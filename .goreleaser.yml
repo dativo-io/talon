@@ -1,0 +1,65 @@
+version: 2
+
+project_name: talon
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod download
+
+builds:
+  - id: talon
+    main: ./cmd/talon/
+    binary: talon
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/dativo-talon/talon/internal/cmd.Version={{.Version}}
+      - -X github.com/dativo-talon/talon/internal/cmd.Commit={{.ShortCommit}}
+      - -X github.com/dativo-talon/talon/internal/cmd.BuildDate={{.Date}}
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+  groups:
+    - title: 'New Features'
+      regexp: '^feat:'
+    - title: 'Bug Fixes'
+      regexp: '^fix:'
+    - title: 'Security'
+      regexp: '^sec:'
+
+release:
+  github:
+    owner: dativo-ai
+    name: talon
+  draft: false
+  prerelease: auto

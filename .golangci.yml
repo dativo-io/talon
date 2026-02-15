@@ -1,0 +1,77 @@
+run:
+  timeout: 5m
+  go: '1.22'
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - gofumpt
+    - revive
+    - gosec
+    - bodyclose
+    - noctx
+    - gocritic
+    - gocyclo
+    - dupl
+
+linters-settings:
+  revive:
+    rules:
+      - name: exported
+        severity: warning
+      - name: unexported-return
+        severity: warning
+
+  gocyclo:
+    min-complexity: 15
+
+  gocritic:
+    enabled-checks:
+      - appendAssign
+      - assignOp
+      - boolExprSimplify
+      - commentedOutCode
+      - deprecatedComment
+      - dupImport
+      - emptyStringTest
+      - equalFold
+      - hexLiteral
+      - indexAlloc
+      - initClause
+      - methodExprCall
+      - nilValReturn
+      - rangeValCopy
+      - regexpMust
+      - sloppyLen
+      - stringXbytes
+      - typeUnparen
+      - unnamedResult
+      - unnecessaryBlock
+      - weakCond
+      - yodaStyleExpr
+
+issues:
+  exclude-rules:
+    # Exclude some linters for test files
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
+        - dupl
+
+    # Exclude specific gosec rules
+    - linters:
+        - gosec
+      text: "G404:" # Random number generation (OK for non-crypto use)
+
+    # Exclude specific staticcheck rules
+    - linters:
+        - staticcheck
+      text: "SA1019:" # Deprecation warnings (sometimes unavoidable)
