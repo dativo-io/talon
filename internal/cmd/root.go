@@ -1,0 +1,136 @@
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+
+	"github.com/dativo-talon/talon/internal/otel"
+)
+
+// tracer is the package-level tracer for all CLI commands
+var tracer = otel.Tracer("github.com/dativo-talon/talon/internal/cmd")
+
+var (
+	// otelShutdown holds the OTel shutdown function, called from Execute()
+	otelShutdown func(context.Context) error
+
+	// Version info injected via ldflags at build time
+	Version   = "dev"
+	Commit    = "none"
+	BuildDate = "unknown"
+
+	// Global flags
+	cfgFile   string
+	verbose   bool
+	logLevel  string
+	logFormat string
+)
+
+// rootCmd represents the base command
+var rootCmd = &cobra.Command{
+	Use:   "talon",
+	Short: "Policy-as-code for AI agents",
+	Long: `Talon is a compliance-first AI orchestration platform for European SMBs.
+
+It enforces policies on AI agent execution with:
+- Cost control and budgets
+- PII detection and data classification
+- Audit trail with HMAC-signed evidence
+- Multi-tenant isolation
+- MCP-native tool integration`,
+
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Initialize logging
+		setupLogging()
+
+		// Initialize OpenTelemetry
+		shutdown, err := otel.Setup("dativo-talon", Version)
+		if err != nil {
+			return fmt.Errorf("initializing OpenTelemetry: %w", err)
+		}
+
+		// Store shutdown for call on exit from Execute()
+		otelShutdown = shutdown
+
+		return nil
+	},
+}
+
+func setupLogging() {
+	// Parse log level
+	level, err := zerolog.ParseLevel(logLevel)
+	if err != nil {
+		level = zerolog.InfoLevel
+	}
+	zerolog.SetGlobalLevel(level)
+
+	// Set format
+	if logFormat == "json" {
+		log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
+	} else {
+		// Pretty console output for development
+		log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).
+			With().
+			Timestamp().
+			Logger()
+	}
+
+	if verbose {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
+}
+
+func init() {
+	cobra.OnInitialize(initConfig)
+
+	// Global flags
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ~/.talon/config.yaml)")
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
+	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level (debug, info, warn, error)")
+	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "console", "log format (console, json)")
+
+	// Bind to viper
+	_ = viper.BindPFlag("verbose", rootCmd.PersistentFlags().Lookup("verbose"))
+	_ = viper.BindPFlag("log_level", rootCmd.PersistentFlags().Lookup("log-level"))
+	_ = viper.BindPFlag("log_format", rootCmd.PersistentFlags().Lookup("log-format"))
+}
+
+func initConfig() {
+	if cfgFile != "" {
+		viper.SetConfigFile(cfgFile)
+	} else {
+		// Search in ~/.talon/ and current directory
+		home, err := os.UserHomeDir()
+		if err == nil {
+			viper.AddConfigPath(home + "/.talon")
+		}
+		viper.AddConfigPath(".")
+		viper.SetConfigName("talon.config")
+		viper.SetConfigType("yaml")
+	}
+
+	// Environment variables with TALON_ prefix
+	viper.SetEnvPrefix("TALON")
+	viper.AutomaticEnv()
+
+	// Read config (ignore errors - file may not exist yet)
+	_ = viper.ReadInConfig()
+}
+
+// Execute runs the root command and flushes OTel on exit
+func Execute() error {
+	err := rootCmd.Execute()
+	if otelShutdown != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = otelShutdown(ctx)
+	}
+	return err
+}
