@@ -30,3 +30,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+# Private documentation & planning
+/internal_docs/
+
+
+# AI coding context (rename from CLAUDE_PROJECT_INSTRUCTIONS.md)
+/.cursor/
