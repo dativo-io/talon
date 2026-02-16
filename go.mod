@@ -3,7 +3,6 @@ module github.com/dativo-io/talon
 go 1.22
 
 require (
-
 	// HTTP Router (Prompt 6)
 	github.com/go-chi/chi/v5 v5.1.0
 
@@ -30,6 +29,11 @@ require (
 	go.opentelemetry.io/otel/trace v1.28.0
 	golang.org/x/crypto v0.21.0
 	golang.org/x/time v0.5.0
+)
+
+require (
+	github.com/xeipuuv/gojsonschema v1.2.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -78,6 +82,5 @@ require (
 	google.golang.org/protobuf v1.32.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )

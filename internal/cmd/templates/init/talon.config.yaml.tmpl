@@ -1,0 +1,26 @@
+# Talon Global Configuration
+
+# LLM Provider (openai, anthropic, bedrock, ollama)
+llm_provider: openai
+
+# Logging
+log_level: info
+log_format: console
+
+# Evidence storage
+evidence:
+  type: sqlite
+  path: ~/.talon/evidence.db
+
+# Secrets encryption key (generate with: openssl rand -hex 32)
+# Set via environment: export TALON_SECRETS_KEY=<key>
+secrets_key_env: TALON_SECRETS_KEY
+
+# Multi-tenant configuration (optional)
+tenants:
+  - id: default
+    display_name: Default Tenant
+    budgets:
+      daily: 200.0
+      monthly: 3000.0
+    rate_limit: 30
