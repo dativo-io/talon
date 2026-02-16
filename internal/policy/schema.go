@@ -302,12 +302,14 @@ func ValidateSchema(yamlBytes []byte, strict bool) error {
 }
 
 // strictValidation applies additional business-rule checks beyond schema.
+// Strict mode enforces compliance posture: cost budgets, compliance declaration, and audit config.
 func strictValidation(jsonBytes []byte) error {
 	var doc map[string]interface{}
 	if err := json.Unmarshal(jsonBytes, &doc); err != nil {
 		return fmt.Errorf("parsing policy for strict validation: %w", err)
 	}
 
+	// 1. Cost limits must have at least daily OR monthly set
 	policies, ok := doc["policies"].(map[string]interface{})
 	if !ok {
 		return fmt.Errorf("strict mode: policies section is invalid")
@@ -316,6 +318,23 @@ func strictValidation(jsonBytes []byte) error {
 	costLimits, ok := policies["cost_limits"].(map[string]interface{})
 	if !ok || len(costLimits) == 0 {
 		return fmt.Errorf("strict mode: at least one cost limit must be set")
+	}
+
+	// Must have daily or monthly (per-request alone is insufficient governance)
+	_, hasDaily := costLimits["daily"]
+	_, hasMonthly := costLimits["monthly"]
+	if !hasDaily && !hasMonthly {
+		return fmt.Errorf("strict mode: cost_limits must include 'daily' or 'monthly' budget")
+	}
+
+	// 2. Compliance section required in strict mode
+	if _, ok := doc["compliance"]; !ok {
+		return fmt.Errorf("strict mode: 'compliance' section is required (set frameworks, data_residency)")
+	}
+
+	// 3. Audit section must exist
+	if _, ok := doc["audit"]; !ok {
+		return fmt.Errorf("strict mode: 'audit' section is required for compliance")
 	}
 
 	return nil
