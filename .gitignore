@@ -1,38 +1,58 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+# Binaries
+bin/
 *.exe
-*.exe~
 *.dll
 *.so
 *.dylib
+/talon
+dist/
 
-# Test binary, built with `go test -c`
-*.test
-
-# Code coverage profiles and other test artifacts
-*.out
-coverage.*
+# Test coverage
+coverage.out
+coverage.html
 *.coverprofile
-profile.cov
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# IDE
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+*~
 
-# Go workspace file
-go.work
-go.work.sum
+# OS
+.DS_Store
+Thumbs.db
+.AppleDouble
+.LSOverride
 
-# env file
+# Build artifacts
+*.test
+*.prof
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Local configuration (may contain secrets)
+talon.config.yaml
 .env
+.env.local
 
-# Editor/IDE
-# .idea/
-# .vscode/
-# Private documentation & planning
-/internal_docs/
+# Evidence database
+*.db
+*.db-shm
+*.db-wal
 
+# State directory
+.talon/
 
-# AI coding context (rename from CLAUDE_PROJECT_INSTRUCTIONS.md)
-/.cursor/
+# Internal documentation (never commit)
+internal_docs/
+
+# Temporary PR files
+.pr_body.md
+
+# Node (if we add JS tooling later)
+node_modules/

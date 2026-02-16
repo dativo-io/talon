@@ -1,0 +1,32 @@
+services:
+  talon:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+    image: talon:${VERSION:-latest}
+    command: serve --dashboard --port 8080
+    ports:
+      - "8080:8080"
+    environment:
+      - TALON_LLM_PROVIDER=${TALON_LLM_PROVIDER:-openai}
+      - TALON_LOG_LEVEL=${TALON_LOG_LEVEL:-info}
+      - TALON_LOG_FORMAT=json
+      # Secrets (set in .env file)
+      - TALON_SECRETS_KEY=${TALON_SECRETS_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - talon-data:/home/talon/.talon
+      - ./policies:/etc/talon/policies:ro
+      - ./examples:/etc/talon/examples:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "talon", "version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  talon-data:
+    driver: local
