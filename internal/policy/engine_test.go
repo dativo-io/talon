@@ -306,6 +306,50 @@ func TestEngineMemoryGovernance(t *testing.T) {
 	}
 }
 
+func TestDataClassificationDefaultsToTier1WhenNoPIIData(t *testing.T) {
+	ctx := context.Background()
+	pol := newTestPolicy()
+
+	engine, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	// No pii_entities in input at all — should default to tier 1, not 0
+	tier, err := engine.EvaluateDataClassification(ctx, map[string]interface{}{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, tier, "missing PII data should default to tier 1 (confidential), not 0 (public)")
+}
+
+func TestDataClassificationTier0RequiresExplicitEmptyPII(t *testing.T) {
+	ctx := context.Background()
+	pol := newTestPolicy()
+
+	engine, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	// Explicit empty pii_entities — this is tier 0
+	tier, err := engine.EvaluateDataClassification(ctx, map[string]interface{}{
+		"pii_entities": []interface{}{},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, tier, "explicitly empty PII should be tier 0")
+}
+
+func TestDataClassificationTier2WithSensitivePII(t *testing.T) {
+	ctx := context.Background()
+	pol := newTestPolicy()
+
+	engine, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	tier, err := engine.EvaluateDataClassification(ctx, map[string]interface{}{
+		"pii_entities": []interface{}{
+			map[string]interface{}{"type": "iban", "value": "DE89370400440532013000"},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, tier, "IBAN should trigger tier 2")
+}
+
 func TestEngineDecisionHasPolicyVersion(t *testing.T) {
 	ctx := context.Background()
 	pol := newTestPolicy()

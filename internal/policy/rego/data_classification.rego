@@ -6,7 +6,13 @@ import rego.v1
 # Tier 1: Confidential, some PII allowed
 # Tier 2: Highly sensitive, EU-only routing required
 
-default tier := 0
+# Default to tier 1 (not 0) when PII data is missing — fail safe
+default tier := 1
+
+tier := 0 if {
+	input.pii_entities
+	count(input.pii_entities) == 0
+}
 
 tier := 2 if {
 	contains_sensitive_pii
