@@ -3,7 +3,6 @@ package otel
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -34,18 +33,8 @@ func Setup(serviceName, version string, enabled bool) (shutdown func(context.Con
 	}
 
 	// Create exporter
-	var exporter sdktrace.SpanExporter
-
-	// Check if OTLP endpoint is configured (for Phase 2)
-	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint != "" {
-		// Future: use OTLP exporter
-		// For MVP: fall back to stdout
-		_ = endpoint
-		exporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
-	} else {
-		// MVP: stdout exporter
-		exporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
-	}
+	// MVP: stdout exporter (OTLP exporter will be added in Phase 2)
+	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
 
 	if err != nil {
 		return nil, fmt.Errorf("creating OTel exporter: %w", err)
