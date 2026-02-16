@@ -505,6 +505,15 @@ func TestProxyCompliance(t *testing.T) {
 			wantContain: "Data residency violation",
 		},
 		{
+			name: "empty upstream region denied (fail-closed)",
+			input: &ProxyInput{
+				ToolName:       "zendesk_ticket_search",
+				UpstreamRegion: "",
+			},
+			wantAllowed: false,
+			wantContain: "Data residency violation",
+		},
+		{
 			name: "high-risk operation without approval denied",
 			input: &ProxyInput{
 				ToolName:       "data_export_report",
@@ -562,6 +571,58 @@ func TestProxyCompliance(t *testing.T) {
 				}
 				assert.True(t, found, "expected reason containing %q in %v", tt.wantContain, decision.Reasons)
 			}
+		})
+	}
+}
+
+// TestProxyCompliance_EmptyRegionFailClosed verifies that an empty or missing
+// upstream_region is denied when data_residency is "eu-only". This is a
+// regression test for a fail-open bypass: omitempty on the Go struct dropped
+// the field from JSON, causing the Rego deny rule's sprintf to silently fail
+// on the undefined value, allowing the request through despite a detected
+// data residency violation.
+func TestProxyCompliance_EmptyRegionFailClosed(t *testing.T) {
+	ctx := context.Background()
+	cfg := newTestProxyConfig() // has DataResidency: "eu-only"
+
+	engine, err := NewProxyEngine(ctx, cfg)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		input *ProxyInput
+	}{
+		{
+			name: "empty string region",
+			input: &ProxyInput{
+				ToolName:       "zendesk_ticket_search",
+				UpstreamRegion: "",
+			},
+		},
+		{
+			name: "region not set at all",
+			input: &ProxyInput{
+				ToolName: "zendesk_ticket_search",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision, err := engine.EvaluateProxyCompliance(ctx, tt.input)
+			require.NoError(t, err)
+			assert.False(t, decision.Allowed,
+				"empty/missing upstream_region MUST be denied when data_residency is eu-only (fail-closed)")
+			require.NotEmpty(t, decision.Reasons)
+			found := false
+			for _, r := range decision.Reasons {
+				if containsStr(r, "Data residency violation") {
+					found = true
+					break
+				}
+			}
+			assert.True(t, found,
+				"expected 'Data residency violation' in reasons %v", decision.Reasons)
 		})
 	}
 }

@@ -75,7 +75,7 @@ type ProxyInput struct {
 	ToolName       string                 `json:"tool_name"`
 	Vendor         string                 `json:"vendor,omitempty"`
 	DetectedPII    []string               `json:"detected_pii,omitempty"`
-	UpstreamRegion string                 `json:"upstream_region,omitempty"`
+	UpstreamRegion string                 `json:"upstream_region"`
 	RequestCount   int                    `json:"request_count,omitempty"`
 	Arguments      map[string]interface{} `json:"arguments,omitempty"`
 	Approved       bool                   `json:"approved,omitempty"`
