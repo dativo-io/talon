@@ -7,11 +7,13 @@ import rego.v1
 # - Human oversight for high-risk operations (NIS2 Art. 21 + EU AI Act Art. 14)
 
 # EU regions that satisfy "eu-only" residency requirement.
-eu_regions := ["eu-west-1", "eu-central-1"]
+# Uses prefix matching to cover all current and future AWS EU regions:
+#   eu-west-1 (Ireland), eu-west-2 (London), eu-west-3 (Paris),
+#   eu-central-1 (Frankfurt), eu-central-2 (Zurich),
+#   eu-north-1 (Stockholm), eu-south-1 (Milan), eu-south-2 (Spain).
 
 is_eu_region(region) if {
-	some r in eu_regions
-	r == region
+	startswith(region, "eu-")
 }
 
 # Data residency violation: upstream in non-EU region when policy requires EU-only.

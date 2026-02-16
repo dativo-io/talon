@@ -432,7 +432,7 @@ func TestProxyCompliance(t *testing.T) {
 		wantContain string
 	}{
 		{
-			name: "EU region passes",
+			name: "EU region eu-west-1 passes",
 			input: &ProxyInput{
 				ToolName:       "zendesk_ticket_search",
 				UpstreamRegion: "eu-west-1",
@@ -440,10 +440,58 @@ func TestProxyCompliance(t *testing.T) {
 			wantAllowed: true,
 		},
 		{
-			name: "EU central region passes",
+			name: "EU region eu-west-2 passes",
+			input: &ProxyInput{
+				ToolName:       "zendesk_ticket_search",
+				UpstreamRegion: "eu-west-2",
+			},
+			wantAllowed: true,
+		},
+		{
+			name: "EU region eu-west-3 passes",
+			input: &ProxyInput{
+				ToolName:       "zendesk_ticket_search",
+				UpstreamRegion: "eu-west-3",
+			},
+			wantAllowed: true,
+		},
+		{
+			name: "EU region eu-central-1 passes",
 			input: &ProxyInput{
 				ToolName:       "zendesk_ticket_search",
 				UpstreamRegion: "eu-central-1",
+			},
+			wantAllowed: true,
+		},
+		{
+			name: "EU region eu-central-2 passes",
+			input: &ProxyInput{
+				ToolName:       "zendesk_ticket_search",
+				UpstreamRegion: "eu-central-2",
+			},
+			wantAllowed: true,
+		},
+		{
+			name: "EU region eu-north-1 passes",
+			input: &ProxyInput{
+				ToolName:       "zendesk_ticket_search",
+				UpstreamRegion: "eu-north-1",
+			},
+			wantAllowed: true,
+		},
+		{
+			name: "EU region eu-south-1 passes",
+			input: &ProxyInput{
+				ToolName:       "zendesk_ticket_search",
+				UpstreamRegion: "eu-south-1",
+			},
+			wantAllowed: true,
+		},
+		{
+			name: "EU region eu-south-2 passes",
+			input: &ProxyInput{
+				ToolName:       "zendesk_ticket_search",
+				UpstreamRegion: "eu-south-2",
 			},
 			wantAllowed: true,
 		},
