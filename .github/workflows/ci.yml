@@ -81,10 +81,6 @@ jobs:
             goarch: amd64
           - goos: linux
             goarch: arm64
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -105,7 +101,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 1
-          CC: ${{ matrix.goarch == 'arm64' && matrix.goos == 'linux' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
+          CC: ${{ matrix.goarch == 'arm64' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
         run: |
           make build
           ls -lh bin/
