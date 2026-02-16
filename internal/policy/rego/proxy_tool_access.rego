@@ -5,13 +5,7 @@ import rego.v1
 # Proxy tool access: default deny.
 # Tool must be in allowed_tools, must NOT be in forbidden_tools,
 # and admin operations require explicit allow.
-
-# Allow if tool is explicitly in allowed list, not forbidden, and not an unallowed admin op.
-allow if {
-	tool_in_allowed
-	not is_forbidden
-	not is_blocked_admin
-}
+# Decision is deny-set based: if the "deny" set is non-empty the request is blocked.
 
 tool_in_allowed if {
 	some tool in data.proxy.allowed_tools
