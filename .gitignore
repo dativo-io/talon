@@ -51,5 +51,8 @@ talon.config.yaml
 # Internal documentation (never commit)
 internal_docs/
 
+# Temporary PR files
+.pr_body.md
+
 # Node (if we add JS tooling later)
 node_modules/
