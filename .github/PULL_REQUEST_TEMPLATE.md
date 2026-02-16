@@ -24,6 +24,3 @@
 
 ## Testing
 <!-- How did you test this? -->
-
-## Prompt Reference
-<!-- Which cursor prompt does this implement? e.g., "Prompt 2: Policy Engine" -->
