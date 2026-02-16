@@ -45,6 +45,8 @@ WORKDIR /home/talon
 
 EXPOSE 8080
 
+# TODO: Replace with HTTP health check once `talon serve` is implemented (Prompt 6)
+# HEALTHCHECK CMD ["wget", "-q", "--spider", "http://localhost:8080/healthz"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
     CMD ["talon", "version"] || exit 1
 

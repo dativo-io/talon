@@ -1,23 +1,29 @@
 ## Description
-
-<!-- Summarize the change and why it's needed -->
+<!-- Describe your changes -->
 
 ## Type of Change
-
-- [ ] New feature (non-breaking change which adds functionality)
 - [ ] Bug fix (non-breaking change which fixes an issue)
+- [ ] New feature (non-breaking change which adds functionality)
 - [ ] Breaking change (fix or feature that would cause existing functionality to change)
+- [ ] Documentation update
 
-## What's included
-
-<!-- List main changes, files, or areas affected -->
-
-## Verification
-
-- [ ] `make build` succeeds
+## Checklist
+- [ ] Code follows `.cursorrules` conventions
+- [ ] Critical rules from `CLAUDE_PROJECT_INSTRUCTIONS.md` followed
+- [ ] Tests added/updated (target: 70% coverage)
 - [ ] `make test` passes
-- [ ] (Optional) Manual checks done
+- [ ] `make lint` passes
+- [ ] OTel spans on significant functions
+- [ ] Evidence generated for auditable operations
+- [ ] No secrets hardcoded
+- [ ] Documentation updated (if needed)
+- [ ] CHANGELOG.md updated (if user-facing change)
 
-## Related
+## Related Issues
+<!-- Link related issues: Fixes #123 -->
 
-<!-- Issues, docs, or follow-up work -->
+## Testing
+<!-- How did you test this? -->
+
+## Prompt Reference
+<!-- Which cursor prompt does this implement? e.g., "Prompt 2: Policy Engine" -->
