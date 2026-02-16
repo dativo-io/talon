@@ -13,9 +13,15 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 )
 
-// Setup initializes OpenTelemetry with stdout exporter for MVP
-// Returns a shutdown function that must be called on exit
-func Setup(serviceName, version string) (shutdown func(context.Context) error, err error) {
+// Setup initializes OpenTelemetry with stdout exporter for MVP.
+// If enabled is false, returns a no-op shutdown function and OTel remains disabled.
+// Returns a shutdown function that must be called on exit.
+func Setup(serviceName, version string, enabled bool) (shutdown func(context.Context) error, err error) {
+	if !enabled {
+		// Return no-op shutdown function
+		return func(ctx context.Context) error { return nil }, nil
+	}
+
 	// Create resource
 	res, err := resource.New(context.Background(),
 		resource.WithAttributes(

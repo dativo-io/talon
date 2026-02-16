@@ -15,14 +15,16 @@ func TestSetup(t *testing.T) {
 		name        string
 		serviceName string
 		version     string
+		enabled     bool
 	}{
-		{"basic setup", "test-service", "1.0.0"},
-		{"dev version", "dativo-talon", "dev"},
-		{"empty version", "talon", ""},
+		{"basic setup", "test-service", "1.0.0", true},
+		{"dev version", "dativo-talon", "dev", true},
+		{"empty version", "talon", "", true},
+		{"disabled", "test-service", "1.0.0", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			shutdown, err := Setup(tt.serviceName, tt.version)
+			shutdown, err := Setup(tt.serviceName, tt.version, tt.enabled)
 			require.NoError(t, err)
 			require.NotNil(t, shutdown, "shutdown function must not be nil")
 
@@ -35,7 +37,7 @@ func TestSetup(t *testing.T) {
 }
 
 func TestSetup_ReturnsWorkingShutdown(t *testing.T) {
-	shutdown, err := Setup("test-service", "0.0.1")
+	shutdown, err := Setup("test-service", "0.0.1", true)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -58,7 +60,7 @@ func TestTracer_DifferentPackagesReturnDistinctTracers(t *testing.T) {
 }
 
 func TestTracer_CreatesValidSpans(t *testing.T) {
-	shutdown, err := Setup("test-service", "0.0.1")
+	shutdown, err := Setup("test-service", "0.0.1", true)
 	require.NoError(t, err)
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -83,4 +85,22 @@ func TestTracer_SpansAreNotRecordingWithoutSetup(t *testing.T) {
 	defer span.End()
 
 	assert.Implements(t, (*trace.Span)(nil), span)
+}
+
+func TestSetup_DisabledReturnsNoOpShutdown(t *testing.T) {
+	shutdown, err := Setup("test-service", "0.0.1", false)
+	require.NoError(t, err)
+	require.NotNil(t, shutdown)
+
+	// No-op shutdown should complete immediately without error
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err = shutdown(ctx)
+	assert.NoError(t, err)
+
+	// When disabled, spans should still work but won't be exported
+	tr := Tracer("github.com/dativo-io/talon/internal/otel/test")
+	_, span := tr.Start(context.Background(), "test.operation")
+	defer span.End()
+	assert.NotNil(t, span)
 }
