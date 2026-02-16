@@ -135,6 +135,9 @@ func (e *Engine) Evaluate(ctx context.Context, input map[string]interface{}) (*D
 		attribute.Bool("policy.allowed", decision.Allowed),
 		attribute.Int("policy.deny_reasons", len(decision.Reasons)),
 	)
+	if decision.Allowed {
+		span.SetStatus(codes.Ok, "policy evaluation passed")
+	}
 
 	return decision, nil
 }
@@ -170,6 +173,14 @@ func (e *Engine) EvaluateToolAccess(ctx context.Context, toolName string, params
 		decision.Action = "deny"
 	}
 
+	span.SetAttributes(
+		attribute.Bool("policy.allowed", decision.Allowed),
+		attribute.Int("policy.deny_reasons", len(decision.Reasons)),
+	)
+	if decision.Allowed {
+		span.SetStatus(codes.Ok, "policy evaluation passed")
+	}
+
 	return decision, nil
 }
 
@@ -201,6 +212,14 @@ func (e *Engine) EvaluateSecretAccess(ctx context.Context, secretName string) (*
 	if len(decision.Reasons) > 0 {
 		decision.Allowed = false
 		decision.Action = "deny"
+	}
+
+	span.SetAttributes(
+		attribute.Bool("policy.allowed", decision.Allowed),
+		attribute.Int("policy.deny_reasons", len(decision.Reasons)),
+	)
+	if decision.Allowed {
+		span.SetStatus(codes.Ok, "policy evaluation passed")
 	}
 
 	return decision, nil
@@ -236,6 +255,14 @@ func (e *Engine) EvaluateMemoryWrite(ctx context.Context, category string, conte
 	if len(decision.Reasons) > 0 {
 		decision.Allowed = false
 		decision.Action = "deny"
+	}
+
+	span.SetAttributes(
+		attribute.Bool("policy.allowed", decision.Allowed),
+		attribute.Int("policy.deny_reasons", len(decision.Reasons)),
+	)
+	if decision.Allowed {
+		span.SetStatus(codes.Ok, "policy evaluation passed")
 	}
 
 	return decision, nil
