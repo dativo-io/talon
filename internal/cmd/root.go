@@ -50,8 +50,9 @@ It enforces policies on AI agent execution with:
 		// Initialize logging
 		setupLogging()
 
-		// Initialize OpenTelemetry
-		shutdown, err := otel.Setup("dativo-talon", Version)
+		// Initialize OpenTelemetry only if explicitly enabled
+		otelEnabled := verbose || os.Getenv("TALON_OTEL_ENABLED") == "true"
+		shutdown, err := otel.Setup("dativo-talon", Version, otelEnabled)
 		if err != nil {
 			return fmt.Errorf("initializing OpenTelemetry: %w", err)
 		}
