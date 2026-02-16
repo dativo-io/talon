@@ -1,6 +1,9 @@
 # Dativo Talon Agent Configuration
 # Agent Type: {{ .Name }}
 # Schema: .talon.yaml v2.0
+#
+# Review these settings before deploying to production.
+# Run 'talon validate --strict' to verify compliance requirements.
 
 agent:
   name: {{ .Name }}
@@ -45,7 +48,8 @@ policies:
       location: any
     tier_1:
       primary: gpt-4o
-      location: any
+      fallback: gpt-4o-mini
+      location: eu-west-1
     tier_2:
       primary: claude-sonnet-4-20250514
       location: eu-west-1
