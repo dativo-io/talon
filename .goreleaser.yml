@@ -21,9 +21,9 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X github.com/dativo-talon/talon/internal/cmd.Version={{.Version}}
-      - -X github.com/dativo-talon/talon/internal/cmd.Commit={{.ShortCommit}}
-      - -X github.com/dativo-talon/talon/internal/cmd.BuildDate={{.Date}}
+      - -X github.com/dativo-io/talon/internal/cmd.Version={{.Version}}
+      - -X github.com/dativo-io/talon/internal/cmd.Commit={{.ShortCommit}}
+      - -X github.com/dativo-io/talon/internal/cmd.BuildDate={{.Date}}
 
 archives:
   - format: tar.gz
@@ -59,7 +59,7 @@ changelog:
 
 release:
   github:
-    owner: dativo-ai
+    owner: dativo-io
     name: talon
   draft: false
   prerelease: auto

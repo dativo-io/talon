@@ -8,7 +8,7 @@
 
 ```bash
 # Build from source
-git clone https://github.com/dativo-talon/talon.git
+git clone https://github.com/dativo-io/talon.git
 cd talon
 make build
 

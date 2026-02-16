@@ -46,13 +46,13 @@ func TestSetup_ReturnsWorkingShutdown(t *testing.T) {
 }
 
 func TestTracer_ReturnsNonNilTracer(t *testing.T) {
-	tr := Tracer("github.com/dativo-talon/talon/internal/test")
+	tr := Tracer("github.com/dativo-io/talon/internal/test")
 	assert.NotNil(t, tr)
 }
 
 func TestTracer_DifferentPackagesReturnDistinctTracers(t *testing.T) {
-	tr1 := Tracer("github.com/dativo-talon/talon/internal/cmd")
-	tr2 := Tracer("github.com/dativo-talon/talon/internal/llm")
+	tr1 := Tracer("github.com/dativo-io/talon/internal/cmd")
+	tr2 := Tracer("github.com/dativo-io/talon/internal/llm")
 	assert.NotNil(t, tr1)
 	assert.NotNil(t, tr2)
 }
@@ -66,7 +66,7 @@ func TestTracer_CreatesValidSpans(t *testing.T) {
 		_ = shutdown(ctx)
 	}()
 
-	tr := Tracer("github.com/dativo-talon/talon/internal/otel/test")
+	tr := Tracer("github.com/dativo-io/talon/internal/otel/test")
 	ctx, span := tr.Start(context.Background(), "test.operation")
 	defer span.End()
 
@@ -78,7 +78,7 @@ func TestTracer_CreatesValidSpans(t *testing.T) {
 }
 
 func TestTracer_SpansAreNotRecordingWithoutSetup(t *testing.T) {
-	tr := Tracer("github.com/dativo-talon/talon/internal/noop")
+	tr := Tracer("github.com/dativo-io/talon/internal/noop")
 	_, span := tr.Start(context.Background(), "noop.operation")
 	defer span.End()
 
