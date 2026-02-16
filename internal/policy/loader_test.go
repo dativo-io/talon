@@ -187,7 +187,7 @@ policies:
 			wantErr: true,
 		},
 		{
-			name: "strict mode with valid cost limits",
+			name: "strict mode requires compliance section",
 			yaml: `
 agent:
   name: test-agent
@@ -198,7 +198,65 @@ policies:
     monthly: 1000.0
 `,
 			strict:  true,
+			wantErr: true,
+		},
+		{
+			name: "strict mode requires audit section",
+			yaml: `
+agent:
+  name: test-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 100.0
+    monthly: 1000.0
+compliance:
+  frameworks:
+    - gdpr
+  data_residency: eu
+`,
+			strict:  true,
+			wantErr: true,
+		},
+		{
+			name: "strict mode passes with all required sections",
+			yaml: `
+agent:
+  name: test-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 100.0
+    monthly: 1000.0
+compliance:
+  frameworks:
+    - gdpr
+  data_residency: eu
+audit:
+  log_level: detailed
+  retention_days: 2555
+`,
+			strict:  true,
 			wantErr: false,
+		},
+		{
+			name: "strict mode fails with only per_request cost limit",
+			yaml: `
+agent:
+  name: test-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    per_request: 5.0
+compliance:
+  frameworks:
+    - gdpr
+  data_residency: eu
+audit:
+  log_level: detailed
+`,
+			strict:  true,
+			wantErr: true,
 		},
 	}
 

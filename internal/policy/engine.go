@@ -135,6 +135,9 @@ func (e *Engine) Evaluate(ctx context.Context, input map[string]interface{}) (*D
 		attribute.Bool("policy.allowed", decision.Allowed),
 		attribute.Int("policy.deny_reasons", len(decision.Reasons)),
 	)
+	if decision.Allowed {
+		span.SetStatus(codes.Ok, "policy evaluation passed")
+	}
 
 	return decision, nil
 }
@@ -170,6 +173,14 @@ func (e *Engine) EvaluateToolAccess(ctx context.Context, toolName string, params
 		decision.Action = "deny"
 	}
 
+	span.SetAttributes(
+		attribute.Bool("policy.allowed", decision.Allowed),
+		attribute.Int("policy.deny_reasons", len(decision.Reasons)),
+	)
+	if decision.Allowed {
+		span.SetStatus(codes.Ok, "policy evaluation passed")
+	}
+
 	return decision, nil
 }
 
@@ -201,6 +212,14 @@ func (e *Engine) EvaluateSecretAccess(ctx context.Context, secretName string) (*
 	if len(decision.Reasons) > 0 {
 		decision.Allowed = false
 		decision.Action = "deny"
+	}
+
+	span.SetAttributes(
+		attribute.Bool("policy.allowed", decision.Allowed),
+		attribute.Int("policy.deny_reasons", len(decision.Reasons)),
+	)
+	if decision.Allowed {
+		span.SetStatus(codes.Ok, "policy evaluation passed")
 	}
 
 	return decision, nil
@@ -238,8 +257,20 @@ func (e *Engine) EvaluateMemoryWrite(ctx context.Context, category string, conte
 		decision.Action = "deny"
 	}
 
+	span.SetAttributes(
+		attribute.Bool("policy.allowed", decision.Allowed),
+		attribute.Int("policy.deny_reasons", len(decision.Reasons)),
+	)
+	if decision.Allowed {
+		span.SetStatus(codes.Ok, "policy evaluation passed")
+	}
+
 	return decision, nil
 }
+
+// defaultDataTier is the fail-safe tier when OPA returns no result or an
+// unrecognised type.  Must match the Rego default (tier 1 = confidential).
+const defaultDataTier = 1
 
 // EvaluateDataClassification returns the data tier (0, 1, or 2) for the given input.
 func (e *Engine) EvaluateDataClassification(ctx context.Context, input map[string]interface{}) (int, error) {
@@ -248,24 +279,24 @@ func (e *Engine) EvaluateDataClassification(ctx context.Context, input map[strin
 
 	prepared, ok := e.prepared["rego/data_classification.rego"]
 	if !ok {
-		return 0, fmt.Errorf("data classification policy not prepared")
+		return defaultDataTier, fmt.Errorf("data classification policy not prepared")
 	}
 
 	results, err := prepared.Eval(ctx, rego.EvalInput(input))
 	if err != nil {
 		span.RecordError(err)
-		return 0, fmt.Errorf("evaluating data classification: %w", err)
+		return defaultDataTier, fmt.Errorf("evaluating data classification: %w", err)
 	}
 
 	if len(results) == 0 || len(results[0].Expressions) == 0 {
-		return 0, nil
+		return defaultDataTier, nil
 	}
 
 	tierVal, ok := results[0].Expressions[0].Value.(json.Number)
 	if ok {
 		tier, err := tierVal.Int64()
 		if err != nil {
-			return 0, fmt.Errorf("parsing tier value: %w", err)
+			return defaultDataTier, fmt.Errorf("parsing tier value: %w", err)
 		}
 		return int(tier), nil
 	}
@@ -275,7 +306,7 @@ func (e *Engine) EvaluateDataClassification(ctx context.Context, input map[strin
 		return int(tierFloat), nil
 	}
 
-	return 0, nil
+	return defaultDataTier, nil
 }
 
 // evaluateDenyPolicy runs a single Rego policy that produces a set of deny messages.
