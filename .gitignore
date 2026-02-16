@@ -48,5 +48,8 @@ talon.config.yaml
 # State directory
 .talon/
 
+# Internal documentation (never commit)
+internal_docs/
+
 # Node (if we add JS tooling later)
 node_modules/
