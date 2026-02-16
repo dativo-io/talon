@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/dativo-talon/talon/internal/cmd"
+	"github.com/dativo-io/talon/internal/cmd"
 )
 
 func main() {

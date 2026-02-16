@@ -4,9 +4,9 @@ VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 BUILD_DATE=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS=-ldflags "-s -w \
-	-X github.com/dativo-talon/talon/internal/cmd.Version=$(VERSION) \
-	-X github.com/dativo-talon/talon/internal/cmd.Commit=$(COMMIT) \
-	-X github.com/dativo-talon/talon/internal/cmd.BuildDate=$(BUILD_DATE)"
+	-X github.com/dativo-io/talon/internal/cmd.Version=$(VERSION) \
+	-X github.com/dativo-io/talon/internal/cmd.Commit=$(COMMIT) \
+	-X github.com/dativo-io/talon/internal/cmd.BuildDate=$(BUILD_DATE)"
 
 .PHONY: help build install test lint fmt clean vet mod-tidy check docker-build
 

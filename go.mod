@@ -1,9 +1,8 @@
-module github.com/dativo-talon/talon
+module github.com/dativo-io/talon
 
 go 1.22
 
 require (
-
 	// Observability - CRITICAL v2.0 ADDITION
 	github.com/rs/zerolog v1.32.0
 	// CLI + Config

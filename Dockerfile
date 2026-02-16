@@ -22,9 +22,9 @@ ARG BUILD_DATE=unknown
 
 RUN CGO_ENABLED=1 go build \
     -ldflags="-s -w \
-    -X github.com/dativo-talon/talon/internal/cmd.Version=${VERSION} \
-    -X github.com/dativo-talon/talon/internal/cmd.Commit=${COMMIT} \
-    -X github.com/dativo-talon/talon/internal/cmd.BuildDate=${BUILD_DATE}" \
+    -X github.com/dativo-io/talon/internal/cmd.Version=${VERSION} \
+    -X github.com/dativo-io/talon/internal/cmd.Commit=${COMMIT} \
+    -X github.com/dativo-io/talon/internal/cmd.BuildDate=${BUILD_DATE}" \
     -o talon ./cmd/talon/
 
 # Stage 2: Runtime

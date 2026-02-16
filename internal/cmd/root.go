@@ -11,11 +11,11 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/dativo-talon/talon/internal/otel"
+	"github.com/dativo-io/talon/internal/otel"
 )
 
 // tracer is the package-level tracer for all CLI commands
-var tracer = otel.Tracer("github.com/dativo-talon/talon/internal/cmd")
+var tracer = otel.Tracer("github.com/dativo-io/talon/internal/cmd")
 
 var (
 	// otelShutdown holds the OTel shutdown function, called from Execute()
