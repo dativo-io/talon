@@ -1,12 +1,13 @@
-// This file ensures core dependencies are available for upcoming prompts.
-// It will be removed once the dependencies are actually imported in Prompt 2+.
-package deps
+package internal
+
+// deps_stub.go pins dependencies in go.mod before they're used in real code.
+// Remove this file once each package is imported by actual production code.
 
 import (
 	_ "github.com/go-chi/chi/v5"
 	_ "github.com/mattn/go-sqlite3"
-	_ "github.com/open-policy-agent/opa"
+	_ "github.com/open-policy-agent/opa/rego"
 	_ "github.com/robfig/cron/v3"
-	_ "golang.org/x/crypto"
-	_ "golang.org/x/time"
+	_ "golang.org/x/crypto/nacl/secretbox"
+	_ "golang.org/x/time/rate"
 )
