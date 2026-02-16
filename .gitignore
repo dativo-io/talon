@@ -8,7 +8,7 @@ bin/
 dist/
 
 # Test coverage
-coverage.out
+*.out
 coverage.html
 *.coverprofile
 
