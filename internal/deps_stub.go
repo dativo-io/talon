@@ -6,7 +6,6 @@ package internal
 import (
 	_ "github.com/go-chi/chi/v5"
 	_ "github.com/mattn/go-sqlite3"
-	_ "github.com/open-policy-agent/opa/rego"
 	_ "github.com/robfig/cron/v3"
 	_ "golang.org/x/crypto/nacl/secretbox"
 	_ "golang.org/x/time/rate"
