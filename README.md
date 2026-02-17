@@ -124,7 +124,7 @@ talon run "Summarize EU AI regulation trends"
 ```bash
 # Install
 curl -sSL https://get.talon.dativo.io | sh
-# Or: go install github.com/dativo-talon/talon/cmd/talon@latest
+# Or: go install github.com/dativo-io/talon/cmd/talon@latest
 
 # Initialize a project
 mkdir my-agents && cd my-agents
@@ -340,7 +340,7 @@ Apache 2.0 — See [LICENSE](LICENSE)
 - **Vendor Integration:** [VENDOR_INTEGRATION_GUIDE.md](docs/VENDOR_INTEGRATION_GUIDE.md)
 - **Adoption Paths:** [ADOPTION_SCENARIOS.md](docs/ADOPTION_SCENARIOS.md)
 - **Website:** https://talon.dativo.io
-- **Community:** https://github.com/dativo-talon/talon/discussions
+- **Community:** https://github.com/dativo-io/talon/discussions
 
 ---
 

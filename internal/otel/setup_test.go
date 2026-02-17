@@ -18,7 +18,7 @@ func TestSetup(t *testing.T) {
 		enabled     bool
 	}{
 		{"basic setup", "test-service", "1.0.0", true},
-		{"dev version", "dativo-talon", "dev", true},
+		{"dev version", "dativo-io", "dev", true},
 		{"empty version", "talon", "", true},
 		{"disabled", "test-service", "1.0.0", false},
 	}
