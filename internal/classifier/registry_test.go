@@ -181,13 +181,14 @@ func TestCompilePIIPatterns(t *testing.T) {
 	enabled := true
 	disabled := false
 
+	score08, score05 := 0.8, 0.5
 	recognizers := []RecognizerConfig{
 		{
 			Name:            "Email",
 			SupportedEntity: "EMAIL_ADDRESS",
 			Enabled:         &enabled,
 			Patterns: []PatternConfig{
-				{Name: "basic", Regex: `\b[a-z]+@[a-z]+\.[a-z]+\b`, Score: 0.8},
+				{Name: "basic", Regex: `\b[a-z]+@[a-z]+\.[a-z]+\b`, Score: &score08},
 			},
 			Sensitivity: 1,
 			Countries:   []string{"EU"},
@@ -197,7 +198,7 @@ func TestCompilePIIPatterns(t *testing.T) {
 			SupportedEntity: "DISABLED_THING",
 			Enabled:         &disabled,
 			Patterns: []PatternConfig{
-				{Name: "never compiled", Regex: `abc`, Score: 0.5},
+				{Name: "never compiled", Regex: `abc`, Score: &score05},
 			},
 			Sensitivity: 1,
 		},
@@ -213,13 +214,37 @@ func TestCompilePIIPatterns(t *testing.T) {
 	assert.NotNil(t, compiled[0].Pattern)
 }
 
+// TestCompilePIIPatternsOmittedScore ensures that when a pattern has no score
+// (nil), the compiled PIIPattern gets DefaultMinScore so it is not filtered out by Scan().
+func TestCompilePIIPatternsOmittedScore(t *testing.T) {
+	rf, err := ParseRecognizerFile([]byte(`
+recognizers:
+  - name: "Ticket"
+    supported_entity: "TICKET_ID"
+    patterns:
+      - name: "ticket"
+        regex: '\bTKT-\d{5}\b'
+`))
+	require.NoError(t, err)
+	require.Len(t, rf.Recognizers, 1)
+	require.Len(t, rf.Recognizers[0].Patterns, 1)
+	assert.Nil(t, rf.Recognizers[0].Patterns[0].Score, "omitted score in YAML must unmarshal as nil")
+
+	compiled, err := CompilePIIPatterns(rf.Recognizers)
+	require.NoError(t, err)
+	require.Len(t, compiled, 1)
+	assert.Equal(t, DefaultMinScore, compiled[0].Score,
+		"omitted score must compile to DefaultMinScore so custom patterns are effective")
+}
+
 func TestCompilePIIPatternsInvalidRegex(t *testing.T) {
+	score05 := 0.5
 	recognizers := []RecognizerConfig{
 		{
 			Name:            "Bad Regex",
 			SupportedEntity: "BAD",
 			Patterns: []PatternConfig{
-				{Name: "invalid", Regex: `[invalid`, Score: 0.5},
+				{Name: "invalid", Regex: `[invalid`, Score: &score05},
 			},
 		},
 	}

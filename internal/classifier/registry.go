@@ -33,10 +33,12 @@ type RecognizerConfig struct {
 }
 
 // PatternConfig is a single regex pattern within a recognizer.
+// Score is optional; when omitted (nil), DefaultMinScore is used at compile time
+// so that custom patterns are not filtered out by the scanner's minScore threshold.
 type PatternConfig struct {
-	Name  string  `yaml:"name" json:"name"`
-	Regex string  `yaml:"regex" json:"regex"`
-	Score float64 `yaml:"score" json:"score"`
+	Name  string   `yaml:"name" json:"name"`
+	Regex string   `yaml:"regex" json:"regex"`
+	Score *float64 `yaml:"score,omitempty" json:"score,omitempty"`
 }
 
 // LanguageContext holds context words for a specific language.
@@ -133,13 +135,17 @@ func CompilePIIPatterns(recognizers []RecognizerConfig) ([]PIIPattern, error) {
 			if err != nil {
 				return nil, fmt.Errorf("compiling pattern %q in recognizer %q: %w", p.Name, rec.Name, err)
 			}
+			baseScore := DefaultMinScore
+			if p.Score != nil {
+				baseScore = *p.Score
+			}
 			patterns = append(patterns, PIIPattern{
 				Name:         rec.Name,
 				Type:         entityToType(rec.SupportedEntity),
 				Pattern:      compiled,
 				Countries:    rec.Countries,
 				Sensitivity:  rec.Sensitivity,
-				Score:        p.Score,
+				Score:        baseScore,
 				ContextWords: contextWords,
 				ValidateLuhn: rec.ValidateLuhn,
 				ValidateIBAN: rec.ValidateIBAN,

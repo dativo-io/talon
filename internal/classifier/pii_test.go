@@ -366,12 +366,13 @@ func TestNewScannerWithDisabledEntities(t *testing.T) {
 }
 
 func TestNewScannerWithCustomRecognizers(t *testing.T) {
+	score095 := 0.95
 	custom := []RecognizerConfig{
 		{
 			Name:            "Employee ID",
 			SupportedEntity: "EMPLOYEE_ID",
 			Patterns: []PatternConfig{
-				{Name: "emp id", Regex: `\bEMP-\d{6}\b`, Score: 0.95},
+				{Name: "emp id", Regex: `\bEMP-\d{6}\b`, Score: &score095},
 			},
 			Sensitivity: 2,
 		},
@@ -392,6 +393,38 @@ func TestNewScannerWithCustomRecognizers(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "custom employee ID pattern should match")
+}
+
+// TestNewScannerWithCustomRecognizersOmittedScore verifies that when score is
+// omitted (nil), CompilePIIPatterns uses DefaultMinScore so custom patterns
+// are not filtered out by the scanner's minScore threshold.
+func TestNewScannerWithCustomRecognizersOmittedScore(t *testing.T) {
+	custom := []RecognizerConfig{
+		{
+			Name:            "Ticket ID",
+			SupportedEntity: "TICKET_ID",
+			Patterns: []PatternConfig{
+				{Name: "ticket", Regex: `\bTKT-\d{5}\b`, Score: nil}, // omitted score
+			},
+			Sensitivity: 1,
+		},
+	}
+
+	scanner, err := NewScanner(WithCustomRecognizers(custom))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "See TKT-12345 for details")
+
+	assert.True(t, result.HasPII, "custom pattern with omitted score should match")
+	found := false
+	for _, e := range result.Entities {
+		if e.Type == "ticket_id" && e.Value == "TKT-12345" {
+			found = true
+			assert.GreaterOrEqual(t, e.Confidence, 0.5, "confidence should be at least DefaultMinScore")
+		}
+	}
+	assert.True(t, found, "ticket_id entity should be present when score is omitted")
 }
 
 func TestNewScannerWithPatternFile(t *testing.T) {
