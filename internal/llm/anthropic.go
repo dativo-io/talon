@@ -106,6 +106,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Respon
 	httpReq.Header.Set("x-api-key", p.apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
+	// #nosec G704 -- request URL is constant (api.anthropic.com), not user-controlled
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		span.RecordError(err)

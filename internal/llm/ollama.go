@@ -89,6 +89,7 @@ func (p *OllamaProvider) Generate(ctx context.Context, req *Request) (*Response,
 
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	// #nosec G704 -- baseURL is operator-configured (e.g. localhost:11434), not end-user input
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		span.RecordError(err)
