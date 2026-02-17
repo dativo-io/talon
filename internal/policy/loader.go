@@ -18,7 +18,7 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/policy")
 // LoadPolicy loads and validates a .talon.yaml file.
 // If strict is true, additional business-rule validation is applied.
 func LoadPolicy(ctx context.Context, path string, strict bool) (*Policy, error) {
-	ctx, span := tracer.Start(ctx, "policy.load")
+	_, span := tracer.Start(ctx, "policy.load")
 	defer span.End()
 
 	span.SetAttributes(

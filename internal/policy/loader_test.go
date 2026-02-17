@@ -264,7 +264,7 @@ audit:
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			policyPath := filepath.Join(tmpDir, "policy.yaml")
-			err := os.WriteFile(policyPath, []byte(tt.yaml), 0644)
+			err := os.WriteFile(policyPath, []byte(tt.yaml), 0o644)
 			require.NoError(t, err)
 
 			ctx := context.Background()
@@ -295,7 +295,7 @@ policies:
 
 	tmpDir := t.TempDir()
 	policyPath := filepath.Join(tmpDir, "policy.yaml")
-	err := os.WriteFile(policyPath, []byte(yamlContent), 0644)
+	err := os.WriteFile(policyPath, []byte(yamlContent), 0o644)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -485,7 +485,7 @@ policies:
 `
 		tmpDir := t.TempDir()
 		policyPath := filepath.Join(tmpDir, "policy.yaml")
-		require.NoError(t, os.WriteFile(policyPath, []byte(yamlContent), 0644))
+		require.NoError(t, os.WriteFile(policyPath, []byte(yamlContent), 0o644))
 
 		ctx := context.Background()
 		pol, err := LoadPolicy(ctx, policyPath, false)

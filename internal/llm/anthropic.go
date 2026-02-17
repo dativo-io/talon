@@ -33,11 +33,11 @@ func (p *AnthropicProvider) Name() string {
 }
 
 type anthropicRequest struct {
-	Model       string              `json:"model"`
-	Messages    []anthropicMessage  `json:"messages"`
-	System      string              `json:"system,omitempty"`
-	MaxTokens   int                 `json:"max_tokens"`
-	Temperature float64             `json:"temperature,omitempty"`
+	Model       string             `json:"model"`
+	Messages    []anthropicMessage `json:"messages"`
+	System      string             `json:"system,omitempty"`
+	MaxTokens   int                `json:"max_tokens"`
+	Temperature float64            `json:"temperature,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -81,10 +81,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Respon
 			systemPrompt = msg.Content
 			continue
 		}
-		messages = append(messages, anthropicMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
-		})
+		messages = append(messages, anthropicMessage(msg))
 	}
 
 	apiReq := anthropicRequest{
@@ -157,7 +154,7 @@ func (p *AnthropicProvider) EstimateCost(model string, inputTokens, outputTokens
 	// Anthropic pricing in EUR per 1K tokens (Feb 2026)
 	prices := map[string]pricing{
 		"claude-sonnet-4-20250514":  {input: 0.003, output: 0.015},
-		"claude-opus-4-5-20251101": {input: 0.015, output: 0.075},
+		"claude-opus-4-5-20251101":  {input: 0.015, output: 0.075},
 		"claude-haiku-3-5-20241022": {input: 0.0008, output: 0.004},
 	}
 

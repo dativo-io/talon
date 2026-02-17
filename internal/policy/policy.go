@@ -10,17 +10,17 @@ import (
 
 // Policy represents a complete .talon.yaml configuration (v2.0 schema).
 type Policy struct {
-	Agent              AgentConfig              `yaml:"agent" json:"agent"`
-	Capabilities       *CapabilitiesConfig      `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
-	Triggers           *TriggersConfig          `yaml:"triggers,omitempty" json:"triggers,omitempty"`
-	Secrets            *SecretsConfig           `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	Memory             *MemoryConfig            `yaml:"memory,omitempty" json:"memory,omitempty"`
-	Context            *ContextConfig           `yaml:"context,omitempty" json:"context,omitempty"`
+	Agent              AgentConfig               `yaml:"agent" json:"agent"`
+	Capabilities       *CapabilitiesConfig       `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	Triggers           *TriggersConfig           `yaml:"triggers,omitempty" json:"triggers,omitempty"`
+	Secrets            *SecretsConfig            `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	Memory             *MemoryConfig             `yaml:"memory,omitempty" json:"memory,omitempty"`
+	Context            *ContextConfig            `yaml:"context,omitempty" json:"context,omitempty"`
 	AttachmentHandling *AttachmentHandlingConfig `yaml:"attachment_handling,omitempty" json:"attachment_handling,omitempty"`
-	Policies           PoliciesConfig           `yaml:"policies" json:"policies"`
-	Audit              *AuditConfig             `yaml:"audit,omitempty" json:"audit,omitempty"`
-	Compliance         *ComplianceConfig        `yaml:"compliance,omitempty" json:"compliance,omitempty"`
-	Metadata           *MetadataConfig          `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	Policies           PoliciesConfig            `yaml:"policies" json:"policies"`
+	Audit              *AuditConfig              `yaml:"audit,omitempty" json:"audit,omitempty"`
+	Compliance         *ComplianceConfig         `yaml:"compliance,omitempty" json:"compliance,omitempty"`
+	Metadata           *MetadataConfig           `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 
 	// Computed fields (not serialized from YAML)
 	Hash       string `yaml:"-" json:"-"`
@@ -101,10 +101,10 @@ type SharedMount struct {
 
 // AttachmentHandlingConfig controls prompt injection prevention.
 type AttachmentHandlingConfig struct {
-	Mode                string           `yaml:"mode,omitempty" json:"mode,omitempty"`
-	RequireUserApproval []string         `yaml:"require_user_approval,omitempty" json:"require_user_approval,omitempty"`
-	AutoAllow           []string         `yaml:"auto_allow,omitempty" json:"auto_allow,omitempty"`
-	Scanning            *ScanningConfig  `yaml:"scanning,omitempty" json:"scanning,omitempty"`
+	Mode                string            `yaml:"mode,omitempty" json:"mode,omitempty"`
+	RequireUserApproval []string          `yaml:"require_user_approval,omitempty" json:"require_user_approval,omitempty"`
+	AutoAllow           []string          `yaml:"auto_allow,omitempty" json:"auto_allow,omitempty"`
+	Scanning            *ScanningConfig   `yaml:"scanning,omitempty" json:"scanning,omitempty"`
 	Sandboxing          *SandboxingConfig `yaml:"sandboxing,omitempty" json:"sandboxing,omitempty"`
 }
 
@@ -122,11 +122,11 @@ type SandboxingConfig struct {
 // PoliciesConfig is the main governance section.
 type PoliciesConfig struct {
 	CostLimits         *CostLimitsConfig         `yaml:"cost_limits" json:"cost_limits"`
-	ResourceLimits     *ResourceLimitsConfig      `yaml:"resource_limits,omitempty" json:"resource_limits,omitempty"`
-	RateLimits         *RateLimitsConfig          `yaml:"rate_limits,omitempty" json:"rate_limits,omitempty"`
-	DataClassification *DataClassificationConfig  `yaml:"data_classification,omitempty" json:"data_classification,omitempty"`
-	ModelRouting       *ModelRoutingConfig         `yaml:"model_routing,omitempty" json:"model_routing,omitempty"`
-	TimeRestrictions   *TimeRestrictionsConfig     `yaml:"time_restrictions,omitempty" json:"time_restrictions,omitempty"`
+	ResourceLimits     *ResourceLimitsConfig     `yaml:"resource_limits,omitempty" json:"resource_limits,omitempty"`
+	RateLimits         *RateLimitsConfig         `yaml:"rate_limits,omitempty" json:"rate_limits,omitempty"`
+	DataClassification *DataClassificationConfig `yaml:"data_classification,omitempty" json:"data_classification,omitempty"`
+	ModelRouting       *ModelRoutingConfig       `yaml:"model_routing,omitempty" json:"model_routing,omitempty"`
+	TimeRestrictions   *TimeRestrictionsConfig   `yaml:"time_restrictions,omitempty" json:"time_restrictions,omitempty"`
 }
 
 // CostLimitsConfig sets per-request, daily, and monthly cost budgets.

@@ -167,7 +167,7 @@ func TestExtractor(t *testing.T) {
 	t.Run("extract text file", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "test.txt")
-		require.NoError(t, os.WriteFile(path, []byte("Hello, world!"), 0644))
+		require.NoError(t, os.WriteFile(path, []byte("Hello, world!"), 0o644))
 
 		content, err := extractor.Extract(ctx, path)
 		require.NoError(t, err)
@@ -177,7 +177,7 @@ func TestExtractor(t *testing.T) {
 	t.Run("extract markdown file", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "readme.md")
-		require.NoError(t, os.WriteFile(path, []byte("# Title\nContent"), 0644))
+		require.NoError(t, os.WriteFile(path, []byte("# Title\nContent"), 0o644))
 
 		content, err := extractor.Extract(ctx, path)
 		require.NoError(t, err)
@@ -187,7 +187,7 @@ func TestExtractor(t *testing.T) {
 	t.Run("extract CSV file", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "data.csv")
-		require.NoError(t, os.WriteFile(path, []byte("a,b,c\n1,2,3"), 0644))
+		require.NoError(t, os.WriteFile(path, []byte("a,b,c\n1,2,3"), 0o644))
 
 		content, err := extractor.Extract(ctx, path)
 		require.NoError(t, err)
@@ -198,7 +198,7 @@ func TestExtractor(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "page.html")
 		html := "<html><script>alert('xss')</script><body>Content</body></html>"
-		require.NoError(t, os.WriteFile(path, []byte(html), 0644))
+		require.NoError(t, os.WriteFile(path, []byte(html), 0o644))
 
 		content, err := extractor.Extract(ctx, path)
 		require.NoError(t, err)
@@ -209,7 +209,7 @@ func TestExtractor(t *testing.T) {
 	t.Run("PDF returns placeholder", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "doc.pdf")
-		require.NoError(t, os.WriteFile(path, []byte("fake-pdf"), 0644))
+		require.NoError(t, os.WriteFile(path, []byte("fake-pdf"), 0o644))
 
 		content, err := extractor.Extract(ctx, path)
 		require.NoError(t, err)
@@ -220,7 +220,7 @@ func TestExtractor(t *testing.T) {
 	t.Run("DOCX returns placeholder", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "doc.docx")
-		require.NoError(t, os.WriteFile(path, []byte("fake-docx"), 0644))
+		require.NoError(t, os.WriteFile(path, []byte("fake-docx"), 0o644))
 
 		content, err := extractor.Extract(ctx, path)
 		require.NoError(t, err)
@@ -231,7 +231,7 @@ func TestExtractor(t *testing.T) {
 	t.Run("unsupported type", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "archive.zip")
-		require.NoError(t, os.WriteFile(path, []byte("fake-zip"), 0644))
+		require.NoError(t, os.WriteFile(path, []byte("fake-zip"), 0o644))
 
 		_, err := extractor.Extract(ctx, path)
 		assert.Error(t, err)
@@ -242,7 +242,7 @@ func TestExtractor(t *testing.T) {
 		smallExtractor := NewExtractor(0) // 0 MB limit
 		dir := t.TempDir()
 		path := filepath.Join(dir, "big.txt")
-		require.NoError(t, os.WriteFile(path, []byte("data"), 0644))
+		require.NoError(t, os.WriteFile(path, []byte("data"), 0o644))
 
 		_, err := smallExtractor.Extract(ctx, path)
 		assert.Error(t, err)

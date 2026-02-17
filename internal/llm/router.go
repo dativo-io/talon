@@ -30,7 +30,7 @@ func NewRouter(routing *policy.ModelRoutingConfig, providers map[string]Provider
 // Tier 0 = public data (any provider), Tier 1 = internal (EU preferred),
 // Tier 2 = confidential (EU-only / Bedrock).
 func (r *Router) Route(ctx context.Context, tier int) (Provider, string, error) {
-	ctx, span := tracer.Start(ctx, "llm.route",
+	_, span := tracer.Start(ctx, "llm.route",
 		trace.WithAttributes(
 			attribute.Int("data.tier", tier),
 		))

@@ -665,7 +665,7 @@ compliance:
   frameworks: ["gdpr"]
   data_residency: "eu-only"
 `
-	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
 	cfg, err := LoadProxyPolicy(path)
 	require.NoError(t, err)
@@ -690,7 +690,7 @@ proxy:
   allowed_tools:
     - name: "tool_a"
 `
-	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
 	_, err := LoadProxyPolicy(path)
 	require.Error(t, err)
@@ -709,7 +709,7 @@ proxy:
   allowed_tools:
     - name: "tool_a"
 `
-	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
 	_, err := LoadProxyPolicy(path)
 	require.Error(t, err)
@@ -728,7 +728,7 @@ proxy:
   upstream:
     url: "https://vendor.example.com"
 `
-	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
 	_, err := LoadProxyPolicy(path)
 	require.Error(t, err)
@@ -744,7 +744,7 @@ func TestLoadProxyPolicy_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "proxy.talon.yaml")
 
-	require.NoError(t, os.WriteFile(path, []byte("{{invalid yaml"), 0644))
+	require.NoError(t, os.WriteFile(path, []byte("{{invalid yaml"), 0o644))
 
 	_, err := LoadProxyPolicy(path)
 	require.Error(t, err)
@@ -779,7 +779,7 @@ compliance:
   frameworks: ["gdpr", "nis2"]
   data_residency: "eu-only"
 `
-	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
 	cfg, err := LoadProxyPolicy(path)
 	require.NoError(t, err)

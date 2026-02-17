@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/open-policy-agent/opa/rego"
-	"github.com/open-policy-agent/opa/storage/inmem"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -34,10 +33,10 @@ type ProxyAgentConfig struct {
 
 // ProxyConfig defines the MCP proxy behaviour.
 type ProxyConfig struct {
-	Mode           string             `yaml:"mode,omitempty" json:"mode,omitempty"` // intercept | passthrough | shadow
-	Upstream       UpstreamConfig     `yaml:"upstream" json:"upstream"`
-	AllowedTools   []ToolMapping      `yaml:"allowed_tools" json:"allowed_tools"`
-	ForbiddenTools []string           `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
+	Mode           string               `yaml:"mode,omitempty" json:"mode,omitempty"` // intercept | passthrough | shadow
+	Upstream       UpstreamConfig       `yaml:"upstream" json:"upstream"`
+	AllowedTools   []ToolMapping        `yaml:"allowed_tools" json:"allowed_tools"`
+	ForbiddenTools []string             `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
 	RateLimits     ProxyRateLimitConfig `yaml:"rate_limits,omitempty" json:"rate_limits,omitempty"`
 }
 
@@ -112,30 +111,11 @@ func NewProxyEngine(ctx context.Context, cfg *ProxyPolicyConfig) (*ProxyEngine, 
 		return nil, fmt.Errorf("converting proxy config to OPA data: %w", err)
 	}
 
-	prepared := make(map[string]rego.PreparedEvalQuery, len(proxyPolicies))
-
-	for _, rp := range proxyPolicies {
-		content, err := embeddedPolicies.ReadFile(rp.file)
-		if err != nil {
-			return nil, fmt.Errorf("reading embedded proxy policy %s: %w", rp.file, err)
-		}
-
-		store := inmem.NewFromObject(map[string]interface{}{
-			"proxy": proxyData,
-		})
-
-		r := rego.New(
-			rego.Query(rp.query),
-			rego.Module(rp.file, string(content)),
-			rego.Store(store),
-		)
-
-		preparedQuery, err := r.PrepareForEval(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("preparing proxy Rego policy %s: %w", rp.file, err)
-		}
-
-		prepared[rp.file] = preparedQuery
+	prepared, err := prepareRegoQueries(ctx, proxyPolicies, map[string]interface{}{
+		"proxy": proxyData,
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	span.SetAttributes(attribute.Int("policy.proxy.prepared_count", len(prepared)))
@@ -285,11 +265,11 @@ func proxyConfigToOPAData(cfg *ProxyPolicyConfig) (map[string]interface{}, error
 	}
 
 	data := map[string]interface{}{
-		"allowed_tools":  allowedTools,
+		"allowed_tools":   allowedTools,
 		"forbidden_tools": forbiddenTools,
-		"rate_limits":    rateLimits,
-		"pii_rules":     piiRules,
-		"compliance":    complianceData,
+		"rate_limits":     rateLimits,
+		"pii_rules":       piiRules,
+		"compliance":      complianceData,
 	}
 
 	return data, nil

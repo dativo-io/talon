@@ -26,6 +26,7 @@ func (m *mockProvider) Generate(ctx context.Context, req *Request) (*Response, e
 		Model:        req.Model,
 	}, nil
 }
+
 func (m *mockProvider) EstimateCost(model string, inputTokens, outputTokens int) float64 {
 	return 0.001
 }
@@ -264,13 +265,13 @@ func TestSovereigntyInvariant(t *testing.T) {
 
 	// Every model prefix that inferProvider could map to a non-bedrock provider
 	nonBedrockModels := []string{
-		"gpt-4o",                     // → openai
-		"gpt-4o-mini",                // → openai
-		"claude-sonnet-4-20250514",   // → anthropic
-		"claude-haiku-3-5-20241022",  // → anthropic
-		"llama3.1:70b",               // → ollama
-		"mistral:7b",                 // → ollama
-		"unknown-model",              // → openai (default)
+		"gpt-4o",                    // → openai
+		"gpt-4o-mini",               // → openai
+		"claude-sonnet-4-20250514",  // → anthropic
+		"claude-haiku-3-5-20241022", // → anthropic
+		"llama3.1:70b",              // → ollama
+		"mistral:7b",                // → ollama
+		"unknown-model",             // → openai (default)
 	}
 
 	// All providers registered (worst case for leakage: all are available)

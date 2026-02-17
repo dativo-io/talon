@@ -54,17 +54,17 @@ func TestPIIDetection(t *testing.T) {
 			wantTypes: []string{"credit_card"},
 		},
 		{
-			name:     "german VAT",
-			text:     "VAT ID: DE123456789",
-			wantPII:  true,
-			wantTier: 2, // IBAN pattern also matches (DE + digits), sensitivity 3
+			name:      "german VAT",
+			text:      "VAT ID: DE123456789",
+			wantPII:   true,
+			wantTier:  2, // IBAN pattern also matches (DE + digits), sensitivity 3
 			wantTypes: []string{"vat_id"},
 		},
 		{
-			name:     "french VAT",
-			text:     "TVA: FR12345678901",
-			wantPII:  true,
-			wantTier: 2, // IBAN pattern also matches (FR + digits), sensitivity 3
+			name:      "french VAT",
+			text:      "TVA: FR12345678901",
+			wantPII:   true,
+			wantTier:  2, // IBAN pattern also matches (FR + digits), sensitivity 3
 			wantTypes: []string{"vat_id"},
 		},
 		{
@@ -75,10 +75,10 @@ func TestPIIDetection(t *testing.T) {
 			wantTypes: []string{"ssn"},
 		},
 		{
-			name:     "IPv4 address",
-			text:     "Server at 192.168.1.100",
-			wantPII:  true,
-			wantTier: 2, // Phone pattern also matches numeric octets, >3 entities
+			name:      "IPv4 address",
+			text:      "Server at 192.168.1.100",
+			wantPII:   true,
+			wantTier:  2, // Phone pattern also matches numeric octets, >3 entities
 			wantTypes: []string{"ip_address"},
 		},
 		{
