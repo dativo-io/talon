@@ -2,6 +2,8 @@ package classifier
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,7 +11,7 @@ import (
 )
 
 func TestPIIDetection(t *testing.T) {
-	scanner := NewScanner()
+	scanner := MustNewScanner()
 	ctx := context.Background()
 
 	tests := []struct {
@@ -78,7 +80,7 @@ func TestPIIDetection(t *testing.T) {
 			name:      "IPv4 address",
 			text:      "Server at 192.168.1.100",
 			wantPII:   true,
-			wantTier:  2, // Phone pattern also matches numeric octets, >3 entities
+			wantTier:  1,
 			wantTypes: []string{"ip_address"},
 		},
 		{
@@ -87,6 +89,39 @@ func TestPIIDetection(t *testing.T) {
 			wantPII:   true,
 			wantTier:  2,
 			wantTypes: []string{"email", "iban"},
+		},
+		{
+			name:      "phone E.164 german",
+			text:      "Call me at +491234567890",
+			wantPII:   true,
+			wantTier:  1,
+			wantTypes: []string{"phone"},
+		},
+		{
+			name:      "phone E.164 french",
+			text:      "Téléphone: +33123456789",
+			wantPII:   true,
+			wantTier:  1,
+			wantTypes: []string{"phone"},
+		},
+		{
+			name:      "phone E.164 minimum 7 digits",
+			text:      "Number +1234567",
+			wantPII:   true,
+			wantTier:  1,
+			wantTypes: []string{"phone"},
+		},
+		{
+			name:     "plain numbers are not phone PII",
+			text:     "Revenue was 2300000 EUR in 2025. Grew 15 percent.",
+			wantPII:  false,
+			wantTier: 0,
+		},
+		{
+			name:     "short number with plus not phone",
+			text:     "Offset +12 from baseline",
+			wantPII:  false,
+			wantTier: 0,
 		},
 		{
 			name:     "empty text",
@@ -124,7 +159,7 @@ func TestPIIDetection(t *testing.T) {
 }
 
 func TestPIIRedaction(t *testing.T) {
-	scanner := NewScanner()
+	scanner := MustNewScanner()
 	ctx := context.Background()
 
 	tests := []struct {
@@ -167,7 +202,7 @@ func TestPIIRedaction(t *testing.T) {
 }
 
 func TestDetermineTier(t *testing.T) {
-	scanner := NewScanner()
+	scanner := MustNewScanner()
 
 	tests := []struct {
 		name     string
@@ -237,7 +272,117 @@ func TestDetermineTier(t *testing.T) {
 }
 
 func TestNewScanner(t *testing.T) {
-	scanner := NewScanner()
+	scanner, err := NewScanner()
+	require.NoError(t, err)
 	require.NotNil(t, scanner)
 	assert.Greater(t, len(scanner.patterns), 0, "scanner should have patterns loaded")
+}
+
+func TestNewScannerWithEnabledEntities(t *testing.T) {
+	scanner, err := NewScanner(WithEnabledEntities([]string{"EMAIL_ADDRESS"}))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "user@example.com and +491234567890")
+
+	assert.True(t, result.HasPII, "should detect email")
+	types := make(map[string]bool)
+	for _, e := range result.Entities {
+		types[e.Type] = true
+	}
+	assert.True(t, types["email"], "email should be detected")
+	assert.False(t, types["phone"], "phone should be filtered out")
+}
+
+func TestNewScannerWithDisabledEntities(t *testing.T) {
+	scanner, err := NewScanner(WithDisabledEntities([]string{"IP_ADDRESS", "PASSPORT"}))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "Server at 192.168.1.100")
+
+	assert.False(t, result.HasPII, "IP should be filtered out")
+	assert.Empty(t, result.Entities)
+}
+
+func TestNewScannerWithCustomRecognizers(t *testing.T) {
+	custom := []RecognizerConfig{
+		{
+			Name:            "Employee ID",
+			SupportedEntity: "EMPLOYEE_ID",
+			Patterns: []PatternConfig{
+				{Name: "emp id", Regex: `\bEMP-\d{6}\b`, Score: 0.95},
+			},
+			Sensitivity: 2,
+		},
+	}
+
+	scanner, err := NewScanner(WithCustomRecognizers(custom))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "Contact EMP-123456 for details")
+
+	assert.True(t, result.HasPII)
+	found := false
+	for _, e := range result.Entities {
+		if e.Type == "employee_id" && e.Value == "EMP-123456" {
+			found = true
+		}
+	}
+	assert.True(t, found, "custom employee ID pattern should match")
+}
+
+func TestNewScannerWithPatternFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "custom_patterns.yaml")
+	yaml := `
+recognizers:
+  - name: "Project Code"
+    supported_entity: "PROJECT_CODE"
+    patterns:
+      - name: "project code"
+        regex: '\bPROJ-[A-Z]{3}-\d{4}\b'
+        score: 0.9
+    sensitivity: 1
+`
+	require.NoError(t, os.WriteFile(path, []byte(yaml), 0o644))
+
+	scanner, err := NewScanner(WithPatternFile(path))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	result := scanner.Scan(ctx, "Working on PROJ-ABC-1234")
+
+	assert.True(t, result.HasPII)
+	found := false
+	for _, e := range result.Entities {
+		if e.Type == "project_code" {
+			found = true
+		}
+	}
+	assert.True(t, found, "pattern file recognizer should be loaded")
+}
+
+func TestNewScannerWithMissingPatternFile(t *testing.T) {
+	scanner, err := NewScanner(WithPatternFile("/nonexistent/patterns.yaml"))
+	require.NoError(t, err, "missing pattern file should be silently skipped")
+	require.NotNil(t, scanner)
+	assert.Greater(t, len(scanner.patterns), 0, "should still have defaults")
+}
+
+func TestNewScannerBackwardCompatibility(t *testing.T) {
+	scanner := MustNewScanner()
+	ctx := context.Background()
+
+	result := scanner.Scan(ctx, "Email user@example.com, IBAN DE89370400440532013000")
+	assert.True(t, result.HasPII)
+	assert.Equal(t, 2, result.Tier)
+
+	types := make(map[string]bool)
+	for _, e := range result.Entities {
+		types[e.Type] = true
+	}
+	assert.True(t, types["email"])
+	assert.True(t, types["iban"])
 }

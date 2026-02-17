@@ -24,7 +24,7 @@ import (
 //	talon run "Summarize Q4 revenue for user@example.com"
 func TestUserQueryWorkflow(t *testing.T) {
 	ctx := context.Background()
-	piiScanner := classifier.NewScanner()
+	piiScanner := classifier.MustNewScanner()
 
 	// --- Scenario 1: Public query, no PII → Tier 0 → cheap model ---
 
@@ -144,7 +144,7 @@ func TestUserQueryWorkflow(t *testing.T) {
 //	talon run --attach report.html "Summarize this document"
 func TestAttachmentWorkflow(t *testing.T) {
 	ctx := context.Background()
-	injectionScanner := attachment.NewScanner()
+	injectionScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(10)
 
 	// --- Scenario 1: Safe document passes through ---
@@ -249,8 +249,8 @@ func TestAttachmentWorkflow(t *testing.T) {
 //	user query + attachment → PII scan both → classify tier → scan attachment → sandbox → route
 func TestPIIAndAttachmentCombined(t *testing.T) {
 	ctx := context.Background()
-	piiScanner := classifier.NewScanner()
-	injectionScanner := attachment.NewScanner()
+	piiScanner := classifier.MustNewScanner()
+	injectionScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(10)
 
 	t.Run("query with PII attachment routes correctly", func(t *testing.T) {
@@ -393,7 +393,7 @@ compliance:
 		router := llm.NewRouter(pol.Policies.ModelRouting, providers)
 
 		// Test with actual PII-scanned input
-		piiScanner := classifier.NewScanner()
+		piiScanner := classifier.MustNewScanner()
 
 		// Tier 0 input
 		c := piiScanner.Scan(ctx, "What is the weather?")
@@ -418,7 +418,7 @@ compliance:
 // (tier 2, containing IBANs/SSNs) to non-EU providers like direct Anthropic API.
 func TestSovereigntyEnforcement(t *testing.T) {
 	ctx := context.Background()
-	piiScanner := classifier.NewScanner()
+	piiScanner := classifier.MustNewScanner()
 
 	t.Run("IBAN triggers tier 2 and bedrock_only is enforced with non-bedrock model name", func(t *testing.T) {
 		// Simulate a common misconfiguration: operator sets bedrock_only=true

@@ -1,0 +1,99 @@
+# Dativo Talon — Default Prompt Injection Detection Patterns
+# Used by the attachment scanner to detect prompt injection attempts.
+# Format mirrors the PII recognizer YAML (Presidio-compatible structure).
+
+recognizers:
+  # Imperative override attempts
+  - name: "Ignore Instructions"
+    supported_entity: "INJECTION_OVERRIDE"
+    enabled: true
+    patterns:
+      - name: "ignore/disregard/forget instructions"
+        regex: '(?i)(ignore|disregard|forget)\s+(?:(?:previous|all|prior|earlier|the|my|your)\s+){1,3}(instructions?|prompts?|rules?|directives?)'
+        score: 0.95
+    severity: 3
+
+  - name: "New Instructions"
+    supported_entity: "INJECTION_OVERRIDE"
+    enabled: true
+    patterns:
+      - name: "replacement instructions"
+        regex: '(?i)(new|updated|revised|replacement)\s+(instructions?|prompts?|rules?|directives?)'
+        score: 0.9
+    severity: 3
+
+  # Role-playing attempts
+  - name: "Role Override"
+    supported_entity: "INJECTION_ROLE"
+    enabled: true
+    patterns:
+      - name: "role change attempt"
+        regex: '(?i)(you are now|act as|pretend to be|assume the role|behave like)\s+(a|an)?\s*\w+'
+        score: 0.85
+    severity: 2
+
+  - name: "System Prompt"
+    supported_entity: "INJECTION_ROLE"
+    enabled: true
+    patterns:
+      - name: "system prompt reference"
+        regex: '(?i)system\s+(prompt|message|instruction)'
+        score: 0.8
+    severity: 2
+
+  # Direct overrides
+  - name: "Override Keyword"
+    supported_entity: "INJECTION_OVERRIDE"
+    enabled: true
+    patterns:
+      - name: "override security/policy"
+        regex: '(?i)override\s+(security|policy|restrictions?|rules?)'
+        score: 0.95
+    severity: 3
+
+  - name: "Bypass Attempt"
+    supported_entity: "INJECTION_BYPASS"
+    enabled: true
+    patterns:
+      - name: "bypass/circumvent"
+        regex: '(?i)(bypass|circumvent|evade|workaround)\s+(security|restrictions?|policies)'
+        score: 0.95
+    severity: 3
+
+  # Encoded payloads
+  - name: "Base64 Encoded"
+    supported_entity: "INJECTION_ENCODED"
+    enabled: true
+    patterns:
+      - name: "suspicious base64"
+        regex: '[A-Za-z0-9+/]{40,}={0,2}'
+        score: 0.5
+    severity: 1
+
+  - name: "Hex Encoded"
+    supported_entity: "INJECTION_ENCODED"
+    enabled: true
+    patterns:
+      - name: "long hex string"
+        regex: '0x[0-9a-fA-F]{32,}'
+        score: 0.5
+    severity: 1
+
+  # Hidden content
+  - name: "HTML Comments"
+    supported_entity: "INJECTION_HIDDEN"
+    enabled: true
+    patterns:
+      - name: "hidden instructions in comments"
+        regex: '<!--.*?(ignore|override|system).*?-->'
+        score: 0.8
+    severity: 2
+
+  - name: "Zero-Width Characters"
+    supported_entity: "INJECTION_HIDDEN"
+    enabled: true
+    patterns:
+      - name: "unicode zero-width chars"
+        regex: "[\u200B\u200C\u200D\uFEFF]{3,}"
+        score: 0.7
+    severity: 2

@@ -162,6 +162,32 @@ type DataClassificationConfig struct {
 	InputScan  bool `yaml:"input_scan,omitempty" json:"input_scan,omitempty"`
 	OutputScan bool `yaml:"output_scan,omitempty" json:"output_scan,omitempty"`
 	RedactPII  bool `yaml:"redact_pii,omitempty" json:"redact_pii,omitempty"`
+
+	// EnabledEntities whitelists specific Presidio entity types (e.g. "EMAIL_ADDRESS").
+	// When non-empty, only recognizers matching these entities will be active.
+	EnabledEntities []string `yaml:"enabled_entities,omitempty" json:"enabled_entities,omitempty"`
+
+	// DisabledEntities blacklists specific entity types from scanning.
+	DisabledEntities []string `yaml:"disabled_entities,omitempty" json:"disabled_entities,omitempty"`
+
+	// CustomRecognizers defines per-agent PII recognizers in Presidio-compatible format.
+	CustomRecognizers []CustomRecognizerConfig `yaml:"custom_recognizers,omitempty" json:"custom_recognizers,omitempty"`
+}
+
+// CustomRecognizerConfig is the per-agent YAML representation of a custom PII
+// recognizer. Uses Presidio-compatible field names.
+type CustomRecognizerConfig struct {
+	Name            string                 `yaml:"name" json:"name"`
+	SupportedEntity string                 `yaml:"supported_entity" json:"supported_entity"`
+	Patterns        []CustomPatternConfig  `yaml:"patterns,omitempty" json:"patterns,omitempty"`
+	Sensitivity     int                    `yaml:"sensitivity,omitempty" json:"sensitivity,omitempty"`
+}
+
+// CustomPatternConfig is a single regex pattern in a custom recognizer.
+type CustomPatternConfig struct {
+	Name  string  `yaml:"name" json:"name"`
+	Regex string  `yaml:"regex" json:"regex"`
+	Score float64 `yaml:"score,omitempty" json:"score,omitempty"`
 }
 
 // ModelRoutingConfig defines per-tier LLM routing.

@@ -184,7 +184,7 @@ Try a policy block — set `daily: 0.001` in your `.talon.yaml`, run again, and 
 |-----------|-------|-------|----------|-----------|--------|
 | Policy enforcement | Yes (OPA) | No | No | No | No |
 | Cost control | Yes (per-request) | No | No | No | No |
-| PII detection | Yes (EU patterns) | No | No | No | No |
+| PII detection | Yes (EU patterns, configurable) | No | No | No | No |
 | Audit trail | Yes (HMAC-signed) | No | No | No | No |
 | Data sovereignty | Yes (EU routing) | No | No | No | No |
 | MCP support | Yes (native) | Yes | Partial | Partial | No |
@@ -265,6 +265,15 @@ talon memory list [--agent name]        # View agent learnings
 talon serve [--port 8080] [--dashboard] # Start HTTP + MCP server (includes proxy mode)
 talon provider test                     # Test LLM provider connectivity
 ```
+
+## PII and pattern configuration
+
+PII detection uses **Presidio-compatible** recognizer definitions. Defaults are embedded (EU-focused: email, phone, IBAN, credit card, VAT, SSNs, IP, passport). You can extend or override them without recompiling:
+
+- **Global overrides:** Put a `patterns.yaml` file in `~/.talon/` or the project directory. Same YAML format as the built-in `patterns/pii_eu.yaml`. Later layers override earlier (embedded → global → per-agent).
+- **Per-agent:** In `.talon.yaml` under `policies.data_classification` set `enabled_entities` (whitelist), `disabled_entities` (blacklist), and/or `custom_recognizers` (extra patterns). See the commented block in `talon init` output.
+
+Attachment (prompt-injection) patterns are configured the same way; see `patterns/injection.yaml` for the default set.
 
 ## Compliance Coverage
 

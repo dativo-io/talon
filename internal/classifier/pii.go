@@ -2,6 +2,7 @@ package classifier
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -28,16 +29,98 @@ type Classification struct {
 	Redacted string      `json:"redacted,omitempty"`
 }
 
-// Scanner detects PII in text using EU regex patterns.
+// Scanner detects PII in text using configurable regex patterns.
 type Scanner struct {
 	patterns []PIIPattern
 }
 
-// NewScanner creates a PII scanner with EU patterns.
-func NewScanner() *Scanner {
-	return &Scanner{
-		patterns: EUPatterns,
+// ScannerOption configures a Scanner via the functional options pattern.
+type ScannerOption func(*scannerConfig)
+
+type scannerConfig struct {
+	patternFile       string
+	enabledEntities   []string
+	disabledEntities  []string
+	customRecognizers []RecognizerConfig
+}
+
+// WithPatternFile loads additional recognizers from a global patterns.yaml file.
+// If the file does not exist, it is silently skipped.
+func WithPatternFile(path string) ScannerOption {
+	return func(c *scannerConfig) { c.patternFile = path }
+}
+
+// WithEnabledEntities sets a whitelist of entity types. When non-empty, only
+// recognizers with a matching supported_entity will be active.
+func WithEnabledEntities(entities []string) ScannerOption {
+	return func(c *scannerConfig) { c.enabledEntities = entities }
+}
+
+// WithDisabledEntities sets a blacklist of entity types to exclude.
+func WithDisabledEntities(entities []string) ScannerOption {
+	return func(c *scannerConfig) { c.disabledEntities = entities }
+}
+
+// WithCustomRecognizers adds per-agent custom recognizer definitions.
+func WithCustomRecognizers(recognizers []RecognizerConfig) ScannerOption {
+	return func(c *scannerConfig) { c.customRecognizers = recognizers }
+}
+
+// NewScanner creates a PII scanner. Without options it uses the embedded EU
+// defaults. Options layer global overrides and per-agent customization on top.
+func NewScanner(opts ...ScannerOption) (*Scanner, error) {
+	var cfg scannerConfig
+	for _, o := range opts {
+		o(&cfg)
 	}
+
+	// Layer 1: embedded defaults
+	defaults, err := DefaultRecognizers()
+	if err != nil {
+		return nil, fmt.Errorf("loading default recognizers: %w", err)
+	}
+
+	// Layer 2: global pattern file (optional)
+	var globalRecs []*RecognizerConfig
+	if cfg.patternFile != "" {
+		rf, err := LoadRecognizerFile(cfg.patternFile)
+		if err != nil {
+			return nil, fmt.Errorf("loading global pattern file: %w", err)
+		}
+		if rf != nil {
+			globalRecs = toPtrSlice(rf.Recognizers)
+		}
+	}
+
+	// Layer 3: per-agent custom recognizers
+	var agentRecs []*RecognizerConfig
+	if len(cfg.customRecognizers) > 0 {
+		agentRecs = toPtrSlice(cfg.customRecognizers)
+	}
+
+	// Merge all layers
+	merged := MergeRecognizers(toPtrSlice(defaults), globalRecs, agentRecs)
+
+	// Apply entity filters
+	merged = FilterByEntities(merged, cfg.enabledEntities, cfg.disabledEntities)
+
+	// Compile to runtime patterns
+	compiled, err := CompilePIIPatterns(merged)
+	if err != nil {
+		return nil, fmt.Errorf("compiling patterns: %w", err)
+	}
+
+	return &Scanner{patterns: compiled}, nil
+}
+
+// MustNewScanner is like NewScanner but panics on error. Useful for zero-config
+// startup where the embedded defaults are expected to always compile.
+func MustNewScanner(opts ...ScannerOption) *Scanner {
+	s, err := NewScanner(opts...)
+	if err != nil {
+		panic(fmt.Sprintf("classifier.NewScanner: %v", err))
+	}
+	return s
 }
 
 // Scan analyzes text for PII and returns a classification result.
@@ -58,7 +141,7 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 				Type:       pattern.Type,
 				Value:      text[match[0]:match[1]],
 				Position:   match[0],
-				Confidence: 0.95, // Regex matches are high confidence
+				Confidence: 0.95,
 			}
 			result.Entities = append(result.Entities, entity)
 			result.HasPII = true
@@ -90,7 +173,6 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 		sensitivity int
 	}
 
-	// Collect all matches across all patterns
 	var matches []match
 	for _, pattern := range s.patterns {
 		locs := pattern.Pattern.FindAllStringIndex(text, -1)
@@ -108,8 +190,6 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 		return text
 	}
 
-	// Sort by start position, then by length descending (prefer longer matches),
-	// then by sensitivity descending (prefer more sensitive)
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].start != matches[j].start {
 			return matches[i].start < matches[j].start
@@ -122,7 +202,6 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 		return matches[i].sensitivity > matches[j].sensitivity
 	})
 
-	// Merge overlapping matches, keeping the one with highest sensitivity
 	var merged []match
 	for _, m := range matches {
 		if len(merged) == 0 {
@@ -131,7 +210,6 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 		}
 		last := &merged[len(merged)-1]
 		if m.start < last.end {
-			// Overlapping: keep the one covering more area or higher sensitivity
 			if m.sensitivity > last.sensitivity {
 				last.ptype = m.ptype
 				last.sensitivity = m.sensitivity
@@ -144,7 +222,6 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 		}
 	}
 
-	// Build result by replacing from end to start to preserve indices
 	result := []byte(text)
 	for i := len(merged) - 1; i >= 0; i-- {
 		m := merged[i]
@@ -162,18 +239,15 @@ func (s *Scanner) determineTier(entities []PIIEntity) int {
 		return 0
 	}
 
-	// High-sensitivity types always result in Tier 2
 	for _, entity := range entities {
 		if entity.Type == "credit_card" || entity.Type == "ssn" || entity.Type == "iban" {
 			return 2
 		}
 	}
 
-	// 1-3 entities of lower sensitivity
 	if len(entities) <= 3 {
 		return 1
 	}
 
-	// Many entities
 	return 2
 }
