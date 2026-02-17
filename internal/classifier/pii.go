@@ -15,10 +15,11 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/classifier")
 
 // PIIEntity represents a detected PII instance.
 type PIIEntity struct {
-	Type       string  `json:"type"`
-	Value      string  `json:"value"`
-	Position   int     `json:"position"`
-	Confidence float64 `json:"confidence"`
+	Type        string  `json:"type"`
+	Value       string  `json:"value"`
+	Position    int     `json:"position"`
+	Confidence  float64 `json:"confidence"`
+	Sensitivity int     `json:"sensitivity"` // 1-3 from recognizer; 0 means unset (treated as 1 for tiering)
 }
 
 // Classification holds the result of PII scanning.
@@ -138,10 +139,11 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 		matches := pattern.Pattern.FindAllStringIndex(text, -1)
 		for _, match := range matches {
 			entity := PIIEntity{
-				Type:       pattern.Type,
-				Value:      text[match[0]:match[1]],
-				Position:   match[0],
-				Confidence: 0.95,
+				Type:        pattern.Type,
+				Value:       text[match[0]:match[1]],
+				Position:    match[0],
+				Confidence:  0.95,
+				Sensitivity: pattern.Sensitivity,
 			}
 			result.Entities = append(result.Entities, entity)
 			result.HasPII = true
@@ -234,20 +236,23 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 
 // determineTier classifies data sensitivity based on detected entities.
 // Tier 0 = no PII, Tier 1 = low-sensitivity PII, Tier 2 = high-sensitivity PII.
+// Uses each entity's Sensitivity from the recognizer (1-3); 0 is treated as 1.
+// Any entity with sensitivity >= 2 yields tier 2 so model_routing selects
+// restrictive providers for passport, SSN, IBAN, and custom high-sensitivity recognizers.
 func (s *Scanner) determineTier(entities []PIIEntity) int {
 	if len(entities) == 0 {
 		return 0
 	}
 
 	for _, entity := range entities {
-		if entity.Type == "credit_card" || entity.Type == "ssn" || entity.Type == "iban" {
+		eff := entity.Sensitivity
+		if eff == 0 {
+			eff = 1
+		}
+		if eff >= 2 {
 			return 2
 		}
 	}
 
-	if len(entities) <= 3 {
-		return 1
-	}
-
-	return 2
+	return 1
 }

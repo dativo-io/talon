@@ -130,11 +130,18 @@ func TestPIIDetection(t *testing.T) {
 			wantTier: 0,
 		},
 		{
-			name:      "many low-sensitivity entities bump to tier 2",
+			name:      "many low-sensitivity entities stay tier 1",
 			text:      "a@b.com c@d.com e@f.com g@h.com",
 			wantPII:   true,
-			wantTier:  2,
+			wantTier:  1,
 			wantTypes: []string{"email"},
+		},
+		{
+			name:      "passport number yields tier 2",
+			text:      "Passport number: AB1234567",
+			wantPII:   true,
+			wantTier:  2,
+			wantTypes: []string{"passport"},
 		},
 	}
 
@@ -217,47 +224,68 @@ func TestDetermineTier(t *testing.T) {
 		{
 			name: "single low sensitivity",
 			entities: []PIIEntity{
-				{Type: "email"},
+				{Type: "email", Sensitivity: 1},
 			},
 			wantTier: 1,
 		},
 		{
-			name: "credit card always tier 2",
+			name: "credit card sensitivity 3 yields tier 2",
 			entities: []PIIEntity{
-				{Type: "credit_card"},
+				{Type: "credit_card", Sensitivity: 3},
 			},
 			wantTier: 2,
 		},
 		{
-			name: "SSN always tier 2",
+			name: "SSN sensitivity 3 yields tier 2",
 			entities: []PIIEntity{
-				{Type: "ssn"},
+				{Type: "ssn", Sensitivity: 3},
 			},
 			wantTier: 2,
 		},
 		{
-			name: "IBAN always tier 2",
+			name: "IBAN sensitivity 3 yields tier 2",
 			entities: []PIIEntity{
-				{Type: "iban"},
+				{Type: "iban", Sensitivity: 3},
 			},
 			wantTier: 2,
 		},
 		{
-			name: "4+ low sensitivity entities bump to tier 2",
+			name: "passport sensitivity 3 yields tier 2",
 			entities: []PIIEntity{
-				{Type: "email"},
-				{Type: "email"},
-				{Type: "email"},
-				{Type: "email"},
+				{Type: "passport", Sensitivity: 3},
 			},
 			wantTier: 2,
+		},
+		{
+			name: "custom recognizer sensitivity 2 yields tier 2",
+			entities: []PIIEntity{
+				{Type: "employee_id", Sensitivity: 2},
+			},
+			wantTier: 2,
+		},
+		{
+			name: "4 low sensitivity entities stay tier 1",
+			entities: []PIIEntity{
+				{Type: "email", Sensitivity: 1},
+				{Type: "email", Sensitivity: 1},
+				{Type: "email", Sensitivity: 1},
+				{Type: "email", Sensitivity: 1},
+			},
+			wantTier: 1,
 		},
 		{
 			name: "3 low sensitivity entities stay at tier 1",
 			entities: []PIIEntity{
-				{Type: "email"},
-				{Type: "ip_address"},
-				{Type: "phone"},
+				{Type: "email", Sensitivity: 1},
+				{Type: "ip_address", Sensitivity: 1},
+				{Type: "phone", Sensitivity: 1},
+			},
+			wantTier: 1,
+		},
+		{
+			name: "unset sensitivity treated as 1",
+			entities: []PIIEntity{
+				{Type: "email", Sensitivity: 0},
 			},
 			wantTier: 1,
 		},
@@ -324,6 +352,7 @@ func TestNewScannerWithCustomRecognizers(t *testing.T) {
 	result := scanner.Scan(ctx, "Contact EMP-123456 for details")
 
 	assert.True(t, result.HasPII)
+	assert.Equal(t, 2, result.Tier, "custom recognizer with sensitivity 2 should yield tier 2")
 	found := false
 	for _, e := range result.Entities {
 		if e.Type == "employee_id" && e.Value == "EMP-123456" {
