@@ -32,10 +32,15 @@ func Sandbox(ctx context.Context, filename string, content string, scanResult *S
 		content,
 		AttachmentSuffix)
 
+	var injectionsFound []InjectionAttempt
+	if scanResult != nil {
+		injectionsFound = scanResult.InjectionsFound
+	}
+
 	return &SandboxedContent{
 		Filename:        filename,
 		OriginalContent: content,
 		SandboxedText:   sandboxed,
-		InjectionsFound: scanResult.InjectionsFound,
+		InjectionsFound: injectionsFound,
 	}
 }

@@ -65,7 +65,8 @@ func (e *Extractor) Extract(ctx context.Context, path string) (string, error) {
 // stripScriptAndStyleBlocks removes entire <script>...</script> and
 // <style>...</style> blocks from HTML so that untrusted script/style
 // content (including embedded instructions) is not passed to scanning/sandboxing.
-// Tag matching is case-insensitive.
+// The opening tag, payload, and closing tag are fully removed (not replaced with
+// markers). Tag matching is case-insensitive.
 func stripScriptAndStyleBlocks(html string) string {
 	text := stripTagBlocks(html, "script")
 	text = stripTagBlocks(text, "style")
