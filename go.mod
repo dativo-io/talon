@@ -32,6 +32,7 @@ require (
 )
 
 require (
+	github.com/sashabaranov/go-openai v1.41.2
 	github.com/xeipuuv/gojsonschema v1.2.0
 	gopkg.in/yaml.v3 v3.0.1
 )

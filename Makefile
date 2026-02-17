@@ -22,7 +22,7 @@ install: ## Install to $GOPATH/bin
 	@CGO_ENABLED=1 go install $(LDFLAGS) ./cmd/talon/
 
 test: ## Run tests
-	@go test -race -coverprofile=coverage.out ./internal/... ./cmd/...
+	@go test -race -coverprofile=coverage.out ./internal/... ./cmd/... ./tests/...
 
 test-coverage: test ## Show test coverage
 	@go tool cover -html=coverage.out -o coverage.html
