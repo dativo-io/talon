@@ -349,7 +349,7 @@ func validateIBANChecksum(iban string) bool {
 		case ch >= '0' && ch <= '9':
 			numStr.WriteRune(ch)
 		case ch >= 'A' && ch <= 'Z':
-			numStr.WriteString(fmt.Sprintf("%d", ch-'A'+10))
+			fmt.Fprintf(&numStr, "%d", ch-'A'+10)
 		default:
 			return false
 		}
