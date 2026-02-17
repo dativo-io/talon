@@ -76,16 +76,18 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Respon
 	ctx, cancel := context.WithTimeout(ctx, TimeoutLLMCall)
 	defer cancel()
 
-	// Anthropic uses a separate "system" field rather than a system message
-	var systemPrompt string
+	// Anthropic uses a separate "system" field rather than a system message.
+	// Collect ALL system messages and concatenate them so no directive is lost.
+	var systemParts []string
 	messages := make([]anthropicMessage, 0, len(req.Messages))
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
-			systemPrompt = msg.Content
+			systemParts = append(systemParts, msg.Content)
 			continue
 		}
 		messages = append(messages, anthropicMessage(msg))
 	}
+	systemPrompt := strings.Join(systemParts, "\n\n")
 
 	apiReq := anthropicRequest{
 		Model:       req.Model,
