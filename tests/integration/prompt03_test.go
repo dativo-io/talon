@@ -411,6 +411,122 @@ compliance:
 	})
 }
 
+// TestSovereigntyEnforcement is an integration test that verifies the full pipeline
+// enforces data sovereignty even when model names don't match Bedrock conventions.
+// This test exists because the original router implementation inferred providers from
+// model names and ignored the bedrock_only flag, which could route confidential data
+// (tier 2, containing IBANs/SSNs) to non-EU providers like direct Anthropic API.
+func TestSovereigntyEnforcement(t *testing.T) {
+	ctx := context.Background()
+	piiScanner := classifier.NewScanner()
+
+	t.Run("IBAN triggers tier 2 and bedrock_only is enforced with non-bedrock model name", func(t *testing.T) {
+		// Simulate a common misconfiguration: operator sets bedrock_only=true
+		// but uses a direct Anthropic model name instead of Bedrock-prefixed name
+		input := "Process refund to IBAN DE89370400440532013000"
+
+		// Step 1: PII scan detects IBAN → tier 2
+		classification := piiScanner.Scan(ctx, input)
+		require.True(t, classification.HasPII)
+		require.Equal(t, 2, classification.Tier)
+
+		// Step 2: Route with misconfigured model name
+		// "claude-sonnet-4-20250514" would normally infer to "anthropic" provider
+		routing := &policy.ModelRoutingConfig{
+			Tier2: &policy.TierConfig{
+				Primary:     "claude-sonnet-4-20250514", // NOT a Bedrock-style name
+				Location:    "eu-central-1",
+				BedrockOnly: true,
+			},
+		}
+
+		// Both anthropic AND bedrock are available — the bug was that
+		// inferProvider("claude-sonnet-4-20250514") returned "anthropic"
+		// and the request went to Anthropic's US-based API
+		providers := map[string]llm.Provider{
+			"anthropic": &mockProvider{name: "anthropic"},
+			"bedrock":   &mockProvider{name: "bedrock"},
+			"openai":    &mockProvider{name: "openai"},
+		}
+
+		router := llm.NewRouter(routing, providers)
+		provider, model, err := router.Route(ctx, classification.Tier)
+		require.NoError(t, err)
+
+		assert.Equal(t, "bedrock", provider.Name(),
+			"SOVEREIGNTY VIOLATION: confidential IBAN data must route through Bedrock, "+
+				"not %s — bedrock_only=true must override model name inference", provider.Name())
+		assert.Equal(t, "claude-sonnet-4-20250514", model,
+			"model name should be preserved — only the provider changes")
+	})
+
+	t.Run("credit card data never escapes EU boundary", func(t *testing.T) {
+		input := "Charge card 4111111111111111 for €500"
+
+		classification := piiScanner.Scan(ctx, input)
+		require.True(t, classification.HasPII)
+		require.Equal(t, 2, classification.Tier, "credit card → tier 2")
+
+		routing := &policy.ModelRoutingConfig{
+			Tier2: &policy.TierConfig{
+				Primary:     "gpt-4o", // Would infer to "openai" — explicitly wrong
+				Fallback:    "claude-sonnet-4-20250514", // Would infer to "anthropic"
+				BedrockOnly: true,
+			},
+		}
+
+		providers := map[string]llm.Provider{
+			"openai":    &mockProvider{name: "openai"},
+			"anthropic": &mockProvider{name: "anthropic"},
+			"bedrock":   &mockProvider{name: "bedrock"},
+		}
+
+		router := llm.NewRouter(routing, providers)
+		provider, _, err := router.Route(ctx, classification.Tier)
+		require.NoError(t, err)
+		assert.Equal(t, "bedrock", provider.Name(),
+			"credit card data must never leave EU — bedrock_only must be enforced")
+	})
+
+	t.Run("bedrock unavailable with tier 2 data fails closed", func(t *testing.T) {
+		input := "Refund IBAN DE89370400440532013000"
+
+		classification := piiScanner.Scan(ctx, input)
+		require.Equal(t, 2, classification.Tier)
+
+		routing := &policy.ModelRoutingConfig{
+			Tier2: &policy.TierConfig{
+				Primary:     "claude-sonnet-4-20250514",
+				BedrockOnly: true,
+			},
+		}
+
+		// Bedrock NOT registered — system must fail, not silently route elsewhere
+		providers := map[string]llm.Provider{
+			"openai":    &mockProvider{name: "openai"},
+			"anthropic": &mockProvider{name: "anthropic"},
+		}
+
+		router := llm.NewRouter(routing, providers)
+		_, _, err := router.Route(ctx, classification.Tier)
+		assert.Error(t, err, "must fail closed when bedrock unavailable for tier 2 bedrock_only data")
+	})
+
+	t.Run("policy validation warns about misconfigured model names", func(t *testing.T) {
+		routing := &policy.ModelRoutingConfig{
+			Tier2: &policy.TierConfig{
+				Primary:     "claude-sonnet-4-20250514",
+				BedrockOnly: true,
+			},
+		}
+
+		warnings, err := policy.ValidateRouting(routing)
+		require.NoError(t, err)
+		assert.NotEmpty(t, warnings, "should warn when bedrock_only uses non-bedrock model name")
+		assert.Contains(t, warnings[0].Message, "bedrock_only is true")
+	})
+}
+
 // mockProvider implements llm.Provider for integration tests without live API calls.
 type mockProvider struct {
 	name string

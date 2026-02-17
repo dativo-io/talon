@@ -13,10 +13,11 @@ const (
 
 // Domain errors for the LLM package.
 var (
-	ErrProviderNotAvailable = errors.New("provider not available")
-	ErrNoRoutingConfig      = errors.New("no routing config for tier")
-	ErrInvalidTier          = errors.New("invalid tier")
-	ErrNotImplemented       = errors.New("provider not yet implemented")
+	ErrProviderNotAvailable  = errors.New("provider not available")
+	ErrNoRoutingConfig       = errors.New("no routing config for tier")
+	ErrInvalidTier           = errors.New("invalid tier")
+	ErrNotImplemented        = errors.New("provider not yet implemented")
+	ErrBedrockOnlyViolation  = errors.New("tier requires bedrock_only but resolved to non-bedrock provider")
 )
 
 // Provider is the interface all LLM providers must implement.

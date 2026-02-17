@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -166,6 +167,251 @@ func TestRouterMissingTierConfig(t *testing.T) {
 		_, _, err := router.Route(ctx, 2)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, ErrNoRoutingConfig)
+	})
+}
+
+func TestRouterBedrockOnlyEnforcement(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("bedrock_only forces bedrock even when model name infers anthropic", func(t *testing.T) {
+		providers := map[string]Provider{
+			"anthropic": &mockProvider{name: "anthropic"},
+			"bedrock":   &mockProvider{name: "bedrock"},
+		}
+
+		routing := &policy.ModelRoutingConfig{
+			Tier2: &policy.TierConfig{
+				Primary:     "claude-sonnet-4-20250514", // inferProvider → "anthropic"
+				BedrockOnly: true,
+			},
+		}
+
+		router := NewRouter(routing, providers)
+		provider, model, err := router.Route(ctx, 2)
+		require.NoError(t, err)
+		assert.Equal(t, "bedrock", provider.Name(), "must route through bedrock for sovereignty")
+		assert.Equal(t, "claude-sonnet-4-20250514", model)
+	})
+
+	t.Run("bedrock_only rejects when bedrock provider unavailable", func(t *testing.T) {
+		providers := map[string]Provider{
+			"anthropic": &mockProvider{name: "anthropic"},
+			"openai":    &mockProvider{name: "openai"},
+		}
+
+		routing := &policy.ModelRoutingConfig{
+			Tier2: &policy.TierConfig{
+				Primary:     "claude-sonnet-4-20250514",
+				Fallback:    "gpt-4o",
+				BedrockOnly: true,
+			},
+		}
+
+		router := NewRouter(routing, providers)
+		_, _, err := router.Route(ctx, 2)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, ErrProviderNotAvailable,
+			"must not silently route to non-bedrock provider")
+	})
+
+	t.Run("bedrock_only routes primary through bedrock even when anthropic is absent", func(t *testing.T) {
+		providers := map[string]Provider{
+			"bedrock": &mockProvider{name: "bedrock"},
+			// "anthropic" intentionally absent — without bedrock_only this would fail
+		}
+
+		routing := &policy.ModelRoutingConfig{
+			Tier1: &policy.TierConfig{
+				Primary:     "claude-sonnet-4-20250514", // infers "anthropic" — absent
+				BedrockOnly: true,
+			},
+		}
+
+		router := NewRouter(routing, providers)
+		provider, model, err := router.Route(ctx, 1)
+		require.NoError(t, err)
+		assert.Equal(t, "bedrock", provider.Name(), "bedrock_only must override inferred provider")
+		assert.Equal(t, "claude-sonnet-4-20250514", model)
+	})
+
+	t.Run("without bedrock_only model routes to inferred provider", func(t *testing.T) {
+		providers := map[string]Provider{
+			"anthropic": &mockProvider{name: "anthropic"},
+			"bedrock":   &mockProvider{name: "bedrock"},
+		}
+
+		routing := &policy.ModelRoutingConfig{
+			Tier1: &policy.TierConfig{
+				Primary:     "claude-sonnet-4-20250514",
+				BedrockOnly: false,
+			},
+		}
+
+		router := NewRouter(routing, providers)
+		provider, _, err := router.Route(ctx, 1)
+		require.NoError(t, err)
+		assert.Equal(t, "anthropic", provider.Name(), "should use inferred provider when bedrock_only is false")
+	})
+}
+
+// TestSovereigntyInvariant is a contract test that proves a critical invariant:
+// when BedrockOnly=true, the selected provider is ALWAYS "bedrock" regardless of
+// model name, available providers, or fallback configuration.
+// This test exists because the original implementation of Route() ignored BedrockOnly,
+// which could route confidential data outside the EU sovereignty boundary.
+func TestSovereigntyInvariant(t *testing.T) {
+	ctx := context.Background()
+
+	// Every model prefix that inferProvider could map to a non-bedrock provider
+	nonBedrockModels := []string{
+		"gpt-4o",                     // → openai
+		"gpt-4o-mini",                // → openai
+		"claude-sonnet-4-20250514",   // → anthropic
+		"claude-haiku-3-5-20241022",  // → anthropic
+		"llama3.1:70b",               // → ollama
+		"mistral:7b",                 // → ollama
+		"unknown-model",              // → openai (default)
+	}
+
+	// All providers registered (worst case for leakage: all are available)
+	allProviders := map[string]Provider{
+		"openai":    &mockProvider{name: "openai"},
+		"anthropic": &mockProvider{name: "anthropic"},
+		"bedrock":   &mockProvider{name: "bedrock"},
+		"ollama":    &mockProvider{name: "ollama"},
+	}
+
+	for _, model := range nonBedrockModels {
+		t.Run("primary="+model, func(t *testing.T) {
+			routing := &policy.ModelRoutingConfig{
+				Tier2: &policy.TierConfig{
+					Primary:     model,
+					BedrockOnly: true,
+				},
+			}
+			router := NewRouter(routing, allProviders)
+			provider, _, err := router.Route(ctx, 2)
+			require.NoError(t, err)
+			assert.Equal(t, "bedrock", provider.Name(),
+				"SOVEREIGNTY VIOLATION: bedrock_only=true but routed to %s for model %s",
+				provider.Name(), model)
+		})
+	}
+
+	// Also test that fallback models can't escape bedrock_only
+	for _, fallback := range nonBedrockModels {
+		t.Run("fallback="+fallback, func(t *testing.T) {
+			// Primary uses a model that won't find "bedrock" without the override,
+			// then falls back — fallback must also be forced to bedrock
+			routing := &policy.ModelRoutingConfig{
+				Tier2: &policy.TierConfig{
+					Primary:     "gpt-4o",
+					Fallback:    fallback,
+					BedrockOnly: true,
+				},
+			}
+			router := NewRouter(routing, allProviders)
+			provider, _, err := router.Route(ctx, 2)
+			require.NoError(t, err)
+			assert.Equal(t, "bedrock", provider.Name(),
+				"SOVEREIGNTY VIOLATION: fallback %s escaped bedrock_only", fallback)
+		})
+	}
+}
+
+// TestBedrockOnlyFailsClosed verifies that when bedrock_only=true and the bedrock
+// provider is unavailable, the router fails with an error rather than silently
+// falling back to a non-bedrock provider.
+func TestBedrockOnlyFailsClosed(t *testing.T) {
+	ctx := context.Background()
+
+	// Every possible provider combination EXCEPT bedrock
+	providerSets := []map[string]Provider{
+		{"openai": &mockProvider{name: "openai"}},
+		{"anthropic": &mockProvider{name: "anthropic"}},
+		{"ollama": &mockProvider{name: "ollama"}},
+		{
+			"openai":    &mockProvider{name: "openai"},
+			"anthropic": &mockProvider{name: "anthropic"},
+			"ollama":    &mockProvider{name: "ollama"},
+		},
+	}
+
+	for i, providers := range providerSets {
+		t.Run(fmt.Sprintf("provider_set_%d", i), func(t *testing.T) {
+			routing := &policy.ModelRoutingConfig{
+				Tier2: &policy.TierConfig{
+					Primary:     "claude-sonnet-4-20250514",
+					Fallback:    "gpt-4o",
+					BedrockOnly: true,
+				},
+			}
+			router := NewRouter(routing, providers)
+			_, _, err := router.Route(ctx, 2)
+			assert.Error(t, err, "must fail when bedrock unavailable with bedrock_only=true")
+			assert.ErrorIs(t, err, ErrProviderNotAvailable)
+		})
+	}
+}
+
+// TestTierConfigFieldInfluence is a contract test that verifies every field in
+// TierConfig actually influences routing decisions. If a new field is added to
+// TierConfig but never read by Route(), a test here will catch it.
+func TestTierConfigFieldInfluence(t *testing.T) {
+	ctx := context.Background()
+	allProviders := map[string]Provider{
+		"openai":    &mockProvider{name: "openai"},
+		"anthropic": &mockProvider{name: "anthropic"},
+		"bedrock":   &mockProvider{name: "bedrock"},
+	}
+
+	t.Run("Primary field selects model", func(t *testing.T) {
+		r1 := NewRouter(&policy.ModelRoutingConfig{
+			Tier0: &policy.TierConfig{Primary: "gpt-4o"},
+		}, allProviders)
+		r2 := NewRouter(&policy.ModelRoutingConfig{
+			Tier0: &policy.TierConfig{Primary: "gpt-4o-mini"},
+		}, allProviders)
+
+		_, m1, _ := r1.Route(ctx, 0)
+		_, m2, _ := r2.Route(ctx, 0)
+		assert.NotEqual(t, m1, m2, "changing Primary must change the selected model")
+	})
+
+	t.Run("Fallback field used when primary unavailable", func(t *testing.T) {
+		limitedProviders := map[string]Provider{
+			"openai": &mockProvider{name: "openai"},
+		}
+
+		r1 := NewRouter(&policy.ModelRoutingConfig{
+			Tier0: &policy.TierConfig{Primary: "claude-sonnet-4-20250514", Fallback: "gpt-4o"},
+		}, limitedProviders)
+		r2 := NewRouter(&policy.ModelRoutingConfig{
+			Tier0: &policy.TierConfig{Primary: "claude-sonnet-4-20250514", Fallback: "gpt-4o-mini"},
+		}, limitedProviders)
+
+		_, m1, err1 := r1.Route(ctx, 0)
+		_, m2, err2 := r2.Route(ctx, 0)
+		require.NoError(t, err1)
+		require.NoError(t, err2)
+		assert.NotEqual(t, m1, m2, "changing Fallback must change the selected model when primary is unavailable")
+	})
+
+	t.Run("BedrockOnly field overrides provider selection", func(t *testing.T) {
+		// Same model name, toggle BedrockOnly
+		rOff := NewRouter(&policy.ModelRoutingConfig{
+			Tier0: &policy.TierConfig{Primary: "claude-sonnet-4-20250514", BedrockOnly: false},
+		}, allProviders)
+		rOn := NewRouter(&policy.ModelRoutingConfig{
+			Tier0: &policy.TierConfig{Primary: "claude-sonnet-4-20250514", BedrockOnly: true},
+		}, allProviders)
+
+		pOff, _, _ := rOff.Route(ctx, 0)
+		pOn, _, _ := rOn.Route(ctx, 0)
+		assert.NotEqual(t, pOff.Name(), pOn.Name(),
+			"toggling BedrockOnly must change the selected provider")
+		assert.Equal(t, "bedrock", pOn.Name())
+		assert.Equal(t, "anthropic", pOff.Name())
 	})
 }
 

@@ -45,11 +45,20 @@ func (r *Router) Route(ctx context.Context, tier int) (Provider, string, error) 
 	model := tierConfig.Primary
 	providerName := inferProvider(model)
 
+	// Enforce bedrock_only: override inferred provider and reject non-bedrock fallbacks.
+	// This prevents confidential data from being routed outside the sovereignty boundary.
+	if tierConfig.BedrockOnly {
+		providerName = "bedrock"
+	}
+
 	provider, ok := r.providers[providerName]
 	if !ok {
 		// Try fallback model if available
 		if tierConfig.Fallback != "" {
 			fallbackProvider := inferProvider(tierConfig.Fallback)
+			if tierConfig.BedrockOnly {
+				fallbackProvider = "bedrock"
+			}
 			provider, ok = r.providers[fallbackProvider]
 			if ok {
 				model = tierConfig.Fallback

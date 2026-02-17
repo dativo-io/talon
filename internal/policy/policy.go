@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -216,4 +217,75 @@ func (p *Policy) ComputeHash(content []byte) {
 	hash := sha256.Sum256(content)
 	p.Hash = hex.EncodeToString(hash[:])
 	p.VersionTag = fmt.Sprintf("%s:sha256:%s", p.Agent.Version, p.Hash[:8])
+}
+
+// RoutingWarning describes a potential misconfiguration in model routing.
+type RoutingWarning struct {
+	Tier    string
+	Message string
+}
+
+// ValidateRouting checks model routing configuration for sovereignty
+// misconfigurations. Returns warnings for configs that are technically valid
+// but likely incorrect (e.g., bedrock_only with a non-Bedrock model name).
+// Returns errors for configs that are logically contradictory.
+func ValidateRouting(routing *ModelRoutingConfig) (warnings []RoutingWarning, err error) {
+	if routing == nil {
+		return nil, nil
+	}
+
+	tiers := map[string]*TierConfig{
+		"tier_0": routing.Tier0,
+		"tier_1": routing.Tier1,
+		"tier_2": routing.Tier2,
+	}
+
+	for name, tier := range tiers {
+		if tier == nil {
+			continue
+		}
+		w, e := validateTierRouting(name, tier)
+		warnings = append(warnings, w...)
+		if e != nil {
+			return warnings, e
+		}
+	}
+
+	return warnings, nil
+}
+
+// validateTierRouting checks a single tier config for routing issues.
+func validateTierRouting(tierName string, tier *TierConfig) (warnings []RoutingWarning, err error) {
+	if !tier.BedrockOnly {
+		return nil, nil
+	}
+
+	// BedrockOnly is set — validate that primary looks like a Bedrock model
+	if !isBedrockModelName(tier.Primary) {
+		warnings = append(warnings, RoutingWarning{
+			Tier: tierName,
+			Message: fmt.Sprintf(
+				"bedrock_only is true but primary model %q does not use Bedrock naming (anthropic.* or amazon.*); "+
+					"the router will force Bedrock provider — ensure this model is available via Bedrock in your region",
+				tier.Primary),
+		})
+	}
+
+	// Fallback with bedrock_only: warn if fallback also doesn't look like Bedrock
+	if tier.Fallback != "" && !isBedrockModelName(tier.Fallback) {
+		warnings = append(warnings, RoutingWarning{
+			Tier: tierName,
+			Message: fmt.Sprintf(
+				"bedrock_only is true but fallback model %q does not use Bedrock naming; "+
+					"fallback will also be forced through Bedrock provider",
+				tier.Fallback),
+		})
+	}
+
+	return warnings, nil
+}
+
+// isBedrockModelName returns true if the model name follows Bedrock conventions.
+func isBedrockModelName(model string) bool {
+	return strings.HasPrefix(model, "anthropic.") || strings.HasPrefix(model, "amazon.")
 }
