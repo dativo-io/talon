@@ -90,3 +90,37 @@ func applyDefaults(p *Policy) {
 		}
 	}
 }
+
+// LoadProxyPolicy loads and validates a .talon.yaml file for proxy mode.
+// It checks that agent.type is "mcp_proxy", that an upstream URL is set,
+// and that at least one allowed_tool is defined.
+func LoadProxyPolicy(path string) (*ProxyPolicyConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading proxy policy file %s: %w", path, err)
+	}
+
+	var config ProxyPolicyConfig
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("parsing proxy policy YAML: %w", err)
+	}
+
+	if config.Agent.Type != "mcp_proxy" {
+		return nil, fmt.Errorf("agent.type must be 'mcp_proxy' for proxy configs, got %q", config.Agent.Type)
+	}
+
+	if config.Proxy.Upstream.URL == "" {
+		return nil, fmt.Errorf("proxy.upstream.url is required")
+	}
+
+	if len(config.Proxy.AllowedTools) == 0 {
+		return nil, fmt.Errorf("proxy.allowed_tools must have at least one entry")
+	}
+
+	// Default proxy mode to "intercept" when unset.
+	if config.Proxy.Mode == "" {
+		config.Proxy.Mode = "intercept"
+	}
+
+	return &config, nil
+}
