@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"go.opentelemetry.io/otel/trace"
 
@@ -133,13 +134,17 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Respon
 		talonotel.GenAIResponseID.String(apiResp.ID),
 	)
 
-	content := ""
-	if len(apiResp.Content) > 0 {
-		content = apiResp.Content[0].Text
+	// Concatenate all text blocks; Anthropic can return multiple content blocks
+	// (e.g. multiple text segments or non-text blocks like tool_use first).
+	var content strings.Builder
+	for _, block := range apiResp.Content {
+		if block.Type == "text" && block.Text != "" {
+			content.WriteString(block.Text)
+		}
 	}
 
 	return &Response{
-		Content:      content,
+		Content:      content.String(),
 		FinishReason: apiResp.StopReason,
 		InputTokens:  apiResp.Usage.InputTokens,
 		OutputTokens: apiResp.Usage.OutputTokens,

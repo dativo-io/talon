@@ -121,6 +121,46 @@ func TestAnthropicGenerate_SystemPromptExtraction(t *testing.T) {
 	assert.Equal(t, "OK", resp.Content)
 }
 
+func TestAnthropicGenerate_MultipleContentBlocks(t *testing.T) {
+	_, provider := newAnthropicTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Simulate response with multiple text blocks and a leading non-text block
+		// (e.g. tool_use); only text blocks should be concatenated.
+		resp := anthropicResponse{
+			ID: "msg_multi",
+			Content: []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}{
+				{Type: "tool_use", Text: ""}, // non-text first
+				{Type: "text", Text: "First part. "},
+				{Type: "text", Text: "Second part. "},
+				{Type: "text", Text: "Third part."},
+			},
+			StopReason: "end_turn",
+			Usage: struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			}{
+				InputTokens:  10,
+				OutputTokens: 12,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	req := &Request{
+		Model:     "claude-sonnet-4-20250514",
+		Messages:  []Message{{Role: "user", Content: "Hi"}},
+		MaxTokens: 100,
+	}
+
+	resp, err := provider.Generate(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, "First part. Second part. Third part.", resp.Content,
+		"multiple text blocks must be concatenated; non-text blocks must be skipped")
+}
+
 func TestAnthropicGenerate_APIError(t *testing.T) {
 	_, provider := newAnthropicTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
