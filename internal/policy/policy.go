@@ -291,7 +291,7 @@ func validateTierRouting(tierName string, tier *TierConfig) (warnings []RoutingW
 		warnings = append(warnings, RoutingWarning{
 			Tier: tierName,
 			Message: fmt.Sprintf(
-				"bedrock_only is true but primary model %q does not use Bedrock naming (anthropic.* or amazon.*); "+
+				"bedrock_only is true but primary model %q does not use Bedrock naming (vendor.model, e.g. anthropic.*, amazon.*, meta.*, cohere.*, ai21.*, stability.*, mistral.*); "+
 					"the router will force Bedrock provider — ensure this model is available via Bedrock in your region",
 				tier.Primary),
 		})
@@ -311,7 +311,34 @@ func validateTierRouting(tierName string, tier *TierConfig) (warnings []RoutingW
 	return warnings, nil
 }
 
-// isBedrockModelName returns true if the model name follows Bedrock conventions.
+// bedrockModelPrefixes lists the vendor prefixes used by AWS Bedrock model IDs.
+// Bedrock model names follow the pattern "vendor.model-name-version", e.g.
+// "anthropic.claude-3-sonnet-20240229-v1:0" or "meta.llama3-1-70b-instruct-v1:0".
+var bedrockModelPrefixes = []string{
+	"anthropic.",
+	"amazon.",
+	"meta.",
+	"cohere.",
+	"ai21.",
+	"stability.",
+	"mistral.",
+}
+
+// BedrockModelPrefixes returns the set of known Bedrock vendor prefixes.
+// Used by the LLM router to distinguish Bedrock model IDs from local/other names.
+func BedrockModelPrefixes() []string {
+	out := make([]string, len(bedrockModelPrefixes))
+	copy(out, bedrockModelPrefixes)
+	return out
+}
+
+// isBedrockModelName returns true if the model name follows Bedrock conventions
+// (i.e., starts with a known vendor prefix like "anthropic.", "meta.", etc.).
 func isBedrockModelName(model string) bool {
-	return strings.HasPrefix(model, "anthropic.") || strings.HasPrefix(model, "amazon.")
+	for _, prefix := range bedrockModelPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
 }

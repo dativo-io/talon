@@ -393,6 +393,34 @@ func TestValidateRouting(t *testing.T) {
 		assert.Empty(t, warnings)
 	})
 
+	t.Run("all bedrock vendor prefixes produce no warning", func(t *testing.T) {
+		bedrockModels := []struct {
+			name  string
+			model string
+		}{
+			{"anthropic", "anthropic.claude-3-sonnet-20240229-v1:0"},
+			{"amazon", "amazon.titan-text-premier-v1:0"},
+			{"meta", "meta.llama3-1-70b-instruct-v1:0"},
+			{"cohere", "cohere.command-r-plus-v1:0"},
+			{"ai21", "ai21.jamba-1-5-large-v1:0"},
+			{"stability", "stability.stable-diffusion-xl-v1"},
+			{"mistral", "mistral.mistral-large-2402-v1:0"},
+		}
+		for _, tt := range bedrockModels {
+			t.Run(tt.name, func(t *testing.T) {
+				routing := &ModelRoutingConfig{
+					Tier2: &TierConfig{
+						Primary:     tt.model,
+						BedrockOnly: true,
+					},
+				}
+				warnings, err := ValidateRouting(routing)
+				assert.NoError(t, err)
+				assert.Empty(t, warnings, "bedrock model %q should not trigger warning", tt.model)
+			})
+		}
+	})
+
 	t.Run("non-bedrock model with bedrock_only produces warning", func(t *testing.T) {
 		routing := &ModelRoutingConfig{
 			Tier2: &TierConfig{

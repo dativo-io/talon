@@ -123,15 +123,22 @@ func (r *Router) getTierConfig(tier int) (*policy.TierConfig, error) {
 
 // inferProvider determines the provider name from the model identifier.
 // Returns ErrUnknownModel for unrecognized model prefixes (fail-closed).
+// Bedrock vendor-prefixed models (e.g. "meta.llama3-1-70b-instruct-v1:0")
+// are checked before bare-name Ollama models to avoid misrouting.
 func inferProvider(model string) (string, error) {
+	// Check Bedrock vendor-prefixed models first (e.g. "mistral.mistral-large")
+	// before bare-name checks (e.g. "mistral:7b" for Ollama).
+	for _, prefix := range policy.BedrockModelPrefixes() {
+		if strings.HasPrefix(model, prefix) {
+			return "bedrock", nil
+		}
+	}
+
 	switch {
 	case strings.HasPrefix(model, "gpt-"):
 		return "openai", nil
 	case strings.HasPrefix(model, "claude-"):
 		return "anthropic", nil
-	case strings.HasPrefix(model, "anthropic."),
-		strings.HasPrefix(model, "amazon."):
-		return "bedrock", nil
 	case strings.HasPrefix(model, "llama"),
 		strings.HasPrefix(model, "mistral"),
 		strings.HasPrefix(model, "gemma"),
