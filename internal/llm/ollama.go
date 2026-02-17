@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"go.opentelemetry.io/otel/trace"
@@ -97,6 +98,11 @@ func (p *OllamaProvider) Generate(ctx context.Context, req *Request) (*Response,
 		return nil, fmt.Errorf("ollama api call: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("ollama api error %d: %s", resp.StatusCode, string(respBody))
+	}
 
 	var apiResp ollamaResponse
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
