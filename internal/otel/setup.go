@@ -8,8 +8,8 @@ import (
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Setup initializes OpenTelemetry with stdout exporter for MVP.
@@ -35,7 +35,6 @@ func Setup(serviceName, version string, enabled bool) (shutdown func(context.Con
 	// Create exporter
 	// MVP: stdout exporter (OTLP exporter will be added in Phase 2)
 	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
-
 	if err != nil {
 		return nil, fmt.Errorf("creating OTel exporter: %w", err)
 	}

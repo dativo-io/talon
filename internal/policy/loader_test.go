@@ -264,7 +264,7 @@ audit:
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			policyPath := filepath.Join(tmpDir, "policy.yaml")
-			err := os.WriteFile(policyPath, []byte(tt.yaml), 0644)
+			err := os.WriteFile(policyPath, []byte(tt.yaml), 0o644)
 			require.NoError(t, err)
 
 			ctx := context.Background()
@@ -295,7 +295,7 @@ policies:
 
 	tmpDir := t.TempDir()
 	policyPath := filepath.Join(tmpDir, "policy.yaml")
-	err := os.WriteFile(policyPath, []byte(yamlContent), 0644)
+	err := os.WriteFile(policyPath, []byte(yamlContent), 0o644)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -359,6 +359,168 @@ func TestApplyDefaults(t *testing.T) {
 		}
 		applyDefaults(pol)
 		assert.Equal(t, 1, pol.Agent.ModelTier)
+	})
+}
+
+func TestValidateRouting(t *testing.T) {
+	t.Run("nil routing returns no warnings", func(t *testing.T) {
+		warnings, err := ValidateRouting(nil)
+		assert.NoError(t, err)
+		assert.Empty(t, warnings)
+	})
+
+	t.Run("bedrock model with bedrock_only produces no warning", func(t *testing.T) {
+		routing := &ModelRoutingConfig{
+			Tier2: &TierConfig{
+				Primary:     "anthropic.claude-3-sonnet-20240229-v1:0",
+				BedrockOnly: true,
+			},
+		}
+		warnings, err := ValidateRouting(routing)
+		assert.NoError(t, err)
+		assert.Empty(t, warnings, "bedrock model name should not trigger warning")
+	})
+
+	t.Run("amazon model with bedrock_only produces no warning", func(t *testing.T) {
+		routing := &ModelRoutingConfig{
+			Tier2: &TierConfig{
+				Primary:     "amazon.titan-text-premier-v1:0",
+				BedrockOnly: true,
+			},
+		}
+		warnings, err := ValidateRouting(routing)
+		assert.NoError(t, err)
+		assert.Empty(t, warnings)
+	})
+
+	t.Run("all bedrock vendor prefixes produce no warning", func(t *testing.T) {
+		bedrockModels := []struct {
+			name  string
+			model string
+		}{
+			{"anthropic", "anthropic.claude-3-sonnet-20240229-v1:0"},
+			{"amazon", "amazon.titan-text-premier-v1:0"},
+			{"meta", "meta.llama3-1-70b-instruct-v1:0"},
+			{"cohere", "cohere.command-r-plus-v1:0"},
+			{"ai21", "ai21.jamba-1-5-large-v1:0"},
+			{"stability", "stability.stable-diffusion-xl-v1"},
+			{"mistral", "mistral.mistral-large-2402-v1:0"},
+		}
+		for _, tt := range bedrockModels {
+			t.Run(tt.name, func(t *testing.T) {
+				routing := &ModelRoutingConfig{
+					Tier2: &TierConfig{
+						Primary:     tt.model,
+						BedrockOnly: true,
+					},
+				}
+				warnings, err := ValidateRouting(routing)
+				assert.NoError(t, err)
+				assert.Empty(t, warnings, "bedrock model %q should not trigger warning", tt.model)
+			})
+		}
+	})
+
+	t.Run("non-bedrock model with bedrock_only produces warning", func(t *testing.T) {
+		routing := &ModelRoutingConfig{
+			Tier2: &TierConfig{
+				Primary:     "claude-sonnet-4-20250514",
+				BedrockOnly: true,
+			},
+		}
+		warnings, err := ValidateRouting(routing)
+		assert.NoError(t, err)
+		require.Len(t, warnings, 1)
+		assert.Equal(t, "tier_2", warnings[0].Tier)
+		assert.Contains(t, warnings[0].Message, "bedrock_only is true")
+		assert.Contains(t, warnings[0].Message, "claude-sonnet-4-20250514")
+	})
+
+	t.Run("non-bedrock fallback with bedrock_only produces warning", func(t *testing.T) {
+		routing := &ModelRoutingConfig{
+			Tier1: &TierConfig{
+				Primary:     "anthropic.claude-3-sonnet-20240229-v1:0",
+				Fallback:    "gpt-4o",
+				BedrockOnly: true,
+			},
+		}
+		warnings, err := ValidateRouting(routing)
+		assert.NoError(t, err)
+		require.Len(t, warnings, 1)
+		assert.Equal(t, "tier_1", warnings[0].Tier)
+		assert.Contains(t, warnings[0].Message, "gpt-4o")
+	})
+
+	t.Run("both primary and fallback non-bedrock produce two warnings", func(t *testing.T) {
+		routing := &ModelRoutingConfig{
+			Tier2: &TierConfig{
+				Primary:     "claude-sonnet-4-20250514",
+				Fallback:    "gpt-4o",
+				BedrockOnly: true,
+			},
+		}
+		warnings, err := ValidateRouting(routing)
+		assert.NoError(t, err)
+		assert.Len(t, warnings, 2, "should warn about both primary and fallback")
+	})
+
+	t.Run("bedrock_only false produces no warnings regardless of model", func(t *testing.T) {
+		routing := &ModelRoutingConfig{
+			Tier0: &TierConfig{
+				Primary:     "gpt-4o",
+				BedrockOnly: false,
+			},
+			Tier1: &TierConfig{
+				Primary:     "claude-sonnet-4-20250514",
+				BedrockOnly: false,
+			},
+		}
+		warnings, err := ValidateRouting(routing)
+		assert.NoError(t, err)
+		assert.Empty(t, warnings)
+	})
+
+	t.Run("multiple tiers with warnings", func(t *testing.T) {
+		routing := &ModelRoutingConfig{
+			Tier1: &TierConfig{
+				Primary:     "gpt-4o",
+				BedrockOnly: true,
+			},
+			Tier2: &TierConfig{
+				Primary:     "claude-sonnet-4-20250514",
+				BedrockOnly: true,
+			},
+		}
+		warnings, err := ValidateRouting(routing)
+		assert.NoError(t, err)
+		assert.Len(t, warnings, 2, "should warn for each tier")
+	})
+}
+
+func TestLoadPolicy_RoutingWarnings(t *testing.T) {
+	t.Run("policy with non-bedrock model and bedrock_only loads with warning", func(t *testing.T) {
+		yamlContent := `
+agent:
+  name: test-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 100.0
+  model_routing:
+    tier_2:
+      primary: "claude-sonnet-4-20250514"
+      bedrock_only: true
+`
+		tmpDir := t.TempDir()
+		policyPath := filepath.Join(tmpDir, "policy.yaml")
+		require.NoError(t, os.WriteFile(policyPath, []byte(yamlContent), 0o644))
+
+		ctx := context.Background()
+		pol, err := LoadPolicy(ctx, policyPath, false)
+		// Policy should still load (warnings are non-fatal)
+		require.NoError(t, err)
+		require.NotNil(t, pol)
+		assert.True(t, pol.Policies.ModelRouting.Tier2.BedrockOnly)
 	})
 }
 

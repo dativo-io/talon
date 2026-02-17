@@ -41,6 +41,17 @@ policies:
     input_scan: true
     output_scan: true
     redact_pii: false
+    # Optional: restrict which PII types this agent scans for (Presidio entity names).
+    # enabled_entities: ["EMAIL_ADDRESS", "IBAN_CODE", "CREDIT_CARD"]  # whitelist
+    # disabled_entities: ["IP_ADDRESS"]                                 # blacklist
+    # custom_recognizers:                                              # agent-specific patterns
+    #   - name: "Internal ID"
+    #     supported_entity: "EMPLOYEE_ID"
+    #     patterns:
+    #       - name: "emp id"
+    #         regex: '\bEMP-\d{6}\b'
+    #         score: 0.95
+    #     sensitivity: 2
 
   model_routing:
     tier_0:

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"gopkg.in/yaml.v3"
 
 	talonotel "github.com/dativo-io/talon/internal/otel"
@@ -16,7 +18,7 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/policy")
 // LoadPolicy loads and validates a .talon.yaml file.
 // If strict is true, additional business-rule validation is applied.
 func LoadPolicy(ctx context.Context, path string, strict bool) (*Policy, error) {
-	ctx, span := tracer.Start(ctx, "policy.load")
+	_, span := tracer.Start(ctx, "policy.load")
 	defer span.End()
 
 	span.SetAttributes(
@@ -40,6 +42,24 @@ func LoadPolicy(ctx context.Context, path string, strict bool) (*Policy, error) 
 
 	pol.ComputeHash(content)
 	applyDefaults(&pol)
+
+	// Validate routing configuration for sovereignty misconfigurations
+	if pol.Policies.ModelRouting != nil {
+		warnings, err := ValidateRouting(pol.Policies.ModelRouting)
+		if err != nil {
+			return nil, fmt.Errorf("routing validation: %w", err)
+		}
+		for _, w := range warnings {
+			log.Warn().
+				Str("tier", w.Tier).
+				Str("agent", pol.Agent.Name).
+				Msg(w.Message)
+			span.AddEvent("routing_warning", trace.WithAttributes(
+				attribute.String("tier", w.Tier),
+				attribute.String("warning", w.Message),
+			))
+		}
+	}
 
 	span.SetAttributes(
 		attribute.String("policy.agent_name", pol.Agent.Name),

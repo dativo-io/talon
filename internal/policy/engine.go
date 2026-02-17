@@ -53,7 +53,6 @@ func NewEngine(ctx context.Context, pol *Policy) (*Engine, error) {
 	ctx, span := tracer.Start(ctx, "policy.engine.new")
 	defer span.End()
 
-	// Convert Policy struct to a generic map for OPA data store.
 	policyData, err := policyToData(pol)
 	if err != nil {
 		span.RecordError(err)
@@ -61,17 +60,33 @@ func NewEngine(ctx context.Context, pol *Policy) (*Engine, error) {
 		return nil, fmt.Errorf("converting policy to OPA data: %w", err)
 	}
 
-	prepared := make(map[string]rego.PreparedEvalQuery, len(allPolicies))
+	prepared, err := prepareRegoQueries(ctx, allPolicies, map[string]interface{}{
+		"policy": policyData,
+	})
+	if err != nil {
+		return nil, err
+	}
 
-	for _, rp := range allPolicies {
+	span.SetAttributes(attribute.Int("policy.prepared_count", len(prepared)))
+
+	return &Engine{
+		policy:   pol,
+		prepared: prepared,
+	}, nil
+}
+
+// prepareRegoQueries initializes OPA prepared queries for a given set of
+// policies. This is shared between Engine and ProxyEngine.
+func prepareRegoQueries(ctx context.Context, policies []regoPolicy, opaData map[string]interface{}) (map[string]rego.PreparedEvalQuery, error) {
+	prepared := make(map[string]rego.PreparedEvalQuery, len(policies))
+
+	for _, rp := range policies {
 		content, err := embeddedPolicies.ReadFile(rp.file)
 		if err != nil {
 			return nil, fmt.Errorf("reading embedded policy %s: %w", rp.file, err)
 		}
 
-		store := inmem.NewFromObject(map[string]interface{}{
-			"policy": policyData,
-		})
+		store := inmem.NewFromObject(opaData)
 
 		r := rego.New(
 			rego.Query(rp.query),
@@ -87,12 +102,7 @@ func NewEngine(ctx context.Context, pol *Policy) (*Engine, error) {
 		prepared[rp.file] = preparedQuery
 	}
 
-	span.SetAttributes(attribute.Int("policy.prepared_count", len(prepared)))
-
-	return &Engine{
-		policy:   pol,
-		prepared: prepared,
-	}, nil
+	return prepared, nil
 }
 
 // Evaluate runs the core governance policies (cost, rate, time) and

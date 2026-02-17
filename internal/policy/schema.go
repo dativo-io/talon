@@ -182,7 +182,33 @@ const schemaV2 = `{
           "properties": {
             "input_scan": {"type": "boolean"},
             "output_scan": {"type": "boolean"},
-            "redact_pii": {"type": "boolean"}
+            "redact_pii": {"type": "boolean"},
+            "enabled_entities": {"type": "array", "items": {"type": "string"}},
+            "disabled_entities": {"type": "array", "items": {"type": "string"}},
+            "custom_recognizers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "supported_entity"],
+                "properties": {
+                  "name": {"type": "string"},
+                  "supported_entity": {"type": "string"},
+                  "sensitivity": {"type": "integer", "minimum": 1, "maximum": 3},
+                  "patterns": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["name", "regex"],
+                      "properties": {
+                        "name": {"type": "string"},
+                        "regex": {"type": "string"},
+                        "score": {"type": "number", "minimum": 0, "maximum": 1}
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "model_routing": {

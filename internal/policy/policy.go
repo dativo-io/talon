@@ -4,22 +4,23 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 )
 
 // Policy represents a complete .talon.yaml configuration (v2.0 schema).
 type Policy struct {
-	Agent              AgentConfig              `yaml:"agent" json:"agent"`
-	Capabilities       *CapabilitiesConfig      `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
-	Triggers           *TriggersConfig          `yaml:"triggers,omitempty" json:"triggers,omitempty"`
-	Secrets            *SecretsConfig           `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	Memory             *MemoryConfig            `yaml:"memory,omitempty" json:"memory,omitempty"`
-	Context            *ContextConfig           `yaml:"context,omitempty" json:"context,omitempty"`
+	Agent              AgentConfig               `yaml:"agent" json:"agent"`
+	Capabilities       *CapabilitiesConfig       `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	Triggers           *TriggersConfig           `yaml:"triggers,omitempty" json:"triggers,omitempty"`
+	Secrets            *SecretsConfig            `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	Memory             *MemoryConfig             `yaml:"memory,omitempty" json:"memory,omitempty"`
+	Context            *ContextConfig            `yaml:"context,omitempty" json:"context,omitempty"`
 	AttachmentHandling *AttachmentHandlingConfig `yaml:"attachment_handling,omitempty" json:"attachment_handling,omitempty"`
-	Policies           PoliciesConfig           `yaml:"policies" json:"policies"`
-	Audit              *AuditConfig             `yaml:"audit,omitempty" json:"audit,omitempty"`
-	Compliance         *ComplianceConfig        `yaml:"compliance,omitempty" json:"compliance,omitempty"`
-	Metadata           *MetadataConfig          `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	Policies           PoliciesConfig            `yaml:"policies" json:"policies"`
+	Audit              *AuditConfig              `yaml:"audit,omitempty" json:"audit,omitempty"`
+	Compliance         *ComplianceConfig         `yaml:"compliance,omitempty" json:"compliance,omitempty"`
+	Metadata           *MetadataConfig           `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 
 	// Computed fields (not serialized from YAML)
 	Hash       string `yaml:"-" json:"-"`
@@ -100,10 +101,10 @@ type SharedMount struct {
 
 // AttachmentHandlingConfig controls prompt injection prevention.
 type AttachmentHandlingConfig struct {
-	Mode                string           `yaml:"mode,omitempty" json:"mode,omitempty"`
-	RequireUserApproval []string         `yaml:"require_user_approval,omitempty" json:"require_user_approval,omitempty"`
-	AutoAllow           []string         `yaml:"auto_allow,omitempty" json:"auto_allow,omitempty"`
-	Scanning            *ScanningConfig  `yaml:"scanning,omitempty" json:"scanning,omitempty"`
+	Mode                string            `yaml:"mode,omitempty" json:"mode,omitempty"`
+	RequireUserApproval []string          `yaml:"require_user_approval,omitempty" json:"require_user_approval,omitempty"`
+	AutoAllow           []string          `yaml:"auto_allow,omitempty" json:"auto_allow,omitempty"`
+	Scanning            *ScanningConfig   `yaml:"scanning,omitempty" json:"scanning,omitempty"`
 	Sandboxing          *SandboxingConfig `yaml:"sandboxing,omitempty" json:"sandboxing,omitempty"`
 }
 
@@ -121,11 +122,11 @@ type SandboxingConfig struct {
 // PoliciesConfig is the main governance section.
 type PoliciesConfig struct {
 	CostLimits         *CostLimitsConfig         `yaml:"cost_limits" json:"cost_limits"`
-	ResourceLimits     *ResourceLimitsConfig      `yaml:"resource_limits,omitempty" json:"resource_limits,omitempty"`
-	RateLimits         *RateLimitsConfig          `yaml:"rate_limits,omitempty" json:"rate_limits,omitempty"`
-	DataClassification *DataClassificationConfig  `yaml:"data_classification,omitempty" json:"data_classification,omitempty"`
-	ModelRouting       *ModelRoutingConfig         `yaml:"model_routing,omitempty" json:"model_routing,omitempty"`
-	TimeRestrictions   *TimeRestrictionsConfig     `yaml:"time_restrictions,omitempty" json:"time_restrictions,omitempty"`
+	ResourceLimits     *ResourceLimitsConfig     `yaml:"resource_limits,omitempty" json:"resource_limits,omitempty"`
+	RateLimits         *RateLimitsConfig         `yaml:"rate_limits,omitempty" json:"rate_limits,omitempty"`
+	DataClassification *DataClassificationConfig `yaml:"data_classification,omitempty" json:"data_classification,omitempty"`
+	ModelRouting       *ModelRoutingConfig       `yaml:"model_routing,omitempty" json:"model_routing,omitempty"`
+	TimeRestrictions   *TimeRestrictionsConfig   `yaml:"time_restrictions,omitempty" json:"time_restrictions,omitempty"`
 }
 
 // CostLimitsConfig sets per-request, daily, and monthly cost budgets.
@@ -161,6 +162,32 @@ type DataClassificationConfig struct {
 	InputScan  bool `yaml:"input_scan,omitempty" json:"input_scan,omitempty"`
 	OutputScan bool `yaml:"output_scan,omitempty" json:"output_scan,omitempty"`
 	RedactPII  bool `yaml:"redact_pii,omitempty" json:"redact_pii,omitempty"`
+
+	// EnabledEntities whitelists specific Presidio entity types (e.g. "EMAIL_ADDRESS").
+	// When non-empty, only recognizers matching these entities will be active.
+	EnabledEntities []string `yaml:"enabled_entities,omitempty" json:"enabled_entities,omitempty"`
+
+	// DisabledEntities blacklists specific entity types from scanning.
+	DisabledEntities []string `yaml:"disabled_entities,omitempty" json:"disabled_entities,omitempty"`
+
+	// CustomRecognizers defines per-agent PII recognizers in Presidio-compatible format.
+	CustomRecognizers []CustomRecognizerConfig `yaml:"custom_recognizers,omitempty" json:"custom_recognizers,omitempty"`
+}
+
+// CustomRecognizerConfig is the per-agent YAML representation of a custom PII
+// recognizer. Uses Presidio-compatible field names.
+type CustomRecognizerConfig struct {
+	Name            string                `yaml:"name" json:"name"`
+	SupportedEntity string                `yaml:"supported_entity" json:"supported_entity"`
+	Patterns        []CustomPatternConfig `yaml:"patterns,omitempty" json:"patterns,omitempty"`
+	Sensitivity     int                   `yaml:"sensitivity,omitempty" json:"sensitivity,omitempty"`
+}
+
+// CustomPatternConfig is a single regex pattern in a custom recognizer.
+type CustomPatternConfig struct {
+	Name  string  `yaml:"name" json:"name"`
+	Regex string  `yaml:"regex" json:"regex"`
+	Score float64 `yaml:"score,omitempty" json:"score,omitempty"`
 }
 
 // ModelRoutingConfig defines per-tier LLM routing.
@@ -216,4 +243,102 @@ func (p *Policy) ComputeHash(content []byte) {
 	hash := sha256.Sum256(content)
 	p.Hash = hex.EncodeToString(hash[:])
 	p.VersionTag = fmt.Sprintf("%s:sha256:%s", p.Agent.Version, p.Hash[:8])
+}
+
+// RoutingWarning describes a potential misconfiguration in model routing.
+type RoutingWarning struct {
+	Tier    string
+	Message string
+}
+
+// ValidateRouting checks model routing configuration for sovereignty
+// misconfigurations. Returns warnings for configs that are technically valid
+// but likely incorrect (e.g., bedrock_only with a non-Bedrock model name).
+// Returns errors for configs that are logically contradictory.
+func ValidateRouting(routing *ModelRoutingConfig) (warnings []RoutingWarning, err error) {
+	if routing == nil {
+		return nil, nil
+	}
+
+	tiers := map[string]*TierConfig{
+		"tier_0": routing.Tier0,
+		"tier_1": routing.Tier1,
+		"tier_2": routing.Tier2,
+	}
+
+	for name, tier := range tiers {
+		if tier == nil {
+			continue
+		}
+		w, e := validateTierRouting(name, tier)
+		warnings = append(warnings, w...)
+		if e != nil {
+			return warnings, e
+		}
+	}
+
+	return warnings, nil
+}
+
+// validateTierRouting checks a single tier config for routing issues.
+func validateTierRouting(tierName string, tier *TierConfig) (warnings []RoutingWarning, err error) {
+	if !tier.BedrockOnly {
+		return nil, nil
+	}
+
+	// BedrockOnly is set — validate that primary looks like a Bedrock model
+	if !isBedrockModelName(tier.Primary) {
+		warnings = append(warnings, RoutingWarning{
+			Tier: tierName,
+			Message: fmt.Sprintf(
+				"bedrock_only is true but primary model %q does not use Bedrock naming (vendor.model, e.g. anthropic.*, amazon.*, meta.*, cohere.*, ai21.*, stability.*, mistral.*); "+
+					"the router will force Bedrock provider — ensure this model is available via Bedrock in your region",
+				tier.Primary),
+		})
+	}
+
+	// Fallback with bedrock_only: warn if fallback also doesn't look like Bedrock
+	if tier.Fallback != "" && !isBedrockModelName(tier.Fallback) {
+		warnings = append(warnings, RoutingWarning{
+			Tier: tierName,
+			Message: fmt.Sprintf(
+				"bedrock_only is true but fallback model %q does not use Bedrock naming; "+
+					"fallback will also be forced through Bedrock provider",
+				tier.Fallback),
+		})
+	}
+
+	return warnings, nil
+}
+
+// bedrockModelPrefixes lists the vendor prefixes used by AWS Bedrock model IDs.
+// Bedrock model names follow the pattern "vendor.model-name-version", e.g.
+// "anthropic.claude-3-sonnet-20240229-v1:0" or "meta.llama3-1-70b-instruct-v1:0".
+var bedrockModelPrefixes = []string{
+	"anthropic.",
+	"amazon.",
+	"meta.",
+	"cohere.",
+	"ai21.",
+	"stability.",
+	"mistral.",
+}
+
+// BedrockModelPrefixes returns the set of known Bedrock vendor prefixes.
+// Used by the LLM router to distinguish Bedrock model IDs from local/other names.
+func BedrockModelPrefixes() []string {
+	out := make([]string, len(bedrockModelPrefixes))
+	copy(out, bedrockModelPrefixes)
+	return out
+}
+
+// isBedrockModelName returns true if the model name follows Bedrock conventions
+// (i.e., starts with a known vendor prefix like "anthropic.", "meta.", etc.).
+func isBedrockModelName(model string) bool {
+	for _, prefix := range bedrockModelPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
 }

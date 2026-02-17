@@ -47,6 +47,14 @@ var validateCmd = &cobra.Command{
 			return fmt.Errorf("policy engine initialization failed: %w", err)
 		}
 
+		// Build PII scanner from data_classification so enabled_entities, disabled_entities,
+		// and custom_recognizers are validated and the runtime path is exercised.
+		_, err = policy.NewPIIScannerForPolicy(pol, "")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ PII scanner (data_classification) failed: %s\n", validateFile)
+			return fmt.Errorf("PII scanner from policy: %w", err)
+		}
+
 		log.Info().
 			Str("file", validateFile).
 			Str("version", pol.VersionTag).

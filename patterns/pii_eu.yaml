@@ -1,0 +1,147 @@
+# Dativo Talon — Default PII Recognizers (EU-focused)
+# Format: Presidio-compatible recognizer YAML with Talon extensions (sensitivity, countries).
+# See: https://microsoft.github.io/presidio/analyzer/adding_recognizers/
+
+recognizers:
+  - name: "Email Address"
+    supported_entity: "EMAIL_ADDRESS"
+    enabled: true
+    patterns:
+      - name: "standard email"
+        regex: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        score: 0.85
+    supported_languages:
+      - language: "en"
+        context: ["email", "e-mail", "mail"]
+    sensitivity: 1
+    countries: ["EU"]
+
+  - name: "Phone Number"
+    supported_entity: "PHONE_NUMBER"
+    enabled: true
+    patterns:
+      - name: "E.164 international"
+        regex: '\+[1-9]\d{6,14}\b'
+        score: 0.7
+    supported_languages:
+      - language: "en"
+        context: ["phone", "tel", "call", "mobile", "fax"]
+      - language: "de"
+        context: ["telefon", "anruf", "handy", "mobil"]
+    sensitivity: 1
+    countries: ["EU"]
+
+  - name: "IBAN"
+    supported_entity: "IBAN_CODE"
+    enabled: true
+    patterns:
+      - name: "IBAN standard"
+        regex: '\b[A-Z]{2}\d{2}[A-Z0-9]{1,30}\b'
+        score: 0.9
+    supported_languages:
+      - language: "en"
+        context: ["iban", "bank account", "account number"]
+    sensitivity: 3
+    countries: ["EU"]
+    validate_iban: true
+
+  - name: "Credit Card"
+    supported_entity: "CREDIT_CARD"
+    enabled: true
+    patterns:
+      - name: "Visa/MC/Discover"
+        regex: '\b(?:4\d{3}|5[1-5]\d{2}|6(?:011|5\d{2}))\d{12}\b'
+        score: 0.9
+    supported_languages:
+      - language: "en"
+        context: ["credit card", "card number", "visa", "mastercard"]
+    sensitivity: 3
+    countries: ["Global"]
+    validate_luhn: true
+
+  - name: "VAT Number"
+    supported_entity: "EU_VAT_ID"
+    enabled: true
+    patterns:
+      - name: "EU VAT format"
+        regex: '\b(AT|BE|BG|CY|CZ|DE|DK|EE|EL|ES|FI|FR|HR|HU|IE|IT|LT|LU|LV|MT|NL|PL|PT|RO|SE|SI|SK)U?[0-9A-Z]{8,12}\b'
+        score: 0.7
+    supported_languages:
+      - language: "en"
+        context: ["vat", "tax id", "tax number", "ust"]
+    sensitivity: 1
+    countries: ["EU"]
+
+  - name: "German SSN"
+    supported_entity: "DE_SSN"
+    enabled: true
+    patterns:
+      - name: "Sozialversicherungsnummer"
+        regex: '\b\d{2}\s?\d{6}\s?[A-Z]\s?\d{3}\b'
+        score: 0.6
+    supported_languages:
+      - language: "de"
+        context: ["sozialversicherungsnummer", "svnr", "versicherungsnummer"]
+    sensitivity: 3
+    countries: ["DE"]
+
+  - name: "UK National Insurance"
+    supported_entity: "UK_NINO"
+    enabled: true
+    patterns:
+      - name: "NI number"
+        regex: '\b[A-CEGHJ-PR-TW-Z]{1}[A-CEGHJ-NPR-TW-Z]{1}[0-9]{6}[A-D]{1}\b'
+        score: 0.7
+    supported_languages:
+      - language: "en"
+        context: ["national insurance", "ni number", "nino"]
+    sensitivity: 3
+    countries: ["GB"]
+
+  - name: "French INSEE"
+    supported_entity: "FR_SSN"
+    enabled: true
+    patterns:
+      - name: "INSEE number"
+        regex: '\b[12]\d{2}(0[1-9]|1[0-2])\d{8}\b'
+        score: 0.6
+    supported_languages:
+      - language: "fr"
+        context: ["numéro de sécurité sociale", "insee", "nir"]
+    sensitivity: 3
+    countries: ["FR"]
+
+  - name: "IP Address"
+    supported_entity: "IP_ADDRESS"
+    enabled: true
+    patterns:
+      - name: "IPv4"
+        regex: '\b(?:\d{1,3}\.){3}\d{1,3}\b'
+        score: 0.6
+      - name: "IPv6"
+        regex: '(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b'
+        score: 0.6
+    supported_languages:
+      - language: "en"
+        context: ["ip", "address", "server", "host"]
+    sensitivity: 1
+    countries: ["Global"]
+
+  - name: "Passport Number"
+    supported_entity: "PASSPORT"
+    enabled: true
+    patterns:
+      - name: "generic EU passport"
+        regex: '\b[A-Z]{1,2}\d{6,9}\b'
+        score: 0.4
+    supported_languages:
+      - language: "en"
+        context: ["passport", "travel document", "id number", "identity"]
+      - language: "de"
+        context: ["reisepass", "ausweis"]
+      - language: "fr"
+        context: ["passeport"]
+      - language: "es"
+        context: ["pasaporte"]
+    sensitivity: 3
+    countries: ["EU"]
