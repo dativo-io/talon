@@ -87,6 +87,8 @@ func stripTagBlocks(text, tagName string) string {
 		}
 		j := strings.IndexByte(text[i:], '>')
 		if j < 0 {
+			// Malformed tag: no '>' — remove from opening tag to end of string
+			text = text[:i]
 			break
 		}
 		startContent := i + j + 1
