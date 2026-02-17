@@ -211,6 +211,55 @@ func TestAnthropicGenerate_MultipleContentBlocks(t *testing.T) {
 		"multiple text blocks must be concatenated; non-text blocks must be skipped")
 }
 
+func TestAnthropicGenerate_ZeroTemperature(t *testing.T) {
+	_, provider := newAnthropicTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Decode into raw map to verify temperature is present and zero
+		var raw map[string]json.RawMessage
+		err := json.NewDecoder(r.Body).Decode(&raw)
+		require.NoError(t, err)
+
+		tempJSON, ok := raw["temperature"]
+		require.True(t, ok, "temperature field must be present in JSON body when set to 0")
+
+		var temp float64
+		require.NoError(t, json.Unmarshal(tempJSON, &temp))
+		assert.Equal(t, 0.0, temp, "temperature must be 0, not omitted")
+
+		resp := anthropicResponse{
+			ID: "msg_zero_temp",
+			Content: []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}{
+				{Type: "text", Text: "Deterministic output"},
+			},
+			StopReason: "end_turn",
+			Usage: struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			}{
+				InputTokens:  10,
+				OutputTokens: 3,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	req := &Request{
+		Model: "claude-sonnet-4-20250514",
+		Messages: []Message{
+			{Role: "user", Content: "Hello"},
+		},
+		Temperature: 0, // Explicitly zero — most deterministic
+		MaxTokens:   100,
+	}
+
+	resp, err := provider.Generate(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, "Deterministic output", resp.Content)
+}
+
 func TestAnthropicGenerate_APIError(t *testing.T) {
 	_, provider := newAnthropicTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
