@@ -55,8 +55,10 @@ deny contains msg if {
 }
 
 # Deny: high-risk operation without approval.
+# Uses explicit `== false` check because the Go struct now always emits the
+# "approved" field (no omitempty), ensuring the value is present in OPA input.
 deny contains msg if {
 	is_high_risk_operation
-	not input.approved
+	input.approved == false
 	msg := "High-risk operation requires human approval (NIS2 Art. 21 + EU AI Act Art. 14)"
 }

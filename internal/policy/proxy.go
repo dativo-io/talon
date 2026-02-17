@@ -78,7 +78,7 @@ type ProxyInput struct {
 	UpstreamRegion string                 `json:"upstream_region"`
 	RequestCount   int                    `json:"request_count,omitempty"`
 	Arguments      map[string]interface{} `json:"arguments,omitempty"`
-	Approved       bool                   `json:"approved,omitempty"`
+	Approved       bool                   `json:"approved"`
 }
 
 // ---------------------------------------------------------------------------
