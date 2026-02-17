@@ -19,6 +19,7 @@ var (
 	ErrInvalidTier          = errors.New("invalid tier")
 	ErrNotImplemented       = errors.New("provider not yet implemented")
 	ErrBedrockOnlyViolation = errors.New("tier requires bedrock_only but resolved to non-bedrock provider")
+	ErrUnknownModel         = errors.New("unknown model: cannot infer provider")
 )
 
 // Provider is the interface all LLM providers must implement.

@@ -24,6 +24,12 @@ func NewOpenAIProvider(apiKey string) *OpenAIProvider {
 	}
 }
 
+// newOpenAIProviderWithClient creates an OpenAI provider with a pre-configured
+// client. Used in tests to inject httptest-based clients.
+func newOpenAIProviderWithClient(client *openai.Client) *OpenAIProvider {
+	return &OpenAIProvider{client: client}
+}
+
 // Name returns the provider identifier.
 func (p *OpenAIProvider) Name() string {
 	return "openai"

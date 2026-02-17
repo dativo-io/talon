@@ -24,8 +24,10 @@ type RecognizerConfig struct {
 	DenyList           []string          `yaml:"deny_list,omitempty" json:"deny_list,omitempty"`
 	DenyListScore      float64           `yaml:"deny_list_score,omitempty" json:"deny_list_score,omitempty"`
 	// Talon extensions (safe to include — Presidio ignores unknown fields)
-	Sensitivity int      `yaml:"sensitivity,omitempty" json:"sensitivity,omitempty"`
-	Countries   []string `yaml:"countries,omitempty" json:"countries,omitempty"`
+	Sensitivity  int      `yaml:"sensitivity,omitempty" json:"sensitivity,omitempty"`
+	Countries    []string `yaml:"countries,omitempty" json:"countries,omitempty"`
+	ValidateLuhn bool     `yaml:"validate_luhn,omitempty" json:"validate_luhn,omitempty"`
+	ValidateIBAN bool     `yaml:"validate_iban,omitempty" json:"validate_iban,omitempty"`
 	// Injection-specific extension (used by attachment scanner only)
 	Severity int `yaml:"severity,omitempty" json:"severity,omitempty"`
 }
@@ -119,17 +121,28 @@ func CompilePIIPatterns(recognizers []RecognizerConfig) ([]PIIPattern, error) {
 		if !rec.isEnabled() {
 			continue
 		}
+
+		// Merge context words from all supported languages into a single slice.
+		var contextWords []string
+		for _, lang := range rec.SupportedLanguages {
+			contextWords = append(contextWords, lang.Context...)
+		}
+
 		for _, p := range rec.Patterns {
 			compiled, err := regexp.Compile(p.Regex)
 			if err != nil {
 				return nil, fmt.Errorf("compiling pattern %q in recognizer %q: %w", p.Name, rec.Name, err)
 			}
 			patterns = append(patterns, PIIPattern{
-				Name:        rec.Name,
-				Type:        entityToType(rec.SupportedEntity),
-				Pattern:     compiled,
-				Countries:   rec.Countries,
-				Sensitivity: rec.Sensitivity,
+				Name:         rec.Name,
+				Type:         entityToType(rec.SupportedEntity),
+				Pattern:      compiled,
+				Countries:    rec.Countries,
+				Sensitivity:  rec.Sensitivity,
+				Score:        p.Score,
+				ContextWords: contextWords,
+				ValidateLuhn: rec.ValidateLuhn,
+				ValidateIBAN: rec.ValidateIBAN,
 			})
 		}
 	}

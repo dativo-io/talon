@@ -284,7 +284,6 @@ func TestSovereigntyInvariant(t *testing.T) {
 		"claude-haiku-3-5-20241022", // → anthropic
 		"llama3.1:70b",              // → ollama
 		"mistral:7b",                // → ollama
-		"unknown-model",             // → openai (default)
 	}
 
 	// All providers registered (worst case for leakage: all are available)
@@ -433,25 +432,32 @@ func TestInferProvider(t *testing.T) {
 	tests := []struct {
 		model    string
 		wantProv string
+		wantErr  bool
 	}{
-		{"gpt-4o", "openai"},
-		{"gpt-4o-mini", "openai"},
-		{"gpt-3.5-turbo", "openai"},
-		{"claude-sonnet-4-20250514", "anthropic"},
-		{"claude-haiku-3-5-20241022", "anthropic"},
-		{"anthropic.claude-3-sonnet-20240229-v1:0", "bedrock"},
-		{"amazon.titan-text-premier-v1:0", "bedrock"},
-		{"llama3.1:70b", "ollama"},
-		{"mistral:7b", "ollama"},
-		{"gemma:2b", "ollama"},
-		{"phi3:mini", "ollama"},
-		{"unknown-model", "openai"}, // default
+		{"gpt-4o", "openai", false},
+		{"gpt-4o-mini", "openai", false},
+		{"gpt-3.5-turbo", "openai", false},
+		{"claude-sonnet-4-20250514", "anthropic", false},
+		{"claude-haiku-3-5-20241022", "anthropic", false},
+		{"anthropic.claude-3-sonnet-20240229-v1:0", "bedrock", false},
+		{"amazon.titan-text-premier-v1:0", "bedrock", false},
+		{"llama3.1:70b", "ollama", false},
+		{"mistral:7b", "ollama", false},
+		{"gemma:2b", "ollama", false},
+		{"phi3:mini", "ollama", false},
+		{"unknown-model", "", true}, // fail-closed
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
-			got := inferProvider(tt.model)
-			assert.Equal(t, tt.wantProv, got)
+			got, err := inferProvider(tt.model)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.ErrorIs(t, err, ErrUnknownModel)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.wantProv, got)
+			}
 		})
 	}
 }

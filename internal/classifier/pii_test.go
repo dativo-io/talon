@@ -50,7 +50,7 @@ func TestPIIDetection(t *testing.T) {
 		},
 		{
 			name:      "credit card mastercard",
-			text:      "Card: 5111111111111111",
+			text:      "Card: 5500000000000004",
 			wantPII:   true,
 			wantTier:  2,
 			wantTypes: []string{"credit_card"},
@@ -59,14 +59,14 @@ func TestPIIDetection(t *testing.T) {
 			name:      "german VAT",
 			text:      "VAT ID: DE123456789",
 			wantPII:   true,
-			wantTier:  2, // IBAN pattern also matches (DE + digits), sensitivity 3
+			wantTier:  1, // IBAN regex still matches but fails IBAN validation (wrong length/checksum), so only VAT (sensitivity 1) remains
 			wantTypes: []string{"vat_id"},
 		},
 		{
 			name:      "french VAT",
 			text:      "TVA: FR12345678901",
 			wantPII:   true,
-			wantTier:  2, // IBAN pattern also matches (FR + digits), sensitivity 3
+			wantTier:  1, // Same: IBAN validation gate filters out false-positive IBAN match, VAT sensitivity is now 1
 			wantTypes: []string{"vat_id"},
 		},
 		{
@@ -137,8 +137,40 @@ func TestPIIDetection(t *testing.T) {
 			wantTypes: []string{"email"},
 		},
 		{
-			name:      "passport number yields tier 2",
+			name:      "passport with context word yields tier 2",
 			text:      "Passport number: AB1234567",
+			wantPII:   true,
+			wantTier:  2,
+			wantTypes: []string{"passport"},
+		},
+		{
+			name:     "passport without context word is filtered",
+			text:     "Reference code: AB1234567",
+			wantPII:  false,
+			wantTier: 0,
+		},
+		{
+			name:     "invalid IBAN fails checksum gate",
+			text:     "IBAN DE00000000000000000000",
+			wantPII:  false,
+			wantTier: 0,
+		},
+		{
+			name:     "invalid credit card fails Luhn gate",
+			text:     "Card: 4111111111111112",
+			wantPII:  false,
+			wantTier: 0,
+		},
+		{
+			name:      "valid IBAN passes checksum gate",
+			text:      "IBAN: DE89370400440532013000",
+			wantPII:   true,
+			wantTier:  2,
+			wantTypes: []string{"iban"},
+		},
+		{
+			name:      "passport with German context word",
+			text:      "Reisepass Nr: AB1234567",
 			wantPII:   true,
 			wantTier:  2,
 			wantTypes: []string{"passport"},
@@ -178,7 +210,7 @@ func TestPIIRedaction(t *testing.T) {
 		{
 			name:         "redact email and IBAN",
 			text:         "Email user@example.com, IBAN DE89370400440532013000",
-			wantContains: []string{"[EMAIL]"},
+			wantContains: []string{"[EMAIL]", "[IBAN]"},
 			wantAbsent:   []string{"user@example.com", "DE89370400440532013000"},
 		},
 		{

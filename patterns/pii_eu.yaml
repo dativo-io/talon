@@ -43,6 +43,7 @@ recognizers:
         context: ["iban", "bank account", "account number"]
     sensitivity: 3
     countries: ["EU"]
+    validate_iban: true
 
   - name: "Credit Card"
     supported_entity: "CREDIT_CARD"
@@ -56,6 +57,7 @@ recognizers:
         context: ["credit card", "card number", "visa", "mastercard"]
     sensitivity: 3
     countries: ["Global"]
+    validate_luhn: true
 
   - name: "VAT Number"
     supported_entity: "EU_VAT_ID"
@@ -67,7 +69,7 @@ recognizers:
     supported_languages:
       - language: "en"
         context: ["vat", "tax id", "tax number", "ust"]
-    sensitivity: 2
+    sensitivity: 1
     countries: ["EU"]
 
   - name: "German SSN"
@@ -134,6 +136,12 @@ recognizers:
         score: 0.4
     supported_languages:
       - language: "en"
-        context: ["passport", "travel document"]
+        context: ["passport", "travel document", "id number", "identity"]
+      - language: "de"
+        context: ["reisepass", "ausweis"]
+      - language: "fr"
+        context: ["passeport"]
+      - language: "es"
+        context: ["pasaporte"]
     sensitivity: 3
     countries: ["EU"]

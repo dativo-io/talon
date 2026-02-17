@@ -17,6 +17,7 @@ import (
 type AnthropicProvider struct {
 	apiKey     string
 	httpClient *http.Client
+	baseURL    string
 }
 
 // NewAnthropicProvider creates an Anthropic provider with the given API key.
@@ -24,6 +25,7 @@ func NewAnthropicProvider(apiKey string) *AnthropicProvider {
 	return &AnthropicProvider{
 		apiKey:     apiKey,
 		httpClient: &http.Client{},
+		baseURL:    "https://api.anthropic.com",
 	}
 }
 
@@ -97,7 +99,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Respon
 		return nil, fmt.Errorf("marshalling anthropic request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("creating anthropic request: %w", err)
 	}

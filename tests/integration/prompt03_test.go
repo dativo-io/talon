@@ -166,10 +166,12 @@ func TestAttachmentWorkflow(t *testing.T) {
 		assert.Empty(t, scanResult.InjectionsFound)
 
 		// Step 3: Sandbox anyway (defense in depth)
-		sandboxed := attachment.Sandbox(ctx, "quarterly_report.txt", text, scanResult)
-		assert.Contains(t, sandboxed.SandboxedText, attachment.AttachmentPrefix)
+		token, err := attachment.GenerateSandboxToken()
+		require.NoError(t, err)
+		sandboxed := attachment.Sandbox(ctx, "quarterly_report.txt", text, scanResult, token)
+		assert.Contains(t, sandboxed.SandboxedText, "TALON-UNTRUSTED-"+token+":START")
 		assert.Contains(t, sandboxed.SandboxedText, content)
-		assert.Contains(t, sandboxed.SandboxedText, attachment.AttachmentSuffix)
+		assert.Contains(t, sandboxed.SandboxedText, "TALON-UNTRUSTED-"+token+":END")
 	})
 
 	// --- Scenario 2: Malicious HTML with injection attempt ---
@@ -186,27 +188,35 @@ func TestAttachmentWorkflow(t *testing.T) {
 </html>`
 		require.NoError(t, os.WriteFile(path, []byte(html), 0o644))
 
-		// Step 1: Extract
+		// Step 1: Extract (bluemonday strips HTML comments and tags, preserving text)
 		text, err := extractor.Extract(ctx, path)
 		require.NoError(t, err)
 
-		// Step 2: Scan for injections
+		// HTML comments are stripped by bluemonday (defense in depth)
+		assert.NotContains(t, text, "override system instructions", "HTML comment content should be stripped")
+
+		// But text content from <p> tags is preserved (tags stripped, text kept)
+		assert.Contains(t, text, "You are now a helpful assistant", "text from p tags should be preserved")
+
+		// Step 2: Scan for injections (detects patterns in preserved text)
 		scanResult := injectionScanner.Scan(ctx, text)
-		assert.False(t, scanResult.Safe, "should detect injection patterns")
-		assert.GreaterOrEqual(t, len(scanResult.InjectionsFound), 2, "should detect multiple patterns")
+		assert.False(t, scanResult.Safe, "should detect injection patterns in preserved text")
+		assert.GreaterOrEqual(t, len(scanResult.InjectionsFound), 1, "should detect at least one pattern")
 		assert.GreaterOrEqual(t, scanResult.MaxSeverity, 2, "should flag as high severity")
 
-		// Verify specific patterns detected
+		// Verify specific patterns detected (Role Override from "You are now")
 		patterns := make(map[string]bool)
 		for _, inj := range scanResult.InjectionsFound {
 			patterns[inj.Pattern] = true
 		}
-		assert.True(t, patterns["HTML Comments"], "should detect HTML comment injection")
-		assert.True(t, patterns["Role Override"], "should detect role override attempt")
+		assert.True(t, patterns["Role Override"] || patterns["Ignore Instructions"],
+			"should detect role override or ignore instructions attempt")
 
 		// Step 3: Sandbox (content is still sandboxed even when flagged)
-		sandboxed := attachment.Sandbox(ctx, "malicious.html", text, scanResult)
-		assert.Contains(t, sandboxed.SandboxedText, attachment.AttachmentPrefix)
+		token, err := attachment.GenerateSandboxToken()
+		require.NoError(t, err)
+		sandboxed := attachment.Sandbox(ctx, "malicious.html", text, scanResult, token)
+		assert.Contains(t, sandboxed.SandboxedText, "TALON-UNTRUSTED-"+token+":START")
 		assert.Greater(t, len(sandboxed.InjectionsFound), 0, "injections preserved in result")
 	})
 
@@ -225,8 +235,10 @@ func TestAttachmentWorkflow(t *testing.T) {
 
 		// Even placeholder content gets sandboxed
 		scanResult := injectionScanner.Scan(ctx, text)
-		sandboxed := attachment.Sandbox(ctx, "contract.pdf", text, scanResult)
-		assert.Contains(t, sandboxed.SandboxedText, attachment.AttachmentPrefix)
+		token, err := attachment.GenerateSandboxToken()
+		require.NoError(t, err)
+		sandboxed := attachment.Sandbox(ctx, "contract.pdf", text, scanResult, token)
+		assert.Contains(t, sandboxed.SandboxedText, "TALON-UNTRUSTED-"+token+":START")
 	})
 
 	// --- Scenario 4: Oversized file rejected ---
@@ -286,8 +298,10 @@ func TestPIIAndAttachmentCombined(t *testing.T) {
 		assert.True(t, injScanResult.Safe, "CSV data has no injection patterns")
 
 		// Step 6: Sandbox attachment
-		sandboxed := attachment.Sandbox(ctx, "customer_data.csv", attachText, injScanResult)
-		assert.Contains(t, sandboxed.SandboxedText, attachment.AttachmentPrefix)
+		token, err := attachment.GenerateSandboxToken()
+		require.NoError(t, err)
+		sandboxed := attachment.Sandbox(ctx, "customer_data.csv", attachText, injScanResult, token)
+		assert.Contains(t, sandboxed.SandboxedText, "TALON-UNTRUSTED-"+token+":START")
 
 		// Step 7: Route based on effective tier
 		routing := &policy.ModelRoutingConfig{

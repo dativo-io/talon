@@ -49,7 +49,11 @@ func (r *Router) Route(ctx context.Context, tier int) (Provider, string, error) 
 	}
 
 	model := tierConfig.Primary
-	providerName := inferProvider(model)
+	providerName, err := inferProvider(model)
+	if err != nil {
+		span.RecordError(err)
+		return nil, "", err
+	}
 
 	// Enforce bedrock_only: override inferred provider and reject non-bedrock fallbacks.
 	// This prevents confidential data from being routed outside the sovereignty boundary.
@@ -61,7 +65,11 @@ func (r *Router) Route(ctx context.Context, tier int) (Provider, string, error) 
 	if !ok {
 		// Try fallback model if available
 		if tierConfig.Fallback != "" {
-			fallbackProvider := inferProvider(tierConfig.Fallback)
+			fallbackProvider, fbErr := inferProvider(tierConfig.Fallback)
+			if fbErr != nil {
+				span.RecordError(fbErr)
+				return nil, "", fbErr
+			}
 			if tierConfig.BedrockOnly {
 				fallbackProvider = "bedrock"
 			}
@@ -114,20 +122,22 @@ func (r *Router) getTierConfig(tier int) (*policy.TierConfig, error) {
 }
 
 // inferProvider determines the provider name from the model identifier.
-func inferProvider(model string) string {
+// Returns ErrUnknownModel for unrecognized model prefixes (fail-closed).
+func inferProvider(model string) (string, error) {
 	switch {
 	case strings.HasPrefix(model, "gpt-"):
-		return "openai"
+		return "openai", nil
 	case strings.HasPrefix(model, "claude-"):
-		return "anthropic"
-	case strings.HasPrefix(model, "anthropic."):
-		return "bedrock"
-	case strings.HasPrefix(model, "amazon."):
-		return "bedrock"
-	case strings.HasPrefix(model, "llama"), strings.HasPrefix(model, "mistral"),
-		strings.HasPrefix(model, "gemma"), strings.HasPrefix(model, "phi"):
-		return "ollama"
+		return "anthropic", nil
+	case strings.HasPrefix(model, "anthropic."),
+		strings.HasPrefix(model, "amazon."):
+		return "bedrock", nil
+	case strings.HasPrefix(model, "llama"),
+		strings.HasPrefix(model, "mistral"),
+		strings.HasPrefix(model, "gemma"),
+		strings.HasPrefix(model, "phi"):
+		return "ollama", nil
 	default:
-		return "openai" // Default to OpenAI for unknown model names
+		return "", fmt.Errorf("%w: %s", ErrUnknownModel, model)
 	}
 }
