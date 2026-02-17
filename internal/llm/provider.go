@@ -15,6 +15,7 @@ const (
 var (
 	ErrProviderNotAvailable = errors.New("provider not available")
 	ErrNoRoutingConfig      = errors.New("no routing config for tier")
+	ErrNoPrimaryModel       = errors.New("tier has no primary model configured")
 	ErrInvalidTier          = errors.New("invalid tier")
 	ErrNotImplemented       = errors.New("provider not yet implemented")
 	ErrBedrockOnlyViolation = errors.New("tier requires bedrock_only but resolved to non-bedrock provider")

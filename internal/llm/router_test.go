@@ -85,6 +85,19 @@ func TestRouterRoute(t *testing.T) {
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, ErrInvalidTier)
 	})
+
+	t.Run("tier with empty primary returns routing error", func(t *testing.T) {
+		emptyPrimaryRouting := &policy.ModelRoutingConfig{
+			Tier0: &policy.TierConfig{
+				Primary:  "", // missing in policy
+				Location: "global",
+			},
+		}
+		r := NewRouter(emptyPrimaryRouting, providers)
+		_, _, err := r.Route(ctx, 0)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, ErrNoPrimaryModel)
+	})
 }
 
 func TestRouterFallback(t *testing.T) {

@@ -42,6 +42,12 @@ func (r *Router) Route(ctx context.Context, tier int) (Provider, string, error) 
 		return nil, "", err
 	}
 
+	if strings.TrimSpace(tierConfig.Primary) == "" {
+		err := fmt.Errorf("tier %d: %w", tier, ErrNoPrimaryModel)
+		span.RecordError(err)
+		return nil, "", err
+	}
+
 	model := tierConfig.Primary
 	providerName := inferProvider(model)
 
