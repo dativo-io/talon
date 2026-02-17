@@ -84,8 +84,9 @@ recognizers:
     supported_entity: "INJECTION_HIDDEN"
     enabled: true
     patterns:
+      # [\s\S]*? matches any character including newlines (Go has no DOTALL)
       - name: "hidden instructions in comments"
-        regex: '<!--.*?(ignore|override|system).*?-->'
+        regex: '<!--[\s\S]*?(ignore|override|system)[\s\S]*?-->'
         score: 0.8
     severity: 2
 
