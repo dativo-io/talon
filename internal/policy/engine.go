@@ -278,25 +278,32 @@ func (e *Engine) EvaluateDataClassification(ctx context.Context, input map[strin
 	return 0, nil
 }
 
-// evaluateDenyPolicy runs a single Rego policy that produces a set of deny messages.
+// evaluateDenyPolicy delegates to the shared evaluateDenyReasons helper.
 func (e *Engine) evaluateDenyPolicy(ctx context.Context, pkg string, input map[string]interface{}) ([]string, error) {
-	prepared, ok := e.prepared[pkg]
+	return evaluateDenyReasons(ctx, e.prepared, pkg, input)
+}
+
+// evaluateDenyReasons runs a single prepared Rego policy that produces a set
+// of deny reason strings. Both Engine and ProxyEngine delegate to this
+// shared helper so the OPA result extraction logic lives in one place.
+func evaluateDenyReasons(ctx context.Context, prepared map[string]rego.PreparedEvalQuery, pkg string, input map[string]interface{}) ([]string, error) {
+	pq, ok := prepared[pkg]
 	if !ok {
 		return nil, fmt.Errorf("policy package %s not prepared", pkg)
 	}
 
-	results, err := prepared.Eval(ctx, rego.EvalInput(input))
+	results, err := pq.Eval(ctx, rego.EvalInput(input))
 	if err != nil {
 		return nil, fmt.Errorf("evaluating %s: %w", pkg, err)
 	}
 
-	var reasons []string
 	if len(results) == 0 || len(results[0].Expressions) == 0 {
 		return nil, nil
 	}
 
 	// The result of querying "data.xxx.deny" is a set of strings.
-	// OPA returns it as []interface{}.
+	// OPA returns it as []interface{} or, occasionally, map[string]interface{}.
+	var reasons []string
 	exprVal := results[0].Expressions[0].Value
 	switch v := exprVal.(type) {
 	case []interface{}:
@@ -306,7 +313,6 @@ func (e *Engine) evaluateDenyPolicy(ctx context.Context, pkg string, input map[s
 			}
 		}
 	case map[string]interface{}:
-		// OPA sometimes returns sets as maps with string keys
 		for _, msg := range v {
 			if msgStr, ok := msg.(string); ok {
 				reasons = append(reasons, msgStr)

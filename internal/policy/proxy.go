@@ -193,13 +193,14 @@ func (pe *ProxyEngine) EvaluateProxyCompliance(ctx context.Context, input *Proxy
 }
 
 // evaluate runs a single proxy Rego policy and returns a Decision.
+// It delegates to the shared evaluateDenyReasons helper in engine.go.
 func (pe *ProxyEngine) evaluate(ctx context.Context, file string, input map[string]interface{}) (*Decision, error) {
 	decision := &Decision{
 		Allowed: true,
 		Action:  "allow",
 	}
 
-	reasons, err := pe.evaluateDenyPolicy(ctx, file, input)
+	reasons, err := evaluateDenyReasons(ctx, pe.prepared, file, input)
 	if err != nil {
 		return nil, err
 	}
@@ -211,42 +212,6 @@ func (pe *ProxyEngine) evaluate(ctx context.Context, file string, input map[stri
 	}
 
 	return decision, nil
-}
-
-// evaluateDenyPolicy runs a single Rego policy that produces a set of deny messages.
-func (pe *ProxyEngine) evaluateDenyPolicy(ctx context.Context, pkg string, input map[string]interface{}) ([]string, error) {
-	prepared, ok := pe.prepared[pkg]
-	if !ok {
-		return nil, fmt.Errorf("proxy policy package %s not prepared", pkg)
-	}
-
-	results, err := prepared.Eval(ctx, rego.EvalInput(input))
-	if err != nil {
-		return nil, fmt.Errorf("evaluating proxy %s: %w", pkg, err)
-	}
-
-	var reasons []string
-	if len(results) == 0 || len(results[0].Expressions) == 0 {
-		return nil, nil
-	}
-
-	exprVal := results[0].Expressions[0].Value
-	switch v := exprVal.(type) {
-	case []interface{}:
-		for _, msg := range v {
-			if msgStr, ok := msg.(string); ok {
-				reasons = append(reasons, msgStr)
-			}
-		}
-	case map[string]interface{}:
-		for _, msg := range v {
-			if msgStr, ok := msg.(string); ok {
-				reasons = append(reasons, msgStr)
-			}
-		}
-	}
-
-	return reasons, nil
 }
 
 // ---------------------------------------------------------------------------
