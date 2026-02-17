@@ -194,16 +194,20 @@ func TestExtractor(t *testing.T) {
 		assert.Equal(t, "a,b,c\n1,2,3", content)
 	})
 
-	t.Run("extract HTML strips scripts", func(t *testing.T) {
+	t.Run("extract HTML strips script and style blocks", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "page.html")
-		html := "<html><script>alert('xss')</script><body>Content</body></html>"
+		html := "<html><script>alert('xss')</script><style>body{color:red}</style><body>Content</body></html>"
 		require.NoError(t, os.WriteFile(path, []byte(html), 0o644))
 
 		content, err := extractor.Extract(ctx, path)
 		require.NoError(t, err)
-		assert.Contains(t, content, "SCRIPT_REMOVED")
 		assert.Contains(t, content, "Content")
+		assert.NotContains(t, content, "alert")
+		assert.NotContains(t, content, "<script")
+		assert.NotContains(t, content, "</script>")
+		assert.NotContains(t, content, "<style")
+		assert.NotContains(t, content, "body{color:red}")
 	})
 
 	t.Run("PDF returns placeholder", func(t *testing.T) {
