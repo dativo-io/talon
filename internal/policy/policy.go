@@ -177,10 +177,10 @@ type DataClassificationConfig struct {
 // CustomRecognizerConfig is the per-agent YAML representation of a custom PII
 // recognizer. Uses Presidio-compatible field names.
 type CustomRecognizerConfig struct {
-	Name            string                 `yaml:"name" json:"name"`
-	SupportedEntity string                 `yaml:"supported_entity" json:"supported_entity"`
-	Patterns        []CustomPatternConfig  `yaml:"patterns,omitempty" json:"patterns,omitempty"`
-	Sensitivity     int                    `yaml:"sensitivity,omitempty" json:"sensitivity,omitempty"`
+	Name            string                `yaml:"name" json:"name"`
+	SupportedEntity string                `yaml:"supported_entity" json:"supported_entity"`
+	Patterns        []CustomPatternConfig `yaml:"patterns,omitempty" json:"patterns,omitempty"`
+	Sensitivity     int                   `yaml:"sensitivity,omitempty" json:"sensitivity,omitempty"`
 }
 
 // CustomPatternConfig is a single regex pattern in a custom recognizer.

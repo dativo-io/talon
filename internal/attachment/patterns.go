@@ -31,7 +31,8 @@ func DefaultInjectionRecognizers() ([]classifier.RecognizerConfig, error) {
 func CompileInjectionPatterns(recognizers []classifier.RecognizerConfig) ([]InjectionPattern, error) {
 	var result []InjectionPattern
 
-	for _, rec := range recognizers {
+	for i := range recognizers {
+		rec := &recognizers[i]
 		if rec.Enabled != nil && !*rec.Enabled {
 			continue
 		}

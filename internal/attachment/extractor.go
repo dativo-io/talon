@@ -91,13 +91,11 @@ func stripTagBlocks(text, tagName string) string {
 		startContent := i + j + 1
 		if startContent >= len(lower) {
 			text = text[:i]
-			lower = strings.ToLower(text)
 			break
 		}
 		k := strings.Index(lower[startContent:], closeTag)
 		if k < 0 {
 			text = text[:i]
-			lower = strings.ToLower(text)
 			break
 		}
 		endBlock := startContent + k + len(closeTag)

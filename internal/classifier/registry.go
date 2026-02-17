@@ -16,13 +16,13 @@ type RecognizerFile struct {
 
 // RecognizerConfig mirrors Presidio's YAML recognizer schema with Talon extensions.
 type RecognizerConfig struct {
-	Name               string           `yaml:"name" json:"name"`
-	SupportedEntity    string           `yaml:"supported_entity" json:"supported_entity"`
-	Enabled            *bool            `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	Patterns           []PatternConfig  `yaml:"patterns,omitempty" json:"patterns,omitempty"`
+	Name               string            `yaml:"name" json:"name"`
+	SupportedEntity    string            `yaml:"supported_entity" json:"supported_entity"`
+	Enabled            *bool             `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Patterns           []PatternConfig   `yaml:"patterns,omitempty" json:"patterns,omitempty"`
 	SupportedLanguages []LanguageContext `yaml:"supported_languages,omitempty" json:"supported_languages,omitempty"`
-	DenyList           []string         `yaml:"deny_list,omitempty" json:"deny_list,omitempty"`
-	DenyListScore      float64          `yaml:"deny_list_score,omitempty" json:"deny_list_score,omitempty"`
+	DenyList           []string          `yaml:"deny_list,omitempty" json:"deny_list,omitempty"`
+	DenyListScore      float64           `yaml:"deny_list_score,omitempty" json:"deny_list_score,omitempty"`
 	// Talon extensions (safe to include — Presidio ignores unknown fields)
 	Sensitivity int      `yaml:"sensitivity,omitempty" json:"sensitivity,omitempty"`
 	Countries   []string `yaml:"countries,omitempty" json:"countries,omitempty"`
@@ -114,7 +114,8 @@ func toPtrSlice(configs []RecognizerConfig) []*RecognizerConfig {
 func CompilePIIPatterns(recognizers []RecognizerConfig) ([]PIIPattern, error) {
 	var patterns []PIIPattern
 
-	for _, rec := range recognizers {
+	for i := range recognizers {
+		rec := &recognizers[i]
 		if !rec.isEnabled() {
 			continue
 		}
@@ -148,9 +149,9 @@ func FilterByEntities(recognizers []RecognizerConfig, enabledEntities, disabledE
 			allowed[e] = true
 		}
 		var filtered []RecognizerConfig
-		for _, r := range result {
-			if allowed[r.SupportedEntity] {
-				filtered = append(filtered, r)
+		for i := range result {
+			if allowed[result[i].SupportedEntity] {
+				filtered = append(filtered, result[i])
 			}
 		}
 		result = filtered
@@ -162,9 +163,9 @@ func FilterByEntities(recognizers []RecognizerConfig, enabledEntities, disabledE
 			blocked[e] = true
 		}
 		var filtered []RecognizerConfig
-		for _, r := range result {
-			if !blocked[r.SupportedEntity] {
-				filtered = append(filtered, r)
+		for i := range result {
+			if !blocked[result[i].SupportedEntity] {
+				filtered = append(filtered, result[i])
 			}
 		}
 		result = filtered
