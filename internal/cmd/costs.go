@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -45,7 +47,6 @@ var costsCmd = &cobra.Command{
 		monthEnd := monthStart.AddDate(0, 1, 0)
 
 		if costsAgent != "" {
-			// Single agent: show daily and monthly total for that agent
 			daily, err := store.CostTotal(ctx, tenantID, costsAgent, dayStart, dayEnd)
 			if err != nil {
 				return fmt.Errorf("cost total daily: %w", err)
@@ -54,13 +55,10 @@ var costsCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("cost total monthly: %w", err)
 			}
-			fmt.Printf("Tenant: %s | Agent: %s\n", tenantID, costsAgent)
-			fmt.Printf("  Today:   €%.4f\n", daily)
-			fmt.Printf("  Month:   €%.4f\n", monthly)
+			renderCostReportSingleAgent(os.Stdout, tenantID, costsAgent, daily, monthly)
 			return nil
 		}
 
-		// All agents: aggregate by agent
 		byAgentDaily, err := store.CostByAgent(ctx, tenantID, dayStart, dayEnd)
 		if err != nil {
 			return fmt.Errorf("cost by agent (daily): %w", err)
@@ -69,30 +67,40 @@ var costsCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cost by agent (monthly): %w", err)
 		}
-
-		var dailyTotal, monthlyTotal float64
-		agents := make(map[string]bool)
-		for a := range byAgentDaily {
-			agents[a] = true
-		}
-		for a := range byAgentMonthly {
-			agents[a] = true
-		}
-
-		fmt.Printf("Tenant: %s\n", tenantID)
-		fmt.Printf("%-24s %12s %12s\n", "Agent", "Today", "Month")
-		fmt.Printf("%-24s %12s %12s\n", "----", "-----", "-----")
-		for agentID := range agents {
-			d := byAgentDaily[agentID]
-			m := byAgentMonthly[agentID]
-			dailyTotal += d
-			monthlyTotal += m
-			fmt.Printf("%-24s €%11.4f €%11.4f\n", agentID, d, m)
-		}
-		fmt.Printf("%-24s %12s %12s\n", "----", "-----", "-----")
-		fmt.Printf("%-24s €%11.4f €%11.4f\n", "Total", dailyTotal, monthlyTotal)
+		renderCostReportAllAgents(os.Stdout, tenantID, byAgentDaily, byAgentMonthly)
 		return nil
 	},
+}
+
+// renderCostReportSingleAgent writes single-agent cost output to w (testable).
+func renderCostReportSingleAgent(w io.Writer, tenantID, agentID string, daily, monthly float64) {
+	fmt.Fprintf(w, "Tenant: %s | Agent: %s\n", tenantID, agentID)
+	fmt.Fprintf(w, "  Today:   €%.4f\n", daily)
+	fmt.Fprintf(w, "  Month:   €%.4f\n", monthly)
+}
+
+// renderCostReportAllAgents writes per-agent cost table to w (testable).
+func renderCostReportAllAgents(w io.Writer, tenantID string, byAgentDaily, byAgentMonthly map[string]float64) {
+	var dailyTotal, monthlyTotal float64
+	agents := make(map[string]bool)
+	for a := range byAgentDaily {
+		agents[a] = true
+	}
+	for a := range byAgentMonthly {
+		agents[a] = true
+	}
+	fmt.Fprintf(w, "Tenant: %s\n", tenantID)
+	fmt.Fprintf(w, "%-24s %12s %12s\n", "Agent", "Today", "Month")
+	fmt.Fprintf(w, "%-24s %12s %12s\n", "----", "-----", "-----")
+	for agentID := range agents {
+		d := byAgentDaily[agentID]
+		m := byAgentMonthly[agentID]
+		dailyTotal += d
+		monthlyTotal += m
+		fmt.Fprintf(w, "%-24s €%11.4f €%11.4f\n", agentID, d, m)
+	}
+	fmt.Fprintf(w, "%-24s %12s %12s\n", "----", "-----", "-----")
+	fmt.Fprintf(w, "%-24s €%11.4f €%11.4f\n", "Total", dailyTotal, monthlyTotal)
 }
 
 func init() {

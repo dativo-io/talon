@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -76,31 +78,7 @@ func auditList(cmd *cobra.Command, args []string) error {
 		fmt.Println("No evidence records found.")
 		return nil
 	}
-
-	fmt.Printf("Evidence Records (showing %d):\n\n", len(index))
-	for i := range index {
-		entry := &index[i]
-		status := "\u2713"
-		if !entry.Allowed {
-			status = "\u2717"
-		}
-		errorMark := ""
-		if entry.HasError {
-			errorMark = " [ERROR]"
-		}
-		fmt.Printf("  %s %s | %s | %s/%s | %s | \u20ac%.4f | %dms%s\n",
-			status,
-			entry.ID,
-			entry.Timestamp.Format("2006-01-02 15:04:05"),
-			entry.TenantID,
-			entry.AgentID,
-			entry.ModelUsed,
-			entry.CostEUR,
-			entry.DurationMS,
-			errorMark,
-		)
-	}
-
+	renderAuditList(os.Stdout, index)
 	return nil
 }
 
@@ -120,13 +98,45 @@ func auditVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("verifying evidence: %w", err)
 	}
-
-	if valid {
-		fmt.Printf("\u2713 Evidence %s: signature VALID (HMAC-SHA256 intact)\n", evidenceID)
-	} else {
-		fmt.Printf("\u2717 Evidence %s: signature INVALID (possible tampering)\n", evidenceID)
+	renderVerifyResult(os.Stdout, evidenceID, valid)
+	if !valid {
 		return fmt.Errorf("signature verification failed for %s", evidenceID)
 	}
-
 	return nil
+}
+
+// renderAuditList writes evidence index lines to w (testable).
+func renderAuditList(w io.Writer, index []evidence.Index) {
+	fmt.Fprintf(w, "Evidence Records (showing %d):\n\n", len(index))
+	for i := range index {
+		entry := &index[i]
+		status := "\u2713"
+		if !entry.Allowed {
+			status = "\u2717"
+		}
+		errorMark := ""
+		if entry.HasError {
+			errorMark = " [ERROR]"
+		}
+		fmt.Fprintf(w, "  %s %s | %s | %s/%s | %s | \u20ac%.4f | %dms%s\n",
+			status,
+			entry.ID,
+			entry.Timestamp.Format("2006-01-02 15:04:05"),
+			entry.TenantID,
+			entry.AgentID,
+			entry.ModelUsed,
+			entry.CostEUR,
+			entry.DurationMS,
+			errorMark,
+		)
+	}
+}
+
+// renderVerifyResult writes verify outcome to w (testable).
+func renderVerifyResult(w io.Writer, evidenceID string, valid bool) {
+	if valid {
+		fmt.Fprintf(w, "\u2713 Evidence %s: signature VALID (HMAC-SHA256 intact)\n", evidenceID)
+	} else {
+		fmt.Fprintf(w, "\u2717 Evidence %s: signature INVALID (possible tampering)\n", evidenceID)
+	}
 }

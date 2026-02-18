@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -526,4 +527,55 @@ func TestGenerateWithDegradation(t *testing.T) {
 	assert.True(t, retrieved.Execution.Degraded)
 	assert.Equal(t, "gpt-4o", retrieved.Execution.OriginalModel)
 	assert.Equal(t, "gpt-4o-mini", retrieved.Execution.ModelUsed)
+}
+
+func BenchmarkEvidenceStore(b *testing.B) {
+	dir := b.TempDir()
+	store, err := NewStore(filepath.Join(dir, "evidence.db"), testSigningKey)
+	require.NoError(b, err)
+	defer store.Close()
+	gen := NewGenerator(store)
+	ctx := context.Background()
+	params := GenerateParams{
+		CorrelationID:  "corr_bench",
+		TenantID:       "acme",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		CostEUR:        0.001,
+		InputPrompt:    "bench",
+		OutputResponse: "bench",
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = gen.Generate(ctx, params)
+	}
+}
+
+func BenchmarkCostTotal(b *testing.B) {
+	dir := b.TempDir()
+	store, err := NewStore(filepath.Join(dir, "evidence.db"), testSigningKey)
+	require.NoError(b, err)
+	defer store.Close()
+	gen := NewGenerator(store)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+	for i := 0; i < 100; i++ {
+		_, _ = gen.Generate(ctx, GenerateParams{
+			CorrelationID:  fmt.Sprintf("corr_%d", i),
+			TenantID:       "acme",
+			AgentID:        "agent",
+			InvocationType: "manual",
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+			CostEUR:        0.001 * float64(i+1),
+			InputPrompt:    "bench",
+			OutputResponse: "bench",
+		})
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = store.CostTotal(ctx, "acme", "", dayStart, dayEnd)
+	}
 }

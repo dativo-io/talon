@@ -24,6 +24,15 @@ func NewOpenAIProvider(apiKey string) *OpenAIProvider {
 	}
 }
 
+// NewOpenAIProviderWithBaseURL creates an OpenAI provider with a custom base URL
+// (e.g. for e2e tests pointing at a mock server). baseURL should be the scheme+host
+// without path; the client appends /v1 as needed.
+func NewOpenAIProviderWithBaseURL(apiKey, baseURL string) *OpenAIProvider {
+	config := openai.DefaultConfig(apiKey)
+	config.BaseURL = baseURL + "/v1"
+	return &OpenAIProvider{client: openai.NewClientWithConfig(config)}
+}
+
 // newOpenAIProviderWithClient creates an OpenAI provider with a pre-configured
 // client. Used in tests to inject httptest-based clients.
 func newOpenAIProviderWithClient(client *openai.Client) *OpenAIProvider {

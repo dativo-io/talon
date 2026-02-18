@@ -31,18 +31,23 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      # All test tiers: unit (internal + cmd), integration (tests/integration), e2e (tests/e2e)
       - name: Run unit tests
         run: go test -race -coverprofile=coverage-${{ matrix.go-version }}.out ./internal/... ./cmd/...
 
       - name: Run integration tests
-        run: go test -race -tags=integration ./tests/...
+        run: go test -race -tags=integration ./tests/integration/...
+
+      - name: Run e2e tests
+        run: go test -tags=e2e -timeout 5m ./tests/e2e/...
 
       - name: Check coverage
         run: |
           COVERAGE=$(go tool cover -func=coverage-${{ matrix.go-version }}.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
           if (( $(echo "$COVERAGE < 70" | bc -l) )); then
-            echo "::warning::Coverage ${COVERAGE}% is below 70% target"
+            echo "::error::Coverage ${COVERAGE}% is below 70% target"
+            exit 1
           fi
 
       - name: Upload coverage

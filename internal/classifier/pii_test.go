@@ -503,3 +503,28 @@ func TestNewScannerBackwardCompatibility(t *testing.T) {
 	assert.True(t, types["email"])
 	assert.True(t, types["iban"])
 }
+
+// FuzzPIIScan runs the PII scanner on fuzz input to catch panics and edge cases.
+func FuzzPIIScan(f *testing.F) {
+	scanner := MustNewScanner()
+	ctx := context.Background()
+	f.Add([]byte("hello"))
+	f.Add([]byte("user@example.com"))
+	f.Add([]byte("DE89370400440532013000"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 1<<20 {
+			t.Skip("input too large")
+		}
+		_ = scanner.Scan(ctx, string(data))
+	})
+}
+
+func BenchmarkPIIScan(b *testing.B) {
+	scanner := MustNewScanner()
+	ctx := context.Background()
+	text := "Contact hans.mueller@acme.de about IBAN DE89370400440532013000 and card 4111111111111111"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = scanner.Scan(ctx, text)
+	}
+}

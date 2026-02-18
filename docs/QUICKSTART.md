@@ -164,6 +164,7 @@ talon secrets set openai-api-key "sk-acme-..." # per-tenant key in vault
 | `TALON_MAX_ATTACHMENT_MB` | Max attachment size | `10` |
 | `TALON_OLLAMA_BASE_URL` | Ollama endpoint | `http://localhost:11434` |
 | `OPENAI_API_KEY` | OpenAI key (dev fallback) | — |
+| `OPENAI_BASE_URL` | OpenAI-compatible API base URL (e.g. mock server for tests) | — |
 | `ANTHROPIC_API_KEY` | Anthropic key (dev fallback) | — |
 | `AWS_REGION` | Bedrock region | — |
 

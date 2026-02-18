@@ -167,7 +167,11 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		log.Debug().Msg("OPENAI_API_KEY set — using as operator fallback (use vault for production)")
-		providers["openai"] = llm.NewOpenAIProvider(key)
+		if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
+			providers["openai"] = llm.NewOpenAIProviderWithBaseURL(key, baseURL)
+		} else {
+			providers["openai"] = llm.NewOpenAIProvider(key)
+		}
 	}
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
 		log.Debug().Msg("ANTHROPIC_API_KEY set — using as operator fallback (use vault for production)")
