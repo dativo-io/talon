@@ -18,17 +18,18 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "e2e TestMain: mkdir temp: %v\n", err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(dir)
-
 	binaryPath = filepath.Join(dir, "talon")
 	cmd := exec.Command("go", "build", "-o", binaryPath, "../../cmd/talon")
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e TestMain: build: %v\n%s\n", err, out)
+		os.RemoveAll(dir)
 		os.Exit(1)
 	}
 
-	os.Exit(m.Run())
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 // RunTalon runs the talon binary with the given args. dataDir is used as TALON_DATA_DIR;
