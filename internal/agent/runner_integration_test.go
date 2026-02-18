@@ -2,13 +2,16 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
@@ -465,4 +468,80 @@ func TestRunner_NoRouteAvailable(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "routing LLM")
+}
+
+// TestRunner_PlanReviewGate_ReturnsPlanPending proves Step 4.5 (EU AI Act Art. 14) is wired:
+// when policy has human_oversight: "always" and runner has PlanReviewStore, Run returns
+// PlanPending and does not call the LLM.
+func TestRunner_PlanReviewGate_ReturnsPlanPending(t *testing.T) {
+	dir := t.TempDir()
+	policyContent := `
+agent:
+  name: "review-agent"
+  version: "1.0.0"
+compliance:
+  human_oversight: "always"
+policies:
+  cost_limits:
+    per_request: 100.0
+    daily: 1000.0
+    monthly: 10000.0
+  model_routing:
+    tier_0:
+      primary: "gpt-4"
+    tier_1:
+      primary: "gpt-4"
+    tier_2:
+      primary: "gpt-4"
+`
+	policyPath := filepath.Join(dir, "review-agent.talon.yaml")
+	require.NoError(t, os.WriteFile(policyPath, []byte(policyContent), 0o644))
+
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+	planStore, err := NewPlanReviewStore(db)
+	require.NoError(t, err)
+
+	providers := map[string]llm.Provider{
+		"openai": &mockProvider{name: "openai", content: "should not be called"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+	storeDir := t.TempDir()
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(storeDir, "secrets.db"), testEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(storeDir, "evidence.db"), testSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { evidenceStore.Close() })
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:    dir,
+		Classifier:   classifier.MustNewScanner(),
+		AttScanner:   attachment.MustNewScanner(),
+		Extractor:    attachment.NewExtractor(10),
+		Router:       llm.NewRouter(routingCfg, providers),
+		Secrets:      secretsStore,
+		Evidence:     evidenceStore,
+		PlanReview:   planStore,
+		ToolRegistry: tools.NewRegistry(),
+	})
+
+	resp, err := runner.Run(context.Background(), &RunRequest{
+		TenantID:       "acme",
+		AgentName:      "review-agent",
+		Prompt:         "Hello",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+
+	// Gate triggered: execution stopped for human review, no LLM call
+	assert.True(t, resp.PolicyAllow)
+	assert.NotEmpty(t, resp.PlanPending, "PlanPending must be set when plan review gate triggers")
+	assert.Empty(t, resp.Response, "LLM must not be called when gated")
 }
