@@ -179,7 +179,7 @@ recognizers:
     enabled: true
     patterns:
       - name: "NIR Securite sociale"
-        regex: '\b[12]\d{2}(0[1-9]|1[0-2])\d{2}[0-9A-B]\d{3}\d{3}\d{2}\b'
+        regex: '\b[12]\d{2}(0[1-9]|1[0-2])(\d{2}|2[AB])\d{3}\d{3}\d{2}\b'
         score: 0.75
     supported_languages:
       - language: "fr"
