@@ -13,6 +13,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -45,6 +46,7 @@ type Runner struct {
 	evidence     *evidence.Generator
 	planReview   *PlanReviewStore
 	toolRegistry *tools.ToolRegistry
+	hooks        *HookRegistry
 }
 
 // RunnerConfig holds the dependencies for constructing a Runner.
@@ -58,6 +60,7 @@ type RunnerConfig struct {
 	Evidence     *evidence.Store
 	PlanReview   *PlanReviewStore
 	ToolRegistry *tools.ToolRegistry
+	Hooks        *HookRegistry // optional; nil = no hooks
 }
 
 // NewRunner creates an agent runner with the given dependencies.
@@ -72,6 +75,7 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		evidence:     evidence.NewGenerator(cfg.Evidence),
 		planReview:   cfg.PlanReview,
 		toolRegistry: cfg.ToolRegistry,
+		hooks:        cfg.Hooks,
 	}
 }
 
@@ -113,6 +117,8 @@ type RunResponse struct {
 //  7. Call LLM provider
 //  8. Classify output
 //  9. Generate evidence
+//
+//nolint:gocyclo // orchestration flow is inherently branched; splitting would obscure the pipeline
 func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error) {
 	startTime := time.Now()
 	correlationID := "corr_" + uuid.New().String()[:12]
@@ -188,56 +194,90 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 
 	complianceInfo := complianceFromPolicy(pol)
 
+	// Hook: post-policy (fires for both allow and deny)
+	if resp, err := r.checkHook(ctx, HookPostPolicy, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
+		"decision": boolToDecision(decision.Allowed),
+		"action":   decision.Action,
+		"tier":     inputClass.Tier,
+	}); resp != nil || err != nil {
+		return resp, err
+	}
+
 	if !decision.Allowed {
-		span.SetStatus(codes.Error, "policy denied")
-		log.Warn().
-			Str("correlation_id", correlationID).
-			Str("deny_reason", decision.Action).
-			Msg("policy_denied")
-
-		_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
-			CorrelationID:  correlationID,
-			TenantID:       req.TenantID,
-			AgentID:        req.AgentName,
-			InvocationType: req.InvocationType,
-			PolicyDecision: evidence.PolicyDecision{
-				Allowed:       false,
-				Action:        decision.Action,
-				Reasons:       decision.Reasons,
-				PolicyVersion: pol.VersionTag,
-			},
-			Classification: evidence.Classification{
-				InputTier:   inputClass.Tier,
-				PIIDetected: inputEntityNames,
-			},
-			AttachmentScan: attachmentScan,
-			InputPrompt:    req.Prompt,
-			Compliance:     complianceInfo,
-		})
-
-		return &RunResponse{
-			PolicyAllow: false,
-			DenyReason:  decision.Action,
-		}, nil
+		r.recordPolicyDenial(ctx, span, correlationID, req, pol, decision, inputClass.Tier, inputEntityNames, attachmentScan, complianceInfo)
+		return &RunResponse{PolicyAllow: false, DenyReason: decision.Action}, nil
 	}
 
 	if req.DryRun {
-		return &RunResponse{
-			PolicyAllow: true,
-		}, nil
+		return &RunResponse{PolicyAllow: true}, nil
 	}
 
 	// Step 4.5: Plan Review Gate (EU AI Act Art. 14)
+	if resp, err := r.checkHook(ctx, HookPrePlanReview, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
+		"tier": inputClass.Tier,
+	}); resp != nil || err != nil {
+		return resp, err
+	}
+
 	resp, ok, err := r.maybeGateForPlanReview(ctx, pol, req, correlationID, inputClass.Tier, processedPrompt)
 	if err != nil {
 		return nil, err
 	}
 	if ok {
+		_, _ = r.fireHook(ctx, HookPostPlanReview, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
+			"plan_id": resp.PlanPending,
+			"gated":   true,
+		})
 		return resp, nil
 	}
 
+	return r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol,
+		inputClass.Tier, inputEntityNames, processedPrompt, attachmentScan, complianceInfo)
+}
+
+// checkHook fires a hook and returns a deny RunResponse if the hook aborts the pipeline.
+// Returns (nil, nil) when the hook allows continuation.
+func (r *Runner) checkHook(ctx context.Context, point HookPoint, tenantID, agentID, correlationID string, payload interface{}) (*RunResponse, error) {
+	cont, err := r.fireHook(ctx, point, tenantID, agentID, correlationID, payload)
+	if err != nil {
+		return nil, fmt.Errorf("%s hook: %w", point, err)
+	}
+	if !cont {
+		return &RunResponse{PolicyAllow: false, DenyReason: "blocked by " + string(point) + " hook"}, nil
+	}
+	return nil, nil
+}
+
+// recordPolicyDenial logs and records evidence for a policy-denied request.
+func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correlationID string, req *RunRequest, pol *policy.Policy, decision *policy.Decision, tier int, piiNames []string, attScan *evidence.AttachmentScan, compliance evidence.Compliance) {
+	span.SetStatus(codes.Error, "policy denied")
+	log.Warn().
+		Str("correlation_id", correlationID).
+		Str("deny_reason", decision.Action).
+		Msg("policy_denied")
+
+	_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+		CorrelationID:  correlationID,
+		TenantID:       req.TenantID,
+		AgentID:        req.AgentName,
+		InvocationType: req.InvocationType,
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed:       false,
+			Action:        decision.Action,
+			Reasons:       decision.Reasons,
+			PolicyVersion: pol.VersionTag,
+		},
+		Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
+		AttachmentScan: attScan,
+		InputPrompt:    req.Prompt,
+		Compliance:     compliance,
+	})
+}
+
+// executeLLMPipeline runs steps 5-9: route provider, call LLM, classify output, generate evidence.
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance) (*RunResponse, error) {
 	// Step 5+6: Route LLM and resolve tenant-scoped API key
-	provider, model, secretsAccessed, err := r.resolveProvider(ctx, req, inputClass.Tier)
+	provider, model, secretsAccessed, err := r.resolveProvider(ctx, req, tier)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
@@ -247,11 +287,19 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		attribute.String("gen_ai.request.model", model),
 	)
 
+	// Hook: pre-LLM
+	if resp, err := r.checkHook(ctx, HookPreLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
+		"model":         model,
+		"cost_estimate": 0.01,
+	}); resp != nil || err != nil {
+		return resp, err
+	}
+
 	// Step 7: Call LLM
 	llmReq := &llm.Request{
 		Model: model,
 		Messages: []llm.Message{
-			{Role: "user", Content: processedPrompt},
+			{Role: "user", Content: prompt},
 		},
 		Temperature: 0.7,
 		MaxTokens:   2000,
@@ -260,59 +308,53 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	llmResp, err := provider.Generate(ctx, llmReq)
 	if err != nil {
 		span.RecordError(err)
-
 		duration := time.Since(startTime)
 		_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
-			CorrelationID:  correlationID,
-			TenantID:       req.TenantID,
-			AgentID:        req.AgentName,
-			InvocationType: req.InvocationType,
-			PolicyDecision: evidence.PolicyDecision{
-				Allowed:       true,
-				Action:        "allow",
-				PolicyVersion: pol.VersionTag,
-			},
-			Classification: evidence.Classification{
-				InputTier:   inputClass.Tier,
-				PIIDetected: inputEntityNames,
-			},
-			AttachmentScan:  attachmentScan,
+			CorrelationID:   correlationID,
+			TenantID:        req.TenantID,
+			AgentID:         req.AgentName,
+			InvocationType:  req.InvocationType,
+			PolicyDecision:  evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: pol.VersionTag},
+			Classification:  evidence.Classification{InputTier: tier, PIIDetected: piiNames},
+			AttachmentScan:  attScan,
 			ModelUsed:       model,
 			DurationMS:      duration.Milliseconds(),
 			Error:           err.Error(),
 			SecretsAccessed: secretsAccessed,
 			InputPrompt:     req.Prompt,
-			Compliance:      complianceInfo,
+			Compliance:      compliance,
 		})
-
 		return nil, fmt.Errorf("calling LLM: %w", err)
 	}
+
+	// Hook: post-LLM
+	costEUR := provider.EstimateCost(model, llmResp.InputTokens, llmResp.OutputTokens)
+	_, _ = r.fireHook(ctx, HookPostLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
+		"model":         model,
+		"cost_estimate": costEUR,
+		"input_tokens":  llmResp.InputTokens,
+		"output_tokens": llmResp.OutputTokens,
+	})
 
 	// Step 8: Classify output
 	outputClass := r.classifier.Scan(ctx, llmResp.Content)
 	outputEntityNames := entityNames(outputClass.Entities)
 
 	// Step 9: Generate evidence
-	costEUR := provider.EstimateCost(model, llmResp.InputTokens, llmResp.OutputTokens)
 	duration := time.Since(startTime)
-
 	ev, err := r.evidence.Generate(ctx, evidence.GenerateParams{
 		CorrelationID:  correlationID,
 		TenantID:       req.TenantID,
 		AgentID:        req.AgentName,
 		InvocationType: req.InvocationType,
-		PolicyDecision: evidence.PolicyDecision{
-			Allowed:       true,
-			Action:        "allow",
-			PolicyVersion: pol.VersionTag,
-		},
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: pol.VersionTag},
 		Classification: evidence.Classification{
-			InputTier:   inputClass.Tier,
+			InputTier:   tier,
 			OutputTier:  outputClass.Tier,
-			PIIDetected: append(inputEntityNames, outputEntityNames...),
+			PIIDetected: append(piiNames, outputEntityNames...),
 			PIIRedacted: false,
 		},
-		AttachmentScan:  attachmentScan,
+		AttachmentScan:  attScan,
 		ModelUsed:       model,
 		CostEUR:         costEUR,
 		Tokens:          evidence.TokenUsage{Input: llmResp.InputTokens, Output: llmResp.OutputTokens},
@@ -320,7 +362,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		SecretsAccessed: secretsAccessed,
 		InputPrompt:     req.Prompt,
 		OutputResponse:  llmResp.Content,
-		Compliance:      complianceInfo,
+		Compliance:      compliance,
 	})
 	evidenceID := ""
 	if err != nil {
@@ -328,6 +370,12 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	} else {
 		evidenceID = ev.ID
 	}
+
+	// Hook: post-evidence
+	_, _ = r.fireHook(ctx, HookPostEvidence, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
+		"evidence_id": evidenceID,
+		"cost_eur":    costEUR,
+	})
 
 	log.Info().
 		Str("correlation_id", correlationID).
@@ -474,6 +522,36 @@ func (r *Runner) maybeGateForPlanReview(ctx context.Context, pol *policy.Policy,
 		return nil, false, fmt.Errorf("saving plan for review: %w", err)
 	}
 	return &RunResponse{PolicyAllow: true, PlanPending: plan.ID}, true, nil
+}
+
+// fireHook is a nil-safe helper that fires a hook at the given point.
+// Returns (continue=true) when hooks is nil or no hook aborts the pipeline.
+func (r *Runner) fireHook(ctx context.Context, point HookPoint, tenantID, agentID, correlationID string, payload interface{}) (bool, error) {
+	if r.hooks == nil {
+		return true, nil
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return true, nil
+	}
+	result, err := r.hooks.Execute(ctx, point, &HookData{
+		TenantID:      tenantID,
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+		Stage:         point,
+		Payload:       raw,
+	})
+	if err != nil {
+		return true, err
+	}
+	return result.Continue, nil
+}
+
+func boolToDecision(allowed bool) string {
+	if allowed {
+		return "allow"
+	}
+	return "deny"
 }
 
 // planReviewConfigFromPolicy converts policy-level plan review config to agent type.

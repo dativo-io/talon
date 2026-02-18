@@ -49,7 +49,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Minute)
 	defer cancel()
 
-	_, span := tracer.Start(ctx, "cmd.run")
+	ctx, span := tracer.Start(ctx, "cmd.run")
 	defer span.End()
 
 	prompt := args[0]
@@ -139,6 +139,12 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	if runDryRun {
 		fmt.Printf("\u2713 Policy check: ALLOWED (dry run, no LLM call)\n")
+		return nil
+	}
+
+	if resp.PlanPending != "" {
+		fmt.Printf("\u2713 Policy check: ALLOWED\n")
+		fmt.Printf("\u2713 Plan pending human review: %s\n", resp.PlanPending)
 		return nil
 	}
 

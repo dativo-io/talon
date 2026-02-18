@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -544,4 +546,209 @@ policies:
 	assert.True(t, resp.PolicyAllow)
 	assert.NotEmpty(t, resp.PlanPending, "PlanPending must be set when plan review gate triggers")
 	assert.Empty(t, resp.Response, "LLM must not be called when gated")
+}
+
+// recordingHook captures every invocation for test assertions.
+type recordingHook struct {
+	point   HookPoint
+	mu      sync.Mutex
+	calls   []recordedCall
+	abortAt int // abort after N calls (-1 = never)
+}
+
+type recordedCall struct {
+	Stage   HookPoint
+	Payload json.RawMessage
+}
+
+func newRecordingHook(point HookPoint) *recordingHook {
+	return &recordingHook{point: point, abortAt: -1}
+}
+
+func (h *recordingHook) Point() HookPoint { return h.point }
+func (h *recordingHook) Execute(_ context.Context, data *HookData) (*HookResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls = append(h.calls, recordedCall{Stage: data.Stage, Payload: data.Payload})
+	if h.abortAt >= 0 && len(h.calls) > h.abortAt {
+		return &HookResult{Continue: false}, nil
+	}
+	return &HookResult{Continue: true}, nil
+}
+
+func (h *recordingHook) callCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.calls)
+}
+
+func (h *recordingHook) lastPayload() map[string]interface{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.calls) == 0 {
+		return nil
+	}
+	var m map[string]interface{}
+	_ = json.Unmarshal(h.calls[len(h.calls)-1].Payload, &m)
+	return m
+}
+
+// TestRunner_HooksFireAtPipelineStages verifies that hooks registered at key
+// pipeline points (post-policy, pre-llm, post-llm, post-evidence) receive
+// stage-appropriate JSON payloads during a successful run.
+func TestRunner_HooksFireAtPipelineStages(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeTestPolicy(t, dir, "hooks-agent")
+
+	providers := map[string]llm.Provider{
+		"openai": &mockProvider{name: "openai", content: "hooked response"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	postPolicy := newRecordingHook(HookPostPolicy)
+	preLLM := newRecordingHook(HookPreLLM)
+	postLLM := newRecordingHook(HookPostLLM)
+	postEvidence := newRecordingHook(HookPostEvidence)
+
+	registry := NewHookRegistry()
+	registry.Register(postPolicy)
+	registry.Register(preLLM)
+	registry.Register(postLLM)
+	registry.Register(postEvidence)
+
+	storeDir := t.TempDir()
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(storeDir, "secrets.db"), testEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(storeDir, "evidence.db"), testSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { evidenceStore.Close() })
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:  dir,
+		Classifier: classifier.MustNewScanner(),
+		AttScanner: attachment.MustNewScanner(),
+		Extractor:  attachment.NewExtractor(10),
+		Router:     llm.NewRouter(routingCfg, providers),
+		Secrets:    secretsStore,
+		Evidence:   evidenceStore,
+		Hooks:      registry,
+	})
+
+	resp, err := runner.Run(context.Background(), &RunRequest{
+		TenantID:       "acme",
+		AgentName:      "hooks-agent",
+		Prompt:         "test hooks",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "hooked response", resp.Response)
+
+	// Verify each hook fired exactly once with stage-appropriate payloads.
+	assert.Equal(t, 1, postPolicy.callCount(), "HookPostPolicy should fire once")
+	pp := postPolicy.lastPayload()
+	assert.Equal(t, "allow", pp["decision"])
+	assert.NotNil(t, pp["tier"])
+
+	assert.Equal(t, 1, preLLM.callCount(), "HookPreLLM should fire once")
+	pl := preLLM.lastPayload()
+	assert.NotEmpty(t, pl["model"])
+
+	assert.Equal(t, 1, postLLM.callCount(), "HookPostLLM should fire once")
+	plPost := postLLM.lastPayload()
+	assert.NotEmpty(t, plPost["model"])
+	assert.NotNil(t, plPost["input_tokens"])
+	assert.NotNil(t, plPost["output_tokens"])
+
+	assert.Equal(t, 1, postEvidence.callCount(), "HookPostEvidence should fire once")
+	pe := postEvidence.lastPayload()
+	assert.NotEmpty(t, pe["evidence_id"])
+	assert.NotNil(t, pe["cost_eur"])
+}
+
+// TestRunner_HookAbortBlocksPipeline verifies that a hook returning
+// Continue=false at HookPreLLM prevents the LLM call.
+func TestRunner_HookAbortBlocksPipeline(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeTestPolicy(t, dir, "abort-agent")
+
+	providers := map[string]llm.Provider{
+		"openai": &mockProvider{name: "openai", content: "should not reach LLM"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	abortHook := &recordingHook{point: HookPreLLM, abortAt: 0}
+
+	registry := NewHookRegistry()
+	registry.Register(abortHook)
+
+	storeDir := t.TempDir()
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(storeDir, "secrets.db"), testEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(storeDir, "evidence.db"), testSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { evidenceStore.Close() })
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:  dir,
+		Classifier: classifier.MustNewScanner(),
+		AttScanner: attachment.MustNewScanner(),
+		Extractor:  attachment.NewExtractor(10),
+		Router:     llm.NewRouter(routingCfg, providers),
+		Secrets:    secretsStore,
+		Evidence:   evidenceStore,
+		Hooks:      registry,
+	})
+
+	resp, err := runner.Run(context.Background(), &RunRequest{
+		TenantID:       "acme",
+		AgentName:      "abort-agent",
+		Prompt:         "test abort",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.PolicyAllow)
+	assert.Contains(t, resp.DenyReason, "blocked by pre_llm hook")
+	assert.Empty(t, resp.Response, "LLM should not be called when hook aborts")
+}
+
+// TestRunner_NilHooksDoesNotPanic verifies that a Runner with no hooks
+// (nil HookRegistry) works without panics — backward compatibility.
+func TestRunner_NilHooksDoesNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeTestPolicy(t, dir, "nohooks-agent")
+
+	providers := map[string]llm.Provider{
+		"openai": &mockProvider{name: "openai", content: "no hooks response"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner := setupRunner(t, dir, providers, routingCfg)
+	// setupRunner does NOT set Hooks — confirm nil hooks is safe.
+
+	resp, err := runner.Run(context.Background(), &RunRequest{
+		TenantID:       "acme",
+		AgentName:      "nohooks-agent",
+		Prompt:         "test nil hooks",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "no hooks response", resp.Response)
+	assert.True(t, resp.PolicyAllow)
 }
