@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,8 +28,10 @@ import (
 	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/classifier"
+	talonctx "github.com/dativo-io/talon/internal/context"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/memory"
 	talonotel "github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
@@ -49,6 +52,8 @@ type Runner struct {
 	planReview    *PlanReviewStore
 	toolRegistry  *tools.ToolRegistry
 	hooks         *HookRegistry
+	memory        *memory.Store
+	governance    *memory.Governance
 }
 
 // RunnerConfig holds the dependencies for constructing a Runner.
@@ -62,12 +67,13 @@ type RunnerConfig struct {
 	Evidence     *evidence.Store
 	PlanReview   *PlanReviewStore
 	ToolRegistry *tools.ToolRegistry
-	Hooks        *HookRegistry // optional; nil = no hooks
+	Hooks        *HookRegistry      // optional; nil = no hooks
+	Memory       *memory.Store      // optional; nil = memory disabled
 }
 
 // NewRunner creates an agent runner with the given dependencies.
 func NewRunner(cfg RunnerConfig) *Runner {
-	return &Runner{
+	r := &Runner{
 		policyDir:     cfg.PolicyDir,
 		classifier:    cfg.Classifier,
 		attScanner:    cfg.AttScanner,
@@ -79,7 +85,12 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		planReview:    cfg.PlanReview,
 		toolRegistry:  cfg.ToolRegistry,
 		hooks:         cfg.Hooks,
+		memory:        cfg.Memory,
 	}
+	if cfg.Memory != nil && cfg.Classifier != nil {
+		r.governance = memory.NewGovernance(cfg.Memory, cfg.Classifier)
+	}
+	return r
 }
 
 // RunRequest is the input for a single agent invocation.
@@ -107,7 +118,9 @@ type RunResponse struct {
 	DurationMS  int64
 	PolicyAllow bool
 	DenyReason  string
-	PlanPending string // set when execution is gated for human review (EU AI Act Art. 14)
+	PlanPending string   // set when execution is gated for human review (EU AI Act Art. 14)
+	ModelUsed   string   // LLM model used for generation
+	ToolsCalled []string // MCP tools invoked
 }
 
 // Run executes the complete agent pipeline:
@@ -252,8 +265,42 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		return resp, nil
 	}
 
+	// Step 4.75: Pre-LLM memory + context enrichment
+	finalPrompt := processedPrompt
+	effectiveTier := inputClass.Tier
+
+	if pol.Memory != nil && pol.Memory.Enabled && r.memory != nil {
+		memIndex, memErr := r.memory.ListIndex(ctx, req.TenantID, req.AgentName, 50)
+		if memErr != nil {
+			log.Warn().Err(memErr).Msg("failed to load memory index")
+		} else if len(memIndex) > 0 {
+			finalPrompt = formatMemoryIndexForPrompt(memIndex) + "\n\n" + finalPrompt
+		}
+	}
+
+	if pol.Context != nil && len(pol.Context.SharedMounts) > 0 {
+		sharedCtx, ctxErr := talonctx.LoadSharedContext(pol)
+		if ctxErr != nil {
+			log.Warn().Err(ctxErr).Msg("failed to load shared context")
+		} else if len(sharedCtx.Mounts) > 0 {
+			ctxPrompt := sharedCtx.FormatForPrompt()
+			if ctxPrompt != "" {
+				finalPrompt = ctxPrompt + "\n\n" + finalPrompt
+			}
+			if sharedCtx.GetMaxTier() > effectiveTier {
+				effectiveTier = sharedCtx.GetMaxTier()
+				span.SetAttributes(attribute.Int("classification.tier_upgraded_to", effectiveTier))
+			}
+			for _, m := range sharedCtx.Mounts {
+				if m.PrivateStripped > 0 {
+					log.Info().Str("mount", m.Name).Int("stripped", m.PrivateStripped).Msg("private_tags_stripped_from_context")
+				}
+			}
+		}
+	}
+
 	return r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol,
-		inputClass.Tier, inputEntityNames, processedPrompt, attachmentScan, complianceInfo, costCtx)
+		effectiveTier, inputEntityNames, finalPrompt, attachmentScan, complianceInfo, costCtx)
 }
 
 // checkHook fires a hook and returns a deny RunResponse if the hook aborts the pipeline.
@@ -411,13 +458,20 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		Int64("duration_ms", duration.Milliseconds()).
 		Msg("agent_run_completed")
 
-	return &RunResponse{
+	resp := &RunResponse{
 		Response:    llmResp.Content,
 		EvidenceID:  evidenceID,
 		CostEUR:     costEUR,
 		DurationMS:  duration.Milliseconds(),
 		PolicyAllow: true,
-	}, nil
+		ModelUsed:   model,
+		ToolsCalled: []string{},
+	}
+
+	// Post-LLM: governed memory write
+	r.writeMemoryObservation(ctx, req, pol, resp, ev)
+
+	return resp, nil
 }
 
 // processAttachments scans, sandboxes, and appends attachment content to the prompt.
@@ -596,6 +650,138 @@ func boolToDecision(allowed bool) string {
 		return "allow"
 	}
 	return "deny"
+}
+
+// writeMemoryObservation compresses the run result into a memory observation
+// and writes it through the governance pipeline.
+func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, pol *policy.Policy, resp *RunResponse, ev *evidence.Evidence) {
+	if r.memory == nil || r.governance == nil || pol.Memory == nil || !pol.Memory.Enabled {
+		return
+	}
+	if ev == nil {
+		return
+	}
+
+	// Strip private tags from response before persisting to memory
+	privacyResult := memory.StripPrivateTags(resp.Response)
+
+	observation := memory.Entry{
+		TenantID:         req.TenantID,
+		AgentID:          req.AgentName,
+		Category:         inferCategory(resp),
+		Title:            compressTitle(resp),
+		Content:          compressObservation(resp, privacyResult.CleanContent),
+		ObservationType:  inferObservationType(resp),
+		EvidenceID:       ev.ID,
+		SourceType:       sourceTypeFromInvocation(req.InvocationType),
+		SourceEvidenceID: ev.ID,
+	}
+
+	if err := r.governance.ValidateWrite(ctx, &observation, pol); err != nil {
+		log.Warn().Err(err).
+			Str("agent_id", req.AgentName).
+			Str("category", observation.Category).
+			Msg("memory_write_denied")
+		return
+	}
+
+	if err := r.memory.Write(ctx, observation); err != nil {
+		log.Error().Err(err).Msg("memory_write_failed")
+		return
+	}
+
+	log.Info().
+		Str("entry_id", observation.ID).
+		Int("trust_score", observation.TrustScore).
+		Str("review_status", observation.ReviewStatus).
+		Msg("memory_observation_written")
+}
+
+// formatMemoryIndexForPrompt creates a lightweight prompt section from memory entries.
+func formatMemoryIndexForPrompt(entries []memory.IndexEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[AGENT MEMORY INDEX]\n")
+	for _, e := range entries {
+		icon := "\u2713"
+		if e.ReviewStatus == "pending_review" {
+			icon = "?"
+		}
+		fmt.Fprintf(&b, "%s %s | %s | %s | trust:%d | %s | %s\n",
+			icon, e.ID, e.Category, e.Title, e.TrustScore,
+			e.ReviewStatus, e.Timestamp.Format("2006-01-02"))
+	}
+	b.WriteString("[END MEMORY INDEX]\n")
+	return b.String()
+}
+
+// compressObservation creates a ~500-token summary of the run for memory storage.
+func compressObservation(resp *RunResponse, cleanContent string) string {
+	summary := fmt.Sprintf("Model: %s | Cost: EUR%.4f | Duration: %dms",
+		resp.ModelUsed, resp.CostEUR, resp.DurationMS)
+	if resp.DenyReason != "" {
+		summary += " | Denied: " + resp.DenyReason
+	}
+	const maxLen = 1600
+	if len(cleanContent) > maxLen {
+		cleanContent = cleanContent[:maxLen] + "..."
+	}
+	return summary + "\n" + cleanContent
+}
+
+// compressTitle derives a short title from the response.
+func compressTitle(resp *RunResponse) string {
+	if resp.DenyReason != "" {
+		return "Denied: " + resp.DenyReason
+	}
+	text := resp.Response
+	if idx := strings.IndexAny(text, ".\n"); idx > 0 && idx < 80 {
+		return text[:idx]
+	}
+	if len(text) > 80 {
+		return text[:80]
+	}
+	return text
+}
+
+func inferCategory(resp *RunResponse) string {
+	if resp.DenyReason != "" {
+		return memory.CategoryPolicyHit
+	}
+	return memory.CategoryDomainKnowledge
+}
+
+func inferObservationType(resp *RunResponse) string {
+	if resp.DenyReason != "" {
+		return memory.ObsDecision
+	}
+	return memory.ObsLearning
+}
+
+func sourceTypeFromInvocation(invocationType string) string {
+	switch {
+	case invocationType == "manual":
+		return memory.SourceAgentRun
+	case invocationType == "scheduled":
+		return memory.SourceAgentRun
+	case strings.HasPrefix(invocationType, "webhook:"):
+		return memory.SourceWebhook
+	default:
+		return memory.SourceAgentRun
+	}
+}
+
+// RunFromTrigger implements the trigger.AgentRunner interface for cron/webhook execution.
+func (r *Runner) RunFromTrigger(ctx context.Context, agentName, prompt, invocationType string) error {
+	_, err := r.Run(ctx, &RunRequest{
+		TenantID:       "default",
+		AgentName:      agentName,
+		Prompt:         prompt,
+		InvocationType: invocationType,
+	})
+	return err
 }
 
 // planReviewConfigFromPolicy converts policy-level plan review config to agent type.

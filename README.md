@@ -278,10 +278,19 @@ talon secrets list                           # List secrets (metadata only, valu
 talon secrets audit                          # View secret access log
 talon secrets rotate <name>                  # Re-encrypt with fresh nonce
 
+# Agent memory
+talon memory list [--agent name]             # Browse memory index
+talon memory show <entry-id>                 # Full entry detail
+talon memory search "query"                  # Full-text search
+talon memory rollback --agent name --to-version N --yes  # Rollback
+talon memory health [--agent name]           # Trust distribution + conflicts
+talon memory audit [--agent name]            # Evidence chain verification
+
+# Trigger server
+talon serve [--port 8080]                    # Start HTTP server + cron scheduler
+
 # Coming soon
 talon costs [--tenant acme]                  # Cost and budget summary
-talon memory list [--agent name]             # View agent learnings
-talon serve [--port 8080] [--dashboard]      # Start HTTP + MCP server
 ```
 
 ## PII and pattern configuration
@@ -364,6 +373,8 @@ Apache 2.0 — See [LICENSE](LICENSE)
 ## Links
 
 - **Documentation:** [docs/](docs/)
+- **Quick Start:** [QUICKSTART.md](docs/QUICKSTART.md)
+- **Memory Governance:** [MEMORY_GOVERNANCE.md](docs/MEMORY_GOVERNANCE.md)
 - **Vendor Integration:** [VENDOR_INTEGRATION_GUIDE.md](docs/VENDOR_INTEGRATION_GUIDE.md)
 - **Adoption Paths:** [ADOPTION_SCENARIOS.md](docs/ADOPTION_SCENARIOS.md)
 - **Website:** https://talon.dativo.io

@@ -77,14 +77,22 @@ type SecretACL struct {
 
 // MemoryConfig governs the agent's self-improvement memory.
 type MemoryConfig struct {
-	Enabled             bool     `yaml:"enabled" json:"enabled"`
-	MaxEntries          int      `yaml:"max_entries,omitempty" json:"max_entries,omitempty"`
-	MaxEntrySizeKB      int      `yaml:"max_entry_size_kb,omitempty" json:"max_entry_size_kb,omitempty"`
-	RetentionDays       int      `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
-	ReviewMode          string   `yaml:"review_mode,omitempty" json:"review_mode,omitempty"`
-	AllowedCategories   []string `yaml:"allowed_categories,omitempty" json:"allowed_categories,omitempty"`
-	ForbiddenCategories []string `yaml:"forbidden_categories,omitempty" json:"forbidden_categories,omitempty"`
-	Audit               bool     `yaml:"audit,omitempty" json:"audit,omitempty"`
+	Enabled             bool                    `yaml:"enabled" json:"enabled"`
+	MaxEntries          int                     `yaml:"max_entries,omitempty" json:"max_entries,omitempty"`
+	MaxEntrySizeKB      int                     `yaml:"max_entry_size_kb,omitempty" json:"max_entry_size_kb,omitempty"`
+	RetentionDays       int                     `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
+	ReviewMode          string                  `yaml:"review_mode,omitempty" json:"review_mode,omitempty"`
+	AllowedCategories   []string                `yaml:"allowed_categories,omitempty" json:"allowed_categories,omitempty"`
+	ForbiddenCategories []string                `yaml:"forbidden_categories,omitempty" json:"forbidden_categories,omitempty"`
+	Audit               bool                    `yaml:"audit,omitempty" json:"audit,omitempty"`
+	Governance          *MemoryGovernanceConfig `yaml:"governance,omitempty" json:"governance,omitempty"`
+}
+
+// MemoryGovernanceConfig controls memory conflict detection and trust scoring.
+type MemoryGovernanceConfig struct {
+	ConflictResolution          string  `yaml:"conflict_resolution,omitempty" json:"conflict_resolution,omitempty"`
+	ConflictSimilarityThreshold float64 `yaml:"conflict_similarity_threshold,omitempty" json:"conflict_similarity_threshold,omitempty"`
+	TrustScoreOverrides         bool    `yaml:"trust_score_overrides,omitempty" json:"trust_score_overrides,omitempty"`
 }
 
 // ContextConfig defines shared enterprise context mounts.
@@ -95,6 +103,7 @@ type ContextConfig struct {
 // SharedMount is a read-only enterprise knowledge mount.
 type SharedMount struct {
 	Name           string `yaml:"name" json:"name"`
+	Path           string `yaml:"path" json:"path"`
 	Description    string `yaml:"description,omitempty" json:"description,omitempty"`
 	Classification string `yaml:"classification" json:"classification"`
 }

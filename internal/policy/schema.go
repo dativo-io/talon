@@ -101,7 +101,15 @@ const schemaV2 = `{
         "review_mode": {"type": "string", "enum": ["auto", "human-review", "read-only"]},
         "allowed_categories": {"type": "array", "items": {"type": "string"}},
         "forbidden_categories": {"type": "array", "items": {"type": "string"}},
-        "audit": {"type": "boolean"}
+        "audit": {"type": "boolean"},
+        "governance": {
+          "type": "object",
+          "properties": {
+            "conflict_resolution": {"type": "string", "enum": ["auto", "flag_for_review", "reject"]},
+            "conflict_similarity_threshold": {"type": "number", "minimum": 0, "maximum": 1},
+            "trust_score_overrides": {"type": "boolean"}
+          }
+        }
       }
     },
     "context": {
@@ -114,6 +122,7 @@ const schemaV2 = `{
             "required": ["name", "classification"],
             "properties": {
               "name": {"type": "string"},
+              "path": {"type": "string"},
               "description": {"type": "string"},
               "classification": {"type": "string", "enum": ["tier_0", "tier_1", "tier_2"]}
             }

@@ -83,6 +83,11 @@ func (c *Config) EvidenceDBPath() string {
 	return filepath.Join(c.DataDir, "evidence.db")
 }
 
+// MemoryDBPath returns the full path to the memory SQLite database.
+func (c *Config) MemoryDBPath() string {
+	return filepath.Join(c.DataDir, "memory.db")
+}
+
 // EnsureDataDir creates the data directory if it doesn't exist.
 func (c *Config) EnsureDataDir() error {
 	return os.MkdirAll(c.DataDir, 0o700)
