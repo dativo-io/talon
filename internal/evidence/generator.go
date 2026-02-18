@@ -31,6 +31,8 @@ type GenerateParams struct {
 	Classification  Classification  // PII detection on input and output
 	AttachmentScan  *AttachmentScan // nil when no attachments were provided
 	ModelUsed       string          // LLM model that was called (empty on deny/dry-run)
+	OriginalModel   string          // Primary model when degraded (empty when not degraded)
+	Degraded        bool            // True when cost degradation used fallback model
 	ToolsCalled     []string        // MCP tools invoked during execution
 	CostEUR         float64         // Estimated cost in EUR
 	Tokens          TokenUsage      // Input/output token counts
@@ -56,12 +58,14 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 		Classification: params.Classification,
 		AttachmentScan: params.AttachmentScan,
 		Execution: Execution{
-			ModelUsed:   params.ModelUsed,
-			ToolsCalled: params.ToolsCalled,
-			CostEUR:     params.CostEUR,
-			Tokens:      params.Tokens,
-			DurationMS:  params.DurationMS,
-			Error:       params.Error,
+			ModelUsed:     params.ModelUsed,
+			OriginalModel: params.OriginalModel,
+			Degraded:      params.Degraded,
+			ToolsCalled:   params.ToolsCalled,
+			CostEUR:       params.CostEUR,
+			Tokens:        params.Tokens,
+			DurationMS:    params.DurationMS,
+			Error:         params.Error,
 		},
 		SecretsAccessed: params.SecretsAccessed,
 		MemoryWrites:    params.MemoryWrites,

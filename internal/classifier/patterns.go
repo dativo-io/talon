@@ -9,15 +9,17 @@ import (
 
 // PIIPattern represents a compiled, ready-to-use PII detection pattern.
 type PIIPattern struct {
-	Name         string
-	Type         string
-	Pattern      *regexp.Regexp
-	Countries    []string
-	Sensitivity  int      // 1-3, higher = more sensitive
-	Score        float64  // base confidence from YAML (Presidio-compatible)
-	ContextWords []string // merged from all supported_languages[].context
-	ValidateLuhn bool     // Talon extension: ISO/IEC 7812 checksum gate
-	ValidateIBAN bool     // Talon extension: ISO 13616 MOD-97 + country length gate
+	Name          string
+	Type          string
+	Pattern       *regexp.Regexp
+	Countries     []string
+	Sensitivity   int      // 1-3, higher = more sensitive
+	Score         float64  // base confidence from YAML (Presidio-compatible)
+	ContextWords  []string // merged from all supported_languages[].context
+	ValidateLuhn  bool     // Talon extension: ISO/IEC 7812 checksum gate
+	ValidateIBAN  bool     // Talon extension: ISO 13616 MOD-97 + country length gate
+	ValidateBSN   bool     // Talon extension: Dutch BSN 11-test
+	ValidatePESEL bool     // Talon extension: Polish PESEL check digit
 }
 
 // IBANLengths maps EU+UK country codes to their exact IBAN character length (ISO 13616).

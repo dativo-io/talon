@@ -131,9 +131,19 @@ type PoliciesConfig struct {
 
 // CostLimitsConfig sets per-request, daily, and monthly cost budgets.
 type CostLimitsConfig struct {
-	PerRequest float64 `yaml:"per_request,omitempty" json:"per_request,omitempty"`
-	Daily      float64 `yaml:"daily,omitempty" json:"daily,omitempty"`
-	Monthly    float64 `yaml:"monthly,omitempty" json:"monthly,omitempty"`
+	PerRequest  float64            `yaml:"per_request,omitempty" json:"per_request,omitempty"`
+	Daily       float64            `yaml:"daily,omitempty" json:"daily,omitempty"`
+	Monthly     float64            `yaml:"monthly,omitempty" json:"monthly,omitempty"`
+	Degradation *DegradationConfig `yaml:"degradation,omitempty" json:"degradation,omitempty"`
+}
+
+// DegradationConfig enables graceful model downgrade when budget threshold is reached.
+// When enabled and daily budget used >= threshold_percent, router uses fallback_model instead of primary.
+type DegradationConfig struct {
+	Enabled          bool    `yaml:"enabled" json:"enabled"`
+	ThresholdPercent float64 `yaml:"threshold_percent" json:"threshold_percent"`
+	FallbackModel    string  `yaml:"fallback_model" json:"fallback_model"`
+	Notify           bool    `yaml:"notify,omitempty" json:"notify,omitempty"`
 }
 
 // ResourceLimitsConfig sets compute resource constraints.

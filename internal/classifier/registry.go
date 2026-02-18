@@ -24,10 +24,12 @@ type RecognizerConfig struct {
 	DenyList           []string          `yaml:"deny_list,omitempty" json:"deny_list,omitempty"`
 	DenyListScore      float64           `yaml:"deny_list_score,omitempty" json:"deny_list_score,omitempty"`
 	// Talon extensions (safe to include — Presidio ignores unknown fields)
-	Sensitivity  int      `yaml:"sensitivity,omitempty" json:"sensitivity,omitempty"`
-	Countries    []string `yaml:"countries,omitempty" json:"countries,omitempty"`
-	ValidateLuhn bool     `yaml:"validate_luhn,omitempty" json:"validate_luhn,omitempty"`
-	ValidateIBAN bool     `yaml:"validate_iban,omitempty" json:"validate_iban,omitempty"`
+	Sensitivity   int      `yaml:"sensitivity,omitempty" json:"sensitivity,omitempty"`
+	Countries     []string `yaml:"countries,omitempty" json:"countries,omitempty"`
+	ValidateLuhn  bool     `yaml:"validate_luhn,omitempty" json:"validate_luhn,omitempty"`
+	ValidateIBAN  bool     `yaml:"validate_iban,omitempty" json:"validate_iban,omitempty"`
+	ValidateBSN   bool     `yaml:"validate_bsn,omitempty" json:"validate_bsn,omitempty"`
+	ValidatePESEL bool     `yaml:"validate_pesel,omitempty" json:"validate_pesel,omitempty"`
 	// Injection-specific extension (used by attachment scanner only)
 	Severity int `yaml:"severity,omitempty" json:"severity,omitempty"`
 }
@@ -140,15 +142,17 @@ func CompilePIIPatterns(recognizers []RecognizerConfig) ([]PIIPattern, error) {
 				baseScore = *p.Score
 			}
 			patterns = append(patterns, PIIPattern{
-				Name:         rec.Name,
-				Type:         entityToType(rec.SupportedEntity),
-				Pattern:      compiled,
-				Countries:    rec.Countries,
-				Sensitivity:  rec.Sensitivity,
-				Score:        baseScore,
-				ContextWords: contextWords,
-				ValidateLuhn: rec.ValidateLuhn,
-				ValidateIBAN: rec.ValidateIBAN,
+				Name:          rec.Name,
+				Type:          entityToType(rec.SupportedEntity),
+				Pattern:       compiled,
+				Countries:     rec.Countries,
+				Sensitivity:   rec.Sensitivity,
+				Score:         baseScore,
+				ContextWords:  contextWords,
+				ValidateLuhn:  rec.ValidateLuhn,
+				ValidateIBAN:  rec.ValidateIBAN,
+				ValidateBSN:   rec.ValidateBSN,
+				ValidatePESEL: rec.ValidatePESEL,
 			})
 		}
 	}
@@ -196,16 +200,31 @@ func FilterByEntities(recognizers []RecognizerConfig, enabledEntities, disabledE
 // entityToType converts Presidio entity names (SCREAMING_SNAKE) to the
 // lower_snake_case type strings used internally (e.g. "EMAIL_ADDRESS" -> "email").
 var entityTypeMap = map[string]string{
-	"EMAIL_ADDRESS": "email",
-	"PHONE_NUMBER":  "phone",
-	"IBAN_CODE":     "iban",
-	"CREDIT_CARD":   "credit_card",
-	"EU_VAT_ID":     "vat_id",
-	"DE_SSN":        "ssn",
-	"UK_NINO":       "ssn",
-	"FR_SSN":        "ssn",
-	"IP_ADDRESS":    "ip_address",
-	"PASSPORT":      "passport",
+	"EMAIL_ADDRESS":   "email",
+	"PHONE_NUMBER":    "phone",
+	"IBAN_CODE":       "iban",
+	"CREDIT_CARD":     "credit_card",
+	"EU_VAT_ID":       "vat_id",
+	"DE_SSN":          "ssn",
+	"UK_NINO":         "ssn",
+	"FR_SSN":          "ssn",
+	"IP_ADDRESS":      "ip_address",
+	"PASSPORT":        "passport",
+	"DE_ID_CARD":      "national_id",
+	"DE_TAX_ID":       "tax_id",
+	"FR_NIR":          "ssn",
+	"FR_ID_CARD":      "national_id",
+	"NL_BSN":          "national_id",
+	"PL_PESEL":        "national_id",
+	"PL_NIP":          "tax_id",
+	"ES_DNI":          "national_id",
+	"ES_NIE":          "national_id",
+	"BE_NATIONAL_ID":  "national_id",
+	"AT_SVN":          "national_id",
+	"SE_PERSONNUMMER": "national_id",
+	"DK_CPR":          "national_id",
+	"IE_PPS":          "national_id",
+	"PT_NIF":          "tax_id",
 }
 
 // entityToType maps a Presidio entity name to the internal type string.

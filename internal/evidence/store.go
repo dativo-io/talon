@@ -73,12 +73,14 @@ type AttachmentScan struct {
 
 // Execution captures LLM call details.
 type Execution struct {
-	ModelUsed   string     `json:"model_used"`
-	ToolsCalled []string   `json:"tools_called,omitempty"`
-	CostEUR     float64    `json:"cost_eur"`
-	Tokens      TokenUsage `json:"tokens"`
-	DurationMS  int64      `json:"duration_ms"`
-	Error       string     `json:"error,omitempty"`
+	ModelUsed     string     `json:"model_used"`
+	OriginalModel string     `json:"original_model,omitempty"`
+	Degraded      bool       `json:"degraded,omitempty"`
+	ToolsCalled   []string   `json:"tools_called,omitempty"`
+	CostEUR       float64    `json:"cost_eur"`
+	Tokens        TokenUsage `json:"tokens"`
+	DurationMS    int64      `json:"duration_ms"`
+	Error         string     `json:"error,omitempty"`
 }
 
 // TokenUsage captures input/output token counts.
@@ -270,6 +272,84 @@ func (s *Store) List(ctx context.Context, tenantID, agentID string, from, to tim
 	}
 
 	return results, nil
+}
+
+// CostTotal returns the sum of CostEUR for evidence in the half-open time range [from, to).
+// If agentID is empty, sums across all agents for the tenant.
+// Callers should pass to as the start of the next period (e.g. dayStart.Add(24*time.Hour)) to avoid double-counting at boundaries.
+// Uses SQLite json_extract in SUM to avoid transferring or deserializing evidence blobs.
+func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, to time.Time) (float64, error) {
+	ctx, span := tracer.Start(ctx, "evidence.cost_total",
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("agent_id", agentID),
+		))
+	defer span.End()
+
+	query := `SELECT COALESCE(SUM(json_extract(evidence_json, '$.execution.cost_eur')), 0) FROM evidence WHERE tenant_id = ?`
+	args := []interface{}{tenantID}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+
+	var total float64
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("querying evidence for cost: %w", err)
+	}
+	span.SetAttributes(attribute.Float64("cost_total", total))
+	return total, nil
+}
+
+// CostByAgent returns cost per agent for the tenant in the half-open time range [from, to).
+// Callers should pass to as the start of the next period to avoid double-counting at boundaries.
+// Uses SQLite json_extract in SUM with GROUP BY to avoid transferring or deserializing evidence blobs.
+func (s *Store) CostByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]float64, error) {
+	ctx, span := tracer.Start(ctx, "evidence.cost_by_agent",
+		trace.WithAttributes(attribute.String("tenant_id", tenantID)))
+	defer span.End()
+
+	query := `SELECT agent_id, SUM(json_extract(evidence_json, '$.execution.cost_eur')) FROM evidence WHERE tenant_id = ?`
+	args := []interface{}{tenantID}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	query += ` GROUP BY agent_id`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying evidence for cost by agent: %w", err)
+	}
+	defer rows.Close()
+
+	byAgent := make(map[string]float64)
+	for rows.Next() {
+		var agentID string
+		var total float64
+		if err := rows.Scan(&agentID, &total); err != nil {
+			continue
+		}
+		byAgent[agentID] = total
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating cost by agent: %w", err)
+	}
+	span.SetAttributes(attribute.Int("agent_count", len(byAgent)))
+	return byAgent, nil
 }
 
 // Verify checks the HMAC signature integrity of an evidence record.

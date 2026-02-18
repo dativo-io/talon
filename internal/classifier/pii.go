@@ -185,6 +185,22 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 				}
 			}
 
+			// Hard validation gate: Dutch BSN 11-test
+			if pattern.ValidateBSN {
+				digits := stripNonDigits(value)
+				if !validateBSN(digits) {
+					continue
+				}
+			}
+
+			// Hard validation gate: Polish PESEL check digit
+			if pattern.ValidatePESEL {
+				digits := stripNonDigits(value)
+				if !validatePESEL(digits) {
+					continue
+				}
+			}
+
 			// Presidio-style confidence: base score + context word boost
 			confidence := enhanceScoreWithContext(text, match[0], pattern.Score, pattern.ContextWords)
 			if confidence < s.minScore {
@@ -361,6 +377,56 @@ func validateIBANChecksum(iban string) bool {
 	mod := new(big.Int)
 	mod.Mod(n, big.NewInt(97))
 	return mod.Int64() == 1
+}
+
+// validateBSN checks the Dutch BSN (Burgerservicenummer) using the 11-test.
+// Formula: (9*d1 + 8*d2 + 7*d3 + 6*d4 + 5*d5 + 4*d6 + 3*d7 + 2*d8 - 1*d9) mod 11 == 0.
+func validateBSN(digits string) bool {
+	if len(digits) != 9 {
+		return false
+	}
+	sum := 0
+	weights := []int{9, 8, 7, 6, 5, 4, 3, 2, -1}
+	for i := range weights {
+		if i >= len(digits) {
+			return false
+		}
+		r := digits[i]
+		if r < '0' || r > '9' {
+			return false
+		}
+		w := weights[i] // #nosec G602 -- i from range weights, always in bounds
+		sum += int(r-'0') * w
+	}
+	if sum < 0 {
+		sum = -sum
+	}
+	return sum%11 == 0
+}
+
+// validatePESEL checks the Polish PESEL (11 digits) check digit.
+// Weights for positions 1-10: 1, 3, 7, 9, 1, 3, 7, 9, 1, 3. Checksum mod 10; control digit = (10 - checksum) mod 10.
+func validatePESEL(digits string) bool {
+	if len(digits) != 11 {
+		return false
+	}
+	weights := []int{1, 3, 7, 9, 1, 3, 7, 9, 1, 3}
+	sum := 0
+	for i := range weights {
+		if i >= len(digits) {
+			return false
+		}
+		if digits[i] < '0' || digits[i] > '9' {
+			return false
+		}
+		w := weights[i] // #nosec G602 -- i from range weights, always in bounds
+		sum += int(digits[i]-'0') * w
+	}
+	if len(digits) < 11 {
+		return false
+	}
+	control := (10 - (sum % 10)) % 10
+	return int(digits[10]-'0') == control
 }
 
 // validateIBANLength checks that the IBAN has the correct length for its country code.
