@@ -605,4 +605,35 @@ func TestGracefulRoute(t *testing.T) {
 		assert.Equal(t, "gpt-4o", model)
 		assert.Equal(t, "openai", provider.Name())
 	})
+
+	// Tier 2 with BedrockOnly must not degrade to a non-Bedrock fallback (data sovereignty).
+	t.Run("bedrock_only tier does not degrade to non-Bedrock fallback", func(t *testing.T) {
+		bedrockProviders := map[string]Provider{
+			"openai":  &mockProvider{name: "openai"},
+			"bedrock": &mockProvider{name: "bedrock"},
+		}
+		routingT2 := &policy.ModelRoutingConfig{
+			Tier0: &policy.TierConfig{Primary: "gpt-4o", Location: "global"},
+			Tier2: &policy.TierConfig{
+				Primary:     "anthropic.claude-3-sonnet-20240229-v1:0",
+				Location:    "eu-central-1",
+				BedrockOnly: true,
+			},
+		}
+		costLimits := &policy.CostLimitsConfig{
+			Daily: 100,
+			Degradation: &policy.DegradationConfig{
+				Enabled:          true,
+				ThresholdPercent: 80,
+				FallbackModel:    "gpt-4o-mini", // OpenAI — would violate sovereignty for Tier 2
+			},
+		}
+		router := NewRouter(routingT2, bedrockProviders, costLimits)
+		costCtx := &CostContext{DailyTotal: 85, TenantID: "t1", AgentName: "a1"}
+		provider, model, degraded, _, err := router.GracefulRoute(ctx, 2, costCtx)
+		require.NoError(t, err)
+		assert.False(t, degraded, "must not degrade when tier is bedrock_only and fallback is non-Bedrock")
+		assert.Equal(t, "bedrock", provider.Name(), "must stay on Bedrock for data sovereignty")
+		assert.Equal(t, "anthropic.claude-3-sonnet-20240229-v1:0", model)
+	})
 }

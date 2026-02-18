@@ -142,6 +142,18 @@ func (r *Router) GracefulRoute(ctx context.Context, tier int, costCtx *CostConte
 		span.RecordError(err)
 		return provider, model, false, "", nil
 	}
+
+	// Enforce tier's bedrock_only: do not degrade to a non-Bedrock provider when the tier
+	// requires EU/Bedrock-only (data sovereignty). Route() enforces this for primary and
+	// tier fallback; we must not bypass it for cost-degradation fallback.
+	if tierConfig, tierErr := r.getTierConfig(tier); tierErr == nil && tierConfig.BedrockOnly && fallbackProviderName != "bedrock" {
+		span.SetAttributes(
+			attribute.Bool("cost.degradation_skipped_bedrock_only", true),
+			attribute.String("cost.fallback_model_rejected", fallbackModel),
+		)
+		return provider, model, false, "", nil
+	}
+
 	fallbackProvider, ok := r.providers[fallbackProviderName]
 	if !ok {
 		return provider, model, false, "", nil
