@@ -381,8 +381,18 @@ func (s *SecretStore) Rotate(ctx context.Context, name string) error {
 		return fmt.Errorf("querying secret: %w", err)
 	}
 
-	ciphertext, _ := base64.StdEncoding.DecodeString(encryptedValue)
-	nonce, _ := base64.StdEncoding.DecodeString(nonceB64)
+	ciphertext, err := base64.StdEncoding.DecodeString(encryptedValue)
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("decoding ciphertext for rotation: %w", err)
+	}
+
+	nonce, err := base64.StdEncoding.DecodeString(nonceB64)
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("decoding nonce for rotation: %w", err)
+	}
+
 	plaintext, err := s.gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		span.RecordError(err)
