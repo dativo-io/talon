@@ -184,7 +184,8 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		"agent_id":           req.AgentName,
 		"tier":               inputClass.Tier,
 		"estimated_cost":     0.01,
-		"current_daily_cost": 0.0,
+		"daily_cost_total":   0.0,
+		"monthly_cost_total": 0.0,
 	}
 
 	decision, err := engine.Evaluate(ctx, policyInput)
