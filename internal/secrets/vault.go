@@ -26,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/dativo-io/talon/internal/cryptoutil"
 	talonotel "github.com/dativo-io/talon/internal/otel"
 )
 
@@ -141,7 +142,7 @@ func NewSecretStore(dbPath string, encryptionKey string) (*SecretStore, error) {
 
 // resolveEncryptionKey interprets the key as 32 raw bytes or 64 hex characters (→ 32 bytes for AES-256).
 func resolveEncryptionKey(key string) ([]byte, error) {
-	if len(key) == 64 && isHex(key) {
+	if len(key) == 64 && cryptoutil.IsHexString(key) {
 		decoded, err := hex.DecodeString(key)
 		if err != nil || len(decoded) != 32 {
 			return nil, fmt.Errorf("encryption key hex must decode to 32 bytes: %w", ErrInvalidEncryptionKey)
@@ -154,14 +155,6 @@ func resolveEncryptionKey(key string) ([]byte, error) {
 	return nil, fmt.Errorf("encryption key must be 32 bytes or 64 hex characters (got %d): %w", len(key), ErrInvalidEncryptionKey)
 }
 
-func isHex(s string) bool {
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return false
-		}
-	}
-	return true
-}
 
 // Close releases the database connection.
 func (s *SecretStore) Close() error {

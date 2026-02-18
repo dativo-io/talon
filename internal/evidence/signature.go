@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+
+	"github.com/dativo-io/talon/internal/cryptoutil"
 )
 
 // Signer creates and verifies HMAC-SHA256 signatures for evidence integrity.
@@ -23,7 +25,7 @@ func NewSigner(key string) (*Signer, error) {
 
 // resolveSigningKey interprets the key as raw bytes or hex (64+ even hex chars → decoded bytes, requiring ≥32 bytes).
 func resolveSigningKey(key string) ([]byte, error) {
-	if len(key) >= 64 && len(key)%2 == 0 && isHexString(key) {
+	if len(key) >= 64 && len(key)%2 == 0 && cryptoutil.IsHexString(key) {
 		decoded, err := hex.DecodeString(key)
 		if err != nil {
 			return nil, fmt.Errorf("signing key hex decode: %w", err)
@@ -39,14 +41,6 @@ func resolveSigningKey(key string) ([]byte, error) {
 	return []byte(key), nil
 }
 
-func isHexString(s string) bool {
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return false
-		}
-	}
-	return true
-}
 
 // Sign creates an HMAC-SHA256 signature for the given data.
 func (s *Signer) Sign(data []byte) (string, error) {

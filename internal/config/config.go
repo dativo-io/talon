@@ -27,6 +27,8 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
+
+	"github.com/dativo-io/talon/internal/cryptoutil"
 )
 
 // Viper keys. Each maps to an env var with the TALON_ prefix
@@ -173,7 +175,7 @@ func validateSecretsKey(key string) error {
 	if n == 32 {
 		return nil
 	}
-	if n == 64 && isHexString(key) {
+	if n == 64 && cryptoutil.IsHexString(key) {
 		decoded, err := hex.DecodeString(key)
 		if err != nil || len(decoded) != 32 {
 			return fmt.Errorf("secrets_key hex must decode to 32 bytes: %w", err)
@@ -187,7 +189,7 @@ func validateSecretsKey(key string) error {
 // Hex is checked first (disjoint from raw) so that hex format is validated; raw is accepted otherwise when n ≥ 32.
 func validateSigningKey(key string) error {
 	n := len(key)
-	if n >= 64 && n%2 == 0 && isHexString(key) {
+	if n >= 64 && n%2 == 0 && cryptoutil.IsHexString(key) {
 		decoded, err := hex.DecodeString(key)
 		if err != nil || len(decoded) < 32 {
 			return fmt.Errorf("signing_key hex must decode to at least 32 bytes: %w", err)
@@ -200,11 +202,3 @@ func validateSigningKey(key string) error {
 	return fmt.Errorf("signing_key must be at least 32 bytes or 64+ hex characters (got %d); set TALON_SIGNING_KEY", n)
 }
 
-func isHexString(s string) bool {
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return false
-		}
-	}
-	return true
-}

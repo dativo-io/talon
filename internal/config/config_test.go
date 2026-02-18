@@ -6,6 +6,8 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dativo-io/talon/internal/cryptoutil"
 )
 
 func resetViper(t *testing.T) {
@@ -137,7 +139,7 @@ func TestDeriveDefaultKey_Deterministic(t *testing.T) {
 	k2 := deriveDefaultKey("/home/user/.talon", "test-salt")
 	assert.Equal(t, k1, k2)
 	assert.Len(t, k1, 64, "should be 64 hex chars (32 bytes)")
-	assert.True(t, isHexString(k1), "should be valid hex")
+	assert.True(t, cryptoutil.IsHexString(k1), "should be valid hex")
 }
 
 func TestDeriveDefaultKey_DifferentSalts(t *testing.T) {
