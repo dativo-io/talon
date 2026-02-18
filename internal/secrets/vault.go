@@ -286,6 +286,7 @@ func (s *SecretStore) Get(ctx context.Context, name, tenantID, agentID string) (
 }
 
 // List returns metadata for all secrets visible to a tenant (values are NOT included).
+// Use ListAll for an operator-style view of every secret regardless of ACL.
 func (s *SecretStore) List(ctx context.Context, tenantID string) ([]SecretMetadata, error) {
 	ctx, span := tracer.Start(ctx, "secrets.list",
 		trace.WithAttributes(attribute.String("tenant_id", tenantID)))
@@ -323,6 +324,47 @@ func (s *SecretStore) List(ctx context.Context, tenantID string) ([]SecretMetada
 				AccessCount: accessCount,
 			})
 		}
+	}
+
+	return results, nil
+}
+
+// ListAll returns metadata for every secret in the vault (no ACL filtering).
+// Intended for operator use (e.g. talon secrets list). Values are never included.
+func (s *SecretStore) ListAll(ctx context.Context) ([]SecretMetadata, error) {
+	ctx, span := tracer.Start(ctx, "secrets.list_all")
+	defer span.End()
+
+	query := `SELECT name, acl_json, created_at, accessed_at, access_count FROM secrets`
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("querying secrets: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SecretMetadata
+	for rows.Next() {
+		var name, aclJSON string
+		var createdAt, accessedAt sql.NullTime
+		var accessCount int
+
+		if err := rows.Scan(&name, &aclJSON, &createdAt, &accessedAt, &accessCount); err != nil {
+			continue
+		}
+
+		var acl ACL
+		if err := json.Unmarshal([]byte(aclJSON), &acl); err != nil {
+			continue
+		}
+
+		results = append(results, SecretMetadata{
+			Name:        name,
+			ACL:         acl,
+			CreatedAt:   createdAt.Time,
+			AccessedAt:  accessedAt.Time,
+			AccessCount: accessCount,
+		})
 	}
 
 	return results, nil

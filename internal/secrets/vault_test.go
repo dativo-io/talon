@@ -149,7 +149,7 @@ func TestSecretStore(t *testing.T) {
 	})
 
 	t.Run("list secrets", func(t *testing.T) {
-		list, err := store.List(ctx, "*")
+		list, err := store.ListAll(ctx)
 		require.NoError(t, err)
 		assert.GreaterOrEqual(t, len(list), 1)
 	})
@@ -245,7 +245,7 @@ func TestListMultipleSecrets(t *testing.T) {
 	require.NoError(t, store.Set(ctx, "key-b", []byte("v2"), openACL))
 	require.NoError(t, store.Set(ctx, "key-c", []byte("v3"), openACL))
 
-	list, err := store.List(ctx, "*")
+	list, err := store.ListAll(ctx)
 	require.NoError(t, err)
 	assert.Len(t, list, 3)
 
@@ -256,6 +256,38 @@ func TestListMultipleSecrets(t *testing.T) {
 	assert.True(t, names["key-a"])
 	assert.True(t, names["key-b"])
 	assert.True(t, names["key-c"])
+}
+
+// TestListHidesRestrictedSecrets verifies that List(tenantID) filters by ACL:
+// a secret with Tenants: ["acme"] is visible to "acme" but not when listing as "*" (literal).
+func TestListHidesRestrictedSecrets(t *testing.T) {
+	dir := t.TempDir()
+	key := "12345678901234567890123456789012"
+	store, err := NewSecretStore(filepath.Join(dir, "secrets.db"), key)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+	// Tenant-only restriction (no Agents list = allow any agent for List(ctx, "acme")).
+	restrictedACL := ACL{Tenants: []string{"acme"}}
+	require.NoError(t, store.Set(ctx, "acme-only", []byte("secret"), restrictedACL))
+
+	// List(ctx, "*") treats "*" as literal; ACL pattern "acme" does not match value "*", so hidden.
+	listWildcard, err := store.List(ctx, "*")
+	require.NoError(t, err)
+	assert.Len(t, listWildcard, 0, "List with literal '*' should not match ACL Tenants: [acme]")
+
+	// ListAll shows every secret regardless of ACL (fix for talon secrets list).
+	listAll, err := store.ListAll(ctx)
+	require.NoError(t, err)
+	assert.Len(t, listAll, 1)
+	assert.Equal(t, "acme-only", listAll[0].Name)
+
+	// List with the actual tenant sees the secret (tenant matches; no agent restriction).
+	listAcme, err := store.List(ctx, "acme")
+	require.NoError(t, err)
+	assert.Len(t, listAcme, 1)
+	assert.Equal(t, "acme-only", listAcme[0].Name)
 }
 
 func TestAuditLogEmpty(t *testing.T) {

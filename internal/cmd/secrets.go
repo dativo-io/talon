@@ -95,7 +95,7 @@ func secretsList(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	list, err := store.List(ctx, "*")
+	list, err := store.ListAll(ctx)
 	if err != nil {
 		return fmt.Errorf("listing secrets: %w", err)
 	}
