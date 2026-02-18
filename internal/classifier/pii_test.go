@@ -94,14 +94,14 @@ func TestPIIDetection(t *testing.T) {
 			name:      "phone E.164 german",
 			text:      "Call me at +491234567890",
 			wantPII:   true,
-			wantTier:  1,
+			wantTier:  2, // can also match AT SVN (10 digits) or other EU IDs
 			wantTypes: []string{"phone"},
 		},
 		{
 			name:      "phone E.164 french",
 			text:      "Téléphone: +33123456789",
 			wantPII:   true,
-			wantTier:  1,
+			wantTier:  2,
 			wantTypes: []string{"phone"},
 		},
 		{
@@ -175,6 +175,29 @@ func TestPIIDetection(t *testing.T) {
 			wantTier:  2,
 			wantTypes: []string{"passport"},
 		},
+		// --- New EU country patterns: valid samples and invalid where no other pattern matches ---
+		{name: "DE Personalausweis valid 1", text: "Personalausweis L01X00TT42", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "DE Personalausweis valid 2", text: "Ausweisnummer CFGHJKLM00", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "DE Steuer-ID valid", text: "Steuer-ID 12345678901", wantPII: true, wantTier: 2, wantTypes: []string{"tax_id"}},
+		{name: "FR NIR valid", text: "NIR 1850775012345678", wantPII: true, wantTier: 2, wantTypes: []string{"ssn"}},
+		{name: "FR NIR invalid sex digit", text: "NIR 3850775012345678", wantPII: false, wantTier: 0},
+		{name: "FR identity card valid", text: "Carte d'identité 123456789012", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "NL BSN valid", text: "BSN 123456782", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "NL BSN valid 2", text: "burgerservicenummer 000000000", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "PL PESEL valid", text: "PESEL 12345678903", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "PL PESEL valid 2", text: "numer pesel 02070803628", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "PL NIP valid", text: "NIP 123-456-32-18", wantPII: true, wantTier: 2, wantTypes: []string{"tax_id"}},
+		{name: "PL NIP no dash", text: "NIP 1234563218", wantPII: true, wantTier: 2, wantTypes: []string{"tax_id"}},
+		{name: "ES DNI valid", text: "DNI 12345678Z", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "ES DNI invalid no letter", text: "DNI 1234567", wantPII: false, wantTier: 0}, // 7 digits, no letter
+		{name: "ES NIE valid", text: "NIE X1234567L", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "ES NIE invalid prefix", text: "NIE A1234567L", wantPII: false, wantTier: 0},
+		{name: "BE Rijksregister valid", text: "Rijksregisternummer 12.34.56-789.12", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "AT SVN valid", text: "Sozialversicherungsnummer 1234567890", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "SE Personnummer valid", text: "Personnummer 550713-1234", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "DK CPR valid", text: "CPR 010190-1234", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "IE PPS valid", text: "PPS 1234567T", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
+		{name: "PT NIF valid", text: "NIF 123456789", wantPII: true, wantTier: 2, wantTypes: []string{"tax_id"}},
 	}
 
 	for _, tt := range tests {

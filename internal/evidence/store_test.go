@@ -405,3 +405,125 @@ func TestSignerWithHexKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, signer.Verify(data, sig))
 }
+
+func TestCostTotal(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+
+	// Agent A: 0.01 + 0.02
+	_, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr_c1",
+		TenantID:       "acme",
+		AgentID:        "agent-a",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		CostEUR:        0.01,
+		InputPrompt:    "test",
+		OutputResponse: "response",
+	})
+	require.NoError(t, err)
+	_, err = gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr_c2",
+		TenantID:       "acme",
+		AgentID:        "agent-a",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		CostEUR:        0.02,
+		InputPrompt:    "test",
+		OutputResponse: "response",
+	})
+	require.NoError(t, err)
+	// Agent B: 0.03
+	_, err = gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr_c3",
+		TenantID:       "acme",
+		AgentID:        "agent-b",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		CostEUR:        0.03,
+		InputPrompt:    "test",
+		OutputResponse: "response",
+	})
+	require.NoError(t, err)
+
+	totalAll, err := store.CostTotal(ctx, "acme", "", dayStart, dayEnd)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.06, totalAll, 0.0001)
+
+	totalA, err := store.CostTotal(ctx, "acme", "agent-a", dayStart, dayEnd)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.03, totalA, 0.0001)
+
+	totalB, err := store.CostTotal(ctx, "acme", "agent-b", dayStart, dayEnd)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.03, totalB, 0.0001)
+}
+
+func TestCostByAgent(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+
+	for _, p := range []struct {
+		agent string
+		cost  float64
+	}{
+		{"sales-analyst", 1.5},
+		{"support-bot", 0.5},
+		{"sales-analyst", 2.0},
+	} {
+		_, err := gen.Generate(ctx, GenerateParams{
+			CorrelationID:  "corr_cba",
+			TenantID:       "tenant1",
+			AgentID:        p.agent,
+			InvocationType: "manual",
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+			CostEUR:        p.cost,
+			InputPrompt:    "test",
+			OutputResponse: "response",
+		})
+		require.NoError(t, err)
+	}
+
+	byAgent, err := store.CostByAgent(ctx, "tenant1", dayStart, dayEnd)
+	require.NoError(t, err)
+	assert.Len(t, byAgent, 2)
+	assert.InDelta(t, 3.5, byAgent["sales-analyst"], 0.0001)
+	assert.InDelta(t, 0.5, byAgent["support-bot"], 0.0001)
+}
+
+func TestGenerateWithDegradation(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	ev, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr_deg",
+		TenantID:       "acme",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		ModelUsed:      "gpt-4o-mini",
+		OriginalModel:  "gpt-4o",
+		Degraded:       true,
+		CostEUR:        0.001,
+		InputPrompt:    "test",
+		OutputResponse: "response",
+	})
+	require.NoError(t, err)
+
+	retrieved, err := store.Get(ctx, ev.ID)
+	require.NoError(t, err)
+	assert.True(t, retrieved.Execution.Degraded)
+	assert.Equal(t, "gpt-4o", retrieved.Execution.OriginalModel)
+	assert.Equal(t, "gpt-4o-mini", retrieved.Execution.ModelUsed)
+}

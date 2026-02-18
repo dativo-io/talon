@@ -38,16 +38,17 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/agent")
 
 // Runner executes the full agent orchestration pipeline.
 type Runner struct {
-	policyDir    string
-	classifier   *classifier.Scanner
-	attScanner   *attachment.Scanner
-	extractor    *attachment.Extractor
-	router       *llm.Router
-	secrets      *secrets.SecretStore
-	evidence     *evidence.Generator
-	planReview   *PlanReviewStore
-	toolRegistry *tools.ToolRegistry
-	hooks        *HookRegistry
+	policyDir     string
+	classifier    *classifier.Scanner
+	attScanner    *attachment.Scanner
+	extractor     *attachment.Extractor
+	router        *llm.Router
+	secrets       *secrets.SecretStore
+	evidence      *evidence.Generator
+	evidenceStore *evidence.Store
+	planReview    *PlanReviewStore
+	toolRegistry  *tools.ToolRegistry
+	hooks         *HookRegistry
 }
 
 // RunnerConfig holds the dependencies for constructing a Runner.
@@ -67,16 +68,17 @@ type RunnerConfig struct {
 // NewRunner creates an agent runner with the given dependencies.
 func NewRunner(cfg RunnerConfig) *Runner {
 	return &Runner{
-		policyDir:    cfg.PolicyDir,
-		classifier:   cfg.Classifier,
-		attScanner:   cfg.AttScanner,
-		extractor:    cfg.Extractor,
-		router:       cfg.Router,
-		secrets:      cfg.Secrets,
-		evidence:     evidence.NewGenerator(cfg.Evidence),
-		planReview:   cfg.PlanReview,
-		toolRegistry: cfg.ToolRegistry,
-		hooks:        cfg.Hooks,
+		policyDir:     cfg.PolicyDir,
+		classifier:    cfg.Classifier,
+		attScanner:    cfg.AttScanner,
+		extractor:     cfg.Extractor,
+		router:        cfg.Router,
+		secrets:       cfg.Secrets,
+		evidence:      evidence.NewGenerator(cfg.Evidence),
+		evidenceStore: cfg.Evidence,
+		planReview:    cfg.PlanReview,
+		toolRegistry:  cfg.ToolRegistry,
+		hooks:         cfg.Hooks,
 	}
 }
 
@@ -172,7 +174,24 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		)
 	}
 
-	// Step 4: Evaluate policy
+	// Step 4: Evaluate policy (with real cost totals for budget checks)
+	var dailyCost, monthlyCost float64
+	if r.evidenceStore != nil {
+		now := time.Now().UTC()
+		dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		dayEnd := dayStart.Add(24 * time.Hour)
+		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+		monthEnd := monthStart.AddDate(0, 1, 0)
+		dailyCost, _ = r.evidenceStore.CostTotal(ctx, req.TenantID, "", dayStart, dayEnd)
+		monthlyCost, _ = r.evidenceStore.CostTotal(ctx, req.TenantID, "", monthStart, monthEnd)
+	}
+	costCtx := &llm.CostContext{
+		DailyTotal:   dailyCost,
+		MonthlyTotal: monthlyCost,
+		AgentName:    req.AgentName,
+		TenantID:     req.TenantID,
+	}
+
 	engine, err := policy.NewEngine(ctx, pol)
 	if err != nil {
 		span.RecordError(err)
@@ -184,8 +203,8 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		"agent_id":           req.AgentName,
 		"tier":               inputClass.Tier,
 		"estimated_cost":     0.01,
-		"daily_cost_total":   0.0,
-		"monthly_cost_total": 0.0,
+		"daily_cost_total":   dailyCost,
+		"monthly_cost_total": monthlyCost,
 	}
 
 	decision, err := engine.Evaluate(ctx, policyInput)
@@ -234,7 +253,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	}
 
 	return r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol,
-		inputClass.Tier, inputEntityNames, processedPrompt, attachmentScan, complianceInfo)
+		inputClass.Tier, inputEntityNames, processedPrompt, attachmentScan, complianceInfo, costCtx)
 }
 
 // checkHook fires a hook and returns a deny RunResponse if the hook aborts the pipeline.
@@ -277,9 +296,9 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 }
 
 // executeLLMPipeline runs steps 5-9: route provider, call LLM, classify output, generate evidence.
-func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance) (*RunResponse, error) {
-	// Step 5+6: Route LLM and resolve tenant-scoped API key
-	provider, model, secretsAccessed, err := r.resolveProvider(ctx, req, tier)
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext) (*RunResponse, error) {
+	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
+	provider, model, degraded, originalModel, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
@@ -287,6 +306,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	span.SetAttributes(
 		attribute.String("gen_ai.system", provider.Name()),
 		attribute.String("gen_ai.request.model", model),
+		attribute.Bool("cost.degraded", degraded),
 	)
 
 	// Hook: pre-LLM
@@ -320,6 +340,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			Classification:  evidence.Classification{InputTier: tier, PIIDetected: piiNames},
 			AttachmentScan:  attScan,
 			ModelUsed:       model,
+			OriginalModel:   originalModel,
+			Degraded:        degraded,
 			DurationMS:      duration.Milliseconds(),
 			Error:           err.Error(),
 			SecretsAccessed: secretsAccessed,
@@ -331,6 +353,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 
 	// Hook: post-LLM
 	costEUR := provider.EstimateCost(model, llmResp.InputTokens, llmResp.OutputTokens)
+	llm.RecordCostMetrics(ctx, costEUR, req.AgentName, model, degraded)
 	_, _ = r.fireHook(ctx, HookPostLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 		"model":         model,
 		"cost_estimate": costEUR,
@@ -358,6 +381,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		},
 		AttachmentScan:  attScan,
 		ModelUsed:       model,
+		OriginalModel:   originalModel,
+		Degraded:        degraded,
 		CostEUR:         costEUR,
 		Tokens:          evidence.TokenUsage{Input: llmResp.InputTokens, Output: llmResp.OutputTokens},
 		DurationMS:      duration.Milliseconds(),
@@ -447,12 +472,20 @@ func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *p
 	return processedPrompt, scan, nil
 }
 
-// resolveProvider routes to an LLM provider and resolves a tenant-scoped API key
-// from the vault, falling back to the operator-configured provider for dev/quickstart.
-func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int) (provider llm.Provider, model string, secretsAccessed []string, err error) {
-	provider, model, err = r.router.Route(ctx, tier)
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("routing LLM: %w", err)
+// resolveProvider routes to an LLM provider (with optional cost degradation) and resolves
+// a tenant-scoped API key from the vault. Returns (provider, model, degraded, originalModel, secrets, err).
+func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int, costCtx *llm.CostContext) (provider llm.Provider, model string, degraded bool, originalModel string, secretsAccessed []string, err error) {
+	if costCtx != nil {
+		var routeErr error
+		provider, model, degraded, originalModel, routeErr = r.router.GracefulRoute(ctx, tier, costCtx)
+		if routeErr != nil {
+			return nil, "", false, "", nil, fmt.Errorf("routing LLM: %w", routeErr)
+		}
+	} else {
+		provider, model, err = r.router.Route(ctx, tier)
+		if err != nil {
+			return nil, "", false, "", nil, fmt.Errorf("routing LLM: %w", err)
+		}
 	}
 
 	providerName := provider.Name()
@@ -473,7 +506,7 @@ func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int)
 		}
 	}
 
-	return provider, model, secretsAccessed, nil
+	return provider, model, degraded, originalModel, secretsAccessed, nil
 }
 
 // entityNames extracts type strings from PIIEntity slice for evidence records.

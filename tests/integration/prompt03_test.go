@@ -50,7 +50,7 @@ func TestUserQueryWorkflow(t *testing.T) {
 			"bedrock":   &mockProvider{name: "bedrock"},
 		}
 
-		router := llm.NewRouter(routing, providers)
+		router := llm.NewRouter(routing, providers, nil)
 		provider, model, err := router.Route(ctx, classification.Tier)
 		require.NoError(t, err)
 
@@ -90,7 +90,7 @@ func TestUserQueryWorkflow(t *testing.T) {
 			"anthropic": &mockProvider{name: "anthropic"},
 		}
 
-		router := llm.NewRouter(routing, providers)
+		router := llm.NewRouter(routing, providers, nil)
 		provider, model, err := router.Route(ctx, classification.Tier)
 		require.NoError(t, err)
 
@@ -118,7 +118,7 @@ func TestUserQueryWorkflow(t *testing.T) {
 			"bedrock": &mockProvider{name: "bedrock"},
 		}
 
-		router := llm.NewRouter(routing, providers)
+		router := llm.NewRouter(routing, providers, nil)
 		provider, _, err := router.Route(ctx, classification.Tier)
 		require.NoError(t, err)
 
@@ -317,7 +317,7 @@ func TestPIIAndAttachmentCombined(t *testing.T) {
 			"bedrock":   &mockProvider{name: "bedrock"},
 		}
 
-		router := llm.NewRouter(routing, providers)
+		router := llm.NewRouter(routing, providers, nil)
 		provider, _, err := router.Route(ctx, effectiveTier)
 		require.NoError(t, err)
 
@@ -406,7 +406,7 @@ compliance:
 			"bedrock":   &mockProvider{name: "bedrock"},
 		}
 
-		router := llm.NewRouter(pol.Policies.ModelRouting, providers)
+		router := llm.NewRouter(pol.Policies.ModelRouting, providers, nil)
 
 		// Test with actual PII-scanned input
 		piiScanner := classifier.MustNewScanner()
@@ -465,7 +465,7 @@ func TestSovereigntyEnforcement(t *testing.T) {
 			"openai":    &mockProvider{name: "openai"},
 		}
 
-		router := llm.NewRouter(routing, providers)
+		router := llm.NewRouter(routing, providers, nil)
 		provider, model, err := router.Route(ctx, classification.Tier)
 		require.NoError(t, err)
 
@@ -497,7 +497,7 @@ func TestSovereigntyEnforcement(t *testing.T) {
 			"bedrock":   &mockProvider{name: "bedrock"},
 		}
 
-		router := llm.NewRouter(routing, providers)
+		router := llm.NewRouter(routing, providers, nil)
 		provider, _, err := router.Route(ctx, classification.Tier)
 		require.NoError(t, err)
 		assert.Equal(t, "bedrock", provider.Name(),
@@ -523,7 +523,7 @@ func TestSovereigntyEnforcement(t *testing.T) {
 			"anthropic": &mockProvider{name: "anthropic"},
 		}
 
-		router := llm.NewRouter(routing, providers)
+		router := llm.NewRouter(routing, providers, nil)
 		_, _, err := router.Route(ctx, classification.Tier)
 		assert.Error(t, err, "must fail closed when bedrock unavailable for tier 2 bedrock_only data")
 	})

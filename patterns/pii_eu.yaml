@@ -145,3 +145,213 @@ recognizers:
         context: ["pasaporte"]
     sensitivity: 3
     countries: ["EU"]
+
+  # --- Germany ---
+  - name: "German Personalausweisnummer"
+    supported_entity: "DE_ID_CARD"
+    enabled: true
+    patterns:
+      - name: "Personalausweis 10-char"
+        regex: '\b[CFGHJKLMNPRTVWXYZ0-9]{9}[0-9]\b'
+        score: 0.7
+    supported_languages:
+      - language: "de"
+        context: ["personalausweis", "ausweisnummer", "id card"]
+    sensitivity: 3
+    countries: ["DE"]
+
+  - name: "German Steuer-ID"
+    supported_entity: "DE_TAX_ID"
+    enabled: true
+    patterns:
+      - name: "Steuer-ID 11 digits"
+        regex: '\b\d{11}\b'
+        score: 0.6
+    supported_languages:
+      - language: "de"
+        context: ["steuer-id", "steueridentifikationsnummer", "tax id"]
+    sensitivity: 2
+    countries: ["DE"]
+
+  # --- France ---
+  - name: "French NIR"
+    supported_entity: "FR_NIR"
+    enabled: true
+    patterns:
+      - name: "NIR Securite sociale"
+        regex: '\b[12]\d{2}(0[1-9]|1[0-2])\d{2}[0-9A-B]\d{3}\d{3}\d{2}\b'
+        score: 0.75
+    supported_languages:
+      - language: "fr"
+        context: ["nir", "numéro de sécurité sociale", "sécurité sociale"]
+    sensitivity: 3
+    countries: ["FR"]
+
+  - name: "French Carte d'identite"
+    supported_entity: "FR_ID_CARD"
+    enabled: true
+    patterns:
+      - name: "Carte identite 12 digits"
+        regex: '\b\d{12}\b'
+        score: 0.6
+    supported_languages:
+      - language: "fr"
+        context: ["carte d'identité", "carte d identite", "identité"]
+    sensitivity: 3
+    countries: ["FR"]
+
+  # --- Netherlands ---
+  - name: "Dutch BSN"
+    supported_entity: "NL_BSN"
+    enabled: true
+    patterns:
+      - name: "BSN 9 digits"
+        regex: '\b\d{9}\b'
+        score: 0.7
+    supported_languages:
+      - language: "nl"
+        context: ["bsn", "burgerservicenummer", "sofi"]
+    sensitivity: 3
+    countries: ["NL"]
+    validate_bsn: true
+
+  # --- Poland ---
+  - name: "Polish PESEL"
+    supported_entity: "PL_PESEL"
+    enabled: true
+    patterns:
+      - name: "PESEL 11 digits"
+        regex: '\b\d{11}\b'
+        score: 0.75
+    supported_languages:
+      - language: "pl"
+        context: ["pesel", "numer pesel", "dowód"]
+    sensitivity: 3
+    countries: ["PL"]
+    validate_pesel: true
+
+  - name: "Polish NIP"
+    supported_entity: "PL_NIP"
+    enabled: true
+    patterns:
+      - name: "NIP tax ID"
+        regex: '\b\d{3}-?\d{3}-?\d{2}-?\d{2}\b'
+        score: 0.7
+    supported_languages:
+      - language: "pl"
+        context: ["nip", "numer nip", "tax id"]
+    sensitivity: 2
+    countries: ["PL"]
+
+  # --- Spain ---
+  - name: "Spanish DNI"
+    supported_entity: "ES_DNI"
+    enabled: true
+    patterns:
+      - name: "DNI 8 digits + letter"
+        regex: '\b\d{8}[A-Z]\b'
+        score: 0.8
+    supported_languages:
+      - language: "es"
+        context: ["dni", "documento nacional", "identidad"]
+    sensitivity: 3
+    countries: ["ES"]
+
+  - name: "Spanish NIE"
+    supported_entity: "ES_NIE"
+    enabled: true
+    patterns:
+      - name: "NIE X/Y/Z + 7 digits + letter"
+        regex: '\b[XYZ]\d{7}[A-Z]\b'
+        score: 0.8
+    supported_languages:
+      - language: "es"
+        context: ["nie", "número de identidad de extranjero"]
+    sensitivity: 3
+    countries: ["ES"]
+
+  # --- Belgium ---
+  - name: "Belgian Rijksregisternummer"
+    supported_entity: "BE_NATIONAL_ID"
+    enabled: true
+    patterns:
+      - name: "Rijksregister with optional dots/dash"
+        regex: '\b\d{2}\.?\d{2}\.?\d{2}-?\d{3}\.?\d{2}\b'
+        score: 0.75
+    supported_languages:
+      - language: "nl"
+        context: ["rijksregisternummer", "nationaal nummer"]
+      - language: "fr"
+        context: ["numéro de registre national", "rn"]
+    sensitivity: 3
+    countries: ["BE"]
+
+  # --- Austria ---
+  - name: "Austrian Sozialversicherungsnummer"
+    supported_entity: "AT_SVN"
+    enabled: true
+    patterns:
+      - name: "SVN 10 digits"
+        regex: '\b\d{10}\b'
+        score: 0.65
+    supported_languages:
+      - language: "de"
+        context: ["sozialversicherungsnummer", "svnr", "sv-nummer"]
+    sensitivity: 3
+    countries: ["AT"]
+
+  # --- Sweden ---
+  - name: "Swedish Personnummer"
+    supported_entity: "SE_PERSONNUMMER"
+    enabled: true
+    patterns:
+      - name: "Personnummer 6+4 or 8+4"
+        regex: '\b\d{6}-?\d{4}\b|\b\d{8}-?\d{4}\b'
+        score: 0.7
+    supported_languages:
+      - language: "sv"
+        context: ["personnummer", "personnr", "id number"]
+    sensitivity: 3
+    countries: ["SE"]
+
+  # --- Denmark ---
+  - name: "Danish CPR-nummer"
+    supported_entity: "DK_CPR"
+    enabled: true
+    patterns:
+      - name: "CPR 6+4 digits"
+        regex: '\b\d{6}-?\d{4}\b'
+        score: 0.7
+    supported_languages:
+      - language: "da"
+        context: ["cpr", "cpr-nummer", "personnummer"]
+    sensitivity: 3
+    countries: ["DK"]
+
+  # --- Ireland ---
+  - name: "Irish PPS Number"
+    supported_entity: "IE_PPS"
+    enabled: true
+    patterns:
+      - name: "PPS 7 digits + 1-2 letters"
+        regex: '\b\d{7}[A-Z]{1,2}\b'
+        score: 0.75
+    supported_languages:
+      - language: "en"
+        context: ["pps", "pps number", "personal public service"]
+    sensitivity: 3
+    countries: ["IE"]
+
+  # --- Portugal ---
+  - name: "Portuguese NIF"
+    supported_entity: "PT_NIF"
+    enabled: true
+    patterns:
+      - name: "NIF 9 digits"
+        regex: '\b\d{9}\b'
+        score: 0.65
+    supported_languages:
+      - language: "pt"
+        context: ["nif", "número de identificação fiscal", "tax id"]
+    sensitivity: 2
+    countries: ["PT"]

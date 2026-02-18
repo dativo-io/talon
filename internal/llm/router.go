@@ -11,18 +11,29 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 )
 
+// CostContext holds cost totals and scope for graceful degradation decisions.
+type CostContext struct {
+	DailyTotal   float64
+	MonthlyTotal float64
+	AgentName    string
+	TenantID     string
+}
+
 // Router selects the appropriate LLM provider and model based on
 // data classification tier and policy configuration.
 type Router struct {
-	providers map[string]Provider
-	routing   *policy.ModelRoutingConfig
+	providers  map[string]Provider
+	routing    *policy.ModelRoutingConfig
+	costLimits *policy.CostLimitsConfig
 }
 
 // NewRouter creates an LLM router with the given providers and routing config.
-func NewRouter(routing *policy.ModelRoutingConfig, providers map[string]Provider) *Router {
+// costLimits may be nil; when set, GracefulRoute can downgrade to fallback_model when budget threshold is reached.
+func NewRouter(routing *policy.ModelRoutingConfig, providers map[string]Provider, costLimits *policy.CostLimitsConfig) *Router {
 	return &Router{
-		providers: providers,
-		routing:   routing,
+		providers:  providers,
+		routing:    routing,
+		costLimits: costLimits,
 	}
 }
 
@@ -92,6 +103,62 @@ func (r *Router) Route(ctx context.Context, tier int) (Provider, string, error) 
 	)
 
 	return provider, model, nil
+}
+
+// GracefulRoute selects provider and model like Route, but may downgrade to a fallback model
+// when cost degradation is enabled and the daily budget usage meets the threshold.
+// Returns (provider, model, degraded, originalModel, error). When degraded is true, originalModel
+// is the primary model that would have been used; model is the fallback actually used.
+func (r *Router) GracefulRoute(ctx context.Context, tier int, costCtx *CostContext) (provider Provider, model string, degraded bool, originalModel string, err error) {
+	ctx, span := tracer.Start(ctx, "llm.graceful_route",
+		trace.WithAttributes(attribute.Int("data.tier", tier)))
+	defer span.End()
+
+	provider, model, err = r.Route(ctx, tier)
+	if err != nil {
+		span.RecordError(err)
+		return nil, "", false, "", err
+	}
+
+	if costCtx == nil || r.costLimits == nil || r.costLimits.Degradation == nil || !r.costLimits.Degradation.Enabled {
+		return provider, model, false, "", nil
+	}
+	if r.costLimits.Daily <= 0 {
+		return provider, model, false, "", nil
+	}
+
+	budgetUsedPct := (costCtx.DailyTotal / r.costLimits.Daily) * 100
+	if budgetUsedPct < r.costLimits.Degradation.ThresholdPercent {
+		return provider, model, false, "", nil
+	}
+
+	fallbackModel := strings.TrimSpace(r.costLimits.Degradation.FallbackModel)
+	if fallbackModel == "" {
+		return provider, model, false, "", nil
+	}
+
+	fallbackProviderName, err := InferProvider(fallbackModel)
+	if err != nil {
+		span.RecordError(err)
+		return provider, model, false, "", nil
+	}
+	fallbackProvider, ok := r.providers[fallbackProviderName]
+	if !ok {
+		return provider, model, false, "", nil
+	}
+
+	span.SetAttributes(
+		attribute.Bool("cost.degraded", true),
+		attribute.String("cost.original_model", model),
+		attribute.String("cost.fallback_model", fallbackModel),
+		attribute.Float64("cost.budget_used_pct", budgetUsedPct),
+	)
+	return fallbackProvider, fallbackModel, true, model, nil
+}
+
+// InferProvider is the public name for inferProvider for use by callers that need to resolve a model to a provider.
+func InferProvider(model string) (string, error) {
+	return inferProvider(model)
 }
 
 // getTierConfig returns the routing configuration for the given tier.

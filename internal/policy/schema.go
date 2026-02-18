@@ -151,7 +151,16 @@ const schemaV2 = `{
           "properties": {
             "per_request": {"type": "number", "minimum": 0},
             "daily": {"type": "number", "minimum": 0},
-            "monthly": {"type": "number", "minimum": 0}
+            "monthly": {"type": "number", "minimum": 0},
+            "degradation": {
+              "type": "object",
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "threshold_percent": {"type": "number", "minimum": 0, "maximum": 100},
+                "fallback_model": {"type": "string"},
+                "notify": {"type": "boolean"}
+              }
+            }
           }
         },
         "resource_limits": {

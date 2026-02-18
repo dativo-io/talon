@@ -77,8 +77,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
 
 	providers := buildProviders(cfg)
-	routing := loadRoutingConfig(ctx, policyPath)
-	router := llm.NewRouter(routing, providers)
+	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath)
+	router := llm.NewRouter(routing, providers, costLimits)
 
 	secretsStore, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
 	if err != nil {
@@ -183,12 +183,13 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 	return providers
 }
 
-// loadRoutingConfig attempts to load model routing from the policy file.
-func loadRoutingConfig(ctx context.Context, policyPath string) *policy.ModelRoutingConfig {
+// loadRoutingAndCostLimits loads the policy file and returns model routing and cost limits
+// for the router (cost limits enable graceful degradation when budget threshold is hit).
+func loadRoutingAndCostLimits(ctx context.Context, policyPath string) (*policy.ModelRoutingConfig, *policy.CostLimitsConfig) {
 	pol, err := policy.LoadPolicy(ctx, policyPath, false)
 	if err != nil {
-		log.Debug().Err(err).Msg("could not pre-load policy for routing config")
-		return nil
+		log.Debug().Err(err).Msg("could not pre-load policy for routing/cost config")
+		return nil, nil
 	}
-	return pol.Policies.ModelRouting
+	return pol.Policies.ModelRouting, pol.Policies.CostLimits
 }

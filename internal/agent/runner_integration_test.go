@@ -104,7 +104,7 @@ func setupRunner(t *testing.T, policyDir string, providers map[string]llm.Provid
 	cls := classifier.MustNewScanner()
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(10)
-	router := llm.NewRouter(routingCfg, providers)
+	router := llm.NewRouter(routingCfg, providers, nil)
 
 	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testEncryptionKey)
 	require.NoError(t, err)
@@ -379,7 +379,7 @@ func TestRunner_TenantKeyFromVault(t *testing.T) {
 		Classifier: classifier.MustNewScanner(),
 		AttScanner: attachment.MustNewScanner(),
 		Extractor:  attachment.NewExtractor(10),
-		Router:     llm.NewRouter(routingCfg, providers),
+		Router:     llm.NewRouter(routingCfg, providers, nil),
 		Secrets:    secretsStore,
 		Evidence:   evidenceStore,
 	})
@@ -452,7 +452,7 @@ func TestRunner_VaultKeyACLDenied_FallsBackToOperator(t *testing.T) {
 		Classifier: classifier.MustNewScanner(),
 		AttScanner: attachment.MustNewScanner(),
 		Extractor:  attachment.NewExtractor(10),
-		Router:     llm.NewRouter(routingCfg, providers),
+		Router:     llm.NewRouter(routingCfg, providers, nil),
 		Secrets:    secretsStore,
 		Evidence:   evidenceStore,
 	})
@@ -551,7 +551,7 @@ policies:
 		Classifier:   classifier.MustNewScanner(),
 		AttScanner:   attachment.MustNewScanner(),
 		Extractor:    attachment.NewExtractor(10),
-		Router:       llm.NewRouter(routingCfg, providers),
+		Router:       llm.NewRouter(routingCfg, providers, nil),
 		Secrets:      secretsStore,
 		Evidence:     evidenceStore,
 		PlanReview:   planStore,
@@ -658,7 +658,7 @@ func TestRunner_HooksFireAtPipelineStages(t *testing.T) {
 		Classifier: classifier.MustNewScanner(),
 		AttScanner: attachment.MustNewScanner(),
 		Extractor:  attachment.NewExtractor(10),
-		Router:     llm.NewRouter(routingCfg, providers),
+		Router:     llm.NewRouter(routingCfg, providers, nil),
 		Secrets:    secretsStore,
 		Evidence:   evidenceStore,
 		Hooks:      registry,
@@ -729,7 +729,7 @@ func TestRunner_HookAbortBlocksPipeline(t *testing.T) {
 		Classifier: classifier.MustNewScanner(),
 		AttScanner: attachment.MustNewScanner(),
 		Extractor:  attachment.NewExtractor(10),
-		Router:     llm.NewRouter(routingCfg, providers),
+		Router:     llm.NewRouter(routingCfg, providers, nil),
 		Secrets:    secretsStore,
 		Evidence:   evidenceStore,
 		Hooks:      registry,

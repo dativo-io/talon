@@ -86,7 +86,7 @@ func TestBug8c_RouteReturnsErrorForUnknownModel(t *testing.T) {
 			Primary: "grok-2-ultra-secret",
 		},
 	}
-	router := NewRouter(routing, providers)
+	router := NewRouter(routing, providers, nil)
 
 	_, _, err := router.Route(context.Background(), 0)
 	assert.Error(t, err,
