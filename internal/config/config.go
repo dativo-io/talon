@@ -201,4 +201,3 @@ func validateSigningKey(key string) error {
 	}
 	return fmt.Errorf("signing_key must be at least 32 bytes or 64+ hex characters (got %d); set TALON_SIGNING_KEY", n)
 }
-

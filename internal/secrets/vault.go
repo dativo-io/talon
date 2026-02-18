@@ -155,7 +155,6 @@ func resolveEncryptionKey(key string) ([]byte, error) {
 	return nil, fmt.Errorf("encryption key must be 32 bytes or 64 hex characters (got %d): %w", len(key), ErrInvalidEncryptionKey)
 }
 
-
 // Close releases the database connection.
 func (s *SecretStore) Close() error {
 	return s.db.Close()

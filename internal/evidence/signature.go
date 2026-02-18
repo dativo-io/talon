@@ -41,7 +41,6 @@ func resolveSigningKey(key string) ([]byte, error) {
 	return []byte(key), nil
 }
 
-
 // Sign creates an HMAC-SHA256 signature for the given data.
 func (s *Signer) Sign(data []byte) (string, error) {
 	h := hmac.New(sha256.New, s.key)
