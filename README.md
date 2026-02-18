@@ -100,10 +100,10 @@ curl -sSL https://get.talon.dativo.io | sh
 
 # Initialize
 mkdir my-agents && cd my-agents
-talon init --org "MyCompany" --compliance "gdpr,nis2"
+talon init
 
-# Configure secrets
-talon secrets set OPENAI_API_KEY "sk-proj-..."
+# Configure secrets (or use env: export OPENAI_API_KEY=sk-proj-...)
+talon secrets set openai-api-key "sk-proj-..."
 
 # Run first governed agent
 talon run "Summarize EU AI regulation trends"
@@ -132,6 +132,7 @@ talon init
 
 # Set your LLM provider key (or use vault: talon secrets set openai-api-key "sk-...")
 export OPENAI_API_KEY=sk-your-key
+# Or: talon secrets set openai-api-key "sk-..."
 # Also supports: ANTHROPIC_API_KEY, AWS_REGION (for Bedrock), Ollama (local, no key needed)
 
 # Run your first governed agent
@@ -144,7 +145,7 @@ You'll see:
 
 [Agent response appears here]
 
-✓ Evidence stored: ev_a1b2c3d4e5f6
+✓ Evidence stored: req_xxxxxxxx
 ✓ Cost: €0.0018 | Duration: 1250ms
 ```
 
@@ -156,9 +157,10 @@ Try a policy block — set `daily: 0.001` in your `.talon.yaml`, run again, and 
 
 Verify evidence integrity at any time:
 ```bash
-talon audit verify ev_a1b2c3d4e5f6
-# ✓ Evidence ev_a1b2c3d4e5f6: signature VALID (HMAC-SHA256 intact)
+talon audit verify <evidence-id>
+# ✓ Evidence <evidence-id>: signature VALID (HMAC-SHA256 intact)
 ```
+(Evidence IDs are shown in run output, e.g. `req_xxxxxxxx`.)
 
 ## Features
 

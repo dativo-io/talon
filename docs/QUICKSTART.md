@@ -21,10 +21,10 @@ curl -sSL https://get.talon.dativo.io | sh
 
 ```bash
 mkdir my-agents && cd my-agents
-talon init --org "MyCompany" --compliance "gdpr,nis2"
+talon init
 ```
 
-This creates an `agent.talon.yaml` policy file with sensible defaults: cost limits, PII detection enabled, and your chosen compliance frameworks.
+Optional: `talon init --name my-agent --owner you@company.com` to set agent name and owner. This creates `agent.talon.yaml` and `talon.config.yaml` with sensible defaults: cost limits, PII detection enabled, and model routing.
 
 ## 3. Configure an LLM Provider
 
@@ -57,7 +57,7 @@ Output:
 
 The European Union has been at the forefront of AI regulation...
 
-✓ Evidence stored: ev_a1b2c3d4e5f6
+✓ Evidence stored: req_xxxxxxxx
 ✓ Cost: €0.0018 | Duration: 1250ms
 ```
 
@@ -134,11 +134,11 @@ talon secrets rotate openai-api-key
 ```bash
 # List recent evidence records
 talon audit list --limit 10
-#   ✓ ev_abc123 | 2026-02-18 14:30:00 | default/default | gpt-4o-mini | €0.0018 | 1250ms
+#   ✓ req_xxxxxxxx | 2026-02-18 14:30:00 | default/default | gpt-4o-mini | €0.0018 | 1250ms
 
-# Verify signature integrity
-talon audit verify ev_abc123
-#   ✓ Evidence ev_abc123: signature VALID (HMAC-SHA256 intact)
+# Verify signature integrity (use an ID from run output or audit list)
+talon audit verify <evidence-id>
+#   ✓ Evidence <evidence-id>: signature VALID (HMAC-SHA256 intact)
 ```
 
 ## 10. Multi-Tenant Usage
