@@ -131,6 +131,140 @@ func TestWebhookHook_UnreachableDoesNotAbort(t *testing.T) {
 	assert.True(t, result.Continue)
 }
 
+func TestWebhookHook_OnFilterDeniedOnlyDeliversForDenial(t *testing.T) {
+	var received int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	hook := NewWebhookHook(HookPostPolicy, HookConfig{
+		Type: "webhook",
+		URL:  server.URL,
+		On:   "denied",
+	})
+
+	// Payload with decision "deny" -> should deliver
+	dataDeny := &HookData{
+		TenantID: "acme",
+		Stage:    HookPostPolicy,
+		Payload:  mustMarshal(map[string]string{"decision": "deny", "action": "budget_exceeded"}),
+	}
+	result, err := hook.Execute(context.Background(), dataDeny)
+	require.NoError(t, err)
+	assert.True(t, result.Continue)
+	assert.Equal(t, 1, received)
+
+	// Payload with decision "allow" -> should not deliver
+	dataAllow := &HookData{
+		TenantID: "acme",
+		Stage:    HookPostPolicy,
+		Payload:  mustMarshal(map[string]string{"decision": "allow"}),
+	}
+	result, err = hook.Execute(context.Background(), dataAllow)
+	require.NoError(t, err)
+	assert.True(t, result.Continue)
+	assert.Equal(t, 1, received, "request count should not increase")
+}
+
+func TestWebhookHook_OnFilterAllowedOnlyDeliversForAllow(t *testing.T) {
+	var received int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	hook := NewWebhookHook(HookPostPolicy, HookConfig{
+		Type: "webhook",
+		URL:  server.URL,
+		On:   "allowed",
+	})
+
+	// Payload with decision "allow" -> should deliver
+	dataAllow := &HookData{
+		TenantID: "acme",
+		Stage:    HookPostPolicy,
+		Payload:  mustMarshal(map[string]string{"decision": "allow"}),
+	}
+	result, err := hook.Execute(context.Background(), dataAllow)
+	require.NoError(t, err)
+	assert.True(t, result.Continue)
+	assert.Equal(t, 1, received)
+
+	// Payload with decision "deny" -> should not deliver
+	dataDeny := &HookData{
+		TenantID: "acme",
+		Stage:    HookPostPolicy,
+		Payload:  mustMarshal(map[string]string{"decision": "deny"}),
+	}
+	result, err = hook.Execute(context.Background(), dataDeny)
+	require.NoError(t, err)
+	assert.True(t, result.Continue)
+	assert.Equal(t, 1, received, "request count should not increase")
+}
+
+func TestWebhookHook_OnFilterAllOrFiredAlwaysDelivers(t *testing.T) {
+	for _, on := range []string{"all", "fired", ""} {
+		t.Run(on, func(t *testing.T) {
+			var received int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				received++
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			hook := NewWebhookHook(HookPostPolicy, HookConfig{
+				Type: "webhook",
+				URL:  server.URL,
+				On:   on,
+			})
+
+			// Both allow and deny payloads should trigger delivery
+			for _, decision := range []string{"allow", "deny"} {
+				data := &HookData{
+					TenantID: "acme",
+					Stage:    HookPostPolicy,
+					Payload:  mustMarshal(map[string]string{"decision": decision}),
+				}
+				result, err := hook.Execute(context.Background(), data)
+				require.NoError(t, err)
+				assert.True(t, result.Continue)
+			}
+			assert.Equal(t, 2, received)
+		})
+	}
+}
+
+func TestOutcomeFromPayload(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload json.RawMessage
+		want    string
+	}{
+		{"nil", nil, "allowed"},
+		{"empty", json.RawMessage(`{}`), "allowed"},
+		{"decision allow", mustMarshal(map[string]string{"decision": "allow"}), "allowed"},
+		{"decision deny", mustMarshal(map[string]string{"decision": "deny"}), "denied"},
+		{"no decision key", mustMarshal(map[string]interface{}{"model": "gpt-4"}), "allowed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := outcomeFromPayload(tt.payload)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func mustMarshal(v interface{}) json.RawMessage {
+	out, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
+
 func TestLoadHooksFromConfig(t *testing.T) {
 	config := map[string][]HookConfig{
 		"post_policy": {

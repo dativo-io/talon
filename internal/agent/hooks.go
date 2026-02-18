@@ -128,9 +128,51 @@ func NewWebhookHook(point HookPoint, config HookConfig) *WebhookHook {
 // Point returns the pipeline point this hook is registered at.
 func (h *WebhookHook) Point() HookPoint { return h.point }
 
+// outcomeFromPayload derives allow/deny from HookData.Payload for filtering.
+// Payload may contain "decision": "allow"|"deny" (e.g. post_policy). If absent, the
+// hook point is only reached after policy allowed, so we treat as "allowed".
+func outcomeFromPayload(payload json.RawMessage) string {
+	if len(payload) == 0 {
+		return "allowed"
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return "allowed"
+	}
+	d, _ := m["decision"].(string)
+	switch d {
+	case "deny":
+		return "denied"
+	case "allow":
+		return "allowed"
+	default:
+		return "allowed"
+	}
+}
+
+// shouldDeliver returns true if the webhook should fire given the On filter and payload outcome.
+func (h *WebhookHook) shouldDeliver(outcome string) bool {
+	switch h.filter {
+	case "", "all", "fired":
+		return true
+	case "allowed":
+		return outcome == "allowed"
+	case "denied":
+		return outcome == "denied"
+	default:
+		return true
+	}
+}
+
 // Execute sends the hook data as JSON POST to the configured URL.
+// It only delivers when the configured On filter matches the payload outcome (e.g. on: "denied" only for denials).
 func (h *WebhookHook) Execute(ctx context.Context, data *HookData) (*HookResult, error) {
 	if h.url == "" {
+		return &HookResult{Continue: true}, nil
+	}
+
+	outcome := outcomeFromPayload(data.Payload)
+	if !h.shouldDeliver(outcome) {
 		return &HookResult{Continue: true}, nil
 	}
 
