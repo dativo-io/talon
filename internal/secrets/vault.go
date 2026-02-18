@@ -269,8 +269,9 @@ func (s *SecretStore) Get(ctx context.Context, name, tenantID, agentID string) (
 		return nil, fmt.Errorf("decrypting secret: %w", err)
 	}
 
+	now := time.Now()
 	_, _ = s.db.ExecContext(ctx, `UPDATE secrets SET accessed_at = ?, access_count = access_count + 1 WHERE name = ?`,
-		time.Now(), name)
+		now, name)
 
 	s.logAccess(ctx, name, tenantID, agentID, true, "")
 
@@ -279,7 +280,7 @@ func (s *SecretStore) Get(ctx context.Context, name, tenantID, agentID string) (
 		Value:       plaintext,
 		ACL:         acl,
 		CreatedAt:   createdAt.Time,
-		AccessedAt:  accessedAt.Time,
+		AccessedAt:  now,
 		AccessCount: accessCount + 1,
 	}, nil
 }
