@@ -637,3 +637,22 @@ func TestGracefulRoute(t *testing.T) {
 		assert.Equal(t, "anthropic.claude-3-sonnet-20240229-v1:0", model)
 	})
 }
+
+func BenchmarkRouterRoute(b *testing.B) {
+	providers := map[string]Provider{
+		"openai":    &mockProvider{name: "openai"},
+		"anthropic": &mockProvider{name: "anthropic"},
+		"bedrock":   &mockProvider{name: "bedrock"},
+	}
+	routing := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4o-mini"},
+		Tier1: &policy.TierConfig{Primary: "claude-sonnet-4-20250514"},
+		Tier2: &policy.TierConfig{Primary: "anthropic.claude-3-sonnet-20240229-v1:0", BedrockOnly: true},
+	}
+	router := NewRouter(routing, providers, nil)
+	ctx := context.Background()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = router.Route(ctx, i%3)
+	}
+}

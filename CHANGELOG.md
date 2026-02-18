@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+#### Testing & CI
+- Test pyramid: unit (`./internal/...`, `./cmd/...`), integration (`tests/integration/` with `-tags=integration`), e2e (`tests/e2e/` with `-tags=e2e`)
+- E2E tests for CLI flows: init, run (mock LLM), dry-run, policy deny, tenant/agent, attachments, audit list/verify, costs, secrets lifecycle, validate
+- Makefile targets: `test-e2e`, `test-all` (unit + integration + e2e)
+- CI: e2e job; coverage below 70% fails the build
+- `OPENAI_BASE_URL` env support for OpenAI provider (e2e/mock usage)
+- Shared test helpers in `internal/testutil/` (mock provider, policy files, constants)
+- Fuzz tests: `FuzzPIIScan`, `FuzzLoadPolicy`, `FuzzInjectionScan`
+- Benchmarks: `BenchmarkPIIScan`, `BenchmarkRouterRoute`, `BenchmarkEvidenceStore`, `BenchmarkCostTotal`
+
 #### Agent Pipeline (`internal/agent/`)
 - Full orchestration runner: load policy → classify input → scan attachments → evaluate OPA → resolve secrets → route LLM → call provider → classify output → generate evidence
 - Execution plan generation for EU AI Act Art. 11/13 compliance (plan review gate, SHA-256 hashed prompts, configurable timeout)

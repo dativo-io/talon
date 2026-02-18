@@ -542,3 +542,20 @@ func TestComputeHash(t *testing.T) {
 	pol2.ComputeHash(content)
 	assert.Equal(t, pol.Hash, pol2.Hash)
 }
+
+// FuzzLoadPolicy runs policy loading on fuzz YAML input to catch panics and edge cases.
+func FuzzLoadPolicy(f *testing.F) {
+	ctx := context.Background()
+	f.Add([]byte("agent:\n  name: x\n"))
+	f.Add([]byte("policies:\n  cost_limits:\n    daily: 1\n"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > 1<<20 {
+			t.Skip("input too large")
+		}
+		path := filepath.Join(t.TempDir(), "fuzz.yaml")
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Skip(err)
+		}
+		_, _ = LoadPolicy(ctx, path, false)
+	})
+}

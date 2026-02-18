@@ -15,6 +15,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/llm"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/testutil"
 )
 
 // TestUserQueryWorkflow simulates the full "talon run" pipeline:
@@ -45,9 +46,9 @@ func TestUserQueryWorkflow(t *testing.T) {
 			Tier2: &policy.TierConfig{Primary: "anthropic.claude-3-sonnet-20240229-v1:0", BedrockOnly: true},
 		}
 		providers := map[string]llm.Provider{
-			"openai":    &mockProvider{name: "openai"},
-			"anthropic": &mockProvider{name: "anthropic"},
-			"bedrock":   &mockProvider{name: "bedrock"},
+			"openai":    &testutil.MockProvider{ProviderName: "openai"},
+			"anthropic": &testutil.MockProvider{ProviderName: "anthropic"},
+			"bedrock":   &testutil.MockProvider{ProviderName: "bedrock"},
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
@@ -86,8 +87,8 @@ func TestUserQueryWorkflow(t *testing.T) {
 			Tier1: &policy.TierConfig{Primary: "claude-sonnet-4-20250514", Location: "eu"},
 		}
 		providers := map[string]llm.Provider{
-			"openai":    &mockProvider{name: "openai"},
-			"anthropic": &mockProvider{name: "anthropic"},
+			"openai":    &testutil.MockProvider{ProviderName: "openai"},
+			"anthropic": &testutil.MockProvider{ProviderName: "anthropic"},
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
@@ -115,7 +116,7 @@ func TestUserQueryWorkflow(t *testing.T) {
 			},
 		}
 		providers := map[string]llm.Provider{
-			"bedrock": &mockProvider{name: "bedrock"},
+			"bedrock": &testutil.MockProvider{ProviderName: "bedrock"},
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
@@ -312,9 +313,9 @@ func TestPIIAndAttachmentCombined(t *testing.T) {
 			Tier2: &policy.TierConfig{Primary: "anthropic.claude-3-sonnet-20240229-v1:0", BedrockOnly: true},
 		}
 		providers := map[string]llm.Provider{
-			"openai":    &mockProvider{name: "openai"},
-			"anthropic": &mockProvider{name: "anthropic"},
-			"bedrock":   &mockProvider{name: "bedrock"},
+			"openai":    &testutil.MockProvider{ProviderName: "openai"},
+			"anthropic": &testutil.MockProvider{ProviderName: "anthropic"},
+			"bedrock":   &testutil.MockProvider{ProviderName: "bedrock"},
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
@@ -401,9 +402,9 @@ compliance:
 
 		// Use the loaded policy to create a router
 		providers := map[string]llm.Provider{
-			"openai":    &mockProvider{name: "openai"},
-			"anthropic": &mockProvider{name: "anthropic"},
-			"bedrock":   &mockProvider{name: "bedrock"},
+			"openai":    &testutil.MockProvider{ProviderName: "openai"},
+			"anthropic": &testutil.MockProvider{ProviderName: "anthropic"},
+			"bedrock":   &testutil.MockProvider{ProviderName: "bedrock"},
 		}
 
 		router := llm.NewRouter(pol.Policies.ModelRouting, providers, nil)
@@ -460,9 +461,9 @@ func TestSovereigntyEnforcement(t *testing.T) {
 		// inferProvider("claude-sonnet-4-20250514") returned "anthropic"
 		// and the request went to Anthropic's US-based API
 		providers := map[string]llm.Provider{
-			"anthropic": &mockProvider{name: "anthropic"},
-			"bedrock":   &mockProvider{name: "bedrock"},
-			"openai":    &mockProvider{name: "openai"},
+			"anthropic": &testutil.MockProvider{ProviderName: "anthropic"},
+			"bedrock":   &testutil.MockProvider{ProviderName: "bedrock"},
+			"openai":    &testutil.MockProvider{ProviderName: "openai"},
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
@@ -492,9 +493,9 @@ func TestSovereigntyEnforcement(t *testing.T) {
 		}
 
 		providers := map[string]llm.Provider{
-			"openai":    &mockProvider{name: "openai"},
-			"anthropic": &mockProvider{name: "anthropic"},
-			"bedrock":   &mockProvider{name: "bedrock"},
+			"openai":    &testutil.MockProvider{ProviderName: "openai"},
+			"anthropic": &testutil.MockProvider{ProviderName: "anthropic"},
+			"bedrock":   &testutil.MockProvider{ProviderName: "bedrock"},
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
@@ -519,8 +520,8 @@ func TestSovereigntyEnforcement(t *testing.T) {
 
 		// Bedrock NOT registered — system must fail, not silently route elsewhere
 		providers := map[string]llm.Provider{
-			"openai":    &mockProvider{name: "openai"},
-			"anthropic": &mockProvider{name: "anthropic"},
+			"openai":    &testutil.MockProvider{ProviderName: "openai"},
+			"anthropic": &testutil.MockProvider{ProviderName: "anthropic"},
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
@@ -541,24 +542,4 @@ func TestSovereigntyEnforcement(t *testing.T) {
 		assert.NotEmpty(t, warnings, "should warn when bedrock_only uses non-bedrock model name")
 		assert.Contains(t, warnings[0].Message, "bedrock_only is true")
 	})
-}
-
-// mockProvider implements llm.Provider for integration tests without live API calls.
-type mockProvider struct {
-	name string
-}
-
-func (m *mockProvider) Name() string { return m.name }
-func (m *mockProvider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
-	return &llm.Response{
-		Content:      "mock response from " + m.name,
-		FinishReason: "stop",
-		InputTokens:  100,
-		OutputTokens: 50,
-		Model:        req.Model,
-	}, nil
-}
-
-func (m *mockProvider) EstimateCost(model string, inputTokens, outputTokens int) float64 {
-	return 0.001
 }
