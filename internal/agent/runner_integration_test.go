@@ -269,6 +269,31 @@ func TestRunner_LLMError(t *testing.T) {
 	assert.Contains(t, err.Error(), "calling LLM")
 }
 
+func TestRunner_DefaultPolicyPathUsesPolicyDir(t *testing.T) {
+	dir := t.TempDir()
+	writeTestPolicy(t, dir, "default-path-agent")
+
+	providers := map[string]llm.Provider{
+		"openai": &mockProvider{name: "openai", content: "policy from policyDir"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner := setupRunner(t, dir, providers, routingCfg)
+
+	// No PolicyPath: runner must resolve policyDir/AgentName.talon.yaml
+	resp, err := runner.Run(context.Background(), &RunRequest{
+		TenantID:       "acme",
+		AgentName:      "default-path-agent",
+		Prompt:         "Hello",
+		InvocationType: "manual",
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+	assert.Equal(t, "policy from policyDir", resp.Response)
+}
+
 func TestRunner_MissingPolicy(t *testing.T) {
 	dir := t.TempDir()
 

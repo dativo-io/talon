@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -142,7 +143,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	// Step 1: Load policy
 	policyPath := req.PolicyPath
 	if policyPath == "" {
-		policyPath = req.AgentName + ".talon.yaml"
+		policyPath = filepath.Join(r.policyDir, req.AgentName+".talon.yaml")
 	}
 
 	pol, err := policy.LoadPolicy(ctx, policyPath, false)
