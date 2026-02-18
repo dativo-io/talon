@@ -274,8 +274,9 @@ func (s *Store) List(ctx context.Context, tenantID, agentID string, from, to tim
 	return results, nil
 }
 
-// CostTotal returns the sum of CostEUR for evidence in the given time range.
+// CostTotal returns the sum of CostEUR for evidence in the half-open time range [from, to).
 // If agentID is empty, sums across all agents for the tenant.
+// Callers should pass to as the start of the next period (e.g. dayStart.Add(24*time.Hour)) to avoid double-counting at boundaries.
 func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, to time.Time) (float64, error) {
 	ctx, span := tracer.Start(ctx, "evidence.cost_total",
 		trace.WithAttributes(
@@ -295,7 +296,7 @@ func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, t
 		args = append(args, from)
 	}
 	if !to.IsZero() {
-		query += ` AND timestamp <= ?`
+		query += ` AND timestamp < ?`
 		args = append(args, to)
 	}
 
@@ -321,7 +322,8 @@ func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, t
 	return total, nil
 }
 
-// CostByAgent returns cost per agent for the tenant in the given time range.
+// CostByAgent returns cost per agent for the tenant in the half-open time range [from, to).
+// Callers should pass to as the start of the next period to avoid double-counting at boundaries.
 func (s *Store) CostByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]float64, error) {
 	ctx, span := tracer.Start(ctx, "evidence.cost_by_agent",
 		trace.WithAttributes(attribute.String("tenant_id", tenantID)))
@@ -334,7 +336,7 @@ func (s *Store) CostByAgent(ctx context.Context, tenantID string, from, to time.
 		args = append(args, from)
 	}
 	if !to.IsZero() {
-		query += ` AND timestamp <= ?`
+		query += ` AND timestamp < ?`
 		args = append(args, to)
 	}
 
