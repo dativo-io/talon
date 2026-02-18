@@ -19,6 +19,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -155,14 +156,55 @@ func deriveDefaultKey(dataDir, salt string) string {
 }
 
 func (c *Config) validate() error {
-	if len(c.SecretsKey) != 32 {
-		return fmt.Errorf("secrets_key must be exactly 32 bytes (got %d); set TALON_SECRETS_KEY", len(c.SecretsKey))
+	if err := validateSecretsKey(c.SecretsKey); err != nil {
+		return err
 	}
-	if len(c.SigningKey) < 32 {
-		return fmt.Errorf("signing_key must be at least 32 bytes (got %d); set TALON_SIGNING_KEY", len(c.SigningKey))
+	if err := validateSigningKey(c.SigningKey); err != nil {
+		return err
 	}
 	if c.MaxAttachmentMB <= 0 {
 		return fmt.Errorf("max_attachment_mb must be positive")
 	}
 	return nil
+}
+
+// validateSecretsKey accepts either 32 raw bytes or 64 hex characters (decodes to 32 bytes for AES-256).
+func validateSecretsKey(key string) error {
+	n := len(key)
+	if n == 32 {
+		return nil
+	}
+	if n == 64 && isHexString(key) {
+		decoded, err := hex.DecodeString(key)
+		if err != nil || len(decoded) != 32 {
+			return fmt.Errorf("secrets_key hex must decode to 32 bytes: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("secrets_key must be exactly 32 bytes or 64 hex characters (got %d); set TALON_SECRETS_KEY", n)
+}
+
+// validateSigningKey accepts either ≥32 raw bytes or ≥64 hex characters (decoded length ≥32 for HMAC-SHA256).
+func validateSigningKey(key string) error {
+	n := len(key)
+	if n >= 32 {
+		return nil
+	}
+	if n >= 64 && n%2 == 0 && isHexString(key) {
+		decoded, err := hex.DecodeString(key)
+		if err != nil || len(decoded) < 32 {
+			return fmt.Errorf("signing_key hex must decode to at least 32 bytes: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("signing_key must be at least 32 bytes or 64+ hex characters (got %d); set TALON_SIGNING_KEY", n)
+}
+
+func isHexString(s string) bool {
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
 }

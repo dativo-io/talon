@@ -394,3 +394,14 @@ func TestSignAndVerify(t *testing.T) {
 	assert.True(t, signer.Verify(data, sig))
 	assert.False(t, signer.Verify([]byte("tampered"), sig))
 }
+
+func TestSignerWithHexKey(t *testing.T) {
+	// 64 hex chars → 32 bytes (full HMAC key strength); recommended: openssl rand -hex 32
+	hexKey := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	signer, err := NewSigner(hexKey)
+	require.NoError(t, err)
+	data := []byte("payload")
+	sig, err := signer.Sign(data)
+	require.NoError(t, err)
+	assert.True(t, signer.Verify(data, sig))
+}

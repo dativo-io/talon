@@ -9,6 +9,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSecretStore_WithHexKey(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "secrets_hex.db")
+	// 64 hex chars → 32 bytes (full AES-256 strength); recommended: openssl rand -hex 32
+	key := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	store, err := NewSecretStore(dbPath, key)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+	acl := ACL{Agents: []string{"*"}, Tenants: []string{"*"}}
+	err = store.Set(ctx, "k", []byte("value"), acl)
+	require.NoError(t, err)
+	secret, err := store.Get(ctx, "k", "t", "a")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("value"), secret.Value)
+}
+
 func TestSecretStore(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "secrets.db")

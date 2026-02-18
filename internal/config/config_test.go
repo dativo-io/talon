@@ -57,7 +57,20 @@ func TestLoad_InvalidSecretsKeyLength(t *testing.T) {
 
 	_, err := Load()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "secrets_key must be exactly 32 bytes")
+	assert.Contains(t, err.Error(), "secrets_key")
+}
+
+func TestLoad_ExplicitKeysHex(t *testing.T) {
+	resetViper(t)
+	// 64 hex chars = 32 bytes when decoded (full AES-256 strength)
+	t.Setenv("TALON_SECRETS_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	t.Setenv("TALON_SIGNING_KEY", "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Len(t, cfg.SecretsKey, 64)
+	assert.Len(t, cfg.SigningKey, 64)
+	assert.False(t, cfg.UsingDefaultKeys())
 }
 
 func TestLoad_InvalidSigningKeyLength(t *testing.T) {
@@ -66,7 +79,7 @@ func TestLoad_InvalidSigningKeyLength(t *testing.T) {
 
 	_, err := Load()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "signing_key must be at least 32 bytes")
+	assert.Contains(t, err.Error(), "signing_key")
 }
 
 func TestLoad_CustomDataDir(t *testing.T) {

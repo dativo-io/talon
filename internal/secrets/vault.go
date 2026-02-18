@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -79,10 +80,11 @@ type AccessRecord struct {
 }
 
 // NewSecretStore creates an encrypted secret store backed by SQLite.
-// The encryptionKey must be exactly 32 bytes (AES-256).
+// The encryptionKey must be exactly 32 raw bytes or 64 hex characters (decoded to 32 bytes for AES-256).
 func NewSecretStore(dbPath string, encryptionKey string) (*SecretStore, error) {
-	if len(encryptionKey) != 32 {
-		return nil, fmt.Errorf("encryption key must be 32 bytes (256 bits): %w", ErrInvalidEncryptionKey)
+	keyBytes, err := resolveEncryptionKey(encryptionKey)
+	if err != nil {
+		return nil, err
 	}
 
 	db, err := sql.Open("sqlite3", dbPath)
@@ -120,7 +122,7 @@ func NewSecretStore(dbPath string, encryptionKey string) (*SecretStore, error) {
 		return nil, fmt.Errorf("creating schema: %w", err)
 	}
 
-	block, err := aes.NewCipher([]byte(encryptionKey))
+	block, err := aes.NewCipher(keyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("creating cipher: %w", err)
 	}
@@ -132,9 +134,33 @@ func NewSecretStore(dbPath string, encryptionKey string) (*SecretStore, error) {
 
 	return &SecretStore{
 		db:            db,
-		encryptionKey: []byte(encryptionKey),
+		encryptionKey: keyBytes,
 		gcm:           gcm,
 	}, nil
+}
+
+// resolveEncryptionKey interprets the key as 32 raw bytes or 64 hex characters (→ 32 bytes for AES-256).
+func resolveEncryptionKey(key string) ([]byte, error) {
+	if len(key) == 64 && isHex(key) {
+		decoded, err := hex.DecodeString(key)
+		if err != nil || len(decoded) != 32 {
+			return nil, fmt.Errorf("encryption key hex must decode to 32 bytes: %w", ErrInvalidEncryptionKey)
+		}
+		return decoded, nil
+	}
+	if len(key) == 32 {
+		return []byte(key), nil
+	}
+	return nil, fmt.Errorf("encryption key must be 32 bytes or 64 hex characters (got %d): %w", len(key), ErrInvalidEncryptionKey)
+}
+
+func isHex(s string) bool {
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 // Close releases the database connection.

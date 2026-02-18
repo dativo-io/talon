@@ -158,8 +158,8 @@ talon secrets set openai-api-key "sk-acme-..." # per-tenant key in vault
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `TALON_DATA_DIR` | Base directory for state | `~/.talon` |
-| `TALON_SECRETS_KEY` | AES-256 encryption key (32 bytes) | Auto-derived per machine |
-| `TALON_SIGNING_KEY` | HMAC signing key (≥32 bytes) | Auto-derived per machine |
+| `TALON_SECRETS_KEY` | AES-256 key: 32 raw bytes or 64 hex chars (256 bits) | Auto-derived per machine |
+| `TALON_SIGNING_KEY` | HMAC key: ≥32 raw bytes or 64+ hex chars (≥256 bits) | Auto-derived per machine |
 | `TALON_DEFAULT_POLICY` | Default policy filename | `agent.talon.yaml` |
 | `TALON_MAX_ATTACHMENT_MB` | Max attachment size | `10` |
 | `TALON_OLLAMA_BASE_URL` | Ollama endpoint | `http://localhost:11434` |
@@ -169,11 +169,12 @@ talon secrets set openai-api-key "sk-acme-..." # per-tenant key in vault
 
 ### Crypto Key Warning
 
-On first run with no keys configured, Talon derives deterministic keys from your data directory path. This is fine for local development but **not for production**. Set explicit keys:
+On first run with no keys configured, Talon derives deterministic keys from your data directory path. This is fine for local development but **not for production**. Set explicit keys with full AES-256 / HMAC strength (256 bits). Keys may be given as **hex**: 64 hex characters decode to 32 bytes.
 
 ```bash
-export TALON_SECRETS_KEY=$(openssl rand -hex 16)   # 32 hex chars = 32-byte string
-export TALON_SIGNING_KEY=$(openssl rand -hex 16)
+# 64 hex chars → 32 bytes = 256 bits (full AES-256 strength)
+export TALON_SECRETS_KEY=$(openssl rand -hex 32)
+export TALON_SIGNING_KEY=$(openssl rand -hex 32)
 ```
 
 ## Next Steps
