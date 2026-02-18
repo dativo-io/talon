@@ -100,10 +100,10 @@ curl -sSL https://get.talon.dativo.io | sh
 
 # Initialize
 mkdir my-agents && cd my-agents
-talon init --org "MyCompany" --compliance "gdpr,nis2"
+talon init
 
-# Configure secrets
-talon secrets set OPENAI_API_KEY "sk-proj-..."
+# Configure secrets (or use env: export OPENAI_API_KEY=sk-proj-...)
+talon secrets set openai-api-key "sk-proj-..."
 
 # Run first governed agent
 talon run "Summarize EU AI regulation trends"
@@ -130,10 +130,10 @@ curl -sSL https://get.talon.dativo.io | sh
 mkdir my-agents && cd my-agents
 talon init
 
-# Set your LLM provider
-export TALON_LLM_PROVIDER=openai
+# Set your LLM provider key (or use vault: talon secrets set openai-api-key "sk-...")
 export OPENAI_API_KEY=sk-your-key
-# Also supports: anthropic, bedrock (eu-west-1), ollama (local, no key needed)
+# Or: talon secrets set openai-api-key "sk-..."
+# Also supports: ANTHROPIC_API_KEY, AWS_REGION (for Bedrock), Ollama (local, no key needed)
 
 # Run your first governed agent
 talon run "Summarize the key trends in European AI regulation"
@@ -141,20 +141,26 @@ talon run "Summarize the key trends in European AI regulation"
 
 You'll see:
 ```
-✓ Policy loaded: agent.talon.yaml (v1.0.0:sha256:a1b2c3)
-✓ Input classified: Tier 0 (no PII detected)
-✓ Attachment scan: No attachments
-✓ Model routed: claude-haiku-3.5 (cost estimate: €0.002)
-✓ Policy check: ALLOWED (cost within budget)
+✓ Policy check: ALLOWED
 
 [Agent response appears here]
 
-✓ Evidence stored: evidence/2026/02/15/req_abc123.json (signed)
-✓ Memory: No learnings recorded
-✓ Cost: €0.0018 | Budget remaining: €199.998/day
+✓ Evidence stored: req_xxxxxxxx
+✓ Cost: €0.0018 | Duration: 1250ms
 ```
 
-Try a policy block — set `daily: 0.001` in your `.talon.yaml`, run again, and watch the policy engine deny the request with full evidence.
+Try a policy block — set `daily: 0.001` in your `.talon.yaml`, run again, and watch the policy engine deny the request:
+```
+✗ Policy check: DENIED
+  Reason: budget_exceeded
+```
+
+Verify evidence integrity at any time:
+```bash
+talon audit verify <evidence-id>
+# ✓ Evidence <evidence-id>: signature VALID (HMAC-SHA256 intact)
+```
+(Evidence IDs are shown in run output, e.g. `req_xxxxxxxx`.)
 
 ## Features
 
@@ -250,20 +256,32 @@ Detailed view:
 ## CLI Commands
 
 ```bash
-talon init                              # Scaffold new project
-talon run "query"                       # Run agent with policy enforcement
-talon run --dry-run "query"             # Show policy decision without LLM call
-talon validate                          # Validate .talon.yaml
-talon audit list [--tenant acme]        # List evidence records
-talon audit export --format csv         # Export for compliance
-talon audit verify <evidence-id>        # Verify HMAC signature
-talon costs [--tenant acme]             # Cost summary
-talon secrets set <name> <value>        # Store encrypted secret
-talon secrets list                      # List secrets (metadata only)
-talon secrets audit                     # View secret access log
-talon memory list [--agent name]        # View agent learnings
-talon serve [--port 8080] [--dashboard] # Start HTTP + MCP server (includes proxy mode)
-talon provider test                     # Test LLM provider connectivity
+# Agent execution
+talon run "query"                            # Run agent with policy enforcement
+talon run --dry-run "query"                  # Show policy decision without LLM call
+talon run --attach report.pdf "Summarize"    # Process attachments (injection-scanned)
+talon run --agent sales --tenant acme "..."  # Specify agent and tenant
+talon run --policy custom.talon.yaml "..."   # Use explicit policy file
+
+# Project setup
+talon init                                   # Scaffold new project
+talon validate                               # Validate .talon.yaml
+
+# Audit trail
+talon audit list                             # List evidence records
+talon audit list --tenant acme --limit 50    # Filter by tenant with limit
+talon audit verify <evidence-id>             # Verify HMAC-SHA256 signature
+
+# Secrets vault
+talon secrets set <name> <value>             # Store encrypted secret (AES-256-GCM)
+talon secrets list                           # List secrets (metadata only, values hidden)
+talon secrets audit                          # View secret access log
+talon secrets rotate <name>                  # Re-encrypt with fresh nonce
+
+# Coming soon
+talon costs [--tenant acme]                  # Cost and budget summary
+talon memory list [--agent name]             # View agent learnings
+talon serve [--port 8080] [--dashboard]      # Start HTTP + MCP server
 ```
 
 ## PII and pattern configuration

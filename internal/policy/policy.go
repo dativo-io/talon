@@ -221,12 +221,22 @@ type AuditConfig struct {
 	IncludeResponses bool   `yaml:"include_responses,omitempty" json:"include_responses,omitempty"`
 }
 
+// PlanReviewConfig configures when execution plans require human review (EU AI Act Art. 14).
+type PlanReviewConfig struct {
+	RequireForTools  bool    `yaml:"require_for_tools" json:"require_for_tools"`
+	RequireForTier   string  `yaml:"require_for_tier" json:"require_for_tier"`
+	CostThresholdEUR float64 `yaml:"cost_threshold_eur" json:"cost_threshold_eur"`
+	TimeoutMinutes   int     `yaml:"timeout_minutes" json:"timeout_minutes"`
+	NotifyWebhook    string  `yaml:"notify_webhook" json:"notify_webhook"`
+}
+
 // ComplianceConfig declares regulatory framework alignment.
 type ComplianceConfig struct {
-	Frameworks     []string `yaml:"frameworks,omitempty" json:"frameworks,omitempty"`
-	DataResidency  string   `yaml:"data_residency,omitempty" json:"data_residency,omitempty"`
-	AIActRiskLevel string   `yaml:"ai_act_risk_level,omitempty" json:"ai_act_risk_level,omitempty"`
-	HumanOversight string   `yaml:"human_oversight,omitempty" json:"human_oversight,omitempty"`
+	Frameworks     []string          `yaml:"frameworks,omitempty" json:"frameworks,omitempty"`
+	DataResidency  string            `yaml:"data_residency,omitempty" json:"data_residency,omitempty"`
+	AIActRiskLevel string            `yaml:"ai_act_risk_level,omitempty" json:"ai_act_risk_level,omitempty"`
+	HumanOversight string            `yaml:"human_oversight,omitempty" json:"human_oversight,omitempty"`
+	PlanReview     *PlanReviewConfig `yaml:"plan_review,omitempty" json:"plan_review,omitempty"`
 }
 
 // MetadataConfig holds optional organizational metadata.

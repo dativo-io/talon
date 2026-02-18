@@ -180,3 +180,43 @@ func TestExtractFileSizeLimit(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds limit")
 }
+
+// TestExtractBytes verifies in-memory extraction matches Extract behavior (used by runner for --attach).
+func TestExtractBytes(t *testing.T) {
+	ctx := context.Background()
+	extractor := NewExtractor(10)
+
+	t.Run("plain text", func(t *testing.T) {
+		got, err := extractor.ExtractBytes(ctx, "readme.txt", []byte("hello world"))
+		require.NoError(t, err)
+		assert.Equal(t, "hello world", got)
+	})
+	t.Run("markdown", func(t *testing.T) {
+		got, err := extractor.ExtractBytes(ctx, "doc.md", []byte("# Title\n\nBody"))
+		require.NoError(t, err)
+		assert.Equal(t, "# Title\n\nBody", got)
+	})
+	t.Run("html sanitized", func(t *testing.T) {
+		got, err := extractor.ExtractBytes(ctx, "page.html", []byte("<script>evil</script><p>Safe</p>"))
+		require.NoError(t, err)
+		assert.NotContains(t, got, "evil")
+		assert.Contains(t, got, "Safe")
+	})
+	t.Run("pdf placeholder", func(t *testing.T) {
+		got, err := extractor.ExtractBytes(ctx, "report.pdf", []byte("\x25\x50\x44\x46-")) // PDF magic
+		require.NoError(t, err)
+		assert.Contains(t, got, "PDF content extraction")
+	})
+	t.Run("unsupported format", func(t *testing.T) {
+		_, err := extractor.ExtractBytes(ctx, "file.xyz", []byte("data"))
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported file type")
+	})
+	t.Run("size limit", func(t *testing.T) {
+		small := NewExtractor(1) // 1 MB
+		data := make([]byte, 2*1024*1024)
+		_, err := small.ExtractBytes(ctx, "big.txt", data)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "exceeds limit")
+	})
+}
