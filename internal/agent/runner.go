@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
@@ -35,36 +36,42 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/agent")
 
 // Runner executes the full agent orchestration pipeline.
 type Runner struct {
-	policyDir  string
-	classifier *classifier.Scanner
-	attScanner *attachment.Scanner
-	extractor  *attachment.Extractor
-	router     *llm.Router
-	secrets    *secrets.SecretStore
-	evidence   *evidence.Generator
+	policyDir    string
+	classifier   *classifier.Scanner
+	attScanner   *attachment.Scanner
+	extractor    *attachment.Extractor
+	router       *llm.Router
+	secrets      *secrets.SecretStore
+	evidence     *evidence.Generator
+	planReview   *PlanReviewStore
+	toolRegistry *tools.ToolRegistry
 }
 
 // RunnerConfig holds the dependencies for constructing a Runner.
 type RunnerConfig struct {
-	PolicyDir  string
-	Classifier *classifier.Scanner
-	AttScanner *attachment.Scanner
-	Extractor  *attachment.Extractor
-	Router     *llm.Router
-	Secrets    *secrets.SecretStore
-	Evidence   *evidence.Store
+	PolicyDir    string
+	Classifier   *classifier.Scanner
+	AttScanner   *attachment.Scanner
+	Extractor    *attachment.Extractor
+	Router       *llm.Router
+	Secrets      *secrets.SecretStore
+	Evidence     *evidence.Store
+	PlanReview   *PlanReviewStore
+	ToolRegistry *tools.ToolRegistry
 }
 
 // NewRunner creates an agent runner with the given dependencies.
 func NewRunner(cfg RunnerConfig) *Runner {
 	return &Runner{
-		policyDir:  cfg.PolicyDir,
-		classifier: cfg.Classifier,
-		attScanner: cfg.AttScanner,
-		extractor:  cfg.Extractor,
-		router:     cfg.Router,
-		secrets:    cfg.Secrets,
-		evidence:   evidence.NewGenerator(cfg.Evidence),
+		policyDir:    cfg.PolicyDir,
+		classifier:   cfg.Classifier,
+		attScanner:   cfg.AttScanner,
+		extractor:    cfg.Extractor,
+		router:       cfg.Router,
+		secrets:      cfg.Secrets,
+		evidence:     evidence.NewGenerator(cfg.Evidence),
+		planReview:   cfg.PlanReview,
+		toolRegistry: cfg.ToolRegistry,
 	}
 }
 
@@ -93,6 +100,7 @@ type RunResponse struct {
 	DurationMS  int64
 	PolicyAllow bool
 	DenyReason  string
+	PlanPending string // set when execution is gated for human review (EU AI Act Art. 14)
 }
 
 // Run executes the complete agent pipeline:
@@ -219,6 +227,15 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		}, nil
 	}
 
+	// Step 4.5: Plan Review Gate (EU AI Act Art. 14)
+	resp, ok, err := r.maybeGateForPlanReview(ctx, pol, req, correlationID, inputClass.Tier, processedPrompt)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		return resp, nil
+	}
+
 	// Step 5+6: Route LLM and resolve tenant-scoped API key
 	provider, model, secretsAccessed, err := r.resolveProvider(ctx, req, inputClass.Tier)
 	if err != nil {
@@ -305,20 +322,23 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		OutputResponse:  llmResp.Content,
 		Compliance:      complianceInfo,
 	})
+	evidenceID := ""
 	if err != nil {
 		log.Error().Err(err).Msg("failed_to_generate_evidence")
+	} else {
+		evidenceID = ev.ID
 	}
 
 	log.Info().
 		Str("correlation_id", correlationID).
-		Str("evidence_id", ev.ID).
+		Str("evidence_id", evidenceID).
 		Float64("cost_eur", costEUR).
 		Int64("duration_ms", duration.Milliseconds()).
 		Msg("agent_run_completed")
 
 	return &RunResponse{
 		Response:    llmResp.Content,
-		EvidenceID:  ev.ID,
+		EvidenceID:  evidenceID,
 		CostEUR:     costEUR,
 		DurationMS:  duration.Milliseconds(),
 		PolicyAllow: true,
@@ -421,4 +441,51 @@ func complianceFromPolicy(pol *policy.Policy) evidence.Compliance {
 		c.DataLocation = pol.Compliance.DataResidency
 	}
 	return c
+}
+
+// maybeGateForPlanReview runs the plan review gate; returns (response, true, nil) if execution is gated.
+func (r *Runner) maybeGateForPlanReview(ctx context.Context, pol *policy.Policy, req *RunRequest, correlationID string, dataTier int, processedPrompt string) (*RunResponse, bool, error) {
+	if r.planReview == nil {
+		return nil, false, nil
+	}
+	humanOversight := ""
+	var planCfg *PlanReviewConfig
+	if pol.Compliance != nil {
+		humanOversight = pol.Compliance.HumanOversight
+		if pol.Compliance.PlanReview != nil {
+			planCfg = planReviewConfigFromPolicy(pol.Compliance.PlanReview)
+		}
+	}
+	costEstimate := 0.01
+	hasTools := r.toolRegistry != nil && len(r.toolRegistry.List()) > 0
+	if !RequiresReview(humanOversight, dataTier, costEstimate, hasTools, planCfg) {
+		return nil, false, nil
+	}
+	timeoutMin := 30
+	if planCfg != nil && planCfg.TimeoutMinutes > 0 {
+		timeoutMin = planCfg.TimeoutMinutes
+	}
+	plan := GenerateExecutionPlan(
+		correlationID, req.TenantID, req.AgentName, "pending",
+		dataTier, nil, costEstimate, "allow",
+		"", processedPrompt, timeoutMin,
+	)
+	if err := r.planReview.Save(ctx, plan); err != nil {
+		return nil, false, fmt.Errorf("saving plan for review: %w", err)
+	}
+	return &RunResponse{PolicyAllow: true, PlanPending: plan.ID}, true, nil
+}
+
+// planReviewConfigFromPolicy converts policy-level plan review config to agent type.
+func planReviewConfigFromPolicy(cfg *policy.PlanReviewConfig) *PlanReviewConfig {
+	if cfg == nil {
+		return nil
+	}
+	return &PlanReviewConfig{
+		RequireForTools:  cfg.RequireForTools,
+		RequireForTier:   cfg.RequireForTier,
+		CostThresholdEUR: cfg.CostThresholdEUR,
+		TimeoutMinutes:   cfg.TimeoutMinutes,
+		NotifyWebhook:    cfg.NotifyWebhook,
+	}
 }

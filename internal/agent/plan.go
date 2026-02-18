@@ -79,8 +79,8 @@ func GenerateExecutionPlan(
 		ToolsAvailable:   toolsAvailable,
 		CostEstimateEUR:  costEstimate,
 		PolicyDecision:   policyDecision,
-		SystemPromptHash: hex.EncodeToString(promptHash[:8]),
-		InputHash:        hex.EncodeToString(inputHash[:8]),
+		SystemPromptHash: hex.EncodeToString(promptHash[:]),
+		InputHash:        hex.EncodeToString(inputHash[:]),
 		CreatedAt:        time.Now(),
 		TimeoutAt:        time.Now().Add(time.Duration(timeoutMinutes) * time.Minute),
 	}

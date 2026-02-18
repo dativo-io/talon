@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dativo-io/talon/internal/agent"
+	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/config"
@@ -92,13 +93,14 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	defer evidenceStore.Close()
 
 	runner := agent.NewRunner(agent.RunnerConfig{
-		PolicyDir:  ".",
-		Classifier: cls,
-		AttScanner: attScanner,
-		Extractor:  extractor,
-		Router:     router,
-		Secrets:    secretsStore,
-		Evidence:   evidenceStore,
+		PolicyDir:    ".",
+		Classifier:   cls,
+		AttScanner:   attScanner,
+		Extractor:    extractor,
+		Router:       router,
+		Secrets:      secretsStore,
+		Evidence:     evidenceStore,
+		ToolRegistry: tools.NewRegistry(),
 	})
 
 	var attachments []agent.Attachment

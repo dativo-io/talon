@@ -172,10 +172,8 @@ talon secrets set openai-api-key "sk-acme-..." # per-tenant key in vault
 On first run with no keys configured, Talon derives deterministic keys from your data directory path. This is fine for local development but **not for production**. Set explicit keys:
 
 ```bash
-export TALON_SECRETS_KEY=$(openssl rand -hex 16)   # exactly 32 hex chars = 16 bytes... 
-# Actually needs exactly 32 bytes as a string:
-export TALON_SECRETS_KEY=$(head -c 32 /dev/urandom | base64 | head -c 32)
-export TALON_SIGNING_KEY=$(head -c 32 /dev/urandom | base64 | head -c 32)
+export TALON_SECRETS_KEY=$(openssl rand -hex 16)   # 32 hex chars = 32-byte string
+export TALON_SIGNING_KEY=$(openssl rand -hex 16)
 ```
 
 ## Next Steps

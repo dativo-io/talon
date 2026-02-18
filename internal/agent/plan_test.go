@@ -28,8 +28,8 @@ func TestGenerateExecutionPlan(t *testing.T) {
 	assert.Equal(t, []string{"search", "email"}, plan.ToolsAvailable)
 	assert.InDelta(t, 0.05, plan.CostEstimateEUR, 0.001)
 	assert.Equal(t, "allow", plan.PolicyDecision)
-	assert.NotEmpty(t, plan.SystemPromptHash)
-	assert.NotEmpty(t, plan.InputHash)
+	assert.Len(t, plan.SystemPromptHash, 64, "full SHA-256 = 32 bytes = 64 hex chars")
+	assert.Len(t, plan.InputHash, 64, "full SHA-256 = 32 bytes = 64 hex chars")
 	assert.False(t, plan.CreatedAt.IsZero())
 	assert.True(t, plan.TimeoutAt.After(plan.CreatedAt))
 }
