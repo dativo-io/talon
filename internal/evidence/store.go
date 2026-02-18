@@ -277,6 +277,7 @@ func (s *Store) List(ctx context.Context, tenantID, agentID string, from, to tim
 // CostTotal returns the sum of CostEUR for evidence in the half-open time range [from, to).
 // If agentID is empty, sums across all agents for the tenant.
 // Callers should pass to as the start of the next period (e.g. dayStart.Add(24*time.Hour)) to avoid double-counting at boundaries.
+// Uses SQLite json_extract in SUM to avoid transferring or deserializing evidence blobs.
 func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, to time.Time) (float64, error) {
 	ctx, span := tracer.Start(ctx, "evidence.cost_total",
 		trace.WithAttributes(
@@ -285,7 +286,7 @@ func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, t
 		))
 	defer span.End()
 
-	query := `SELECT evidence_json FROM evidence WHERE tenant_id = ?`
+	query := `SELECT COALESCE(SUM(json_extract(evidence_json, '$.execution.cost_eur')), 0) FROM evidence WHERE tenant_id = ?`
 	args := []interface{}{tenantID}
 	if agentID != "" {
 		query += ` AND agent_id = ?`
@@ -300,23 +301,10 @@ func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, t
 		args = append(args, to)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	var total float64
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&total)
 	if err != nil {
 		return 0, fmt.Errorf("querying evidence for cost: %w", err)
-	}
-	defer rows.Close()
-
-	var total float64
-	for rows.Next() {
-		var evidenceJSON string
-		if err := rows.Scan(&evidenceJSON); err != nil {
-			continue
-		}
-		var ev Evidence
-		if err := json.Unmarshal([]byte(evidenceJSON), &ev); err != nil {
-			continue
-		}
-		total += ev.Execution.CostEUR
 	}
 	span.SetAttributes(attribute.Float64("cost_total", total))
 	return total, nil
@@ -324,12 +312,13 @@ func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, t
 
 // CostByAgent returns cost per agent for the tenant in the half-open time range [from, to).
 // Callers should pass to as the start of the next period to avoid double-counting at boundaries.
+// Uses SQLite json_extract in SUM with GROUP BY to avoid transferring or deserializing evidence blobs.
 func (s *Store) CostByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]float64, error) {
 	ctx, span := tracer.Start(ctx, "evidence.cost_by_agent",
 		trace.WithAttributes(attribute.String("tenant_id", tenantID)))
 	defer span.End()
 
-	query := `SELECT evidence_json FROM evidence WHERE tenant_id = ?`
+	query := `SELECT agent_id, SUM(json_extract(evidence_json, '$.execution.cost_eur')) FROM evidence WHERE tenant_id = ?`
 	args := []interface{}{tenantID}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
@@ -339,6 +328,7 @@ func (s *Store) CostByAgent(ctx context.Context, tenantID string, from, to time.
 		query += ` AND timestamp < ?`
 		args = append(args, to)
 	}
+	query += ` GROUP BY agent_id`
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -348,15 +338,15 @@ func (s *Store) CostByAgent(ctx context.Context, tenantID string, from, to time.
 
 	byAgent := make(map[string]float64)
 	for rows.Next() {
-		var evidenceJSON string
-		if err := rows.Scan(&evidenceJSON); err != nil {
+		var agentID string
+		var total float64
+		if err := rows.Scan(&agentID, &total); err != nil {
 			continue
 		}
-		var ev Evidence
-		if err := json.Unmarshal([]byte(evidenceJSON), &ev); err != nil {
-			continue
-		}
-		byAgent[ev.AgentID] += ev.Execution.CostEUR
+		byAgent[agentID] = total
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating cost by agent: %w", err)
 	}
 	span.SetAttributes(attribute.Int("agent_count", len(byAgent)))
 	return byAgent, nil
