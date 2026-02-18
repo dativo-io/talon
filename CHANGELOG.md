@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Makefile targets: `test-e2e`, `test-all` (unit + integration + e2e)
 - CI: e2e job; coverage below 70% fails the build
 - `OPENAI_BASE_URL` env support for OpenAI provider (e2e/mock usage)
-- Shared test helpers in `internal/testutil/` (mock provider, policy files, evidence store, constants)
+- Shared test helpers in `internal/testutil/` (mock provider, policy files, constants)
 - Fuzz tests: `FuzzPIIScan`, `FuzzLoadPolicy`, `FuzzInjectionScan`
 - Benchmarks: `BenchmarkPIIScan`, `BenchmarkRouterRoute`, `BenchmarkEvidenceStore`, `BenchmarkCostTotal`
 
