@@ -408,7 +408,16 @@ func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *p
 	processedPrompt := req.Prompt
 
 	for _, att := range req.Attachments {
-		text := string(att.Content)
+		var text string
+		if r.extractor != nil {
+			var extractErr error
+			text, extractErr = r.extractor.ExtractBytes(ctx, att.Filename, att.Content)
+			if extractErr != nil {
+				return "", nil, fmt.Errorf("extracting %s: %w", att.Filename, extractErr)
+			}
+		} else {
+			text = string(att.Content)
+		}
 		scanResult := r.attScanner.Scan(ctx, text)
 
 		if !scanResult.Safe {

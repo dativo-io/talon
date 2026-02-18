@@ -44,7 +44,26 @@ func (e *Extractor) Extract(ctx context.Context, path string) (string, error) {
 	}
 
 	ext := strings.ToLower(filepath.Ext(path))
+	return e.extractFromContent(content, ext)
+}
 
+// ExtractBytes extracts text from in-memory content using the given filename to determine format.
+// Use this when attachments are already loaded (e.g. from --attach); avoids writing temp files.
+// Same supported formats and size limit as Extract.
+func (e *Extractor) ExtractBytes(ctx context.Context, filename string, content []byte) (string, error) {
+	_, span := tracer.Start(ctx, "attachment.extract_bytes")
+	defer span.End()
+
+	if int64(len(content)) > e.maxSize {
+		return "", fmt.Errorf("content size %d exceeds limit %d bytes", len(content), e.maxSize)
+	}
+
+	ext := strings.ToLower(filepath.Ext(filename))
+	return e.extractFromContent(content, ext)
+}
+
+// extractFromContent performs format-specific extraction (shared by Extract and ExtractBytes).
+func (e *Extractor) extractFromContent(content []byte, ext string) (string, error) {
 	switch ext {
 	case ".txt", ".md", ".csv":
 		return string(content), nil
