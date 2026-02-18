@@ -94,14 +94,14 @@ func TestPIIDetection(t *testing.T) {
 			name:      "phone E.164 german",
 			text:      "Call me at +491234567890",
 			wantPII:   true,
-			wantTier:  2, // can also match AT SVN (10 digits) or other EU IDs
+			wantTier:  1,
 			wantTypes: []string{"phone"},
 		},
 		{
 			name:      "phone E.164 french",
 			text:      "Téléphone: +33123456789",
 			wantPII:   true,
-			wantTier:  2,
+			wantTier:  1,
 			wantTypes: []string{"phone"},
 		},
 		{

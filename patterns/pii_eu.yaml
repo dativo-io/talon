@@ -166,7 +166,7 @@ recognizers:
     patterns:
       - name: "Steuer-ID 11 digits"
         regex: '\b\d{11}\b'
-        score: 0.6
+        score: 0.4
     supported_languages:
       - language: "de"
         context: ["steuer-id", "steueridentifikationsnummer", "tax id"]
@@ -193,7 +193,7 @@ recognizers:
     patterns:
       - name: "Carte identite 12 digits"
         regex: '\b\d{12}\b'
-        score: 0.6
+        score: 0.4
     supported_languages:
       - language: "fr"
         context: ["carte d'identité", "carte d identite", "identité"]
@@ -222,7 +222,7 @@ recognizers:
     patterns:
       - name: "PESEL 11 digits"
         regex: '\b\d{11}\b'
-        score: 0.75
+        score: 0.4
     supported_languages:
       - language: "pl"
         context: ["pesel", "numer pesel", "dowód"]
@@ -236,7 +236,7 @@ recognizers:
     patterns:
       - name: "NIP tax ID"
         regex: '\b\d{3}-?\d{3}-?\d{2}-?\d{2}\b'
-        score: 0.7
+        score: 0.4
     supported_languages:
       - language: "pl"
         context: ["nip", "numer nip", "tax id"]
@@ -277,7 +277,7 @@ recognizers:
     patterns:
       - name: "Rijksregister with optional dots/dash"
         regex: '\b\d{2}\.?\d{2}\.?\d{2}-?\d{3}\.?\d{2}\b'
-        score: 0.75
+        score: 0.4
     supported_languages:
       - language: "nl"
         context: ["rijksregisternummer", "nationaal nummer"]
@@ -293,7 +293,7 @@ recognizers:
     patterns:
       - name: "SVN 10 digits"
         regex: '\b\d{10}\b'
-        score: 0.65
+        score: 0.4
     supported_languages:
       - language: "de"
         context: ["sozialversicherungsnummer", "svnr", "sv-nummer"]
@@ -307,7 +307,7 @@ recognizers:
     patterns:
       - name: "Personnummer 6+4 or 8+4"
         regex: '\b\d{6}-?\d{4}\b|\b\d{8}-?\d{4}\b'
-        score: 0.7
+        score: 0.4
     supported_languages:
       - language: "sv"
         context: ["personnummer", "personnr", "id number"]
@@ -321,7 +321,7 @@ recognizers:
     patterns:
       - name: "CPR 6+4 digits"
         regex: '\b\d{6}-?\d{4}\b'
-        score: 0.7
+        score: 0.4
     supported_languages:
       - language: "da"
         context: ["cpr", "cpr-nummer", "personnummer"]
@@ -349,7 +349,7 @@ recognizers:
     patterns:
       - name: "NIF 9 digits"
         regex: '\b\d{9}\b'
-        score: 0.65
+        score: 0.4
     supported_languages:
       - language: "pt"
         context: ["nif", "número de identificação fiscal", "tax id"]
