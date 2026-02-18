@@ -146,7 +146,8 @@ func (h *WebhookHook) Execute(ctx context.Context, data *HookData) (*HookResult,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Hook", string(h.point))
 
-	resp, err := h.client.Do(req)
+	// G704: URL is from operator-controlled .talon.yaml hook config, not user input.
+	resp, err := h.client.Do(req) // #nosec G704
 	if err != nil {
 		log.Warn().Err(err).Str("url", h.url).Msg("webhook_delivery_failed")
 		return &HookResult{Continue: true}, nil

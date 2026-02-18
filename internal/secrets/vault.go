@@ -363,7 +363,8 @@ func (s *SecretStore) AuditLog(ctx context.Context, secretName string, limit int
 	query += ` ORDER BY timestamp DESC`
 
 	if limit > 0 {
-		query += fmt.Sprintf(` LIMIT %d`, limit)
+		query += ` LIMIT ?`
+		args = append(args, limit)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
