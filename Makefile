@@ -21,8 +21,8 @@ build: ## Build the binary
 install: ## Install to $GOPATH/bin
 	@CGO_ENABLED=1 go install $(LDFLAGS) ./cmd/talon/
 
-test: ## Run tests (unit + integration)
-	@go test -race -coverprofile=coverage.out ./internal/... ./cmd/...
+test: ## Run tests (unit + integration). Coverage excludes cmd/talon and internal/testutil.
+	@go test -race -coverprofile=coverage.out $$(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v 'cmd/talon')
 	@go test -race -tags=integration ./tests/integration/...
 
 test-coverage: test ## Show test coverage

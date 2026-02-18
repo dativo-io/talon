@@ -45,4 +45,4 @@ Test layout:
 - Integration tests are in `tests/integration/` and use `//go:build integration`.
 - E2E tests are in `tests/e2e/` and use `//go:build e2e`; they run the real CLI against a mock LLM (set `OPENAI_BASE_URL` to a mock server).
 
-CI runs all three tiers; coverage is computed from unit tests only. Coverage target: ≥70% (CI fails if below).
+CI runs all three tiers; coverage is computed from unit tests only. Coverage target: ≥70% (CI fails if below). The coverage run excludes `cmd/talon` (main) and `internal/testutil` (test helpers).
