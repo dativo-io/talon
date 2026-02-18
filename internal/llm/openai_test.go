@@ -122,3 +122,24 @@ func TestOpenAICostEstimation(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeOpenAIBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{"scheme+host gets /v1", "https://api.openai.com", "https://api.openai.com/v1"},
+		{"scheme+host+port", "http://localhost:8080", "http://localhost:8080/v1"},
+		{"already /v1 unchanged", "https://my-proxy.com/v1", "https://my-proxy.com/v1"},
+		{"already /v1/ trimmed then unchanged", "https://my-proxy.com/v1/", "https://my-proxy.com/v1"},
+		{"trailing slash no v1", "https://proxy.com/", "https://proxy.com/v1"},
+		{"empty becomes /v1", "", "/v1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NormalizeOpenAIBaseURL(tt.baseURL)
+			assert.Equal(t, tt.want, got, "OPENAI_BASE_URL convention: no double /v1/v1")
+		})
+	}
+}

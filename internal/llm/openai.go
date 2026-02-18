@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
 	"go.opentelemetry.io/otel/trace"
@@ -25,12 +26,27 @@ func NewOpenAIProvider(apiKey string) *OpenAIProvider {
 }
 
 // NewOpenAIProviderWithBaseURL creates an OpenAI provider with a custom base URL
-// (e.g. for e2e tests pointing at a mock server). baseURL should be the scheme+host
-// without path; the client appends /v1 as needed.
+// (e.g. for e2e tests or proxies). baseURL may be scheme+host (e.g. https://proxy.com)
+// or scheme+host+path including /v1 (e.g. https://proxy.com/v1), matching OpenAI SDK
+// convention. The client appends /v1 only when not already present.
 func NewOpenAIProviderWithBaseURL(apiKey, baseURL string) *OpenAIProvider {
 	config := openai.DefaultConfig(apiKey)
-	config.BaseURL = baseURL + "/v1"
+	config.BaseURL = NormalizeOpenAIBaseURL(baseURL)
 	return &OpenAIProvider{client: openai.NewClientWithConfig(config)}
+}
+
+// NormalizeOpenAIBaseURL returns baseURL with /v1 as the path, without duplicating it.
+// If baseURL already ends with /v1 (with optional trailing slash), it is returned normalized.
+// This matches OpenAI SDK convention where OPENAI_BASE_URL may be "https://proxy.com/v1".
+func NormalizeOpenAIBaseURL(baseURL string) string {
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == "" {
+		return "/v1"
+	}
+	if strings.HasSuffix(baseURL, "/v1") {
+		return baseURL
+	}
+	return baseURL + "/v1"
 }
 
 // newOpenAIProviderWithClient creates an OpenAI provider with a pre-configured
