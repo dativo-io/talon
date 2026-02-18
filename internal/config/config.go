@@ -19,6 +19,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -143,16 +144,14 @@ func resolveDataDir() string {
 }
 
 // deriveDefaultKey produces a deterministic 32-byte fallback key from the
-// data directory path and a salt. This is NOT cryptographically strong — it
-// exists solely so `talon init && talon run` works out of the box while
-// still encrypting data at rest with a per-machine-unique key.
+// data directory path and a salt. Uses SHA-256 so the full salt always
+// contributes to the output regardless of path length. This is NOT
+// cryptographically strong — it exists solely so `talon init && talon run`
+// works out of the box while still encrypting data at rest with a
+// per-machine-unique key.
 func deriveDefaultKey(dataDir, salt string) string {
-	base := fmt.Sprintf("talon:%s:%s", dataDir, salt)
-	// Pad/truncate to exactly 32 bytes
-	for len(base) < 32 {
-		base += "="
-	}
-	return base[:32]
+	h := sha256.Sum256([]byte(fmt.Sprintf("talon:%s:%s", dataDir, salt)))
+	return hex.EncodeToString(h[:])
 }
 
 func (c *Config) validate() error {

@@ -34,8 +34,9 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, DefaultMaxAttachMB, cfg.MaxAttachmentMB)
 	assert.Equal(t, DefaultOllamaURL, cfg.OllamaBaseURL)
 	assert.True(t, cfg.UsingDefaultKeys(), "should report default keys when none are set")
-	assert.Len(t, cfg.SecretsKey, 32)
-	assert.True(t, len(cfg.SigningKey) >= 32)
+	assert.Len(t, cfg.SecretsKey, 64, "derived key should be 64 hex chars")
+	assert.Len(t, cfg.SigningKey, 64, "derived key should be 64 hex chars")
+	assert.NotEqual(t, cfg.SecretsKey, cfg.SigningKey, "secrets and signing keys must differ")
 }
 
 func TestLoad_ExplicitKeys(t *testing.T) {
@@ -135,13 +136,24 @@ func TestDeriveDefaultKey_Deterministic(t *testing.T) {
 	k1 := deriveDefaultKey("/home/user/.talon", "test-salt")
 	k2 := deriveDefaultKey("/home/user/.talon", "test-salt")
 	assert.Equal(t, k1, k2)
-	assert.Len(t, k1, 32)
+	assert.Len(t, k1, 64, "should be 64 hex chars (32 bytes)")
+	assert.True(t, isHexString(k1), "should be valid hex")
 }
 
 func TestDeriveDefaultKey_DifferentSalts(t *testing.T) {
-	k1 := deriveDefaultKey("/data", "secrets-encryption")
-	k2 := deriveDefaultKey("/data", "evidence-signing--")
-	assert.NotEqual(t, k1, k2)
+	paths := []string{
+		"/data",
+		"/home/user/.talon",
+		"/Users/longusername/.talon",
+		"/Users/verylongusername/custom-data-directory/.talon",
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			k1 := deriveDefaultKey(path, "secrets-encryption")
+			k2 := deriveDefaultKey(path, "evidence-signing--")
+			assert.NotEqual(t, k1, k2, "different salts must produce different keys for path %q", path)
+		})
+	}
 }
 
 func TestDeriveDefaultKey_DifferentPaths(t *testing.T) {
