@@ -48,12 +48,12 @@ func SetupRunner(t *testing.T, policyDir string, providers map[string]llm.Provid
 	t.Cleanup(func() { evidenceStore.Close() })
 
 	return agent.NewRunner(agent.RunnerConfig{
-		PolicyDir:   policyDir,
-		Classifier:  cls,
-		AttScanner:  attScanner,
-		Extractor:   extractor,
-		Router:      router,
-		Secrets:     secretsStore,
-		Evidence:    evidenceStore,
+		PolicyDir:  policyDir,
+		Classifier: cls,
+		AttScanner: attScanner,
+		Extractor:  extractor,
+		Router:     router,
+		Secrets:    secretsStore,
+		Evidence:   evidenceStore,
 	})
 }

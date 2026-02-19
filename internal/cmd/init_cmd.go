@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"strings"
 	"text/template"
 	"time"
 
@@ -15,14 +16,19 @@ import (
 var initTemplates embed.FS
 
 var (
-	initName  string
-	initOwner string
+	initName    string
+	initOwner   string
+	initMinimal bool
+	initPack    string
 )
+
+// supportedPacks are the allowed values for --pack (industry starter packs).
+var supportedPacks = []string{"fintech-eu", "ecommerce-eu", "saas-eu"}
 
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new Talon project",
-	Long:  "Creates agent.talon.yaml and talon.config.yaml from templates",
+	Long:  "Creates agent.talon.yaml and talon.config.yaml from templates. Use --minimal for a short config, or --pack for an industry starter.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		_, span := tracer.Start(cmd.Context(), "init")
 		defer span.End()
@@ -33,6 +39,8 @@ var initCmd = &cobra.Command{
 
 		log.Info().
 			Str("name", initName).
+			Bool("minimal", initMinimal).
+			Str("pack", initPack).
 			Msg("Initialized Talon project")
 
 		fmt.Println("Initialized Talon project")
@@ -59,11 +67,17 @@ func init() {
 
 	initCmd.Flags().StringVar(&initName, "name", "my-agent", "agent name")
 	initCmd.Flags().StringVar(&initOwner, "owner", "", "agent owner email")
+	initCmd.Flags().BoolVar(&initMinimal, "minimal", false, "generate minimal agent.talon.yaml (fewer options, faster to edit)")
+	initCmd.Flags().StringVar(&initPack, "pack", "", "industry starter pack: fintech-eu, ecommerce-eu, saas-eu (overrides default template)")
 }
 
 func initializeProject() error {
 	if _, err := os.Stat("agent.talon.yaml"); err == nil {
 		return fmt.Errorf("agent.talon.yaml already exists")
+	}
+
+	if initPack != "" && initMinimal {
+		return fmt.Errorf("cannot use both --pack and --minimal; choose one")
 	}
 
 	data := map[string]interface{}{
@@ -72,7 +86,25 @@ func initializeProject() error {
 		"Date":  time.Now().Format(time.RFC3339),
 	}
 
-	if err := renderTemplate("templates/init/agent.talon.yaml.tmpl", "agent.talon.yaml", data); err != nil {
+	agentTmpl := "templates/init/agent.talon.yaml.tmpl"
+	switch {
+	case initPack != "":
+		ok := false
+		for _, p := range supportedPacks {
+			if p == initPack {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return fmt.Errorf("unsupported --pack %q; use one of: %s", initPack, strings.Join(supportedPacks, ", "))
+		}
+		agentTmpl = "templates/init/pack_" + strings.ReplaceAll(initPack, "-", "_") + ".talon.yaml.tmpl"
+	case initMinimal:
+		agentTmpl = "templates/init/agent.talon.yaml.minimal.tmpl"
+	}
+
+	if err := renderTemplate(agentTmpl, "agent.talon.yaml", data); err != nil {
 		return fmt.Errorf("creating agent.talon.yaml: %w", err)
 	}
 

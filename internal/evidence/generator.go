@@ -23,42 +23,48 @@ func NewGenerator(store *Store) *Generator {
 // Callers populate this struct at the end of the agent pipeline; the
 // Generator hashes prompts/responses, signs the record, and persists it.
 type GenerateParams struct {
-	CorrelationID   string          // Unique trace identifier for this invocation
-	TenantID        string          // Tenant scope
-	AgentID         string          // Agent that was invoked
-	InvocationType  string          // "manual", "scheduled", or "webhook:<name>"
-	PolicyDecision  PolicyDecision  // OPA evaluation result
-	Classification  Classification  // PII detection on input and output
-	AttachmentScan  *AttachmentScan // nil when no attachments were provided
-	ModelUsed       string          // LLM model that was called (empty on deny/dry-run)
-	OriginalModel   string          // Primary model when degraded (empty when not degraded)
-	Degraded        bool            // True when cost degradation used fallback model
-	ToolsCalled     []string        // MCP tools invoked during execution
-	CostEUR         float64         // Estimated cost in EUR
-	Tokens          TokenUsage      // Input/output token counts
-	MemoryTokens    int             // Tokens injected from memory context
-	DurationMS      int64           // Wall-clock duration of the full pipeline
-	Error           string          // Non-empty on LLM or tool errors
-	SecretsAccessed []string        // Vault secret names accessed during this run
-	MemoryWrites    []MemoryWrite   // Soul directory writes (if any)
-	MemoryReads     []MemoryRead    // Memory entries injected into the LLM prompt
-	InputPrompt     string          // Raw user prompt (hashed in evidence, not stored verbatim)
-	OutputResponse  string          // LLM response text (hashed in evidence)
-	Compliance      Compliance      // Applicable compliance frameworks and data location
+	CorrelationID           string          // Unique trace identifier for this invocation
+	TenantID                string          // Tenant scope
+	AgentID                 string          // Agent that was invoked
+	InvocationType          string          // "manual", "scheduled", or "webhook:<name>"
+	RequestSourceID         string          // Who triggered (CLI user, webhook name, cron) — for GDPR Art. 30
+	PolicyDecision          PolicyDecision  // OPA evaluation result
+	Classification          Classification  // PII detection on input and output
+	AttachmentScan          *AttachmentScan // nil when no attachments were provided
+	ModelUsed               string          // LLM model that was called (empty on deny/dry-run)
+	OriginalModel           string          // Primary model when degraded (empty when not degraded)
+	Degraded                bool            // True when cost degradation used fallback model
+	ModelRoutingRationale   string          // Why this model was chosen (e.g. "primary", "degraded to fallback")
+	ToolsCalled             []string        // MCP tools invoked during execution
+	CostEUR                 float64         // Estimated cost in EUR
+	Tokens                  TokenUsage      // Input/output token counts
+	MemoryTokens            int             // Tokens injected from memory context
+	DurationMS              int64           // Wall-clock duration of the full pipeline
+	Error                   string          // Non-empty on LLM or tool errors
+	SecretsAccessed         []string        // Vault secret names accessed during this run
+	MemoryWrites            []MemoryWrite   // Soul directory writes (if any)
+	MemoryReads             []MemoryRead    // Memory entries injected into the LLM prompt
+	InputPrompt             string          // Raw user prompt (hashed in evidence, not stored verbatim)
+	OutputResponse          string          // LLM response text (hashed in evidence)
+	Compliance              Compliance      // Applicable compliance frameworks and data location
+	ObservationModeOverride bool            // True when allowed despite policy deny (shadow/observation-only mode)
 }
 
 // Generate creates and stores an evidence record from the given parameters.
 func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evidence, error) {
 	ev := &Evidence{
-		ID:             "req_" + uuid.New().String()[:8],
-		CorrelationID:  params.CorrelationID,
-		Timestamp:      time.Now(),
-		TenantID:       params.TenantID,
-		AgentID:        params.AgentID,
-		InvocationType: params.InvocationType,
-		PolicyDecision: params.PolicyDecision,
-		Classification: params.Classification,
-		AttachmentScan: params.AttachmentScan,
+		ID:                      "req_" + uuid.New().String()[:8],
+		CorrelationID:           params.CorrelationID,
+		Timestamp:               time.Now(),
+		TenantID:                params.TenantID,
+		AgentID:                 params.AgentID,
+		InvocationType:          params.InvocationType,
+		RequestSourceID:         params.RequestSourceID,
+		PolicyDecision:          params.PolicyDecision,
+		Classification:          params.Classification,
+		AttachmentScan:          params.AttachmentScan,
+		ModelRoutingRationale:   params.ModelRoutingRationale,
+		ObservationModeOverride: params.ObservationModeOverride,
 		Execution: Execution{
 			ModelUsed:     params.ModelUsed,
 			OriginalModel: params.OriginalModel,

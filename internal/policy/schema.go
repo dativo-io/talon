@@ -172,7 +172,8 @@ const schemaV2 = `{
                 "fallback_model": {"type": "string"},
                 "notify": {"type": "boolean"}
               }
-            }
+            },
+            "budget_alert_webhook": {"type": "string", "format": "uri"}
           }
         },
         "resource_limits": {
@@ -279,7 +280,8 @@ const schemaV2 = `{
         "log_level": {"type": "string", "enum": ["minimal", "detailed", "full"]},
         "retention_days": {"type": "integer", "minimum": 1},
         "include_prompts": {"type": "boolean"},
-        "include_responses": {"type": "boolean"}
+        "include_responses": {"type": "boolean"},
+        "observation_only": {"type": "boolean"}
       }
     },
     "compliance": {

@@ -12,11 +12,14 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +42,43 @@ import (
 
 var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/agent")
 
+// ActiveRunTracker counts in-flight runs per tenant for rate-limit policy (concurrent_executions).
+// Safe for concurrent use. When nil, rate-limit policy input concurrent_executions is not set.
+type ActiveRunTracker struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+// Increment adds one in-flight run for the tenant.
+func (t *ActiveRunTracker) Increment(tenantID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.counts == nil {
+		t.counts = make(map[string]int)
+	}
+	t.counts[tenantID]++
+}
+
+// Decrement removes one in-flight run for the tenant.
+func (t *ActiveRunTracker) Decrement(tenantID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.counts == nil {
+		return
+	}
+	t.counts[tenantID]--
+	if t.counts[tenantID] <= 0 {
+		delete(t.counts, tenantID)
+	}
+}
+
+// Count returns the current in-flight run count for the tenant (including the run that just called Increment).
+func (t *ActiveRunTracker) Count(tenantID string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.counts[tenantID]
+}
+
 // Runner executes the full agent orchestration pipeline.
 type Runner struct {
 	policyDir         string
@@ -52,6 +92,7 @@ type Runner struct {
 	evidenceStore     *evidence.Store
 	planReview        *PlanReviewStore
 	toolRegistry      *tools.ToolRegistry
+	activeRuns        *ActiveRunTracker // optional; when set, used for rate-limit policy concurrent_executions
 	hooks             *HookRegistry
 	memory            *memory.Store
 	governance        *memory.Governance
@@ -69,8 +110,9 @@ type RunnerConfig struct {
 	Evidence          *evidence.Store
 	PlanReview        *PlanReviewStore
 	ToolRegistry      *tools.ToolRegistry
-	Hooks             *HookRegistry // optional; nil = no hooks
-	Memory            *memory.Store // optional; nil = memory disabled
+	ActiveRunTracker  *ActiveRunTracker // optional; when set, rate-limit policy receives concurrent_executions
+	Hooks             *HookRegistry     // optional; nil = no hooks
+	Memory            *memory.Store     // optional; nil = memory disabled
 }
 
 // NewRunner creates an agent runner with the given dependencies.
@@ -87,6 +129,7 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		evidenceStore:     cfg.Evidence,
 		planReview:        cfg.PlanReview,
 		toolRegistry:      cfg.ToolRegistry,
+		activeRuns:        cfg.ActiveRunTracker,
 		hooks:             cfg.Hooks,
 		memory:            cfg.Memory,
 	}
@@ -98,13 +141,20 @@ func NewRunner(cfg RunnerConfig) *Runner {
 
 // RunRequest is the input for a single agent invocation.
 type RunRequest struct {
-	TenantID       string
-	AgentName      string
-	Prompt         string
-	Attachments    []Attachment
-	InvocationType string // "manual", "scheduled", "webhook:name"
-	DryRun         bool
-	PolicyPath     string // explicit path to .talon.yaml
+	TenantID        string
+	AgentName       string
+	Prompt          string
+	Attachments     []Attachment
+	InvocationType  string // "manual", "scheduled", "webhook:name"
+	DryRun          bool
+	PolicyPath      string           // explicit path to .talon.yaml
+	ToolInvocations []ToolInvocation // optional; when set, each is policy-checked and executed, and names recorded in evidence
+}
+
+// ToolInvocation represents a single tool call (e.g. from MCP or a future agent loop).
+type ToolInvocation struct {
+	Name   string          `json:"name"`
+	Params json.RawMessage `json:"params"`
 }
 
 // Attachment is a file attached to a run request.
@@ -151,6 +201,11 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			attribute.Bool("dry_run", req.DryRun),
 		))
 	defer span.End()
+
+	if r.activeRuns != nil {
+		r.activeRuns.Increment(req.TenantID)
+		defer r.activeRuns.Decrement(req.TenantID)
+	}
 
 	log.Info().
 		Str("correlation_id", correlationID).
@@ -208,6 +263,8 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		TenantID:     req.TenantID,
 	}
 
+	emitBudgetAlertIfNeeded(ctx, req.TenantID, dailyCost, monthlyCost, pol.Policies.CostLimits)
+
 	// Per-run engine: do not assign to shared Governance (SetPolicyEvaluator); pass this
 	// engine through to executeLLMPipeline so writeMemoryObservation uses it in ValidateWrite.
 	// That keeps concurrent Run() (e.g. webhook/cron in talon serve) from racing on g.opa.
@@ -217,13 +274,31 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		return nil, fmt.Errorf("creating policy engine: %w", err)
 	}
 
+	estimatedCost := 0.01
+	if r.router != nil {
+		if c, err := r.router.PreRunEstimate(inputClass.Tier); err == nil {
+			estimatedCost = c
+		}
+	}
+	requestsLastMinute := 0
+	if r.evidenceStore != nil {
+		now := time.Now().UTC()
+		from := now.Add(-1 * time.Minute)
+		requestsLastMinute, _ = r.evidenceStore.CountInRange(ctx, req.TenantID, "", from, now)
+	}
+	concurrentExecutions := 0
+	if r.activeRuns != nil {
+		concurrentExecutions = r.activeRuns.Count(req.TenantID)
+	}
 	policyInput := map[string]interface{}{
-		"tenant_id":          req.TenantID,
-		"agent_id":           req.AgentName,
-		"tier":               inputClass.Tier,
-		"estimated_cost":     0.01,
-		"daily_cost_total":   dailyCost,
-		"monthly_cost_total": monthlyCost,
+		"tenant_id":             req.TenantID,
+		"agent_id":              req.AgentName,
+		"tier":                  inputClass.Tier,
+		"estimated_cost":        estimatedCost,
+		"daily_cost_total":      dailyCost,
+		"monthly_cost_total":    monthlyCost,
+		"requests_last_minute":  requestsLastMinute,
+		"concurrent_executions": concurrentExecutions,
 	}
 
 	decision, err := engine.Evaluate(ctx, policyInput)
@@ -243,9 +318,23 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		return resp, err
 	}
 
+	var observationOverride bool
+	var originalDecision *policy.Decision
 	if !decision.Allowed {
-		r.recordPolicyDenial(ctx, span, correlationID, req, pol, decision, inputClass.Tier, inputEntityNames, attachmentScan, complianceInfo)
-		return &RunResponse{PolicyAllow: false, DenyReason: decision.Action}, nil
+		if pol.Audit != nil && pol.Audit.ObservationOnly {
+			observationOverride = true
+			originalDecision = decision
+			span.AddEvent("observation_only_override", trace.WithAttributes(
+				attribute.String("policy.action", decision.Action),
+			))
+			log.Info().
+				Str("correlation_id", correlationID).
+				Str("would_deny_reason", decision.Action).
+				Msg("observation_only: policy would deny, allowing for audit")
+		} else {
+			r.recordPolicyDenial(ctx, span, correlationID, req, pol, decision, inputClass.Tier, inputEntityNames, attachmentScan, complianceInfo)
+			return &RunResponse{PolicyAllow: false, DenyReason: decision.Action}, nil
+		}
 	}
 
 	if req.DryRun {
@@ -347,7 +436,8 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	}
 
 	return r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine,
-		effectiveTier, inputEntityNames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens)
+		effectiveTier, inputEntityNames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
+		observationOverride, originalDecision)
 }
 
 // checkHook fires a hook and returns a deny RunResponse if the hook aborts the pipeline.
@@ -372,10 +462,11 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 		Msg("policy_denied")
 
 	_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
-		CorrelationID:  correlationID,
-		TenantID:       req.TenantID,
-		AgentID:        req.AgentName,
-		InvocationType: req.InvocationType,
+		CorrelationID:   correlationID,
+		TenantID:        req.TenantID,
+		AgentID:         req.AgentName,
+		InvocationType:  req.InvocationType,
+		RequestSourceID: req.InvocationType,
 		PolicyDecision: evidence.PolicyDecision{
 			Allowed:       false,
 			Action:        decision.Action,
@@ -391,7 +482,8 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 
 // executeLLMPipeline runs steps 5-9: route provider, call LLM, classify output, generate evidence.
 // policyEval is the per-run OPA engine used for memory governance to avoid data races when concurrent Run() share one Governance.
-func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int) (*RunResponse, error) {
+// When observationOverride is true, originalDecision holds the policy deny that was overridden for audit-only (shadow) mode.
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision) (*RunResponse, error) {
 	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
 	provider, model, degraded, originalModel, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx)
 	if err != nil {
@@ -404,10 +496,16 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		attribute.Bool("cost.degraded", degraded),
 	)
 
+	preRunCost := 0.01
+	if r.router != nil {
+		if c, _ := r.router.PreRunEstimate(tier); c > 0 {
+			preRunCost = c
+		}
+	}
 	// Hook: pre-LLM
 	if resp, err := r.checkHook(ctx, HookPreLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 		"model":         model,
-		"cost_estimate": 0.01,
+		"cost_estimate": preRunCost,
 	}); resp != nil || err != nil {
 		return resp, err
 	}
@@ -422,26 +520,38 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		MaxTokens:   2000,
 	}
 
+	modelRationale := "primary"
+	if degraded && originalModel != "" {
+		modelRationale = "degraded to fallback: " + originalModel
+	}
+	policyDec := evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: pol.VersionTag}
+	if observationOverride && originalDecision != nil {
+		policyDec = evidence.PolicyDecision{Allowed: false, Action: originalDecision.Action, Reasons: originalDecision.Reasons, PolicyVersion: pol.VersionTag}
+	}
+
 	llmResp, err := provider.Generate(ctx, llmReq)
 	if err != nil {
 		span.RecordError(err)
 		duration := time.Since(startTime)
 		_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
-			CorrelationID:   correlationID,
-			TenantID:        req.TenantID,
-			AgentID:         req.AgentName,
-			InvocationType:  req.InvocationType,
-			PolicyDecision:  evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: pol.VersionTag},
-			Classification:  evidence.Classification{InputTier: tier, PIIDetected: piiNames},
-			AttachmentScan:  attScan,
-			ModelUsed:       model,
-			OriginalModel:   originalModel,
-			Degraded:        degraded,
-			DurationMS:      duration.Milliseconds(),
-			Error:           err.Error(),
-			SecretsAccessed: secretsAccessed,
-			InputPrompt:     req.Prompt,
-			Compliance:      compliance,
+			CorrelationID:           correlationID,
+			TenantID:                req.TenantID,
+			AgentID:                 req.AgentName,
+			InvocationType:          req.InvocationType,
+			RequestSourceID:         req.InvocationType,
+			PolicyDecision:          policyDec,
+			Classification:          evidence.Classification{InputTier: tier, PIIDetected: piiNames},
+			AttachmentScan:          attScan,
+			ModelUsed:               model,
+			OriginalModel:           originalModel,
+			Degraded:                degraded,
+			ModelRoutingRationale:   modelRationale,
+			DurationMS:              duration.Milliseconds(),
+			Error:                   err.Error(),
+			SecretsAccessed:         secretsAccessed,
+			InputPrompt:             req.Prompt,
+			Compliance:              compliance,
+			ObservationModeOverride: observationOverride,
 		})
 		return nil, fmt.Errorf("calling LLM: %w", err)
 	}
@@ -456,6 +566,9 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		"output_tokens": llmResp.OutputTokens,
 	})
 
+	// Step 7.5: Tool execution (policy-checked, recorded in evidence)
+	toolsCalled := r.executeToolInvocations(ctx, span, req, policyEval, pol)
+
 	// Step 8: Classify output
 	outputClass := r.classifier.Scan(ctx, llmResp.Content)
 	outputEntityNames := entityNames(outputClass.Entities)
@@ -463,30 +576,34 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	// Step 9: Generate evidence
 	duration := time.Since(startTime)
 	ev, err := r.evidence.Generate(ctx, evidence.GenerateParams{
-		CorrelationID:  correlationID,
-		TenantID:       req.TenantID,
-		AgentID:        req.AgentName,
-		InvocationType: req.InvocationType,
-		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: pol.VersionTag},
+		CorrelationID:   correlationID,
+		TenantID:        req.TenantID,
+		AgentID:         req.AgentName,
+		InvocationType:  req.InvocationType,
+		RequestSourceID: req.InvocationType,
+		PolicyDecision:  policyDec,
 		Classification: evidence.Classification{
 			InputTier:   tier,
 			OutputTier:  outputClass.Tier,
 			PIIDetected: append(piiNames, outputEntityNames...),
 			PIIRedacted: false,
 		},
-		AttachmentScan:  attScan,
-		ModelUsed:       model,
-		OriginalModel:   originalModel,
-		Degraded:        degraded,
-		CostEUR:         costEUR,
-		Tokens:          evidence.TokenUsage{Input: llmResp.InputTokens, Output: llmResp.OutputTokens},
-		DurationMS:      duration.Milliseconds(),
-		SecretsAccessed: secretsAccessed,
-		MemoryReads:     memReads,
-		MemoryTokens:    memTokens,
-		InputPrompt:     req.Prompt,
-		OutputResponse:  llmResp.Content,
-		Compliance:      compliance,
+		AttachmentScan:          attScan,
+		ModelUsed:               model,
+		OriginalModel:           originalModel,
+		Degraded:                degraded,
+		ModelRoutingRationale:   modelRationale,
+		ToolsCalled:             toolsCalled,
+		CostEUR:                 costEUR,
+		Tokens:                  evidence.TokenUsage{Input: llmResp.InputTokens, Output: llmResp.OutputTokens},
+		DurationMS:              duration.Milliseconds(),
+		SecretsAccessed:         secretsAccessed,
+		MemoryReads:             memReads,
+		MemoryTokens:            memTokens,
+		InputPrompt:             req.Prompt,
+		OutputResponse:          llmResp.Content,
+		Compliance:              compliance,
+		ObservationModeOverride: observationOverride,
 	})
 	evidenceID := ""
 	if err != nil {
@@ -515,13 +632,121 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		DurationMS:  duration.Milliseconds(),
 		PolicyAllow: true,
 		ModelUsed:   model,
-		ToolsCalled: []string{},
+		ToolsCalled: toolsCalled,
 	}
 
 	// Post-LLM: governed memory write
 	r.writeMemoryObservation(ctx, req, pol, policyEval, resp, ev)
 
 	return resp, nil
+}
+
+// executeToolInvocations runs each requested tool through policy and the registry, and returns the list of tool names actually executed (for evidence).
+func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, req *RunRequest, policyEval memory.PolicyEvaluator, pol *policy.Policy) []string {
+	if len(req.ToolInvocations) == 0 || r.toolRegistry == nil {
+		return nil
+	}
+	policyEngine, _ := policyEval.(*policy.Engine)
+	var called []string
+	for _, inv := range req.ToolInvocations {
+		if policyEngine != nil {
+			var paramsMap map[string]interface{}
+			_ = json.Unmarshal(inv.Params, &paramsMap)
+			if paramsMap == nil {
+				paramsMap = make(map[string]interface{})
+			}
+			dec, err := policyEngine.EvaluateToolAccess(ctx, inv.Name, paramsMap)
+			if err != nil {
+				log.Warn().Err(err).Str("tool", inv.Name).Msg("tool access policy evaluation failed")
+				continue
+			}
+			if dec != nil && !dec.Allowed {
+				log.Warn().Str("tool", inv.Name).Strs("reasons", dec.Reasons).Msg("tool access denied by policy")
+				continue
+			}
+		}
+		tool, ok := r.toolRegistry.Get(inv.Name)
+		if !ok {
+			log.Warn().Str("tool", inv.Name).Msg("tool not in registry")
+			continue
+		}
+		_, err := tool.Execute(ctx, inv.Params)
+		if err != nil {
+			log.Warn().Err(err).Str("tool", inv.Name).Msg("tool execution failed")
+		}
+		called = append(called, inv.Name)
+		span.SetAttributes(attribute.String("tool.called", inv.Name))
+	}
+	return called
+}
+
+const budgetAlertThresholdPct = 0.8
+
+// emitBudgetAlertIfNeeded logs a structured warning and optionally POSTs to budget_alert_webhook
+// when daily or monthly usage is >= 80% of the configured limit.
+func emitBudgetAlertIfNeeded(ctx context.Context, tenantID string, dailyCost, monthlyCost float64, limits *policy.CostLimitsConfig) {
+	if limits == nil {
+		return
+	}
+	payload := map[string]interface{}{
+		"tenant_id":     tenantID,
+		"daily_cost":    dailyCost,
+		"monthly_cost":  monthlyCost,
+		"daily_limit":   limits.Daily,
+		"monthly_limit": limits.Monthly,
+	}
+	var fired bool
+	if limits.Daily > 0 && dailyCost >= budgetAlertThresholdPct*limits.Daily {
+		log.Warn().
+			Str("tenant_id", tenantID).
+			Float64("daily_cost", dailyCost).
+			Float64("daily_limit", limits.Daily).
+			Msg("budget_approaching_limit_daily")
+		payload["alert_type"] = "daily"
+		fired = true
+	}
+	if limits.Monthly > 0 && monthlyCost >= budgetAlertThresholdPct*limits.Monthly {
+		log.Warn().
+			Str("tenant_id", tenantID).
+			Float64("monthly_cost", monthlyCost).
+			Float64("monthly_limit", limits.Monthly).
+			Msg("budget_approaching_limit_monthly")
+		if !fired {
+			payload["alert_type"] = "monthly"
+		} else {
+			payload["alert_type"] = "daily_and_monthly"
+		}
+		fired = true
+	}
+	if fired && limits.BudgetAlertWebhook != "" {
+		go postBudgetAlert(limits.BudgetAlertWebhook, payload)
+	}
+}
+
+func postBudgetAlert(url string, payload map[string]interface{}) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Warn().Err(err).Msg("budget_alert_marshal_failed")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		log.Warn().Err(err).Str("url", url).Msg("budget_alert_request_failed")
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Warn().Err(err).Str("url", url).Msg("budget_alert_post_failed")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		log.Warn().Int("status", resp.StatusCode).Str("url", url).Msg("budget_alert_webhook_non_2xx")
+	}
 }
 
 // processAttachments scans, sandboxes, and appends attachment content to the prompt.
@@ -653,6 +878,11 @@ func (r *Runner) maybeGateForPlanReview(ctx context.Context, pol *policy.Policy,
 		}
 	}
 	costEstimate := 0.01
+	if r.router != nil {
+		if c, err := r.router.PreRunEstimate(dataTier); err == nil {
+			costEstimate = c
+		}
+	}
 	hasTools := r.toolRegistry != nil && len(r.toolRegistry.List()) > 0
 	if !RequiresReview(humanOversight, dataTier, costEstimate, hasTools, planCfg) {
 		return nil, false, nil

@@ -94,13 +94,22 @@ func (c *Config) EnsureDataDir() error {
 }
 
 // WarnIfDefaultKeys logs a warning when crypto keys are not explicitly set.
+// Suppressed when TALON_QUICKSTART=1 or true (e.g. first-time exploration, demos).
 func (c *Config) WarnIfDefaultKeys() {
+	if isQuickstart() {
+		return
+	}
 	if c.usingDefaultSecretsKey {
 		log.Warn().Msg("Using generated default TALON_SECRETS_KEY — set via env var or config file for production")
 	}
 	if c.usingDefaultSigningKey {
 		log.Warn().Msg("Using generated default TALON_SIGNING_KEY — set via env var or config file for production")
 	}
+}
+
+func isQuickstart() bool {
+	v := os.Getenv("TALON_QUICKSTART")
+	return v == "1" || v == "true" || v == "TRUE"
 }
 
 func init() {

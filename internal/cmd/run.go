@@ -23,11 +23,13 @@ import (
 )
 
 var (
-	runAgentName   string
-	runTenantID    string
-	runDryRun      bool
-	runAttachments []string
-	runPolicyPath  string
+	runAgentName        string
+	runTenantID         string
+	runDryRun           bool
+	runValidate         bool
+	runAttachments      []string
+	runPolicyPath       string
+	runActiveRunTracker = &agent.ActiveRunTracker{} // shared so rate-limit policy sees concurrent runs (e.g. multiple talon run in parallel)
 )
 
 var runCmd = &cobra.Command{
@@ -41,11 +43,13 @@ func init() {
 	runCmd.Flags().StringVar(&runAgentName, "agent", "default", "Agent name")
 	runCmd.Flags().StringVar(&runTenantID, "tenant", "default", "Tenant ID")
 	runCmd.Flags().BoolVar(&runDryRun, "dry-run", false, "Show policy decision without LLM call")
+	runCmd.Flags().BoolVar(&runValidate, "validate", false, "Validate policy before running (same as talon validate)")
 	runCmd.Flags().StringSliceVar(&runAttachments, "attach", nil, "Attachment files")
 	runCmd.Flags().StringVar(&runPolicyPath, "policy", "", "Path to .talon.yaml")
 	rootCmd.AddCommand(runCmd)
 }
 
+//nolint:gocyclo // orchestration flow is inherently branched
 func runAgent(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Minute)
 	defer cancel()
@@ -71,6 +75,22 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	policyPath := runPolicyPath
 	if policyPath == "" {
 		policyPath = cfg.DefaultPolicy
+	}
+
+	if _, err := os.Stat(policyPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("policy file not found: %s — create a project first with: talon init", policyPath)
+		}
+		return fmt.Errorf("policy file: %w", err)
+	}
+
+	if runValidate {
+		if err := validatePolicyFile(ctx, policyPath); err != nil {
+			return fmt.Errorf("pre-flight validation failed: %w", err)
+		}
+		if verbose {
+			log.Info().Str("policy", policyPath).Msg("policy validated")
+		}
 	}
 
 	cls := classifier.MustNewScanner()
@@ -102,15 +122,16 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	runner := agent.NewRunner(agent.RunnerConfig{
-		PolicyDir:    ".",
-		Classifier:   cls,
-		AttScanner:   attScanner,
-		Extractor:    extractor,
-		Router:       router,
-		Secrets:      secretsStore,
-		Evidence:     evidenceStore,
-		ToolRegistry: tools.NewRegistry(),
-		Memory:       memStore,
+		PolicyDir:        ".",
+		Classifier:       cls,
+		AttScanner:       attScanner,
+		Extractor:        extractor,
+		Router:           router,
+		Secrets:          secretsStore,
+		Evidence:         evidenceStore,
+		ToolRegistry:     tools.NewRegistry(),
+		ActiveRunTracker: runActiveRunTracker,
+		Memory:           memStore,
 	})
 
 	var attachments []agent.Attachment
@@ -195,6 +216,21 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 	}
 
 	return providers
+}
+
+// validatePolicyFile runs the same checks as "talon validate" (schema, engine compile, PII scanner).
+func validatePolicyFile(ctx context.Context, policyPath string) error {
+	pol, err := policy.LoadPolicy(ctx, policyPath, false)
+	if err != nil {
+		return err
+	}
+	if _, err := policy.NewEngine(ctx, pol); err != nil {
+		return fmt.Errorf("policy engine: %w", err)
+	}
+	if _, err := policy.NewPIIScannerForPolicy(pol, ""); err != nil {
+		return fmt.Errorf("PII scanner: %w", err)
+	}
+	return nil
 }
 
 // loadRoutingAndCostLimits loads the policy file and returns model routing and cost limits

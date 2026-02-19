@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"context"
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -14,9 +17,12 @@ import (
 )
 
 var (
-	auditTenant string
-	auditAgent  string
-	auditLimit  int
+	auditTenant    string
+	auditAgent     string
+	auditLimit     int
+	auditExportFmt string
+	auditFrom      string
+	auditTo        string
 )
 
 var auditCmd = &cobra.Command{
@@ -37,13 +43,27 @@ var auditVerifyCmd = &cobra.Command{
 	RunE:  auditVerify,
 }
 
+var auditExportCmd = &cobra.Command{
+	Use:   "export",
+	Short: "Export evidence records as CSV or JSON for compliance",
+	RunE:  auditExport,
+}
+
 func init() {
 	auditListCmd.Flags().StringVar(&auditTenant, "tenant", "", "Filter by tenant ID")
 	auditListCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
 	auditListCmd.Flags().IntVar(&auditLimit, "limit", 20, "Maximum records to show")
 
+	auditExportCmd.Flags().StringVar(&auditExportFmt, "format", "csv", "Output format: csv or json")
+	auditExportCmd.Flags().StringVar(&auditFrom, "from", "", "Start date (YYYY-MM-DD)")
+	auditExportCmd.Flags().StringVar(&auditTo, "to", "", "End date (YYYY-MM-DD)")
+	auditExportCmd.Flags().StringVar(&auditTenant, "tenant", "", "Filter by tenant ID")
+	auditExportCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
+	auditExportCmd.Flags().IntVar(&auditLimit, "limit", 10000, "Maximum records to export")
+
 	auditCmd.AddCommand(auditListCmd)
 	auditCmd.AddCommand(auditVerifyCmd)
+	auditCmd.AddCommand(auditExportCmd)
 	rootCmd.AddCommand(auditCmd)
 }
 
@@ -103,6 +123,83 @@ func auditVerify(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("signature verification failed for %s", evidenceID)
 	}
 	return nil
+}
+
+func auditExport(cmd *cobra.Command, args []string) error {
+	ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
+	defer cancel()
+
+	store, err := openEvidenceStore()
+	if err != nil {
+		return fmt.Errorf("initializing evidence store: %w", err)
+	}
+	defer store.Close()
+
+	var from, to time.Time
+	if auditFrom != "" {
+		var errParse error
+		from, errParse = time.ParseInLocation("2006-01-02", auditFrom, time.UTC)
+		if errParse != nil {
+			return fmt.Errorf("invalid --from: %w", errParse)
+		}
+	}
+	if auditTo != "" {
+		var errParse error
+		to, errParse = time.ParseInLocation("2006-01-02", auditTo, time.UTC)
+		if errParse != nil {
+			return fmt.Errorf("invalid --to: %w", errParse)
+		}
+		if !to.IsZero() {
+			to = to.Add(24 * time.Hour)
+		}
+	}
+
+	index, err := store.ListIndex(ctx, auditTenant, auditAgent, from, to, auditLimit)
+	if err != nil {
+		return fmt.Errorf("querying evidence: %w", err)
+	}
+
+	switch auditExportFmt {
+	case "csv":
+		return renderAuditExportCSV(os.Stdout, index)
+	case "json":
+		return renderAuditExportJSON(os.Stdout, index)
+	default:
+		return fmt.Errorf("unsupported --format %q; use csv or json", auditExportFmt)
+	}
+}
+
+func renderAuditExportCSV(w io.Writer, index []evidence.Index) error {
+	writer := csv.NewWriter(w)
+	defer writer.Flush()
+	header := []string{"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "cost_eur", "model_used", "duration_ms", "has_error"}
+	if err := writer.Write(header); err != nil {
+		return err
+	}
+	for i := range index {
+		row := []string{
+			index[i].ID,
+			index[i].Timestamp.Format(time.RFC3339),
+			index[i].TenantID,
+			index[i].AgentID,
+			index[i].InvocationType,
+			strconv.FormatBool(index[i].Allowed),
+			strconv.FormatFloat(index[i].CostEUR, 'f', 4, 64),
+			index[i].ModelUsed,
+			strconv.FormatInt(index[i].DurationMS, 10),
+			strconv.FormatBool(index[i].HasError),
+		}
+		if err := writer.Write(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renderAuditExportJSON(w io.Writer, index []evidence.Index) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(index)
 }
 
 // renderAuditList writes evidence index lines to w (testable).

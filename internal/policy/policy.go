@@ -143,10 +143,11 @@ type PoliciesConfig struct {
 
 // CostLimitsConfig sets per-request, daily, and monthly cost budgets.
 type CostLimitsConfig struct {
-	PerRequest  float64            `yaml:"per_request,omitempty" json:"per_request,omitempty"`
-	Daily       float64            `yaml:"daily,omitempty" json:"daily,omitempty"`
-	Monthly     float64            `yaml:"monthly,omitempty" json:"monthly,omitempty"`
-	Degradation *DegradationConfig `yaml:"degradation,omitempty" json:"degradation,omitempty"`
+	PerRequest         float64            `yaml:"per_request,omitempty" json:"per_request,omitempty"`
+	Daily              float64            `yaml:"daily,omitempty" json:"daily,omitempty"`
+	Monthly            float64            `yaml:"monthly,omitempty" json:"monthly,omitempty"`
+	Degradation        *DegradationConfig `yaml:"degradation,omitempty" json:"degradation,omitempty"`
+	BudgetAlertWebhook string             `yaml:"budget_alert_webhook,omitempty" json:"budget_alert_webhook,omitempty"` // Optional URL; POST when usage >= 80% of daily or monthly
 }
 
 // DegradationConfig enables graceful model downgrade when budget threshold is reached.
@@ -236,11 +237,13 @@ type TimeRestrictionsConfig struct {
 }
 
 // AuditConfig controls evidence logging detail.
+// When ObservationOnly is true, policy denials are logged but not enforced (shadow mode for governance visibility).
 type AuditConfig struct {
 	LogLevel         string `yaml:"log_level,omitempty" json:"log_level,omitempty"`
 	RetentionDays    int    `yaml:"retention_days,omitempty" json:"retention_days,omitempty"`
 	IncludePrompts   bool   `yaml:"include_prompts,omitempty" json:"include_prompts,omitempty"`
 	IncludeResponses bool   `yaml:"include_responses,omitempty" json:"include_responses,omitempty"`
+	ObservationOnly  bool   `yaml:"observation_only,omitempty" json:"observation_only,omitempty"` // If true, never deny; record would-have-denied in evidence
 }
 
 // PlanReviewConfig configures when execution plans require human review (EU AI Act Art. 14).

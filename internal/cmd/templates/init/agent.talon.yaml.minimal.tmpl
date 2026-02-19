@@ -1,0 +1,38 @@
+# Dativo Talon — Minimal Agent Configuration
+# Agent: {{ .Name }}
+# For full options run: talon init (without --minimal)
+
+agent:
+  name: {{ .Name }}
+  description: AI agent with policy enforcement
+  version: 1.0.0
+  model_tier: 0
+
+policies:
+  cost_limits:
+    per_request: 1.0
+    daily: 50.0
+    monthly: 500.0
+  model_routing:
+    tier_0:
+      primary: gpt-4o-mini
+      location: any
+    tier_1:
+      primary: gpt-4o-mini
+      location: any
+    tier_2:
+      primary: gpt-4o-mini
+      location: eu-west-1
+      bedrock_only: true
+
+audit:
+  log_level: detailed
+  retention_days: 2555
+
+compliance:
+  frameworks: [gdpr]
+  data_residency: eu
+
+metadata:
+  owner: "{{ .Owner }}"
+  tags: [ai-agent]

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -87,6 +88,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		defer memStore.Close()
 	}
 
+	activeRunTracker := &agent.ActiveRunTracker{}
 	runner := agent.NewRunner(agent.RunnerConfig{
 		PolicyDir:         ".",
 		DefaultPolicyPath: policyPath,
@@ -97,6 +99,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Secrets:           secretsStore,
 		Evidence:          evidenceStore,
 		ToolRegistry:      tools.NewRegistry(),
+		ActiveRunTracker:  activeRunTracker,
 		Memory:            memStore,
 	})
 
@@ -122,9 +125,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 	r.Use(middleware.RealIP)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	// Minimal status page: key SMB metrics (evidence count, cost today, active runs) for monitoring.
+	r.Get("/status", newStatusHandler(evidenceStore, activeRunTracker, "default"))
 	r.Post("/v1/triggers/{name}", webhookHandler.HandleWebhook)
 
 	addr := fmt.Sprintf(":%d", servePort)
@@ -162,4 +168,40 @@ func runServe(cmd *cobra.Command, args []string) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return server.Shutdown(shutdownCtx)
+}
+
+// statusResponse is the JSON shape for GET /status (minimal dashboard metrics).
+type statusResponse struct {
+	Status             string  `json:"status"`
+	EvidenceCountToday int     `json:"evidence_count_today,omitempty"`
+	CostEURToday       float64 `json:"cost_eur_today,omitempty"`
+	ActiveRuns         int     `json:"active_runs,omitempty"`
+}
+
+func newStatusHandler(store *evidence.Store, tracker *agent.ActiveRunTracker, defaultTenantID string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID := r.URL.Query().Get("tenant_id")
+		if tenantID == "" {
+			tenantID = defaultTenantID
+		}
+		resp := statusResponse{Status: "ok"}
+		if store != nil {
+			ctx := r.Context()
+			now := time.Now().UTC()
+			dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+			dayEnd := dayStart.Add(24 * time.Hour)
+			if n, err := store.CountInRange(ctx, tenantID, "", dayStart, dayEnd); err == nil {
+				resp.EvidenceCountToday = n
+			}
+			if cost, err := store.CostTotal(ctx, tenantID, "", dayStart, dayEnd); err == nil {
+				resp.CostEURToday = cost
+			}
+		}
+		if tracker != nil {
+			resp.ActiveRuns = tracker.Count(tenantID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	}
 }
