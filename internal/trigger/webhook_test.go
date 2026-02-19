@@ -2,7 +2,6 @@ package trigger
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -106,9 +105,42 @@ func TestHandleWebhook_ReturnsSuccess(t *testing.T) {
 	assert.Equal(t, "ok", resp.Status)
 }
 
-// Satisfy interface at compile time
-var _ AgentRunner = (*mockRunner)(nil)
-
-func (m *mockRunner) RunFromTriggerCtx(ctx context.Context, agentName, prompt, invocationType string) error {
-	return m.RunFromTrigger(ctx, agentName, prompt, invocationType)
+func TestRenderTemplate_UntrustedPayload_Sanitized(t *testing.T) {
+	// Nested payload is sanitized to JSON-like types only; template cannot invoke methods.
+	payload := map[string]interface{}{
+		"action": "deploy",
+		"repo":   "acme/app",
+		"nested": map[string]interface{}{"key": "value"},
+	}
+	safe := sanitizePayload(payload).(map[string]interface{})
+	prompt, err := renderTemplate("Event: {{.payload.action}} / {{.payload.repo}}", map[string]interface{}{"payload": safe})
+	require.NoError(t, err)
+	assert.Equal(t, "Event: deploy / acme/app", prompt)
 }
+
+func TestSanitizePayload_OnlyAllowsJSONLikeTypes(t *testing.T) {
+	// Primitives and collections pass through; other types become string.
+	t.Run("nil", func(t *testing.T) {
+		assert.Nil(t, sanitizePayload(nil))
+	})
+	t.Run("map", func(t *testing.T) {
+		in := map[string]interface{}{"a": "b"}
+		out := sanitizePayload(in).(map[string]interface{})
+		assert.Equal(t, "b", out["a"])
+	})
+	t.Run("slice", func(t *testing.T) {
+		in := []interface{}{"x", "y"}
+		out := sanitizePayload(in).([]interface{})
+		assert.Len(t, out, 2)
+		assert.Equal(t, "x", out[0])
+	})
+	t.Run("nested", func(t *testing.T) {
+		in := map[string]interface{}{"issue": map[string]interface{}{"key": "PROJ-1"}}
+		out := sanitizePayload(in).(map[string]interface{})
+		nested := out["issue"].(map[string]interface{})
+		assert.Equal(t, "PROJ-1", nested["key"])
+	})
+}
+
+// mockRunner is defined in scheduler_test.go; AgentRunner is satisfied there.
+var _ AgentRunner = (*mockRunner)(nil)

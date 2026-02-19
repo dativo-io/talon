@@ -62,7 +62,8 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	prompt, err := renderTemplate(trigger.PromptTemplate, map[string]interface{}{"payload": payload})
+	safePayload := sanitizePayload(payload)
+	prompt, err := renderTemplate(trigger.PromptTemplate, map[string]interface{}{"payload": safePayload})
 	if err != nil {
 		log.Warn().Err(err).Str("trigger", name).Msg("webhook_template_failed")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -94,9 +95,42 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(webhookResponse{Status: "ok", Message: "trigger executed"})
 }
 
-// renderTemplate renders a Go text/template with the given data.
+// sanitizePayload recursively restricts the payload to JSON-like types only
+// (map[string]interface{}, []interface{}, string, float64, bool, nil). This
+// prevents the template engine from calling methods on unexpected types
+// when rendering with untrusted webhook body data.
+func sanitizePayload(v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
+	switch val := v.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(val))
+		for k, elem := range val {
+			out[k] = sanitizePayload(elem)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(val))
+		for i, elem := range val {
+			out[i] = sanitizePayload(elem)
+		}
+		return out
+	case string, float64, bool:
+		return v
+	default:
+		// Numbers from JSON decode as float64; ints not possible from standard encoding/json.
+		// Any other type (e.g. future custom decoder) is reduced to a safe string form.
+		return fmt.Sprint(v)
+	}
+}
+
+// renderTemplate renders a Go text/template with the given data. It uses an
+// explicit empty FuncMap so no template functions are available, and callers
+// must pass sanitized data (e.g. from sanitizePayload) to avoid method calls
+// on untrusted payloads.
 func renderTemplate(tmplStr string, data interface{}) (string, error) {
-	tmpl, err := template.New("webhook").Parse(tmplStr)
+	tmpl, err := template.New("webhook").Funcs(template.FuncMap{}).Parse(tmplStr)
 	if err != nil {
 		return "", fmt.Errorf("parsing template: %w", err)
 	}
