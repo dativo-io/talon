@@ -105,6 +105,39 @@ func TestHandleWebhook_ReturnsSuccess(t *testing.T) {
 	assert.Equal(t, "ok", resp.Status)
 }
 
+func TestHandleWebhook_RequireApproval_GatesExecution(t *testing.T) {
+	runner := &mockRunner{}
+	pol := &policy.Policy{
+		Agent: policy.AgentConfig{Name: "jira-bot"},
+		Triggers: &policy.TriggersConfig{
+			Webhooks: []policy.WebhookTrigger{
+				{
+					Name:            "jira-update",
+					Source:          "jira",
+					PromptTemplate:  "Analyze: {{.payload.issue.key}}",
+					RequireApproval: true,
+				},
+			},
+		},
+	}
+	handler := NewWebhookHandler(runner, pol)
+	router := webhookRouter(handler)
+
+	body, _ := json.Marshal(map[string]interface{}{"issue": map[string]string{"key": "PROJ-123"}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/triggers/jira-update", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	var resp webhookResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "pending_approval", resp.Status)
+	assert.Contains(t, resp.Message, "human approval")
+	assert.Empty(t, runner.calls, "agent must not run when require_approval is true")
+}
+
 func TestRenderTemplate_UntrustedPayload_Sanitized(t *testing.T) {
 	// Nested payload is sanitized to JSON-like types only; template cannot invoke methods.
 	payload := map[string]interface{}{

@@ -71,6 +71,23 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Human oversight gate (EU AI Act Art. 14): when require_approval is true,
+	// do not execute the agent. Return 202 so the caller knows the webhook was
+	// received but no run was started until an operator approves.
+	if trigger.RequireApproval {
+		log.Info().
+			Str("agent_id", wh.agent).
+			Str("trigger", name).
+			Msg("webhook_received_pending_approval")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(webhookResponse{
+			Status:  "pending_approval",
+			Message: "Webhook received; execution requires human approval (EU AI Act Art. 14). No run was started.",
+		})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
 
