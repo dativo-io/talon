@@ -127,9 +127,10 @@ func (g *Governance) ValidateWrite(ctx context.Context, entry *Entry, pol *polic
 	}
 	entry.TrustScore = DeriveTrustScore(entry.SourceType)
 
-	// Check 5: Conflict detection + resolution
+	// Check 5: Conflict detection + resolution (reject mode returns ErrMemoryConflict)
+	// Must use deny() so memory.writes.denied and governance.denied_by are recorded.
 	if err := g.handleConflicts(ctx, entry, pol); err != nil {
-		return err
+		return deny("conflict", err)
 	}
 
 	span.SetAttributes(
