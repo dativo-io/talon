@@ -662,14 +662,15 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 		return
 	}
 
-	// Strip private tags from response before persisting to memory
+	// Strip private tags from response before persisting to memory (GDPR Art. 25).
+	// Both Title and Content must be derived from clean content so <private> is never persisted.
 	privacyResult := memory.StripPrivateTags(resp.Response)
 
 	observation := memory.Entry{
 		TenantID:         req.TenantID,
 		AgentID:          req.AgentName,
 		Category:         inferCategory(resp),
-		Title:            compressTitle(resp),
+		Title:            compressTitle(resp, privacyResult.CleanContent),
 		Content:          compressObservation(resp, privacyResult.CleanContent),
 		ObservationType:  inferObservationType(resp),
 		EvidenceID:       ev.ID,
@@ -731,12 +732,13 @@ func compressObservation(resp *RunResponse, cleanContent string) string {
 	return summary + "\n" + cleanContent
 }
 
-// compressTitle derives a short title from the response.
-func compressTitle(resp *RunResponse) string {
+// compressTitle derives a short title from the response using only privacy-stripped content.
+// Using cleanContent ensures <private> sections are never persisted in the title (GDPR Art. 25).
+func compressTitle(resp *RunResponse, cleanContent string) string {
 	if resp.DenyReason != "" {
 		return "Denied: " + resp.DenyReason
 	}
-	text := resp.Response
+	text := cleanContent
 	if idx := strings.IndexAny(text, ".\n"); idx > 0 && idx < 80 {
 		return text[:idx]
 	}

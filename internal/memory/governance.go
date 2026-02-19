@@ -66,16 +66,21 @@ func (g *Governance) ValidateWrite(ctx context.Context, entry *Entry, pol *polic
 		return err
 	}
 
-	// Check 2: PII scan
+	// Check 2: PII scan (Title and Content — both must be free of PII)
 	if g.classifier != nil {
-		result := g.classifier.Scan(ctx, entry.Content)
+		combined := entry.Title + "\n" + entry.Content
+		result := g.classifier.Scan(ctx, combined)
 		if result.HasPII {
 			span.SetAttributes(attribute.String("governance.denied_by", "pii"))
 			return fmt.Errorf("memory write contains PII: %w", ErrPIIDetected)
 		}
 	}
 
-	// Check 3: Policy override detection
+	// Check 3: Policy override detection (Title and Content)
+	if err := g.checkPolicyOverride(entry.Title); err != nil {
+		span.SetAttributes(attribute.String("governance.denied_by", "policy_override"))
+		return err
+	}
 	if err := g.checkPolicyOverride(entry.Content); err != nil {
 		span.SetAttributes(attribute.String("governance.denied_by", "policy_override"))
 		return err
