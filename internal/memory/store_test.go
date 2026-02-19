@@ -71,6 +71,48 @@ func TestWrite_EstimatesTokenCount(t *testing.T) {
 	assert.Equal(t, len(content)/4, entries[0].TokenCount)
 }
 
+// TestWrite_ConcurrentSameTenantAgent_DistinctVersions ensures that concurrent
+// writes for the same tenant/agent (e.g. cron + webhook) get distinct version
+// numbers so rollback semantics are preserved.
+func TestWrite_ConcurrentSameTenantAgent_DistinctVersions(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	const concurrency = 20
+
+	var wg sync.WaitGroup
+	versions := make(chan int, concurrency)
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			entry := Entry{
+				TenantID:   "acme",
+				AgentID:    "sales",
+				Category:   CategoryDomainKnowledge,
+				Title:      "Concurrent entry",
+				Content:    "Content",
+				EvidenceID: "req_123",
+				SourceType: SourceAgentRun,
+			}
+			err := store.Write(ctx, &entry)
+			require.NoError(t, err)
+			versions <- entry.Version
+		}(i)
+	}
+	wg.Wait()
+	close(versions)
+
+	seen := make(map[int]bool)
+	for v := range versions {
+		assert.False(t, seen[v], "duplicate version %d", v)
+		seen[v] = true
+	}
+	assert.Len(t, seen, concurrency, "expected %d distinct versions", concurrency)
+	for i := 1; i <= concurrency; i++ {
+		assert.True(t, seen[i], "missing version %d", i)
+	}
+}
+
 func TestGet_ReturnsFullEntry(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

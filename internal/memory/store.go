@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -157,37 +158,33 @@ func (s *Store) Write(ctx context.Context, entry *Entry) error {
 		))
 	defer span.End()
 
+	prepareEntry(entry)
+	filesJSON, conflictsJSON := entryJSONBlobs(entry)
+
+	err := s.writeWithRetry(ctx, entry, filesJSON, conflictsJSON)
+	if err != nil {
+		return err
+	}
+
+	span.SetAttributes(
+		attribute.String("memory.id", entry.ID),
+		attribute.Int("memory.version", entry.Version),
+		attribute.Int("memory.trust_score", entry.TrustScore),
+	)
+	return nil
+}
+
+// prepareEntry fills in ID, timestamp, token count, and default fields on entry.
+func prepareEntry(entry *Entry) {
 	if entry.ID == "" {
 		entry.ID = "mem_" + uuid.New().String()[:12]
 	}
-
 	if entry.Timestamp.IsZero() {
 		entry.Timestamp = time.Now().UTC()
 	}
-
 	if entry.TokenCount == 0 {
 		entry.TokenCount = len(entry.Content) / 4
 	}
-
-	// Auto-increment version per tenant+agent
-	var maxVersion int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(version), 0) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`,
-		entry.TenantID, entry.AgentID).Scan(&maxVersion)
-	if err != nil {
-		return fmt.Errorf("querying max version: %w", err)
-	}
-	entry.Version = maxVersion + 1
-
-	filesJSON, _ := json.Marshal(entry.FilesAffected)
-	if entry.FilesAffected == nil {
-		filesJSON = []byte("[]")
-	}
-	conflictsJSON, _ := json.Marshal(entry.ConflictsWith)
-	if entry.ConflictsWith == nil {
-		conflictsJSON = []byte("[]")
-	}
-
 	if entry.ReviewStatus == "" {
 		entry.ReviewStatus = "auto_approved"
 	}
@@ -200,14 +197,78 @@ func (s *Store) Write(ctx context.Context, entry *Entry) error {
 	if entry.TrustScore == 0 {
 		entry.TrustScore = DeriveTrustScore(entry.SourceType)
 	}
+}
+
+// entryJSONBlobs returns JSON-encoded files_affected and conflicts_with.
+func entryJSONBlobs(entry *Entry) (filesJSON, conflictsJSON []byte) {
+	filesJSON, _ = json.Marshal(entry.FilesAffected)
+	if entry.FilesAffected == nil {
+		filesJSON = []byte("[]")
+	}
+	conflictsJSON, _ = json.Marshal(entry.ConflictsWith)
+	if entry.ConflictsWith == nil {
+		conflictsJSON = []byte("[]")
+	}
+	return filesJSON, conflictsJSON
+}
+
+// writeWithRetry runs writeInTx with retries on SQLite busy/locked.
+func (s *Store) writeWithRetry(ctx context.Context, entry *Entry, filesJSON, conflictsJSON []byte) error {
+	const maxRetries = 15
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			if err := sleepRetry(ctx, attempt); err != nil {
+				return err
+			}
+		}
+		lastErr = s.writeInTx(ctx, entry, filesJSON, conflictsJSON)
+		if lastErr == nil {
+			return nil
+		}
+		if !isSQLiteLocked(lastErr) {
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
+func sleepRetry(ctx context.Context, attempt int) error {
+	backoff := time.Duration(attempt*attempt) * 20 * time.Millisecond
+	if backoff > 250*time.Millisecond {
+		backoff = 250 * time.Millisecond
+	}
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled: %w", ctx.Err())
+	case <-time.After(backoff):
+		return nil
+	}
+}
+
+// writeInTx runs the version read + insert inside a single transaction.
+func (s *Store) writeInTx(ctx context.Context, entry *Entry, filesJSON, conflictsJSON []byte) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var maxVersion int
+	err = tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(version), 0) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`,
+		entry.TenantID, entry.AgentID).Scan(&maxVersion)
+	if err != nil {
+		return fmt.Errorf("querying max version: %w", err)
+	}
+	entry.Version = maxVersion + 1
 
 	query := `INSERT INTO memory_entries (
 		id, tenant_id, agent_id, category, title, content, observation_type,
 		token_count, files_affected, version, timestamp, evidence_id,
 		source_type, source_evidence_id, trust_score, conflicts_with, review_status
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-
-	_, err = s.db.ExecContext(ctx, query,
+	_, err = tx.ExecContext(ctx, query,
 		entry.ID, entry.TenantID, entry.AgentID, entry.Category,
 		entry.Title, entry.Content, entry.ObservationType,
 		entry.TokenCount, string(filesJSON), entry.Version, entry.Timestamp,
@@ -217,13 +278,18 @@ func (s *Store) Write(ctx context.Context, entry *Entry) error {
 	if err != nil {
 		return fmt.Errorf("writing memory entry: %w", err)
 	}
+	return tx.Commit()
+}
 
-	span.SetAttributes(
-		attribute.String("memory.id", entry.ID),
-		attribute.Int("memory.version", entry.Version),
-		attribute.Int("memory.trust_score", entry.TrustScore),
-	)
-	return nil
+// isSQLiteLocked reports whether the error is SQLite busy/locked (retryable).
+func isSQLiteLocked(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "SQLITE_BUSY") ||
+		strings.Contains(msg, "locked")
 }
 
 // Get retrieves a full memory entry by ID (Layer 2).
