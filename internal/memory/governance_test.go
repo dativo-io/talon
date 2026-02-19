@@ -45,7 +45,7 @@ func TestValidateWrite_AllowedCategory(t *testing.T) {
 		SourceType: SourceAgentRun,
 		TenantID:   "acme", AgentID: "sales",
 	}
-	err := gov.ValidateWrite(context.Background(), entry, pol)
+	err := gov.ValidateWrite(context.Background(), entry, pol, nil)
 	assert.NoError(t, err)
 }
 
@@ -59,7 +59,7 @@ func TestValidateWrite_AllowAllWhenEmpty(t *testing.T) {
 		SourceType: SourceAgentRun,
 		TenantID:   "acme", AgentID: "sales",
 	}
-	err := gov.ValidateWrite(context.Background(), entry, pol)
+	err := gov.ValidateWrite(context.Background(), entry, pol, nil)
 	assert.NoError(t, err)
 }
 
@@ -73,7 +73,7 @@ func TestValidateWrite_ForbiddenCategory(t *testing.T) {
 		SourceType: SourceAgentRun,
 		TenantID:   "acme", AgentID: "sales",
 	}
-	err := gov.ValidateWrite(context.Background(), entry, pol)
+	err := gov.ValidateWrite(context.Background(), entry, pol, nil)
 	assert.ErrorIs(t, err, ErrMemoryWriteDenied)
 }
 
@@ -88,7 +88,7 @@ func TestValidateWrite_HardcodedForbidden(t *testing.T) {
 			SourceType: SourceAgentRun,
 			TenantID:   "acme", AgentID: "sales",
 		}
-		err := gov.ValidateWrite(context.Background(), entry, pol)
+		err := gov.ValidateWrite(context.Background(), entry, pol, nil)
 		assert.ErrorIs(t, err, ErrMemoryWriteDenied, "category %s should be forbidden", cat)
 	}
 }
@@ -103,7 +103,7 @@ func TestValidateWrite_PIIRejected(t *testing.T) {
 		SourceType: SourceAgentRun,
 		TenantID:   "acme", AgentID: "sales",
 	}
-	err := gov.ValidateWrite(context.Background(), entry, pol)
+	err := gov.ValidateWrite(context.Background(), entry, pol, nil)
 	assert.ErrorIs(t, err, ErrPIIDetected)
 }
 
@@ -129,7 +129,7 @@ func TestValidateWrite_PolicyOverrideRejected(t *testing.T) {
 				SourceType: SourceAgentRun,
 				TenantID:   "acme", AgentID: "sales",
 			}
-			err := gov.ValidateWrite(context.Background(), entry, pol)
+			err := gov.ValidateWrite(context.Background(), entry, pol, nil)
 			assert.ErrorIs(t, err, ErrMemoryWriteDenied)
 		})
 	}
@@ -149,7 +149,7 @@ func TestValidateWrite_MaxEntrySizeKB(t *testing.T) {
 			SourceType: SourceAgentRun,
 			TenantID:   "acme", AgentID: "sales",
 		}
-		err := gov.ValidateWrite(context.Background(), entry, pol)
+		err := gov.ValidateWrite(context.Background(), entry, pol, nil)
 		assert.NoError(t, err)
 	})
 
@@ -165,7 +165,7 @@ func TestValidateWrite_MaxEntrySizeKB(t *testing.T) {
 			SourceType: SourceAgentRun,
 			TenantID:   "acme", AgentID: "sales",
 		}
-		err := gov.ValidateWrite(context.Background(), entry, pol)
+		err := gov.ValidateWrite(context.Background(), entry, pol, nil)
 		assert.ErrorIs(t, err, ErrMemoryWriteDenied)
 	})
 }
@@ -180,7 +180,7 @@ func TestValidateWrite_MissingSourceType(t *testing.T) {
 		SourceType: "",
 		TenantID:   "acme", AgentID: "sales",
 	}
-	err := gov.ValidateWrite(context.Background(), entry, pol)
+	err := gov.ValidateWrite(context.Background(), entry, pol, nil)
 	assert.ErrorIs(t, err, ErrMemoryWriteDenied)
 }
 
@@ -207,7 +207,7 @@ func TestValidateWrite_DerivesTrustScore(t *testing.T) {
 				SourceType: tt.sourceType,
 				TenantID:   "acme", AgentID: "sales",
 			}
-			err := gov.ValidateWrite(context.Background(), entry, pol)
+			err := gov.ValidateWrite(context.Background(), entry, pol, nil)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.wantScore, entry.TrustScore)
 		})
@@ -275,7 +275,7 @@ func TestConflictResolution_Auto(t *testing.T) {
 		Content:    "Updated: the company fiscal year begins in April",
 		SourceType: SourceUserInput,
 	}
-	err := gov.ValidateWrite(ctx, entry, pol)
+	err := gov.ValidateWrite(ctx, entry, pol, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, "auto_approved", entry.ReviewStatus)
 }
@@ -298,7 +298,7 @@ func TestConflictResolution_FlagForReview(t *testing.T) {
 		Content:    "Actually the fiscal year begins in January, not April",
 		SourceType: SourceAgentRun,
 	}
-	err := gov.ValidateWrite(ctx, entry, pol)
+	err := gov.ValidateWrite(ctx, entry, pol, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, "pending_review", entry.ReviewStatus)
 }
@@ -321,7 +321,7 @@ func TestConflictResolution_Reject(t *testing.T) {
 		Content:    "Actually the fiscal year begins in January, not April",
 		SourceType: SourceAgentRun,
 	}
-	err := gov.ValidateWrite(ctx, entry, pol)
+	err := gov.ValidateWrite(ctx, entry, pol, nil)
 	assert.ErrorIs(t, err, ErrMemoryConflict)
 }
 
@@ -343,7 +343,7 @@ func TestConflictDetection_FailClosed(t *testing.T) {
 		Content:    "Weather forecasting uses satellite data",
 		SourceType: SourceAgentRun,
 	}
-	err := gov.ValidateWrite(ctx, entry, pol)
+	err := gov.ValidateWrite(ctx, entry, pol, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, "auto_approved", entry.ReviewStatus)
 
@@ -356,7 +356,7 @@ func TestConflictDetection_FailClosed(t *testing.T) {
 		Content:    "This should be flagged pending_review",
 		SourceType: SourceAgentRun,
 	}
-	err = gov.ValidateWrite(ctx, failEntry, pol)
+	err = gov.ValidateWrite(ctx, failEntry, pol, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, "pending_review", failEntry.ReviewStatus)
 }

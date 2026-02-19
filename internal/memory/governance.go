@@ -66,7 +66,10 @@ var forbiddenPhrases = []string{
 
 // ValidateWrite runs all five governance checks in order.
 // It may mutate the entry (setting TrustScore, ReviewStatus, ConflictsWith).
-func (g *Governance) ValidateWrite(ctx context.Context, entry *Entry, pol *policy.Policy) error {
+// eval is an optional per-call policy evaluator (e.g. the OPA engine for this run).
+// When non-nil, it is used for OPA memory governance instead of the shared g.opa,
+// avoiding data races when multiple Run() calls execute concurrently.
+func (g *Governance) ValidateWrite(ctx context.Context, entry *Entry, pol *policy.Policy, eval PolicyEvaluator) error {
 	ctx, span := tracer.Start(ctx, "memory.governance.validate",
 		trace.WithAttributes(
 			attribute.String("category", entry.Category),
@@ -87,25 +90,13 @@ func (g *Governance) ValidateWrite(ctx context.Context, entry *Entry, pol *polic
 	}
 
 	// Check 0.5: max_entry_size_kb enforcement (Go-level, mirrors the OPA rego rule)
-	if pol.Memory != nil && pol.Memory.MaxEntrySizeKB > 0 {
-		contentSize := len(entry.Title) + len(entry.Content)
-		maxBytes := pol.Memory.MaxEntrySizeKB * 1024
-		if contentSize > maxBytes {
-			return deny("max_entry_size", fmt.Errorf("entry size %d bytes exceeds max_entry_size_kb (%d KB): %w",
-				contentSize, pol.Memory.MaxEntrySizeKB, ErrMemoryWriteDenied))
-		}
+	if err := g.checkMaxEntrySize(entry, pol); err != nil {
+		return deny("max_entry_size", err)
 	}
 
 	// Check 0.75: OPA policy evaluation (unified governance path)
-	if g.opa != nil {
-		contentSize := len(entry.Title) + len(entry.Content)
-		decision, opaErr := g.opa.EvaluateMemoryWrite(ctx, entry.Category, contentSize)
-		if opaErr != nil {
-			log.Warn().Err(opaErr).Msg("OPA memory governance unavailable, continuing with Go checks")
-		} else if !decision.Allowed {
-			return deny("opa", fmt.Errorf("OPA policy denied memory write: %s: %w",
-				strings.Join(decision.Reasons, "; "), ErrMemoryWriteDenied))
-		}
+	if err := g.evalOPAMemoryWrite(ctx, entry, eval); err != nil {
+		return deny("opa", err)
 	}
 
 	// Check 1: Category allowed (Go-level allow/forbid lists)
@@ -146,6 +137,43 @@ func (g *Governance) ValidateWrite(ctx context.Context, entry *Entry, pol *polic
 		attribute.String("governance.review_status", entry.ReviewStatus),
 	)
 	return nil
+}
+
+// checkMaxEntrySize returns an error if the entry exceeds policy max_entry_size_kb.
+func (g *Governance) checkMaxEntrySize(entry *Entry, pol *policy.Policy) error {
+	if pol.Memory == nil || pol.Memory.MaxEntrySizeKB <= 0 {
+		return nil
+	}
+	contentSize := len(entry.Title) + len(entry.Content)
+	maxBytes := pol.Memory.MaxEntrySizeKB * 1024
+	if contentSize <= maxBytes {
+		return nil
+	}
+	return fmt.Errorf("entry size %d bytes exceeds max_entry_size_kb (%d KB): %w",
+		contentSize, pol.Memory.MaxEntrySizeKB, ErrMemoryWriteDenied)
+}
+
+// evalOPAMemoryWrite runs OPA memory governance when an evaluator is available (eval or g.opa).
+// Returns nil if no evaluator, OPA is unavailable (logs and continues), or OPA allows; otherwise the denial error.
+func (g *Governance) evalOPAMemoryWrite(ctx context.Context, entry *Entry, eval PolicyEvaluator) error {
+	opa := eval
+	if opa == nil {
+		opa = g.opa
+	}
+	if opa == nil {
+		return nil
+	}
+	contentSize := len(entry.Title) + len(entry.Content)
+	decision, opaErr := opa.EvaluateMemoryWrite(ctx, entry.Category, contentSize)
+	if opaErr != nil {
+		log.Warn().Err(opaErr).Msg("OPA memory governance unavailable, continuing with Go checks")
+		return nil
+	}
+	if decision.Allowed {
+		return nil
+	}
+	return fmt.Errorf("OPA policy denied memory write: %s: %w",
+		strings.Join(decision.Reasons, "; "), ErrMemoryWriteDenied)
 }
 
 // checkCategory validates the entry category against policy allow/forbid lists.

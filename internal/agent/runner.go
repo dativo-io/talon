@@ -214,11 +214,6 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		return nil, fmt.Errorf("creating policy engine: %w", err)
 	}
 
-	// Wire OPA engine into memory governance for unified policy enforcement.
-	if r.governance != nil {
-		r.governance.SetPolicyEvaluator(engine)
-	}
-
 	policyInput := map[string]interface{}{
 		"tenant_id":          req.TenantID,
 		"agent_id":           req.AgentName,
@@ -340,7 +335,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		}
 	}
 
-	return r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol,
+	return r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine,
 		effectiveTier, inputEntityNames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens)
 }
 
@@ -384,7 +379,8 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 }
 
 // executeLLMPipeline runs steps 5-9: route provider, call LLM, classify output, generate evidence.
-func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int) (*RunResponse, error) {
+// policyEval is the per-run OPA engine used for memory governance to avoid data races when concurrent Run() share one Governance.
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int) (*RunResponse, error) {
 	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
 	provider, model, degraded, originalModel, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx)
 	if err != nil {
@@ -512,7 +508,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	}
 
 	// Post-LLM: governed memory write
-	r.writeMemoryObservation(ctx, req, pol, resp, ev)
+	r.writeMemoryObservation(ctx, req, pol, policyEval, resp, ev)
 
 	return resp, nil
 }
@@ -714,7 +710,8 @@ func memoryMode(pol *policy.Policy) string {
 // writeMemoryObservation compresses the run result into a memory observation
 // and writes it through the governance pipeline.
 // In shadow mode, all checks run and results are logged, but no entry is persisted.
-func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, pol *policy.Policy, resp *RunResponse, ev *evidence.Evidence) {
+// policyEval is the per-run OPA engine for this invocation (avoids data race on shared Governance).
+func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, resp *RunResponse, ev *evidence.Evidence) {
 	if r.memory == nil || r.governance == nil || pol.Memory == nil || !pol.Memory.Enabled {
 		return
 	}
@@ -743,7 +740,7 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 		SourceEvidenceID: ev.ID,
 	}
 
-	if err := r.governance.ValidateWrite(ctx, &observation, pol); err != nil {
+	if err := r.governance.ValidateWrite(ctx, &observation, pol, policyEval); err != nil {
 		log.Warn().Err(err).
 			Str("agent_id", req.AgentName).
 			Str("category", observation.Category).
