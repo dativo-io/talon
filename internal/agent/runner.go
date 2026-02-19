@@ -285,6 +285,10 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				memIndex = filterByPromptCategories(memIndex, pol.Memory.PromptCategories)
 			}
 
+			// Exclude pending_review before token cap and evidence: only entries actually
+			// injected into the prompt are recorded in evidence (compliance-accurate audit).
+			memIndex = filterOutPendingReview(memIndex)
+
 			// Apply max_prompt_tokens cap: evict oldest/lowest-trust entries if over budget
 			if pol.Memory.MaxPromptTokens > 0 {
 				memIndex = capMemoryByTokens(memIndex, pol.Memory.MaxPromptTokens)
@@ -787,6 +791,20 @@ func filterByPromptCategories(entries []memory.IndexEntry, categories []string) 
 	return filtered
 }
 
+// filterOutPendingReview keeps only entries eligible for prompt injection (excludes pending_review).
+// Must run before building memoryReads and capMemoryByTokens so evidence matches what is actually injected.
+const reviewStatusPendingReview = "pending_review"
+
+func filterOutPendingReview(entries []memory.IndexEntry) []memory.IndexEntry {
+	var filtered []memory.IndexEntry
+	for i := range entries {
+		if entries[i].ReviewStatus != reviewStatusPendingReview {
+			filtered = append(filtered, entries[i])
+		}
+	}
+	return filtered
+}
+
 // capMemoryByTokens trims the memory index to fit within a token budget.
 // It keeps entries from newest to oldest, dropping the oldest when over budget.
 func capMemoryByTokens(entries []memory.IndexEntry, maxTokens int) []memory.IndexEntry {
@@ -817,7 +835,7 @@ func formatMemoryIndexForPrompt(entries []memory.IndexEntry) string {
 	b.WriteString("[AGENT MEMORY INDEX]\n")
 	included := 0
 	for i := range entries {
-		if entries[i].ReviewStatus == "pending_review" {
+		if entries[i].ReviewStatus == reviewStatusPendingReview {
 			continue
 		}
 		fmt.Fprintf(&b, "\u2713 %s | %s | %s | trust:%d | %s\n",

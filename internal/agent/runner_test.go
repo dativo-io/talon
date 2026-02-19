@@ -242,6 +242,26 @@ func TestFilterByPromptCategories(t *testing.T) {
 	})
 }
 
+func TestFilterOutPendingReview(t *testing.T) {
+	entries := []memory.IndexEntry{
+		{ID: "mem_1", ReviewStatus: "auto_approved"},
+		{ID: "mem_2", ReviewStatus: "pending_review"},
+		{ID: "mem_3", ReviewStatus: "auto_approved"},
+		{ID: "mem_4", ReviewStatus: ""},
+	}
+
+	got := filterOutPendingReview(entries)
+	assert.Len(t, got, 3)
+	ids := make([]string, len(got))
+	for i := range got {
+		ids[i] = got[i].ID
+	}
+	assert.NotContains(t, ids, "mem_2")
+	assert.Contains(t, ids, "mem_1")
+	assert.Contains(t, ids, "mem_3")
+	assert.Contains(t, ids, "mem_4")
+}
+
 func TestCapMemoryByTokens(t *testing.T) {
 	entries := []memory.IndexEntry{
 		{ID: "mem_1", TokenCount: 100, Title: "E1", Category: "test"},
