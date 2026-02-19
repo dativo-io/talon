@@ -176,7 +176,7 @@ func TestInferObservationType(t *testing.T) {
 }
 
 func TestSourceTypeFromInvocation(t *testing.T) {
-	assert.Equal(t, memory.SourceAgentRun, sourceTypeFromInvocation("manual"))
+	assert.Equal(t, memory.SourceManual, sourceTypeFromInvocation("manual"))
 	assert.Equal(t, memory.SourceAgentRun, sourceTypeFromInvocation("scheduled"))
 	assert.Equal(t, memory.SourceWebhook, sourceTypeFromInvocation("webhook:jira"))
 	assert.Equal(t, memory.SourceAgentRun, sourceTypeFromInvocation(""))

@@ -768,7 +768,7 @@ func inferObservationType(resp *RunResponse) string {
 func sourceTypeFromInvocation(invocationType string) string {
 	switch {
 	case invocationType == "manual":
-		return memory.SourceAgentRun
+		return memory.SourceManual
 	case invocationType == "scheduled":
 		return memory.SourceAgentRun
 	case strings.HasPrefix(invocationType, "webhook:"):

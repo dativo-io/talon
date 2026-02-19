@@ -119,8 +119,8 @@ func TestRunner_MemoryWriteAfterRun(t *testing.T) {
 	require.Len(t, entries, 1)
 
 	entry := entries[0]
-	assert.Equal(t, memory.SourceAgentRun, entry.SourceType)
-	assert.Equal(t, 70, entry.TrustScore)
+	assert.Equal(t, memory.SourceManual, entry.SourceType)
+	assert.Equal(t, 100, entry.TrustScore)
 	assert.NotEmpty(t, entry.EvidenceID)
 	assert.Equal(t, resp.EvidenceID, entry.EvidenceID)
 }
