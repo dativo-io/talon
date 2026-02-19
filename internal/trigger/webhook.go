@@ -64,8 +64,9 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 
 	prompt, err := renderTemplate(trigger.PromptTemplate, map[string]interface{}{"payload": payload})
 	if err != nil {
+		log.Warn().Err(err).Str("trigger", name).Msg("webhook_template_failed")
 		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: fmt.Sprintf("template error: %v", err)})
+		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: "invalid webhook template"})
 		return
 	}
 
@@ -85,7 +86,7 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 			Str("trigger", name).
 			Msg("webhook_trigger_failed")
 		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: err.Error()})
+		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: "trigger execution failed"})
 		return
 	}
 
