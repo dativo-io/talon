@@ -145,9 +145,16 @@ func (g *Governance) checkPolicyOverride(content string) error {
 	return nil
 }
 
+// defaultConflictSimilarityThreshold is used when policy does not set conflict_similarity_threshold.
+const defaultConflictSimilarityThreshold = 0.6
+
 // handleConflicts detects and resolves conflicts with existing memory entries.
 func (g *Governance) handleConflicts(ctx context.Context, entry *Entry, pol *policy.Policy) error {
-	conflicts, err := g.CheckConflicts(ctx, *entry)
+	threshold := defaultConflictSimilarityThreshold
+	if pol.Memory != nil && pol.Memory.Governance != nil && pol.Memory.Governance.ConflictSimilarityThreshold > 0 {
+		threshold = pol.Memory.Governance.ConflictSimilarityThreshold
+	}
+	conflicts, err := g.CheckConflicts(ctx, *entry, threshold)
 	if err != nil {
 		// Fail-open: log warning but allow write
 		log.Warn().Err(err).Str("entry_id", entry.ID).Msg("conflict detection failed, allowing write")
@@ -190,12 +197,12 @@ func (g *Governance) handleConflicts(ctx context.Context, entry *Entry, pol *pol
 }
 
 // CheckConflicts finds existing entries that may contradict the new entry.
-func (g *Governance) CheckConflicts(ctx context.Context, entry Entry) ([]ConflictCandidate, error) {
-	ctx, span := tracer.Start(ctx, "memory.governance.check_conflicts")
+// similarityThreshold is the minimum keyword-overlap ratio (0..1) to consider two entries in conflict;
+// it is typically taken from policy memory.governance.conflict_similarity_threshold (default 0.6).
+func (g *Governance) CheckConflicts(ctx context.Context, entry Entry, similarityThreshold float64) ([]ConflictCandidate, error) {
+	ctx, span := tracer.Start(ctx, "memory.governance.check_conflicts",
+		trace.WithAttributes(attribute.Float64("conflict_similarity_threshold", similarityThreshold)))
 	defer span.End()
-
-	threshold := 0.6
-	// We don't have direct access to policy here; threshold is set by handleConflicts caller if needed
 
 	var candidates []ConflictCandidate
 	seen := make(map[string]bool)
@@ -206,12 +213,13 @@ func (g *Governance) CheckConflicts(ctx context.Context, entry Entry) ([]Conflic
 		return nil, fmt.Errorf("searching by category: %w", err)
 	}
 
-	for _, existing := range catEntries {
+	for i := range catEntries {
+		existing := &catEntries[i]
 		if existing.ID == entry.ID {
 			continue
 		}
 		sim := keywordSimilarity(entry.Title+" "+entry.Content, existing.Title+" "+existing.Content)
-		if sim >= threshold {
+		if sim >= similarityThreshold {
 			candidates = append(candidates, ConflictCandidate{
 				ExistingEntryID: existing.ID,
 				ExistingTitle:   existing.Title,
@@ -238,7 +246,7 @@ func (g *Governance) CheckConflicts(ctx context.Context, entry Entry) ([]Conflic
 				candidates = append(candidates, ConflictCandidate{
 					ExistingEntryID: idx.ID,
 					ExistingTitle:   idx.Title,
-					Similarity:      threshold, // FTS5 matches are at least threshold
+					Similarity:      similarityThreshold, // FTS5 matches treated as at least threshold
 					Category:        idx.Category,
 					TrustScore:      idx.TrustScore,
 				})

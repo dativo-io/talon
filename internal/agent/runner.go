@@ -67,8 +67,8 @@ type RunnerConfig struct {
 	Evidence     *evidence.Store
 	PlanReview   *PlanReviewStore
 	ToolRegistry *tools.ToolRegistry
-	Hooks        *HookRegistry      // optional; nil = no hooks
-	Memory       *memory.Store      // optional; nil = memory disabled
+	Hooks        *HookRegistry // optional; nil = no hooks
+	Memory       *memory.Store // optional; nil = memory disabled
 }
 
 // NewRunner creates an agent runner with the given dependencies.

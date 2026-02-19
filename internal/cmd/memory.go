@@ -216,7 +216,7 @@ func memoryRollback(cmd *cobra.Command, args []string) error {
 	if !memYes {
 		fmt.Printf("Rollback agent %q (tenant: %s) to version %d? [y/N] ", memAgent, memTenant, memVer)
 		var confirm string
-		fmt.Scanln(&confirm)
+		_, _ = fmt.Scanln(&confirm)
 		if confirm != "y" && confirm != "Y" {
 			fmt.Println("Cancelled.")
 			return nil
@@ -298,7 +298,8 @@ func memoryAudit(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Memory Audit Trail: %s (tenant: %s)\n\n", memAgent, memTenant)
 
-	for _, entry := range entries {
+	for i := range entries {
+		entry := &entries[i]
 		fmt.Printf("  %s | %s | %s | trust:%d | %s\n",
 			entry.ID,
 			entry.Timestamp.Format("2006-01-02 15:04"),
@@ -342,7 +343,8 @@ func printIndexTable(entries []memory.IndexEntry) {
 	fmt.Printf("%-14s | %-18s | %-10s | %-30s | %-5s | %-10s | %s\n",
 		"ID", "Category", "Type", "Title", "Trust", "Status", "Timestamp")
 	fmt.Println(strings.Repeat("-", 120))
-	for _, e := range entries {
+	for i := range entries {
+		e := &entries[i]
 		title := e.Title
 		if len(title) > 30 {
 			title = title[:27] + "..."
@@ -357,7 +359,8 @@ func printEntryTable(entries []memory.Entry) {
 	fmt.Printf("%-14s | %-18s | %-10s | %-30s | %-5s | %-10s | %s\n",
 		"ID", "Category", "Type", "Title", "Trust", "Status", "Timestamp")
 	fmt.Println(strings.Repeat("-", 120))
-	for _, e := range entries {
+	for i := range entries {
+		e := &entries[i]
 		title := e.Title
 		if len(title) > 30 {
 			title = title[:27] + "..."
@@ -370,5 +373,6 @@ func printEntryTable(entries []memory.Entry) {
 
 // openEvidenceStore is defined in audit.go; we reuse it for the memory audit command.
 var _ = openEvidenceStore
+
 // Ensure evidence.Store is referenced for the compiler.
 var _ *evidence.Store

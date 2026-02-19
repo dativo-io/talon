@@ -185,18 +185,18 @@ func TestCheckConflicts_DetectsOverlap(t *testing.T) {
 
 	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
-		Title: "Fiscal year starts April",
-		Content: "The company fiscal year begins in April and ends in March",
+		Title:      "Fiscal year starts April",
+		Content:    "The company fiscal year begins in April and ends in March",
 		EvidenceID: "req_1", SourceType: SourceAgentRun, TrustScore: 70,
 	}))
 
 	newEntry := Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
-		Title: "Fiscal year starts January",
+		Title:   "Fiscal year starts January",
 		Content: "The company fiscal year begins in January and ends in December",
 	}
 
-	conflicts, err := gov.CheckConflicts(ctx, newEntry)
+	conflicts, err := gov.CheckConflicts(ctx, newEntry, 0.6)
 	require.NoError(t, err)
 	assert.NotEmpty(t, conflicts, "should detect conflict with overlapping content")
 }
@@ -216,7 +216,7 @@ func TestCheckConflicts_NoConflictForDifferentCategory(t *testing.T) {
 		Title: "Revenue target Q4", Content: "Revenue target for Q4 is 1M EUR",
 	}
 
-	conflicts, err := gov.CheckConflicts(ctx, newEntry)
+	conflicts, err := gov.CheckConflicts(ctx, newEntry, 0.6)
 	require.NoError(t, err)
 	assert.Empty(t, conflicts)
 }
@@ -228,8 +228,8 @@ func TestConflictResolution_Auto(t *testing.T) {
 
 	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
-		Title: "Fiscal year starts April",
-		Content: "The company fiscal year begins in April and runs to March",
+		Title:      "Fiscal year starts April",
+		Content:    "The company fiscal year begins in April and runs to March",
 		EvidenceID: "req_1", SourceType: SourceToolOutput, TrustScore: 50,
 	}))
 
@@ -252,8 +252,8 @@ func TestConflictResolution_FlagForReview(t *testing.T) {
 
 	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
-		Title: "Fiscal year starts April",
-		Content: "The company fiscal year begins in April and runs to March",
+		Title:      "Fiscal year starts April",
+		Content:    "The company fiscal year begins in April and runs to March",
 		EvidenceID: "req_1", SourceType: SourceAgentRun, TrustScore: 70,
 	}))
 
@@ -275,8 +275,8 @@ func TestConflictResolution_Reject(t *testing.T) {
 
 	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
-		Title: "Fiscal year starts April",
-		Content: "The company fiscal year begins in April and runs to March",
+		Title:      "Fiscal year starts April",
+		Content:    "The company fiscal year begins in April and runs to March",
 		EvidenceID: "req_1", SourceType: SourceAgentRun, TrustScore: 70,
 	}))
 

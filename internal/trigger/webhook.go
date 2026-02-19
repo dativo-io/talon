@@ -51,21 +51,21 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 	trigger, ok := wh.webhooks[name]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: fmt.Sprintf("trigger %q not found", name)})
+		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: fmt.Sprintf("trigger %q not found", name)})
 		return
 	}
 
 	var payload interface{}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: "invalid JSON body"})
+		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: "invalid JSON body"})
 		return
 	}
 
 	prompt, err := renderTemplate(trigger.PromptTemplate, map[string]interface{}{"payload": payload})
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: fmt.Sprintf("template error: %v", err)})
+		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: fmt.Sprintf("template error: %v", err)})
 		return
 	}
 
@@ -85,12 +85,12 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 			Str("trigger", name).
 			Msg("webhook_trigger_failed")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: err.Error()})
+		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: err.Error()})
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(webhookResponse{Status: "ok", Message: "trigger executed"})
+	_ = json.NewEncoder(w).Encode(webhookResponse{Status: "ok", Message: "trigger executed"})
 }
 
 // renderTemplate renders a Go text/template with the given data.

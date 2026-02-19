@@ -13,11 +13,11 @@ var (
 
 // PrivacyResult holds the outcome of stripping privacy tags from content.
 type PrivacyResult struct {
-	CleanContent           string // Content with <private> blocks removed and <classified> tags stripped
-	FullContent            string // Original content unchanged
+	CleanContent            string // Content with <private> blocks removed and <classified> tags stripped
+	FullContent             string // Original content unchanged
 	PrivateSectionsStripped int
-	MaxClassifiedTier      int
-	HasPrivateContent      bool
+	MaxClassifiedTier       int
+	HasPrivateContent       bool
 }
 
 // StripPrivateTags processes content for privacy:

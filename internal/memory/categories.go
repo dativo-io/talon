@@ -12,11 +12,11 @@ const (
 
 // Operational categories -- runtime observations.
 const (
-	CategoryPolicyHit    = "policy_hit"
-	CategoryCostDecision = "cost_decision"
-	CategoryPIIRedaction = "pii_redaction"
-	CategoryToolApproval = "tool_approval"
-	CategoryEscalation   = "escalation"
+	CategoryPolicyHit     = "policy_hit"
+	CategoryCostDecision  = "cost_decision"
+	CategoryPIIRedaction  = "pii_redaction"
+	CategoryToolApproval  = "tool_approval"
+	CategoryEscalation    = "escalation"
 	CategoryErrorRecovery = "error_recovery"
 )
 
@@ -49,11 +49,11 @@ func ValidObservationTypes() []string {
 
 // Source types and their default trust scores.
 const (
-	SourceManual    = "manual"
-	SourceUserInput = "user_input"
-	SourceAgentRun  = "agent_run"
+	SourceManual     = "manual"
+	SourceUserInput  = "user_input"
+	SourceAgentRun   = "agent_run"
 	SourceToolOutput = "tool_output"
-	SourceWebhook   = "webhook"
+	SourceWebhook    = "webhook"
 )
 
 var trustScores = map[string]int{
