@@ -263,11 +263,14 @@ func TestFilterOutPendingReview(t *testing.T) {
 }
 
 func TestCapMemoryByTokens(t *testing.T) {
+	// Index-line estimate is (len(Title)+len(Category)+40)/4; TokenCount is ignored (prompt uses one line per entry).
+	shortTitle := "E1"
+	longTitle := strings.Repeat("a", 356)
 	entries := []memory.IndexEntry{
-		{ID: "mem_1", TokenCount: 100, Title: "E1", Category: "test"},
-		{ID: "mem_2", TokenCount: 100, Title: "E2", Category: "test"},
-		{ID: "mem_3", TokenCount: 100, Title: "E3", Category: "test"},
-		{ID: "mem_4", TokenCount: 100, Title: "E4", Category: "test"},
+		{ID: "mem_1", Title: longTitle, Category: "test"},
+		{ID: "mem_2", Title: longTitle, Category: "test"},
+		{ID: "mem_3", Title: shortTitle, Category: "test"},
+		{ID: "mem_4", Title: shortTitle, Category: "test"},
 	}
 
 	t.Run("all fit", func(t *testing.T) {
@@ -276,7 +279,7 @@ func TestCapMemoryByTokens(t *testing.T) {
 	})
 	t.Run("cap at 2", func(t *testing.T) {
 		got := capMemoryByTokens(entries, 200)
-		assert.Len(t, got, 2)
+		assert.Len(t, got, 2, "first two entries ~100 tokens each = 200; third would exceed budget")
 	})
 	t.Run("at least one", func(t *testing.T) {
 		got := capMemoryByTokens(entries, 10)

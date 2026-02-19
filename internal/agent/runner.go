@@ -811,13 +811,17 @@ func filterOutPendingReview(entries []memory.IndexEntry) []memory.IndexEntry {
 
 // capMemoryByTokens trims the memory index to fit within a token budget.
 // It keeps entries from newest to oldest, dropping the oldest when over budget.
+// Token count uses the index-line estimate only: formatMemoryIndexForPrompt emits
+// one summary line per entry (~20 tokens), not the full content. Stored TokenCount
+// is len(Content)/4 and would massively over-count, allowing far fewer entries than
+// the budget intends.
 func capMemoryByTokens(entries []memory.IndexEntry, maxTokens int) []memory.IndexEntry {
 	var result []memory.IndexEntry
 	totalTokens := 0
 	for i := range entries {
-		entryTokens := entries[i].TokenCount
-		if entryTokens == 0 {
-			entryTokens = (len(entries[i].Title) + len(entries[i].Category) + 40) / 4 // estimate per index line
+		entryTokens := (len(entries[i].Title) + len(entries[i].Category) + 40) / 4 // one index line per entry
+		if entryTokens < 5 {
+			entryTokens = 5
 		}
 		if totalTokens+entryTokens > maxTokens && len(result) > 0 {
 			break
