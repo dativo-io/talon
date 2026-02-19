@@ -295,25 +295,27 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			}
 
 			memPrompt := formatMemoryIndexForPrompt(memIndex)
-			finalPrompt = memPrompt + "\n\n" + finalPrompt
-			memoryTokens = len(memPrompt) / 4
+			if memPrompt != "" {
+				finalPrompt = memPrompt + "\n\n" + finalPrompt
+				memoryTokens = len(memPrompt) / 4
 
-			for i := range memIndex {
-				memoryReads = append(memoryReads, evidence.MemoryRead{
-					EntryID:    memIndex[i].ID,
-					TrustScore: memIndex[i].TrustScore,
-				})
-			}
+				for i := range memIndex {
+					memoryReads = append(memoryReads, evidence.MemoryRead{
+						EntryID:    memIndex[i].ID,
+						TrustScore: memIndex[i].TrustScore,
+					})
+				}
 
-			span.SetAttributes(attribute.Int("memory.tokens_injected", memoryTokens))
+				span.SetAttributes(attribute.Int("memory.tokens_injected", memoryTokens))
 
-			// Re-classify memory content to detect tier upgrades from persisted
-			// classified data — prevents sending tier-1/tier-2 memory content
-			// to a lower-tier model (data sovereignty protection).
-			memClass := r.classifier.Scan(ctx, memPrompt)
-			if memClass.Tier > effectiveTier {
-				effectiveTier = memClass.Tier
-				span.SetAttributes(attribute.Int("classification.tier_upgraded_by_memory", effectiveTier))
+				// Re-classify memory content to detect tier upgrades from persisted
+				// classified data — prevents sending tier-1/tier-2 memory content
+				// to a lower-tier model (data sovereignty protection).
+				memClass := r.classifier.Scan(ctx, memPrompt)
+				if memClass.Tier > effectiveTier {
+					effectiveTier = memClass.Tier
+					span.SetAttributes(attribute.Int("classification.tier_upgraded_by_memory", effectiveTier))
+				}
 			}
 		}
 	}
