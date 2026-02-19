@@ -42,6 +42,7 @@ type Evidence struct {
 	Execution       Execution       `json:"execution"`
 	SecretsAccessed []string        `json:"secrets_accessed,omitempty"`
 	MemoryWrites    []MemoryWrite   `json:"memory_writes,omitempty"`
+	MemoryReads     []MemoryRead    `json:"memory_reads,omitempty"`
 	AuditTrail      AuditTrail      `json:"audit_trail"`
 	Compliance      Compliance      `json:"compliance"`
 	Signature       string          `json:"signature"`
@@ -79,6 +80,7 @@ type Execution struct {
 	ToolsCalled   []string   `json:"tools_called,omitempty"`
 	CostEUR       float64    `json:"cost_eur"`
 	Tokens        TokenUsage `json:"tokens"`
+	MemoryTokens  int        `json:"memory_tokens,omitempty"` // tokens injected from memory context
 	DurationMS    int64      `json:"duration_ms"`
 	Error         string     `json:"error,omitempty"`
 }
@@ -93,6 +95,12 @@ type TokenUsage struct {
 type MemoryWrite struct {
 	Category string `json:"category"`
 	EntryID  string `json:"entry_id"`
+}
+
+// MemoryRead records a memory entry that was injected into the LLM prompt.
+type MemoryRead struct {
+	EntryID    string `json:"entry_id"`
+	TrustScore int    `json:"trust_score"`
 }
 
 // AuditTrail contains content hashes for integrity verification.

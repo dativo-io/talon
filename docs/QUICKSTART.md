@@ -178,9 +178,97 @@ export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 export TALON_SIGNING_KEY=$(openssl rand -hex 32)
 ```
 
+## 11. Agent Memory
+
+Agents automatically compress each run into governed observations. Memory is controlled via policy:
+
+```yaml
+# In agent.talon.yaml
+memory:
+  enabled: true
+  mode: active              # active | shadow | disabled
+  max_entries: 1000         # cap per agent (oldest evicted)
+  max_entry_size_kb: 16     # reject oversized entries
+  max_prompt_tokens: 2000   # cap memory tokens in LLM prompts
+  retention_days: 90        # auto-purge old entries
+  prompt_categories:        # which categories enter LLM context (empty = all)
+    - domain_knowledge
+    - procedure_improvements
+```
+
+Use **shadow mode** during evaluation: all governance checks run and results are logged, but no data is persisted. Switch to `active` when ready.
+
+Browse and manage memory via the CLI:
+
+```bash
+# Browse memory index
+talon memory list --agent sales-analyst
+
+# Full-text search across entries
+talon memory search "revenue target"
+
+# Full entry detail
+talon memory show mem_a1b2c3d4
+
+# Trust distribution and conflicts
+talon memory health --agent sales-analyst
+
+# Rollback to a specific version
+talon memory rollback --agent sales-analyst --to-version 5 --yes
+
+# Evidence chain verification
+talon memory audit --agent sales-analyst
+```
+
+Every memory write passes through a multi-layer governance pipeline (hardcoded forbidden categories, max size, OPA policy, category validation, PII scan, policy override detection, provenance tracking, conflict detection) and links to an HMAC-signed evidence record. Memory reads injected into LLM prompts are recorded in evidence for traceability.
+
+See [MEMORY_GOVERNANCE.md](MEMORY_GOVERNANCE.md) for full details.
+
+## 12. Shared Enterprise Context
+
+Mount read-only company knowledge into agent prompts:
+
+```yaml
+# In agent.talon.yaml
+context:
+  shared_mounts:
+    - name: company-procedures
+      path: ./context/procedures.md
+      classification: tier_0
+```
+
+Use `<private>...</private>` tags in context files to exclude sensitive content from memory persistence. Use `<classified:tier_N>...</classified>` to propagate data tiers to model routing.
+
+## 13. Triggers (Cron & Webhooks)
+
+Run agents on a schedule or in response to events:
+
+```yaml
+# In agent.talon.yaml
+triggers:
+  schedule:
+    - cron: "0 9 * * 1-5"
+      prompt: "Generate the daily compliance report"
+      description: "Weekday morning compliance run"
+  webhooks:
+    - name: jira-update
+      source: jira
+      prompt_template: "Analyze JIRA update: {{.payload.issue.key}} — {{.payload.issue.fields.summary}}"
+      require_approval: false
+```
+
+Start the trigger server:
+
+```bash
+talon serve --port 8080
+```
+
+Webhooks are available at `POST /v1/triggers/{name}`. The server also runs a daily retention loop that purges expired memory entries and enforces `max_entries`.
+
 ## Next Steps
 
 - Edit `agent.talon.yaml` to tune cost limits, model routing, and compliance frameworks
+- See [MEMORY_GOVERNANCE.md](MEMORY_GOVERNANCE.md) for memory governance details
 - See [VENDOR_INTEGRATION_GUIDE.md](VENDOR_INTEGRATION_GUIDE.md) to wrap existing AI vendors
 - See [ADOPTION_SCENARIOS.md](ADOPTION_SCENARIOS.md) for migration paths
 - See [ARCHITECTURE_MCP_PROXY.md](ARCHITECTURE_MCP_PROXY.md) for proxy mode details

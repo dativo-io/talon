@@ -1,12 +1,23 @@
 package agent
 
 import (
+	"context"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/classifier"
+	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/secrets"
+	"github.com/dativo-io/talon/internal/testutil"
 )
 
 func TestEntityNames(t *testing.T) {
@@ -65,4 +76,313 @@ func TestComplianceFromPolicy(t *testing.T) {
 		assert.Equal(t, []string{"gdpr", "nis2"}, c.Frameworks)
 		assert.Equal(t, "eu-west-1", c.DataLocation)
 	})
+}
+
+func TestFormatMemoryIndexForPrompt(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		got := formatMemoryIndexForPrompt(nil)
+		assert.Empty(t, got)
+		got = formatMemoryIndexForPrompt([]memory.IndexEntry{})
+		assert.Empty(t, got)
+	})
+	t.Run("single entry", func(t *testing.T) {
+		entries := []memory.IndexEntry{
+			{
+				ID:              "mem_1",
+				Category:        memory.CategoryDomainKnowledge,
+				Title:           "A learning",
+				ObservationType: memory.ObsLearning,
+				TrustScore:      70,
+				ReviewStatus:    "auto_approved",
+				Timestamp:       time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC),
+			},
+		}
+		got := formatMemoryIndexForPrompt(entries)
+		assert.Contains(t, got, "[AGENT MEMORY INDEX]")
+		assert.Contains(t, got, "[END MEMORY INDEX]")
+		assert.Contains(t, got, "mem_1")
+		assert.Contains(t, got, "domain_knowledge")
+		assert.Contains(t, got, "✓")
+	})
+	t.Run("pending_review excluded from prompt", func(t *testing.T) {
+		entries := []memory.IndexEntry{
+			{
+				ID:              "mem_2",
+				Category:        memory.CategoryPolicyHit,
+				Title:           "Denied",
+				ObservationType: memory.ObsDecision,
+				TrustScore:      40,
+				ReviewStatus:    "pending_review",
+				Timestamp:       time.Date(2025, 1, 16, 0, 0, 0, 0, time.UTC),
+			},
+		}
+		got := formatMemoryIndexForPrompt(entries)
+		assert.Empty(t, got, "pending_review entries should not appear in prompt")
+	})
+	t.Run("mix of approved and pending", func(t *testing.T) {
+		entries := []memory.IndexEntry{
+			{
+				ID: "mem_approved", Category: memory.CategoryDomainKnowledge, Title: "Approved",
+				TrustScore: 70, ReviewStatus: "auto_approved",
+				Timestamp: time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC),
+			},
+			{
+				ID: "mem_pending", Category: memory.CategoryPolicyHit, Title: "Pending",
+				TrustScore: 40, ReviewStatus: "pending_review",
+				Timestamp: time.Date(2025, 1, 16, 0, 0, 0, 0, time.UTC),
+			},
+		}
+		got := formatMemoryIndexForPrompt(entries)
+		assert.Contains(t, got, "mem_approved")
+		assert.NotContains(t, got, "mem_pending")
+	})
+}
+
+func TestCompressObservation(t *testing.T) {
+	resp := &RunResponse{ModelUsed: "gpt-4", CostEUR: 0.002, DurationMS: 100}
+	got := compressObservation(resp, "Short content")
+	assert.Contains(t, got, "Model: gpt-4")
+	assert.Contains(t, got, "EUR0.0020")
+	assert.Contains(t, got, "100ms")
+	assert.Contains(t, got, "Short content")
+
+	resp.DenyReason = "budget exceeded"
+	got = compressObservation(resp, "x")
+	assert.Contains(t, got, "Denied: budget exceeded")
+
+	long := string(make([]byte, 2000))
+	got = compressObservation(resp, long)
+	assert.Contains(t, got, "...")
+	assert.LessOrEqual(t, len(got), 2000+100)
+}
+
+func TestCompressTitle(t *testing.T) {
+	t.Run("denied", func(t *testing.T) {
+		resp := &RunResponse{DenyReason: "PII detected"}
+		got := compressTitle(resp, "any")
+		assert.Equal(t, "Denied: PII detected", got)
+	})
+	t.Run("first sentence under 80", func(t *testing.T) {
+		resp := &RunResponse{}
+		got := compressTitle(resp, "First line. Second line.")
+		assert.Equal(t, "First line", got) // stops before the period (IndexAny)
+	})
+	t.Run("truncate at 80", func(t *testing.T) {
+		resp := &RunResponse{}
+		long := strings.Repeat("a", 90)
+		got := compressTitle(resp, long)
+		assert.LessOrEqual(t, len(got), 81)
+		assert.Equal(t, 80, len(got))
+	})
+	t.Run("short passthrough", func(t *testing.T) {
+		resp := &RunResponse{}
+		got := compressTitle(resp, "Short")
+		assert.Equal(t, "Short", got)
+	})
+}
+
+func TestInferCategory(t *testing.T) {
+	assert.Equal(t, memory.CategoryPolicyHit, inferCategory(&RunResponse{DenyReason: "denied"}))
+	assert.Equal(t, memory.CategoryDomainKnowledge, inferCategory(&RunResponse{}))
+}
+
+func TestInferObservationType(t *testing.T) {
+	assert.Equal(t, memory.ObsDecision, inferObservationType(&RunResponse{DenyReason: "x"}))
+	assert.Equal(t, memory.ObsLearning, inferObservationType(&RunResponse{}))
+}
+
+func TestMemoryMode(t *testing.T) {
+	t.Run("nil memory config", func(t *testing.T) {
+		assert.Equal(t, "disabled", memoryMode(&policy.Policy{}))
+	})
+	t.Run("disabled", func(t *testing.T) {
+		assert.Equal(t, "disabled", memoryMode(&policy.Policy{
+			Memory: &policy.MemoryConfig{Enabled: false},
+		}))
+	})
+	t.Run("default is active", func(t *testing.T) {
+		assert.Equal(t, "active", memoryMode(&policy.Policy{
+			Memory: &policy.MemoryConfig{Enabled: true},
+		}))
+	})
+	t.Run("shadow", func(t *testing.T) {
+		assert.Equal(t, "shadow", memoryMode(&policy.Policy{
+			Memory: &policy.MemoryConfig{Enabled: true, Mode: "shadow"},
+		}))
+	})
+	t.Run("explicit active", func(t *testing.T) {
+		assert.Equal(t, "active", memoryMode(&policy.Policy{
+			Memory: &policy.MemoryConfig{Enabled: true, Mode: "active"},
+		}))
+	})
+	t.Run("unknown mode defaults to shadow", func(t *testing.T) {
+		// Typo like "shadown" must not default to "active"; fail closed to shadow.
+		assert.Equal(t, "shadow", memoryMode(&policy.Policy{
+			Memory: &policy.MemoryConfig{Enabled: true, Mode: "shadown"},
+		}))
+	})
+}
+
+func TestFilterByPromptCategories(t *testing.T) {
+	entries := []memory.IndexEntry{
+		{ID: "mem_1", Category: memory.CategoryDomainKnowledge},
+		{ID: "mem_2", Category: memory.CategoryPolicyHit},
+		{ID: "mem_3", Category: memory.CategoryDomainKnowledge},
+		{ID: "mem_4", Category: memory.CategoryErrorRecovery},
+	}
+
+	t.Run("filter to domain_knowledge only", func(t *testing.T) {
+		got := filterByPromptCategories(entries, []string{memory.CategoryDomainKnowledge})
+		assert.Len(t, got, 2)
+		for _, e := range got {
+			assert.Equal(t, memory.CategoryDomainKnowledge, e.Category)
+		}
+	})
+	t.Run("multiple categories", func(t *testing.T) {
+		got := filterByPromptCategories(entries, []string{memory.CategoryDomainKnowledge, memory.CategoryPolicyHit})
+		assert.Len(t, got, 3)
+	})
+	t.Run("empty categories returns none", func(t *testing.T) {
+		got := filterByPromptCategories(entries, []string{})
+		assert.Empty(t, got)
+	})
+}
+
+func TestFilterOutPendingReview(t *testing.T) {
+	entries := []memory.IndexEntry{
+		{ID: "mem_1", ReviewStatus: "auto_approved"},
+		{ID: "mem_2", ReviewStatus: "pending_review"},
+		{ID: "mem_3", ReviewStatus: "auto_approved"},
+		{ID: "mem_4", ReviewStatus: ""},
+	}
+
+	got := filterOutPendingReview(entries)
+	assert.Len(t, got, 3)
+	ids := make([]string, len(got))
+	for i := range got {
+		ids[i] = got[i].ID
+	}
+	assert.NotContains(t, ids, "mem_2")
+	assert.Contains(t, ids, "mem_1")
+	assert.Contains(t, ids, "mem_3")
+	assert.Contains(t, ids, "mem_4")
+}
+
+func TestCapMemoryByTokens(t *testing.T) {
+	// Index-line estimate is (len(Title)+len(Category)+40)/4; TokenCount is ignored (prompt uses one line per entry).
+	shortTitle := "E1"
+	longTitle := strings.Repeat("a", 356)
+	entries := []memory.IndexEntry{
+		{ID: "mem_1", Title: longTitle, Category: "test"},
+		{ID: "mem_2", Title: longTitle, Category: "test"},
+		{ID: "mem_3", Title: shortTitle, Category: "test"},
+		{ID: "mem_4", Title: shortTitle, Category: "test"},
+	}
+
+	t.Run("all fit", func(t *testing.T) {
+		got := capMemoryByTokens(entries, 500)
+		assert.Len(t, got, 4)
+	})
+	t.Run("cap at 2", func(t *testing.T) {
+		got := capMemoryByTokens(entries, 200)
+		assert.Len(t, got, 2, "first two entries ~100 tokens each = 200; third would exceed budget")
+	})
+	t.Run("at least one", func(t *testing.T) {
+		got := capMemoryByTokens(entries, 10)
+		assert.Len(t, got, 1)
+	})
+	t.Run("empty", func(t *testing.T) {
+		got := capMemoryByTokens(nil, 100)
+		assert.Empty(t, got)
+	})
+}
+
+func TestSourceTypeFromInvocation(t *testing.T) {
+	assert.Equal(t, memory.SourceManual, sourceTypeFromInvocation("manual"))
+	assert.Equal(t, memory.SourceAgentRun, sourceTypeFromInvocation("scheduled"))
+	assert.Equal(t, memory.SourceWebhook, sourceTypeFromInvocation("webhook:jira"))
+	assert.Equal(t, memory.SourceAgentRun, sourceTypeFromInvocation(""))
+	assert.Equal(t, memory.SourceAgentRun, sourceTypeFromInvocation("other"))
+}
+
+func TestPlanReviewConfigFromPolicy(t *testing.T) {
+	assert.Nil(t, planReviewConfigFromPolicy(nil))
+	cfg := &policy.PlanReviewConfig{
+		RequireForTools:  true,
+		RequireForTier:   "tier_2",
+		CostThresholdEUR: 1.5,
+		TimeoutMinutes:   10,
+		NotifyWebhook:    "https://example.com/hook",
+	}
+	got := planReviewConfigFromPolicy(cfg)
+	require.NotNil(t, got)
+	assert.True(t, got.RequireForTools)
+	assert.Equal(t, "tier_2", got.RequireForTier)
+	assert.Equal(t, 1.5, got.CostThresholdEUR)
+	assert.Equal(t, 10, got.TimeoutMinutes)
+	assert.Equal(t, "https://example.com/hook", got.NotifyWebhook)
+}
+
+func TestNewRunner(t *testing.T) {
+	cls := classifier.MustNewScanner()
+	dir := t.TempDir()
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	r := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: "agent.talon.yaml",
+		Classifier:        cls,
+		Router:            llm.NewRouter(nil, map[string]llm.Provider{"ollama": nil}, nil),
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+	require.NotNil(t, r)
+}
+
+func TestRunFromTrigger_usesDefaultPolicyPath(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, dir, "test-agent")
+	require.FileExists(t, policyPath)
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "ok"},
+	}
+	routing := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+	router := llm.NewRouter(routing, providers, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err = runner.RunFromTrigger(ctx, "test-agent", "Say hello", "scheduled")
+	require.NoError(t, err)
 }

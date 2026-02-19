@@ -17,6 +17,7 @@ import (
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
 )
@@ -92,6 +93,14 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 	defer evidenceStore.Close()
 
+	var memStore *memory.Store
+	memStore, err = memory.NewStore(cfg.MemoryDBPath())
+	if err != nil {
+		log.Warn().Err(err).Msg("memory store unavailable, running without memory")
+	} else {
+		defer memStore.Close()
+	}
+
 	runner := agent.NewRunner(agent.RunnerConfig{
 		PolicyDir:    ".",
 		Classifier:   cls,
@@ -101,6 +110,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		Secrets:      secretsStore,
 		Evidence:     evidenceStore,
 		ToolRegistry: tools.NewRegistry(),
+		Memory:       memStore,
 	})
 
 	var attachments []agent.Attachment

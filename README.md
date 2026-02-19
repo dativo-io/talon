@@ -174,7 +174,7 @@ talon audit verify <evidence-id>
 
 **Prompt Injection Prevention** — PDF/DOCX/HTML attachments are sandboxed automatically. Instruction-detection scanner flags injection attempts. Configurable: block, warn, or log.
 
-**Governed Agent Memory** — Agents write learnings to an audited soul directory. Every memory write is PII-scanned, policy-checked, and HMAC-signed. Constitutional AI governance: agents learn facts but never alter policies. Rollback to any previous state if memory poisoning is detected. Unlike MemOS or mem0, Talon's memory is a compliance asset — not just a developer convenience.
+**Governed Agent Memory** — Agents write learnings to an audited soul directory. Every memory write passes through a multi-layer governance pipeline (hardcoded forbidden categories, OPA policy, PII scan, conflict detection) and is HMAC-signed. Shadow mode lets operators observe memory behavior before enabling writes. Retention policies auto-purge expired entries. Prompt injection controls filter which memories enter LLM context. Rollback to any previous state if memory poisoning is detected. Unlike MemOS or mem0, Talon's memory is a compliance asset — not just a developer convenience.
 
 **Scheduled & Event-Driven** — Cron schedules and webhook triggers. Same policy enforcement whether an agent runs manually, on schedule, or from a GitHub webhook.
 
@@ -278,10 +278,19 @@ talon secrets list                           # List secrets (metadata only, valu
 talon secrets audit                          # View secret access log
 talon secrets rotate <name>                  # Re-encrypt with fresh nonce
 
+# Agent memory
+talon memory list [--agent name]             # Browse memory index
+talon memory show <entry-id>                 # Full entry detail
+talon memory search "query"                  # Full-text search
+talon memory rollback --agent name --to-version N --yes  # Rollback
+talon memory health [--agent name]           # Trust distribution + conflicts
+talon memory audit [--agent name]            # Evidence chain verification
+
+# Trigger server
+talon serve [--port 8080]                    # Start HTTP server + cron scheduler
+
 # Coming soon
 talon costs [--tenant acme]                  # Cost and budget summary
-talon memory list [--agent name]             # View agent learnings
-talon serve [--port 8080] [--dashboard]      # Start HTTP + MCP server
 ```
 
 ## PII and pattern configuration
@@ -364,6 +373,8 @@ Apache 2.0 — See [LICENSE](LICENSE)
 ## Links
 
 - **Documentation:** [docs/](docs/)
+- **Quick Start:** [QUICKSTART.md](docs/QUICKSTART.md)
+- **Memory Governance:** [MEMORY_GOVERNANCE.md](docs/MEMORY_GOVERNANCE.md)
 - **Vendor Integration:** [VENDOR_INTEGRATION_GUIDE.md](docs/VENDOR_INTEGRATION_GUIDE.md)
 - **Adoption Paths:** [ADOPTION_SCENARIOS.md](docs/ADOPTION_SCENARIOS.md)
 - **Website:** https://talon.dativo.io
