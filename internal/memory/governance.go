@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
@@ -26,10 +27,13 @@ type PolicyEvaluator interface {
 var ErrMemoryConflict = errors.New("memory entry conflicts with existing entries")
 
 // Governance enforces Constitutional AI rules on memory writes.
+// opaMu protects the shared opa field so that SetPolicyEvaluator and
+// evalOPAMemoryWrite (when using g.opa) are safe under concurrent Run() calls.
 type Governance struct {
 	store      *Store
 	classifier *classifier.Scanner
-	opa        PolicyEvaluator // optional; nil = skip OPA check
+	opa        PolicyEvaluator // optional; nil = skip OPA check; guarded by opaMu
+	opaMu      sync.RWMutex
 }
 
 // NewGovernance creates a governance checker backed by the given store and PII scanner.
@@ -38,8 +42,14 @@ func NewGovernance(store *Store, cls *classifier.Scanner) *Governance {
 }
 
 // SetPolicyEvaluator attaches an OPA-based policy evaluator for memory governance.
-// When set, ValidateWrite runs OPA rules in addition to hardcoded Go checks.
+// When set, ValidateWrite runs OPA rules in addition to hardcoded Go checks (when
+// called with a nil per-call eval). Callers running concurrent agent invocations
+// (e.g. talon serve webhooks/cron) should prefer passing the per-run engine into
+// ValidateWrite instead of setting a shared evaluator here, to avoid sharing mutable
+// state across goroutines.
 func (g *Governance) SetPolicyEvaluator(eval PolicyEvaluator) {
+	g.opaMu.Lock()
+	defer g.opaMu.Unlock()
 	g.opa = eval
 }
 
@@ -156,10 +166,13 @@ func (g *Governance) checkMaxEntrySize(entry *Entry, pol *policy.Policy) error {
 
 // evalOPAMemoryWrite runs OPA memory governance when an evaluator is available (eval or g.opa).
 // Returns nil if no evaluator, OPA is unavailable (logs and continues), or OPA allows; otherwise the denial error.
+// When eval is nil, g.opa is read under opaMu to avoid data races with SetPolicyEvaluator.
 func (g *Governance) evalOPAMemoryWrite(ctx context.Context, entry *Entry, eval PolicyEvaluator) error {
 	opa := eval
 	if opa == nil {
+		g.opaMu.RLock()
 		opa = g.opa
+		g.opaMu.RUnlock()
 	}
 	if opa == nil {
 		return nil

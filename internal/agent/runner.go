@@ -208,6 +208,9 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		TenantID:     req.TenantID,
 	}
 
+	// Per-run engine: do not assign to shared Governance (SetPolicyEvaluator); pass this
+	// engine through to executeLLMPipeline so writeMemoryObservation uses it in ValidateWrite.
+	// That keeps concurrent Run() (e.g. webhook/cron in talon serve) from racing on g.opa.
 	engine, err := policy.NewEngine(ctx, pol)
 	if err != nil {
 		span.RecordError(err)
