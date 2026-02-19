@@ -41,51 +41,54 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/agent")
 
 // Runner executes the full agent orchestration pipeline.
 type Runner struct {
-	policyDir     string
-	classifier    *classifier.Scanner
-	attScanner    *attachment.Scanner
-	extractor     *attachment.Extractor
-	router        *llm.Router
-	secrets       *secrets.SecretStore
-	evidence      *evidence.Generator
-	evidenceStore *evidence.Store
-	planReview    *PlanReviewStore
-	toolRegistry  *tools.ToolRegistry
-	hooks         *HookRegistry
-	memory        *memory.Store
-	governance    *memory.Governance
+	policyDir         string
+	defaultPolicyPath string // used by RunFromTrigger when PolicyPath is not set (e.g. serve uses cfg.DefaultPolicy)
+	classifier        *classifier.Scanner
+	attScanner        *attachment.Scanner
+	extractor         *attachment.Extractor
+	router            *llm.Router
+	secrets           *secrets.SecretStore
+	evidence          *evidence.Generator
+	evidenceStore     *evidence.Store
+	planReview        *PlanReviewStore
+	toolRegistry      *tools.ToolRegistry
+	hooks             *HookRegistry
+	memory            *memory.Store
+	governance        *memory.Governance
 }
 
 // RunnerConfig holds the dependencies for constructing a Runner.
 type RunnerConfig struct {
-	PolicyDir    string
-	Classifier   *classifier.Scanner
-	AttScanner   *attachment.Scanner
-	Extractor    *attachment.Extractor
-	Router       *llm.Router
-	Secrets      *secrets.SecretStore
-	Evidence     *evidence.Store
-	PlanReview   *PlanReviewStore
-	ToolRegistry *tools.ToolRegistry
-	Hooks        *HookRegistry // optional; nil = no hooks
-	Memory       *memory.Store // optional; nil = memory disabled
+	PolicyDir         string // base directory for policy path resolution
+	DefaultPolicyPath string // path to default .talon.yaml (e.g. agent.talon.yaml); used by RunFromTrigger when request has no PolicyPath
+	Classifier        *classifier.Scanner
+	AttScanner        *attachment.Scanner
+	Extractor         *attachment.Extractor
+	Router            *llm.Router
+	Secrets           *secrets.SecretStore
+	Evidence          *evidence.Store
+	PlanReview        *PlanReviewStore
+	ToolRegistry      *tools.ToolRegistry
+	Hooks             *HookRegistry // optional; nil = no hooks
+	Memory            *memory.Store // optional; nil = memory disabled
 }
 
 // NewRunner creates an agent runner with the given dependencies.
 func NewRunner(cfg RunnerConfig) *Runner {
 	r := &Runner{
-		policyDir:     cfg.PolicyDir,
-		classifier:    cfg.Classifier,
-		attScanner:    cfg.AttScanner,
-		extractor:     cfg.Extractor,
-		router:        cfg.Router,
-		secrets:       cfg.Secrets,
-		evidence:      evidence.NewGenerator(cfg.Evidence),
-		evidenceStore: cfg.Evidence,
-		planReview:    cfg.PlanReview,
-		toolRegistry:  cfg.ToolRegistry,
-		hooks:         cfg.Hooks,
-		memory:        cfg.Memory,
+		policyDir:         cfg.PolicyDir,
+		defaultPolicyPath: cfg.DefaultPolicyPath,
+		classifier:        cfg.Classifier,
+		attScanner:        cfg.AttScanner,
+		extractor:         cfg.Extractor,
+		router:            cfg.Router,
+		secrets:           cfg.Secrets,
+		evidence:          evidence.NewGenerator(cfg.Evidence),
+		evidenceStore:     cfg.Evidence,
+		planReview:        cfg.PlanReview,
+		toolRegistry:      cfg.ToolRegistry,
+		hooks:             cfg.Hooks,
+		memory:            cfg.Memory,
 	}
 	if cfg.Memory != nil && cfg.Classifier != nil {
 		r.governance = memory.NewGovernance(cfg.Memory, cfg.Classifier)
@@ -776,13 +779,19 @@ func sourceTypeFromInvocation(invocationType string) string {
 }
 
 // RunFromTrigger implements the trigger.AgentRunner interface for cron/webhook execution.
+// It uses the runner's default policy path so cron/webhook runs load the same .talon.yaml
+// as the process (e.g. agent.talon.yaml), instead of deriving agentName+".talon.yaml".
 func (r *Runner) RunFromTrigger(ctx context.Context, agentName, prompt, invocationType string) error {
-	_, err := r.Run(ctx, &RunRequest{
+	req := &RunRequest{
 		TenantID:       "default",
 		AgentName:      agentName,
 		Prompt:         prompt,
 		InvocationType: invocationType,
-	})
+	}
+	if r.defaultPolicyPath != "" {
+		req.PolicyPath = r.defaultPolicyPath
+	}
+	_, err := r.Run(ctx, req)
 	return err
 }
 

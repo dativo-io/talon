@@ -88,15 +88,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	runner := agent.NewRunner(agent.RunnerConfig{
-		PolicyDir:    ".",
-		Classifier:   cls,
-		AttScanner:   attScanner,
-		Extractor:    extractor,
-		Router:       router,
-		Secrets:      secretsStore,
-		Evidence:     evidenceStore,
-		ToolRegistry: tools.NewRegistry(),
-		Memory:       memStore,
+		PolicyDir:         ".",
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		ToolRegistry:      tools.NewRegistry(),
+		Memory:            memStore,
 	})
 
 	// Register cron triggers
