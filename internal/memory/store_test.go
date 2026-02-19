@@ -37,7 +37,7 @@ func TestWrite_AssignsIDVersionTimestamp(t *testing.T) {
 		EvidenceID: "req_12345678",
 		SourceType: SourceAgentRun,
 	}
-	require.NoError(t, store.Write(ctx, entry))
+	require.NoError(t, store.Write(ctx, &entry))
 
 	entries, err := store.Read(ctx, "acme", "sales")
 	require.NoError(t, err)
@@ -63,7 +63,7 @@ func TestWrite_EstimatesTokenCount(t *testing.T) {
 		EvidenceID: "req_12345678",
 		SourceType: SourceAgentRun,
 	}
-	require.NoError(t, store.Write(ctx, entry))
+	require.NoError(t, store.Write(ctx, &entry))
 
 	entries, err := store.Read(ctx, "acme", "sales")
 	require.NoError(t, err)
@@ -89,7 +89,7 @@ func TestGet_ReturnsFullEntry(t *testing.T) {
 		ConflictsWith:    []string{"mem_aaa"},
 		ReviewStatus:     "pending_review",
 	}
-	require.NoError(t, store.Write(ctx, entry))
+	require.NoError(t, store.Write(ctx, &entry))
 
 	entries, err := store.Read(ctx, "acme", "sales")
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestListIndex_ReturnsLightweightEntries(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title: "Test", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
 	}))
@@ -138,7 +138,7 @@ func TestListIndex_OrdersByTimestampDesc(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 3; i++ {
-		require.NoError(t, store.Write(ctx, Entry{
+		require.NoError(t, store.Write(ctx, &Entry{
 			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 			Title: "Entry", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
 			Timestamp: time.Now().Add(time.Duration(i) * time.Second),
@@ -156,7 +156,7 @@ func TestListIndex_RespectsLimit(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 10; i++ {
-		require.NoError(t, store.Write(ctx, Entry{
+		require.NoError(t, store.Write(ctx, &Entry{
 			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 			Title: "Entry", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
 		}))
@@ -171,11 +171,11 @@ func TestList_FiltersByCategory(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title: "Domain", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
 	}))
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryPolicyHit,
 		Title: "Policy", Content: "Content", EvidenceID: "req_2", SourceType: SourceAgentRun,
 	}))
@@ -190,12 +190,12 @@ func TestSearch_FTS5(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title: "Fiscal year starts April", Content: "The company fiscal year begins in April",
 		EvidenceID: "req_1", SourceType: SourceAgentRun,
 	}))
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryPolicyHit,
 		Title: "Budget exceeded", Content: "Monthly budget exceeded for Q3",
 		EvidenceID: "req_2", SourceType: SourceAgentRun,
@@ -211,11 +211,11 @@ func TestSearchByCategory(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title: "Entry 1", Content: "Content 1", EvidenceID: "req_1", SourceType: SourceAgentRun,
 	}))
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title: "Entry 2", Content: "Content 2", EvidenceID: "req_2", SourceType: SourceAgentRun,
 	}))
@@ -230,7 +230,7 @@ func TestRollback_DeletesAfterVersion(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 5; i++ {
-		require.NoError(t, store.Write(ctx, Entry{
+		require.NoError(t, store.Write(ctx, &Entry{
 			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 			Title: "Entry", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
 		}))
@@ -247,12 +247,12 @@ func TestHealthStats_Aggregates(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title: "A", Content: "Content", EvidenceID: "req_1",
 		SourceType: SourceAgentRun, ReviewStatus: "auto_approved",
 	}))
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryPolicyHit,
 		Title: "B", Content: "Content", EvidenceID: "req_2",
 		SourceType: SourceUserInput, ReviewStatus: "pending_review",
@@ -276,7 +276,7 @@ func TestTenantIsolation(t *testing.T) {
 		go func(tid string) {
 			defer wg.Done()
 			for i := 0; i < 5; i++ {
-				_ = store.Write(ctx, Entry{
+				_ = store.Write(ctx, &Entry{
 					TenantID: tid, AgentID: "agent1", Category: CategoryDomainKnowledge,
 					Title: "Entry", Content: "Content for " + tid, EvidenceID: "req_1",
 					SourceType: SourceAgentRun,
@@ -319,7 +319,7 @@ func TestProvenanceFieldsRoundTrip(t *testing.T) {
 		ConflictsWith:    []string{"mem_111", "mem_222"},
 		ReviewStatus:     "pending_review",
 	}
-	require.NoError(t, store.Write(ctx, entry))
+	require.NoError(t, store.Write(ctx, &entry))
 
 	entries, err := store.Read(ctx, "acme", "sales")
 	require.NoError(t, err)

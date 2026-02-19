@@ -685,7 +685,7 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 		return
 	}
 
-	if err := r.memory.Write(ctx, observation); err != nil {
+	if err := r.memory.Write(ctx, &observation); err != nil {
 		log.Error().Err(err).Msg("memory_write_failed")
 		return
 	}

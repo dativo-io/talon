@@ -148,7 +148,7 @@ func (s *Store) Close() error {
 
 // Write persists a memory entry. It assigns an ID, auto-increments version,
 // sets timestamp, and estimates token count if not set.
-func (s *Store) Write(ctx context.Context, entry Entry) error {
+func (s *Store) Write(ctx context.Context, entry *Entry) error {
 	ctx, span := tracer.Start(ctx, "memory.write",
 		trace.WithAttributes(
 			attribute.String("tenant_id", entry.TenantID),

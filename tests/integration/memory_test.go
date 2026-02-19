@@ -237,7 +237,7 @@ func TestRunner_MemoryIndexInPrompt(t *testing.T) {
 	ctx := context.Background()
 
 	// Pre-seed memory
-	require.NoError(t, memStore.Write(ctx, memory.Entry{
+	require.NoError(t, memStore.Write(ctx, &memory.Entry{
 		TenantID: "acme", AgentID: "idx-agent",
 		Category: memory.CategoryDomainKnowledge,
 		Title:    "Company HQ in Berlin",

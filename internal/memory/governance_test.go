@@ -183,7 +183,7 @@ func TestCheckConflicts_DetectsOverlap(t *testing.T) {
 	gov, store := testGovernance(t)
 	ctx := context.Background()
 
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title: "Fiscal year starts April",
 		Content: "The company fiscal year begins in April and ends in March",
@@ -205,7 +205,7 @@ func TestCheckConflicts_NoConflictForDifferentCategory(t *testing.T) {
 	gov, store := testGovernance(t)
 	ctx := context.Background()
 
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryPolicyHit,
 		Title: "Cost limit reached", Content: "Daily budget exceeded",
 		EvidenceID: "req_1", SourceType: SourceAgentRun, TrustScore: 70,
@@ -226,7 +226,7 @@ func TestConflictResolution_Auto(t *testing.T) {
 	ctx := context.Background()
 	pol := memoryPolicy(nil, nil, &policy.MemoryGovernanceConfig{ConflictResolution: "auto"})
 
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title: "Fiscal year starts April",
 		Content: "The company fiscal year begins in April and runs to March",
@@ -250,7 +250,7 @@ func TestConflictResolution_FlagForReview(t *testing.T) {
 	ctx := context.Background()
 	pol := memoryPolicy(nil, nil, &policy.MemoryGovernanceConfig{ConflictResolution: "flag_for_review"})
 
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title: "Fiscal year starts April",
 		Content: "The company fiscal year begins in April and runs to March",
@@ -273,7 +273,7 @@ func TestConflictResolution_Reject(t *testing.T) {
 	ctx := context.Background()
 	pol := memoryPolicy(nil, nil, &policy.MemoryGovernanceConfig{ConflictResolution: "reject"})
 
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title: "Fiscal year starts April",
 		Content: "The company fiscal year begins in April and runs to March",
@@ -297,7 +297,7 @@ func TestConflictDetection_FailOpen(t *testing.T) {
 	pol := memoryPolicy(nil, nil, nil)
 
 	// Write one entry, then close the store to simulate errors
-	require.NoError(t, store.Write(ctx, Entry{
+	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title: "Test entry", Content: "Content",
 		EvidenceID: "req_1", SourceType: SourceAgentRun, TrustScore: 70,
