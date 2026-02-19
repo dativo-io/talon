@@ -100,6 +100,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Memory:            memStore,
 	})
 
+	// Start memory retention loop (daily purge of expired entries + max_entries enforcement)
+	if memStore != nil && pol.Memory != nil && pol.Memory.Enabled {
+		stopRetention := memory.StartRetentionLoop(ctx, memStore, pol, 24*time.Hour)
+		defer stopRetention()
+	}
+
 	// Register cron triggers
 	scheduler := trigger.NewScheduler(runner)
 	if err := scheduler.RegisterSchedules(pol); err != nil {

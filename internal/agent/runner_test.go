@@ -104,7 +104,7 @@ func TestFormatMemoryIndexForPrompt(t *testing.T) {
 		assert.Contains(t, got, "domain_knowledge")
 		assert.Contains(t, got, "✓")
 	})
-	t.Run("pending_review uses question mark", func(t *testing.T) {
+	t.Run("pending_review excluded from prompt", func(t *testing.T) {
 		entries := []memory.IndexEntry{
 			{
 				ID:              "mem_2",
@@ -117,8 +117,24 @@ func TestFormatMemoryIndexForPrompt(t *testing.T) {
 			},
 		}
 		got := formatMemoryIndexForPrompt(entries)
-		assert.Contains(t, got, "?")
-		assert.Contains(t, got, "pending_review")
+		assert.Empty(t, got, "pending_review entries should not appear in prompt")
+	})
+	t.Run("mix of approved and pending", func(t *testing.T) {
+		entries := []memory.IndexEntry{
+			{
+				ID: "mem_approved", Category: memory.CategoryDomainKnowledge, Title: "Approved",
+				TrustScore: 70, ReviewStatus: "auto_approved",
+				Timestamp: time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC),
+			},
+			{
+				ID: "mem_pending", Category: memory.CategoryPolicyHit, Title: "Pending",
+				TrustScore: 40, ReviewStatus: "pending_review",
+				Timestamp: time.Date(2025, 1, 16, 0, 0, 0, 0, time.UTC),
+			},
+		}
+		got := formatMemoryIndexForPrompt(entries)
+		assert.Contains(t, got, "mem_approved")
+		assert.NotContains(t, got, "mem_pending")
 	})
 }
 
@@ -173,6 +189,83 @@ func TestInferCategory(t *testing.T) {
 func TestInferObservationType(t *testing.T) {
 	assert.Equal(t, memory.ObsDecision, inferObservationType(&RunResponse{DenyReason: "x"}))
 	assert.Equal(t, memory.ObsLearning, inferObservationType(&RunResponse{}))
+}
+
+func TestMemoryMode(t *testing.T) {
+	t.Run("nil memory config", func(t *testing.T) {
+		assert.Equal(t, "disabled", memoryMode(&policy.Policy{}))
+	})
+	t.Run("disabled", func(t *testing.T) {
+		assert.Equal(t, "disabled", memoryMode(&policy.Policy{
+			Memory: &policy.MemoryConfig{Enabled: false},
+		}))
+	})
+	t.Run("default is active", func(t *testing.T) {
+		assert.Equal(t, "active", memoryMode(&policy.Policy{
+			Memory: &policy.MemoryConfig{Enabled: true},
+		}))
+	})
+	t.Run("shadow", func(t *testing.T) {
+		assert.Equal(t, "shadow", memoryMode(&policy.Policy{
+			Memory: &policy.MemoryConfig{Enabled: true, Mode: "shadow"},
+		}))
+	})
+	t.Run("explicit active", func(t *testing.T) {
+		assert.Equal(t, "active", memoryMode(&policy.Policy{
+			Memory: &policy.MemoryConfig{Enabled: true, Mode: "active"},
+		}))
+	})
+}
+
+func TestFilterByPromptCategories(t *testing.T) {
+	entries := []memory.IndexEntry{
+		{ID: "mem_1", Category: memory.CategoryDomainKnowledge},
+		{ID: "mem_2", Category: memory.CategoryPolicyHit},
+		{ID: "mem_3", Category: memory.CategoryDomainKnowledge},
+		{ID: "mem_4", Category: memory.CategoryErrorRecovery},
+	}
+
+	t.Run("filter to domain_knowledge only", func(t *testing.T) {
+		got := filterByPromptCategories(entries, []string{memory.CategoryDomainKnowledge})
+		assert.Len(t, got, 2)
+		for _, e := range got {
+			assert.Equal(t, memory.CategoryDomainKnowledge, e.Category)
+		}
+	})
+	t.Run("multiple categories", func(t *testing.T) {
+		got := filterByPromptCategories(entries, []string{memory.CategoryDomainKnowledge, memory.CategoryPolicyHit})
+		assert.Len(t, got, 3)
+	})
+	t.Run("empty categories returns none", func(t *testing.T) {
+		got := filterByPromptCategories(entries, []string{})
+		assert.Empty(t, got)
+	})
+}
+
+func TestCapMemoryByTokens(t *testing.T) {
+	entries := []memory.IndexEntry{
+		{ID: "mem_1", TokenCount: 100, Title: "E1", Category: "test"},
+		{ID: "mem_2", TokenCount: 100, Title: "E2", Category: "test"},
+		{ID: "mem_3", TokenCount: 100, Title: "E3", Category: "test"},
+		{ID: "mem_4", TokenCount: 100, Title: "E4", Category: "test"},
+	}
+
+	t.Run("all fit", func(t *testing.T) {
+		got := capMemoryByTokens(entries, 500)
+		assert.Len(t, got, 4)
+	})
+	t.Run("cap at 2", func(t *testing.T) {
+		got := capMemoryByTokens(entries, 200)
+		assert.Len(t, got, 2)
+	})
+	t.Run("at least one", func(t *testing.T) {
+		got := capMemoryByTokens(entries, 10)
+		assert.Len(t, got, 1)
+	})
+	t.Run("empty", func(t *testing.T) {
+		got := capMemoryByTokens(nil, 100)
+		assert.Empty(t, got)
+	})
 }
 
 func TestSourceTypeFromInvocation(t *testing.T) {

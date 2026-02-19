@@ -153,7 +153,7 @@ func memoryShow(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	entry, err := store.Get(ctx, args[0])
+	entry, err := store.Get(ctx, memTenant, args[0])
 	if err != nil {
 		return fmt.Errorf("getting entry: %w", err)
 	}

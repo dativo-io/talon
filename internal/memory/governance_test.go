@@ -135,6 +135,41 @@ func TestValidateWrite_PolicyOverrideRejected(t *testing.T) {
 	}
 }
 
+func TestValidateWrite_MaxEntrySizeKB(t *testing.T) {
+	gov, _ := testGovernance(t)
+
+	t.Run("under_limit", func(t *testing.T) {
+		pol := &policy.Policy{
+			Memory:   &policy.MemoryConfig{Enabled: true, MaxEntrySizeKB: 1},
+			Policies: policy.PoliciesConfig{},
+		}
+		entry := &Entry{
+			Category:   CategoryDomainKnowledge,
+			Content:    "Short content",
+			SourceType: SourceAgentRun,
+			TenantID:   "acme", AgentID: "sales",
+		}
+		err := gov.ValidateWrite(context.Background(), entry, pol)
+		assert.NoError(t, err)
+	})
+
+	t.Run("over_limit", func(t *testing.T) {
+		pol := &policy.Policy{
+			Memory:   &policy.MemoryConfig{Enabled: true, MaxEntrySizeKB: 1},
+			Policies: policy.PoliciesConfig{},
+		}
+		content := string(make([]byte, 2048))
+		entry := &Entry{
+			Category:   CategoryDomainKnowledge,
+			Content:    content,
+			SourceType: SourceAgentRun,
+			TenantID:   "acme", AgentID: "sales",
+		}
+		err := gov.ValidateWrite(context.Background(), entry, pol)
+		assert.ErrorIs(t, err, ErrMemoryWriteDenied)
+	})
+}
+
 func TestValidateWrite_MissingSourceType(t *testing.T) {
 	gov, _ := testGovernance(t)
 	pol := memoryPolicy(nil, nil, nil)
@@ -290,20 +325,18 @@ func TestConflictResolution_Reject(t *testing.T) {
 	assert.ErrorIs(t, err, ErrMemoryConflict)
 }
 
-func TestConflictDetection_FailOpen(t *testing.T) {
-	// Use a store that will be closed to simulate FTS5 errors
+func TestConflictDetection_FailClosed(t *testing.T) {
 	gov, store := testGovernance(t)
 	ctx := context.Background()
 	pol := memoryPolicy(nil, nil, nil)
 
-	// Write one entry, then close the store to simulate errors
 	require.NoError(t, store.Write(ctx, &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title: "Test entry", Content: "Content",
 		EvidenceID: "req_1", SourceType: SourceAgentRun, TrustScore: 70,
 	}))
 
-	// Normal case: conflict detection should work
+	// Normal case with no conflict: should auto-approve
 	entry := &Entry{
 		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 		Title:      "Different topic entirely about weather forecasting",
@@ -312,6 +345,20 @@ func TestConflictDetection_FailOpen(t *testing.T) {
 	}
 	err := gov.ValidateWrite(ctx, entry, pol)
 	assert.NoError(t, err)
+	assert.Equal(t, "auto_approved", entry.ReviewStatus)
+
+	// Simulate conflict detection failure by closing the store.
+	// The governance layer should fail-closed (flag for review), not fail-open.
+	store.Close()
+	failEntry := &Entry{
+		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+		Title:      "Entry during db failure",
+		Content:    "This should be flagged pending_review",
+		SourceType: SourceAgentRun,
+	}
+	err = gov.ValidateWrite(ctx, failEntry, pol)
+	assert.NoError(t, err)
+	assert.Equal(t, "pending_review", failEntry.ReviewStatus)
 }
 
 // TestExtractKeywords_DeterministicAndSorted ensures extractKeywords returns the same

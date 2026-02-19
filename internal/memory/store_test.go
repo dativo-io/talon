@@ -137,7 +137,7 @@ func TestGet_ReturnsFullEntry(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 
-	got, err := store.Get(ctx, entries[0].ID)
+	got, err := store.Get(ctx, "acme", entries[0].ID)
 	require.NoError(t, err)
 	assert.Equal(t, "acme", got.TenantID)
 	assert.Equal(t, "sales", got.AgentID)
@@ -153,7 +153,7 @@ func TestGet_ReturnsFullEntry(t *testing.T) {
 
 func TestGet_NotFound(t *testing.T) {
 	store := testStore(t)
-	_, err := store.Get(context.Background(), "mem_nonexistent")
+	_, err := store.Get(context.Background(), "acme", "mem_nonexistent")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -338,10 +338,282 @@ func TestTenantIsolation(t *testing.T) {
 
 	// Verify no cross-access via Get
 	for _, idx := range acmeIdx {
-		e, err := store.Get(ctx, idx.ID)
+		e, err := store.Get(ctx, "acme", idx.ID)
 		require.NoError(t, err)
 		assert.Equal(t, "acme", e.TenantID)
 	}
+}
+
+func TestTenantIsolation_GetBlocksCrossTenant(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	entry := Entry{
+		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+		Title: "Secret", Content: "Acme confidential data", EvidenceID: "req_1",
+		SourceType: SourceAgentRun,
+	}
+	require.NoError(t, store.Write(ctx, &entry))
+
+	// Same tenant can read
+	got, err := store.Get(ctx, "acme", entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "acme", got.TenantID)
+
+	// Different tenant cannot read
+	_, err = store.Get(ctx, "globex", entry.ID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestTenantIsolation_SearchBlocksCrossTenant(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+		Title: "Unique fiscal data", Content: "Revenue target for fiscal year",
+		EvidenceID: "req_1", SourceType: SourceAgentRun,
+	}))
+
+	// Same tenant finds it
+	results, err := store.Search(ctx, "acme", "sales", "fiscal", 20)
+	require.NoError(t, err)
+	assert.NotEmpty(t, results)
+
+	// Different tenant does not
+	results, err = store.Search(ctx, "globex", "sales", "fiscal", 20)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+}
+
+func TestTenantIsolation_RollbackScopedToTenant(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		require.NoError(t, store.Write(ctx, &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: "Entry", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}))
+		require.NoError(t, store.Write(ctx, &Entry{
+			TenantID: "globex", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: "Entry", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}))
+	}
+
+	// Rollback acme to version 1
+	require.NoError(t, store.Rollback(ctx, "acme", "sales", 1))
+
+	// Acme should have 1 entry
+	acme, err := store.Read(ctx, "acme", "sales")
+	require.NoError(t, err)
+	assert.Len(t, acme, 1)
+
+	// Globex should still have all 3
+	globex, err := store.Read(ctx, "globex", "sales")
+	require.NoError(t, err)
+	assert.Len(t, globex, 3)
+}
+
+func TestPurgeExpired(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	// Write entries with explicit timestamps
+	old := time.Now().UTC().AddDate(0, 0, -100)
+	recent := time.Now().UTC()
+
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+		Title: "Old entry", Content: "Old", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		Timestamp: old,
+	}))
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+		Title: "Recent entry", Content: "Recent", EvidenceID: "req_2", SourceType: SourceAgentRun,
+		Timestamp: recent,
+	}))
+
+	purged, err := store.PurgeExpired(ctx, "acme", "sales", 30)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), purged)
+
+	entries, err := store.Read(ctx, "acme", "sales")
+	require.NoError(t, err)
+	assert.Len(t, entries, 1)
+	assert.Equal(t, "Recent entry", entries[0].Title)
+}
+
+func TestEnforceMaxEntries(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		require.NoError(t, store.Write(ctx, &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: "Entry", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}))
+	}
+
+	evicted, err := store.EnforceMaxEntries(ctx, "acme", "sales", 5)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), evicted)
+
+	entries, err := store.Read(ctx, "acme", "sales")
+	require.NoError(t, err)
+	assert.Len(t, entries, 5)
+
+	// Oldest should have been evicted — remaining should have higher versions
+	for _, e := range entries {
+		assert.Greater(t, e.Version, 5)
+	}
+}
+
+func TestEnforceMaxEntries_UnderLimit(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		require.NoError(t, store.Write(ctx, &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: "Entry", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}))
+	}
+
+	evicted, err := store.EnforceMaxEntries(ctx, "acme", "sales", 10)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), evicted)
+}
+
+func TestDistinctAgents(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+		Title: "E", Content: "C", EvidenceID: "req_1", SourceType: SourceAgentRun,
+	}))
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "support", Category: CategoryDomainKnowledge,
+		Title: "E", Content: "C", EvidenceID: "req_2", SourceType: SourceAgentRun,
+	}))
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "globex", AgentID: "sales", Category: CategoryDomainKnowledge,
+		Title: "E", Content: "C", EvidenceID: "req_3", SourceType: SourceAgentRun,
+	}))
+
+	pairs, err := store.DistinctAgents(ctx)
+	require.NoError(t, err)
+	assert.Len(t, pairs, 3)
+}
+
+func TestScopeFieldRoundTrip(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		scope     string
+		wantScope string
+	}{
+		{"default scope", "", ScopeAgent},
+		{"explicit agent", ScopeAgent, ScopeAgent},
+		{"session scope", ScopeSession, ScopeSession},
+		{"workspace scope", ScopeWorkspace, ScopeWorkspace},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := Entry{
+				TenantID: "acme", AgentID: "scope-test", Category: CategoryDomainKnowledge,
+				Title: "Scope " + tt.name, Content: "Content", Scope: tt.scope,
+				EvidenceID: "req_1", SourceType: SourceAgentRun,
+			}
+			require.NoError(t, store.Write(ctx, &entry))
+
+			// Verify via Get (Layer 2)
+			got, err := store.Get(ctx, "acme", entry.ID)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantScope, got.Scope)
+
+			// Verify via ListIndex (Layer 1)
+			index, err := store.ListIndex(ctx, "acme", "scope-test", 100)
+			require.NoError(t, err)
+			var found bool
+			for _, idx := range index {
+				if idx.ID == entry.ID {
+					assert.Equal(t, tt.wantScope, idx.Scope)
+					found = true
+					break
+				}
+			}
+			assert.True(t, found, "entry should be in index")
+		})
+	}
+}
+
+func TestPurgeExpired_CrossTenantIsolation(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	oldTime := time.Now().UTC().AddDate(0, 0, -100)
+
+	// Both tenants get old entries
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+		Title: "Acme old", Content: "Content", EvidenceID: "req_1",
+		SourceType: SourceAgentRun, Timestamp: oldTime,
+	}))
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "globex", AgentID: "sales", Category: CategoryDomainKnowledge,
+		Title: "Globex old", Content: "Content", EvidenceID: "req_2",
+		SourceType: SourceAgentRun, Timestamp: oldTime,
+	}))
+
+	// Purge only acme
+	purged, err := store.PurgeExpired(ctx, "acme", "sales", 30)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), purged)
+
+	// Acme should be empty
+	acme, err := store.Read(ctx, "acme", "sales")
+	require.NoError(t, err)
+	assert.Empty(t, acme)
+
+	// Globex should be untouched
+	globex, err := store.Read(ctx, "globex", "sales")
+	require.NoError(t, err)
+	assert.Len(t, globex, 1)
+}
+
+func TestEnforceMaxEntries_CrossTenantIsolation(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		require.NoError(t, store.Write(ctx, &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: "Entry", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}))
+		require.NoError(t, store.Write(ctx, &Entry{
+			TenantID: "globex", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: "Entry", Content: "Content", EvidenceID: "req_2", SourceType: SourceAgentRun,
+		}))
+	}
+
+	// Enforce max on acme only
+	evicted, err := store.EnforceMaxEntries(ctx, "acme", "sales", 3)
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), evicted)
+
+	acme, err := store.Read(ctx, "acme", "sales")
+	require.NoError(t, err)
+	assert.Len(t, acme, 3)
+
+	// Globex untouched
+	globex, err := store.Read(ctx, "globex", "sales")
+	require.NoError(t, err)
+	assert.Len(t, globex, 10)
 }
 
 func TestProvenanceFieldsRoundTrip(t *testing.T) {

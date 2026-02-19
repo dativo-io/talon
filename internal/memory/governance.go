@@ -15,6 +15,12 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 )
 
+// PolicyEvaluator is an optional interface for OPA-based memory governance.
+// When set on Governance, ValidateWrite calls OPA in addition to hardcoded checks.
+type PolicyEvaluator interface {
+	EvaluateMemoryWrite(ctx context.Context, category string, contentSizeBytes int) (*policy.Decision, error)
+}
+
 // ErrMemoryConflict is returned when a memory write conflicts with existing entries
 // and the conflict resolution policy is "reject".
 var ErrMemoryConflict = errors.New("memory entry conflicts with existing entries")
@@ -23,11 +29,18 @@ var ErrMemoryConflict = errors.New("memory entry conflicts with existing entries
 type Governance struct {
 	store      *Store
 	classifier *classifier.Scanner
+	opa        PolicyEvaluator // optional; nil = skip OPA check
 }
 
 // NewGovernance creates a governance checker backed by the given store and PII scanner.
 func NewGovernance(store *Store, cls *classifier.Scanner) *Governance {
 	return &Governance{store: store, classifier: cls}
+}
+
+// SetPolicyEvaluator attaches an OPA-based policy evaluator for memory governance.
+// When set, ValidateWrite runs OPA rules in addition to hardcoded Go checks.
+func (g *Governance) SetPolicyEvaluator(eval PolicyEvaluator) {
+	g.opa = eval
 }
 
 // ConflictCandidate describes a potential conflict with an existing memory entry.
@@ -61,10 +74,43 @@ func (g *Governance) ValidateWrite(ctx context.Context, entry *Entry, pol *polic
 		))
 	defer span.End()
 
-	// Check 1: Category allowed
-	if err := g.checkCategory(entry.Category, pol); err != nil {
-		span.SetAttributes(attribute.String("governance.denied_by", "category"))
+	deny := func(reason string, err error) error {
+		writesDenied.Add(ctx, 1)
+		span.SetAttributes(attribute.String("governance.denied_by", reason))
 		return err
+	}
+
+	// Check 0 (backstop): Hardcoded forbidden categories — always checked first,
+	// regardless of OPA availability, as defense-in-depth.
+	if IsForbiddenCategory(entry.Category) {
+		return deny("hardcoded_forbidden", fmt.Errorf("category %q is hardcoded forbidden: %w", entry.Category, ErrMemoryWriteDenied))
+	}
+
+	// Check 0.5: max_entry_size_kb enforcement (Go-level, mirrors the OPA rego rule)
+	if pol.Memory != nil && pol.Memory.MaxEntrySizeKB > 0 {
+		contentSize := len(entry.Title) + len(entry.Content)
+		maxBytes := pol.Memory.MaxEntrySizeKB * 1024
+		if contentSize > maxBytes {
+			return deny("max_entry_size", fmt.Errorf("entry size %d bytes exceeds max_entry_size_kb (%d KB): %w",
+				contentSize, pol.Memory.MaxEntrySizeKB, ErrMemoryWriteDenied))
+		}
+	}
+
+	// Check 0.75: OPA policy evaluation (unified governance path)
+	if g.opa != nil {
+		contentSize := len(entry.Title) + len(entry.Content)
+		decision, opaErr := g.opa.EvaluateMemoryWrite(ctx, entry.Category, contentSize)
+		if opaErr != nil {
+			log.Warn().Err(opaErr).Msg("OPA memory governance unavailable, continuing with Go checks")
+		} else if !decision.Allowed {
+			return deny("opa", fmt.Errorf("OPA policy denied memory write: %s: %w",
+				strings.Join(decision.Reasons, "; "), ErrMemoryWriteDenied))
+		}
+	}
+
+	// Check 1: Category allowed (Go-level allow/forbid lists)
+	if err := g.checkCategory(entry.Category, pol); err != nil {
+		return deny("category", err)
 	}
 
 	// Check 2: PII scan (Title and Content — both must be free of PII)
@@ -72,25 +118,21 @@ func (g *Governance) ValidateWrite(ctx context.Context, entry *Entry, pol *polic
 		combined := entry.Title + "\n" + entry.Content
 		result := g.classifier.Scan(ctx, combined)
 		if result.HasPII {
-			span.SetAttributes(attribute.String("governance.denied_by", "pii"))
-			return fmt.Errorf("memory write contains PII: %w", ErrPIIDetected)
+			return deny("pii", fmt.Errorf("memory write contains PII: %w", ErrPIIDetected))
 		}
 	}
 
 	// Check 3: Policy override detection (Title and Content)
 	if err := g.checkPolicyOverride(entry.Title); err != nil {
-		span.SetAttributes(attribute.String("governance.denied_by", "policy_override"))
-		return err
+		return deny("policy_override", err)
 	}
 	if err := g.checkPolicyOverride(entry.Content); err != nil {
-		span.SetAttributes(attribute.String("governance.denied_by", "policy_override"))
-		return err
+		return deny("policy_override", err)
 	}
 
 	// Check 4: Provenance validation
 	if entry.SourceType == "" {
-		span.SetAttributes(attribute.String("governance.denied_by", "missing_source"))
-		return fmt.Errorf("source_type is required: %w", ErrMemoryWriteDenied)
+		return deny("missing_source", fmt.Errorf("source_type is required: %w", ErrMemoryWriteDenied))
 	}
 	entry.TrustScore = DeriveTrustScore(entry.SourceType)
 
@@ -106,12 +148,9 @@ func (g *Governance) ValidateWrite(ctx context.Context, entry *Entry, pol *polic
 	return nil
 }
 
-// checkCategory validates the entry category against policy rules and hardcoded forbidden list.
+// checkCategory validates the entry category against policy allow/forbid lists.
+// Hardcoded forbidden categories are already checked in ValidateWrite before this is called.
 func (g *Governance) checkCategory(category string, pol *policy.Policy) error {
-	if IsForbiddenCategory(category) {
-		return fmt.Errorf("category %q is hardcoded forbidden: %w", category, ErrMemoryWriteDenied)
-	}
-
 	if pol.Memory == nil {
 		return nil
 	}
@@ -162,11 +201,10 @@ func (g *Governance) handleConflicts(ctx context.Context, entry *Entry, pol *pol
 	}
 	conflicts, err := g.CheckConflicts(ctx, *entry, threshold)
 	if err != nil {
-		// Fail-open: log warning but allow write
-		log.Warn().Err(err).Str("entry_id", entry.ID).Msg("conflict detection failed, allowing write")
-		if entry.ReviewStatus == "" {
-			entry.ReviewStatus = "auto_approved"
-		}
+		// Fail-closed: flag for review so transient errors (SQLite lock)
+		// cannot allow poisoned entries through.
+		log.Warn().Err(err).Str("entry_id", entry.ID).Msg("conflict detection failed, flagging for review")
+		entry.ReviewStatus = "pending_review"
 		return nil
 	}
 
@@ -245,22 +283,25 @@ func (g *Governance) CheckConflicts(ctx context.Context, entry Entry, similarity
 		if err != nil {
 			log.Warn().Err(err).Msg("FTS5 conflict search failed, continuing with category results")
 		} else {
-			for _, idx := range indexResults {
-				if seen[idx.ID] || idx.ID == entry.ID {
+			for i := range indexResults {
+				if seen[indexResults[i].ID] || indexResults[i].ID == entry.ID {
 					continue
 				}
 				candidates = append(candidates, ConflictCandidate{
-					ExistingEntryID: idx.ID,
-					ExistingTitle:   idx.Title,
+					ExistingEntryID: indexResults[i].ID,
+					ExistingTitle:   indexResults[i].Title,
 					Similarity:      similarityThreshold, // FTS5 matches treated as at least threshold
-					Category:        idx.Category,
-					TrustScore:      idx.TrustScore,
+					Category:        indexResults[i].Category,
+					TrustScore:      indexResults[i].TrustScore,
 				})
 			}
 		}
 	}
 
 	span.SetAttributes(attribute.Int("conflicts.count", len(candidates)))
+	if len(candidates) > 0 {
+		conflictsFound.Add(ctx, int64(len(candidates)))
+	}
 	return candidates, nil
 }
 

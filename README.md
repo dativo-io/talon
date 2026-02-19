@@ -174,7 +174,7 @@ talon audit verify <evidence-id>
 
 **Prompt Injection Prevention** — PDF/DOCX/HTML attachments are sandboxed automatically. Instruction-detection scanner flags injection attempts. Configurable: block, warn, or log.
 
-**Governed Agent Memory** — Agents write learnings to an audited soul directory. Every memory write is PII-scanned, policy-checked, and HMAC-signed. Constitutional AI governance: agents learn facts but never alter policies. Rollback to any previous state if memory poisoning is detected. Unlike MemOS or mem0, Talon's memory is a compliance asset — not just a developer convenience.
+**Governed Agent Memory** — Agents write learnings to an audited soul directory. Every memory write passes through a multi-layer governance pipeline (hardcoded forbidden categories, OPA policy, PII scan, conflict detection) and is HMAC-signed. Shadow mode lets operators observe memory behavior before enabling writes. Retention policies auto-purge expired entries. Prompt injection controls filter which memories enter LLM context. Rollback to any previous state if memory poisoning is detected. Unlike MemOS or mem0, Talon's memory is a compliance asset — not just a developer convenience.
 
 **Scheduled & Event-Driven** — Cron schedules and webhook triggers. Same policy enforcement whether an agent runs manually, on schedule, or from a GitHub webhook.
 

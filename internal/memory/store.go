@@ -72,12 +72,20 @@ CREATE TRIGGER IF NOT EXISTS memory_au AFTER UPDATE ON memory_entries BEGIN
 END;
 `
 
+// Memory scopes define the lifetime and visibility of entries.
+const (
+	ScopeAgent     = "agent"     // persists per-agent across sessions (default)
+	ScopeSession   = "session"   // per-session; auto-expiry is Phase 2
+	ScopeWorkspace = "workspace" // shared read-only across agents in a tenant
+)
+
 // Entry is a full memory record with provenance.
 type Entry struct {
 	ID               string    `json:"id"`
 	TenantID         string    `json:"tenant_id"`
 	AgentID          string    `json:"agent_id"`
 	Category         string    `json:"category"`
+	Scope            string    `json:"scope"` // "agent" (default), "session", "workspace"
 	Title            string    `json:"title"`
 	Content          string    `json:"content"`
 	ObservationType  string    `json:"observation_type"`
@@ -97,6 +105,7 @@ type Entry struct {
 type IndexEntry struct {
 	ID              string    `json:"id"`
 	Category        string    `json:"category"`
+	Scope           string    `json:"scope"`
 	Title           string    `json:"title"`
 	ObservationType string    `json:"observation_type"`
 	TokenCount      int       `json:"token_count"`
@@ -134,6 +143,10 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("creating memory schema: %w", err)
 	}
 
+	// Migrate: add scope column if missing (added in memory architecture review)
+	_, _ = db.ExecContext(context.Background(),
+		`ALTER TABLE memory_entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'agent'`)
+
 	hasFTS5 := true
 	if _, err := db.ExecContext(context.Background(), ftsSchema); err != nil {
 		hasFTS5 = false
@@ -166,6 +179,8 @@ func (s *Store) Write(ctx context.Context, entry *Entry) error {
 		return err
 	}
 
+	writesTotal.Add(ctx, 1)
+	entriesGauge.Record(ctx, int64(entry.Version)) // version is a monotonic count per tenant+agent
 	span.SetAttributes(
 		attribute.String("memory.id", entry.ID),
 		attribute.Int("memory.version", entry.Version),
@@ -196,6 +211,9 @@ func prepareEntry(entry *Entry) {
 	}
 	if entry.TrustScore == 0 {
 		entry.TrustScore = DeriveTrustScore(entry.SourceType)
+	}
+	if entry.Scope == "" {
+		entry.Scope = ScopeAgent
 	}
 }
 
@@ -264,12 +282,12 @@ func (s *Store) writeInTx(ctx context.Context, entry *Entry, filesJSON, conflict
 	entry.Version = maxVersion + 1
 
 	query := `INSERT INTO memory_entries (
-		id, tenant_id, agent_id, category, title, content, observation_type,
+		id, tenant_id, agent_id, category, scope, title, content, observation_type,
 		token_count, files_affected, version, timestamp, evidence_id,
 		source_type, source_evidence_id, trust_score, conflicts_with, review_status
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = tx.ExecContext(ctx, query,
-		entry.ID, entry.TenantID, entry.AgentID, entry.Category,
+		entry.ID, entry.TenantID, entry.AgentID, entry.Category, entry.Scope,
 		entry.Title, entry.Content, entry.ObservationType,
 		entry.TokenCount, string(filesJSON), entry.Version, entry.Timestamp,
 		entry.EvidenceID, entry.SourceType, entry.SourceEvidenceID,
@@ -293,16 +311,20 @@ func isSQLiteLocked(err error) bool {
 }
 
 // Get retrieves a full memory entry by ID (Layer 2).
-func (s *Store) Get(ctx context.Context, id string) (*Entry, error) {
+// tenantID enforces tenant isolation — the entry must belong to the specified tenant.
+func (s *Store) Get(ctx context.Context, tenantID, id string) (*Entry, error) {
 	ctx, span := tracer.Start(ctx, "memory.get",
-		trace.WithAttributes(attribute.String("memory.id", id)))
+		trace.WithAttributes(
+			attribute.String("memory.id", id),
+			attribute.String("tenant_id", tenantID),
+		))
 	defer span.End()
 
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, tenant_id, agent_id, category, title, content, observation_type,
+		`SELECT id, tenant_id, agent_id, category, scope, title, content, observation_type,
 		        token_count, files_affected, version, timestamp, evidence_id,
 		        source_type, source_evidence_id, trust_score, conflicts_with, review_status
-		 FROM memory_entries WHERE id = ?`, id)
+		 FROM memory_entries WHERE id = ? AND tenant_id = ?`, id, tenantID)
 
 	entry, err := scanEntry(row)
 	if err == sql.ErrNoRows {
@@ -323,7 +345,7 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit i
 		))
 	defer span.End()
 
-	query := `SELECT id, category, title, observation_type, token_count, timestamp, trust_score, review_status
+	query := `SELECT id, category, scope, title, observation_type, token_count, timestamp, trust_score, review_status
 	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
 	          ORDER BY timestamp DESC`
 	args := []interface{}{tenantID, agentID}
@@ -341,12 +363,13 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit i
 	var results []IndexEntry
 	for rows.Next() {
 		var e IndexEntry
-		if err := rows.Scan(&e.ID, &e.Category, &e.Title, &e.ObservationType,
+		if err := rows.Scan(&e.ID, &e.Category, &e.Scope, &e.Title, &e.ObservationType,
 			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus); err != nil {
 			continue
 		}
 		results = append(results, e)
 	}
+	readsTotal.Add(ctx, 1)
 	return results, rows.Err()
 }
 
@@ -355,7 +378,7 @@ func (s *Store) List(ctx context.Context, tenantID, agentID, category string, li
 	ctx, span := tracer.Start(ctx, "memory.list")
 	defer span.End()
 
-	query := `SELECT id, tenant_id, agent_id, category, title, content, observation_type,
+	query := `SELECT id, tenant_id, agent_id, category, scope, title, content, observation_type,
 	                 token_count, files_affected, version, timestamp, evidence_id,
 	                 source_type, source_evidence_id, trust_score, conflicts_with, review_status
 	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`
@@ -390,7 +413,7 @@ func (s *Store) Search(ctx context.Context, tenantID, agentID, query string, lim
 	var args []interface{}
 
 	if s.hasFTS5 {
-		sqlQuery = `SELECT m.id, m.category, m.title, m.observation_type, m.token_count,
+		sqlQuery = `SELECT m.id, m.category, m.scope, m.title, m.observation_type, m.token_count,
 		                   m.timestamp, m.trust_score, m.review_status
 		            FROM memory_entries m
 		            JOIN memory_fts f ON m.rowid = f.rowid
@@ -398,7 +421,7 @@ func (s *Store) Search(ctx context.Context, tenantID, agentID, query string, lim
 		            ORDER BY rank`
 		args = []interface{}{query, tenantID, agentID}
 	} else {
-		sqlQuery = `SELECT id, category, title, observation_type, token_count,
+		sqlQuery = `SELECT id, category, scope, title, observation_type, token_count,
 		                   timestamp, trust_score, review_status
 		            FROM memory_entries
 		            WHERE tenant_id = ? AND agent_id = ?
@@ -422,7 +445,7 @@ func (s *Store) Search(ctx context.Context, tenantID, agentID, query string, lim
 	var results []IndexEntry
 	for rows.Next() {
 		var e IndexEntry
-		if err := rows.Scan(&e.ID, &e.Category, &e.Title, &e.ObservationType,
+		if err := rows.Scan(&e.ID, &e.Category, &e.Scope, &e.Title, &e.ObservationType,
 			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus); err != nil {
 			continue
 		}
@@ -526,7 +549,7 @@ func (s *Store) AuditLog(ctx context.Context, tenantID, agentID string, limit in
 	ctx, span := tracer.Start(ctx, "memory.audit_log")
 	defer span.End()
 
-	query := `SELECT id, tenant_id, agent_id, category, title, content, observation_type,
+	query := `SELECT id, tenant_id, agent_id, category, scope, title, content, observation_type,
 	                 token_count, files_affected, version, timestamp, evidence_id,
 	                 source_type, source_evidence_id, trust_score, conflicts_with, review_status
 	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
@@ -538,6 +561,90 @@ func (s *Store) AuditLog(ctx context.Context, tenantID, agentID string, limit in
 	}
 
 	return s.queryEntries(ctx, query, args...)
+}
+
+// PurgeExpired deletes memory entries older than retentionDays.
+// Returns the number of deleted entries.
+func (s *Store) PurgeExpired(ctx context.Context, tenantID, agentID string, retentionDays int) (int64, error) {
+	ctx, span := tracer.Start(ctx, "memory.purge_expired",
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("agent_id", agentID),
+			attribute.Int("retention_days", retentionDays),
+		))
+	defer span.End()
+
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND timestamp < ?`,
+		tenantID, agentID, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("purging expired memory entries: %w", err)
+	}
+
+	affected, _ := result.RowsAffected()
+	span.SetAttributes(attribute.Int64("memory.purged", affected))
+	return affected, nil
+}
+
+// EnforceMaxEntries deletes the oldest entries when the count exceeds maxEntries (FIFO).
+// Returns the number of deleted entries.
+func (s *Store) EnforceMaxEntries(ctx context.Context, tenantID, agentID string, maxEntries int) (int64, error) {
+	ctx, span := tracer.Start(ctx, "memory.enforce_max_entries",
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("agent_id", agentID),
+			attribute.Int("max_entries", maxEntries),
+		))
+	defer span.End()
+
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`,
+		tenantID, agentID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting entries: %w", err)
+	}
+
+	if count <= maxEntries {
+		return 0, nil
+	}
+
+	excess := count - maxEntries
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM memory_entries WHERE id IN (
+			SELECT id FROM memory_entries
+			WHERE tenant_id = ? AND agent_id = ?
+			ORDER BY version ASC
+			LIMIT ?
+		)`, tenantID, agentID, excess)
+	if err != nil {
+		return 0, fmt.Errorf("enforcing max entries: %w", err)
+	}
+
+	affected, _ := result.RowsAffected()
+	span.SetAttributes(attribute.Int64("memory.evicted", affected))
+	return affected, nil
+}
+
+// DistinctAgents returns all (tenant_id, agent_id) pairs in the store.
+func (s *Store) DistinctAgents(ctx context.Context) ([][2]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT tenant_id, agent_id FROM memory_entries`)
+	if err != nil {
+		return nil, fmt.Errorf("querying distinct agents: %w", err)
+	}
+	defer rows.Close()
+
+	var pairs [][2]string
+	for rows.Next() {
+		var tid, aid string
+		if err := rows.Scan(&tid, &aid); err != nil {
+			continue
+		}
+		pairs = append(pairs, [2]string{tid, aid})
+	}
+	return pairs, rows.Err()
 }
 
 // queryEntries executes a query and scans the result into Entry slices.
@@ -553,7 +660,7 @@ func (s *Store) queryEntries(ctx context.Context, query string, args ...interfac
 		var e Entry
 		var filesJSON, conflictsJSON string
 		if err := rows.Scan(
-			&e.ID, &e.TenantID, &e.AgentID, &e.Category, &e.Title, &e.Content,
+			&e.ID, &e.TenantID, &e.AgentID, &e.Category, &e.Scope, &e.Title, &e.Content,
 			&e.ObservationType, &e.TokenCount, &filesJSON, &e.Version, &e.Timestamp,
 			&e.EvidenceID, &e.SourceType, &e.SourceEvidenceID, &e.TrustScore,
 			&conflictsJSON, &e.ReviewStatus,
@@ -578,7 +685,7 @@ func scanEntry(row *sql.Row) (*Entry, error) {
 	var e Entry
 	var filesJSON, conflictsJSON string
 	err := row.Scan(
-		&e.ID, &e.TenantID, &e.AgentID, &e.Category, &e.Title, &e.Content,
+		&e.ID, &e.TenantID, &e.AgentID, &e.Category, &e.Scope, &e.Title, &e.Content,
 		&e.ObservationType, &e.TokenCount, &filesJSON, &e.Version, &e.Timestamp,
 		&e.EvidenceID, &e.SourceType, &e.SourceEvidenceID, &e.TrustScore,
 		&conflictsJSON, &e.ReviewStatus,

@@ -36,10 +36,12 @@ type GenerateParams struct {
 	ToolsCalled     []string        // MCP tools invoked during execution
 	CostEUR         float64         // Estimated cost in EUR
 	Tokens          TokenUsage      // Input/output token counts
+	MemoryTokens    int             // Tokens injected from memory context
 	DurationMS      int64           // Wall-clock duration of the full pipeline
 	Error           string          // Non-empty on LLM or tool errors
 	SecretsAccessed []string        // Vault secret names accessed during this run
 	MemoryWrites    []MemoryWrite   // Soul directory writes (if any)
+	MemoryReads     []MemoryRead    // Memory entries injected into the LLM prompt
 	InputPrompt     string          // Raw user prompt (hashed in evidence, not stored verbatim)
 	OutputResponse  string          // LLM response text (hashed in evidence)
 	Compliance      Compliance      // Applicable compliance frameworks and data location
@@ -64,11 +66,13 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 			ToolsCalled:   params.ToolsCalled,
 			CostEUR:       params.CostEUR,
 			Tokens:        params.Tokens,
+			MemoryTokens:  params.MemoryTokens,
 			DurationMS:    params.DurationMS,
 			Error:         params.Error,
 		},
 		SecretsAccessed: params.SecretsAccessed,
 		MemoryWrites:    params.MemoryWrites,
+		MemoryReads:     params.MemoryReads,
 		AuditTrail: AuditTrail{
 			InputHash:  hashString(params.InputPrompt),
 			OutputHash: hashString(params.OutputResponse),

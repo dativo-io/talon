@@ -214,6 +214,11 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		return nil, fmt.Errorf("creating policy engine: %w", err)
 	}
 
+	// Wire OPA engine into memory governance for unified policy enforcement.
+	if r.governance != nil {
+		r.governance.SetPolicyEvaluator(engine)
+	}
+
 	policyInput := map[string]interface{}{
 		"tenant_id":          req.TenantID,
 		"agent_id":           req.AgentName,
@@ -271,13 +276,46 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	// Step 4.75: Pre-LLM memory + context enrichment
 	finalPrompt := processedPrompt
 	effectiveTier := inputClass.Tier
+	var memoryReads []evidence.MemoryRead
+
+	var memoryTokens int
 
 	if pol.Memory != nil && pol.Memory.Enabled && r.memory != nil {
 		memIndex, memErr := r.memory.ListIndex(ctx, req.TenantID, req.AgentName, 50)
 		if memErr != nil {
 			log.Warn().Err(memErr).Msg("failed to load memory index")
 		} else if len(memIndex) > 0 {
-			finalPrompt = formatMemoryIndexForPrompt(memIndex) + "\n\n" + finalPrompt
+			// Filter by prompt_categories so operators control which categories enter context
+			if len(pol.Memory.PromptCategories) > 0 {
+				memIndex = filterByPromptCategories(memIndex, pol.Memory.PromptCategories)
+			}
+
+			// Apply max_prompt_tokens cap: evict oldest/lowest-trust entries if over budget
+			if pol.Memory.MaxPromptTokens > 0 {
+				memIndex = capMemoryByTokens(memIndex, pol.Memory.MaxPromptTokens)
+			}
+
+			memPrompt := formatMemoryIndexForPrompt(memIndex)
+			finalPrompt = memPrompt + "\n\n" + finalPrompt
+			memoryTokens = len(memPrompt) / 4
+
+			for i := range memIndex {
+				memoryReads = append(memoryReads, evidence.MemoryRead{
+					EntryID:    memIndex[i].ID,
+					TrustScore: memIndex[i].TrustScore,
+				})
+			}
+
+			span.SetAttributes(attribute.Int("memory.tokens_injected", memoryTokens))
+
+			// Re-classify memory content to detect tier upgrades from persisted
+			// classified data — prevents sending tier-1/tier-2 memory content
+			// to a lower-tier model (data sovereignty protection).
+			memClass := r.classifier.Scan(ctx, memPrompt)
+			if memClass.Tier > effectiveTier {
+				effectiveTier = memClass.Tier
+				span.SetAttributes(attribute.Int("classification.tier_upgraded_by_memory", effectiveTier))
+			}
 		}
 	}
 
@@ -303,7 +341,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	}
 
 	return r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol,
-		effectiveTier, inputEntityNames, finalPrompt, attachmentScan, complianceInfo, costCtx)
+		effectiveTier, inputEntityNames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens)
 }
 
 // checkHook fires a hook and returns a deny RunResponse if the hook aborts the pipeline.
@@ -346,7 +384,7 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 }
 
 // executeLLMPipeline runs steps 5-9: route provider, call LLM, classify output, generate evidence.
-func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext) (*RunResponse, error) {
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int) (*RunResponse, error) {
 	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
 	provider, model, degraded, originalModel, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx)
 	if err != nil {
@@ -437,6 +475,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		Tokens:          evidence.TokenUsage{Input: llmResp.InputTokens, Output: llmResp.OutputTokens},
 		DurationMS:      duration.Milliseconds(),
 		SecretsAccessed: secretsAccessed,
+		MemoryReads:     memReads,
+		MemoryTokens:    memTokens,
 		InputPrompt:     req.Prompt,
 		OutputResponse:  llmResp.Content,
 		Compliance:      compliance,
@@ -655,13 +695,35 @@ func boolToDecision(allowed bool) string {
 	return "deny"
 }
 
+// memoryMode returns the effective memory mode from policy, defaulting to "active".
+func memoryMode(pol *policy.Policy) string {
+	if pol.Memory == nil {
+		return "disabled"
+	}
+	if !pol.Memory.Enabled {
+		return "disabled"
+	}
+	switch pol.Memory.Mode {
+	case "shadow", "disabled":
+		return pol.Memory.Mode
+	default:
+		return "active"
+	}
+}
+
 // writeMemoryObservation compresses the run result into a memory observation
 // and writes it through the governance pipeline.
+// In shadow mode, all checks run and results are logged, but no entry is persisted.
 func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, pol *policy.Policy, resp *RunResponse, ev *evidence.Evidence) {
 	if r.memory == nil || r.governance == nil || pol.Memory == nil || !pol.Memory.Enabled {
 		return
 	}
 	if ev == nil {
+		return
+	}
+
+	mode := memoryMode(pol)
+	if mode == "disabled" {
 		return
 	}
 
@@ -685,7 +747,19 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 		log.Warn().Err(err).
 			Str("agent_id", req.AgentName).
 			Str("category", observation.Category).
+			Bool("memory.shadow", mode == "shadow").
 			Msg("memory_write_denied")
+		return
+	}
+
+	if mode == "shadow" {
+		log.Info().
+			Str("category", observation.Category).
+			Int("trust_score", observation.TrustScore).
+			Str("review_status", observation.ReviewStatus).
+			Str("evidence_id", ev.ID).
+			Bool("memory.shadow", true).
+			Msg("memory_shadow_observation")
 		return
 	}
 
@@ -701,21 +775,61 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 		Msg("memory_observation_written")
 }
 
+// filterByPromptCategories keeps only entries whose category is in the allowed list.
+func filterByPromptCategories(entries []memory.IndexEntry, categories []string) []memory.IndexEntry {
+	allowed := make(map[string]bool, len(categories))
+	for _, c := range categories {
+		allowed[c] = true
+	}
+	var filtered []memory.IndexEntry
+	for i := range entries {
+		if allowed[entries[i].Category] {
+			filtered = append(filtered, entries[i])
+		}
+	}
+	return filtered
+}
+
+// capMemoryByTokens trims the memory index to fit within a token budget.
+// It keeps entries from newest to oldest, dropping the oldest when over budget.
+func capMemoryByTokens(entries []memory.IndexEntry, maxTokens int) []memory.IndexEntry {
+	var result []memory.IndexEntry
+	totalTokens := 0
+	for i := range entries {
+		entryTokens := entries[i].TokenCount
+		if entryTokens == 0 {
+			entryTokens = (len(entries[i].Title) + len(entries[i].Category) + 40) / 4 // estimate per index line
+		}
+		if totalTokens+entryTokens > maxTokens && len(result) > 0 {
+			break
+		}
+		result = append(result, entries[i])
+		totalTokens += entryTokens
+	}
+	return result
+}
+
 // formatMemoryIndexForPrompt creates a lightweight prompt section from memory entries.
+// Entries with pending_review status are excluded — unvalidated entries must not
+// influence LLM decisions (governance integrity).
 func formatMemoryIndexForPrompt(entries []memory.IndexEntry) string {
 	if len(entries) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("[AGENT MEMORY INDEX]\n")
-	for _, e := range entries {
-		icon := "\u2713"
-		if e.ReviewStatus == "pending_review" {
-			icon = "?"
+	included := 0
+	for i := range entries {
+		if entries[i].ReviewStatus == "pending_review" {
+			continue
 		}
-		fmt.Fprintf(&b, "%s %s | %s | %s | trust:%d | %s | %s\n",
-			icon, e.ID, e.Category, e.Title, e.TrustScore,
-			e.ReviewStatus, e.Timestamp.Format("2006-01-02"))
+		fmt.Fprintf(&b, "\u2713 %s | %s | %s | trust:%d | %s\n",
+			entries[i].ID, entries[i].Category, entries[i].Title, entries[i].TrustScore,
+			entries[i].Timestamp.Format("2006-01-02"))
+		included++
+	}
+	if included == 0 {
+		return ""
 	}
 	b.WriteString("[END MEMORY INDEX]\n")
 	return b.String()
