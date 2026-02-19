@@ -180,7 +180,7 @@ func (s *Store) Write(ctx context.Context, entry *Entry) error {
 	}
 
 	writesTotal.Add(ctx, 1)
-	entriesGauge.Record(ctx, int64(entry.Version)) // version is a monotonic count per tenant+agent
+	recordEntriesGauge(ctx, s)
 	span.SetAttributes(
 		attribute.String("memory.id", entry.ID),
 		attribute.Int("memory.version", entry.Version),
@@ -308,6 +308,24 @@ func isSQLiteLocked(err error) bool {
 	return strings.Contains(msg, "database is locked") ||
 		strings.Contains(msg, "SQLITE_BUSY") ||
 		strings.Contains(msg, "locked")
+}
+
+// countTotal returns the total number of memory entries across all tenants and agents.
+func (s *Store) countTotal(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_entries`).Scan(&n)
+	return n, err
+}
+
+// recordEntriesGauge sets memory.entries.count to the current total entry count.
+// Called after Write, PurgeExpired, EnforceMaxEntries, and Rollback so the gauge
+// reflects actual count, not the monotonic version high-water mark.
+func recordEntriesGauge(ctx context.Context, s *Store) {
+	count, err := s.countTotal(ctx)
+	if err != nil {
+		return
+	}
+	entriesGauge.Record(ctx, count)
 }
 
 // Get retrieves a full memory entry by ID (Layer 2).
@@ -478,6 +496,9 @@ func (s *Store) Rollback(ctx context.Context, tenantID, agentID string, toVersio
 
 	affected, _ := result.RowsAffected()
 	span.SetAttributes(attribute.Int64("memory.deleted", affected))
+	if affected > 0 {
+		recordEntriesGauge(ctx, s)
+	}
 	return nil
 }
 
@@ -584,6 +605,9 @@ func (s *Store) PurgeExpired(ctx context.Context, tenantID, agentID string, rete
 
 	affected, _ := result.RowsAffected()
 	span.SetAttributes(attribute.Int64("memory.purged", affected))
+	if affected > 0 {
+		recordEntriesGauge(ctx, s)
+	}
 	return affected, nil
 }
 
@@ -624,6 +648,9 @@ func (s *Store) EnforceMaxEntries(ctx context.Context, tenantID, agentID string,
 
 	affected, _ := result.RowsAffected()
 	span.SetAttributes(attribute.Int64("memory.evicted", affected))
+	if affected > 0 {
+		recordEntriesGauge(ctx, s)
+	}
 	return affected, nil
 }
 
