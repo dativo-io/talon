@@ -95,12 +95,15 @@ const schemaV2 = `{
       "type": "object",
       "properties": {
         "enabled": {"type": "boolean"},
+        "mode": {"type": "string", "enum": ["active", "shadow", "disabled"]},
         "max_entries": {"type": "integer", "minimum": 1},
         "max_entry_size_kb": {"type": "integer", "minimum": 1},
+        "max_prompt_tokens": {"type": "integer", "minimum": 0},
         "retention_days": {"type": "integer", "minimum": 1},
         "review_mode": {"type": "string", "enum": ["auto", "human-review", "read-only"]},
         "allowed_categories": {"type": "array", "items": {"type": "string"}},
         "forbidden_categories": {"type": "array", "items": {"type": "string"}},
+        "prompt_categories": {"type": "array", "items": {"type": "string"}},
         "audit": {"type": "boolean"},
         "governance": {
           "type": "object",

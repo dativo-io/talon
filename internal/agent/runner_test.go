@@ -215,6 +215,12 @@ func TestMemoryMode(t *testing.T) {
 			Memory: &policy.MemoryConfig{Enabled: true, Mode: "active"},
 		}))
 	})
+	t.Run("unknown mode defaults to shadow", func(t *testing.T) {
+		// Typo like "shadown" must not default to "active"; fail closed to shadow.
+		assert.Equal(t, "shadow", memoryMode(&policy.Policy{
+			Memory: &policy.MemoryConfig{Enabled: true, Mode: "shadown"},
+		}))
+	})
 }
 
 func TestFilterByPromptCategories(t *testing.T) {

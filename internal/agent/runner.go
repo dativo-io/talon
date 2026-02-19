@@ -700,6 +700,8 @@ func boolToDecision(allowed bool) string {
 }
 
 // memoryMode returns the effective memory mode from policy, defaulting to "active".
+// Unknown non-empty mode values are treated as "shadow" (fail-closed) so typos or
+// bypassed schema never cause live writes when shadow was intended.
 func memoryMode(pol *policy.Policy) string {
 	if pol.Memory == nil {
 		return "disabled"
@@ -708,9 +710,16 @@ func memoryMode(pol *policy.Policy) string {
 		return "disabled"
 	}
 	switch pol.Memory.Mode {
+	case "active":
+		return "active"
 	case "shadow", "disabled":
 		return pol.Memory.Mode
 	default:
+		// Unknown or typo (e.g. "shadown"): fail closed to shadow so we never persist by mistake
+		if pol.Memory.Mode != "" {
+			log.Warn().Str("mode", pol.Memory.Mode).Msg("memory mode unknown, defaulting to shadow")
+			return "shadow"
+		}
 		return "active"
 	}
 }

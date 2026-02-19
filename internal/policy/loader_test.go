@@ -258,6 +258,22 @@ audit:
 			strict:  true,
 			wantErr: true,
 		},
+		{
+			name: "invalid memory mode fails schema validation",
+			yaml: `
+agent:
+  name: test-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 100.0
+memory:
+  enabled: true
+  mode: shadown
+`,
+			strict:  false,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
