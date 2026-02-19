@@ -269,13 +269,15 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	}
 
 	// Step 4.75: Pre-LLM memory + context enrichment
+	// Only inject memory into prompts when mode is "active". In shadow/disabled,
+	// memory is not included (MEMORY_GOVERNANCE.md: shadow = "Memory not included").
 	finalPrompt := processedPrompt
 	effectiveTier := inputClass.Tier
 	var memoryReads []evidence.MemoryRead
 
 	var memoryTokens int
 
-	if pol.Memory != nil && pol.Memory.Enabled && r.memory != nil {
+	if pol.Memory != nil && pol.Memory.Enabled && memoryMode(pol) == "active" && r.memory != nil {
 		memIndex, memErr := r.memory.ListIndex(ctx, req.TenantID, req.AgentName, 50)
 		if memErr != nil {
 			log.Warn().Err(memErr).Msg("failed to load memory index")
