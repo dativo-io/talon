@@ -24,9 +24,11 @@ type Scheduler struct {
 }
 
 // NewScheduler creates a scheduler backed by the given runner.
+// Cron expressions use the standard 5-field format: minute hour day-of-month month day-of-week
+// (e.g. "0 9 * * 1-5" for 09:00 on weekdays). Do not use WithSeconds() so docs and configs match.
 func NewScheduler(runner AgentRunner) *Scheduler {
 	return &Scheduler{
-		cron:   cron.New(cron.WithSeconds()),
+		cron:   cron.New(),
 		runner: runner,
 	}
 }

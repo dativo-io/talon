@@ -27,8 +27,8 @@ func TestRegisterSchedules_AddsEntries(t *testing.T) {
 		Agent: policy.AgentConfig{Name: "sales-analyst"},
 		Triggers: &policy.TriggersConfig{
 			Schedule: []policy.ScheduleTrigger{
-				{Cron: "0 0 9 * * *", Prompt: "Morning report", Description: "daily"},
-				{Cron: "0 0 17 * * *", Prompt: "Evening summary", Description: "daily"},
+				{Cron: "0 9 * * *", Prompt: "Morning report", Description: "daily"},
+				{Cron: "0 17 * * *", Prompt: "Evening summary", Description: "daily"},
 			},
 		},
 	}
