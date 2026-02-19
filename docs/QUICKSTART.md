@@ -233,7 +233,7 @@ triggers:
   webhooks:
     - name: jira-update
       source: jira
-      prompt_template: "Analyze JIRA update: {{.body.issue.key}} — {{.body.issue.fields.summary}}"
+      prompt_template: "Analyze JIRA update: {{.payload.issue.key}} — {{.payload.issue.fields.summary}}"
       require_approval: false
 ```
 
