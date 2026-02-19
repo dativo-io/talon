@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -303,17 +304,23 @@ func keywordSimilarity(a, b string) float64 {
 	return float64(overlap) / float64(denominator)
 }
 
-// extractKeywords returns top keywords from text, excluding stop words.
+// extractKeywords returns up to 10 keywords from text (excluding stop words),
+// in deterministic lexicographic order so FTS5 conflict detection is reproducible.
 func extractKeywords(text string) []string {
 	words := extractKeywordSet(text)
-	result := make([]string, 0, len(words))
-	for w := range words {
-		result = append(result, w)
-		if len(result) >= 10 {
-			break
-		}
+	if len(words) == 0 {
+		return nil
 	}
-	return result
+	keys := make([]string, 0, len(words))
+	for w := range words {
+		keys = append(keys, w)
+	}
+	sort.Strings(keys)
+	const maxKeywords = 10
+	if len(keys) > maxKeywords {
+		keys = keys[:maxKeywords]
+	}
+	return keys
 }
 
 // extractKeywordSet returns unique non-stopword tokens.

@@ -313,3 +313,31 @@ func TestConflictDetection_FailOpen(t *testing.T) {
 	err := gov.ValidateWrite(ctx, entry, pol)
 	assert.NoError(t, err)
 }
+
+// TestExtractKeywords_DeterministicAndSorted ensures extractKeywords returns the same
+// result for the same input (no map iteration order dependence) and that results are sorted.
+func TestExtractKeywords_DeterministicAndSorted(t *testing.T) {
+	text := "revenue target quarter fiscal year budget forecast actual results"
+	var first []string
+	for i := 0; i < 5; i++ {
+		got := extractKeywords(text)
+		assert.NotEmpty(t, got)
+		// Same input must yield same output every time (no map iteration order dependence)
+		if first == nil {
+			first = got
+		} else {
+			assert.Equal(t, first, got, "extractKeywords must be deterministic")
+		}
+		// Result must be sorted (deterministic order for FTS5 conflict detection)
+		for j := 1; j < len(got); j++ {
+			assert.True(t, got[j] >= got[j-1], "extractKeywords must return sorted slice: %v", got)
+		}
+	}
+	// Many words: cap at 10, still sorted
+	long := "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi"
+	got := extractKeywords(long)
+	assert.LessOrEqual(t, len(got), 10)
+	for j := 1; j < len(got); j++ {
+		assert.True(t, got[j] >= got[j-1], "extractKeywords must return sorted slice: %v", got)
+	}
+}
