@@ -1122,6 +1122,75 @@ func TestRun_AgenticLoop_MaxToolCallsPerRun(t *testing.T) {
 	assert.Len(t, resp.ToolsCalled, 1)
 }
 
+// TestRun_AgenticLoop_MaxToolCallsPerRun_WithinSingleResponse verifies that when the LLM returns
+// multiple tool calls in one response, we enforce max_tool_calls_per_run within that batch
+// (not only between iterations). With limit 1 and 5 tool calls in one response, only 1 runs.
+func TestRun_AgenticLoop_MaxToolCallsPerRun_WithinSingleResponse(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeAgenticLoopPolicy(t, dir, "max-one-agent", 10, 1, 0) // max 1 tool call per run
+
+	mock := &testutil.ToolCallMockProvider{
+		Responses: []*llm.Response{
+			{
+				FinishReason: "tool_calls", InputTokens: 10, OutputTokens: 20, Model: "gpt-4",
+				ToolCalls: []llm.ToolCall{
+					{ID: "tc-1", Name: "echo", Arguments: map[string]interface{}{"n": float64(1)}},
+					{ID: "tc-2", Name: "echo", Arguments: map[string]interface{}{"n": float64(2)}},
+					{ID: "tc-3", Name: "echo", Arguments: map[string]interface{}{"n": float64(3)}},
+					{ID: "tc-4", Name: "echo", Arguments: map[string]interface{}{"n": float64(4)}},
+					{ID: "tc-5", Name: "echo", Arguments: map[string]interface{}{"n": float64(5)}},
+				},
+			},
+			{Content: "Done.", FinishReason: "stop", InputTokens: 15, OutputTokens: 5, Model: "gpt-4"},
+		},
+	}
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, map[string]llm.Provider{"openai": mock}, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{})
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		ToolRegistry:      reg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:   "acme",
+		AgentName:  "max-one-agent",
+		Prompt:     "Echo five times.",
+		PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+	// Only one tool call must have been executed despite five in the response.
+	assert.Len(t, resp.ToolsCalled, 1, "max_tool_calls_per_run=1 must cap executions within a single LLM response")
+}
+
 func TestRun_AgenticLoop_MaxCostPerRun(t *testing.T) {
 	dir := t.TempDir()
 	policyPath := writeAgenticLoopPolicy(t, dir, "max-cost-agent", 10, 0, 0.001) // max 0.001 EUR per run

@@ -609,18 +609,39 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			if len(resp.ToolCalls) == 0 || iteration >= maxIterations {
 				break
 			}
-			// Append assistant message with tool calls, then execute each and append tool results
+			// Append assistant message with tool calls, then execute each and append tool results.
+			// Enforce max_tool_calls_per_run inside this loop so a single LLM response with many
+			// tool calls cannot exceed the limit before the next iteration check.
 			assistantMsg := llm.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls}
 			messages = append(messages, assistantMsg)
 			for _, tc := range resp.ToolCalls {
-				_, _ = r.fireHook(ctx, HookPreTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
-					"tool": tc.Name, "tool_call_id": tc.ID,
-				})
-				toolStart := time.Now()
-				resultContent, executed, toolName := r.executeOneToolCall(ctx, policyEval, pol, tc, toolHistory)
-				toolDuration := time.Since(toolStart).Milliseconds()
-				if executed {
-					toolsCalled = append(toolsCalled, toolName)
+				atLimit := rl != nil && rl.MaxToolCallsPerRun > 0 && len(toolsCalled) >= rl.MaxToolCallsPerRun
+				var resultContent string
+				var executed bool
+				var toolName string
+				if atLimit {
+					resultContent = `{"error":"max_tool_calls_per_run limit reached"}`
+					toolName = tc.Name
+				} else {
+					_, _ = r.fireHook(ctx, HookPreTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
+						"tool": tc.Name, "tool_call_id": tc.ID,
+					})
+					toolStart := time.Now()
+					resultContent, executed, toolName = r.executeOneToolCall(ctx, policyEval, pol, tc, toolHistory)
+					toolDuration := time.Since(toolStart).Milliseconds()
+					if executed {
+						toolsCalled = append(toolsCalled, toolName)
+					}
+					_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
+						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+						StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
+						OutputSummary: truncateStr(resultContent, 500),
+						DurationMS:    toolDuration, CostEUR: 0,
+					})
+					stepIndex++
+					_, _ = r.fireHook(ctx, HookPostTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
+						"tool": tc.Name, "executed": executed,
+					})
 				}
 				// Append to tool_history for next tool's policy evaluation (tool-chain risk scoring)
 				toolHistory = append(toolHistory, map[string]interface{}{
@@ -628,17 +649,16 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					"params":         tc.Arguments,
 					"result_summary": truncateStr(resultContent, 200),
 				})
-				_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
-					CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
-					StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
-					OutputSummary: truncateStr(resultContent, 500),
-					DurationMS:    toolDuration, CostEUR: 0,
-				})
-				stepIndex++
+				if atLimit {
+					_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
+						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+						StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
+						OutputSummary: "max_tool_calls_per_run limit reached",
+						DurationMS:    0, CostEUR: 0,
+					})
+					stepIndex++
+				}
 				messages = append(messages, llm.Message{Role: "tool", Content: resultContent, ToolCallID: tc.ID})
-				_, _ = r.fireHook(ctx, HookPostTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
-					"tool": tc.Name, "executed": executed,
-				})
 			}
 		}
 	} else {
