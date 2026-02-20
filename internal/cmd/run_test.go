@@ -52,9 +52,10 @@ func TestBuildProviders_Empty(t *testing.T) {
 
 	cfg := &config.Config{OllamaBaseURL: "http://localhost:11434"}
 	providers := buildProviders(cfg)
+	// openai and anthropic are always registered (empty key) so vault-only keys work
+	assert.Contains(t, providers, "openai")
+	assert.Contains(t, providers, "anthropic")
 	assert.Contains(t, providers, "ollama")
-	assert.NotContains(t, providers, "openai")
-	assert.NotContains(t, providers, "anthropic")
 	assert.NotContains(t, providers, "bedrock")
 }
 

@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -1098,6 +1099,16 @@ func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int,
 	if llm.ProviderUsesAPIKey(providerName) && r.secrets != nil {
 		secretName := providerName + "-api-key"
 		secret, secretErr := r.secrets.Get(ctx, secretName, req.TenantID, req.AgentName)
+		// Fallback: accept env-var-style secret names (e.g. OPENAI_API_KEY) for convenience
+		if secretErr != nil && errors.Is(secretErr, secrets.ErrSecretNotFound) {
+			alias := secretNameForProviderEnvAlias(providerName)
+			if alias != "" {
+				secret, secretErr = r.secrets.Get(ctx, alias, req.TenantID, req.AgentName)
+				if secretErr == nil {
+					secretName = alias
+				}
+			}
+		}
 		if secretErr == nil {
 			secretsAccessed = append(secretsAccessed, secretName)
 			if p := llm.NewProviderWithKey(providerName, string(secret.Value)); p != nil {
@@ -1112,6 +1123,20 @@ func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int,
 	}
 
 	return provider, model, degraded, originalModel, secretsAccessed, nil
+}
+
+// secretNameForProviderEnvAlias returns the env-var-style secret name for a provider,
+// so that "talon secrets set OPENAI_API_KEY ..." works as well as "openai-api-key".
+// Returns empty string if there is no standard alias.
+func secretNameForProviderEnvAlias(providerName string) string {
+	switch providerName {
+	case "openai":
+		return "OPENAI_API_KEY"
+	case "anthropic":
+		return "ANTHROPIC_API_KEY"
+	default:
+		return ""
+	}
 }
 
 // entityNames extracts type strings from PIIEntity slice for evidence records.

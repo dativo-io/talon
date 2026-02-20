@@ -187,15 +187,17 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// buildProviders creates LLM providers from OPERATOR-LEVEL environment variables.
+// buildProviders creates LLM providers from OPERATOR-LEVEL environment variables
+// and ensures openai/anthropic are always registered so vault-only keys work.
 //
-// These are fallback providers for single-tenant development / quickstart.
-// In production, tenant-scoped API keys should be stored in the secrets
-// vault via "talon secrets set <provider>-api-key <key>". The agent runner
-// resolves vault keys at runtime and overrides these fallbacks per-request.
+// Env vars (OPENAI_API_KEY, ANTHROPIC_API_KEY) are used as fallbacks when set.
+// When not set, the provider is still registered with an empty key; the runner
+// resolves the key from the vault at request time (resolveProvider). Use
+// "talon secrets set openai-api-key <key>" or "talon secrets set anthropic-api-key <key>".
 func buildProviders(cfg *config.Config) map[string]llm.Provider {
 	providers := make(map[string]llm.Provider)
 
+	// OpenAI: env fallback or placeholder so vault-only works
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		log.Debug().Msg("OPENAI_API_KEY set — using as operator fallback (use vault for production)")
 		if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
@@ -203,10 +205,15 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 		} else {
 			providers["openai"] = llm.NewOpenAIProvider(key)
 		}
+	} else {
+		providers["openai"] = llm.NewOpenAIProvider("")
 	}
+	// Anthropic: env fallback or placeholder so vault-only works
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
 		log.Debug().Msg("ANTHROPIC_API_KEY set — using as operator fallback (use vault for production)")
 		providers["anthropic"] = llm.NewAnthropicProvider(key)
+	} else {
+		providers["anthropic"] = llm.NewAnthropicProvider("")
 	}
 
 	providers["ollama"] = llm.NewOllamaProvider(cfg.OllamaBaseURL)
