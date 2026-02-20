@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -626,6 +627,38 @@ func TestActiveRunTracker(t *testing.T) {
 	assert.Equal(t, 1, tracker.Count("tenant-b"))
 	tracker.Decrement("tenant-b")
 	assert.Equal(t, 0, tracker.Count("tenant-b"))
+}
+
+func TestBudgetAlertClaimFire(t *testing.T) {
+	// First claim for (t1, daily) succeeds
+	assert.True(t, budgetAlertClaimFire("t1", "daily"))
+
+	// Second claim within cooldown fails (deduplication)
+	assert.False(t, budgetAlertClaimFire("t1", "daily"))
+
+	// Different tenant or alert type can still claim
+	assert.True(t, budgetAlertClaimFire("t2", "daily"))
+	assert.True(t, budgetAlertClaimFire("t1", "monthly"))
+
+	// Concurrent callers: only one should get true per (tenant, alertType)
+	var wg sync.WaitGroup
+	results := make(chan bool, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- budgetAlertClaimFire("concurrent-tenant", "daily")
+		}()
+	}
+	wg.Wait()
+	close(results)
+	var trues int
+	for v := range results {
+		if v {
+			trues++
+		}
+	}
+	assert.Equal(t, 1, trues, "exactly one concurrent caller should claim fire per (tenant, alertType)")
 }
 
 func TestEmitBudgetAlertIfNeeded(t *testing.T) {

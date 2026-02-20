@@ -690,24 +690,22 @@ var budgetAlertDedupe = &struct {
 	lastFired map[string]time.Time // key: tenantID+":"+alertType
 }{lastFired: make(map[string]time.Time)}
 
-func budgetAlertShouldFireWebhook(tenantID, alertType string) bool {
-	budgetAlertDedupe.mu.Lock()
-	defer budgetAlertDedupe.mu.Unlock()
-	key := tenantID + ":" + alertType
-	last, ok := budgetAlertDedupe.lastFired[key]
-	if !ok || time.Since(last) >= budgetAlertCooldown {
-		return true
-	}
-	return false
-}
-
-func budgetAlertRecordFired(tenantID, alertType string) {
+// budgetAlertClaimFire atomically checks whether a webhook should fire for (tenantID, alertType) and, if so,
+// records the firing and returns true. Only one caller per (tenant, alertType) per cooldown gets true,
+// preventing duplicate POSTs when concurrent Run() calls exceed the threshold.
+func budgetAlertClaimFire(tenantID, alertType string) bool {
 	budgetAlertDedupe.mu.Lock()
 	defer budgetAlertDedupe.mu.Unlock()
 	if budgetAlertDedupe.lastFired == nil {
 		budgetAlertDedupe.lastFired = make(map[string]time.Time)
 	}
-	budgetAlertDedupe.lastFired[tenantID+":"+alertType] = time.Now().UTC()
+	key := tenantID + ":" + alertType
+	last, ok := budgetAlertDedupe.lastFired[key]
+	if !ok || time.Since(last) >= budgetAlertCooldown {
+		budgetAlertDedupe.lastFired[key] = time.Now().UTC()
+		return true
+	}
+	return false
 }
 
 // emitBudgetAlertIfNeeded logs a structured warning and optionally POSTs to budget_alert_webhook
@@ -751,8 +749,7 @@ func emitBudgetAlertIfNeeded(ctx context.Context, tenantID string, dailyCost, mo
 		fired = true
 	}
 	if fired && limits.BudgetAlertWebhook != "" {
-		if budgetAlertShouldFireWebhook(tenantID, alertType) {
-			budgetAlertRecordFired(tenantID, alertType)
+		if budgetAlertClaimFire(tenantID, alertType) {
 			go postBudgetAlert(limits.BudgetAlertWebhook, payload)
 		}
 	}
