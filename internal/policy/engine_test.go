@@ -365,3 +365,36 @@ func TestEngineDecisionHasPolicyVersion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, decision.PolicyVersion, "1.0.0:sha256:")
 }
+
+func TestBedrockModelPrefixes(t *testing.T) {
+	prefixes := BedrockModelPrefixes()
+	require.NotEmpty(t, prefixes)
+	assert.Contains(t, prefixes, "anthropic.")
+	assert.Contains(t, prefixes, "meta.")
+	assert.Contains(t, prefixes, "amazon.")
+	assert.Contains(t, prefixes, "cohere.")
+	assert.Len(t, prefixes, 7) // known set of Bedrock vendor prefixes
+}
+
+func TestEngineEvaluate_RateLimitDeny(t *testing.T) {
+	ctx := context.Background()
+	pol := newTestPolicy()
+
+	engine, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	// requests_per_minute is 60; sending 60 in input should deny (>= limit)
+	decision, err := engine.Evaluate(ctx, map[string]interface{}{
+		"tenant_id":             "acme",
+		"agent_id":              "test",
+		"tier":                  0,
+		"estimated_cost":        0.1,
+		"daily_cost_total":      0.0,
+		"monthly_cost_total":    0.0,
+		"requests_last_minute":  60,
+		"concurrent_executions": 1,
+	})
+	require.NoError(t, err)
+	assert.False(t, decision.Allowed)
+	assert.NotEmpty(t, decision.Reasons)
+}

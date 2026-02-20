@@ -71,6 +71,39 @@ func TestWrite_EstimatesTokenCount(t *testing.T) {
 	assert.Equal(t, len(content)/4, entries[0].TokenCount)
 }
 
+func TestAuditLog(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	entry := Entry{
+		TenantID:   "acme",
+		AgentID:    "sales",
+		Category:   CategoryDomainKnowledge,
+		Title:      "Audit entry",
+		Content:    "Content for audit",
+		EvidenceID: "req_1",
+		SourceType: SourceAgentRun,
+	}
+	require.NoError(t, store.Write(ctx, &entry))
+
+	logs, err := store.AuditLog(ctx, "acme", "sales", 10)
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	assert.Equal(t, "Audit entry", logs[0].Title)
+	assert.Equal(t, "acme", logs[0].TenantID)
+	assert.Equal(t, "sales", logs[0].AgentID)
+
+	// limit 0 means no limit in query; limit 1 returns at most 1
+	logs1, err := store.AuditLog(ctx, "acme", "sales", 1)
+	require.NoError(t, err)
+	assert.Len(t, logs1, 1)
+
+	// wrong tenant/agent returns empty
+	empty, err := store.AuditLog(ctx, "other", "agent", 10)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}
+
 // TestWrite_ConcurrentSameTenantAgent_DistinctVersions ensures that concurrent
 // writes for the same tenant/agent (e.g. cron + webhook) get distinct version
 // numbers so rollback semantics are preserved.

@@ -44,3 +44,13 @@ func TestValidObservationTypes(t *testing.T) {
 	assert.Contains(t, types, ObsLearning)
 	assert.Contains(t, types, ObsError)
 }
+
+func TestValidSourceTypes(t *testing.T) {
+	types := ValidSourceTypes()
+	assert.Len(t, types, 5)
+	assert.Contains(t, types, SourceManual)
+	assert.Contains(t, types, SourceUserInput)
+	assert.Contains(t, types, SourceAgentRun)
+	assert.Contains(t, types, SourceToolOutput)
+	assert.Contains(t, types, SourceWebhook)
+}

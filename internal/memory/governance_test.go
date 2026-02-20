@@ -184,6 +184,52 @@ func TestValidateWrite_MissingSourceType(t *testing.T) {
 	assert.ErrorIs(t, err, ErrMemoryWriteDenied)
 }
 
+// mockPolicyEvaluator implements PolicyEvaluator for testing SetPolicyEvaluator and evalOPAMemoryWrite path.
+type mockPolicyEvaluator struct {
+	allow bool
+	err   error
+}
+
+func (m *mockPolicyEvaluator) EvaluateMemoryWrite(_ context.Context, _ string, _ int) (*policy.Decision, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.allow {
+		return &policy.Decision{Allowed: true, Action: "allow", Reasons: nil}, nil
+	}
+	return &policy.Decision{Allowed: false, Action: "deny", Reasons: []string{"test deny"}}, nil
+}
+
+func TestSetPolicyEvaluator_ValidateWriteUsesOPA(t *testing.T) {
+	gov, _ := testGovernance(t)
+	pol := memoryPolicy([]string{CategoryDomainKnowledge}, nil, nil)
+
+	entry := &Entry{
+		Category:   CategoryDomainKnowledge,
+		Content:    "Safe learning content",
+		SourceType: SourceAgentRun,
+		TenantID:   "acme", AgentID: "sales",
+	}
+
+	t.Run("opa_allow", func(t *testing.T) {
+		gov.SetPolicyEvaluator(&mockPolicyEvaluator{allow: true})
+		err := gov.ValidateWrite(context.Background(), entry, pol, nil)
+		assert.NoError(t, err)
+	})
+
+	t.Run("opa_deny", func(t *testing.T) {
+		gov.SetPolicyEvaluator(&mockPolicyEvaluator{allow: false, err: nil})
+		err := gov.ValidateWrite(context.Background(), entry, pol, nil)
+		assert.ErrorIs(t, err, ErrMemoryWriteDenied)
+	})
+
+	t.Run("opa_error_continues_with_go_checks", func(t *testing.T) {
+		gov.SetPolicyEvaluator(&mockPolicyEvaluator{err: context.DeadlineExceeded})
+		err := gov.ValidateWrite(context.Background(), entry, pol, nil)
+		assert.NoError(t, err, "OPA error should log and continue; Go checks allow this entry")
+	})
+}
+
 func TestValidateWrite_DerivesTrustScore(t *testing.T) {
 	gov, _ := testGovernance(t)
 	pol := memoryPolicy(nil, nil, nil)

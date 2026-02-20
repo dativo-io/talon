@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -56,11 +55,12 @@ func runReport(cmd *cobra.Command, args []string) error {
 	costToday, _ := store.CostTotal(ctx, reportTenant, "", todayStart, todayEnd)
 	costMonth, _ := store.CostTotal(ctx, reportTenant, "", monthStart, monthEnd)
 
-	fmt.Fprintf(os.Stdout, "Compliance summary — tenant %s\n", reportTenant)
-	fmt.Fprintf(os.Stdout, "  Evidence records today:  %d\n", countToday)
-	fmt.Fprintf(os.Stdout, "  Evidence records (7d):   %d\n", countWeek)
-	fmt.Fprintf(os.Stdout, "  Cost today (EUR):        %.4f\n", costToday)
-	fmt.Fprintf(os.Stdout, "  Cost this month (EUR):   %.4f\n", costMonth)
-	fmt.Fprintln(os.Stdout)
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Compliance summary — tenant %s\n", reportTenant)
+	fmt.Fprintf(out, "  Evidence records today:  %d\n", countToday)
+	fmt.Fprintf(out, "  Evidence records (7d):   %d\n", countWeek)
+	fmt.Fprintf(out, "  Cost today (EUR):        %.4f\n", costToday)
+	fmt.Fprintf(out, "  Cost this month (EUR):   %.4f\n", costMonth)
+	fmt.Fprintln(out)
 	return nil
 }
