@@ -581,7 +581,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
 				CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 				StepIndex: stepIndex, Type: "llm_call",
-				OutputSummary: truncateStr(resp.Content, 500),
+				OutputSummary: evidence.TruncateForSummary(resp.Content, 500),
 				DurationMS:    iterDuration, CostEUR: iterCost,
 			})
 			stepIndex++
@@ -635,7 +635,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
 						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 						StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
-						OutputSummary: truncateStr(resultContent, 500),
+						OutputSummary: evidence.TruncateForSummary(resultContent, 500),
 						DurationMS:    toolDuration, CostEUR: 0,
 					})
 					stepIndex++
@@ -647,7 +647,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				toolHistory = append(toolHistory, map[string]interface{}{
 					"name":           toolName,
 					"params":         tc.Arguments,
-					"result_summary": truncateStr(resultContent, 200),
+					"result_summary": evidence.TruncateForSummary(resultContent, 200),
 				})
 				if atLimit {
 					_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
@@ -1104,13 +1104,6 @@ func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int,
 }
 
 // entityNames extracts type strings from PIIEntity slice for evidence records.
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
 func entityNames(entities []classifier.PIIEntity) []string {
 	if len(entities) == 0 {
 		return nil

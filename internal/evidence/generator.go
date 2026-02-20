@@ -78,8 +78,8 @@ func (g *Generator) GenerateStep(ctx context.Context, params StepParams) (*StepE
 		ToolName:      params.ToolName,
 		InputHash:     params.InputHash,
 		OutputHash:    params.OutputHash,
-		InputSummary:  truncateForSummary(params.InputSummary, 500),
-		OutputSummary: truncateForSummary(params.OutputSummary, 500),
+		InputSummary:  TruncateForSummary(params.InputSummary, 500),
+		OutputSummary: TruncateForSummary(params.OutputSummary, 500),
 		DurationMS:    params.DurationMS,
 		CostEUR:       params.CostEUR,
 		Timestamp:     time.Now(),
@@ -90,7 +90,9 @@ func (g *Generator) GenerateStep(ctx context.Context, params StepParams) (*StepE
 	return step, nil
 }
 
-func truncateForSummary(s string, maxLen int) string {
+// TruncateForSummary truncates s to at most maxLen bytes and appends "..." if truncated.
+// Used for evidence summaries (step output, tool results) to keep audit records bounded.
+func TruncateForSummary(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}

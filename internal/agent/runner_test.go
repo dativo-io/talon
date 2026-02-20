@@ -1322,7 +1322,7 @@ func TestTruncateStr(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := truncateStr(tt.s, tt.maxLen)
+			got := evidence.TruncateForSummary(tt.s, tt.maxLen)
 			assert.Equal(t, tt.want, got)
 		})
 	}
