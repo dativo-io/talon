@@ -348,7 +348,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		return resp, err
 	}
 
-	resp, ok, err := r.maybeGateForPlanReview(ctx, pol, req, correlationID, inputClass.Tier, processedPrompt)
+	resp, ok, err := r.maybeGateForPlanReview(ctx, pol, req, correlationID, inputClass.Tier, processedPrompt, estimatedCost)
 	if err != nil {
 		return nil, err
 	}
@@ -437,7 +437,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 
 	return r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine,
 		effectiveTier, inputEntityNames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
-		observationOverride, originalDecision)
+		observationOverride, originalDecision, estimatedCost)
 }
 
 // checkHook fires a hook and returns a deny RunResponse if the hook aborts the pipeline.
@@ -483,7 +483,8 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 // executeLLMPipeline runs steps 5-9: route provider, call LLM, classify output, generate evidence.
 // policyEval is the per-run OPA engine used for memory governance to avoid data races when concurrent Run() share one Governance.
 // When observationOverride is true, originalDecision holds the policy deny that was overridden for audit-only (shadow) mode.
-func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision) (*RunResponse, error) {
+// costEstimate is the pre-run cost estimate from Run() (same value used for policy input and plan-review gate).
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64) (*RunResponse, error) {
 	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
 	provider, model, degraded, originalModel, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx)
 	if err != nil {
@@ -496,16 +497,10 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		attribute.Bool("cost.degraded", degraded),
 	)
 
-	preRunCost := 0.01
-	if r.router != nil {
-		if c, _ := r.router.PreRunEstimate(tier); c > 0 {
-			preRunCost = c
-		}
-	}
-	// Hook: pre-LLM
+	// Hook: pre-LLM (costEstimate was computed once in Run() and passed through)
 	if resp, err := r.checkHook(ctx, HookPreLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 		"model":         model,
-		"cost_estimate": preRunCost,
+		"cost_estimate": costEstimate,
 	}); resp != nil || err != nil {
 		return resp, err
 	}
@@ -902,7 +897,8 @@ func complianceFromPolicy(pol *policy.Policy) evidence.Compliance {
 }
 
 // maybeGateForPlanReview runs the plan review gate; returns (response, true, nil) if execution is gated.
-func (r *Runner) maybeGateForPlanReview(ctx context.Context, pol *policy.Policy, req *RunRequest, correlationID string, dataTier int, processedPrompt string) (*RunResponse, bool, error) {
+// costEstimate is the pre-run cost estimate from Run() (same value used for policy input).
+func (r *Runner) maybeGateForPlanReview(ctx context.Context, pol *policy.Policy, req *RunRequest, correlationID string, dataTier int, processedPrompt string, costEstimate float64) (*RunResponse, bool, error) {
 	if r.planReview == nil {
 		return nil, false, nil
 	}
@@ -912,12 +908,6 @@ func (r *Runner) maybeGateForPlanReview(ctx context.Context, pol *policy.Policy,
 		humanOversight = pol.Compliance.HumanOversight
 		if pol.Compliance.PlanReview != nil {
 			planCfg = planReviewConfigFromPolicy(pol.Compliance.PlanReview)
-		}
-	}
-	costEstimate := 0.01
-	if r.router != nil {
-		if c, err := r.router.PreRunEstimate(dataTier); err == nil {
-			costEstimate = c
 		}
 	}
 	hasTools := r.toolRegistry != nil && len(r.toolRegistry.List()) > 0
