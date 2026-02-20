@@ -194,7 +194,7 @@ func TestRunner_LLMError(t *testing.T) {
 	providers := map[string]llm.Provider{
 		"openai": &testutil.MockProvider{
 			ProviderName: "openai",
-			Err:  assert.AnError,
+			Err:          assert.AnError,
 		},
 	}
 	routingCfg := &policy.ModelRoutingConfig{
@@ -319,13 +319,13 @@ func TestRunner_TenantKeyFromVault(t *testing.T) {
 	t.Cleanup(func() { evidenceStore.Close() })
 
 	runner := agent.NewRunner(agent.RunnerConfig{
-		PolicyDir:   dir,
-		Classifier:  classifier.MustNewScanner(),
-		AttScanner:  attachment.MustNewScanner(),
-		Extractor:   attachment.NewExtractor(10),
-		Router:      llm.NewRouter(routingCfg, providers, nil),
-		Secrets:     secretsStore,
-		Evidence:    evidenceStore,
+		PolicyDir:  dir,
+		Classifier: classifier.MustNewScanner(),
+		AttScanner: attachment.MustNewScanner(),
+		Extractor:  attachment.NewExtractor(10),
+		Router:     llm.NewRouter(routingCfg, providers, nil),
+		Secrets:    secretsStore,
+		Evidence:   evidenceStore,
 	})
 
 	resp, err := runner.Run(context.Background(), &agent.RunRequest{
@@ -379,13 +379,13 @@ func TestRunner_VaultKeyACLDenied_FallsBackToOperator(t *testing.T) {
 	t.Cleanup(func() { evidenceStore.Close() })
 
 	runner := agent.NewRunner(agent.RunnerConfig{
-		PolicyDir:   dir,
-		Classifier:  classifier.MustNewScanner(),
-		AttScanner:  attachment.MustNewScanner(),
-		Extractor:   attachment.NewExtractor(10),
-		Router:      llm.NewRouter(routingCfg, providers, nil),
-		Secrets:     secretsStore,
-		Evidence:    evidenceStore,
+		PolicyDir:  dir,
+		Classifier: classifier.MustNewScanner(),
+		AttScanner: attachment.MustNewScanner(),
+		Extractor:  attachment.NewExtractor(10),
+		Router:     llm.NewRouter(routingCfg, providers, nil),
+		Secrets:    secretsStore,
+		Evidence:   evidenceStore,
 	})
 
 	resp, err := runner.Run(context.Background(), &agent.RunRequest{
@@ -530,14 +530,14 @@ func TestRunner_HooksFireAtPipelineStages(t *testing.T) {
 	t.Cleanup(func() { evidenceStore.Close() })
 
 	runner := agent.NewRunner(agent.RunnerConfig{
-		PolicyDir:   dir,
-		Classifier:  classifier.MustNewScanner(),
-		AttScanner:  attachment.MustNewScanner(),
-		Extractor:   attachment.NewExtractor(10),
-		Router:      llm.NewRouter(routingCfg, providers, nil),
-		Secrets:     secretsStore,
-		Evidence:    evidenceStore,
-		Hooks:       registry,
+		PolicyDir:  dir,
+		Classifier: classifier.MustNewScanner(),
+		AttScanner: attachment.MustNewScanner(),
+		Extractor:  attachment.NewExtractor(10),
+		Router:     llm.NewRouter(routingCfg, providers, nil),
+		Secrets:    secretsStore,
+		Evidence:   evidenceStore,
+		Hooks:      registry,
 	})
 
 	resp, err := runner.Run(context.Background(), &agent.RunRequest{
@@ -598,14 +598,14 @@ func TestRunner_HookAbortBlocksPipeline(t *testing.T) {
 	t.Cleanup(func() { evidenceStore.Close() })
 
 	runner := agent.NewRunner(agent.RunnerConfig{
-		PolicyDir:   dir,
-		Classifier:  classifier.MustNewScanner(),
-		AttScanner:  attachment.MustNewScanner(),
-		Extractor:   attachment.NewExtractor(10),
-		Router:      llm.NewRouter(routingCfg, providers, nil),
-		Secrets:     secretsStore,
-		Evidence:    evidenceStore,
-		Hooks:       registry,
+		PolicyDir:  dir,
+		Classifier: classifier.MustNewScanner(),
+		AttScanner: attachment.MustNewScanner(),
+		Extractor:  attachment.NewExtractor(10),
+		Router:     llm.NewRouter(routingCfg, providers, nil),
+		Secrets:    secretsStore,
+		Evidence:   evidenceStore,
+		Hooks:      registry,
 	})
 
 	resp, err := runner.Run(context.Background(), &agent.RunRequest{
@@ -716,13 +716,13 @@ policies:
 	router := llm.NewRouter(pol.Policies.ModelRouting, providers, costLimits)
 
 	runner := agent.NewRunner(agent.RunnerConfig{
-		PolicyDir:   dir,
-		Classifier:  classifier.MustNewScanner(),
-		AttScanner:  attachment.MustNewScanner(),
-		Extractor:   attachment.NewExtractor(10),
-		Router:      router,
-		Secrets:     secretsStore,
-		Evidence:    evidenceStore,
+		PolicyDir:  dir,
+		Classifier: classifier.MustNewScanner(),
+		AttScanner: attachment.MustNewScanner(),
+		Extractor:  attachment.NewExtractor(10),
+		Router:     router,
+		Secrets:    secretsStore,
+		Evidence:   evidenceStore,
 	})
 
 	resp, err := runner.Run(ctx, &agent.RunRequest{
@@ -768,13 +768,13 @@ func TestTenantIsolation_FullStack(t *testing.T) {
 		Tier2: &policy.TierConfig{Primary: "gpt-4"},
 	}
 	runner := agent.NewRunner(agent.RunnerConfig{
-		PolicyDir:   dir,
-		Classifier:  classifier.MustNewScanner(),
-		AttScanner:  attachment.MustNewScanner(),
-		Extractor:   attachment.NewExtractor(10),
-		Router:      llm.NewRouter(routingCfg, providers, nil),
-		Secrets:     secretsStore,
-		Evidence:    evidenceStore,
+		PolicyDir:  dir,
+		Classifier: classifier.MustNewScanner(),
+		AttScanner: attachment.MustNewScanner(),
+		Extractor:  attachment.NewExtractor(10),
+		Router:     llm.NewRouter(routingCfg, providers, nil),
+		Secrets:    secretsStore,
+		Evidence:   evidenceStore,
 	})
 
 	// Run as tenant acme
@@ -859,13 +859,13 @@ func TestRunner_ConcurrentTenants(t *testing.T) {
 		Tier2: &policy.TierConfig{Primary: "gpt-4"},
 	}
 	runner := agent.NewRunner(agent.RunnerConfig{
-		PolicyDir:   dir,
-		Classifier:  classifier.MustNewScanner(),
-		AttScanner:  attachment.MustNewScanner(),
-		Extractor:   attachment.NewExtractor(10),
-		Router:      llm.NewRouter(routingCfg, providers, nil),
-		Secrets:     secretsStore,
-		Evidence:    evidenceStore,
+		PolicyDir:  dir,
+		Classifier: classifier.MustNewScanner(),
+		AttScanner: attachment.MustNewScanner(),
+		Extractor:  attachment.NewExtractor(10),
+		Router:     llm.NewRouter(routingCfg, providers, nil),
+		Secrets:    secretsStore,
+		Evidence:   evidenceStore,
 	})
 
 	const numTenants = 8

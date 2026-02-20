@@ -1,11 +1,17 @@
 package cmd
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/testutil"
 )
 
 func TestRunCmd_Flags(t *testing.T) {
@@ -73,4 +79,56 @@ func TestBuildProviders_OllamaCustomURL(t *testing.T) {
 	cfg := &config.Config{OllamaBaseURL: "http://custom:11434"}
 	providers := buildProviders(cfg)
 	assert.Contains(t, providers, "ollama")
+}
+
+func TestValidatePolicyFile_Valid(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, dir, "valid-agent")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := validatePolicyFile(ctx, policyPath)
+	require.NoError(t, err)
+}
+
+func TestValidatePolicyFile_InvalidPath(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := validatePolicyFile(ctx, filepath.Join(t.TempDir(), "nonexistent.talon.yaml"))
+	require.Error(t, err)
+}
+
+func TestValidatePolicyFile_InvalidYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.talon.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("agent:\n  name: [unclosed"), 0o600))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := validatePolicyFile(ctx, path)
+	require.Error(t, err)
+}
+
+func TestLoadRoutingAndCostLimits_Valid(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, dir, "routing-agent")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath)
+	require.NotNil(t, routing)
+	require.NotNil(t, costLimits)
+	assert.NotNil(t, routing.Tier0)
+	assert.Equal(t, "gpt-4", routing.Tier0.Primary)
+	assert.Equal(t, 100.0, costLimits.PerRequest)
+}
+
+func TestLoadRoutingAndCostLimits_MissingFile(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	routing, costLimits := loadRoutingAndCostLimits(ctx, filepath.Join(t.TempDir(), "nonexistent.talon.yaml"))
+	assert.Nil(t, routing)
+	assert.Nil(t, costLimits)
 }

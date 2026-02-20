@@ -168,6 +168,37 @@ func (r *Router) GracefulRoute(ctx context.Context, tier int, costCtx *CostConte
 	return fallbackProvider, fallbackModel, true, model, nil
 }
 
+// PreRunEstimate returns an estimated cost in EUR for a small request (300 input + 300 output tokens)
+// for the primary model of the given tier. Used for pre-run policy budget checks when the actual
+// token counts are not yet known. Returns a conservative estimate; on error falls back to 0.01.
+const (
+	preRunEstimateInputTokens  = 300
+	preRunEstimateOutputTokens = 300
+)
+
+func (r *Router) PreRunEstimate(tier int) (float64, error) {
+	tierConfig, err := r.getTierConfig(tier)
+	if err != nil {
+		return 0.01, err
+	}
+	model := strings.TrimSpace(tierConfig.Primary)
+	if model == "" {
+		return 0.01, ErrNoPrimaryModel
+	}
+	providerName, err := inferProvider(model)
+	if err != nil {
+		return 0.01, err
+	}
+	if tierConfig.BedrockOnly {
+		providerName = "bedrock"
+	}
+	provider, ok := r.providers[providerName]
+	if !ok {
+		return 0.01, ErrProviderNotAvailable
+	}
+	return provider.EstimateCost(model, preRunEstimateInputTokens, preRunEstimateOutputTokens), nil
+}
+
 // InferProvider is the public name for inferProvider for use by callers that need to resolve a model to a provider.
 func InferProvider(model string) (string, error) {
 	return inferProvider(model)

@@ -20,6 +20,7 @@ func TestRootCommand_HasExpectedSubcommands(t *testing.T) {
 		"secrets",
 		"memory",
 		"config",
+		"report",
 	}
 	registered := make(map[string]bool)
 	for _, cmd := range rootCmd.Commands() {

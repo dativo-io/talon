@@ -19,7 +19,7 @@ deny contains msg if {
 
 deny contains msg if {
 	data.policy.policies.rate_limits.concurrent_executions
-	input.concurrent_executions >= data.policy.policies.rate_limits.concurrent_executions
+	input.concurrent_executions > data.policy.policies.rate_limits.concurrent_executions
 	msg := sprintf("Concurrent execution limit reached: %d/%d", [
 		input.concurrent_executions,
 		data.policy.policies.rate_limits.concurrent_executions,

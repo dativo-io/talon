@@ -30,22 +30,25 @@ type Store struct {
 
 // Evidence is the full audit record for a single agent invocation.
 type Evidence struct {
-	ID              string          `json:"id"`
-	CorrelationID   string          `json:"correlation_id"`
-	Timestamp       time.Time       `json:"timestamp"`
-	TenantID        string          `json:"tenant_id"`
-	AgentID         string          `json:"agent_id"`
-	InvocationType  string          `json:"invocation_type"`
-	PolicyDecision  PolicyDecision  `json:"policy_decision"`
-	Classification  Classification  `json:"classification"`
-	AttachmentScan  *AttachmentScan `json:"attachment_scan,omitempty"`
-	Execution       Execution       `json:"execution"`
-	SecretsAccessed []string        `json:"secrets_accessed,omitempty"`
-	MemoryWrites    []MemoryWrite   `json:"memory_writes,omitempty"`
-	MemoryReads     []MemoryRead    `json:"memory_reads,omitempty"`
-	AuditTrail      AuditTrail      `json:"audit_trail"`
-	Compliance      Compliance      `json:"compliance"`
-	Signature       string          `json:"signature"`
+	ID                      string          `json:"id"`
+	CorrelationID           string          `json:"correlation_id"`
+	Timestamp               time.Time       `json:"timestamp"`
+	TenantID                string          `json:"tenant_id"`
+	AgentID                 string          `json:"agent_id"`
+	InvocationType          string          `json:"invocation_type"`
+	RequestSourceID         string          `json:"request_source_id,omitempty"` // Who triggered: "cli", "cron", "webhook:<name>", or caller-supplied identity (GDPR Art. 30)
+	PolicyDecision          PolicyDecision  `json:"policy_decision"`
+	Classification          Classification  `json:"classification"`
+	AttachmentScan          *AttachmentScan `json:"attachment_scan,omitempty"`
+	Execution               Execution       `json:"execution"`
+	ModelRoutingRationale   string          `json:"model_routing_rationale,omitempty"` // Why this model was chosen: "primary", "degraded to fallback", etc.
+	SecretsAccessed         []string        `json:"secrets_accessed,omitempty"`
+	MemoryWrites            []MemoryWrite   `json:"memory_writes,omitempty"`
+	MemoryReads             []MemoryRead    `json:"memory_reads,omitempty"`
+	AuditTrail              AuditTrail      `json:"audit_trail"`
+	Compliance              Compliance      `json:"compliance"`
+	ObservationModeOverride bool            `json:"observation_mode_override,omitempty"` // True when request was allowed despite policy deny (audit-only shadow mode)
+	Signature               string          `json:"signature"`
 }
 
 // PolicyDecision captures the OPA evaluation result.
@@ -316,6 +319,31 @@ func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, t
 	}
 	span.SetAttributes(attribute.Float64("cost_total", total))
 	return total, nil
+}
+
+// CountInRange returns the number of evidence records in the half-open time range [from, to) for the tenant (and optional agent).
+// Used for rate-limit policy input (e.g. requests_last_minute).
+func (s *Store) CountInRange(ctx context.Context, tenantID, agentID string, from, to time.Time) (int, error) {
+	query := `SELECT COUNT(*) FROM evidence WHERE tenant_id = ?`
+	args := []interface{}{tenantID}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting evidence: %w", err)
+	}
+	return n, nil
 }
 
 // CostByAgent returns cost per agent for the tenant in the half-open time range [from, to).

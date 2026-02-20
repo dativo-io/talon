@@ -93,3 +93,61 @@ func TestRenderVerifyResult(t *testing.T) {
 	assert.Contains(t, bufInvalid.String(), "INVALID")
 	assert.Contains(t, bufInvalid.String(), "ev_xyz")
 }
+
+func TestRenderAuditExportCSV(t *testing.T) {
+	var buf bytes.Buffer
+	ts := time.Date(2025, 2, 18, 10, 0, 0, 0, time.UTC)
+	index := []evidence.Index{
+		{ID: "ev_1", Timestamp: ts, TenantID: "acme", AgentID: "agent", InvocationType: "manual", Allowed: true, CostEUR: 0.01, ModelUsed: "gpt-4", DurationMS: 100, HasError: false},
+	}
+	err := renderAuditExportCSV(&buf, index)
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Contains(t, out, "id,timestamp,tenant_id")
+	assert.Contains(t, out, "ev_1")
+	assert.Contains(t, out, "acme")
+	assert.Contains(t, out, "true")
+	assert.Contains(t, out, "0.0100")
+}
+
+func TestRenderAuditExportJSON(t *testing.T) {
+	var buf bytes.Buffer
+	ts := time.Date(2025, 2, 18, 10, 0, 0, 0, time.UTC)
+	index := []evidence.Index{
+		{ID: "ev_2", Timestamp: ts, TenantID: "default", AgentID: "runner", InvocationType: "scheduled", Allowed: false, CostEUR: 0, ModelUsed: "", DurationMS: 0, HasError: true},
+	}
+	err := renderAuditExportJSON(&buf, index)
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Contains(t, out, "ev_2")
+	assert.Contains(t, out, "default")
+	assert.Contains(t, out, "scheduled")
+	assert.Contains(t, out, "false")
+}
+
+func TestAuditListCmd_RunSuccess(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+
+	rootCmd.SetArgs([]string{"audit", "list"})
+	err := rootCmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestAuditExportCmd_RunSuccess(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+
+	rootCmd.SetArgs([]string{"audit", "export", "--format", "csv"})
+	err := rootCmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestAuditExportCmd_JSONFormat(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+
+	rootCmd.SetArgs([]string{"audit", "export", "--format", "json"})
+	err := rootCmd.Execute()
+	require.NoError(t, err)
+}

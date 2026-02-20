@@ -2,14 +2,18 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
@@ -385,4 +389,299 @@ func TestRunFromTrigger_usesDefaultPolicyPath(t *testing.T) {
 
 	err = runner.RunFromTrigger(ctx, "test-agent", "Say hello", "scheduled")
 	require.NoError(t, err)
+}
+
+func TestRun_PolicyDeny(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteStrictPolicyFile(t, dir, "deny-agent")
+	require.FileExists(t, policyPath)
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "should not run"},
+	}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, providers, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:       "acme",
+		AgentName:      "deny-agent",
+		Prompt:         "expensive query",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.PolicyAllow)
+	assert.NotEmpty(t, resp.DenyReason)
+}
+
+func TestRun_WithAttachments(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, dir, "attach-agent")
+	require.FileExists(t, policyPath)
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "from attachment"},
+	}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, providers, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:       "acme",
+		AgentName:      "attach-agent",
+		Prompt:         "Summarize this",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+		Attachments:    []Attachment{{Filename: "note.txt", Content: []byte("Q4 revenue: 1M EUR.")}},
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+	assert.Contains(t, resp.Response, "from attachment")
+}
+
+// echoTool implements tools.Tool for tests; echoes params back.
+type echoTool struct{}
+
+func (e *echoTool) Name() string                 { return "echo" }
+func (e *echoTool) Description() string          { return "Echo" }
+func (e *echoTool) InputSchema() json.RawMessage { return json.RawMessage(`{}`) }
+func (e *echoTool) Execute(_ context.Context, params json.RawMessage) (json.RawMessage, error) {
+	return params, nil
+}
+
+func TestRun_WithToolInvocations(t *testing.T) {
+	dir := t.TempDir()
+	// Policy must allow the tool in capabilities.allowed_tools
+	policyPath := filepath.Join(dir, "tool-agent.talon.yaml")
+	policyYAML := `
+agent:
+  name: "tool-agent"
+  version: "1.0.0"
+capabilities:
+  allowed_tools: ["echo"]
+policies:
+  cost_limits:
+    per_request: 100.0
+    daily: 1000.0
+    monthly: 10000.0
+  model_routing:
+    tier_0:
+      primary: "gpt-4"
+    tier_1:
+      primary: "gpt-4"
+    tier_2:
+      primary: "gpt-4"
+`
+	require.NoError(t, os.WriteFile(policyPath, []byte(policyYAML), 0o600))
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "ok"},
+	}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, providers, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{})
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		ToolRegistry:      reg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:       "acme",
+		AgentName:      "tool-agent",
+		Prompt:         "Hello",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+		ToolInvocations: []ToolInvocation{
+			{Name: "echo", Params: []byte(`{"x":1}`)},
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+	assert.Contains(t, resp.ToolsCalled, "echo")
+}
+
+func TestAllowedBudgetAlertURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{"https allowed", "https://hooks.example.com/alerts", true},
+		{"https with path", "https://api.eu.example.com/webhook/budget", true},
+		{"http localhost", "http://localhost:9090/hook", true},
+		{"http 127.0.0.1", "http://127.0.0.1:8080/cb", true},
+		{"http subdomain localhost", "http://api.localhost/hook", true},
+		{"empty", "", false},
+		{"invalid url", "://no-scheme", false},
+		{"no host", "https://", false},
+		{"http non-loopback rejected", "http://evil.internal/hook", false},
+		{"http private host rejected", "http://10.0.0.1/hook", false},
+		{"ftp rejected", "ftp://files.example.com/x", false},
+		{"javascript rejected", "javascript:alert(1)", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := allowedBudgetAlertURL(tt.url)
+			assert.Equal(t, tt.want, got, "allowedBudgetAlertURL(%q)", tt.url)
+		})
+	}
+}
+
+func TestActiveRunTracker(t *testing.T) {
+	tracker := &ActiveRunTracker{}
+	assert.Equal(t, 0, tracker.Count("tenant-a"))
+
+	tracker.Increment("tenant-a")
+	assert.Equal(t, 1, tracker.Count("tenant-a"))
+	tracker.Increment("tenant-a")
+	assert.Equal(t, 2, tracker.Count("tenant-a"))
+	assert.Equal(t, 0, tracker.Count("tenant-b"))
+
+	tracker.Decrement("tenant-a")
+	assert.Equal(t, 1, tracker.Count("tenant-a"))
+	tracker.Decrement("tenant-a")
+	assert.Equal(t, 0, tracker.Count("tenant-a"))
+	tracker.Decrement("tenant-a") // idempotent at zero
+	assert.Equal(t, 0, tracker.Count("tenant-a"))
+
+	tracker.Increment("tenant-b")
+	assert.Equal(t, 1, tracker.Count("tenant-b"))
+	tracker.Decrement("tenant-b")
+	assert.Equal(t, 0, tracker.Count("tenant-b"))
+}
+
+func TestBudgetAlertClaimFire(t *testing.T) {
+	// First claim for (t1, daily) succeeds
+	assert.True(t, budgetAlertClaimFire("t1", "daily"))
+
+	// Second claim within cooldown fails (deduplication)
+	assert.False(t, budgetAlertClaimFire("t1", "daily"))
+
+	// Different tenant or alert type can still claim
+	assert.True(t, budgetAlertClaimFire("t2", "daily"))
+	assert.True(t, budgetAlertClaimFire("t1", "monthly"))
+
+	// Concurrent callers: only one should get true per (tenant, alertType)
+	var wg sync.WaitGroup
+	results := make(chan bool, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- budgetAlertClaimFire("concurrent-tenant", "daily")
+		}()
+	}
+	wg.Wait()
+	close(results)
+	var trues int
+	for v := range results {
+		if v {
+			trues++
+		}
+	}
+	assert.Equal(t, 1, trues, "exactly one concurrent caller should claim fire per (tenant, alertType)")
+}
+
+func TestEmitBudgetAlertIfNeeded(t *testing.T) {
+	ctx := context.Background()
+	// Nil limits: no-op
+	emitBudgetAlertIfNeeded(ctx, "t1", 10, 100, nil)
+
+	// Below threshold: no fire
+	emitBudgetAlertIfNeeded(ctx, "t1", 1, 50, &policy.CostLimitsConfig{Daily: 100, Monthly: 1000})
+
+	// At or above 80%: fires log; webhook URL rejected (no outbound HTTP) so postBudgetAlert bails in test
+	emitBudgetAlertIfNeeded(ctx, "t1", 90, 0, &policy.CostLimitsConfig{
+		Daily: 100, Monthly: 1000,
+		BudgetAlertWebhook: "http://rejected.invalid/hook", // not localhost, so allowedBudgetAlertURL rejects
+	})
+	// Monthly at 80%
+	emitBudgetAlertIfNeeded(ctx, "t2", 0, 900, &policy.CostLimitsConfig{
+		Daily: 100, Monthly: 1000,
+		BudgetAlertWebhook: "ftp://no",
+	})
+}
+
+func TestBoolToDecision(t *testing.T) {
+	assert.Equal(t, "allow", boolToDecision(true))
+	assert.Equal(t, "deny", boolToDecision(false))
 }
