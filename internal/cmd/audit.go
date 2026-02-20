@@ -17,12 +17,13 @@ import (
 )
 
 var (
-	auditTenant    string
-	auditAgent     string
-	auditLimit     int
-	auditExportFmt string
-	auditFrom      string
-	auditTo        string
+	auditTenant      string
+	auditAgent       string
+	auditLimit       int // list: max records to show
+	auditExportLimit int // export: max records to export
+	auditExportFmt   string
+	auditFrom        string
+	auditTo          string
 )
 
 var auditCmd = &cobra.Command{
@@ -59,7 +60,7 @@ func init() {
 	auditExportCmd.Flags().StringVar(&auditTo, "to", "", "End date (YYYY-MM-DD)")
 	auditExportCmd.Flags().StringVar(&auditTenant, "tenant", "", "Filter by tenant ID")
 	auditExportCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
-	auditExportCmd.Flags().IntVar(&auditLimit, "limit", 10000, "Maximum records to export")
+	auditExportCmd.Flags().IntVar(&auditExportLimit, "limit", 10000, "Maximum records to export")
 
 	auditCmd.AddCommand(auditListCmd)
 	auditCmd.AddCommand(auditVerifyCmd)
@@ -154,7 +155,7 @@ func auditExport(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	index, err := store.ListIndex(ctx, auditTenant, auditAgent, from, to, auditLimit)
+	index, err := store.ListIndex(ctx, auditTenant, auditAgent, from, to, auditExportLimit)
 	if err != nil {
 		return fmt.Errorf("querying evidence: %w", err)
 	}
