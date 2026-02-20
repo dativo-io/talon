@@ -46,7 +46,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 	now := time.Now().UTC()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	todayEnd := todayStart.Add(24 * time.Hour)
-	weekStart := todayStart.AddDate(0, 0, -7)
+	weekStart := todayStart.AddDate(0, 0, -6) // 7-day window [weekStart, todayEnd) including today
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	monthEnd := monthStart.AddDate(0, 1, 0)
 
