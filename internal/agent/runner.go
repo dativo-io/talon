@@ -862,7 +862,8 @@ func (r *Runner) executeOneToolCall(ctx context.Context, policyEval memory.Polic
 		dec, err := policyEngine.EvaluateToolAccess(ctx, tc.Name, tc.Arguments, toolHistory)
 		if err != nil {
 			log.Warn().Err(err).Str("tool", tc.Name).Msg("tool access policy evaluation failed")
-			return fmt.Sprintf(`{"error":"policy evaluation failed: %s"}`, err.Error()), false, toolName
+			b, _ := json.Marshal(map[string]string{"error": "policy evaluation failed: " + err.Error()})
+			return string(b), false, toolName
 		}
 		if dec != nil && !dec.Allowed {
 			log.Warn().Str("tool", tc.Name).Strs("reasons", dec.Reasons).Msg("tool access denied by policy")
@@ -881,7 +882,8 @@ func (r *Runner) executeOneToolCall(ctx context.Context, policyEval memory.Polic
 	out, err := tool.Execute(ctx, params)
 	if err != nil {
 		log.Warn().Err(err).Str("tool", tc.Name).Msg("tool execution failed")
-		return fmt.Sprintf(`{"error":"%s"}`, err.Error()), false, toolName
+		b, _ := json.Marshal(map[string]string{"error": err.Error()})
+		return string(b), false, toolName
 	}
 	if len(out) == 0 {
 		return "{}", true, toolName
