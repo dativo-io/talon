@@ -62,6 +62,7 @@ func TestRootCommand_GlobalFlags(t *testing.T) {
 		{"verbose flag", "verbose"},
 		{"log-level flag", "log-level"},
 		{"log-format flag", "log-format"},
+		{"otel flag", "otel"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

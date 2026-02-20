@@ -212,6 +212,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		Str("correlation_id", correlationID).
 		Str("tenant_id", req.TenantID).
 		Str("agent_id", req.AgentName).
+		Func(talonotel.LogTraceFields(ctx)).
 		Msg("agent_run_started")
 
 	// Step 1: Load policy
@@ -330,6 +331,8 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			))
 			log.Info().
 				Str("correlation_id", correlationID).
+				Str("tenant_id", req.TenantID).
+				Str("agent_id", req.AgentName).
 				Str("would_deny_reason", decision.Action).
 				Msg("observation_only: policy would deny, allowing for audit")
 		} else {
@@ -373,7 +376,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	if pol.Memory != nil && pol.Memory.Enabled && memoryMode(pol) == "active" && r.memory != nil {
 		memIndex, memErr := r.memory.ListIndex(ctx, req.TenantID, req.AgentName, 50)
 		if memErr != nil {
-			log.Warn().Err(memErr).Msg("failed to load memory index")
+			log.Warn().Err(memErr).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("failed to load memory index")
 		} else if len(memIndex) > 0 {
 			// Filter by prompt_categories so operators control which categories enter context
 			if len(pol.Memory.PromptCategories) > 0 {
@@ -418,7 +421,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	if pol.Context != nil && len(pol.Context.SharedMounts) > 0 {
 		sharedCtx, ctxErr := talonctx.LoadSharedContext(pol)
 		if ctxErr != nil {
-			log.Warn().Err(ctxErr).Msg("failed to load shared context")
+			log.Warn().Err(ctxErr).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("failed to load shared context")
 		} else if len(sharedCtx.Mounts) > 0 {
 			ctxPrompt := sharedCtx.FormatForPrompt()
 			if ctxPrompt != "" {
@@ -459,6 +462,8 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 	span.SetStatus(codes.Error, "policy denied")
 	log.Warn().
 		Str("correlation_id", correlationID).
+		Str("tenant_id", req.TenantID).
+		Str("agent_id", req.AgentName).
 		Str("deny_reason", decision.Action).
 		Msg("policy_denied")
 
@@ -738,7 +743,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	})
 	evidenceID := ""
 	if err != nil {
-		log.Error().Err(err).Msg("failed_to_generate_evidence")
+		log.Error().Err(err).Func(talonotel.LogTraceFields(ctx)).Msg("failed_to_generate_evidence")
 	} else {
 		evidenceID = ev.ID
 	}
@@ -754,6 +759,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		Str("evidence_id", evidenceID).
 		Float64("cost", cost).
 		Int64("duration_ms", duration.Milliseconds()).
+		Func(talonotel.LogTraceFields(ctx)).
 		Msg("agent_run_completed")
 
 	resp := &RunResponse{
@@ -1257,6 +1263,7 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 
 	if err := r.governance.ValidateWrite(ctx, &observation, pol, policyEval); err != nil {
 		log.Warn().Err(err).
+			Str("tenant_id", req.TenantID).
 			Str("agent_id", req.AgentName).
 			Str("category", observation.Category).
 			Bool("memory.shadow", mode == "shadow").
@@ -1266,6 +1273,8 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 
 	if mode == "shadow" {
 		log.Info().
+			Str("tenant_id", req.TenantID).
+			Str("agent_id", req.AgentName).
 			Str("category", observation.Category).
 			Int("trust_score", observation.TrustScore).
 			Str("review_status", observation.ReviewStatus).
@@ -1276,11 +1285,13 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 	}
 
 	if err := r.memory.Write(ctx, &observation); err != nil {
-		log.Error().Err(err).Msg("memory_write_failed")
+		log.Error().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("memory_write_failed")
 		return
 	}
 
 	log.Info().
+		Str("tenant_id", req.TenantID).
+		Str("agent_id", req.AgentName).
 		Str("entry_id", observation.ID).
 		Int("trust_score", observation.TrustScore).
 		Str("review_status", observation.ReviewStatus).
