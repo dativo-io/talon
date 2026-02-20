@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -757,7 +758,29 @@ func emitBudgetAlertIfNeeded(ctx context.Context, tenantID string, dailyCost, mo
 	}
 }
 
-func postBudgetAlert(url string, payload map[string]interface{}) {
+// allowedBudgetAlertURL returns true if the URL is safe for outbound webhook POST (HTTPS, or HTTP to loopback only).
+// Used to mitigate SSRF when the URL comes from policy config.
+func allowedBudgetAlertURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		h := strings.ToLower(u.Hostname())
+		return h == "localhost" || h == "127.0.0.1" || strings.HasSuffix(h, ".localhost")
+	default:
+		return false
+	}
+}
+
+func postBudgetAlert(webhookURL string, payload map[string]interface{}) {
+	if !allowedBudgetAlertURL(webhookURL) {
+		log.Warn().Str("url", webhookURL).Msg("budget_alert_webhook_url_rejected")
+		return
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Warn().Err(err).Msg("budget_alert_marshal_failed")
@@ -765,21 +788,22 @@ func postBudgetAlert(url string, payload map[string]interface{}) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {
-		log.Warn().Err(err).Str("url", url).Msg("budget_alert_request_failed")
+		log.Warn().Err(err).Str("url", webhookURL).Msg("budget_alert_request_failed")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{}
-	resp, err := client.Do(req)
+	// URL was validated by allowedBudgetAlertURL (HTTPS or HTTP loopback only).
+	resp, err := client.Do(req) // #nosec G704
 	if err != nil {
-		log.Warn().Err(err).Str("url", url).Msg("budget_alert_post_failed")
+		log.Warn().Err(err).Str("url", webhookURL).Msg("budget_alert_post_failed")
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		log.Warn().Int("status", resp.StatusCode).Str("url", url).Msg("budget_alert_webhook_non_2xx")
+		log.Warn().Int("status", resp.StatusCode).Str("url", webhookURL).Msg("budget_alert_webhook_non_2xx")
 	}
 }
 
