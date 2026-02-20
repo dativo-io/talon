@@ -26,7 +26,7 @@ func TestNewStatusHandler(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
 	assert.Equal(t, "ok", resp.Status)
 	assert.Equal(t, 0, resp.EvidenceCountToday)
-	assert.Equal(t, 0.0, resp.CostEURToday)
+	assert.Equal(t, 0.0, resp.CostToday)
 	assert.Equal(t, 0, resp.ActiveRuns)
 
 	// With tracker: active runs reflected
@@ -62,5 +62,5 @@ func TestNewStatusHandler_WithStore(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
 	assert.Equal(t, "ok", resp.Status)
 	assert.Equal(t, 0, resp.EvidenceCountToday)
-	assert.Equal(t, 0.0, resp.CostEURToday)
+	assert.Equal(t, 0.0, resp.CostToday)
 }

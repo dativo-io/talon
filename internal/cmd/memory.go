@@ -324,7 +324,7 @@ func memoryAudit(cmd *cobra.Command, args []string) error {
 					}
 				}
 				fmt.Printf("    Evidence: %s | %s | %s | EUR%.4f | HMAC: %s\n",
-					ev.ID, ev.InvocationType, ev.Execution.ModelUsed, ev.Execution.CostEUR, hmacStatus)
+					ev.ID, ev.InvocationType, ev.Execution.ModelUsed, ev.Execution.Cost, hmacStatus)
 			}
 		}
 

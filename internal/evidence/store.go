@@ -81,7 +81,7 @@ type Execution struct {
 	OriginalModel string     `json:"original_model,omitempty"`
 	Degraded      bool       `json:"degraded,omitempty"`
 	ToolsCalled   []string   `json:"tools_called,omitempty"`
-	CostEUR       float64    `json:"cost_eur"`
+	Cost          float64    `json:"cost"`
 	Tokens        TokenUsage `json:"tokens"`
 	MemoryTokens  int        `json:"memory_tokens,omitempty"` // tokens injected from memory context
 	DurationMS    int64      `json:"duration_ms"`
@@ -133,7 +133,7 @@ type StepEvidence struct {
 	InputSummary  string    `json:"input_summary,omitempty"` // Truncated for audit readability
 	OutputSummary string    `json:"output_summary,omitempty"`
 	DurationMS    int64     `json:"duration_ms"`
-	CostEUR       float64   `json:"cost_eur"`
+	Cost          float64   `json:"cost"`
 	Timestamp     time.Time `json:"timestamp"`
 	Signature     string    `json:"signature"`
 }
@@ -383,7 +383,7 @@ func (s *Store) List(ctx context.Context, tenantID, agentID string, from, to tim
 	return results, nil
 }
 
-// CostTotal returns the sum of CostEUR for evidence in the half-open time range [from, to).
+// CostTotal returns the sum of Cost for evidence in the half-open time range [from, to).
 // If agentID is empty, sums across all agents for the tenant.
 // Callers should pass to as the start of the next period (e.g. dayStart.Add(24*time.Hour)) to avoid double-counting at boundaries.
 // Uses SQLite json_extract in SUM to avoid transferring or deserializing evidence blobs.
@@ -395,7 +395,7 @@ func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, t
 		))
 	defer span.End()
 
-	query := `SELECT COALESCE(SUM(json_extract(evidence_json, '$.execution.cost_eur')), 0) FROM evidence WHERE tenant_id = ?`
+	query := `SELECT COALESCE(SUM(COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur'))), 0) FROM evidence WHERE tenant_id = ?`
 	args := []interface{}{tenantID}
 	if agentID != "" {
 		query += ` AND agent_id = ?`
@@ -452,7 +452,7 @@ func (s *Store) CostByAgent(ctx context.Context, tenantID string, from, to time.
 		trace.WithAttributes(attribute.String("tenant_id", tenantID)))
 	defer span.End()
 
-	query := `SELECT agent_id, SUM(json_extract(evidence_json, '$.execution.cost_eur')) FROM evidence WHERE tenant_id = ?`
+	query := `SELECT agent_id, SUM(COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur'))) FROM evidence WHERE tenant_id = ?`
 	args := []interface{}{tenantID}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
@@ -523,7 +523,7 @@ type Index struct {
 	AgentID        string    `json:"agent_id"`
 	InvocationType string    `json:"invocation_type"`
 	Allowed        bool      `json:"allowed"`
-	CostEUR        float64   `json:"cost_eur"`
+	Cost           float64   `json:"cost"`
 	ModelUsed      string    `json:"model_used"`
 	DurationMS     int64     `json:"duration_ms"`
 	HasError       bool      `json:"has_error"`
@@ -671,7 +671,7 @@ func toIndex(full *Evidence) Index {
 		AgentID:        full.AgentID,
 		InvocationType: full.InvocationType,
 		Allowed:        full.PolicyDecision.Allowed,
-		CostEUR:        full.Execution.CostEUR,
+		Cost:           full.Execution.Cost,
 		ModelUsed:      full.Execution.ModelUsed,
 		DurationMS:     full.Execution.DurationMS,
 		HasError:       full.Execution.Error != "",

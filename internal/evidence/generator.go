@@ -36,7 +36,7 @@ type GenerateParams struct {
 	Degraded                bool            // True when cost degradation used fallback model
 	ModelRoutingRationale   string          // Why this model was chosen (e.g. "primary", "degraded to fallback")
 	ToolsCalled             []string        // MCP tools invoked during execution
-	CostEUR                 float64         // Estimated cost in EUR
+	Cost                    float64         // Estimated cost
 	Tokens                  TokenUsage      // Input/output token counts
 	MemoryTokens            int             // Tokens injected from memory context
 	DurationMS              int64           // Wall-clock duration of the full pipeline
@@ -63,7 +63,7 @@ type StepParams struct {
 	InputSummary  string // Truncated for audit
 	OutputSummary string
 	DurationMS    int64
-	CostEUR       float64
+	Cost          float64
 }
 
 // GenerateStep creates and stores a step evidence record.
@@ -81,7 +81,7 @@ func (g *Generator) GenerateStep(ctx context.Context, params StepParams) (*StepE
 		InputSummary:  TruncateForSummary(params.InputSummary, 500),
 		OutputSummary: TruncateForSummary(params.OutputSummary, 500),
 		DurationMS:    params.DurationMS,
-		CostEUR:       params.CostEUR,
+		Cost:          params.Cost,
 		Timestamp:     time.Now(),
 	}
 	if err := g.store.StoreStep(ctx, step); err != nil {
@@ -119,7 +119,7 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 			OriginalModel: params.OriginalModel,
 			Degraded:      params.Degraded,
 			ToolsCalled:   params.ToolsCalled,
-			CostEUR:       params.CostEUR,
+			Cost:          params.Cost,
 			Tokens:        params.Tokens,
 			MemoryTokens:  params.MemoryTokens,
 			DurationMS:    params.DurationMS,

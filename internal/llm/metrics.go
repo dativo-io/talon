@@ -35,7 +35,7 @@ func initCostMetrics() {
 // Attributes agent, model, and degraded allow filtering in observability backends.
 // Daily and budget-remaining metrics would require OTel observable gauges with
 // callbacks; for MVP we emit the request histogram only.
-func RecordCostMetrics(ctx context.Context, costEUR float64, agent, model string, degraded bool) {
+func RecordCostMetrics(ctx context.Context, cost float64, agent, model string, degraded bool) {
 	costMetricsOnce.Do(initCostMetrics)
 	if !costMetricsRegistered {
 		return
@@ -45,5 +45,5 @@ func RecordCostMetrics(ctx context.Context, costEUR float64, agent, model string
 		attribute.String("model", model),
 		attribute.Bool("degraded", degraded),
 	)
-	costRequestHistogram.Record(ctx, costEUR, attrs)
+	costRequestHistogram.Record(ctx, cost, attrs)
 }

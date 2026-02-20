@@ -144,7 +144,7 @@ func TestFormatMemoryIndexForPrompt(t *testing.T) {
 }
 
 func TestCompressObservation(t *testing.T) {
-	resp := &RunResponse{ModelUsed: "gpt-4", CostEUR: 0.002, DurationMS: 100}
+	resp := &RunResponse{ModelUsed: "gpt-4", Cost: 0.002, DurationMS: 100}
 	got := compressObservation(resp, "Short content")
 	assert.Contains(t, got, "Model: gpt-4")
 	assert.Contains(t, got, "EUR0.0020")
@@ -1258,7 +1258,7 @@ func TestRun_AgenticLoop_MaxCostPerRun(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, resp.PolicyAllow)
-	// First LLM call costs 0.001; after that costEUR >= max_cost_per_run so loop stops before second call
+	// First LLM call costs 0.001; after that cost >= max_cost_per_run so loop stops before second call
 	assert.Equal(t, 1, mock.CallCount)
 }
 

@@ -168,7 +168,7 @@ type Attachment struct {
 type RunResponse struct {
 	Response    string
 	EvidenceID  string
-	CostEUR     float64
+	Cost        float64
 	DurationMS  int64
 	PolicyAllow bool
 	DenyReason  string
@@ -531,7 +531,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 
 	var messages []llm.Message
 	var llmResp *llm.Response
-	var costEUR float64
+	var cost float64
 	var totalInputTokens, totalOutputTokens int
 	var toolsCalled []string
 
@@ -569,7 +569,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			}
 			iterDuration := time.Since(iterStart).Milliseconds()
 			iterCost := provider.EstimateCost(model, resp.InputTokens, resp.OutputTokens)
-			costEUR += iterCost
+			cost += iterCost
 			totalInputTokens += resp.InputTokens
 			totalOutputTokens += resp.OutputTokens
 			llm.RecordCostMetrics(ctx, iterCost, req.AgentName, model, degraded)
@@ -582,13 +582,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 				StepIndex: stepIndex, Type: "llm_call",
 				OutputSummary: evidence.TruncateForSummary(resp.Content, 500),
-				DurationMS:    iterDuration, CostEUR: iterCost,
+				DurationMS:    iterDuration, Cost: iterCost,
 			})
 			stepIndex++
 
 			llmResp = resp
-			if perRequest > 0 && costEUR > perRequest {
-				log.Warn().Float64("total_cost", costEUR).Float64("per_request", perRequest).Msg("agent_loop_stopped_per_request_budget")
+			if perRequest > 0 && cost > perRequest {
+				log.Warn().Float64("total_cost", cost).Float64("per_request", perRequest).Msg("agent_loop_stopped_per_request_budget")
 				break
 			}
 			rl := pol.Policies.ResourceLimits
@@ -596,12 +596,12 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				log.Warn().Int("tool_calls", len(toolsCalled)).Int("max", rl.MaxToolCallsPerRun).Msg("agent_loop_stopped_max_tool_calls")
 				break
 			}
-			if rl != nil && rl.MaxCostPerRun > 0 && costEUR >= rl.MaxCostPerRun {
-				log.Warn().Float64("cost", costEUR).Float64("max", rl.MaxCostPerRun).Msg("agent_loop_stopped_max_cost_per_run")
+			if rl != nil && rl.MaxCostPerRun > 0 && cost >= rl.MaxCostPerRun {
+				log.Warn().Float64("cost", cost).Float64("max", rl.MaxCostPerRun).Msg("agent_loop_stopped_max_cost_per_run")
 				break
 			}
 			if policyEngine, ok := policyEval.(*policy.Engine); ok {
-				if dec, err := policyEngine.EvaluateLoopContainment(ctx, iteration, len(toolsCalled), costEUR); err == nil && dec != nil && !dec.Allowed {
+				if dec, err := policyEngine.EvaluateLoopContainment(ctx, iteration, len(toolsCalled), cost); err == nil && dec != nil && !dec.Allowed {
 					log.Warn().Strs("reasons", dec.Reasons).Msg("agent_loop_stopped_loop_containment")
 					break
 				}
@@ -636,7 +636,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 						StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
 						OutputSummary: evidence.TruncateForSummary(resultContent, 500),
-						DurationMS:    toolDuration, CostEUR: 0,
+						DurationMS:    toolDuration, Cost: 0,
 					})
 					stepIndex++
 					_, _ = r.fireHook(ctx, HookPostTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
@@ -654,7 +654,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 						StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
 						OutputSummary: "max_tool_calls_per_run limit reached",
-						DurationMS:    0, CostEUR: 0,
+						DurationMS:    0, Cost: 0,
 					})
 					stepIndex++
 				}
@@ -687,12 +687,12 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			return nil, fmt.Errorf("calling LLM: %w", err)
 		}
 		llmResp = resp
-		costEUR = provider.EstimateCost(model, resp.InputTokens, resp.OutputTokens)
+		cost = provider.EstimateCost(model, resp.InputTokens, resp.OutputTokens)
 		totalInputTokens = resp.InputTokens
 		totalOutputTokens = resp.OutputTokens
-		llm.RecordCostMetrics(ctx, costEUR, req.AgentName, model, degraded)
+		llm.RecordCostMetrics(ctx, cost, req.AgentName, model, degraded)
 		_, _ = r.fireHook(ctx, HookPostLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
-			"model": model, "cost_estimate": costEUR, "input_tokens": resp.InputTokens, "output_tokens": resp.OutputTokens,
+			"model": model, "cost_estimate": cost, "input_tokens": resp.InputTokens, "output_tokens": resp.OutputTokens,
 		})
 		// Step 7.5: Pre-specified tool invocations (legacy path)
 		toolsCalled = r.executeToolInvocations(ctx, span, req, policyEval, pol)
@@ -723,7 +723,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		Degraded:                degraded,
 		ModelRoutingRationale:   modelRationale,
 		ToolsCalled:             toolsCalled,
-		CostEUR:                 costEUR,
+		Cost:                    cost,
 		Tokens:                  evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
 		DurationMS:              duration.Milliseconds(),
 		SecretsAccessed:         secretsAccessed,
@@ -744,20 +744,20 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	// Hook: post-evidence
 	_, _ = r.fireHook(ctx, HookPostEvidence, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 		"evidence_id": evidenceID,
-		"cost_eur":    costEUR,
+		"cost":        cost,
 	})
 
 	log.Info().
 		Str("correlation_id", correlationID).
 		Str("evidence_id", evidenceID).
-		Float64("cost_eur", costEUR).
+		Float64("cost", cost).
 		Int64("duration_ms", duration.Milliseconds()).
 		Msg("agent_run_completed")
 
 	resp := &RunResponse{
 		Response:    llmResp.Content,
 		EvidenceID:  evidenceID,
-		CostEUR:     costEUR,
+		Cost:        cost,
 		DurationMS:  duration.Milliseconds(),
 		PolicyAllow: true,
 		ModelUsed:   model,
@@ -1368,7 +1368,7 @@ func formatMemoryIndexForPrompt(entries []memory.IndexEntry) string {
 // compressObservation creates a ~500-token summary of the run for memory storage.
 func compressObservation(resp *RunResponse, cleanContent string) string {
 	summary := fmt.Sprintf("Model: %s | Cost: EUR%.4f | Duration: %dms",
-		resp.ModelUsed, resp.CostEUR, resp.DurationMS)
+		resp.ModelUsed, resp.Cost, resp.DurationMS)
 	if resp.DenyReason != "" {
 		summary += " | Denied: " + resp.DenyReason
 	}
