@@ -1252,6 +1252,86 @@ func TestRun_AgenticLoop_MaxCostPerRun(t *testing.T) {
 	assert.Equal(t, 1, mock.CallCount)
 }
 
+// TestRun_AgenticLoop_MidLoopFailureEvidence verifies that when the LLM fails on iteration N > 1,
+// the error evidence record includes accumulated Cost, Tokens, and ToolsCalled from prior iterations.
+// This ensures CostTotal and /status do not underreport costs for failed agentic runs.
+func TestRun_AgenticLoop_MidLoopFailureEvidence(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeAgenticLoopPolicy(t, dir, "midloop-fail-agent", 10, 0, 0)
+
+	errMidLoop := fmt.Errorf("mock LLM failure on second call")
+	mock := &testutil.ToolCallMockProvider{
+		Responses: []*llm.Response{
+			{
+				FinishReason: "tool_calls", InputTokens: 10, OutputTokens: 20, Model: "gpt-4",
+				ToolCalls: []llm.ToolCall{{ID: "tc-1", Name: "echo", Arguments: map[string]interface{}{"q": "hi"}}},
+			},
+			// Second call will not be reached; we return ErrOnCall before returning this
+			{Content: "Final.", FinishReason: "stop", InputTokens: 15, OutputTokens: 5, Model: "gpt-4"},
+		},
+		ErrOnCall:           2,
+		Err:                 errMidLoop,
+		EstimateCostPerCall: 0.002,
+	}
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, map[string]llm.Provider{"openai": mock}, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{})
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		ToolRegistry:      reg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:   "acme",
+		AgentName:  "midloop-fail-agent",
+		Prompt:     "Use echo then answer.",
+		PolicyPath: policyPath,
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errMidLoop)
+	assert.Nil(t, resp)
+
+	// Evidence was still generated for the failed run; it must include cost, tokens, and tools from iteration 1
+	from := time.Now().Add(-2 * time.Second)
+	to := time.Now().Add(2 * time.Second)
+	list, err := evidenceStore.List(ctx, "acme", "midloop-fail-agent", from, to, 5)
+	require.NoError(t, err)
+	require.NotEmpty(t, list, "expected one evidence record for the failed run")
+	ev := list[0]
+	assert.NotEmpty(t, ev.Execution.Error, "evidence should record the LLM error")
+	assert.Greater(t, ev.Execution.Cost, 0.0, "evidence must include accumulated cost from iteration 1")
+	assert.Greater(t, ev.Execution.Tokens.Input, 0, "evidence must include accumulated input tokens")
+	assert.Greater(t, ev.Execution.Tokens.Output, 0, "evidence must include accumulated output tokens")
+	assert.Contains(t, ev.Execution.ToolsCalled, "echo", "evidence must include tools called before the failure")
+}
+
 func TestBuildLLMTools(t *testing.T) {
 	dir := t.TempDir()
 	cls := classifier.MustNewScanner()

@@ -704,7 +704,7 @@ policies:
 		AgentID:        "deg-agent",
 		InvocationType: "manual",
 		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
-		Cost:        6.0,
+		Cost:           6.0,
 		InputPrompt:    "seed",
 		OutputResponse: "seed",
 	})

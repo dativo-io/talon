@@ -45,12 +45,15 @@ func (m *MockProvider) EstimateCost(_ string, _, _ int) float64 { return 0.001 }
 // It returns a configurable sequence of responses (e.g. tool calls then final answer),
 // tracks call count and received messages for assertions, and Name() returns "openai"
 // so the runner's agentic loop is active.
+// Set ErrOnCall (1-based) and Err to make Generate return an error on that call (e.g. mid-loop failure).
 type ToolCallMockProvider struct {
 	mu                  sync.Mutex
 	Responses           []*llm.Response // sequence of responses; call N gets Responses[N] or last if N >= len
 	CallCount           int             // incremented on each Generate call
 	ReceivedMessages    [][]llm.Message
 	EstimateCostPerCall float64 // cost returned by EstimateCost (default 0.001)
+	ErrOnCall           int     // 1-based; when CallCount == ErrOnCall, Generate returns (nil, Err). 0 = never
+	Err                 error   // error to return when ErrOnCall is hit
 }
 
 // Name returns "openai" so the agentic loop is used in tests.
@@ -66,8 +69,14 @@ func (p *ToolCallMockProvider) Generate(_ context.Context, req *llm.Request) (*l
 	copy(msgCopy, req.Messages)
 	p.ReceivedMessages = append(p.ReceivedMessages, msgCopy)
 	resps := p.Responses
+	callCount := p.CallCount
+	errOnCall := p.ErrOnCall
+	errReturn := p.Err
 	p.mu.Unlock()
 
+	if errOnCall > 0 && callCount == errOnCall && errReturn != nil {
+		return nil, errReturn
+	}
 	if len(resps) == 0 {
 		return &llm.Response{
 			Content:      "no responses configured",

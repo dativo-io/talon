@@ -564,6 +564,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(), Error: err.Error(),
 					SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, Compliance: compliance,
 					ObservationModeOverride: observationOverride,
+					ToolsCalled:             toolsCalled, Cost: cost,
+					Tokens: evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
 				})
 				return nil, fmt.Errorf("calling LLM: %w", err)
 			}
