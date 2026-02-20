@@ -522,7 +522,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 
 	modelRationale := "primary"
 	if degraded && originalModel != "" {
-		modelRationale = "degraded to fallback: " + originalModel
+		modelRationale = "degraded from primary " + originalModel + " to fallback " + model
 	}
 	policyDec := evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: pol.VersionTag}
 	if observationOverride && originalDecision != nil {
