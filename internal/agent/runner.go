@@ -802,6 +802,7 @@ func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, re
 		_, err := tool.Execute(ctx, inv.Params)
 		if err != nil {
 			log.Warn().Err(err).Str("tool", inv.Name).Msg("tool execution failed")
+			continue
 		}
 		called = append(called, inv.Name)
 	}
