@@ -171,11 +171,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 }
 
 // statusResponse is the JSON shape for GET /status (minimal dashboard metrics).
+// Metric fields have no omitempty so zero values are always present for reliable monitoring.
 type statusResponse struct {
 	Status             string  `json:"status"`
-	EvidenceCountToday int     `json:"evidence_count_today,omitempty"`
-	CostEURToday       float64 `json:"cost_eur_today,omitempty"`
-	ActiveRuns         int     `json:"active_runs,omitempty"`
+	EvidenceCountToday int     `json:"evidence_count_today"`
+	CostEURToday       float64 `json:"cost_eur_today"`
+	ActiveRuns         int     `json:"active_runs"`
 }
 
 func newStatusHandler(store *evidence.Store, tracker *agent.ActiveRunTracker, defaultTenantID string) http.HandlerFunc {
