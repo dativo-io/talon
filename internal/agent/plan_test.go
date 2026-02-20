@@ -214,6 +214,26 @@ func TestPlanReviewStore_DoubleApproveErrors(t *testing.T) {
 	assert.ErrorIs(t, err, ErrPlanNotPending)
 }
 
+func TestPlanReviewStore_ProposedSteps(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	store, err := NewPlanReviewStore(db)
+	require.NoError(t, err)
+
+	plan := GenerateExecutionPlan("corr_steps", "acme", "agent", "gpt-4", 0, nil, 0.01, "allow", "", "", 30)
+	plan.ProposedSteps = []string{"1. Search for Q4 data", "2. Summarize results", "3. Send report"}
+
+	err = store.Save(ctx, plan)
+	require.NoError(t, err)
+
+	got, err := store.Get(ctx, plan.ID)
+	require.NoError(t, err)
+	assert.Equal(t, plan.ProposedSteps, got.ProposedSteps)
+	assert.Len(t, got.ProposedSteps, 3)
+	assert.Equal(t, "2. Summarize results", got.ProposedSteps[1])
+}
+
 func TestPlanReviewStore_GetNotFound(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

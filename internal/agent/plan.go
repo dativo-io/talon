@@ -40,6 +40,7 @@ type ExecutionPlan struct {
 	ReviewedAt       *time.Time   `json:"reviewed_at,omitempty"`
 	ReviewReason     string       `json:"review_reason,omitempty"`
 	Annotations      []Annotation `json:"annotations,omitempty"`
+	ProposedSteps    []string     `json:"proposed_steps,omitempty"` // LLM-proposed task steps for Art. 11/13 transparency
 	CreatedAt        time.Time    `json:"created_at"`
 	TimeoutAt        time.Time    `json:"timeout_at"`
 }

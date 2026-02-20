@@ -85,7 +85,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Respon
 			systemParts = append(systemParts, msg.Content)
 			continue
 		}
-		messages = append(messages, anthropicMessage(msg))
+		messages = append(messages, anthropicMessage{Role: msg.Role, Content: msg.Content})
 	}
 	systemPrompt := strings.Join(systemParts, "\n\n")
 

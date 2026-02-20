@@ -36,7 +36,7 @@ type GenerateParams struct {
 	Degraded                bool            // True when cost degradation used fallback model
 	ModelRoutingRationale   string          // Why this model was chosen (e.g. "primary", "degraded to fallback")
 	ToolsCalled             []string        // MCP tools invoked during execution
-	CostEUR                 float64         // Estimated cost in EUR
+	Cost                    float64         // Estimated cost
 	Tokens                  TokenUsage      // Input/output token counts
 	MemoryTokens            int             // Tokens injected from memory context
 	DurationMS              int64           // Wall-clock duration of the full pipeline
@@ -48,6 +48,55 @@ type GenerateParams struct {
 	OutputResponse          string          // LLM response text (hashed in evidence)
 	Compliance              Compliance      // Applicable compliance frameworks and data location
 	ObservationModeOverride bool            // True when allowed despite policy deny (shadow/observation-only mode)
+}
+
+// StepParams holds inputs for creating a step-level evidence record (one LLM call or one tool call within a run).
+type StepParams struct {
+	CorrelationID string // Links to parent Evidence
+	TenantID      string
+	AgentID       string
+	StepIndex     int
+	Type          string // "llm_call" or "tool_call"
+	ToolName      string // For type "tool_call"
+	InputHash     string // SHA256 or empty
+	OutputHash    string
+	InputSummary  string // Truncated for audit
+	OutputSummary string
+	DurationMS    int64
+	Cost          float64
+}
+
+// GenerateStep creates and stores a step evidence record.
+func (g *Generator) GenerateStep(ctx context.Context, params StepParams) (*StepEvidence, error) {
+	step := &StepEvidence{
+		ID:            "step_" + uuid.New().String()[:12],
+		CorrelationID: params.CorrelationID,
+		TenantID:      params.TenantID,
+		AgentID:       params.AgentID,
+		StepIndex:     params.StepIndex,
+		Type:          params.Type,
+		ToolName:      params.ToolName,
+		InputHash:     params.InputHash,
+		OutputHash:    params.OutputHash,
+		InputSummary:  TruncateForSummary(params.InputSummary, 500),
+		OutputSummary: TruncateForSummary(params.OutputSummary, 500),
+		DurationMS:    params.DurationMS,
+		Cost:          params.Cost,
+		Timestamp:     time.Now(),
+	}
+	if err := g.store.StoreStep(ctx, step); err != nil {
+		return nil, err
+	}
+	return step, nil
+}
+
+// TruncateForSummary truncates s to at most maxLen bytes and appends "..." if truncated.
+// Used for evidence summaries (step output, tool results) to keep audit records bounded.
+func TruncateForSummary(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // Generate creates and stores an evidence record from the given parameters.
@@ -70,7 +119,7 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 			OriginalModel: params.OriginalModel,
 			Degraded:      params.Degraded,
 			ToolsCalled:   params.ToolsCalled,
-			CostEUR:       params.CostEUR,
+			Cost:          params.Cost,
 			Tokens:        params.Tokens,
 			MemoryTokens:  params.MemoryTokens,
 			DurationMS:    params.DurationMS,

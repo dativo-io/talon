@@ -100,7 +100,7 @@ func TestRunner_FullPipeline_Success(t *testing.T) {
 	assert.Equal(t, "Hello from mock LLM!", resp.Response)
 	assert.NotEmpty(t, resp.EvidenceID)
 	assert.Greater(t, resp.DurationMS, int64(0))
-	assert.InDelta(t, 0.001, resp.CostEUR, 0.01)
+	assert.InDelta(t, 0.001, resp.Cost, 0.01)
 }
 
 func TestRunner_DryRun(t *testing.T) {
@@ -568,7 +568,7 @@ func TestRunner_HooksFireAtPipelineStages(t *testing.T) {
 	assert.Equal(t, 1, postEvidence.callCount(), "HookPostEvidence should fire once")
 	pe := postEvidence.lastPayload()
 	assert.NotEmpty(t, pe["evidence_id"])
-	assert.NotNil(t, pe["cost_eur"])
+	assert.NotNil(t, pe["cost"])
 }
 
 func TestRunner_HookAbortBlocksPipeline(t *testing.T) {
@@ -704,7 +704,7 @@ policies:
 		AgentID:        "deg-agent",
 		InvocationType: "manual",
 		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
-		CostEUR:        6.0,
+		Cost:           6.0,
 		InputPrompt:    "seed",
 		OutputResponse: "seed",
 	})

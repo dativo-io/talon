@@ -172,7 +172,7 @@ func auditExport(cmd *cobra.Command, args []string) error {
 
 func renderAuditExportCSV(w io.Writer, index []evidence.Index) error {
 	writer := csv.NewWriter(w)
-	header := []string{"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "cost_eur", "model_used", "duration_ms", "has_error"}
+	header := []string{"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "cost", "model_used", "duration_ms", "has_error"}
 	if err := writer.Write(header); err != nil {
 		return err
 	}
@@ -184,7 +184,7 @@ func renderAuditExportCSV(w io.Writer, index []evidence.Index) error {
 			index[i].AgentID,
 			index[i].InvocationType,
 			strconv.FormatBool(index[i].Allowed),
-			strconv.FormatFloat(index[i].CostEUR, 'f', 4, 64),
+			strconv.FormatFloat(index[i].Cost, 'f', 4, 64),
 			index[i].ModelUsed,
 			strconv.FormatInt(index[i].DurationMS, 10),
 			strconv.FormatBool(index[i].HasError),
@@ -223,7 +223,7 @@ func renderAuditList(w io.Writer, index []evidence.Index) {
 			entry.TenantID,
 			entry.AgentID,
 			entry.ModelUsed,
-			entry.CostEUR,
+			entry.Cost,
 			entry.DurationMS,
 			errorMark,
 		)

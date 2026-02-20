@@ -182,6 +182,9 @@ const schemaV2 = `{
             "cpu": {"type": "string"},
             "memory": {"type": "string"},
             "ephemeral_storage": {"type": "string"},
+            "max_iterations": {"type": "integer", "minimum": 0, "maximum": 50},
+            "max_tool_calls_per_run": {"type": "integer", "minimum": 0},
+            "max_cost_per_run": {"type": "number", "minimum": 0},
             "timeout": {
               "type": "object",
               "properties": {

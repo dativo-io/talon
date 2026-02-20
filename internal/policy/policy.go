@@ -161,10 +161,13 @@ type DegradationConfig struct {
 
 // ResourceLimitsConfig sets compute resource constraints.
 type ResourceLimitsConfig struct {
-	CPU              string         `yaml:"cpu,omitempty" json:"cpu,omitempty"`
-	Memory           string         `yaml:"memory,omitempty" json:"memory,omitempty"`
-	EphemeralStorage string         `yaml:"ephemeral_storage,omitempty" json:"ephemeral_storage,omitempty"`
-	Timeout          *TimeoutConfig `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	CPU                string         `yaml:"cpu,omitempty" json:"cpu,omitempty"`
+	Memory             string         `yaml:"memory,omitempty" json:"memory,omitempty"`
+	EphemeralStorage   string         `yaml:"ephemeral_storage,omitempty" json:"ephemeral_storage,omitempty"`
+	MaxIterations      int            `yaml:"max_iterations,omitempty" json:"max_iterations,omitempty"`                 // agentic loop cap; 0 or 1 = single LLM call
+	MaxToolCallsPerRun int            `yaml:"max_tool_calls_per_run,omitempty" json:"max_tool_calls_per_run,omitempty"` // cap tool invocations per run; 0 = no limit
+	MaxCostPerRun      float64        `yaml:"max_cost_per_run,omitempty" json:"max_cost_per_run,omitempty"`             // cap cost per run (EUR); 0 = no limit
+	Timeout            *TimeoutConfig `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 }
 
 // TimeoutConfig sets operation timeouts.

@@ -175,7 +175,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 type statusResponse struct {
 	Status             string  `json:"status"`
 	EvidenceCountToday int     `json:"evidence_count_today"`
-	CostEURToday       float64 `json:"cost_eur_today"`
+	CostToday          float64 `json:"cost_today"`
 	ActiveRuns         int     `json:"active_runs"`
 }
 
@@ -195,7 +195,7 @@ func newStatusHandler(store *evidence.Store, tracker *agent.ActiveRunTracker, de
 				resp.EvidenceCountToday = n
 			}
 			if cost, err := store.CostTotal(ctx, tenantID, "", dayStart, dayEnd); err == nil {
-				resp.CostEURToday = cost
+				resp.CostToday = cost
 			}
 		}
 		if tracker != nil {

@@ -42,7 +42,7 @@ func TestStoreAndGet(t *testing.T) {
 			PIIDetected: []string{},
 		},
 		ModelUsed:      "gpt-4",
-		CostEUR:        0.0018,
+		Cost:           0.0018,
 		Tokens:         TokenUsage{Input: 100, Output: 50},
 		DurationMS:     250,
 		InputPrompt:    "Hello world",
@@ -128,7 +128,7 @@ func TestListIndex(t *testing.T) {
 		InvocationType: "manual",
 		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
 		ModelUsed:      "gpt-4",
-		CostEUR:        0.005,
+		Cost:           0.005,
 		InputPrompt:    "test",
 		OutputResponse: "response",
 	})
@@ -423,7 +423,7 @@ func TestCostTotal(t *testing.T) {
 		AgentID:        "agent-a",
 		InvocationType: "manual",
 		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
-		CostEUR:        0.01,
+		Cost:           0.01,
 		InputPrompt:    "test",
 		OutputResponse: "response",
 	})
@@ -434,7 +434,7 @@ func TestCostTotal(t *testing.T) {
 		AgentID:        "agent-a",
 		InvocationType: "manual",
 		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
-		CostEUR:        0.02,
+		Cost:           0.02,
 		InputPrompt:    "test",
 		OutputResponse: "response",
 	})
@@ -446,7 +446,7 @@ func TestCostTotal(t *testing.T) {
 		AgentID:        "agent-b",
 		InvocationType: "manual",
 		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
-		CostEUR:        0.03,
+		Cost:           0.03,
 		InputPrompt:    "test",
 		OutputResponse: "response",
 	})
@@ -488,7 +488,7 @@ func TestCostByAgent(t *testing.T) {
 			AgentID:        p.agent,
 			InvocationType: "manual",
 			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
-			CostEUR:        p.cost,
+			Cost:           p.cost,
 			InputPrompt:    "test",
 			OutputResponse: "response",
 		})
@@ -516,7 +516,7 @@ func TestGenerateWithDegradation(t *testing.T) {
 		ModelUsed:      "gpt-4o-mini",
 		OriginalModel:  "gpt-4o",
 		Degraded:       true,
-		CostEUR:        0.001,
+		Cost:           0.001,
 		InputPrompt:    "test",
 		OutputResponse: "response",
 	})
@@ -542,7 +542,7 @@ func BenchmarkEvidenceStore(b *testing.B) {
 		AgentID:        "agent",
 		InvocationType: "manual",
 		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
-		CostEUR:        0.001,
+		Cost:           0.001,
 		InputPrompt:    "bench",
 		OutputResponse: "bench",
 	}
@@ -550,6 +550,41 @@ func BenchmarkEvidenceStore(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _ = gen.Generate(ctx, params)
 	}
+}
+
+func TestStoreStepAndListSteps(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	corrID := "corr_step_test"
+	_, err := gen.GenerateStep(ctx, StepParams{
+		CorrelationID: corrID, TenantID: "acme", AgentID: "agent",
+		StepIndex: 0, Type: "llm_call",
+		OutputSummary: "model response summary",
+		DurationMS:    100, Cost: 0.002,
+	})
+	require.NoError(t, err)
+
+	_, err = gen.GenerateStep(ctx, StepParams{
+		CorrelationID: corrID, TenantID: "acme", AgentID: "agent",
+		StepIndex: 1, Type: "tool_call", ToolName: "search",
+		OutputSummary: "tool result",
+		DurationMS:    5, Cost: 0,
+	})
+	require.NoError(t, err)
+
+	steps, err := store.ListStepsByCorrelationID(ctx, corrID)
+	require.NoError(t, err)
+	require.Len(t, steps, 2)
+	assert.Equal(t, 0, steps[0].StepIndex)
+	assert.Equal(t, "llm_call", steps[0].Type)
+	assert.Equal(t, int64(100), steps[0].DurationMS)
+	assert.Equal(t, 1, steps[1].StepIndex)
+	assert.Equal(t, "tool_call", steps[1].Type)
+	assert.Equal(t, "search", steps[1].ToolName)
+	assert.NotEmpty(t, steps[0].Signature)
+	assert.NotEmpty(t, steps[1].Signature)
 }
 
 func BenchmarkCostTotal(b *testing.B) {
@@ -569,7 +604,7 @@ func BenchmarkCostTotal(b *testing.B) {
 			AgentID:        "agent",
 			InvocationType: "manual",
 			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
-			CostEUR:        0.001 * float64(i+1),
+			Cost:           0.001 * float64(i+1),
 			InputPrompt:    "bench",
 			OutputResponse: "bench",
 		})

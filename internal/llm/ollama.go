@@ -68,7 +68,7 @@ func (p *OllamaProvider) Generate(ctx context.Context, req *Request) (*Response,
 
 	messages := make([]ollamaMessage, len(req.Messages))
 	for i, msg := range req.Messages {
-		messages[i] = ollamaMessage(msg)
+		messages[i] = ollamaMessage{Role: msg.Role, Content: msg.Content}
 	}
 
 	apiReq := ollamaRequest{
