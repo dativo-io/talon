@@ -631,25 +631,24 @@ func TestActiveRunTracker(t *testing.T) {
 }
 
 func TestBudgetAlertClaimFire(t *testing.T) {
-	// First claim for t1 succeeds
-	assert.True(t, budgetAlertClaimFire("t1"))
+	// First claim for (t1, daily) succeeds
+	assert.True(t, budgetAlertClaimFire("t1", "daily"))
 
-	// Second claim for same tenant within cooldown fails (one webhook per tenant per cooldown)
-	assert.False(t, budgetAlertClaimFire("t1"))
+	// Second claim within cooldown fails (deduplication)
+	assert.False(t, budgetAlertClaimFire("t1", "daily"))
 
-	// Different tenant can still claim
-	assert.True(t, budgetAlertClaimFire("t2"))
-	// t1 still in cooldown
-	assert.False(t, budgetAlertClaimFire("t1"))
+	// Different tenant or alert type can still claim
+	assert.True(t, budgetAlertClaimFire("t2", "daily"))
+	assert.True(t, budgetAlertClaimFire("t1", "monthly"))
 
-	// Concurrent callers: only one should get true per tenant
+	// Concurrent callers: only one should get true per (tenant, alertType)
 	var wg sync.WaitGroup
 	results := make(chan bool, 20)
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results <- budgetAlertClaimFire("concurrent-tenant")
+			results <- budgetAlertClaimFire("concurrent-tenant", "daily")
 		}()
 	}
 	wg.Wait()
@@ -660,7 +659,7 @@ func TestBudgetAlertClaimFire(t *testing.T) {
 			trues++
 		}
 	}
-	assert.Equal(t, 1, trues, "exactly one concurrent caller should claim fire per tenant")
+	assert.Equal(t, 1, trues, "exactly one concurrent caller should claim fire per (tenant, alertType)")
 }
 
 func TestEmitBudgetAlertIfNeeded(t *testing.T) {
@@ -681,15 +680,6 @@ func TestEmitBudgetAlertIfNeeded(t *testing.T) {
 		Daily: 100, Monthly: 1000,
 		BudgetAlertWebhook: "ftp://no",
 	})
-
-	// Dedup: same tenant, first daily-only then daily_and_monthly must not send a second webhook (single key per tenant).
-	const dedupTenant = "dedup-daily-then-both"
-	limits := &policy.CostLimitsConfig{Daily: 100, Monthly: 1000, BudgetAlertWebhook: "http://127.0.0.1/hook"}
-	// First: daily only over 80% -> alert_type "daily", claim fires.
-	emitBudgetAlertIfNeeded(ctx, dedupTenant, 90, 50, limits)
-	// Second: both over 80% -> alert_type "daily_and_monthly"; must not claim (cooldown).
-	emitBudgetAlertIfNeeded(ctx, dedupTenant, 90, 900, limits)
-	assert.False(t, budgetAlertClaimFire(dedupTenant), "second request in cooldown must not claim; ensures only one webhook per tenant when escalating daily -> daily_and_monthly")
 }
 
 func TestBoolToDecision(t *testing.T) {
