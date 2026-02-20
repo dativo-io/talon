@@ -137,6 +137,22 @@ metadata:
 			wantErr: false,
 		},
 		{
+			name: "resource_limits with zero max_iterations and max_tool_calls_per_run passes schema",
+			yaml: `
+agent:
+  name: test-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 100.0
+  resource_limits:
+    max_iterations: 0
+    max_tool_calls_per_run: 0
+`,
+			strict:  false,
+			wantErr: false,
+		},
+		{
 			name: "missing required agent version",
 			yaml: `
 agent:
