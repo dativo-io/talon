@@ -894,26 +894,26 @@ const (
 	budgetAlertCooldown     = 1 * time.Hour // minimum interval between webhook POSTs per (tenant, alert_type)
 )
 
-// budgetAlertDedupe ensures we only POST to the budget alert webhook once per (tenant, alert_type) per cooldown.
+// budgetAlertDedupe ensures we only POST to the budget alert webhook once per tenant per cooldown.
+// A single key per tenant avoids sending the same condition twice (e.g. "daily" then "daily_and_monthly").
 // Log warnings are still emitted on every Run() over threshold; only the HTTP call is deduplicated.
 var budgetAlertDedupe = &struct {
 	mu        sync.Mutex
-	lastFired map[string]time.Time // key: tenantID+":"+alertType
+	lastFired map[string]time.Time // key: tenantID (one webhook per tenant per cooldown)
 }{lastFired: make(map[string]time.Time)}
 
-// budgetAlertClaimFire atomically checks whether a webhook should fire for (tenantID, alertType) and, if so,
-// records the firing and returns true. Only one caller per (tenant, alertType) per cooldown gets true,
-// preventing duplicate POSTs when concurrent Run() calls exceed the threshold.
-func budgetAlertClaimFire(tenantID, alertType string) bool {
+// budgetAlertClaimFire atomically checks whether a webhook should fire for this tenant and, if so,
+// records the firing and returns true. Only one caller per tenant per cooldown gets true,
+// so daily-then-daily_and_monthly within cooldown does not send a second POST.
+func budgetAlertClaimFire(tenantID string) bool {
 	budgetAlertDedupe.mu.Lock()
 	defer budgetAlertDedupe.mu.Unlock()
 	if budgetAlertDedupe.lastFired == nil {
 		budgetAlertDedupe.lastFired = make(map[string]time.Time)
 	}
-	key := tenantID + ":" + alertType
-	last, ok := budgetAlertDedupe.lastFired[key]
+	last, ok := budgetAlertDedupe.lastFired[tenantID]
 	if !ok || time.Since(last) >= budgetAlertCooldown {
-		budgetAlertDedupe.lastFired[key] = time.Now().UTC()
+		budgetAlertDedupe.lastFired[tenantID] = time.Now().UTC()
 		return true
 	}
 	return false
@@ -921,7 +921,8 @@ func budgetAlertClaimFire(tenantID, alertType string) bool {
 
 // emitBudgetAlertIfNeeded logs a structured warning and optionally POSTs to budget_alert_webhook
 // when daily or monthly usage is >= 80% of the configured limit.
-// Webhook POSTs are deduplicated per (tenant, alert_type) with a 1-hour cooldown to avoid flooding the endpoint.
+// Webhook POSTs are deduplicated per tenant (one key) with a 1-hour cooldown so that daily-then-daily_and_monthly
+// does not send two POSTs; the payload's alert_type (daily, monthly, daily_and_monthly) still describes the state.
 func emitBudgetAlertIfNeeded(ctx context.Context, tenantID string, dailyCost, monthlyCost float64, limits *policy.CostLimitsConfig) {
 	if limits == nil {
 		return
@@ -960,7 +961,7 @@ func emitBudgetAlertIfNeeded(ctx context.Context, tenantID string, dailyCost, mo
 		fired = true
 	}
 	if fired && limits.BudgetAlertWebhook != "" {
-		if budgetAlertClaimFire(tenantID, alertType) {
+		if budgetAlertClaimFire(tenantID) {
 			go postBudgetAlert(limits.BudgetAlertWebhook, payload)
 		}
 	}

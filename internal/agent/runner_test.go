@@ -631,24 +631,25 @@ func TestActiveRunTracker(t *testing.T) {
 }
 
 func TestBudgetAlertClaimFire(t *testing.T) {
-	// First claim for (t1, daily) succeeds
-	assert.True(t, budgetAlertClaimFire("t1", "daily"))
+	// First claim for t1 succeeds
+	assert.True(t, budgetAlertClaimFire("t1"))
 
-	// Second claim within cooldown fails (deduplication)
-	assert.False(t, budgetAlertClaimFire("t1", "daily"))
+	// Second claim for same tenant within cooldown fails (one webhook per tenant per cooldown)
+	assert.False(t, budgetAlertClaimFire("t1"))
 
-	// Different tenant or alert type can still claim
-	assert.True(t, budgetAlertClaimFire("t2", "daily"))
-	assert.True(t, budgetAlertClaimFire("t1", "monthly"))
+	// Different tenant can still claim
+	assert.True(t, budgetAlertClaimFire("t2"))
+	// t1 still in cooldown
+	assert.False(t, budgetAlertClaimFire("t1"))
 
-	// Concurrent callers: only one should get true per (tenant, alertType)
+	// Concurrent callers: only one should get true per tenant
 	var wg sync.WaitGroup
 	results := make(chan bool, 20)
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results <- budgetAlertClaimFire("concurrent-tenant", "daily")
+			results <- budgetAlertClaimFire("concurrent-tenant")
 		}()
 	}
 	wg.Wait()
@@ -659,7 +660,7 @@ func TestBudgetAlertClaimFire(t *testing.T) {
 			trues++
 		}
 	}
-	assert.Equal(t, 1, trues, "exactly one concurrent caller should claim fire per (tenant, alertType)")
+	assert.Equal(t, 1, trues, "exactly one concurrent caller should claim fire per tenant")
 }
 
 func TestEmitBudgetAlertIfNeeded(t *testing.T) {
