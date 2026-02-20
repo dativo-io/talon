@@ -680,10 +680,41 @@ func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, re
 	return called
 }
 
-const budgetAlertThresholdPct = 0.8
+const (
+	budgetAlertThresholdPct = 0.8
+	budgetAlertCooldown     = 1 * time.Hour // minimum interval between webhook POSTs per (tenant, alert_type)
+)
+
+// budgetAlertDedupe ensures we only POST to the budget alert webhook once per (tenant, alert_type) per cooldown.
+// Log warnings are still emitted on every Run() over threshold; only the HTTP call is deduplicated.
+var budgetAlertDedupe = &struct {
+	mu        sync.Mutex
+	lastFired map[string]time.Time // key: tenantID+":"+alertType
+}{lastFired: make(map[string]time.Time)}
+
+func budgetAlertShouldFireWebhook(tenantID, alertType string) bool {
+	budgetAlertDedupe.mu.Lock()
+	defer budgetAlertDedupe.mu.Unlock()
+	key := tenantID + ":" + alertType
+	last, ok := budgetAlertDedupe.lastFired[key]
+	if !ok || time.Since(last) >= budgetAlertCooldown {
+		return true
+	}
+	return false
+}
+
+func budgetAlertRecordFired(tenantID, alertType string) {
+	budgetAlertDedupe.mu.Lock()
+	defer budgetAlertDedupe.mu.Unlock()
+	if budgetAlertDedupe.lastFired == nil {
+		budgetAlertDedupe.lastFired = make(map[string]time.Time)
+	}
+	budgetAlertDedupe.lastFired[tenantID+":"+alertType] = time.Now().UTC()
+}
 
 // emitBudgetAlertIfNeeded logs a structured warning and optionally POSTs to budget_alert_webhook
 // when daily or monthly usage is >= 80% of the configured limit.
+// Webhook POSTs are deduplicated per (tenant, alert_type) with a 1-hour cooldown to avoid flooding the endpoint.
 func emitBudgetAlertIfNeeded(ctx context.Context, tenantID string, dailyCost, monthlyCost float64, limits *policy.CostLimitsConfig) {
 	if limits == nil {
 		return
@@ -696,13 +727,15 @@ func emitBudgetAlertIfNeeded(ctx context.Context, tenantID string, dailyCost, mo
 		"monthly_limit": limits.Monthly,
 	}
 	var fired bool
+	var alertType string
 	if limits.Daily > 0 && dailyCost >= budgetAlertThresholdPct*limits.Daily {
 		log.Warn().
 			Str("tenant_id", tenantID).
 			Float64("daily_cost", dailyCost).
 			Float64("daily_limit", limits.Daily).
 			Msg("budget_approaching_limit_daily")
-		payload["alert_type"] = "daily"
+		alertType = "daily"
+		payload["alert_type"] = alertType
 		fired = true
 	}
 	if limits.Monthly > 0 && monthlyCost >= budgetAlertThresholdPct*limits.Monthly {
@@ -712,14 +745,18 @@ func emitBudgetAlertIfNeeded(ctx context.Context, tenantID string, dailyCost, mo
 			Float64("monthly_limit", limits.Monthly).
 			Msg("budget_approaching_limit_monthly")
 		if !fired {
-			payload["alert_type"] = "monthly"
+			alertType = "monthly"
 		} else {
-			payload["alert_type"] = "daily_and_monthly"
+			alertType = "daily_and_monthly"
 		}
+		payload["alert_type"] = alertType
 		fired = true
 	}
 	if fired && limits.BudgetAlertWebhook != "" {
-		go postBudgetAlert(limits.BudgetAlertWebhook, payload)
+		if budgetAlertShouldFireWebhook(tenantID, alertType) {
+			budgetAlertRecordFired(tenantID, alertType)
+			go postBudgetAlert(limits.BudgetAlertWebhook, payload)
+		}
 	}
 }
 
