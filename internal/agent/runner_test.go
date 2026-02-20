@@ -681,6 +681,15 @@ func TestEmitBudgetAlertIfNeeded(t *testing.T) {
 		Daily: 100, Monthly: 1000,
 		BudgetAlertWebhook: "ftp://no",
 	})
+
+	// Dedup: same tenant, first daily-only then daily_and_monthly must not send a second webhook (single key per tenant).
+	const dedupTenant = "dedup-daily-then-both"
+	limits := &policy.CostLimitsConfig{Daily: 100, Monthly: 1000, BudgetAlertWebhook: "http://127.0.0.1/hook"}
+	// First: daily only over 80% -> alert_type "daily", claim fires.
+	emitBudgetAlertIfNeeded(ctx, dedupTenant, 90, 50, limits)
+	// Second: both over 80% -> alert_type "daily_and_monthly"; must not claim (cooldown).
+	emitBudgetAlertIfNeeded(ctx, dedupTenant, 90, 900, limits)
+	assert.False(t, budgetAlertClaimFire(dedupTenant), "second request in cooldown must not claim; ensures only one webhook per tenant when escalating daily -> daily_and_monthly")
 }
 
 func TestBoolToDecision(t *testing.T) {

@@ -891,7 +891,7 @@ func (r *Runner) executeOneToolCall(ctx context.Context, policyEval memory.Polic
 
 const (
 	budgetAlertThresholdPct = 0.8
-	budgetAlertCooldown     = 1 * time.Hour // minimum interval between webhook POSTs per (tenant, alert_type)
+	budgetAlertCooldown     = 1 * time.Hour // minimum interval between webhook POSTs per tenant (single key avoids daily then daily_and_monthly sending twice)
 )
 
 // budgetAlertDedupe ensures we only POST to the budget alert webhook once per tenant per cooldown.
@@ -961,6 +961,7 @@ func emitBudgetAlertIfNeeded(ctx context.Context, tenantID string, dailyCost, mo
 		fired = true
 	}
 	if fired && limits.BudgetAlertWebhook != "" {
+		// Dedup by tenant only (not tenant+alertType) so escalation from "daily" to "daily_and_monthly" does not send a second webhook.
 		if budgetAlertClaimFire(tenantID) {
 			go postBudgetAlert(limits.BudgetAlertWebhook, payload)
 		}
