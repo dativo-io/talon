@@ -670,7 +670,9 @@ func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, re
 			log.Warn().Err(err).Str("tool", inv.Name).Msg("tool execution failed")
 		}
 		called = append(called, inv.Name)
-		span.SetAttributes(attribute.String("tool.called", inv.Name))
+	}
+	if len(called) > 0 {
+		span.SetAttributes(attribute.StringSlice("tool.called", called))
 	}
 	return called
 }

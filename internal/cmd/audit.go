@@ -171,7 +171,6 @@ func auditExport(cmd *cobra.Command, args []string) error {
 
 func renderAuditExportCSV(w io.Writer, index []evidence.Index) error {
 	writer := csv.NewWriter(w)
-	defer writer.Flush()
 	header := []string{"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "cost_eur", "model_used", "duration_ms", "has_error"}
 	if err := writer.Write(header); err != nil {
 		return err
@@ -193,7 +192,8 @@ func renderAuditExportCSV(w io.Writer, index []evidence.Index) error {
 			return err
 		}
 	}
-	return nil
+	writer.Flush()
+	return writer.Error()
 }
 
 func renderAuditExportJSON(w io.Writer, index []evidence.Index) error {
