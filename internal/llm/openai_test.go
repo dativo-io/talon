@@ -123,6 +123,79 @@ func TestOpenAICostEstimation(t *testing.T) {
 	}
 }
 
+func TestOpenAIGenerate_WithToolCalls(t *testing.T) {
+	_, provider := newOpenAITestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		resp := openai.ChatCompletionResponse{
+			ID:    "chatcmpl-toolcall",
+			Model: "gpt-4o",
+			Choices: []openai.ChatCompletionChoice{
+				{
+					Message: openai.ChatCompletionMessage{
+						Role:      "assistant",
+						Content:   "",
+						ToolCalls: []openai.ToolCall{{ID: "call_abc", Type: openai.ToolTypeFunction, Function: openai.FunctionCall{Name: "get_weather", Arguments: `{"location":"Berlin"}`}}},
+					},
+					FinishReason: openai.FinishReasonToolCalls,
+				},
+			},
+			Usage: openai.Usage{PromptTokens: 10, CompletionTokens: 20},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	req := &Request{
+		Model:     "gpt-4o",
+		Messages:  []Message{{Role: "user", Content: "What's the weather?"}},
+		MaxTokens: 100,
+	}
+	resp, err := provider.Generate(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, "tool_calls", resp.FinishReason)
+	require.Len(t, resp.ToolCalls, 1)
+	assert.Equal(t, "call_abc", resp.ToolCalls[0].ID)
+	assert.Equal(t, "get_weather", resp.ToolCalls[0].Name)
+	assert.Equal(t, map[string]interface{}{"location": "Berlin"}, resp.ToolCalls[0].Arguments)
+}
+
+func TestOpenAIGenerate_WithToolsInRequest(t *testing.T) {
+	var receivedBody map[string]interface{}
+	_, provider := newOpenAITestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&receivedBody))
+		resp := openai.ChatCompletionResponse{
+			ID:      "chatcmpl-ok",
+			Model:   "gpt-4o",
+			Choices: []openai.ChatCompletionChoice{{Message: openai.ChatCompletionMessage{Role: "assistant", Content: "Done."}, FinishReason: openai.FinishReasonStop}},
+			Usage:   openai.Usage{PromptTokens: 20, CompletionTokens: 5},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	})
+
+	req := &Request{
+		Model: "gpt-4o",
+		Messages: []Message{
+			{Role: "user", Content: "Hello"},
+			{Role: "assistant", Content: "", ToolCalls: []ToolCall{{ID: "call_1", Name: "echo", Arguments: map[string]interface{}{"x": "1"}}}},
+			{Role: "tool", Content: `{"result":"ok"}`, ToolCallID: "call_1"},
+		},
+		Tools:     []Tool{{Name: "echo", Description: "Echo", Parameters: map[string]interface{}{"type": "object"}}},
+		MaxTokens: 100,
+	}
+	_, err := provider.Generate(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, receivedBody)
+	tools, _ := receivedBody["tools"].([]interface{})
+	require.NotEmpty(t, tools)
+	msgs, _ := receivedBody["messages"].([]interface{})
+	require.Len(t, msgs, 3)
+	// Second message should have tool_calls; third should have tool_call_id
+	msg1, _ := msgs[1].(map[string]interface{})
+	assert.NotNil(t, msg1["tool_calls"])
+	msg2, _ := msgs[2].(map[string]interface{})
+	assert.Equal(t, "call_1", msg2["tool_call_id"])
+}
+
 func TestNormalizeOpenAIBaseURL(t *testing.T) {
 	tests := []struct {
 		name    string

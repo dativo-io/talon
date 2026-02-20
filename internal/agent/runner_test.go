@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -684,4 +685,576 @@ func TestEmitBudgetAlertIfNeeded(t *testing.T) {
 func TestBoolToDecision(t *testing.T) {
 	assert.Equal(t, "allow", boolToDecision(true))
 	assert.Equal(t, "deny", boolToDecision(false))
+}
+
+// writeAgenticLoopPolicy writes a .talon.yaml with allowed_tools and resource_limits for agentic loop tests.
+// When maxToolCallsPerRun is 0 we emit 999 (schema requires >= 1 when set).
+func writeAgenticLoopPolicy(t *testing.T, dir, agentName string, maxIterations, maxToolCallsPerRun int, maxCostPerRun float64) string {
+	t.Helper()
+	if maxIterations <= 0 {
+		maxIterations = 10
+	}
+	m := maxToolCallsPerRun
+	if m <= 0 {
+		m = 999
+	}
+	policyYAML := `
+agent:
+  name: "` + agentName + `"
+  version: "1.0.0"
+capabilities:
+  allowed_tools: ["echo"]
+policies:
+  cost_limits:
+    per_request: 100.0
+    daily: 1000.0
+    monthly: 10000.0
+  resource_limits:
+    max_iterations: ` + fmt.Sprintf("%d", maxIterations) + `
+    max_tool_calls_per_run: ` + fmt.Sprintf("%d", m) + `
+    max_cost_per_run: ` + fmt.Sprintf("%.3f", maxCostPerRun) + `
+  model_routing:
+    tier_0:
+      primary: "gpt-4"
+    tier_1:
+      primary: "gpt-4"
+    tier_2:
+      primary: "gpt-4"
+`
+	path := filepath.Join(dir, agentName+".talon.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(policyYAML), 0o600))
+	return path
+}
+
+func TestRun_AgenticLoop_SingleIteration(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeAgenticLoopPolicy(t, dir, "loop-agent", 10, 0, 0)
+
+	// First response: one tool call (echo). Second: final text answer.
+	mock := &testutil.ToolCallMockProvider{
+		Responses: []*llm.Response{
+			{
+				Content:      "",
+				FinishReason: "tool_calls",
+				InputTokens:  10,
+				OutputTokens: 20,
+				Model:        "gpt-4",
+				ToolCalls: []llm.ToolCall{
+					{ID: "tc-1", Name: "echo", Arguments: map[string]interface{}{"q": "hello"}},
+				},
+			},
+			{
+				Content:      "Done.",
+				FinishReason: "stop",
+				InputTokens:  15,
+				OutputTokens: 5,
+				Model:        "gpt-4",
+			},
+		},
+	}
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, map[string]llm.Provider{"openai": mock}, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{})
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		ToolRegistry:      reg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:   "acme",
+		AgentName:  "loop-agent",
+		Prompt:     "Use echo then answer.",
+		PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+	assert.Contains(t, resp.ToolsCalled, "echo")
+	assert.Equal(t, "Done.", resp.Response)
+	assert.Equal(t, 2, mock.CallCount)
+	ev, err := evidenceStore.Get(ctx, resp.EvidenceID)
+	require.NoError(t, err)
+	steps, err := evidenceStore.ListStepsByCorrelationID(ctx, ev.CorrelationID)
+	require.NoError(t, err)
+	// One llm_call step, one tool_call step, then second llm_call
+	assert.GreaterOrEqual(t, len(steps), 2)
+}
+
+func TestRun_AgenticLoop_MultipleIterations(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeAgenticLoopPolicy(t, dir, "multi-agent", 10, 0, 0)
+
+	mock := &testutil.ToolCallMockProvider{
+		Responses: []*llm.Response{
+			{
+				FinishReason: "tool_calls", InputTokens: 10, OutputTokens: 20, Model: "gpt-4",
+				ToolCalls: []llm.ToolCall{{ID: "tc-1", Name: "echo", Arguments: map[string]interface{}{"a": "1"}}},
+			},
+			{
+				FinishReason: "tool_calls", InputTokens: 15, OutputTokens: 20, Model: "gpt-4",
+				ToolCalls: []llm.ToolCall{{ID: "tc-2", Name: "echo", Arguments: map[string]interface{}{"b": "2"}}},
+			},
+			{Content: "Final.", FinishReason: "stop", InputTokens: 15, OutputTokens: 5, Model: "gpt-4"},
+		},
+	}
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, map[string]llm.Provider{"openai": mock}, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{})
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		ToolRegistry:      reg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:   "acme",
+		AgentName:  "multi-agent",
+		Prompt:     "Echo twice then answer.",
+		PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+	assert.Len(t, resp.ToolsCalled, 2)
+	assert.Equal(t, "Final.", resp.Response)
+	assert.Equal(t, 3, mock.CallCount)
+	ev, err := evidenceStore.Get(ctx, resp.EvidenceID)
+	require.NoError(t, err)
+	steps, err := evidenceStore.ListStepsByCorrelationID(ctx, ev.CorrelationID)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(steps), 4) // 2 llm_call + 2 tool_call
+}
+
+func TestRun_AgenticLoop_MaxIterationsBreak(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeAgenticLoopPolicy(t, dir, "cap-agent", 2, 0, 0) // max 2 iterations
+
+	// Every response returns tool calls; loop should stop after iteration 2.
+	mock := &testutil.ToolCallMockProvider{
+		Responses: []*llm.Response{
+			{
+				FinishReason: "tool_calls", InputTokens: 10, OutputTokens: 20, Model: "gpt-4",
+				ToolCalls: []llm.ToolCall{{ID: "tc-1", Name: "echo", Arguments: map[string]interface{}{}}},
+			},
+			{
+				FinishReason: "tool_calls", InputTokens: 15, OutputTokens: 20, Model: "gpt-4",
+				ToolCalls: []llm.ToolCall{{ID: "tc-2", Name: "echo", Arguments: map[string]interface{}{}}},
+			},
+			{
+				Content: "Would continue.", FinishReason: "tool_calls", InputTokens: 15, OutputTokens: 20, Model: "gpt-4",
+				ToolCalls: []llm.ToolCall{{ID: "tc-3", Name: "echo", Arguments: map[string]interface{}{}}},
+			},
+		},
+	}
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, map[string]llm.Provider{"openai": mock}, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{})
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		ToolRegistry:      reg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:   "acme",
+		AgentName:  "cap-agent",
+		Prompt:     "Echo.",
+		PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+	// Loop stops at iteration 2; last LLM response (iteration 2) is used as final content
+	assert.Equal(t, 2, mock.CallCount)
+}
+
+func TestRun_AgenticLoop_ToolDeniedByPolicy(t *testing.T) {
+	dir := t.TempDir()
+	// Policy allows only "echo"; we'll use a mock that returns a different tool name so it gets denied.
+	policyPath := writeAgenticLoopPolicy(t, dir, "deny-tool-agent", 10, 0, 0)
+
+	mock := &testutil.ToolCallMockProvider{
+		Responses: []*llm.Response{
+			{
+				FinishReason: "tool_calls", InputTokens: 10, OutputTokens: 20, Model: "gpt-4",
+				ToolCalls: []llm.ToolCall{{ID: "tc-1", Name: "forbidden_tool", Arguments: map[string]interface{}{}}},
+			},
+			{Content: "I see the tool was denied.", FinishReason: "stop", InputTokens: 20, OutputTokens: 10, Model: "gpt-4"},
+		},
+	}
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, map[string]llm.Provider{"openai": mock}, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{})
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		ToolRegistry:      reg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:   "acme",
+		AgentName:  "deny-tool-agent",
+		Prompt:     "Call forbidden_tool.",
+		PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+	// forbidden_tool not in allowed_tools so not executed; error result sent to LLM; loop continues to final answer
+	assert.NotContains(t, resp.ToolsCalled, "forbidden_tool")
+	assert.Equal(t, "I see the tool was denied.", resp.Response)
+	assert.Equal(t, 2, mock.CallCount)
+}
+
+func TestRun_AgenticLoop_NonOpenAI_FallsBackToSingleCall(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeAgenticLoopPolicy(t, dir, "anthropic-agent", 10, 0, 0)
+
+	// Provider named "anthropic" -> no agentic loop even with tools and max_iterations
+	mock := &testutil.MockProvider{ProviderName: "anthropic", Content: "single call response"}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "claude-3-sonnet"},
+		Tier1: &policy.TierConfig{Primary: "claude-3-sonnet"},
+		Tier2: &policy.TierConfig{Primary: "claude-3-sonnet"},
+	}, map[string]llm.Provider{"anthropic": mock}, nil)
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{})
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		ToolRegistry:      reg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:   "acme",
+		AgentName:  "anthropic-agent",
+		Prompt:     "Hello",
+		PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+	assert.Equal(t, "single call response", resp.Response)
+	// No agentic loop: one LLM call only (MockProvider doesn't track count; we just assert single response)
+	assert.Empty(t, resp.ToolsCalled)
+}
+
+func TestRun_AgenticLoop_MaxToolCallsPerRun(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeAgenticLoopPolicy(t, dir, "max-tools-agent", 10, 1, 0) // max 1 tool call per run
+
+	// First response has exactly one tool call; after executing it we hit the limit, so no second iteration.
+	mock := &testutil.ToolCallMockProvider{
+		Responses: []*llm.Response{
+			{
+				FinishReason: "tool_calls", InputTokens: 10, OutputTokens: 20, Model: "gpt-4",
+				ToolCalls: []llm.ToolCall{
+					{ID: "tc-1", Name: "echo", Arguments: map[string]interface{}{}},
+				},
+			},
+			{Content: "Done.", FinishReason: "stop", InputTokens: 15, OutputTokens: 5, Model: "gpt-4"},
+		},
+	}
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, map[string]llm.Provider{"openai": mock}, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{})
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		ToolRegistry:      reg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:   "acme",
+		AgentName:  "max-tools-agent",
+		Prompt:     "Echo twice.",
+		PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+	assert.Len(t, resp.ToolsCalled, 1)
+}
+
+func TestRun_AgenticLoop_MaxCostPerRun(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeAgenticLoopPolicy(t, dir, "max-cost-agent", 10, 0, 0.001) // max 0.001 EUR per run
+
+	mock := &testutil.ToolCallMockProvider{
+		EstimateCostPerCall: 0.001, // each LLM call costs 0.001; after first call we're at limit
+		Responses: []*llm.Response{
+			{
+				FinishReason: "tool_calls", InputTokens: 10, OutputTokens: 20, Model: "gpt-4",
+				ToolCalls: []llm.ToolCall{{ID: "tc-1", Name: "echo", Arguments: map[string]interface{}{}}},
+			},
+			{Content: "Second.", FinishReason: "stop", InputTokens: 15, OutputTokens: 5, Model: "gpt-4"},
+		},
+	}
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, map[string]llm.Provider{"openai": mock}, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{})
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		ToolRegistry:      reg,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:   "acme",
+		AgentName:  "max-cost-agent",
+		Prompt:     "Echo then answer.",
+		PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+	// First LLM call costs 0.001; after that costEUR >= max_cost_per_run so loop stops before second call
+	assert.Equal(t, 1, mock.CallCount)
+}
+
+func TestBuildLLMTools(t *testing.T) {
+	dir := t.TempDir()
+	cls := classifier.MustNewScanner()
+	reg := tools.NewRegistry()
+	reg.Register(&echoTool{})
+
+	runnerWithReg := NewRunner(RunnerConfig{
+		PolicyDir: dir, Classifier: cls,
+		Router:       llm.NewRouter(nil, map[string]llm.Provider{"openai": &testutil.MockProvider{}}, nil),
+		Evidence:     mustEvidenceStore(t, dir),
+		ToolRegistry: reg,
+	})
+	runnerNoReg := NewRunner(RunnerConfig{
+		PolicyDir: dir, Classifier: cls,
+		Router:   llm.NewRouter(nil, map[string]llm.Provider{"openai": &testutil.MockProvider{}}, nil),
+		Evidence: mustEvidenceStore(t, dir),
+	})
+
+	tests := []struct {
+		name     string
+		r        *Runner
+		pol      *policy.Policy
+		wantNil  bool
+		wantLen  int
+		wantName string
+	}{
+		{"nil registry", runnerNoReg, &policy.Policy{Capabilities: &policy.CapabilitiesConfig{AllowedTools: []string{"echo"}}}, true, 0, ""},
+		{"nil capabilities", runnerWithReg, &policy.Policy{}, true, 0, ""},
+		{"empty allowed_tools", runnerWithReg, &policy.Policy{Capabilities: &policy.CapabilitiesConfig{AllowedTools: []string{}}}, true, 0, ""},
+		{"matching tools", runnerWithReg, &policy.Policy{Capabilities: &policy.CapabilitiesConfig{AllowedTools: []string{"echo"}}}, false, 1, "echo"},
+		{"non-matching tools", runnerWithReg, &policy.Policy{Capabilities: &policy.CapabilitiesConfig{AllowedTools: []string{"other"}}}, true, 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.r.buildLLMTools(tt.pol)
+			if tt.wantNil {
+				assert.Nil(t, got)
+			} else {
+				require.NotNil(t, got)
+				assert.Len(t, got, tt.wantLen)
+				if tt.wantName != "" {
+					assert.Equal(t, tt.wantName, got[0].Name)
+				}
+			}
+		})
+	}
+}
+
+func mustEvidenceStore(t *testing.T, dir string) *evidence.Store {
+	t.Helper()
+	s, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+func TestTruncateStr(t *testing.T) {
+	tests := []struct {
+		name   string
+		s      string
+		maxLen int
+		want   string
+	}{
+		{"short unchanged", "hello", 10, "hello"},
+		{"exact length", "hello", 5, "hello"},
+		{"long truncated", "hello world", 5, "hello..."},
+		{"empty", "", 5, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateStr(tt.s, tt.maxLen)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

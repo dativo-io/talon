@@ -50,6 +50,53 @@ type GenerateParams struct {
 	ObservationModeOverride bool            // True when allowed despite policy deny (shadow/observation-only mode)
 }
 
+// StepParams holds inputs for creating a step-level evidence record (one LLM call or one tool call within a run).
+type StepParams struct {
+	CorrelationID string // Links to parent Evidence
+	TenantID      string
+	AgentID       string
+	StepIndex     int
+	Type          string // "llm_call" or "tool_call"
+	ToolName      string // For type "tool_call"
+	InputHash     string // SHA256 or empty
+	OutputHash    string
+	InputSummary  string // Truncated for audit
+	OutputSummary string
+	DurationMS    int64
+	CostEUR       float64
+}
+
+// GenerateStep creates and stores a step evidence record.
+func (g *Generator) GenerateStep(ctx context.Context, params StepParams) (*StepEvidence, error) {
+	step := &StepEvidence{
+		ID:            "step_" + uuid.New().String()[:12],
+		CorrelationID: params.CorrelationID,
+		TenantID:      params.TenantID,
+		AgentID:       params.AgentID,
+		StepIndex:     params.StepIndex,
+		Type:          params.Type,
+		ToolName:      params.ToolName,
+		InputHash:     params.InputHash,
+		OutputHash:    params.OutputHash,
+		InputSummary:  truncateForSummary(params.InputSummary, 500),
+		OutputSummary: truncateForSummary(params.OutputSummary, 500),
+		DurationMS:    params.DurationMS,
+		CostEUR:       params.CostEUR,
+		Timestamp:     time.Now(),
+	}
+	if err := g.store.StoreStep(ctx, step); err != nil {
+		return nil, err
+	}
+	return step, nil
+}
+
+func truncateForSummary(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // Generate creates and stores an evidence record from the given parameters.
 func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evidence, error) {
 	ev := &Evidence{

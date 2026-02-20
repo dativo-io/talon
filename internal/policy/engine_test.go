@@ -190,11 +190,114 @@ func TestEngineToolAccess(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			decision, err := engine.EvaluateToolAccess(ctx, tt.toolName, tt.params)
+			decision, err := engine.EvaluateToolAccess(ctx, tt.toolName, tt.params, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantAllowed, decision.Allowed)
 		})
 	}
+}
+
+func TestEngineToolAccessWithHistory(t *testing.T) {
+	ctx := context.Background()
+	pol := newTestPolicy()
+	engine, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	// Pass non-nil tool_history; no Rego rules use it yet, but input must be accepted and rules still apply.
+	toolHistory := []map[string]interface{}{
+		{"name": "sql_query", "params": map[string]interface{}{"q": "SELECT 1"}, "result_summary": "ok"},
+	}
+	decision, err := engine.EvaluateToolAccess(ctx, "sql_query", map[string]interface{}{}, toolHistory)
+	require.NoError(t, err)
+	assert.True(t, decision.Allowed)
+
+	// Disallowed tool with history still denied
+	decision, err = engine.EvaluateToolAccess(ctx, "shell_exec", map[string]interface{}{}, toolHistory)
+	require.NoError(t, err)
+	assert.False(t, decision.Allowed)
+}
+
+func TestEngineLoopContainment(t *testing.T) {
+	ctx := context.Background()
+
+	policyWithLimits := newTestPolicy()
+	policyWithLimits.Policies.ResourceLimits = &ResourceLimitsConfig{
+		MaxIterations:      5,
+		MaxToolCallsPerRun: 10,
+		MaxCostPerRun:      1.0,
+	}
+	policyWithLimits.ComputeHash([]byte("test"))
+
+	engineWithLimits, err := NewEngine(ctx, policyWithLimits)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name        string
+		engine      *Engine
+		iteration   int
+		toolCalls   int
+		cost        float64
+		wantAllowed bool
+	}{
+		{
+			name:        "max_iterations exceeded",
+			engine:      engineWithLimits,
+			iteration:   6,
+			toolCalls:   0,
+			cost:        0,
+			wantAllowed: false,
+		},
+		{
+			name:        "max_iterations within",
+			engine:      engineWithLimits,
+			iteration:   3,
+			toolCalls:   0,
+			cost:        0,
+			wantAllowed: true,
+		},
+		{
+			name:        "max_tool_calls_per_run exceeded",
+			engine:      engineWithLimits,
+			iteration:   1,
+			toolCalls:   15,
+			cost:        0,
+			wantAllowed: false,
+		},
+		{
+			name:        "max_cost_per_run exceeded",
+			engine:      engineWithLimits,
+			iteration:   1,
+			toolCalls:   0,
+			cost:        1.5,
+			wantAllowed: false,
+		},
+		{
+			name:        "all within bounds",
+			engine:      engineWithLimits,
+			iteration:   2,
+			toolCalls:   3,
+			cost:        0.5,
+			wantAllowed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision, err := tt.engine.EvaluateLoopContainment(ctx, tt.iteration, tt.toolCalls, tt.cost)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAllowed, decision.Allowed)
+		})
+	}
+
+	// No resource_limits set: should allow (no deny)
+	policyNoLimits := newTestPolicy()
+	policyNoLimits.Policies.ResourceLimits = nil
+	policyNoLimits.ComputeHash([]byte("test"))
+	engineNoLimits, err := NewEngine(ctx, policyNoLimits)
+	require.NoError(t, err)
+	decision, err := engineNoLimits.EvaluateLoopContainment(ctx, 100, 100, 1000.0)
+	require.NoError(t, err)
+	assert.True(t, decision.Allowed)
 }
 
 func TestEngineSecretAccess(t *testing.T) {

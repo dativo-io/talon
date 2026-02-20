@@ -35,6 +35,7 @@ var allPolicies = []regoPolicy{
 	{file: "rego/cost_limits.rego", query: "data.talon.policy.cost_limits.deny"},
 	{file: "rego/rate_limits.rego", query: "data.talon.policy.rate_limits.deny"},
 	{file: "rego/time_restrictions.rego", query: "data.talon.policy.time_restrictions.deny"},
+	{file: "rego/resource_limits.rego", query: "data.talon.policy.resource_limits.deny"},
 	{file: "rego/tool_access.rego", query: "data.talon.policy.tool_access.deny"},
 	{file: "rego/secret_access.rego", query: "data.talon.policy.secret_access.deny"},
 	{file: "rego/memory_governance.rego", query: "data.talon.policy.memory_governance.deny"},
@@ -153,16 +154,25 @@ func (e *Engine) Evaluate(ctx context.Context, input map[string]interface{}) (*D
 }
 
 // EvaluateToolAccess checks whether the given tool call is allowed.
-func (e *Engine) EvaluateToolAccess(ctx context.Context, toolName string, params map[string]interface{}) (*Decision, error) {
+// tool_history is optional: when non-nil, it provides the sequence of tool calls in this run
+// so that future Rego rules can implement tool-chain risk scoring (e.g. deny "read_db" then "send_email").
+// Each element should have "name", and optionally "params" and "result_summary".
+func (e *Engine) EvaluateToolAccess(ctx context.Context, toolName string, params map[string]interface{}, toolHistory []map[string]interface{}) (*Decision, error) {
 	ctx, span := tracer.Start(ctx, "policy.evaluate_tool_access",
 		trace.WithAttributes(
 			attribute.String("tool.name", toolName),
+			attribute.Int("tool_history_len", len(toolHistory)),
 		))
 	defer span.End()
 
+	th := toolHistory
+	if th == nil {
+		th = []map[string]interface{}{}
+	}
 	input := map[string]interface{}{
-		"tool_name": toolName,
-		"params":    params,
+		"tool_name":    toolName,
+		"params":       params,
+		"tool_history": mapSliceToInterface(th),
 	}
 
 	decision := &Decision{
@@ -189,6 +199,45 @@ func (e *Engine) EvaluateToolAccess(ctx context.Context, toolName string, params
 	)
 	if decision.Allowed {
 		span.SetStatus(codes.Ok, "policy evaluation passed")
+	}
+
+	return decision, nil
+}
+
+// EvaluateLoopContainment checks whether the current agentic loop state exceeds resource_limits.
+// Call with current iteration, number of tool calls so far, and cost so far (EUR).
+// Returns a deny decision when max_iterations, max_tool_calls_per_run, or max_cost_per_run would be exceeded.
+func (e *Engine) EvaluateLoopContainment(ctx context.Context, currentIteration, toolCallsThisRun int, costThisRun float64) (*Decision, error) {
+	ctx, span := tracer.Start(ctx, "policy.evaluate_loop_containment",
+		trace.WithAttributes(
+			attribute.Int("current_iteration", currentIteration),
+			attribute.Int("tool_calls_this_run", toolCallsThisRun),
+			attribute.Float64("cost_this_run", costThisRun),
+		))
+	defer span.End()
+
+	input := map[string]interface{}{
+		"current_iteration":   currentIteration,
+		"tool_calls_this_run": toolCallsThisRun,
+		"cost_this_run":       costThisRun,
+	}
+
+	decision := &Decision{
+		Allowed:       true,
+		Action:        "allow",
+		PolicyVersion: e.policy.VersionTag,
+	}
+
+	reasons, err := e.evaluateDenyPolicy(ctx, "rego/resource_limits.rego", input)
+	if err != nil {
+		span.RecordError(err)
+		return nil, err
+	}
+	decision.Reasons = append(decision.Reasons, reasons...)
+
+	if len(decision.Reasons) > 0 {
+		decision.Allowed = false
+		decision.Action = "deny"
 	}
 
 	return decision, nil
@@ -362,6 +411,15 @@ func evaluateDenyReasons(ctx context.Context, prepared map[string]rego.PreparedE
 	}
 
 	return reasons, nil
+}
+
+// mapSliceToInterface converts []map[string]interface{} to []interface{} for OPA input.
+func mapSliceToInterface(s []map[string]interface{}) []interface{} {
+	out := make([]interface{}, len(s))
+	for i, m := range s {
+		out[i] = m
+	}
+	return out
 }
 
 // policyToData converts a Policy struct to map[string]interface{} for OPA.

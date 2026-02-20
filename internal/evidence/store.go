@@ -118,6 +118,26 @@ type Compliance struct {
 	DataLocation string   `json:"data_location"`
 }
 
+// StepEvidence is a per-step audit record within an agent run (e.g. one LLM call or one tool call).
+// Linked to the parent Evidence via CorrelationID. Signed individually for integrity.
+type StepEvidence struct {
+	ID            string    `json:"id"`
+	CorrelationID string    `json:"correlation_id"`
+	TenantID      string    `json:"tenant_id"`
+	AgentID       string    `json:"agent_id"`
+	StepIndex     int       `json:"step_index"`
+	Type          string    `json:"type"` // "llm_call" or "tool_call"
+	ToolName      string    `json:"tool_name,omitempty"`
+	InputHash     string    `json:"input_hash,omitempty"`
+	OutputHash    string    `json:"output_hash,omitempty"`
+	InputSummary  string    `json:"input_summary,omitempty"` // Truncated for audit readability
+	OutputSummary string    `json:"output_summary,omitempty"`
+	DurationMS    int64     `json:"duration_ms"`
+	CostEUR       float64   `json:"cost_eur"`
+	Timestamp     time.Time `json:"timestamp"`
+	Signature     string    `json:"signature"`
+}
+
 // NewStore creates an evidence store with HMAC signing.
 func NewStore(dbPath string, signingKey string) (*Store, error) {
 	db, err := sql.Open("sqlite3", dbPath)
@@ -141,6 +161,20 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 	CREATE INDEX IF NOT EXISTS idx_evidence_agent ON evidence(agent_id);
 	CREATE INDEX IF NOT EXISTS idx_evidence_timestamp ON evidence(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_evidence_correlation ON evidence(correlation_id);
+
+	CREATE TABLE IF NOT EXISTS step_evidence (
+		id TEXT PRIMARY KEY,
+		correlation_id TEXT NOT NULL,
+		tenant_id TEXT NOT NULL,
+		agent_id TEXT NOT NULL,
+		step_index INTEGER NOT NULL,
+		step_type TEXT NOT NULL,
+		tool_name TEXT,
+		step_json TEXT NOT NULL,
+		signature TEXT NOT NULL,
+		timestamp TIMESTAMP NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_step_evidence_correlation ON step_evidence(correlation_id);
 	`
 
 	if _, err := db.ExecContext(context.Background(), schema); err != nil {
@@ -199,6 +233,70 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 	}
 
 	return nil
+}
+
+// StoreStep saves a step-level evidence record with HMAC signature.
+func (s *Store) StoreStep(ctx context.Context, step *StepEvidence) error {
+	ctx, span := tracer.Start(ctx, "evidence.store_step",
+		trace.WithAttributes(
+			attribute.String("step.id", step.ID),
+			attribute.String("correlation_id", step.CorrelationID),
+			attribute.Int("step_index", step.StepIndex),
+		))
+	defer span.End()
+
+	step.Signature = ""
+	stepJSON, err := json.Marshal(step)
+	if err != nil {
+		return fmt.Errorf("marshaling step evidence: %w", err)
+	}
+	signature, err := s.signer.Sign(stepJSON)
+	if err != nil {
+		return fmt.Errorf("signing step evidence: %w", err)
+	}
+	step.Signature = signature
+	stepJSONWithSig, _ := json.Marshal(step)
+
+	query := `INSERT INTO step_evidence (id, correlation_id, tenant_id, agent_id, step_index, step_type, tool_name, step_json, signature, timestamp)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err = s.db.ExecContext(ctx, query,
+		step.ID, step.CorrelationID, step.TenantID, step.AgentID, step.StepIndex, step.Type, step.ToolName,
+		string(stepJSONWithSig), signature, step.Timestamp,
+	)
+	if err != nil {
+		return fmt.Errorf("storing step evidence: %w", err)
+	}
+	return nil
+}
+
+// ListStepsByCorrelationID returns all step evidence for a given run (correlation_id), ordered by step_index.
+func (s *Store) ListStepsByCorrelationID(ctx context.Context, correlationID string) ([]StepEvidence, error) {
+	ctx, span := tracer.Start(ctx, "evidence.list_steps",
+		trace.WithAttributes(attribute.String("correlation_id", correlationID)))
+	defer span.End()
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT step_json FROM step_evidence WHERE correlation_id = ? ORDER BY step_index`,
+		correlationID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying step evidence: %w", err)
+	}
+	defer rows.Close()
+
+	var steps []StepEvidence
+	for rows.Next() {
+		var stepJSON string
+		if err := rows.Scan(&stepJSON); err != nil {
+			return nil, fmt.Errorf("scanning step: %w", err)
+		}
+		var step StepEvidence
+		if err := json.Unmarshal([]byte(stepJSON), &step); err != nil {
+			return nil, fmt.Errorf("unmarshaling step: %w", err)
+		}
+		steps = append(steps, step)
+	}
+	return steps, rows.Err()
 }
 
 // Get retrieves evidence by ID.

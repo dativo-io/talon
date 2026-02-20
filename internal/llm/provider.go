@@ -41,9 +41,13 @@ type Request struct {
 }
 
 // Message represents a chat message.
+// For assistant messages that requested tool calls, set ToolCalls.
+// For tool result messages, set Role "tool", Content (result), and ToolCallID.
 type Message struct {
-	Role    string // "system", "user", "assistant"
-	Content string
+	Role       string     // "system", "user", "assistant", "tool"
+	Content    string     // for "tool" role this is the tool result
+	ToolCallID string     // for role "tool": ID of the tool call this result answers
+	ToolCalls  []ToolCall // for role "assistant": tool calls made by the model
 }
 
 // Tool represents an MCP tool definition passed to the LLM.

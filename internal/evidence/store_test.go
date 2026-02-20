@@ -552,6 +552,41 @@ func BenchmarkEvidenceStore(b *testing.B) {
 	}
 }
 
+func TestStoreStepAndListSteps(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	corrID := "corr_step_test"
+	_, err := gen.GenerateStep(ctx, StepParams{
+		CorrelationID: corrID, TenantID: "acme", AgentID: "agent",
+		StepIndex: 0, Type: "llm_call",
+		OutputSummary: "model response summary",
+		DurationMS:    100, CostEUR: 0.002,
+	})
+	require.NoError(t, err)
+
+	_, err = gen.GenerateStep(ctx, StepParams{
+		CorrelationID: corrID, TenantID: "acme", AgentID: "agent",
+		StepIndex: 1, Type: "tool_call", ToolName: "search",
+		OutputSummary: "tool result",
+		DurationMS:    5, CostEUR: 0,
+	})
+	require.NoError(t, err)
+
+	steps, err := store.ListStepsByCorrelationID(ctx, corrID)
+	require.NoError(t, err)
+	require.Len(t, steps, 2)
+	assert.Equal(t, 0, steps[0].StepIndex)
+	assert.Equal(t, "llm_call", steps[0].Type)
+	assert.Equal(t, int64(100), steps[0].DurationMS)
+	assert.Equal(t, 1, steps[1].StepIndex)
+	assert.Equal(t, "tool_call", steps[1].Type)
+	assert.Equal(t, "search", steps[1].ToolName)
+	assert.NotEmpty(t, steps[0].Signature)
+	assert.NotEmpty(t, steps[1].Signature)
+}
+
 func BenchmarkCostTotal(b *testing.B) {
 	dir := b.TempDir()
 	store, err := NewStore(filepath.Join(dir, "evidence.db"), testSigningKey)

@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -75,12 +76,31 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req *Request) (*Response,
 	ctx, cancel := context.WithTimeout(ctx, TimeoutLLMCall)
 	defer cancel()
 
-	// Convert messages
+	// Convert messages (including tool role and assistant tool_calls for agentic loop)
 	messages := make([]openai.ChatCompletionMessage, len(req.Messages))
 	for i, msg := range req.Messages {
 		messages[i] = openai.ChatCompletionMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
+			Role:       msg.Role,
+			Content:    msg.Content,
+			ToolCallID: msg.ToolCallID,
+		}
+		if len(msg.ToolCalls) > 0 {
+			messages[i].ToolCalls = make([]openai.ToolCall, len(msg.ToolCalls))
+			for j, tc := range msg.ToolCalls {
+				args := ""
+				if len(tc.Arguments) > 0 {
+					b, _ := json.Marshal(tc.Arguments)
+					args = string(b)
+				}
+				messages[i].ToolCalls[j] = openai.ToolCall{
+					ID:   tc.ID,
+					Type: openai.ToolTypeFunction,
+					Function: openai.FunctionCall{
+						Name:      tc.Name,
+						Arguments: args,
+					},
+				}
+			}
 		}
 	}
 
@@ -89,6 +109,23 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req *Request) (*Response,
 		Messages:    messages,
 		Temperature: float32(req.Temperature),
 		MaxTokens:   req.MaxTokens,
+	}
+	if len(req.Tools) > 0 {
+		chatReq.Tools = make([]openai.Tool, len(req.Tools))
+		for i, t := range req.Tools {
+			params := t.Parameters
+			if params == nil {
+				params = map[string]interface{}{}
+			}
+			chatReq.Tools[i] = openai.Tool{
+				Type: openai.ToolTypeFunction,
+				Function: &openai.FunctionDefinition{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  params,
+				},
+			}
+		}
 	}
 
 	resp, err := p.client.CreateChatCompletion(ctx, chatReq)
@@ -107,13 +144,26 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req *Request) (*Response,
 		talonotel.GenAIResponseFinishReason.String(string(resp.Choices[0].FinishReason)),
 	)
 
-	return &Response{
+	out := &Response{
 		Content:      resp.Choices[0].Message.Content,
 		FinishReason: string(resp.Choices[0].FinishReason),
 		InputTokens:  resp.Usage.PromptTokens,
 		OutputTokens: resp.Usage.CompletionTokens,
 		Model:        resp.Model,
-	}, nil
+	}
+	// Parse tool calls for agentic loop
+	for _, tc := range resp.Choices[0].Message.ToolCalls {
+		args := make(map[string]interface{})
+		if tc.Function.Arguments != "" {
+			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+		}
+		out.ToolCalls = append(out.ToolCalls, ToolCall{
+			ID:        tc.ID,
+			Name:      tc.Function.Name,
+			Arguments: args,
+		})
+	}
+	return out, nil
 }
 
 // EstimateCost estimates the cost in EUR for the given model and token counts.

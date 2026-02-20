@@ -485,6 +485,8 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 // policyEval is the per-run OPA engine used for memory governance to avoid data races when concurrent Run() share one Governance.
 // When observationOverride is true, originalDecision holds the policy deny that was overridden for audit-only (shadow) mode.
 // costEstimate is the pre-run cost estimate from Run() (same value used for policy input and plan-review gate).
+//
+//nolint:gocyclo // orchestration flow is inherently branched; splitting would obscure the pipeline
 func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64) (*RunResponse, error) {
 	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
 	provider, model, degraded, originalModel, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx)
@@ -506,16 +508,6 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		return resp, err
 	}
 
-	// Step 7: Call LLM
-	llmReq := &llm.Request{
-		Model: model,
-		Messages: []llm.Message{
-			{Role: "user", Content: prompt},
-		},
-		Temperature: 0.7,
-		MaxTokens:   2000,
-	}
-
 	modelRationale := "primary"
 	if degraded && originalModel != "" {
 		modelRationale = "degraded from primary " + originalModel + " to fallback " + model
@@ -525,45 +517,166 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		policyDec = evidence.PolicyDecision{Allowed: false, Action: originalDecision.Action, Reasons: originalDecision.Reasons, PolicyVersion: pol.VersionTag}
 	}
 
-	llmResp, err := provider.Generate(ctx, llmReq)
-	if err != nil {
-		span.RecordError(err)
-		duration := time.Since(startTime)
-		_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
-			CorrelationID:           correlationID,
-			TenantID:                req.TenantID,
-			AgentID:                 req.AgentName,
-			InvocationType:          req.InvocationType,
-			RequestSourceID:         req.InvocationType,
-			PolicyDecision:          policyDec,
-			Classification:          evidence.Classification{InputTier: tier, PIIDetected: piiNames},
-			AttachmentScan:          attScan,
-			ModelUsed:               model,
-			OriginalModel:           originalModel,
-			Degraded:                degraded,
-			ModelRoutingRationale:   modelRationale,
-			DurationMS:              duration.Milliseconds(),
-			Error:                   err.Error(),
-			SecretsAccessed:         secretsAccessed,
-			InputPrompt:             req.Prompt,
-			Compliance:              compliance,
-			ObservationModeOverride: observationOverride,
-		})
-		return nil, fmt.Errorf("calling LLM: %w", err)
+	// Agentic loop: max_iterations from policy (0 or 1 = single call); tools from registry filtered by allowed_tools
+	maxIterations := 1
+	if pol.Policies.ResourceLimits != nil && pol.Policies.ResourceLimits.MaxIterations > 0 {
+		maxIterations = pol.Policies.ResourceLimits.MaxIterations
+		if maxIterations > 50 {
+			maxIterations = 50
+		}
 	}
+	llmTools := r.buildLLMTools(pol)
+	// Only OpenAI supports tool calls in the API; other providers would ignore or error on tool messages
+	useAgenticLoop := len(llmTools) > 0 && maxIterations >= 2 && provider.Name() == "openai"
 
-	// Hook: post-LLM
-	costEUR := provider.EstimateCost(model, llmResp.InputTokens, llmResp.OutputTokens)
-	llm.RecordCostMetrics(ctx, costEUR, req.AgentName, model, degraded)
-	_, _ = r.fireHook(ctx, HookPostLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
-		"model":         model,
-		"cost_estimate": costEUR,
-		"input_tokens":  llmResp.InputTokens,
-		"output_tokens": llmResp.OutputTokens,
-	})
+	var messages []llm.Message
+	var llmResp *llm.Response
+	var costEUR float64
+	var totalInputTokens, totalOutputTokens int
+	var toolsCalled []string
 
-	// Step 7.5: Tool execution (policy-checked, recorded in evidence)
-	toolsCalled := r.executeToolInvocations(ctx, span, req, policyEval, pol)
+	if useAgenticLoop {
+		messages = []llm.Message{{Role: "user", Content: prompt}}
+		perRequest := 0.0
+		if pol.Policies.CostLimits != nil && pol.Policies.CostLimits.PerRequest > 0 {
+			perRequest = pol.Policies.CostLimits.PerRequest
+		}
+		stepIndex := 0
+		var toolHistory []map[string]interface{} // passed to OPA for future tool-chain risk scoring
+		for iteration := 1; ; iteration++ {
+			llmReq := &llm.Request{
+				Model:       model,
+				Messages:    messages,
+				Temperature: 0.7,
+				MaxTokens:   2000,
+				Tools:       llmTools,
+			}
+			iterStart := time.Now()
+			resp, err := provider.Generate(ctx, llmReq)
+			if err != nil {
+				span.RecordError(err)
+				duration := time.Since(startTime)
+				_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+					CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+					InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
+					PolicyDecision: policyDec, Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
+					AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
+					ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(), Error: err.Error(),
+					SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, Compliance: compliance,
+					ObservationModeOverride: observationOverride,
+				})
+				return nil, fmt.Errorf("calling LLM: %w", err)
+			}
+			iterDuration := time.Since(iterStart).Milliseconds()
+			iterCost := provider.EstimateCost(model, resp.InputTokens, resp.OutputTokens)
+			costEUR += iterCost
+			totalInputTokens += resp.InputTokens
+			totalOutputTokens += resp.OutputTokens
+			llm.RecordCostMetrics(ctx, iterCost, req.AgentName, model, degraded)
+			_, _ = r.fireHook(ctx, HookPostLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
+				"model": model, "cost_estimate": iterCost, "input_tokens": resp.InputTokens, "output_tokens": resp.OutputTokens,
+			})
+
+			// Step-level evidence: one record per LLM call in the loop
+			_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
+				CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+				StepIndex: stepIndex, Type: "llm_call",
+				OutputSummary: truncateStr(resp.Content, 500),
+				DurationMS:    iterDuration, CostEUR: iterCost,
+			})
+			stepIndex++
+
+			llmResp = resp
+			if perRequest > 0 && costEUR > perRequest {
+				log.Warn().Float64("total_cost", costEUR).Float64("per_request", perRequest).Msg("agent_loop_stopped_per_request_budget")
+				break
+			}
+			rl := pol.Policies.ResourceLimits
+			if rl != nil && rl.MaxToolCallsPerRun > 0 && len(toolsCalled) >= rl.MaxToolCallsPerRun {
+				log.Warn().Int("tool_calls", len(toolsCalled)).Int("max", rl.MaxToolCallsPerRun).Msg("agent_loop_stopped_max_tool_calls")
+				break
+			}
+			if rl != nil && rl.MaxCostPerRun > 0 && costEUR >= rl.MaxCostPerRun {
+				log.Warn().Float64("cost", costEUR).Float64("max", rl.MaxCostPerRun).Msg("agent_loop_stopped_max_cost_per_run")
+				break
+			}
+			if policyEngine, ok := policyEval.(*policy.Engine); ok {
+				if dec, err := policyEngine.EvaluateLoopContainment(ctx, iteration, len(toolsCalled), costEUR); err == nil && dec != nil && !dec.Allowed {
+					log.Warn().Strs("reasons", dec.Reasons).Msg("agent_loop_stopped_loop_containment")
+					break
+				}
+			}
+			if len(resp.ToolCalls) == 0 || iteration >= maxIterations {
+				break
+			}
+			// Append assistant message with tool calls, then execute each and append tool results
+			assistantMsg := llm.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls}
+			messages = append(messages, assistantMsg)
+			for _, tc := range resp.ToolCalls {
+				_, _ = r.fireHook(ctx, HookPreTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
+					"tool": tc.Name, "tool_call_id": tc.ID,
+				})
+				toolStart := time.Now()
+				resultContent, executed, toolName := r.executeOneToolCall(ctx, policyEval, pol, tc, toolHistory)
+				toolDuration := time.Since(toolStart).Milliseconds()
+				if executed {
+					toolsCalled = append(toolsCalled, toolName)
+				}
+				// Append to tool_history for next tool's policy evaluation (tool-chain risk scoring)
+				toolHistory = append(toolHistory, map[string]interface{}{
+					"name":           toolName,
+					"params":         tc.Arguments,
+					"result_summary": truncateStr(resultContent, 200),
+				})
+				_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
+					CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+					StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
+					OutputSummary: truncateStr(resultContent, 500),
+					DurationMS:    toolDuration, CostEUR: 0,
+				})
+				stepIndex++
+				messages = append(messages, llm.Message{Role: "tool", Content: resultContent, ToolCallID: tc.ID})
+				_, _ = r.fireHook(ctx, HookPostTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
+					"tool": tc.Name, "executed": executed,
+				})
+			}
+		}
+	} else {
+		// Single LLM call (no agentic loop)
+		llmReq := &llm.Request{
+			Model: model,
+			Messages: []llm.Message{
+				{Role: "user", Content: prompt},
+			},
+			Temperature: 0.7,
+			MaxTokens:   2000,
+		}
+		resp, err := provider.Generate(ctx, llmReq)
+		if err != nil {
+			span.RecordError(err)
+			duration := time.Since(startTime)
+			_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+				CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+				InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
+				PolicyDecision: policyDec, Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
+				AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
+				ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(), Error: err.Error(),
+				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, Compliance: compliance,
+				ObservationModeOverride: observationOverride,
+			})
+			return nil, fmt.Errorf("calling LLM: %w", err)
+		}
+		llmResp = resp
+		costEUR = provider.EstimateCost(model, resp.InputTokens, resp.OutputTokens)
+		totalInputTokens = resp.InputTokens
+		totalOutputTokens = resp.OutputTokens
+		llm.RecordCostMetrics(ctx, costEUR, req.AgentName, model, degraded)
+		_, _ = r.fireHook(ctx, HookPostLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
+			"model": model, "cost_estimate": costEUR, "input_tokens": resp.InputTokens, "output_tokens": resp.OutputTokens,
+		})
+		// Step 7.5: Pre-specified tool invocations (legacy path)
+		toolsCalled = r.executeToolInvocations(ctx, span, req, policyEval, pol)
+	}
 
 	// Step 8: Classify output
 	outputClass := r.classifier.Scan(ctx, llmResp.Content)
@@ -591,7 +704,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		ModelRoutingRationale:   modelRationale,
 		ToolsCalled:             toolsCalled,
 		CostEUR:                 costEUR,
-		Tokens:                  evidence.TokenUsage{Input: llmResp.InputTokens, Output: llmResp.OutputTokens},
+		Tokens:                  evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
 		DurationMS:              duration.Milliseconds(),
 		SecretsAccessed:         secretsAccessed,
 		MemoryReads:             memReads,
@@ -651,7 +764,7 @@ func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, re
 			if paramsMap == nil {
 				paramsMap = make(map[string]interface{})
 			}
-			dec, err := policyEngine.EvaluateToolAccess(ctx, inv.Name, paramsMap)
+			dec, err := policyEngine.EvaluateToolAccess(ctx, inv.Name, paramsMap, nil)
 			if err != nil {
 				log.Warn().Err(err).Str("tool", inv.Name).Msg("tool access policy evaluation failed")
 				continue
@@ -676,6 +789,83 @@ func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, re
 		span.SetAttributes(attribute.StringSlice("tool.called", called))
 	}
 	return called
+}
+
+// buildLLMTools returns LLM tool definitions from the registry, filtered by policy allowed_tools.
+// Empty allowed_tools means no tools are passed to the LLM (single-call behavior).
+func (r *Runner) buildLLMTools(pol *policy.Policy) []llm.Tool {
+	if r.toolRegistry == nil || pol.Capabilities == nil {
+		return nil
+	}
+	allowed := pol.Capabilities.AllowedTools
+	list := r.toolRegistry.List()
+	if len(allowed) == 0 || len(list) == 0 {
+		return nil
+	}
+	allowedSet := make(map[string]bool)
+	for _, n := range allowed {
+		allowedSet[n] = true
+	}
+	var out []llm.Tool
+	for _, t := range list {
+		if !allowedSet[t.Name()] {
+			continue
+		}
+		schema := t.InputSchema()
+		var params map[string]interface{}
+		if len(schema) > 0 {
+			_ = json.Unmarshal(schema, &params)
+		}
+		if params == nil {
+			params = make(map[string]interface{})
+		}
+		out = append(out, llm.Tool{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  params,
+		})
+	}
+	return out
+}
+
+// executeOneToolCall runs policy check, registry lookup, and execution for a single LLM tool call.
+// toolHistory is the sequence of tool calls in this run so far (for OPA tool-chain risk scoring).
+// Returns (result content for the tool message, whether the tool was executed, tool name).
+func (r *Runner) executeOneToolCall(ctx context.Context, policyEval memory.PolicyEvaluator, pol *policy.Policy, tc llm.ToolCall, toolHistory []map[string]interface{}) (resultContent string, executed bool, toolName string) {
+	toolName = tc.Name
+	if r.toolRegistry == nil {
+		return `{"error":"tool registry not available"}`, false, toolName
+	}
+	policyEngine, _ := policyEval.(*policy.Engine)
+	if policyEngine != nil {
+		dec, err := policyEngine.EvaluateToolAccess(ctx, tc.Name, tc.Arguments, toolHistory)
+		if err != nil {
+			log.Warn().Err(err).Str("tool", tc.Name).Msg("tool access policy evaluation failed")
+			return fmt.Sprintf(`{"error":"policy evaluation failed: %s"}`, err.Error()), false, toolName
+		}
+		if dec != nil && !dec.Allowed {
+			log.Warn().Str("tool", tc.Name).Strs("reasons", dec.Reasons).Msg("tool access denied by policy")
+			reasonsJSON, _ := json.Marshal(dec.Reasons)
+			return fmt.Sprintf(`{"error":"denied by policy","reasons":%s}`, string(reasonsJSON)), false, toolName
+		}
+	}
+	tool, ok := r.toolRegistry.Get(tc.Name)
+	if !ok {
+		return `{"error":"tool not in registry"}`, false, toolName
+	}
+	params, _ := json.Marshal(tc.Arguments)
+	if len(params) == 0 {
+		params = []byte("{}")
+	}
+	out, err := tool.Execute(ctx, params)
+	if err != nil {
+		log.Warn().Err(err).Str("tool", tc.Name).Msg("tool execution failed")
+		return fmt.Sprintf(`{"error":"%s"}`, err.Error()), false, toolName
+	}
+	if len(out) == 0 {
+		return "{}", true, toolName
+	}
+	return string(out), true, toolName
 }
 
 const (
@@ -894,6 +1084,13 @@ func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int,
 }
 
 // entityNames extracts type strings from PIIEntity slice for evidence records.
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 func entityNames(entities []classifier.PIIEntity) []string {
 	if len(entities) == 0 {
 		return nil
