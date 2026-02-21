@@ -1,6 +1,9 @@
 package cmd
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+)
 
 // formatCost formats cost for display: sub-cent as 6 decimals or "< 0.0001" for tiny amounts.
 func formatCost(c float64) string {
@@ -11,4 +14,10 @@ func formatCost(c float64) string {
 		return fmt.Sprintf("%.6f", c)
 	}
 	return fmt.Sprintf("%.6f", c)
+}
+
+// formatCostNumeric formats cost as a numeric string for machine-readable export (e.g. CSV).
+// Always returns a valid number parseable by spreadsheets and BI tools; never "< 0.0001".
+func formatCostNumeric(c float64) string {
+	return strconv.FormatFloat(c, 'f', 6, 64)
 }

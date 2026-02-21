@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,6 +28,26 @@ func TestFormatCost(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := formatCost(tt.c)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestFormatCostNumeric(t *testing.T) {
+	tests := []struct {
+		name string
+		c    float64
+	}{
+		{"zero", 0},
+		{"tiny positive", 0.00005},
+		{"small positive", 0.0003},
+		{"normal", 1.5},
+		{"negative", -0.5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatCostNumeric(tt.c)
+			_, err := strconv.ParseFloat(got, 64)
+			assert.NoError(t, err, "formatCostNumeric must produce parseable numeric string, got %q", got)
 		})
 	}
 }

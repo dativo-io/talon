@@ -225,7 +225,7 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 			r.AgentID,
 			r.InvocationType,
 			strconv.FormatBool(r.Allowed),
-			formatCost(r.Cost),
+			formatCostNumeric(r.Cost),
 			r.ModelUsed,
 			strconv.FormatInt(r.DurationMS, 10),
 			strconv.FormatBool(r.HasError),
