@@ -259,6 +259,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		policyPath = req.AgentName + ".talon.yaml"
 	}
 	var safePath string
+	var loadBaseDir string
 	if filepath.IsAbs(policyPath) {
 		var err error
 		safePath, err = filepath.Abs(filepath.Clean(policyPath))
@@ -266,16 +267,18 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			span.RecordError(err)
 			return nil, fmt.Errorf("policy path: %w", err)
 		}
+		loadBaseDir = filepath.Dir(safePath)
 	} else {
 		var err error
-		safePath, err = safePolicyPathUnder(r.policyDir, policyPath)
+		_, err = safePolicyPathUnder(r.policyDir, policyPath)
 		if err != nil {
 			span.RecordError(err)
 			return nil, fmt.Errorf("policy path: %w", err)
 		}
+		loadBaseDir = r.policyDir
 	}
 
-	pol, err := policy.LoadPolicy(ctx, safePath, false)
+	pol, err := policy.LoadPolicy(ctx, policyPath, false, loadBaseDir)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("loading policy: %w", err)

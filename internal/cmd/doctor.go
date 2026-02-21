@@ -61,7 +61,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "\u2717 Policy: %s — file not found\n", policyPath)
 		ok = false
 	} else {
-		pol, err := policy.LoadPolicy(ctx, policyPath, false)
+		pol, err := policy.LoadPolicy(ctx, policyPath, false, ".")
 		if err != nil {
 			fmt.Fprintf(out, "\u2717 Policy: %s — %v\n", policyPath, err)
 			ok = false

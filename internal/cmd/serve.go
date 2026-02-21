@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -57,24 +56,24 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	cfg.WarnIfDefaultKeys()
 
+	policyBaseDir := "."
 	policyPath := cfg.DefaultPolicy
-	pol, err := policy.LoadPolicy(ctx, policyPath, false)
+	safePath, err := policy.ResolvePathUnderBase(policyBaseDir, policyPath)
+	if err != nil {
+		return fmt.Errorf("policy path: %w", err)
+	}
+	pol, err := policy.LoadPolicy(ctx, policyPath, false, policyBaseDir)
 	if err != nil {
 		return fmt.Errorf("loading policy: %w", err)
 	}
-	// Resolve to absolute so chat completions handler and runner receive a path that
-	// is not restricted to policyDir (e.g. Docker volume at /etc/talon/policies).
-	policyPath, err = filepath.Abs(policyPath)
-	if err != nil {
-		return fmt.Errorf("resolving policy path: %w", err)
-	}
+	policyPath = safePath
 
 	cls := classifier.MustNewScanner()
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
 
 	providers := buildProviders(cfg)
-	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath)
+	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, policyBaseDir)
 	router := llm.NewRouter(routing, providers, costLimits)
 
 	secretsStore, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)

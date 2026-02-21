@@ -78,20 +78,33 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		policyPath = cfg.DefaultPolicy
 	}
 
-	if _, err := os.Stat(policyPath); err != nil {
+	baseDir := "."
+	safePath, err := policy.ResolvePathUnderBase(baseDir, policyPath)
+	if err != nil {
+		// Allow absolute paths (e.g. e2e or Docker): constrain to the path's directory.
+		if filepath.IsAbs(filepath.Clean(policyPath)) {
+			safePath, err = filepath.Abs(filepath.Clean(policyPath))
+			if err != nil {
+				return fmt.Errorf("policy path: %w", err)
+			}
+			baseDir = filepath.Dir(safePath)
+			if _, err := policy.ResolvePathUnderBase(baseDir, safePath); err != nil {
+				return fmt.Errorf("policy path: %w", err)
+			}
+		} else {
+			return fmt.Errorf("policy path: %w", err)
+		}
+	}
+	if _, err := os.Stat(safePath); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("policy file not found: %s — create a project first with: talon init", policyPath)
+			return fmt.Errorf("policy file not found: %s — create a project first with: talon init", safePath)
 		}
 		return fmt.Errorf("policy file: %w", err)
 	}
-	// Resolve to absolute so runner accepts paths outside CWD (e.g. talon run --policy /etc/talon/policies/agent.talon.yaml).
-	policyPath, err = filepath.Abs(policyPath)
-	if err != nil {
-		return fmt.Errorf("resolving policy path: %w", err)
-	}
+	policyPath = safePath
 
 	if runValidate {
-		if err := validatePolicyFile(ctx, policyPath); err != nil {
+		if err := validatePolicyFile(ctx, policyPath, baseDir); err != nil {
 			return fmt.Errorf("pre-flight validation failed: %w", err)
 		}
 		if verbose {
@@ -104,7 +117,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
 
 	providers := buildProviders(cfg)
-	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath)
+	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, baseDir)
 	router := llm.NewRouter(routing, providers, costLimits)
 
 	secretsStore, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
@@ -242,8 +255,8 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 }
 
 // validatePolicyFile runs the same checks as "talon validate" (schema, engine compile, PII scanner).
-func validatePolicyFile(ctx context.Context, policyPath string) error {
-	pol, err := policy.LoadPolicy(ctx, policyPath, false)
+func validatePolicyFile(ctx context.Context, policyPath, baseDir string) error {
+	pol, err := policy.LoadPolicy(ctx, policyPath, false, baseDir)
 	if err != nil {
 		return err
 	}
@@ -258,8 +271,8 @@ func validatePolicyFile(ctx context.Context, policyPath string) error {
 
 // loadRoutingAndCostLimits loads the policy file and returns model routing and cost limits
 // for the router (cost limits enable graceful degradation when budget threshold is hit).
-func loadRoutingAndCostLimits(ctx context.Context, policyPath string) (*policy.ModelRoutingConfig, *policy.CostLimitsConfig) {
-	pol, err := policy.LoadPolicy(ctx, policyPath, false)
+func loadRoutingAndCostLimits(ctx context.Context, policyPath, baseDir string) (*policy.ModelRoutingConfig, *policy.CostLimitsConfig) {
+	pol, err := policy.LoadPolicy(ctx, policyPath, false, baseDir)
 	if err != nil {
 		log.Debug().Err(err).Msg("could not pre-load policy for routing/cost config")
 		return nil, nil

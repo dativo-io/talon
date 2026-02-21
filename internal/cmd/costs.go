@@ -103,7 +103,7 @@ var costsCmd = &cobra.Command{
 }
 
 func printBudgetUtilization(w io.Writer, ctx context.Context, cfg *config.Config, tenantID string, daily, monthly float64) {
-	pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false)
+	pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
 	if err != nil || pol == nil || pol.Policies.CostLimits == nil {
 		return
 	}

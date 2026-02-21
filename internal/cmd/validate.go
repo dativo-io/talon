@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
@@ -29,7 +30,11 @@ var validateCmd = &cobra.Command{
 			validateFile = "agent.talon.yaml"
 		}
 
-		pol, err := policy.LoadPolicy(ctx, validateFile, validateStrict)
+		baseDir := "."
+		if filepath.IsAbs(filepath.Clean(validateFile)) {
+			baseDir = filepath.Dir(filepath.Clean(validateFile))
+		}
+		pol, err := policy.LoadPolicy(ctx, validateFile, validateStrict, baseDir)
 		if err != nil {
 			log.Error().
 				Err(err).
