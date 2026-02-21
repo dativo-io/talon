@@ -7,13 +7,22 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestFormatCost_ZeroDistinctFromTiny ensures zero cost is never displayed as "< 0.0001".
+// Regression test: zero (no runs, denied requests, empty periods) must show as "0.000000"
+// for compliance and financial reports, not as a tiny positive amount.
+func TestFormatCost_ZeroDistinctFromTiny(t *testing.T) {
+	got := formatCost(0)
+	assert.Equal(t, "0.000000", got, "zero cost must display as 0.000000 for compliance/financial clarity")
+	assert.NotEqual(t, "< 0.0001", got, "zero cost must not be displayed as tiny positive (misleading in reports)")
+}
+
 func TestFormatCost(t *testing.T) {
 	tests := []struct {
 		name string
 		c    float64
 		want string
 	}{
-		{"zero", 0, "< 0.0001"},
+		{"zero", 0, "0.000000"},
 		{"tiny positive below threshold", 0.00005, "< 0.0001"},
 		{"just below threshold", 0.0000999, "< 0.0001"},
 		{"boundary exactly 0.0001", 0.0001, "0.000100"},

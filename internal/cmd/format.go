@@ -5,9 +5,12 @@ import (
 	"strconv"
 )
 
-// formatCost formats cost for display: sub-cent as 6 decimals or "< 0.0001" for tiny amounts.
+// formatCost formats cost for display: zero as "0.000000", sub-cent as 6 decimals or "< 0.0001" for tiny positive amounts.
 func formatCost(c float64) string {
-	if c < 0.0001 && c >= 0 {
+	if c == 0 {
+		return "0.000000"
+	}
+	if c > 0 && c < 0.0001 {
 		return "< 0.0001"
 	}
 	if c < 0 {

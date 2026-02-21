@@ -52,8 +52,9 @@ func TestRenderCostReportAllAgents_EmptyMaps(t *testing.T) {
 	out := buf.String()
 	require.Contains(t, out, "Tenant: tenant1")
 	require.Contains(t, out, "Total")
-	// Totals are 0 so formatCost shows "< 0.0001"
-	require.Contains(t, out, "< 0.0001")
+	// Totals are 0 so formatCost must show "0.000000", not "< 0.0001" (compliance/financial)
+	require.Contains(t, out, "0.000000")
+	require.NotContains(t, out, "< 0.0001", "zero cost must not display as tiny positive in cost report")
 	// No duplicate separator when no agents (single "----" then Total)
 	require.NotRegexp(t, `----\s*\n\s*----\s*\n\s*Total`, out)
 }
@@ -80,7 +81,8 @@ func TestRenderCostByModel_EmptyMaps(t *testing.T) {
 	out := buf.String()
 	require.Contains(t, out, "Tenant: tenant1 (by model)")
 	require.Contains(t, out, "Total")
-	require.Contains(t, out, "< 0.0001") // zero total formatted as sub-cent
+	require.Contains(t, out, "0.000000") // zero total shows as 0.000000 (not "< 0.0001")
+	require.NotContains(t, out, "< 0.0001", "zero cost must not display as tiny positive")
 }
 
 func TestRenderCostByModel_OneModelOnlyInMonthly(t *testing.T) {
@@ -90,7 +92,7 @@ func TestRenderCostByModel_OneModelOnlyInMonthly(t *testing.T) {
 	renderCostByModel(&buf, "acme", "", byDaily, byMonthly)
 	out := buf.String()
 	assert.Contains(t, out, "gpt-4o")
-	assert.Contains(t, out, "< 0.0001") // daily is 0
+	assert.Contains(t, out, "0.000000") // daily is 0
 	assert.Contains(t, out, "5.000000") // monthly
 	assert.Contains(t, out, "Total")
 }
