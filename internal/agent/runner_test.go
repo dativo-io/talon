@@ -344,6 +344,63 @@ func TestSafePolicyPathUnder(t *testing.T) {
 	}
 }
 
+// TestRun_acceptsAbsolutePolicyPathOutsidePolicyDir ensures that when PolicyPath is an
+// absolute path (e.g. from --policy or serve config / Docker volume), the runner accepts it
+// even though it is outside policyDir. This fixes serve chat completions and talon run --policy
+// when the policy file lives outside CWD.
+func TestRun_acceptsAbsolutePolicyPathOutsidePolicyDir(t *testing.T) {
+	// Policy file in its own temp dir (simulates e.g. /etc/talon/policies)
+	policyDir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, policyDir, "out-of-cwd-agent")
+	require.FileExists(t, policyPath)
+	absPath, err := filepath.Abs(policyPath)
+	require.NoError(t, err)
+	// Runner with policyDir "." so absPath is outside it
+	runDir := t.TempDir()
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(runDir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(runDir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "ok"},
+	}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, providers, nil)
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         ".", // as in serve and run
+		DefaultPolicyPath: "",
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:       "default",
+		AgentName:      "out-of-cwd-agent",
+		Prompt:         "hello",
+		InvocationType: "manual",
+		PolicyPath:     absPath, // absolute path outside policyDir "."
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+}
+
 func TestPlanReviewConfigFromPolicy(t *testing.T) {
 	assert.Nil(t, planReviewConfigFromPolicy(nil))
 	cfg := &policy.PlanReviewConfig{

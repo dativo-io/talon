@@ -250,15 +250,29 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		Func(talonotel.LogTraceFields(ctx)).
 		Msg("agent_run_started")
 
-	// Step 1: Load policy (resolve path under policyDir to prevent path traversal)
+	// Step 1: Load policy
+	// Operator-provided absolute paths (--policy, cfg.DefaultPolicy, serve default) are trusted so that
+	// paths outside CWD work (e.g. Docker volumes at /etc/talon/policies). Relative paths (including
+	// when derived from AgentName) are resolved under policyDir to prevent path traversal.
 	policyPath := req.PolicyPath
 	if policyPath == "" {
 		policyPath = req.AgentName + ".talon.yaml"
 	}
-	safePath, err := safePolicyPathUnder(r.policyDir, policyPath)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("policy path: %w", err)
+	var safePath string
+	if filepath.IsAbs(policyPath) {
+		var err error
+		safePath, err = filepath.Abs(filepath.Clean(policyPath))
+		if err != nil {
+			span.RecordError(err)
+			return nil, fmt.Errorf("policy path: %w", err)
+		}
+	} else {
+		var err error
+		safePath, err = safePolicyPathUnder(r.policyDir, policyPath)
+		if err != nil {
+			span.RecordError(err)
+			return nil, fmt.Errorf("policy path: %w", err)
+		}
 	}
 
 	pol, err := policy.LoadPolicy(ctx, safePath, false)
