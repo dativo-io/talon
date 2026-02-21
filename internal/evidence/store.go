@@ -487,16 +487,23 @@ func (s *Store) CostByAgent(ctx context.Context, tenantID string, from, to time.
 }
 
 // CostByModel returns cost per model for the tenant in the half-open time range [from, to).
-// Uses json_extract on execution.model_used and execution.cost.
-func (s *Store) CostByModel(ctx context.Context, tenantID string, from, to time.Time) (map[string]float64, error) {
+// If agentID is non-empty, results are limited to that agent. Uses json_extract on execution.model_used and execution.cost.
+func (s *Store) CostByModel(ctx context.Context, tenantID, agentID string, from, to time.Time) (map[string]float64, error) {
 	ctx, span := tracer.Start(ctx, "evidence.cost_by_model",
-		trace.WithAttributes(attribute.String("tenant_id", tenantID)))
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("agent_id", agentID),
+		))
 	defer span.End()
 
 	query := `SELECT COALESCE(json_extract(evidence_json, '$.execution.model_used'), 'unknown'),
 	         SUM(COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur')))
 	         FROM evidence WHERE tenant_id = ?`
 	args := []interface{}{tenantID}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
 		args = append(args, from)

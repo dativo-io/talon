@@ -62,7 +62,7 @@ func TestRenderCostByModel(t *testing.T) {
 	var buf bytes.Buffer
 	byDaily := map[string]float64{"gpt-4o": 0.5, "gpt-4o-mini": 1.0}
 	byMonthly := map[string]float64{"gpt-4o": 10.0, "gpt-4o-mini": 20.0}
-	renderCostByModel(&buf, "acme", byDaily, byMonthly)
+	renderCostByModel(&buf, "acme", "", byDaily, byMonthly)
 	out := buf.String()
 	assert.Contains(t, out, "Tenant: acme (by model)")
 	assert.Contains(t, out, "Model")
@@ -76,7 +76,7 @@ func TestRenderCostByModel(t *testing.T) {
 
 func TestRenderCostByModel_EmptyMaps(t *testing.T) {
 	var buf bytes.Buffer
-	renderCostByModel(&buf, "tenant1", nil, nil)
+	renderCostByModel(&buf, "tenant1", "", nil, nil)
 	out := buf.String()
 	require.Contains(t, out, "Tenant: tenant1 (by model)")
 	require.Contains(t, out, "Total")
@@ -87,12 +87,23 @@ func TestRenderCostByModel_OneModelOnlyInMonthly(t *testing.T) {
 	var buf bytes.Buffer
 	byDaily := map[string]float64{}
 	byMonthly := map[string]float64{"gpt-4o": 5.0}
-	renderCostByModel(&buf, "acme", byDaily, byMonthly)
+	renderCostByModel(&buf, "acme", "", byDaily, byMonthly)
 	out := buf.String()
 	assert.Contains(t, out, "gpt-4o")
 	assert.Contains(t, out, "< 0.0001") // daily is 0
 	assert.Contains(t, out, "5.000000") // monthly
 	assert.Contains(t, out, "Total")
+}
+
+func TestRenderCostByModel_WithAgent(t *testing.T) {
+	var buf bytes.Buffer
+	byDaily := map[string]float64{"gpt-4o-mini": 0.5}
+	byMonthly := map[string]float64{"gpt-4o-mini": 5.0}
+	renderCostByModel(&buf, "acme", "sales-bot", byDaily, byMonthly)
+	out := buf.String()
+	require.Contains(t, out, "Tenant: acme | Agent: sales-bot (by model)")
+	require.Contains(t, out, "gpt-4o-mini")
+	require.Contains(t, out, "Total")
 }
 
 // TestCostsCmd_ShowsBudgetUtilization runs costs with a policy that has cost_limits

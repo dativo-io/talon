@@ -53,17 +53,17 @@ var costsCmd = &cobra.Command{
 		out := cmd.OutOrStdout()
 
 		if costsByModel {
-			byModelDaily, err := store.CostByModel(ctx, tenantID, dayStart, dayEnd)
+			byModelDaily, err := store.CostByModel(ctx, tenantID, costsAgent, dayStart, dayEnd)
 			if err != nil {
 				return fmt.Errorf("cost by model (daily): %w", err)
 			}
-			byModelMonthly, err := store.CostByModel(ctx, tenantID, monthStart, monthEnd)
+			byModelMonthly, err := store.CostByModel(ctx, tenantID, costsAgent, monthStart, monthEnd)
 			if err != nil {
 				return fmt.Errorf("cost by model (monthly): %w", err)
 			}
-			renderCostByModel(out, tenantID, byModelDaily, byModelMonthly)
-			// Optional: 7d trend
-			weekTotal, _ := store.CostTotal(ctx, tenantID, "", weekStart, dayEnd)
+			renderCostByModel(out, tenantID, costsAgent, byModelDaily, byModelMonthly)
+			// Optional: 7d trend (same agent filter when --agent is set)
+			weekTotal, _ := store.CostTotal(ctx, tenantID, costsAgent, weekStart, dayEnd)
 			fmt.Fprintf(out, "  7d total: €%s\n", formatCost(weekTotal))
 			return nil
 		}
@@ -131,10 +131,10 @@ func renderCostReportSingleAgent(w io.Writer, tenantID, agentID string, daily, m
 	fmt.Fprintf(w, "  Month:   €%s\n", formatCost(monthly))
 }
 
-// renderCostByModel writes per-model cost table to w.
+// renderCostByModel writes per-model cost table to w. If agentID is non-empty, the header shows tenant and agent.
 //
 //nolint:dupl // similar to renderCostReportAllAgents but for model grouping; keeping separate for clarity
-func renderCostByModel(w io.Writer, tenantID string, byModelDaily, byModelMonthly map[string]float64) {
+func renderCostByModel(w io.Writer, tenantID, agentID string, byModelDaily, byModelMonthly map[string]float64) {
 	models := make(map[string]bool)
 	for m := range byModelDaily {
 		models[m] = true
@@ -147,7 +147,11 @@ func renderCostByModel(w io.Writer, tenantID string, byModelDaily, byModelMonthl
 		list = append(list, m)
 	}
 	sort.Strings(list)
-	fmt.Fprintf(w, "Tenant: %s (by model)\n", tenantID)
+	if agentID != "" {
+		fmt.Fprintf(w, "Tenant: %s | Agent: %s (by model)\n", tenantID, agentID)
+	} else {
+		fmt.Fprintf(w, "Tenant: %s (by model)\n", tenantID)
+	}
 	fmt.Fprintf(w, "%-32s %14s %14s\n", "Model", "Today", "Month")
 	fmt.Fprintf(w, "%-32s %14s %14s\n", "-----", "-----", "-----")
 	var dailyTotal, monthlyTotal float64
