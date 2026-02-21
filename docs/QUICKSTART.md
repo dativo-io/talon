@@ -52,6 +52,8 @@ Vault-stored keys are encrypted at rest (AES-256-GCM), scoped per tenant/agent v
 
 ## 4. Run Your First Agent
 
+**First run without AWS?** The default `talon init` template sets **tier_2** (used for PII-bearing inputs) to a Bedrock-only model. If you only have an OpenAI or Anthropic API key and no AWS Bedrock, either use the **telecom-eu** pack (`talon init --pack telecom-eu`) or edit `agent.talon.yaml`: set `policies.model_routing.tier_2.bedrock_only: false` and set `primary` (and optional `fallback`) to an OpenAI or Anthropic model (e.g. `gpt-4o`, `gpt-4o-mini`). Otherwise tier-2 requests will fail with "provider bedrock: provider not available".
+
 ```bash
 talon run "Summarize the key trends in European AI regulation"
 ```
@@ -172,7 +174,7 @@ talon secrets set openai-api-key "sk-acme-..." # per-tenant key in vault
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `TALON_DATA_DIR` | Base directory for state | `~/.talon` |
+| `TALON_DATA_DIR` | Base directory for state (vault, evidence, memory DBs). For **project-scoped onboarding** or evaluation, use `TALON_DATA_DIR=$(pwd)/.talon` so each project has its own vault and audit data. | `~/.talon` |
 | `TALON_SECRETS_KEY` | AES-256 key: 32 raw bytes or 64 hex chars (256 bits) | Auto-derived per machine |
 | `TALON_SIGNING_KEY` | HMAC key: ≥32 raw bytes or 64+ hex chars (≥256 bits) | Auto-derived per machine |
 | `TALON_DEFAULT_POLICY` | Default policy filename | `agent.talon.yaml` |
@@ -195,7 +197,9 @@ export TALON_SIGNING_KEY=$(openssl rand -hex 32)
 
 ## 11. Agent Memory
 
-Agents automatically compress each run into governed observations. Memory is controlled via policy:
+Agent memory is **off by default**. The default `talon init` config does not include a `memory:` block, so `talon memory list` and `talon memory health` will be empty until you enable memory in your policy (see [MEMORY_GOVERNANCE.md](MEMORY_GOVERNANCE.md)).
+
+When enabled, agents automatically compress each run into governed observations. Memory is controlled via policy:
 
 ```yaml
 # In agent.talon.yaml
@@ -283,6 +287,7 @@ Webhooks are available at `POST /v1/triggers/{name}`. The server also runs a dai
 ## Next Steps
 
 - Edit `agent.talon.yaml` to tune cost limits, model routing, and compliance frameworks
+- See [PERSONA_GUIDES.md](PERSONA_GUIDES.md) for role-based workflows (Compliance Officer, CTO, SecOps, FinOps, DevOps)
 - See [MEMORY_GOVERNANCE.md](MEMORY_GOVERNANCE.md) for memory governance details
 - See [VENDOR_INTEGRATION_GUIDE.md](VENDOR_INTEGRATION_GUIDE.md) to wrap existing AI vendors
 - See [ADOPTION_SCENARIOS.md](ADOPTION_SCENARIOS.md) for migration paths

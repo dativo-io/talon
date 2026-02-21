@@ -399,6 +399,7 @@ Apache 2.0 — See [LICENSE](LICENSE)
 
 - **Documentation:** [docs/](docs/)
 - **Quick Start:** [QUICKSTART.md](docs/QUICKSTART.md)
+- **Persona Guides:** [PERSONA_GUIDES.md](docs/PERSONA_GUIDES.md) — How Compliance, CTO, SecOps, FinOps, and DevOps use Talon
 - **Memory Governance:** [MEMORY_GOVERNANCE.md](docs/MEMORY_GOVERNANCE.md)
 - **Vendor Integration:** [VENDOR_INTEGRATION_GUIDE.md](docs/VENDOR_INTEGRATION_GUIDE.md)
 - **Adoption Paths:** [ADOPTION_SCENARIOS.md](docs/ADOPTION_SCENARIOS.md)

@@ -167,15 +167,22 @@ type Attachment struct {
 
 // RunResponse is the output of an agent invocation.
 type RunResponse struct {
-	Response    string
-	EvidenceID  string
-	Cost        float64
-	DurationMS  int64
-	PolicyAllow bool
-	DenyReason  string
-	PlanPending string   // set when execution is gated for human review (EU AI Act Art. 14)
-	ModelUsed   string   // LLM model used for generation
-	ToolsCalled []string // MCP tools invoked
+	Response     string
+	EvidenceID   string
+	Cost         float64
+	DurationMS   int64
+	PolicyAllow  bool
+	DenyReason   string
+	PlanPending  string   // set when execution is gated for human review (EU AI Act Art. 14)
+	ModelUsed    string   // LLM model used for generation
+	ToolsCalled  []string // MCP tools invoked
+	InputTokens  int      // prompt tokens (for OpenAI-compatible API responses)
+	OutputTokens int      // completion tokens (for OpenAI-compatible API responses)
+	// Dry-run / CLI feedback: PII and injection scan results (set even when DryRun is true).
+	PIIDetected                  []string // entity names detected in input
+	InputTier                    int      // classification tier of input (0–2)
+	AttachmentInjectionsDetected int      // number of injection patterns found in attachments
+	AttachmentBlocked            bool     // true if any attachment was blocked due to injection
 }
 
 // Run executes the complete agent pipeline:
@@ -338,12 +345,21 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				Msg("observation_only: policy would deny, allowing for audit")
 		} else {
 			r.recordPolicyDenial(ctx, span, correlationID, req, pol, decision, inputClass.Tier, inputEntityNames, attachmentScan, complianceInfo)
-			return &RunResponse{PolicyAllow: false, DenyReason: decision.Action}, nil
+			denyReason := decision.Action
+			if len(decision.Reasons) > 0 {
+				denyReason = strings.Join(decision.Reasons, "; ")
+			}
+			return &RunResponse{PolicyAllow: false, DenyReason: denyReason}, nil
 		}
 	}
 
 	if req.DryRun {
-		return &RunResponse{PolicyAllow: true}, nil
+		resp := &RunResponse{PolicyAllow: true, PIIDetected: inputEntityNames, InputTier: inputClass.Tier}
+		if attachmentScan != nil {
+			resp.AttachmentInjectionsDetected = attachmentScan.InjectionsDetected
+			resp.AttachmentBlocked = len(attachmentScan.BlockedFiles) > 0
+		}
+		return resp, nil
 	}
 
 	// Step 4.5: Plan Review Gate (EU AI Act Art. 14)
@@ -764,13 +780,15 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		Msg("agent_run_completed")
 
 	resp := &RunResponse{
-		Response:    llmResp.Content,
-		EvidenceID:  evidenceID,
-		Cost:        cost,
-		DurationMS:  duration.Milliseconds(),
-		PolicyAllow: true,
-		ModelUsed:   model,
-		ToolsCalled: toolsCalled,
+		Response:     llmResp.Content,
+		EvidenceID:   evidenceID,
+		Cost:         cost,
+		DurationMS:   duration.Milliseconds(),
+		PolicyAllow:  true,
+		ModelUsed:    model,
+		ToolsCalled:  toolsCalled,
+		InputTokens:  totalInputTokens,
+		OutputTokens: totalOutputTokens,
 	}
 
 	// Post-LLM: governed memory write
@@ -1115,6 +1133,9 @@ func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int,
 				provider = p
 			}
 		} else {
+			// Record env fallback so SecOps sees access was via environment (talon secrets audit).
+			canonicalName := providerName + "-api-key"
+			r.secrets.RecordEnvFallback(ctx, canonicalName, req.TenantID, req.AgentName)
 			log.Debug().
 				Str("provider", providerName).
 				Str("tenant_id", req.TenantID).

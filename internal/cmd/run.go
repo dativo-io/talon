@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -170,6 +171,16 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	if runDryRun {
 		fmt.Printf("\u2713 Policy check: ALLOWED (dry run, no LLM call)\n")
+		if len(resp.PIIDetected) > 0 {
+			fmt.Printf("  PII detected: %s (input tier: %d)\n", strings.Join(resp.PIIDetected, ", "), resp.InputTier)
+		}
+		if resp.AttachmentInjectionsDetected > 0 {
+			if resp.AttachmentBlocked {
+				fmt.Printf("  Attachment injection: %d pattern(s) detected — BLOCKED\n", resp.AttachmentInjectionsDetected)
+			} else {
+				fmt.Printf("  Attachment injection: %d pattern(s) detected (logged)\n", resp.AttachmentInjectionsDetected)
+			}
+		}
 		return nil
 	}
 

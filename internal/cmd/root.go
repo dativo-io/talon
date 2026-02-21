@@ -73,11 +73,10 @@ func setupLogging() {
 	}
 	zerolog.SetGlobalLevel(level)
 
-	// Set format
+	// All structured logs go to stderr so stdout stays clean for piping (e.g. talon costs | jq).
 	if logFormat == "json" {
 		log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
 	} else {
-		// Pretty console output for development
 		log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).
 			With().
 			Timestamp().

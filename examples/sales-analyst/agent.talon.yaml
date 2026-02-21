@@ -1,0 +1,41 @@
+# Dativo Talon — Sales / Financial Analyst Agent
+# Financial data analysis with PII redaction and cost controls.
+
+agent:
+  name: sales-analyst
+  description: Financial and sales data analysis AI with policy enforcement
+  version: 1.0.0
+  model_tier: 1
+
+capabilities:
+  allowed_tools: [sql_query, file_read]
+  forbidden_patterns: [".env", "secrets", "credentials"]
+
+policies:
+  cost_limits:
+    per_request: 5.0
+    daily: 200.0
+    monthly: 3000.0
+  resource_limits:
+    timeout: { operation: "60s", tool_execution: "5m", agent_total: "30m" }
+  rate_limits: { requests_per_minute: 30, concurrent_executions: 2 }
+  data_classification: { input_scan: true, output_scan: true, redact_pii: true }
+  model_routing:
+    tier_0: { primary: gpt-4o-mini, location: any }
+    tier_1: { primary: gpt-4o, fallback: gpt-4o-mini, location: eu-west-1 }
+    tier_2: { primary: gpt-4o, fallback: gpt-4o-mini, location: eu-west-1, bedrock_only: false }
+
+audit:
+  log_level: detailed
+  retention_days: 2555
+  include_prompts: false
+  include_responses: false
+
+compliance:
+  frameworks: [gdpr, eu-ai-act]
+  data_residency: eu
+
+metadata:
+  department: sales
+  owner: analytics@company.eu
+  tags: [ai-agent, sales, analytics, governed]

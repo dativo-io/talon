@@ -198,6 +198,7 @@ func (s *SecretStore) Set(ctx context.Context, name string, value []byte, acl AC
 		return fmt.Errorf("storing secret: %w", err)
 	}
 
+	s.logAccess(ctx, name, "system", "operator", true, "set")
 	return nil
 }
 
@@ -404,7 +405,11 @@ func (s *SecretStore) Rotate(ctx context.Context, name string) error {
 		return fmt.Errorf("unmarshaling ACL: %w", err)
 	}
 
-	return s.Set(ctx, name, plaintext, acl)
+	if err := s.Set(ctx, name, plaintext, acl); err != nil {
+		return err
+	}
+	s.logAccess(ctx, name, "system", "operator", true, "rotate")
+	return nil
 }
 
 // logAccess records secret access attempts for audit compliance.
@@ -413,6 +418,12 @@ func (s *SecretStore) logAccess(ctx context.Context, secretName, tenantID, agent
 	query := `INSERT INTO secret_access_log (id, secret_name, tenant_id, agent_id, timestamp, allowed, reason)
 	          VALUES (?, ?, ?, ?, ?, ?, ?)`
 	_, _ = s.db.ExecContext(ctx, query, id, secretName, tenantID, agentID, time.Now(), allowed, reason)
+}
+
+// RecordEnvFallback records that a run used the environment variable fallback for this secret
+// (vault lookup was denied or missing). SecOps can see this in "talon secrets audit" as allowed=true, reason=env_fallback.
+func (s *SecretStore) RecordEnvFallback(ctx context.Context, secretName, tenantID, agentID string) {
+	s.logAccess(ctx, secretName, tenantID, agentID, true, "env_fallback")
 }
 
 // AuditLog returns access records for compliance review.

@@ -486,6 +486,52 @@ func (s *Store) CostByAgent(ctx context.Context, tenantID string, from, to time.
 	return byAgent, nil
 }
 
+// CostByModel returns cost per model for the tenant in the half-open time range [from, to).
+// Uses json_extract on execution.model_used and execution.cost.
+func (s *Store) CostByModel(ctx context.Context, tenantID string, from, to time.Time) (map[string]float64, error) {
+	ctx, span := tracer.Start(ctx, "evidence.cost_by_model",
+		trace.WithAttributes(attribute.String("tenant_id", tenantID)))
+	defer span.End()
+
+	query := `SELECT COALESCE(json_extract(evidence_json, '$.execution.model_used'), 'unknown'),
+	         SUM(COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur')))
+	         FROM evidence WHERE tenant_id = ?`
+	args := []interface{}{tenantID}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	query += ` GROUP BY 1`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying evidence for cost by model: %w", err)
+	}
+	defer rows.Close()
+
+	byModel := make(map[string]float64)
+	for rows.Next() {
+		var model string
+		var total float64
+		if err := rows.Scan(&model, &total); err != nil {
+			continue
+		}
+		if model == "" {
+			model = "unknown"
+		}
+		byModel[model] = total
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating cost by model: %w", err)
+	}
+	span.SetAttributes(attribute.Int("model_count", len(byModel)))
+	return byModel, nil
+}
+
 // Verify checks the HMAC signature integrity of an evidence record.
 func (s *Store) Verify(ctx context.Context, id string) (bool, error) {
 	ev, err := s.Get(ctx, id)

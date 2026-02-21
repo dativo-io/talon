@@ -225,7 +225,7 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 			r.AgentID,
 			r.InvocationType,
 			strconv.FormatBool(r.Allowed),
-			strconv.FormatFloat(r.Cost, 'f', 4, 64),
+			formatCost(r.Cost),
 			r.ModelUsed,
 			strconv.FormatInt(r.DurationMS, 10),
 			strconv.FormatBool(r.HasError),
@@ -265,14 +265,14 @@ func renderAuditList(w io.Writer, index []evidence.Index) {
 		if entry.HasError {
 			errorMark = " [ERROR]"
 		}
-		fmt.Fprintf(w, "  %s %s | %s | %s/%s | %s | \u20ac%.4f | %dms%s\n",
+		fmt.Fprintf(w, "  %s %s | %s | %s/%s | %s | €%s | %dms%s\n",
 			status,
 			entry.ID,
 			entry.Timestamp.Format("2006-01-02 15:04:05"),
 			entry.TenantID,
 			entry.AgentID,
 			entry.ModelUsed,
-			entry.Cost,
+			formatCost(entry.Cost),
 			entry.DurationMS,
 			errorMark,
 		)
@@ -298,12 +298,12 @@ func renderVerifyResult(w io.Writer, evidenceID string, valid bool, ev *evidence
 		if !ev.PolicyDecision.Allowed {
 			policyStatus = "DENIED"
 		}
-		fmt.Fprintf(w, "%s | %s/%s | %s | €%.4f | %dms\n",
+		fmt.Fprintf(w, "%s | %s/%s | %s | €%s | %dms\n",
 			ev.Timestamp.Format(time.RFC3339),
 			ev.TenantID,
 			ev.AgentID,
 			ev.Execution.ModelUsed,
-			ev.Execution.Cost,
+			formatCost(ev.Execution.Cost),
 			ev.Execution.DurationMS,
 		)
 		fmt.Fprintf(w, "Policy: %s | Tier: %d→%d | PII: %s | Redacted: %t\n",
@@ -351,7 +351,7 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 	fmt.Fprintf(w, "PII Redacted:  %t\n", ev.Classification.PIIRedacted)
 	fmt.Fprintln(w, "Execution")
 	fmt.Fprintf(w, "Model:         %s\n", ev.Execution.ModelUsed)
-	fmt.Fprintf(w, "Cost:          €%.4f\n", ev.Execution.Cost)
+	fmt.Fprintf(w, "Cost:          €%s\n", formatCost(ev.Execution.Cost))
 	fmt.Fprintf(w, "Duration:      %dms\n", ev.Execution.DurationMS)
 	fmt.Fprintf(w, "Tokens:        in=%d out=%d\n", ev.Execution.Tokens.Input, ev.Execution.Tokens.Output)
 	toolsStr := strings.Join(ev.Execution.ToolsCalled, ", ")

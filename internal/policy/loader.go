@@ -50,7 +50,7 @@ func LoadPolicy(ctx context.Context, path string, strict bool) (*Policy, error) 
 			return nil, fmt.Errorf("routing validation: %w", err)
 		}
 		for _, w := range warnings {
-			log.Warn().
+			log.Debug().
 				Str("tier", w.Tier).
 				Str("agent", pol.Agent.Name).
 				Msg(w.Message)

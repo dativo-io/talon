@@ -336,18 +336,18 @@ func TestAuditLogFilterBySecretName(t *testing.T) {
 	_, _ = store.Get(ctx, "key-a", "t", "a")
 	_, _ = store.Get(ctx, "key-b", "t", "a")
 
-	// Filter by specific secret
+	// Filter by specific secret (2 Gets + 1 Set for key-a)
 	records, err := store.AuditLog(ctx, "key-a", 50)
 	require.NoError(t, err)
-	assert.Len(t, records, 2)
+	assert.Len(t, records, 3)
 	for _, r := range records {
 		assert.Equal(t, "key-a", r.SecretName)
 	}
 
-	// All secrets
+	// All secrets (2 Gets key-a + 1 Get key-b + 2 Sets)
 	all, err := store.AuditLog(ctx, "", 50)
 	require.NoError(t, err)
-	assert.Len(t, all, 3)
+	assert.Len(t, all, 5)
 }
 
 func TestSetOverwriteExisting(t *testing.T) {

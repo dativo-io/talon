@@ -5,7 +5,7 @@ services:
       args:
         VERSION: ${VERSION:-dev}
     image: talon:${VERSION:-latest}
-    command: serve --dashboard --port 8080
+    command: serve --port 8080
     ports:
       - "8080:8080"
     environment:
@@ -22,7 +22,7 @@ services:
       - ./examples:/etc/talon/examples:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "talon", "version"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -30,8 +30,8 @@ RUN CGO_ENABLED=1 go build \
 # Stage 2: Runtime
 FROM alpine:3.19
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates sqlite-libs tzdata && \
+# Install runtime dependencies (wget for HEALTHCHECK)
+RUN apk add --no-cache ca-certificates sqlite-libs tzdata wget && \
     adduser -D -u 1000 talon
 
 # Copy binary
@@ -45,10 +45,8 @@ WORKDIR /home/talon
 
 EXPOSE 8080
 
-# TODO: Replace with HTTP health check once `talon serve` is implemented (Prompt 6)
-# HEALTHCHECK CMD ["wget", "-q", "--spider", "http://localhost:8080/healthz"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
-    CMD talon version || exit 1
+    CMD wget -q --spider http://localhost:8080/health || exit 1
 
 ENTRYPOINT ["talon"]
 CMD ["serve"]
