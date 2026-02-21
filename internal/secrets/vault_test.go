@@ -232,6 +232,43 @@ func TestRotateNonexistent(t *testing.T) {
 	assert.ErrorIs(t, err, ErrSecretNotFound)
 }
 
+// TestRotateSingleAuditEntry verifies that one Rotate produces exactly one audit log entry
+// with reason "rotate", not an extra "set" entry (Rotate uses storeSecret internally).
+func TestRotateSingleAuditEntry(t *testing.T) {
+	dir := t.TempDir()
+	key := "12345678901234567890123456789012"
+	store, err := NewSecretStore(filepath.Join(dir, "secrets.db"), key)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+	acl := ACL{Agents: []string{"*"}}
+	require.NoError(t, store.Set(ctx, "rotated-key", []byte("secret"), acl))
+
+	recordsBefore, err := store.AuditLog(ctx, "rotated-key", 10)
+	require.NoError(t, err)
+
+	require.NoError(t, store.Rotate(ctx, "rotated-key"))
+
+	recordsAfter, err := store.AuditLog(ctx, "rotated-key", 10)
+	require.NoError(t, err)
+
+	// One Set produced one "set" entry; one Rotate must produce exactly one "rotate" entry.
+	rotateReasons := 0
+	setReasons := 0
+	for _, r := range recordsAfter {
+		switch r.Reason {
+		case "rotate":
+			rotateReasons++
+		case "set":
+			setReasons++
+		}
+	}
+	assert.Equal(t, 1, setReasons, "expected exactly one 'set' from initial Set")
+	assert.Equal(t, 1, rotateReasons, "expected exactly one 'rotate' from Rotate (no extra 'set')")
+	assert.Equal(t, len(recordsBefore)+1, len(recordsAfter), "Rotate should add exactly one audit entry")
+}
+
 func TestListMultipleSecrets(t *testing.T) {
 	dir := t.TempDir()
 	key := "12345678901234567890123456789012"

@@ -168,9 +168,20 @@ func (s *SecretStore) Set(ctx context.Context, name string, value []byte, acl AC
 		))
 	defer span.End()
 
+	if err := s.storeSecret(ctx, name, value, acl); err != nil {
+		span.RecordError(err)
+		return err
+	}
+	s.logAccess(ctx, name, "system", "operator", true, "set")
+	return nil
+}
+
+// storeSecret encrypts and persists a secret without writing an audit entry.
+// Used by Set (which then logs "set") and by Rotate (which then logs "rotate") so that
+// a single operation produces exactly one audit record.
+func (s *SecretStore) storeSecret(ctx context.Context, name string, value []byte, acl ACL) error {
 	nonce := make([]byte, s.gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		span.RecordError(err)
 		return fmt.Errorf("generating nonce: %w", err)
 	}
 
@@ -180,7 +191,6 @@ func (s *SecretStore) Set(ctx context.Context, name string, value []byte, acl AC
 
 	aclJSON, err := json.Marshal(acl)
 	if err != nil {
-		span.RecordError(err)
 		return fmt.Errorf("marshaling ACL: %w", err)
 	}
 
@@ -194,11 +204,8 @@ func (s *SecretStore) Set(ctx context.Context, name string, value []byte, acl AC
 	`
 
 	if _, err := s.db.ExecContext(ctx, query, name, encryptedValue, nonceB64, string(aclJSON), time.Now()); err != nil {
-		span.RecordError(err)
 		return fmt.Errorf("storing secret: %w", err)
 	}
-
-	s.logAccess(ctx, name, "system", "operator", true, "set")
 	return nil
 }
 
@@ -405,7 +412,8 @@ func (s *SecretStore) Rotate(ctx context.Context, name string) error {
 		return fmt.Errorf("unmarshaling ACL: %w", err)
 	}
 
-	if err := s.Set(ctx, name, plaintext, acl); err != nil {
+	if err := s.storeSecret(ctx, name, plaintext, acl); err != nil {
+		span.RecordError(err)
 		return err
 	}
 	s.logAccess(ctx, name, "system", "operator", true, "rotate")
