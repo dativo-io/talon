@@ -319,7 +319,7 @@ recognizers:
     enabled: true
     patterns:
       - name: "ICCID 19-20 digits (89 prefix)"
-        regex: '\b89\d{17,19}\b'
+        regex: '\b89\d{17,18}\b'
         score: 0.9
     supported_languages:
       - language: "en"
