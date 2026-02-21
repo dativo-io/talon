@@ -441,17 +441,83 @@ func TestRun_rejectsAgentNameAsAbsolutePath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// PolicyPath empty, AgentName starts with "/" -> derived path is absolute -> must reject
+	// PolicyPath empty, AgentName starts with "/" -> must reject (would bypass safePolicyPathUnder)
 	_, err = runner.Run(ctx, &RunRequest{
 		TenantID:       "default",
 		AgentName:      "/etc/foo",
 		Prompt:         "hello",
 		InvocationType: "manual",
-		PolicyPath:     "", // empty so path becomes AgentName + ".talon.yaml" = "/etc/foo.talon.yaml"
+		PolicyPath:     "", // empty so path would become AgentName + ".talon.yaml"
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "policy path")
-	assert.Contains(t, err.Error(), "must not be an absolute path")
+	assert.True(t, strings.Contains(err.Error(), "must not be an absolute path") ||
+		strings.Contains(err.Error(), "must not start with path separator"),
+		"error should reject absolute or path-separator agent name: %s", err.Error())
+}
+
+// TestValidateAgentNameForPolicyPath checks that when PolicyPath is empty, unsafe agent names are rejected.
+func TestValidateAgentNameForPolicyPath(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentName string
+		wantErr   bool
+	}{
+		{"ok", "my-agent", false},
+		{"ok_simple", "agent", false},
+		{"empty", "", true},
+		{"starts_with_slash", "/etc/foo", true},
+		{"contains_slash", "foo/bar", true},
+		{"double_dot", "..", true},
+		{"starts_with_dotdot", "../x", true},
+		{"contains_dotdot", "a/../b", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAgentNameForPolicyPath(tt.agentName)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "agent name")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// TestRun_rejectsEmptyAgentNameWhenNoPolicyPath ensures Run rejects empty AgentName when PolicyPath is empty.
+func TestRun_rejectsEmptyAgentNameWhenNoPolicyPath(t *testing.T) {
+	dir := t.TempDir()
+	_ = testutil.WriteTestPolicyFile(t, dir, "agent")
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	cls := classifier.MustNewScanner()
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: "",
+		Classifier:        cls,
+		Router:            llm.NewRouter(nil, map[string]llm.Provider{"openai": &testutil.MockProvider{}}, nil),
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = runner.Run(ctx, &RunRequest{
+		TenantID:       "default",
+		AgentName:      "",
+		Prompt:         "hello",
+		InvocationType: "manual",
+		PolicyPath:     "",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "policy path")
+	assert.Contains(t, err.Error(), "must not be empty")
 }
 
 func TestPlanReviewConfigFromPolicy(t *testing.T) {

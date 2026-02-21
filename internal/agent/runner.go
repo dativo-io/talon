@@ -186,6 +186,28 @@ type RunResponse struct {
 	AttachmentBlocked            bool     // true if any attachment was blocked due to injection
 }
 
+// validateAgentNameForPolicyPath ensures AgentName is safe to use when deriving PolicyPath
+// (PolicyPath empty → policyPath = AgentName + ".talon.yaml"). Rejects empty names, names
+// that start with or contain path separators, so the derived path cannot be absolute or
+// escape policyDir when passed to safePolicyPathUnder.
+func validateAgentNameForPolicyPath(agentName string) error {
+	if agentName == "" {
+		return fmt.Errorf("agent name must not be empty when policy path is not set")
+	}
+	sep := string(filepath.Separator)
+	if strings.HasPrefix(agentName, sep) {
+		return fmt.Errorf("agent name must not start with path separator (got %q)", agentName)
+	}
+	if strings.Contains(agentName, sep) {
+		return fmt.Errorf("agent name must not contain path separators (got %q)", agentName)
+	}
+	// Reject ".." so derived path cannot traverse out of policyDir
+	if agentName == ".." || strings.HasPrefix(agentName, ".."+sep) || strings.Contains(agentName, sep+"..") {
+		return fmt.Errorf("agent name must not be or contain .. (got %q)", agentName)
+	}
+	return nil
+}
+
 // safePolicyPathUnder resolves path relative to policyDir and returns an absolute path
 // that is guaranteed to be under policyDir. Prevents path traversal when path or its
 // components (e.g. AgentName) are user-controlled.
@@ -256,10 +278,15 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	// paths outside CWD work (e.g. Docker volumes at /etc/talon/policies). Relative paths (including
 	// when derived from AgentName) are resolved under policyDir to prevent path traversal.
 	// When PolicyPath is empty we derive from AgentName; that derived path must never be treated as
-	// a trusted absolute path, so reject agent names that would produce an absolute path (e.g. "/foo").
+	// a trusted absolute path. Enforce contract: AgentName must be a single path segment (no path
+	// separators, not empty) so the derived path stays under policyDir via safePolicyPathUnder.
 	policyPath := req.PolicyPath
 	pathDerivedFromAgent := false
 	if policyPath == "" {
+		if err := validateAgentNameForPolicyPath(req.AgentName); err != nil {
+			span.RecordError(err)
+			return nil, fmt.Errorf("policy path: %w", err)
+		}
 		policyPath = req.AgentName + ".talon.yaml"
 		pathDerivedFromAgent = true
 	}
