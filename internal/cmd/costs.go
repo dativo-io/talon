@@ -109,17 +109,11 @@ func printBudgetUtilization(w io.Writer, ctx context.Context, cfg *config.Config
 	}
 	cl := pol.Policies.CostLimits
 	if cl.Daily > 0 {
-		pct := 0.0
-		if cl.Daily > 0 {
-			pct = 100 * daily / cl.Daily
-		}
+		pct := 100 * daily / cl.Daily
 		fmt.Fprintf(w, "  Daily budget:   %.1f%% (€%s / €%.2f)\n", pct, formatCost(daily), cl.Daily)
 	}
 	if cl.Monthly > 0 {
-		pct := 0.0
-		if cl.Monthly > 0 {
-			pct = 100 * monthly / cl.Monthly
-		}
+		pct := 100 * monthly / cl.Monthly
 		fmt.Fprintf(w, "  Monthly budget: %.1f%% (€%s / €%.2f)\n", pct, formatCost(monthly), cl.Monthly)
 	}
 }
