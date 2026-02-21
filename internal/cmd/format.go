@@ -13,9 +13,6 @@ func formatCost(c float64) string {
 	if c > 0 && c < 0.0001 {
 		return "< 0.0001"
 	}
-	if c < 0 {
-		return fmt.Sprintf("%.6f", c)
-	}
 	return fmt.Sprintf("%.6f", c)
 }
 
