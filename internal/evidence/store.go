@@ -488,24 +488,24 @@ func (s *Store) CostByAgent(ctx context.Context, tenantID string, from, to time.
 
 // Verify checks the HMAC signature integrity of an evidence record.
 func (s *Store) Verify(ctx context.Context, id string) (bool, error) {
-	ctx, span := tracer.Start(ctx, "evidence.verify",
-		trace.WithAttributes(attribute.String("evidence.id", id)))
-	defer span.End()
-
 	ev, err := s.Get(ctx, id)
 	if err != nil {
 		return false, err
 	}
+	return s.VerifyRecord(ev), nil
+}
 
+// VerifyRecord checks the HMAC signature of an already-loaded Evidence.
+// Use this to avoid a second Get when you already have the record (e.g. audit show).
+func (s *Store) VerifyRecord(ev *Evidence) bool {
 	signature := ev.Signature
 	ev.Signature = ""
-
 	evidenceJSON, err := json.Marshal(ev)
+	ev.Signature = signature
 	if err != nil {
-		return false, fmt.Errorf("marshaling for verification: %w", err)
+		return false
 	}
-
-	return s.signer.Verify(evidenceJSON, signature), nil
+	return s.signer.Verify(evidenceJSON, signature)
 }
 
 // --- Progressive Disclosure Methods ---

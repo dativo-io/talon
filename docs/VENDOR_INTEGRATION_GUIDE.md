@@ -528,7 +528,7 @@ curl -X POST https://talon.your-company.local/tools/call \
   }'
 
 # Check evidence
-talon evidence show evt_abc123
+talon audit show evt_abc123
 
 # Expected evidence:
 # {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -37,6 +38,13 @@ var auditListCmd = &cobra.Command{
 	RunE:  auditList,
 }
 
+var auditShowCmd = &cobra.Command{
+	Use:   "show <evidence-id>",
+	Short: "Show full evidence record (HMAC-verified)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  auditShow,
+}
+
 var auditVerifyCmd = &cobra.Command{
 	Use:   "verify [evidence-id]",
 	Short: "Verify HMAC signature of an evidence record",
@@ -63,6 +71,7 @@ func init() {
 	auditExportCmd.Flags().IntVar(&auditExportLimit, "limit", 10000, "Maximum records to export")
 
 	auditCmd.AddCommand(auditListCmd)
+	auditCmd.AddCommand(auditShowCmd)
 	auditCmd.AddCommand(auditVerifyCmd)
 	auditCmd.AddCommand(auditExportCmd)
 	rootCmd.AddCommand(auditCmd)
@@ -103,6 +112,27 @@ func auditList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func auditShow(cmd *cobra.Command, args []string) error {
+	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+	defer cancel()
+
+	evidenceID := args[0]
+
+	store, err := openEvidenceStore()
+	if err != nil {
+		return fmt.Errorf("initializing evidence store: %w", err)
+	}
+	defer store.Close()
+
+	ev, err := store.Get(ctx, evidenceID)
+	if err != nil {
+		return fmt.Errorf("fetching evidence: %w", err)
+	}
+	valid := store.VerifyRecord(ev)
+	renderAuditShow(os.Stdout, ev, valid)
+	return nil
+}
+
 func auditVerify(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
@@ -115,11 +145,12 @@ func auditVerify(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	valid, err := store.Verify(ctx, evidenceID)
+	ev, err := store.Get(ctx, evidenceID)
 	if err != nil {
 		return fmt.Errorf("verifying evidence: %w", err)
 	}
-	renderVerifyResult(os.Stdout, evidenceID, valid)
+	valid := store.VerifyRecord(ev)
+	renderVerifyResult(os.Stdout, evidenceID, valid, ev)
 	if !valid {
 		return fmt.Errorf("signature verification failed for %s", evidenceID)
 	}
@@ -155,39 +186,57 @@ func auditExport(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	index, err := store.ListIndex(ctx, auditTenant, auditAgent, from, to, auditExportLimit)
+	// Single SQL scan of evidence_json for export (no N Get() calls).
+	// TODO: for very large exports (e.g. millions), consider cursor-based pagination.
+	list, err := store.List(ctx, auditTenant, auditAgent, from, to, auditExportLimit)
 	if err != nil {
 		return fmt.Errorf("querying evidence: %w", err)
+	}
+	records := make([]evidence.ExportRecord, len(list))
+	for i := range list {
+		records[i] = evidence.ToExportRecord(&list[i])
 	}
 
 	switch auditExportFmt {
 	case "csv":
-		return renderAuditExportCSV(os.Stdout, index)
+		return renderAuditExportCSV(os.Stdout, records)
 	case "json":
-		return renderAuditExportJSON(os.Stdout, index)
+		return renderAuditExportJSON(os.Stdout, records)
 	default:
 		return fmt.Errorf("unsupported --format %q; use csv or json", auditExportFmt)
 	}
 }
 
-func renderAuditExportCSV(w io.Writer, index []evidence.Index) error {
+func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 	writer := csv.NewWriter(w)
-	header := []string{"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "cost", "model_used", "duration_ms", "has_error"}
+	header := []string{
+		"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "cost", "model_used", "duration_ms", "has_error",
+		"input_tier", "output_tier", "pii_detected", "pii_redacted", "policy_reasons", "tools_called", "input_hash", "output_hash",
+	}
 	if err := writer.Write(header); err != nil {
 		return err
 	}
-	for i := range index {
+	for i := range records {
+		r := &records[i]
 		row := []string{
-			index[i].ID,
-			index[i].Timestamp.Format(time.RFC3339),
-			index[i].TenantID,
-			index[i].AgentID,
-			index[i].InvocationType,
-			strconv.FormatBool(index[i].Allowed),
-			strconv.FormatFloat(index[i].Cost, 'f', 4, 64),
-			index[i].ModelUsed,
-			strconv.FormatInt(index[i].DurationMS, 10),
-			strconv.FormatBool(index[i].HasError),
+			r.ID,
+			r.Timestamp.Format(time.RFC3339),
+			r.TenantID,
+			r.AgentID,
+			r.InvocationType,
+			strconv.FormatBool(r.Allowed),
+			strconv.FormatFloat(r.Cost, 'f', 4, 64),
+			r.ModelUsed,
+			strconv.FormatInt(r.DurationMS, 10),
+			strconv.FormatBool(r.HasError),
+			strconv.Itoa(r.InputTier),
+			strconv.Itoa(r.OutputTier),
+			r.PIIDetectedCSV(),
+			strconv.FormatBool(r.PIIRedacted),
+			r.PolicyReasonsCSV(),
+			r.ToolsCalledCSV(),
+			r.InputHash,
+			r.OutputHash,
 		}
 		if err := writer.Write(row); err != nil {
 			return err
@@ -197,10 +246,10 @@ func renderAuditExportCSV(w io.Writer, index []evidence.Index) error {
 	return writer.Error()
 }
 
-func renderAuditExportJSON(w io.Writer, index []evidence.Index) error {
+func renderAuditExportJSON(w io.Writer, records []evidence.ExportRecord) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(index)
+	return enc.Encode(records)
 }
 
 // renderAuditList writes evidence index lines to w (testable).
@@ -230,11 +279,91 @@ func renderAuditList(w io.Writer, index []evidence.Index) {
 	}
 }
 
-// renderVerifyResult writes verify outcome to w (testable).
-func renderVerifyResult(w io.Writer, evidenceID string, valid bool) {
+// renderVerifyResult writes verify outcome and optional compact summary to w (testable).
+func renderVerifyResult(w io.Writer, evidenceID string, valid bool, ev *evidence.Evidence) {
 	if valid {
 		fmt.Fprintf(w, "\u2713 Evidence %s: signature VALID (HMAC-SHA256 intact)\n", evidenceID)
 	} else {
-		fmt.Fprintf(w, "\u2717 Evidence %s: signature INVALID (possible tampering)\n", evidenceID)
+		fmt.Fprintf(w, "\u2717 Evidence %s: signature INVALID — record may have been tampered\n", evidenceID)
+		if ev != nil {
+			fmt.Fprintln(w, "(record contents shown for reference only — do not trust)")
+		}
 	}
+	if ev != nil {
+		piiStr := strings.Join(ev.Classification.PIIDetected, ", ")
+		if piiStr == "" {
+			piiStr = "(none)"
+		}
+		policyStatus := "ALLOWED"
+		if !ev.PolicyDecision.Allowed {
+			policyStatus = "DENIED"
+		}
+		fmt.Fprintf(w, "%s | %s/%s | %s | €%.4f | %dms\n",
+			ev.Timestamp.Format(time.RFC3339),
+			ev.TenantID,
+			ev.AgentID,
+			ev.Execution.ModelUsed,
+			ev.Execution.Cost,
+			ev.Execution.DurationMS,
+		)
+		fmt.Fprintf(w, "Policy: %s | Tier: %d→%d | PII: %s | Redacted: %t\n",
+			policyStatus,
+			ev.Classification.InputTier,
+			ev.Classification.OutputTier,
+			piiStr,
+			ev.Classification.PIIRedacted,
+		)
+	}
+}
+
+// renderAuditShow writes a full evidence record (Layer 3) to w. HMAC status is shown prominently.
+func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
+	const sep = "─────────────────────────────────────────────────────"
+	fmt.Fprintf(w, "Evidence: %s\n", ev.ID)
+	fmt.Fprintln(w, sep)
+	fmt.Fprintf(w, "Timestamp:       %s\n", ev.Timestamp.Format(time.RFC3339))
+	fmt.Fprintf(w, "Tenant / Agent:  %s / %s\n", ev.TenantID, ev.AgentID)
+	fmt.Fprintf(w, "Invocation:      %s\n", ev.InvocationType)
+	if valid {
+		fmt.Fprintf(w, "HMAC Signature:  ✓ VALID\n")
+	} else {
+		fmt.Fprintf(w, "HMAC Signature:  ✗ INVALID (tampered)\n")
+	}
+	fmt.Fprintln(w, "Policy Decision")
+	fmt.Fprintf(w, "Allowed:       %t\n", ev.PolicyDecision.Allowed)
+	fmt.Fprintf(w, "Action:        %s\n", ev.PolicyDecision.Action)
+	if ev.PolicyDecision.PolicyVersion != "" {
+		fmt.Fprintf(w, "Policy Ver:    %s\n", ev.PolicyDecision.PolicyVersion)
+	}
+	if !ev.PolicyDecision.Allowed && len(ev.PolicyDecision.Reasons) > 0 {
+		for _, r := range ev.PolicyDecision.Reasons {
+			fmt.Fprintf(w, "  Reason:      %s\n", r)
+		}
+	}
+	fmt.Fprintln(w, "Classification")
+	fmt.Fprintf(w, "Input Tier:    %d\n", ev.Classification.InputTier)
+	fmt.Fprintf(w, "Output Tier:   %d\n", ev.Classification.OutputTier)
+	piiStr := strings.Join(ev.Classification.PIIDetected, ", ")
+	if piiStr == "" {
+		piiStr = "(none)"
+	}
+	fmt.Fprintf(w, "PII Detected:  %s\n", piiStr)
+	fmt.Fprintf(w, "PII Redacted:  %t\n", ev.Classification.PIIRedacted)
+	fmt.Fprintln(w, "Execution")
+	fmt.Fprintf(w, "Model:         %s\n", ev.Execution.ModelUsed)
+	fmt.Fprintf(w, "Cost:          €%.4f\n", ev.Execution.Cost)
+	fmt.Fprintf(w, "Duration:      %dms\n", ev.Execution.DurationMS)
+	fmt.Fprintf(w, "Tokens:        in=%d out=%d\n", ev.Execution.Tokens.Input, ev.Execution.Tokens.Output)
+	toolsStr := strings.Join(ev.Execution.ToolsCalled, ", ")
+	if toolsStr == "" {
+		toolsStr = "(none)"
+	}
+	fmt.Fprintf(w, "Tools Called:  %s\n", toolsStr)
+	fmt.Fprintln(w, "Audit Trail")
+	fmt.Fprintf(w, "Input Hash:    %s\n", ev.AuditTrail.InputHash)
+	fmt.Fprintf(w, "Output Hash:   %s\n", ev.AuditTrail.OutputHash)
+	fmt.Fprintln(w, "Compliance")
+	fmt.Fprintf(w, "Frameworks:    %s\n", strings.Join(ev.Compliance.Frameworks, ", "))
+	fmt.Fprintf(w, "Data Residency: %s\n", ev.Compliance.DataLocation)
+	fmt.Fprintln(w, sep)
 }

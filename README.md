@@ -119,14 +119,35 @@ talon run "Summarize EU AI regulation trends"
 
 ---
 
+## Install
+
+Talon requires **Go 1.22+** and **CGO** (for SQLite). Standard options:
+
+**From source (any branch, recommended for development):**
+```bash
+git clone https://github.com/dativo-io/talon.git
+cd talon
+git checkout main   # or feat/your-branch
+make build          # → bin/talon
+# or: make install  # → $GOPATH/bin/talon
+```
+On **macOS**, `make build` / `make install` use the system Clang by default so CGO linking works. If you use `go build` or `go install` directly and see `unsupported tapi file type '!tapi-tbd'`, set the compiler: `CC=/usr/bin/clang CGO_ENABLED=1 go build -o bin/talon ./cmd/talon/`.
+
+**From a released version (stable):**
+```bash
+go install github.com/dativo-io/talon/cmd/talon@latest
+# or a specific tag: ...@v1.0.0
+```
+On macOS, if that fails with the `.tbd` linker error, run: `CC=/usr/bin/clang go install github.com/dativo-io/talon/cmd/talon@latest`.
+
+**Note:** You cannot install a branch with `go install ...@branch-name`; Go expects a module version (tag or pseudo-version). To run a branch, clone the repo and use `make build` or `make install` from that branch.
+
+---
+
 ## Quick Start (2 minutes)
 
 ```bash
-# Install
-curl -sSL https://get.talon.dativo.io | sh
-# Or: go install github.com/dativo-io/talon/cmd/talon@latest
-
-# Initialize a project
+# Install (see Install section above), then:
 mkdir my-agents && cd my-agents
 talon init
 
@@ -155,10 +176,12 @@ Try a policy block — set `daily: 0.001` in your `.talon.yaml`, run again, and 
   Reason: budget_exceeded
 ```
 
-Verify evidence integrity at any time:
+Inspect and verify the audit trail:
 ```bash
-talon audit verify <evidence-id>
-# ✓ Evidence <evidence-id>: signature VALID (HMAC-SHA256 intact)
+talon audit list --limit 10                    # List recent evidence
+talon audit show <evidence-id>                 # Full record (classification, PII, HMAC status)
+talon audit verify <evidence-id>               # Verify signature + compact summary
+talon audit export --format csv --from ... --to ...  # Export for compliance (includes pii_detected, tiers)
 ```
 (Evidence IDs are shown in run output, e.g. `req_xxxxxxxx`.)
 
@@ -270,7 +293,9 @@ talon validate                               # Validate .talon.yaml
 # Audit trail
 talon audit list                             # List evidence records
 talon audit list --tenant acme --limit 50    # Filter by tenant with limit
-talon audit verify <evidence-id>             # Verify HMAC-SHA256 signature
+talon audit show <evidence-id>               # Full record (Layer 3: classification, PII, HMAC)
+talon audit verify <evidence-id>             # Verify HMAC-SHA256 + compact summary
+talon audit export --format csv|json [--from YYYY-MM-DD] [--to YYYY-MM-DD]  # Export with pii_detected, tiers
 
 # Secrets vault
 talon secrets set <name> <value>             # Store encrypted secret (AES-256-GCM)

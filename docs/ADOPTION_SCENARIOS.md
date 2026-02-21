@@ -191,7 +191,7 @@ talon logs --follow --agent slack-support-bot
 
 **Step 5:** Generate compliance report
 ```bash
-talon evidence export \
+talon audit export \
   --agent slack-support-bot \
   --format gdpr-art30 \
   --date-range 2025-02-16:2025-02-16 \
@@ -349,7 +349,7 @@ In Zendesk AI Agent config:
 # Trigger appointment search via vendor
 # Check Talon logs
 
-talon evidence show evt_abc123
+talon audit show evt_abc123
 
 # Evidence shows:
 # {
@@ -390,7 +390,7 @@ talon audit report --agent zendesk-vendor-proxy --last 24h
 **Step 3:** Generate first compliance report
 
 ```bash
-talon evidence export \
+talon audit export \
   --agent zendesk-vendor-proxy \
   --format gdpr-art30 \
   --output /tmp/vendor-compliance-report.pdf
@@ -571,7 +571,7 @@ Track these to measure adoption success:
 
 | Metric | Target | Measurement |
 |--------|--------|-------------|
-| **Compliance readiness** | Audit-ready in <1 hour | `talon evidence export` time |
+| **Compliance readiness** | Audit-ready in <1 hour | `talon audit export` time |
 | **Developer productivity** | Zero compliance code written | Lines of custom governance code |
 | **Audit findings** | Zero compliance violations | External audit reports |
 | **Time to compliance** | <1 week from install | Calendar days (install → first audit report) |

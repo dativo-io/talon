@@ -9,13 +9,19 @@ Get from zero to a policy-enforced AI agent in under 5 minutes.
 
 ## 1. Install
 
-```bash
-# From source
-go install github.com/dativo-io/talon/cmd/talon@latest
+Talon needs Go 1.22+ and CGO (for SQLite).
 
-# Or download a release binary
-curl -sSL https://get.talon.dativo.io | sh
+```bash
+# From source (any branch: clone then build)
+git clone https://github.com/dativo-io/talon.git && cd talon
+make build    # → bin/talon
+# or: make install   # → $GOPATH/bin/talon
+
+# Or install a released version
+go install github.com/dativo-io/talon/cmd/talon@latest
 ```
+
+**macOS:** If `go install` or `go build` fails with `unsupported tapi file type '!tapi-tbd'`, use `make build` (it uses the system Clang), or run `CC=/usr/bin/clang CGO_ENABLED=1 go build -o bin/talon ./cmd/talon/`.
 
 ## 2. Initialize a Project
 
@@ -136,9 +142,18 @@ talon secrets rotate openai-api-key
 talon audit list --limit 10
 #   ✓ req_xxxxxxxx | 2026-02-18 14:30:00 | default/default | gpt-4o-mini | €0.0018 | 1250ms
 
-# Verify signature integrity (use an ID from run output or audit list)
+# Show full evidence record (HMAC-verified; includes classification, PII, policy reasons)
+talon audit show <evidence-id>
+
+# Verify signature integrity and see compact summary (tier, PII, policy)
 talon audit verify <evidence-id>
 #   ✓ Evidence <evidence-id>: signature VALID (HMAC-SHA256 intact)
+#   2026-02-21T11:28:45+01:00 | default/slack-support-bot | gpt-4o-mini | €0.0000 | 909ms
+#   Policy: ALLOWED | Tier: 2→0 | PII: EMAIL_ADDRESS | Redacted: true
+
+# Export for compliance (CSV/JSON include input_tier, output_tier, pii_detected, policy_reasons, etc.)
+talon audit export --format csv --from 2026-02-01 --to 2026-02-28
+talon audit export --format json --limit 1000
 ```
 
 ## 10. Multi-Tenant Usage
