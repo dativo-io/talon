@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1182,13 +1183,18 @@ func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int,
 				provider = p
 			}
 		} else {
-			// Record env fallback so SecOps sees access was via environment (talon secrets audit).
+			// Record audit only when accurate: env_fallback only if env var is actually set.
 			canonicalName := providerName + "-api-key"
-			r.secrets.RecordEnvFallback(ctx, canonicalName, req.TenantID, req.AgentName)
-			log.Debug().
-				Str("provider", providerName).
-				Str("tenant_id", req.TenantID).
-				Msg("no tenant key in vault, using operator fallback")
+			envVarName := secretNameForProviderEnvAlias(providerName)
+			if envVarName != "" && os.Getenv(envVarName) != "" {
+				r.secrets.RecordEnvFallback(ctx, canonicalName, req.TenantID, req.AgentName)
+				log.Debug().
+					Str("provider", providerName).
+					Str("tenant_id", req.TenantID).
+					Msg("no tenant key in vault, using operator fallback")
+			} else {
+				r.secrets.RecordVaultMissNoFallback(ctx, canonicalName, req.TenantID, req.AgentName)
+			}
 		}
 	}
 

@@ -429,9 +429,16 @@ func (s *SecretStore) logAccess(ctx context.Context, secretName, tenantID, agent
 }
 
 // RecordEnvFallback records that a run used the environment variable fallback for this secret
-// (vault lookup was denied or missing). SecOps can see this in "talon secrets audit" as allowed=true, reason=env_fallback.
+// (vault lookup was denied or missing). Only call when the env var is actually set.
+// SecOps can see this in "talon secrets audit" as allowed=true, reason=env_fallback.
 func (s *SecretStore) RecordEnvFallback(ctx context.Context, secretName, tenantID, agentID string) {
 	s.logAccess(ctx, secretName, tenantID, agentID, true, "env_fallback")
+}
+
+// RecordVaultMissNoFallback records that vault had no key and no environment fallback was available.
+// SecOps sees this as allowed=false, reason=no_key so the audit trail is accurate.
+func (s *SecretStore) RecordVaultMissNoFallback(ctx context.Context, secretName, tenantID, agentID string) {
+	s.logAccess(ctx, secretName, tenantID, agentID, false, "no_key")
 }
 
 // AuditLog returns access records for compliance review.
