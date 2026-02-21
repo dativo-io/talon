@@ -310,6 +310,40 @@ func TestSourceTypeFromInvocation(t *testing.T) {
 	assert.Equal(t, memory.SourceAgentRun, sourceTypeFromInvocation("other"))
 }
 
+func TestSafePolicyPathUnder(t *testing.T) {
+	dir := t.TempDir()
+	dirAbs, _ := filepath.Abs(dir)
+
+	tests := []struct {
+		name      string
+		policyDir string
+		path      string
+		wantErr   bool
+	}{
+		{"relative_under", dir, "agent.talon.yaml", false},
+		{"relative_under_subdir", dir, "sub/agent.talon.yaml", false},
+		{"traversal_escape", dir, "../../../etc/passwd.talon.yaml", true},
+		{"traversal_double_dot", dir, "sub/../../../etc/passwd.talon.yaml", true},
+		{"absolute_under", dirAbs, filepath.Join(dirAbs, "a.talon.yaml"), false},
+		{"absolute_outside", dirAbs, filepath.Clean(filepath.Join(dirAbs, "..", "outside.talon.yaml")), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := safePolicyPathUnder(tt.policyDir, tt.path)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "policy path")
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, filepath.IsAbs(got), "expected absolute path")
+			rel, err := filepath.Rel(tt.policyDir, got)
+			require.NoError(t, err)
+			assert.False(t, strings.HasPrefix(rel, ".."), "path must be under policy dir")
+		})
+	}
+}
+
 func TestPlanReviewConfigFromPolicy(t *testing.T) {
 	assert.Nil(t, planReviewConfigFromPolicy(nil))
 	cfg := &policy.PlanReviewConfig{

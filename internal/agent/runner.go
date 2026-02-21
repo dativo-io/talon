@@ -185,6 +185,33 @@ type RunResponse struct {
 	AttachmentBlocked            bool     // true if any attachment was blocked due to injection
 }
 
+// safePolicyPathUnder resolves path relative to policyDir and returns an absolute path
+// that is guaranteed to be under policyDir. Prevents path traversal when path or its
+// components (e.g. AgentName) are user-controlled.
+func safePolicyPathUnder(policyDir, path string) (string, error) {
+	dirAbs, err := filepath.Abs(filepath.Clean(policyDir))
+	if err != nil {
+		return "", fmt.Errorf("policy directory: %w", err)
+	}
+	full := path
+	if !filepath.IsAbs(path) {
+		full = filepath.Join(dirAbs, path)
+	}
+	full = filepath.Clean(full)
+	pathAbs, err := filepath.Abs(full)
+	if err != nil {
+		return "", fmt.Errorf("policy path: %w", err)
+	}
+	rel, err := filepath.Rel(dirAbs, pathAbs)
+	if err != nil {
+		return "", fmt.Errorf("policy path outside policy directory")
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.HasPrefix(rel, "../") {
+		return "", fmt.Errorf("policy path outside policy directory")
+	}
+	return pathAbs, nil
+}
+
 // Run executes the complete agent pipeline:
 //  1. Load policy
 //  2. Classify input (PII detection)
@@ -223,13 +250,18 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		Func(talonotel.LogTraceFields(ctx)).
 		Msg("agent_run_started")
 
-	// Step 1: Load policy
+	// Step 1: Load policy (resolve path under policyDir to prevent path traversal)
 	policyPath := req.PolicyPath
 	if policyPath == "" {
-		policyPath = filepath.Join(r.policyDir, req.AgentName+".talon.yaml")
+		policyPath = req.AgentName + ".talon.yaml"
+	}
+	safePath, err := safePolicyPathUnder(r.policyDir, policyPath)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("policy path: %w", err)
 	}
 
-	pol, err := policy.LoadPolicy(ctx, policyPath, false)
+	pol, err := policy.LoadPolicy(ctx, safePath, false)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("loading policy: %w", err)
