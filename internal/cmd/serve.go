@@ -124,7 +124,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(otel.Middleware())
+	r.Use(otel.MiddlewareWithStatus())
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
