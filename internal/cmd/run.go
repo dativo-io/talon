@@ -84,6 +84,11 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("policy file: %w", err)
 	}
+	// Resolve to absolute so runner accepts paths outside CWD (e.g. talon run --policy /etc/talon/policies/agent.talon.yaml).
+	policyPath, err = filepath.Abs(policyPath)
+	if err != nil {
+		return fmt.Errorf("resolving policy path: %w", err)
+	}
 
 	if runValidate {
 		if err := validatePolicyFile(ctx, policyPath); err != nil {

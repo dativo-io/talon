@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -42,6 +43,7 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 }
 
+//nolint:gocyclo // orchestration flow is inherently branched
 func runServe(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -59,6 +61,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 	pol, err := policy.LoadPolicy(ctx, policyPath, false)
 	if err != nil {
 		return fmt.Errorf("loading policy: %w", err)
+	}
+	// Resolve to absolute so chat completions handler and runner receive a path that
+	// is not restricted to policyDir (e.g. Docker volume at /etc/talon/policies).
+	policyPath, err = filepath.Abs(policyPath)
+	if err != nil {
+		return fmt.Errorf("resolving policy path: %w", err)
 	}
 
 	cls := classifier.MustNewScanner()
