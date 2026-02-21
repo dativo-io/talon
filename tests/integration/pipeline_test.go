@@ -377,7 +377,7 @@ compliance:
 		require.NoError(t, os.WriteFile(policyPath, []byte(yamlContent), 0o644))
 
 		// Load the policy
-		pol, err := policy.LoadPolicy(ctx, policyPath, false)
+		pol, err := policy.LoadPolicy(ctx, policyPath, false, dir)
 		require.NoError(t, err)
 		assert.Equal(t, "test-agent", pol.Agent.Name)
 

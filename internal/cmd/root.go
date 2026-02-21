@@ -31,6 +31,7 @@ var (
 	verbose   bool
 	logLevel  string
 	logFormat string
+	otelFlag  bool
 )
 
 // rootCmd represents the base command
@@ -50,8 +51,8 @@ It enforces policies on AI agent execution with:
 		// Initialize logging
 		setupLogging()
 
-		// Initialize OpenTelemetry only if explicitly enabled
-		otelEnabled := verbose || os.Getenv("TALON_OTEL_ENABLED") == "true"
+		// Initialize OpenTelemetry when --otel, -v, or TALON_OTEL_ENABLED=true
+		otelEnabled := otelFlag || verbose || os.Getenv("TALON_OTEL_ENABLED") == "true"
 		shutdown, err := otel.Setup("dativo-talon", Version, otelEnabled)
 		if err != nil {
 			return fmt.Errorf("initializing OpenTelemetry: %w", err)
@@ -72,11 +73,10 @@ func setupLogging() {
 	}
 	zerolog.SetGlobalLevel(level)
 
-	// Set format
+	// All structured logs go to stderr so stdout stays clean for piping (e.g. talon costs | jq).
 	if logFormat == "json" {
 		log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
 	} else {
-		// Pretty console output for development
 		log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).
 			With().
 			Timestamp().
@@ -96,9 +96,11 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "console", "log format (console, json)")
+	rootCmd.PersistentFlags().BoolVar(&otelFlag, "otel", false, "enable OpenTelemetry (traces and metrics to stdout)")
 
 	// Bind to viper
 	_ = viper.BindPFlag("verbose", rootCmd.PersistentFlags().Lookup("verbose"))
+	_ = viper.BindPFlag("otel", rootCmd.PersistentFlags().Lookup("otel"))
 	_ = viper.BindPFlag("log_level", rootCmd.PersistentFlags().Lookup("log-level"))
 	_ = viper.BindPFlag("log_format", rootCmd.PersistentFlags().Lookup("log-format"))
 }

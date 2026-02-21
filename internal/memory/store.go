@@ -478,6 +478,8 @@ func (s *Store) SearchByCategory(ctx context.Context, tenantID, agentID, categor
 }
 
 // Rollback deletes all memory entries with version > toVersion for an agent.
+// Returns an error if the agent has no memory entries (nothing to roll back) or if
+// no rows were deleted (already at or before toVersion).
 func (s *Store) Rollback(ctx context.Context, tenantID, agentID string, toVersion int) error {
 	ctx, span := tracer.Start(ctx, "memory.rollback",
 		trace.WithAttributes(
@@ -486,6 +488,17 @@ func (s *Store) Rollback(ctx context.Context, tenantID, agentID string, toVersio
 			attribute.Int("to_version", toVersion),
 		))
 	defer span.End()
+
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`,
+		tenantID, agentID).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("counting memory entries: %w", err)
+	}
+	if count == 0 {
+		return fmt.Errorf("no memory entries for agent %q (tenant %s); nothing to roll back", agentID, tenantID)
+	}
 
 	result, err := s.db.ExecContext(ctx,
 		`DELETE FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND version > ?`,
@@ -496,6 +509,9 @@ func (s *Store) Rollback(ctx context.Context, tenantID, agentID string, toVersio
 
 	affected, _ := result.RowsAffected()
 	span.SetAttributes(attribute.Int64("memory.deleted", affected))
+	if affected == 0 {
+		return fmt.Errorf("no entries with version > %d; agent is already at or before that version (nothing to roll back)", toVersion)
+	}
 	if affected > 0 {
 		recordEntriesGauge(ctx, s)
 	}

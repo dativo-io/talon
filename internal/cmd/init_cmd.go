@@ -23,7 +23,7 @@ var (
 )
 
 // supportedPacks are the allowed values for --pack (industry starter packs).
-var supportedPacks = []string{"fintech-eu", "ecommerce-eu", "saas-eu"}
+var supportedPacks = []string{"fintech-eu", "ecommerce-eu", "saas-eu", "telecom-eu"}
 
 var initCmd = &cobra.Command{
 	Use:   "init",
@@ -68,7 +68,7 @@ func init() {
 	initCmd.Flags().StringVar(&initName, "name", "my-agent", "agent name")
 	initCmd.Flags().StringVar(&initOwner, "owner", "", "agent owner email")
 	initCmd.Flags().BoolVar(&initMinimal, "minimal", false, "generate minimal agent.talon.yaml (fewer options, faster to edit)")
-	initCmd.Flags().StringVar(&initPack, "pack", "", "industry starter pack: fintech-eu, ecommerce-eu, saas-eu (overrides default template)")
+	initCmd.Flags().StringVar(&initPack, "pack", "", "industry starter pack: fintech-eu, ecommerce-eu, saas-eu, telecom-eu (overrides default template)")
 }
 
 func initializeProject() error {

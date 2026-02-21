@@ -73,6 +73,16 @@ func (c *Config) UsingDefaultKeys() bool {
 	return c.usingDefaultSecretsKey || c.usingDefaultSigningKey
 }
 
+// UsingDefaultSecretsKey returns true if the secrets encryption key was derived (not set explicitly).
+func (c *Config) UsingDefaultSecretsKey() bool {
+	return c.usingDefaultSecretsKey
+}
+
+// UsingDefaultSigningKey returns true if the evidence signing key was derived (not set explicitly).
+func (c *Config) UsingDefaultSigningKey() bool {
+	return c.usingDefaultSigningKey
+}
+
 // SecretsDBPath returns the full path to the secrets SQLite database.
 func (c *Config) SecretsDBPath() string {
 	return filepath.Join(c.DataDir, "secrets.db")

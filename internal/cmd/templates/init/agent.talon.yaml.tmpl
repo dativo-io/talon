@@ -61,6 +61,8 @@ policies:
       primary: gpt-4o
       fallback: gpt-4o-mini
       location: eu-west-1
+    # tier_2 is used for PII-bearing inputs. If you don't use AWS Bedrock, set bedrock_only: false
+    # and primary/fallback to OpenAI or Anthropic models (e.g. gpt-4o, gpt-4o-mini).
     tier_2:
       primary: claude-sonnet-4-20250514
       location: eu-west-1
@@ -77,6 +79,14 @@ compliance:
     - gdpr
     - eu-ai-act
   data_residency: eu
+
+# Agent memory is off by default. Uncomment and set enabled: true to allow governed learning (see MEMORY_GOVERNANCE.md).
+# memory:
+#   enabled: true
+#   mode: active
+#   max_entries: 100
+#   max_entry_size_kb: 16
+#   retention_days: 90
 
 metadata:
   department: engineering

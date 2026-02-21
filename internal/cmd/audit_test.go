@@ -14,7 +14,7 @@ import (
 )
 
 func TestAuditCmd_HasSubcommands(t *testing.T) {
-	expected := []string{"list", "verify"}
+	expected := []string{"list", "show", "verify", "export"}
 	registered := make(map[string]bool)
 	for _, cmd := range auditCmd.Commands() {
 		registered[cmd.Name()] = true
@@ -86,8 +86,8 @@ func TestRenderAuditList(t *testing.T) {
 
 func TestRenderVerifyResult(t *testing.T) {
 	var bufValid, bufInvalid bytes.Buffer
-	renderVerifyResult(&bufValid, "ev_abc", true)
-	renderVerifyResult(&bufInvalid, "ev_xyz", false)
+	renderVerifyResult(&bufValid, "ev_abc", true, nil)
+	renderVerifyResult(&bufInvalid, "ev_xyz", false, nil)
 	assert.Contains(t, bufValid.String(), "VALID")
 	assert.Contains(t, bufValid.String(), "ev_abc")
 	assert.Contains(t, bufInvalid.String(), "INVALID")
@@ -97,10 +97,10 @@ func TestRenderVerifyResult(t *testing.T) {
 func TestRenderAuditExportCSV(t *testing.T) {
 	var buf bytes.Buffer
 	ts := time.Date(2025, 2, 18, 10, 0, 0, 0, time.UTC)
-	index := []evidence.Index{
-		{ID: "ev_1", Timestamp: ts, TenantID: "acme", AgentID: "agent", InvocationType: "manual", Allowed: true, Cost: 0.01, ModelUsed: "gpt-4", DurationMS: 100, HasError: false},
+	records := []evidence.ExportRecord{
+		{ID: "ev_1", Timestamp: ts, TenantID: "acme", AgentID: "agent", InvocationType: "manual", Allowed: true, Cost: 0.01, ModelUsed: "gpt-4", DurationMS: 100, HasError: false, InputTier: 1, OutputTier: 0, PIIDetected: []string{"EMAIL_ADDRESS"}, PIIRedacted: true},
 	}
-	err := renderAuditExportCSV(&buf, index)
+	err := renderAuditExportCSV(&buf, records)
 	require.NoError(t, err)
 	out := buf.String()
 	assert.Contains(t, out, "id,timestamp,tenant_id")
@@ -108,21 +108,25 @@ func TestRenderAuditExportCSV(t *testing.T) {
 	assert.Contains(t, out, "acme")
 	assert.Contains(t, out, "true")
 	assert.Contains(t, out, "0.0100")
+	assert.Contains(t, out, "input_tier,output_tier,pii_detected,pii_redacted")
+	assert.Contains(t, out, "EMAIL_ADDRESS")
 }
 
 func TestRenderAuditExportJSON(t *testing.T) {
 	var buf bytes.Buffer
 	ts := time.Date(2025, 2, 18, 10, 0, 0, 0, time.UTC)
-	index := []evidence.Index{
-		{ID: "ev_2", Timestamp: ts, TenantID: "default", AgentID: "runner", InvocationType: "scheduled", Allowed: false, Cost: 0, ModelUsed: "", DurationMS: 0, HasError: true},
+	records := []evidence.ExportRecord{
+		{ID: "ev_2", Timestamp: ts, TenantID: "default", AgentID: "runner", InvocationType: "scheduled", Allowed: false, Cost: 0, ModelUsed: "", DurationMS: 0, HasError: true, PIIDetected: []string{"PHONE_NUMBER"}},
 	}
-	err := renderAuditExportJSON(&buf, index)
+	err := renderAuditExportJSON(&buf, records)
 	require.NoError(t, err)
 	out := buf.String()
 	assert.Contains(t, out, "ev_2")
 	assert.Contains(t, out, "default")
 	assert.Contains(t, out, "scheduled")
 	assert.Contains(t, out, "false")
+	assert.Contains(t, out, "pii_detected")
+	assert.Contains(t, out, "PHONE_NUMBER")
 }
 
 func TestAuditListCmd_RunSuccess(t *testing.T) {
@@ -150,4 +154,88 @@ func TestAuditExportCmd_JSONFormat(t *testing.T) {
 	rootCmd.SetArgs([]string{"audit", "export", "--format", "json"})
 	err := rootCmd.Execute()
 	require.NoError(t, err)
+}
+
+func TestRenderAuditShow_PIIDetected(t *testing.T) {
+	var buf bytes.Buffer
+	ev := &evidence.Evidence{
+		ID:        "req_9d838d88",
+		Timestamp: time.Date(2026, 2, 21, 11, 28, 45, 0, time.FixedZone("CET", 3600)),
+		TenantID:  "default", AgentID: "slack-support-bot", InvocationType: "manual",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "abc123"},
+		Classification: evidence.Classification{InputTier: 2, OutputTier: 0, PIIDetected: []string{"EMAIL_ADDRESS", "PHONE_NUMBER"}, PIIRedacted: true},
+		Execution:      evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 0.0001, DurationMS: 909, Tokens: evidence.TokenUsage{Input: 45, Output: 32}, ToolsCalled: []string{}},
+		AuditTrail:     evidence.AuditTrail{InputHash: "sha256:a3f9", OutputHash: "sha256:b2c1"},
+		Compliance:     evidence.Compliance{Frameworks: []string{"gdpr", "iso27001"}, DataLocation: "eu-only"},
+	}
+	renderAuditShow(&buf, ev, true)
+	out := buf.String()
+	assert.Contains(t, out, "Evidence: req_9d838d88")
+	assert.Contains(t, out, "✓ VALID")
+	assert.Contains(t, out, "EMAIL_ADDRESS")
+	assert.Contains(t, out, "PHONE_NUMBER")
+	assert.Contains(t, out, "PII Redacted:  true")
+}
+
+func TestRenderAuditShow_PINone(t *testing.T) {
+	var buf bytes.Buffer
+	ev := &evidence.Evidence{
+		ID:        "req_nopii",
+		Timestamp: time.Now(),
+		TenantID:  "default", AgentID: "bot", InvocationType: "manual",
+		Classification: evidence.Classification{InputTier: 0, OutputTier: 0, PIIDetected: nil, PIIRedacted: false},
+		Execution:      evidence.Execution{ModelUsed: "gpt-4o", Cost: 0},
+		AuditTrail:     evidence.AuditTrail{},
+		Compliance:     evidence.Compliance{},
+	}
+	renderAuditShow(&buf, ev, true)
+	out := buf.String()
+	assert.Contains(t, out, "PII Detected:  (none)")
+}
+
+func TestRenderAuditShow_InvalidSignature(t *testing.T) {
+	var buf bytes.Buffer
+	ev := &evidence.Evidence{
+		ID:        "req_tampered",
+		Timestamp: time.Now(),
+		TenantID:  "default", AgentID: "bot", InvocationType: "manual",
+		Classification: evidence.Classification{},
+		Execution:      evidence.Execution{},
+		AuditTrail:     evidence.AuditTrail{},
+		Compliance:     evidence.Compliance{},
+	}
+	renderAuditShow(&buf, ev, false)
+	out := buf.String()
+	assert.Contains(t, out, "✗ INVALID")
+	assert.Contains(t, out, "tampered")
+}
+
+func TestRenderVerifyResult_WithSummary(t *testing.T) {
+	var buf bytes.Buffer
+	ev := &evidence.Evidence{
+		Timestamp: time.Date(2026, 2, 21, 11, 28, 45, 0, time.FixedZone("CET", 3600)),
+		TenantID:  "default", AgentID: "slack-support-bot",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true},
+		Classification: evidence.Classification{InputTier: 2, OutputTier: 0, PIIDetected: []string{"EMAIL_ADDRESS"}, PIIRedacted: true},
+		Execution:      evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 0.0000, DurationMS: 909},
+	}
+	renderVerifyResult(&buf, "req_9d838d88", true, ev)
+	out := buf.String()
+	assert.Contains(t, out, "VALID")
+	assert.Contains(t, out, "default/slack-support-bot")
+	assert.Contains(t, out, "gpt-4o-mini")
+	assert.Contains(t, out, "Tier: 2→0")
+	assert.Contains(t, out, "PII: EMAIL_ADDRESS")
+	assert.Contains(t, out, "Redacted: true")
+}
+
+func TestAuditShowCmd_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+
+	rootCmd.SetArgs([]string{"audit", "show", "req_nonexistent_12345"})
+	err := rootCmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching evidence")
+	assert.Contains(t, err.Error(), "not found")
 }

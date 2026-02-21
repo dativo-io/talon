@@ -310,6 +310,216 @@ func TestSourceTypeFromInvocation(t *testing.T) {
 	assert.Equal(t, memory.SourceAgentRun, sourceTypeFromInvocation("other"))
 }
 
+func TestSafePolicyPathUnder(t *testing.T) {
+	dir := t.TempDir()
+	dirAbs, _ := filepath.Abs(dir)
+
+	tests := []struct {
+		name      string
+		policyDir string
+		path      string
+		wantErr   bool
+	}{
+		{"relative_under", dir, "agent.talon.yaml", false},
+		{"relative_under_subdir", dir, "sub/agent.talon.yaml", false},
+		{"traversal_escape", dir, "../../../etc/passwd.talon.yaml", true},
+		{"traversal_double_dot", dir, "sub/../../../etc/passwd.talon.yaml", true},
+		{"absolute_under", dirAbs, filepath.Join(dirAbs, "a.talon.yaml"), false},
+		{"absolute_outside", dirAbs, filepath.Clean(filepath.Join(dirAbs, "..", "outside.talon.yaml")), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := safePolicyPathUnder(tt.policyDir, tt.path)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "policy path")
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, filepath.IsAbs(got), "expected absolute path")
+			rel, err := filepath.Rel(tt.policyDir, got)
+			require.NoError(t, err)
+			assert.False(t, strings.HasPrefix(rel, ".."), "path must be under policy dir")
+		})
+	}
+}
+
+// TestRun_acceptsAbsolutePolicyPathOutsidePolicyDir ensures that when PolicyPath is an
+// absolute path (e.g. from --policy or serve config / Docker volume), the runner accepts it
+// even though it is outside policyDir. This fixes serve chat completions and talon run --policy
+// when the policy file lives outside CWD.
+func TestRun_acceptsAbsolutePolicyPathOutsidePolicyDir(t *testing.T) {
+	// Policy file in its own temp dir (simulates e.g. /etc/talon/policies)
+	policyDir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, policyDir, "out-of-cwd-agent")
+	require.FileExists(t, policyPath)
+	absPath, err := filepath.Abs(policyPath)
+	require.NoError(t, err)
+	// Runner with policyDir "." so absPath is outside it
+	runDir := t.TempDir()
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(runDir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(runDir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "ok"},
+	}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, providers, nil)
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         ".", // as in serve and run
+		DefaultPolicyPath: "",
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:       "default",
+		AgentName:      "out-of-cwd-agent",
+		Prompt:         "hello",
+		InvocationType: "manual",
+		PolicyPath:     absPath, // absolute path outside policyDir "."
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+}
+
+// TestRun_rejectsAgentNameAsAbsolutePath ensures that when PolicyPath is empty, the path is
+// derived from AgentName and must not be treated as a trusted absolute path. An agent name
+// starting with "/" (e.g. from a future HTTP handler) would otherwise bypass safePolicyPathUnder.
+func TestRun_rejectsAgentNameAsAbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, dir, "agent")
+	require.FileExists(t, policyPath)
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "ok"},
+	}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, providers, nil)
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: "",
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// PolicyPath empty, AgentName starts with "/" -> must reject (would bypass safePolicyPathUnder)
+	_, err = runner.Run(ctx, &RunRequest{
+		TenantID:       "default",
+		AgentName:      "/etc/foo",
+		Prompt:         "hello",
+		InvocationType: "manual",
+		PolicyPath:     "", // empty so path would become AgentName + ".talon.yaml"
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "policy path")
+	assert.True(t, strings.Contains(err.Error(), "must not be an absolute path") ||
+		strings.Contains(err.Error(), "must not start with path separator"),
+		"error should reject absolute or path-separator agent name: %s", err.Error())
+}
+
+// TestValidateAgentNameForPolicyPath checks that when PolicyPath is empty, unsafe agent names are rejected.
+func TestValidateAgentNameForPolicyPath(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentName string
+		wantErr   bool
+	}{
+		{"ok", "my-agent", false},
+		{"ok_simple", "agent", false},
+		{"empty", "", true},
+		{"starts_with_slash", "/etc/foo", true},
+		{"contains_slash", "foo/bar", true},
+		{"double_dot", "..", true},
+		{"starts_with_dotdot", "../x", true},
+		{"contains_dotdot", "a/../b", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAgentNameForPolicyPath(tt.agentName)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "agent name")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// TestRun_rejectsEmptyAgentNameWhenNoPolicyPath ensures Run rejects empty AgentName when PolicyPath is empty.
+func TestRun_rejectsEmptyAgentNameWhenNoPolicyPath(t *testing.T) {
+	dir := t.TempDir()
+	_ = testutil.WriteTestPolicyFile(t, dir, "agent")
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	cls := classifier.MustNewScanner()
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: "",
+		Classifier:        cls,
+		Router:            llm.NewRouter(nil, map[string]llm.Provider{"openai": &testutil.MockProvider{}}, nil),
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = runner.Run(ctx, &RunRequest{
+		TenantID:       "default",
+		AgentName:      "",
+		Prompt:         "hello",
+		InvocationType: "manual",
+		PolicyPath:     "",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "policy path")
+	assert.Contains(t, err.Error(), "must not be empty")
+}
+
 func TestPlanReviewConfigFromPolicy(t *testing.T) {
 	assert.Nil(t, planReviewConfigFromPolicy(nil))
 	cfg := &policy.PlanReviewConfig{

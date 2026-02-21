@@ -300,7 +300,7 @@ memory:
 			require.NoError(t, err)
 
 			ctx := context.Background()
-			pol, err := LoadPolicy(ctx, policyPath, tt.strict)
+			pol, err := LoadPolicy(ctx, policyPath, tt.strict, tmpDir)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -331,7 +331,7 @@ policies:
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	pol, err := LoadPolicy(ctx, policyPath, false)
+	pol, err := LoadPolicy(ctx, policyPath, false, tmpDir)
 	require.NoError(t, err)
 
 	assert.Contains(t, pol.VersionTag, "1.0.0:sha256:")
@@ -340,10 +340,51 @@ policies:
 
 func TestLoadPolicy_FileNotFound(t *testing.T) {
 	ctx := context.Background()
-	pol, err := LoadPolicy(ctx, "/nonexistent/path.yaml", false)
+	// Use baseDir "/" so path is considered under base; error is from missing file.
+	pol, err := LoadPolicy(ctx, "/nonexistent/path.yaml", false, "/")
 	assert.Error(t, err)
 	assert.Nil(t, pol)
 	assert.Contains(t, err.Error(), "reading policy file")
+}
+
+func TestLoadPolicy_PathOutsideBase(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	policyPath := filepath.Join(tmpDir, "policy.yaml")
+	require.NoError(t, os.WriteFile(policyPath, []byte("agent:\n  name: x\n  version: 1.0.0\n"), 0o644))
+
+	// Path under a different base (e.g. path traversal) must be rejected.
+	otherBase := t.TempDir()
+	pol, err := LoadPolicy(ctx, policyPath, false, otherBase)
+	assert.Error(t, err)
+	assert.Nil(t, pol)
+	assert.Contains(t, err.Error(), "outside base directory")
+}
+
+func TestResolvePathUnderBase(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "sub", "policy.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(policyPath), 0o755))
+
+	// Relative path under base resolves correctly.
+	resolved, err := ResolvePathUnderBase(dir, "sub/policy.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, policyPath, resolved)
+
+	// Absolute path under base is allowed.
+	resolved, err = ResolvePathUnderBase(dir, policyPath)
+	require.NoError(t, err)
+	assert.Equal(t, policyPath, resolved)
+
+	// Path outside base is rejected.
+	_, err = ResolvePathUnderBase(dir, filepath.Join(t.TempDir(), "other.yaml"))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "outside base directory")
+
+	// Traversal attempt is rejected.
+	_, err = ResolvePathUnderBase(dir, "sub/../../../etc/passwd")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "outside base directory")
 }
 
 func TestApplyDefaults(t *testing.T) {
@@ -548,7 +589,7 @@ policies:
 		require.NoError(t, os.WriteFile(policyPath, []byte(yamlContent), 0o644))
 
 		ctx := context.Background()
-		pol, err := LoadPolicy(ctx, policyPath, false)
+		pol, err := LoadPolicy(ctx, policyPath, false, tmpDir)
 		// Policy should still load (warnings are non-fatal)
 		require.NoError(t, err)
 		require.NotNil(t, pol)
@@ -584,10 +625,11 @@ func FuzzLoadPolicy(f *testing.F) {
 		if len(data) > 1<<20 {
 			t.Skip("input too large")
 		}
-		path := filepath.Join(t.TempDir(), "fuzz.yaml")
+		dir := t.TempDir()
+		path := filepath.Join(dir, "fuzz.yaml")
 		if err := os.WriteFile(path, data, 0o644); err != nil {
 			t.Skip(err)
 		}
-		_, _ = LoadPolicy(ctx, path, false)
+		_, _ = LoadPolicy(ctx, path, false, dir)
 	})
 }

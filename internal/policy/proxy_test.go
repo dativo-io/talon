@@ -667,7 +667,7 @@ compliance:
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	cfg, err := LoadProxyPolicy(path)
+	cfg, err := LoadProxyPolicy(path, dir)
 	require.NoError(t, err)
 	assert.Equal(t, "vendor-proxy", cfg.Agent.Name)
 	assert.Equal(t, "mcp_proxy", cfg.Agent.Type)
@@ -692,7 +692,7 @@ proxy:
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	_, err := LoadProxyPolicy(path)
+	_, err := LoadProxyPolicy(path, dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mcp_proxy")
 }
@@ -711,7 +711,7 @@ proxy:
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	_, err := LoadProxyPolicy(path)
+	_, err := LoadProxyPolicy(path, dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "upstream.url")
 }
@@ -730,13 +730,13 @@ proxy:
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	_, err := LoadProxyPolicy(path)
+	_, err := LoadProxyPolicy(path, dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "allowed_tools")
 }
 
 func TestLoadProxyPolicy_FileNotFound(t *testing.T) {
-	_, err := LoadProxyPolicy("/nonexistent/path.yaml")
+	_, err := LoadProxyPolicy("/nonexistent/path.yaml", "/")
 	require.Error(t, err)
 }
 
@@ -746,7 +746,7 @@ func TestLoadProxyPolicy_InvalidYAML(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(path, []byte("{{invalid yaml"), 0o644))
 
-	_, err := LoadProxyPolicy(path)
+	_, err := LoadProxyPolicy(path, dir)
 	require.Error(t, err)
 }
 
@@ -781,7 +781,7 @@ compliance:
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	cfg, err := LoadProxyPolicy(path)
+	cfg, err := LoadProxyPolicy(path, dir)
 	require.NoError(t, err)
 	assert.Equal(t, "passthrough", cfg.Proxy.Mode)
 	assert.Equal(t, "zendesk-ai", cfg.Proxy.Upstream.Vendor)

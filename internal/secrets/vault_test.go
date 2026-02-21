@@ -232,6 +232,43 @@ func TestRotateNonexistent(t *testing.T) {
 	assert.ErrorIs(t, err, ErrSecretNotFound)
 }
 
+// TestRotateSingleAuditEntry verifies that one Rotate produces exactly one audit log entry
+// with reason "rotate", not an extra "set" entry (Rotate uses storeSecret internally).
+func TestRotateSingleAuditEntry(t *testing.T) {
+	dir := t.TempDir()
+	key := "12345678901234567890123456789012"
+	store, err := NewSecretStore(filepath.Join(dir, "secrets.db"), key)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+	acl := ACL{Agents: []string{"*"}}
+	require.NoError(t, store.Set(ctx, "rotated-key", []byte("secret"), acl))
+
+	recordsBefore, err := store.AuditLog(ctx, "rotated-key", 10)
+	require.NoError(t, err)
+
+	require.NoError(t, store.Rotate(ctx, "rotated-key"))
+
+	recordsAfter, err := store.AuditLog(ctx, "rotated-key", 10)
+	require.NoError(t, err)
+
+	// One Set produced one "set" entry; one Rotate must produce exactly one "rotate" entry.
+	rotateReasons := 0
+	setReasons := 0
+	for _, r := range recordsAfter {
+		switch r.Reason {
+		case "rotate":
+			rotateReasons++
+		case "set":
+			setReasons++
+		}
+	}
+	assert.Equal(t, 1, setReasons, "expected exactly one 'set' from initial Set")
+	assert.Equal(t, 1, rotateReasons, "expected exactly one 'rotate' from Rotate (no extra 'set')")
+	assert.Equal(t, len(recordsBefore)+1, len(recordsAfter), "Rotate should add exactly one audit entry")
+}
+
 func TestListMultipleSecrets(t *testing.T) {
 	dir := t.TempDir()
 	key := "12345678901234567890123456789012"
@@ -336,18 +373,18 @@ func TestAuditLogFilterBySecretName(t *testing.T) {
 	_, _ = store.Get(ctx, "key-a", "t", "a")
 	_, _ = store.Get(ctx, "key-b", "t", "a")
 
-	// Filter by specific secret
+	// Filter by specific secret (2 Gets + 1 Set for key-a)
 	records, err := store.AuditLog(ctx, "key-a", 50)
 	require.NoError(t, err)
-	assert.Len(t, records, 2)
+	assert.Len(t, records, 3)
 	for _, r := range records {
 		assert.Equal(t, "key-a", r.SecretName)
 	}
 
-	// All secrets
+	// All secrets (2 Gets key-a + 1 Get key-b + 2 Sets)
 	all, err := store.AuditLog(ctx, "", 50)
 	require.NoError(t, err)
-	assert.Len(t, all, 3)
+	assert.Len(t, all, 5)
 }
 
 func TestSetOverwriteExisting(t *testing.T) {

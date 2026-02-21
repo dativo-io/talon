@@ -9,13 +9,19 @@ Get from zero to a policy-enforced AI agent in under 5 minutes.
 
 ## 1. Install
 
-```bash
-# From source
-go install github.com/dativo-io/talon/cmd/talon@latest
+Talon needs Go 1.22+ and CGO (for SQLite).
 
-# Or download a release binary
-curl -sSL https://get.talon.dativo.io | sh
+```bash
+# From source (any branch: clone then build)
+git clone https://github.com/dativo-io/talon.git && cd talon
+make build    # → bin/talon
+# or: make install   # → $GOPATH/bin/talon
+
+# Or install a released version
+go install github.com/dativo-io/talon/cmd/talon@latest
 ```
+
+**macOS:** If `go install` or `go build` fails with `unsupported tapi file type '!tapi-tbd'`, use `make build` (it uses the system Clang), or run `CC=/usr/bin/clang CGO_ENABLED=1 go build -o bin/talon ./cmd/talon/`.
 
 ## 2. Initialize a Project
 
@@ -45,6 +51,8 @@ talon secrets set openai-api-key "sk-proj-..."
 Vault-stored keys are encrypted at rest (AES-256-GCM), scoped per tenant/agent via ACLs, and every access is audit-logged. The runner tries the vault first and falls back to env vars.
 
 ## 4. Run Your First Agent
+
+**First run without AWS?** The default `talon init` template sets **tier_2** (used for PII-bearing inputs) to a Bedrock-only model. If you only have an OpenAI or Anthropic API key and no AWS Bedrock, either use the **telecom-eu** pack (`talon init --pack telecom-eu`) or edit `agent.talon.yaml`: set `policies.model_routing.tier_2.bedrock_only: false` and set `primary` (and optional `fallback`) to an OpenAI or Anthropic model (e.g. `gpt-4o`, `gpt-4o-mini`). Otherwise tier-2 requests will fail with "provider bedrock: provider not available".
 
 ```bash
 talon run "Summarize the key trends in European AI regulation"
@@ -136,9 +144,18 @@ talon secrets rotate openai-api-key
 talon audit list --limit 10
 #   ✓ req_xxxxxxxx | 2026-02-18 14:30:00 | default/default | gpt-4o-mini | €0.0018 | 1250ms
 
-# Verify signature integrity (use an ID from run output or audit list)
+# Show full evidence record (HMAC-verified; includes classification, PII, policy reasons)
+talon audit show <evidence-id>
+
+# Verify signature integrity and see compact summary (tier, PII, policy)
 talon audit verify <evidence-id>
 #   ✓ Evidence <evidence-id>: signature VALID (HMAC-SHA256 intact)
+#   2026-02-21T11:28:45+01:00 | default/slack-support-bot | gpt-4o-mini | €0.0000 | 909ms
+#   Policy: ALLOWED | Tier: 2→0 | PII: EMAIL_ADDRESS | Redacted: true
+
+# Export for compliance (CSV/JSON include input_tier, output_tier, pii_detected, policy_reasons, etc.)
+talon audit export --format csv --from 2026-02-01 --to 2026-02-28
+talon audit export --format json --limit 1000
 ```
 
 ## 10. Multi-Tenant Usage
@@ -157,7 +174,7 @@ talon secrets set openai-api-key "sk-acme-..." # per-tenant key in vault
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `TALON_DATA_DIR` | Base directory for state | `~/.talon` |
+| `TALON_DATA_DIR` | Base directory for state (vault, evidence, memory DBs). For **project-scoped onboarding** or evaluation, use `TALON_DATA_DIR=$(pwd)/.talon` so each project has its own vault and audit data. | `~/.talon` |
 | `TALON_SECRETS_KEY` | AES-256 key: 32 raw bytes or 64 hex chars (256 bits) | Auto-derived per machine |
 | `TALON_SIGNING_KEY` | HMAC key: ≥32 raw bytes or 64+ hex chars (≥256 bits) | Auto-derived per machine |
 | `TALON_DEFAULT_POLICY` | Default policy filename | `agent.talon.yaml` |
@@ -180,7 +197,9 @@ export TALON_SIGNING_KEY=$(openssl rand -hex 32)
 
 ## 11. Agent Memory
 
-Agents automatically compress each run into governed observations. Memory is controlled via policy:
+Agent memory is **off by default**. The default `talon init` config does not include a `memory:` block, so `talon memory list` and `talon memory health` will be empty until you enable memory in your policy (see [MEMORY_GOVERNANCE.md](MEMORY_GOVERNANCE.md)).
+
+When enabled, agents automatically compress each run into governed observations. Memory is controlled via policy:
 
 ```yaml
 # In agent.talon.yaml
@@ -268,6 +287,7 @@ Webhooks are available at `POST /v1/triggers/{name}`. The server also runs a dai
 ## Next Steps
 
 - Edit `agent.talon.yaml` to tune cost limits, model routing, and compliance frameworks
+- See [PERSONA_GUIDES.md](PERSONA_GUIDES.md) for role-based workflows (Compliance Officer, CTO, SecOps, FinOps, DevOps)
 - See [MEMORY_GOVERNANCE.md](MEMORY_GOVERNANCE.md) for memory governance details
 - See [VENDOR_INTEGRATION_GUIDE.md](VENDOR_INTEGRATION_GUIDE.md) to wrap existing AI vendors
 - See [ADOPTION_SCENARIOS.md](ADOPTION_SCENARIOS.md) for migration paths

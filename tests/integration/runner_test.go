@@ -680,7 +680,7 @@ policies:
 	policyPath := filepath.Join(dir, "deg-agent.talon.yaml")
 	require.NoError(t, os.WriteFile(policyPath, []byte(policyContent), 0o644))
 
-	pol, err := policy.LoadPolicy(ctx, policyPath, false)
+	pol, err := policy.LoadPolicy(ctx, policyPath, false, dir)
 	require.NoError(t, err)
 	costLimits := pol.Policies.CostLimits
 	require.NotNil(t, costLimits)

@@ -52,9 +52,10 @@ func TestBuildProviders_Empty(t *testing.T) {
 
 	cfg := &config.Config{OllamaBaseURL: "http://localhost:11434"}
 	providers := buildProviders(cfg)
+	// openai and anthropic are always registered (empty key) so vault-only keys work
+	assert.Contains(t, providers, "openai")
+	assert.Contains(t, providers, "anthropic")
 	assert.Contains(t, providers, "ollama")
-	assert.NotContains(t, providers, "openai")
-	assert.NotContains(t, providers, "anthropic")
 	assert.NotContains(t, providers, "bedrock")
 }
 
@@ -87,7 +88,7 @@ func TestValidatePolicyFile_Valid(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := validatePolicyFile(ctx, policyPath)
+	err := validatePolicyFile(ctx, policyPath, dir)
 	require.NoError(t, err)
 }
 
@@ -95,7 +96,8 @@ func TestValidatePolicyFile_InvalidPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := validatePolicyFile(ctx, filepath.Join(t.TempDir(), "nonexistent.talon.yaml"))
+	tmp := t.TempDir()
+	err := validatePolicyFile(ctx, filepath.Join(tmp, "nonexistent.talon.yaml"), tmp)
 	require.Error(t, err)
 }
 
@@ -106,7 +108,7 @@ func TestValidatePolicyFile_InvalidYAML(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := validatePolicyFile(ctx, path)
+	err := validatePolicyFile(ctx, path, dir)
 	require.Error(t, err)
 }
 
@@ -116,7 +118,7 @@ func TestLoadRoutingAndCostLimits_Valid(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath)
+	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, dir)
 	require.NotNil(t, routing)
 	require.NotNil(t, costLimits)
 	assert.NotNil(t, routing.Tier0)
@@ -128,7 +130,8 @@ func TestLoadRoutingAndCostLimits_MissingFile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	routing, costLimits := loadRoutingAndCostLimits(ctx, filepath.Join(t.TempDir(), "nonexistent.talon.yaml"))
+	tmp := t.TempDir()
+	routing, costLimits := loadRoutingAndCostLimits(ctx, filepath.Join(tmp, "nonexistent.talon.yaml"), tmp)
 	assert.Nil(t, routing)
 	assert.Nil(t, costLimits)
 }

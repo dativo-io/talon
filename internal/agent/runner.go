@@ -15,9 +15,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -166,15 +168,71 @@ type Attachment struct {
 
 // RunResponse is the output of an agent invocation.
 type RunResponse struct {
-	Response    string
-	EvidenceID  string
-	Cost        float64
-	DurationMS  int64
-	PolicyAllow bool
-	DenyReason  string
-	PlanPending string   // set when execution is gated for human review (EU AI Act Art. 14)
-	ModelUsed   string   // LLM model used for generation
-	ToolsCalled []string // MCP tools invoked
+	Response     string
+	EvidenceID   string
+	Cost         float64
+	DurationMS   int64
+	PolicyAllow  bool
+	DenyReason   string
+	PlanPending  string   // set when execution is gated for human review (EU AI Act Art. 14)
+	ModelUsed    string   // LLM model used for generation
+	ToolsCalled  []string // MCP tools invoked
+	InputTokens  int      // prompt tokens (for OpenAI-compatible API responses)
+	OutputTokens int      // completion tokens (for OpenAI-compatible API responses)
+	// Dry-run / CLI feedback: PII and injection scan results (set even when DryRun is true).
+	PIIDetected                  []string // entity names detected in input
+	InputTier                    int      // classification tier of input (0–2)
+	AttachmentInjectionsDetected int      // number of injection patterns found in attachments
+	AttachmentBlocked            bool     // true if any attachment was blocked due to injection
+}
+
+// validateAgentNameForPolicyPath ensures AgentName is safe to use when deriving PolicyPath
+// (PolicyPath empty → policyPath = AgentName + ".talon.yaml"). Rejects empty names, names
+// that start with or contain path separators, so the derived path cannot be absolute or
+// escape policyDir when passed to safePolicyPathUnder.
+func validateAgentNameForPolicyPath(agentName string) error {
+	if agentName == "" {
+		return fmt.Errorf("agent name must not be empty when policy path is not set")
+	}
+	sep := string(filepath.Separator)
+	if strings.HasPrefix(agentName, sep) {
+		return fmt.Errorf("agent name must not start with path separator (got %q)", agentName)
+	}
+	if strings.Contains(agentName, sep) {
+		return fmt.Errorf("agent name must not contain path separators (got %q)", agentName)
+	}
+	// Reject ".." so derived path cannot traverse out of policyDir
+	if agentName == ".." || strings.HasPrefix(agentName, ".."+sep) || strings.Contains(agentName, sep+"..") {
+		return fmt.Errorf("agent name must not be or contain .. (got %q)", agentName)
+	}
+	return nil
+}
+
+// safePolicyPathUnder resolves path relative to policyDir and returns an absolute path
+// that is guaranteed to be under policyDir. Prevents path traversal when path or its
+// components (e.g. AgentName) are user-controlled.
+func safePolicyPathUnder(policyDir, path string) (string, error) {
+	dirAbs, err := filepath.Abs(filepath.Clean(policyDir))
+	if err != nil {
+		return "", fmt.Errorf("policy directory: %w", err)
+	}
+	full := path
+	if !filepath.IsAbs(path) {
+		full = filepath.Join(dirAbs, path)
+	}
+	full = filepath.Clean(full)
+	pathAbs, err := filepath.Abs(full)
+	if err != nil {
+		return "", fmt.Errorf("policy path: %w", err)
+	}
+	rel, err := filepath.Rel(dirAbs, pathAbs)
+	if err != nil {
+		return "", fmt.Errorf("policy path outside policy directory")
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.HasPrefix(rel, "../") {
+		return "", fmt.Errorf("policy path outside policy directory")
+	}
+	return pathAbs, nil
 }
 
 // Run executes the complete agent pipeline:
@@ -212,15 +270,52 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		Str("correlation_id", correlationID).
 		Str("tenant_id", req.TenantID).
 		Str("agent_id", req.AgentName).
+		Func(talonotel.LogTraceFields(ctx)).
 		Msg("agent_run_started")
 
 	// Step 1: Load policy
+	// Operator-provided absolute paths (--policy, cfg.DefaultPolicy, serve default) are trusted so that
+	// paths outside CWD work (e.g. Docker volumes at /etc/talon/policies). Relative paths (including
+	// when derived from AgentName) are resolved under policyDir to prevent path traversal.
+	// When PolicyPath is empty we derive from AgentName; that derived path must never be treated as
+	// a trusted absolute path. Enforce contract: AgentName must be a single path segment (no path
+	// separators, not empty) so the derived path stays under policyDir via safePolicyPathUnder.
 	policyPath := req.PolicyPath
+	pathDerivedFromAgent := false
 	if policyPath == "" {
-		policyPath = filepath.Join(r.policyDir, req.AgentName+".talon.yaml")
+		if err := validateAgentNameForPolicyPath(req.AgentName); err != nil {
+			span.RecordError(err)
+			return nil, fmt.Errorf("policy path: %w", err)
+		}
+		policyPath = req.AgentName + ".talon.yaml"
+		pathDerivedFromAgent = true
+	}
+	var safePath string
+	var loadBaseDir string
+	if filepath.IsAbs(policyPath) {
+		if pathDerivedFromAgent {
+			err := fmt.Errorf("agent name must not be an absolute path or start with path separator (got %q)", req.AgentName)
+			span.RecordError(err)
+			return nil, fmt.Errorf("policy path: %w", err)
+		}
+		var err error
+		safePath, err = filepath.Abs(filepath.Clean(policyPath))
+		if err != nil {
+			span.RecordError(err)
+			return nil, fmt.Errorf("policy path: %w", err)
+		}
+		loadBaseDir = filepath.Dir(safePath)
+	} else {
+		var err error
+		_, err = safePolicyPathUnder(r.policyDir, policyPath)
+		if err != nil {
+			span.RecordError(err)
+			return nil, fmt.Errorf("policy path: %w", err)
+		}
+		loadBaseDir = r.policyDir
 	}
 
-	pol, err := policy.LoadPolicy(ctx, policyPath, false)
+	pol, err := policy.LoadPolicy(ctx, policyPath, false, loadBaseDir)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("loading policy: %w", err)
@@ -330,16 +425,27 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			))
 			log.Info().
 				Str("correlation_id", correlationID).
+				Str("tenant_id", req.TenantID).
+				Str("agent_id", req.AgentName).
 				Str("would_deny_reason", decision.Action).
 				Msg("observation_only: policy would deny, allowing for audit")
 		} else {
 			r.recordPolicyDenial(ctx, span, correlationID, req, pol, decision, inputClass.Tier, inputEntityNames, attachmentScan, complianceInfo)
-			return &RunResponse{PolicyAllow: false, DenyReason: decision.Action}, nil
+			denyReason := decision.Action
+			if len(decision.Reasons) > 0 {
+				denyReason = strings.Join(decision.Reasons, "; ")
+			}
+			return &RunResponse{PolicyAllow: false, DenyReason: denyReason}, nil
 		}
 	}
 
 	if req.DryRun {
-		return &RunResponse{PolicyAllow: true}, nil
+		resp := &RunResponse{PolicyAllow: true, PIIDetected: inputEntityNames, InputTier: inputClass.Tier}
+		if attachmentScan != nil {
+			resp.AttachmentInjectionsDetected = attachmentScan.InjectionsDetected
+			resp.AttachmentBlocked = len(attachmentScan.BlockedFiles) > 0
+		}
+		return resp, nil
 	}
 
 	// Step 4.5: Plan Review Gate (EU AI Act Art. 14)
@@ -373,7 +479,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	if pol.Memory != nil && pol.Memory.Enabled && memoryMode(pol) == "active" && r.memory != nil {
 		memIndex, memErr := r.memory.ListIndex(ctx, req.TenantID, req.AgentName, 50)
 		if memErr != nil {
-			log.Warn().Err(memErr).Msg("failed to load memory index")
+			log.Warn().Err(memErr).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("failed to load memory index")
 		} else if len(memIndex) > 0 {
 			// Filter by prompt_categories so operators control which categories enter context
 			if len(pol.Memory.PromptCategories) > 0 {
@@ -418,7 +524,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	if pol.Context != nil && len(pol.Context.SharedMounts) > 0 {
 		sharedCtx, ctxErr := talonctx.LoadSharedContext(pol)
 		if ctxErr != nil {
-			log.Warn().Err(ctxErr).Msg("failed to load shared context")
+			log.Warn().Err(ctxErr).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("failed to load shared context")
 		} else if len(sharedCtx.Mounts) > 0 {
 			ctxPrompt := sharedCtx.FormatForPrompt()
 			if ctxPrompt != "" {
@@ -459,6 +565,8 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 	span.SetStatus(codes.Error, "policy denied")
 	log.Warn().
 		Str("correlation_id", correlationID).
+		Str("tenant_id", req.TenantID).
+		Str("agent_id", req.AgentName).
 		Str("deny_reason", decision.Action).
 		Msg("policy_denied")
 
@@ -738,7 +846,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	})
 	evidenceID := ""
 	if err != nil {
-		log.Error().Err(err).Msg("failed_to_generate_evidence")
+		log.Error().Err(err).Func(talonotel.LogTraceFields(ctx)).Msg("failed_to_generate_evidence")
 	} else {
 		evidenceID = ev.ID
 	}
@@ -754,16 +862,19 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		Str("evidence_id", evidenceID).
 		Float64("cost", cost).
 		Int64("duration_ms", duration.Milliseconds()).
+		Func(talonotel.LogTraceFields(ctx)).
 		Msg("agent_run_completed")
 
 	resp := &RunResponse{
-		Response:    llmResp.Content,
-		EvidenceID:  evidenceID,
-		Cost:        cost,
-		DurationMS:  duration.Milliseconds(),
-		PolicyAllow: true,
-		ModelUsed:   model,
-		ToolsCalled: toolsCalled,
+		Response:     llmResp.Content,
+		EvidenceID:   evidenceID,
+		Cost:         cost,
+		DurationMS:   duration.Milliseconds(),
+		PolicyAllow:  true,
+		ModelUsed:    model,
+		ToolsCalled:  toolsCalled,
+		InputTokens:  totalInputTokens,
+		OutputTokens: totalOutputTokens,
 	}
 
 	// Post-LLM: governed memory write
@@ -1092,20 +1203,52 @@ func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int,
 	if llm.ProviderUsesAPIKey(providerName) && r.secrets != nil {
 		secretName := providerName + "-api-key"
 		secret, secretErr := r.secrets.Get(ctx, secretName, req.TenantID, req.AgentName)
+		// Fallback: accept env-var-style secret names (e.g. OPENAI_API_KEY) for convenience
+		if secretErr != nil && errors.Is(secretErr, secrets.ErrSecretNotFound) {
+			alias := secretNameForProviderEnvAlias(providerName)
+			if alias != "" {
+				secret, secretErr = r.secrets.Get(ctx, alias, req.TenantID, req.AgentName)
+				if secretErr == nil {
+					secretName = alias
+				}
+			}
+		}
 		if secretErr == nil {
 			secretsAccessed = append(secretsAccessed, secretName)
 			if p := llm.NewProviderWithKey(providerName, string(secret.Value)); p != nil {
 				provider = p
 			}
 		} else {
-			log.Debug().
-				Str("provider", providerName).
-				Str("tenant_id", req.TenantID).
-				Msg("no tenant key in vault, using operator fallback")
+			// Record audit only when accurate: env_fallback only if env var is actually set.
+			canonicalName := providerName + "-api-key"
+			envVarName := secretNameForProviderEnvAlias(providerName)
+			if envVarName != "" && os.Getenv(envVarName) != "" {
+				r.secrets.RecordEnvFallback(ctx, canonicalName, req.TenantID, req.AgentName)
+				log.Debug().
+					Str("provider", providerName).
+					Str("tenant_id", req.TenantID).
+					Msg("no tenant key in vault, using operator fallback")
+			} else {
+				r.secrets.RecordVaultMissNoFallback(ctx, canonicalName, req.TenantID, req.AgentName)
+			}
 		}
 	}
 
 	return provider, model, degraded, originalModel, secretsAccessed, nil
+}
+
+// secretNameForProviderEnvAlias returns the env-var-style secret name for a provider,
+// so that "talon secrets set OPENAI_API_KEY ..." works as well as "openai-api-key".
+// Returns empty string if there is no standard alias.
+func secretNameForProviderEnvAlias(providerName string) string {
+	switch providerName {
+	case "openai":
+		return "OPENAI_API_KEY"
+	case "anthropic":
+		return "ANTHROPIC_API_KEY"
+	default:
+		return ""
+	}
 }
 
 // entityNames extracts type strings from PIIEntity slice for evidence records.
@@ -1257,6 +1400,7 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 
 	if err := r.governance.ValidateWrite(ctx, &observation, pol, policyEval); err != nil {
 		log.Warn().Err(err).
+			Str("tenant_id", req.TenantID).
 			Str("agent_id", req.AgentName).
 			Str("category", observation.Category).
 			Bool("memory.shadow", mode == "shadow").
@@ -1266,6 +1410,8 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 
 	if mode == "shadow" {
 		log.Info().
+			Str("tenant_id", req.TenantID).
+			Str("agent_id", req.AgentName).
 			Str("category", observation.Category).
 			Int("trust_score", observation.TrustScore).
 			Str("review_status", observation.ReviewStatus).
@@ -1276,11 +1422,13 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 	}
 
 	if err := r.memory.Write(ctx, &observation); err != nil {
-		log.Error().Err(err).Msg("memory_write_failed")
+		log.Error().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("memory_write_failed")
 		return
 	}
 
 	log.Info().
+		Str("tenant_id", req.TenantID).
+		Str("agent_id", req.AgentName).
 		Str("entry_id", observation.ID).
 		Int("trust_score", observation.TrustScore).
 		Str("review_status", observation.ReviewStatus).

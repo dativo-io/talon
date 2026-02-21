@@ -1,0 +1,41 @@
+# Dativo Talon — Code Review Agent
+# Code review with tool access controls and audit trail.
+
+agent:
+  name: code-reviewer
+  description: Code review AI with policy enforcement and tool access controls
+  version: 1.0.0
+  model_tier: 0
+
+capabilities:
+  allowed_tools: [sql_query, file_read]
+  forbidden_patterns: [".env", "secrets", "credentials", "api_key", "password", "private_key"]
+
+policies:
+  cost_limits:
+    per_request: 3.0
+    daily: 50.0
+    monthly: 500.0
+  resource_limits:
+    timeout: { operation: "60s", tool_execution: "5m", agent_total: "15m" }
+  rate_limits: { requests_per_minute: 20, concurrent_executions: 1 }
+  data_classification: { input_scan: true, output_scan: true, redact_pii: false }
+  model_routing:
+    tier_0: { primary: gpt-4o-mini, location: any }
+    tier_1: { primary: gpt-4o, fallback: gpt-4o-mini, location: eu-west-1 }
+    tier_2: { primary: gpt-4o, fallback: gpt-4o-mini, location: eu-west-1, bedrock_only: false }
+
+audit:
+  log_level: detailed
+  retention_days: 365
+  include_prompts: true
+  include_responses: false
+
+compliance:
+  frameworks: [eu-ai-act]
+  data_residency: eu
+
+metadata:
+  department: engineering
+  owner: devops@company.eu
+  tags: [ai-agent, code-review, governed]

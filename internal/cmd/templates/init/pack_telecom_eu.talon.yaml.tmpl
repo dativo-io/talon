@@ -1,0 +1,43 @@
+# Dativo Talon — Telecom EU Starter Pack
+# Agent: {{ .Name }}
+# EU defaults for telecom / eSIM operators (NIS2, GDPR, ePrivacy, TKG 2021).
+# Tier 2 uses OpenAI by default so you can run PII flows with only an OpenAI key (no AWS Bedrock required).
+
+agent:
+  name: {{ .Name }}
+  description: Telecom / eSIM AI agent with policy enforcement
+  version: 1.0.0
+  model_tier: 1
+
+capabilities:
+  allowed_tools: [sql_query, file_read]
+  forbidden_patterns: [".env", "secrets", "credentials", "ki_key", "apn_credential"]
+
+policies:
+  cost_limits:
+    per_request: 2.0
+    daily: 100.0
+    monthly: 1500.0
+  resource_limits:
+    timeout: { operation: "60s", tool_execution: "5m", agent_total: "30m" }
+  rate_limits: { requests_per_minute: 30, concurrent_executions: 1 }
+  data_classification: { input_scan: true, output_scan: true, redact_pii: true }
+  model_routing:
+    tier_0: { primary: gpt-4o-mini, location: any }
+    tier_1: { primary: gpt-4o, fallback: gpt-4o-mini, location: eu-west-1 }
+    tier_2: { primary: gpt-4o, fallback: gpt-4o-mini, location: eu-west-1, bedrock_only: false }
+
+audit:
+  log_level: detailed
+  retention_days: 2555
+  include_prompts: false
+  include_responses: false
+
+compliance:
+  frameworks: [gdpr, nis2, eu-ai-act]
+  data_residency: eu
+
+metadata:
+  department: engineering
+  owner: "{{ .Owner }}"
+  tags: [ai-agent, telecom, esim, governed]

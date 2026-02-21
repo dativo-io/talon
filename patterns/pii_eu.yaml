@@ -291,14 +291,54 @@ recognizers:
     supported_entity: "AT_SVN"
     enabled: true
     patterns:
-      - name: "SVN 10 digits"
-        regex: '\b\d{10}\b'
-        score: 0.4
+      - name: "SVN 4+6 digits (NNNN DDMMYY)"
+        regex: '\b\d{4}(0[1-9]|[12]\d|3[01])(0[1-9]|1[0-2])\d{2}\b'
+        score: 0.6
     supported_languages:
       - language: "de"
         context: ["sozialversicherungsnummer", "svnr", "sv-nummer"]
     sensitivity: 3
     countries: ["AT"]
+
+  # --- Telecom / eSIM (IMSI, ICCID, EID) ---
+  - name: "IMSI"
+    supported_entity: "IMSI"
+    enabled: true
+    patterns:
+      - name: "IMSI 15 digits (EU MCC 2xx)"
+        regex: '\b2\d{14}\b'
+        score: 0.85
+    supported_languages:
+      - language: "en"
+        context: ["imsi", "subscriber identity", "mobile subscriber"]
+    sensitivity: 3
+    countries: ["EU"]
+
+  - name: "ICCID"
+    supported_entity: "ICCID"
+    enabled: true
+    patterns:
+      - name: "ICCID 19-20 digits (89 prefix)"
+        regex: '\b89\d{17,18}\b'
+        score: 0.9
+    supported_languages:
+      - language: "en"
+        context: ["iccid", "sim card", "esim", "uicc"]
+    sensitivity: 3
+    countries: ["EU"]
+
+  - name: "EID (eUICC identifier)"
+    supported_entity: "EID"
+    enabled: true
+    patterns:
+      - name: "EID 32 digits"
+        regex: '\b\d{32}\b'
+        score: 0.9
+    supported_languages:
+      - language: "en"
+        context: ["eid", "euicc", "esim identifier"]
+    sensitivity: 3
+    countries: ["EU"]
 
   # --- Sweden ---
   - name: "Swedish Personnummer"

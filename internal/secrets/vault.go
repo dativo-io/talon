@@ -168,9 +168,20 @@ func (s *SecretStore) Set(ctx context.Context, name string, value []byte, acl AC
 		))
 	defer span.End()
 
+	if err := s.storeSecret(ctx, name, value, acl); err != nil {
+		span.RecordError(err)
+		return err
+	}
+	s.logAccess(ctx, name, "system", "operator", true, "set")
+	return nil
+}
+
+// storeSecret encrypts and persists a secret without writing an audit entry.
+// Used by Set (which then logs "set") and by Rotate (which then logs "rotate") so that
+// a single operation produces exactly one audit record.
+func (s *SecretStore) storeSecret(ctx context.Context, name string, value []byte, acl ACL) error {
 	nonce := make([]byte, s.gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		span.RecordError(err)
 		return fmt.Errorf("generating nonce: %w", err)
 	}
 
@@ -180,7 +191,6 @@ func (s *SecretStore) Set(ctx context.Context, name string, value []byte, acl AC
 
 	aclJSON, err := json.Marshal(acl)
 	if err != nil {
-		span.RecordError(err)
 		return fmt.Errorf("marshaling ACL: %w", err)
 	}
 
@@ -194,10 +204,8 @@ func (s *SecretStore) Set(ctx context.Context, name string, value []byte, acl AC
 	`
 
 	if _, err := s.db.ExecContext(ctx, query, name, encryptedValue, nonceB64, string(aclJSON), time.Now()); err != nil {
-		span.RecordError(err)
 		return fmt.Errorf("storing secret: %w", err)
 	}
-
 	return nil
 }
 
@@ -404,7 +412,12 @@ func (s *SecretStore) Rotate(ctx context.Context, name string) error {
 		return fmt.Errorf("unmarshaling ACL: %w", err)
 	}
 
-	return s.Set(ctx, name, plaintext, acl)
+	if err := s.storeSecret(ctx, name, plaintext, acl); err != nil {
+		span.RecordError(err)
+		return err
+	}
+	s.logAccess(ctx, name, "system", "operator", true, "rotate")
+	return nil
 }
 
 // logAccess records secret access attempts for audit compliance.
@@ -413,6 +426,19 @@ func (s *SecretStore) logAccess(ctx context.Context, secretName, tenantID, agent
 	query := `INSERT INTO secret_access_log (id, secret_name, tenant_id, agent_id, timestamp, allowed, reason)
 	          VALUES (?, ?, ?, ?, ?, ?, ?)`
 	_, _ = s.db.ExecContext(ctx, query, id, secretName, tenantID, agentID, time.Now(), allowed, reason)
+}
+
+// RecordEnvFallback records that a run used the environment variable fallback for this secret
+// (vault lookup was denied or missing). Only call when the env var is actually set.
+// SecOps can see this in "talon secrets audit" as allowed=true, reason=env_fallback.
+func (s *SecretStore) RecordEnvFallback(ctx context.Context, secretName, tenantID, agentID string) {
+	s.logAccess(ctx, secretName, tenantID, agentID, true, "env_fallback")
+}
+
+// RecordVaultMissNoFallback records that vault had no key and no environment fallback was available.
+// SecOps sees this as allowed=false, reason=no_key so the audit trail is accurate.
+func (s *SecretStore) RecordVaultMissNoFallback(ctx context.Context, secretName, tenantID, agentID string) {
+	s.logAccess(ctx, secretName, tenantID, agentID, false, "no_key")
 }
 
 // AuditLog returns access records for compliance review.

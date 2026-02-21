@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -77,15 +78,33 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		policyPath = cfg.DefaultPolicy
 	}
 
-	if _, err := os.Stat(policyPath); err != nil {
+	baseDir := "."
+	safePath, err := policy.ResolvePathUnderBase(baseDir, policyPath)
+	if err != nil {
+		// Allow absolute paths (e.g. e2e or Docker): constrain to the path's directory.
+		if filepath.IsAbs(filepath.Clean(policyPath)) {
+			safePath, err = filepath.Abs(filepath.Clean(policyPath))
+			if err != nil {
+				return fmt.Errorf("policy path: %w", err)
+			}
+			baseDir = filepath.Dir(safePath)
+			if _, err := policy.ResolvePathUnderBase(baseDir, safePath); err != nil {
+				return fmt.Errorf("policy path: %w", err)
+			}
+		} else {
+			return fmt.Errorf("policy path: %w", err)
+		}
+	}
+	if _, err := os.Stat(safePath); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("policy file not found: %s — create a project first with: talon init", policyPath)
+			return fmt.Errorf("policy file not found: %s — create a project first with: talon init", safePath)
 		}
 		return fmt.Errorf("policy file: %w", err)
 	}
+	policyPath = safePath
 
 	if runValidate {
-		if err := validatePolicyFile(ctx, policyPath); err != nil {
+		if err := validatePolicyFile(ctx, policyPath, baseDir); err != nil {
 			return fmt.Errorf("pre-flight validation failed: %w", err)
 		}
 		if verbose {
@@ -98,7 +117,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
 
 	providers := buildProviders(cfg)
-	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath)
+	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, baseDir)
 	router := llm.NewRouter(routing, providers, costLimits)
 
 	secretsStore, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
@@ -170,6 +189,16 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	if runDryRun {
 		fmt.Printf("\u2713 Policy check: ALLOWED (dry run, no LLM call)\n")
+		if len(resp.PIIDetected) > 0 {
+			fmt.Printf("  PII detected: %s (input tier: %d)\n", strings.Join(resp.PIIDetected, ", "), resp.InputTier)
+		}
+		if resp.AttachmentInjectionsDetected > 0 {
+			if resp.AttachmentBlocked {
+				fmt.Printf("  Attachment injection: %d pattern(s) detected — BLOCKED\n", resp.AttachmentInjectionsDetected)
+			} else {
+				fmt.Printf("  Attachment injection: %d pattern(s) detected (logged)\n", resp.AttachmentInjectionsDetected)
+			}
+		}
 		return nil
 	}
 
@@ -187,15 +216,17 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// buildProviders creates LLM providers from OPERATOR-LEVEL environment variables.
+// buildProviders creates LLM providers from OPERATOR-LEVEL environment variables
+// and ensures openai/anthropic are always registered so vault-only keys work.
 //
-// These are fallback providers for single-tenant development / quickstart.
-// In production, tenant-scoped API keys should be stored in the secrets
-// vault via "talon secrets set <provider>-api-key <key>". The agent runner
-// resolves vault keys at runtime and overrides these fallbacks per-request.
+// Env vars (OPENAI_API_KEY, ANTHROPIC_API_KEY) are used as fallbacks when set.
+// When not set, the provider is still registered with an empty key; the runner
+// resolves the key from the vault at request time (resolveProvider). Use
+// "talon secrets set openai-api-key <key>" or "talon secrets set anthropic-api-key <key>".
 func buildProviders(cfg *config.Config) map[string]llm.Provider {
 	providers := make(map[string]llm.Provider)
 
+	// OpenAI: env fallback or placeholder so vault-only works
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		log.Debug().Msg("OPENAI_API_KEY set — using as operator fallback (use vault for production)")
 		if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
@@ -203,10 +234,15 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 		} else {
 			providers["openai"] = llm.NewOpenAIProvider(key)
 		}
+	} else {
+		providers["openai"] = llm.NewOpenAIProvider("")
 	}
+	// Anthropic: env fallback or placeholder so vault-only works
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
 		log.Debug().Msg("ANTHROPIC_API_KEY set — using as operator fallback (use vault for production)")
 		providers["anthropic"] = llm.NewAnthropicProvider(key)
+	} else {
+		providers["anthropic"] = llm.NewAnthropicProvider("")
 	}
 
 	providers["ollama"] = llm.NewOllamaProvider(cfg.OllamaBaseURL)
@@ -219,8 +255,8 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 }
 
 // validatePolicyFile runs the same checks as "talon validate" (schema, engine compile, PII scanner).
-func validatePolicyFile(ctx context.Context, policyPath string) error {
-	pol, err := policy.LoadPolicy(ctx, policyPath, false)
+func validatePolicyFile(ctx context.Context, policyPath, baseDir string) error {
+	pol, err := policy.LoadPolicy(ctx, policyPath, false, baseDir)
 	if err != nil {
 		return err
 	}
@@ -235,8 +271,8 @@ func validatePolicyFile(ctx context.Context, policyPath string) error {
 
 // loadRoutingAndCostLimits loads the policy file and returns model routing and cost limits
 // for the router (cost limits enable graceful degradation when budget threshold is hit).
-func loadRoutingAndCostLimits(ctx context.Context, policyPath string) (*policy.ModelRoutingConfig, *policy.CostLimitsConfig) {
-	pol, err := policy.LoadPolicy(ctx, policyPath, false)
+func loadRoutingAndCostLimits(ctx context.Context, policyPath, baseDir string) (*policy.ModelRoutingConfig, *policy.CostLimitsConfig) {
+	pol, err := policy.LoadPolicy(ctx, policyPath, false, baseDir)
 	if err != nil {
 		log.Debug().Err(err).Msg("could not pre-load policy for routing/cost config")
 		return nil, nil
