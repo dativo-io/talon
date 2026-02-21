@@ -255,13 +255,22 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	// Operator-provided absolute paths (--policy, cfg.DefaultPolicy, serve default) are trusted so that
 	// paths outside CWD work (e.g. Docker volumes at /etc/talon/policies). Relative paths (including
 	// when derived from AgentName) are resolved under policyDir to prevent path traversal.
+	// When PolicyPath is empty we derive from AgentName; that derived path must never be treated as
+	// a trusted absolute path, so reject agent names that would produce an absolute path (e.g. "/foo").
 	policyPath := req.PolicyPath
+	pathDerivedFromAgent := false
 	if policyPath == "" {
 		policyPath = req.AgentName + ".talon.yaml"
+		pathDerivedFromAgent = true
 	}
 	var safePath string
 	var loadBaseDir string
 	if filepath.IsAbs(policyPath) {
+		if pathDerivedFromAgent {
+			err := fmt.Errorf("agent name must not be an absolute path or start with path separator (got %q)", req.AgentName)
+			span.RecordError(err)
+			return nil, fmt.Errorf("policy path: %w", err)
+		}
 		var err error
 		safePath, err = filepath.Abs(filepath.Clean(policyPath))
 		if err != nil {

@@ -401,6 +401,59 @@ func TestRun_acceptsAbsolutePolicyPathOutsidePolicyDir(t *testing.T) {
 	assert.True(t, resp.PolicyAllow)
 }
 
+// TestRun_rejectsAgentNameAsAbsolutePath ensures that when PolicyPath is empty, the path is
+// derived from AgentName and must not be treated as a trusted absolute path. An agent name
+// starting with "/" (e.g. from a future HTTP handler) would otherwise bypass safePolicyPathUnder.
+func TestRun_rejectsAgentNameAsAbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, dir, "agent")
+	require.FileExists(t, policyPath)
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "ok"},
+	}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, providers, nil)
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: "",
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// PolicyPath empty, AgentName starts with "/" -> derived path is absolute -> must reject
+	_, err = runner.Run(ctx, &RunRequest{
+		TenantID:       "default",
+		AgentName:      "/etc/foo",
+		Prompt:         "hello",
+		InvocationType: "manual",
+		PolicyPath:     "", // empty so path becomes AgentName + ".talon.yaml" = "/etc/foo.talon.yaml"
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "policy path")
+	assert.Contains(t, err.Error(), "must not be an absolute path")
+}
+
 func TestPlanReviewConfigFromPolicy(t *testing.T) {
 	assert.Nil(t, planReviewConfigFromPolicy(nil))
 	cfg := &policy.PlanReviewConfig{
