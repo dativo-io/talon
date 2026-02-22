@@ -861,5 +861,6 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
+	//nolint:gosec // G705: dashboard HTML is embedded at build time (web.DashboardHTML), not user-controlled
 	_, _ = w.Write([]byte(s.dashboardHTML))
 }

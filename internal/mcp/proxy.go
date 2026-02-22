@@ -222,6 +222,7 @@ func (h *ProxyHandler) doUpstreamRequest(ctx context.Context, body []byte) (*htt
 			req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
 		}
 	}
+	//nolint:gosec // G704: upstream URL is from proxy config (validated at load), not user request input
 	return h.httpClient.Do(req)
 }
 
