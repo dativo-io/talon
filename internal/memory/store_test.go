@@ -679,3 +679,112 @@ func TestProvenanceFieldsRoundTrip(t *testing.T) {
 	assert.Equal(t, []string{"mem_111", "mem_222"}, got.ConflictsWith)
 	assert.Equal(t, "pending_review", got.ReviewStatus)
 }
+
+func TestListPendingReview(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	// Empty: no pending entries
+	pending, err := store.ListPendingReview(ctx, "acme", "agent1", 10)
+	require.NoError(t, err)
+	assert.Empty(t, pending)
+
+	// Write one auto_approved — should not appear in ListPendingReview
+	e1 := Entry{
+		TenantID:     "acme",
+		AgentID:      "agent1",
+		Category:     CategoryDomainKnowledge,
+		Title:        "Auto",
+		Content:      "Content",
+		EvidenceID:   "ev_1",
+		SourceType:   SourceAgentRun,
+		ReviewStatus: "auto_approved",
+	}
+	require.NoError(t, store.Write(ctx, &e1))
+	pending, err = store.ListPendingReview(ctx, "acme", "agent1", 10)
+	require.NoError(t, err)
+	assert.Empty(t, pending)
+
+	// Write one pending_review
+	e2 := Entry{
+		TenantID:     "acme",
+		AgentID:      "agent1",
+		Category:     CategoryDomainKnowledge,
+		Title:        "Pending",
+		Content:      "Pending content",
+		EvidenceID:   "ev_2",
+		SourceType:   SourceAgentRun,
+		ReviewStatus: "pending_review",
+	}
+	require.NoError(t, store.Write(ctx, &e2))
+	pending, err = store.ListPendingReview(ctx, "acme", "agent1", 10)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	assert.Equal(t, e2.ID, pending[0].ID)
+	assert.Equal(t, "pending_review", pending[0].ReviewStatus)
+	assert.Equal(t, "Pending", pending[0].Title)
+
+	// Limit 0 returns all pending
+	pending2, err := store.ListPendingReview(ctx, "acme", "agent1", 0)
+	require.NoError(t, err)
+	assert.Len(t, pending2, 1)
+
+	// Wrong tenant/agent returns empty
+	other, err := store.ListPendingReview(ctx, "other", "agent1", 10)
+	require.NoError(t, err)
+	assert.Empty(t, other)
+}
+
+func TestUpdateReviewStatus(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	entry := Entry{
+		TenantID:     "acme",
+		AgentID:      "agent1",
+		Category:     CategoryDomainKnowledge,
+		Title:        "To approve",
+		Content:      "Content",
+		EvidenceID:   "ev_1",
+		SourceType:   SourceAgentRun,
+		ReviewStatus: "pending_review",
+	}
+	require.NoError(t, store.Write(ctx, &entry))
+
+	// Approve
+	err := store.UpdateReviewStatus(ctx, "acme", "agent1", entry.ID, "approved")
+	require.NoError(t, err)
+	got, err := store.Get(ctx, "acme", entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "approved", got.ReviewStatus)
+
+	// Reject (write another pending first)
+	entry2 := Entry{
+		TenantID:     "acme",
+		AgentID:      "agent1",
+		Category:     CategoryDomainKnowledge,
+		Title:        "To reject",
+		Content:      "Content",
+		EvidenceID:   "ev_2",
+		SourceType:   SourceAgentRun,
+		ReviewStatus: "pending_review",
+	}
+	require.NoError(t, store.Write(ctx, &entry2))
+	err = store.UpdateReviewStatus(ctx, "acme", "agent1", entry2.ID, "rejected")
+	require.NoError(t, err)
+	got2, err := store.Get(ctx, "acme", entry2.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "rejected", got2.ReviewStatus)
+
+	// Invalid status
+	err = store.UpdateReviewStatus(ctx, "acme", "agent1", entry.ID, "invalid")
+	assert.Error(t, err)
+
+	// Not found: wrong id
+	err = store.UpdateReviewStatus(ctx, "acme", "agent1", "nonexistent_id", "approved")
+	assert.ErrorIs(t, err, ErrEntryNotFound)
+
+	// Not found: wrong tenant
+	err = store.UpdateReviewStatus(ctx, "other", "agent1", entry.ID, "approved")
+	assert.ErrorIs(t, err, ErrEntryNotFound)
+}

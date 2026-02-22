@@ -185,6 +185,40 @@ talon audit export --format csv --from ... --to ...  # Export for compliance (in
 ```
 (Evidence IDs are shown in run output, e.g. `req_xxxxxxxx`.)
 
+## HTTP API Server
+
+Run the full REST API, MCP server, and embedded dashboard:
+
+```bash
+# Set API keys (comma-separated: key or key:tenant_id)
+export TALON_API_KEYS="your-secret-key:default"
+
+# Start server (dashboard at / and /dashboard)
+talon serve --port 8080
+
+# With MCP proxy for vendor compliance (e.g. Zendesk AI)
+talon serve --port 8080 --proxy-config examples/vendor-proxy/zendesk-proxy.talon.yaml
+```
+
+Endpoints include: `GET /v1/health`, `GET /v1/status`, `POST /v1/agents/run`, `POST /v1/chat/completions` (OpenAI-compatible), `GET /v1/evidence`, `GET /v1/costs`, `GET /v1/plans/pending` (plan review), `POST /mcp` (native MCP), `POST /mcp/proxy` (when proxy is configured). Authenticate with header `X-Talon-Key: <key>` or `Authorization: Bearer <key>`.
+
+**See:** [QUICKSTART.md](docs/QUICKSTART.md) for serve and dashboard usage.
+
+## Vendor Integration (MCP Proxy)
+
+Route third-party AI vendors (Zendesk, Intercom, HubSpot) through Talon for independent audit and PII redaction:
+
+1. Create a proxy config (see `examples/vendor-proxy/zendesk-proxy.talon.yaml`).
+2. Start Talon with `--proxy-config`:
+   ```bash
+   talon serve --port 8080 --proxy-config path/to/proxy.talon.yaml
+   ```
+3. Point the vendor at `https://your-talon-host/mcp/proxy`.
+
+Talon intercepts MCP traffic, enforces policy, redacts PII, and records evidence. Modes: **intercept** (block forbidden), **passthrough** (log only), **shadow** (audit without blocking).
+
+**See:** [VENDOR_INTEGRATION_GUIDE.md](docs/VENDOR_INTEGRATION_GUIDE.md) and [ARCHITECTURE_MCP_PROXY.md](docs/ARCHITECTURE_MCP_PROXY.md).
+
 ## Features
 
 **Policy-as-Code** — Define agent governance in `.talon.yaml` files. Cost limits, data classification, model routing, tool access, time restrictions — all declarative, version-controlled, auditable.

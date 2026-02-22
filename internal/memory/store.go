@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -17,6 +18,9 @@ import (
 )
 
 var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/memory")
+
+// ErrEntryNotFound is returned when a memory entry does not exist.
+var ErrEntryNotFound = errors.New("memory entry not found")
 
 const schema = `
 CREATE TABLE IF NOT EXISTS memory_entries (
@@ -389,6 +393,69 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit i
 	}
 	readsTotal.Add(ctx, 1)
 	return results, rows.Err()
+}
+
+// ListPendingReview returns entries with review_status = 'pending_review' for the tenant/agent.
+func (s *Store) ListPendingReview(ctx context.Context, tenantID, agentID string, limit int) ([]IndexEntry, error) {
+	ctx, span := tracer.Start(ctx, "memory.list_pending_review",
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("agent_id", agentID),
+		))
+	defer span.End()
+
+	query := `SELECT id, category, scope, title, observation_type, token_count, timestamp, trust_score, review_status
+	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND review_status = 'pending_review'
+	          ORDER BY timestamp DESC`
+	args := []interface{}{tenantID, agentID}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing pending review: %w", err)
+	}
+	defer rows.Close()
+
+	var results []IndexEntry
+	for rows.Next() {
+		var e IndexEntry
+		if err := rows.Scan(&e.ID, &e.Category, &e.Scope, &e.Title, &e.ObservationType,
+			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus); err != nil {
+			continue
+		}
+		results = append(results, e)
+	}
+	return results, rows.Err()
+}
+
+// UpdateReviewStatus sets review_status for a memory entry to "approved" or "rejected".
+func (s *Store) UpdateReviewStatus(ctx context.Context, tenantID, agentID, entryID, status string) error {
+	if status != "approved" && status != "rejected" {
+		return fmt.Errorf("review status must be approved or rejected, got %q", status)
+	}
+	ctx, span := tracer.Start(ctx, "memory.update_review_status",
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("agent_id", agentID),
+			attribute.String("entry_id", entryID),
+			attribute.String("review_status", status),
+		))
+	defer span.End()
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE memory_entries SET review_status = ? WHERE id = ? AND tenant_id = ? AND agent_id = ?`,
+		status, entryID, tenantID, agentID)
+	if err != nil {
+		return fmt.Errorf("updating review status: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrEntryNotFound
+	}
+	return nil
 }
 
 // List returns full memory entries filtered by category.

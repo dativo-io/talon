@@ -1,0 +1,44 @@
+# Zendesk MCP Proxy — Talon intercepts vendor MCP traffic for audit and PII redaction.
+# Use: talon serve --proxy-config examples/vendor-proxy/zendesk-proxy.talon.yaml
+# Point Zendesk AI at: https://talon.example.com/mcp/proxy
+
+agent:
+  name: zendesk-mcp-proxy
+  type: mcp_proxy
+  description: Policy-enforced MCP proxy for Zendesk AI with audit trail
+  version: 1.0.0
+
+proxy:
+  mode: intercept  # intercept | passthrough | shadow
+  upstream:
+    vendor: zendesk-ai
+    url: "https://zendesk-ai-vendor.example.com/mcp"
+    # Auth: set TALON_ZENDESK_AI_TOKEN or use secrets in production
+  allowed_tools:
+    - name: zendesk_ticket_search
+      upstream_name: ticket_search
+    - name: zendesk_ticket_read
+      upstream_name: get_ticket
+    - name: zendesk_ticket_update
+      upstream_name: update_ticket
+  forbidden_tools:
+    - zendesk_user_delete
+    - zendesk_export_all
+    - zendesk_admin_*
+  rate_limits:
+    requests_per_minute: 100
+
+pii_handling:
+  redaction_rules:
+    - field: requester.email
+      method: hash
+    - field: requester.phone
+      method: mask_middle
+    - field: description
+      method: mask
+      patterns:
+        - "(\\+?\\d{1,3}[-.\\s]?)?\\d{9,15}"
+
+compliance:
+  frameworks: [gdpr, nis2]
+  data_residency: eu-only

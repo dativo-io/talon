@@ -158,7 +158,35 @@ talon audit export --format csv --from 2026-02-01 --to 2026-02-28
 talon audit export --format json --limit 1000
 ```
 
-## 10. Multi-Tenant Usage
+## 10. Run the HTTP Server and Dashboard
+
+Start the full API server with embedded dashboard:
+
+```bash
+# Optional: set API keys (comma-separated; each entry is key or key:tenant_id)
+export TALON_API_KEYS="your-api-key:default"
+
+# Start server (default port 8080)
+talon serve
+
+# Or with options
+talon serve --port 8080 --dashboard
+```
+
+- **Health:** `curl http://localhost:8080/health` or `http://localhost:8080/v1/health?detail=true`
+- **Dashboard:** Open `http://localhost:8080/dashboard` in a browser. Set `window.TALON_API_KEY = 'your-api-key'` in the console if you use API key auth.
+- **Agent run via API:** `curl -X POST http://localhost:8080/v1/agents/run -H "X-Talon-Key: your-key" -H "Content-Type: application/json" -d '{"prompt":"Hello"}'`
+- **OpenAI-compatible chat:** `POST /v1/chat/completions` with `X-Talon-Key` and body `{ "model": "gpt-4", "messages": [{"role":"user","content":"..."}] }`
+
+**MCP proxy (vendor integration):** To route a third-party vendor (e.g. Zendesk AI) through Talon for audit and PII redaction:
+
+```bash
+talon serve --port 8080 --proxy-config examples/vendor-proxy/zendesk-proxy.talon.yaml
+```
+
+Point the vendor at `https://your-talon-host/mcp/proxy`. See [VENDOR_INTEGRATION_GUIDE.md](VENDOR_INTEGRATION_GUIDE.md).
+
+## 11. Multi-Tenant Usage
 
 Scope everything by tenant:
 
@@ -195,7 +223,7 @@ export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 export TALON_SIGNING_KEY=$(openssl rand -hex 32)
 ```
 
-## 11. Agent Memory
+## 12. Agent Memory
 
 Agent memory is **off by default**. The default `talon init` config does not include a `memory:` block, so `talon memory list` and `talon memory health` will be empty until you enable memory in your policy (see [MEMORY_GOVERNANCE.md](MEMORY_GOVERNANCE.md)).
 
@@ -243,7 +271,7 @@ Every memory write passes through a multi-layer governance pipeline (hardcoded f
 
 See [MEMORY_GOVERNANCE.md](MEMORY_GOVERNANCE.md) for full details.
 
-## 12. Shared Enterprise Context
+## 13. Shared Enterprise Context
 
 Mount read-only company knowledge into agent prompts:
 
@@ -258,7 +286,7 @@ context:
 
 Use `<private>...</private>` tags in context files to exclude sensitive content from memory persistence. Use `<classified:tier_N>...</classified>` to propagate data tiers to model routing.
 
-## 13. Triggers (Cron & Webhooks)
+## 14. Triggers (Cron & Webhooks)
 
 Run agents on a schedule or in response to events:
 
