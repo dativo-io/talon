@@ -81,6 +81,16 @@
           return r.json();
         });
       }
+      function escapeHtml(s) {
+        if (s == null || s === undefined) return '';
+        var str = String(s);
+        return str
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
       function post(url, body) {
         return fetch(base + url, { method: 'POST', headers: headers(), body: JSON.stringify(body || {}) }).then(function(r) {
           if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
@@ -113,12 +123,12 @@
             var time = ev.timestamp ? new Date(ev.timestamp).toLocaleString() : '—';
             var status = ev.allowed ? '<span class="status-ok">allowed</span>' : '<span class="status-deny">denied</span>';
             var cost = ev.cost != null ? ev.cost.toFixed(4) : '—';
-            tr.innerHTML = '<td>' + time + '</td><td>' + (ev.agent_id || '—') + '</td><td>' + status + '</td><td>' + cost + '</td><td>' + (ev.id || '—') + '</td>';
+            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(ev.agent_id || '—') + '</td><td>' + status + '</td><td>' + escapeHtml(cost) + '</td><td>' + escapeHtml(ev.id || '—') + '</td>';
             tbody.appendChild(tr);
           });
         }).catch(function(e) {
           var tbody = document.getElementById('evidence-tbody');
-          if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="error">' + e.message + '</td></tr>';
+          if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="error">' + escapeHtml(e.message) + '</td></tr>';
         });
       }
 
@@ -131,8 +141,9 @@
             var tr = document.createElement('tr');
             var time = p.created_at ? new Date(p.created_at).toLocaleString() : '—';
             var cost = p.cost_estimate_eur != null ? p.cost_estimate_eur.toFixed(4) : '—';
-            var actions = '<button class="btn btn-approve" data-id="' + p.id + '">Approve</button> <button class="btn btn-reject" data-id="' + p.id + '">Reject</button>';
-            tr.innerHTML = '<td>' + time + '</td><td>' + (p.agent_id || '—') + '</td><td>' + (p.selected_model || '—') + '</td><td>' + (p.data_tier != null ? p.data_tier : '—') + '</td><td>' + cost + '</td><td>' + actions + '</td>';
+            var safeId = escapeHtml(p.id);
+            var actions = '<button class="btn btn-approve" data-id="' + safeId + '">Approve</button> <button class="btn btn-reject" data-id="' + safeId + '">Reject</button>';
+            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(p.agent_id || '—') + '</td><td>' + escapeHtml(p.selected_model || '—') + '</td><td>' + escapeHtml(p.data_tier != null ? p.data_tier : '—') + '</td><td>' + escapeHtml(cost) + '</td><td>' + actions + '</td>';
             tbody.appendChild(tr);
           });
           tbody.querySelectorAll('.btn-approve').forEach(function(btn) {
@@ -148,7 +159,7 @@
           });
         }).catch(function(e) {
           var tbody = document.getElementById('plans-tbody');
-          if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="error">' + e.message + '</td></tr>';
+          if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="error">' + escapeHtml(e.message) + '</td></tr>';
         });
       }
 
@@ -165,7 +176,8 @@
           (d.entries || []).forEach(function(e) {
             var tr = document.createElement('tr');
             var time = e.timestamp ? new Date(e.timestamp).toLocaleString() : '—';
-            tr.innerHTML = '<td>' + time + '</td><td>' + (e.category || '—') + '</td><td>' + (e.title || '—') + '</td><td><button class="btn btn-approve" data-id="' + e.id + '">Approve</button></td>';
+            var safeId = escapeHtml(e.id);
+            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(e.category || '—') + '</td><td>' + escapeHtml(e.title || '—') + '</td><td><button class="btn btn-approve" data-id="' + safeId + '">Approve</button></td>';
             tbody.appendChild(tr);
           });
           tbody.querySelectorAll('.btn-approve').forEach(function(btn) {
@@ -174,7 +186,7 @@
             });
           });
         }).catch(function(e) {
-          document.getElementById('memory-tbody').innerHTML = '<tr><td colspan="4" class="error">' + e.message + '</td></tr>';
+          document.getElementById('memory-tbody').innerHTML = '<tr><td colspan="4" class="error">' + escapeHtml(e.message) + '</td></tr>';
         });
       }
 
