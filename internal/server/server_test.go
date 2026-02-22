@@ -133,6 +133,41 @@ func TestStatusEndpoint(t *testing.T) {
 	assert.NotNil(t, out["cost_today"])
 }
 
+func TestStatusEndpoint_ActiveRunsFromTracker(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	tracker := &agent.ActiveRunTracker{}
+	tracker.Increment("acme")
+	tracker.Increment("acme")
+
+	apiKeys := map[string]string{"k": "default", "k-acme": "acme"}
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, apiKeys, WithActiveRunTracker(tracker))
+	r := srv.Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("X-Talon-Key", "k-acme")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Equal(t, "ok", out["status"])
+	assert.Equal(t, float64(2), out["active_runs"], "active_runs must reflect tracker count for tenant")
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Equal(t, float64(0), out["active_runs"], "default tenant has no runs")
+}
+
 func TestCostsAndBudgetEndpoints(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)

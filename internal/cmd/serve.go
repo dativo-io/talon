@@ -183,6 +183,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		server.WithPlanReviewStore(planReviewStore),
 		server.WithMemoryStore(memStore),
 		server.WithCORSOrigins([]string{"*"}),
+		server.WithActiveRunTracker(activeRunTracker),
 	}
 	if serveDashboard {
 		opts = append(opts, server.WithDashboard(web.DashboardHTML))

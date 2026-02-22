@@ -426,6 +426,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			resp["monthly"] = cost
 		}
 	}
+	if s.activeRunTracker != nil {
+		resp["active_runs"] = s.activeRunTracker.Count(tenantID)
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

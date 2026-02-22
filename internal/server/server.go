@@ -21,23 +21,24 @@ const defaultTimeout = 60 * time.Second
 
 // Server holds all dependencies for the HTTP API and MCP endpoints.
 type Server struct {
-	router          *chi.Mux
-	runner          *agent.Runner
-	evidenceStore   *evidence.Store
-	mcpServer       http.Handler // native MCP at POST /mcp
-	mcpProxy        http.Handler // optional MCP proxy at POST /mcp/proxy
-	tenantManager   *tenant.Manager
-	webhookHandler  *trigger.WebhookHandler
-	planReviewStore *agent.PlanReviewStore
-	memoryStore     *memory.Store
-	policyEngine    *policy.Engine
-	secretsStore    *secrets.SecretStore
-	policy          *policy.Policy
-	dashboardHTML   string
-	apiKeys         map[string]string
-	corsOrigins     []string
-	policyPath      string
-	startTime       time.Time
+	router           *chi.Mux
+	runner           *agent.Runner
+	evidenceStore    *evidence.Store
+	mcpServer        http.Handler // native MCP at POST /mcp
+	mcpProxy         http.Handler // optional MCP proxy at POST /mcp/proxy
+	tenantManager    *tenant.Manager
+	webhookHandler   *trigger.WebhookHandler
+	planReviewStore  *agent.PlanReviewStore
+	memoryStore      *memory.Store
+	policyEngine     *policy.Engine
+	secretsStore     *secrets.SecretStore
+	policy           *policy.Policy
+	dashboardHTML    string
+	apiKeys          map[string]string
+	corsOrigins      []string
+	policyPath       string
+	startTime        time.Time
+	activeRunTracker *agent.ActiveRunTracker
 }
 
 // Option configures the Server.
@@ -76,6 +77,11 @@ func WithDashboard(html string) Option {
 // WithCORSOrigins sets allowed CORS origins (e.g. ["*"] for MVP).
 func WithCORSOrigins(origins []string) Option {
 	return func(s *Server) { s.corsOrigins = origins }
+}
+
+// WithActiveRunTracker sets the in-flight run tracker for status/dashboard active_runs.
+func WithActiveRunTracker(tracker *agent.ActiveRunTracker) Option {
+	return func(s *Server) { s.activeRunTracker = tracker }
 }
 
 // NewServer builds a Server with the required dependencies and optional Option(s).
