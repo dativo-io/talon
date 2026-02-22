@@ -124,3 +124,58 @@ func TestProxyHandler_toolsCall_missingName(t *testing.T) {
 	require.NotNil(t, r.Error)
 	assert.Equal(t, codeInvalidParams, r.Error.Code)
 }
+
+// TestProxyHandler_forbiddenTool_shadowBlocks verifies that in shadow mode, explicitly
+// forbidden tools are audited (evidence recorded) and blocked, not forwarded to upstream.
+func TestProxyHandler_forbiddenTool_shadowBlocks(t *testing.T) {
+	cfg := &policy.ProxyPolicyConfig{
+		Agent: policy.ProxyAgentConfig{Name: "t", Type: "mcp_proxy"},
+		Proxy: policy.ProxyConfig{
+			Mode:         "shadow",
+			Upstream:     policy.UpstreamConfig{URL: "https://example.com", Vendor: "test"},
+			AllowedTools: []policy.ToolMapping{{Name: "allowed_tool"}},
+			ForbiddenTools: []string{
+				"zendesk_user_delete",
+				"zendesk_admin_*",
+			},
+		},
+	}
+	engine, err := policy.NewProxyEngine(context.Background(), cfg)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+
+	// Forbidden exact match: must be blocked (audit + block, no forward).
+	body, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "method": "tools/call", "id": 1,
+		"params": map[string]interface{}{"name": "zendesk_user_delete", "arguments": map[string]interface{}{}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var r jsonrpcResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
+	require.NotNil(t, r.Error, "shadow mode must block forbidden tool and return error")
+	assert.Equal(t, codeServerError, r.Error.Code)
+	assert.Contains(t, r.Error.Message, "tool not allowed by policy")
+
+	// Forbidden glob match: must be blocked.
+	body, _ = json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "method": "tools/call", "id": 2,
+		"params": map[string]interface{}{"name": "zendesk_admin_export", "arguments": map[string]interface{}{}},
+	})
+	req = httptest.NewRequest(http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
+	require.NotNil(t, r.Error)
+	assert.Contains(t, r.Error.Message, "tool not allowed by policy")
+}

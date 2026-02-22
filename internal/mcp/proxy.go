@@ -128,14 +128,18 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		}
 	}
 
-	// Forbidden check
+	// Forbidden check: explicitly forbidden tools are never forwarded in intercept or shadow.
+	// intercept = block; shadow = audit then block; passthrough = log only then forward.
 	for _, f := range h.config.Proxy.ForbiddenTools {
 		if f == toolName || (strings.HasSuffix(f, "*") && strings.HasPrefix(toolName, strings.TrimSuffix(f, "*"))) {
 			h.recordEvidence(ctx, tenantID, "proxy_tool_blocked", toolName, nil, "forbidden_tools")
 			span.SetAttributes(attribute.String("proxy.blocked", "forbidden"))
-			if h.config.Proxy.Mode == "intercept" {
+			switch h.config.Proxy.Mode {
+			case "intercept", "shadow":
+				// Block: intercept always; shadow audits then blocks (never forward forbidden tools).
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "tool not allowed by policy"}}
 			}
+			// passthrough: evidence recorded, fall through to forward
 			break
 		}
 	}
