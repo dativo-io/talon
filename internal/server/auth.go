@@ -77,11 +77,7 @@ func RateLimitMiddleware(tm *tenant.Manager) func(http.Handler) http.Handler {
 				w.Header().Set("Retry-After", "1")
 				w.Header().Set("X-RateLimit-Limit", "0")
 				w.Header().Set("X-RateLimit-Remaining", "0")
-				w.WriteHeader(http.StatusTooManyRequests)
-				_ = json.NewEncoder(w).Encode(map[string]string{
-					"error":   "rate_limit_exceeded",
-					"message": err.Error(),
-				})
+				writeError(w, http.StatusTooManyRequests, "rate_limit_exceeded", err.Error())
 			case tenant.ErrTenantNotFound:
 				writeError(w, http.StatusForbidden, "forbidden", err.Error())
 			case tenant.ErrDailyBudgetExceeded, tenant.ErrMonthlyBudgetExceeded:
