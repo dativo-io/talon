@@ -134,7 +134,7 @@ func TestListIndex(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	index, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 10)
+	index, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 10, "")
 	require.NoError(t, err)
 	assert.Len(t, index, 1)
 	assert.True(t, index[0].Allowed)
@@ -270,15 +270,58 @@ func TestListIndexWithTimeFilter(t *testing.T) {
 
 	from := time.Now().Add(-1 * time.Hour)
 	to := time.Now().Add(1 * time.Hour)
-	index, err := store.ListIndex(ctx, "acme", "agent", from, to, 10)
+	index, err := store.ListIndex(ctx, "acme", "agent", from, to, 10, "")
 	require.NoError(t, err)
 	assert.Len(t, index, 3)
 
 	futureFrom := time.Now().Add(1 * time.Hour)
 	futureTo := time.Now().Add(2 * time.Hour)
-	empty, err := store.ListIndex(ctx, "acme", "agent", futureFrom, futureTo, 10)
+	empty, err := store.ListIndex(ctx, "acme", "agent", futureFrom, futureTo, 10, "")
 	require.NoError(t, err)
 	assert.Len(t, empty, 0)
+}
+
+// TestListIndexByInvocationType ensures limit is applied after filtering by invocation_type,
+// so e.g. trigger history returns the N most recent webhook entries, not N overall then filtered.
+func TestListIndexByInvocationType(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	// Mix of types: 3 webhook:zendesk, 2 manual, 2 cron (7 total)
+	for _, inv := range []string{"webhook:zendesk", "webhook:zendesk", "manual", "cron", "webhook:zendesk", "manual", "cron"} {
+		_, err := gen.Generate(ctx, GenerateParams{
+			CorrelationID:  "corr_inv",
+			TenantID:       "acme",
+			AgentID:        "agent",
+			InvocationType: inv,
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+			InputPrompt:    "test",
+		})
+		require.NoError(t, err)
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// Without filter: limit 50 returns up to 50 (we have 7)
+	all, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 50, "")
+	require.NoError(t, err)
+	assert.Len(t, all, 7)
+
+	// With invocationType filter: limit applies *after* filter, so we get all 3 webhook:zendesk
+	webhook, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 50, "webhook:zendesk")
+	require.NoError(t, err)
+	assert.Len(t, webhook, 3, "should return all webhook:zendesk entries when limit is 50")
+	for i := range webhook {
+		assert.Equal(t, "webhook:zendesk", webhook[i].InvocationType)
+	}
+
+	// Limit 2 with filter returns 2 most recent webhook:zendesk only
+	webhook2, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 2, "webhook:zendesk")
+	require.NoError(t, err)
+	assert.Len(t, webhook2, 2)
+	for i := range webhook2 {
+		assert.Equal(t, "webhook:zendesk", webhook2[i].InvocationType)
+	}
 }
 
 func TestListWithAgentFilter(t *testing.T) {

@@ -583,11 +583,13 @@ type Index struct {
 }
 
 // ListIndex returns lightweight evidence summaries (Layer 1).
-func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, from, to time.Time, limit int) ([]Index, error) {
+// If invocationType is non-empty, only entries with that invocation_type are returned; limit applies after the filter.
+func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, from, to time.Time, limit int, invocationType string) ([]Index, error) {
 	ctx, span := tracer.Start(ctx, "evidence.list_index",
 		trace.WithAttributes(
 			attribute.String("tenant_id", tenantID),
 			attribute.String("agent_id", agentID),
+			attribute.String("invocation_type", invocationType),
 		))
 	defer span.End()
 
@@ -601,6 +603,10 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, from, t
 	if agentID != "" {
 		query += ` AND agent_id = ?`
 		args = append(args, agentID)
+	}
+	if invocationType != "" {
+		query += ` AND invocation_type = ?`
+		args = append(args, invocationType)
 	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`

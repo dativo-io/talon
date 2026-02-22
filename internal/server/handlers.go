@@ -258,7 +258,7 @@ func (s *Server) handleEvidenceList(w http.ResponseWriter, r *http.Request) {
 	if t := r.URL.Query().Get("to"); t != "" {
 		to, _ = time.Parse(time.RFC3339, t)
 	}
-	entries, err := s.evidenceStore.ListIndex(r.Context(), tenantID, agentID, from, to, limit)
+	entries, err := s.evidenceStore.ListIndex(r.Context(), tenantID, agentID, from, to, limit, "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -671,18 +671,15 @@ func (s *Server) handleTriggerHistory(w http.ResponseWriter, r *http.Request) {
 		tenantID = "default"
 	}
 	invocationType := "webhook:" + name
-	entries, err := s.evidenceStore.ListIndex(r.Context(), tenantID, "", time.Time{}, time.Time{}, 50)
+	entries, err := s.evidenceStore.ListIndex(r.Context(), tenantID, "", time.Time{}, time.Time{}, 50, invocationType)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	filtered := make([]evidence.Index, 0)
-	for i := range entries {
-		if entries[i].InvocationType == invocationType {
-			filtered = append(filtered, entries[i])
-		}
+	if entries == nil {
+		entries = []evidence.Index{}
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"entries": filtered})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"entries": entries})
 }
 
 func (s *Server) handlePlansPending(w http.ResponseWriter, r *http.Request) {

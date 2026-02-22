@@ -99,7 +99,7 @@ func auditList(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	index, err := store.ListIndex(ctx, auditTenant, auditAgent, time.Time{}, time.Time{}, auditLimit)
+	index, err := store.ListIndex(ctx, auditTenant, auditAgent, time.Time{}, time.Time{}, auditLimit, "")
 	if err != nil {
 		return fmt.Errorf("querying evidence: %w", err)
 	}
