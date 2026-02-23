@@ -1,0 +1,23 @@
+name: Docs
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '*.md'
+      - 'examples/**/*.md'
+
+jobs:
+  lint:
+    name: Markdown Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Markdown link check
+        uses: gaurav-nelson/github-action-markdown-link-check@v1
+        with:
+          config-file: '.github/mlc_config.json'
+          use-quiet-mode: 'yes'
+          folder-path: 'docs/,examples/'
+          file-path: 'README.md,CONTRIBUTING.md,CHANGELOG.md'

@@ -1,0 +1,43 @@
+name: Bug Report
+description: Report a bug in Talon
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Talon version
+      description: Output of `talon version`
+      placeholder: "v0.1.0 (commit: abc123)"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04 / macOS 14.3 / WSL2"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to trigger the bug
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      render: shell

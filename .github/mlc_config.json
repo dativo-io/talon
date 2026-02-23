@@ -1,0 +1,10 @@
+{
+  "ignorePatterns": [
+    { "pattern": "^https://get.talon.dativo.io" },
+    { "pattern": "^http://localhost" },
+    { "pattern": "^http://talon" }
+  ],
+  "timeout": "10s",
+  "retryOn429": true,
+  "aliveStatusCodes": [200, 403]
+}

@@ -1,0 +1,10 @@
+{
+  "tenant_id": "acme",
+  "agent_id": "test",
+  "tier": 0,
+  "estimated_cost": 0.5,
+  "daily_cost_total": 9.8,
+  "monthly_cost_total": 50.0,
+  "requests_last_minute": 10,
+  "concurrent_executions": 1
+}
