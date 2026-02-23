@@ -57,7 +57,7 @@ curl -sSL -o "${TMP_DIR}/checksums.txt" "${CHECKSUM_URL}"
 # Verify checksum
 echo "Verifying checksum..."
 EXPECTED=$(grep "talon_${LATEST#v}_${OS}_${ARCH}.tar.gz" "${TMP_DIR}/checksums.txt" | awk '{print $1}')
-ACTUAL=$(sha256sum "${TMP_DIR}/talon.tar.gz" 2>/dev/null || shasum -a 256 "${TMP_DIR}/talon.tar.gz" | awk '{print $1}')
+ACTUAL=$( (sha256sum "${TMP_DIR}/talon.tar.gz" 2>/dev/null || shasum -a 256 "${TMP_DIR}/talon.tar.gz") | awk '{print $1}')
 
 if [ "$EXPECTED" != "$ACTUAL" ]; then
     echo "Error: Checksum mismatch!"
