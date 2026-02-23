@@ -131,7 +131,7 @@ func TestSecretStore(t *testing.T) {
 		_, _ = store.Get(ctx, "audit-key", "acme", "test-agent")
 		_, _ = store.Get(ctx, "audit-key", "acme", "unauthorized")
 
-		records, err := store.AuditLog(ctx, "audit-key", 10)
+		records, err := store.AuditLog(ctx, "acme", "audit-key", 10)
 		require.NoError(t, err)
 		assert.GreaterOrEqual(t, len(records), 2)
 
@@ -245,12 +245,13 @@ func TestRotateSingleAuditEntry(t *testing.T) {
 	acl := ACL{Agents: []string{"*"}}
 	require.NoError(t, store.Set(ctx, "rotated-key", []byte("secret"), acl))
 
-	recordsBefore, err := store.AuditLog(ctx, "rotated-key", 10)
+	// Set/Rotate log with tenant_id "system"
+	recordsBefore, err := store.AuditLog(ctx, "system", "rotated-key", 10)
 	require.NoError(t, err)
 
 	require.NoError(t, store.Rotate(ctx, "rotated-key"))
 
-	recordsAfter, err := store.AuditLog(ctx, "rotated-key", 10)
+	recordsAfter, err := store.AuditLog(ctx, "system", "rotated-key", 10)
 	require.NoError(t, err)
 
 	// One Set produced one "set" entry; one Rotate must produce exactly one "rotate" entry.
@@ -334,7 +335,7 @@ func TestAuditLogEmpty(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	records, err := store.AuditLog(context.Background(), "", 10)
+	records, err := store.AuditLog(context.Background(), "", "", 10)
 	require.NoError(t, err)
 	assert.Len(t, records, 0)
 }
@@ -373,18 +374,19 @@ func TestAuditLogFilterBySecretName(t *testing.T) {
 	_, _ = store.Get(ctx, "key-a", "t", "a")
 	_, _ = store.Get(ctx, "key-b", "t", "a")
 
-	// Filter by specific secret (2 Gets + 1 Set for key-a)
-	records, err := store.AuditLog(ctx, "key-a", 50)
+	// Filter by tenant "t" and secret "key-a" (2 Gets only; Set uses tenant "system")
+	records, err := store.AuditLog(ctx, "t", "key-a", 50)
 	require.NoError(t, err)
-	assert.Len(t, records, 3)
+	assert.Len(t, records, 2)
 	for _, r := range records {
 		assert.Equal(t, "key-a", r.SecretName)
+		assert.Equal(t, "t", r.TenantID)
 	}
 
-	// All secrets (2 Gets key-a + 1 Get key-b + 2 Sets)
-	all, err := store.AuditLog(ctx, "", 50)
+	// All secrets for tenant "t" (2 Gets key-a + 1 Get key-b + 2 Sets; Sets use "system" so not in tenant t)
+	all, err := store.AuditLog(ctx, "t", "", 50)
 	require.NoError(t, err)
-	assert.Len(t, all, 5)
+	assert.Len(t, all, 3, "tenant t has 3 access records (2 key-a Get + 1 key-b Get)")
 }
 
 func TestSetOverwriteExisting(t *testing.T) {

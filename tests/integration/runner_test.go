@@ -336,7 +336,7 @@ func TestRunner_TenantKeyFromVault(t *testing.T) {
 		PolicyPath:     policyPath,
 	})
 
-	auditLog, err2 := secretsStore.AuditLog(context.Background(), "openai-api-key", 10)
+	auditLog, err2 := secretsStore.AuditLog(context.Background(), "acme", "openai-api-key", 10)
 	require.NoError(t, err2)
 
 	found := false

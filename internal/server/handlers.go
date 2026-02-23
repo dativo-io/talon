@@ -516,12 +516,19 @@ func (s *Server) handleSecretsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSecretsAudit(w http.ResponseWriter, r *http.Request) {
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	secretName := r.URL.Query().Get("secret_name")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
 		limit = 100
 	}
-	list, err := s.secretsStore.AuditLog(r.Context(), secretName, limit)
+	list, err := s.secretsStore.AuditLog(r.Context(), tenantID, secretName, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return

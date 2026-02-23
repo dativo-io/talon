@@ -635,6 +635,62 @@ func TestSecretsAudit(t *testing.T) {
 	assert.True(t, hasAudit)
 }
 
+// TestSecretsAuditTenantIsolation ensures GET /v1/secrets/audit only returns records for the authenticated tenant.
+func TestSecretsAuditTenantIsolation(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	evStore, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evStore.Close() })
+	secretsStore, err := secrets.NewSecretStore(dir+"/secrets.db", testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+
+	ctx := context.Background()
+	acl := secrets.ACL{Tenants: []string{"*"}, Agents: []string{"*"}}
+	require.NoError(t, secretsStore.Set(ctx, "audit-key", []byte("secret"), acl))
+	_, _ = secretsStore.Get(ctx, "audit-key", "acme", "agent1")
+	_, _ = secretsStore.Get(ctx, "audit-key", "other", "agent2")
+
+	apiKeys := map[string]string{"key-acme": "acme", "key-other": "other"}
+	srv := NewServer(nil, evStore, nil, engine, pol, "", secretsStore, apiKeys)
+	r := srv.Routes()
+
+	// Tenant acme sees only acme records
+	reqAcme := httptest.NewRequest(http.MethodGet, "/v1/secrets/audit?limit=50", nil)
+	reqAcme.Header.Set("X-Talon-Key", "key-acme")
+	recAcme := httptest.NewRecorder()
+	r.ServeHTTP(recAcme, reqAcme)
+	require.Equal(t, http.StatusOK, recAcme.Code)
+	var outAcme struct {
+		Audit []struct {
+			TenantID string `json:"tenant_id"`
+		} `json:"audit"`
+	}
+	require.NoError(t, json.NewDecoder(recAcme.Body).Decode(&outAcme))
+	for _, r := range outAcme.Audit {
+		assert.Equal(t, "acme", r.TenantID, "acme key must only see acme audit records")
+	}
+
+	// Tenant other sees only other records
+	reqOther := httptest.NewRequest(http.MethodGet, "/v1/secrets/audit?limit=50", nil)
+	reqOther.Header.Set("X-Talon-Key", "key-other")
+	recOther := httptest.NewRecorder()
+	r.ServeHTTP(recOther, reqOther)
+	require.Equal(t, http.StatusOK, recOther.Code)
+	var outOther struct {
+		Audit []struct {
+			TenantID string `json:"tenant_id"`
+		} `json:"audit"`
+	}
+	require.NoError(t, json.NewDecoder(recOther.Body).Decode(&outOther))
+	for _, r := range outOther.Audit {
+		assert.Equal(t, "other", r.TenantID, "other key must only see other audit records")
+	}
+}
+
 func TestMemorySearchMissingParams(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
