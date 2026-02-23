@@ -788,3 +788,66 @@ func TestUpdateReviewStatus(t *testing.T) {
 	err = store.UpdateReviewStatus(ctx, "other", "agent1", entry.ID, "approved")
 	assert.ErrorIs(t, err, ErrEntryNotFound)
 }
+
+func TestWrite_PersistsInputHash(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	entry := Entry{
+		TenantID:   "test",
+		AgentID:    "agent1",
+		Category:   CategoryDomainKnowledge,
+		Title:      "Test",
+		Content:    "Content",
+		EvidenceID: "req_1",
+		SourceType: SourceAgentRun,
+		InputHash:  "sha256:abc123",
+	}
+	require.NoError(t, store.Write(ctx, &entry))
+
+	got, err := store.Get(ctx, "test", entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "sha256:abc123", got.InputHash)
+}
+
+func TestHasRecentWithInputHash(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	entry := &Entry{
+		TenantID:   "test",
+		AgentID:    "agent1",
+		Category:   CategoryDomainKnowledge,
+		Title:      "Test observation",
+		Content:    "test observation",
+		EvidenceID: "req_1",
+		SourceType: SourceAgentRun,
+		InputHash:  "sha256:abc123",
+	}
+	require.NoError(t, store.Write(ctx, entry))
+
+	// Same hash within window → true
+	has, err := store.HasRecentWithInputHash(ctx, "test", "agent1", "sha256:abc123", 1*time.Hour)
+	require.NoError(t, err)
+	assert.True(t, has)
+
+	// Different hash → false
+	has, err = store.HasRecentWithInputHash(ctx, "test", "agent1", "sha256:different", 1*time.Hour)
+	require.NoError(t, err)
+	assert.False(t, has)
+
+	// Empty hash → false (no error)
+	has, err = store.HasRecentWithInputHash(ctx, "test", "agent1", "", 1*time.Hour)
+	require.NoError(t, err)
+	assert.False(t, has)
+
+	// Different agent → false (tenant+agent scoped)
+	has, err = store.HasRecentWithInputHash(ctx, "test", "agent2", "sha256:abc123", 1*time.Hour)
+	require.NoError(t, err)
+	assert.False(t, has)
+
+	// Different tenant → false
+	has, err = store.HasRecentWithInputHash(ctx, "other", "agent1", "sha256:abc123", 1*time.Hour)
+	require.NoError(t, err)
+	assert.False(t, has)
+}

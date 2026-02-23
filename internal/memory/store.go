@@ -90,6 +90,7 @@ type Entry struct {
 	AgentID          string    `json:"agent_id"`
 	Category         string    `json:"category"`
 	Scope            string    `json:"scope"` // "agent" (default), "session", "workspace"
+	InputHash        string    `json:"input_hash"` // SHA256 fingerprint for deduplication (optional)
 	Title            string    `json:"title"`
 	Content          string    `json:"content"`
 	ObservationType  string    `json:"observation_type"`
@@ -150,6 +151,12 @@ func NewStore(dbPath string) (*Store, error) {
 	// Migrate: add scope column if missing (added in memory architecture review)
 	_, _ = db.ExecContext(context.Background(),
 		`ALTER TABLE memory_entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'agent'`)
+
+	// Migrate: add input_hash column for deduplication (v3.0)
+	_, _ = db.ExecContext(context.Background(),
+		`ALTER TABLE memory_entries ADD COLUMN input_hash TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(context.Background(),
+		`CREATE INDEX IF NOT EXISTS idx_memory_input_hash ON memory_entries(tenant_id, agent_id, input_hash)`)
 
 	hasFTS5 := true
 	if _, err := db.ExecContext(context.Background(), ftsSchema); err != nil {
@@ -288,19 +295,57 @@ func (s *Store) writeInTx(ctx context.Context, entry *Entry, filesJSON, conflict
 	query := `INSERT INTO memory_entries (
 		id, tenant_id, agent_id, category, scope, title, content, observation_type,
 		token_count, files_affected, version, timestamp, evidence_id,
-		source_type, source_evidence_id, trust_score, conflicts_with, review_status
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		source_type, source_evidence_id, trust_score, conflicts_with, review_status,
+		input_hash
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = tx.ExecContext(ctx, query,
 		entry.ID, entry.TenantID, entry.AgentID, entry.Category, entry.Scope,
 		entry.Title, entry.Content, entry.ObservationType,
 		entry.TokenCount, string(filesJSON), entry.Version, entry.Timestamp,
 		entry.EvidenceID, entry.SourceType, entry.SourceEvidenceID,
 		entry.TrustScore, string(conflictsJSON), entry.ReviewStatus,
+		entry.InputHash,
 	)
 	if err != nil {
 		return fmt.Errorf("writing memory entry: %w", err)
 	}
 	return tx.Commit()
+}
+
+// HasRecentWithInputHash checks if a memory entry with the same input fingerprint
+// exists within the given time window. Used to skip duplicate writes for re-runs.
+//
+// Returns true if a recent entry with matching hash exists (should skip write).
+// Returns false on empty hash or any error (fail-open: proceed with write).
+func (s *Store) HasRecentWithInputHash(ctx context.Context, tenantID, agentID, inputHash string, window time.Duration) (bool, error) {
+	ctx, span := tracer.Start(ctx, "memory.has_recent_input_hash",
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("agent_id", agentID),
+		))
+	defer span.End()
+
+	if inputHash == "" {
+		return false, nil
+	}
+
+	cutoff := time.Now().UTC().Add(-window)
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_entries
+		 WHERE tenant_id = ? AND agent_id = ? AND input_hash = ? AND timestamp > ?`,
+		tenantID, agentID, inputHash, cutoff).Scan(&count)
+	if err != nil {
+		span.SetAttributes(attribute.Bool("memory.dedup_error", true))
+		return false, fmt.Errorf("checking input hash: %w", err)
+	}
+
+	hit := count > 0
+	span.SetAttributes(
+		attribute.Bool("memory.dedup_hit", hit),
+		attribute.Int("memory.dedup_count", count),
+	)
+	return hit, nil
 }
 
 // isSQLiteLocked reports whether the error is SQLite busy/locked (retryable).
@@ -345,7 +390,8 @@ func (s *Store) Get(ctx context.Context, tenantID, id string) (*Entry, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, tenant_id, agent_id, category, scope, title, content, observation_type,
 		        token_count, files_affected, version, timestamp, evidence_id,
-		        source_type, source_evidence_id, trust_score, conflicts_with, review_status
+		        source_type, source_evidence_id, trust_score, conflicts_with, review_status,
+		        COALESCE(input_hash, '')
 		 FROM memory_entries WHERE id = ? AND tenant_id = ?`, id, tenantID)
 
 	entry, err := scanEntry(row)
@@ -465,7 +511,8 @@ func (s *Store) List(ctx context.Context, tenantID, agentID, category string, li
 
 	query := `SELECT id, tenant_id, agent_id, category, scope, title, content, observation_type,
 	                 token_count, files_affected, version, timestamp, evidence_id,
-	                 source_type, source_evidence_id, trust_score, conflicts_with, review_status
+	                 source_type, source_evidence_id, trust_score, conflicts_with, review_status,
+	                 COALESCE(input_hash, '')
 	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`
 	args := []interface{}{tenantID, agentID}
 
@@ -655,7 +702,8 @@ func (s *Store) AuditLog(ctx context.Context, tenantID, agentID string, limit in
 
 	query := `SELECT id, tenant_id, agent_id, category, scope, title, content, observation_type,
 	                 token_count, files_affected, version, timestamp, evidence_id,
-	                 source_type, source_evidence_id, trust_score, conflicts_with, review_status
+	                 source_type, source_evidence_id, trust_score, conflicts_with, review_status,
+	                 COALESCE(input_hash, '')
 	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
 	          ORDER BY timestamp DESC`
 	args := []interface{}{tenantID, agentID}
@@ -773,7 +821,7 @@ func (s *Store) queryEntries(ctx context.Context, query string, args ...interfac
 			&e.ID, &e.TenantID, &e.AgentID, &e.Category, &e.Scope, &e.Title, &e.Content,
 			&e.ObservationType, &e.TokenCount, &filesJSON, &e.Version, &e.Timestamp,
 			&e.EvidenceID, &e.SourceType, &e.SourceEvidenceID, &e.TrustScore,
-			&conflictsJSON, &e.ReviewStatus,
+			&conflictsJSON, &e.ReviewStatus, &e.InputHash,
 		); err != nil {
 			continue
 		}
@@ -798,7 +846,7 @@ func scanEntry(row *sql.Row) (*Entry, error) {
 		&e.ID, &e.TenantID, &e.AgentID, &e.Category, &e.Scope, &e.Title, &e.Content,
 		&e.ObservationType, &e.TokenCount, &filesJSON, &e.Version, &e.Timestamp,
 		&e.EvidenceID, &e.SourceType, &e.SourceEvidenceID, &e.TrustScore,
-		&conflictsJSON, &e.ReviewStatus,
+		&conflictsJSON, &e.ReviewStatus, &e.InputHash,
 	)
 	if err != nil {
 		return nil, err

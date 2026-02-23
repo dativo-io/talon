@@ -239,3 +239,41 @@ func TestAuditShowCmd_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "fetching evidence")
 	assert.Contains(t, err.Error(), "not found")
 }
+
+func TestAuditShowCmd_AcceptsZeroOrOneArg(t *testing.T) {
+	// show [evidence-id]: 0 or 1 arg allowed
+	errZero := auditShowCmd.Args(auditShowCmd, []string{})
+	assert.NoError(t, errZero)
+	errOne := auditShowCmd.Args(auditShowCmd, []string{"ev_123"})
+	assert.NoError(t, errOne)
+	errTwo := auditShowCmd.Args(auditShowCmd, []string{"ev_1", "ev_2"})
+	assert.Error(t, errTwo)
+}
+
+func TestAuditShowCmd_ZeroArgs_EmptyStore_PrintsNoRecords(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+
+	// audit show writes via fmt.Println(os.Stdout), so redirect process stdout
+	oldOut := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+	defer func() { os.Stdout = oldOut }()
+
+	rootCmd.SetArgs([]string{"audit", "show"})
+	done := make(chan struct{})
+	var out []byte
+	go func() {
+		defer close(done)
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		out = buf.Bytes()
+	}()
+
+	err = rootCmd.Execute()
+	require.NoError(t, err)
+	w.Close()
+	<-done
+	assert.Contains(t, string(out), "No evidence records found.")
+}

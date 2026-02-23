@@ -91,11 +91,12 @@ type MemoryConfig struct {
 	Governance          *MemoryGovernanceConfig `yaml:"governance,omitempty" json:"governance,omitempty"`
 }
 
-// MemoryGovernanceConfig controls memory conflict detection and trust scoring.
+// MemoryGovernanceConfig controls memory conflict detection, trust scoring, and deduplication.
 type MemoryGovernanceConfig struct {
 	ConflictResolution          string  `yaml:"conflict_resolution,omitempty" json:"conflict_resolution,omitempty"`
 	ConflictSimilarityThreshold float64 `yaml:"conflict_similarity_threshold,omitempty" json:"conflict_similarity_threshold,omitempty"`
 	TrustScoreOverrides         bool    `yaml:"trust_score_overrides,omitempty" json:"trust_score_overrides,omitempty"`
+	DedupWindowMinutes          int     `yaml:"dedup_window_minutes,omitempty" json:"dedup_window_minutes,omitempty"` // Skip memory write if same input_hash within window (0 = disabled)
 }
 
 // ContextConfig defines shared enterprise context mounts.

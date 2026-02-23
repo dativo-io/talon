@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,6 +25,16 @@ import (
 
 func writeMemoryPolicy(t *testing.T, dir, name string) string {
 	t.Helper()
+	return writeMemoryPolicyWithDedup(t, dir, name, 0)
+}
+
+// writeMemoryPolicyWithDedup writes a memory policy; dedupMinutes 0 = disabled, >0 enables input-hash dedup window.
+func writeMemoryPolicyWithDedup(t *testing.T, dir, name string, dedupMinutes int) string {
+	t.Helper()
+	dedupYaml := ""
+	if dedupMinutes > 0 {
+		dedupYaml = "\n    dedup_window_minutes: " + fmt.Sprint(dedupMinutes)
+	}
 	content := `
 agent:
   name: "` + name + `"
@@ -35,7 +46,7 @@ memory:
     - policy_hit
     - factual_corrections
   governance:
-    conflict_resolution: auto
+    conflict_resolution: auto` + dedupYaml + `
 policies:
   cost_limits:
     per_request: 100.0
@@ -306,4 +317,133 @@ func TestRunner_EvidenceChainIntegrity(t *testing.T) {
 	valid, err := evidenceStore.Verify(ctx, memEntry.EvidenceID)
 	require.NoError(t, err)
 	assert.True(t, valid, "evidence HMAC should be valid")
+}
+
+func TestRunner_MemoryDedupSamePrompt(t *testing.T) {
+	dir := t.TempDir()
+	// Enable dedup window so second run with same prompt skips memory write
+	policyPath := writeMemoryPolicyWithDedup(t, dir, "dedup-agent", 60)
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "Same response"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, _ := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+	prompt := "Summarize this document"
+
+	_, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "acme",
+		AgentName:      "dedup-agent",
+		Prompt:         prompt,
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+
+	_, err = runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "acme",
+		AgentName:      "dedup-agent",
+		Prompt:         prompt,
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+
+	entries, err := memStore.Read(ctx, "acme", "dedup-agent")
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "second run with same prompt should be deduplicated; expected 1 memory entry")
+}
+
+func TestRunner_SkipMemoryNoWrite(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeMemoryPolicy(t, dir, "skip-agent")
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "Response"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, _ := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+
+	_, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "acme",
+		AgentName:      "skip-agent",
+		Prompt:         "Hello",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+		SkipMemory:     true,
+	})
+	require.NoError(t, err)
+
+	entries, err := memStore.Read(ctx, "acme", "skip-agent")
+	require.NoError(t, err)
+	assert.Empty(t, entries, "SkipMemory: true should skip memory write")
+}
+
+func TestRunner_MemoryRetentionEnforceMaxEntries(t *testing.T) {
+	dir := t.TempDir()
+	content := `
+agent:
+  name: "retention-agent"
+  version: "1.0.0"
+memory:
+  enabled: true
+  max_entries: 2
+  allowed_categories:
+    - domain_knowledge
+  governance:
+    conflict_resolution: auto
+policies:
+  cost_limits:
+    per_request: 100.0
+    daily: 1000.0
+    monthly: 10000.0
+  model_routing:
+    tier_0:
+      primary: "gpt-4"
+    tier_1:
+      primary: "gpt-4"
+    tier_2:
+      primary: "gpt-4"
+`
+	policyPath := filepath.Join(dir, "retention-agent.talon.yaml")
+	require.NoError(t, os.WriteFile(policyPath, []byte(content), 0o600))
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "Answer"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, _ := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		_, err := runner.Run(ctx, &agent.RunRequest{
+			TenantID:       "acme",
+			AgentName:      "retention-agent",
+			Prompt:         fmt.Sprintf("Question %d", i),
+			InvocationType: "manual",
+			PolicyPath:     policyPath,
+		})
+		require.NoError(t, err)
+	}
+
+	entries, err := memStore.Read(ctx, "acme", "retention-agent")
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(entries), 2, "EnforceMaxEntries(2) should evict oldest; at most 2 entries")
 }

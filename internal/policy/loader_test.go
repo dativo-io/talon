@@ -625,6 +625,32 @@ policies:
 	})
 }
 
+func TestLoadPolicy_MemoryGovernanceDedupWindow(t *testing.T) {
+	yamlContent := `
+agent:
+  name: test-agent
+  version: 1.0.0
+memory:
+  enabled: true
+  governance:
+    dedup_window_minutes: 60
+policies:
+  cost_limits:
+    daily: 100.0
+`
+	tmpDir := t.TempDir()
+	policyPath := filepath.Join(tmpDir, "policy.yaml")
+	require.NoError(t, os.WriteFile(policyPath, []byte(yamlContent), 0o644))
+
+	ctx := context.Background()
+	pol, err := LoadPolicy(ctx, policyPath, false, tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, pol)
+	require.NotNil(t, pol.Memory)
+	require.NotNil(t, pol.Memory.Governance)
+	assert.Equal(t, 60, pol.Memory.Governance.DedupWindowMinutes)
+}
+
 func TestComputeHash(t *testing.T) {
 	pol := &Policy{
 		Agent: AgentConfig{Version: "2.0.0"},

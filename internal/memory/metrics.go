@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"context"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -8,11 +10,12 @@ import (
 var meter = otel.Meter("github.com/dativo-io/talon/internal/memory")
 
 var (
-	writesTotal    metric.Int64Counter
-	writesDenied   metric.Int64Counter
-	conflictsFound metric.Int64Counter
-	readsTotal     metric.Int64Counter
-	entriesGauge   metric.Int64Gauge
+	writesTotal     metric.Int64Counter
+	writesDenied    metric.Int64Counter
+	conflictsFound  metric.Int64Counter
+	readsTotal      metric.Int64Counter
+	entriesGauge    metric.Int64Gauge
+	dedupSkips      metric.Int64Counter
 )
 
 func init() {
@@ -46,4 +49,15 @@ func init() {
 	if err != nil {
 		entriesGauge, _ = meter.Int64Gauge("memory.entries.count.fallback")
 	}
+
+	dedupSkips, err = meter.Int64Counter("memory.dedup.skips",
+		metric.WithDescription("Memory writes skipped due to input-hash deduplication"))
+	if err != nil {
+		dedupSkips, _ = meter.Int64Counter("memory.dedup.skips.fallback")
+	}
+}
+
+// DedupSkipsAdd records memory writes skipped due to input-hash deduplication.
+func DedupSkipsAdd(ctx context.Context, n int64) {
+	dedupSkips.Add(ctx, n)
 }

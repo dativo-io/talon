@@ -153,6 +153,7 @@ type RunRequest struct {
 	DryRun          bool
 	PolicyPath      string           // explicit path to .talon.yaml
 	ToolInvocations []ToolInvocation // optional; when set, each is policy-checked and executed, and names recorded in evidence
+	SkipMemory      bool             // if true, do not write memory observation for this run (e.g. --no-memory)
 }
 
 // ToolInvocation represents a single tool call (e.g. from MCP or a future agent loop).
@@ -603,9 +604,22 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		}
 	}
 
-	return r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine,
+	resp, err = r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine,
 		effectiveTier, effectivePIINames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
 		observationOverride, originalDecision, estimatedCost)
+	if err != nil {
+		return nil, err
+	}
+	// Lightweight retention: enforce max_entries after each run (full purge by days remains in talon serve).
+	if r.memory != nil && pol.Memory != nil && pol.Memory.Enabled && pol.Memory.MaxEntries > 0 {
+		evicted, evErr := r.memory.EnforceMaxEntries(ctx, req.TenantID, req.AgentName, pol.Memory.MaxEntries)
+		if evErr != nil {
+			log.Warn().Err(evErr).Msg("cli_retention_failed")
+		} else if evicted > 0 {
+			log.Info().Int64("evicted", evicted).Msg("memory_max_entries_enforced")
+		}
+	}
+	return resp, nil
 }
 
 // checkHook fires a hook and returns a deny RunResponse if the hook aborts the pipeline.
@@ -1499,6 +1513,32 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 	if mode == "disabled" {
 		return
 	}
+	if req.SkipMemory {
+		log.Info().Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("memory_write_skipped_per_request")
+		return
+	}
+
+	// Input-hash deduplication: skip write if we recently stored an observation for the same input.
+	if ev.AuditTrail.InputHash != "" {
+		dedupWindow := 1 * time.Hour
+		if pol.Memory.Governance != nil && pol.Memory.Governance.DedupWindowMinutes > 0 {
+			dedupWindow = time.Duration(pol.Memory.Governance.DedupWindowMinutes) * time.Minute
+		}
+		if dedupWindow > 0 {
+			isDup, err := r.memory.HasRecentWithInputHash(ctx, req.TenantID, req.AgentName, ev.AuditTrail.InputHash, dedupWindow)
+			if err != nil {
+				log.Warn().Err(err).Msg("memory_dedup_check_failed")
+			} else if isDup {
+				log.Info().
+					Str("input_hash", ev.AuditTrail.InputHash).
+					Str("tenant_id", req.TenantID).
+					Str("agent_id", req.AgentName).
+					Msg("memory_write_skipped_duplicate")
+				memory.DedupSkipsAdd(ctx, 1)
+				return
+			}
+		}
+	}
 
 	// Strip private tags from response before persisting to memory (GDPR Art. 25).
 	// Both Title and Content must be derived from clean content so <private> is never persisted.
@@ -1514,6 +1554,7 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 		EvidenceID:       ev.ID,
 		SourceType:       sourceTypeFromInvocation(req.InvocationType),
 		SourceEvidenceID: ev.ID,
+		InputHash:        ev.AuditTrail.InputHash,
 	}
 
 	if err := r.governance.ValidateWrite(ctx, &observation, pol, policyEval); err != nil {

@@ -30,6 +30,7 @@ var (
 	runValidate         bool
 	runAttachments      []string
 	runPolicyPath       string
+	runNoMemory         bool
 	runActiveRunTracker = &agent.ActiveRunTracker{} // shared so rate-limit policy sees concurrent runs (e.g. multiple talon run in parallel)
 )
 
@@ -47,6 +48,7 @@ func init() {
 	runCmd.Flags().BoolVar(&runValidate, "validate", false, "Validate policy before running (same as talon validate)")
 	runCmd.Flags().StringSliceVar(&runAttachments, "attach", nil, "Attachment files")
 	runCmd.Flags().StringVar(&runPolicyPath, "policy", "", "Path to .talon.yaml")
+	runCmd.Flags().BoolVar(&runNoMemory, "no-memory", false, "Skip memory write for this run")
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -176,6 +178,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		InvocationType: "manual",
 		DryRun:         runDryRun,
 		PolicyPath:     policyPath,
+		SkipMemory:     runNoMemory,
 	}
 
 	resp, err := runner.Run(ctx, req)
