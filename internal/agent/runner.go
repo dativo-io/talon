@@ -622,7 +622,8 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		return nil, err
 	}
 	// Lightweight retention: enforce max_entries after each run (full purge by days remains in talon serve).
-	if r.memory != nil && pol.Memory != nil && pol.Memory.Enabled && pol.Memory.MaxEntries > 0 {
+	// Skip when SkipMemory is set (e.g. --no-memory) so we do not evict entries during a run that requested no memory writes.
+	if r.memory != nil && pol.Memory != nil && pol.Memory.Enabled && pol.Memory.MaxEntries > 0 && !req.SkipMemory {
 		evicted, evErr := r.memory.EnforceMaxEntries(ctx, req.TenantID, req.AgentName, pol.Memory.MaxEntries)
 		if evErr != nil {
 			log.Warn().Err(evErr).Msg("cli_retention_failed")
