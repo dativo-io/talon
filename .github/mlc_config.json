@@ -1,10 +1,31 @@
 {
   "ignorePatterns": [
-    { "pattern": "^https://get.talon.dativo.io" },
-    { "pattern": "^http://localhost" },
-    { "pattern": "^http://talon" }
+    {
+      "pattern": "^https://get.talon.dativo.io"
+    },
+    {
+      "pattern": "^http://localhost"
+    },
+    {
+      "pattern": "^http://talon"
+    },
+    {
+      "pattern": "https://spec.modelcontextprotocol.io"
+    },
+    {
+      "pattern": "https://docs.dativo.com"
+    },
+    {
+      "pattern": "https://dativo-community.slack.com"
+    },
+    {
+      "pattern": "https://talon.dativo.io"
+    }
   ],
   "timeout": "10s",
   "retryOn429": true,
-  "aliveStatusCodes": [200, 403]
+  "aliveStatusCodes": [
+    200,
+    403
+  ]
 }

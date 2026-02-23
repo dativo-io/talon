@@ -28,7 +28,7 @@ This guide shows realistic timelines, effort, and ROI for each path.
 #### Day 1: Install & Configure (2 hours)
 ```bash
 # Install Talon
-wget https://github.com/dativo/talon/releases/download/v1.0.0/talon-linux-amd64
+wget https://github.com/dativo-io/talon/releases/download/v1.0.0/talon-linux-amd64
 sudo mv talon-linux-amd64 /usr/local/bin/talon
 
 # Initialize workspace
@@ -124,7 +124,7 @@ Compliance Officer: "We have 3 months until NIS2 audit. Fix this or shut it down
 **Step 1:** Install Talon on same EC2 instance
 ```bash
 # On existing bot server
-wget https://github.com/dativo/talon/releases/download/v1.0.0/talon-linux-amd64
+wget https://github.com/dativo-io/talon/releases/download/v1.0.0/talon-linux-amd64
 sudo mv talon-linux-amd64 /usr/local/bin/talon
 
 talon server --port 8081 &  # Runs alongside existing bot
@@ -581,8 +581,8 @@ Track these to measure adoption success:
 
 ## Support
 
-- **Documentation:** https://docs.dativo.com
-- **GitHub:** https://github.com/dativo/talon
+- **Documentation:** https://github.com/dativo-io/talon#readme
+- **GitHub:** https://github.com/dativo-io/talon
 - **Community Slack:** https://dativo-community.slack.com
 - **Enterprise Support:** enterprise@dativo.com
 
