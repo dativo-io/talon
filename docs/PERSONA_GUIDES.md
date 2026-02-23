@@ -22,6 +22,8 @@ This guide describes how different roles in your organization use Talon: what th
 
 ### Key commands
 
+Use **`talon run`** (not `talon` alone) to run an agent; flags like `--attach` go after `run`, and the prompt is the last argument: `talon run [flags] "your prompt"`.
+
 ```bash
 # Install and bootstrap
 make build                                    # or: go install .../cmd/talon@latest
@@ -29,11 +31,11 @@ talon init --name my-agent --owner dev@co.at  # Create agent.talon.yaml + talon.
 talon validate                                # Check policy is valid
 talon validate --strict                       # Strict compliance check
 
-# Run agents
-talon run "Summarize EU AI regulation trends"           # Real run with LLM
-talon run --dry-run "What is revenue?"                 # Policy check only, no LLM call
-talon run --attach report.pdf "Summarize this document" # Attachments (injection-scanned)
-talon run --tenant acme --agent sales-bot "..."        # Multi-tenant
+# Run agents (subcommand is always "run"; prompt is the final quoted argument)
+talon run "Summarize EU AI regulation trends"                    # Real run with LLM
+talon run --dry-run "What is revenue?"                            # Policy check only, no LLM call
+talon run --attach report.pdf "Summarize this document"           # Attachments (injection-scanned)
+talon run --tenant acme --agent sales-bot "Your prompt here"       # Multi-tenant
 
 # Serve (triggers, webhooks, cron)
 talon serve --port 8080

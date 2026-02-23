@@ -202,10 +202,14 @@ func TestExtractBytes(t *testing.T) {
 		assert.NotContains(t, got, "evil")
 		assert.Contains(t, got, "Safe")
 	})
-	t.Run("pdf placeholder", func(t *testing.T) {
-		got, err := extractor.ExtractBytes(ctx, "report.pdf", []byte("\x25\x50\x44\x46-")) // PDF magic
-		require.NoError(t, err)
-		assert.Contains(t, got, "PDF content extraction")
+	t.Run("pdf invalid header returns error", func(t *testing.T) {
+		_, err := extractor.ExtractBytes(ctx, "report.pdf", []byte("\x25\x50\x44\x46-")) // PDF magic only, not valid
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "PDF")
+	})
+	t.Run("pdf empty or truncated returns error", func(t *testing.T) {
+		_, err := extractor.ExtractBytes(ctx, "empty.pdf", []byte{})
+		require.Error(t, err)
 	})
 	t.Run("unsupported format", func(t *testing.T) {
 		_, err := extractor.ExtractBytes(ctx, "file.xyz", []byte("data"))

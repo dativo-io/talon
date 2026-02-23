@@ -179,27 +179,34 @@ evidence:
 
 **Step 4:** Test with real tickets
 ```bash
-# Send test ticket through bot
-# Verify Talon intercepts and logs
+# In one terminal: run the Talon server (logs show each request)
+talon serve
 
-talon logs --follow --agent slack-support-bot
+# In another terminal: send a test ticket through your bot, then verify evidence
+talon audit list --agent slack-support-bot --limit 10
 
-# Output:
-# [14:23:15] LLM call intercepted
-# [14:23:15] PII redacted: 1 phone, 1 email
-# [14:23:15] Evidence generated: evt_abc123
-# [14:23:16] Response returned to bot
+# Example output:
+# Evidence Records (showing 3):
+#
+#   ✓ evt_abc123 | 2025-02-16 14:23:15 | default/slack-support-bot | gpt-4 | €0.0023 | 1247ms
+#   ✓ evt_abc124 | 2025-02-16 14:23:16 | default/slack-support-bot | gpt-4 | €0.0011 | 892ms
+#   ...
+
+# Inspect a specific record (PII redaction, model, cost)
+talon audit show evt_abc123
 ```
 
 **Step 5:** Generate compliance report
 ```bash
 talon audit export \
   --agent slack-support-bot \
-  --format gdpr-art30 \
-  --date-range 2025-02-16:2025-02-16 \
-  --output /tmp/test-report.pdf
+  --format csv \
+  --from 2025-02-16 \
+  --to 2025-02-16 \
+  --limit 10000
 
-# Review with compliance officer
+# Redirect to file for review: talon audit export ... > /tmp/test-report.csv
+# For GDPR Art. 30 style summary, use: talon report --tenant default
 ```
 
 #### End of Day: Production Rollout
@@ -365,24 +372,25 @@ talon audit show evt_abc123
 
 **Test 2:** Verify forbidden operations blocked
 ```bash
-# Vendor attempts bulk export
-# Talon blocks it
+# After vendor attempts bulk export, Talon blocks it (see server logs).
+# Check recent evidence for denied requests:
 
-talon logs --last 5m
+talon audit list --agent zendesk-vendor-proxy --limit 20
 
-# [15:43:27] Policy violation: zendesk_patient_export_all not in allowed_tools
-# [15:43:27] Request blocked: 403 Forbidden
-# [15:43:27] Alert sent to: security@our-company.com
+# Look for ✗ (denied) entries. Inspect details:
+talon audit show <evidence-id>
+# Policy reasons will show: tool not in allowed_tools, request blocked.
 ```
 
 **Test 3:** Verify data residency
 ```bash
-# Check all API calls stayed in EU
+# Check evidence for the proxy agent (model/location in each record)
 
-talon audit report --agent zendesk-vendor-proxy --last 24h
+talon audit list --agent zendesk-vendor-proxy --limit 50
+talon audit show <evidence-id>
 
-# All requests: eu-central-1 ✓
-# No us-east-1 calls detected ✓
+# Confirm model_used and policy show EU routing; use talon report for cost/summary:
+talon report --tenant default
 ```
 
 #### Week 1, Day 6-7: Production Rollout (2 hours)

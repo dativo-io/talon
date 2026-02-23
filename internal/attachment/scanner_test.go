@@ -271,15 +271,14 @@ func TestExtractor(t *testing.T) {
 		assert.NotContains(t, content, "<script")
 	})
 
-	t.Run("PDF returns placeholder", func(t *testing.T) {
+	t.Run("PDF invalid content returns error", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "doc.pdf")
 		require.NoError(t, os.WriteFile(path, []byte("fake-pdf"), 0o644))
 
-		content, err := extractor.Extract(ctx, path)
-		require.NoError(t, err)
-		assert.Contains(t, content, "PDF")
-		assert.Contains(t, content, "not yet implemented")
+		_, err := extractor.Extract(ctx, path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "PDF")
 	})
 
 	t.Run("DOCX returns placeholder", func(t *testing.T) {

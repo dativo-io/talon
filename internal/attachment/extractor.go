@@ -1,12 +1,15 @@
 package attachment
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/ledongthuc/pdf"
 	"github.com/microcosm-cc/bluemonday"
 )
 
@@ -23,8 +26,8 @@ func NewExtractor(maxSizeMB int) *Extractor {
 }
 
 // Extract reads and extracts text from a file.
-// Supported formats: .txt, .md, .csv, .html/.htm (MVP).
-// PDF and DOCX return placeholders for future implementation.
+// Supported formats: .txt, .md, .csv, .html/.htm, .pdf (MVP).
+// DOCX returns a placeholder for future implementation.
 func (e *Extractor) Extract(ctx context.Context, path string) (string, error) {
 	_, span := tracer.Start(ctx, "attachment.extract")
 	defer span.End()
@@ -73,7 +76,7 @@ func (e *Extractor) extractFromContent(content []byte, ext string) (string, erro
 		return p.Sanitize(string(content)), nil
 
 	case ".pdf":
-		return "[PDF content extraction - not yet implemented]", nil
+		return e.extractPDF(content)
 
 	case ".docx":
 		return "[DOCX content extraction - not yet implemented]", nil
@@ -81,4 +84,23 @@ func (e *Extractor) extractFromContent(content []byte, ext string) (string, erro
 	default:
 		return "", fmt.Errorf("unsupported file type: %s", ext)
 	}
+}
+
+// extractPDF extracts plain text from PDF content using ledongthuc/pdf.
+// Encrypted or malformed PDFs may return an error or partial/empty text.
+func (e *Extractor) extractPDF(content []byte) (string, error) {
+	ra := bytes.NewReader(content)
+	r, err := pdf.NewReader(ra, int64(len(content)))
+	if err != nil {
+		return "", fmt.Errorf("reading PDF: %w", err)
+	}
+	plain, err := r.GetPlainText()
+	if err != nil {
+		return "", fmt.Errorf("extracting PDF text: %w", err)
+	}
+	b, err := io.ReadAll(plain)
+	if err != nil {
+		return "", fmt.Errorf("reading PDF text: %w", err)
+	}
+	return strings.TrimSpace(string(b)), nil
 }

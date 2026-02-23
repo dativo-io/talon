@@ -223,24 +223,29 @@ func TestAttachmentWorkflow(t *testing.T) {
 		assert.Greater(t, len(sandboxed.InjectionsFound), 0, "injections preserved in result")
 	})
 
-	// --- Scenario 3: PDF and DOCX gracefully handled ---
+	// --- Scenario 3: PDF (extraction) and DOCX (placeholder) ---
 
-	t.Run("unsupported binary formats return placeholders", func(t *testing.T) {
+	t.Run("invalid PDF returns error, DOCX returns placeholder", func(t *testing.T) {
 		dir := t.TempDir()
 
+		// PDF with invalid content returns error (PDF extraction is implemented)
 		pdfPath := filepath.Join(dir, "contract.pdf")
 		require.NoError(t, os.WriteFile(pdfPath, []byte("%PDF-fake"), 0o644))
+		_, err := extractor.Extract(ctx, pdfPath)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "PDF")
 
-		text, err := extractor.Extract(ctx, pdfPath)
+		// DOCX still returns placeholder until implemented
+		docxPath := filepath.Join(dir, "report.docx")
+		require.NoError(t, os.WriteFile(docxPath, []byte("fake-docx"), 0o644))
+		text, err := extractor.Extract(ctx, docxPath)
 		require.NoError(t, err)
-		assert.Contains(t, text, "PDF")
+		assert.Contains(t, text, "DOCX")
 		assert.Contains(t, text, "not yet implemented")
-
-		// Even placeholder content gets sandboxed
 		scanResult := injectionScanner.Scan(ctx, text)
 		token, err := attachment.GenerateSandboxToken()
 		require.NoError(t, err)
-		sandboxed := attachment.Sandbox(ctx, "contract.pdf", text, scanResult, token)
+		sandboxed := attachment.Sandbox(ctx, "report.docx", text, scanResult, token)
 		assert.Contains(t, sandboxed.SandboxedText, "TALON-UNTRUSTED-"+token+":START")
 	})
 
