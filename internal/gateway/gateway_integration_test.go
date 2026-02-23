@@ -147,3 +147,51 @@ func TestGateway_ServeHTTP_Unauthorized(t *testing.T) {
 
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 }
+
+// TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied ensures that when pii_action is "block"
+// and PII is detected, the request is rejected and evidence is recorded with allowed=false for audit correctness.
+func TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &GatewayConfig{
+		Enabled:      true,
+		ListenPrefix: "/v1/proxy",
+		Providers: map[string]ProviderConfig{
+			"ollama": {Enabled: true, BaseURL: "http://localhost:11434"},
+		},
+		Callers: []CallerConfig{
+			{Name: "test", APIKey: "talon-gw-pii-test", TenantID: "default"},
+		},
+		DefaultPolicy: DefaultPolicyConfig{DefaultPIIAction: "block"},
+		Timeouts:      TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+	}
+	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evStore.Close() })
+	secStore, err := secrets.NewSecretStore(filepath.Join(dir, "s.db"), "12345678901234567890123456789012")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secStore.Close() })
+	cls := classifier.MustNewScanner()
+
+	gw, err := NewGateway(cfg, cls, evStore, secStore, nil, nil)
+	require.NoError(t, err)
+
+	// Request body containing PII (email) so classifier detects it
+	body := []byte(`{"model":"llama2","messages":[{"role":"user","content":"Contact me at user@example.com"}]}`)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://test/v1/proxy/ollama/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer talon-gw-pii-test")
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Contains(t, w.Body.String(), "PII")
+
+	// Evidence must be recorded with allowed=false for compliance
+	list, err := evStore.List(context.Background(), "default", "test", time.Time{}, time.Now().Add(time.Second), 5)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.False(t, list[0].PolicyDecision.Allowed, "PII block must record evidence with allowed=false")
+	require.Equal(t, "deny", list[0].PolicyDecision.Action)
+	require.Contains(t, list[0].PolicyDecision.Reasons, "PII block")
+}

@@ -147,7 +147,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if piiAction == "block" && classification.HasPII {
 		WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request contains PII that is not allowed")
-		_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, true, []string{"PII block"})
+		_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"})
 		return
 	}
 
