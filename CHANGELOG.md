@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-02-23
+
+### Fixed
+
+- **Release:** Use goreleaser-cross for CGO cross-compilation (fix darwin/arm64 build from Linux). GoReleaser archive deprecations (format → formats).
+- **Security:** Run gitleaks CLI instead of gitleaks-action@v2 to avoid org license requirement. Dependency upgrades for govulncheck: OpenTelemetry v1.28 → v1.40 (GO-2026-4394), OPA v0.62 → v0.68 (GO-2024-3141), golang.org/x/net → v0.38 (GO-2025-3595). Go 1.22 → 1.23 for stdlib fixes.
+
 ## [0.7.0] - 2026-02-23
 
 ### Added
@@ -45,4 +52,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
+[Unreleased]: https://github.com/dativo-io/talon/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/dativo-io/talon/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/dativo-io/talon/releases/tag/v0.7.0

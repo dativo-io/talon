@@ -17,11 +17,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
-
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -29,11 +24,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: '~> v2'
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # goreleaser-cross provides CGO cross-compilers (Darwin, Windows) so we can
+      # build all targets from Linux; plain goreleaser fails with "unsupported -arch"
+      # when building darwin/arm64 from Linux.
+      - name: Run GoReleaser (goreleaser-cross)
+        run: |
+          docker run --rm --privileged \
+            -v $PWD:/work -w /work \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $HOME/.docker:/root/.docker:ro \
+            -e GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+            -e CGO_ENABLED=1 \
+            ghcr.io/goreleaser/goreleaser-cross:v1.25.7 \
+            release --clean
