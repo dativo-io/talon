@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-02-23
+
+### Fixed
+
+- **CI:** Dockerfile Go 1.24 to match go.mod; goreleaser skip linux/arm64 (CGO assembler incompatibility in goreleaser-cross); gitleaks allowlist for test/doc placeholders.
+
 ## [0.7.1] - 2026-02-23
 
 ### Fixed
@@ -52,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/dativo-io/talon/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/dativo-io/talon/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/dativo-io/talon/releases/tag/v0.7.0
