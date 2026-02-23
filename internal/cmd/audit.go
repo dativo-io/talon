@@ -373,6 +373,15 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		toolsStr = "(none)"
 	}
 	fmt.Fprintf(w, "Tools Called:  %s\n", toolsStr)
+	if ev.Execution.MemoryTokens > 0 {
+		fmt.Fprintf(w, "Memory Tokens: %d (injected into prompt)\n", ev.Execution.MemoryTokens)
+	}
+	if len(ev.MemoryReads) > 0 {
+		fmt.Fprintln(w, "Memory Reads (injected into prompt)")
+		for _, r := range ev.MemoryReads {
+			fmt.Fprintf(w, "  Entry: %s  TrustScore: %d\n", r.EntryID, r.TrustScore)
+		}
+	}
 	fmt.Fprintln(w, "Audit Trail")
 	fmt.Fprintf(w, "Input Hash:    %s\n", ev.AuditTrail.InputHash)
 	fmt.Fprintf(w, "Output Hash:   %s\n", ev.AuditTrail.OutputHash)

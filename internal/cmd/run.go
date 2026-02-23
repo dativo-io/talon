@@ -216,7 +216,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	fmt.Printf("\u2713 Policy check: ALLOWED\n")
 	fmt.Printf("\n%s\n\n", resp.Response)
 	fmt.Printf("\u2713 Evidence stored: %s\n", resp.EvidenceID)
-	fmt.Printf("\u2713 Cost: \u20ac%.4f | Duration: %dms\n", resp.Cost, resp.DurationMS)
+	fmt.Printf("\u2713 Cost: €%s | Duration: %dms\n", formatCost(resp.Cost), resp.DurationMS)
 
 	return nil
 }

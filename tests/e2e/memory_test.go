@@ -91,7 +91,7 @@ func TestMemoryHealth_AfterRun(t *testing.T) {
 	}
 	require.Equal(t, 0, code)
 	assert.Contains(t, stdout, "Memory Health Report")
-	assert.Contains(t, stdout, "Total entries")
+	assert.Contains(t, stdout, "Active entries")
 }
 
 func TestMemoryRollback(t *testing.T) {
