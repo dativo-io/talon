@@ -65,6 +65,13 @@ var memoryAuditCmd = &cobra.Command{
 	RunE:  memoryAudit,
 }
 
+var memoryAsOfCmd = &cobra.Command{
+	Use:   "as-of <RFC3339 timestamp>",
+	Short: "List memory entries valid at a point in time (compliance: NIS2, EU AI Act)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  memoryAsOf,
+}
+
 func init() {
 	memoryListCmd.Flags().StringVar(&memAgent, "agent", "default", "Agent name")
 	memoryListCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
@@ -92,8 +99,12 @@ func init() {
 	memoryAuditCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
 	memoryAuditCmd.Flags().IntVar(&memLimit, "limit", 20, "Maximum entries")
 
+	memoryAsOfCmd.Flags().StringVar(&memAgent, "agent", "default", "Agent name")
+	memoryAsOfCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
+	memoryAsOfCmd.Flags().IntVar(&memLimit, "limit", 50, "Maximum entries")
+
 	memoryCmd.AddCommand(memoryListCmd, memoryShowCmd, memorySearchCmd,
-		memoryRollbackCmd, memoryHealthCmd, memoryAuditCmd)
+		memoryRollbackCmd, memoryHealthCmd, memoryAuditCmd, memoryAsOfCmd)
 	rootCmd.AddCommand(memoryCmd)
 }
 
@@ -336,6 +347,34 @@ func memoryAudit(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
+	return nil
+}
+
+func memoryAsOf(cmd *cobra.Command, args []string) error {
+	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+	defer cancel()
+
+	asOf, err := time.Parse(time.RFC3339, args[0])
+	if err != nil {
+		return fmt.Errorf("parsing as-of time (use RFC3339, e.g. 2026-02-23T12:00:00Z): %w", err)
+	}
+
+	store, err := openMemoryStore()
+	if err != nil {
+		return fmt.Errorf("opening memory store: %w", err)
+	}
+	defer store.Close()
+
+	entries, err := store.AsOf(ctx, memTenant, memAgent, asOf, memLimit)
+	if err != nil {
+		return fmt.Errorf("querying memory as-of %s: %w", asOf.Format(time.RFC3339), err)
+	}
+	if len(entries) == 0 {
+		fmt.Printf("No memory entries valid at %s.\n", asOf.Format(time.RFC3339))
+		return nil
+	}
+	fmt.Printf("Memory entries valid at %s (tenant: %s, agent: %s):\n\n", asOf.Format(time.RFC3339), memTenant, memAgent)
+	printEntryTable(entries)
 	return nil
 }
 

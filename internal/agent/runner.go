@@ -100,6 +100,7 @@ type Runner struct {
 	hooks             *HookRegistry
 	memory            *memory.Store
 	governance        *memory.Governance
+	consolidator      *memory.Consolidator // optional; when set, memory writes go through AUDN consolidation
 }
 
 // RunnerConfig holds the dependencies for constructing a Runner.
@@ -139,6 +140,9 @@ func NewRunner(cfg RunnerConfig) *Runner {
 	}
 	if cfg.Memory != nil && cfg.Classifier != nil {
 		r.governance = memory.NewGovernance(cfg.Memory, cfg.Classifier)
+	}
+	if cfg.Memory != nil {
+		r.consolidator = memory.NewConsolidator(cfg.Memory)
 	}
 	return r
 }
@@ -1501,6 +1505,8 @@ func memoryMode(pol *policy.Policy) string {
 // and writes it through the governance pipeline.
 // In shadow mode, all checks run and results are logged, but no entry is persisted.
 // policyEval is the per-run OPA engine for this invocation (avoids data race on shared Governance).
+//
+//nolint:gocyclo // orchestration flow is inherently branched
 func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, resp *RunResponse, ev *evidence.Evidence) {
 	if r.memory == nil || r.governance == nil || pol.Memory == nil || !pol.Memory.Enabled {
 		return
@@ -1580,18 +1586,46 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 		return
 	}
 
-	if err := r.memory.Write(ctx, &observation); err != nil {
-		log.Error().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("memory_write_failed")
-		return
+	if r.consolidator != nil {
+		result, err := r.consolidator.Evaluate(ctx, &observation)
+		if err != nil {
+			log.Warn().Err(err).Msg("consolidation_evaluate_failed")
+			if writeErr := r.memory.Write(ctx, &observation); writeErr != nil {
+				log.Error().Err(writeErr).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("memory_write_failed")
+			}
+			return
+		}
+		log.Info().
+			Str("action", string(result.Action)).
+			Str("reason", result.Reason).
+			Float64("similarity", result.Similarity).
+			Msg("memory_consolidation_decision")
+		if err := r.consolidator.Apply(ctx, &observation, result); err != nil {
+			log.Error().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("consolidation_apply_failed")
+			return
+		}
+		if result.Action == memory.ActionAdd || result.Action == memory.ActionInvalidate {
+			log.Info().
+				Str("tenant_id", req.TenantID).
+				Str("agent_id", req.AgentName).
+				Str("entry_id", observation.ID).
+				Int("trust_score", observation.TrustScore).
+				Str("review_status", observation.ReviewStatus).
+				Msg("memory_observation_written")
+		}
+	} else {
+		if err := r.memory.Write(ctx, &observation); err != nil {
+			log.Error().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("memory_write_failed")
+			return
+		}
+		log.Info().
+			Str("tenant_id", req.TenantID).
+			Str("agent_id", req.AgentName).
+			Str("entry_id", observation.ID).
+			Int("trust_score", observation.TrustScore).
+			Str("review_status", observation.ReviewStatus).
+			Msg("memory_observation_written")
 	}
-
-	log.Info().
-		Str("tenant_id", req.TenantID).
-		Str("agent_id", req.AgentName).
-		Str("entry_id", observation.ID).
-		Int("trust_score", observation.TrustScore).
-		Str("review_status", observation.ReviewStatus).
-		Msg("memory_observation_written")
 }
 
 // filterByPromptCategories keeps only entries whose category is in the allowed list.

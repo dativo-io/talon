@@ -851,3 +851,114 @@ func TestHasRecentWithInputHash(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, has)
 }
+
+func TestInvalidate(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	entry := &Entry{
+		TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge,
+		Title: "Active entry", Content: "content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+	}
+	require.NoError(t, store.Write(ctx, entry))
+
+	now := time.Now().UTC()
+	err := store.Invalidate(ctx, "t1", entry.ID, "mem_new123", now)
+	require.NoError(t, err)
+
+	got, err := store.Get(ctx, "t1", entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "invalidated", got.ConsolidationStatus)
+	assert.Equal(t, "mem_new123", got.InvalidatedBy)
+	assert.NotNil(t, got.InvalidAt)
+	assert.NotNil(t, got.ExpiredAt)
+
+	// ListIndex excludes invalidated
+	index, err := store.ListIndex(ctx, "t1", "a1", 10)
+	require.NoError(t, err)
+	assert.Empty(t, index)
+}
+
+func TestAppendContent(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	entry := &Entry{
+		TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge,
+		Title: "Original", Content: "original content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+	}
+	require.NoError(t, store.Write(ctx, entry))
+	origTokens := entry.TokenCount
+
+	now := time.Now().UTC()
+	err := store.AppendContent(ctx, "t1", entry.ID, "appended text", now)
+	require.NoError(t, err)
+
+	got, err := store.Get(ctx, "t1", entry.ID)
+	require.NoError(t, err)
+	assert.Contains(t, got.Content, "original content")
+	assert.Contains(t, got.Content, "appended text")
+	assert.GreaterOrEqual(t, got.TokenCount, origTokens)
+}
+
+func TestListIndex_ExcludesInvalidated(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	e1 := &Entry{TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge, Title: "Active", Content: "c1", EvidenceID: "req_1", SourceType: SourceAgentRun}
+	require.NoError(t, store.Write(ctx, e1))
+
+	e2 := &Entry{TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge, Title: "To invalidate", Content: "c2", EvidenceID: "req_2", SourceType: SourceAgentRun}
+	require.NoError(t, store.Write(ctx, e2))
+
+	require.NoError(t, store.Invalidate(ctx, "t1", e2.ID, "mem_superseding", time.Now().UTC()))
+
+	index, err := store.ListIndex(ctx, "t1", "a1", 10)
+	require.NoError(t, err)
+	require.Len(t, index, 1)
+	assert.Equal(t, e1.ID, index[0].ID)
+}
+
+func TestAsOf(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	e1 := &Entry{TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge, Title: "First", Content: "c1", EvidenceID: "req_1", SourceType: SourceAgentRun}
+	require.NoError(t, store.Write(ctx, e1))
+
+	// AsOf with a time in the future: entry we just wrote has created_at <= now, so it's valid at now+1h
+	asOf := time.Now().UTC().Add(1 * time.Hour)
+	entries, err := store.AsOf(ctx, "t1", "a1", asOf, 10)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(entries), 1)
+
+	// AsOf with a time in the past (before any entry): empty
+	asOfPast := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	entriesPast, err := store.AsOf(ctx, "t1", "a1", asOfPast, 10)
+	require.NoError(t, err)
+	assert.Empty(t, entriesPast)
+}
+
+func TestAsOf_ExcludesExpired(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	e1 := &Entry{TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge, Title: "First", Content: "c1", EvidenceID: "req_1", SourceType: SourceAgentRun}
+	require.NoError(t, store.Write(ctx, e1))
+	// Capture a time when entry was valid (after created_at)
+	validWhen := time.Now().UTC().Add(10 * time.Millisecond)
+	time.Sleep(15 * time.Millisecond)
+	now := time.Now().UTC()
+	require.NoError(t, store.Invalidate(ctx, "t1", e1.ID, "mem_superseding", now))
+
+	// AsOf after expiry: entry should not appear (expired_at <= asOf)
+	asOfAfter := now.Add(1 * time.Second)
+	entries, err := store.AsOf(ctx, "t1", "a1", asOfAfter, 10)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "AsOf after expired_at should exclude invalidated entry")
+
+	// AsOf at validWhen (between created_at and expired_at): entry should appear
+	entriesBefore, err := store.AsOf(ctx, "t1", "a1", validWhen, 10)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(entriesBefore), 1, "AsOf at time before expiry should include entry")
+}

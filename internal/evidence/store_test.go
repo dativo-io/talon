@@ -64,6 +64,39 @@ func TestStoreAndGet(t *testing.T) {
 	assert.Equal(t, "gpt-4", retrieved.Execution.ModelUsed)
 }
 
+func TestGenerate_InputHashDeterministic(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	params := GenerateParams{
+		CorrelationID:  "corr_hash1",
+		TenantID:       "acme",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		InputPrompt:    "Summarize this document",
+		OutputResponse: "Summary here",
+	}
+	ev1, err := gen.Generate(ctx, params)
+	require.NoError(t, err)
+	params.CorrelationID = "corr_hash2"
+	params.OutputResponse = "Different response"
+	ev2, err := gen.Generate(ctx, params)
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, ev1.AuditTrail.InputHash, "InputHash should be set")
+	assert.Equal(t, ev1.AuditTrail.InputHash, ev2.AuditTrail.InputHash,
+		"same InputPrompt should yield same InputHash (for memory dedup)")
+
+	params.InputPrompt = "Different prompt"
+	params.CorrelationID = "corr_hash3"
+	ev3, err := gen.Generate(ctx, params)
+	require.NoError(t, err)
+	assert.NotEqual(t, ev1.AuditTrail.InputHash, ev3.AuditTrail.InputHash,
+		"different InputPrompt should yield different InputHash")
+}
+
 func TestVerifySignature(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

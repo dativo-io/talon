@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -79,4 +80,32 @@ func TestRootCommand_UseAndShort(t *testing.T) {
 
 func TestPackageLevelTracer_IsNotNil(t *testing.T) {
 	assert.NotNil(t, tracer, "package-level tracer should be initialized")
+}
+
+func TestMemoryAsOfCmd_EmptyStore(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+
+	// memory as-of uses fmt.Printf (stdout), so capture process stdout
+	oldOut := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+	defer func() { os.Stdout = oldOut }()
+
+	rootCmd.SetArgs([]string{"memory", "as-of", "2020-01-01T00:00:00Z"})
+	done := make(chan struct{})
+	var out []byte
+	go func() {
+		defer close(done)
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		out = buf.Bytes()
+	}()
+
+	err = rootCmd.Execute()
+	require.NoError(t, err)
+	w.Close()
+	<-done
+	assert.Contains(t, string(out), "No memory entries valid at")
 }

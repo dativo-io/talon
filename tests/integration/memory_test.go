@@ -447,3 +447,43 @@ policies:
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(entries), 2, "EnforceMaxEntries(2) should evict oldest; at most 2 entries")
 }
+
+// TestRunner_Consolidation_ListReturnsOnlyActive runs two times with similar content so
+// the consolidator may ADD then NOOP/UPDATE/INVALIDATE; asserts List returns only active entries.
+func TestRunner_Consolidation_ListReturnsOnlyActive(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeMemoryPolicy(t, dir, "cons-agent")
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "Revenue is one million euros"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, _ := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+
+	_, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID: "acme", AgentName: "cons-agent",
+		Prompt: "What is our revenue?", InvocationType: "manual", PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+
+	_, err = runner.Run(ctx, &agent.RunRequest{
+		TenantID: "acme", AgentName: "cons-agent",
+		Prompt: "What is revenue?", InvocationType: "manual", PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+
+	// List/Read use consolidation_status = active filter; we should only see active entries
+	entries, err := memStore.Read(ctx, "acme", "cons-agent")
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(entries), 1)
+	assert.LessOrEqual(t, len(entries), 2)
+	for i := range entries {
+		assert.Equal(t, "active", entries[i].ConsolidationStatus, "List must return only active entries")
+	}
+}
