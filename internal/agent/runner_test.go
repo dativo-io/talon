@@ -523,17 +523,17 @@ func TestRun_rejectsEmptyAgentNameWhenNoPolicyPath(t *testing.T) {
 func TestPlanReviewConfigFromPolicy(t *testing.T) {
 	assert.Nil(t, planReviewConfigFromPolicy(nil))
 	cfg := &policy.PlanReviewConfig{
-		RequireForTools:  true,
-		RequireForTier:   "tier_2",
-		CostThresholdEUR: 1.5,
-		TimeoutMinutes:   10,
-		NotifyWebhook:    "https://example.com/hook",
+		RequireForTools: true,
+		RequireForTier:  "tier_2",
+		CostThreshold:   1.5,
+		TimeoutMinutes:  10,
+		NotifyWebhook:   "https://example.com/hook",
 	}
 	got := planReviewConfigFromPolicy(cfg)
 	require.NotNil(t, got)
 	assert.True(t, got.RequireForTools)
 	assert.Equal(t, "tier_2", got.RequireForTier)
-	assert.Equal(t, 1.5, got.CostThresholdEUR)
+	assert.Equal(t, 1.5, got.CostThreshold)
 	assert.Equal(t, 10, got.TimeoutMinutes)
 	assert.Equal(t, "https://example.com/hook", got.NotifyWebhook)
 }

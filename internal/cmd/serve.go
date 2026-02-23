@@ -21,6 +21,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/llm"
 	"github.com/dativo-io/talon/internal/mcp"
 	"github.com/dativo-io/talon/internal/memory"
@@ -32,9 +33,11 @@ import (
 )
 
 var (
-	servePort        int
-	serveProxyConfig string
-	serveDashboard   bool
+	servePort          int
+	serveProxyConfig   string
+	serveDashboard     bool
+	serveGateway       bool
+	serveGatewayConfig string
 )
 
 var serveCmd = &cobra.Command{
@@ -47,6 +50,8 @@ func init() {
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "HTTP server port")
 	serveCmd.Flags().StringVar(&serveProxyConfig, "proxy-config", "", "Path to MCP proxy config YAML (optional)")
 	serveCmd.Flags().BoolVar(&serveDashboard, "dashboard", true, "Serve embedded dashboard at / and /dashboard")
+	serveCmd.Flags().BoolVar(&serveGateway, "gateway", false, "Enable LLM API gateway at /v1/proxy/*")
+	serveCmd.Flags().StringVar(&serveGatewayConfig, "gateway-config", "talon.config.yaml", "Path to config file with gateway block (used when --gateway is set)")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -209,6 +214,27 @@ func runServe(cmd *cobra.Command, args []string) error {
 		opts = append(opts, server.WithMCPProxy(proxyHandler))
 	}
 
+	var gatewayHandler http.Handler
+	if serveGateway {
+		gatewayCfg, err := gateway.LoadGatewayConfig(serveGatewayConfig)
+		if err != nil {
+			return fmt.Errorf("loading gateway config: %w", err)
+		}
+		if !gatewayCfg.Enabled {
+			log.Warn().Msg("gateway config has enabled: false — gateway not started")
+		} else {
+			gatewayPolicy, err := policy.NewGatewayEngine(ctx)
+			if err != nil {
+				return fmt.Errorf("gateway policy engine: %w", err)
+			}
+			gatewayHandler, err = gateway.NewGateway(gatewayCfg, cls, evidenceStore, secretsStore, gatewayPolicy, nil)
+			if err != nil {
+				return fmt.Errorf("initializing gateway: %w", err)
+			}
+			opts = append(opts, server.WithGateway(gatewayHandler))
+		}
+	}
+
 	srv := server.NewServer(
 		runner,
 		evidenceStore,
@@ -236,6 +262,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Str("agent", pol.Agent.Name).
 		Bool("dashboard", serveDashboard).
 		Bool("mcp_proxy", proxyHandler != nil).
+		Bool("gateway", gatewayHandler != nil).
 		Msg("talon_serve_started")
 
 	errCh := make(chan error, 1)

@@ -209,11 +209,11 @@ func (s *PlanReviewStore) updateStatus(ctx context.Context, planID, tenantID str
 
 // PlanReviewConfig from .talon.yaml.
 type PlanReviewConfig struct {
-	RequireForTools  bool    `yaml:"require_for_tools"`
-	RequireForTier   string  `yaml:"require_for_tier"`
-	CostThresholdEUR float64 `yaml:"cost_threshold_eur"`
-	TimeoutMinutes   int     `yaml:"timeout_minutes"`
-	NotifyWebhook    string  `yaml:"notify_webhook"`
+	RequireForTools bool    `yaml:"require_for_tools"`
+	RequireForTier  string  `yaml:"require_for_tier"`
+	CostThreshold   float64 `yaml:"cost_threshold"`
+	TimeoutMinutes  int     `yaml:"timeout_minutes"`
+	NotifyWebhook   string  `yaml:"notify_webhook"`
 }
 
 // RequiresReview checks if the current request needs human review based on policy.
@@ -230,7 +230,7 @@ func RequiresReview(humanOversight string, dataTier int, costEstimate float64, h
 	if planConfig.RequireForTools && hasTools {
 		return true
 	}
-	if planConfig.CostThresholdEUR > 0 && costEstimate >= planConfig.CostThresholdEUR {
+	if planConfig.CostThreshold > 0 && costEstimate >= planConfig.CostThreshold {
 		return true
 	}
 	tierThreshold := tierFromString(planConfig.RequireForTier)

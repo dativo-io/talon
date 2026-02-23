@@ -251,11 +251,11 @@ type AuditConfig struct {
 
 // PlanReviewConfig configures when execution plans require human review (EU AI Act Art. 14).
 type PlanReviewConfig struct {
-	RequireForTools  bool    `yaml:"require_for_tools" json:"require_for_tools"`
-	RequireForTier   string  `yaml:"require_for_tier" json:"require_for_tier"`
-	CostThresholdEUR float64 `yaml:"cost_threshold_eur" json:"cost_threshold_eur"`
-	TimeoutMinutes   int     `yaml:"timeout_minutes" json:"timeout_minutes"`
-	NotifyWebhook    string  `yaml:"notify_webhook" json:"notify_webhook"`
+	RequireForTools bool    `yaml:"require_for_tools" json:"require_for_tools"`
+	RequireForTier  string  `yaml:"require_for_tier" json:"require_for_tier"`
+	CostThreshold   float64 `yaml:"cost_threshold" json:"cost_threshold"`
+	TimeoutMinutes  int     `yaml:"timeout_minutes" json:"timeout_minutes"`
+	NotifyWebhook   string  `yaml:"notify_webhook" json:"notify_webhook"`
 }
 
 // ComplianceConfig declares regulatory framework alignment.

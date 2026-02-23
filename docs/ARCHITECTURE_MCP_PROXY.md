@@ -662,3 +662,9 @@ Talon's MCP proxy pattern enables:
 **Key insight:** European companies can NOW adopt AI vendors (Zendesk, Intercom, HubSpot) while maintaining GDPR/NIS2/EU AI Act compliance. Talon makes vendor "compliance claims" verifiable.
 
 This is a **massive competitive advantage** - no other platform offers this.
+
+---
+
+## Related: LLM API Gateway
+
+Talon also provides an **LLM API Gateway** at `POST /v1/proxy/{provider}/v1/chat/completions`. Unlike the MCP proxy (which intercepts **tool-level** MCP calls from vendors), the LLM gateway intercepts **request-level** LLM API calls from any application: desktop apps, Slack bots, scripts. Clients send OpenAI/Anthropic/Ollama requests to Talon with a caller API key; Talon enforces per-caller model and cost policy and records evidence. Enable with `talon serve --gateway --gateway-config <path>`. See [OpenClaw integration](guides/openclaw-integration.md), [Slack bot integration](guides/slack-bot-integration.md), and [Desktop app governance](guides/desktop-app-governance.md).

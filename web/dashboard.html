@@ -140,7 +140,7 @@
           (d.plans || []).forEach(function(p) {
             var tr = document.createElement('tr');
             var time = p.created_at ? new Date(p.created_at).toLocaleString() : '—';
-            var cost = p.cost_estimate_eur != null ? p.cost_estimate_eur.toFixed(4) : '—';
+            var cost = p.cost_estimate != null ? p.cost_estimate.toFixed(4) : '—';
             var safeId = escapeHtml(p.id);
             var actions = '<button class="btn btn-approve" data-id="' + safeId + '">Approve</button> <button class="btn btn-reject" data-id="' + safeId + '">Reject</button>';
             tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(p.agent_id || '—') + '</td><td>' + escapeHtml(p.selected_model || '—') + '</td><td>' + escapeHtml(p.data_tier != null ? p.data_tier : '—') + '</td><td>' + escapeHtml(cost) + '</td><td>' + actions + '</td>';
