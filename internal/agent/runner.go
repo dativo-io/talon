@@ -1533,8 +1533,9 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 	}
 
 	// Input-hash deduplication: skip write if we recently stored an observation for the same input.
+	// Only when dedup_window_minutes > 0 (0 = disabled per docs); no default window.
 	if ev.AuditTrail.InputHash != "" {
-		dedupWindow := 1 * time.Hour
+		var dedupWindow time.Duration
 		if pol.Memory.Governance != nil && pol.Memory.Governance.DedupWindowMinutes > 0 {
 			dedupWindow = time.Duration(pol.Memory.Governance.DedupWindowMinutes) * time.Minute
 		}
