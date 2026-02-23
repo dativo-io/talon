@@ -209,7 +209,9 @@ func (h *ProxyHandler) forwardRequest(ctx context.Context, body []byte, tenantID
 	}
 	defer upstreamResp.Body.Close()
 	var out jsonrpcResponse
-	_ = json.NewDecoder(upstreamResp.Body).Decode(&out)
+	if err := json.NewDecoder(upstreamResp.Body).Decode(&out); err != nil {
+		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid"}}
+	}
 	out.ID = req.ID
 	return &out
 }
