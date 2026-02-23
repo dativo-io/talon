@@ -164,12 +164,20 @@ func (s *PlanReviewStore) Modify(ctx context.Context, planID, tenantID, reviewed
 		return err
 	}
 	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return ErrPlanNotPending
+	if rows > 0 {
+		log.Info().Str("plan_id", planID).Str("tenant_id", tenantID).Str("reviewed_by", reviewedBy).Msg("plan_modified")
+		return nil
 	}
-
-	log.Info().Str("plan_id", planID).Str("tenant_id", tenantID).Str("reviewed_by", reviewedBy).Msg("plan_modified")
-	return nil
+	// Zero rows: plan missing/wrong tenant vs already reviewed — distinguish for correct HTTP status.
+	var currentStatus string
+	err = s.db.QueryRowContext(ctx, `SELECT status FROM execution_plans WHERE id = ? AND tenant_id = ?`, planID, tenantID).Scan(&currentStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrPlanNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return ErrPlanNotPending
 }
 
 func (s *PlanReviewStore) updateStatus(ctx context.Context, planID, tenantID string, status PlanStatus, reviewedBy, reason string) error {
@@ -183,12 +191,20 @@ func (s *PlanReviewStore) updateStatus(ctx context.Context, planID, tenantID str
 		return err
 	}
 	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return ErrPlanNotPending
+	if rows > 0 {
+		log.Info().Str("plan_id", planID).Str("tenant_id", tenantID).Str("status", string(status)).Msg("plan_review_completed")
+		return nil
 	}
-
-	log.Info().Str("plan_id", planID).Str("tenant_id", tenantID).Str("status", string(status)).Msg("plan_review_completed")
-	return nil
+	// Zero rows: plan missing/wrong tenant vs already reviewed — distinguish for correct HTTP status.
+	var currentStatus string
+	err = s.db.QueryRowContext(ctx, `SELECT status FROM execution_plans WHERE id = ? AND tenant_id = ?`, planID, tenantID).Scan(&currentStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrPlanNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return ErrPlanNotPending
 }
 
 // PlanReviewConfig from .talon.yaml.

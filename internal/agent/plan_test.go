@@ -288,24 +288,24 @@ func TestPlanReviewStore_CrossTenantAccess(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "acme", got.TenantID)
 
-	// Approve with wrong tenant does not update the plan (no row matched)
+	// Approve with wrong tenant returns not found (plan not visible to that tenant)
 	err = store.Approve(ctx, acmePlan.ID, "globex", "attacker")
-	assert.ErrorIs(t, err, ErrPlanNotPending)
+	assert.ErrorIs(t, err, ErrPlanNotFound)
 	// Plan still pending for acme
 	got, err = store.Get(ctx, acmePlan.ID, "acme")
 	require.NoError(t, err)
 	assert.Equal(t, PlanPending, got.Status)
 
-	// Reject with wrong tenant does not update the plan
+	// Reject with wrong tenant returns not found
 	err = store.Reject(ctx, acmePlan.ID, "globex", "attacker", "reason")
-	assert.ErrorIs(t, err, ErrPlanNotPending)
+	assert.ErrorIs(t, err, ErrPlanNotFound)
 	got, err = store.Get(ctx, acmePlan.ID, "acme")
 	require.NoError(t, err)
 	assert.Equal(t, PlanPending, got.Status)
 
-	// Modify with wrong tenant does not update the plan
+	// Modify with wrong tenant returns not found
 	err = store.Modify(ctx, acmePlan.ID, "globex", "attacker", nil)
-	assert.ErrorIs(t, err, ErrPlanNotPending)
+	assert.ErrorIs(t, err, ErrPlanNotFound)
 }
 
 // openTestDB creates an in-memory SQLite database for testing.

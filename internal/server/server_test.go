@@ -417,6 +417,118 @@ func TestPlanModifySuccess(t *testing.T) {
 	assert.Equal(t, "modified", out["status"])
 }
 
+// TestPlanApproveRejectModify_NonexistentPlanReturns404 ensures approve/reject/modify
+// with a nonexistent plan ID return 404 (not 409) so clients can distinguish not-found from not-pending.
+func TestPlanApproveRejectModify_NonexistentPlanReturns404(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	planStore, err := agent.NewPlanReviewStore(db)
+	require.NoError(t, err)
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+		WithPlanReviewStore(planStore))
+	r := srv.Routes()
+	nonexistentID := "plan_nonexistent_404_test"
+	key := "X-Talon-Key"
+	apiKey := "k"
+
+	// Approve nonexistent plan -> 404
+	req := httptest.NewRequest(http.MethodPost, "/v1/plans/"+nonexistentID+"/approve", strings.NewReader(`{"reviewed_by":"u"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(key, apiKey)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code, "approve nonexistent plan must return 404")
+	var errResp map[string]string
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&errResp))
+	assert.Equal(t, "not_found", errResp["error"])
+
+	// Reject nonexistent plan -> 404
+	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+nonexistentID+"/reject", strings.NewReader(`{"reviewed_by":"u","reason":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(key, apiKey)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code, "reject nonexistent plan must return 404")
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&errResp))
+	assert.Equal(t, "not_found", errResp["error"])
+
+	// Modify nonexistent plan -> 404
+	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+nonexistentID+"/modify", strings.NewReader(`{"reviewed_by":"u","annotations":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(key, apiKey)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code, "modify nonexistent plan must return 404")
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&errResp))
+	assert.Equal(t, "not_found", errResp["error"])
+}
+
+// TestPlanApproveRejectModify_AlreadyReviewedReturns409 ensures approve/reject/modify
+// when the plan is already reviewed (e.g. already approved) return 409 conflict.
+func TestPlanApproveRejectModify_AlreadyReviewedReturns409(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	planStore, err := agent.NewPlanReviewStore(db)
+	require.NoError(t, err)
+	plan := agent.GenerateExecutionPlan("corr_409", "default", "agent1", "gpt-4", 0, nil, 0, "allow", "", "", 30)
+	require.NoError(t, planStore.Save(context.Background(), plan))
+	require.NoError(t, planStore.Approve(context.Background(), plan.ID, "default", "reviewer@test"))
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+		WithPlanReviewStore(planStore))
+	r := srv.Routes()
+	key := "X-Talon-Key"
+	apiKey := "k"
+
+	// Second approve -> 409
+	req := httptest.NewRequest(http.MethodPost, "/v1/plans/"+plan.ID+"/approve", strings.NewReader(`{"reviewed_by":"other"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(key, apiKey)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusConflict, rec.Code, "approve already-approved plan must return 409")
+	var errResp map[string]string
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&errResp))
+	assert.Equal(t, "conflict", errResp["error"])
+	assert.Contains(t, errResp["message"], "not pending")
+
+	// Reject already-approved plan -> 409
+	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+plan.ID+"/reject", strings.NewReader(`{"reviewed_by":"u","reason":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(key, apiKey)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusConflict, rec.Code)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&errResp))
+	assert.Equal(t, "conflict", errResp["error"])
+
+	// Modify already-approved plan -> 409
+	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+plan.ID+"/modify", strings.NewReader(`{"reviewed_by":"u","annotations":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(key, apiKey)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusConflict, rec.Code)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&errResp))
+	assert.Equal(t, "conflict", errResp["error"])
+}
+
 func TestEvidenceExportInvalidFormat(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
@@ -855,36 +967,36 @@ func TestPlanCrossTenantAccess(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
 	assert.Equal(t, acmePlan.ID, out["id"])
 
-	// Globex user cannot APPROVE acme's plan -> 409 (plan not found for tenant, treated as not pending)
+	// Globex user cannot APPROVE acme's plan -> 404 (plan not found for that tenant)
 	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+acmePlan.ID+"/approve", strings.NewReader(`{"reviewed_by":"attacker"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "key_globex")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusConflict, rec.Code, "approve other tenant's plan must not succeed")
+	assert.Equal(t, http.StatusNotFound, rec.Code, "approve other tenant's plan must return 404 not found")
 	// Plan still pending for acme
 	got, err := planStore.Get(context.Background(), acmePlan.ID, "acme")
 	require.NoError(t, err)
 	assert.Equal(t, "pending", string(got.Status))
 
-	// Globex user cannot REJECT acme's plan
+	// Globex user cannot REJECT acme's plan -> 404
 	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+acmePlan.ID+"/reject", strings.NewReader(`{"reviewed_by":"attacker","reason":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "key_globex")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusConflict, rec.Code)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 	got, err = planStore.Get(context.Background(), acmePlan.ID, "acme")
 	require.NoError(t, err)
 	assert.Equal(t, "pending", string(got.Status))
 
-	// Globex user cannot MODIFY acme's plan
+	// Globex user cannot MODIFY acme's plan -> 404
 	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+acmePlan.ID+"/modify", strings.NewReader(`{"reviewed_by":"attacker","annotations":[]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "key_globex")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusConflict, rec.Code)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 	got, err = planStore.Get(context.Background(), acmePlan.ID, "acme")
 	require.NoError(t, err)
 	assert.Equal(t, "pending", string(got.Status))
