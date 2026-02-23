@@ -20,6 +20,11 @@ builds:
     goarch:
       - amd64
       - arm64
+    # goreleaser-cross image's aarch64 assembler is incompatible with Go runtime/cgo
+    # (gcc_arm64.S "no such instruction" for stp/ldp). Skip until image toolchain is updated.
+    ignore:
+      - goos: linux
+        goarch: arm64
     ldflags:
       - -s -w
       - -X github.com/dativo-io/talon/internal/cmd.Version={{.Version}}

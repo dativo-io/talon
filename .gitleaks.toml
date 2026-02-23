@@ -1,0 +1,21 @@
+# Gitleaks config for Talon. Allowlist test/doc placeholders so CI passes.
+# See https://github.com/gitleaks/gitleaks#configuration
+
+title = "Talon gitleaks config"
+
+[allowlist]
+description = "Allow test files, integration/e2e dirs, and docs that use placeholder secrets"
+# Test code and fixtures (fake keys, env vars for tests)
+paths = [
+  '''_test\.go$''',
+  '''^tests/''',
+  '''^docs/''',
+  '''\.tmpl$''',
+  '''docker-compose\.yml''',
+]
+# Optional: allow the specific 64-char hex placeholder used in tests (not a real key)
+regexes = [
+  '''^0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef$''',
+  '''^abcdef0123456789abcdef0123456789$''',
+  '''^abcdefghijklmnopqrstuvwxyz012345$''',
+]
