@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -240,6 +241,53 @@ func TestListIndex_RespectsLimit(t *testing.T) {
 	index, err := store.ListIndex(ctx, "acme", "sales", 3)
 	require.NoError(t, err)
 	assert.Len(t, index, 3)
+}
+
+func TestRetrieveScored_OrderAndTokenCap(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	// Write entries with different Title (relevance), MemoryType, TrustScore, age
+	base := time.Now().UTC()
+	for i, row := range []struct {
+		title, memType string
+		trust          int
+		ageHours       float64
+	}{
+		{"alpha beta match", MemTypeSemanticFact, 80, 24},
+		{"gamma unrelated", MemTypeEpisodic, 90, 1},
+		{"alpha only", MemTypeProcedural, 70, 48},
+	} {
+		ts := base.Add(-time.Duration(row.ageHours) * time.Hour)
+		require.NoError(t, store.Write(ctx, &Entry{
+			TenantID:   "acme",
+			AgentID:    "sales",
+			Category:   CategoryDomainKnowledge,
+			Title:      row.title,
+			Content:    "content",
+			EvidenceID: fmt.Sprintf("req_%d", i),
+			SourceType: SourceAgentRun,
+			MemoryType: row.memType,
+			TrustScore: row.trust,
+			Timestamp:  ts,
+		}))
+	}
+
+	// Query "alpha": relevance should favor "alpha beta match" and "alpha only"
+	scored, err := store.RetrieveScored(ctx, "acme", "sales", "alpha", 50)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(scored), 2)
+	tokens := 0
+	for _, e := range scored {
+		tokens += e.TokenCount
+	}
+	assert.LessOrEqual(t, tokens, 50, "RetrieveScored must cap by maxTokens")
+	// First result should be more relevant to "alpha" than unrelated "gamma"
+	titles := make([]string, len(scored))
+	for i := range scored {
+		titles[i] = scored[i].Title
+	}
+	assert.Contains(t, titles[0], "alpha")
 }
 
 func TestList_FiltersByCategory(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -124,6 +125,7 @@ type IndexEntry struct {
 	Timestamp       time.Time `json:"timestamp"`
 	TrustScore      int       `json:"trust_score"`
 	ReviewStatus    string    `json:"review_status"`
+	MemoryType      string    `json:"memory_type"` // semantic, episodic, procedural (for scored retrieval)
 }
 
 // HealthReport aggregates memory health metrics for CLI output.
@@ -520,7 +522,8 @@ func (s *Store) Get(ctx context.Context, tenantID, id string) (*Entry, error) {
 }
 
 // ListIndex returns lightweight memory summaries (Layer 1) ordered by timestamp desc.
-func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit int) ([]IndexEntry, error) {
+// When scopes is non-empty, only entries whose scope is in scopes are returned.
+func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit int, scopes ...string) ([]IndexEntry, error) {
 	ctx, span := tracer.Start(ctx, "memory.list_index",
 		trace.WithAttributes(
 			attribute.String("tenant_id", tenantID),
@@ -528,11 +531,19 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit i
 		))
 	defer span.End()
 
-	query := `SELECT id, category, scope, title, observation_type, token_count, timestamp, trust_score, review_status
+	query := `SELECT id, category, scope, title, observation_type, token_count, timestamp, trust_score, review_status,
+	          COALESCE(memory_type, 'semantic')
 	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
-	          AND (COALESCE(consolidation_status, 'active') = 'active')
-	          ORDER BY timestamp DESC`
+	          AND (COALESCE(consolidation_status, 'active') = 'active')`
 	args := []interface{}{tenantID, agentID}
+	if len(scopes) > 0 {
+		placeholders := strings.Repeat("?,", len(scopes))
+		query += ` AND scope IN (` + placeholders[:len(placeholders)-1] + `)`
+		for _, sc := range scopes {
+			args = append(args, sc)
+		}
+	}
+	query += ` ORDER BY timestamp DESC`
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)
@@ -548,13 +559,75 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit i
 	for rows.Next() {
 		var e IndexEntry
 		if err := rows.Scan(&e.ID, &e.Category, &e.Scope, &e.Title, &e.ObservationType,
-			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus); err != nil {
+			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus, &e.MemoryType); err != nil {
 			continue
 		}
 		results = append(results, e)
 	}
 	readsTotal.Add(ctx, 1)
 	return results, rows.Err()
+}
+
+const scoredRetrievalCandidates = 200
+
+// RetrieveScored returns memory index entries ordered by relevance to queryText, then capped by maxTokens.
+// Score = relevance*0.4 + recency*0.3 + typeWeight*0.2 + trustNorm*0.1.
+func (s *Store) RetrieveScored(ctx context.Context, tenantID, agentID, queryText string, maxTokens int) ([]IndexEntry, error) {
+	ctx, span := tracer.Start(ctx, "memory.retrieve_scored",
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("agent_id", agentID),
+			attribute.Int("max_tokens", maxTokens),
+		))
+	defer span.End()
+
+	candidates, err := s.ListIndex(ctx, tenantID, agentID, scoredRetrievalCandidates)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	now := time.Now().UTC()
+	type scored struct {
+		entry IndexEntry
+		score float64
+	}
+	scores := make([]scored, 0, len(candidates))
+	for i := range candidates {
+		e := &candidates[i]
+		relevance := keywordSimilarity(queryText, e.Title)
+		days := now.Sub(e.Timestamp).Hours() / 24
+		recency := 1.0 / (1.0 + days)
+		typeW := TypeWeights[e.MemoryType]
+		if typeW == 0 {
+			typeW = 0.25
+		}
+		trustNorm := float64(e.TrustScore) / 100.0
+		if trustNorm > 1 {
+			trustNorm = 1
+		}
+		score := relevance*0.4 + recency*0.3 + typeW*0.2 + trustNorm*0.1
+		scores = append(scores, scored{entry: *e, score: score})
+	}
+	sort.Slice(scores, func(i, j int) bool { return scores[i].score > scores[j].score })
+
+	var out []IndexEntry
+	var tokens int
+	for i := range scores {
+		sc := &scores[i]
+		if maxTokens > 0 && tokens+sc.entry.TokenCount > maxTokens {
+			continue
+		}
+		out = append(out, sc.entry)
+		tokens += sc.entry.TokenCount
+	}
+	span.SetAttributes(
+		attribute.Int("memory.scored_returned", len(out)),
+		attribute.Int("memory.scored_tokens", tokens),
+	)
+	return out, nil
 }
 
 // ListPendingReview returns entries with review_status = 'pending_review' for the tenant/agent.
@@ -566,7 +639,8 @@ func (s *Store) ListPendingReview(ctx context.Context, tenantID, agentID string,
 		))
 	defer span.End()
 
-	query := `SELECT id, category, scope, title, observation_type, token_count, timestamp, trust_score, review_status
+	query := `SELECT id, category, scope, title, observation_type, token_count, timestamp, trust_score, review_status,
+	          COALESCE(memory_type, 'semantic')
 	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND review_status = 'pending_review'
 	          AND (COALESCE(consolidation_status, 'active') = 'active')
 	          ORDER BY timestamp DESC`
@@ -586,7 +660,7 @@ func (s *Store) ListPendingReview(ctx context.Context, tenantID, agentID string,
 	for rows.Next() {
 		var e IndexEntry
 		if err := rows.Scan(&e.ID, &e.Category, &e.Scope, &e.Title, &e.ObservationType,
-			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus); err != nil {
+			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus, &e.MemoryType); err != nil {
 			continue
 		}
 		results = append(results, e)
@@ -666,7 +740,7 @@ func (s *Store) Search(ctx context.Context, tenantID, agentID, query string, lim
 
 	if s.hasFTS5 {
 		sqlQuery = `SELECT m.id, m.category, m.scope, m.title, m.observation_type, m.token_count,
-		                   m.timestamp, m.trust_score, m.review_status
+		                   m.timestamp, m.trust_score, m.review_status, COALESCE(m.memory_type, 'semantic')
 		            FROM memory_entries m
 		            JOIN memory_fts f ON m.rowid = f.rowid
 		            WHERE f.memory_fts MATCH ? AND m.tenant_id = ? AND m.agent_id = ?
@@ -674,7 +748,7 @@ func (s *Store) Search(ctx context.Context, tenantID, agentID, query string, lim
 		args = []interface{}{query, tenantID, agentID}
 	} else {
 		sqlQuery = `SELECT id, category, scope, title, observation_type, token_count,
-		                   timestamp, trust_score, review_status
+		                   timestamp, trust_score, review_status, COALESCE(memory_type, 'semantic')
 		            FROM memory_entries
 		            WHERE tenant_id = ? AND agent_id = ?
 		            AND (title LIKE ? OR content LIKE ?)
@@ -698,7 +772,7 @@ func (s *Store) Search(ctx context.Context, tenantID, agentID, query string, lim
 	for rows.Next() {
 		var e IndexEntry
 		if err := rows.Scan(&e.ID, &e.Category, &e.Scope, &e.Title, &e.ObservationType,
-			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus); err != nil {
+			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus, &e.MemoryType); err != nil {
 			continue
 		}
 		results = append(results, e)

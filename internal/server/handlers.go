@@ -602,6 +602,38 @@ func (s *Server) handleMemoryList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"entries": entries})
 }
 
+func (s *Server) handleMemoryAsOf(w http.ResponseWriter, r *http.Request) {
+	if s.memoryStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "disabled", "memory store is disabled")
+		return
+	}
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	agentID := r.URL.Query().Get("agent_id")
+	asOfStr := r.URL.Query().Get("as_of")
+	if agentID == "" || asOfStr == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "agent_id and as_of (RFC3339) are required")
+		return
+	}
+	asOf, err := time.Parse(time.RFC3339, asOfStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "as_of must be RFC3339: "+err.Error())
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 100
+	}
+	entries, err := s.memoryStore.AsOf(r.Context(), tenantID, agentID, asOf, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"entries": entries})
+}
+
 func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 	if s.memoryStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "disabled", "memory store is disabled")

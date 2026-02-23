@@ -14,6 +14,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -543,7 +545,13 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	var memoryTokens int
 
 	if pol.Memory != nil && pol.Memory.Enabled && memoryMode(pol) == "active" && r.memory != nil {
-		memIndex, memErr := r.memory.ListIndex(ctx, req.TenantID, req.AgentName, 50)
+		var memIndex []memory.IndexEntry
+		var memErr error
+		if req.Prompt != "" && pol.Memory.MaxPromptTokens > 0 {
+			memIndex, memErr = r.memory.RetrieveScored(ctx, req.TenantID, req.AgentName, req.Prompt, pol.Memory.MaxPromptTokens)
+		} else {
+			memIndex, memErr = r.memory.ListIndex(ctx, req.TenantID, req.AgentName, 50)
+		}
 		if memErr != nil {
 			log.Warn().Err(memErr).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("failed to load memory index")
 		} else if len(memIndex) > 0 {
@@ -552,12 +560,11 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				memIndex = filterByPromptCategories(memIndex, pol.Memory.PromptCategories)
 			}
 
-			// Exclude pending_review before token cap and evidence: only entries actually
-			// injected into the prompt are recorded in evidence (compliance-accurate audit).
+			// Exclude pending_review before evidence: only entries actually injected are recorded (compliance-accurate audit).
 			memIndex = filterOutPendingReview(memIndex)
 
-			// Apply max_prompt_tokens cap: evict oldest/lowest-trust entries if over budget
-			if pol.Memory.MaxPromptTokens > 0 {
+			// Token cap: when using ListIndex (no prompt), apply cap here; RetrieveScored already caps by maxTokens
+			if req.Prompt == "" && pol.Memory.MaxPromptTokens > 0 {
 				memIndex = capMemoryByTokens(memIndex, pol.Memory.MaxPromptTokens)
 			}
 
@@ -920,6 +927,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		MemoryTokens:            memTokens,
 		InputPrompt:             req.Prompt,
 		OutputResponse:          llmResp.Content,
+		AttachmentHashes:        attachmentHashesFromRequest(req),
 		Compliance:              compliance,
 		ObservationModeOverride: observationOverride,
 	})
@@ -1550,13 +1558,15 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 	// Both Title and Content must be derived from clean content so <private> is never persisted.
 	privacyResult := memory.StripPrivateTags(resp.Response)
 
+	category, obsType, memType := inferCategoryTypeAndMemType(resp)
 	observation := memory.Entry{
 		TenantID:         req.TenantID,
 		AgentID:          req.AgentName,
-		Category:         inferCategory(resp),
+		Category:         category,
 		Title:            compressTitle(resp, privacyResult.CleanContent),
 		Content:          compressObservation(resp, privacyResult.CleanContent),
-		ObservationType:  inferObservationType(resp),
+		ObservationType:  obsType,
+		MemoryType:       memType,
 		EvidenceID:       ev.ID,
 		SourceType:       sourceTypeFromInvocation(req.InvocationType),
 		SourceEvidenceID: ev.ID,
@@ -1736,18 +1746,68 @@ func compressTitle(resp *RunResponse, cleanContent string) string {
 	return text
 }
 
-func inferCategory(resp *RunResponse) string {
+// inferCategoryTypeAndMemType maps run outcome to category, observation type, and memory type (three-type model).
+// Order: policy denial → tool use → error → high cost → content keywords → default (domain_knowledge + semantic).
+func inferCategoryTypeAndMemType(resp *RunResponse) (category, obsType, memType string) {
+	category = memory.CategoryDomainKnowledge
+	obsType = memory.ObsLearning
+	memType = memory.MemTypeSemanticFact
+
 	if resp.DenyReason != "" {
-		return memory.CategoryPolicyHit
+		return memory.CategoryPolicyHit, memory.ObsDecision, memory.MemTypeEpisodic
 	}
-	return memory.CategoryDomainKnowledge
+	if len(resp.ToolsCalled) > 0 {
+		return memory.CategoryToolApproval, memory.ObsToolUse, memory.MemTypeEpisodic
+	}
+	if resp.Cost > 0.10 {
+		return memory.CategoryCostDecision, memory.ObsDecision, memory.MemTypeEpisodic
+	}
+
+	lower := strings.ToLower(resp.Response)
+	switch {
+	case containsAny(lower, "prefer", "like", "want", "always use", "never use", "favorite"):
+		return memory.CategoryUserPreferences, memory.ObsLearning, memory.MemTypeSemanticFact
+	case containsAny(lower, "step 1", "procedure", "workflow", "process", "how to", "best practice"):
+		return memory.CategoryProcedureImprovements, memory.ObsLearning, memory.MemTypeProcedural
+	case containsAny(lower, "correction", "actually", "wrong", "updated", "no longer"):
+		return memory.CategoryFactualCorrections, memory.ObsLearning, memory.MemTypeSemanticFact
+	}
+	return category, obsType, memType
 }
 
-func inferObservationType(resp *RunResponse) string {
-	if resp.DenyReason != "" {
-		return memory.ObsDecision
+func containsAny(s string, keywords ...string) bool {
+	for _, kw := range keywords {
+		if strings.Contains(s, kw) {
+			return true
+		}
 	}
-	return memory.ObsLearning
+	return false
+}
+
+// inferCategory returns the memory category for a run response (wrapper for inferCategoryTypeAndMemType).
+func inferCategory(resp *RunResponse) string {
+	cat, _, _ := inferCategoryTypeAndMemType(resp)
+	return cat
+}
+
+// inferObservationType returns the observation type for a run response (wrapper for inferCategoryTypeAndMemType).
+func inferObservationType(resp *RunResponse) string {
+	_, obs, _ := inferCategoryTypeAndMemType(resp)
+	return obs
+}
+
+// attachmentHashesFromRequest returns SHA256 hex of each attachment's content, sorted for deterministic evidence InputHash.
+func attachmentHashesFromRequest(req *RunRequest) []string {
+	if len(req.Attachments) == 0 {
+		return nil
+	}
+	hashes := make([]string, 0, len(req.Attachments))
+	for _, a := range req.Attachments {
+		h := sha256.Sum256(a.Content)
+		hashes = append(hashes, hex.EncodeToString(h[:]))
+	}
+	sort.Strings(hashes)
+	return hashes
 }
 
 func sourceTypeFromInvocation(invocationType string) string {

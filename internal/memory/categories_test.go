@@ -54,3 +54,14 @@ func TestValidSourceTypes(t *testing.T) {
 	assert.Contains(t, types, SourceToolOutput)
 	assert.Contains(t, types, SourceWebhook)
 }
+
+func TestMemoryTypeConstantsAndTypeWeights(t *testing.T) {
+	assert.Equal(t, "semantic", MemTypeSemanticFact)
+	assert.Equal(t, "episodic", MemTypeEpisodic)
+	assert.Equal(t, "procedural", MemTypeProcedural)
+
+	assert.Len(t, TypeWeights, 3)
+	assert.Equal(t, 0.6, TypeWeights[MemTypeSemanticFact])
+	assert.Equal(t, 0.3, TypeWeights[MemTypeEpisodic])
+	assert.Equal(t, 0.1, TypeWeights[MemTypeProcedural])
+}

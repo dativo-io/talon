@@ -33,6 +33,21 @@ func IsForbiddenCategory(cat string) bool {
 	return hardcodedForbidden[cat]
 }
 
+// Memory types (Tulving/CoALA — three-type model for retrieval scoring).
+const (
+	MemTypeSemanticFact = "semantic"   // What the agent knows: facts, preferences, constraints
+	MemTypeEpisodic     = "episodic"   // What happened: specific interactions, outcomes, events
+	MemTypeProcedural   = "procedural" // How to do things: learned behaviors, response patterns
+)
+
+// TypeWeights for relevance-scored retrieval (Mem0-style).
+// Semantic facts are most valuable for prompt injection; episodic provides recent context; procedural fine-tunes behavior.
+var TypeWeights = map[string]float64{
+	MemTypeSemanticFact: 0.6,
+	MemTypeEpisodic:     0.3,
+	MemTypeProcedural:   0.1,
+}
+
 // Observation types describe what kind of memory entry this is.
 const (
 	ObsDecision  = "decision"

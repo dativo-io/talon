@@ -85,6 +85,25 @@ Shadow mode is designed for evaluation periods: operators see exactly what the a
 - **max_prompt_tokens:** caps total memory tokens injected; oldest/lowest-trust entries evicted first
 - **tier re-classification:** memory content is scanned by the classifier before model routing to detect tier upgrades from persisted classified data
 
+### Three-Type Memory and Relevance-Scored Retrieval
+
+Talon uses a **three-type memory model** (semantic, episodic, procedural) for retrieval scoring:
+
+| Type | Description | Default weight |
+|------|-------------|----------------|
+| **semantic** | What the agent knows: facts, preferences, constraints | 0.6 |
+| **episodic** | What happened: specific interactions, outcomes, events | 0.3 |
+| **procedural** | How to do things: learned behaviors, response patterns | 0.1 |
+
+When the run has a non-empty **prompt** and `max_prompt_tokens` is set, memory is retrieved via **relevance-scored retrieval** instead of flat timestamp order. The composite score is:
+
+- **Relevance** (40%): keyword overlap between the current prompt and each entry’s title (governance `keywordSimilarity`)
+- **Recency** (30%): decay by age (`1 / (1 + days_since)`)
+- **Type weight** (20%): semantic > episodic > procedural
+- **Trust** (10%): normalized trust score (0–1)
+
+Entries are sorted by score descending, then a **token cap** (`max_prompt_tokens`) is applied so the most relevant memories fit in the prompt. When there is no prompt (e.g. scheduled run with fixed prompt), retrieval falls back to **timestamp-ordered** `ListIndex` with the same token cap.
+
 ### Retention & Expiration
 
 - `retention_days`: entries older than N days are auto-purged

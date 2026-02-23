@@ -97,6 +97,39 @@ func TestGenerate_InputHashDeterministic(t *testing.T) {
 		"different InputPrompt should yield different InputHash")
 }
 
+func TestInputHashWithAttachmentHashes(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	params := GenerateParams{
+		CorrelationID:    "corr_att1",
+		TenantID:         "acme",
+		AgentID:          "agent",
+		InvocationType:   "manual",
+		PolicyDecision:   PolicyDecision{Allowed: true, Action: "allow"},
+		InputPrompt:      "Summarize the document",
+		OutputResponse:   "Summary",
+		AttachmentHashes: []string{"aa", "bb"},
+	}
+	ev1, err := gen.Generate(ctx, params)
+	require.NoError(t, err)
+
+	params.CorrelationID = "corr_att2"
+	params.AttachmentHashes = []string{"aa", "bb"}
+	ev2, err := gen.Generate(ctx, params)
+	require.NoError(t, err)
+	assert.Equal(t, ev1.AuditTrail.InputHash, ev2.AuditTrail.InputHash,
+		"same prompt + same attachment hashes → same InputHash")
+
+	params.CorrelationID = "corr_att3"
+	params.AttachmentHashes = []string{"aa", "cc"}
+	ev3, err := gen.Generate(ctx, params)
+	require.NoError(t, err)
+	assert.NotEqual(t, ev1.AuditTrail.InputHash, ev3.AuditTrail.InputHash,
+		"different attachment hashes → different InputHash")
+}
+
 func TestVerifySignature(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

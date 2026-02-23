@@ -25,6 +25,74 @@ import (
 	"github.com/dativo-io/talon/internal/testutil"
 )
 
+func TestInferCategoryTypeAndMemType(t *testing.T) {
+	tests := []struct {
+		name    string
+		resp    *RunResponse
+		wantCat string
+		wantObs string
+		wantMem string
+	}{
+		{
+			name:    "deny → policy_hit + episodic",
+			resp:    &RunResponse{DenyReason: "budget exceeded"},
+			wantCat: memory.CategoryPolicyHit,
+			wantObs: memory.ObsDecision,
+			wantMem: memory.MemTypeEpisodic,
+		},
+		{
+			name:    "tool use → tool_approval + episodic",
+			resp:    &RunResponse{ToolsCalled: []string{"search"}},
+			wantCat: memory.CategoryToolApproval,
+			wantObs: memory.ObsToolUse,
+			wantMem: memory.MemTypeEpisodic,
+		},
+		{
+			name:    "high cost → cost_decision + episodic",
+			resp:    &RunResponse{Cost: 0.15},
+			wantCat: memory.CategoryCostDecision,
+			wantObs: memory.ObsDecision,
+			wantMem: memory.MemTypeEpisodic,
+		},
+		{
+			name:    "content prefer → user_preferences + semantic",
+			resp:    &RunResponse{Response: "User said they prefer dark mode"},
+			wantCat: memory.CategoryUserPreferences,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+		{
+			name:    "content procedure → procedure_improvements + procedural",
+			resp:    &RunResponse{Response: "Step 1: do X. Procedure for onboarding."},
+			wantCat: memory.CategoryProcedureImprovements,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeProcedural,
+		},
+		{
+			name:    "content correction → factual_corrections + semantic",
+			resp:    &RunResponse{Response: "Actually the date was wrong, updated to 2024"},
+			wantCat: memory.CategoryFactualCorrections,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+		{
+			name:    "default → domain_knowledge + semantic",
+			resp:    &RunResponse{Response: "General reply with no keywords"},
+			wantCat: memory.CategoryDomainKnowledge,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cat, obs, mem := inferCategoryTypeAndMemType(tt.resp)
+			assert.Equal(t, tt.wantCat, cat)
+			assert.Equal(t, tt.wantObs, obs)
+			assert.Equal(t, tt.wantMem, mem)
+		})
+	}
+}
+
 func TestEntityNames(t *testing.T) {
 	tests := []struct {
 		name     string
