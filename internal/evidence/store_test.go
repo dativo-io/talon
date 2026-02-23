@@ -226,6 +226,37 @@ func TestGenerateWithAttachmentScan(t *testing.T) {
 	assert.Equal(t, 1, ev.AttachmentScan.InjectionsDetected)
 }
 
+func TestGenerateWithAttachmentScanPIIFields(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	ev, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr_att_pii",
+		TenantID:       "acme",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		AttachmentScan: &AttachmentScan{
+			FilesProcessed:           1,
+			InjectionsDetected:       0,
+			ActionTaken:              "sandboxed",
+			PIIDetectedInAttachments: []string{"email", "iban"},
+			AttachmentTier:           2,
+		},
+		InputPrompt: "summarize",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ev.AttachmentScan)
+	assert.Equal(t, []string{"email", "iban"}, ev.AttachmentScan.PIIDetectedInAttachments)
+	assert.Equal(t, 2, ev.AttachmentScan.AttachmentTier)
+
+	retrieved, err := store.Get(ctx, ev.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"email", "iban"}, retrieved.AttachmentScan.PIIDetectedInAttachments)
+	assert.Equal(t, 2, retrieved.AttachmentScan.AttachmentTier)
+}
+
 func TestVerifyTamperedData(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

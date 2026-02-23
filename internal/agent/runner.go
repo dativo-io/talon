@@ -341,6 +341,46 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		)
 	}
 
+	// Effective input classification: prompt + attachments (tier and PII)
+	effectiveTier := inputClass.Tier
+	effectivePIINames := inputEntityNames
+	if attachmentScan != nil {
+		if attachmentScan.AttachmentTier > effectiveTier {
+			effectiveTier = attachmentScan.AttachmentTier
+		}
+		effectivePIINames = mergePIIEntityNames(inputEntityNames, attachmentScan.PIIDetectedInAttachments)
+	}
+	effectiveHasPII := inputClass.HasPII || (attachmentScan != nil && len(attachmentScan.PIIDetectedInAttachments) > 0)
+
+	// Block-on-PII gate: deny run when policy requires and input contains PII
+	if pol.Policies.DataClassification != nil && pol.Policies.DataClassification.BlockOnPII && effectiveHasPII {
+		span.SetStatus(codes.Error, "block_on_pii")
+		log.Warn().
+			Str("correlation_id", correlationID).
+			Str("tenant_id", req.TenantID).
+			Str("agent_id", req.AgentName).
+			Strs("pii_detected", effectivePIINames).
+			Msg("block_on_pii: input contains PII, run denied")
+		_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+			CorrelationID:   correlationID,
+			TenantID:        req.TenantID,
+			AgentID:         req.AgentName,
+			InvocationType:  req.InvocationType,
+			RequestSourceID: req.InvocationType,
+			PolicyDecision: evidence.PolicyDecision{
+				Allowed:       false,
+				Action:        "block_on_pii",
+				Reasons:       []string{"Input contains PII (policy: block_on_pii)"},
+				PolicyVersion: pol.VersionTag,
+			},
+			Classification: evidence.Classification{InputTier: effectiveTier, PIIDetected: effectivePIINames},
+			AttachmentScan: attachmentScan,
+			InputPrompt:    req.Prompt,
+			Compliance:     complianceFromPolicy(pol),
+		})
+		return &RunResponse{PolicyAllow: false, DenyReason: "Input contains PII (policy: block_on_pii)"}, nil
+	}
+
 	// Step 4: Evaluate policy (with real cost totals for budget checks)
 	var dailyCost, monthlyCost float64
 	if r.evidenceStore != nil {
@@ -372,7 +412,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 
 	estimatedCost := 0.01
 	if r.router != nil {
-		if c, err := r.router.PreRunEstimate(inputClass.Tier); err == nil {
+		if c, err := r.router.PreRunEstimate(effectiveTier); err == nil {
 			estimatedCost = c
 		}
 	}
@@ -389,7 +429,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	policyInput := map[string]interface{}{
 		"tenant_id":             req.TenantID,
 		"agent_id":              req.AgentName,
-		"tier":                  inputClass.Tier,
+		"tier":                  effectiveTier,
 		"estimated_cost":        estimatedCost,
 		"daily_cost_total":      dailyCost,
 		"monthly_cost_total":    monthlyCost,
@@ -409,7 +449,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	if resp, err := r.checkHook(ctx, HookPostPolicy, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 		"decision": boolToDecision(decision.Allowed),
 		"action":   decision.Action,
-		"tier":     inputClass.Tier,
+		"tier":     effectiveTier,
 	}); resp != nil || err != nil {
 		return resp, err
 	}
@@ -430,7 +470,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				Str("would_deny_reason", decision.Action).
 				Msg("observation_only: policy would deny, allowing for audit")
 		} else {
-			r.recordPolicyDenial(ctx, span, correlationID, req, pol, decision, inputClass.Tier, inputEntityNames, attachmentScan, complianceInfo)
+			r.recordPolicyDenial(ctx, span, correlationID, req, pol, decision, effectiveTier, effectivePIINames, attachmentScan, complianceInfo)
 			denyReason := decision.Action
 			if len(decision.Reasons) > 0 {
 				denyReason = strings.Join(decision.Reasons, "; ")
@@ -454,13 +494,13 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				Reasons:       decision.Reasons,
 				PolicyVersion: pol.VersionTag,
 			},
-			Classification: evidence.Classification{InputTier: inputClass.Tier, PIIDetected: inputEntityNames},
+			Classification: evidence.Classification{InputTier: effectiveTier, PIIDetected: effectivePIINames},
 			AttachmentScan: attachmentScan,
 			DurationMS:     duration.Milliseconds(),
 			InputPrompt:    req.Prompt,
 			Compliance:     complianceInfo,
 		})
-		resp := &RunResponse{PolicyAllow: true, PIIDetected: inputEntityNames, InputTier: inputClass.Tier}
+		resp := &RunResponse{PolicyAllow: true, PIIDetected: effectivePIINames, InputTier: effectiveTier}
 		if attachmentScan != nil {
 			resp.AttachmentInjectionsDetected = attachmentScan.InjectionsDetected
 			resp.AttachmentBlocked = len(attachmentScan.BlockedFiles) > 0
@@ -470,12 +510,12 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 
 	// Step 4.5: Plan Review Gate (EU AI Act Art. 14)
 	if resp, err := r.checkHook(ctx, HookPrePlanReview, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
-		"tier": inputClass.Tier,
+		"tier": effectiveTier,
 	}); resp != nil || err != nil {
 		return resp, err
 	}
 
-	resp, ok, err := r.maybeGateForPlanReview(ctx, pol, req, correlationID, inputClass.Tier, processedPrompt, estimatedCost)
+	resp, ok, err := r.maybeGateForPlanReview(ctx, pol, req, correlationID, effectiveTier, processedPrompt, estimatedCost)
 	if err != nil {
 		return nil, err
 	}
@@ -490,8 +530,8 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	// Step 4.75: Pre-LLM memory + context enrichment
 	// Only inject memory into prompts when mode is "active". In shadow/disabled,
 	// memory is not included (MEMORY_GOVERNANCE.md: shadow = "Memory not included").
+	// effectiveTier already set from prompt + attachments; may be upgraded by memory/context below.
 	finalPrompt := processedPrompt
-	effectiveTier := inputClass.Tier
 	var memoryReads []evidence.MemoryRead
 
 	var memoryTokens int
@@ -563,7 +603,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	}
 
 	return r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine,
-		effectiveTier, inputEntityNames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
+		effectiveTier, effectivePIINames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
 		observationOverride, originalDecision, estimatedCost)
 }
 
@@ -1164,6 +1204,9 @@ func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *p
 	scan := &evidence.AttachmentScan{FilesProcessed: len(req.Attachments)}
 	processedPrompt := req.Prompt
 
+	piiTypesSeen := make(map[string]bool)
+	maxAttachmentTier := 0
+
 	for _, att := range req.Attachments {
 		var text string
 		if r.extractor != nil {
@@ -1174,6 +1217,18 @@ func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *p
 			}
 		} else {
 			text = string(att.Content)
+		}
+		if r.classifier != nil {
+			attachClass := r.classifier.Scan(ctx, text)
+			if attachClass.Tier > maxAttachmentTier {
+				maxAttachmentTier = attachClass.Tier
+			}
+			for _, e := range attachClass.Entities {
+				if !piiTypesSeen[e.Type] {
+					piiTypesSeen[e.Type] = true
+					scan.PIIDetectedInAttachments = append(scan.PIIDetectedInAttachments, e.Type)
+				}
+			}
 		}
 		scanResult := r.attScanner.Scan(ctx, text)
 
@@ -1199,6 +1254,7 @@ func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *p
 	if scan.ActionTaken == "" {
 		scan.ActionTaken = "sandboxed"
 	}
+	scan.AttachmentTier = maxAttachmentTier
 	return processedPrompt, scan, nil
 }
 
@@ -1305,6 +1361,25 @@ func entityNames(entities []classifier.PIIEntity) []string {
 		}
 	}
 	return names
+}
+
+// mergePIIEntityNames merges two slices of PII entity type names and deduplicates.
+func mergePIIEntityNames(a, b []string) []string {
+	seen := make(map[string]bool)
+	for _, s := range a {
+		seen[s] = true
+	}
+	for _, s := range b {
+		seen[s] = true
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	return out
 }
 
 // complianceFromPolicy extracts compliance info from policy for evidence.

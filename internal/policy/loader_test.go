@@ -338,6 +338,34 @@ policies:
 	assert.Len(t, pol.Hash, 64) // SHA-256 is 64 hex chars
 }
 
+func TestLoadPolicy_BlockOnPII(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	policyPath := filepath.Join(tmpDir, "agent.talon.yaml")
+	yamlContent := `
+agent:
+  name: block-pii-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 100.0
+  data_classification:
+    input_scan: true
+    block_on_pii: true
+  model_routing:
+    tier_0:
+      primary: gpt-4
+`
+	require.NoError(t, os.WriteFile(policyPath, []byte(yamlContent), 0o644))
+
+	pol, err := LoadPolicy(ctx, policyPath, false, tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, pol.Policies)
+	require.NotNil(t, pol.Policies.DataClassification)
+	assert.True(t, pol.Policies.DataClassification.BlockOnPII)
+	assert.True(t, pol.Policies.DataClassification.InputScan)
+}
+
 func TestLoadPolicy_FileNotFound(t *testing.T) {
 	ctx := context.Background()
 	// Use baseDir "/" so path is considered under base; error is from missing file.

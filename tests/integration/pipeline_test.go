@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/llm"
@@ -329,6 +330,50 @@ func TestPIIAndAttachmentCombined(t *testing.T) {
 
 		assert.Equal(t, "bedrock", provider.Name(),
 			"PII in attachment must elevate routing to EU-only Bedrock")
+	})
+}
+
+// TestBlockOnPII_Integration verifies that block_on_pii in agent policy denies runs when input contains PII.
+func TestBlockOnPII_Integration(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	routing := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "summary"},
+	}
+	runner := SetupRunner(t, dir, providers, routing)
+
+	t.Run("block_on_pii true and prompt with PII denies run", func(t *testing.T) {
+		policyPath := WriteBlockOnPIIPolicy(t, dir, "block-agent", true)
+		resp, err := runner.Run(ctx, &agent.RunRequest{
+			TenantID:       "default",
+			AgentName:      "block-agent",
+			Prompt:         "summarize for user@example.com",
+			InvocationType: "manual",
+			PolicyPath:     policyPath,
+		})
+		require.NoError(t, err)
+		assert.False(t, resp.PolicyAllow)
+		assert.Contains(t, resp.DenyReason, "PII")
+	})
+
+	t.Run("block_on_pii false and prompt with PII allows run", func(t *testing.T) {
+		policyPath := WriteBlockOnPIIPolicy(t, dir, "allow-agent", false)
+		resp, err := runner.Run(ctx, &agent.RunRequest{
+			TenantID:       "default",
+			AgentName:      "allow-agent",
+			Prompt:         "summarize for user@example.com",
+			InvocationType: "manual",
+			PolicyPath:     policyPath,
+		})
+		require.NoError(t, err)
+		assert.True(t, resp.PolicyAllow)
+		assert.Contains(t, resp.Response, "summary")
 	})
 }
 
