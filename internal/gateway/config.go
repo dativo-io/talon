@@ -34,6 +34,8 @@ type GatewayConfig struct {
 	RateLimits          RateLimitsConfig           `yaml:"rate_limits" json:"rate_limits"`
 	Timeouts            TimeoutsConfig             `yaml:"timeouts" json:"timeouts"`
 	NetworkInterception *NetworkInterceptionConfig `yaml:"network_interception,omitempty" json:"network_interception,omitempty"`
+	// TrustedProxyCIDRs: when set, X-Forwarded-For is used for client IP only when the direct peer (RemoteAddr) is in one of these CIDRs. Prevents spoofing when gateway is not behind a trusted proxy. Empty = never trust X-Forwarded-For for source_ip.
+	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs,omitempty" json:"trusted_proxy_cidrs,omitempty"`
 }
 
 // ProviderConfig holds per-provider gateway settings.

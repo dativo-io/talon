@@ -1,11 +1,16 @@
 # Example Talon config with LLM API Gateway enabled.
 # Use: talon serve --gateway --gateway-config=examples/gateway/talon.config.gateway.yaml
 # Then point clients at http://localhost:8080/v1/proxy/openai or /v1/proxy/anthropic
+#
+# When behind a reverse proxy (nginx, load balancer) and using identify_by: source_ip,
+# set trusted_proxy_cidrs so X-Forwarded-For is only trusted when the direct peer is in that list.
+# Example: trusted_proxy_cidrs: ["127.0.0.0/8", "10.0.0.0/8"]
 
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
   mode: "enforce"   # enforce | shadow | log_only
+  # trusted_proxy_cidrs: []   # optional; when set, X-Forwarded-For used only when RemoteAddr is in these CIDRs
 
   providers:
     openai:

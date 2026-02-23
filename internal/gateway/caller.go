@@ -35,7 +35,7 @@ func (c *GatewayConfig) ResolveCaller(r *http.Request) (*CallerConfig, error) {
 	}
 
 	// 2. Try source IP matching (for DNS-intercepted traffic)
-	clientIP := clientIPFromRequest(r)
+	clientIP := c.clientIPFromRequest(r)
 	if clientIP != nil {
 		for i := range c.Callers {
 			caller := &c.Callers[i]
@@ -79,21 +79,56 @@ func extractAPIKey(r *http.Request) string {
 	return ""
 }
 
-// clientIPFromRequest returns the client IP, considering X-Forwarded-For when behind a proxy.
-func clientIPFromRequest(r *http.Request) net.IP {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// First value is the client (rest are proxies)
-		parts := strings.Split(strings.TrimSpace(xff), ",")
-		if len(parts) > 0 {
-			ipStr := strings.TrimSpace(parts[0])
-			if ip := net.ParseIP(ipStr); ip != nil {
-				return ip
-			}
+// clientIPFromRequest returns the client IP for source_ip caller identification.
+// It uses X-Forwarded-For only when the direct peer (RemoteAddr) is in TrustedProxyCIDRs;
+// otherwise it uses only RemoteAddr to prevent clients from spoofing X-Forwarded-For to bypass policy.
+func (c *GatewayConfig) clientIPFromRequest(r *http.Request) net.IP {
+	directPeer := peerIPFromAddr(r.RemoteAddr)
+	if directPeer == nil {
+		return nil
+	}
+	if len(c.TrustedProxyCIDRs) > 0 && c.isTrustedProxy(directPeer) {
+		if ip := c.clientIPFromXFF(r); ip != nil {
+			return ip
 		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	return directPeer
+}
+
+// peerIPFromAddr extracts the IP from "host:port" or returns nil.
+func peerIPFromAddr(addr string) net.IP {
+	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return net.ParseIP(r.RemoteAddr)
+		return net.ParseIP(addr)
 	}
 	return net.ParseIP(host)
+}
+
+func (c *GatewayConfig) isTrustedProxy(ip net.IP) bool {
+	for _, cidrStr := range c.TrustedProxyCIDRs {
+		_, network, err := net.ParseCIDR(cidrStr)
+		if err != nil {
+			continue
+		}
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *GatewayConfig) clientIPFromXFF(r *http.Request) net.IP {
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff == "" {
+		return nil
+	}
+	parts := strings.Split(strings.TrimSpace(xff), ",")
+	if len(parts) == 0 {
+		return nil
+	}
+	ipStr := strings.TrimSpace(parts[0])
+	if ip := net.ParseIP(ipStr); ip != nil {
+		return ip
+	}
+	return nil
 }
