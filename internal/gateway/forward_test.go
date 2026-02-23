@@ -44,6 +44,43 @@ func TestForward_NonStreaming(t *testing.T) {
 	require.Contains(t, body, "Hi")
 }
 
+// TestForward_ChunkedJSONNotTreatedAsStream ensures that a response with
+// Transfer-Encoding: chunked but Content-Type: application/json is handled as
+// non-streaming. Many upstreams send normal JSON with chunked encoding; treating
+// it as SSE would break token usage parsing and cost/evidence.
+func TestForward_ChunkedJSONNotTreatedAsStream(t *testing.T) {
+	body := []byte(`{"id":"chunked-1","choices":[{"message":{"role":"assistant","content":"OK"}}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Transfer-Encoding", "chunked")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer upstream.Close()
+
+	var usage TokenUsage
+	w := httptest.NewRecorder()
+	timeouts := ParsedTimeouts{
+		ConnectTimeout:    5 * time.Second,
+		RequestTimeout:    30 * time.Second,
+		StreamIdleTimeout: 60 * time.Second,
+	}
+	err := Forward(w, ForwardParams{
+		Context:     context.Background(),
+		UpstreamURL: upstream.URL,
+		Method:      http.MethodPost,
+		Body:        []byte(`{"model":"gpt-4o","messages":[]}`),
+		Headers:     map[string]string{"Content-Type": "application/json"},
+		Timeouts:    timeouts,
+		TokenUsage:  &usage,
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 7, usage.Input, "usage must be parsed from JSON body (chunked must not trigger SSE path)")
+	require.Equal(t, 3, usage.Output, "usage must be parsed from JSON body (chunked must not trigger SSE path)")
+	require.Equal(t, string(body), w.Body.String())
+}
+
 func TestForward_Streaming(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
