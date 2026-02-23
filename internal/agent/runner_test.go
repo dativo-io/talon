@@ -703,6 +703,159 @@ func TestRun_WithAttachments(t *testing.T) {
 	assert.Contains(t, resp.Response, "from attachment")
 }
 
+func TestRun_BlockOnPII_PromptPII(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteBlockOnPIIPolicyFile(t, dir, "block-pii-agent", true)
+	require.FileExists(t, policyPath)
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "should not run"},
+	}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, providers, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:       "acme",
+		AgentName:      "block-pii-agent",
+		Prompt:         "summarize this for user@example.com",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.PolicyAllow)
+	assert.Contains(t, resp.DenyReason, "PII")
+}
+
+func TestRun_BlockOnPII_NoBlockWhenFalse(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteBlockOnPIIPolicyFile(t, dir, "allow-pii-agent", false)
+	require.FileExists(t, policyPath)
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "summary done"},
+	}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, providers, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:       "acme",
+		AgentName:      "allow-pii-agent",
+		Prompt:         "summarize for user@example.com",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+	assert.Contains(t, resp.Response, "summary done")
+}
+
+func TestRun_BlockOnPII_AttachmentPII(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteBlockOnPIIPolicyFile(t, dir, "block-pii-att-agent", true)
+	require.FileExists(t, policyPath)
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "should not run"},
+	}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, providers, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Prompt has no PII; attachment (CSV) contains email and IBAN
+	csvWithPII := []byte("name,email,iban\nJane Doe,jane@acme.de,DE89370400440532013000")
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:       "acme",
+		AgentName:      "block-pii-att-agent",
+		Prompt:         "Summarize this document",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+		Attachments:    []Attachment{{Filename: "data.csv", Content: csvWithPII}},
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.PolicyAllow)
+	assert.Contains(t, resp.DenyReason, "PII")
+}
+
 // echoTool implements tools.Tool for tests; echoes params back.
 type echoTool struct{}
 

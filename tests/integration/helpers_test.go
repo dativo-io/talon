@@ -28,6 +28,11 @@ func WriteStrictPolicy(t *testing.T, dir, name string) string {
 	return testutil.WriteStrictPolicyFile(t, dir, name)
 }
 
+// WriteBlockOnPIIPolicy creates a .talon.yaml with data_classification.block_on_pii set.
+func WriteBlockOnPIIPolicy(t *testing.T, dir, name string, blockOnPII bool) string {
+	return testutil.WriteBlockOnPIIPolicyFile(t, dir, name, blockOnPII)
+}
+
 // SetupRunner creates a Runner with real SQLite stores and classifier, for integration tests.
 func SetupRunner(t *testing.T, policyDir string, providers map[string]llm.Provider, routingCfg *policy.ModelRoutingConfig) *agent.Runner {
 	t.Helper()

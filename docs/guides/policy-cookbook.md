@@ -93,6 +93,24 @@ gateway:
 
 ---
 
+## Block runs when input contains PII
+
+**Goal:** Deny the run (no LLM call) when the user prompt or any attachment content contains PII (e.g. email, IBAN). Both prompt and attachment text are scanned; if either has PII and `block_on_pii` is true, the run is denied and evidence is recorded.
+
+**Where:** `.talon.yaml` under `policies.data_classification`.
+
+```yaml
+policies:
+  data_classification:
+    input_scan: true
+    block_on_pii: true
+  # ... cost_limits, model_routing, etc.
+```
+
+With `block_on_pii: true`, requests whose prompt or attachments contain detected PII (email, phone, IBAN, national IDs, etc.) are rejected before the LLM is called. Use `block_on_pii: false` or omit it to allow runs with PII (tier-based routing and evidence still apply).
+
+---
+
 ## Require human approval for high-risk or tool use
 
 **Goal:** Pause execution until a human approves (EU AI Act Art. 14 style).
@@ -132,4 +150,5 @@ attachment_handling:
 | Model allow/block | `.talon.yaml` → `policies.model_routing` | Gateway → `callers[].policy_overrides.allowed_models` / `blocked_models` |
 | Time restrictions | `.talon.yaml` → `policies.time_restrictions` | — |
 | PII action | `.talon.yaml` (policy/default) | Gateway → `default_policy.default_pii_action` or `callers[].policy_overrides.pii_action` |
+| Block on PII | `.talon.yaml` → `policies.data_classification.block_on_pii` | — |
 | Human oversight | `.talon.yaml` → `compliance.human_oversight` | — |

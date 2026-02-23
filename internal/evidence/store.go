@@ -67,12 +67,14 @@ type Classification struct {
 	PIIRedacted bool     `json:"pii_redacted"`
 }
 
-// AttachmentScan captures prompt injection scan results.
+// AttachmentScan captures prompt injection scan results and PII detected in attachment content.
 type AttachmentScan struct {
-	FilesProcessed     int      `json:"files_processed"`
-	InjectionsDetected int      `json:"injections_detected"`
-	ActionTaken        string   `json:"action_taken"`
-	BlockedFiles       []string `json:"blocked_files,omitempty"`
+	FilesProcessed           int      `json:"files_processed"`
+	InjectionsDetected       int      `json:"injections_detected"`
+	ActionTaken              string   `json:"action_taken"`
+	BlockedFiles             []string `json:"blocked_files,omitempty"`
+	PIIDetectedInAttachments []string `json:"pii_detected_in_attachments,omitempty"` // entity types (e.g. email, iban)
+	AttachmentTier           int      `json:"attachment_tier,omitempty"`             // max tier across all attachment texts (0-2)
 }
 
 // Execution captures LLM call details.

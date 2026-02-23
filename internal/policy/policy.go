@@ -188,6 +188,8 @@ type DataClassificationConfig struct {
 	InputScan  bool `yaml:"input_scan,omitempty" json:"input_scan,omitempty"`
 	OutputScan bool `yaml:"output_scan,omitempty" json:"output_scan,omitempty"`
 	RedactPII  bool `yaml:"redact_pii,omitempty" json:"redact_pii,omitempty"`
+	// BlockOnPII when true denies the run when input (prompt or attachments) contains PII.
+	BlockOnPII bool `yaml:"block_on_pii,omitempty" json:"block_on_pii,omitempty"`
 
 	// EnabledEntities whitelists specific Presidio entity types (e.g. "EMAIL_ADDRESS").
 	// When non-empty, only recognizers matching these entities will be active.
