@@ -64,6 +64,9 @@ func parseAPIKeys(env string) map[string]string {
 		tenantID := "default"
 		if idx := strings.Index(part, ":"); idx > 0 {
 			tenantID = strings.TrimSpace(part[idx+1:])
+			if tenantID == "" {
+				tenantID = "default"
+			}
 			part = strings.TrimSpace(part[:idx])
 		}
 		m[part] = tenantID

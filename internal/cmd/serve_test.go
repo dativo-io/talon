@@ -18,4 +18,13 @@ func TestParseAPIKeys(t *testing.T) {
 	assert.Len(t, m, 2)
 	assert.Equal(t, "acme", m["key1"])
 	assert.Equal(t, "tenant2", m["key2"])
+
+	// "mykey:" or "mykey:  " must map to default tenant (empty after colon = default)
+	m = parseAPIKeys("mykey:")
+	assert.Len(t, m, 1)
+	assert.Equal(t, "default", m["mykey"], "key with trailing colon must get default tenant")
+
+	m = parseAPIKeys("mykey:  ")
+	assert.Len(t, m, 1)
+	assert.Equal(t, "default", m["mykey"], "key with colon and spaces must get default tenant")
 }
