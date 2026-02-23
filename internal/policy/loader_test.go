@@ -338,6 +338,59 @@ policies:
 	assert.Len(t, pol.Hash, 64) // SHA-256 is 64 hex chars
 }
 
+func TestLoadPolicy_AgentConfigFields(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	policyPath := filepath.Join(tmpDir, "agent.talon.yaml")
+	yamlContent := `
+agent:
+  name: sales-analyst
+  description: Analyzes sales data with policy enforcement
+  version: 2.1.0
+  model_tier: 1
+policies:
+  cost_limits:
+    per_request: 5.0
+  model_routing:
+    tier_0:
+      primary: gpt-4o-mini
+`
+	require.NoError(t, os.WriteFile(policyPath, []byte(yamlContent), 0o644))
+
+	pol, err := LoadPolicy(ctx, policyPath, false, tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, pol)
+
+	assert.Equal(t, "sales-analyst", pol.Agent.Name, "agent name")
+	assert.Equal(t, "Analyzes sales data with policy enforcement", pol.Agent.Description, "agent description")
+	assert.Equal(t, "2.1.0", pol.Agent.Version, "agent version")
+	assert.Equal(t, 1, pol.Agent.ModelTier, "agent model_tier")
+}
+
+func TestLoadPolicy_AgentConfig_MinimalNameAndVersion(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	policyPath := filepath.Join(tmpDir, "minimal.talon.yaml")
+	yamlContent := `
+agent:
+  name: minimal-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 100.0
+`
+	require.NoError(t, os.WriteFile(policyPath, []byte(yamlContent), 0o644))
+
+	pol, err := LoadPolicy(ctx, policyPath, false, tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, pol)
+
+	assert.Equal(t, "minimal-agent", pol.Agent.Name)
+	assert.Equal(t, "1.0.0", pol.Agent.Version)
+	assert.Empty(t, pol.Agent.Description)
+	assert.Equal(t, 0, pol.Agent.ModelTier)
+}
+
 func TestLoadPolicy_BlockOnPII(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()

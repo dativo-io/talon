@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/memory"
+	"github.com/dativo-io/talon/internal/policy"
 )
 
 var (
@@ -73,33 +75,31 @@ var memoryAsOfCmd = &cobra.Command{
 }
 
 func init() {
-	memoryListCmd.Flags().StringVar(&memAgent, "agent", "default", "Agent name")
+	memoryListCmd.Flags().StringVar(&memAgent, "agent", "", "Agent name (from agent.talon.yaml in cwd if unset)")
 	memoryListCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
 	memoryListCmd.Flags().StringVar(&memCat, "category", "", "Filter by category")
 	memoryListCmd.Flags().IntVar(&memLimit, "limit", 50, "Maximum entries to show")
 
 	memoryShowCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
 
-	memorySearchCmd.Flags().StringVar(&memAgent, "agent", "default", "Agent name")
+	memorySearchCmd.Flags().StringVar(&memAgent, "agent", "", "Agent name (from agent.talon.yaml in cwd if unset)")
 	memorySearchCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
 	memorySearchCmd.Flags().IntVar(&memLimit, "limit", 20, "Maximum results")
 
-	memoryRollbackCmd.Flags().StringVar(&memAgent, "agent", "", "Agent name (required)")
+	memoryRollbackCmd.Flags().StringVar(&memAgent, "agent", "", "Agent name (from agent.talon.yaml in cwd if unset)")
 	memoryRollbackCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
 	memoryRollbackCmd.Flags().IntVar(&memVer, "to-version", 0, "Version to rollback to (required)")
 	memoryRollbackCmd.Flags().BoolVar(&memYes, "yes", false, "Skip confirmation")
-	_ = memoryRollbackCmd.MarkFlagRequired("agent")
 	_ = memoryRollbackCmd.MarkFlagRequired("to-version")
 
-	memoryHealthCmd.Flags().StringVar(&memAgent, "agent", "", "Agent name (required)")
+	memoryHealthCmd.Flags().StringVar(&memAgent, "agent", "", "Agent name (from agent.talon.yaml in cwd if unset)")
 	memoryHealthCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
-	_ = memoryHealthCmd.MarkFlagRequired("agent")
 
-	memoryAuditCmd.Flags().StringVar(&memAgent, "agent", "default", "Agent name")
+	memoryAuditCmd.Flags().StringVar(&memAgent, "agent", "", "Agent name (from agent.talon.yaml in cwd if unset)")
 	memoryAuditCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
 	memoryAuditCmd.Flags().IntVar(&memLimit, "limit", 20, "Maximum entries")
 
-	memoryAsOfCmd.Flags().StringVar(&memAgent, "agent", "default", "Agent name")
+	memoryAsOfCmd.Flags().StringVar(&memAgent, "agent", "", "Agent name (from agent.talon.yaml in cwd if unset)")
 	memoryAsOfCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
 	memoryAsOfCmd.Flags().IntVar(&memLimit, "limit", 50, "Maximum entries")
 
@@ -119,9 +119,51 @@ func openMemoryStore() (*memory.Store, error) {
 	return memory.NewStore(cfg.MemoryDBPath())
 }
 
+// resolveMemoryAgent returns the agent name to use for memory commands. When memAgent is
+// non-empty (--agent set), that value is used. Otherwise, if agent.talon.yaml (or the
+// configured default policy) exists in the current directory, the agent name is read from
+// it so commands never fall back to "default" when running inside a project. If no policy
+// is found or it has no agent name, returns ("default", false). Second return is true when
+// the name came from a policy file.
+func resolveMemoryAgent(ctx context.Context) (agent string, fromPolicy bool) {
+	cfg, err := config.Load()
+	if err != nil {
+		return "default", false
+	}
+	return resolveMemoryAgentFromPolicy(ctx, memAgent, ".", cfg.DefaultPolicy)
+}
+
+// resolveMemoryAgentFromPolicy resolves the effective agent name from an explicit value or
+// by loading the policy file under baseDir. Used by memory commands and by tests. When
+// explicitAgent is non-empty it is returned with fromPolicy true. Otherwise the policy at
+// baseDir+policyPath is loaded and pol.Agent.Name is returned if set; if not, returns
+// ("default", false).
+func resolveMemoryAgentFromPolicy(ctx context.Context, explicitAgent, baseDir, policyPath string) (agent string, fromPolicy bool) {
+	if explicitAgent != "" {
+		return explicitAgent, true
+	}
+	safePath, err := policy.ResolvePathUnderBase(baseDir, policyPath)
+	if err != nil {
+		return "default", false
+	}
+	if _, err := os.Stat(safePath); err != nil {
+		return "default", false
+	}
+	pol, err := policy.LoadPolicy(ctx, safePath, false, baseDir)
+	if err != nil {
+		return "default", false
+	}
+	if pol.Agent.Name == "" {
+		return "default", false
+	}
+	return pol.Agent.Name, true
+}
+
 func memoryList(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
+
+	agent, _ := resolveMemoryAgent(ctx)
 
 	store, err := openMemoryStore()
 	if err != nil {
@@ -130,7 +172,7 @@ func memoryList(cmd *cobra.Command, args []string) error {
 	defer store.Close()
 
 	if memCat != "" {
-		entries, err := store.List(ctx, memTenant, memAgent, memCat, memLimit)
+		entries, err := store.List(ctx, memTenant, agent, memCat, memLimit)
 		if err != nil {
 			return fmt.Errorf("listing memory: %w", err)
 		}
@@ -142,7 +184,7 @@ func memoryList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	index, err := store.ListIndex(ctx, memTenant, memAgent, memLimit)
+	index, err := store.ListIndex(ctx, memTenant, agent, memLimit)
 	if err != nil {
 		return fmt.Errorf("listing memory: %w", err)
 	}
@@ -202,13 +244,14 @@ func memorySearch(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
 
+	agent, _ := resolveMemoryAgent(ctx)
+
 	store, err := openMemoryStore()
 	if err != nil {
 		return fmt.Errorf("opening memory store: %w", err)
 	}
 	defer store.Close()
-
-	results, err := store.Search(ctx, memTenant, memAgent, args[0], memLimit)
+	results, err := store.Search(ctx, memTenant, agent, args[0], memLimit)
 	if err != nil {
 		return fmt.Errorf("searching memory: %w", err)
 	}
@@ -224,8 +267,13 @@ func memoryRollback(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
 
+	agent, fromPolicy := resolveMemoryAgent(ctx)
+	if agent == "" || (!fromPolicy && agent == "default") {
+		return fmt.Errorf("agent name required: set --agent or run from a directory containing %s", config.DefaultPolicy)
+	}
+
 	if !memYes {
-		fmt.Printf("Rollback agent %q (tenant: %s) to version %d? [y/N] ", memAgent, memTenant, memVer)
+		fmt.Printf("Rollback agent %q (tenant: %s) to version %d? [y/N] ", agent, memTenant, memVer)
 		var confirm string
 		_, _ = fmt.Scanln(&confirm)
 		if confirm != "y" && confirm != "Y" {
@@ -240,11 +288,11 @@ func memoryRollback(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	if err := store.Rollback(ctx, memTenant, memAgent, memVer); err != nil {
+	if err := store.Rollback(ctx, memTenant, agent, memVer); err != nil {
 		return fmt.Errorf("rolling back: %w", err)
 	}
 
-	fmt.Printf("Rolled back agent %q to version %d.\n", memAgent, memVer)
+	fmt.Printf("Rolled back agent %q to version %d.\n", agent, memVer)
 	return nil
 }
 
@@ -252,18 +300,23 @@ func memoryHealth(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
 
+	agent, fromPolicy := resolveMemoryAgent(ctx)
+	if agent == "" || (!fromPolicy && agent == "default") {
+		return fmt.Errorf("agent name required: set --agent or run from a directory containing %s", config.DefaultPolicy)
+	}
+
 	store, err := openMemoryStore()
 	if err != nil {
 		return fmt.Errorf("opening memory store: %w", err)
 	}
 	defer store.Close()
 
-	report, err := store.HealthStats(ctx, memTenant, memAgent)
+	report, err := store.HealthStats(ctx, memTenant, agent)
 	if err != nil {
 		return fmt.Errorf("getting health stats: %w", err)
 	}
 
-	fmt.Printf("Memory Health Report: %s (tenant: %s)\n", memAgent, memTenant)
+	fmt.Printf("Memory Health Report: agent %s, tenant %s\n", agent, memTenant)
 	fmt.Printf("  Total entries:      %d\n", report.TotalEntries)
 
 	if len(report.TrustDistribution) > 0 {
@@ -285,6 +338,8 @@ func memoryAudit(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
 
+	agent, _ := resolveMemoryAgent(ctx)
+
 	memStore, err := openMemoryStore()
 	if err != nil {
 		return fmt.Errorf("opening memory store: %w", err)
@@ -297,7 +352,7 @@ func memoryAudit(cmd *cobra.Command, args []string) error {
 	}
 	defer evStore.Close()
 
-	entries, err := memStore.AuditLog(ctx, memTenant, memAgent, memLimit)
+	entries, err := memStore.AuditLog(ctx, memTenant, agent, memLimit)
 	if err != nil {
 		return fmt.Errorf("querying audit log: %w", err)
 	}
@@ -307,7 +362,7 @@ func memoryAudit(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("Memory Audit Trail: %s (tenant: %s)\n\n", memAgent, memTenant)
+	fmt.Printf("Memory Audit Trail: agent %s, tenant %s\n\n", agent, memTenant)
 
 	for i := range entries {
 		entry := &entries[i]
@@ -359,13 +414,15 @@ func memoryAsOf(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("parsing as-of time (use RFC3339, e.g. 2026-02-23T12:00:00Z): %w", err)
 	}
 
+	agent, _ := resolveMemoryAgent(ctx)
+
 	store, err := openMemoryStore()
 	if err != nil {
 		return fmt.Errorf("opening memory store: %w", err)
 	}
 	defer store.Close()
 
-	entries, err := store.AsOf(ctx, memTenant, memAgent, asOf, memLimit)
+	entries, err := store.AsOf(ctx, memTenant, agent, asOf, memLimit)
 	if err != nil {
 		return fmt.Errorf("querying memory as-of %s: %w", asOf.Format(time.RFC3339), err)
 	}
@@ -373,7 +430,7 @@ func memoryAsOf(cmd *cobra.Command, args []string) error {
 		fmt.Printf("No memory entries valid at %s.\n", asOf.Format(time.RFC3339))
 		return nil
 	}
-	fmt.Printf("Memory entries valid at %s (tenant: %s, agent: %s):\n\n", asOf.Format(time.RFC3339), memTenant, memAgent)
+	fmt.Printf("Memory entries valid at %s (tenant: %s, agent: %s):\n\n", asOf.Format(time.RFC3339), memTenant, agent)
 	printEntryTable(entries)
 	return nil
 }
