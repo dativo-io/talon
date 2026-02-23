@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Talon Dashboard</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 1rem; background: #0f172a; color: #e2e8f0; }
+    h1 { margin: 0 0 1rem; font-size: 1.5rem; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .card { background: #1e293b; padding: 1rem; border-radius: 8px; }
+    .card .label { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; }
+    .card .value { font-size: 1.5rem; font-weight: 600; }
+    .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+    .tabs button { padding: 0.5rem 1rem; background: #334155; border: none; border-radius: 6px; color: #e2e8f0; cursor: pointer; }
+    .tabs button.active { background: #3b82f6; }
+    .tabs button:hover:not(.active) { background: #475569; }
+    .panel { display: none; background: #1e293b; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+    .panel.active { display: block; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #334155; }
+    th { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; }
+    .status-ok { color: #22c55e; }
+    .status-deny { color: #ef4444; }
+    .btn { padding: 0.25rem 0.5rem; border-radius: 4px; border: none; cursor: pointer; font-size: 0.875rem; }
+    .btn-approve { background: #22c55e; color: #fff; }
+    .btn-reject { background: #ef4444; color: #fff; }
+    .refresh { font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.5rem; }
+    .error { color: #f87171; }
+    select { background: #334155; color: #e2e8f0; border: 1px solid #475569; padding: 0.5rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Talon Dashboard</h1>
+  <div class="cards">
+    <div class="card"><div class="label">Today&rsquo;s requests</div><div class="value" id="card-requests">—</div></div>
+    <div class="card"><div class="label">Daily cost</div><div class="value" id="card-daily">— &euro;</div></div>
+    <div class="card"><div class="label">Monthly cost</div><div class="value" id="card-monthly">— &euro;</div></div>
+    <div class="card"><div class="label">Pending plans</div><div class="value" id="card-plans">—</div></div>
+  </div>
+  <div class="tabs">
+    <button class="active" data-tab="evidence">Evidence</button>
+    <button data-tab="plans">Plans Awaiting Review</button>
+    <button data-tab="memory">Memory Review</button>
+  </div>
+  <div class="refresh">Auto-refresh every 30s. Set <code>window.TALON_API_KEY</code> for API calls.</div>
+
+  <div id="panel-evidence" class="panel active">
+    <table>
+      <thead><tr><th>Time</th><th>Agent</th><th>Status</th><th>Cost (€)</th><th>ID</th></tr></thead>
+      <tbody id="evidence-tbody"></tbody>
+    </table>
+  </div>
+  <div id="panel-plans" class="panel">
+    <table>
+      <thead><tr><th>Time</th><th>Agent</th><th>Model</th><th>Tier</th><th>Est. cost (€)</th><th>Actions</th></tr></thead>
+      <tbody id="plans-tbody"></tbody>
+    </table>
+  </div>
+  <div id="panel-memory" class="panel">
+    <p>Agent: <select id="memory-agent"></select></p>
+    <table>
+      <thead><tr><th>Time</th><th>Category</th><th>Title</th><th>Actions</th></tr></thead>
+      <tbody id="memory-tbody"></tbody>
+    </table>
+  </div>
+
+  <script>
+    (function() {
+      var base = window.TALON_BASE_URL || '';
+      var key = window.TALON_API_KEY || '';
+      function headers() {
+        var h = { 'Content-Type': 'application/json' };
+        if (key) h['X-Talon-Key'] = key;
+        return h;
+      }
+      function get(url) {
+        return fetch(base + url, { headers: headers() }).then(function(r) {
+          if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+          return r.json();
+        });
+      }
+      function escapeHtml(s) {
+        if (s == null || s === undefined) return '';
+        var str = String(s);
+        return str
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+      function post(url, body) {
+        return fetch(base + url, { method: 'POST', headers: headers(), body: JSON.stringify(body || {}) }).then(function(r) {
+          if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+          return r.json();
+        });
+      }
+
+      function renderCards() {
+        get('/v1/status').then(function(d) {
+          var el = document.getElementById('card-requests');
+          if (el) el.textContent = d.evidence_count_today != null ? d.evidence_count_today : '—';
+          el = document.getElementById('card-daily');
+          if (el) el.textContent = (d.cost_today != null ? d.cost_today.toFixed(2) : '—') + ' €';
+          el = document.getElementById('card-monthly');
+          if (el) el.textContent = (d.monthly != null ? d.monthly.toFixed(2) : '—') + ' €';
+        }).catch(function() {});
+        get('/v1/plans/pending').then(function(d) {
+          var el = document.getElementById('card-plans');
+          if (el && d.plans) el.textContent = d.plans.length;
+        }).catch(function() {});
+      }
+
+      function renderEvidence() {
+        get('/v1/evidence?limit=10').then(function(d) {
+          var tbody = document.getElementById('evidence-tbody');
+          if (!tbody) return;
+          tbody.innerHTML = '';
+          (d.entries || []).forEach(function(ev) {
+            var tr = document.createElement('tr');
+            var time = ev.timestamp ? new Date(ev.timestamp).toLocaleString() : '—';
+            var status = ev.allowed ? '<span class="status-ok">allowed</span>' : '<span class="status-deny">denied</span>';
+            var cost = ev.cost != null ? ev.cost.toFixed(4) : '—';
+            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(ev.agent_id || '—') + '</td><td>' + status + '</td><td>' + escapeHtml(cost) + '</td><td>' + escapeHtml(ev.id || '—') + '</td>';
+            tbody.appendChild(tr);
+          });
+        }).catch(function(e) {
+          var tbody = document.getElementById('evidence-tbody');
+          if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="error">' + escapeHtml(e.message) + '</td></tr>';
+        });
+      }
+
+      function renderPlans() {
+        get('/v1/plans/pending').then(function(d) {
+          var tbody = document.getElementById('plans-tbody');
+          if (!tbody) return;
+          tbody.innerHTML = '';
+          (d.plans || []).forEach(function(p) {
+            var tr = document.createElement('tr');
+            var time = p.created_at ? new Date(p.created_at).toLocaleString() : '—';
+            var cost = p.cost_estimate_eur != null ? p.cost_estimate_eur.toFixed(4) : '—';
+            var safeId = escapeHtml(p.id);
+            var actions = '<button class="btn btn-approve" data-id="' + safeId + '">Approve</button> <button class="btn btn-reject" data-id="' + safeId + '">Reject</button>';
+            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(p.agent_id || '—') + '</td><td>' + escapeHtml(p.selected_model || '—') + '</td><td>' + escapeHtml(p.data_tier != null ? p.data_tier : '—') + '</td><td>' + escapeHtml(cost) + '</td><td>' + actions + '</td>';
+            tbody.appendChild(tr);
+          });
+          tbody.querySelectorAll('.btn-approve').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+              post('/v1/plans/' + btn.dataset.id + '/approve', { reviewed_by: 'dashboard-user' }).then(function() { renderPlans(); renderCards(); });
+            });
+          });
+          tbody.querySelectorAll('.btn-reject').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+              var reason = prompt('Rejection reason:');
+              if (reason != null) post('/v1/plans/' + btn.dataset.id + '/reject', { reviewed_by: 'dashboard-user', reason: reason }).then(function() { renderPlans(); renderCards(); });
+            });
+          });
+        }).catch(function(e) {
+          var tbody = document.getElementById('plans-tbody');
+          if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="error">' + escapeHtml(e.message) + '</td></tr>';
+        });
+      }
+
+      function renderMemory() {
+        var agentId = document.getElementById('memory-agent').value;
+        if (!agentId) {
+          document.getElementById('memory-tbody').innerHTML = '<tr><td colspan="4">Select an agent</td></tr>';
+          return;
+        }
+        get('/v1/memory/' + encodeURIComponent(agentId) + '/review').then(function(d) {
+          var tbody = document.getElementById('memory-tbody');
+          if (!tbody) return;
+          tbody.innerHTML = '';
+          (d.entries || []).forEach(function(e) {
+            var tr = document.createElement('tr');
+            var time = e.timestamp ? new Date(e.timestamp).toLocaleString() : '—';
+            var safeId = escapeHtml(e.id);
+            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(e.category || '—') + '</td><td>' + escapeHtml(e.title || '—') + '</td><td><button class="btn btn-approve" data-id="' + safeId + '">Approve</button></td>';
+            tbody.appendChild(tr);
+          });
+          tbody.querySelectorAll('.btn-approve').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+              post('/v1/memory/' + encodeURIComponent(agentId) + '/approve', { entry_id: btn.dataset.id, reviewed_by: 'dashboard-user' }).then(function() { renderMemory(); });
+            });
+          });
+        }).catch(function(e) {
+          document.getElementById('memory-tbody').innerHTML = '<tr><td colspan="4" class="error">' + escapeHtml(e.message) + '</td></tr>';
+        });
+      }
+
+      function loadAgents() {
+        get('/v1/memory?agent_id=default&limit=1').then(function() {}).catch(function() {});
+        var sel = document.getElementById('memory-agent');
+        if (!sel) return;
+        sel.innerHTML = '<option value="default">default</option>';
+        sel.addEventListener('change', renderMemory);
+      }
+
+      document.querySelectorAll('.tabs button').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          document.querySelectorAll('.tabs button').forEach(function(b) { b.classList.remove('active'); });
+          document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
+          btn.classList.add('active');
+          var tab = btn.dataset.tab;
+          var panel = document.getElementById('panel-' + tab);
+          if (panel) panel.classList.add('active');
+          if (tab === 'plans') renderPlans();
+          if (tab === 'memory') { loadAgents(); renderMemory(); }
+        });
+      });
+
+      function refresh() {
+        renderCards();
+        renderEvidence();
+        if (document.getElementById('panel-plans').classList.contains('active')) renderPlans();
+        if (document.getElementById('panel-memory').classList.contains('active')) renderMemory();
+      }
+      refresh();
+      setInterval(refresh, 30000);
+    })();
+  </script>
+</body>
+</html>

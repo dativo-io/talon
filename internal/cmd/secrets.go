@@ -123,7 +123,8 @@ func secretsAudit(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	records, err := store.AuditLog(ctx, "", 50)
+	// CLI shows all tenants (tenantID ""); for tenant-scoped use the HTTP API.
+	records, err := store.AuditLog(ctx, "", "", 50)
 	if err != nil {
 		return fmt.Errorf("fetching audit log: %w", err)
 	}

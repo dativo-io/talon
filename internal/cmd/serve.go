@@ -2,16 +2,16 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 
@@ -22,14 +22,20 @@ import (
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/mcp"
 	"github.com/dativo-io/talon/internal/memory"
-	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
+	"github.com/dativo-io/talon/internal/server"
 	"github.com/dativo-io/talon/internal/trigger"
+	"github.com/dativo-io/talon/web"
 )
 
-var servePort int
+var (
+	servePort        int
+	serveProxyConfig string
+	serveDashboard   bool
+)
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -39,7 +45,33 @@ var serveCmd = &cobra.Command{
 
 func init() {
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "HTTP server port")
+	serveCmd.Flags().StringVar(&serveProxyConfig, "proxy-config", "", "Path to MCP proxy config YAML (optional)")
+	serveCmd.Flags().BoolVar(&serveDashboard, "dashboard", true, "Serve embedded dashboard at / and /dashboard")
 	rootCmd.AddCommand(serveCmd)
+}
+
+// parseAPIKeys returns a map of key -> tenant_id from TALON_API_KEYS (comma-separated; each entry key or key:tenant_id).
+func parseAPIKeys(env string) map[string]string {
+	m := make(map[string]string)
+	if env == "" {
+		return m
+	}
+	for _, part := range strings.Split(env, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		tenantID := "default"
+		if idx := strings.Index(part, ":"); idx > 0 {
+			tenantID = strings.TrimSpace(part[idx+1:])
+			if tenantID == "" {
+				tenantID = "default"
+			}
+			part = strings.TrimSpace(part[:idx])
+		}
+		m[part] = tenantID
+	}
+	return m
 }
 
 //nolint:gocyclo // orchestration flow is inherently branched
@@ -68,6 +100,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	policyPath = safePath
 
+	policyEngine, err := policy.NewEngine(ctx, pol)
+	if err != nil {
+		return fmt.Errorf("policy engine: %w", err)
+	}
+
 	cls := classifier.MustNewScanner()
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
@@ -88,6 +125,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	defer evidenceStore.Close()
 
+	var planReviewStore *agent.PlanReviewStore
+	dbPlan, err := sql.Open("sqlite3", cfg.EvidenceDBPath()+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err == nil {
+		defer dbPlan.Close()
+		planReviewStore, err = agent.NewPlanReviewStore(dbPlan)
+		if err != nil {
+			log.Warn().Err(err).Msg("plan review store unavailable")
+			planReviewStore = nil
+		}
+	} else {
+		log.Warn().Err(err).Msg("plan review DB unavailable")
+	}
+
 	var memStore *memory.Store
 	memStore, err = memory.NewStore(cfg.MemoryDBPath())
 	if err != nil {
@@ -97,6 +147,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	activeRunTracker := &agent.ActiveRunTracker{}
+	toolRegistry := tools.NewRegistry()
 	runner := agent.NewRunner(agent.RunnerConfig{
 		PolicyDir:         ".",
 		DefaultPolicyPath: policyPath,
@@ -106,18 +157,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Router:            router,
 		Secrets:           secretsStore,
 		Evidence:          evidenceStore,
-		ToolRegistry:      tools.NewRegistry(),
+		PlanReview:        planReviewStore,
+		ToolRegistry:      toolRegistry,
 		ActiveRunTracker:  activeRunTracker,
 		Memory:            memStore,
 	})
 
-	// Start memory retention loop (daily purge of expired entries + max_entries enforcement)
 	if memStore != nil && pol.Memory != nil && pol.Memory.Enabled {
 		stopRetention := memory.StartRetentionLoop(ctx, memStore, pol, 24*time.Hour)
 		defer stopRetention()
 	}
 
-	// Register cron triggers
 	scheduler := trigger.NewScheduler(runner)
 	if err := scheduler.RegisterSchedules(pol); err != nil {
 		return fmt.Errorf("registering schedules: %w", err)
@@ -125,28 +175,56 @@ func runServe(cmd *cobra.Command, args []string) error {
 	scheduler.Start()
 	defer scheduler.Stop()
 
-	// Set up HTTP with webhook triggers
 	webhookHandler := trigger.NewWebhookHandler(runner, pol)
-	r := chi.NewRouter()
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(otel.MiddlewareWithStatus())
 
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-	// Minimal status page: key SMB metrics (evidence count, cost today, active runs) for monitoring.
-	r.Get("/status", newStatusHandler(evidenceStore, activeRunTracker, "default"))
-	r.Post("/v1/chat/completions", newChatCompletionsHandler(runner, policyPath))
-	r.Post("/v1/triggers/{name}", webhookHandler.HandleWebhook)
+	apiKeys := parseAPIKeys(os.Getenv("TALON_API_KEYS"))
+	if len(apiKeys) == 0 {
+		log.Warn().Msg("TALON_API_KEYS not set — all API endpoints will return 401. Set for production.")
+	}
+
+	opts := []server.Option{
+		server.WithPlanReviewStore(planReviewStore),
+		server.WithMemoryStore(memStore),
+		server.WithCORSOrigins([]string{"*"}),
+		server.WithActiveRunTracker(activeRunTracker),
+	}
+	if serveDashboard {
+		opts = append(opts, server.WithDashboard(web.DashboardHTML))
+	}
+
+	mcpHandler := mcp.NewHandler(toolRegistry, policyEngine, evidenceStore)
+	opts = append(opts, server.WithMCPServer(mcpHandler))
+
+	var proxyHandler http.Handler
+	if serveProxyConfig != "" {
+		proxyCfg, err := mcp.LoadProxyConfig(ctx, serveProxyConfig)
+		if err != nil {
+			return fmt.Errorf("loading proxy config: %w", err)
+		}
+		proxyEngine, err := policy.NewProxyEngine(ctx, proxyCfg)
+		if err != nil {
+			return fmt.Errorf("proxy policy engine: %w", err)
+		}
+		proxyHandler = mcp.NewProxyHandler(proxyCfg, proxyEngine, evidenceStore, cls)
+		opts = append(opts, server.WithMCPProxy(proxyHandler))
+	}
+
+	srv := server.NewServer(
+		runner,
+		evidenceStore,
+		webhookHandler,
+		policyEngine,
+		pol,
+		policyPath,
+		secretsStore,
+		apiKeys,
+		opts...,
+	)
 
 	addr := fmt.Sprintf(":%d", servePort)
-	server := &http.Server{
+	httpServer := &http.Server{
 		Addr:         addr,
-		Handler:      r,
+		Handler:      srv.Routes(),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Minute,
 		IdleTimeout:  60 * time.Second,
@@ -156,17 +234,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Str("addr", addr).
 		Int("cron_entries", scheduler.Entries()).
 		Str("agent", pol.Agent.Name).
+		Bool("dashboard", serveDashboard).
+		Bool("mcp_proxy", proxyHandler != nil).
 		Msg("talon_serve_started")
 
-	// Start HTTP in goroutine
 	errCh := make(chan error, 1)
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 	}()
 
-	// Wait for shutdown signal
 	select {
 	case <-ctx.Done():
 		log.Info().Msg("shutdown_signal_received")
@@ -174,230 +252,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("server error: %w", err)
 	}
 
-	// Graceful shutdown
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return server.Shutdown(shutdownCtx)
-}
-
-// statusResponse is the JSON shape for GET /status (minimal dashboard metrics).
-// Metric fields have no omitempty so zero values are always present for reliable monitoring.
-type statusResponse struct {
-	Status             string  `json:"status"`
-	EvidenceCountToday int     `json:"evidence_count_today"`
-	CostToday          float64 `json:"cost_today"`
-	ActiveRuns         int     `json:"active_runs"`
-}
-
-func newStatusHandler(store *evidence.Store, tracker *agent.ActiveRunTracker, defaultTenantID string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID := r.URL.Query().Get("tenant_id")
-		if tenantID == "" {
-			tenantID = defaultTenantID
-		}
-		resp := statusResponse{Status: "ok"}
-		if store != nil {
-			ctx := r.Context()
-			now := time.Now().UTC()
-			dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-			dayEnd := dayStart.Add(24 * time.Hour)
-			if n, err := store.CountInRange(ctx, tenantID, "", dayStart, dayEnd); err == nil {
-				resp.EvidenceCountToday = n
-			}
-			if cost, err := store.CostTotal(ctx, tenantID, "", dayStart, dayEnd); err == nil {
-				resp.CostToday = cost
-			}
-		}
-		if tracker != nil {
-			resp.ActiveRuns = tracker.Count(tenantID)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shutdown: %w", err)
 	}
-}
-
-// OpenAI-compatible chat completions request (subset used by Talon).
-type chatCompletionsRequest struct {
-	Model    string                  `json:"model"`
-	Messages []chatCompletionMessage `json:"messages"`
-	AgentID  string                  `json:"agent_id,omitempty"`
-	TenantID string                  `json:"tenant_id,omitempty"`
-}
-
-type chatCompletionMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// OpenAI-compatible chat completions response.
-type chatCompletionsResponse struct {
-	ID      string                 `json:"id"`
-	Object  string                 `json:"object"`
-	Created int64                  `json:"created"`
-	Model   string                 `json:"model"`
-	Choices []chatCompletionChoice `json:"choices"`
-	Usage   chatCompletionsUsage   `json:"usage,omitempty"`
-}
-
-type chatCompletionChoice struct {
-	Index        int     `json:"index"`
-	Message      message `json:"message"`
-	FinishReason string  `json:"finish_reason"`
-}
-
-type message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type chatCompletionsUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
-}
-
-type chatCompletionsError struct {
-	Error errBody `json:"error"`
-}
-
-type errBody struct {
-	Message string `json:"message"`
-	Type    string `json:"type,omitempty"`
-	Code    string `json:"code,omitempty"`
-}
-
-//nolint:gocyclo // handler branches on request validation and policy/run outcomes
-func newChatCompletionsHandler(runner *agent.Runner, defaultPolicyPath string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			_ = json.NewEncoder(w).Encode(chatCompletionsError{Error: errBody{Message: "method not allowed", Type: "invalid_request_error", Code: "method_not_allowed"}})
-			return
-		}
-
-		var req chatCompletionsRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(chatCompletionsError{Error: errBody{Message: "invalid JSON: " + err.Error(), Type: "invalid_request_error", Code: "invalid_json"}})
-			return
-		}
-
-		if len(req.Messages) == 0 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(chatCompletionsError{Error: errBody{Message: "messages is required and must be non-empty", Type: "invalid_request_error", Code: "messages_required"}})
-			return
-		}
-
-		tenantID := req.TenantID
-		if tenantID == "" {
-			tenantID = r.Header.Get("X-Talon-Tenant")
-		}
-		if tenantID == "" {
-			tenantID = "default"
-		}
-
-		agentName := req.AgentID
-		if agentName == "" {
-			agentName = r.Header.Get("X-Talon-Agent")
-		}
-		if agentName == "" {
-			agentName = "default"
-		}
-
-		// Build prompt from messages: use last user message, or concatenate all for context.
-		var prompt string
-		for i := len(req.Messages) - 1; i >= 0; i-- {
-			if req.Messages[i].Role == "user" && req.Messages[i].Content != "" {
-				prompt = req.Messages[i].Content
-				break
-			}
-		}
-		if prompt == "" {
-			// Fallback: concat all content
-			for _, m := range req.Messages {
-				if m.Content != "" {
-					prompt = m.Content
-					break
-				}
-			}
-		}
-		if prompt == "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(chatCompletionsError{Error: errBody{Message: "no user message content in messages", Type: "invalid_request_error", Code: "messages_required"}})
-			return
-		}
-
-		runReq := &agent.RunRequest{
-			TenantID:       tenantID,
-			AgentName:      agentName,
-			Prompt:         prompt,
-			InvocationType: "http",
-			PolicyPath:     defaultPolicyPath,
-		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
-		defer cancel()
-
-		resp, err := runner.Run(ctx, runReq)
-		if err != nil {
-			log.Error().Err(err).Str("tenant_id", tenantID).Str("agent_id", agentName).Msg("chat_completions_run_error")
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(chatCompletionsError{Error: errBody{Message: err.Error(), Type: "internal_error", Code: "run_failed"}})
-			return
-		}
-
-		if !resp.PolicyAllow {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_ = json.NewEncoder(w).Encode(chatCompletionsError{Error: errBody{Message: resp.DenyReason, Type: "policy_denied", Code: "policy_denied"}})
-			return
-		}
-
-		if resp.PlanPending != "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(w).Encode(chatCompletionsError{Error: errBody{Message: "plan pending human review: " + resp.PlanPending, Type: "plan_pending", Code: "plan_pending"}})
-			return
-		}
-
-		model := resp.ModelUsed
-		if model == "" {
-			model = req.Model
-		}
-		if model == "" {
-			model = "talon"
-		}
-
-		id := "chatcmpl-" + resp.EvidenceID
-		if len(id) > 32 {
-			id = id[:32]
-		}
-
-		out := chatCompletionsResponse{
-			ID:      id,
-			Object:  "chat.completion",
-			Created: time.Now().UTC().Unix(),
-			Model:   model,
-			Choices: []chatCompletionChoice{{
-				Index:        0,
-				Message:      message{Role: "assistant", Content: resp.Response},
-				FinishReason: "stop",
-			}},
-			Usage: chatCompletionsUsage{
-				PromptTokens:     resp.InputTokens,
-				CompletionTokens: resp.OutputTokens,
-				TotalTokens:      resp.InputTokens + resp.OutputTokens,
-			},
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(out)
-	}
+	log.Info().Msg("server_stopped")
+	return nil
 }

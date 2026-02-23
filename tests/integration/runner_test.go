@@ -336,7 +336,7 @@ func TestRunner_TenantKeyFromVault(t *testing.T) {
 		PolicyPath:     policyPath,
 	})
 
-	auditLog, err2 := secretsStore.AuditLog(context.Background(), "openai-api-key", 10)
+	auditLog, err2 := secretsStore.AuditLog(context.Background(), "acme", "openai-api-key", 10)
 	require.NoError(t, err2)
 
 	found := false
@@ -814,9 +814,9 @@ func TestTenantIsolation_FullStack(t *testing.T) {
 	assert.InDelta(t, 0.001, costGlobex, 0.0001, "globex cost should be single run")
 
 	// List isolation: each tenant's index only contains their evidence
-	idxAcme, err := evidenceStore.ListIndex(ctx, "acme", "", dayStart, dayEnd, 10)
+	idxAcme, err := evidenceStore.ListIndex(ctx, "acme", "", dayStart, dayEnd, 10, "")
 	require.NoError(t, err)
-	idxGlobex, err := evidenceStore.ListIndex(ctx, "globex", "", dayStart, dayEnd, 10)
+	idxGlobex, err := evidenceStore.ListIndex(ctx, "globex", "", dayStart, dayEnd, 10, "")
 	require.NoError(t, err)
 	assert.Len(t, idxAcme, 1, "acme should see one evidence record")
 	assert.Len(t, idxGlobex, 1, "globex should see one evidence record")
@@ -917,7 +917,7 @@ func TestRunner_ConcurrentTenants(t *testing.T) {
 		require.NoError(t, err)
 		expectedCost := float64(runsPerTenant) * 0.001
 		assert.InDelta(t, expectedCost, cost, 0.0001, "tenant %s cost", tid)
-		idx, err := evidenceStore.ListIndex(ctx, tid, "", dayStart, dayEnd, 20)
+		idx, err := evidenceStore.ListIndex(ctx, tid, "", dayStart, dayEnd, 20, "")
 		require.NoError(t, err)
 		assert.Len(t, idx, runsPerTenant, "tenant %s index count", tid)
 		for _, ev := range idx {

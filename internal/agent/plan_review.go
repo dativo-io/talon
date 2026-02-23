@@ -106,13 +106,14 @@ func (s *PlanReviewStore) GetPending(ctx context.Context, tenantID string) ([]*E
 	return plans, nil
 }
 
-// Get returns a single plan by ID.
-func (s *PlanReviewStore) Get(ctx context.Context, planID string) (*ExecutionPlan, error) {
+// Get returns a single plan by ID, scoped to tenantID. Returns ErrPlanNotFound if the plan does not exist or belongs to another tenant.
+func (s *PlanReviewStore) Get(ctx context.Context, planID, tenantID string) (*ExecutionPlan, error) {
 	var planJSON, status string
 	var reviewedBy, reviewReason sql.NullString
 	var reviewedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx,
-		`SELECT plan_json, status, reviewed_by, reviewed_at, review_reason FROM execution_plans WHERE id = ?`, planID,
+		`SELECT plan_json, status, reviewed_by, reviewed_at, review_reason FROM execution_plans WHERE id = ? AND tenant_id = ?`,
+		planID, tenantID,
 	).Scan(&planJSON, &status, &reviewedBy, &reviewedAt, &reviewReason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrPlanNotFound
@@ -140,54 +141,70 @@ func (s *PlanReviewStore) Get(ctx context.Context, planID string) (*ExecutionPla
 	return &plan, nil
 }
 
-// Approve marks a plan as approved by a reviewer.
-func (s *PlanReviewStore) Approve(ctx context.Context, planID, reviewedBy string) error {
-	return s.updateStatus(ctx, planID, PlanApproved, reviewedBy, "")
+// Approve marks a plan as approved by a reviewer, scoped to tenantID.
+func (s *PlanReviewStore) Approve(ctx context.Context, planID, tenantID, reviewedBy string) error {
+	return s.updateStatus(ctx, planID, tenantID, PlanApproved, reviewedBy, "")
 }
 
-// Reject marks a plan as rejected with a reason.
-func (s *PlanReviewStore) Reject(ctx context.Context, planID, reviewedBy, reason string) error {
-	return s.updateStatus(ctx, planID, PlanRejected, reviewedBy, reason)
+// Reject marks a plan as rejected with a reason, scoped to tenantID.
+func (s *PlanReviewStore) Reject(ctx context.Context, planID, tenantID, reviewedBy, reason string) error {
+	return s.updateStatus(ctx, planID, tenantID, PlanRejected, reviewedBy, reason)
 }
 
-// Modify marks a plan as approved-with-modifications and stores reviewer annotations.
-func (s *PlanReviewStore) Modify(ctx context.Context, planID, reviewedBy string, annotations []Annotation) error {
+// Modify marks a plan as approved-with-modifications and stores reviewer annotations, scoped to tenantID.
+func (s *PlanReviewStore) Modify(ctx context.Context, planID, tenantID, reviewedBy string, annotations []Annotation) error {
 	annotJSON, _ := json.Marshal(annotations)
 	now := time.Now()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE execution_plans SET status = ?, reviewed_by = ?, reviewed_at = ?, annotations_json = ?
-		WHERE id = ? AND status = 'pending'`,
-		string(PlanModified), reviewedBy, now, string(annotJSON), planID,
+		WHERE id = ? AND tenant_id = ? AND status = 'pending'`,
+		string(PlanModified), reviewedBy, now, string(annotJSON), planID, tenantID,
 	)
 	if err != nil {
 		return err
 	}
 	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return ErrPlanNotPending
+	if rows > 0 {
+		log.Info().Str("plan_id", planID).Str("tenant_id", tenantID).Str("reviewed_by", reviewedBy).Msg("plan_modified")
+		return nil
 	}
-
-	log.Info().Str("plan_id", planID).Str("reviewed_by", reviewedBy).Msg("plan_modified")
-	return nil
+	// Zero rows: plan missing/wrong tenant vs already reviewed — distinguish for correct HTTP status.
+	var currentStatus string
+	err = s.db.QueryRowContext(ctx, `SELECT status FROM execution_plans WHERE id = ? AND tenant_id = ?`, planID, tenantID).Scan(&currentStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrPlanNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return ErrPlanNotPending
 }
 
-func (s *PlanReviewStore) updateStatus(ctx context.Context, planID string, status PlanStatus, reviewedBy, reason string) error {
+func (s *PlanReviewStore) updateStatus(ctx context.Context, planID, tenantID string, status PlanStatus, reviewedBy, reason string) error {
 	now := time.Now()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE execution_plans SET status = ?, reviewed_by = ?, reviewed_at = ?, review_reason = ?
-		WHERE id = ? AND status = 'pending'`,
-		string(status), reviewedBy, now, reason, planID,
+		WHERE id = ? AND tenant_id = ? AND status = 'pending'`,
+		string(status), reviewedBy, now, reason, planID, tenantID,
 	)
 	if err != nil {
 		return err
 	}
 	rows, _ := result.RowsAffected()
-	if rows == 0 {
-		return ErrPlanNotPending
+	if rows > 0 {
+		log.Info().Str("plan_id", planID).Str("tenant_id", tenantID).Str("status", string(status)).Msg("plan_review_completed")
+		return nil
 	}
-
-	log.Info().Str("plan_id", planID).Str("status", string(status)).Msg("plan_review_completed")
-	return nil
+	// Zero rows: plan missing/wrong tenant vs already reviewed — distinguish for correct HTTP status.
+	var currentStatus string
+	err = s.db.QueryRowContext(ctx, `SELECT status FROM execution_plans WHERE id = ? AND tenant_id = ?`, planID, tenantID).Scan(&currentStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrPlanNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return ErrPlanNotPending
 }
 
 // PlanReviewConfig from .talon.yaml.

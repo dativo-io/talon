@@ -442,25 +442,38 @@ func (s *SecretStore) RecordVaultMissNoFallback(ctx context.Context, secretName,
 }
 
 // AuditLog returns access records for compliance review.
-// Pass empty secretName to get all records. Limit <= 0 means no limit.
-func (s *SecretStore) AuditLog(ctx context.Context, secretName string, limit int) ([]AccessRecord, error) {
+// If tenantID is non-empty, only records for that tenant are returned (multi-tenant isolation).
+// Pass empty secretName to get all records for the tenant. Limit <= 0 means no limit.
+func (s *SecretStore) AuditLog(ctx context.Context, tenantID, secretName string, limit int) ([]AccessRecord, error) {
 	ctx, span := tracer.Start(ctx, "secrets.audit_log",
-		trace.WithAttributes(attribute.String("secret.name", secretName)))
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("secret.name", secretName)))
 	defer span.End()
 
-	query := `SELECT id, secret_name, tenant_id, agent_id, timestamp, allowed, reason
-	          FROM secret_access_log`
+	const baseSelect = `SELECT id, secret_name, tenant_id, agent_id, timestamp, allowed, reason
+		FROM secret_access_log`
+	const orderBy = ` ORDER BY timestamp DESC`
+	const limitClause = ` LIMIT ?`
 
-	args := []interface{}{}
-	if secretName != "" {
-		query += ` WHERE secret_name = ?`
-		args = append(args, secretName)
+	var query string
+	var args []interface{}
+	switch {
+	case tenantID != "" && secretName != "":
+		query = baseSelect + ` WHERE tenant_id = ? AND secret_name = ?` + orderBy
+		args = []interface{}{tenantID, secretName}
+	case tenantID != "":
+		query = baseSelect + ` WHERE tenant_id = ?` + orderBy
+		args = []interface{}{tenantID}
+	case secretName != "":
+		query = baseSelect + ` WHERE secret_name = ?` + orderBy
+		args = []interface{}{secretName}
+	default:
+		query = baseSelect + orderBy
+		args = nil
 	}
-
-	query += ` ORDER BY timestamp DESC`
-
 	if limit > 0 {
-		query += ` LIMIT ?`
+		query += limitClause
 		args = append(args, limit)
 	}
 
