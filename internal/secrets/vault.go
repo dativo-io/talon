@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -452,27 +451,29 @@ func (s *SecretStore) AuditLog(ctx context.Context, tenantID, secretName string,
 			attribute.String("secret.name", secretName)))
 	defer span.End()
 
-	query := `SELECT id, secret_name, tenant_id, agent_id, timestamp, allowed, reason
-	          FROM secret_access_log`
+	const baseSelect = `SELECT id, secret_name, tenant_id, agent_id, timestamp, allowed, reason
+		FROM secret_access_log`
+	const orderBy = ` ORDER BY timestamp DESC`
+	const limitClause = ` LIMIT ?`
 
-	args := []interface{}{}
-	where := []string{}
-	if tenantID != "" {
-		where = append(where, `tenant_id = ?`)
-		args = append(args, tenantID)
+	var query string
+	var args []interface{}
+	switch {
+	case tenantID != "" && secretName != "":
+		query = baseSelect + ` WHERE tenant_id = ? AND secret_name = ?` + orderBy
+		args = []interface{}{tenantID, secretName}
+	case tenantID != "":
+		query = baseSelect + ` WHERE tenant_id = ?` + orderBy
+		args = []interface{}{tenantID}
+	case secretName != "":
+		query = baseSelect + ` WHERE secret_name = ?` + orderBy
+		args = []interface{}{secretName}
+	default:
+		query = baseSelect + orderBy
+		args = nil
 	}
-	if secretName != "" {
-		where = append(where, `secret_name = ?`)
-		args = append(args, secretName)
-	}
-	if len(where) > 0 {
-		query += ` WHERE ` + strings.Join(where, ` AND `)
-	}
-
-	query += ` ORDER BY timestamp DESC`
-
 	if limit > 0 {
-		query += ` LIMIT ?`
+		query += limitClause
 		args = append(args, limit)
 	}
 
