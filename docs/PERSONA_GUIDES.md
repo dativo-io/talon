@@ -51,7 +51,7 @@ talon serve --port 8080
 
 ### Policy configuration that matters
 
-- **`agent.name`**, **`agent.version`** — Identity and versioning.
+- **`agent.name`**, **`agent.version`** — Identity and versioning. When you run without `--agent`, the runtime agent ID (evidence, memory) is taken from `agent.name` in the loaded policy.
 - **`policies.cost_limits`** — Per-request, daily, monthly (DevOps often sets these with FinOps).
 - **`policies.model_routing`** — Tier 0/1/2 models; Tier 2 may require Bedrock for EU-only.
 - **`triggers`** — Cron and webhooks if using `talon serve`.

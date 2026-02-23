@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-02-23
+
+### Changed
+
+- **CLI:** When `talon run` is invoked without `--agent`, the runtime agent ID (evidence, memory, secrets) is now taken from the loaded policy file (`agent.name` in the YAML) instead of the CLI default `"default"`. Explicit `--agent <name>` continues to override. This aligns config file and runtime identity when using the default policy.
+
+### Added
+
+- **CLI:** `resolveRunAgentName` and unit tests for default vs explicit agent name resolution; `--agent` flag description updated; QUICKSTART and PERSONA_GUIDES note the behavior when `--agent` is omitted.
+
 ## [0.7.5] - 2026-02-23
 
 ### Added
@@ -68,7 +78,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/dativo-io/talon/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/dativo-io/talon/compare/v0.7.4...v0.7.5
 [0.7.2]: https://github.com/dativo-io/talon/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/dativo-io/talon/compare/v0.7.0...v0.7.1

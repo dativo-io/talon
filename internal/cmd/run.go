@@ -41,7 +41,7 @@ var runCmd = &cobra.Command{
 }
 
 func init() {
-	runCmd.Flags().StringVar(&runAgentName, "agent", "default", "Agent name")
+	runCmd.Flags().StringVar(&runAgentName, "agent", "default", "Agent name (when omitted, taken from the loaded policy file)")
 	runCmd.Flags().StringVar(&runTenantID, "tenant", "default", "Tenant ID")
 	runCmd.Flags().BoolVar(&runDryRun, "dry-run", false, "Show policy decision without LLM call")
 	runCmd.Flags().BoolVar(&runValidate, "validate", false, "Validate policy before running (same as talon validate)")
@@ -102,6 +102,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("policy file: %w", err)
 	}
 	policyPath = safePath
+
+	agentName := resolveRunAgentName(ctx, policyPath, baseDir, runAgentName)
 
 	if runValidate {
 		if err := validatePolicyFile(ctx, policyPath, baseDir); err != nil {
@@ -168,7 +170,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	req := &agent.RunRequest{
 		TenantID:       runTenantID,
-		AgentName:      runAgentName,
+		AgentName:      agentName,
 		Prompt:         prompt,
 		Attachments:    attachments,
 		InvocationType: "manual",
@@ -267,6 +269,23 @@ func validatePolicyFile(ctx context.Context, policyPath, baseDir string) error {
 		return fmt.Errorf("PII scanner: %w", err)
 	}
 	return nil
+}
+
+// resolveRunAgentName returns the agent name to use for the run. When runAgentName is the
+// default "default", the name is read from the loaded policy file so that config and identity
+// come from the same source; otherwise the flag value is used.
+func resolveRunAgentName(ctx context.Context, policyPath, baseDir, runAgentName string) string {
+	if runAgentName != "default" {
+		return runAgentName
+	}
+	pol, err := policy.LoadPolicy(ctx, policyPath, false, baseDir)
+	if err != nil {
+		return "default"
+	}
+	if pol.Agent.Name == "" {
+		return "default"
+	}
+	return pol.Agent.Name
 }
 
 // loadRoutingAndCostLimits loads the policy file and returns model routing and cost limits

@@ -135,3 +135,42 @@ func TestLoadRoutingAndCostLimits_MissingFile(t *testing.T) {
 	assert.Nil(t, routing)
 	assert.Nil(t, costLimits)
 }
+
+func TestResolveRunAgentName_Default_UsesPolicyAgentName(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, dir, "custom-name")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	got := resolveRunAgentName(ctx, policyPath, dir, "default")
+	assert.Equal(t, "custom-name", got, "when --agent omitted, agent name should come from policy")
+}
+
+func TestResolveRunAgentName_ExplicitFlag_Unchanged(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, dir, "policy-agent")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	got := resolveRunAgentName(ctx, policyPath, dir, "my-agent")
+	assert.Equal(t, "my-agent", got)
+}
+
+func TestResolveRunAgentName_Default_PolicyMissing_FallbackToDefault(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	got := resolveRunAgentName(ctx, filepath.Join(tmp, "nonexistent.talon.yaml"), tmp, "default")
+	assert.Equal(t, "default", got)
+}
+
+func TestResolveRunAgentName_Default_PolicySaysDefault_ReturnsDefault(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, dir, "default")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	got := resolveRunAgentName(ctx, policyPath, dir, "default")
+	assert.Equal(t, "default", got)
+}

@@ -41,7 +41,7 @@ mkdir my-agents && cd my-agents && talon init
 
 # Set key and run
 export OPENAI_API_KEY=sk-proj-...
-talon run "Your query here"
+talon run "Your query here"   # Uses agent name from policy when --agent omitted
 
 # Server (API + dashboard + optional gateway/proxy)
 export TALON_API_KEYS="your-key:default"
