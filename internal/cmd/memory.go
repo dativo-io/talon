@@ -21,7 +21,6 @@ var (
 	memCat    string
 	memLimit  int
 	memYes    bool
-	memVer    int
 )
 
 var memoryCmd = &cobra.Command{
@@ -50,8 +49,9 @@ var memorySearchCmd = &cobra.Command{
 }
 
 var memoryRollbackCmd = &cobra.Command{
-	Use:   "rollback",
-	Short: "Rollback memory to a specific version",
+	Use:   "rollback <mem_id>",
+	Short: "Rollback memory to a specific entry (soft-delete newer entries for audit)",
+	Args:  cobra.ExactArgs(1),
 	RunE:  memoryRollback,
 }
 
@@ -86,11 +86,8 @@ func init() {
 	memorySearchCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
 	memorySearchCmd.Flags().IntVar(&memLimit, "limit", 20, "Maximum results")
 
-	memoryRollbackCmd.Flags().StringVar(&memAgent, "agent", "", "Agent name (from agent.talon.yaml in cwd if unset)")
 	memoryRollbackCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
-	memoryRollbackCmd.Flags().IntVar(&memVer, "to-version", 0, "Version to rollback to (required)")
 	memoryRollbackCmd.Flags().BoolVar(&memYes, "yes", false, "Skip confirmation")
-	_ = memoryRollbackCmd.MarkFlagRequired("to-version")
 
 	memoryHealthCmd.Flags().StringVar(&memAgent, "agent", "", "Agent name (from agent.talon.yaml in cwd if unset)")
 	memoryHealthCmd.Flags().StringVar(&memTenant, "tenant", "default", "Tenant ID")
@@ -216,9 +213,11 @@ func memoryShow(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Tenant:    %s\n", entry.TenantID)
 	fmt.Printf("  Category:  %s\n", entry.Category)
 	fmt.Printf("  Type:      %s\n", entry.ObservationType)
-	fmt.Printf("  Version:   %d\n", entry.Version)
 	fmt.Printf("  Trust:     %d (%s)\n", entry.TrustScore, entry.SourceType)
 	fmt.Printf("  Status:    %s\n", entry.ReviewStatus)
+	if entry.ConsolidationStatus != "" && entry.ConsolidationStatus != "active" {
+		fmt.Printf("  State:     %s\n", strings.ToUpper(entry.ConsolidationStatus))
+	}
 	fmt.Printf("  Evidence:  %s\n", entry.EvidenceID)
 	fmt.Printf("  Timestamp: %s\n", entry.Timestamp.Format("2006-01-02 15:04:05 UTC"))
 	fmt.Println()
@@ -267,13 +266,24 @@ func memoryRollback(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
 
-	agent, fromPolicy := resolveMemoryAgent(ctx)
-	if agent == "" || (!fromPolicy && agent == "default") {
-		return fmt.Errorf("agent name required: set --agent or run from a directory containing %s", config.DefaultPolicy)
+	entryID := args[0]
+
+	store, err := openMemoryStore()
+	if err != nil {
+		return fmt.Errorf("opening memory store: %w", err)
+	}
+	defer store.Close()
+
+	entry, err := store.Get(ctx, memTenant, entryID)
+	if err != nil {
+		return fmt.Errorf("entry not found: %w", err)
 	}
 
 	if !memYes {
-		fmt.Printf("Rollback agent %q (tenant: %s) to version %d? [y/N] ", agent, memTenant, memVer)
+		fmt.Printf("Rollback agent %q (tenant: %s) to entry %s? All newer entries will be marked as rolled back.\n",
+			entry.AgentID, memTenant, entryID)
+		fmt.Printf("  Entry: %s | %s | %s\n", entry.ID, entry.Category, entry.Title)
+		fmt.Print("Proceed? [y/N] ")
 		var confirm string
 		_, _ = fmt.Scanln(&confirm)
 		if confirm != "y" && confirm != "Y" {
@@ -282,17 +292,13 @@ func memoryRollback(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	store, err := openMemoryStore()
+	affected, err := store.RollbackTo(ctx, memTenant, entryID)
 	if err != nil {
-		return fmt.Errorf("opening memory store: %w", err)
-	}
-	defer store.Close()
-
-	if err := store.Rollback(ctx, memTenant, agent, memVer); err != nil {
 		return fmt.Errorf("rolling back: %w", err)
 	}
 
-	fmt.Printf("Rolled back agent %q to version %d.\n", agent, memVer)
+	fmt.Printf("Rolled back agent %q to entry %s (%d entries marked as rolled_back).\n",
+		entry.AgentID, entryID, affected)
 	return nil
 }
 
@@ -317,7 +323,10 @@ func memoryHealth(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Memory Health Report: agent %s, tenant %s\n", agent, memTenant)
-	fmt.Printf("  Total entries:      %d\n", report.TotalEntries)
+	fmt.Printf("  Active entries:     %d\n", report.TotalEntries)
+	if report.RolledBack > 0 {
+		fmt.Printf("  Rolled back:        %d\n", report.RolledBack)
+	}
 
 	if len(report.TrustDistribution) > 0 {
 		var parts []string
@@ -366,12 +375,19 @@ func memoryAudit(cmd *cobra.Command, args []string) error {
 
 	for i := range entries {
 		entry := &entries[i]
+		status := entry.ReviewStatus
+		switch entry.ConsolidationStatus {
+		case "rolled_back":
+			status = "ROLLED_BACK"
+		case "invalidated":
+			status = "INVALIDATED"
+		}
 		fmt.Printf("  %s | %s | %s | trust:%d | %s\n",
 			entry.ID,
 			entry.Timestamp.Format("2006-01-02 15:04"),
 			entry.Category,
 			entry.TrustScore,
-			entry.ReviewStatus,
+			status,
 		)
 
 		// Cross-reference evidence

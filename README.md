@@ -362,7 +362,7 @@ talon secrets rotate <name>                  # Re-encrypt with fresh nonce
 talon memory list [--agent name]             # Browse memory index
 talon memory show <entry-id>                 # Full entry detail
 talon memory search "query"                  # Full-text search
-talon memory rollback --agent name --to-version N --yes  # Rollback
+talon memory rollback <mem_id> --yes                     # Rollback to entry (soft-delete newer)
 talon memory health [--agent name]           # Trust distribution + conflicts
 talon memory audit [--agent name]            # Evidence chain verification
 

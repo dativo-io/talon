@@ -131,6 +131,7 @@ type IndexEntry struct {
 // HealthReport aggregates memory health metrics for CLI output.
 type HealthReport struct {
 	TotalEntries      int
+	RolledBack        int
 	TrustDistribution map[string]int
 	PendingReview     int
 	ConflictCount     int
@@ -744,6 +745,7 @@ func (s *Store) Search(ctx context.Context, tenantID, agentID, query string, lim
 		            FROM memory_entries m
 		            JOIN memory_fts f ON m.rowid = f.rowid
 		            WHERE f.memory_fts MATCH ? AND m.tenant_id = ? AND m.agent_id = ?
+		            AND COALESCE(m.consolidation_status, 'active') = 'active'
 		            ORDER BY rank`
 		args = []interface{}{query, tenantID, agentID}
 	} else {
@@ -752,6 +754,7 @@ func (s *Store) Search(ctx context.Context, tenantID, agentID, query string, lim
 		            FROM memory_entries
 		            WHERE tenant_id = ? AND agent_id = ?
 		            AND (title LIKE ? OR content LIKE ?)
+		            AND COALESCE(consolidation_status, 'active') = 'active'
 		            ORDER BY timestamp DESC`
 		likePattern := "%" + query + "%"
 		args = []interface{}{tenantID, agentID, likePattern, likePattern}
@@ -785,45 +788,46 @@ func (s *Store) SearchByCategory(ctx context.Context, tenantID, agentID, categor
 	return s.List(ctx, tenantID, agentID, category, 0)
 }
 
-// Rollback deletes all memory entries with version > toVersion for an agent.
-// Returns an error if the agent has no memory entries (nothing to roll back) or if
-// no rows were deleted (already at or before toVersion).
-func (s *Store) Rollback(ctx context.Context, tenantID, agentID string, toVersion int) error {
-	ctx, span := tracer.Start(ctx, "memory.rollback",
+// RollbackTo soft-deletes all memory entries newer than the specified entry.
+// The entry identified by entryID becomes the newest "active" entry for its agent.
+// Rolled-back entries are marked consolidation_status = 'rolled_back' and expired_at = now.
+// They remain in the database for audit (AuditLog still returns them) but are excluded
+// from list, search, and prompt injection.
+func (s *Store) RollbackTo(ctx context.Context, tenantID, entryID string) (int64, error) {
+	ctx, span := tracer.Start(ctx, "memory.rollback_to",
 		trace.WithAttributes(
 			attribute.String("tenant_id", tenantID),
-			attribute.String("agent_id", agentID),
-			attribute.Int("to_version", toVersion),
+			attribute.String("entry_id", entryID),
 		))
 	defer span.End()
 
-	var count int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`,
-		tenantID, agentID).Scan(&count)
+	entry, err := s.Get(ctx, tenantID, entryID)
 	if err != nil {
-		return fmt.Errorf("counting memory entries: %w", err)
-	}
-	if count == 0 {
-		return fmt.Errorf("no memory entries for agent %q (tenant %s); nothing to roll back", agentID, tenantID)
+		return 0, fmt.Errorf("looking up entry %s: %w", entryID, err)
 	}
 
+	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND version > ?`,
-		tenantID, agentID, toVersion)
+		`UPDATE memory_entries
+		 SET consolidation_status = 'rolled_back', expired_at = ?
+		 WHERE tenant_id = ? AND agent_id = ? AND version > ?
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
+		now, tenantID, entry.AgentID, entry.Version)
 	if err != nil {
-		return fmt.Errorf("rolling back memory: %w", err)
+		return 0, fmt.Errorf("rolling back memory: %w", err)
 	}
 
 	affected, _ := result.RowsAffected()
-	span.SetAttributes(attribute.Int64("memory.deleted", affected))
+	span.SetAttributes(
+		attribute.Int64("memory.rolled_back", affected),
+		attribute.String("memory.agent_id", entry.AgentID),
+		attribute.Int("memory.to_version", entry.Version),
+	)
 	if affected == 0 {
-		return fmt.Errorf("no entries with version > %d; agent is already at or before that version (nothing to roll back)", toVersion)
+		return 0, fmt.Errorf("entry %s is already the newest active entry; nothing to roll back", entryID)
 	}
-	if affected > 0 {
-		recordEntriesGauge(ctx, s)
-	}
-	return nil
+	recordEntriesGauge(ctx, s)
+	return affected, nil
 }
 
 // HealthStats returns aggregate health metrics for an agent's memory.
@@ -835,17 +839,28 @@ func (s *Store) HealthStats(ctx context.Context, tenantID, agentID string) (*Hea
 		TrustDistribution: make(map[string]int),
 	}
 
-	// Total entries
+	// Total active entries (excludes rolled_back, invalidated, etc.)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
 		tenantID, agentID).Scan(&report.TotalEntries)
 	if err != nil {
 		return nil, fmt.Errorf("counting memory entries: %w", err)
 	}
 
-	// Trust distribution by source_type
+	// Rolled-back entries
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
+		 AND consolidation_status = 'rolled_back'`,
+		tenantID, agentID).Scan(&report.RolledBack)
+	if err != nil {
+		return nil, fmt.Errorf("counting rolled-back entries: %w", err)
+	}
+
+	// Trust distribution by source_type (active entries only)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT source_type, COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ? GROUP BY source_type`,
+		`SELECT source_type, COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
+		 AND COALESCE(consolidation_status, 'active') = 'active' GROUP BY source_type`,
 		tenantID, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("querying trust distribution: %w", err)
@@ -860,26 +875,31 @@ func (s *Store) HealthStats(ctx context.Context, tenantID, agentID string) (*Hea
 		report.TrustDistribution[srcType] = count
 	}
 
-	// Pending review
+	// Pending review (active entries only)
 	err = s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND review_status = 'pending_review'`,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
+		 AND review_status = 'pending_review'
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
 		tenantID, agentID).Scan(&report.PendingReview)
 	if err != nil {
 		return nil, fmt.Errorf("counting pending reviews: %w", err)
 	}
 
-	// Conflict counts
+	// Conflict counts (active entries only)
 	err = s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND conflicts_with != '[]'`,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
+		 AND conflicts_with != '[]'
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
 		tenantID, agentID).Scan(&report.ConflictCount)
 	if err != nil {
 		return nil, fmt.Errorf("counting conflicts: %w", err)
 	}
 
-	// Auto-resolved vs pending conflicts
+	// Auto-resolved vs pending conflicts (active entries only)
 	err = s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
-		 AND conflicts_with != '[]' AND review_status = 'auto_approved'`,
+		 AND conflicts_with != '[]' AND review_status = 'auto_approved'
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
 		tenantID, agentID).Scan(&report.AutoResolved)
 	if err != nil {
 		return nil, fmt.Errorf("counting auto-resolved: %w", err)

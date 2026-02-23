@@ -382,22 +382,70 @@ func TestSearchByCategory(t *testing.T) {
 	assert.Len(t, entries, 2)
 }
 
-func TestRollback_DeletesAfterVersion(t *testing.T) {
+func TestRollbackTo_SoftDeletesNewerEntries(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 
+	var entryIDs []string
 	for i := 0; i < 5; i++ {
-		require.NoError(t, store.Write(ctx, &Entry{
+		e := &Entry{
 			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
-			Title: "Entry", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
-		}))
+			Title: fmt.Sprintf("Entry %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		entryIDs = append(entryIDs, e.ID)
 	}
 
-	require.NoError(t, store.Rollback(ctx, "acme", "sales", 3))
+	// Rollback to entry 3 (version 3) — entries 4 and 5 should be soft-deleted
+	affected, err := store.RollbackTo(ctx, "acme", entryIDs[2])
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), affected)
 
+	// List/Read should only return 3 active entries
 	entries, err := store.Read(ctx, "acme", "sales")
 	require.NoError(t, err)
 	assert.Len(t, entries, 3)
+
+	// AuditLog should return all 5 (including rolled-back)
+	audit, err := store.AuditLog(ctx, "acme", "sales", 50)
+	require.NoError(t, err)
+	assert.Len(t, audit, 5)
+
+	// Rolled-back entries should have consolidation_status = "rolled_back"
+	rolledBack := 0
+	for _, e := range audit {
+		if e.ConsolidationStatus == "rolled_back" {
+			rolledBack++
+			assert.NotNil(t, e.ExpiredAt)
+		}
+	}
+	assert.Equal(t, 2, rolledBack)
+
+	// Search should not find rolled-back entries
+	results, err := store.Search(ctx, "acme", "sales", "Entry", 50)
+	require.NoError(t, err)
+	assert.Len(t, results, 3)
+
+	// Health should reflect active count and rolled-back count
+	report, err := store.HealthStats(ctx, "acme", "sales")
+	require.NoError(t, err)
+	assert.Equal(t, 3, report.TotalEntries)
+	assert.Equal(t, 2, report.RolledBack)
+}
+
+func TestRollbackTo_NewestEntry_ReturnsError(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	e := &Entry{
+		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+		Title: "Only entry", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+	}
+	require.NoError(t, store.Write(ctx, e))
+
+	_, err := store.RollbackTo(ctx, "acme", e.ID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already the newest")
 }
 
 func TestHealthStats_Aggregates(t *testing.T) {
@@ -506,21 +554,28 @@ func TestTenantIsolation_RollbackScopedToTenant(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 
+	var acmeFirstID string
 	for i := 0; i < 3; i++ {
-		require.NoError(t, store.Write(ctx, &Entry{
+		e := &Entry{
 			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
 			Title: "Entry", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
-		}))
+		}
+		require.NoError(t, store.Write(ctx, e))
+		if i == 0 {
+			acmeFirstID = e.ID
+		}
 		require.NoError(t, store.Write(ctx, &Entry{
 			TenantID: "globex", AgentID: "sales", Category: CategoryDomainKnowledge,
 			Title: "Entry", Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
 		}))
 	}
 
-	// Rollback acme to version 1
-	require.NoError(t, store.Rollback(ctx, "acme", "sales", 1))
+	// Rollback acme to first entry
+	affected, err := store.RollbackTo(ctx, "acme", acmeFirstID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), affected)
 
-	// Acme should have 1 entry
+	// Acme should have 1 active entry
 	acme, err := store.Read(ctx, "acme", "sales")
 	require.NoError(t, err)
 	assert.Len(t, acme, 1)
@@ -529,6 +584,11 @@ func TestTenantIsolation_RollbackScopedToTenant(t *testing.T) {
 	globex, err := store.Read(ctx, "globex", "sales")
 	require.NoError(t, err)
 	assert.Len(t, globex, 3)
+
+	// Acme audit should show all 3 (including 2 rolled back)
+	audit, err := store.AuditLog(ctx, "acme", "sales", 50)
+	require.NoError(t, err)
+	assert.Len(t, audit, 3)
 }
 
 func TestPurgeExpired(t *testing.T) {

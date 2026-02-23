@@ -144,8 +144,8 @@ talon memory show mem_a1b2c3d4
 # Full-text search
 talon memory search "revenue target"
 
-# Rollback to specific version
-talon memory rollback --agent sales-analyst --to-version 5 --yes
+# Rollback to a specific entry (soft-delete newer entries for audit)
+talon memory rollback mem_a1b2c3d4 --yes
 
 # Trust distribution and conflict status
 talon memory health --agent sales-analyst
@@ -217,6 +217,6 @@ Talon implements multiple layers of defense against memory poisoning attacks:
 - **Trust scoring:** entries from lower-trust sources (webhooks, tools) can be flagged for review when conflicting with higher-trust entries
 - **Conflict detection:** FTS5-based keyword overlap identifies contradictory information; fail-closed on error
 - **Prompt filtering:** `pending_review` entries are excluded from LLM prompts, preventing unvalidated data from influencing decisions
-- **Rollback:** `talon memory rollback` restores memory to any previous version if poisoning is detected
+- **Rollback:** `talon memory rollback <mem_id>` soft-deletes entries newer than the specified entry; rolled-back entries remain visible in `talon memory audit` with `ROLLED_BACK` status for compliance
 - **Health monitoring:** `talon memory health` surfaces trust distribution and pending conflicts
 

@@ -108,14 +108,44 @@ func TestMemoryRollback(t *testing.T) {
 	RunTalon(t, dir, env, "run", "Second run beta")
 	RunTalon(t, dir, env, "run", "Third run gamma")
 
-	// Rollback to version 1. Consolidation may leave only one entry (version 1), in which case there is nothing to roll back.
-	stdout, stderr, code := RunTalon(t, dir, env, "memory", "rollback", "--agent", "default", "--to-version", "1", "--yes")
+	// List entries to get the first entry's mem_id
+	listOut, _, listCode := RunTalon(t, dir, env, "memory", "list", "--agent", "default")
+	require.Equal(t, 0, listCode)
+
+	firstMemID := parseLastMemID(listOut)
+	if firstMemID == "" {
+		t.Skip("no memory entries created (consolidation may have merged all)")
+	}
+
+	// Rollback to first entry; newer entries should be soft-deleted
+	stdout, stderr, code := RunTalon(t, dir, env, "memory", "rollback", firstMemID, "--yes")
 	if code == 0 {
 		assert.Contains(t, stdout, "Rolled back")
+		assert.Contains(t, stdout, "rolled_back")
+
+		// Audit should still show all entries (including rolled-back)
+		auditOut, _, auditCode := RunTalon(t, dir, env, "memory", "audit", "--agent", "default")
+		require.Equal(t, 0, auditCode)
+		assert.Contains(t, auditOut, "ROLLED_BACK")
 	} else {
-		// Accept "nothing to roll back" when consolidation left agent at or before version 1
-		assert.Contains(t, stderr, "nothing to roll back", "rollback should fail with nothing to roll back when already at/before version")
+		// Accept "already the newest" when consolidation left only one entry
+		assert.Contains(t, stderr, "already the newest", "rollback should fail when entry is newest")
 	}
+}
+
+// parseLastMemID extracts the last (oldest) mem_XXX ID from `memory list` table output.
+func parseLastMemID(output string) string {
+	var lastID string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "mem_") {
+			fields := strings.SplitN(line, "|", 2)
+			if len(fields) > 0 {
+				lastID = strings.TrimSpace(fields[0])
+			}
+		}
+	}
+	return lastID
 }
 
 func TestMemoryAudit(t *testing.T) {
