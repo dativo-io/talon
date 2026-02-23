@@ -1766,8 +1766,9 @@ func inferCategoryTypeAndMemType(resp *RunResponse) (category, obsType, memType 
 	}
 
 	lower := strings.ToLower(resp.Response)
+	// Use " i like " (with spaces), not "like", to avoid matching "looks like", "likely", "likewise", "would like to".
 	switch {
-	case containsAny(lower, "prefer", "like", "want", "always use", "never use", "favorite"):
+	case containsAny(lower, "prefer", " i like ", "want", "always use", "never use", "favorite"):
 		return memory.CategoryUserPreferences, memory.ObsLearning, memory.MemTypeSemanticFact
 	case containsAny(lower, "step 1", "procedure", "workflow", "process", "how to", "best practice"):
 		return memory.CategoryProcedureImprovements, memory.ObsLearning, memory.MemTypeProcedural

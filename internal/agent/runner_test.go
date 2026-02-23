@@ -82,6 +82,35 @@ func TestInferCategoryTypeAndMemType(t *testing.T) {
 			wantObs: memory.ObsLearning,
 			wantMem: memory.MemTypeSemanticFact,
 		},
+		// Bare "like" was removed: common phrases must not be classified as user_preferences
+		{
+			name:    "looks like → domain_knowledge not user_preferences",
+			resp:    &RunResponse{Response: "It looks like the request was successful."},
+			wantCat: memory.CategoryDomainKnowledge,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+		{
+			name:    "likely / likewise → domain_knowledge not user_preferences",
+			resp:    &RunResponse{Response: "This is likely correct. Likewise for the other case."},
+			wantCat: memory.CategoryDomainKnowledge,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+		{
+			name:    "would like to → domain_knowledge not user_preferences",
+			resp:    &RunResponse{Response: "The user would like to receive a summary."},
+			wantCat: memory.CategoryDomainKnowledge,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+		{
+			name:    "explicit I like → user_preferences",
+			resp:    &RunResponse{Response: "User said: I like getting reports in PDF."},
+			wantCat: memory.CategoryUserPreferences,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
