@@ -1,73 +1,48 @@
 # Changelog
 
-All notable changes to Talon will be documented in this file.
+All notable changes to Dativo Talon are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-02-23
+
 ### Added
 
-#### Testing & CI
-- Test pyramid: unit (`./internal/...`, `./cmd/...`), integration (`tests/integration/` with `-tags=integration`), e2e (`tests/e2e/` with `-tags=e2e`)
-- E2E tests for CLI flows: init, run (mock LLM), dry-run, policy deny, tenant/agent, attachments, audit list/verify, costs, secrets lifecycle, validate
-- Makefile targets: `test-e2e`, `test-all` (unit + integration + e2e)
-- CI: e2e job; coverage below 70% fails the build
-- `OPENAI_BASE_URL` env support for OpenAI provider (e2e/mock usage)
-- Shared test helpers in `internal/testutil/` (mock provider, policy files, constants)
-- Fuzz tests: `FuzzPIIScan`, `FuzzLoadPolicy`, `FuzzInjectionScan`
-- Benchmarks: `BenchmarkPIIScan`, `BenchmarkRouterRoute`, `BenchmarkEvidenceStore`, `BenchmarkCostTotal`
+- **Bootstrap & CLI:** Cobra CLI with OpenTelemetry integration; zerolog structured logging with OTel bridge; Makefile, Dockerfile, docker-compose, CI workflows.
+- **Policy engine:** Embedded OPA with v2.0 schema; Rego policies for cost limits, rate limits, time restrictions, resource limits, tool access, secret access, memory governance, data classification; `talon init` and `talon validate` (strict mode); template-based init.
+- **MCP proxy:** Architecture and onboarding docs; proxy Rego policies (tool allowlists, rate limits, PII redaction, high-risk blocking).
+- **PII, attachments, LLM:** Regex-based PII classifier (EU patterns); attachment scanner with extraction, instruction detection, sandboxing; multi-provider LLM router (OpenAI, Anthropic, Bedrock EU, Ollama); cost estimation and tier-based routing.
+- **Agent pipeline:** Full runner (policy → classify → scan attachments → OPA → secrets → route LLM → evidence); execution plan generation and plan review gate (EU AI Act Art. 11/13); pipeline hooks (webhook delivery); MCP tool registry; `talon run` with `--dry-run`, `--agent`, `--tenant`, `--attach`, `--policy`.
+- **Secrets & evidence:** AES-256-GCM secrets vault with per-secret ACL; secret rotation and audit log; SQLite evidence store with HMAC-SHA256; progressive disclosure (list → timeline → detail); `talon audit list/verify`, `talon secrets set/list/audit/rotate`.
+- **Cost & PII:** Graceful cost degradation (fallback model when budget threshold reached); expanded EU PII patterns.
+- **Testing:** Test pyramid (unit, integration, e2e); shared `internal/testutil` (mock provider, policy helpers, constants); e2e CLI flows (init, run, validate, audit, costs, secrets, memory); fuzz and benchmarks; CI coverage threshold 70%.
+- **Memory, context, triggers:** Governed agent memory (Constitutional AI, allowed/forbidden categories, PII scan); shared enterprise context mounts with privacy tags; cron scheduler and webhook handler; memory CLI and search.
+- **SMB governance:** Onboarding and governance improvements for SMB use cases.
+- **Agent planning:** Bounded agentic loop; step-level evidence; loop containment policy; tests and docs.
+- **Observability & CLI:** Config show, doctor, costs/report commands; examples and docs.
+- **HTTP API & MCP:** REST API with 15+ endpoints; MCP JSON-RPC 2.0 server; MCP proxy for vendor integration; embedded dashboard (evidence, plan review, memory); per-tenant rate limits.
+- **CI/CD & release:** Golden tests for policy engine; integration full-flow and gateway stub tests; gofmt, vet, OPA policy tests, Codecov in CI; security workflow (govulncheck, gitleaks, SBOM); docs workflow (markdown link check); install script with checksum verification; GoReleaser with SBOM and Docker (GHCR); SECURITY.md; issue and PR templates.
 
-#### Agent Pipeline (`internal/agent/`)
-- Full orchestration runner: load policy → classify input → scan attachments → evaluate OPA → resolve secrets → route LLM → call provider → classify output → generate evidence
-- Execution plan generation for EU AI Act Art. 11/13 compliance (plan review gate, SHA-256 hashed prompts, configurable timeout)
-- Plan review store (SQLite-backed, approve/reject/modify workflow with annotations)
-- Pipeline hook system: pre/post hooks at every stage (policy, LLM, tools, memory, evidence) with webhook delivery
-- MCP-compatible tool registry (thread-safe, `Register`/`Get`/`List`)
-- Dry-run mode (`--dry-run` shows policy decision without calling LLM)
+### Fixed
 
-#### CLI Commands (`internal/cmd/`)
-- `talon run [prompt]` — fully functional with `--agent`, `--tenant`, `--dry-run`, `--attach`, `--policy` flags
-- `talon audit list` — query evidence records with `--tenant`, `--agent`, `--limit` filters
-- `talon audit verify [id]` — verify HMAC-SHA256 signature integrity of an evidence record
-- `talon secrets set [name] [value]` — store AES-256-GCM encrypted secret
-- `talon secrets list` — show metadata (names + access counts, values never shown)
-- `talon secrets audit` — view secret access log (allowed/denied, per tenant/agent)
-- `talon secrets rotate [name]` — re-encrypt with fresh nonce
+- Policy engine post-review fixes (PR #4).
+- Memory: prevent data race on shared Governance OPA evaluator.
 
-#### Evidence Store (`internal/evidence/`)
-- SQLite-backed evidence persistence with HMAC-SHA256 signatures
-- Progressive disclosure: index (list view) → timeline (NIS2 Art. 23) → full detail
-- Evidence generator that creates, signs, and persists records in one call
-- Tamper detection via signature verification
-- Filtering by tenant, agent, time range
+### Security
 
-#### Secrets Vault (`internal/secrets/`)
-- AES-256-GCM encrypted secret storage in SQLite
-- Per-secret ACL with glob pattern matching for agents, tenants, and forbidden lists
-- Every access (allowed and denied) logged to audit table
-- Secret rotation (re-encrypt with fresh nonce, same plaintext)
-- Access counting per secret
+- AES-256-GCM encryption for secrets at rest.
+- HMAC-SHA256 signatures for evidence integrity.
+- Timing-safe API key comparison; per-agent/tenant ACL; fail-closed policy evaluation.
 
-#### Configuration (`internal/config/`)
-- Operator-level config via env vars (`TALON_*`) or `talon.config.yaml`
-- Deterministic per-machine key derivation for zero-config quickstart
-- Validation (key length, attachment limits)
-- Warning on default crypto keys
+### Compliance
 
-#### LLM Key Resolution (`internal/llm/`)
-- Vault-first API key resolver: tenant-scoped keys from secrets vault, env-var fallback for dev/quickstart
-- Provider factory (`NewProviderWithKey`) for runtime credential injection
+- ISO 27001: policy, classification, audit, secrets controls.
+- GDPR: controller obligations, privacy by design, processing records, security.
+- NIS2: risk management, incident reporting via evidence timeline.
+- EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
+- Data residency: tier-based EU model routing.
 
-### Changed
-- `go.mod`: `github.com/google/uuid` promoted from indirect to direct dependency
-- `talon run`, `talon audit`, `talon secrets` — rewritten from stubs to full implementations
-
-### Infrastructure
-- Project bootstrap with CLI framework (cobra)
-- OpenTelemetry integration (traces + structured logging)
-- Policy engine (OPA embedded) with YAML loader
-- PII detection (regex-based EU patterns)
-- Attachment scanner (prompt injection detection + sandboxing)
-- Multi-provider LLM router (OpenAI, Anthropic, Bedrock, Ollama)
+[0.7.0]: https://github.com/dativo-io/talon/releases/tag/v0.7.0

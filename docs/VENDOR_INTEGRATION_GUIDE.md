@@ -69,7 +69,7 @@ Third-Party AI Agent → Talon MCP Server → Your Zendesk/CRM
 #### Step 1: Install Talon
 ```bash
 # On your infrastructure (VM, EC2, on-prem server)
-wget https://github.com/dativo/talon/releases/download/v1.0.0/talon-linux-amd64
+wget https://github.com/dativo-io/talon/releases/download/v1.0.0/talon-linux-amd64
 chmod +x talon-linux-amd64
 sudo mv talon-linux-amd64 /usr/local/bin/talon
 ```
@@ -702,8 +702,8 @@ curl -X POST https://talon.your-company.local/tools/call \
 
 ## Support
 
-- **Documentation:** https://docs.dativo.com
-- **GitHub Issues:** https://github.com/dativo/talon/issues
+- **Documentation:** https://github.com/dativo-io/talon#readme
+- **GitHub Issues:** https://github.com/dativo-io/talon/issues
 - **Community Slack:** https://dativo-community.slack.com
 - **Enterprise Support:** enterprise@dativo.com
 

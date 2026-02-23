@@ -8,16 +8,17 @@
 - [ ] Documentation update
 
 ## Checklist
+- [ ] `make check` passes (tests + lint + vet)
 - [ ] Code follows `.cursorrules` conventions
 - [ ] Critical rules from `CLAUDE_PROJECT_INSTRUCTIONS.md` followed
 - [ ] Tests added/updated (target: 70% coverage)
-- [ ] `make test` passes
-- [ ] `make lint` passes
+- [ ] Coverage ≥70% for changed packages
+- [ ] Docs updated (if user-facing)
+- [ ] CHANGELOG.md updated (if user-facing change)
+- [ ] Conventional commit messages used
 - [ ] OTel spans on significant functions
 - [ ] Evidence generated for auditable operations
 - [ ] No secrets hardcoded
-- [ ] Documentation updated (if needed)
-- [ ] CHANGELOG.md updated (if user-facing change)
 
 ## Related Issues
 <!-- Link related issues: Fixes #123 -->

@@ -31,6 +31,18 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      - name: Format check
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
       # All test tiers: unit (internal + cmd), integration (tests/integration), e2e (tests/e2e)
       # Coverage: exclude cmd/talon (main) and internal/testutil (test helpers) so 70% target is meaningful
       - name: Run unit tests
@@ -51,11 +63,27 @@ jobs:
             exit 1
           fi
 
+      - name: OPA/Rego policy tests
+        run: |
+          if ! command -v opa &> /dev/null; then
+            curl -L -o opa https://github.com/open-policy-agent/opa/releases/latest/download/opa_linux_amd64_static
+            chmod +x opa
+            sudo mv opa /usr/local/bin/
+          fi
+          opa test internal/policy/rego/ -v
+
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.go-version }}
           path: coverage-${{ matrix.go-version }}.out
+
+      - name: Upload to Codecov
+        if: matrix.go-version == '1.22'
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage-1.22.out
+          fail_ci_if_error: false
 
   lint:
     name: Lint

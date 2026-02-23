@@ -440,6 +440,26 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	}
 
 	if req.DryRun {
+		// Record evidence for dry-run so audit trail includes policy-check attempts (no LLM call).
+		duration := time.Since(startTime)
+		_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+			CorrelationID:   correlationID,
+			TenantID:        req.TenantID,
+			AgentID:         req.AgentName,
+			InvocationType:  req.InvocationType,
+			RequestSourceID: req.InvocationType,
+			PolicyDecision: evidence.PolicyDecision{
+				Allowed:       true,
+				Action:        decision.Action,
+				Reasons:       decision.Reasons,
+				PolicyVersion: pol.VersionTag,
+			},
+			Classification: evidence.Classification{InputTier: inputClass.Tier, PIIDetected: inputEntityNames},
+			AttachmentScan: attachmentScan,
+			DurationMS:     duration.Milliseconds(),
+			InputPrompt:    req.Prompt,
+			Compliance:     complianceInfo,
+		})
 		resp := &RunResponse{PolicyAllow: true, PIIDetected: inputEntityNames, InputTier: inputClass.Tier}
 		if attachmentScan != nil {
 			resp.AttachmentInjectionsDetected = attachmentScan.InjectionsDetected
