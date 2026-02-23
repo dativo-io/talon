@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestFullFlow(t *testing.T) {
@@ -106,8 +107,22 @@ func TestPolicyEnforcement(t *testing.T) {
 	content, err := os.ReadFile(policyPath)
 	require.NoError(t, err)
 
-	modified := strings.Replace(string(content), "daily: 200.0", "daily: 0.001", 1)
-	require.NoError(t, os.WriteFile(policyPath, []byte(modified), 0644))
+	// Parse YAML and set a tiny daily budget so the test is not tied to template formatting.
+	// If the template no longer has policies.cost_limits.daily, this fails and catches regressions.
+	var doc map[string]interface{}
+	require.NoError(t, yaml.Unmarshal(content, &doc), "policy must be valid YAML")
+	policies, ok := doc["policies"].(map[string]interface{})
+	require.True(t, ok, "policy must have policies section")
+	costLimits, ok := policies["cost_limits"].(map[string]interface{})
+	require.True(t, ok, "policy must have policies.cost_limits")
+	costLimits["daily"] = 0.001
+
+	modified, err := yaml.Marshal(doc)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(policyPath, modified, 0644))
+
+	// Ensure we actually wrote a tight budget (guards against no-op if structure changes).
+	assert.Contains(t, string(modified), "daily: 0.001", "modified policy must contain tight daily limit")
 
 	out := runCmd(t, binary, workDir, "run", "--dry-run", "test")
 	assert.True(t, strings.Contains(out, "ALLOW") || strings.Contains(out, "DRY"),
