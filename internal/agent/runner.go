@@ -1218,43 +1218,63 @@ func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int,
 		}
 	}
 
-	providerName := provider.Name()
+	if llm.ProviderUsesAPIKey(provider.Name()) && r.secrets != nil {
+		provider, secretsAccessed = r.applyProviderKeyFromVaultOrEnv(ctx, req, provider)
+	}
 
-	if llm.ProviderUsesAPIKey(providerName) && r.secrets != nil {
-		secretName := providerName + "-api-key"
-		secret, secretErr := r.secrets.Get(ctx, secretName, req.TenantID, req.AgentName)
-		// Fallback: accept env-var-style secret names (e.g. OPENAI_API_KEY) for convenience
-		if secretErr != nil && errors.Is(secretErr, secrets.ErrSecretNotFound) {
-			alias := secretNameForProviderEnvAlias(providerName)
-			if alias != "" {
-				secret, secretErr = r.secrets.Get(ctx, alias, req.TenantID, req.AgentName)
-				if secretErr == nil {
-					secretName = alias
-				}
-			}
-		}
-		if secretErr == nil {
-			secretsAccessed = append(secretsAccessed, secretName)
-			if p := llm.NewProviderWithKey(providerName, string(secret.Value)); p != nil {
-				provider = p
-			}
-		} else {
-			// Record audit only when accurate: env_fallback only if env var is actually set.
-			canonicalName := providerName + "-api-key"
-			envVarName := secretNameForProviderEnvAlias(providerName)
-			if envVarName != "" && os.Getenv(envVarName) != "" {
-				r.secrets.RecordEnvFallback(ctx, canonicalName, req.TenantID, req.AgentName)
-				log.Debug().
-					Str("provider", providerName).
-					Str("tenant_id", req.TenantID).
-					Msg("no tenant key in vault, using operator fallback")
-			} else {
-				r.secrets.RecordVaultMissNoFallback(ctx, canonicalName, req.TenantID, req.AgentName)
+	return provider, model, degraded, originalModel, secretsAccessed, nil
+}
+
+// applyProviderKeyFromVaultOrEnv resolves the provider's API key from the vault (or env fallback)
+// and returns the provider to use and any secret names that were accessed.
+func (r *Runner) applyProviderKeyFromVaultOrEnv(ctx context.Context, req *RunRequest, provider llm.Provider) (resolved llm.Provider, secretsAccessed []string) {
+	providerName := provider.Name()
+	secretName := providerName + "-api-key"
+	secret, secretErr := r.secrets.Get(ctx, secretName, req.TenantID, req.AgentName)
+	if secretErr != nil && errors.Is(secretErr, secrets.ErrSecretNotFound) {
+		alias := secretNameForProviderEnvAlias(providerName)
+		if alias != "" {
+			secret, secretErr = r.secrets.Get(ctx, alias, req.TenantID, req.AgentName)
+			if secretErr == nil {
+				secretName = alias
 			}
 		}
 	}
 
-	return provider, model, degraded, originalModel, secretsAccessed, nil
+	canonicalName := providerName + "-api-key"
+	envVarName := secretNameForProviderEnvAlias(providerName)
+	envSet := envVarName != "" && os.Getenv(envVarName) != ""
+
+	if secretErr == nil {
+		if envSet {
+			r.secrets.RecordEnvFallback(ctx, canonicalName, req.TenantID, req.AgentName)
+			log.Debug().
+				Str("provider", providerName).
+				Str("tenant_id", req.TenantID).
+				Msg("operator env set — using env over vault")
+			resolved = provider
+			return
+		}
+		secretsAccessed = append(secretsAccessed, secretName)
+		if p := llm.NewProviderWithKey(providerName, string(secret.Value)); p != nil {
+			resolved = p
+			return
+		}
+		resolved = provider
+		return
+	}
+
+	if envSet {
+		r.secrets.RecordEnvFallback(ctx, canonicalName, req.TenantID, req.AgentName)
+		log.Debug().
+			Str("provider", providerName).
+			Str("tenant_id", req.TenantID).
+			Msg("no tenant key in vault, using operator fallback")
+	} else {
+		r.secrets.RecordVaultMissNoFallback(ctx, canonicalName, req.TenantID, req.AgentName)
+	}
+	resolved = provider
+	return
 }
 
 // secretNameForProviderEnvAlias returns the env-var-style secret name for a provider,
