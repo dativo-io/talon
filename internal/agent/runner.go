@@ -1599,7 +1599,11 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 	}
 
 	if r.consolidator != nil {
-		result, err := r.consolidator.Evaluate(ctx, &observation)
+		var dedupWindow time.Duration
+		if pol.Memory.Governance != nil && pol.Memory.Governance.DedupWindowMinutes > 0 {
+			dedupWindow = time.Duration(pol.Memory.Governance.DedupWindowMinutes) * time.Minute
+		}
+		result, err := r.consolidator.Evaluate(ctx, &observation, dedupWindow)
 		if err != nil {
 			log.Warn().Err(err).Msg("consolidation_evaluate_failed")
 			if writeErr := r.memory.Write(ctx, &observation); writeErr != nil {

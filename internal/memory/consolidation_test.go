@@ -17,6 +17,31 @@ func testStoreForConsolidation(t *testing.T) *Store {
 	return store
 }
 
+func TestConsolidator_Evaluate_DedupWindowZero_DoesNotNoopOnSameInputHash(t *testing.T) {
+	store := testStoreForConsolidation(t)
+	ctx := context.Background()
+
+	// Existing entry with InputHash so that with a 1h window we would get NOOP.
+	existing := &Entry{
+		TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge,
+		Title: "Old", Content: "Old content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		InputHash: "sha256:same",
+	}
+	require.NoError(t, store.Write(ctx, existing))
+
+	c := NewConsolidator(store)
+	candidate := &Entry{
+		TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge,
+		Title: "New fact", Content: "Different content", EvidenceID: "req_2", SourceType: SourceAgentRun,
+		InputHash: "sha256:same", TrustScore: 80,
+	}
+	// dedupWindow 0 = disabled per policy: must not return NOOP for "duplicate input hash".
+	result, err := c.Evaluate(ctx, candidate, 0)
+	require.NoError(t, err)
+	assert.NotEqual(t, "duplicate input hash", result.Reason, "policy dedup disabled (0) must not NOOP on input hash")
+	assert.Equal(t, ActionAdd, result.Action)
+}
+
 func TestConsolidator_Evaluate_NoMatch_ReturnsAdd(t *testing.T) {
 	store := testStoreForConsolidation(t)
 	ctx := context.Background()
@@ -26,7 +51,7 @@ func TestConsolidator_Evaluate_NoMatch_ReturnsAdd(t *testing.T) {
 		TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge,
 		Title: "Novel fact", Content: "Something completely new", EvidenceID: "req_1", SourceType: SourceAgentRun, TrustScore: 80,
 	}
-	result, err := c.Evaluate(ctx, candidate)
+	result, err := c.Evaluate(ctx, candidate, 0)
 	require.NoError(t, err)
 	assert.Equal(t, ActionAdd, result.Action)
 	assert.Contains(t, result.Reason, "novel")
@@ -47,7 +72,7 @@ func TestConsolidator_Evaluate_NearDuplicate_ReturnsNoop(t *testing.T) {
 		TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge,
 		Title: "Revenue target", Content: "Revenue target is 1M EUR", EvidenceID: "req_2", SourceType: SourceAgentRun, TrustScore: 80,
 	}
-	result, err := c.Evaluate(ctx, candidate)
+	result, err := c.Evaluate(ctx, candidate, 0)
 	require.NoError(t, err)
 	// High keyword overlap → NOOP
 	if result.Action == ActionNoop {
@@ -183,7 +208,7 @@ func TestConsolidator_Evaluate_Table(t *testing.T) {
 				TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge,
 				Title: tt.candidateTitle, Content: tt.candidateContent, EvidenceID: "req_cand", SourceType: SourceAgentRun, TrustScore: tt.candidateTrust,
 			}
-			result, err := c.Evaluate(ctx, candidate)
+			result, err := c.Evaluate(ctx, candidate, 0)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantAction, result.Action, "action")
 			assert.Contains(t, result.Reason, tt.wantReason, "reason")
