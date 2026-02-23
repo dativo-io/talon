@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1364,6 +1365,7 @@ func entityNames(entities []classifier.PIIEntity) []string {
 }
 
 // mergePIIEntityNames merges two slices of PII entity type names and deduplicates.
+// Returns a sorted slice so evidence and logs have deterministic ordering.
 func mergePIIEntityNames(a, b []string) []string {
 	seen := make(map[string]bool)
 	for _, s := range a {
@@ -1379,6 +1381,7 @@ func mergePIIEntityNames(a, b []string) []string {
 	for s := range seen {
 		out = append(out, s)
 	}
+	sort.Strings(out)
 	return out
 }
 
