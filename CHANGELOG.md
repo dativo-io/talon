@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-02-23
+
+### Added
+
+- **Policy:** `policies.data_classification.block_on_pii` — when true, runs are denied (no LLM call) when the user prompt or any attachment content contains PII; prompt and attachment text are scanned and evidence is recorded on deny. Documented in policy cookbook.
+
+### Fixed
+
+- **Agent:** Deterministic ordering of `PIIDetected` / `pii_detected` in evidence and logs (merged PII entity names are now sorted to avoid flaky tests and unstable serialized evidence).
+
 ## [0.7.2] - 2026-02-23
 
 ### Fixed
@@ -58,7 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/dativo-io/talon/compare/v0.7.4...v0.7.5
 [0.7.2]: https://github.com/dativo-io/talon/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/dativo-io/talon/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/dativo-io/talon/releases/tag/v0.7.0
