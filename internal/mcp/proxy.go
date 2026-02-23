@@ -234,6 +234,15 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 	if h.evidenceStore == nil {
 		return
 	}
+	allowed := eventType == "proxy_tool_call" || (eventType == "proxy_pii_redaction" && reason == "")
+	action := "allow"
+	if !allowed {
+		action = "deny"
+	}
+	var reasons []string
+	if reason != "" {
+		reasons = []string{reason}
+	}
 	ev := &evidence.Evidence{
 		ID:              "proxy_" + uuid.New().String()[:8],
 		CorrelationID:   "mcp_proxy_" + uuid.New().String()[:8],
@@ -242,7 +251,7 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 		AgentID:         "mcp-proxy",
 		InvocationType:  eventType,
 		RequestSourceID: h.config.Proxy.Upstream.Vendor,
-		PolicyDecision:  evidence.PolicyDecision{Allowed: eventType == "proxy_tool_call", Action: "allow", Reasons: nil},
+		PolicyDecision:  evidence.PolicyDecision{Allowed: allowed, Action: action, Reasons: reasons},
 		Execution: evidence.Execution{
 			ToolsCalled: []string{toolName},
 			Error:       reason,
