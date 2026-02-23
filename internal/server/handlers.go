@@ -23,6 +23,27 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 
+// openAIErrorBody is the OpenAI API error response shape so SDKs can parse error.message.
+type openAIErrorBody struct {
+	Error struct {
+		Message string `json:"message"`
+		Type    string `json:"type,omitempty"`
+		Code    string `json:"code,omitempty"`
+	} `json:"error"`
+}
+
+// writeOpenAIError writes a JSON error in OpenAI format: {"error": {"message": "...", "type": "...", "code": "..."}}.
+// Use only for OpenAI-compatible endpoints (e.g. /v1/chat/completions).
+func writeOpenAIError(w http.ResponseWriter, status int, code, typeStr, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	body := openAIErrorBody{}
+	body.Error.Message = message
+	body.Error.Type = typeStr
+	body.Error.Code = code
+	_ = json.NewEncoder(w).Encode(body)
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{
 		"status": "ok",
@@ -131,7 +152,7 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 //nolint:gocyclo // handler branches on request validation and response shaping
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "invalid_request_error", "POST required")
 		return
 	}
 	var req struct {
@@ -144,7 +165,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		TenantID string `json:"tenant_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error())
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_json", "invalid_request_error", "invalid JSON: "+err.Error())
 		return
 	}
 	tenantID := TenantIDFromContext(r.Context())
@@ -180,7 +201,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if prompt == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "no user message content in messages")
+		writeOpenAIError(w, http.StatusBadRequest, "messages_required", "invalid_request_error", "no user message content in messages")
 		return
 	}
 	runReq := &agent.RunRequest{
@@ -195,18 +216,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.runner.Run(ctx, runReq)
 	if err != nil {
 		log.Error().Err(err).Str("tenant_id", tenantID).Msg("chat_completions_run_error")
-		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		writeOpenAIError(w, http.StatusInternalServerError, "run_failed", "internal_error", err.Error())
 		return
 	}
 	if !resp.PolicyAllow {
-		writeError(w, http.StatusForbidden, "policy_denied", resp.DenyReason)
+		writeOpenAIError(w, http.StatusForbidden, "policy_denied", "policy_denied", resp.DenyReason)
 		return
 	}
 	if resp.PlanPending != "" {
-		writeJSON(w, http.StatusAccepted, map[string]string{
-			"error":   "plan_pending",
-			"message": "plan pending human review: " + resp.PlanPending,
-		})
+		writeOpenAIError(w, http.StatusAccepted, "plan_pending", "plan_pending", "plan pending human review: "+resp.PlanPending)
 		return
 	}
 	model := resp.ModelUsed

@@ -927,6 +927,52 @@ func TestEvidenceGetAndVerifySuccess(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+// TestChatCompletionsErrorShape ensures /v1/chat/completions returns OpenAI-compatible
+// error format: {"error": {"message": "...", "type": "...", "code": "..."}} so SDKs can parse error.message.
+func TestChatCompletionsErrorShape(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	r := srv.Routes()
+
+	var errBody struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+
+	// Invalid JSON -> 400 with nested error
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Talon-Key", "k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "response: %s", rec.Body.String())
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&errBody))
+	assert.Contains(t, errBody.Error.Message, "invalid JSON", "OpenAI SDKs expect error.message")
+	assert.Equal(t, "invalid_request_error", errBody.Error.Type)
+	assert.Equal(t, "invalid_json", errBody.Error.Code)
+
+	// Empty messages -> 400 with nested error
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4","messages":[]}`))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-Talon-Key", "k")
+	rec2 := httptest.NewRecorder()
+	r.ServeHTTP(rec2, req2)
+	assert.Equal(t, http.StatusBadRequest, rec2.Code, "response: %s", rec2.Body.String())
+	require.NoError(t, json.NewDecoder(rec2.Body).Decode(&errBody), "body: %s", rec2.Body.String())
+	assert.Equal(t, "no user message content in messages", errBody.Error.Message)
+	assert.Equal(t, "messages_required", errBody.Error.Code)
+}
+
 func minimalPolicy() *policy.Policy {
 	return &policy.Policy{
 		Agent:      policy.AgentConfig{Name: "test", Version: "1.0"},
