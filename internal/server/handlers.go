@@ -734,7 +734,11 @@ func (s *Server) handlePlanGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "id is required")
 		return
 	}
-	plan, err := s.planReviewStore.Get(r.Context(), id)
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	plan, err := s.planReviewStore.Get(r.Context(), id, tenantID)
 	if err != nil {
 		if errors.Is(err, agent.ErrPlanNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "plan not found")
@@ -756,6 +760,10 @@ func (s *Server) handlePlanApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "id is required")
 		return
 	}
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	var req struct {
 		ReviewedBy string `json:"reviewed_by"`
 	}
@@ -763,7 +771,7 @@ func (s *Server) handlePlanApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error())
 		return
 	}
-	err := s.planReviewStore.Approve(r.Context(), id, req.ReviewedBy)
+	err := s.planReviewStore.Approve(r.Context(), id, tenantID, req.ReviewedBy)
 	if err != nil {
 		if errors.Is(err, agent.ErrPlanNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "plan not found")
@@ -789,6 +797,10 @@ func (s *Server) handlePlanReject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "id is required")
 		return
 	}
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	var req struct {
 		ReviewedBy string `json:"reviewed_by"`
 		Reason     string `json:"reason"`
@@ -797,7 +809,7 @@ func (s *Server) handlePlanReject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error())
 		return
 	}
-	err := s.planReviewStore.Reject(r.Context(), id, req.ReviewedBy, req.Reason)
+	err := s.planReviewStore.Reject(r.Context(), id, tenantID, req.ReviewedBy, req.Reason)
 	if err != nil {
 		if errors.Is(err, agent.ErrPlanNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "plan not found")
@@ -823,6 +835,10 @@ func (s *Server) handlePlanModify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "id is required")
 		return
 	}
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	var req struct {
 		ReviewedBy  string             `json:"reviewed_by"`
 		Annotations []agent.Annotation `json:"annotations"`
@@ -831,7 +847,7 @@ func (s *Server) handlePlanModify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error())
 		return
 	}
-	err := s.planReviewStore.Modify(r.Context(), id, req.ReviewedBy, req.Annotations)
+	err := s.planReviewStore.Modify(r.Context(), id, tenantID, req.ReviewedBy, req.Annotations)
 	if err != nil {
 		if errors.Is(err, agent.ErrPlanNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "plan not found")

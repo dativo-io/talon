@@ -138,7 +138,7 @@ func TestPlanReviewStore_CRUD(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get
-	got, err := store.Get(ctx, plan.ID)
+	got, err := store.Get(ctx, plan.ID, "acme")
 	require.NoError(t, err)
 	assert.Equal(t, plan.ID, got.ID)
 	assert.Equal(t, PlanPending, got.Status)
@@ -149,10 +149,10 @@ func TestPlanReviewStore_CRUD(t *testing.T) {
 	assert.Len(t, pending, 1)
 
 	// Approve
-	err = store.Approve(ctx, plan.ID, "reviewer@acme.com")
+	err = store.Approve(ctx, plan.ID, "acme", "reviewer@acme.com")
 	require.NoError(t, err)
 
-	approved, err := store.Get(ctx, plan.ID)
+	approved, err := store.Get(ctx, plan.ID, "acme")
 	require.NoError(t, err)
 	assert.Equal(t, PlanApproved, approved.Status)
 
@@ -172,10 +172,10 @@ func TestPlanReviewStore_Reject(t *testing.T) {
 	plan := GenerateExecutionPlan("corr_2", "acme", "agent", "gpt-4", 0, nil, 0.01, "allow", "", "", 30)
 	require.NoError(t, store.Save(ctx, plan))
 
-	err = store.Reject(ctx, plan.ID, "admin", "too expensive")
+	err = store.Reject(ctx, plan.ID, "acme", "admin", "too expensive")
 	require.NoError(t, err)
 
-	got, err := store.Get(ctx, plan.ID)
+	got, err := store.Get(ctx, plan.ID, "acme")
 	require.NoError(t, err)
 	assert.Equal(t, PlanRejected, got.Status)
 }
@@ -193,7 +193,7 @@ func TestPlanReviewStore_Modify(t *testing.T) {
 	annotations := []Annotation{
 		{ID: "a1", Type: "comment", Content: "Use cheaper model", CreatedBy: "admin"},
 	}
-	err = store.Modify(ctx, plan.ID, "admin", annotations)
+	err = store.Modify(ctx, plan.ID, "acme", "admin", annotations)
 	require.NoError(t, err)
 }
 
@@ -207,10 +207,10 @@ func TestPlanReviewStore_DoubleApproveErrors(t *testing.T) {
 	plan := GenerateExecutionPlan("corr_4", "acme", "agent", "gpt-4", 0, nil, 0.01, "allow", "", "", 30)
 	require.NoError(t, store.Save(ctx, plan))
 
-	err = store.Approve(ctx, plan.ID, "admin")
+	err = store.Approve(ctx, plan.ID, "acme", "admin")
 	require.NoError(t, err)
 
-	err = store.Approve(ctx, plan.ID, "admin")
+	err = store.Approve(ctx, plan.ID, "acme", "admin")
 	assert.ErrorIs(t, err, ErrPlanNotPending)
 }
 
@@ -227,7 +227,7 @@ func TestPlanReviewStore_ProposedSteps(t *testing.T) {
 	err = store.Save(ctx, plan)
 	require.NoError(t, err)
 
-	got, err := store.Get(ctx, plan.ID)
+	got, err := store.Get(ctx, plan.ID, "acme")
 	require.NoError(t, err)
 	assert.Equal(t, plan.ProposedSteps, got.ProposedSteps)
 	assert.Len(t, got.ProposedSteps, 3)
@@ -241,7 +241,7 @@ func TestPlanReviewStore_GetNotFound(t *testing.T) {
 	store, err := NewPlanReviewStore(db)
 	require.NoError(t, err)
 
-	_, err = store.Get(ctx, "nonexistent")
+	_, err = store.Get(ctx, "nonexistent", "acme")
 	assert.ErrorIs(t, err, ErrPlanNotFound)
 }
 
@@ -265,6 +265,47 @@ func TestPlanReviewStore_TenantIsolation(t *testing.T) {
 	allPlans, err := store.GetPending(ctx, "")
 	require.NoError(t, err)
 	assert.Len(t, allPlans, 2)
+}
+
+// TestPlanReviewStore_CrossTenantAccess verifies that Get/Approve/Reject/Modify scoped by tenant_id
+// prevent cross-tenant access: wrong tenant gets not found or no-op.
+func TestPlanReviewStore_CrossTenantAccess(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	store, err := NewPlanReviewStore(db)
+	require.NoError(t, err)
+
+	acmePlan := GenerateExecutionPlan("cross_1", "acme", "agent", "gpt-4", 0, nil, 0, "allow", "", "", 30)
+	require.NoError(t, store.Save(ctx, acmePlan))
+
+	// Get with wrong tenant returns not found
+	_, err = store.Get(ctx, acmePlan.ID, "globex")
+	assert.ErrorIs(t, err, ErrPlanNotFound)
+
+	// Get with correct tenant succeeds
+	got, err := store.Get(ctx, acmePlan.ID, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, "acme", got.TenantID)
+
+	// Approve with wrong tenant does not update the plan (no row matched)
+	err = store.Approve(ctx, acmePlan.ID, "globex", "attacker")
+	assert.ErrorIs(t, err, ErrPlanNotPending)
+	// Plan still pending for acme
+	got, err = store.Get(ctx, acmePlan.ID, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, PlanPending, got.Status)
+
+	// Reject with wrong tenant does not update the plan
+	err = store.Reject(ctx, acmePlan.ID, "globex", "attacker", "reason")
+	assert.ErrorIs(t, err, ErrPlanNotPending)
+	got, err = store.Get(ctx, acmePlan.ID, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, PlanPending, got.Status)
+
+	// Modify with wrong tenant does not update the plan
+	err = store.Modify(ctx, acmePlan.ID, "globex", "attacker", nil)
+	assert.ErrorIs(t, err, ErrPlanNotPending)
 }
 
 // openTestDB creates an in-memory SQLite database for testing.

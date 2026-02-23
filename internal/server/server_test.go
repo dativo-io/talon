@@ -815,6 +815,81 @@ func TestPlanGetSuccess(t *testing.T) {
 	assert.Equal(t, plan.ID, out["id"])
 }
 
+// TestPlanCrossTenantAccess ensures plan Get/Approve/Reject/Modify are scoped by tenant:
+// a user from one tenant cannot read or mutate another tenant's plans.
+func TestPlanCrossTenantAccess(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	evidenceStore, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+	db, err := sql.Open("sqlite3", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	planStore, err := agent.NewPlanReviewStore(db)
+	require.NoError(t, err)
+	acmePlan := agent.GenerateExecutionPlan("corr_cross", "acme", "agent1", "gpt-4", 0, nil, 0, "allow", "", "", 30)
+	require.NoError(t, planStore.Save(context.Background(), acmePlan))
+
+	// key_acme -> tenant acme, key_globex -> tenant globex
+	apiKeys := map[string]string{"key_acme": "acme", "key_globex": "globex"}
+	srv := NewServer(nil, evidenceStore, nil, engine, pol, "", nil, apiKeys, WithPlanReviewStore(planStore))
+	r := srv.Routes()
+
+	// Globex user cannot GET acme's plan -> 404
+	req := httptest.NewRequest(http.MethodGet, "/v1/plans/"+acmePlan.ID, nil)
+	req.Header.Set("X-Talon-Key", "key_globex")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code, "GET plan from other tenant must return 404")
+
+	// Acme user can GET acme's plan -> 200
+	req = httptest.NewRequest(http.MethodGet, "/v1/plans/"+acmePlan.ID, nil)
+	req.Header.Set("X-Talon-Key", "key_acme")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Equal(t, acmePlan.ID, out["id"])
+
+	// Globex user cannot APPROVE acme's plan -> 409 (plan not found for tenant, treated as not pending)
+	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+acmePlan.ID+"/approve", strings.NewReader(`{"reviewed_by":"attacker"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Talon-Key", "key_globex")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusConflict, rec.Code, "approve other tenant's plan must not succeed")
+	// Plan still pending for acme
+	got, err := planStore.Get(context.Background(), acmePlan.ID, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, "pending", string(got.Status))
+
+	// Globex user cannot REJECT acme's plan
+	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+acmePlan.ID+"/reject", strings.NewReader(`{"reviewed_by":"attacker","reason":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Talon-Key", "key_globex")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusConflict, rec.Code)
+	got, err = planStore.Get(context.Background(), acmePlan.ID, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, "pending", string(got.Status))
+
+	// Globex user cannot MODIFY acme's plan
+	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+acmePlan.ID+"/modify", strings.NewReader(`{"reviewed_by":"attacker","annotations":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Talon-Key", "key_globex")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusConflict, rec.Code)
+	got, err = planStore.Get(context.Background(), acmePlan.ID, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, "pending", string(got.Status))
+}
+
 func TestDashboardEndpoint(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
