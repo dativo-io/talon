@@ -1,0 +1,64 @@
+# Example Talon config with LLM API Gateway enabled.
+# Use: talon serve --gateway --gateway-config=examples/gateway/talon.config.gateway.yaml
+# Then point clients at http://localhost:8080/v1/proxy/openai or /v1/proxy/anthropic
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "enforce"   # enforce | shadow | log_only
+
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+      allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+      blocked_models: []
+    anthropic:
+      enabled: true
+      secret_name: "anthropic-api-key"
+      base_url: "https://api.anthropic.com"
+      allowed_models: ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022"]
+    ollama:
+      enabled: true
+      base_url: "http://localhost:11434"
+
+  callers:
+    - name: "openclaw-main"
+      api_key: "talon-gw-openclaw-abc123"
+      tenant_id: "default"
+      team: "engineering"
+      allowed_providers: ["openai", "anthropic"]
+      policy_overrides:
+        max_daily_cost_eur: 25.00
+        max_monthly_cost_eur: 500.00
+        pii_action: "redact"
+        allowed_models: ["gpt-4o", "gpt-4o-mini"]
+
+    - name: "support-bot"
+      api_key: "talon-gw-support-xyz789"
+      tenant_id: "default"
+      team: "support"
+      allowed_providers: ["openai"]
+      policy_overrides:
+        max_daily_cost_eur: 10.00
+        pii_action: "block"
+        allowed_models: ["gpt-4o-mini"]
+
+  default_policy:
+    default_pii_action: "warn"
+    max_daily_cost_eur: 100.00
+    max_monthly_cost_eur: 2000.00
+    require_caller_id: true
+    log_prompts: true
+    log_responses: false
+    log_response_preview_chars: 0
+
+  rate_limits:
+    global_requests_per_min: 300
+    per_caller_requests_per_min: 60
+
+  timeouts:
+    connect_timeout: 10s
+    request_timeout: 120s
+    stream_idle_timeout: 60s

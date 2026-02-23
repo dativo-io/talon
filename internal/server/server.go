@@ -26,6 +26,7 @@ type Server struct {
 	evidenceStore    *evidence.Store
 	mcpServer        http.Handler // native MCP at POST /mcp
 	mcpProxy         http.Handler // optional MCP proxy at POST /mcp/proxy
+	gateway          http.Handler // optional LLM API gateway at /v1/proxy/*
 	tenantManager    *tenant.Manager
 	webhookHandler   *trigger.WebhookHandler
 	planReviewStore  *agent.PlanReviewStore
@@ -84,6 +85,11 @@ func WithActiveRunTracker(tracker *agent.ActiveRunTracker) Option {
 	return func(s *Server) { s.activeRunTracker = tracker }
 }
 
+// WithGateway sets the LLM API gateway handler (optional). Mounted at /v1/proxy/* with its own caller auth.
+func WithGateway(h http.Handler) Option {
+	return func(s *Server) { s.gateway = h }
+}
+
 // NewServer builds a Server with the required dependencies and optional Option(s).
 func NewServer(
 	runner *agent.Runner,
@@ -135,6 +141,13 @@ func (s *Server) Routes() http.Handler {
 
 	// Webhooks (no auth; signature validation can be added later)
 	r.Post("/v1/triggers/{name}", s.webhookHandler.HandleWebhook)
+
+	// LLM API Gateway (caller identification via API key or source IP; no Talon auth middleware)
+	if s.gateway != nil {
+		r.Route("/v1/proxy", func(r chi.Router) {
+			r.Handle("/*", s.gateway)
+		})
+	}
 
 	// Authenticated API group
 	r.Group(func(r chi.Router) {
