@@ -1058,6 +1058,247 @@ func TestEvidenceGetAndVerifySuccess(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+// TestEvidenceGetVerifyTimelineTenantIsolation ensures GET /v1/evidence/<id>, verify, and timeline
+// return 404 when the evidence belongs to another tenant (cross-tenant data leak prevention).
+func TestEvidenceGetVerifyTimelineTenantIsolation(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Evidence for tenant "acme"
+	ev := &evidence.Evidence{
+		ID:             "ev_acme_1",
+		CorrelationID:  "corr_acme",
+		Timestamp:      time.Now().UTC(),
+		TenantID:       "acme",
+		AgentID:        "agent1",
+		InvocationType: "test",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "v1"},
+		Execution:      evidence.Execution{},
+		AuditTrail:     evidence.AuditTrail{},
+	}
+	err = store.Store(context.Background(), ev)
+	require.NoError(t, err)
+
+	// API key "k" maps to tenant "default", not "acme"
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	r := srv.Routes()
+
+	// GET with default tenant must not return acme's evidence
+	req := httptest.NewRequest(http.MethodGet, "/v1/evidence/ev_acme_1", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code, "GET must return 404 for other tenant's evidence")
+
+	// Verify with default tenant must not reveal acme's evidence
+	req = httptest.NewRequest(http.MethodGet, "/v1/evidence/ev_acme_1/verify", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code, "verify must return 404 for other tenant's evidence")
+
+	// Timeline around acme's id with default tenant must return 404
+	req = httptest.NewRequest(http.MethodGet, "/v1/evidence/timeline?around=ev_acme_1&before=2&after=2", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code, "timeline must return 404 when around id belongs to other tenant")
+}
+
+// TestEvidenceTenantIsolation_SameTenantSucceeds ensures that when the key's tenant matches
+// the evidence tenant, GET, verify, and timeline return 200 and correct data.
+func TestEvidenceTenantIsolation_SameTenantSucceeds(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ev := &evidence.Evidence{
+		ID:             "ev_acme_2",
+		CorrelationID:  "corr_acme_2",
+		Timestamp:      time.Now().UTC(),
+		TenantID:       "acme",
+		AgentID:        "agent1",
+		InvocationType: "test",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "v1"},
+		Execution:      evidence.Execution{},
+		AuditTrail:     evidence.AuditTrail{},
+	}
+	err = store.Store(context.Background(), ev)
+	require.NoError(t, err)
+
+	// Key "k_acme" maps to tenant "acme"
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k_acme": "acme"})
+	r := srv.Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/evidence/ev_acme_2", nil)
+	req.Header.Set("X-Talon-Key", "k_acme")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "GET must succeed for same-tenant evidence")
+	var got map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&got))
+	assert.Equal(t, "acme", got["tenant_id"], "response must be acme's evidence")
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/evidence/ev_acme_2/verify", nil)
+	req.Header.Set("X-Talon-Key", "k_acme")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&got))
+	assert.True(t, got["valid"].(bool))
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/evidence/timeline?around=ev_acme_2&before=1&after=1", nil)
+	req.Header.Set("X-Talon-Key", "k_acme")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var timelineResp map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&timelineResp))
+	entries, _ := timelineResp["entries"].([]interface{})
+	require.NotEmpty(t, entries, "timeline must return at least the target entry")
+}
+
+// TestEvidenceTenantIsolation_ListOnlyReturnsOwnTenant ensures GET /v1/evidence list
+// returns only entries for the authenticated tenant.
+func TestEvidenceTenantIsolation_ListOnlyReturnsOwnTenant(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	for _, e := range []struct {
+		id       string
+		tenantID string
+	}{
+		{"ev_default_1", "default"},
+		{"ev_default_2", "default"},
+		{"ev_acme_1", "acme"},
+		{"ev_acme_2", "acme"},
+	} {
+		err = store.Store(ctx, &evidence.Evidence{
+			ID:             e.id,
+			CorrelationID:  "c",
+			Timestamp:      time.Now().UTC(),
+			TenantID:       e.tenantID,
+			AgentID:        "a",
+			InvocationType: "test",
+			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "v1"},
+			Execution:      evidence.Execution{},
+			AuditTrail:     evidence.AuditTrail{},
+		})
+		require.NoError(t, err)
+	}
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k_acme": "acme", "k_default": "default"})
+	r := srv.Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/evidence", nil)
+	req.Header.Set("X-Talon-Key", "k_acme")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var listResp map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ := listResp["entries"].([]interface{})
+	require.Len(t, entries, 2, "acme must see only 2 acme entries")
+	for _, e := range entries {
+		ent := e.(map[string]interface{})
+		assert.Equal(t, "acme", ent["tenant_id"], "every list entry must be acme tenant")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/evidence", nil)
+	req.Header.Set("X-Talon-Key", "k_default")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ = listResp["entries"].([]interface{})
+	require.Len(t, entries, 2, "default must see only 2 default entries")
+	for _, e := range entries {
+		ent := e.(map[string]interface{})
+		assert.Equal(t, "default", ent["tenant_id"], "every list entry must be default tenant")
+	}
+}
+
+// TestEvidenceTenantIsolation_NonexistentIDReturns404 ensures that requesting a
+// nonexistent evidence ID returns 404 (not 403) so we don't leak existence.
+func TestEvidenceTenantIsolation_NonexistentIDReturns404(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	r := srv.Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/evidence/nonexistent_id_12345", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code, "nonexistent ID must return 404")
+	var errResp map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&errResp))
+	assert.Equal(t, "not_found", errResp["error"], "error body must use 'error' field per writeError")
+}
+
+// TestEvidenceTenantIsolation_ContextOverQueryParam ensures tenant comes from
+// auth context; query param tenant_id is only used when context has no tenant (e.g. no auth).
+func TestEvidenceTenantIsolation_ContextOverQueryParam(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Only default tenant has evidence
+	err = store.Store(context.Background(), &evidence.Evidence{
+		ID:             "ev_default_only",
+		CorrelationID:  "c",
+		Timestamp:      time.Now().UTC(),
+		TenantID:       "default",
+		AgentID:        "a",
+		InvocationType: "test",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "v1"},
+		Execution:      evidence.Execution{},
+		AuditTrail:     evidence.AuditTrail{},
+	})
+	require.NoError(t, err)
+
+	// Key "k" -> default. Request list with ?tenant_id=acme (attempt to list acme).
+	// Context wins: we must see default's list, not acme's (acme would be empty).
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	r := srv.Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/evidence?tenant_id=acme", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var listResp map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ := listResp["entries"].([]interface{})
+	require.Len(t, entries, 1, "context tenant is default; must not use query param to switch to acme")
+	assert.Equal(t, "default", entries[0].(map[string]interface{})["tenant_id"])
+}
+
 // TestChatCompletionsErrorShape ensures /v1/chat/completions returns OpenAI-compatible
 // error format: {"error": {"message": "...", "type": "...", "code": "..."}} so SDKs can parse error.message.
 func TestChatCompletionsErrorShape(t *testing.T) {

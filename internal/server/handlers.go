@@ -294,6 +294,23 @@ func (s *Server) handleEvidenceTimeline(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid_request", "around query parameter is required")
 		return
 	}
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	// Resolve target to enforce tenant isolation; Timeline uses target.TenantID for before/after.
+	target, err := s.evidenceStore.Get(r.Context(), around)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if target.TenantID != tenantID {
+		writeError(w, http.StatusNotFound, "not_found", "evidence not found")
+		return
+	}
 	before, _ := strconv.Atoi(r.URL.Query().Get("before"))
 	if before <= 0 {
 		before = 3
@@ -323,9 +340,20 @@ func (s *Server) handleEvidenceGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "id is required")
 		return
 	}
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	ev, err := s.evidenceStore.Get(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if ev.TenantID != tenantID {
+		writeError(w, http.StatusNotFound, "not_found", "evidence not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, ev)
@@ -337,11 +365,23 @@ func (s *Server) handleEvidenceVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "id is required")
 		return
 	}
-	valid, err := s.evidenceStore.Verify(r.Context(), id)
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	ev, err := s.evidenceStore.Get(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	if ev.TenantID != tenantID {
+		writeError(w, http.StatusNotFound, "not_found", "evidence not found")
+		return
+	}
+	valid := s.evidenceStore.VerifyRecord(ev)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"id": id, "valid": valid})
 }
 
