@@ -48,7 +48,7 @@ type ProviderConfig struct {
 // CallerConfig identifies an application or team that uses the gateway.
 type CallerConfig struct {
 	Name             string                 `yaml:"name" json:"name"`
-	APIKey           string                 `yaml:"api_key,omitempty" json:"api_key,omitempty"`
+	APIKey           string                 `yaml:"api_key,omitempty" json:"api_key,omitempty"` // #nosec G117 -- auth identifier from config, not a hardcoded secret
 	TenantID         string                 `yaml:"tenant_id" json:"tenant_id"`
 	Team             string                 `yaml:"team,omitempty" json:"team,omitempty"`
 	IdentifyBy       string                 `yaml:"identify_by,omitempty" json:"identify_by,omitempty"` // "source_ip" for IP-based
@@ -59,19 +59,19 @@ type CallerConfig struct {
 
 // CallerPolicyOverrides are per-caller policy overrides.
 type CallerPolicyOverrides struct {
-	MaxDailyCostEUR   float64  `yaml:"max_daily_cost_eur,omitempty" json:"max_daily_cost_eur,omitempty"`
-	MaxMonthlyCostEUR float64  `yaml:"max_monthly_cost_eur,omitempty" json:"max_monthly_cost_eur,omitempty"`
-	PIIAction         string   `yaml:"pii_action,omitempty" json:"pii_action,omitempty"` // block | redact | warn | allow
-	AllowedModels     []string `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
-	BlockedModels     []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
-	MaxDataTier       *int     `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"` // 0, 1, or 2
+	MaxDailyCost   float64  `yaml:"max_daily_cost,omitempty" json:"max_daily_cost,omitempty"`
+	MaxMonthlyCost float64  `yaml:"max_monthly_cost,omitempty" json:"max_monthly_cost,omitempty"`
+	PIIAction      string   `yaml:"pii_action,omitempty" json:"pii_action,omitempty"` // block | redact | warn | allow
+	AllowedModels  []string `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
+	BlockedModels  []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
+	MaxDataTier    *int     `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"` // 0, 1, or 2
 }
 
 // DefaultPolicyConfig holds server-wide default policy for the gateway.
 type DefaultPolicyConfig struct {
 	DefaultPIIAction        string  `yaml:"default_pii_action" json:"default_pii_action"` // warn | block | redact | allow
-	MaxDailyCostEUR         float64 `yaml:"max_daily_cost_eur" json:"max_daily_cost_eur"`
-	MaxMonthlyCostEUR       float64 `yaml:"max_monthly_cost_eur" json:"max_monthly_cost_eur"`
+	MaxDailyCost            float64 `yaml:"max_daily_cost" json:"max_daily_cost"`
+	MaxMonthlyCost          float64 `yaml:"max_monthly_cost" json:"max_monthly_cost"`
 	RequireCallerID         *bool   `yaml:"require_caller_id" json:"require_caller_id"` // nil = true (default)
 	LogPrompts              bool    `yaml:"log_prompts" json:"log_prompts"`
 	LogResponses            bool    `yaml:"log_responses" json:"log_responses"`
@@ -195,11 +195,11 @@ func (c *GatewayConfig) ApplyDefaults() error {
 	if c.DefaultPolicy.DefaultPIIAction == "" {
 		c.DefaultPolicy.DefaultPIIAction = DefaultPIIAction
 	}
-	if c.DefaultPolicy.MaxDailyCostEUR == 0 {
-		c.DefaultPolicy.MaxDailyCostEUR = 100
+	if c.DefaultPolicy.MaxDailyCost == 0 {
+		c.DefaultPolicy.MaxDailyCost = 100
 	}
-	if c.DefaultPolicy.MaxMonthlyCostEUR == 0 {
-		c.DefaultPolicy.MaxMonthlyCostEUR = 2000
+	if c.DefaultPolicy.MaxMonthlyCost == 0 {
+		c.DefaultPolicy.MaxMonthlyCost = 2000
 	}
 	if c.RateLimits.GlobalRequestsPerMin == 0 {
 		c.RateLimits.GlobalRequestsPerMin = DefaultGlobalRPM

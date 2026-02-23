@@ -198,9 +198,12 @@ talon serve --port 8080
 
 # With MCP proxy for vendor compliance (e.g. Zendesk AI)
 talon serve --port 8080 --proxy-config examples/vendor-proxy/zendesk-proxy.talon.yaml
+
+# With LLM API gateway (proxy mode: route OpenAI/Anthropic/Ollama traffic through Talon)
+talon serve --port 8080 --gateway --gateway-config examples/gateway/talon.config.gateway.yaml
 ```
 
-Endpoints include: `GET /v1/health`, `GET /v1/status`, `POST /v1/agents/run`, `POST /v1/chat/completions` (OpenAI-compatible), `GET /v1/evidence`, `GET /v1/costs`, `GET /v1/plans/pending` (plan review), `POST /mcp` (native MCP), `POST /mcp/proxy` (when proxy is configured). Authenticate with header `X-Talon-Key: <key>` or `Authorization: Bearer <key>`.
+Endpoints include: `GET /v1/health`, `GET /v1/status`, `POST /v1/agents/run`, `POST /v1/chat/completions` (OpenAI-compatible), `GET /v1/evidence`, `GET /v1/costs`, `GET /v1/plans/pending` (plan review), `POST /mcp` (native MCP), `POST /mcp/proxy` (when proxy is configured), and **`POST /v1/proxy/{provider}/v1/chat/completions`** (LLM API gateway when `--gateway` is set; caller auth via `Authorization: Bearer <gateway-caller-key>`). Talon API routes use `X-Talon-Key: <key>` or `Authorization: Bearer <key>`.
 
 **See:** [QUICKSTART.md](docs/QUICKSTART.md) for serve and dashboard usage.
 
@@ -219,6 +222,21 @@ Talon intercepts MCP traffic, enforces policy, redacts PII, and records evidence
 
 **See:** [VENDOR_INTEGRATION_GUIDE.md](docs/VENDOR_INTEGRATION_GUIDE.md) and [ARCHITECTURE_MCP_PROXY.md](docs/ARCHITECTURE_MCP_PROXY.md).
 
+## LLM API Gateway (Proxy Mode)
+
+Route raw LLM API traffic (OpenAI, Anthropic, Ollama) through Talon so desktop apps, Slack bots, and scripts get the same governance without code changes:
+
+1. Create a gateway config (see `examples/gateway/talon.config.gateway.yaml`) with providers, caller API keys, and optional policy overrides (allowed models, cost limits).
+2. Start Talon with `--gateway` and `--gateway-config`:
+   ```bash
+   talon serve --port 8080 --gateway --gateway-config path/to/gateway.yaml
+   ```
+3. Point your app at `https://your-talon-host/v1/proxy/ollama/v1/chat/completions` (or `openai`, `anthropic`) and send `Authorization: Bearer <caller-key>`.
+
+Talon identifies the caller, enforces per-caller model and cost policy, records evidence, and forwards to the configured upstream. Costs appear in `GET /v1/costs` for the caller's tenant.
+
+**See:** [OpenClaw integration](docs/guides/openclaw-integration.md), [Slack bot integration](docs/guides/slack-bot-integration.md), [Desktop app governance](docs/guides/desktop-app-governance.md).
+
 ## Features
 
 **Policy-as-Code** — Define agent governance in `.talon.yaml` files. Cost limits, data classification, model routing, tool access, time restrictions — all declarative, version-controlled, auditable.
@@ -226,6 +244,8 @@ Talon intercepts MCP traffic, enforces policy, redacts PII, and records evidence
 **MCP-Native** — Talon speaks Model Context Protocol. Connect any MCP-compatible agent or tool. Every MCP tool call passes through the policy engine. Works as transparent proxy for third-party vendors.
 
 **Vendor Integration** — Route third-party AI vendors (Zendesk, Intercom, HubSpot) through Talon's MCP proxy. Gain audit trails, PII redaction, and policy enforcement without vendor rewrites. You stay compliant even with black-box SaaS.
+
+**LLM API Gateway** — Route raw LLM API traffic (OpenAI, Anthropic, Ollama) through Talon at `/v1/proxy/*`. Desktop apps, Slack bots, and scripts use caller API keys; Talon enforces per-caller model and cost policy and records evidence. Same governance as native agents, zero app code changes beyond base URL.
 
 **Audited Secrets Vault** — API keys encrypted at rest (AES-256-GCM). Per-agent ACLs. Every secret retrieval logged. Upgrade path to Infisical for rotation and SAML.
 
@@ -252,6 +272,7 @@ Talon intercepts MCP traffic, enforces policy, redacts PII, and records evidence
 | Data sovereignty | Yes (EU routing) | No | No | No | No |
 | MCP support | Yes (native) | Yes | Partial | Partial | No |
 | **Vendor proxy** | **Yes (MCP proxy)** | **No** | **No** | **No** | **No** |
+| **LLM API gateway** | **Yes (/v1/proxy/\*)** | **No** | **No** | **No** | **No** |
 | Secrets vault | Yes (audited) | No | No | No | No |
 | Prompt injection prev. | Yes (3-layer) | No | No | No | No |
 | Agent memory | Yes (governed) | Yes (advanced: KV-cache, graph, LoRA) | No | No | Partial |

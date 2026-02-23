@@ -50,6 +50,7 @@ func Forward(w http.ResponseWriter, p ForwardParams) error {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
+	// #nosec G704 -- upstream URL is from gateway config (provider base URL), not user-controlled
 	resp, err := p.Client.Do(req)
 	if err != nil {
 		return err
@@ -115,6 +116,7 @@ func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, usage *
 		buf = append(buf, '\n')
 		// Flush on empty line (end of SSE event)
 		if len(line) == 0 {
+			// #nosec G705 -- proxy forwards upstream LLM response; Content-Type controlled by upstream
 			if _, err := w.Write(buf); err != nil {
 				return err
 			}
@@ -127,6 +129,7 @@ func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, usage *
 		}
 	}
 	if len(buf) > 0 {
+		// #nosec G705 -- proxy forwards upstream LLM response; Content-Type controlled by upstream
 		_, _ = w.Write(buf)
 		flusher.Flush()
 	}

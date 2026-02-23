@@ -32,7 +32,7 @@ type ExecutionPlan struct {
 	SelectedModel    string       `json:"selected_model"`
 	DataTier         int          `json:"data_tier"`
 	ToolsAvailable   []string     `json:"tools_available"`
-	CostEstimateEUR  float64      `json:"cost_estimate_eur"`
+	CostEstimate     float64      `json:"cost_estimate"`
 	PolicyDecision   string       `json:"policy_decision"`
 	SystemPromptHash string       `json:"system_prompt_hash"`
 	InputHash        string       `json:"input_hash"`
@@ -78,7 +78,7 @@ func GenerateExecutionPlan(
 		SelectedModel:    selectedModel,
 		DataTier:         dataTier,
 		ToolsAvailable:   toolsAvailable,
-		CostEstimateEUR:  costEstimate,
+		CostEstimate:     costEstimate,
 		PolicyDecision:   policyDecision,
 		SystemPromptHash: hex.EncodeToString(promptHash[:]),
 		InputHash:        hex.EncodeToString(inputHash[:]),

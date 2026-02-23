@@ -1,4 +1,4 @@
-# Govern ChatGPT Desktop & Claude Desktop (Enterprise IT)
+# How to govern ChatGPT/Claude Desktop (enterprise)
 
 This guide describes how enterprise IT can route ChatGPT Desktop and Claude Desktop traffic through Talon using DNS and TLS interception. Every conversation from managed devices is then audited and policy-enforced.
 
@@ -36,7 +36,7 @@ gateway:
       tenant_id: "default"
       team: "engineering"
       policy_overrides:
-        max_daily_cost_eur: 15.00
+        max_daily_cost: 15.00
         pii_action: "warn"
 
   network_interception:

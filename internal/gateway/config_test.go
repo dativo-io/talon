@@ -29,7 +29,7 @@ gateway:
       tenant_id: "default"
   default_policy:
     default_pii_action: warn
-    max_daily_cost_eur: 100
+    max_daily_cost: 100
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)

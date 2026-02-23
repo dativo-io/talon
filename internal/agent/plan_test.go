@@ -26,7 +26,7 @@ func TestGenerateExecutionPlan(t *testing.T) {
 	assert.Equal(t, "gpt-4", plan.SelectedModel)
 	assert.Equal(t, 1, plan.DataTier)
 	assert.Equal(t, []string{"search", "email"}, plan.ToolsAvailable)
-	assert.InDelta(t, 0.05, plan.CostEstimateEUR, 0.001)
+	assert.InDelta(t, 0.05, plan.CostEstimate, 0.001)
 	assert.Equal(t, "allow", plan.PolicyDecision)
 	assert.Len(t, plan.SystemPromptHash, 64, "full SHA-256 = 32 bytes = 64 hex chars")
 	assert.Len(t, plan.InputHash, 64, "full SHA-256 = 32 bytes = 64 hex chars")
@@ -90,14 +90,14 @@ func TestRequiresReview(t *testing.T) {
 			name:           "on-demand triggers on cost threshold",
 			humanOversight: "on-demand",
 			costEstimate:   5.0,
-			planConfig:     &PlanReviewConfig{CostThresholdEUR: 1.0},
+			planConfig:     &PlanReviewConfig{CostThreshold: 1.0},
 			want:           true,
 		},
 		{
 			name:           "on-demand below cost threshold",
 			humanOversight: "on-demand",
 			costEstimate:   0.5,
-			planConfig:     &PlanReviewConfig{CostThresholdEUR: 1.0},
+			planConfig:     &PlanReviewConfig{CostThreshold: 1.0},
 			want:           false,
 		},
 		{

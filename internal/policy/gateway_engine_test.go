@@ -59,13 +59,13 @@ func TestGatewayEngine_EvaluateGateway_DenyDailyCost(t *testing.T) {
 	require.NoError(t, err)
 
 	allowed, reasons, err := eng.EvaluateGateway(ctx, map[string]interface{}{
-		"provider":                  "openai",
-		"model":                     "gpt-4o",
-		"data_tier":                 0,
-		"daily_cost":                24.0,
-		"monthly_cost":              0.0,
-		"estimated_cost":            2.0,
-		"caller_max_daily_cost_eur": 25.0,
+		"provider":              "openai",
+		"model":                 "gpt-4o",
+		"data_tier":             0,
+		"daily_cost":            24.0,
+		"monthly_cost":          0.0,
+		"estimated_cost":        2.0,
+		"caller_max_daily_cost": 25.0,
 	})
 	require.NoError(t, err)
 	require.False(t, allowed)

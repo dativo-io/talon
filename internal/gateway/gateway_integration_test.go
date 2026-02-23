@@ -69,8 +69,8 @@ func TestGateway_ServeHTTP_Integration(t *testing.T) {
 			{
 				Name: "test", APIKey: "talon-gw-key", TenantID: "default",
 				PolicyOverrides: &CallerPolicyOverrides{
-					AllowedModels:   []string{"llama2", "gpt-4o"},
-					MaxDailyCostEUR: 100,
+					AllowedModels: []string{"llama2", "gpt-4o"},
+					MaxDailyCost:  100,
 				},
 			},
 		},

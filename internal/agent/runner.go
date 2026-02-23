@@ -1613,10 +1613,10 @@ func planReviewConfigFromPolicy(cfg *policy.PlanReviewConfig) *PlanReviewConfig 
 		return nil
 	}
 	return &PlanReviewConfig{
-		RequireForTools:  cfg.RequireForTools,
-		RequireForTier:   cfg.RequireForTier,
-		CostThresholdEUR: cfg.CostThresholdEUR,
-		TimeoutMinutes:   cfg.TimeoutMinutes,
-		NotifyWebhook:    cfg.NotifyWebhook,
+		RequireForTools: cfg.RequireForTools,
+		RequireForTier:  cfg.RequireForTier,
+		CostThreshold:   cfg.CostThreshold,
+		TimeoutMinutes:  cfg.TimeoutMinutes,
+		NotifyWebhook:   cfg.NotifyWebhook,
 	}
 }

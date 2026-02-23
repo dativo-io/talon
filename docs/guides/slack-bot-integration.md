@@ -1,6 +1,6 @@
-# Add Compliance to Your Slack Bot (10 minutes)
+# How to add compliance to your Slack bot
 
-Route your Slack bot's LLM calls through Talon for audit, PII detection, and cost control with a single config change.
+Route your Slack bot's LLM calls through Talon for audit, PII detection, and cost control with a single config change. Allow about 10 minutes.
 
 ## Prerequisites
 
@@ -72,7 +72,7 @@ In the gateway config, under `callers`, add or edit the Slack bot caller with `p
   tenant_id: "default"
   allowed_providers: ["openai"]
   policy_overrides:
-    max_daily_cost_eur: 10.00
+    max_daily_cost: 10.00
     pii_action: "block"
     allowed_models: ["gpt-4o-mini"]
 ```

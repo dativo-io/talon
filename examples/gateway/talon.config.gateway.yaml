@@ -30,8 +30,8 @@ gateway:
       team: "engineering"
       allowed_providers: ["openai", "anthropic"]
       policy_overrides:
-        max_daily_cost_eur: 25.00
-        max_monthly_cost_eur: 500.00
+        max_daily_cost: 25.00
+        max_monthly_cost: 500.00
         pii_action: "redact"
         allowed_models: ["gpt-4o", "gpt-4o-mini"]
 
@@ -41,14 +41,14 @@ gateway:
       team: "support"
       allowed_providers: ["openai"]
       policy_overrides:
-        max_daily_cost_eur: 10.00
+        max_daily_cost: 10.00
         pii_action: "block"
         allowed_models: ["gpt-4o-mini"]
 
   default_policy:
     default_pii_action: "warn"
-    max_daily_cost_eur: 100.00
-    max_monthly_cost_eur: 2000.00
+    max_daily_cost: 100.00
+    max_monthly_cost: 2000.00
     require_caller_id: true
     log_prompts: true
     log_responses: false

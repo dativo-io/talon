@@ -284,8 +284,8 @@ func buildGatewayPolicyInput(caller *CallerConfig, provider, model string, dataT
 	if caller.PolicyOverrides != nil {
 		input["caller_allowed_models"] = caller.PolicyOverrides.AllowedModels
 		input["caller_blocked_models"] = caller.PolicyOverrides.BlockedModels
-		input["caller_max_daily_cost_eur"] = caller.PolicyOverrides.MaxDailyCostEUR
-		input["caller_max_monthly_cost_eur"] = caller.PolicyOverrides.MaxMonthlyCostEUR
+		input["caller_max_daily_cost"] = caller.PolicyOverrides.MaxDailyCost
+		input["caller_max_monthly_cost"] = caller.PolicyOverrides.MaxMonthlyCost
 		if caller.PolicyOverrides.MaxDataTier != nil {
 			input["caller_max_data_tier"] = *caller.PolicyOverrides.MaxDataTier
 		}

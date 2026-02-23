@@ -1,6 +1,6 @@
-# Govern OpenClaw with Talon (15 minutes)
+# How to govern OpenClaw with Talon
 
-This guide shows how to route OpenClaw's LLM traffic through Talon so every request is audited and policy-enforced.
+This guide shows how to route OpenClaw's LLM traffic through Talon so every request is audited and policy-enforced. Allow about 15 minutes.
 
 ## Prerequisites
 
@@ -57,7 +57,7 @@ You should see evidence records with `invocation_type: gateway` and your caller 
 
 Edit your gateway config and add or adjust `callers` and `policy_overrides`:
 
-- `max_daily_cost_eur` / `max_monthly_cost_eur` — cost caps per caller
+- `max_daily_cost` / `max_monthly_cost` — cost caps per caller
 - `pii_action` — `block`, `redact`, or `warn` when PII is detected
 - `allowed_models` — restrict which models this caller can use
 

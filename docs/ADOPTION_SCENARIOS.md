@@ -11,6 +11,8 @@ Companies adopt Talon in three ways:
 2. **Brownfield Custom** — Adding governance to existing custom-built automation
 3. **Brownfield Vendor** — Adding compliance to third-party SaaS vendors
 
+**Existing app (Slack bot, desktop app, script) that already calls OpenAI/Anthropic/Ollama?** Route traffic through Talon's **LLM API Gateway** (proxy mode) with no code change beyond base URL and a caller API key. See [Slack bot integration](guides/slack-bot-integration.md), [Desktop app governance](guides/desktop-app-governance.md), and [OpenClaw integration](guides/openclaw-integration.md).
+
 This guide shows realistic timelines, effort, and ROI for each path.
 
 ---
