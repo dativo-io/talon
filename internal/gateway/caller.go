@@ -58,7 +58,11 @@ func (c *GatewayConfig) ResolveCaller(r *http.Request) (*CallerConfig, error) {
 	if c.DefaultPolicy.CallerIDRequired() {
 		return nil, ErrCallerIDRequired
 	}
-	return nil, ErrCallerNotFound
+	// Anonymous allowed: return a synthetic caller so the pipeline can proceed
+	return &CallerConfig{
+		Name:     "anonymous",
+		TenantID: "default",
+	}, nil
 }
 
 func extractAPIKey(r *http.Request) string {

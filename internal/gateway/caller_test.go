@@ -49,6 +49,24 @@ func TestResolveCaller_MissingKey(t *testing.T) {
 	}
 }
 
+func TestResolveCaller_AnonymousAllowed(t *testing.T) {
+	cfg := &GatewayConfig{
+		Callers:       []CallerConfig{},
+		DefaultPolicy: DefaultPolicyConfig{RequireCallerID: boolPtr(false)},
+	}
+	r, _ := http.NewRequestWithContext(context.Background(), "POST", "/", nil)
+	caller, err := cfg.ResolveCaller(r)
+	if err != nil {
+		t.Fatalf("err = %v, want nil (anonymous allowed)", err)
+	}
+	if caller == nil {
+		t.Fatal("caller = nil, want anonymous caller")
+	}
+	if caller.Name != "anonymous" || caller.TenantID != "default" {
+		t.Errorf("caller = %+v, want Name=anonymous TenantID=default", caller)
+	}
+}
+
 func TestExtractAPIKey(t *testing.T) {
 	t.Run("bearer", func(t *testing.T) {
 		r := httptestNewRequest(context.Background(), "Bearer sk-abc")
