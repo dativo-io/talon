@@ -538,7 +538,7 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit i
 	args := []interface{}{tenantID, agentID}
 	if len(scopes) > 0 {
 		placeholders := strings.Repeat("?,", len(scopes))
-		query += ` AND scope IN (` + placeholders[:len(placeholders)-1] + `)`
+		query += ` AND scope IN (` + placeholders[:len(placeholders)-1] + `)` //nolint:gosec // G202: only placeholder count from len(scopes); values bound as args
 		for _, sc := range scopes {
 			args = append(args, sc)
 		}

@@ -38,3 +38,12 @@ export TALON_SIGNING_KEY=$(openssl rand -hex 32)
 - **API keys:** Set `TALON_API_KEYS` as comma-separated entries; each entry is a key or `key:tenant_id`.
 - **Gateway:** Enable with `--gateway` and `--gateway-config <path>`. See [How to choose your integration path](../guides/choosing-integration-path.md) and gateway guides.
 - **MCP proxy:** Enable with `--proxy-config <path>`. See [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md).
+
+---
+
+## Memory and policy (.talon.yaml)
+
+| Key | Purpose |
+|-----|---------|
+| `memory.governance.dedup_window_minutes` | When > 0, runs with the same input fingerprint within this window do not create a new memory entry. 0 = disabled. See [MEMORY_GOVERNANCE.md](../MEMORY_GOVERNANCE.md). |
+| `memory.max_prompt_tokens` | Cap on memory tokens injected into the LLM prompt. When the run has a prompt, retrieval is relevance-scored (Phase 3); otherwise timestamp-ordered. |

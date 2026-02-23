@@ -290,6 +290,40 @@ func TestRetrieveScored_OrderAndTokenCap(t *testing.T) {
 	assert.Contains(t, titles[0], "alpha")
 }
 
+func TestListIndex_ScopeFilter(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "scope-agent", Category: CategoryDomainKnowledge,
+		Title: "Agent A", Content: "c1", Scope: ScopeAgent, EvidenceID: "req_1", SourceType: SourceAgentRun,
+	}))
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "scope-agent", Category: CategoryDomainKnowledge,
+		Title: "Agent B", Content: "c2", Scope: ScopeAgent, EvidenceID: "req_2", SourceType: SourceAgentRun,
+	}))
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "scope-agent", Category: CategoryDomainKnowledge,
+		Title: "Session only", Content: "c3", Scope: ScopeSession, EvidenceID: "req_3", SourceType: SourceAgentRun,
+	}))
+
+	all, err := store.ListIndex(ctx, "acme", "scope-agent", 10)
+	require.NoError(t, err)
+	assert.Len(t, all, 3, "ListIndex with no scopes returns all")
+
+	agentOnly, err := store.ListIndex(ctx, "acme", "scope-agent", 10, ScopeAgent)
+	require.NoError(t, err)
+	assert.Len(t, agentOnly, 2, "ListIndex with scope 'agent' returns only agent-scope entries")
+	for _, e := range agentOnly {
+		assert.Equal(t, ScopeAgent, e.Scope)
+	}
+
+	sessionOnly, err := store.ListIndex(ctx, "acme", "scope-agent", 10, ScopeSession)
+	require.NoError(t, err)
+	assert.Len(t, sessionOnly, 1)
+	assert.Equal(t, ScopeSession, sessionOnly[0].Scope)
+}
+
 func TestList_FiltersByCategory(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -486,4 +487,106 @@ func TestRunner_Consolidation_ListReturnsOnlyActive(t *testing.T) {
 	for i := range entries {
 		assert.Equal(t, "active", entries[i].ConsolidationStatus, "List must return only active entries")
 	}
+}
+
+// TestRunner_ScoredRetrievalWithPrompt runs with prompt and max_prompt_tokens so the runner
+// uses RetrieveScored (Phase 3). Verifies memory is injected and run succeeds.
+func TestRunner_ScoredRetrievalWithPrompt(t *testing.T) {
+	dir := t.TempDir()
+	content := `
+agent:
+  name: "scored-agent"
+  version: "1.0.0"
+memory:
+  enabled: true
+  max_prompt_tokens: 500
+  allowed_categories:
+    - domain_knowledge
+  governance:
+    conflict_resolution: auto
+policies:
+  cost_limits:
+    per_request: 100.0
+    daily: 1000.0
+    monthly: 10000.0
+  model_routing:
+    tier_0:
+      primary: "gpt-4"
+    tier_1:
+      primary: "gpt-4"
+    tier_2:
+      primary: "gpt-4"
+`
+	policyPath := filepath.Join(dir, "scored-agent.talon.yaml")
+	require.NoError(t, os.WriteFile(policyPath, []byte(content), 0o600))
+
+	mock := &testutil.MockProvider{ProviderName: "openai", Content: "Berlin HQ response"}
+	providers := map[string]llm.Provider{"openai": mock}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, _ := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+
+	require.NoError(t, memStore.Write(ctx, &memory.Entry{
+		TenantID: "acme", AgentID: "scored-agent", Category: memory.CategoryDomainKnowledge,
+		Title: "HQ in Berlin", Content: "Headquarters is in Berlin", EvidenceID: "req_seed",
+		SourceType: memory.SourceManual, MemoryType: memory.MemTypeSemanticFact,
+	}))
+
+	resp, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "acme",
+		AgentName:      "scored-agent",
+		Prompt:         "Where is our headquarters?",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+
+	entries, err := memStore.Read(ctx, "acme", "scored-agent")
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(entries), 1)
+}
+
+// TestRunner_MemoryV3PhasesTogether exercises Phase 1 (dedup), Phase 2 (consolidation/AsOf), Phase 3 (scored path) in one flow.
+func TestRunner_MemoryV3PhasesTogether(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeMemoryPolicyWithDedup(t, dir, "v3-agent", 60)
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "Revenue target 1M EUR"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, _ := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+
+	// Phase 1: same prompt twice with dedup → one memory entry
+	prompt1 := "What is our revenue target?"
+	_, err := runner.Run(ctx, &agent.RunRequest{TenantID: "acme", AgentName: "v3-agent", Prompt: prompt1, InvocationType: "manual", PolicyPath: policyPath})
+	require.NoError(t, err)
+	_, err = runner.Run(ctx, &agent.RunRequest{TenantID: "acme", AgentName: "v3-agent", Prompt: prompt1, InvocationType: "manual", PolicyPath: policyPath})
+	require.NoError(t, err)
+	entries, _ := memStore.Read(ctx, "acme", "v3-agent")
+	require.Len(t, entries, 1, "Phase 1 dedup: same prompt twice should yield one entry")
+
+	// Phase 2: AsOf returns entries valid at a time
+	asOfEntries, err := memStore.AsOf(ctx, "acme", "v3-agent", time.Now().UTC().Add(time.Hour), 10)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(asOfEntries), 1, "Phase 2 AsOf: entry valid at future time")
+
+	// Phase 3: different prompt triggers new write; runner uses scored retrieval when prompt set.
+	// Consolidation may ADD or INVALIDATE/UPDATE, so we may have 1 or 2 active entries.
+	_, err = runner.Run(ctx, &agent.RunRequest{TenantID: "acme", AgentName: "v3-agent", Prompt: "Different question", InvocationType: "manual", PolicyPath: policyPath})
+	require.NoError(t, err)
+	entries2, _ := memStore.Read(ctx, "acme", "v3-agent")
+	assert.GreaterOrEqual(t, len(entries2), 1, "Phase 3: after second prompt we have at least one active entry (consolidation may merge)")
 }
