@@ -13,8 +13,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// LoadProxyConfig reads a proxy YAML file into ProxyPolicyConfig and applies defaults.
-// Validates: upstream.url required, at least one allowed_tools entry.
+// LoadProxyConfig reads a proxy YAML file into ProxyPolicyConfig, expands ${VAR}
+// in upstream URL/vendor via ExpandEnv, and applies defaults.
+// Validates: upstream.url required (after expansion), at least one allowed_tools entry.
 func LoadProxyConfig(ctx context.Context, path string) (*policy.ProxyPolicyConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -24,10 +25,21 @@ func LoadProxyConfig(ctx context.Context, path string) (*policy.ProxyPolicyConfi
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing proxy config: %w", err)
 	}
+	expandProxyConfigEnv(&cfg)
 	if err := validateAndApplyDefaults(&cfg); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// expandProxyConfigEnv replaces ${VAR} with os.Getenv("VAR") in fields that
+// commonly hold URLs or tokens (upstream URL, vendor name).
+func expandProxyConfigEnv(cfg *policy.ProxyPolicyConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.Proxy.Upstream.URL = ExpandEnv(cfg.Proxy.Upstream.URL)
+	cfg.Proxy.Upstream.Vendor = ExpandEnv(cfg.Proxy.Upstream.Vendor)
 }
 
 func validateAndApplyDefaults(cfg *policy.ProxyPolicyConfig) error {

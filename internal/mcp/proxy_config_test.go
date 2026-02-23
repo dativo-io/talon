@@ -66,6 +66,51 @@ proxy:
 	assert.Equal(t, 100, cfg.Proxy.RateLimits.RequestsPerMinute)
 }
 
+func TestLoadProxyConfig_ExpandEnv(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	os.Setenv("MCP_BASE_URL", "https://vendor.example.com/mcp")
+	os.Setenv("MCP_VENDOR", "zendesk-ai")
+	defer func() {
+		os.Unsetenv("MCP_BASE_URL")
+		os.Unsetenv("MCP_VENDOR")
+	}()
+
+	path := filepath.Join(dir, "env.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+agent: { name: test, type: mcp_proxy }
+proxy:
+  upstream:
+    url: "${MCP_BASE_URL}"
+    vendor: "${MCP_VENDOR}"
+  allowed_tools: [{ name: ticket_search }]
+`), 0o600))
+
+	cfg, err := LoadProxyConfig(ctx, path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, "https://vendor.example.com/mcp", cfg.Proxy.Upstream.URL, "upstream URL must be expanded from env")
+	assert.Equal(t, "zendesk-ai", cfg.Proxy.Upstream.Vendor, "upstream vendor must be expanded from env")
+}
+
+// TestLoadProxyConfig_ExpandEnvUnset ensures url "${UNSET}" expands to empty and validation fails.
+func TestLoadProxyConfig_ExpandEnvUnset(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unset.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+agent: { name: test, type: mcp_proxy }
+proxy:
+  upstream: { url: "${MCP_URL_UNSET_VAR}" }
+  allowed_tools: [{ name: foo }]
+`), 0o600))
+
+	_, err := LoadProxyConfig(ctx, path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "proxy.upstream.url is required")
+}
+
 func TestExpandEnv(t *testing.T) {
 	os.Setenv("MCP_URL", "https://mcp.example.com")
 	defer os.Unsetenv("MCP_URL")
