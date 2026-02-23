@@ -67,6 +67,28 @@ func TestResolveCaller_AnonymousAllowed(t *testing.T) {
 	}
 }
 
+// TestResolveCaller_AnonymousAllowed_NonMatchingKey ensures that when require_caller_id is false,
+// a request with a non-matching API key is treated as anonymous (not ErrCallerNotFound).
+func TestResolveCaller_AnonymousAllowed_NonMatchingKey(t *testing.T) {
+	cfg := &GatewayConfig{
+		Callers: []CallerConfig{
+			{Name: "known", APIKey: "talon-gw-known", TenantID: "default"},
+		},
+		DefaultPolicy: DefaultPolicyConfig{RequireCallerID: boolPtr(false)},
+	}
+	r := httptestNewRequest(context.Background(), "Bearer wrong-or-missing-key")
+	caller, err := cfg.ResolveCaller(r)
+	if err != nil {
+		t.Fatalf("err = %v, want nil (anonymous allowed when no matching caller)", err)
+	}
+	if caller == nil {
+		t.Fatal("caller = nil, want anonymous caller")
+	}
+	if caller.Name != "anonymous" || caller.TenantID != "default" {
+		t.Errorf("caller = %+v, want Name=anonymous TenantID=default", caller)
+	}
+}
+
 func TestExtractAPIKey(t *testing.T) {
 	t.Run("bearer", func(t *testing.T) {
 		r := httptestNewRequest(context.Background(), "Bearer sk-abc")

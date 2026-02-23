@@ -16,53 +16,60 @@ var (
 // ResolveCaller identifies the caller from the request using API key or source IP.
 // Uses timing-safe comparison for API key lookup. Returns the CallerConfig or an error.
 func (c *GatewayConfig) ResolveCaller(r *http.Request) (*CallerConfig, error) {
-	// 1. Try API key (Authorization: Bearer or x-api-key)
 	apiKey := extractAPIKey(r)
 	if apiKey != "" {
-		for i := range c.Callers {
-			caller := &c.Callers[i]
-			if caller.IdentifyBy == "source_ip" || caller.APIKey == "" {
-				continue
-			}
-			if subtle.ConstantTimeCompare([]byte(caller.APIKey), []byte(apiKey)) == 1 {
-				return caller, nil
-			}
+		if caller := c.resolveCallerByAPIKey(r, apiKey); caller != nil {
+			return caller, nil
 		}
-		// Key provided but no match
-		if apiKey != "" {
+		if c.DefaultPolicy.CallerIDRequired() {
 			return nil, ErrCallerNotFound
 		}
 	}
 
-	// 2. Try source IP matching (for DNS-intercepted traffic)
-	clientIP := c.clientIPFromRequest(r)
-	if clientIP != nil {
-		for i := range c.Callers {
-			caller := &c.Callers[i]
-			if caller.IdentifyBy != "source_ip" || len(caller.SourceIPRanges) == 0 {
-				continue
-			}
-			for _, cidrStr := range caller.SourceIPRanges {
-				_, network, err := net.ParseCIDR(cidrStr)
-				if err != nil {
-					continue
-				}
-				if network.Contains(clientIP) {
-					return caller, nil
-				}
-			}
+	if clientIP := c.clientIPFromRequest(r); clientIP != nil {
+		if caller := c.resolveCallerBySourceIP(clientIP); caller != nil {
+			return caller, nil
 		}
 	}
 
-	// 3. No caller identified
 	if c.DefaultPolicy.CallerIDRequired() {
 		return nil, ErrCallerIDRequired
 	}
-	// Anonymous allowed: return a synthetic caller so the pipeline can proceed
-	return &CallerConfig{
-		Name:     "anonymous",
-		TenantID: "default",
-	}, nil
+	return &CallerConfig{Name: "anonymous", TenantID: "default"}, nil
+}
+
+// resolveCallerByAPIKey finds a caller by API key (timing-safe). Returns nil if no match.
+func (c *GatewayConfig) resolveCallerByAPIKey(_ *http.Request, apiKey string) *CallerConfig {
+	for i := range c.Callers {
+		caller := &c.Callers[i]
+		if caller.IdentifyBy == "source_ip" || caller.APIKey == "" {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(caller.APIKey), []byte(apiKey)) == 1 {
+			return caller
+		}
+	}
+	return nil
+}
+
+// resolveCallerBySourceIP finds a caller whose source_ip_ranges contain clientIP. Returns nil if no match.
+func (c *GatewayConfig) resolveCallerBySourceIP(clientIP net.IP) *CallerConfig {
+	for i := range c.Callers {
+		caller := &c.Callers[i]
+		if caller.IdentifyBy != "source_ip" || len(caller.SourceIPRanges) == 0 {
+			continue
+		}
+		for _, cidrStr := range caller.SourceIPRanges {
+			_, network, err := net.ParseCIDR(cidrStr)
+			if err != nil {
+				continue
+			}
+			if network.Contains(clientIP) {
+				return caller
+			}
+		}
+	}
+	return nil
 }
 
 func extractAPIKey(r *http.Request) string {
