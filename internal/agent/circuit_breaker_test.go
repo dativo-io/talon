@@ -94,8 +94,9 @@ func TestCircuitBreaker_HalfOpenProbeDenialReopens(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 	_ = cb.Check("t", "a") // half-open, probe in flight
 
-	// Single denial during probe reopens the circuit.
+	// Single denial during probe reopens the circuit immediately (no need to re-accumulate threshold).
 	cb.RecordPolicyDenial("t", "a")
+	assert.Equal(t, CircuitOpen, cb.State("t", "a"), "single failed probe must reopen immediately")
 	err := cb.Check("t", "a")
 	assert.Error(t, err, "denial in half-open should reopen circuit")
 }

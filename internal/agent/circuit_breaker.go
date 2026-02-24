@@ -85,7 +85,9 @@ func (cb *CircuitBreaker) Check(tenantID, agentID string) error {
 }
 
 // RecordPolicyDenial records a policy denial for the agent. If the threshold
-// is exceeded within the window, the circuit opens.
+// is exceeded within the window, the circuit opens. In half-open state, a
+// single denial (failed probe) reopens the circuit immediately without
+// requiring threshold denials again.
 func (cb *CircuitBreaker) RecordPolicyDenial(tenantID, agentID string) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -98,16 +100,20 @@ func (cb *CircuitBreaker) RecordPolicyDenial(tenantID, agentID string) {
 	}
 
 	now := time.Now()
+
+	// Half-open: failed probe reopens immediately so we don't allow repeated failing requests.
+	if ac.state == CircuitHalfOpen {
+		ac.state = CircuitOpen
+		ac.openedAt = now
+		ac.probeInFlight = false
+		return
+	}
+
 	cutoff := now.Add(-cb.window)
 	ac.denials = append(ac.denials[:0], filterAfter(ac.denials, cutoff)...)
 	ac.denials = append(ac.denials, now)
 
-	if ac.state == CircuitHalfOpen {
-		// Single denial during probe reopens the circuit immediately.
-		ac.state = CircuitOpen
-		ac.openedAt = now
-		ac.probeInFlight = false
-	} else if len(ac.denials) >= cb.threshold {
+	if len(ac.denials) >= cb.threshold {
 		ac.state = CircuitOpen
 		ac.openedAt = now
 	}
