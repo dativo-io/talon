@@ -348,6 +348,50 @@ func TestInferCategory(t *testing.T) {
 	assert.Equal(t, memory.CategoryDomainKnowledge, inferCategory(&RunResponse{}))
 }
 
+// TestLegacyAllowedCategoriesAcceptInferredSubtypes ensures that when a policy has
+// only allowed_categories: [domain_knowledge, policy_hit], memory writes for runs
+// that inferCategoryTypeAndMemType classifies as tool_approval, cost_decision,
+// user_preferences, or procedure_improvements are accepted by ValidateWrite (no
+// silent memory loss).
+func TestLegacyAllowedCategoriesAcceptInferredSubtypes(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := memory.NewStore(filepath.Join(dir, "mem.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { store.Close() })
+	gov := memory.NewGovernance(store, classifier.MustNewScanner())
+
+	legacyPol := &policy.Policy{
+		Memory: &policy.MemoryConfig{
+			Enabled:           true,
+			MaxEntrySizeKB:    10,
+			AllowedCategories: []string{"domain_knowledge", "policy_hit"},
+		},
+		Policies: policy.PoliciesConfig{},
+	}
+	engine, err := policy.NewEngine(ctx, legacyPol)
+	require.NoError(t, err)
+
+	responses := []*RunResponse{
+		{ToolsCalled: []string{"search"}},              // → tool_approval
+		{Cost: 0.15, Response: "Used expensive model"}, // → cost_decision
+		{Response: "I prefer bullet points"},           // → user_preferences
+		{Response: "Step 1: do X. Step 2: do Y"},       // → procedure_improvements
+	}
+	for _, resp := range responses {
+		category, _, _ := inferCategoryTypeAndMemType(resp)
+		entry := &memory.Entry{
+			Category:   category,
+			Title:      "Test",
+			Content:    "Safe content without PII",
+			SourceType: memory.SourceAgentRun,
+			TenantID:   "acme", AgentID: "test",
+		}
+		err := gov.ValidateWrite(ctx, entry, legacyPol, engine)
+		assert.NoError(t, err, "legacy policy must allow inferred category %q", category)
+	}
+}
+
 func TestInferObservationType(t *testing.T) {
 	assert.Equal(t, memory.ObsDecision, inferObservationType(&RunResponse{DenyReason: "x"}))
 	assert.Equal(t, memory.ObsLearning, inferObservationType(&RunResponse{}))
