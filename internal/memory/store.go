@@ -975,7 +975,7 @@ func (s *Store) EnforceMaxEntries(ctx context.Context, tenantID, agentID string,
 
 	var count int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND COALESCE(consolidation_status, 'active') = 'active'`,
 		tenantID, agentID).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("counting entries: %w", err)
@@ -989,7 +989,7 @@ func (s *Store) EnforceMaxEntries(ctx context.Context, tenantID, agentID string,
 	result, err := s.db.ExecContext(ctx,
 		`DELETE FROM memory_entries WHERE id IN (
 			SELECT id FROM memory_entries
-			WHERE tenant_id = ? AND agent_id = ?
+			WHERE tenant_id = ? AND agent_id = ? AND COALESCE(consolidation_status, 'active') = 'active'
 			ORDER BY version ASC
 			LIMIT ?
 		)`, tenantID, agentID, excess)

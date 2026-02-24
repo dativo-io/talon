@@ -825,6 +825,46 @@ func TestEnforceMaxEntries_CrossTenantIsolation(t *testing.T) {
 	assert.Len(t, globex, 10)
 }
 
+// TestEnforceMaxEntries_OnlyCountsAndEvictsActive verifies that rolled_back and invalidated
+// entries are not counted toward max_entries and are never deleted by eviction (audit trail preserved).
+func TestEnforceMaxEntries_OnlyCountsAndEvictsActive(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var entryIDs []string
+	for i := 0; i < 15; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("Entry %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		entryIDs = append(entryIDs, e.ID)
+	}
+
+	// Roll back to 10th entry: entries 11–15 become rolled_back (5), 1–10 stay active (10).
+	_, err := store.RollbackTo(ctx, "acme", entryIDs[9])
+	require.NoError(t, err)
+
+	// Total rows: 15. Active: 10. maxEntries=10 → should evict 0 (only active count toward cap).
+	evicted, err := store.EnforceMaxEntries(ctx, "acme", "sales", 10)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), evicted, "should not evict when active count equals max; rolled_back must not be counted")
+
+	entries, err := store.Read(ctx, "acme", "sales")
+	require.NoError(t, err)
+	assert.Len(t, entries, 10, "all 10 active entries must remain")
+
+	report, err := store.HealthStats(ctx, "acme", "sales")
+	require.NoError(t, err)
+	assert.Equal(t, 10, report.TotalEntries)
+	assert.Equal(t, 5, report.RolledBack, "rolled_back entries preserved for audit")
+
+	// Audit log should still show all 15 (active + rolled_back)
+	audit, err := store.AuditLog(ctx, "acme", "sales", 20)
+	require.NoError(t, err)
+	assert.Len(t, audit, 15)
+}
+
 func TestProvenanceFieldsRoundTrip(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
