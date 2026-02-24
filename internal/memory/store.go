@@ -571,9 +571,9 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit i
 
 const scoredRetrievalCandidates = 200
 
-// RetrieveScored returns memory index entries ordered by relevance to queryText (no token cap).
-// Caller must apply category/review filtering and then cap by tokens so excluded entries
-// do not consume budget. Score = relevance*0.4 + recency*0.3 + typeWeight*0.2 + trustNorm*0.1.
+// RetrieveScored returns memory index entries ordered by relevance to queryText, capped by maxTokens.
+// It returns the highest-scored entries that fit within the token budget (score order preserved).
+// When maxTokens <= 0, all scored candidates are returned. Score = relevance*0.4 + recency*0.3 + typeWeight*0.2 + trustNorm*0.1.
 func (s *Store) RetrieveScored(ctx context.Context, tenantID, agentID, queryText string, maxTokens int) ([]IndexEntry, error) {
 	ctx, span := tracer.Start(ctx, "memory.retrieve_scored",
 		trace.WithAttributes(
@@ -615,13 +615,18 @@ func (s *Store) RetrieveScored(ctx context.Context, tenantID, agentID, queryText
 	}
 	sort.Slice(scores, func(i, j int) bool { return scores[i].score > scores[j].score })
 
-	out := make([]IndexEntry, len(scores))
-	for i := range scores {
-		out[i] = scores[i].entry
-	}
+	// Build result: highest-scored entries that fit within maxTokens (do not skip and add lower-scored entries).
+	var out []IndexEntry
 	var tokens int
-	for i := range out {
-		tokens += out[i].TokenCount
+	for i := range scores {
+		entry := scores[i].entry
+		nextTotal := tokens + entry.TokenCount
+		if maxTokens > 0 && nextTotal > maxTokens {
+			// Stop at first entry that would exceed budget; do not continue to add smaller, lower-scored entries.
+			break
+		}
+		out = append(out, entry)
+		tokens = nextTotal
 	}
 	span.SetAttributes(
 		attribute.Int("memory.scored_returned", len(out)),

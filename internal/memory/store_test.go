@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -274,7 +275,7 @@ func TestRetrieveScored_Order(t *testing.T) {
 	}
 
 	// Query "alpha": relevance should favor "alpha beta match" and "alpha only"
-	// RetrieveScored does not apply token cap; caller caps after category/review filtering.
+	// With token cap 50, we still get at least the top entries that fit (small content => low token count).
 	scored, err := store.RetrieveScored(ctx, "acme", "sales", "alpha", 50)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(scored), 2)
@@ -284,6 +285,43 @@ func TestRetrieveScored_Order(t *testing.T) {
 		titles[i] = scored[i].Title
 	}
 	assert.Contains(t, titles[0], "alpha")
+}
+
+func TestRetrieveScored_TokenBudget(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	base := time.Now().UTC()
+
+	// High-scored entry (matches "query") with large token count; lower-scored with small count.
+	bigContent := strings.Repeat("x", 1200)  // ~300 tokens
+	smallContent := strings.Repeat("y", 200) // ~50 tokens
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "agent", Category: CategoryDomainKnowledge,
+		Title: "query match high relevance", Content: bigContent,
+		EvidenceID: "e1", SourceType: SourceAgentRun, Timestamp: base,
+	}))
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "agent", Category: CategoryDomainKnowledge,
+		Title: "unrelated low relevance", Content: smallContent,
+		EvidenceID: "e2", SourceType: SourceAgentRun, Timestamp: base.Add(-48 * time.Hour),
+	}))
+
+	// Budget 500: both fit; we must get highest-scored first (query match).
+	scored, err := store.RetrieveScored(ctx, "acme", "agent", "query", 500)
+	require.NoError(t, err)
+	require.Len(t, scored, 2)
+	assert.Contains(t, scored[0].Title, "query")
+
+	// Budget 100: only the small entry would fit by size, but we take by score order and stop when over budget.
+	// We must NOT return the lower-scored 50-token entry and skip the high-scored 300-token one.
+	scoredCap, err := store.RetrieveScored(ctx, "acme", "agent", "query", 100)
+	require.NoError(t, err)
+	// First entry is ~300 tokens, exceeds 100 → we break and do not add it; we do not add the second either (we stopped).
+	assert.LessOrEqual(t, len(scoredCap), 1)
+	if len(scoredCap) == 1 {
+		// If we have one, it must be the high-scored one (we don't skip and add lower-scored).
+		assert.Contains(t, scoredCap[0].Title, "query")
+	}
 }
 
 func TestListIndex_ScopeFilter(t *testing.T) {
