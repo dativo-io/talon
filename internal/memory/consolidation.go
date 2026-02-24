@@ -144,14 +144,13 @@ func (c *Consolidator) Apply(ctx context.Context, candidate *Entry, result *Cons
 		return nil
 
 	case ActionInvalidate:
-		prepareEntry(candidate) // set candidate.ID before Invalidate references it
-		if err := c.store.Invalidate(ctx, candidate.TenantID, result.TargetID, candidate.ID, now); err != nil {
+		candidate.ConsolidationStatus = "active"
+		candidate.CreatedAt = now
+		if err := c.store.InvalidateAndWrite(ctx, candidate.TenantID, result.TargetID, now, candidate); err != nil {
 			return fmt.Errorf("invalidating %s: %w", result.TargetID, err)
 		}
 		consolidationInvalidations.Add(ctx, 1)
-		candidate.ConsolidationStatus = "active"
-		candidate.CreatedAt = now
-		return c.store.Write(ctx, candidate)
+		return nil
 
 	case ActionUpdate:
 		if err := c.store.AppendContent(ctx, candidate.TenantID, result.TargetID, candidate.Content, now); err != nil {

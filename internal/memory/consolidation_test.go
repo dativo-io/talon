@@ -242,3 +242,43 @@ func TestConsolidator_Apply_Update(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, entries, 1)
 }
+
+// TestConsolidator_Apply_Invalidate_Atomic verifies that if the replacement write fails,
+// the invalidation of the old entry is rolled back (both happen in one transaction).
+func TestConsolidator_Apply_Invalidate_Atomic(t *testing.T) {
+	store := testStoreForConsolidation(t)
+	ctx := context.Background()
+
+	oldEntry := &Entry{
+		TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge,
+		Title: "Old", Content: "Old fact", EvidenceID: "req_1", SourceType: SourceAgentRun, TrustScore: 60,
+	}
+	require.NoError(t, store.Write(ctx, oldEntry))
+
+	c := NewConsolidator(store)
+
+	// Use a duplicate ID to force the INSERT to fail with a primary key constraint violation,
+	// simulating a write failure after the invalidation UPDATE within the same transaction.
+	badCandidate := &Entry{
+		ID:       oldEntry.ID, // duplicate PK → INSERT will fail
+		TenantID: "t1", AgentID: "a1", Category: CategoryDomainKnowledge,
+		Title: "New", Content: "Superseding fact", EvidenceID: "req_2", SourceType: SourceAgentRun, TrustScore: 90,
+	}
+	result := &ConsolidationResult{Action: ActionInvalidate, TargetID: oldEntry.ID, Reason: "superseded"}
+	err := c.Apply(ctx, badCandidate, result)
+	require.Error(t, err, "Apply should fail when replacement write fails")
+
+	// The old entry must still be active because the transaction was rolled back.
+	gotOld, err := store.Get(ctx, "t1", oldEntry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "active", gotOld.ConsolidationStatus,
+		"old entry must remain active when replacement write fails")
+	assert.Nil(t, gotOld.InvalidAt, "invalid_at must not be set on rollback")
+	assert.Empty(t, gotOld.InvalidatedBy, "invalidated_by must not be set on rollback")
+
+	// Only the original entry should exist.
+	entries, err := store.Read(ctx, "t1", "a1")
+	require.NoError(t, err)
+	assert.Len(t, entries, 1)
+	assert.Equal(t, oldEntry.ID, entries[0].ID)
+}

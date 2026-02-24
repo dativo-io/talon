@@ -419,6 +419,100 @@ func (s *Store) Invalidate(ctx context.Context, tenantID, entryID, newEntryID st
 	return nil
 }
 
+// InvalidateAndWrite atomically invalidates an existing entry and writes its replacement
+// in a single transaction. If the write fails, the invalidation is rolled back.
+// entry.ID is used as the invalidated_by reference; prepareEntry is called to ensure it is set.
+func (s *Store) InvalidateAndWrite(ctx context.Context, tenantID, targetID string, now time.Time, entry *Entry) error {
+	prepareEntry(entry)
+
+	ctx, span := tracer.Start(ctx, "memory.invalidate_and_write",
+		trace.WithAttributes(
+			attribute.String("memory.invalidated_id", targetID),
+			attribute.String("memory.new_id", entry.ID),
+		))
+	defer span.End()
+
+	filesJSON, conflictsJSON := entryJSONBlobs(entry)
+
+	const maxRetries = 15
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			if err := sleepRetry(ctx, attempt); err != nil {
+				return err
+			}
+		}
+		lastErr = s.invalidateAndWriteInTx(ctx, tenantID, targetID, now, entry, filesJSON, conflictsJSON)
+		if lastErr == nil {
+			span.SetAttributes(attribute.Int64("memory.rows_invalidated", 1))
+			writesTotal.Add(ctx, 1)
+			recordEntriesGauge(ctx, s)
+			return nil
+		}
+		if !isSQLiteLocked(lastErr) {
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
+// invalidateAndWriteInTx performs the invalidation UPDATE and replacement INSERT in one transaction.
+func (s *Store) invalidateAndWriteInTx(ctx context.Context, tenantID, targetID string, now time.Time, entry *Entry, filesJSON, conflictsJSON []byte) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE memory_entries
+		 SET consolidation_status = 'invalidated', invalid_at = ?, expired_at = ?, invalidated_by = ?
+		 WHERE id = ? AND tenant_id = ? AND (COALESCE(consolidation_status, 'active') = 'active')`,
+		now, now, entry.ID, targetID, tenantID)
+	if err != nil {
+		return fmt.Errorf("invalidating entry %s: %w", targetID, err)
+	}
+
+	var maxVersion int
+	err = tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(version), 0) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`,
+		entry.TenantID, entry.AgentID).Scan(&maxVersion)
+	if err != nil {
+		return fmt.Errorf("querying max version: %w", err)
+	}
+	entry.Version = maxVersion + 1
+
+	query := `INSERT INTO memory_entries (
+		id, tenant_id, agent_id, category, scope, title, content, observation_type,
+		token_count, files_affected, version, timestamp, evidence_id,
+		source_type, source_evidence_id, trust_score, conflicts_with, review_status,
+		input_hash, memory_type, consolidation_status, created_at, valid_at, invalid_at, invalidated_by, expired_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	var validAt, invalidAt, expiredAt interface{}
+	if entry.ValidAt != nil {
+		validAt = *entry.ValidAt
+	}
+	if entry.InvalidAt != nil {
+		invalidAt = *entry.InvalidAt
+	}
+	if entry.ExpiredAt != nil {
+		expiredAt = *entry.ExpiredAt
+	}
+	_, err = tx.ExecContext(ctx, query,
+		entry.ID, entry.TenantID, entry.AgentID, entry.Category, entry.Scope,
+		entry.Title, entry.Content, entry.ObservationType,
+		entry.TokenCount, string(filesJSON), entry.Version, entry.Timestamp,
+		entry.EvidenceID, entry.SourceType, entry.SourceEvidenceID,
+		entry.TrustScore, string(conflictsJSON), entry.ReviewStatus,
+		entry.InputHash, entry.MemoryType, entry.ConsolidationStatus, entry.CreatedAt,
+		validAt, invalidAt, entry.InvalidatedBy, expiredAt,
+	)
+	if err != nil {
+		return fmt.Errorf("writing replacement entry: %w", err)
+	}
+	return tx.Commit()
+}
+
 // AppendContent appends supplementary content to an existing active entry (consolidation UPDATE).
 func (s *Store) AppendContent(ctx context.Context, tenantID, entryID, additionalContent string, now time.Time) error {
 	ctx, span := tracer.Start(ctx, "memory.append_content",
