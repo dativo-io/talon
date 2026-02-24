@@ -811,6 +811,14 @@ func (s *Store) RollbackTo(ctx context.Context, tenantID, entryID string) (int64
 		return 0, fmt.Errorf("looking up entry %s: %w", entryID, err)
 	}
 
+	status := entry.ConsolidationStatus
+	if status == "" {
+		status = "active"
+	}
+	if status != "active" {
+		return 0, fmt.Errorf("entry %s has consolidation_status %q; can only roll back to an active entry", entryID, status)
+	}
+
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE memory_entries

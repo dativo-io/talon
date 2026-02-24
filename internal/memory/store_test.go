@@ -482,6 +482,32 @@ func TestRollbackTo_NewestEntry_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "already the newest")
 }
 
+func TestRollbackTo_InactiveTarget_ReturnsError(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var entryIDs []string
+	for i := 0; i < 4; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("Entry %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		entryIDs = append(entryIDs, e.ID)
+	}
+
+	// Rollback to entry 2 — entries 3 and 4 become rolled_back
+	affected, err := store.RollbackTo(ctx, "acme", entryIDs[1])
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), affected)
+
+	// Now try to rollback to entry 3 which was itself rolled back
+	_, err = store.RollbackTo(ctx, "acme", entryIDs[2])
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "consolidation_status")
+	assert.Contains(t, err.Error(), "rolled_back")
+}
+
 func TestHealthStats_Aggregates(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
