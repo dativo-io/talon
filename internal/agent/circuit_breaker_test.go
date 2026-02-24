@@ -66,6 +66,25 @@ func TestCircuitBreaker_HalfOpenProbeSuccessCloses(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestCircuitBreaker_HalfOpenOnlyOneProbeAllowed(t *testing.T) {
+	cb := NewCircuitBreaker(2, 50*time.Millisecond)
+
+	cb.RecordPolicyDenial("t", "a")
+	cb.RecordPolicyDenial("t", "a")
+
+	time.Sleep(60 * time.Millisecond)
+
+	// First Check transitions to half-open and allows the single probe.
+	err1 := cb.Check("t", "a")
+	assert.NoError(t, err1, "first check in half-open should allow probe")
+	assert.Equal(t, CircuitHalfOpen, cb.State("t", "a"))
+
+	// Second Check while probe is still in flight must be denied.
+	err2 := cb.Check("t", "a")
+	assert.Error(t, err2, "second check in half-open must be denied until probe completes")
+	assert.Contains(t, err2.Error(), "circuit_half_open")
+}
+
 func TestCircuitBreaker_HalfOpenProbeDenialReopens(t *testing.T) {
 	cb := NewCircuitBreaker(2, 50*time.Millisecond)
 
@@ -73,9 +92,9 @@ func TestCircuitBreaker_HalfOpenProbeDenialReopens(t *testing.T) {
 	cb.RecordPolicyDenial("t", "a")
 
 	time.Sleep(60 * time.Millisecond)
-	_ = cb.Check("t", "a") // half-open
+	_ = cb.Check("t", "a") // half-open, probe in flight
 
-	cb.RecordPolicyDenial("t", "a")
+	// Single denial during probe reopens the circuit.
 	cb.RecordPolicyDenial("t", "a")
 	err := cb.Check("t", "a")
 	assert.Error(t, err, "denial in half-open should reopen circuit")

@@ -26,10 +26,11 @@ type CircuitBreaker struct {
 }
 
 type agentCircuit struct {
-	denials    []time.Time
-	state      CircuitState
-	openedAt   time.Time
-	windowSize time.Duration
+	denials       []time.Time
+	state         CircuitState
+	openedAt      time.Time
+	windowSize    time.Duration
+	probeInFlight bool // when half-open, only one request is allowed until RecordSuccess/RecordPolicyDenial
 }
 
 // NewCircuitBreaker creates a circuit breaker with the given threshold and window.
@@ -69,11 +70,16 @@ func (cb *CircuitBreaker) Check(tenantID, agentID string) error {
 	case CircuitOpen:
 		if time.Since(ac.openedAt) > ac.windowSize {
 			ac.state = CircuitHalfOpen
-			return nil // allow probe
+			ac.probeInFlight = true // this request is the single allowed probe
+			return nil
 		}
 		return fmt.Errorf("circuit_open: agent %s suspended after repeated policy denials", agentID)
 	case CircuitHalfOpen:
-		return nil // probe in progress
+		if ac.probeInFlight {
+			return fmt.Errorf("circuit_half_open: probe already in progress for agent %s", agentID)
+		}
+		ac.probeInFlight = true
+		return nil
 	}
 	return nil
 }
@@ -96,7 +102,12 @@ func (cb *CircuitBreaker) RecordPolicyDenial(tenantID, agentID string) {
 	ac.denials = append(ac.denials[:0], filterAfter(ac.denials, cutoff)...)
 	ac.denials = append(ac.denials, now)
 
-	if len(ac.denials) >= cb.threshold {
+	if ac.state == CircuitHalfOpen {
+		// Single denial during probe reopens the circuit immediately.
+		ac.state = CircuitOpen
+		ac.openedAt = now
+		ac.probeInFlight = false
+	} else if len(ac.denials) >= cb.threshold {
 		ac.state = CircuitOpen
 		ac.openedAt = now
 	}
@@ -117,6 +128,7 @@ func (cb *CircuitBreaker) RecordSuccess(tenantID, agentID string) {
 	if ac.state == CircuitHalfOpen {
 		ac.state = CircuitClosed
 		ac.denials = nil
+		ac.probeInFlight = false
 	}
 }
 
