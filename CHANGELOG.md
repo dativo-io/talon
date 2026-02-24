@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- (none)
+
+## [0.8.0] - 2026-02-24
+
+### Added
+
 - **Memory Phase 1:** Input-hash deduplication; `memory.governance.dedup_window_minutes`; per-run `--no-memory`; `talon audit show` without ID shows latest; retention/max_entries enforcement. See [docs/MEMORY_GOVERNANCE.md](docs/MEMORY_GOVERNANCE.md).
 - **Memory Phase 2:** Consolidation pipeline (ADD/UPDATE/INVALIDATE/NOOP); temporal invalidation (preserved for audit); point-in-time `AsOf` (CLI `talon memory as-of <RFC3339>` and API `GET /v1/memory/as-of`). See [docs/MEMORY_GOVERNANCE.md](docs/MEMORY_GOVERNANCE.md).
 - **Memory Phase 3:** Three-type memory (semantic, episodic, procedural) and relevance-scored retrieval (relevance × recency × type weight × trust); enhanced input fingerprint (prompt + attachment hashes). See [docs/MEMORY_GOVERNANCE.md](docs/MEMORY_GOVERNANCE.md).
@@ -84,7 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v0.7.6...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/dativo-io/talon/compare/v0.7.6...v0.8.0
 [0.7.6]: https://github.com/dativo-io/talon/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/dativo-io/talon/compare/v0.7.4...v0.7.5
 [0.7.2]: https://github.com/dativo-io/talon/compare/v0.7.1...v0.7.2
