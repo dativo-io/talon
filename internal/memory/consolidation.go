@@ -39,30 +39,18 @@ func NewConsolidator(store *Store) *Consolidator {
 }
 
 // Evaluate determines the AUDN action for a candidate entry (rule-based similarity).
-// dedupWindow is the policy-configured window for input-hash dedup; 0 means disabled
-// (no input-hash NOOP). Caller should pass pol.Memory.Governance.DedupWindowMinutes as duration.
+// Input-hash deduplication is performed by the caller (e.g. Runner.writeMemoryObservation)
+// before calling Evaluate; do not duplicate HasRecentWithInputHash here.
 //
-// Logic: when dedupWindow > 0 and candidate has InputHash, same hash within window → NOOP;
-// else similarity >= 0.90 → NOOP; >= 0.60 → trust comparison → INVALIDATE or UPDATE;
+// Logic: similarity >= 0.90 → NOOP; >= 0.60 → trust comparison → INVALIDATE or UPDATE;
 // < 0.30 → ADD; 0.30–0.60 → ADD (related but distinct).
-func (c *Consolidator) Evaluate(ctx context.Context, candidate *Entry, dedupWindow time.Duration) (*ConsolidationResult, error) {
+func (c *Consolidator) Evaluate(ctx context.Context, candidate *Entry) (*ConsolidationResult, error) {
 	ctx, span := tracer.Start(ctx, "memory.consolidate.evaluate",
 		trace.WithAttributes(
 			attribute.String("memory.agent_id", candidate.AgentID),
 			attribute.String("memory.category", candidate.Category),
 		))
 	defer span.End()
-
-	if dedupWindow > 0 && candidate.InputHash != "" {
-		isDup, err := c.store.HasRecentWithInputHash(ctx,
-			candidate.TenantID, candidate.AgentID, candidate.InputHash, dedupWindow)
-		if err != nil {
-			span.SetAttributes(attribute.Bool("memory.consolidation.dedup_check_failed", true))
-			// fail-open: continue to similarity logic
-		} else if isDup {
-			return &ConsolidationResult{Action: ActionNoop, Reason: "duplicate input hash"}, nil
-		}
-	}
 
 	existing, err := c.store.SearchByCategory(ctx,
 		candidate.TenantID, candidate.AgentID, candidate.Category)
