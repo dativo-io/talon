@@ -352,7 +352,7 @@ func (h *ProxyHandler) handleToolsList(ctx context.Context, body []byte, tenantI
 	var resultIface interface{}
 	switch extract.Shape {
 	case "object":
-		out := make(map[string]interface{}, len(extract.ObjectRest)+1)
+		out := make(map[string]interface{}, 1)
 		for k, v := range extract.ObjectRest {
 			out[k] = v
 		}

@@ -251,6 +251,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if capture.statusCode != 0 {
 				w.WriteHeader(capture.statusCode)
 			}
+			//nolint:gosec // G705: LLM API response body (JSON), not HTML; PII-scanned/redacted before write
 			_, _ = w.Write(scannedBody)
 		} else {
 			capture.flushTo(w)

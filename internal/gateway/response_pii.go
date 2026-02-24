@@ -44,6 +44,7 @@ func (rc *responseCapture) flushTo(w http.ResponseWriter) {
 	if rc.statusCode != 0 {
 		w.WriteHeader(rc.statusCode)
 	}
+	//nolint:gosec // G705: API response body (JSON), not HTML; gateway passthrough
 	_, _ = w.Write(rc.body.Bytes())
 }
 
