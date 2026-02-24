@@ -383,7 +383,8 @@ func (s *Store) HasRecentWithInputHash(ctx context.Context, tenantID, agentID, i
 	var count int
 	err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM memory_entries
-		 WHERE tenant_id = ? AND agent_id = ? AND input_hash = ? AND timestamp > ?`,
+		 WHERE tenant_id = ? AND agent_id = ? AND input_hash = ? AND timestamp > ?
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
 		tenantID, agentID, inputHash, cutoff).Scan(&count)
 	if err != nil {
 		span.SetAttributes(attribute.Bool("memory.dedup_error", true))

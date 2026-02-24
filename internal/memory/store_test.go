@@ -1066,6 +1066,12 @@ func TestHasRecentWithInputHash(t *testing.T) {
 	has, err = store.HasRecentWithInputHash(ctx, "other", "agent1", "sha256:abc123", 1*time.Hour)
 	require.NoError(t, err)
 	assert.False(t, has)
+
+	// Invalidated entry with same hash must not count → false (so re-run after invalidate can write)
+	require.NoError(t, store.Invalidate(ctx, "test", entry.ID, "mem_new123", time.Now().UTC()))
+	has, err = store.HasRecentWithInputHash(ctx, "test", "agent1", "sha256:abc123", 1*time.Hour)
+	require.NoError(t, err)
+	assert.False(t, has, "invalidated entry must not be counted for dedup; re-run should be allowed to write")
 }
 
 func TestInvalidate(t *testing.T) {
