@@ -1787,6 +1787,10 @@ func normalizeTitleWhitespace(s string) string {
 
 // inferCategoryTypeAndMemType maps run outcome to category, observation type, and memory type (three-type model).
 // Order: policy denial → tool use → error → high cost → content keywords → default (domain_knowledge + semantic).
+// Categories like tool_approval, cost_decision, user_preferences, procedure_improvements are accepted by
+// governance when the policy allows domain_knowledge (AllowedWhenDomainKnowledgeAllowed in Go and
+// domain_knowledge_subtype in Rego), so legacy policies with allowed_categories: [domain_knowledge, policy_hit]
+// do not silently reject these writes.
 func inferCategoryTypeAndMemType(resp *RunResponse) (category, obsType, memType string) {
 	category = memory.CategoryDomainKnowledge
 	obsType = memory.ObsLearning
