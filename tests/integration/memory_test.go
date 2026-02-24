@@ -66,6 +66,41 @@ policies:
 	return path
 }
 
+// writeMemoryPolicyAllLearningCategories allows all learning categories (for testing factual, user_preferences, procedure).
+func writeMemoryPolicyAllLearningCategories(t *testing.T, dir, name string) string {
+	t.Helper()
+	content := `
+agent:
+  name: "` + name + `"
+  version: "1.0.0"
+memory:
+  enabled: true
+  allowed_categories:
+    - domain_knowledge
+    - policy_hit
+    - factual_corrections
+    - user_preferences
+    - procedure_improvements
+  governance:
+    conflict_resolution: auto
+policies:
+  cost_limits:
+    per_request: 100.0
+    daily: 1000.0
+    monthly: 10000.0
+  model_routing:
+    tier_0:
+      primary: "gpt-4"
+    tier_1:
+      primary: "gpt-4"
+    tier_2:
+      primary: "gpt-4"
+`
+	path := filepath.Join(dir, name+".talon.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
 func setupRunnerWithMemory(t *testing.T, dir string, providers map[string]llm.Provider, routingCfg *policy.ModelRoutingConfig) (*agent.Runner, *memory.Store, *evidence.Store) {
 	t.Helper()
 	storeDir := t.TempDir()
@@ -390,6 +425,186 @@ func TestRunner_SkipMemoryNoWrite(t *testing.T) {
 	entries, err := memStore.Read(ctx, "acme", "skip-agent")
 	require.NoError(t, err)
 	assert.Empty(t, entries, "SkipMemory: true should skip memory write")
+}
+
+// TestRunner_MemoryCategory_FactualCorrections asserts that when the LLM response contains
+// correction keywords (e.g. "actually", "updated"), the stored entry has category factual_corrections.
+func TestRunner_MemoryCategory_FactualCorrections(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeMemoryPolicyAllLearningCategories(t, dir, "factual-agent")
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "Actually the Q4 budget was wrong — it is 2M EUR, updated from 1M."},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, _ := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+
+	_, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "acme",
+		AgentName:      "factual-agent",
+		Prompt:         "Correct the budget figure.",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+
+	entries, err := memStore.Read(ctx, "acme", "factual-agent")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, memory.CategoryFactualCorrections, entries[0].Category)
+	assert.Equal(t, memory.ObsLearning, entries[0].ObservationType)
+}
+
+// TestRunner_MemoryCategory_UserPreferences asserts that when the LLM response contains
+// preference keywords (e.g. "prefer", "I like"), the stored entry has category user_preferences.
+func TestRunner_MemoryCategory_UserPreferences(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeMemoryPolicyAllLearningCategories(t, dir, "pref-agent")
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "User said they prefer to get summaries in bullet points. I'll remember that."},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, _ := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+
+	_, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "acme",
+		AgentName:      "pref-agent",
+		Prompt:         "I prefer bullet points for summaries.",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+
+	entries, err := memStore.Read(ctx, "acme", "pref-agent")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, memory.CategoryUserPreferences, entries[0].Category)
+	assert.Equal(t, memory.ObsLearning, entries[0].ObservationType)
+}
+
+// TestRunner_MemoryCategory_ProcedureImprovements asserts that when the LLM response contains
+// procedure keywords (e.g. "best practice", "step 1"), the stored entry has category procedure_improvements.
+func TestRunner_MemoryCategory_ProcedureImprovements(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeMemoryPolicyAllLearningCategories(t, dir, "proc-agent")
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "Best practice: run step 1 validation before step 2 deployment. Procedure for releases."},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, _ := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+
+	_, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "acme",
+		AgentName:      "proc-agent",
+		Prompt:         "How should we do releases?",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+
+	entries, err := memStore.Read(ctx, "acme", "proc-agent")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, memory.CategoryProcedureImprovements, entries[0].Category)
+	assert.Equal(t, memory.ObsLearning, entries[0].ObservationType)
+}
+
+// TestRunner_MemoryReadsOrderedByTrustDesc asserts that when memory is injected into a run,
+// the evidence memory_reads list is ordered by trust_score descending so higher-trust context
+// is presented first to the model.
+func TestRunner_MemoryReadsOrderedByTrustDesc(t *testing.T) {
+	dir := t.TempDir()
+	content := `
+agent:
+  name: "order-agent"
+  version: "1.0.0"
+memory:
+  enabled: true
+  allowed_categories:
+    - domain_knowledge
+  governance:
+    conflict_resolution: auto
+policies:
+  cost_limits:
+    per_request: 100.0
+    daily: 1000.0
+    monthly: 10000.0
+  model_routing:
+    tier_0:
+      primary: "gpt-4"
+    tier_1:
+      primary: "gpt-4"
+    tier_2:
+      primary: "gpt-4"
+`
+	policyPath := filepath.Join(dir, "order-agent.talon.yaml")
+	require.NoError(t, os.WriteFile(policyPath, []byte(content), 0o600))
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "Response"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, evidenceStore := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+
+	// Seed two entries: high-trust first (older), low-trust second (newer). ListIndex returns by timestamp DESC,
+	// so the runner will get [low-trust, high-trust]. We assert memory_reads should be ordered by trust desc.
+	require.NoError(t, memStore.Write(ctx, &memory.Entry{
+		TenantID: "acme", AgentID: "order-agent", Category: memory.CategoryDomainKnowledge,
+		Title: "High trust fact", Content: "Important context", EvidenceID: "ev1",
+		SourceType: memory.SourceManual, TrustScore: 90,
+	}))
+	require.NoError(t, memStore.Write(ctx, &memory.Entry{
+		TenantID: "acme", AgentID: "order-agent", Category: memory.CategoryDomainKnowledge,
+		Title: "Low trust fact", Content: "Less important", EvidenceID: "ev2",
+		SourceType: memory.SourceManual, TrustScore: 70,
+	}))
+
+	resp, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "acme",
+		AgentName:      "order-agent",
+		Prompt:         "", // no prompt so runner uses ListIndex (timestamp order), not RetrieveScored
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, resp.EvidenceID)
+
+	ev, err := evidenceStore.Get(ctx, resp.EvidenceID)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(ev.MemoryReads), 2, "expected at least 2 memory reads")
+
+	// Memory reads should be ordered by trust_score descending so the model sees highest-trust first.
+	for i := 1; i < len(ev.MemoryReads); i++ {
+		assert.GreaterOrEqual(t, ev.MemoryReads[i-1].TrustScore, ev.MemoryReads[i].TrustScore,
+			"memory_reads should be ordered by trust_score descending; position %d had %d, position %d had %d",
+			i-1, ev.MemoryReads[i-1].TrustScore, i, ev.MemoryReads[i].TrustScore)
+	}
 }
 
 func TestRunner_MemoryRetentionEnforceMaxEntries(t *testing.T) {

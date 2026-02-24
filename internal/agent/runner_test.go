@@ -111,6 +111,20 @@ func TestInferCategoryTypeAndMemType(t *testing.T) {
 			wantObs: memory.ObsLearning,
 			wantMem: memory.MemTypeSemanticFact,
 		},
+		{
+			name:    "best practice → procedure_improvements",
+			resp:    &RunResponse{Response: "Best practice: run validation before deploy."},
+			wantCat: memory.CategoryProcedureImprovements,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeProcedural,
+		},
+		{
+			name:    "no longer → factual_corrections",
+			resp:    &RunResponse{Response: "The budget is no longer 1M; it was updated to 2M."},
+			wantCat: memory.CategoryFactualCorrections,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -221,6 +235,31 @@ func TestFormatMemoryIndexForPrompt(t *testing.T) {
 		got := formatMemoryIndexForPrompt(entries)
 		assert.Empty(t, got, "pending_review entries should not appear in prompt")
 	})
+	t.Run("entries ordered by trust descending so highest-trust context appears first", func(t *testing.T) {
+		// When multiple entries are injected, highest-trust should appear first so the model prioritizes it.
+		entries := []memory.IndexEntry{
+			{
+				ID: "mem_low", Category: memory.CategoryDomainKnowledge, Title: "Low trust", TrustScore: 70,
+				ReviewStatus: "auto_approved", Timestamp: time.Date(2025, 1, 14, 0, 0, 0, 0, time.UTC),
+			},
+			{
+				ID: "mem_high", Category: memory.CategoryDomainKnowledge, Title: "High trust", TrustScore: 90,
+				ReviewStatus: "auto_approved", Timestamp: time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC),
+			},
+			{
+				ID: "mem_mid", Category: memory.CategoryDomainKnowledge, Title: "Mid trust", TrustScore: 80,
+				ReviewStatus: "auto_approved", Timestamp: time.Date(2025, 1, 16, 0, 0, 0, 0, time.UTC),
+			},
+		}
+		got := formatMemoryIndexForPrompt(entries)
+		require.NotEmpty(t, got)
+		// Highest trust (90) must appear before lowest (70) in the prompt.
+		pos90 := strings.Index(got, "trust:90")
+		pos70 := strings.Index(got, "trust:70")
+		require.Greater(t, pos90, -1, "output should contain trust:90")
+		require.Greater(t, pos70, -1, "output should contain trust:70")
+		assert.Less(t, pos90, pos70, "highest-trust entry (trust:90) should appear before lowest (trust:70) so model sees best context first")
+	})
 	t.Run("mix of approved and pending", func(t *testing.T) {
 		entries := []memory.IndexEntry{
 			{
@@ -280,6 +319,27 @@ func TestCompressTitle(t *testing.T) {
 		resp := &RunResponse{}
 		got := compressTitle(resp, "Short")
 		assert.Equal(t, "Short", got)
+	})
+	// Memory should be complete: newline must not cut the title and drop units (e.g. "2" without "M").
+	t.Run("newline must not cut title so unit is preserved", func(t *testing.T) {
+		resp := &RunResponse{}
+		// Model sometimes replies "EUR 2\nMillion." — title must include "2 Million", not just "EUR 2"
+		got := compressTitle(resp, "Your Q4 revenue target for the Acme Suite is EUR 2\nMillion.")
+		assert.Contains(t, got, "2 Million", "title must be complete and include unit after newline")
+		assert.NotEqual(t, "Your Q4 revenue target for the Acme Suite is EUR 2", got, "must not stop at newline and drop Million")
+	})
+	t.Run("number and unit on separate lines", func(t *testing.T) {
+		resp := &RunResponse{}
+		got := compressTitle(resp, "Target is EUR 2\nM.")
+		assert.Contains(t, got, "2", got)
+		assert.Contains(t, got, "M", "unit M must not be dropped when on next line")
+	})
+	t.Run("first sentence over 80 chars after normalizing newlines", func(t *testing.T) {
+		resp := &RunResponse{}
+		// First sentence (up to .) is under 80 when newlines are spaces; total length > 80
+		s := "Short prefix. " + strings.Repeat("x", 70)
+		got := compressTitle(resp, s)
+		assert.Equal(t, "Short prefix", got)
 	})
 }
 

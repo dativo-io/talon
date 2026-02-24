@@ -262,6 +262,73 @@ func TestE2E_MemoryAsOf_ShowsEntriesValidAtTime(t *testing.T) {
 	assert.Contains(t, stdoutPast, "No memory entries valid at", "as-of past should show no entries")
 }
 
+// writeMemoryE2EPolicyWithMaxPromptTokens writes a memory policy with max_prompt_tokens so the runner uses scored retrieval.
+func writeMemoryE2EPolicyWithMaxPromptTokens(t *testing.T, dir string) string {
+	t.Helper()
+	content := `
+agent:
+  name: "default"
+  version: "1.0.0"
+memory:
+  enabled: true
+  max_prompt_tokens: 500
+  allowed_categories:
+    - domain_knowledge
+    - policy_hit
+    - factual_corrections
+  governance:
+    conflict_resolution: auto
+policies:
+  cost_limits:
+    per_request: 100.0
+    daily: 1000.0
+    monthly: 10000.0
+  model_routing:
+    tier_0:
+      primary: "gpt-4"
+    tier_1:
+      primary: "gpt-4"
+    tier_2:
+      primary: "gpt-4"
+`
+	path := filepath.Join(dir, "agent.talon.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
+// TestE2E_MemoryRecall_InjectedOnSecondRun teaches a fact (first run), then asks a question (second run).
+// It asserts that the second run had memory injected by checking that the latest evidence shows Memory Tokens or Memory Reads.
+func TestE2E_MemoryRecall_InjectedOnSecondRun(t *testing.T) {
+	dir := t.TempDir()
+	writeMemoryE2EPolicyWithMaxPromptTokens(t, dir)
+	env := map[string]string{
+		"OPENAI_API_KEY":  "test-key",
+		"OPENAI_BASE_URL": mockLLMServer(t),
+	}
+
+	// First run: teach something (stored as memory)
+	_, stderr, code := RunTalon(t, dir, env, "run", "Remember: our company headquarters is in Berlin.")
+	require.Equal(t, 0, code, "first run should succeed: %s", stderr)
+
+	// Second run: ask something that requires memory (runner injects memory into prompt)
+	_, stderr2, code2 := RunTalon(t, dir, env, "run", "Where is our company headquarters?")
+	require.Equal(t, 0, code2, "second run should succeed: %s", stderr2)
+
+	// Prove memory was injected: latest evidence (second run) should show Memory Tokens or Memory Reads
+	stdout, _, code3 := RunTalon(t, dir, env, "audit", "show")
+	require.Equal(t, 0, code3)
+	assert.True(t,
+		strings.Contains(stdout, "Memory Tokens") || strings.Contains(stdout, "Memory Reads") || strings.Contains(stdout, "Entry:"),
+		"second run should have memory injected; audit show output should contain Memory Tokens or Memory Reads; got: %s", stdout)
+}
+
+// TestE2E_MemoryRecall_ReplyContainsRememberedFact asserts that after teaching "HQ is Berlin",
+// the reply to "Where is our HQ?" contains "Berlin" (user-visible recall).
+// Skipped when using the static mock (fixed response). Run with real LLM to verify end-to-end recall.
+func TestE2E_MemoryRecall_ReplyContainsRememberedFact(t *testing.T) {
+	t.Skip("requires real LLM or prompt-aware mock to assert reply content; use TestE2E_MemoryRecall_InjectedOnSecondRun for injection proof with mock")
+}
+
 // mockLLMServer starts a mock OpenAI-compatible server and returns its URL.
 func mockLLMServer(t *testing.T) string {
 	t.Helper()

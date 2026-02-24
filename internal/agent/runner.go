@@ -568,6 +568,9 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				memIndex = capMemoryByTokens(memIndex, pol.Memory.MaxPromptTokens)
 			}
 
+			// Order by trust_score descending so highest-trust context is first (prompt and evidence order).
+			sort.Slice(memIndex, func(i, j int) bool { return memIndex[i].TrustScore > memIndex[j].TrustScore })
+
 			memPrompt := formatMemoryIndexForPrompt(memIndex)
 			if memPrompt != "" {
 				finalPrompt = memPrompt + "\n\n" + finalPrompt
@@ -1695,20 +1698,26 @@ func capMemoryByTokens(entries []memory.IndexEntry, maxTokens int) []memory.Inde
 // formatMemoryIndexForPrompt creates a lightweight prompt section from memory entries.
 // Entries with pending_review status are excluded — unvalidated entries must not
 // influence LLM decisions (governance integrity).
+// Entries are ordered by trust_score descending so the model sees highest-trust context first.
 func formatMemoryIndexForPrompt(entries []memory.IndexEntry) string {
 	if len(entries) == 0 {
 		return ""
 	}
+	// Sort by trust descending so highest-trust context appears first in the prompt.
+	sorted := make([]memory.IndexEntry, len(entries))
+	copy(sorted, entries)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TrustScore > sorted[j].TrustScore })
+
 	var b strings.Builder
 	b.WriteString("[AGENT MEMORY INDEX]\n")
 	included := 0
-	for i := range entries {
-		if entries[i].ReviewStatus == reviewStatusPendingReview {
+	for i := range sorted {
+		if sorted[i].ReviewStatus == reviewStatusPendingReview {
 			continue
 		}
 		fmt.Fprintf(&b, "\u2713 %s | %s | %s | trust:%d | %s\n",
-			entries[i].ID, entries[i].Category, entries[i].Title, entries[i].TrustScore,
-			entries[i].Timestamp.Format("2006-01-02"))
+			sorted[i].ID, sorted[i].Category, sorted[i].Title, sorted[i].TrustScore,
+			sorted[i].Timestamp.Format("2006-01-02"))
 		included++
 	}
 	if included == 0 {
@@ -1734,18 +1743,46 @@ func compressObservation(resp *RunResponse, cleanContent string) string {
 
 // compressTitle derives a short title from the response using only privacy-stripped content.
 // Using cleanContent ensures <private> sections are never persisted in the title (GDPR Art. 25).
+// Newlines are normalized to spaces so the first sentence is complete (e.g. "EUR 2\nMillion" -> "EUR 2 Million").
 func compressTitle(resp *RunResponse, cleanContent string) string {
 	if resp.DenyReason != "" {
 		return "Denied: " + resp.DenyReason
 	}
-	text := cleanContent
-	if idx := strings.IndexAny(text, ".\n"); idx > 0 && idx < 80 {
+	text := normalizeTitleWhitespace(cleanContent)
+	// First sentence ends at period; do not cut at newline (already normalized).
+	if idx := strings.IndexByte(text, '.'); idx > 0 && idx < 80 {
 		return text[:idx]
 	}
 	if len(text) > 80 {
 		return text[:80]
 	}
 	return text
+}
+
+// normalizeTitleWhitespace replaces newlines and carriage returns with spaces and collapses multiple spaces,
+// so the first logical sentence can be taken without losing text that was on the next line (e.g. "2\nMillion").
+func normalizeTitleWhitespace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prevSpace := false
+	for _, r := range s {
+		switch r {
+		case '\n', '\r', '\t':
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+		case ' ':
+			if !prevSpace {
+				b.WriteRune(r)
+				prevSpace = true
+			}
+		default:
+			b.WriteRune(r)
+			prevSpace = false
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // inferCategoryTypeAndMemType maps run outcome to category, observation type, and memory type (three-type model).
