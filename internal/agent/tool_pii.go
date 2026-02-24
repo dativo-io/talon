@@ -70,7 +70,8 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 		if action == policy.PIIActionRedact {
 			redacted := scanner.Redact(ctx, argStr)
 			if redacted != argStr {
-				result.ModifiedArgs = json.RawMessage(redacted)
+				redactedJSON, _ := json.Marshal(redacted)
+				result.ModifiedArgs = redactedJSON
 			}
 		}
 		return result

@@ -170,6 +170,57 @@ func TestApplyToolArgumentPII_NoToolPolicies(t *testing.T) {
 	assert.Nil(t, result.ModifiedArgs)
 }
 
+func TestApplyToolArgumentPII_NonJSONArgs_RedactProducesValidJSON(t *testing.T) {
+	scanner := newTestScanner(t)
+	ctx := context.Background()
+
+	pol := &policy.Policy{
+		ToolPolicies: map[string]policy.ToolPIIPolicy{
+			"_default": {
+				ArgumentDefault: policy.PIIActionRedact,
+			},
+		},
+	}
+
+	// Pass a plain string that isn't a JSON object — triggers the Unmarshal-error fallback.
+	rawArgs := json.RawMessage(`"Contact jan.kowalski@gmail.com about IBAN DE89370400440532013000"`)
+
+	result := applyToolArgumentPII(ctx, scanner, "some_tool", rawArgs, pol)
+	require.NotNil(t, result)
+	assert.False(t, result.Blocked)
+	assert.NotNil(t, result.ModifiedArgs, "non-JSON-object args with PII should be redacted")
+
+	// ModifiedArgs must be valid JSON — this was the bug (plain string cast to RawMessage).
+	assert.True(t, json.Valid(result.ModifiedArgs),
+		"ModifiedArgs must be valid JSON, got: %s", string(result.ModifiedArgs))
+
+	var redactedStr string
+	require.NoError(t, json.Unmarshal(result.ModifiedArgs, &redactedStr),
+		"ModifiedArgs should unmarshal to a JSON string")
+	assert.NotContains(t, redactedStr, "jan.kowalski@gmail.com")
+	assert.NotContains(t, redactedStr, "DE89370400440532013000")
+}
+
+func TestApplyToolArgumentPII_NonJSONArgs_BlockMode(t *testing.T) {
+	scanner := newTestScanner(t)
+	ctx := context.Background()
+
+	pol := &policy.Policy{
+		ToolPolicies: map[string]policy.ToolPIIPolicy{
+			"_default": {
+				ArgumentDefault: policy.PIIActionBlock,
+			},
+		},
+	}
+
+	rawArgs := json.RawMessage(`"Contact jan.kowalski@gmail.com"`)
+
+	result := applyToolArgumentPII(ctx, scanner, "blocked_tool", rawArgs, pol)
+	require.NotNil(t, result)
+	assert.True(t, result.Blocked, "block mode should block non-JSON-object args with PII")
+	assert.NotEmpty(t, result.BlockReason)
+}
+
 func TestApplyToolResultPII_RedactMode(t *testing.T) {
 	scanner := newTestScanner(t)
 	ctx := context.Background()
