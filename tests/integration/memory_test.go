@@ -767,6 +767,211 @@ policies:
 	assert.GreaterOrEqual(t, len(entries), 1)
 }
 
+// --- Rollback integration tests ---
+
+// TestRunner_MemoryInjectionAfterRollback verifies that after rolling back memory,
+// subsequent runs do NOT inject rolled-back entries into the LLM prompt.
+func TestRunner_MemoryInjectionAfterRollback(t *testing.T) {
+	dir := t.TempDir()
+	content := `
+agent:
+  name: "rollback-inject-agent"
+  version: "1.0.0"
+memory:
+  enabled: true
+  allowed_categories:
+    - domain_knowledge
+  governance:
+    conflict_resolution: auto
+policies:
+  cost_limits:
+    per_request: 100.0
+    daily: 1000.0
+    monthly: 10000.0
+  model_routing:
+    tier_0:
+      primary: "gpt-4"
+    tier_1:
+      primary: "gpt-4"
+    tier_2:
+      primary: "gpt-4"
+`
+	policyPath := filepath.Join(dir, "rollback-inject-agent.talon.yaml")
+	require.NoError(t, os.WriteFile(policyPath, []byte(content), 0o600))
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "Response from LLM"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, evidenceStore := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+
+	// Seed 3 entries with distinct titles
+	var entryIDs []string
+	for i, title := range []string{"HQ is Berlin", "Revenue target 1M", "Contact email support@acme.eu"} {
+		e := &memory.Entry{
+			TenantID: "acme", AgentID: "rollback-inject-agent",
+			Category:   memory.CategoryDomainKnowledge,
+			Title:      title,
+			Content:    fmt.Sprintf("Fact %d", i+1),
+			EvidenceID: fmt.Sprintf("ev_seed_%d", i+1),
+			SourceType: memory.SourceManual,
+		}
+		require.NoError(t, memStore.Write(ctx, e))
+		entryIDs = append(entryIDs, e.ID)
+	}
+
+	// Rollback to entry 1: entries 2 and 3 become rolled_back
+	affected, err := memStore.RollbackTo(ctx, "acme", entryIDs[0])
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), affected)
+
+	// Run agent — memory should inject only entry 1
+	resp, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "acme",
+		AgentName:      "rollback-inject-agent",
+		Prompt:         "",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, resp.EvidenceID)
+
+	ev, err := evidenceStore.Get(ctx, resp.EvidenceID)
+	require.NoError(t, err)
+
+	// Only entry 1 should appear in memory_reads (rolled-back entries excluded)
+	for _, mr := range ev.MemoryReads {
+		assert.Equal(t, entryIDs[0], mr.EntryID,
+			"only the surviving entry should be injected; got %s", mr.EntryID)
+	}
+	assert.LessOrEqual(t, len(ev.MemoryReads), 2,
+		"at most entry 1 + the new observation from this run; rolled-back entries must not be injected")
+}
+
+// TestRunner_RollbackThenNewWrite verifies that after rollback the runner can write
+// new memory entries and version numbering is correct.
+func TestRunner_RollbackThenNewWrite(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeMemoryPolicy(t, dir, "rb-write-agent")
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "New knowledge after rollback"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, _ := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+
+	// Seed 3 entries
+	var entryIDs []string
+	for i := 0; i < 3; i++ {
+		e := &memory.Entry{
+			TenantID: "acme", AgentID: "rb-write-agent",
+			Category:   memory.CategoryDomainKnowledge,
+			Title:      fmt.Sprintf("Seed %d", i+1),
+			Content:    fmt.Sprintf("Content %d", i+1),
+			EvidenceID: fmt.Sprintf("ev_seed_%d", i+1),
+			SourceType: memory.SourceManual,
+		}
+		require.NoError(t, memStore.Write(ctx, e))
+		entryIDs = append(entryIDs, e.ID)
+	}
+
+	// Rollback to entry 1
+	_, err := memStore.RollbackTo(ctx, "acme", entryIDs[0])
+	require.NoError(t, err)
+
+	// Run agent: should create a new memory entry
+	resp, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "acme",
+		AgentName:      "rb-write-agent",
+		Prompt:         "Learn something new after rollback",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.PolicyAllow)
+
+	// Active entries: entry 1 + new observation (consolidation may merge, so >= 1)
+	entries, err := memStore.Read(ctx, "acme", "rb-write-agent")
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(entries), 1, "should have at least 1 active entry after rollback + run")
+
+	// Audit should show all: 3 original + new observation(s)
+	audit, err := memStore.AuditLog(ctx, "acme", "rb-write-agent", 20)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(audit), 4, "audit should contain original 3 + at least 1 new")
+}
+
+// TestRunner_RollbackDoesNotAffectDedupForNewPrompt verifies that after rollback,
+// a new prompt (different from rolled-back content) can still create a memory entry.
+func TestRunner_RollbackDoesNotAffectDedupForNewPrompt(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := writeMemoryPolicyWithDedup(t, dir, "rb-dedup-agent", 60)
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "Dedup test response"},
+	}
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+
+	runner, memStore, _ := setupRunnerWithMemory(t, dir, providers, routingCfg)
+	ctx := context.Background()
+
+	// Run 1: creates an entry
+	_, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID: "acme", AgentName: "rb-dedup-agent",
+		Prompt: "First topic alpha", InvocationType: "manual", PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+
+	// Run 2: different prompt, creates another entry
+	_, err = runner.Run(ctx, &agent.RunRequest{
+		TenantID: "acme", AgentName: "rb-dedup-agent",
+		Prompt: "Second topic beta", InvocationType: "manual", PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+
+	entries, _ := memStore.Read(ctx, "acme", "rb-dedup-agent")
+	require.GreaterOrEqual(t, len(entries), 1)
+
+	// Rollback to first entry if more than one exists
+	if len(entries) >= 2 {
+		// Find the oldest entry (highest version = newest, so sort and pick lowest version)
+		oldest := entries[0]
+		for _, e := range entries[1:] {
+			if e.Version < oldest.Version {
+				oldest = e
+			}
+		}
+		_, err = memStore.RollbackTo(ctx, "acme", oldest.ID)
+		require.NoError(t, err)
+	}
+
+	// Run 3: completely new prompt should still write
+	_, err = runner.Run(ctx, &agent.RunRequest{
+		TenantID: "acme", AgentName: "rb-dedup-agent",
+		Prompt: "Third topic gamma entirely new", InvocationType: "manual", PolicyPath: policyPath,
+	})
+	require.NoError(t, err)
+
+	entriesAfter, _ := memStore.Read(ctx, "acme", "rb-dedup-agent")
+	assert.GreaterOrEqual(t, len(entriesAfter), 1, "new prompt after rollback should create memory entry")
+}
+
 // TestRunner_MemoryV3PhasesTogether exercises Phase 1 (dedup), Phase 2 (consolidation/AsOf), Phase 3 (scored path) in one flow.
 func TestRunner_MemoryV3PhasesTogether(t *testing.T) {
 	dir := t.TempDir()

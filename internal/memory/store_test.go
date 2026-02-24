@@ -1247,6 +1247,375 @@ func TestListIndex_ExcludesInvalidated(t *testing.T) {
 	assert.Equal(t, e1.ID, index[0].ID)
 }
 
+// --- Rollback testing pyramid: comprehensive unit tests ---
+
+func TestRollbackTo_NonExistentEntry_ReturnsNotFound(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	_, err := store.RollbackTo(ctx, "acme", "mem_does_not_exist")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestRollbackTo_ExcludesFromListIndex(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var ids []string
+	for i := 0; i < 4; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("Idx entry %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		ids = append(ids, e.ID)
+	}
+
+	_, err := store.RollbackTo(ctx, "acme", ids[1])
+	require.NoError(t, err)
+
+	index, err := store.ListIndex(ctx, "acme", "sales", 50)
+	require.NoError(t, err)
+	assert.Len(t, index, 2, "ListIndex must exclude rolled-back entries")
+	for _, ie := range index {
+		assert.NotContains(t, []string{ids[2], ids[3]}, ie.ID, "rolled-back IDs must not appear in ListIndex")
+	}
+}
+
+func TestRollbackTo_ExcludesFromRetrieveScored(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var ids []string
+	for i := 0; i < 4; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("Revenue target %d", i+1), Content: "Revenue information", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		ids = append(ids, e.ID)
+	}
+
+	_, err := store.RollbackTo(ctx, "acme", ids[1])
+	require.NoError(t, err)
+
+	scored, err := store.RetrieveScored(ctx, "acme", "sales", "Revenue target", 10000)
+	require.NoError(t, err)
+	assert.Len(t, scored, 2, "RetrieveScored must exclude rolled-back entries")
+	for _, ie := range scored {
+		assert.NotEqual(t, ids[2], ie.ID)
+		assert.NotEqual(t, ids[3], ie.ID)
+	}
+}
+
+func TestRollbackTo_AsOf_RolledBackEntriesRespectExpiredAt(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var ids []string
+	for i := 0; i < 3; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("AsOf entry %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		ids = append(ids, e.ID)
+	}
+
+	beforeRollback := time.Now().UTC()
+	time.Sleep(15 * time.Millisecond)
+
+	_, err := store.RollbackTo(ctx, "acme", ids[0])
+	require.NoError(t, err)
+
+	afterRollback := time.Now().UTC().Add(1 * time.Second)
+
+	// AsOf before rollback: all 3 entries should be visible (expired_at hadn't been set yet)
+	entriesBefore, err := store.AsOf(ctx, "acme", "sales", beforeRollback, 50)
+	require.NoError(t, err)
+	assert.Len(t, entriesBefore, 3, "AsOf before rollback time should see all entries")
+
+	// AsOf after rollback: only 1 entry should be visible (rolled-back have expired_at <= afterRollback)
+	entriesAfter, err := store.AsOf(ctx, "acme", "sales", afterRollback, 50)
+	require.NoError(t, err)
+	assert.Len(t, entriesAfter, 1, "AsOf after rollback time should exclude rolled-back entries")
+}
+
+func TestRollbackTo_WriteAfterRollback_ContinuesVersioning(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var ids []string
+	for i := 0; i < 5; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("Entry %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		ids = append(ids, e.ID)
+	}
+
+	_, err := store.RollbackTo(ctx, "acme", ids[1])
+	require.NoError(t, err)
+
+	// Write new entry after rollback
+	newEntry := &Entry{
+		TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+		Title: "Post-rollback entry", Content: "New content", EvidenceID: "req_2", SourceType: SourceAgentRun,
+	}
+	require.NoError(t, store.Write(ctx, newEntry))
+
+	// Should have 3 active entries: original 1, original 2, and the new one
+	entries, err := store.Read(ctx, "acme", "sales")
+	require.NoError(t, err)
+	assert.Len(t, entries, 3, "after rollback + new write: 2 original + 1 new")
+
+	// New entry's version must be higher than original highest (version 5)
+	got, err := store.Get(ctx, "acme", newEntry.ID)
+	require.NoError(t, err)
+	assert.Greater(t, got.Version, 5, "new entry version should continue from max version in table")
+
+	// Audit: all 6 entries (5 original + 1 new, with 3 rolled-back among the 5)
+	audit, err := store.AuditLog(ctx, "acme", "sales", 20)
+	require.NoError(t, err)
+	assert.Len(t, audit, 6)
+}
+
+func TestRollbackTo_DoubleRollback_ProgressivelyNarrower(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var ids []string
+	for i := 0; i < 6; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("Entry %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		ids = append(ids, e.ID)
+	}
+
+	// First rollback to entry 4: entries 5 & 6 rolled back
+	affected1, err := store.RollbackTo(ctx, "acme", ids[3])
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), affected1)
+
+	entries1, _ := store.Read(ctx, "acme", "sales")
+	assert.Len(t, entries1, 4)
+
+	// Second rollback to entry 2: entries 3 & 4 rolled back (5 & 6 already were)
+	affected2, err := store.RollbackTo(ctx, "acme", ids[1])
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), affected2, "should only affect active entries newer than target")
+
+	entries2, _ := store.Read(ctx, "acme", "sales")
+	assert.Len(t, entries2, 2)
+
+	// Audit should show all 6
+	audit, err := store.AuditLog(ctx, "acme", "sales", 20)
+	require.NoError(t, err)
+	assert.Len(t, audit, 6)
+
+	rolledBackCount := 0
+	for _, e := range audit {
+		if e.ConsolidationStatus == "rolled_back" {
+			rolledBackCount++
+		}
+	}
+	assert.Equal(t, 4, rolledBackCount, "entries 3,4,5,6 should all be rolled_back")
+}
+
+func TestRollbackTo_ScopedToAgentWithinTenant(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	// Write entries for two agents in the same tenant
+	salesIDs := make([]string, 3)
+	for i := 0; i < 3; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("Sales %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		salesIDs[i] = e.ID
+	}
+	for i := 0; i < 3; i++ {
+		require.NoError(t, store.Write(ctx, &Entry{
+			TenantID: "acme", AgentID: "support", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("Support %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}))
+	}
+
+	// Rollback sales to first entry
+	_, err := store.RollbackTo(ctx, "acme", salesIDs[0])
+	require.NoError(t, err)
+
+	// Sales: 1 active
+	salesEntries, _ := store.Read(ctx, "acme", "sales")
+	assert.Len(t, salesEntries, 1)
+
+	// Support: all 3 still active
+	supportEntries, _ := store.Read(ctx, "acme", "support")
+	assert.Len(t, supportEntries, 3)
+}
+
+func TestRollbackTo_MixedConsolidationStatuses(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var ids []string
+	for i := 0; i < 5; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "analyst", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("Mixed entry %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		ids = append(ids, e.ID)
+	}
+
+	// Invalidate entry 4 via consolidation (simulating UPDATE)
+	require.NoError(t, store.Invalidate(ctx, "acme", ids[3], ids[4], time.Now().UTC()))
+
+	// Rollback to entry 2: should only roll back active entries newer than 2 (entries 3 and 5 are active; 4 is already invalidated)
+	affected, err := store.RollbackTo(ctx, "acme", ids[1])
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), affected, "only active entries 3 and 5 should be rolled back; entry 4 was already invalidated")
+
+	entries, _ := store.Read(ctx, "acme", "analyst")
+	assert.Len(t, entries, 2, "entries 1 and 2 are active")
+
+	// Entry 4 should still be invalidated (not rolled_back)
+	got4, err := store.Get(ctx, "acme", ids[3])
+	require.NoError(t, err)
+	assert.Equal(t, "invalidated", got4.ConsolidationStatus)
+}
+
+func TestRollbackTo_PendingReviewEntriesAlsoRolledBack(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var ids []string
+	for i := 0; i < 4; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "reviewer", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("Review entry %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		if i >= 2 {
+			e.ReviewStatus = "pending_review"
+		}
+		require.NoError(t, store.Write(ctx, e))
+		ids = append(ids, e.ID)
+	}
+
+	// Entry 3 and 4 are pending_review but still consolidation_status=active
+	affected, err := store.RollbackTo(ctx, "acme", ids[1])
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), affected, "pending_review entries with active consolidation_status should be rolled back")
+
+	// Pending review should be empty now (both were rolled back)
+	pending, err := store.ListPendingReview(ctx, "acme", "reviewer", 10)
+	require.NoError(t, err)
+	assert.Empty(t, pending, "ListPendingReview must exclude rolled-back entries")
+}
+
+func TestRollbackTo_ListPendingReview_ExcludesRolledBack(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var ids []string
+	for i := 0; i < 5; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "pr-agent", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("PR entry %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+			ReviewStatus: "pending_review",
+		}
+		require.NoError(t, store.Write(ctx, e))
+		ids = append(ids, e.ID)
+	}
+
+	pending, err := store.ListPendingReview(ctx, "acme", "pr-agent", 20)
+	require.NoError(t, err)
+	assert.Len(t, pending, 5)
+
+	// Rollback to entry 2
+	_, err = store.RollbackTo(ctx, "acme", ids[1])
+	require.NoError(t, err)
+
+	pending2, err := store.ListPendingReview(ctx, "acme", "pr-agent", 20)
+	require.NoError(t, err)
+	assert.Len(t, pending2, 2, "only entries 1 and 2 should remain in pending review after rollback")
+}
+
+func TestRollbackTo_GetStillReturnsRolledBackEntry(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var ids []string
+	for i := 0; i < 3; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "sales", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("Get entry %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		ids = append(ids, e.ID)
+	}
+
+	_, err := store.RollbackTo(ctx, "acme", ids[0])
+	require.NoError(t, err)
+
+	// Get by ID should still return the rolled-back entry (needed for audit/forensics)
+	got, err := store.Get(ctx, "acme", ids[1])
+	require.NoError(t, err)
+	assert.Equal(t, "rolled_back", got.ConsolidationStatus)
+	assert.NotNil(t, got.ExpiredAt)
+}
+
+func TestRollbackTo_HealthStats_ReflectsRolledBackCount(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var ids []string
+	for i := 0; i < 10; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "health", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("Health entry %d", i+1), Content: "Content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		ids = append(ids, e.ID)
+	}
+
+	_, err := store.RollbackTo(ctx, "acme", ids[4])
+	require.NoError(t, err)
+
+	report, err := store.HealthStats(ctx, "acme", "health")
+	require.NoError(t, err)
+	assert.Equal(t, 5, report.TotalEntries, "active count")
+	assert.Equal(t, 5, report.RolledBack, "rolled back count")
+}
+
+func TestRollbackTo_SearchExcludesRolledBackByCategory(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	var ids []string
+	for i := 0; i < 4; i++ {
+		e := &Entry{
+			TenantID: "acme", AgentID: "catquery", Category: CategoryDomainKnowledge,
+			Title: fmt.Sprintf("CatSearch %d", i+1), Content: "searchable content", EvidenceID: "req_1", SourceType: SourceAgentRun,
+		}
+		require.NoError(t, store.Write(ctx, e))
+		ids = append(ids, e.ID)
+	}
+
+	_, err := store.RollbackTo(ctx, "acme", ids[1])
+	require.NoError(t, err)
+
+	results, err := store.SearchByCategory(ctx, "acme", "catquery", CategoryDomainKnowledge)
+	require.NoError(t, err)
+	assert.Len(t, results, 2, "SearchByCategory should exclude rolled-back entries")
+}
+
 func TestAsOf(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
