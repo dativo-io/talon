@@ -947,10 +947,16 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 
 					// Pre-execution evidence: write a "pending" record so a kill/crash
 					// never creates an unaudited action.
-					pendingStep, _ := r.evidence.GeneratePendingStep(ctx, evidence.StepParams{
+					pendingStep, pendingErr := r.evidence.GeneratePendingStep(ctx, evidence.StepParams{
 						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 						StepIndex: stepIndex, Type: "tool_call", ToolName: tc.Name,
 					})
+					if pendingErr != nil {
+						log.Warn().Err(pendingErr).Str("correlation_id", correlationID).
+							Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).
+							Str("tool", tc.Name).Msg("evidence_pending_step_failed_fallback_will_record_after_execution")
+						pendingStep = nil
+					}
 
 					toolStart := time.Now()
 					tcResult := r.executeToolCallFull(ctx, policyEval, pol, tc, toolHistory)
@@ -967,7 +973,9 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						r.toolFailures.RecordToolFailure(req.TenantID, req.AgentName, toolName, tcResult.ExecutionError)
 					}
 
-					// Update the pending record to completed or failed.
+					// Update the pending record to completed or failed; if we never had a pending
+					// record (e.g. transient store failure), write a single step now so the tool
+					// call is still audited (no unaudited-action gap).
 					if pendingStep != nil {
 						pendingStep.ToolName = toolName
 						if executed {
@@ -976,6 +984,20 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						} else {
 							_ = r.evidence.FailStep(ctx, pendingStep, resultContent, toolDuration)
 						}
+					} else {
+						// Fallback: pending step write failed; ensure one record for this tool call.
+						stepStatus := "completed"
+						stepError := ""
+						if !executed {
+							stepStatus = "failed"
+							stepError = resultContent
+						}
+						_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
+							CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+							StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
+							OutputSummary: evidence.TruncateForSummary(resultContent, 500),
+							DurationMS:    toolDuration, Cost: 0, Status: stepStatus, Error: stepError,
+						})
 					}
 					stepIndex++
 					_, _ = r.fireHook(ctx, HookPostTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
