@@ -936,7 +936,9 @@ func (s *Store) AuditLog(ctx context.Context, tenantID, agentID string, limit in
 	return s.queryEntries(ctx, query, args...)
 }
 
-// PurgeExpired deletes memory entries older than retentionDays.
+// PurgeExpired deletes memory entries older than retentionDays. Entries with
+// consolidation_status 'rolled_back' or 'invalidated' are never purged so they
+// remain available for audit (NIS2, EU AI Act point-in-time reconstruction).
 // Returns the number of deleted entries.
 func (s *Store) PurgeExpired(ctx context.Context, tenantID, agentID string, retentionDays int) (int64, error) {
 	ctx, span := tracer.Start(ctx, "memory.purge_expired",
@@ -949,7 +951,8 @@ func (s *Store) PurgeExpired(ctx context.Context, tenantID, agentID string, rete
 
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
 	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND timestamp < ?`,
+		`DELETE FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND timestamp < ?
+		 AND COALESCE(consolidation_status, 'active') NOT IN ('rolled_back', 'invalidated')`,
 		tenantID, agentID, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("purging expired memory entries: %w", err)

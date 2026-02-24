@@ -654,6 +654,86 @@ func TestPurgeExpired(t *testing.T) {
 	assert.Equal(t, "Recent entry", entries[0].Title)
 }
 
+// TestPurgeExpired_PreservesAuditEntries ensures rolled_back and invalidated entries
+// are never purged by retention so they remain available for audit (NIS2, EU AI Act).
+func TestPurgeExpired_PreservesAuditEntries(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	old := time.Now().UTC().AddDate(0, 0, -100)
+
+	// Rolled_back: two old entries, rollback to first so second becomes rolled_back; purge must not delete second.
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "audit-agent", Category: CategoryDomainKnowledge,
+		Title: "Active old", Content: "A", EvidenceID: "ev_1", SourceType: SourceAgentRun,
+		Timestamp: old,
+	}))
+	var firstID string
+	idx, _ := store.ListIndex(ctx, "acme", "audit-agent", 10)
+	for _, e := range idx {
+		if e.Title == "Active old" {
+			firstID = e.ID
+			break
+		}
+	}
+	require.NotEmpty(t, firstID)
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "audit-agent", Category: CategoryDomainKnowledge,
+		Title: "Rolled-back old", Content: "B", EvidenceID: "ev_2", SourceType: SourceAgentRun,
+		Timestamp: old,
+	}))
+	_, err := store.RollbackTo(ctx, "acme", firstID)
+	require.NoError(t, err)
+
+	purged, err := store.PurgeExpired(ctx, "acme", "audit-agent", 30)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), purged, "only the active old entry should be purged")
+	audit, err := store.AuditLog(ctx, "acme", "audit-agent", 10)
+	require.NoError(t, err)
+	require.Len(t, audit, 1, "rolled_back entry must remain for audit")
+	assert.Equal(t, "rolled_back", audit[0].ConsolidationStatus)
+	assert.Equal(t, "Rolled-back old", audit[0].Title)
+
+	// Invalidated: two old entries, invalidate first by second; purge must not delete invalidated first.
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "inv-agent", Category: CategoryDomainKnowledge,
+		Title: "To invalidate", Content: "C", EvidenceID: "ev_3", SourceType: SourceAgentRun,
+		Timestamp: old,
+	}))
+	var invOldID string
+	entries, _ := store.Read(ctx, "acme", "inv-agent")
+	for _, e := range entries {
+		if e.Title == "To invalidate" {
+			invOldID = e.ID
+			break
+		}
+	}
+	require.NotEmpty(t, invOldID)
+	require.NoError(t, store.Write(ctx, &Entry{
+		TenantID: "acme", AgentID: "inv-agent", Category: CategoryDomainKnowledge,
+		Title: "Newer active", Content: "D", EvidenceID: "ev_4", SourceType: SourceAgentRun,
+		Timestamp: old,
+	}))
+	var newerID string
+	entries, _ = store.Read(ctx, "acme", "inv-agent")
+	for _, e := range entries {
+		if e.Title == "Newer active" {
+			newerID = e.ID
+			break
+		}
+	}
+	require.NotEmpty(t, newerID)
+	require.NoError(t, store.Invalidate(ctx, "acme", invOldID, newerID, time.Now().UTC()))
+
+	purged2, err := store.PurgeExpired(ctx, "acme", "inv-agent", 30)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), purged2, "only the active (newer) old entry should be purged")
+	audit2, err := store.AuditLog(ctx, "acme", "inv-agent", 10)
+	require.NoError(t, err)
+	require.Len(t, audit2, 1, "invalidated entry must remain for audit")
+	assert.Equal(t, "invalidated", audit2[0].ConsolidationStatus)
+	assert.Equal(t, "To invalidate", audit2[0].Title)
+}
+
 func TestEnforceMaxEntries(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
