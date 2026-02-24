@@ -297,6 +297,65 @@ func TestProxyRateLimit_DefaultLimit(t *testing.T) {
 	assert.False(t, decision.Allowed, "default limit of 100 should deny 101 requests")
 }
 
+// TestProxyRateLimit_HighRiskLimit verifies proxy Rego high_risk_limit (e.g. delete_* at >10/min denied).
+func TestProxyRateLimit_HighRiskLimit(t *testing.T) {
+	ctx := context.Background()
+	cfg := &ProxyPolicyConfig{
+		Agent: ProxyAgentConfig{Name: "test-proxy", Type: "mcp_proxy"},
+		Proxy: ProxyConfig{
+			Mode:     "intercept",
+			Upstream: UpstreamConfig{URL: "http://localhost:3000", Vendor: "test"},
+			AllowedTools: []ToolMapping{
+				{Name: "email_read"},
+				{Name: "email_delete"},
+			},
+			RateLimits: ProxyRateLimitConfig{RequestsPerMinute: 100},
+		},
+	}
+
+	engine, err := NewProxyEngine(ctx, cfg)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name         string
+		toolName     string
+		requestCount int
+		wantAllowed  bool
+	}{
+		{
+			name:         "delete at 9 rpm - under high-risk limit",
+			toolName:     "email_delete",
+			requestCount: 9,
+			wantAllowed:  true,
+		},
+		{
+			name:         "delete at 11 rpm - over high-risk limit of 10",
+			toolName:     "email_delete",
+			requestCount: 11,
+			wantAllowed:  false,
+		},
+		{
+			name:         "read at 50 rpm - under general limit",
+			toolName:     "email_read",
+			requestCount: 50,
+			wantAllowed:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision, err := engine.EvaluateProxyRateLimit(ctx, &ProxyInput{
+				ToolName:     tt.toolName,
+				Vendor:       "test",
+				RequestCount: tt.requestCount,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAllowed, decision.Allowed,
+				"tool=%s rpm=%d", tt.toolName, tt.requestCount)
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // PII redaction tests
 // ---------------------------------------------------------------------------

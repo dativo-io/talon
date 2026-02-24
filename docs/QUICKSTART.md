@@ -18,7 +18,7 @@ If you want a single guided path (install → init → run → see evidence), fo
 |------|-----|
 | **Learn by doing** (one guided path) | [Your first governed agent](tutorials/first-governed-agent.md) (Tutorial) |
 | **Pick the right way to use Talon** (MCP proxy vs gateway vs native) | [How to choose your integration path](guides/choosing-integration-path.md) |
-| **Route OpenClaw / Slack bot / desktop app** through Talon | [OpenClaw](guides/openclaw-integration.md), [Slack bot](guides/slack-bot-integration.md), [Desktop apps](guides/desktop-app-governance.md) |
+| **Route OpenClaw / Slack bot / desktop app** through Talon | [OpenClaw](guides/openclaw-integration.md) (bidirectional PII scanning, tool-aware redaction, rate limiting, kill switch), [Slack bot](guides/slack-bot-integration.md), [Desktop apps](guides/desktop-app-governance.md) |
 | **Look up config and env vars** | [Configuration and environment](reference/configuration.md) (Reference) |
 | **Cap cost per team or app** | [How to cap daily spend per team or application](guides/cost-governance-by-caller.md) |
 | **Export evidence for auditors** | [How to export evidence for auditors](guides/compliance-export-runbook.md) |

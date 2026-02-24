@@ -1,0 +1,37 @@
+# OpenClaw incident investigation — MCP proxy config for OpenClaw vendor agent.
+# Governs traffic from an external OpenClaw agent through Talon's proxy pipeline.
+
+agent:
+  name: "openclaw-email-proxy"
+  type: "mcp_proxy"
+  description: "MCP proxy governing OpenClaw email agent traffic"
+  version: "1.0.0"
+
+proxy:
+  mode: "intercept"
+  upstream:
+    vendor: "openclaw-email-agent"
+    url: "http://localhost:3000"
+  allowed_tools:
+    - name: "email_read"
+    - name: "email_list"
+    - name: "email_search"
+    - name: "email_archive"
+  forbidden_tools:
+    - "email_delete"
+    - "email_bulk_*"
+    - "email_send"
+    - "email_forward"
+    - "admin_*"
+    - "export_all_*"
+  rate_limits:
+    requests_per_minute: 30
+
+pii_handling:
+  redaction_rules:
+    - field: "email_body"
+      method: "scan_and_flag"
+
+compliance:
+  frameworks: ["gdpr"]
+  human_oversight: "recommended"

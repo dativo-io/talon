@@ -24,6 +24,8 @@ type RecordGatewayEvidenceParams struct {
 	InputTier               int
 	PIIDetected             []string
 	PIIRedacted             bool
+	OutputPIIDetected       bool
+	OutputPIITypes          []string
 	Cost                    float64
 	InputTokens             int
 	OutputTokens            int
@@ -50,10 +52,12 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			PolicyVersion: params.PolicyVersion,
 		},
 		Classification: evidence.Classification{
-			InputTier:   params.InputTier,
-			OutputTier:  params.InputTier,
-			PIIDetected: params.PIIDetected,
-			PIIRedacted: params.PIIRedacted,
+			InputTier:         params.InputTier,
+			OutputTier:        params.InputTier,
+			PIIDetected:       params.PIIDetected,
+			PIIRedacted:       params.PIIRedacted,
+			OutputPIIDetected: params.OutputPIIDetected,
+			OutputPIITypes:    params.OutputPIITypes,
 		},
 		Execution: evidence.Execution{
 			ModelUsed:  params.Model,

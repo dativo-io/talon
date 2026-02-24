@@ -61,17 +61,19 @@ type CallerConfig struct {
 
 // CallerPolicyOverrides are per-caller policy overrides.
 type CallerPolicyOverrides struct {
-	MaxDailyCost   float64  `yaml:"max_daily_cost,omitempty" json:"max_daily_cost,omitempty"`
-	MaxMonthlyCost float64  `yaml:"max_monthly_cost,omitempty" json:"max_monthly_cost,omitempty"`
-	PIIAction      string   `yaml:"pii_action,omitempty" json:"pii_action,omitempty"` // block | redact | warn | allow
-	AllowedModels  []string `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
-	BlockedModels  []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
-	MaxDataTier    *int     `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"` // 0, 1, or 2
+	MaxDailyCost      float64  `yaml:"max_daily_cost,omitempty" json:"max_daily_cost,omitempty"`
+	MaxMonthlyCost    float64  `yaml:"max_monthly_cost,omitempty" json:"max_monthly_cost,omitempty"`
+	PIIAction         string   `yaml:"pii_action,omitempty" json:"pii_action,omitempty"`                   // block | redact | warn | allow
+	ResponsePIIAction string   `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from pii_action
+	AllowedModels     []string `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
+	BlockedModels     []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
+	MaxDataTier       *int     `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"` // 0, 1, or 2
 }
 
 // DefaultPolicyConfig holds server-wide default policy for the gateway.
 type DefaultPolicyConfig struct {
-	DefaultPIIAction        string  `yaml:"default_pii_action" json:"default_pii_action"` // warn | block | redact | allow
+	DefaultPIIAction        string  `yaml:"default_pii_action" json:"default_pii_action"`                       // warn | block | redact | allow
+	ResponsePIIAction       string  `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from default_pii_action
 	MaxDailyCost            float64 `yaml:"max_daily_cost" json:"max_daily_cost"`
 	MaxMonthlyCost          float64 `yaml:"max_monthly_cost" json:"max_monthly_cost"`
 	RequireCallerID         *bool   `yaml:"require_caller_id" json:"require_caller_id"` // nil = true (default)

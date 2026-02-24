@@ -152,6 +152,35 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	activeRunTracker := &agent.ActiveRunTracker{}
+
+	cbThreshold := 5
+	cbWindow := 60 * time.Second
+	if pol.Policies.RateLimits != nil {
+		if pol.Policies.RateLimits.CircuitBreakerThreshold > 0 {
+			cbThreshold = pol.Policies.RateLimits.CircuitBreakerThreshold
+		}
+		if pol.Policies.RateLimits.CircuitBreakerWindow != "" {
+			if d, err := time.ParseDuration(pol.Policies.RateLimits.CircuitBreakerWindow); err == nil {
+				cbWindow = d
+			}
+		}
+	}
+	circuitBreaker := agent.NewCircuitBreaker(cbThreshold, cbWindow)
+
+	tfThreshold := 10
+	tfWindow := 5 * time.Minute
+	if pol.Policies.RateLimits != nil {
+		if pol.Policies.RateLimits.ToolFailureThreshold > 0 {
+			tfThreshold = pol.Policies.RateLimits.ToolFailureThreshold
+		}
+		if pol.Policies.RateLimits.ToolFailureWindow != "" {
+			if d, err := time.ParseDuration(pol.Policies.RateLimits.ToolFailureWindow); err == nil {
+				tfWindow = d
+			}
+		}
+	}
+	toolFailureTracker := agent.NewToolFailureTracker(tfThreshold, tfWindow)
+
 	toolRegistry := tools.NewRegistry()
 	runner := agent.NewRunner(agent.RunnerConfig{
 		PolicyDir:         ".",
@@ -165,6 +194,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		PlanReview:        planReviewStore,
 		ToolRegistry:      toolRegistry,
 		ActiveRunTracker:  activeRunTracker,
+		CircuitBreaker:    circuitBreaker,
+		ToolFailures:      toolFailureTracker,
 		Memory:            memStore,
 	})
 

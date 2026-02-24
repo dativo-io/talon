@@ -1,0 +1,43 @@
+# OpenClaw incident investigation — gateway config with PII blocking.
+# Routes OpenClaw traffic through Talon; requests containing PII are blocked entirely.
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "enforce"
+
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+      allowed_models: ["gpt-4o-mini", "gpt-4o"]
+
+  callers:
+    - name: "openclaw-main"
+      api_key: "talon-gw-openclaw-abc123"
+      tenant_id: "test-tenant"
+      team: "engineering"
+      allowed_providers: ["openai"]
+      policy_overrides:
+        max_daily_cost: 25.00
+        max_monthly_cost: 500.00
+        pii_action: "block"
+        allowed_models: ["gpt-4o-mini", "gpt-4o"]
+
+  default_policy:
+    default_pii_action: "block"
+    max_daily_cost: 100.00
+    max_monthly_cost: 2000.00
+    require_caller_id: true
+    log_prompts: false
+    log_responses: false
+
+  rate_limits:
+    global_requests_per_min: 300
+    per_caller_requests_per_min: 60
+
+  timeouts:
+    connect_timeout: "5s"
+    request_timeout: "30s"
+    stream_idle_timeout: "60s"

@@ -1,12 +1,10 @@
-# OpenClaw + Talon gateway primer — run Talon as LLM API gateway for OpenClaw (or any OpenAI-compatible client).
+# OpenClaw + Talon primer — OpenAI only. Talon sits between OpenClaw and OpenAI.
 #
-# From repo root:
 #   cd docs/guides/openclaw-talon-primer
-#   cp .env.example .env   # set OPENAI_API_KEY (and optionally TALON_SECRETS_KEY)
-#   docker compose build
-#   docker compose up -d
+#   cp .env.example .env   # set OPENAI_API_KEY
+#   docker compose build && docker compose up -d
 #
-# Then point OpenClaw (or curl) at http://localhost:8080/v1/proxy/openai with API key: talon-gw-openclaw-abc123
+# Then in OpenClaw: base URL = http://localhost:8080/v1/proxy/openai, API key = talon-gw-openclaw-abc123
 
 services:
   talon:
@@ -21,7 +19,6 @@ services:
       - "${TALON_PORT:-8080}:8080"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - TALON_SECRETS_KEY=${TALON_SECRETS_KEY}
       - TALON_SIGNING_KEY=${TALON_SIGNING_KEY}
       - TALON_DATA_DIR=/home/talon/.talon

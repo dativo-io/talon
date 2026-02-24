@@ -67,6 +67,92 @@ Edit your gateway config and add or adjust `callers` and `policy_overrides`:
 
 Restart `talon serve --gateway` after config changes.
 
+### 7. Monitor and respond
+
+Once traffic is flowing, use these operational controls:
+
+**Kill switch** — immediately halt a misbehaving caller without restarting Talon:
+
+```go
+// Go API: cancel the agent's context
+activeRunTracker.Kill(correlationID)
+```
+
+> CLI and HTTP wrappers for kill switch are planned for a future release.
+
+**Audit queries** — inspect recent activity:
+
+```bash
+# Show recent evidence for the caller
+talon audit list --agent openclaw-main --limit 20
+
+# Show full evidence detail for a specific event
+talon audit show <evidence_id>
+
+# Verify evidence integrity (HMAC signatures)
+talon audit verify <evidence_id>
+
+# Cost summary
+talon costs --tenant default
+```
+
+**PII verification** — confirm redaction is working:
+
+```bash
+# List recent evidence and check for PII annotations in the output
+talon audit list --agent openclaw-main --limit 10
+```
+
+For a complete incident response workflow, see the [Incident Response Playbook](incident-response-playbook.md).
+
+---
+
+## Failure mode → defense mapping
+
+| Failure mode | Talon defense | Config / control |
+|---|---|---|
+| LLM returns PII in response | Response-path PII scanning | `pii_action: redact` or `block` in gateway config |
+| Agent calls destructive tool | Destructive operation detection | `tool_access.rego` blocks `delete`, `drop`, `remove` patterns |
+| Runaway cost accumulation | Per-caller cost caps | `max_daily_cost`, `max_monthly_cost` in caller config |
+| Repeated policy denials (bug loop) | Circuit breaker with half-open recovery | Automatic after configurable denial threshold |
+| Agent stuck / infinite loop | Kill switch | `ActiveRunTracker.Kill(correlationID)` (Go API) |
+| Bulk data exfiltration attempt | Contextual volume detection in plan review | Plan review flags high-volume operations |
+| Evidence tampering | HMAC-signed evidence chain | `talon audit verify` checks integrity |
+| Memory poisoning | Governed memory with PII scan + category restrictions | `memory.governance` in `.talon.yaml` |
+
+---
+
+## Tool-aware governance
+
+Talon applies a **three-category redaction model** that goes beyond blanket PII rules. Each tool call (or gateway request) is classified into one of four actions based on the tool and its arguments:
+
+| Category | Behavior | Example |
+|---|---|---|
+| **allow** | PII passes through unmodified | Internal analytics tools querying anonymized data |
+| **redact** | PII entities are replaced with placeholders before the tool sees them | Customer-facing tools receiving names, emails, IBANs |
+| **audit** | PII passes through but every occurrence is logged as evidence | Privileged support tools where redaction would break functionality |
+| **block** | Request is rejected entirely when PII is detected | Export or bulk-delete tools that should never receive personal data |
+
+Configure per-tool policies in the agent's `.talon.yaml` (not the gateway config):
+
+```yaml
+tool_policies:
+  search_tickets:
+    argument_default: redact
+    result: redact
+  export_report:
+    argument_default: block
+    result: block
+  admin_lookup:
+    argument_default: audit
+    result: audit
+  _default:
+    argument_default: redact
+    result: redact
+```
+
+This model ensures that governance is proportional — low-risk tools stay fast while high-risk tools get strict controls.
+
 ## Summary
 
 | Before                         | After                          |

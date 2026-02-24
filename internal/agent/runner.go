@@ -48,11 +48,27 @@ import (
 
 var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/agent")
 
-// ActiveRunTracker counts in-flight runs per tenant for rate-limit policy (concurrent_executions).
+// runEntry tracks a single in-flight run for kill switch support.
+type runEntry struct {
+	TenantID string
+	Cancel   context.CancelFunc
+}
+
+// ActiveRunTracker counts in-flight runs per tenant for rate-limit policy (concurrent_executions)
+// and provides kill switch support via correlation-ID-keyed cancel functions.
 // Safe for concurrent use. When nil, rate-limit policy input concurrent_executions is not set.
 type ActiveRunTracker struct {
 	mu     sync.Mutex
 	counts map[string]int
+	runs   map[string]runEntry // keyed by correlation ID
+}
+
+// NewActiveRunTracker creates a new tracker.
+func NewActiveRunTracker() *ActiveRunTracker {
+	return &ActiveRunTracker{
+		counts: make(map[string]int),
+		runs:   make(map[string]runEntry),
+	}
 }
 
 // Increment adds one in-flight run for the tenant.
@@ -85,6 +101,63 @@ func (t *ActiveRunTracker) Count(tenantID string) int {
 	return t.counts[tenantID]
 }
 
+// Register stores a cancel function for a running agent, keyed by correlation ID.
+func (t *ActiveRunTracker) Register(tenantID, correlationID string, cancel context.CancelFunc) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.runs == nil {
+		t.runs = make(map[string]runEntry)
+	}
+	t.runs[correlationID] = runEntry{TenantID: tenantID, Cancel: cancel}
+}
+
+// Deregister removes a completed run from the tracker.
+func (t *ActiveRunTracker) Deregister(correlationID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.runs, correlationID)
+}
+
+// Kill cancels a running agent by correlation ID. Returns true if found.
+func (t *ActiveRunTracker) Kill(correlationID string) bool {
+	t.mu.Lock()
+	entry, ok := t.runs[correlationID]
+	if ok {
+		delete(t.runs, correlationID)
+	}
+	t.mu.Unlock()
+	if ok && entry.Cancel != nil {
+		entry.Cancel()
+	}
+	return ok
+}
+
+// KillAllForTenant cancels all running agents for a tenant. Returns count of killed runs.
+func (t *ActiveRunTracker) KillAllForTenant(tenantID string) int {
+	t.mu.Lock()
+	var toCancel []context.CancelFunc
+	for id, entry := range t.runs {
+		if entry.TenantID == tenantID {
+			toCancel = append(toCancel, entry.Cancel)
+			delete(t.runs, id)
+		}
+	}
+	t.mu.Unlock()
+	for _, cancel := range toCancel {
+		if cancel != nil {
+			cancel()
+		}
+	}
+	return len(toCancel)
+}
+
+// ActiveRunCount returns the number of active runs being tracked with cancel functions.
+func (t *ActiveRunTracker) ActiveRunCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.runs)
+}
+
 // Runner executes the full agent orchestration pipeline.
 type Runner struct {
 	policyDir         string
@@ -98,7 +171,9 @@ type Runner struct {
 	evidenceStore     *evidence.Store
 	planReview        *PlanReviewStore
 	toolRegistry      *tools.ToolRegistry
-	activeRuns        *ActiveRunTracker // optional; when set, used for rate-limit policy concurrent_executions
+	activeRuns        *ActiveRunTracker   // optional; when set, used for rate-limit policy concurrent_executions
+	circuitBreaker    *CircuitBreaker     // optional; when set, checks/records policy denials per agent
+	toolFailures      *ToolFailureTracker // optional; tracks tool execution failures separately from policy denials
 	hooks             *HookRegistry
 	memory            *memory.Store
 	governance        *memory.Governance
@@ -117,9 +192,11 @@ type RunnerConfig struct {
 	Evidence          *evidence.Store
 	PlanReview        *PlanReviewStore
 	ToolRegistry      *tools.ToolRegistry
-	ActiveRunTracker  *ActiveRunTracker // optional; when set, rate-limit policy receives concurrent_executions
-	Hooks             *HookRegistry     // optional; nil = no hooks
-	Memory            *memory.Store     // optional; nil = memory disabled
+	ActiveRunTracker  *ActiveRunTracker   // optional; when set, rate-limit policy receives concurrent_executions
+	CircuitBreaker    *CircuitBreaker     // optional; when set, suspends agents after repeated policy denials
+	ToolFailures      *ToolFailureTracker // optional; tracks tool execution failures separately from circuit breaker
+	Hooks             *HookRegistry       // optional; nil = no hooks
+	Memory            *memory.Store       // optional; nil = memory disabled
 }
 
 // NewRunner creates an agent runner with the given dependencies.
@@ -137,6 +214,8 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		planReview:        cfg.PlanReview,
 		toolRegistry:      cfg.ToolRegistry,
 		activeRuns:        cfg.ActiveRunTracker,
+		circuitBreaker:    cfg.CircuitBreaker,
+		toolFailures:      cfg.ToolFailures,
 		hooks:             cfg.Hooks,
 		memory:            cfg.Memory,
 	}
@@ -269,9 +348,15 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		))
 	defer span.End()
 
+	// Kill switch: wrap context with a cancellable parent so Kill() can terminate this run.
+	ctx, killCancel := context.WithCancel(ctx)
+	defer killCancel()
+
 	if r.activeRuns != nil {
 		r.activeRuns.Increment(req.TenantID)
+		r.activeRuns.Register(req.TenantID, correlationID, killCancel)
 		defer r.activeRuns.Decrement(req.TenantID)
+		defer r.activeRuns.Deregister(correlationID)
 	}
 
 	log.Info().
@@ -425,26 +510,54 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		}
 	}
 	requestsLastMinute := 0
+	requestsLastMinuteAgent := 0
 	if r.evidenceStore != nil {
 		now := time.Now().UTC()
 		from := now.Add(-1 * time.Minute)
 		requestsLastMinute, _ = r.evidenceStore.CountInRange(ctx, req.TenantID, "", from, now)
+		requestsLastMinuteAgent, _ = r.evidenceStore.CountInRange(ctx, req.TenantID, req.AgentName, from, now)
 	}
 	concurrentExecutions := 0
 	if r.activeRuns != nil {
 		concurrentExecutions = r.activeRuns.Count(req.TenantID)
 	}
 	policyInput := map[string]interface{}{
-		"tenant_id":             req.TenantID,
-		"agent_id":              req.AgentName,
-		"tier":                  effectiveTier,
-		"estimated_cost":        estimatedCost,
-		"daily_cost_total":      dailyCost,
-		"monthly_cost_total":    monthlyCost,
-		"requests_last_minute":  requestsLastMinute,
-		"concurrent_executions": concurrentExecutions,
+		"tenant_id":                  req.TenantID,
+		"agent_id":                   req.AgentName,
+		"tier":                       effectiveTier,
+		"estimated_cost":             estimatedCost,
+		"daily_cost_total":           dailyCost,
+		"monthly_cost_total":         monthlyCost,
+		"requests_last_minute":       requestsLastMinute,
+		"requests_last_minute_agent": requestsLastMinuteAgent,
+		"concurrent_executions":      concurrentExecutions,
 	}
 
+	// Circuit breaker: check before policy evaluation. An open circuit means the
+	// agent has accumulated too many policy denials and should be suspended.
+	if r.circuitBreaker != nil {
+		if cbErr := r.circuitBreaker.Check(req.TenantID, req.AgentName); cbErr != nil {
+			span.SetAttributes(attribute.String("circuit_breaker.state", "open"))
+			return &RunResponse{PolicyAllow: false, DenyReason: cbErr.Error()}, nil
+		}
+	}
+
+	// ARCHITECTURAL INVARIANT — OpenClaw Incident Defense
+	//
+	// This policy evaluation MUST happen before any LLM call, tool execution, or
+	// data forwarding. It is the single enforcement point that prevents:
+	//   1. Destructive operations without approval (FM-1: mass deletion)
+	//   2. Runaway agents ignoring stop commands (FM-2: default-deny + rate limits)
+	//   3. Budget overruns from uncontrolled execution (FM-3: cost_limits)
+	//   4. PII exposure through unscanned content (FM-6: tier-based routing)
+	//
+	// The policy input is context-independent: it uses the YAML-declared values
+	// (cost limits, tier, rate limits), NOT the LLM's context window. This means
+	// context compaction or prompt injection cannot alter the policy decision.
+	//
+	// If this evaluation is bypassed or moved after the LLM call, every failure
+	// mode from the OpenClaw incident (Feb 2026) becomes exploitable.
+	// See: internal_docs/investigations/openclaw-incident-gap-report.md
 	decision, err := engine.Evaluate(ctx, policyInput)
 	if err != nil {
 		span.RecordError(err)
@@ -465,6 +578,9 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	var observationOverride bool
 	var originalDecision *policy.Decision
 	if !decision.Allowed {
+		if r.circuitBreaker != nil {
+			r.circuitBreaker.RecordPolicyDenial(req.TenantID, req.AgentName)
+		}
 		if pol.Audit != nil && pol.Audit.ObservationOnly {
 			observationOverride = true
 			originalDecision = decision
@@ -485,6 +601,8 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			}
 			return &RunResponse{PolicyAllow: false, DenyReason: denyReason}, nil
 		}
+	} else if r.circuitBreaker != nil {
+		r.circuitBreaker.RecordSuccess(req.TenantID, req.AgentName)
 	}
 
 	if req.DryRun {
@@ -826,18 +944,39 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					_, _ = r.fireHook(ctx, HookPreTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 						"tool": tc.Name, "tool_call_id": tc.ID,
 					})
+
+					// Pre-execution evidence: write a "pending" record so a kill/crash
+					// never creates an unaudited action.
+					pendingStep, _ := r.evidence.GeneratePendingStep(ctx, evidence.StepParams{
+						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+						StepIndex: stepIndex, Type: "tool_call", ToolName: tc.Name,
+					})
+
 					toolStart := time.Now()
-					resultContent, executed, toolName = r.executeOneToolCall(ctx, policyEval, pol, tc, toolHistory)
+					tcResult := r.executeToolCallFull(ctx, policyEval, pol, tc, toolHistory)
+					resultContent = tcResult.Content
+					executed = tcResult.Executed
+					toolName = tcResult.ToolName
 					toolDuration := time.Since(toolStart).Milliseconds()
 					if executed {
 						toolsCalled = append(toolsCalled, toolName)
 					}
-					_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
-						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
-						StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
-						OutputSummary: evidence.TruncateForSummary(resultContent, 500),
-						DurationMS:    toolDuration, Cost: 0,
-					})
+
+					// Track tool execution failures separately from policy denials (Gap T4).
+					if tcResult.ExecutionError != "" && r.toolFailures != nil {
+						r.toolFailures.RecordToolFailure(req.TenantID, req.AgentName, toolName, tcResult.ExecutionError)
+					}
+
+					// Update the pending record to completed or failed.
+					if pendingStep != nil {
+						pendingStep.ToolName = toolName
+						if executed {
+							_ = r.evidence.CompleteStep(ctx, pendingStep,
+								evidence.TruncateForSummary(resultContent, 500), toolDuration, 0)
+						} else {
+							_ = r.evidence.FailStep(ctx, pendingStep, resultContent, toolDuration)
+						}
+					}
 					stepIndex++
 					_, _ = r.fireHook(ctx, HookPostTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 						"tool": tc.Name, "executed": executed,
@@ -1053,46 +1192,120 @@ func (r *Runner) buildLLMTools(pol *policy.Policy) []llm.Tool {
 	return out
 }
 
-// executeOneToolCall runs policy check, registry lookup, and execution for a single LLM tool call.
+// ToolCallResult extends the basic return values with PII findings for evidence.
+type ToolCallResult struct {
+	Content        string
+	Executed       bool
+	ToolName       string
+	PIIFindings    []ToolPIIFinding
+	ExecutionError string // non-empty when tool.Execute() returned an error (distinct from policy denial)
+}
+
+// executeToolCallFull runs policy check, tool-aware PII scanning, argument validation,
+// registry lookup, per-tool timeout, and execution for a single LLM tool call.
 // toolHistory is the sequence of tool calls in this run so far (for OPA tool-chain risk scoring).
-// Returns (result content for the tool message, whether the tool was executed, tool name).
-func (r *Runner) executeOneToolCall(ctx context.Context, policyEval memory.PolicyEvaluator, pol *policy.Policy, tc llm.ToolCall, toolHistory []map[string]interface{}) (resultContent string, executed bool, toolName string) {
-	toolName = tc.Name
+//
+//nolint:gocyclo // tool execution pipeline: policy, PII, validation, timeout, execute, result PII
+func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.PolicyEvaluator, pol *policy.Policy, tc llm.ToolCall, toolHistory []map[string]interface{}) ToolCallResult {
+	result := ToolCallResult{ToolName: tc.Name}
 	if r.toolRegistry == nil {
-		return `{"error":"tool registry not available"}`, false, toolName
+		result.Content = `{"error":"tool registry not available"}`
+		return result
 	}
+
+	// Step 1: OPA policy check
 	policyEngine, _ := policyEval.(*policy.Engine)
 	if policyEngine != nil {
 		dec, err := policyEngine.EvaluateToolAccess(ctx, tc.Name, tc.Arguments, toolHistory)
 		if err != nil {
 			log.Warn().Err(err).Str("tool", tc.Name).Msg("tool access policy evaluation failed")
 			b, _ := json.Marshal(map[string]string{"error": "policy evaluation failed: " + err.Error()})
-			return string(b), false, toolName
+			result.Content = string(b)
+			return result
 		}
 		if dec != nil && !dec.Allowed {
 			log.Warn().Str("tool", tc.Name).Strs("reasons", dec.Reasons).Msg("tool access denied by policy")
 			reasonsJSON, _ := json.Marshal(dec.Reasons)
-			return fmt.Sprintf(`{"error":"denied by policy","reasons":%s}`, string(reasonsJSON)), false, toolName
+			result.Content = fmt.Sprintf(`{"error":"denied by policy","reasons":%s}`, string(reasonsJSON))
+			return result
 		}
 	}
-	tool, ok := r.toolRegistry.Get(tc.Name)
-	if !ok {
-		return `{"error":"tool not in registry"}`, false, toolName
-	}
+
+	// Step 2: Tool-aware PII scanning on arguments
 	params, _ := json.Marshal(tc.Arguments)
 	if len(params) == 0 {
 		params = []byte("{}")
 	}
-	out, err := tool.Execute(ctx, params)
+
+	if r.classifier != nil && pol != nil && len(pol.ToolPolicies) > 0 {
+		piiResult := applyToolArgumentPII(ctx, r.classifier, tc.Name, params, pol)
+		if piiResult != nil {
+			result.PIIFindings = append(result.PIIFindings, piiResult.Findings...)
+			if piiResult.Blocked {
+				log.Warn().Str("tool", tc.Name).Str("reason", piiResult.BlockReason).Msg("tool call blocked by PII policy")
+				b, _ := json.Marshal(map[string]string{"error": piiResult.BlockReason})
+				result.Content = string(b)
+				return result
+			}
+			if piiResult.ModifiedArgs != nil {
+				params = piiResult.ModifiedArgs
+			}
+		}
+	}
+
+	// Step 3: Registry lookup and execution
+	tool, ok := r.toolRegistry.Get(tc.Name)
+	if !ok {
+		result.Content = `{"error":"tool not in registry"}`
+		return result
+	}
+
+	// Argument validation (Gap T6): if the tool implements ArgumentValidator, check before execution.
+	if validator, ok := tool.(tools.ArgumentValidator); ok {
+		if valErr := validator.ValidateArguments(params); valErr != nil {
+			log.Warn().Err(valErr).Str("tool", tc.Name).Msg("tool argument validation failed")
+			b, _ := json.Marshal(map[string]string{"error": "argument validation failed: " + valErr.Error()})
+			result.Content = string(b)
+			return result
+		}
+	}
+
+	// Per-tool timeout (Gap T5): wrap context if the tool has a configured timeout.
+	execCtx := ctx
+	if pol != nil {
+		if tp := resolveToolPolicy(tc.Name, pol); tp != nil && tp.Timeout != "" {
+			if d, parseErr := time.ParseDuration(tp.Timeout); parseErr == nil && d > 0 {
+				var cancel context.CancelFunc
+				execCtx, cancel = context.WithTimeout(ctx, d)
+				defer cancel()
+			}
+		}
+	}
+
+	out, err := tool.Execute(execCtx, params)
 	if err != nil {
 		log.Warn().Err(err).Str("tool", tc.Name).Msg("tool execution failed")
 		b, _ := json.Marshal(map[string]string{"error": err.Error()})
-		return string(b), false, toolName
+		result.Content = string(b)
+		result.ExecutionError = err.Error()
+		return result
 	}
+	result.Executed = true
+
+	resultStr := string(out)
 	if len(out) == 0 {
-		return "{}", true, toolName
+		resultStr = "{}"
 	}
-	return string(out), true, toolName
+
+	// Step 4: Tool-aware PII scanning on result
+	if r.classifier != nil && pol != nil && len(pol.ToolPolicies) > 0 {
+		redacted, findings := applyToolResultPII(ctx, r.classifier, tc.Name, resultStr, pol)
+		result.PIIFindings = append(result.PIIFindings, findings...)
+		resultStr = redacted
+	}
+
+	result.Content = resultStr
+	return result
 }
 
 const (

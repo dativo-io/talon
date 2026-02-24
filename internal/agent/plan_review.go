@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -214,10 +217,14 @@ type PlanReviewConfig struct {
 	CostThreshold   float64 `yaml:"cost_threshold"`
 	TimeoutMinutes  int     `yaml:"timeout_minutes"`
 	NotifyWebhook   string  `yaml:"notify_webhook"`
+	VolumeThreshold int     `yaml:"volume_threshold,omitempty"`
 }
 
 // RequiresReview checks if the current request needs human review based on policy.
-func RequiresReview(humanOversight string, dataTier int, costEstimate float64, hasTools bool, planConfig *PlanReviewConfig) bool {
+// RequiresReview determines if a plan requires human review.
+// planText is optional; when provided, volume detection (Gap E) checks for
+// destructive verbs near large numbers.
+func RequiresReview(humanOversight string, dataTier int, costEstimate float64, hasTools bool, planConfig *PlanReviewConfig, planText ...string) bool {
 	if humanOversight == "always" {
 		return true
 	}
@@ -237,7 +244,76 @@ func RequiresReview(humanOversight string, dataTier int, costEstimate float64, h
 	if tierThreshold >= 0 && dataTier >= tierThreshold {
 		return true
 	}
+	// Volume detection (Gap E): check for destructive verb + large number
+	if planConfig.VolumeThreshold > 0 && len(planText) > 0 {
+		if detectDestructiveVolume(planText[0], planConfig.VolumeThreshold, nil) {
+			return true
+		}
+	}
 	return false
+}
+
+var numberRegex = regexp.MustCompile(`\b(\d{3,})\b`)
+
+// defaultDestructiveVerbs is used for volume detection when no custom patterns are provided.
+var defaultDestructiveVerbs = []string{"delete", "drop", "remove", "truncate", "purge", "wipe", "destroy", "bulk"}
+
+// detectDestructiveVolume checks if planText contains a destructive verb within
+// proximity of a number exceeding the threshold. Custom patterns override defaults.
+func detectDestructiveVolume(planText string, threshold int, customPatterns []string) bool {
+	patterns := defaultDestructiveVerbs
+	if len(customPatterns) > 0 {
+		patterns = customPatterns
+	}
+
+	lower := strings.ToLower(planText)
+	words := strings.Fields(lower)
+
+	matches := numberRegex.FindAllStringIndex(lower, -1)
+	for _, m := range matches {
+		numStr := lower[m[0]:m[1]]
+		num, err := strconv.Atoi(numStr)
+		if err != nil || num <= threshold {
+			continue
+		}
+		// Check for a destructive verb within 5 words of the number
+		wordIdx := findWordIndex(words, m[0], lower)
+		if wordIdx < 0 {
+			continue
+		}
+		start := wordIdx - 5
+		if start < 0 {
+			start = 0
+		}
+		end := wordIdx + 6
+		if end > len(words) {
+			end = len(words)
+		}
+		for i := start; i < end; i++ {
+			for _, p := range patterns {
+				if strings.Contains(words[i], p) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func findWordIndex(words []string, charPos int, text string) int {
+	pos := 0
+	for i, w := range words {
+		idx := strings.Index(text[pos:], w)
+		if idx < 0 {
+			continue
+		}
+		wStart := pos + idx
+		if wStart >= charPos-1 && wStart <= charPos+len(w) {
+			return i
+		}
+		pos = wStart + len(w)
+	}
+	return -1
 }
 
 func tierFromString(s string) int {

@@ -1,6 +1,5 @@
-# Gateway config for OpenClaw + Talon primer.
-# Used when running: talon serve --gateway --gateway-config=...
-# Caller "openclaw-main" uses API key below; point OpenClaw at this gateway with that key.
+# OpenClaw + Talon primer — OpenAI only.
+# One provider (OpenAI), one caller (openclaw-main). Talon governs every request before forwarding.
 
 gateway:
   enabled: true
@@ -13,29 +12,22 @@ gateway:
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
       allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
-    anthropic:
-      enabled: true
-      secret_name: "anthropic-api-key"
-      base_url: "https://api.anthropic.com"
-      allowed_models: ["claude-3-5-sonnet-20241022", "claude-sonnet-4-20250514"]
-    ollama:
-      enabled: true
-      base_url: "http://localhost:11434"
 
   callers:
     - name: "openclaw-main"
       api_key: "talon-gw-openclaw-abc123"
       tenant_id: "default"
       team: "engineering"
-      allowed_providers: ["openai", "anthropic"]
+      allowed_providers: ["openai"]
       policy_overrides:
         max_daily_cost: 25.00
         max_monthly_cost: 500.00
         pii_action: "redact"
-        allowed_models: ["gpt-4o", "gpt-4o-mini"]
+        allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
 
   default_policy:
     default_pii_action: "warn"
+    response_pii_action: "redact"
     max_daily_cost: 100.00
     max_monthly_cost: 2000.00
     require_caller_id: true
@@ -50,3 +42,12 @@ gateway:
     connect_timeout: 10s
     request_timeout: 120s
     stream_idle_timeout: 60s
+
+# NOTE: Per-tool PII policies (tool_policies) and circuit breaker settings are
+# configured in the agent .talon.yaml policy (agent.talon.yaml), not in the
+# gateway config. The gateway governs LLM API traffic; the agent runner governs
+# tool execution. See agent.talon.yaml for:
+#   tool_policies:      per-tool, per-argument PII actions (allow|audit|redact|block)
+#   rate_limits:
+#     circuit_breaker_threshold: 5
+#     circuit_breaker_window: "60s"
