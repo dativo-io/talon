@@ -4,6 +4,31 @@ Copy-paste snippets for common policy needs. Use in `.talon.yaml` (native agents
 
 ---
 
+## Enable governed memory
+
+**Goal:** Let the agent persist learnings with governance (categories, PII scan, conflict detection). Memory is injected into later runs so the model can use stored context.
+
+**Where:** `.talon.yaml` under `memory`.
+
+```yaml
+memory:
+  enabled: true
+  mode: active
+  max_entries: 100
+  max_prompt_tokens: 500
+  allowed_categories:
+    - domain_knowledge
+    - factual_corrections
+    - user_preferences
+    - procedure_improvements
+  governance:
+    conflict_resolution: auto
+```
+
+Use `mode: shadow` to log what would be written without persisting. See [Memory governance](../MEMORY_GOVERNANCE.md) and [How to verify memory is used](memory-verification.md).
+
+---
+
 ## Only allow specific models for tier_2
 
 **Goal:** Restrict tier_2 (e.g. PII-bearing) requests to one or more models.

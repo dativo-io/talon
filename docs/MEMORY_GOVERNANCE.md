@@ -131,12 +131,12 @@ When the run has a non-empty **prompt** and `max_prompt_tokens` is set, memory i
 - **Type weight** (20%): semantic > episodic > procedural
 - **Trust** (10%): normalized trust score (0–1)
 
-Entries are sorted by score descending, then a **token cap** (`max_prompt_tokens`) is applied so the most relevant memories fit in the prompt. When there is no prompt (e.g. scheduled run with fixed prompt), retrieval falls back to **timestamp-ordered** `ListIndex` with the same token cap.
+Retrieval returns entries by score; when building the prompt, Talon then **sorts by trust (highest first)** and applies the **token cap** (`max_prompt_tokens`). When there is no prompt (e.g. scheduled run), retrieval uses **timestamp-ordered** list with the same trust sort and token cap.
 
-### Consolidation and point-in-time (Phase 2)
+### Consolidation and point-in-time
 
-- **Consolidation (AUDN):** New observations are evaluated against existing entries (ADD / UPDATE / INVALIDATE / NOOP). Invalidated entries are preserved for audit (Zep-style); they are excluded from `ListIndex` and prompt injection.
-- **Point-in-time (AsOf):** For compliance (NIS2 Art. 23, EU AI Act Art. 11), use `talon memory as-of <RFC3339> --agent <name>` or the API `GET /v1/memory/as-of?agent_id=&as_of=<RFC3339>` to retrieve memory entries valid at a given time. Entries with `expired_at` before that time are excluded.
+- **Consolidation:** New observations are evaluated against existing entries (ADD / UPDATE / INVALIDATE / NOOP). Invalidated entries are kept for audit but excluded from list and prompt injection.
+- **Point-in-time (as-of):** For compliance (e.g. NIS2, EU AI Act), use `talon memory as-of <RFC3339> --agent <name>` to retrieve entries valid at that time.
 
 ### Retention & Expiration
 

@@ -39,6 +39,7 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 | [How to export evidence for auditors](guides/compliance-export-runbook.md) | Export, verify, and hand off audit evidence. |
 | [How to run governed LLM calls in CI/CD](guides/cicd-pipeline-governance.md) | Use Talon from GitHub Actions or GitLab CI. |
 | [How to run a first-line support agent with Talon](guides/internal-support-agent.md) | Ticket summarization with PII and cost controls. |
+| [How to verify memory is used](guides/memory-verification.md) | CLI steps to confirm memory is written and injected into prompts. |
 | [How to offer Talon to multiple customers (multi-tenant/MSP)](guides/multi-tenant-msp.md) | Tenant isolation, API keys, and gateway callers. |
 
 ### Reference (technical description)

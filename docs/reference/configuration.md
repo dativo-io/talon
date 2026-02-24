@@ -43,7 +43,13 @@ export TALON_SIGNING_KEY=$(openssl rand -hex 32)
 
 ## Memory and policy (.talon.yaml)
 
+See [Memory governance](../MEMORY_GOVERNANCE.md) for full reference. Key options:
+
 | Key | Purpose |
 |-----|---------|
-| `memory.governance.dedup_window_minutes` | When > 0, runs with the same input fingerprint within this window do not create a new memory entry. 0 = disabled. See [MEMORY_GOVERNANCE.md](../MEMORY_GOVERNANCE.md). |
-| `memory.max_prompt_tokens` | Cap on memory tokens injected into the LLM prompt. When the run has a prompt, retrieval is relevance-scored (Phase 3); otherwise timestamp-ordered. |
+| `memory.enabled` | Turn memory on or off. |
+| `memory.mode` | `active` (persist + inject), `shadow` (log only, no persist), or `disabled`. |
+| `memory.allowed_categories` | Categories the agent may write (e.g. `domain_knowledge`, `factual_corrections`, `user_preferences`, `procedure_improvements`). |
+| `memory.prompt_categories` | Categories to inject into prompts (empty = all allowed). |
+| `memory.max_prompt_tokens` | Cap on memory tokens injected. With a run prompt, retrieval is relevance-scored; otherwise timestamp-ordered. Injected order is by trust (highest first). |
+| `memory.governance.dedup_window_minutes` | When > 0, same input within the window does not create a new entry. 0 = disabled. |
