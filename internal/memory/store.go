@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -85,24 +86,32 @@ const (
 
 // Entry is a full memory record with provenance.
 type Entry struct {
-	ID               string    `json:"id"`
-	TenantID         string    `json:"tenant_id"`
-	AgentID          string    `json:"agent_id"`
-	Category         string    `json:"category"`
-	Scope            string    `json:"scope"` // "agent" (default), "session", "workspace"
-	Title            string    `json:"title"`
-	Content          string    `json:"content"`
-	ObservationType  string    `json:"observation_type"`
-	TokenCount       int       `json:"token_count"`
-	FilesAffected    []string  `json:"files_affected"`
-	Version          int       `json:"version"`
-	Timestamp        time.Time `json:"timestamp"`
-	EvidenceID       string    `json:"evidence_id"`
-	SourceType       string    `json:"source_type"`
-	SourceEvidenceID string    `json:"source_evidence_id"`
-	TrustScore       int       `json:"trust_score"`
-	ConflictsWith    []string  `json:"conflicts_with"`
-	ReviewStatus     string    `json:"review_status"`
+	ID                  string     `json:"id"`
+	TenantID            string     `json:"tenant_id"`
+	AgentID             string     `json:"agent_id"`
+	Category            string     `json:"category"`
+	Scope               string     `json:"scope"`                // "agent" (default), "session", "workspace"
+	InputHash           string     `json:"input_hash"`           // SHA256 fingerprint for deduplication (optional)
+	MemoryType          string     `json:"memory_type"`          // "semantic", "episodic", "procedural" (Phase 2)
+	ValidAt             *time.Time `json:"valid_at,omitempty"`   // Event time: when fact was true
+	InvalidAt           *time.Time `json:"invalid_at,omitempty"` // Event time: when fact ceased to be true
+	InvalidatedBy       string     `json:"invalidated_by,omitempty"`
+	ConsolidationStatus string     `json:"consolidation_status"` // "active", "invalidated", "merged", "superseded"
+	CreatedAt           time.Time  `json:"created_at"`           // Transaction time: when ingested
+	ExpiredAt           *time.Time `json:"expired_at,omitempty"` // Transaction time: when superseded in system
+	Title               string     `json:"title"`
+	Content             string     `json:"content"`
+	ObservationType     string     `json:"observation_type"`
+	TokenCount          int        `json:"token_count"`
+	FilesAffected       []string   `json:"files_affected"`
+	Version             int        `json:"version"`
+	Timestamp           time.Time  `json:"timestamp"`
+	EvidenceID          string     `json:"evidence_id"`
+	SourceType          string     `json:"source_type"`
+	SourceEvidenceID    string     `json:"source_evidence_id"`
+	TrustScore          int        `json:"trust_score"`
+	ConflictsWith       []string   `json:"conflicts_with"`
+	ReviewStatus        string     `json:"review_status"`
 }
 
 // IndexEntry is a lightweight summary for Layer 1 progressive disclosure (~50 tokens).
@@ -116,11 +125,13 @@ type IndexEntry struct {
 	Timestamp       time.Time `json:"timestamp"`
 	TrustScore      int       `json:"trust_score"`
 	ReviewStatus    string    `json:"review_status"`
+	MemoryType      string    `json:"memory_type"` // semantic, episodic, procedural (for scored retrieval)
 }
 
 // HealthReport aggregates memory health metrics for CLI output.
 type HealthReport struct {
 	TotalEntries      int
+	RolledBack        int
 	TrustDistribution map[string]int
 	PendingReview     int
 	ConflictCount     int
@@ -150,6 +161,32 @@ func NewStore(dbPath string) (*Store, error) {
 	// Migrate: add scope column if missing (added in memory architecture review)
 	_, _ = db.ExecContext(context.Background(),
 		`ALTER TABLE memory_entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'agent'`)
+
+	// Migrate: add input_hash column for deduplication (v3.0)
+	_, _ = db.ExecContext(context.Background(),
+		`ALTER TABLE memory_entries ADD COLUMN input_hash TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(context.Background(),
+		`CREATE INDEX IF NOT EXISTS idx_memory_input_hash ON memory_entries(tenant_id, agent_id, input_hash)`)
+
+	// Migrate: consolidation + temporal columns (v3.0 Phase 2 — AUDN + as-of)
+	consolidationMigrations := []string{
+		`ALTER TABLE memory_entries ADD COLUMN valid_at TIMESTAMP`,
+		`ALTER TABLE memory_entries ADD COLUMN invalid_at TIMESTAMP`,
+		`ALTER TABLE memory_entries ADD COLUMN invalidated_by TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE memory_entries ADD COLUMN consolidation_status TEXT NOT NULL DEFAULT 'active'`,
+		`ALTER TABLE memory_entries ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'semantic'`,
+		`ALTER TABLE memory_entries ADD COLUMN created_at TIMESTAMP`,
+		`ALTER TABLE memory_entries ADD COLUMN expired_at TIMESTAMP`,
+	}
+	for _, m := range consolidationMigrations {
+		_, _ = db.ExecContext(context.Background(), m)
+	}
+	_, _ = db.ExecContext(context.Background(),
+		`UPDATE memory_entries SET created_at = timestamp WHERE created_at IS NULL`)
+	_, _ = db.ExecContext(context.Background(),
+		`CREATE INDEX IF NOT EXISTS idx_memory_consolidation ON memory_entries(tenant_id, agent_id, consolidation_status)`)
+	_, _ = db.ExecContext(context.Background(),
+		`CREATE INDEX IF NOT EXISTS idx_memory_temporal ON memory_entries(tenant_id, agent_id, created_at, expired_at)`)
 
 	hasFTS5 := true
 	if _, err := db.ExecContext(context.Background(), ftsSchema); err != nil {
@@ -218,6 +255,15 @@ func prepareEntry(entry *Entry) {
 	}
 	if entry.Scope == "" {
 		entry.Scope = ScopeAgent
+	}
+	if entry.ConsolidationStatus == "" {
+		entry.ConsolidationStatus = "active"
+	}
+	if entry.MemoryType == "" {
+		entry.MemoryType = "semantic"
+	}
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = time.Now().UTC()
 	}
 }
 
@@ -288,19 +334,229 @@ func (s *Store) writeInTx(ctx context.Context, entry *Entry, filesJSON, conflict
 	query := `INSERT INTO memory_entries (
 		id, tenant_id, agent_id, category, scope, title, content, observation_type,
 		token_count, files_affected, version, timestamp, evidence_id,
-		source_type, source_evidence_id, trust_score, conflicts_with, review_status
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		source_type, source_evidence_id, trust_score, conflicts_with, review_status,
+		input_hash, memory_type, consolidation_status, created_at, valid_at, invalid_at, invalidated_by, expired_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	var validAt, invalidAt, expiredAt interface{}
+	if entry.ValidAt != nil {
+		validAt = *entry.ValidAt
+	}
+	if entry.InvalidAt != nil {
+		invalidAt = *entry.InvalidAt
+	}
+	if entry.ExpiredAt != nil {
+		expiredAt = *entry.ExpiredAt
+	}
 	_, err = tx.ExecContext(ctx, query,
 		entry.ID, entry.TenantID, entry.AgentID, entry.Category, entry.Scope,
 		entry.Title, entry.Content, entry.ObservationType,
 		entry.TokenCount, string(filesJSON), entry.Version, entry.Timestamp,
 		entry.EvidenceID, entry.SourceType, entry.SourceEvidenceID,
 		entry.TrustScore, string(conflictsJSON), entry.ReviewStatus,
+		entry.InputHash, entry.MemoryType, entry.ConsolidationStatus, entry.CreatedAt,
+		validAt, invalidAt, entry.InvalidatedBy, expiredAt,
 	)
 	if err != nil {
 		return fmt.Errorf("writing memory entry: %w", err)
 	}
 	return tx.Commit()
+}
+
+// HasRecentWithInputHash checks if a memory entry with the same input fingerprint
+// exists within the given time window. Used to skip duplicate writes for re-runs.
+//
+// Returns true if a recent entry with matching hash exists (should skip write).
+// Returns false on empty hash or any error (fail-open: proceed with write).
+func (s *Store) HasRecentWithInputHash(ctx context.Context, tenantID, agentID, inputHash string, window time.Duration) (bool, error) {
+	ctx, span := tracer.Start(ctx, "memory.has_recent_input_hash",
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("agent_id", agentID),
+		))
+	defer span.End()
+
+	if inputHash == "" {
+		return false, nil
+	}
+
+	cutoff := time.Now().UTC().Add(-window)
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_entries
+		 WHERE tenant_id = ? AND agent_id = ? AND input_hash = ? AND timestamp > ?
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
+		tenantID, agentID, inputHash, cutoff).Scan(&count)
+	if err != nil {
+		span.SetAttributes(attribute.Bool("memory.dedup_error", true))
+		return false, fmt.Errorf("checking input hash: %w", err)
+	}
+
+	hit := count > 0
+	span.SetAttributes(
+		attribute.Bool("memory.dedup_hit", hit),
+		attribute.Int("memory.dedup_count", count),
+	)
+	return hit, nil
+}
+
+// Invalidate marks an entry as invalidated by a newer entry (Zep-style: preserved for audit).
+// Sets consolidation_status = "invalidated", invalid_at = now, expired_at = now, invalidated_by = newEntryID.
+func (s *Store) Invalidate(ctx context.Context, tenantID, entryID, newEntryID string, now time.Time) error {
+	ctx, span := tracer.Start(ctx, "memory.invalidate",
+		trace.WithAttributes(attribute.String("memory.invalidated_id", entryID)))
+	defer span.End()
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE memory_entries
+		 SET consolidation_status = 'invalidated', invalid_at = ?, expired_at = ?, invalidated_by = ?
+		 WHERE id = ? AND tenant_id = ? AND (COALESCE(consolidation_status, 'active') = 'active')`,
+		now, now, newEntryID, entryID, tenantID)
+	if err != nil {
+		return fmt.Errorf("invalidating entry %s: %w", entryID, err)
+	}
+	rows, _ := result.RowsAffected()
+	span.SetAttributes(attribute.Int64("memory.rows_invalidated", rows))
+	return nil
+}
+
+// InvalidateAndWrite atomically invalidates an existing entry and writes its replacement
+// in a single transaction. If the write fails, the invalidation is rolled back.
+// entry.ID is used as the invalidated_by reference; prepareEntry is called to ensure it is set.
+func (s *Store) InvalidateAndWrite(ctx context.Context, tenantID, targetID string, now time.Time, entry *Entry) error {
+	prepareEntry(entry)
+
+	ctx, span := tracer.Start(ctx, "memory.invalidate_and_write",
+		trace.WithAttributes(
+			attribute.String("memory.invalidated_id", targetID),
+			attribute.String("memory.new_id", entry.ID),
+		))
+	defer span.End()
+
+	filesJSON, conflictsJSON := entryJSONBlobs(entry)
+
+	const maxRetries = 15
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			if err := sleepRetry(ctx, attempt); err != nil {
+				return err
+			}
+		}
+		lastErr = s.invalidateAndWriteInTx(ctx, tenantID, targetID, now, entry, filesJSON, conflictsJSON)
+		if lastErr == nil {
+			span.SetAttributes(attribute.Int64("memory.rows_invalidated", 1))
+			writesTotal.Add(ctx, 1)
+			recordEntriesGauge(ctx, s)
+			return nil
+		}
+		if !isSQLiteLocked(lastErr) {
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
+// invalidateAndWriteInTx performs the invalidation UPDATE and replacement INSERT in one transaction.
+func (s *Store) invalidateAndWriteInTx(ctx context.Context, tenantID, targetID string, now time.Time, entry *Entry, filesJSON, conflictsJSON []byte) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE memory_entries
+		 SET consolidation_status = 'invalidated', invalid_at = ?, expired_at = ?, invalidated_by = ?
+		 WHERE id = ? AND tenant_id = ? AND (COALESCE(consolidation_status, 'active') = 'active')`,
+		now, now, entry.ID, targetID, tenantID)
+	if err != nil {
+		return fmt.Errorf("invalidating entry %s: %w", targetID, err)
+	}
+
+	var maxVersion int
+	err = tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(version), 0) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`,
+		entry.TenantID, entry.AgentID).Scan(&maxVersion)
+	if err != nil {
+		return fmt.Errorf("querying max version: %w", err)
+	}
+	entry.Version = maxVersion + 1
+
+	query := `INSERT INTO memory_entries (
+		id, tenant_id, agent_id, category, scope, title, content, observation_type,
+		token_count, files_affected, version, timestamp, evidence_id,
+		source_type, source_evidence_id, trust_score, conflicts_with, review_status,
+		input_hash, memory_type, consolidation_status, created_at, valid_at, invalid_at, invalidated_by, expired_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	var validAt, invalidAt, expiredAt interface{}
+	if entry.ValidAt != nil {
+		validAt = *entry.ValidAt
+	}
+	if entry.InvalidAt != nil {
+		invalidAt = *entry.InvalidAt
+	}
+	if entry.ExpiredAt != nil {
+		expiredAt = *entry.ExpiredAt
+	}
+	_, err = tx.ExecContext(ctx, query,
+		entry.ID, entry.TenantID, entry.AgentID, entry.Category, entry.Scope,
+		entry.Title, entry.Content, entry.ObservationType,
+		entry.TokenCount, string(filesJSON), entry.Version, entry.Timestamp,
+		entry.EvidenceID, entry.SourceType, entry.SourceEvidenceID,
+		entry.TrustScore, string(conflictsJSON), entry.ReviewStatus,
+		entry.InputHash, entry.MemoryType, entry.ConsolidationStatus, entry.CreatedAt,
+		validAt, invalidAt, entry.InvalidatedBy, expiredAt,
+	)
+	if err != nil {
+		return fmt.Errorf("writing replacement entry: %w", err)
+	}
+	return tx.Commit()
+}
+
+// AppendContent appends supplementary content to an existing active entry (consolidation UPDATE).
+func (s *Store) AppendContent(ctx context.Context, tenantID, entryID, additionalContent string, now time.Time) error {
+	ctx, span := tracer.Start(ctx, "memory.append_content",
+		trace.WithAttributes(attribute.String("memory.entry_id", entryID)))
+	defer span.End()
+
+	suffix := "[Updated " + now.Format("2006-01-02") + "] " + additionalContent
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE memory_entries
+		 SET content = content || char(10) || ?,
+		     token_count = token_count + ?,
+		     timestamp = ?
+		 WHERE id = ? AND tenant_id = ? AND (COALESCE(consolidation_status, 'active') = 'active')`,
+		suffix, len(additionalContent)/4, now, entryID, tenantID)
+	return err
+}
+
+// AsOf returns memory entries valid at the given point in time (transaction time: created_at/expired_at).
+// Used for compliance (NIS2 Art. 23, EU AI Act Art. 11) to reconstruct state at a past time.
+func (s *Store) AsOf(ctx context.Context, tenantID, agentID string, asOf time.Time, limit int) ([]Entry, error) {
+	ctx, span := tracer.Start(ctx, "memory.as_of",
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("agent_id", agentID),
+			attribute.String("as_of", asOf.Format(time.RFC3339)),
+		))
+	defer span.End()
+
+	query := `SELECT id, tenant_id, agent_id, category, scope, title, content, observation_type,
+	                 token_count, files_affected, version, timestamp, evidence_id,
+	                 source_type, source_evidence_id, trust_score, conflicts_with, review_status,
+	                 COALESCE(input_hash, ''), COALESCE(memory_type, 'semantic'),
+	                 valid_at, invalid_at, invalidated_by, COALESCE(consolidation_status, 'active'),
+	                 COALESCE(created_at, timestamp), expired_at
+	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
+	          AND (COALESCE(created_at, timestamp) <= ?)
+	          AND (expired_at IS NULL OR expired_at > ?)
+	          ORDER BY timestamp DESC`
+	args := []interface{}{tenantID, agentID, asOf, asOf}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	return s.queryEntries(ctx, query, args...)
 }
 
 // isSQLiteLocked reports whether the error is SQLite busy/locked (retryable).
@@ -345,7 +601,10 @@ func (s *Store) Get(ctx context.Context, tenantID, id string) (*Entry, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, tenant_id, agent_id, category, scope, title, content, observation_type,
 		        token_count, files_affected, version, timestamp, evidence_id,
-		        source_type, source_evidence_id, trust_score, conflicts_with, review_status
+		        source_type, source_evidence_id, trust_score, conflicts_with, review_status,
+		        COALESCE(input_hash, ''), COALESCE(memory_type, 'semantic'),
+		        valid_at, invalid_at, invalidated_by, COALESCE(consolidation_status, 'active'),
+		        COALESCE(created_at, timestamp), expired_at
 		 FROM memory_entries WHERE id = ? AND tenant_id = ?`, id, tenantID)
 
 	entry, err := scanEntry(row)
@@ -359,7 +618,8 @@ func (s *Store) Get(ctx context.Context, tenantID, id string) (*Entry, error) {
 }
 
 // ListIndex returns lightweight memory summaries (Layer 1) ordered by timestamp desc.
-func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit int) ([]IndexEntry, error) {
+// When scopes is non-empty, only entries whose scope is in scopes are returned.
+func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit int, scopes ...string) ([]IndexEntry, error) {
 	ctx, span := tracer.Start(ctx, "memory.list_index",
 		trace.WithAttributes(
 			attribute.String("tenant_id", tenantID),
@@ -367,10 +627,19 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit i
 		))
 	defer span.End()
 
-	query := `SELECT id, category, scope, title, observation_type, token_count, timestamp, trust_score, review_status
+	query := `SELECT id, category, scope, title, observation_type, token_count, timestamp, trust_score, review_status,
+	          COALESCE(memory_type, 'semantic')
 	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
-	          ORDER BY timestamp DESC`
+	          AND (COALESCE(consolidation_status, 'active') = 'active')`
 	args := []interface{}{tenantID, agentID}
+	if len(scopes) > 0 {
+		placeholders := strings.Repeat("?,", len(scopes))
+		query += ` AND scope IN (` + placeholders[:len(placeholders)-1] + `)` //nolint:gosec // G202: only placeholder count from len(scopes); values bound as args
+		for _, sc := range scopes {
+			args = append(args, sc)
+		}
+	}
+	query += ` ORDER BY timestamp DESC`
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)
@@ -386,13 +655,79 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, limit i
 	for rows.Next() {
 		var e IndexEntry
 		if err := rows.Scan(&e.ID, &e.Category, &e.Scope, &e.Title, &e.ObservationType,
-			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus); err != nil {
+			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus, &e.MemoryType); err != nil {
 			continue
 		}
 		results = append(results, e)
 	}
 	readsTotal.Add(ctx, 1)
 	return results, rows.Err()
+}
+
+const scoredRetrievalCandidates = 200
+
+// RetrieveScored returns memory index entries ordered by relevance to queryText, capped by maxTokens.
+// It returns the highest-scored entries that fit within the token budget (score order preserved).
+// When maxTokens <= 0, all scored candidates are returned. Score = relevance*0.4 + recency*0.3 + typeWeight*0.2 + trustNorm*0.1.
+func (s *Store) RetrieveScored(ctx context.Context, tenantID, agentID, queryText string, maxTokens int) ([]IndexEntry, error) {
+	ctx, span := tracer.Start(ctx, "memory.retrieve_scored",
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("agent_id", agentID),
+			attribute.Int("max_tokens", maxTokens),
+		))
+	defer span.End()
+
+	candidates, err := s.ListIndex(ctx, tenantID, agentID, scoredRetrievalCandidates)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	now := time.Now().UTC()
+	type scored struct {
+		entry IndexEntry
+		score float64
+	}
+	scores := make([]scored, 0, len(candidates))
+	for i := range candidates {
+		e := &candidates[i]
+		relevance := keywordSimilarity(queryText, e.Title)
+		days := now.Sub(e.Timestamp).Hours() / 24
+		recency := 1.0 / (1.0 + days)
+		typeW := TypeWeights[e.MemoryType]
+		if typeW == 0 {
+			typeW = 0.25
+		}
+		trustNorm := float64(e.TrustScore) / 100.0
+		if trustNorm > 1 {
+			trustNorm = 1
+		}
+		score := relevance*0.4 + recency*0.3 + typeW*0.2 + trustNorm*0.1
+		scores = append(scores, scored{entry: *e, score: score})
+	}
+	sort.Slice(scores, func(i, j int) bool { return scores[i].score > scores[j].score })
+
+	// Build result: highest-scored entries that fit within maxTokens (do not skip and add lower-scored entries).
+	var out []IndexEntry
+	var tokens int
+	for i := range scores {
+		entry := scores[i].entry
+		nextTotal := tokens + entry.TokenCount
+		if maxTokens > 0 && nextTotal > maxTokens {
+			// Stop at first entry that would exceed budget; do not continue to add smaller, lower-scored entries.
+			break
+		}
+		out = append(out, entry)
+		tokens = nextTotal
+	}
+	span.SetAttributes(
+		attribute.Int("memory.scored_returned", len(out)),
+		attribute.Int("memory.scored_tokens", tokens),
+	)
+	return out, nil
 }
 
 // ListPendingReview returns entries with review_status = 'pending_review' for the tenant/agent.
@@ -404,8 +739,10 @@ func (s *Store) ListPendingReview(ctx context.Context, tenantID, agentID string,
 		))
 	defer span.End()
 
-	query := `SELECT id, category, scope, title, observation_type, token_count, timestamp, trust_score, review_status
+	query := `SELECT id, category, scope, title, observation_type, token_count, timestamp, trust_score, review_status,
+	          COALESCE(memory_type, 'semantic')
 	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND review_status = 'pending_review'
+	          AND (COALESCE(consolidation_status, 'active') = 'active')
 	          ORDER BY timestamp DESC`
 	args := []interface{}{tenantID, agentID}
 	if limit > 0 {
@@ -423,7 +760,7 @@ func (s *Store) ListPendingReview(ctx context.Context, tenantID, agentID string,
 	for rows.Next() {
 		var e IndexEntry
 		if err := rows.Scan(&e.ID, &e.Category, &e.Scope, &e.Title, &e.ObservationType,
-			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus); err != nil {
+			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus, &e.MemoryType); err != nil {
 			continue
 		}
 		results = append(results, e)
@@ -465,8 +802,12 @@ func (s *Store) List(ctx context.Context, tenantID, agentID, category string, li
 
 	query := `SELECT id, tenant_id, agent_id, category, scope, title, content, observation_type,
 	                 token_count, files_affected, version, timestamp, evidence_id,
-	                 source_type, source_evidence_id, trust_score, conflicts_with, review_status
-	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`
+	                 source_type, source_evidence_id, trust_score, conflicts_with, review_status,
+	                 COALESCE(input_hash, ''), COALESCE(memory_type, 'semantic'),
+	                 valid_at, invalid_at, invalidated_by, COALESCE(consolidation_status, 'active'),
+	                 COALESCE(created_at, timestamp), expired_at
+	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
+	          AND (COALESCE(consolidation_status, 'active') = 'active')`
 	args := []interface{}{tenantID, agentID}
 
 	if category != "" {
@@ -499,18 +840,20 @@ func (s *Store) Search(ctx context.Context, tenantID, agentID, query string, lim
 
 	if s.hasFTS5 {
 		sqlQuery = `SELECT m.id, m.category, m.scope, m.title, m.observation_type, m.token_count,
-		                   m.timestamp, m.trust_score, m.review_status
+		                   m.timestamp, m.trust_score, m.review_status, COALESCE(m.memory_type, 'semantic')
 		            FROM memory_entries m
 		            JOIN memory_fts f ON m.rowid = f.rowid
 		            WHERE f.memory_fts MATCH ? AND m.tenant_id = ? AND m.agent_id = ?
+		            AND COALESCE(m.consolidation_status, 'active') = 'active'
 		            ORDER BY rank`
 		args = []interface{}{query, tenantID, agentID}
 	} else {
 		sqlQuery = `SELECT id, category, scope, title, observation_type, token_count,
-		                   timestamp, trust_score, review_status
+		                   timestamp, trust_score, review_status, COALESCE(memory_type, 'semantic')
 		            FROM memory_entries
 		            WHERE tenant_id = ? AND agent_id = ?
 		            AND (title LIKE ? OR content LIKE ?)
+		            AND COALESCE(consolidation_status, 'active') = 'active'
 		            ORDER BY timestamp DESC`
 		likePattern := "%" + query + "%"
 		args = []interface{}{tenantID, agentID, likePattern, likePattern}
@@ -531,7 +874,7 @@ func (s *Store) Search(ctx context.Context, tenantID, agentID, query string, lim
 	for rows.Next() {
 		var e IndexEntry
 		if err := rows.Scan(&e.ID, &e.Category, &e.Scope, &e.Title, &e.ObservationType,
-			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus); err != nil {
+			&e.TokenCount, &e.Timestamp, &e.TrustScore, &e.ReviewStatus, &e.MemoryType); err != nil {
 			continue
 		}
 		results = append(results, e)
@@ -544,45 +887,54 @@ func (s *Store) SearchByCategory(ctx context.Context, tenantID, agentID, categor
 	return s.List(ctx, tenantID, agentID, category, 0)
 }
 
-// Rollback deletes all memory entries with version > toVersion for an agent.
-// Returns an error if the agent has no memory entries (nothing to roll back) or if
-// no rows were deleted (already at or before toVersion).
-func (s *Store) Rollback(ctx context.Context, tenantID, agentID string, toVersion int) error {
-	ctx, span := tracer.Start(ctx, "memory.rollback",
+// RollbackTo soft-deletes all memory entries newer than the specified entry.
+// The entry identified by entryID becomes the newest "active" entry for its agent.
+// Rolled-back entries are marked consolidation_status = 'rolled_back' and expired_at = now.
+// They remain in the database for audit (AuditLog still returns them) but are excluded
+// from list, search, and prompt injection.
+func (s *Store) RollbackTo(ctx context.Context, tenantID, entryID string) (int64, error) {
+	ctx, span := tracer.Start(ctx, "memory.rollback_to",
 		trace.WithAttributes(
 			attribute.String("tenant_id", tenantID),
-			attribute.String("agent_id", agentID),
-			attribute.Int("to_version", toVersion),
+			attribute.String("entry_id", entryID),
 		))
 	defer span.End()
 
-	var count int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`,
-		tenantID, agentID).Scan(&count)
+	entry, err := s.Get(ctx, tenantID, entryID)
 	if err != nil {
-		return fmt.Errorf("counting memory entries: %w", err)
-	}
-	if count == 0 {
-		return fmt.Errorf("no memory entries for agent %q (tenant %s); nothing to roll back", agentID, tenantID)
+		return 0, fmt.Errorf("looking up entry %s: %w", entryID, err)
 	}
 
+	status := entry.ConsolidationStatus
+	if status == "" {
+		status = "active"
+	}
+	if status != "active" {
+		return 0, fmt.Errorf("entry %s has consolidation_status %q; can only roll back to an active entry", entryID, status)
+	}
+
+	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND version > ?`,
-		tenantID, agentID, toVersion)
+		`UPDATE memory_entries
+		 SET consolidation_status = 'rolled_back', expired_at = ?
+		 WHERE tenant_id = ? AND agent_id = ? AND version > ?
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
+		now, tenantID, entry.AgentID, entry.Version)
 	if err != nil {
-		return fmt.Errorf("rolling back memory: %w", err)
+		return 0, fmt.Errorf("rolling back memory: %w", err)
 	}
 
 	affected, _ := result.RowsAffected()
-	span.SetAttributes(attribute.Int64("memory.deleted", affected))
+	span.SetAttributes(
+		attribute.Int64("memory.rolled_back", affected),
+		attribute.String("memory.agent_id", entry.AgentID),
+		attribute.Int("memory.to_version", entry.Version),
+	)
 	if affected == 0 {
-		return fmt.Errorf("no entries with version > %d; agent is already at or before that version (nothing to roll back)", toVersion)
+		return 0, fmt.Errorf("entry %s is already the newest active entry; nothing to roll back", entryID)
 	}
-	if affected > 0 {
-		recordEntriesGauge(ctx, s)
-	}
-	return nil
+	recordEntriesGauge(ctx, s)
+	return affected, nil
 }
 
 // HealthStats returns aggregate health metrics for an agent's memory.
@@ -594,17 +946,28 @@ func (s *Store) HealthStats(ctx context.Context, tenantID, agentID string) (*Hea
 		TrustDistribution: make(map[string]int),
 	}
 
-	// Total entries
+	// Total active entries (excludes rolled_back, invalidated, etc.)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
 		tenantID, agentID).Scan(&report.TotalEntries)
 	if err != nil {
 		return nil, fmt.Errorf("counting memory entries: %w", err)
 	}
 
-	// Trust distribution by source_type
+	// Rolled-back entries
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
+		 AND consolidation_status = 'rolled_back'`,
+		tenantID, agentID).Scan(&report.RolledBack)
+	if err != nil {
+		return nil, fmt.Errorf("counting rolled-back entries: %w", err)
+	}
+
+	// Trust distribution by source_type (active entries only)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT source_type, COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ? GROUP BY source_type`,
+		`SELECT source_type, COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
+		 AND COALESCE(consolidation_status, 'active') = 'active' GROUP BY source_type`,
 		tenantID, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("querying trust distribution: %w", err)
@@ -619,26 +982,31 @@ func (s *Store) HealthStats(ctx context.Context, tenantID, agentID string) (*Hea
 		report.TrustDistribution[srcType] = count
 	}
 
-	// Pending review
+	// Pending review (active entries only)
 	err = s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND review_status = 'pending_review'`,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
+		 AND review_status = 'pending_review'
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
 		tenantID, agentID).Scan(&report.PendingReview)
 	if err != nil {
 		return nil, fmt.Errorf("counting pending reviews: %w", err)
 	}
 
-	// Conflict counts
+	// Conflict counts (active entries only)
 	err = s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND conflicts_with != '[]'`,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
+		 AND conflicts_with != '[]'
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
 		tenantID, agentID).Scan(&report.ConflictCount)
 	if err != nil {
 		return nil, fmt.Errorf("counting conflicts: %w", err)
 	}
 
-	// Auto-resolved vs pending conflicts
+	// Auto-resolved vs pending conflicts (active entries only)
 	err = s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
-		 AND conflicts_with != '[]' AND review_status = 'auto_approved'`,
+		 AND conflicts_with != '[]' AND review_status = 'auto_approved'
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
 		tenantID, agentID).Scan(&report.AutoResolved)
 	if err != nil {
 		return nil, fmt.Errorf("counting auto-resolved: %w", err)
@@ -655,7 +1023,10 @@ func (s *Store) AuditLog(ctx context.Context, tenantID, agentID string, limit in
 
 	query := `SELECT id, tenant_id, agent_id, category, scope, title, content, observation_type,
 	                 token_count, files_affected, version, timestamp, evidence_id,
-	                 source_type, source_evidence_id, trust_score, conflicts_with, review_status
+	                 source_type, source_evidence_id, trust_score, conflicts_with, review_status,
+	                 COALESCE(input_hash, ''), COALESCE(memory_type, 'semantic'),
+	                 valid_at, invalid_at, invalidated_by, COALESCE(consolidation_status, 'active'),
+	                 COALESCE(created_at, timestamp), expired_at
 	          FROM memory_entries WHERE tenant_id = ? AND agent_id = ?
 	          ORDER BY timestamp DESC`
 	args := []interface{}{tenantID, agentID}
@@ -667,7 +1038,9 @@ func (s *Store) AuditLog(ctx context.Context, tenantID, agentID string, limit in
 	return s.queryEntries(ctx, query, args...)
 }
 
-// PurgeExpired deletes memory entries older than retentionDays.
+// PurgeExpired deletes memory entries older than retentionDays. Entries with
+// consolidation_status 'rolled_back' or 'invalidated' are never purged so they
+// remain available for audit (NIS2, EU AI Act point-in-time reconstruction).
 // Returns the number of deleted entries.
 func (s *Store) PurgeExpired(ctx context.Context, tenantID, agentID string, retentionDays int) (int64, error) {
 	ctx, span := tracer.Start(ctx, "memory.purge_expired",
@@ -680,7 +1053,8 @@ func (s *Store) PurgeExpired(ctx context.Context, tenantID, agentID string, rete
 
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
 	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND timestamp < ?`,
+		`DELETE FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND timestamp < ?
+		 AND COALESCE(consolidation_status, 'active') NOT IN ('rolled_back', 'invalidated')`,
 		tenantID, agentID, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("purging expired memory entries: %w", err)
@@ -707,7 +1081,7 @@ func (s *Store) EnforceMaxEntries(ctx context.Context, tenantID, agentID string,
 
 	var count int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ?`,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND agent_id = ? AND COALESCE(consolidation_status, 'active') = 'active'`,
 		tenantID, agentID).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("counting entries: %w", err)
@@ -721,7 +1095,7 @@ func (s *Store) EnforceMaxEntries(ctx context.Context, tenantID, agentID string,
 	result, err := s.db.ExecContext(ctx,
 		`DELETE FROM memory_entries WHERE id IN (
 			SELECT id FROM memory_entries
-			WHERE tenant_id = ? AND agent_id = ?
+			WHERE tenant_id = ? AND agent_id = ? AND COALESCE(consolidation_status, 'active') = 'active'
 			ORDER BY version ASC
 			LIMIT ?
 		)`, tenantID, agentID, excess)
@@ -769,13 +1143,29 @@ func (s *Store) queryEntries(ctx context.Context, query string, args ...interfac
 	for rows.Next() {
 		var e Entry
 		var filesJSON, conflictsJSON string
+		var validAt, invalidAt, expiredAt, createdAt interface{}
 		if err := rows.Scan(
 			&e.ID, &e.TenantID, &e.AgentID, &e.Category, &e.Scope, &e.Title, &e.Content,
 			&e.ObservationType, &e.TokenCount, &filesJSON, &e.Version, &e.Timestamp,
 			&e.EvidenceID, &e.SourceType, &e.SourceEvidenceID, &e.TrustScore,
-			&conflictsJSON, &e.ReviewStatus,
+			&conflictsJSON, &e.ReviewStatus, &e.InputHash,
+			&e.MemoryType, &validAt, &invalidAt, &e.InvalidatedBy, &e.ConsolidationStatus, &createdAt, &expiredAt,
 		); err != nil {
 			continue
+		}
+		if t, ok := scanTime(createdAt); ok {
+			e.CreatedAt = t
+		} else {
+			e.CreatedAt = e.Timestamp
+		}
+		if t, ok := scanTime(validAt); ok {
+			e.ValidAt = &t
+		}
+		if t, ok := scanTime(invalidAt); ok {
+			e.InvalidAt = &t
+		}
+		if t, ok := scanTime(expiredAt); ok {
+			e.ExpiredAt = &t
 		}
 		_ = json.Unmarshal([]byte(filesJSON), &e.FilesAffected)
 		_ = json.Unmarshal([]byte(conflictsJSON), &e.ConflictsWith)
@@ -790,18 +1180,62 @@ func (s *Store) queryEntries(ctx context.Context, query string, args ...interfac
 	return results, rows.Err()
 }
 
+// scanTime scans a column that may be time.Time or string (SQLite returns datetime as string).
+func scanTime(v interface{}) (t time.Time, ok bool) {
+	if v == nil {
+		return time.Time{}, false
+	}
+	switch val := v.(type) {
+	case time.Time:
+		return val, true
+	case []byte:
+		parsed, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", string(val))
+		if err != nil {
+			parsed, err = time.Parse(time.RFC3339, string(val))
+		}
+		if err == nil {
+			return parsed, true
+		}
+	case string:
+		parsed, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", val)
+		if err != nil {
+			parsed, err = time.Parse(time.RFC3339, val)
+		}
+		if err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
+}
+
 // scanEntry scans a single row into an Entry.
 func scanEntry(row *sql.Row) (*Entry, error) {
 	var e Entry
 	var filesJSON, conflictsJSON string
+	var validAt, invalidAt, expiredAt, createdAt interface{}
 	err := row.Scan(
 		&e.ID, &e.TenantID, &e.AgentID, &e.Category, &e.Scope, &e.Title, &e.Content,
 		&e.ObservationType, &e.TokenCount, &filesJSON, &e.Version, &e.Timestamp,
 		&e.EvidenceID, &e.SourceType, &e.SourceEvidenceID, &e.TrustScore,
-		&conflictsJSON, &e.ReviewStatus,
+		&conflictsJSON, &e.ReviewStatus, &e.InputHash,
+		&e.MemoryType, &validAt, &invalidAt, &e.InvalidatedBy, &e.ConsolidationStatus, &createdAt, &expiredAt,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if t, ok := scanTime(createdAt); ok {
+		e.CreatedAt = t
+	} else {
+		e.CreatedAt = e.Timestamp
+	}
+	if t, ok := scanTime(validAt); ok {
+		e.ValidAt = &t
+	}
+	if t, ok := scanTime(invalidAt); ok {
+		e.InvalidAt = &t
+	}
+	if t, ok := scanTime(expiredAt); ok {
+		e.ExpiredAt = &t
 	}
 	_ = json.Unmarshal([]byte(filesJSON), &e.FilesAffected)
 	_ = json.Unmarshal([]byte(conflictsJSON), &e.ConflictsWith)

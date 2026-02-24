@@ -369,6 +369,30 @@ func TestEngineMemoryGovernance(t *testing.T) {
 			wantAllowed:      true,
 		},
 		{
+			name:             "legacy: tool_approval allowed when domain_knowledge in allowed_categories",
+			category:         "tool_approval",
+			contentSizeBytes: 500,
+			wantAllowed:      true,
+		},
+		{
+			name:             "legacy: cost_decision allowed when domain_knowledge in allowed_categories",
+			category:         "cost_decision",
+			contentSizeBytes: 500,
+			wantAllowed:      true,
+		},
+		{
+			name:             "legacy: user_preferences allowed when domain_knowledge in allowed_categories",
+			category:         "user_preferences",
+			contentSizeBytes: 500,
+			wantAllowed:      true,
+		},
+		{
+			name:             "legacy: procedure_improvements allowed when domain_knowledge in allowed_categories",
+			category:         "procedure_improvements",
+			contentSizeBytes: 500,
+			wantAllowed:      true,
+		},
+		{
 			name:             "forbidden category policy_modifications",
 			category:         "policy_modifications",
 			contentSizeBytes: 100,
@@ -405,6 +429,34 @@ func TestEngineMemoryGovernance(t *testing.T) {
 			decision, err := engine.EvaluateMemoryWrite(ctx, tt.category, tt.contentSizeBytes)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantAllowed, decision.Allowed, "reasons: %v", decision.Reasons)
+		})
+	}
+}
+
+// TestEngineMemoryGovernance_LegacyOnlyDomainKnowledgeAndPolicyHit ensures that
+// policies with only allowed_categories: [domain_knowledge, policy_hit] (no other
+// categories) still allow inferred subtypes (tool_approval, cost_decision,
+// user_preferences, procedure_improvements, factual_corrections). Without this,
+// inferCategoryTypeAndMemType would cause silent memory loss for tool/high-cost/
+// keyword-matched runs (regression).
+func TestEngineMemoryGovernance_LegacyOnlyDomainKnowledgeAndPolicyHit(t *testing.T) {
+	ctx := context.Background()
+	legacyPol := &Policy{
+		Agent:    AgentConfig{Name: "test", Version: "1.0"},
+		Memory:   &MemoryConfig{Enabled: true, MaxEntrySizeKB: 10, AllowedCategories: []string{"domain_knowledge", "policy_hit"}},
+		Policies: PoliciesConfig{},
+	}
+	legacyPol.ComputeHash([]byte("test"))
+
+	engine, err := NewEngine(ctx, legacyPol)
+	require.NoError(t, err)
+
+	subtypes := []string{"tool_approval", "cost_decision", "user_preferences", "procedure_improvements", "factual_corrections"}
+	for _, cat := range subtypes {
+		t.Run(cat, func(t *testing.T) {
+			decision, err := engine.EvaluateMemoryWrite(ctx, cat, 500)
+			require.NoError(t, err)
+			assert.True(t, decision.Allowed, "legacy allowed_categories [domain_knowledge, policy_hit] must allow %q; reasons: %v", cat, decision.Reasons)
 		})
 	}
 }

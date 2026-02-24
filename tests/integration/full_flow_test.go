@@ -67,7 +67,7 @@ func TestFullFlow(t *testing.T) {
 		exportPath := filepath.Join(workDir, "export.csv")
 		out := runCmd(t, binary, workDir, "audit", "export", "--format", "csv")
 		assert.Contains(t, out, "id,", "CSV should have header row")
-		require.NoError(t, os.WriteFile(exportPath, []byte(out), 0644))
+		require.NoError(t, os.WriteFile(exportPath, []byte(out), 0o644))
 		assert.FileExists(t, exportPath)
 	})
 
@@ -119,7 +119,7 @@ func TestPolicyEnforcement(t *testing.T) {
 
 	modified, err := yaml.Marshal(doc)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(policyPath, modified, 0644))
+	require.NoError(t, os.WriteFile(policyPath, modified, 0o644))
 
 	// Ensure we actually wrote a tight budget (guards against no-op if structure changes).
 	assert.Contains(t, string(modified), "daily: 0.001", "modified policy must contain tight daily limit")

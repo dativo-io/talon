@@ -1,0 +1,71 @@
+# OpenClaw + Talon gateway primer — run Talon as LLM API gateway for OpenClaw (or any OpenAI-compatible client).
+#
+# From repo root:
+#   cd docs/guides/openclaw-talon-primer
+#   cp .env.example .env   # set OPENAI_API_KEY (and optionally TALON_SECRETS_KEY)
+#   docker compose build
+#   docker compose up -d
+#
+# Then point OpenClaw (or curl) at http://localhost:8080/v1/proxy/openai with API key: talon-gw-openclaw-abc123
+
+services:
+  talon:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: talon:gateway-primer
+    container_name: talon-gateway
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    command: []
+    ports:
+      - "${TALON_PORT:-8080}:8080"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - TALON_SECRETS_KEY=${TALON_SECRETS_KEY}
+      - TALON_SIGNING_KEY=${TALON_SIGNING_KEY}
+      - TALON_DATA_DIR=/home/talon/.talon
+      - GATEWAY_CONFIG_PATH=/etc/talon/gateway/talon.config.gateway.yaml
+      - PORT=8080
+    volumes:
+      - talon-data:/home/talon/.talon
+      - ./talon.config.gateway.yaml:/etc/talon/gateway/talon.config.gateway.yaml:ro
+      - ./agent.talon.yaml:/home/talon/agent.talon.yaml:ro
+      - ./entrypoint.sh:/entrypoint.sh:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional: hit the gateway with a test request (caller API key from gateway config).
+  verify:
+    image: curlimages/curl:latest
+    container_name: talon-gateway-verify
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Waiting for Talon gateway..."
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://talon:8080/health >/dev/null 2>&1; then break; fi
+          sleep 2
+        done
+        echo "Sending test request to gateway (caller: openclaw-main)..."
+        curl -s -X POST http://talon:8080/v1/proxy/openai/v1/chat/completions \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer talon-gw-openclaw-abc123" \
+          -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hello in one word."}],"max_tokens":10}' \
+          | head -c 500
+        echo ""
+        echo "Done. Check evidence: docker exec talon-gateway talon audit list --agent openclaw-main --limit 5"
+    depends_on:
+      talon:
+        condition: service_healthy
+    profiles:
+      - verify
+
+volumes:
+  talon-data:
+    driver: local

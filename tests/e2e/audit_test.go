@@ -47,3 +47,31 @@ func TestE2E_AuditListAndVerify(t *testing.T) {
 		t.Errorf("expected 'VALID' in audit verify output (doc promise), got: %s", verifyOut)
 	}
 }
+
+// TestE2E_AuditShow_NoArgs_ShowsLatest asserts that `talon audit show` with no ID shows the latest evidence.
+func TestE2E_AuditShow_NoArgs_ShowsLatest(t *testing.T) {
+	dir := t.TempDir()
+	_, _, code := RunTalon(t, dir, nil, "init", "--name", "audit-show-agent")
+	if code != 0 {
+		t.Fatalf("talon init failed: %d", code)
+	}
+	policyPath := filepath.Join(dir, "agent.talon.yaml")
+	server := testutil.NewOpenAICompatibleServer("audit show latest", 10, 20)
+	defer server.Close()
+	env := map[string]string{
+		"OPENAI_API_KEY":  "test-key",
+		"OPENAI_BASE_URL": strings.TrimSuffix(server.URL, "/"),
+	}
+	_, _, code = RunTalon(t, dir, env, "run", "--policy", policyPath, "hello")
+	if code != 0 {
+		t.Fatalf("talon run failed: %d", code)
+	}
+	stdout, stderr, code := RunTalon(t, dir, nil, "audit", "show")
+	if code != 0 {
+		t.Fatalf("talon audit show (no args) exited %d\nstderr: %s", code, stderr)
+	}
+	// Should show latest record: either "Showing latest: req_xxx" on stderr or evidence details on stdout
+	if !strings.Contains(stdout, "Evidence:") && !strings.Contains(stdout, "req_") && !strings.Contains(stderr, "Showing latest:") {
+		t.Errorf("expected audit show (no args) to display latest evidence; stdout: %q stderr: %q", stdout, stderr)
+	}
+}

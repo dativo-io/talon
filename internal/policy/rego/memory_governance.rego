@@ -24,9 +24,21 @@ deny contains msg if {
 	msg := "Memory entry exceeds max_entry_size_kb"
 }
 
+# Sub-types that the legacy inferCategory would have classified as domain_knowledge.
+# Policies with allowed_categories including "domain_knowledge" allow these for backward compatibility.
+domain_knowledge_subtype(cat) if {
+	cat in {"domain_knowledge", "factual_corrections", "user_preferences", "procedure_improvements", "tool_approval", "cost_decision"}
+}
+
 category_allowed(cat) if {
 	some allowed in data.policy.memory.allowed_categories
 	allowed == cat
+}
+
+# Legacy policies with only [domain_knowledge, policy_hit] must still allow finer categories.
+category_allowed(cat) if {
+	"domain_knowledge" in data.policy.memory.allowed_categories
+	domain_knowledge_subtype(cat)
 }
 
 category_forbidden(cat) if {

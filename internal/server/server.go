@@ -175,6 +175,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/v1/secrets/audit", s.handleSecretsAudit)
 
 			r.Get("/v1/memory", s.handleMemoryList)
+			r.Get("/v1/memory/as-of", s.handleMemoryAsOf)
 			r.Get("/v1/memory/search", s.handleMemorySearch)
 			r.Get("/v1/memory/{id}", s.handleMemoryGet)
 			r.Get("/v1/memory/{agent_id}/review", s.handleMemoryReview)

@@ -25,6 +25,117 @@ import (
 	"github.com/dativo-io/talon/internal/testutil"
 )
 
+func TestInferCategoryTypeAndMemType(t *testing.T) {
+	tests := []struct {
+		name    string
+		resp    *RunResponse
+		wantCat string
+		wantObs string
+		wantMem string
+	}{
+		{
+			name:    "deny → policy_hit + episodic",
+			resp:    &RunResponse{DenyReason: "budget exceeded"},
+			wantCat: memory.CategoryPolicyHit,
+			wantObs: memory.ObsDecision,
+			wantMem: memory.MemTypeEpisodic,
+		},
+		{
+			name:    "tool use → tool_approval + episodic",
+			resp:    &RunResponse{ToolsCalled: []string{"search"}},
+			wantCat: memory.CategoryToolApproval,
+			wantObs: memory.ObsToolUse,
+			wantMem: memory.MemTypeEpisodic,
+		},
+		{
+			name:    "high cost → cost_decision + episodic",
+			resp:    &RunResponse{Cost: 0.15},
+			wantCat: memory.CategoryCostDecision,
+			wantObs: memory.ObsDecision,
+			wantMem: memory.MemTypeEpisodic,
+		},
+		{
+			name:    "content prefer → user_preferences + semantic",
+			resp:    &RunResponse{Response: "User said they prefer dark mode"},
+			wantCat: memory.CategoryUserPreferences,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+		{
+			name:    "content procedure → procedure_improvements + procedural",
+			resp:    &RunResponse{Response: "Step 1: do X. Procedure for onboarding."},
+			wantCat: memory.CategoryProcedureImprovements,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeProcedural,
+		},
+		{
+			name:    "content correction → factual_corrections + semantic",
+			resp:    &RunResponse{Response: "Actually the date was wrong, updated to 2024"},
+			wantCat: memory.CategoryFactualCorrections,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+		{
+			name:    "default → domain_knowledge + semantic",
+			resp:    &RunResponse{Response: "General reply with no keywords"},
+			wantCat: memory.CategoryDomainKnowledge,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+		// Bare "like" was removed: common phrases must not be classified as user_preferences
+		{
+			name:    "looks like → domain_knowledge not user_preferences",
+			resp:    &RunResponse{Response: "It looks like the request was successful."},
+			wantCat: memory.CategoryDomainKnowledge,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+		{
+			name:    "likely / likewise → domain_knowledge not user_preferences",
+			resp:    &RunResponse{Response: "This is likely correct. Likewise for the other case."},
+			wantCat: memory.CategoryDomainKnowledge,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+		{
+			name:    "would like to → domain_knowledge not user_preferences",
+			resp:    &RunResponse{Response: "The user would like to receive a summary."},
+			wantCat: memory.CategoryDomainKnowledge,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+		{
+			name:    "explicit I like → user_preferences",
+			resp:    &RunResponse{Response: "User said: I like getting reports in PDF."},
+			wantCat: memory.CategoryUserPreferences,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+		{
+			name:    "best practice → procedure_improvements",
+			resp:    &RunResponse{Response: "Best practice: run validation before deploy."},
+			wantCat: memory.CategoryProcedureImprovements,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeProcedural,
+		},
+		{
+			name:    "no longer → factual_corrections",
+			resp:    &RunResponse{Response: "The budget is no longer 1M; it was updated to 2M."},
+			wantCat: memory.CategoryFactualCorrections,
+			wantObs: memory.ObsLearning,
+			wantMem: memory.MemTypeSemanticFact,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cat, obs, mem := inferCategoryTypeAndMemType(tt.resp)
+			assert.Equal(t, tt.wantCat, cat)
+			assert.Equal(t, tt.wantObs, obs)
+			assert.Equal(t, tt.wantMem, mem)
+		})
+	}
+}
+
 func TestEntityNames(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -124,6 +235,31 @@ func TestFormatMemoryIndexForPrompt(t *testing.T) {
 		got := formatMemoryIndexForPrompt(entries)
 		assert.Empty(t, got, "pending_review entries should not appear in prompt")
 	})
+	t.Run("entries ordered by trust descending so highest-trust context appears first", func(t *testing.T) {
+		// When multiple entries are injected, highest-trust should appear first so the model prioritizes it.
+		entries := []memory.IndexEntry{
+			{
+				ID: "mem_low", Category: memory.CategoryDomainKnowledge, Title: "Low trust", TrustScore: 70,
+				ReviewStatus: "auto_approved", Timestamp: time.Date(2025, 1, 14, 0, 0, 0, 0, time.UTC),
+			},
+			{
+				ID: "mem_high", Category: memory.CategoryDomainKnowledge, Title: "High trust", TrustScore: 90,
+				ReviewStatus: "auto_approved", Timestamp: time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC),
+			},
+			{
+				ID: "mem_mid", Category: memory.CategoryDomainKnowledge, Title: "Mid trust", TrustScore: 80,
+				ReviewStatus: "auto_approved", Timestamp: time.Date(2025, 1, 16, 0, 0, 0, 0, time.UTC),
+			},
+		}
+		got := formatMemoryIndexForPrompt(entries)
+		require.NotEmpty(t, got)
+		// Highest trust (90) must appear before lowest (70) in the prompt.
+		pos90 := strings.Index(got, "trust:90")
+		pos70 := strings.Index(got, "trust:70")
+		require.Greater(t, pos90, -1, "output should contain trust:90")
+		require.Greater(t, pos70, -1, "output should contain trust:70")
+		assert.Less(t, pos90, pos70, "highest-trust entry (trust:90) should appear before lowest (trust:70) so model sees best context first")
+	})
 	t.Run("mix of approved and pending", func(t *testing.T) {
 		entries := []memory.IndexEntry{
 			{
@@ -184,11 +320,76 @@ func TestCompressTitle(t *testing.T) {
 		got := compressTitle(resp, "Short")
 		assert.Equal(t, "Short", got)
 	})
+	// Memory should be complete: newline must not cut the title and drop units (e.g. "2" without "M").
+	t.Run("newline must not cut title so unit is preserved", func(t *testing.T) {
+		resp := &RunResponse{}
+		// Model sometimes replies "EUR 2\nMillion." — title must include "2 Million", not just "EUR 2"
+		got := compressTitle(resp, "Your Q4 revenue target for the Acme Suite is EUR 2\nMillion.")
+		assert.Contains(t, got, "2 Million", "title must be complete and include unit after newline")
+		assert.NotEqual(t, "Your Q4 revenue target for the Acme Suite is EUR 2", got, "must not stop at newline and drop Million")
+	})
+	t.Run("number and unit on separate lines", func(t *testing.T) {
+		resp := &RunResponse{}
+		got := compressTitle(resp, "Target is EUR 2\nM.")
+		assert.Contains(t, got, "2", got)
+		assert.Contains(t, got, "M", "unit M must not be dropped when on next line")
+	})
+	t.Run("first sentence over 80 chars after normalizing newlines", func(t *testing.T) {
+		resp := &RunResponse{}
+		// First sentence (up to .) is under 80 when newlines are spaces; total length > 80
+		s := "Short prefix. " + strings.Repeat("x", 70)
+		got := compressTitle(resp, s)
+		assert.Equal(t, "Short prefix", got)
+	})
 }
 
 func TestInferCategory(t *testing.T) {
 	assert.Equal(t, memory.CategoryPolicyHit, inferCategory(&RunResponse{DenyReason: "denied"}))
 	assert.Equal(t, memory.CategoryDomainKnowledge, inferCategory(&RunResponse{}))
+}
+
+// TestLegacyAllowedCategoriesAcceptInferredSubtypes ensures that when a policy has
+// only allowed_categories: [domain_knowledge, policy_hit], memory writes for runs
+// that inferCategoryTypeAndMemType classifies as tool_approval, cost_decision,
+// user_preferences, or procedure_improvements are accepted by ValidateWrite (no
+// silent memory loss).
+func TestLegacyAllowedCategoriesAcceptInferredSubtypes(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := memory.NewStore(filepath.Join(dir, "mem.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { store.Close() })
+	gov := memory.NewGovernance(store, classifier.MustNewScanner())
+
+	legacyPol := &policy.Policy{
+		Memory: &policy.MemoryConfig{
+			Enabled:           true,
+			MaxEntrySizeKB:    10,
+			AllowedCategories: []string{"domain_knowledge", "policy_hit"},
+		},
+		Policies: policy.PoliciesConfig{},
+	}
+	engine, err := policy.NewEngine(ctx, legacyPol)
+	require.NoError(t, err)
+
+	responses := []*RunResponse{
+		{ToolsCalled: []string{"search"}},              // → tool_approval
+		{Cost: 0.15, Response: "Used expensive model"}, // → cost_decision
+		{Response: "I prefer bullet points"},           // → user_preferences
+		{Response: "Step 1: do X. Step 2: do Y"},       // → procedure_improvements
+	}
+	for _, resp := range responses {
+		category, _, _ := inferCategoryTypeAndMemType(resp)
+		entry := &memory.Entry{
+			Category:   category,
+			Title:      "Test",
+			Content:    "Safe content without PII",
+			SourceType: memory.SourceAgentRun,
+			TenantID:   "acme", AgentID: "test",
+		}
+		err := gov.ValidateWrite(ctx, entry, legacyPol, engine)
+		assert.NoError(t, err, "legacy policy must allow inferred category %q", category)
+	}
 }
 
 func TestInferObservationType(t *testing.T) {

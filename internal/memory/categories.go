@@ -33,6 +33,43 @@ func IsForbiddenCategory(cat string) bool {
 	return hardcodedForbidden[cat]
 }
 
+// domainKnowledgeSubtypes are categories that inferCategoryTypeAndMemType can return
+// for runs that the legacy inferCategory would have classified as domain_knowledge.
+// Policies with allowed_categories: [domain_knowledge, ...] are treated as allowing
+// these sub-types for backward compatibility (avoids silent memory loss).
+var domainKnowledgeSubtypes = map[string]bool{
+	CategoryDomainKnowledge:       true,
+	CategoryFactualCorrections:    true,
+	CategoryUserPreferences:       true,
+	CategoryProcedureImprovements: true,
+	CategoryToolApproval:          true,
+	CategoryCostDecision:          true,
+}
+
+// AllowedWhenDomainKnowledgeAllowed returns true if the category is either
+// domain_knowledge or one of its sub-types (tool_approval, cost_decision,
+// user_preferences, procedure_improvements, factual_corrections). Used so that
+// legacy policies with only allowed_categories: [domain_knowledge, policy_hit]
+// do not silently reject writes that are now classified with the finer categories.
+func AllowedWhenDomainKnowledgeAllowed(cat string) bool {
+	return domainKnowledgeSubtypes[cat]
+}
+
+// Memory types (Tulving/CoALA — three-type model for retrieval scoring).
+const (
+	MemTypeSemanticFact = "semantic"   // What the agent knows: facts, preferences, constraints
+	MemTypeEpisodic     = "episodic"   // What happened: specific interactions, outcomes, events
+	MemTypeProcedural   = "procedural" // How to do things: learned behaviors, response patterns
+)
+
+// TypeWeights for relevance-scored retrieval (Mem0-style).
+// Semantic facts are most valuable for prompt injection; episodic provides recent context; procedural fine-tunes behavior.
+var TypeWeights = map[string]float64{
+	MemTypeSemanticFact: 0.6,
+	MemTypeEpisodic:     0.3,
+	MemTypeProcedural:   0.1,
+}
+
 // Observation types describe what kind of memory entry this is.
 const (
 	ObsDecision  = "decision"

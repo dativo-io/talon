@@ -1,0 +1,52 @@
+# Gateway config for OpenClaw + Talon primer.
+# Used when running: talon serve --gateway --gateway-config=...
+# Caller "openclaw-main" uses API key below; point OpenClaw at this gateway with that key.
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "enforce"
+
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+      allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+    anthropic:
+      enabled: true
+      secret_name: "anthropic-api-key"
+      base_url: "https://api.anthropic.com"
+      allowed_models: ["claude-3-5-sonnet-20241022", "claude-sonnet-4-20250514"]
+    ollama:
+      enabled: true
+      base_url: "http://localhost:11434"
+
+  callers:
+    - name: "openclaw-main"
+      api_key: "talon-gw-openclaw-abc123"
+      tenant_id: "default"
+      team: "engineering"
+      allowed_providers: ["openai", "anthropic"]
+      policy_overrides:
+        max_daily_cost: 25.00
+        max_monthly_cost: 500.00
+        pii_action: "redact"
+        allowed_models: ["gpt-4o", "gpt-4o-mini"]
+
+  default_policy:
+    default_pii_action: "warn"
+    max_daily_cost: 100.00
+    max_monthly_cost: 2000.00
+    require_caller_id: true
+    log_prompts: true
+    log_responses: false
+
+  rate_limits:
+    global_requests_per_min: 300
+    per_caller_requests_per_min: 60
+
+  timeouts:
+    connect_timeout: 10s
+    request_timeout: 120s
+    stream_idle_timeout: 60s

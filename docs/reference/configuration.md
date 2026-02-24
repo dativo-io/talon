@@ -38,3 +38,18 @@ export TALON_SIGNING_KEY=$(openssl rand -hex 32)
 - **API keys:** Set `TALON_API_KEYS` as comma-separated entries; each entry is a key or `key:tenant_id`.
 - **Gateway:** Enable with `--gateway` and `--gateway-config <path>`. See [How to choose your integration path](../guides/choosing-integration-path.md) and gateway guides.
 - **MCP proxy:** Enable with `--proxy-config <path>`. See [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md).
+
+---
+
+## Memory and policy (.talon.yaml)
+
+See [Memory governance](../MEMORY_GOVERNANCE.md) for full reference. Key options:
+
+| Key | Purpose |
+|-----|---------|
+| `memory.enabled` | Turn memory on or off. |
+| `memory.mode` | `active` (persist + inject), `shadow` (log only, no persist), or `disabled`. |
+| `memory.allowed_categories` | Categories the agent may write (e.g. `domain_knowledge`, `factual_corrections`, `user_preferences`, `procedure_improvements`). |
+| `memory.prompt_categories` | Categories to inject into prompts (empty = all allowed). |
+| `memory.max_prompt_tokens` | Cap on memory tokens injected. With a run prompt, retrieval is relevance-scored; otherwise timestamp-ordered. Injected order is by trust (highest first). |
+| `memory.governance.dedup_window_minutes` | When > 0, same input within the window does not create a new entry. 0 = disabled. |

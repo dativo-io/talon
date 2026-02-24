@@ -35,6 +35,19 @@ func TestIsForbiddenCategory(t *testing.T) {
 	assert.False(t, IsForbiddenCategory(""))
 }
 
+func TestAllowedWhenDomainKnowledgeAllowed(t *testing.T) {
+	subtypes := []string{
+		CategoryDomainKnowledge, CategoryFactualCorrections, CategoryUserPreferences,
+		CategoryProcedureImprovements, CategoryToolApproval, CategoryCostDecision,
+	}
+	for _, cat := range subtypes {
+		assert.True(t, AllowedWhenDomainKnowledgeAllowed(cat), "expected %q to be allowed when domain_knowledge is allowed", cat)
+	}
+	assert.False(t, AllowedWhenDomainKnowledgeAllowed(CategoryPolicyHit))
+	assert.False(t, AllowedWhenDomainKnowledgeAllowed("policy_modifications"))
+	assert.False(t, AllowedWhenDomainKnowledgeAllowed(""))
+}
+
 func TestValidObservationTypes(t *testing.T) {
 	types := ValidObservationTypes()
 	assert.Len(t, types, 5)
@@ -53,4 +66,15 @@ func TestValidSourceTypes(t *testing.T) {
 	assert.Contains(t, types, SourceAgentRun)
 	assert.Contains(t, types, SourceToolOutput)
 	assert.Contains(t, types, SourceWebhook)
+}
+
+func TestMemoryTypeConstantsAndTypeWeights(t *testing.T) {
+	assert.Equal(t, "semantic", MemTypeSemanticFact)
+	assert.Equal(t, "episodic", MemTypeEpisodic)
+	assert.Equal(t, "procedural", MemTypeProcedural)
+
+	assert.Len(t, TypeWeights, 3)
+	assert.Equal(t, 0.6, TypeWeights[MemTypeSemanticFact])
+	assert.Equal(t, 0.3, TypeWeights[MemTypeEpisodic])
+	assert.Equal(t, 0.1, TypeWeights[MemTypeProcedural])
 }

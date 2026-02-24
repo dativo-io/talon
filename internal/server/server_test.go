@@ -899,6 +899,58 @@ func TestMemoryGetWithStore(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+func TestMemoryAsOfWithStore(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	evStore, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evStore.Close() })
+	memStore, err := memory.NewStore(dir + "/mem.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = memStore.Close() })
+	ctx := context.Background()
+	require.NoError(t, memStore.Write(ctx, &memory.Entry{
+		TenantID: "default", AgentID: "agent1", Category: memory.CategoryDomainKnowledge,
+		Title: "AsOf test", Content: "content", EvidenceID: "req_1", SourceType: memory.SourceAgentRun,
+	}))
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+		WithMemoryStore(memStore))
+	r := srv.Routes()
+	asOf := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	req := httptest.NewRequest(http.MethodGet, "/v1/memory/as-of?agent_id=agent1&as_of="+asOf+"&limit=10", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	entries, _ := out["entries"].([]interface{})
+	assert.GreaterOrEqual(t, len(entries), 1)
+}
+
+func TestMemoryAsOfBadRequest(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	evStore, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evStore.Close() })
+	memStore, err := memory.NewStore(dir + "/mem.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = memStore.Close() })
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+		WithMemoryStore(memStore))
+	r := srv.Routes()
+	req := httptest.NewRequest(http.MethodGet, "/v1/memory/as-of?agent_id=agent1", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 func TestPlanGetSuccess(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)

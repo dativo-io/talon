@@ -14,6 +14,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -100,6 +102,7 @@ type Runner struct {
 	hooks             *HookRegistry
 	memory            *memory.Store
 	governance        *memory.Governance
+	consolidator      *memory.Consolidator // optional; when set, memory writes go through AUDN consolidation
 }
 
 // RunnerConfig holds the dependencies for constructing a Runner.
@@ -140,6 +143,9 @@ func NewRunner(cfg RunnerConfig) *Runner {
 	if cfg.Memory != nil && cfg.Classifier != nil {
 		r.governance = memory.NewGovernance(cfg.Memory, cfg.Classifier)
 	}
+	if cfg.Memory != nil {
+		r.consolidator = memory.NewConsolidator(cfg.Memory)
+	}
 	return r
 }
 
@@ -153,6 +159,7 @@ type RunRequest struct {
 	DryRun          bool
 	PolicyPath      string           // explicit path to .talon.yaml
 	ToolInvocations []ToolInvocation // optional; when set, each is policy-checked and executed, and names recorded in evidence
+	SkipMemory      bool             // if true, do not write memory observation for this run (e.g. --no-memory)
 }
 
 // ToolInvocation represents a single tool call (e.g. from MCP or a future agent loop).
@@ -538,7 +545,13 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	var memoryTokens int
 
 	if pol.Memory != nil && pol.Memory.Enabled && memoryMode(pol) == "active" && r.memory != nil {
-		memIndex, memErr := r.memory.ListIndex(ctx, req.TenantID, req.AgentName, 50)
+		var memIndex []memory.IndexEntry
+		var memErr error
+		if req.Prompt != "" && pol.Memory.MaxPromptTokens > 0 {
+			memIndex, memErr = r.memory.RetrieveScored(ctx, req.TenantID, req.AgentName, req.Prompt, pol.Memory.MaxPromptTokens)
+		} else {
+			memIndex, memErr = r.memory.ListIndex(ctx, req.TenantID, req.AgentName, 50)
+		}
 		if memErr != nil {
 			log.Warn().Err(memErr).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("failed to load memory index")
 		} else if len(memIndex) > 0 {
@@ -547,14 +560,16 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				memIndex = filterByPromptCategories(memIndex, pol.Memory.PromptCategories)
 			}
 
-			// Exclude pending_review before token cap and evidence: only entries actually
-			// injected into the prompt are recorded in evidence (compliance-accurate audit).
+			// Exclude pending_review before evidence: only entries actually injected are recorded (compliance-accurate audit).
 			memIndex = filterOutPendingReview(memIndex)
 
-			// Apply max_prompt_tokens cap: evict oldest/lowest-trust entries if over budget
+			// Token cap: apply after category and review filtering so budget is not consumed by excluded entries (both ListIndex and RetrieveScored paths).
 			if pol.Memory.MaxPromptTokens > 0 {
 				memIndex = capMemoryByTokens(memIndex, pol.Memory.MaxPromptTokens)
 			}
+
+			// Order by trust_score descending so highest-trust context is first (prompt and evidence order).
+			sort.Slice(memIndex, func(i, j int) bool { return memIndex[i].TrustScore > memIndex[j].TrustScore })
 
 			memPrompt := formatMemoryIndexForPrompt(memIndex)
 			if memPrompt != "" {
@@ -603,9 +618,23 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		}
 	}
 
-	return r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine,
+	resp, err = r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine,
 		effectiveTier, effectivePIINames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
 		observationOverride, originalDecision, estimatedCost)
+	if err != nil {
+		return nil, err
+	}
+	// Lightweight retention: enforce max_entries after each run (full purge by days remains in talon serve).
+	// Skip when SkipMemory is set (e.g. --no-memory) so we do not evict entries during a run that requested no memory writes.
+	if r.memory != nil && pol.Memory != nil && pol.Memory.Enabled && pol.Memory.MaxEntries > 0 && !req.SkipMemory {
+		evicted, evErr := r.memory.EnforceMaxEntries(ctx, req.TenantID, req.AgentName, pol.Memory.MaxEntries)
+		if evErr != nil {
+			log.Warn().Err(evErr).Msg("cli_retention_failed")
+		} else if evicted > 0 {
+			log.Info().Int64("evicted", evicted).Msg("memory_max_entries_enforced")
+		}
+	}
+	return resp, nil
 }
 
 // checkHook fires a hook and returns a deny RunResponse if the hook aborts the pipeline.
@@ -902,6 +931,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		MemoryTokens:            memTokens,
 		InputPrompt:             req.Prompt,
 		OutputResponse:          llmResp.Content,
+		AttachmentHashes:        attachmentHashesFromRequest(req),
 		Compliance:              compliance,
 		ObservationModeOverride: observationOverride,
 	})
@@ -1487,6 +1517,8 @@ func memoryMode(pol *policy.Policy) string {
 // and writes it through the governance pipeline.
 // In shadow mode, all checks run and results are logged, but no entry is persisted.
 // policyEval is the per-run OPA engine for this invocation (avoids data race on shared Governance).
+//
+//nolint:gocyclo // orchestration flow is inherently branched
 func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, resp *RunResponse, ev *evidence.Evidence) {
 	if r.memory == nil || r.governance == nil || pol.Memory == nil || !pol.Memory.Enabled {
 		return
@@ -1499,21 +1531,51 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 	if mode == "disabled" {
 		return
 	}
+	if req.SkipMemory {
+		log.Info().Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("memory_write_skipped_per_request")
+		return
+	}
+
+	// Input-hash deduplication: skip write if we recently stored an observation for the same input.
+	// Only when dedup_window_minutes > 0 (0 = disabled per docs); no default window.
+	if ev.AuditTrail.InputHash != "" {
+		var dedupWindow time.Duration
+		if pol.Memory.Governance != nil && pol.Memory.Governance.DedupWindowMinutes > 0 {
+			dedupWindow = time.Duration(pol.Memory.Governance.DedupWindowMinutes) * time.Minute
+		}
+		if dedupWindow > 0 {
+			isDup, err := r.memory.HasRecentWithInputHash(ctx, req.TenantID, req.AgentName, ev.AuditTrail.InputHash, dedupWindow)
+			if err != nil {
+				log.Warn().Err(err).Msg("memory_dedup_check_failed")
+			} else if isDup {
+				log.Info().
+					Str("input_hash", ev.AuditTrail.InputHash).
+					Str("tenant_id", req.TenantID).
+					Str("agent_id", req.AgentName).
+					Msg("memory_write_skipped_duplicate")
+				memory.DedupSkipsAdd(ctx, 1)
+				return
+			}
+		}
+	}
 
 	// Strip private tags from response before persisting to memory (GDPR Art. 25).
 	// Both Title and Content must be derived from clean content so <private> is never persisted.
 	privacyResult := memory.StripPrivateTags(resp.Response)
 
+	category, obsType, memType := inferCategoryTypeAndMemType(resp)
 	observation := memory.Entry{
 		TenantID:         req.TenantID,
 		AgentID:          req.AgentName,
-		Category:         inferCategory(resp),
+		Category:         category,
 		Title:            compressTitle(resp, privacyResult.CleanContent),
 		Content:          compressObservation(resp, privacyResult.CleanContent),
-		ObservationType:  inferObservationType(resp),
+		ObservationType:  obsType,
+		MemoryType:       memType,
 		EvidenceID:       ev.ID,
 		SourceType:       sourceTypeFromInvocation(req.InvocationType),
 		SourceEvidenceID: ev.ID,
+		InputHash:        ev.AuditTrail.InputHash,
 	}
 
 	if err := r.governance.ValidateWrite(ctx, &observation, pol, policyEval); err != nil {
@@ -1539,18 +1601,46 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 		return
 	}
 
-	if err := r.memory.Write(ctx, &observation); err != nil {
-		log.Error().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("memory_write_failed")
-		return
+	if r.consolidator != nil {
+		result, err := r.consolidator.Evaluate(ctx, &observation)
+		if err != nil {
+			log.Warn().Err(err).Msg("consolidation_evaluate_failed")
+			if writeErr := r.memory.Write(ctx, &observation); writeErr != nil {
+				log.Error().Err(writeErr).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("memory_write_failed")
+			}
+			return
+		}
+		log.Info().
+			Str("action", string(result.Action)).
+			Str("reason", result.Reason).
+			Float64("similarity", result.Similarity).
+			Msg("memory_consolidation_decision")
+		if err := r.consolidator.Apply(ctx, &observation, result); err != nil {
+			log.Error().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("consolidation_apply_failed")
+			return
+		}
+		if result.Action == memory.ActionAdd || result.Action == memory.ActionInvalidate {
+			log.Info().
+				Str("tenant_id", req.TenantID).
+				Str("agent_id", req.AgentName).
+				Str("entry_id", observation.ID).
+				Int("trust_score", observation.TrustScore).
+				Str("review_status", observation.ReviewStatus).
+				Msg("memory_observation_written")
+		}
+	} else {
+		if err := r.memory.Write(ctx, &observation); err != nil {
+			log.Error().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("memory_write_failed")
+			return
+		}
+		log.Info().
+			Str("tenant_id", req.TenantID).
+			Str("agent_id", req.AgentName).
+			Str("entry_id", observation.ID).
+			Int("trust_score", observation.TrustScore).
+			Str("review_status", observation.ReviewStatus).
+			Msg("memory_observation_written")
 	}
-
-	log.Info().
-		Str("tenant_id", req.TenantID).
-		Str("agent_id", req.AgentName).
-		Str("entry_id", observation.ID).
-		Int("trust_score", observation.TrustScore).
-		Str("review_status", observation.ReviewStatus).
-		Msg("memory_observation_written")
 }
 
 // filterByPromptCategories keeps only entries whose category is in the allowed list.
@@ -1608,20 +1698,26 @@ func capMemoryByTokens(entries []memory.IndexEntry, maxTokens int) []memory.Inde
 // formatMemoryIndexForPrompt creates a lightweight prompt section from memory entries.
 // Entries with pending_review status are excluded — unvalidated entries must not
 // influence LLM decisions (governance integrity).
+// Entries are ordered by trust_score descending so the model sees highest-trust context first.
 func formatMemoryIndexForPrompt(entries []memory.IndexEntry) string {
 	if len(entries) == 0 {
 		return ""
 	}
+	// Sort by trust descending so highest-trust context appears first in the prompt.
+	sorted := make([]memory.IndexEntry, len(entries))
+	copy(sorted, entries)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TrustScore > sorted[j].TrustScore })
+
 	var b strings.Builder
 	b.WriteString("[AGENT MEMORY INDEX]\n")
 	included := 0
-	for i := range entries {
-		if entries[i].ReviewStatus == reviewStatusPendingReview {
+	for i := range sorted {
+		if sorted[i].ReviewStatus == reviewStatusPendingReview {
 			continue
 		}
 		fmt.Fprintf(&b, "\u2713 %s | %s | %s | trust:%d | %s\n",
-			entries[i].ID, entries[i].Category, entries[i].Title, entries[i].TrustScore,
-			entries[i].Timestamp.Format("2006-01-02"))
+			sorted[i].ID, sorted[i].Category, sorted[i].Title, sorted[i].TrustScore,
+			sorted[i].Timestamp.Format("2006-01-02"))
 		included++
 	}
 	if included == 0 {
@@ -1647,12 +1743,14 @@ func compressObservation(resp *RunResponse, cleanContent string) string {
 
 // compressTitle derives a short title from the response using only privacy-stripped content.
 // Using cleanContent ensures <private> sections are never persisted in the title (GDPR Art. 25).
+// Newlines are normalized to spaces so the first sentence is complete (e.g. "EUR 2\nMillion" -> "EUR 2 Million").
 func compressTitle(resp *RunResponse, cleanContent string) string {
 	if resp.DenyReason != "" {
 		return "Denied: " + resp.DenyReason
 	}
-	text := cleanContent
-	if idx := strings.IndexAny(text, ".\n"); idx > 0 && idx < 80 {
+	text := normalizeTitleWhitespace(cleanContent)
+	// First sentence ends at period; do not cut at newline (already normalized).
+	if idx := strings.IndexByte(text, '.'); idx > 0 && idx < 80 {
 		return text[:idx]
 	}
 	if len(text) > 80 {
@@ -1661,18 +1759,99 @@ func compressTitle(resp *RunResponse, cleanContent string) string {
 	return text
 }
 
-func inferCategory(resp *RunResponse) string {
-	if resp.DenyReason != "" {
-		return memory.CategoryPolicyHit
+// normalizeTitleWhitespace replaces newlines and carriage returns with spaces and collapses multiple spaces,
+// so the first logical sentence can be taken without losing text that was on the next line (e.g. "2\nMillion").
+func normalizeTitleWhitespace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prevSpace := false
+	for _, r := range s {
+		switch r {
+		case '\n', '\r', '\t':
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+		case ' ':
+			if !prevSpace {
+				b.WriteRune(r)
+				prevSpace = true
+			}
+		default:
+			b.WriteRune(r)
+			prevSpace = false
+		}
 	}
-	return memory.CategoryDomainKnowledge
+	return strings.TrimSpace(b.String())
 }
 
-func inferObservationType(resp *RunResponse) string {
+// inferCategoryTypeAndMemType maps run outcome to category, observation type, and memory type (three-type model).
+// Order: policy denial → tool use → error → high cost → content keywords → default (domain_knowledge + semantic).
+// Categories like tool_approval, cost_decision, user_preferences, procedure_improvements are accepted by
+// governance when the policy allows domain_knowledge (AllowedWhenDomainKnowledgeAllowed in Go and
+// domain_knowledge_subtype in Rego), so legacy policies with allowed_categories: [domain_knowledge, policy_hit]
+// do not silently reject these writes.
+func inferCategoryTypeAndMemType(resp *RunResponse) (category, obsType, memType string) {
+	category = memory.CategoryDomainKnowledge
+	obsType = memory.ObsLearning
+	memType = memory.MemTypeSemanticFact
+
 	if resp.DenyReason != "" {
-		return memory.ObsDecision
+		return memory.CategoryPolicyHit, memory.ObsDecision, memory.MemTypeEpisodic
 	}
-	return memory.ObsLearning
+	if len(resp.ToolsCalled) > 0 {
+		return memory.CategoryToolApproval, memory.ObsToolUse, memory.MemTypeEpisodic
+	}
+	if resp.Cost > 0.10 {
+		return memory.CategoryCostDecision, memory.ObsDecision, memory.MemTypeEpisodic
+	}
+
+	lower := strings.ToLower(resp.Response)
+	// Use " i like " (with spaces), not "like", to avoid matching "looks like", "likely", "likewise", "would like to".
+	switch {
+	case containsAny(lower, "prefer", " i like ", "want", "always use", "never use", "favorite"):
+		return memory.CategoryUserPreferences, memory.ObsLearning, memory.MemTypeSemanticFact
+	case containsAny(lower, "step 1", "procedure", "workflow", "process", "how to", "best practice"):
+		return memory.CategoryProcedureImprovements, memory.ObsLearning, memory.MemTypeProcedural
+	case containsAny(lower, "correction", "actually", "wrong", "updated", "no longer"):
+		return memory.CategoryFactualCorrections, memory.ObsLearning, memory.MemTypeSemanticFact
+	}
+	return category, obsType, memType
+}
+
+func containsAny(s string, keywords ...string) bool {
+	for _, kw := range keywords {
+		if strings.Contains(s, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// inferCategory returns the memory category for a run response (wrapper for inferCategoryTypeAndMemType).
+func inferCategory(resp *RunResponse) string {
+	cat, _, _ := inferCategoryTypeAndMemType(resp)
+	return cat
+}
+
+// inferObservationType returns the observation type for a run response (wrapper for inferCategoryTypeAndMemType).
+func inferObservationType(resp *RunResponse) string {
+	_, obs, _ := inferCategoryTypeAndMemType(resp)
+	return obs
+}
+
+// attachmentHashesFromRequest returns SHA256 hex of each attachment's content, sorted for deterministic evidence InputHash.
+func attachmentHashesFromRequest(req *RunRequest) []string {
+	if len(req.Attachments) == 0 {
+		return nil
+	}
+	hashes := make([]string, 0, len(req.Attachments))
+	for _, a := range req.Attachments {
+		h := sha256.Sum256(a.Content)
+		hashes = append(hashes, hex.EncodeToString(h[:]))
+	}
+	sort.Strings(hashes)
+	return hashes
 }
 
 func sourceTypeFromInvocation(invocationType string) string {

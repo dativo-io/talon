@@ -39,9 +39,9 @@ var auditListCmd = &cobra.Command{
 }
 
 var auditShowCmd = &cobra.Command{
-	Use:   "show <evidence-id>",
-	Short: "Show full evidence record (HMAC-verified)",
-	Args:  cobra.ExactArgs(1),
+	Use:   "show [evidence-id]",
+	Short: "Show full evidence record (HMAC-verified); with no ID, shows latest",
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  auditShow,
 }
 
@@ -116,13 +116,27 @@ func auditShow(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
 
-	evidenceID := args[0]
-
 	store, err := openEvidenceStore()
 	if err != nil {
 		return fmt.Errorf("initializing evidence store: %w", err)
 	}
 	defer store.Close()
+
+	var evidenceID string
+	if len(args) > 0 {
+		evidenceID = args[0]
+	} else {
+		index, err := store.ListIndex(ctx, "", "", time.Time{}, time.Time{}, 1, "")
+		if err != nil {
+			return fmt.Errorf("listing evidence: %w", err)
+		}
+		if len(index) == 0 {
+			fmt.Println("No evidence records found.")
+			return nil
+		}
+		evidenceID = index[0].ID
+		fmt.Fprintf(os.Stderr, "Showing latest: %s\n", evidenceID)
+	}
 
 	ev, err := store.Get(ctx, evidenceID)
 	if err != nil {
@@ -359,6 +373,15 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		toolsStr = "(none)"
 	}
 	fmt.Fprintf(w, "Tools Called:  %s\n", toolsStr)
+	if ev.Execution.MemoryTokens > 0 {
+		fmt.Fprintf(w, "Memory Tokens: %d (injected into prompt)\n", ev.Execution.MemoryTokens)
+	}
+	if len(ev.MemoryReads) > 0 {
+		fmt.Fprintln(w, "Memory Reads (injected into prompt)")
+		for _, r := range ev.MemoryReads {
+			fmt.Fprintf(w, "  Entry: %s  TrustScore: %d\n", r.EntryID, r.TrustScore)
+		}
+	}
 	fmt.Fprintln(w, "Audit Trail")
 	fmt.Fprintf(w, "Input Hash:    %s\n", ev.AuditTrail.InputHash)
 	fmt.Fprintf(w, "Output Hash:   %s\n", ev.AuditTrail.OutputHash)

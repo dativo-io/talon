@@ -33,12 +33,14 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 |-----|-------------|
 | [How to choose your integration path](guides/choosing-integration-path.md) | Pick MCP proxy vs LLM gateway vs native Talon. |
 | [How to govern OpenClaw with Talon](guides/openclaw-integration.md) | Route OpenClaw LLM traffic through the gateway. |
+| [Docker primer: OpenClaw + Talon (cloud-ready)](guides/openclaw-talon-primer/docker-openclaw-talon-primer.md) | Predefined Docker setup to run Talon gateway for OpenClaw; deploy in the cloud. |
 | [How to add compliance to your Slack bot](guides/slack-bot-integration.md) | Route your Slack bot's LLM calls through Talon. |
 | [How to govern ChatGPT/Claude Desktop (enterprise)](guides/desktop-app-governance.md) | Route desktop app traffic via DNS/TLS and gateway. |
 | [How to cap daily spend per team or application](guides/cost-governance-by-caller.md) | Gateway callers and policy overrides for cost limits. |
 | [How to export evidence for auditors](guides/compliance-export-runbook.md) | Export, verify, and hand off audit evidence. |
 | [How to run governed LLM calls in CI/CD](guides/cicd-pipeline-governance.md) | Use Talon from GitHub Actions or GitLab CI. |
 | [How to run a first-line support agent with Talon](guides/internal-support-agent.md) | Ticket summarization with PII and cost controls. |
+| [How to verify memory is used](guides/memory-verification.md) | CLI steps to confirm memory is written and injected into prompts. |
 | [How to offer Talon to multiple customers (multi-tenant/MSP)](guides/multi-tenant-msp.md) | Tenant isolation, API keys, and gateway callers. |
 
 ### Reference (technical description)

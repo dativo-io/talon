@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,6 +48,7 @@ type GenerateParams struct {
 	MemoryReads             []MemoryRead    // Memory entries injected into the LLM prompt
 	InputPrompt             string          // Raw user prompt (hashed in evidence, not stored verbatim)
 	OutputResponse          string          // LLM response text (hashed in evidence)
+	AttachmentHashes        []string        // SHA256 hex of each attachment content (optional); same prompt+same attachments → same InputHash
 	Compliance              Compliance      // Applicable compliance frameworks and data location
 	ObservationModeOverride bool            // True when allowed despite policy deny (shadow/observation-only mode)
 }
@@ -129,7 +132,7 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 		MemoryWrites:    params.MemoryWrites,
 		MemoryReads:     params.MemoryReads,
 		AuditTrail: AuditTrail{
-			InputHash:  hashString(params.InputPrompt),
+			InputHash:  inputHashFromParams(params),
 			OutputHash: hashString(params.OutputResponse),
 		},
 		Compliance: params.Compliance,
@@ -145,4 +148,17 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 func hashString(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return "sha256:" + hex.EncodeToString(h[:])
+}
+
+// inputHashFromParams produces a deterministic fingerprint for deduplication: same prompt + same attachments → same hash.
+func inputHashFromParams(params GenerateParams) string {
+	if len(params.AttachmentHashes) == 0 {
+		return hashString(params.InputPrompt)
+	}
+	// Order-independent: sort hashes so attachment order does not change the fingerprint
+	copied := make([]string, len(params.AttachmentHashes))
+	copy(copied, params.AttachmentHashes)
+	sort.Strings(copied)
+	composite := params.InputPrompt + "\n" + strings.Join(copied, "\n")
+	return hashString(composite)
 }
