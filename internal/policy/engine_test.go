@@ -369,6 +369,30 @@ func TestEngineMemoryGovernance(t *testing.T) {
 			wantAllowed:      true,
 		},
 		{
+			name:             "legacy: tool_approval allowed when domain_knowledge in allowed_categories",
+			category:         "tool_approval",
+			contentSizeBytes: 500,
+			wantAllowed:      true,
+		},
+		{
+			name:             "legacy: cost_decision allowed when domain_knowledge in allowed_categories",
+			category:         "cost_decision",
+			contentSizeBytes: 500,
+			wantAllowed:      true,
+		},
+		{
+			name:             "legacy: user_preferences allowed when domain_knowledge in allowed_categories",
+			category:         "user_preferences",
+			contentSizeBytes: 500,
+			wantAllowed:      true,
+		},
+		{
+			name:             "legacy: procedure_improvements allowed when domain_knowledge in allowed_categories",
+			category:         "procedure_improvements",
+			contentSizeBytes: 500,
+			wantAllowed:      true,
+		},
+		{
 			name:             "forbidden category policy_modifications",
 			category:         "policy_modifications",
 			contentSizeBytes: 100,

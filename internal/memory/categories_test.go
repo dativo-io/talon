@@ -35,6 +35,19 @@ func TestIsForbiddenCategory(t *testing.T) {
 	assert.False(t, IsForbiddenCategory(""))
 }
 
+func TestAllowedWhenDomainKnowledgeAllowed(t *testing.T) {
+	subtypes := []string{
+		CategoryDomainKnowledge, CategoryFactualCorrections, CategoryUserPreferences,
+		CategoryProcedureImprovements, CategoryToolApproval, CategoryCostDecision,
+	}
+	for _, cat := range subtypes {
+		assert.True(t, AllowedWhenDomainKnowledgeAllowed(cat), "expected %q to be allowed when domain_knowledge is allowed", cat)
+	}
+	assert.False(t, AllowedWhenDomainKnowledgeAllowed(CategoryPolicyHit))
+	assert.False(t, AllowedWhenDomainKnowledgeAllowed("policy_modifications"))
+	assert.False(t, AllowedWhenDomainKnowledgeAllowed(""))
+}
+
 func TestValidObservationTypes(t *testing.T) {
 	types := ValidObservationTypes()
 	assert.Len(t, types, 5)

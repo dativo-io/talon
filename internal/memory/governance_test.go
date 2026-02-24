@@ -77,6 +77,49 @@ func TestValidateWrite_ForbiddenCategory(t *testing.T) {
 	assert.ErrorIs(t, err, ErrMemoryWriteDenied)
 }
 
+// TestValidateWrite_LegacyAllowedCategoriesAcceptsSubtypes ensures that policies with
+// allowed_categories: [domain_knowledge, policy_hit] (legacy) accept the finer categories
+// returned by inferCategoryTypeAndMemType (tool_approval, cost_decision, user_preferences,
+// procedure_improvements, factual_corrections) so memory is not silently lost.
+func TestValidateWrite_LegacyAllowedCategoriesAcceptsSubtypes(t *testing.T) {
+	gov, _ := testGovernance(t)
+	pol := memoryPolicy([]string{CategoryDomainKnowledge, CategoryPolicyHit}, nil, nil)
+
+	subtypes := []string{
+		CategoryToolApproval, CategoryCostDecision, CategoryUserPreferences,
+		CategoryProcedureImprovements, CategoryFactualCorrections,
+	}
+	for _, cat := range subtypes {
+		t.Run(cat, func(t *testing.T) {
+			entry := &Entry{
+				Category:   cat,
+				Title:      "Legacy subtype",
+				Content:    "Safe content without PII",
+				SourceType: SourceAgentRun,
+				TenantID:   "acme", AgentID: "sales",
+			}
+			err := gov.ValidateWrite(context.Background(), entry, pol, nil)
+			assert.NoError(t, err, "legacy policy with domain_knowledge should allow category %q", cat)
+		})
+	}
+}
+
+// When domain_knowledge is not in allowed_categories, sub-types must still be denied.
+func TestValidateWrite_SubtypeDeniedWhenDomainKnowledgeNotAllowed(t *testing.T) {
+	gov, _ := testGovernance(t)
+	pol := memoryPolicy([]string{CategoryPolicyHit}, nil, nil) // no domain_knowledge
+
+	entry := &Entry{
+		Category:   CategoryToolApproval,
+		Title:      "Tool use",
+		Content:    "Safe content",
+		SourceType: SourceAgentRun,
+		TenantID:   "acme", AgentID: "sales",
+	}
+	err := gov.ValidateWrite(context.Background(), entry, pol, nil)
+	assert.ErrorIs(t, err, ErrMemoryWriteDenied)
+}
+
 func TestValidateWrite_HardcodedForbidden(t *testing.T) {
 	gov, _ := testGovernance(t)
 	pol := memoryPolicy(nil, nil, nil)

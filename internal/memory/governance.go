@@ -204,13 +204,24 @@ func (g *Governance) checkCategory(category string, pol *policy.Policy) error {
 		}
 	}
 
-	// If AllowedCategories is set, category must be in the list
+	// If AllowedCategories is set, category must be in the list (or allowed via legacy domain_knowledge)
 	if len(pol.Memory.AllowedCategories) > 0 {
 		allowed := false
 		for _, ac := range pol.Memory.AllowedCategories {
 			if ac == category {
 				allowed = true
 				break
+			}
+		}
+		// Backward compatibility: policies with only domain_knowledge used to accept all runs
+		// that are now classified as tool_approval, cost_decision, user_preferences,
+		// procedure_improvements, factual_corrections. Treat domain_knowledge as allowing those.
+		if !allowed && AllowedWhenDomainKnowledgeAllowed(category) {
+			for _, ac := range pol.Memory.AllowedCategories {
+				if ac == CategoryDomainKnowledge {
+					allowed = true
+					break
+				}
 			}
 		}
 		if !allowed {
