@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -175,7 +176,7 @@ func writeMemoryE2EPolicyWithDedup(t *testing.T, dir string, dedupMinutes int) s
 	t.Helper()
 	dedupYaml := ""
 	if dedupMinutes > 0 {
-		dedupYaml = "\n    dedup_window_minutes: 60"
+		dedupYaml = "\n    dedup_window_minutes: " + fmt.Sprint(dedupMinutes)
 	}
 	content := `
 agent:
