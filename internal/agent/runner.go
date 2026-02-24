@@ -563,8 +563,8 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			// Exclude pending_review before evidence: only entries actually injected are recorded (compliance-accurate audit).
 			memIndex = filterOutPendingReview(memIndex)
 
-			// Token cap: when using ListIndex (no prompt), apply cap here; RetrieveScored already caps by maxTokens
-			if req.Prompt == "" && pol.Memory.MaxPromptTokens > 0 {
+			// Token cap: apply after category and review filtering so budget is not consumed by excluded entries (both ListIndex and RetrieveScored paths).
+			if pol.Memory.MaxPromptTokens > 0 {
 				memIndex = capMemoryByTokens(memIndex, pol.Memory.MaxPromptTokens)
 			}
 

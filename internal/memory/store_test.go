@@ -243,7 +243,7 @@ func TestListIndex_RespectsLimit(t *testing.T) {
 	assert.Len(t, index, 3)
 }
 
-func TestRetrieveScored_OrderAndTokenCap(t *testing.T) {
+func TestRetrieveScored_Order(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 
@@ -274,14 +274,10 @@ func TestRetrieveScored_OrderAndTokenCap(t *testing.T) {
 	}
 
 	// Query "alpha": relevance should favor "alpha beta match" and "alpha only"
+	// RetrieveScored does not apply token cap; caller caps after category/review filtering.
 	scored, err := store.RetrieveScored(ctx, "acme", "sales", "alpha", 50)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(scored), 2)
-	tokens := 0
-	for _, e := range scored {
-		tokens += e.TokenCount
-	}
-	assert.LessOrEqual(t, tokens, 50, "RetrieveScored must cap by maxTokens")
 	// First result should be more relevant to "alpha" than unrelated "gamma"
 	titles := make([]string, len(scored))
 	for i := range scored {
