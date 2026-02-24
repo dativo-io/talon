@@ -1,0 +1,39 @@
+# Minimal policy for Talon server when running in gateway-only mode.
+# Gateway traffic is governed by talon.config.gateway.yaml; this file satisfies the server's policy load.
+
+agent:
+  name: gateway-primer
+  description: Talon gateway for OpenClaw and other LLM API clients
+  version: 1.0.0
+  model_tier: 0
+
+capabilities:
+  allowed_tools: []
+  forbidden_patterns: []
+
+policies:
+  cost_limits:
+    per_request: 1.0
+    daily: 100.0
+    monthly: 2000.0
+  resource_limits:
+    timeout: { operation: "60s", tool_execution: "5m", agent_total: "30m" }
+  rate_limits: { requests_per_minute: 60, concurrent_executions: 10 }
+  data_classification: { input_scan: true, output_scan: true, redact_pii: false }
+  model_routing:
+    tier_0: { primary: gpt-4o-mini, location: any }
+
+audit:
+  log_level: minimal
+  retention_days: 90
+  include_prompts: false
+  include_responses: false
+
+compliance:
+  frameworks: []
+  data_residency: eu
+
+metadata:
+  department: platform
+  owner: devops@company.eu
+  tags: [gateway, openclaw]
