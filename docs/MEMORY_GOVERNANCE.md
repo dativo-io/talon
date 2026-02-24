@@ -2,6 +2,17 @@
 
 Talon's agent memory is a compliance asset. Every learning is governed, audited, and defensible.
 
+## Use cases
+
+| Use case | What happens |
+|----------|----------------|
+| **Teach & recall** | Agent stores a fact from a run; later runs get that memory injected so the model can answer from context (e.g. "Where is our HQ?" after "Remember: HQ is Berlin."). |
+| **Factual corrections** | User corrects a fact; response keywords (e.g. "actually", "updated") cause the run to be stored as `factual_corrections`. |
+| **User preferences** | User states a preference (e.g. "I prefer bullet points"); stored as `user_preferences` and available to later runs. |
+| **Procedures** | Descriptions of steps or "best practice" are stored as `procedure_improvements` (procedural memory). |
+| **Deduplication** | With `dedup_window_minutes`, the same prompt (and attachments) within the window does not create a duplicate entry. |
+| **Shadow evaluation** | Use `mode: shadow` to log what would be written and injected without persisting; then switch to `active`. |
+
 ## How It Works
 
 - Agents compress each run into ~500-token observations (not raw transcripts)
@@ -93,12 +104,13 @@ Shadow mode is designed for evaluation periods: operators see exactly what the a
 - **Audit:** `talon audit show` with no ID shows the latest evidence record. `talon audit show <evidence-id>` shows a specific record.
 - **Retention:** `max_entries` is enforced after each run (oldest evicted when over cap). `retention_days` and purge run in `talon serve` (daily).
 
-### Prompt Injection Controls
+### Prompt injection controls
 
-- **pending_review filter:** entries with `review_status = "pending_review"` are excluded from LLM prompts
-- **prompt_categories:** only listed categories enter the LLM context (empty = all allowed)
-- **max_prompt_tokens:** caps total memory tokens injected; oldest/lowest-trust entries evicted first
-- **tier re-classification:** memory content is scanned by the classifier before model routing to detect tier upgrades from persisted classified data
+- **Order:** Injected entries are sorted by **trust score (highest first)** so the model sees the most trusted context first.
+- **pending_review filter:** Entries with `review_status = "pending_review"` are excluded from LLM prompts.
+- **prompt_categories:** Only listed categories enter the LLM context (empty = all allowed).
+- **max_prompt_tokens:** Caps total memory tokens injected; when over cap, lower-trust or older entries are excluded.
+- **Tier re-classification:** Memory content is scanned before model routing so tier upgrades from persisted data are respected.
 
 ### Three-Type Memory and Relevance-Scored Retrieval
 
@@ -131,6 +143,15 @@ Entries are sorted by score descending, then a **token cap** (`max_prompt_tokens
 - `retention_days`: entries older than N days are auto-purged
 - `max_entries`: hard cap per agent; oldest entries (by version) evicted when exceeded
 - Both run automatically via `StartRetentionLoop()` in `talon serve` (daily interval)
+
+## Verify memory is used
+
+1. Enable memory in `.talon.yaml` (`memory.enabled: true`, optional `max_prompt_tokens` for relevance retrieval).
+2. Run once to teach: `talon run "Remember: our company headquarters is in Berlin."`
+3. Run again to recall: `talon run "Where is our company headquarters?"` — the model receives the stored memory in the prompt.
+4. Confirm in audit: `talon audit show` shows **Memory Tokens** and **Memory Reads** for the second run.
+
+See [How to verify memory is used](guides/memory-verification.md) for a full CLI walkthrough.
 
 ## CLI Commands
 
