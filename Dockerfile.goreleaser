@@ -1,0 +1,19 @@
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates sqlite-libs tzdata wget && \
+    adduser -D -u 1000 talon
+
+COPY talon /usr/local/bin/talon
+
+RUN mkdir -p /home/talon/.talon && chown -R talon:talon /home/talon
+
+USER talon
+WORKDIR /home/talon
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
+    CMD wget -q --spider http://localhost:8080/health || exit 1
+
+ENTRYPOINT ["talon"]
+CMD ["serve"]

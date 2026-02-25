@@ -77,7 +77,7 @@ dockers:
       - "ghcr.io/dativo-io/talon:{{ .Version }}"
       - "ghcr.io/dativo-io/talon:{{ .Major }}.{{ .Minor }}"
       - "ghcr.io/dativo-io/talon:latest"
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.goreleaser
     build_flag_templates:
       - "--build-arg=VERSION={{.Version}}"
       - "--build-arg=COMMIT={{.Commit}}"
