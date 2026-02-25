@@ -9,7 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- (none)
+- **feat(governance):** Tool-aware PII redaction with per-tool, per-argument policies — allow/redact/audit/block categories (Gap T1).
+- **feat(gateway):** Response-path PII scanning with redact/block/warn modes for both MCP proxy and LLM gateway (Gap F).
+- **feat(agent):** Kill switch via `ActiveRunTracker.Kill()` Go API (Gap D). CLI and HTTP wrappers planned for next release.
+- **feat(agent):** Circuit breaker with half-open recovery for repeated policy denials, configurable via `circuit_breaker_threshold` and `circuit_breaker_window` in `.talon.yaml` (Gap C).
+- **feat(policy):** Destructive operation detection in `tool_access.rego` — blocks `delete`, `drop`, `remove` patterns (Gap A).
+- **feat(policy):** Per-agent rate limit isolation in `rate_limits.rego` with `requests_last_minute_agent` policy input (Gap B).
+- **feat(agent):** Contextual volume detection in plan review — flags high-volume operations (Gap E).
+- **feat(evidence):** `SanitizeForEvidence` defense-in-depth — scrubs PII from evidence payloads before storage (Gap G).
+- **feat(memory):** Optional HMAC signing for memory entries (Gap H).
+- **feat(evidence):** Pre-execution pending evidence for tool calls — writes "pending" step record before `tool.Execute()`, updates to "completed"/"failed" after. A kill or crash never creates an unaudited action (Gap T2).
+- **feat(mcp):** `tools/list` filtering in MCP proxy — agents only see tools in their `allowed_tools` list (Gap T3).
+- **feat(agent):** Separate tool failure tracking — tool execution errors feed `ToolFailureTracker` with operator alerting, not the circuit breaker. Configurable via `tool_failure_threshold` and `tool_failure_window` (Gap T4).
+- **feat(agent):** Per-tool execution timeouts — reads `ToolPIIPolicy.Timeout` and wraps `tool.Execute()` with `context.WithTimeout` (Gap T5).
+- **feat(agent):** Tool argument validation interface — tools implementing `ArgumentValidator` get pre-execution validation. Full JSON Schema validation planned for Phase 2 (Gap T6).
+- **feat(gateway):** Per-caller and global rate limiting enforced via token bucket (`golang.org/x/time/rate`). Configured via `global_requests_per_min` and `per_caller_requests_per_min`.
+- **fix(agent):** Wire circuit breaker into Runner execution — checks before policy evaluation, records denials/successes.
+- **fix(agent):** Pass `requests_last_minute_agent` to OPA policy input — per-agent rate limiting now functional.
+- **test:** Comprehensive E2E governance test suite covering OpenClaw incident failure modes.
 
 ## [0.8.0] - 2026-02-24
 

@@ -25,3 +25,14 @@ deny contains msg if {
 		data.policy.policies.rate_limits.concurrent_executions,
 	])
 }
+
+# Per-agent rate limit isolation (Gap B)
+deny contains msg if {
+	data.policy.policies.rate_limits.per_agent_requests_per_minute
+	input.requests_last_minute_agent >= data.policy.policies.rate_limits.per_agent_requests_per_minute
+	msg := sprintf("Per-agent rate limit exceeded: %d/%d requests per minute for agent %s", [
+		input.requests_last_minute_agent,
+		data.policy.policies.rate_limits.per_agent_requests_per_minute,
+		input.agent_id,
+	])
+}

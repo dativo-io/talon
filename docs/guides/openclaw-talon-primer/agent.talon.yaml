@@ -14,11 +14,16 @@ capabilities:
 policies:
   cost_limits:
     per_request: 1.0
-    daily: 100.0
-    monthly: 2000.0
+    daily: 10.0 
+    monthly: 200.0
   resource_limits:
     timeout: { operation: "60s", tool_execution: "5m", agent_total: "30m" }
-  rate_limits: { requests_per_minute: 60, concurrent_executions: 10 }
+  rate_limits:
+    requests_per_minute: 60
+    concurrent_executions: 10
+    per_agent_requests_per_minute: 30
+    circuit_breaker_threshold: 5
+    circuit_breaker_window: "60s"
   data_classification: { input_scan: true, output_scan: true, redact_pii: false }
   model_routing:
     tier_0: { primary: gpt-4o-mini, location: any }

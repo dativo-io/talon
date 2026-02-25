@@ -112,6 +112,7 @@ type Entry struct {
 	TrustScore          int        `json:"trust_score"`
 	ConflictsWith       []string   `json:"conflicts_with"`
 	ReviewStatus        string     `json:"review_status"`
+	Signature           string     `json:"signature,omitempty"`
 }
 
 // IndexEntry is a lightweight summary for Layer 1 progressive disclosure (~50 tokens).
@@ -140,9 +141,16 @@ type HealthReport struct {
 }
 
 // Store persists governed memory entries in SQLite with FTS5 full-text search.
+// EntrySigner can sign memory entries for tamper evidence (optional).
+type EntrySigner interface {
+	Sign(data []byte) (string, error)
+	Verify(data []byte, signature string) bool
+}
+
 type Store struct {
 	db      *sql.DB
 	hasFTS5 bool
+	signer  EntrySigner // optional; when set, entries are HMAC-signed on write
 }
 
 // NewStore creates a memory store, initializing the schema and FTS5 tables.
@@ -196,6 +204,11 @@ func NewStore(dbPath string) (*Store, error) {
 	return &Store{db: db, hasFTS5: hasFTS5}, nil
 }
 
+// SetSigner configures an optional HMAC signer for memory entry integrity.
+func (s *Store) SetSigner(signer EntrySigner) {
+	s.signer = signer
+}
+
 // Close releases the database connection.
 func (s *Store) Close() error {
 	return s.db.Close()
@@ -213,6 +226,16 @@ func (s *Store) Write(ctx context.Context, entry *Entry) error {
 	defer span.End()
 
 	prepareEntry(entry)
+
+	// Gap H: HMAC-sign entry if signer is configured
+	if s.signer != nil {
+		entryJSON, _ := json.Marshal(entry)
+		sig, err := s.signer.Sign(entryJSON)
+		if err == nil {
+			entry.Signature = sig
+		}
+	}
+
 	filesJSON, conflictsJSON := entryJSONBlobs(entry)
 
 	err := s.writeWithRetry(ctx, entry, filesJSON, conflictsJSON)

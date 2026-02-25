@@ -48,6 +48,7 @@ type Evidence struct {
 	AuditTrail              AuditTrail      `json:"audit_trail"`
 	Compliance              Compliance      `json:"compliance"`
 	ObservationModeOverride bool            `json:"observation_mode_override,omitempty"` // True when request was allowed despite policy deny (audit-only shadow mode)
+	Status                  string          `json:"status,omitempty"`                    // "pending", "completed", "failed"; empty = completed (backward-compatible)
 	Signature               string          `json:"signature"`
 }
 
@@ -61,10 +62,12 @@ type PolicyDecision struct {
 
 // Classification captures PII detection results.
 type Classification struct {
-	InputTier   int      `json:"input_tier"`
-	OutputTier  int      `json:"output_tier"`
-	PIIDetected []string `json:"pii_detected,omitempty"`
-	PIIRedacted bool     `json:"pii_redacted"`
+	InputTier         int      `json:"input_tier"`
+	OutputTier        int      `json:"output_tier"`
+	PIIDetected       []string `json:"pii_detected,omitempty"`
+	PIIRedacted       bool     `json:"pii_redacted"`
+	OutputPIIDetected bool     `json:"output_pii_detected,omitempty"`
+	OutputPIITypes    []string `json:"output_pii_types,omitempty"`
 }
 
 // AttachmentScan captures prompt injection scan results and PII detected in attachment content.
@@ -136,6 +139,8 @@ type StepEvidence struct {
 	OutputSummary string    `json:"output_summary,omitempty"`
 	DurationMS    int64     `json:"duration_ms"`
 	Cost          float64   `json:"cost"`
+	Status        string    `json:"status,omitempty"` // "pending", "completed", "failed"; empty = completed
+	Error         string    `json:"error,omitempty"`
 	Timestamp     time.Time `json:"timestamp"`
 	Signature     string    `json:"signature"`
 }
@@ -267,6 +272,29 @@ func (s *Store) StoreStep(ctx context.Context, step *StepEvidence) error {
 	)
 	if err != nil {
 		return fmt.Errorf("storing step evidence: %w", err)
+	}
+	return nil
+}
+
+// UpdateStep updates an existing step evidence record (e.g., pending -> completed).
+// Re-signs the updated record.
+func (s *Store) UpdateStep(ctx context.Context, step *StepEvidence) error {
+	step.Signature = ""
+	stepJSON, err := json.Marshal(step)
+	if err != nil {
+		return fmt.Errorf("marshaling step evidence: %w", err)
+	}
+	signature, err := s.signer.Sign(stepJSON)
+	if err != nil {
+		return fmt.Errorf("signing step evidence: %w", err)
+	}
+	step.Signature = signature
+	stepJSONWithSig, _ := json.Marshal(step)
+
+	query := `UPDATE step_evidence SET step_json = ?, signature = ? WHERE id = ?`
+	_, err = s.db.ExecContext(ctx, query, string(stepJSONWithSig), signature, step.ID)
+	if err != nil {
+		return fmt.Errorf("updating step evidence: %w", err)
 	}
 	return nil
 }

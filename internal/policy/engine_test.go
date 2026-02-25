@@ -553,3 +553,172 @@ func TestEngineEvaluate_RateLimitDeny(t *testing.T) {
 	assert.False(t, decision.Allowed)
 	assert.NotEmpty(t, decision.Reasons)
 }
+
+// ---------------------------------------------------------------------------
+// OpenClaw incident — unit tests (default-deny, context independence, rate limits)
+// ---------------------------------------------------------------------------
+
+func newReadonlyInboxPolicy() *Policy {
+	pol := &Policy{
+		Agent: AgentConfig{
+			Name:    "inbox-assistant",
+			Version: "1.0.0",
+		},
+		Capabilities: &CapabilitiesConfig{
+			AllowedTools: []string{
+				"email_read",
+				"email_list",
+				"email_search",
+				"email_archive",
+			},
+			ForbiddenPatterns: []string{
+				"email_delete",
+				"email_bulk_*",
+				"email_send",
+				"email_forward",
+			},
+		},
+		Policies: PoliciesConfig{
+			CostLimits: &CostLimitsConfig{
+				PerRequest: 0.10,
+				Daily:      5.0,
+				Monthly:    50.0,
+			},
+			RateLimits: &RateLimitsConfig{
+				RequestsPerMinute:    20,
+				ConcurrentExecutions: 1,
+			},
+		},
+	}
+	pol.ComputeHash([]byte("test"))
+	return pol
+}
+
+func TestEngine_ToolAccess_DestructiveOperationsDeniedByDefault(t *testing.T) {
+	ctx := context.Background()
+	pol := newReadonlyInboxPolicy()
+	engine, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	destructiveTools := []string{
+		"email_delete",
+		"email_bulk_delete",
+		"file_delete",
+		"user_delete",
+		"export_all_data",
+		"admin_reset",
+		"bulk_archive",
+	}
+
+	for _, tool := range destructiveTools {
+		t.Run(tool, func(t *testing.T) {
+			decision, err := engine.EvaluateToolAccess(ctx, tool, map[string]interface{}{}, nil)
+			require.NoError(t, err)
+			assert.False(t, decision.Allowed,
+				"destructive tool %q should be DENIED by default when not in allowed_tools", tool)
+		})
+	}
+}
+
+func TestEngine_ToolAccess_AllowedOperationsPass(t *testing.T) {
+	ctx := context.Background()
+	pol := newReadonlyInboxPolicy()
+	engine, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	allowedTools := []string{
+		"email_read",
+		"email_list",
+		"email_search",
+		"email_archive",
+	}
+
+	for _, tool := range allowedTools {
+		t.Run(tool, func(t *testing.T) {
+			decision, err := engine.EvaluateToolAccess(ctx, tool, map[string]interface{}{}, nil)
+			require.NoError(t, err)
+			assert.True(t, decision.Allowed,
+				"read-only tool %q should be ALLOWED", tool)
+		})
+	}
+}
+
+func TestEngine_ContextCompactionCannotBypass(t *testing.T) {
+	ctx := context.Background()
+	pol := newReadonlyInboxPolicy()
+	engine, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	decision, err := engine.EvaluateToolAccess(ctx, "email_delete", map[string]interface{}{}, nil)
+	require.NoError(t, err)
+	assert.False(t, decision.Allowed,
+		"email_delete must be denied regardless of what the LLM's context window contains")
+}
+
+func TestEngine_CostPolicyContextIndependent(t *testing.T) {
+	ctx := context.Background()
+	pol := newReadonlyInboxPolicy()
+	engine, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	decision, err := engine.Evaluate(ctx, map[string]interface{}{
+		"estimated_cost":     0.05,
+		"daily_cost_total":   0.0,
+		"monthly_cost_total": 0.0,
+	})
+	require.NoError(t, err)
+	assert.True(t, decision.Allowed)
+}
+
+func TestEngine_RateLimitSpeedRunPrevention(t *testing.T) {
+	ctx := context.Background()
+	pol := newReadonlyInboxPolicy()
+	engine, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name               string
+		requestsLastMinute int
+		wantAllowed        bool
+	}{
+		{"0 requests - allowed", 0, true},
+		{"19 requests - just under limit", 19, true},
+		{"20 requests - at limit - denied", 20, false},
+		{"50 requests - well over", 50, false},
+		{"100 requests - speed run", 100, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision, err := engine.Evaluate(ctx, map[string]interface{}{
+				"estimated_cost":        0.01,
+				"daily_cost_total":      0.0,
+				"monthly_cost_total":    0.0,
+				"requests_last_minute":  tt.requestsLastMinute,
+				"concurrent_executions": 0,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAllowed, decision.Allowed,
+				"at %d requests/min (limit 20), allowed should be %v",
+				tt.requestsLastMinute, tt.wantAllowed)
+		})
+	}
+}
+
+func TestEngine_RateLimitConcurrentExecutionsDenied(t *testing.T) {
+	ctx := context.Background()
+	pol := newReadonlyInboxPolicy()
+	engine, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	decision, err := engine.Evaluate(ctx, map[string]interface{}{
+		"estimated_cost":        0.01,
+		"daily_cost_total":      0.0,
+		"monthly_cost_total":    0.0,
+		"requests_last_minute":  0,
+		"concurrent_executions": 2,
+	})
+	require.NoError(t, err)
+	assert.False(t, decision.Allowed,
+		"concurrent_executions 2 > limit 1 should be denied")
+}

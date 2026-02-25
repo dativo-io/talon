@@ -67,6 +67,8 @@ type StepParams struct {
 	OutputSummary string
 	DurationMS    int64
 	Cost          float64
+	Status        string // "pending", "completed", "failed"; empty defaults to completed
+	Error         string // Error message (for failed steps)
 }
 
 // GenerateStep creates and stores a step evidence record.
@@ -85,12 +87,39 @@ func (g *Generator) GenerateStep(ctx context.Context, params StepParams) (*StepE
 		OutputSummary: TruncateForSummary(params.OutputSummary, 500),
 		DurationMS:    params.DurationMS,
 		Cost:          params.Cost,
+		Status:        params.Status,
+		Error:         params.Error,
 		Timestamp:     time.Now(),
 	}
 	if err := g.store.StoreStep(ctx, step); err != nil {
 		return nil, err
 	}
 	return step, nil
+}
+
+// GeneratePendingStep creates a step evidence record with status "pending" before
+// execution begins. Use UpdateStep to move it to "completed" or "failed" after.
+// This ensures a kill or crash never creates an unaudited action.
+func (g *Generator) GeneratePendingStep(ctx context.Context, params StepParams) (*StepEvidence, error) {
+	params.Status = "pending"
+	return g.GenerateStep(ctx, params)
+}
+
+// CompleteStep updates a pending step to "completed" with the final output, duration, and cost.
+func (g *Generator) CompleteStep(ctx context.Context, step *StepEvidence, outputSummary string, durationMS int64, cost float64) error {
+	step.Status = "completed"
+	step.OutputSummary = TruncateForSummary(outputSummary, 500)
+	step.DurationMS = durationMS
+	step.Cost = cost
+	return g.store.UpdateStep(ctx, step)
+}
+
+// FailStep updates a pending step to "failed" with the error message and duration.
+func (g *Generator) FailStep(ctx context.Context, step *StepEvidence, errMsg string, durationMS int64) error {
+	step.Status = "failed"
+	step.Error = errMsg
+	step.DurationMS = durationMS
+	return g.store.UpdateStep(ctx, step)
 }
 
 // TruncateForSummary truncates s to at most maxLen bytes and appends "..." if truncated.

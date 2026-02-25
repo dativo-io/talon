@@ -18,6 +18,7 @@ type Policy struct {
 	Context            *ContextConfig            `yaml:"context,omitempty" json:"context,omitempty"`
 	AttachmentHandling *AttachmentHandlingConfig `yaml:"attachment_handling,omitempty" json:"attachment_handling,omitempty"`
 	Policies           PoliciesConfig            `yaml:"policies" json:"policies"`
+	ToolPolicies       map[string]ToolPIIPolicy  `yaml:"tool_policies,omitempty" json:"tool_policies,omitempty"`
 	Audit              *AuditConfig              `yaml:"audit,omitempty" json:"audit,omitempty"`
 	Compliance         *ComplianceConfig         `yaml:"compliance,omitempty" json:"compliance,omitempty"`
 	Metadata           *MetadataConfig           `yaml:"metadata,omitempty" json:"metadata,omitempty"`
@@ -37,9 +38,10 @@ type AgentConfig struct {
 
 // CapabilitiesConfig defines what the agent is allowed to do.
 type CapabilitiesConfig struct {
-	AllowedTools       []string `yaml:"allowed_tools,omitempty" json:"allowed_tools,omitempty"`
-	AllowedDataSources []string `yaml:"allowed_data_sources,omitempty" json:"allowed_data_sources,omitempty"`
-	ForbiddenPatterns  []string `yaml:"forbidden_patterns,omitempty" json:"forbidden_patterns,omitempty"`
+	AllowedTools        []string `yaml:"allowed_tools,omitempty" json:"allowed_tools,omitempty"`
+	AllowedDataSources  []string `yaml:"allowed_data_sources,omitempty" json:"allowed_data_sources,omitempty"`
+	ForbiddenPatterns   []string `yaml:"forbidden_patterns,omitempty" json:"forbidden_patterns,omitempty"`
+	DestructivePatterns []string `yaml:"destructive_patterns,omitempty" json:"destructive_patterns,omitempty"`
 }
 
 // TriggersConfig defines automatic execution triggers.
@@ -180,8 +182,13 @@ type TimeoutConfig struct {
 
 // RateLimitsConfig constrains request throughput.
 type RateLimitsConfig struct {
-	RequestsPerMinute    int `yaml:"requests_per_minute,omitempty" json:"requests_per_minute,omitempty"`
-	ConcurrentExecutions int `yaml:"concurrent_executions,omitempty" json:"concurrent_executions,omitempty"`
+	RequestsPerMinute         int    `yaml:"requests_per_minute,omitempty" json:"requests_per_minute,omitempty"`
+	ConcurrentExecutions      int    `yaml:"concurrent_executions,omitempty" json:"concurrent_executions,omitempty"`
+	PerAgentRequestsPerMinute int    `yaml:"per_agent_requests_per_minute,omitempty" json:"per_agent_requests_per_minute,omitempty"`
+	CircuitBreakerThreshold   int    `yaml:"circuit_breaker_threshold,omitempty" json:"circuit_breaker_threshold,omitempty"`
+	CircuitBreakerWindow      string `yaml:"circuit_breaker_window,omitempty" json:"circuit_breaker_window,omitempty"`
+	ToolFailureThreshold      int    `yaml:"tool_failure_threshold,omitempty" json:"tool_failure_threshold,omitempty"` // Gap T4: separate from circuit breaker
+	ToolFailureWindow         string `yaml:"tool_failure_window,omitempty" json:"tool_failure_window,omitempty"`       // Gap T4: e.g. "5m"
 }
 
 // DataClassificationConfig controls PII scanning and redaction.
@@ -219,6 +226,29 @@ type CustomPatternConfig struct {
 	Score float64 `yaml:"score,omitempty" json:"score,omitempty"`
 }
 
+// PIIAction controls how PII is handled for a specific tool argument or result.
+type PIIAction string
+
+const (
+	PIIActionAllow  PIIAction = "allow"
+	PIIActionRedact PIIAction = "redact"
+	PIIActionAudit  PIIAction = "audit"
+	PIIActionBlock  PIIAction = "block"
+)
+
+// ToolPIIPolicy defines per-tool PII handling for arguments and results.
+// When a tool has no explicit policy in tool_policies, the _default entry applies.
+// When tool_policies is entirely absent, the global pii_action from data_classification applies.
+type ToolPIIPolicy struct {
+	Arguments       map[string]PIIAction `yaml:"arguments,omitempty" json:"arguments,omitempty"`
+	ArgumentDefault PIIAction            `yaml:"argument_default,omitempty" json:"argument_default,omitempty"`
+	Result          PIIAction            `yaml:"result,omitempty" json:"result,omitempty"`
+	Timeout         string               `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+// DefaultDestructivePatterns is the compiled-in default for destructive operation detection.
+var DefaultDestructivePatterns = []string{"delete", "drop", "remove", "bulk_", "truncate", "purge", "wipe", "destroy"}
+
 // ModelRoutingConfig defines per-tier LLM routing.
 type ModelRoutingConfig struct {
 	Tier0 *TierConfig `yaml:"tier_0,omitempty" json:"tier_0,omitempty"`
@@ -253,6 +283,8 @@ type AuditConfig struct {
 }
 
 // PlanReviewConfig configures when execution plans require human review (EU AI Act Art. 14).
+// VolumeThreshold is defined in internal/agent/plan_review.go PlanReviewConfig
+// (the agent package owns plan review logic and runtime config).
 type PlanReviewConfig struct {
 	RequireForTools bool    `yaml:"require_for_tools" json:"require_for_tools"`
 	RequireForTier  string  `yaml:"require_for_tier" json:"require_for_tier"`

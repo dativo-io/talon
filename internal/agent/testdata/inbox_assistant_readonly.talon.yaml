@@ -1,0 +1,76 @@
+# OpenClaw incident investigation — readonly inbox assistant policy.
+# Simulates a properly-governed email agent that can only read, list, search, and archive.
+# Destructive operations (delete, send, forward) are explicitly forbidden.
+
+agent:
+  name: "inbox-assistant"
+  description: "Read-only email inbox assistant — no destructive operations"
+  version: "1.0.0"
+  model_tier: 0
+
+capabilities:
+  allowed_tools:
+    - "email_read"
+    - "email_list"
+    - "email_search"
+    - "email_archive"
+  forbidden_patterns:
+    - "email_delete"
+    - "email_bulk_*"
+    - "email_send"
+    - "email_forward"
+
+memory:
+  enabled: true
+  max_entries: 100
+  max_entry_size_kb: 10
+  retention_days: 90
+  review_mode: "auto"
+  allowed_categories:
+    - "domain_knowledge"
+    - "user_preferences"
+    - "procedure_improvements"
+  forbidden_categories:
+    - "policy_modifications"
+    - "prompt_injection"
+    - "credential_data"
+  audit: true
+
+policies:
+  cost_limits:
+    per_request: 0.10
+    daily: 5.00
+    monthly: 50.00
+  rate_limits:
+    requests_per_minute: 20
+    concurrent_executions: 1
+  resource_limits:
+    max_iterations: 5
+    max_tool_calls_per_run: 20
+    timeout:
+      operation: "60s"
+      tool_execution: "5m"
+      agent_total: "30m"
+  model_routing:
+    tier_0:
+      primary: "gpt-4o-mini"
+    tier_1:
+      primary: "gpt-4o-mini"
+    tier_2:
+      primary: "gpt-4o-mini"
+
+audit:
+  log_level: "detailed"
+  retention_days: 365
+  include_prompts: false
+  include_responses: false
+
+compliance:
+  frameworks: ["gdpr", "nis2"]
+  data_residency: "eu"
+  human_oversight: "always"
+
+metadata:
+  department: "engineering"
+  owner: "security-team@company.eu"
+  tags: ["openclaw-incident", "readonly", "email"]

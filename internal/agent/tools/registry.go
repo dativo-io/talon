@@ -17,6 +17,16 @@ type Tool interface {
 	Execute(ctx context.Context, params json.RawMessage) (json.RawMessage, error)
 }
 
+// ArgumentValidator is an optional interface that tools can implement to
+// validate arguments against their schema before execution. When a tool
+// implements this interface, the runner calls ValidateArguments before Execute.
+//
+// Phase 2 will add automatic JSON Schema validation for all tools using
+// the InputSchema() return value. For v1, tools opt in by implementing this.
+type ArgumentValidator interface {
+	ValidateArguments(params json.RawMessage) error
+}
+
 // ToolRegistry manages registered tools for agent execution.
 // Thread-safe for concurrent access.
 type ToolRegistry struct {

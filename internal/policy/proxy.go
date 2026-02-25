@@ -20,7 +20,12 @@ type ProxyPolicyConfig struct {
 	Agent       ProxyAgentConfig  `yaml:"agent" json:"agent"`
 	Proxy       ProxyConfig       `yaml:"proxy" json:"proxy"`
 	PIIHandling PIIHandlingConfig `yaml:"pii_handling,omitempty" json:"pii_handling,omitempty"`
-	Compliance  ComplianceConfig  `yaml:"compliance,omitempty" json:"compliance,omitempty"`
+	// ToolPolicies defines per-tool PII handling for the proxy.
+	// Currently the proxy applies blanket PII redaction on tool results;
+	// per-tool overrides are supported in agent runner mode (Policy.ToolPolicies).
+	// Reserved for future proxy-level per-tool PII handling.
+	ToolPolicies map[string]ToolPIIPolicy `yaml:"tool_policies,omitempty" json:"tool_policies,omitempty"`
+	Compliance   ComplianceConfig         `yaml:"compliance,omitempty" json:"compliance,omitempty"`
 }
 
 // ProxyAgentConfig holds the agent identity for proxy configs.

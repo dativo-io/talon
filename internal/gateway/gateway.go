@@ -35,6 +35,7 @@ type Gateway struct {
 	costEstimate  CostEstimator
 	timeouts      ParsedTimeouts
 	client        *http.Client
+	rateLimiter   *RateLimiter
 }
 
 // NewGateway creates a new Gateway.
@@ -54,6 +55,10 @@ func NewGateway(
 		return nil, err
 	}
 	client := HTTPClientForGateway(timeouts)
+	rl := NewRateLimiter(
+		config.RateLimits.GlobalRequestsPerMin,
+		config.RateLimits.PerCallerRequestsPerMin,
+	)
 	return &Gateway{
 		config:        config,
 		classifier:    classifier,
@@ -63,6 +68,7 @@ func NewGateway(
 		costEstimate:  costEstimate,
 		timeouts:      timeouts,
 		client:        client,
+		rateLimiter:   rl,
 	}, nil
 }
 
@@ -93,6 +99,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		WriteProviderError(w, route.Provider, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Rate limit check (after caller identification, before any work)
+	if g.rateLimiter != nil && !g.rateLimiter.Allow(caller.Name) {
+		log.Warn().Str("caller", caller.Name).Msg("gateway_rate_limited")
+		WriteProviderError(w, route.Provider, http.StatusTooManyRequests, "Rate limit exceeded")
 		return
 	}
 
@@ -147,7 +160,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if piiAction == "block" && classification.HasPII {
 		WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request contains PII that is not allowed")
-		_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"})
+		_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"}, false, nil)
 		return
 	}
 
@@ -164,7 +177,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if !allowed {
 			WriteProviderError(w, route.Provider, http.StatusForbidden, reasons[0])
-			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons)
+			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons, false, nil)
 			return
 		}
 	}
@@ -212,31 +225,71 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Resolve response PII action
+	responsePIIAction := resolveResponsePIIAction(&g.config.DefaultPolicy, caller.PolicyOverrides)
+	isStreaming := isStreamingRequest(forwardBody)
+
 	var tokenUsage TokenUsage
-	err = Forward(w, ForwardParams{
-		Context:     ctx,
-		Client:      g.client,
-		UpstreamURL: route.UpstreamURL,
-		Method:      r.Method,
-		Body:        forwardBody,
-		Headers:     headers,
-		Timeouts:    g.timeouts,
-		TokenUsage:  &tokenUsage,
-	})
+	var responsePII *ResponsePIIScanResult
+
+	if !isStreaming && responsePIIAction != "allow" && responsePIIAction != "" {
+		// Non-streaming: capture response, scan, then write
+		capture := &responseCapture{ResponseWriter: w}
+		err = Forward(capture, ForwardParams{
+			Context:     ctx,
+			Client:      g.client,
+			UpstreamURL: route.UpstreamURL,
+			Method:      r.Method,
+			Body:        forwardBody,
+			Headers:     headers,
+			Timeouts:    g.timeouts,
+			TokenUsage:  &tokenUsage,
+		})
+		if err == nil {
+			scannedBody, scanResult := scanResponseForPII(ctx, capture.body.Bytes(), responsePIIAction, g.classifier)
+			responsePII = scanResult
+			if capture.statusCode != 0 {
+				w.WriteHeader(capture.statusCode)
+			}
+			//nolint:gosec // G705: LLM API response body (JSON), not HTML; PII-scanned/redacted before write
+			_, _ = w.Write(scannedBody)
+		} else {
+			capture.flushTo(w)
+		}
+	} else {
+		err = Forward(w, ForwardParams{
+			Context:     ctx,
+			Client:      g.client,
+			UpstreamURL: route.UpstreamURL,
+			Method:      r.Method,
+			Body:        forwardBody,
+			Headers:     headers,
+			Timeouts:    g.timeouts,
+			TokenUsage:  &tokenUsage,
+		})
+	}
+
 	durationMS := time.Since(start).Milliseconds()
 	cost := g.costEstimate(extracted.Model, tokenUsage.Input, tokenUsage.Output)
 	if tokenUsage.Input == 0 && tokenUsage.Output == 0 {
 		cost = estimatedCost
 	}
 
-	// Step 10: Evidence (async for streaming we'd do after stream ends; here we do after forward returns)
-	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil)
+	// Step 10: Evidence
+	var outputPIIDetected bool
+	var outputPIITypes []string
+	if responsePII != nil {
+		outputPIIDetected = responsePII.PIIDetected
+		outputPIITypes = responsePII.PIITypes
+	}
+
+	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes)
 	if err != nil {
 		log.Warn().Err(err).Msg("gateway_forward_error")
 	}
 }
 
-func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string) error {
+func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string) error {
 	inputTokens, outputTokens := 0, 0
 	if usage != nil {
 		inputTokens, outputTokens = usage.Input, usage.Output
@@ -250,23 +303,25 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		piiDetected = append(piiDetected, e.Type)
 	}
 	return RecordGatewayEvidence(ctx, g.evidenceStore, RecordGatewayEvidenceParams{
-		CorrelationID:   correlationID,
-		TenantID:        caller.TenantID,
-		CallerName:      caller.Name,
-		Team:            caller.Team,
-		Provider:        provider,
-		Model:           model,
-		PolicyAllowed:   allowed,
-		PolicyReasons:   reasons,
-		PolicyVersion:   "",
-		InputTier:       classification.Tier,
-		PIIDetected:     piiDetected,
-		PIIRedacted:     false,
-		Cost:            cost,
-		InputTokens:     inputTokens,
-		OutputTokens:    outputTokens,
-		DurationMS:      durationMS,
-		SecretsAccessed: secretsAccessed,
+		CorrelationID:     correlationID,
+		TenantID:          caller.TenantID,
+		CallerName:        caller.Name,
+		Team:              caller.Team,
+		Provider:          provider,
+		Model:             model,
+		PolicyAllowed:     allowed,
+		PolicyReasons:     reasons,
+		PolicyVersion:     "",
+		InputTier:         classification.Tier,
+		PIIDetected:       piiDetected,
+		PIIRedacted:       false,
+		OutputPIIDetected: outputPIIDetected,
+		OutputPIITypes:    outputPIITypes,
+		Cost:              cost,
+		InputTokens:       inputTokens,
+		OutputTokens:      outputTokens,
+		DurationMS:        durationMS,
+		SecretsAccessed:   secretsAccessed,
 	})
 }
 

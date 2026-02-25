@@ -91,7 +91,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var resp *jsonrpcResponse
 	switch req.Method {
 	case "tools/list":
-		resp = h.forwardRequest(ctx, body, tenantID, &req)
+		resp = h.handleToolsList(ctx, body, tenantID, &req)
 	case "tools/call":
 		resp = h.handleProxyToolCall(ctx, &req, tenantID)
 	default:
@@ -198,8 +198,187 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 	}
 	out.ID = req.ID
 
-	h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "")
+	// Response PII scanning: scan tool result before returning to caller
+	if h.classifier != nil && out.Result != nil {
+		resultBytes, _ := json.Marshal(out.Result)
+		resultStr := string(resultBytes)
+		cls := h.classifier.Scan(ctx, resultStr)
+		if cls != nil && cls.HasPII {
+			piiTypes := make([]string, 0, len(cls.Entities))
+			for _, e := range cls.Entities {
+				piiTypes = append(piiTypes, e.Type)
+			}
+			span.SetAttributes(
+				attribute.Bool("proxy.output_pii_detected", true),
+				attribute.StringSlice("proxy.output_pii_types", piiTypes),
+			)
+			redacted := h.classifier.Redact(ctx, resultStr)
+			var redactedResult interface{}
+			if err := json.Unmarshal([]byte(redacted), &redactedResult); err == nil {
+				out.Result = redactedResult
+			}
+			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_pii_redacted")
+		} else {
+			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "")
+		}
+	} else {
+		h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "")
+	}
+
 	return &out
+}
+
+// toolsListExtract holds the result of parsing an upstream tools/list result
+// so we can support MCP-canonical shape and common variants (array-at-top, other keys).
+type toolsListExtract struct {
+	Tools      []json.RawMessage      // tool items (with "name" or "id")
+	Shape      string                 // "object", "array", or "unknown"
+	ToolsKey   string                 // key that held the array in result object (e.g. "tools")
+	ObjectRest map[string]interface{} // other keys to preserve when Shape == "object"
+}
+
+// extractToolsListFromResult parses resp.Result into a list of tool entries and
+// the original shape so we can rebuild the response correctly. Supports:
+//   - MCP-canonical: result = { "tools": [...], "nextCursor": "..." }
+//   - Array-at-top: result = [...]
+//   - Other keys: result = { "items": [...] } or { "list": [...] } (common variants)
+//
+// Returns Shape "unknown" and empty Tools when the result is not recognizable,
+// so the caller can return a safe empty list instead of leaking unfiltered data.
+func extractToolsListFromResult(result interface{}) toolsListExtract {
+	if result == nil {
+		return toolsListExtract{Shape: "unknown"}
+	}
+	resultBytes, err := json.Marshal(result)
+	if err != nil {
+		return toolsListExtract{Shape: "unknown"}
+	}
+
+	// Try object with "tools" (MCP canonical) or common alternate keys.
+	var obj map[string]interface{}
+	if err := json.Unmarshal(resultBytes, &obj); err == nil && len(obj) > 0 {
+		for _, key := range []string{"tools", "items", "list"} {
+			raw, ok := obj[key]
+			if !ok {
+				continue
+			}
+			arr, ok := raw.([]interface{})
+			if !ok {
+				continue
+			}
+			tools := make([]json.RawMessage, 0, len(arr))
+			for _, item := range arr {
+				b, _ := json.Marshal(item)
+				tools = append(tools, b)
+			}
+			rest := make(map[string]interface{}, len(obj)-1)
+			for k, v := range obj {
+				if k != key {
+					rest[k] = v
+				}
+			}
+			return toolsListExtract{Tools: tools, Shape: "object", ToolsKey: key, ObjectRest: rest}
+		}
+	}
+
+	// Try result as array directly.
+	var arr []interface{}
+	if err := json.Unmarshal(resultBytes, &arr); err == nil {
+		tools := make([]json.RawMessage, 0, len(arr))
+		for _, item := range arr {
+			b, _ := json.Marshal(item)
+			tools = append(tools, b)
+		}
+		return toolsListExtract{Tools: tools, Shape: "array"}
+	}
+
+	return toolsListExtract{Shape: "unknown"}
+}
+
+// toolNameFromRaw returns the tool's name for allowlist check (MCP uses "name"; some impls use "id").
+func toolNameFromRaw(raw json.RawMessage) string {
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	if n, ok := m["name"].(string); ok && n != "" {
+		return n
+	}
+	if id, ok := m["id"].(string); ok && id != "" {
+		return id
+	}
+	return ""
+}
+
+// handleToolsList forwards a tools/list request and filters the response to
+// only include tools in the policy's allowed_tools list. This prevents agents
+// from discovering (and attempting to call) tools they are not authorized to use.
+// It supports multiple upstream result shapes (object with "tools", array at top,
+// or other common keys) and preserves the response shape. If the result shape
+// is unrecognizable, it returns an empty tool list to avoid leaking unfiltered data.
+func (h *ProxyHandler) handleToolsList(ctx context.Context, body []byte, tenantID string, req *jsonrpcRequest) *jsonrpcResponse {
+	ctx, span := proxyTracer.Start(ctx, "mcp.proxy.tools.list")
+	defer span.End()
+
+	resp := h.forwardRequest(ctx, body, tenantID, req)
+	if resp == nil || resp.Error != nil || resp.Result == nil {
+		return resp
+	}
+
+	allowedSet := make(map[string]bool, len(h.config.Proxy.AllowedTools))
+	for _, t := range h.config.Proxy.AllowedTools {
+		allowedSet[t.Name] = true
+		if t.UpstreamName != "" {
+			allowedSet[t.UpstreamName] = true
+		}
+	}
+
+	extract := extractToolsListFromResult(resp.Result)
+
+	filtered := make([]json.RawMessage, 0, len(extract.Tools))
+	for _, toolRaw := range extract.Tools {
+		name := toolNameFromRaw(toolRaw)
+		if name != "" && allowedSet[name] {
+			filtered = append(filtered, toolRaw)
+		}
+	}
+
+	span.SetAttributes(
+		attribute.Int("proxy.tools_upstream", len(extract.Tools)),
+		attribute.Int("proxy.tools_filtered", len(filtered)),
+		attribute.String("proxy.tools_result_shape", extract.Shape),
+	)
+
+	var resultIface interface{}
+	switch extract.Shape {
+	case "object":
+		out := make(map[string]interface{}, 1)
+		for k, v := range extract.ObjectRest {
+			out[k] = v
+		}
+		filteredSlice := make([]interface{}, 0, len(filtered))
+		for _, b := range filtered {
+			var v interface{}
+			_ = json.Unmarshal(b, &v)
+			filteredSlice = append(filteredSlice, v)
+		}
+		out[extract.ToolsKey] = filteredSlice
+		resultIface = out
+	case "array":
+		filteredSlice := make([]interface{}, 0, len(filtered))
+		for _, b := range filtered {
+			var v interface{}
+			_ = json.Unmarshal(b, &v)
+			filteredSlice = append(filteredSlice, v)
+		}
+		resultIface = filteredSlice
+	default:
+		// Unrecognized shape: return canonical empty result so we never leak unfiltered tools.
+		resultIface = map[string]interface{}{"tools": []interface{}{}}
+	}
+
+	resp.Result = resultIface
+	return resp
 }
 
 func (h *ProxyHandler) forwardRequest(ctx context.Context, body []byte, tenantID string, req *jsonrpcRequest) *jsonrpcResponse {
