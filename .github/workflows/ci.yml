@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ['1.23']
+        go-version: ['1.24']
 
     steps:
       - uses: actions/checkout@v4
@@ -79,10 +79,10 @@ jobs:
           path: coverage-${{ matrix.go-version }}.out
 
       - name: Upload to Codecov
-        if: matrix.go-version == '1.23'
+        if: matrix.go-version == '1.24'
         uses: codecov/codecov-action@v4
         with:
-          file: ./coverage-1.23.out
+          file: ./coverage-1.24.out
           fail_ci_if_error: false
 
   lint:
@@ -94,7 +94,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
           cache: true
 
       - name: golangci-lint
@@ -121,7 +121,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
           cache: true
 
       - name: Install cross-compilation tools
