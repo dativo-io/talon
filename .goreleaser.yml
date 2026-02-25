@@ -72,11 +72,6 @@ changelog:
     - title: 'Security'
       regexp: '^sec:'
 
-sboms:
-  - artifacts: archive
-    documents:
-      - "{{ .ArtifactName }}.sbom.spdx.json"
-
 dockers:
   - image_templates:
       - "ghcr.io/dativo-io/talon:{{ .Version }}"
