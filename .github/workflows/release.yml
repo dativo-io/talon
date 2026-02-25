@@ -32,7 +32,7 @@ jobs:
           docker run --rm --privileged \
             -v $PWD:/work -w /work \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v $HOME/.docker:/root/.docker:ro \
+            -v $HOME/.docker:/root/.docker \
             -e GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
             -e CGO_ENABLED=1 \
             ghcr.io/goreleaser/goreleaser-cross:v1.25.7 \
