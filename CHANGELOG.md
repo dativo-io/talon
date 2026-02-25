@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-02-25
+
 ### Added
 
 - **feat(governance):** Tool-aware PII redaction with per-tool, per-argument policies — allow/redact/audit/block categories (Gap T1).
@@ -107,7 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/dativo-io/talon/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/dativo-io/talon/compare/v0.7.6...v0.8.0
 [0.7.6]: https://github.com/dativo-io/talon/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/dativo-io/talon/compare/v0.7.4...v0.7.5
