@@ -97,6 +97,8 @@ response = requests.post("http://localhost:8081/v1/chat/completions", json={
 ```bash
 # Install
 go install github.com/dativo-io/talon/cmd/talon@latest
+# macOS: if you see "unsupported tapi file type" or clang linker error, use:
+#   CC=/usr/bin/clang go install github.com/dativo-io/talon/cmd/talon@latest
 # or: curl -sSL https://install.gettalon.dev | sh
 
 # Initialize
@@ -139,7 +141,7 @@ On **macOS**, `make build` / `make install` use the system Clang by default so C
 go install github.com/dativo-io/talon/cmd/talon@latest
 # or a specific tag: ...@v1.0.0
 ```
-On macOS, if that fails with the `.tbd` linker error, run: `CC=/usr/bin/clang go install github.com/dativo-io/talon/cmd/talon@latest`.
+**macOS:** If `go install` fails with `unsupported tapi file type '!tapi-tbd'` (Homebrew LLVM vs Apple SDK), use system Clang: `CC=/usr/bin/clang go install github.com/dativo-io/talon/cmd/talon@latest`. Or clone the repo and run `make install` (Makefile forces system Clang).
 
 **Note:** You cannot install a branch with `go install ...@branch-name`; Go expects a module version (tag or pseudo-version). To run a branch, clone the repo and use `make build` or `make install` from that branch.
 

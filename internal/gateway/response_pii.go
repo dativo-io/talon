@@ -66,15 +66,22 @@ func resolveResponsePIIAction(defaultPolicy *DefaultPolicyConfig, callerOverride
 	return action
 }
 
-// scanResponseForPII scans a non-streaming response body for PII and applies the action.
-// Returns the (possibly modified) body and scan results for evidence.
+// scanResponseForPII scans only the LLM-generated content fields in a non-streaming
+// response body for PII and applies the action. API envelope fields (id, created,
+// usage, model, etc.) are never scanned, preventing false positives on timestamps
+// and token counts.
 func scanResponseForPII(ctx context.Context, body []byte, action string, scanner *classifier.Scanner) ([]byte, *ResponsePIIScanResult) {
 	result := &ResponsePIIScanResult{}
 	if scanner == nil || action == "allow" || action == "" {
 		return body, result
 	}
 
-	cls := scanner.Scan(ctx, string(body))
+	contentText := extractResponseContentText(body)
+	if contentText == "" {
+		return body, result
+	}
+
+	cls := scanner.Scan(ctx, contentText)
 	if cls == nil || !cls.HasPII {
 		return body, result
 	}
@@ -90,12 +97,12 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 
 	switch action {
 	case "redact":
-		redacted := scanner.Redact(ctx, string(body))
+		modified := redactResponseContentFields(ctx, body, scanner)
 		result.Redacted = true
 		log.Info().
 			Strs("pii_types", result.PIITypes).
 			Msg("response_pii_redacted")
-		return []byte(redacted), result
+		return modified, result
 
 	case "block":
 		safeErr := map[string]interface{}{
@@ -119,6 +126,131 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 	}
 
 	return body, result
+}
+
+// extractResponseContentText extracts only the LLM-generated text from a
+// non-streaming response, covering OpenAI and Anthropic response shapes.
+func extractResponseContentText(body []byte) string {
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return ""
+	}
+
+	var sb strings.Builder
+
+	// OpenAI: choices[].message.content (string or array of content blocks)
+	if choices, ok := m["choices"].([]interface{}); ok {
+		for _, c := range choices {
+			choice, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if msg, ok := choice["message"].(map[string]interface{}); ok {
+				sb.WriteString(contentFieldToText(msg["content"]))
+			}
+		}
+	}
+
+	// Anthropic: content[].text
+	if content, ok := m["content"].([]interface{}); ok {
+		for _, block := range content {
+			if b, ok := block.(map[string]interface{}); ok {
+				if text, ok := b["text"].(string); ok {
+					sb.WriteString(text)
+				}
+			}
+		}
+	}
+
+	return sb.String()
+}
+
+// contentFieldToText converts an OpenAI message content field (string or
+// array of content blocks) to plain text for scanning.
+func contentFieldToText(c interface{}) string {
+	if c == nil {
+		return ""
+	}
+	switch v := c.(type) {
+	case string:
+		return v
+	case []interface{}:
+		var sb strings.Builder
+		for _, part := range v {
+			if m, ok := part.(map[string]interface{}); ok {
+				if typ, _ := m["type"].(string); typ == "text" {
+					if text, _ := m["text"].(string); text != "" {
+						sb.WriteString(text)
+					}
+				}
+			}
+		}
+		return sb.String()
+	}
+	return ""
+}
+
+// redactResponseContentFields redacts PII only within the LLM content fields
+// of the JSON response, leaving the API envelope (id, created, usage, etc.)
+// untouched. Falls back to returning the original body on parse errors.
+func redactResponseContentFields(ctx context.Context, body []byte, scanner *classifier.Scanner) []byte {
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+
+	// OpenAI: choices[].message.content
+	if choices, ok := m["choices"].([]interface{}); ok {
+		for _, c := range choices {
+			choice, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if msg, ok := choice["message"].(map[string]interface{}); ok {
+				msg["content"] = redactContentField(ctx, msg["content"], scanner)
+			}
+		}
+	}
+
+	// Anthropic: content[].text
+	if content, ok := m["content"].([]interface{}); ok {
+		for _, block := range content {
+			if b, ok := block.(map[string]interface{}); ok {
+				if text, ok := b["text"].(string); ok {
+					b["text"] = scanner.Redact(ctx, text)
+				}
+			}
+		}
+	}
+
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// redactContentField redacts PII in an OpenAI content field (string or array).
+func redactContentField(ctx context.Context, c interface{}, scanner *classifier.Scanner) interface{} {
+	if c == nil {
+		return nil
+	}
+	switch v := c.(type) {
+	case string:
+		return scanner.Redact(ctx, v)
+	case []interface{}:
+		for _, part := range v {
+			if m, ok := part.(map[string]interface{}); ok {
+				if typ, _ := m["type"].(string); typ == "text" {
+					if text, ok := m["text"].(string); ok {
+						m["text"] = scanner.Redact(ctx, text)
+					}
+				}
+			}
+		}
+		return v
+	}
+	return c
 }
 
 // scanSSEChunkForPII scans a single SSE chunk's content field for PII.

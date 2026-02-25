@@ -20,7 +20,7 @@ make build    # → bin/talon
 go install github.com/dativo-io/talon/cmd/talon@latest
 ```
 
-**macOS:** If `go install` or `go build` fails with `unsupported tapi file type '!tapi-tbd'`, use `make build` (it uses the system Clang), or run `CC=/usr/bin/clang CGO_ENABLED=1 go build -o bin/talon ./cmd/talon/`.
+**macOS:** If `go install` or `go build` fails with `unsupported tapi file type '!tapi-tbd'` (Homebrew LLVM vs Apple SDK), use system Clang: `CC=/usr/bin/clang go install github.com/dativo-io/talon/cmd/talon@latest`, or clone the repo and run `make build` / `make install`.
 
 Check that it works:
 

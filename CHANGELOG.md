@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-02-25
+
+### Fixed
+
+- **fix(gateway):** Response PII scanner now scans only LLM-generated content fields (`choices[].message.content` for OpenAI, `content[].text` for Anthropic) instead of the entire JSON body. Prevents false positives on API envelope fields (`created` timestamp, token counts, `id`, `system_fingerprint`). The `[NATIONAL_ID]` false positive on `created` timestamps is eliminated.
+- **fix(init):** `talon init --pack openclaw` now shows `TALON_SECRETS_KEY` as step 1 before `talon secrets set`, preventing vault key mismatch errors.
+
+### Docs
+
+- **docs:** macOS `go install` linker error (`unsupported tapi file type`) workaround added to README, OpenClaw integration guide, and first-governed-agent tutorial.
+
+### Test
+
+- **test(gateway):** Comprehensive response PII false-positive prevention suite — 12 envelope-only subtests (timestamps, large tokens, fingerprints, Anthropic format, multi-choice, multimodal, empty/null content), 4 content-PII-with-envelope-preserved subtests, 9 `extractResponseContentText` unit tests, 5 `scanResponseForPII` mode tests.
+
 ## [0.8.2] - 2026-02-25
 
 ### Added
