@@ -79,9 +79,9 @@ dockers:
       - "ghcr.io/dativo-io/talon:latest"
     dockerfile: Dockerfile
     build_flag_templates:
-      - "--build-arg VERSION={{.Version}}"
-      - "--build-arg COMMIT={{.Commit}}"
-      - "--build-arg BUILD_DATE={{.Date}}"
+      - "--build-arg=VERSION={{.Version}}"
+      - "--build-arg=COMMIT={{.Commit}}"
+      - "--build-arg=BUILD_DATE={{.Date}}"
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.created={{.Date}}"
       - "--label=org.opencontainers.image.title=talon"
