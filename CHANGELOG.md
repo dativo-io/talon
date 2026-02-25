@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-02-25
+
+### Added
+
+- **feat(init):** `talon init --pack openclaw` generates OpenClaw gateway starter (`agent.talon.yaml` + `talon.config.yaml`) with post-init instructions.
+- **docs(openclaw):** Integration guide — baseUrl with trailing `/v1` for correct upstream paths; two-keys clarification (TALON_SECRETS_KEY vs caller api_key); troubleshooting (404, binary garbage, vault key); diagnostics script; recommended sequence (secrets then serve). Standardized caller api_key to `talon-gw-openclaw-001` across examples and guides; install instructions (go install, install.gettalon.dev).
+
+### Fixed
+
+- **fix(gateway):** Error responses (4xx/5xx) from upstream are no longer streamed; body is read and forwarded so clients receive readable JSON instead of raw binary/gzip (fixes OpenClaw "404 + garbage" when upstream returned error with SSE content-type).
+
+### Test
+
+- **test(gateway):** Forward-level tests for error responses (404/500/429/400/401 with SSE or JSON) not streamed; success stream unchanged. Gateway pipeline tests: upstream 404/500 readable, 404 with SSE content-type, evidence recorded on upstream error, PII redact then upstream 404, 429 rate-limit forwarded with headers.
+
 ## [0.8.1] - 2026-02-25
 
 ### Added

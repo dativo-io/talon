@@ -23,7 +23,7 @@ var (
 )
 
 // supportedPacks are the allowed values for --pack (industry starter packs).
-var supportedPacks = []string{"fintech-eu", "ecommerce-eu", "saas-eu", "telecom-eu"}
+var supportedPacks = []string{"fintech-eu", "ecommerce-eu", "saas-eu", "telecom-eu", "openclaw"}
 
 var initCmd = &cobra.Command{
 	Use:   "init",
@@ -49,14 +49,18 @@ var initCmd = &cobra.Command{
 		fmt.Println("  - agent.talon.yaml (agent policy)")
 		fmt.Println("  - talon.config.yaml (global config)")
 		fmt.Println()
-		fmt.Println("Next steps:")
-		fmt.Println("  1. Review and edit agent.talon.yaml")
-		fmt.Println("  2. Set LLM provider API key:")
-		fmt.Println("     export OPENAI_API_KEY=sk-your-key")
-		fmt.Println("  3. Validate configuration:")
-		fmt.Println("     talon validate")
-		fmt.Println("  4. Run your agent:")
-		fmt.Println("     talon run \"your query\"")
+		if initPack == "openclaw" {
+			printOpenClawNextSteps()
+		} else {
+			fmt.Println("Next steps:")
+			fmt.Println("  1. Review and edit agent.talon.yaml")
+			fmt.Println("  2. Set LLM provider API key:")
+			fmt.Println("     export OPENAI_API_KEY=sk-your-key")
+			fmt.Println("  3. Validate configuration:")
+			fmt.Println("     talon validate")
+			fmt.Println("  4. Run your agent:")
+			fmt.Println("     talon run \"your query\"")
+		}
 
 		return nil
 	},
@@ -68,7 +72,23 @@ func init() {
 	initCmd.Flags().StringVar(&initName, "name", "my-agent", "agent name")
 	initCmd.Flags().StringVar(&initOwner, "owner", "", "agent owner email")
 	initCmd.Flags().BoolVar(&initMinimal, "minimal", false, "generate minimal agent.talon.yaml (fewer options, faster to edit)")
-	initCmd.Flags().StringVar(&initPack, "pack", "", "industry starter pack: fintech-eu, ecommerce-eu, saas-eu, telecom-eu (overrides default template)")
+	initCmd.Flags().StringVar(&initPack, "pack", "", "starter pack: openclaw, fintech-eu, ecommerce-eu, saas-eu, telecom-eu (overrides default template)")
+}
+
+func printOpenClawNextSteps() {
+	fmt.Println("Next steps (OpenClaw gateway):")
+	fmt.Println("  1. Store your real OpenAI key in the vault:")
+	fmt.Println("     talon secrets set openai-api-key \"sk-your-key\"")
+	fmt.Println("  2. Start the gateway:")
+	fmt.Println("     talon serve --gateway")
+	fmt.Println("  3. Point OpenClaw at Talon:")
+	fmt.Println("     Base URL:  http://localhost:8080/v1/proxy/openai/v1  (trailing /v1 required for correct paths)")
+	fmt.Println("     API key:   talon-gw-openclaw-001")
+	fmt.Println("  4. Send a message through OpenClaw, then check the audit trail:")
+	fmt.Println("     talon audit list")
+	fmt.Println()
+	fmt.Println("  The gateway starts in shadow mode (log only, no blocking).")
+	fmt.Println("  Switch to enforce mode in talon.config.yaml when ready.")
 }
 
 func initializeProject() error {
@@ -108,7 +128,15 @@ func initializeProject() error {
 		return fmt.Errorf("creating agent.talon.yaml: %w", err)
 	}
 
-	if err := renderTemplate("templates/init/talon.config.yaml.tmpl", "talon.config.yaml", data); err != nil {
+	configTmpl := "templates/init/talon.config.yaml.tmpl"
+	if initPack != "" {
+		packConfig := "templates/init/pack_" + strings.ReplaceAll(initPack, "-", "_") + ".config.yaml.tmpl"
+		if _, err := initTemplates.ReadFile(packConfig); err == nil {
+			configTmpl = packConfig
+		}
+	}
+
+	if err := renderTemplate(configTmpl, "talon.config.yaml", data); err != nil {
 		return fmt.Errorf("creating talon.config.yaml: %w", err)
 	}
 

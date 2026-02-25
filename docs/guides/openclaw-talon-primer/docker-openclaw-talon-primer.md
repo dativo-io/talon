@@ -14,19 +14,26 @@ OpenClaw talks to an “OpenAI-compatible” endpoint. To use Talon as that endp
 
 | What OpenClaw sends | What you set in OpenClaw |
 |--------------------|---------------------------|
-| **Base URL** (where requests go) | Set the **OpenAI provider base URL** to the Talon gateway URL. Example: `http://localhost:8080/v1/proxy/openai`. So every request goes to Talon, not to `api.openai.com`. |
-| **API key** (in `Authorization: Bearer ...`) | Set the **OpenAI provider API key** to the **caller key**: `talon-gw-openclaw-abc123`. Do **not** put your real OpenAI key here. Talon uses this to identify the caller; it then adds the real OpenAI key when forwarding. |
+| **Base URL** (where requests go) | Set the **OpenAI provider base URL** to the Talon gateway URL **with trailing `/v1`**: `http://localhost:8080/v1/proxy/openai/v1`. So every request goes to Talon; the `/v1` ensures paths like `chat/completions` become `.../v1/chat/completions` (required by OpenAI). |
+| **API key** (in `Authorization: Bearer ...`) | Set the **OpenAI provider API key** to the **caller key**: `talon-gw-openclaw-001`. Do **not** put your real OpenAI key here. Talon uses this to identify the caller; it then adds the real OpenAI key when forwarding. |
+
+**Two different keys (do not confuse):**
+
+- **TALON_SECRETS_KEY** (Docker: in `.env` as `TALON_SECRETS_KEY`) — Used by Talon to encrypt/decrypt the vault where the real OpenAI key is stored. If it changes, Talon cannot decrypt the secret and you get "cipher: message authentication failed". Never put this in OpenClaw.
+- **Caller api_key** (`talon-gw-openclaw-001` in `talon.config.gateway.yaml` and in OpenClaw's `apiKey`) — A token OpenClaw sends so Talon can identify the caller. Not used for encryption. Must match in both the gateway config and OpenClaw's `openclaw.json`.
 
 Important:
 
 - If the base URL is wrong, OpenClaw will call OpenAI directly and Talon will not see or govern the traffic.
-- If the API key in OpenClaw is your real OpenAI key, Talon will not recognise the caller (401) or you will bypass governance. Use **only** the caller key `talon-gw-openclaw-abc123` in OpenClaw.
+- If the API key in OpenClaw is your real OpenAI key, Talon will not recognise the caller (401) or you will bypass governance. Use **only** the caller key `talon-gw-openclaw-001` in OpenClaw.
 
 ## Prerequisites
 
 - Docker and Docker Compose
 - Talon repo clone (image is built from repo root)
 - Your **real** OpenAI API key (only for `.env`; never put it in OpenClaw)
+
+> **Tip — non-Docker alternative:** If you prefer a local binary over Docker, run `talon init --pack openclaw` to generate a gateway-ready project in one command, then follow the [local integration guide](../openclaw-integration.md).
 
 ## Quick start
 
@@ -51,16 +58,47 @@ docker compose up -d
 
 Talon listens on port 8080. The gateway URL for OpenAI is:
 
-**`http://localhost:8080/v1/proxy/openai`**
+**`http://localhost:8080/v1/proxy/openai/v1`**
 
-(If Talon runs on another host, use `http://<host>:8080/v1/proxy/openai`.)
+The trailing `/v1` is required so that when the client appends `chat/completions`, the path is `.../v1/chat/completions`. (If Talon runs on another host, use `http://<host>:8080/v1/proxy/openai/v1`.)
 
 ### 3. Configure OpenClaw
 
-In OpenClaw (e.g. `~/.openclaw/openclaw.json` or OpenClaw settings):
+Edit `~/.openclaw/openclaw.json` and add a **top-level** `models` block (sibling of `agents`, `channels`, etc.) with `providers.openai` that routes all OpenAI traffic through Talon. OpenClaw requires each provider to declare which models it serves using an array of objects with both `id` and `name`:
 
-1. **OpenAI provider — base URL**: `http://localhost:8080/v1/proxy/openai` (or your Talon host).
-2. **OpenAI provider — API key**: `talon-gw-openclaw-abc123` (the caller key from this primer; **not** your real OpenAI key).
+```json
+{
+  "models": {
+    "providers": {
+      "openai": {
+        "baseUrl": "http://localhost:8080/v1/proxy/openai/v1",
+        "apiKey": "talon-gw-openclaw-001",
+        "api": "openai-responses",
+        "models": [
+          { "id": "gpt-5.1-codex", "name": "gpt-5.1-codex" },
+          { "id": "gpt-4o", "name": "gpt-4o" },
+          { "id": "gpt-4o-mini", "name": "gpt-4o-mini" }
+        ]
+      }
+    }
+  }
+}
+```
+
+Then restart the OpenClaw gateway so it picks up the config:
+
+```bash
+openclaw gateway stop
+openclaw gateway start
+```
+
+On SSH or headless servers, if you see "systemctl --user unavailable: Failed to connect to bus", stop the gateway process directly (e.g. `pkill openclaw-gateway`), then start OpenClaw again as you normally do.
+
+**Important:**
+- `apiKey` is the Talon **caller key** from this primer — **not** your real OpenAI key.
+- `api: "openai-responses"` is required for OpenAI-compatible proxy endpoints.
+- Each model must be an object with both `id` and `name` (OpenClaw's schema requires both).
+- If Talon runs on another host, replace `localhost:8080` with `<talon-host>:8080`. Use the trailing `/v1` in `baseUrl` so paths are correct (avoids 404).
 
 After this, every chat request from OpenClaw goes to Talon. Talon authenticates with the caller key, applies policy, then forwards to OpenAI with your real key and records evidence.
 
@@ -80,7 +118,7 @@ docker exec talon-gateway talon audit list --agent openclaw-main --limit 5
 
 ## What Talon does with each request
 
-1. **Authenticate** — Checks `Authorization: Bearer talon-gw-openclaw-abc123`. If missing or wrong, returns 401.
+1. **Authenticate** — Checks `Authorization: Bearer talon-gw-openclaw-001`. If missing or wrong, returns 401. Client must use `baseUrl` ending in `/v1` (e.g. `.../v1/proxy/openai/v1`) so paths like `chat/completions` become `.../v1/chat/completions` and upstream does not return 404.
 2. **Scan** — Extracts message text and scans for PII. Policy can block or redact (this primer uses `redact`).
 3. **Policy** — Checks cost (daily/monthly caps), allowed models. Denies if over limit.
 4. **Forward** — Sends the request to `https://api.openai.com` with your real API key. OpenClaw never sees that key.
@@ -137,8 +175,9 @@ Talon scans LLM responses **before** returning them to the caller. Configure via
 Test it with a prompt that asks the model to generate a German IBAN:
 
 ```bash
-curl -s http://localhost:8080/v1/proxy/openai/chat/completions \
-  -H "Authorization: Bearer talon-gw-openclaw-abc123" \
+# Use /v1 in path so upstream gets .../v1/chat/completions
+curl -s http://localhost:8080/v1/proxy/openai/v1/chat/completions \
+  -H "Authorization: Bearer talon-gw-openclaw-001" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
@@ -176,6 +215,10 @@ activeRunTracker.Kill(correlationID)
 
 For a full runbook covering detection, triage, containment, and post-mortem, see [Incident Response Playbook](../incident-response-playbook.md).
 
+### Diagnostics
+
+If OpenClaw stops responding or you see gateway errors, see [Troubleshooting and diagnostics](../openclaw-integration.md) in the integration guide. For Docker, you can run `docker exec talon-gateway talon audit list --limit 5` to see if requests reached Talon, and check container logs with `docker logs talon-gateway 2>&1 | tail -50`.
+
 ## Primer layout
 
 ```
@@ -194,7 +237,7 @@ openclaw-talon-primer/
 |------|--------|
 | 1 | Copy `.env.example` to `.env`, set `OPENAI_API_KEY` (your real OpenAI key). |
 | 2 | `docker compose build && docker compose up -d`. |
-| 3 | In OpenClaw: base URL = `http://<talon-host>:8080/v1/proxy/openai`, API key = `talon-gw-openclaw-abc123`. |
+| 3 | In `~/.openclaw/openclaw.json`: add top-level `models.providers.openai` with `baseUrl`, `apiKey`, `api: "openai-responses"`, and `models: [{ "id": "...", "name": "..." }, ...]`. Then `openclaw gateway stop` and `openclaw gateway start` (or `pkill openclaw-gateway` if systemctl --user is unavailable). |
 | 4 | Use OpenClaw as usual; all requests are governed and audited by Talon. |
 
 Only the OpenAI key is used. Configure OpenClaw so it **sends** every request to Talon and uses the **caller** key; Talon then forwards to AI and keeps an audit trail. For more options (cost, PII, models), edit `talon.config.gateway.yaml` or see [How to govern OpenClaw with Talon](../openclaw-integration.md).

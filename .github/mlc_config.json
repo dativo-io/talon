@@ -1,6 +1,6 @@
 {
   "ignorePatterns": [
-    { "pattern": "^https://get.talon.dativo.io" },
+    { "pattern": "^https://install.gettalon.dev" },
     { "pattern": "^http://localhost" },
     { "pattern": "^http://talon" },
     { "pattern": "https://spec.modelcontextprotocol.io" },

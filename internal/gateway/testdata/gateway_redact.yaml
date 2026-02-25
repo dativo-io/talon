@@ -15,7 +15,7 @@ gateway:
 
   callers:
     - name: "openclaw-main"
-      api_key: "talon-gw-openclaw-abc123"
+      api_key: "talon-gw-openclaw-001"
       tenant_id: "test-tenant"
       team: "engineering"
       allowed_providers: ["openai"]

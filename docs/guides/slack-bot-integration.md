@@ -83,6 +83,6 @@ Restart Talon after editing the config.
 
 | Item        | Value                                                |
 |------------|------------------------------------------------------|
-| Gateway URL| `http://<talon>:8080/v1/proxy/openai` (or anthropic) |
+| Gateway URL| `http://<talon>:8080/v1/proxy/openai/v1` (trailing `/v1` for correct paths; or anthropic/v1) |
 | Auth       | Talon-issued API key in gateway `callers`            |
 | Audit      | `talon audit list`                                   |

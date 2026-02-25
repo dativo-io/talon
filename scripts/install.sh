@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Dativo Talon installer
-# Usage: curl -sSL https://get.talon.dativo.io | sh
+# Usage: curl -sSL https://install.gettalon.dev | sh
 
 REPO="dativo-io/talon"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"

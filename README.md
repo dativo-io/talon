@@ -96,7 +96,8 @@ response = requests.post("http://localhost:8081/v1/chat/completions", json={
 
 ```bash
 # Install
-curl -sSL https://get.talon.dativo.io | sh
+go install github.com/dativo-io/talon/cmd/talon@latest
+# or: curl -sSL https://install.gettalon.dev | sh
 
 # Initialize
 mkdir my-agents && cd my-agents

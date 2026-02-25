@@ -69,5 +69,5 @@ gateway:
 
 ## Current status
 
-- **Now:** Gateway supports caller identification by API key and by source IP (`identify_by: "source_ip"`, `source_ip_ranges`). Use the gateway as a **proxy** by pointing clients at `http://talon:8080/v1/proxy/openai` with a Talon-issued key.
+- **Now:** Gateway supports caller identification by API key and by source IP (`identify_by: "source_ip"`, `source_ip_ranges`). Use the gateway as a **proxy** by pointing clients at `http://talon:8080/v1/proxy/openai/v1` (trailing `/v1` so paths like `chat/completions` become `.../v1/chat/completions`) with a Talon-issued key.
 - **Phase 2:** Full DNS interception (Talon as TLS endpoint for `api.openai.com` / `api.anthropic.com`) so desktop apps need no config change.

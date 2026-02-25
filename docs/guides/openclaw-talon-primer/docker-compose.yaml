@@ -4,7 +4,7 @@
 #   cp .env.example .env   # set OPENAI_API_KEY
 #   docker compose build && docker compose up -d
 #
-# Then in OpenClaw: base URL = http://localhost:8080/v1/proxy/openai, API key = talon-gw-openclaw-abc123
+# Then in OpenClaw: baseUrl = http://localhost:8080/v1/proxy/openai/v1, apiKey = talon-gw-openclaw-001
 
 services:
   talon:
@@ -52,7 +52,7 @@ services:
         echo "Sending test request to gateway (caller: openclaw-main)..."
         curl -s -X POST http://talon:8080/v1/proxy/openai/v1/chat/completions \
           -H "Content-Type: application/json" \
-          -H "Authorization: Bearer talon-gw-openclaw-abc123" \
+          -H "Authorization: Bearer talon-gw-openclaw-001" \
           -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hello in one word."}],"max_tokens":10}' \
           | head -c 500
         echo ""

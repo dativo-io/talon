@@ -14,8 +14,10 @@ gateway:
       allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
 
   callers:
+    # api_key below is the CALLER TOKEN (what OpenClaw sends). Not TALON_SECRETS_KEY.
+    # TALON_SECRETS_KEY encrypts the vault; this key only identifies the caller.
     - name: "openclaw-main"
-      api_key: "talon-gw-openclaw-abc123"
+      api_key: "talon-gw-openclaw-001"
       tenant_id: "default"
       team: "engineering"
       allowed_providers: ["openai"]

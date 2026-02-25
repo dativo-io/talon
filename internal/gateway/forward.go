@@ -64,8 +64,10 @@ func Forward(w http.ResponseWriter, p ForwardParams) error {
 	// Only treat as streaming when response is actually SSE. Many upstreams use
 	// Transfer-Encoding: chunked for normal JSON responses; using that would
 	// misroute to streamCopy and break token usage parsing (and cost/evidence).
+	// Never stream 4xx/5xx: read the full body so the client gets a decompressed,
+	// readable error (avoids 404 + raw gzip/binary being shown as garbage).
 	contentType := resp.Header.Get("Content-Type")
-	isStream := strings.Contains(contentType, "text/event-stream")
+	isStream := resp.StatusCode < 400 && strings.Contains(contentType, "text/event-stream")
 
 	if isStream {
 		return streamCopy(ctx, w, resp.Body, p.TokenUsage, resp.Header.Get("X-Request-Id"))
