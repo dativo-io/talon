@@ -23,8 +23,11 @@ builds:
     # goreleaser-cross: skip targets with broken/incompatible toolchains in the image.
     # - linux/arm64: aarch64 assembler incompatible with Go runtime/cgo (stp/ldp).
     # - windows/*: MinGW cross-compile uses -mthreads which host gcc doesn't recognize.
+    # - darwin/arm64: cross-build from Linux passes -arch to host gcc (use native build on Mac).
     ignore:
       - goos: linux
+        goarch: arm64
+      - goos: darwin
         goarch: arm64
       - goos: windows
         goarch: amd64
