@@ -136,18 +136,19 @@ func scanSingleFileBlock(
 
 	// Type enforcement
 	if !isTypeAllowed(fb.Extension, policy) {
-		result.ActionTaken = "blocked"
+		result.ActionTaken = enforcementAction(policy)
 		log.Warn().Str("extension", fb.Extension).Str("filename", fb.Filename).
-			Msg("attachment_type_blocked")
+			Str("action", result.ActionTaken).Msg("attachment_type_not_allowed")
 		return result
 	}
 
 	// Size enforcement
 	maxBytes := int64(policy.MaxFileSizeMB) * 1024 * 1024
 	if maxBytes > 0 && int64(fb.RawSize) > maxBytes {
-		result.ActionTaken = "blocked"
+		result.ActionTaken = enforcementAction(policy)
 		log.Warn().Int("size_bytes", fb.RawSize).Int64("max_bytes", maxBytes).
-			Str("filename", fb.Filename).Msg("attachment_size_blocked")
+			Str("filename", fb.Filename).Str("action", result.ActionTaken).
+			Msg("attachment_size_exceeded")
 		return result
 	}
 
@@ -231,6 +232,20 @@ func decideOnExtractFailure(policy *AttachmentPolicyConfig) string {
 		return "blocked"
 	}
 	return "allowed"
+}
+
+// enforcementAction maps the policy-level action to a per-file action for
+// hard enforcement checks (type/size). In "warn" mode this returns "warned"
+// so the violation is recorded without triggering body modification.
+func enforcementAction(policy *AttachmentPolicyConfig) string {
+	switch policy.Action {
+	case "block":
+		return "blocked"
+	case "strip":
+		return "stripped"
+	default:
+		return "warned"
+	}
 }
 
 func isTypeAllowed(ext string, policy *AttachmentPolicyConfig) bool {
@@ -410,7 +425,11 @@ func extractInputFileBlock(p map[string]interface{}, msgIdx, ci int) *FileBlock 
 	}
 	ext := extensionFromMIME(mime)
 	fname, _ := p["filename"].(string)
-	if fname == "" {
+	if fname != "" {
+		if fext := extensionFromFilename(fname); fext != "" {
+			ext = fext
+		}
+	} else {
 		fname = fmt.Sprintf("input_file_%d_%d.%s", msgIdx, ci, ext)
 	}
 	return &FileBlock{

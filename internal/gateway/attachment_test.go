@@ -300,7 +300,7 @@ func TestScanRequestAttachments_InjectionStrip(t *testing.T) {
 // Unit tests — type enforcement
 // ---------------------------------------------------------------------------
 
-func TestScanRequestAttachments_BlockedType(t *testing.T) {
+func TestScanRequestAttachments_BlockedType_WarnMode(t *testing.T) {
 	content := []byte("harmless content")
 	body := []byte(chatCompletionsWithFile("application/x-executable", "malware.exe", content))
 	policy := &AttachmentPolicyConfig{
@@ -315,9 +315,52 @@ func TestScanRequestAttachments_BlockedType(t *testing.T) {
 		newTestExtractor(), classifier.MustNewScanner(), newTestInjScanner(t), policy,
 	)
 	require.NotNil(t, result)
+	assert.Equal(t, 0, result.FilesBlocked, "warn mode must not block files")
+	require.Len(t, result.Results, 1)
+	assert.Equal(t, "warned", result.Results[0].ActionTaken)
+	assert.Nil(t, result.ModifiedBody, "warn mode must not modify the body")
+}
+
+func TestScanRequestAttachments_BlockedType_BlockMode(t *testing.T) {
+	content := []byte("harmless content")
+	body := []byte(chatCompletionsWithFile("application/x-executable", "malware.exe", content))
+	policy := &AttachmentPolicyConfig{
+		Action:          "block",
+		InjectionAction: "warn",
+		MaxFileSizeMB:   10,
+		BlockedTypes:    []string{"exe", "bat", "sh"},
+	}
+
+	result := ScanRequestAttachments(
+		context.Background(), body, "openai",
+		newTestExtractor(), classifier.MustNewScanner(), newTestInjScanner(t), policy,
+	)
+	require.NotNil(t, result)
 	assert.Equal(t, 1, result.FilesBlocked)
+	assert.True(t, result.BlockRequest)
 	require.Len(t, result.Results, 1)
 	assert.Equal(t, "blocked", result.Results[0].ActionTaken)
+}
+
+func TestScanRequestAttachments_BlockedType_StripMode(t *testing.T) {
+	content := []byte("harmless content")
+	body := []byte(chatCompletionsWithFile("application/x-executable", "malware.exe", content))
+	policy := &AttachmentPolicyConfig{
+		Action:          "strip",
+		InjectionAction: "warn",
+		MaxFileSizeMB:   10,
+		BlockedTypes:    []string{"exe", "bat", "sh"},
+	}
+
+	result := ScanRequestAttachments(
+		context.Background(), body, "openai",
+		newTestExtractor(), classifier.MustNewScanner(), newTestInjScanner(t), policy,
+	)
+	require.NotNil(t, result)
+	assert.Equal(t, 1, result.FilesBlocked)
+	require.Len(t, result.Results, 1)
+	assert.Equal(t, "stripped", result.Results[0].ActionTaken)
+	assert.NotNil(t, result.ModifiedBody, "strip mode must produce modified body")
 }
 
 func TestScanRequestAttachments_AllowedTypesEnforced(t *testing.T) {
@@ -335,14 +378,16 @@ func TestScanRequestAttachments_AllowedTypesEnforced(t *testing.T) {
 		newTestExtractor(), classifier.MustNewScanner(), newTestInjScanner(t), policy,
 	)
 	require.NotNil(t, result)
-	assert.Equal(t, 1, result.FilesBlocked, "txt not in allowed_types=[pdf] → blocked")
+	assert.Equal(t, 0, result.FilesBlocked, "warn mode must not block files")
+	assert.Equal(t, "warned", result.Results[0].ActionTaken, "txt not in allowed_types=[pdf] → warned")
+	assert.Nil(t, result.ModifiedBody, "warn mode must not modify the body")
 }
 
 // ---------------------------------------------------------------------------
 // Unit tests — size enforcement
 // ---------------------------------------------------------------------------
 
-func TestScanRequestAttachments_FileSizeExceeded(t *testing.T) {
+func TestScanRequestAttachments_FileSizeExceeded_WarnMode(t *testing.T) {
 	tinyPolicy := &AttachmentPolicyConfig{
 		Action:          "warn",
 		InjectionAction: "warn",
@@ -356,7 +401,28 @@ func TestScanRequestAttachments_FileSizeExceeded(t *testing.T) {
 		newTestExtractor(), classifier.MustNewScanner(), newTestInjScanner(t), tinyPolicy,
 	)
 	require.NotNil(t, result)
+	assert.Equal(t, 0, result.FilesBlocked, "warn mode must not block files")
+	require.Len(t, result.Results, 1)
+	assert.Equal(t, "warned", result.Results[0].ActionTaken)
+	assert.Nil(t, result.ModifiedBody, "warn mode must not modify the body")
+}
+
+func TestScanRequestAttachments_FileSizeExceeded_BlockMode(t *testing.T) {
+	policy := &AttachmentPolicyConfig{
+		Action:          "block",
+		InjectionAction: "warn",
+		MaxFileSizeMB:   1,
+	}
+	oversize := make([]byte, 1*1024*1024+1)
+	body := []byte(chatCompletionsWithFile("text/plain", "huge.txt", oversize))
+
+	result := ScanRequestAttachments(
+		context.Background(), body, "openai",
+		newTestExtractor(), classifier.MustNewScanner(), newTestInjScanner(t), policy,
+	)
+	require.NotNil(t, result)
 	assert.Equal(t, 1, result.FilesBlocked)
+	assert.True(t, result.BlockRequest)
 	require.Len(t, result.Results, 1)
 	assert.Equal(t, "blocked", result.Results[0].ActionTaken)
 }
@@ -383,6 +449,102 @@ func TestScanRequestAttachments_ImagePassthrough(t *testing.T) {
 	assert.Equal(t, 0, result.FilesBlocked, "images skip PII/injection scan, no block")
 	assert.False(t, result.BlockRequest)
 	assert.Equal(t, "allowed", result.Results[0].ActionTaken)
+}
+
+// ---------------------------------------------------------------------------
+// Regression: warn mode + type/size violation must NOT strip clean files
+// ---------------------------------------------------------------------------
+
+func TestScanRequestAttachments_WarnMode_BlockedType_DoesNotStripCleanFiles(t *testing.T) {
+	cleanContent := []byte("Clean quarterly report with no PII")
+	files := []struct {
+		mime, filename string
+		content        []byte
+	}{
+		{"application/x-executable", "script.exe", []byte("binary stuff")},
+		{"text/plain", "report.txt", cleanContent},
+	}
+	body := []byte(multiFileRequest(files))
+	policy := &AttachmentPolicyConfig{
+		Action:          "warn",
+		InjectionAction: "warn",
+		MaxFileSizeMB:   10,
+		BlockedTypes:    []string{"exe"},
+	}
+
+	result := ScanRequestAttachments(
+		context.Background(), body, "openai",
+		newTestExtractor(), classifier.MustNewScanner(), newTestInjScanner(t), policy,
+	)
+	require.NotNil(t, result)
+	assert.Equal(t, 2, result.FilesScanned)
+	assert.Equal(t, 0, result.FilesBlocked, "warn mode must not block any files")
+	assert.False(t, result.BlockRequest)
+	assert.Nil(t, result.ModifiedBody, "warn mode must forward the request body unchanged")
+
+	assert.Equal(t, "warned", result.Results[0].ActionTaken, "exe gets warned, not blocked")
+	assert.Equal(t, "allowed", result.Results[1].ActionTaken, "clean txt passes through")
+
+	remaining := extractFileBlocks(body, "openai")
+	assert.Len(t, remaining, 2, "original body must still contain both file blocks")
+}
+
+func TestScanRequestAttachments_WarnMode_SizeViolation_DoesNotStripCleanFiles(t *testing.T) {
+	oversized := make([]byte, 2*1024*1024)
+	cleanContent := []byte("No PII here, just a summary")
+	files := []struct {
+		mime, filename string
+		content        []byte
+	}{
+		{"text/plain", "huge.txt", oversized},
+		{"text/plain", "summary.txt", cleanContent},
+	}
+	body := []byte(multiFileRequest(files))
+	policy := &AttachmentPolicyConfig{
+		Action:          "warn",
+		InjectionAction: "warn",
+		MaxFileSizeMB:   1,
+	}
+
+	result := ScanRequestAttachments(
+		context.Background(), body, "openai",
+		newTestExtractor(), classifier.MustNewScanner(), newTestInjScanner(t), policy,
+	)
+	require.NotNil(t, result)
+	assert.Equal(t, 2, result.FilesScanned)
+	assert.Equal(t, 0, result.FilesBlocked)
+	assert.False(t, result.BlockRequest)
+	assert.Nil(t, result.ModifiedBody, "warn mode must forward body unchanged even with size violations")
+
+	assert.Equal(t, "warned", result.Results[0].ActionTaken, "oversized file gets warned")
+	assert.Equal(t, "allowed", result.Results[1].ActionTaken, "normal file passes through")
+}
+
+func TestScanRequestAttachments_StripMode_BlockedType_StripsAll(t *testing.T) {
+	cleanContent := []byte("Clean report")
+	files := []struct {
+		mime, filename string
+		content        []byte
+	}{
+		{"application/x-executable", "script.exe", []byte("binary stuff")},
+		{"text/plain", "report.txt", cleanContent},
+	}
+	body := []byte(multiFileRequest(files))
+	policy := &AttachmentPolicyConfig{
+		Action:          "strip",
+		InjectionAction: "warn",
+		MaxFileSizeMB:   10,
+		BlockedTypes:    []string{"exe"},
+	}
+
+	result := ScanRequestAttachments(
+		context.Background(), body, "openai",
+		newTestExtractor(), classifier.MustNewScanner(), newTestInjScanner(t), policy,
+	)
+	require.NotNil(t, result)
+	assert.Equal(t, 1, result.FilesBlocked, "exe should be counted as blocked in strip mode")
+	assert.Equal(t, "stripped", result.Results[0].ActionTaken)
+	assert.NotNil(t, result.ModifiedBody, "strip mode produces modified body")
 }
 
 // ---------------------------------------------------------------------------

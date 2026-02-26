@@ -386,6 +386,53 @@ func TestExtractFileBlocks_ResponsesAPI_InputFile(t *testing.T) {
 	assert.Equal(t, content, blocks[0].Data)
 }
 
+func TestExtractFileBlocks_ResponsesAPI_InputFile_ExtensionFromFilename(t *testing.T) {
+	tests := []struct {
+		name    string
+		mime    string
+		fname   string
+		wantExt string
+	}{
+		{
+			name:    "generic MIME with pdf filename",
+			mime:    "application/octet-stream",
+			fname:   "report.pdf",
+			wantExt: "pdf",
+		},
+		{
+			name:    "generic MIME with csv filename",
+			mime:    "application/octet-stream",
+			fname:   "data.csv",
+			wantExt: "csv",
+		},
+		{
+			name:    "MIME matches filename",
+			mime:    "text/plain",
+			fname:   "notes.txt",
+			wantExt: "txt",
+		},
+		{
+			name:    "MIME says txt but filename says pdf — filename wins",
+			mime:    "text/plain",
+			fname:   "scan.pdf",
+			wantExt: "pdf",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := []byte("test content")
+			body := responsesAPIWithInputFile(tt.mime, tt.fname, content)
+
+			blocks := extractFileBlocks([]byte(body), "openai")
+			require.Len(t, blocks, 1)
+			assert.Equal(t, "input_file", blocks[0].Type)
+			assert.Equal(t, tt.wantExt, blocks[0].Extension,
+				"Extension must be derived from filename when available")
+			assert.Equal(t, tt.fname, blocks[0].Filename)
+		})
+	}
+}
+
 func TestScanRequestAttachments_ResponsesAPI_PDF(t *testing.T) {
 	pdfBytes := buildTestPDF("IBAN: DE89370400440532013000")
 	body := []byte(responsesAPIWithInputFile("application/pdf", "invoice.pdf", pdfBytes))
