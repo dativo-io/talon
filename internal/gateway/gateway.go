@@ -246,6 +246,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve response PII action
 	responsePIIAction := resolveResponsePIIAction(&g.config.DefaultPolicy, caller.PolicyOverrides)
+
+	// When response PII scanning is active, force non-streaming so we can
+	// capture and scan the full response body before returning it to the client.
+	// Streaming clients (e.g. OpenClaw) send "stream":true by default; without
+	// this override the response bypasses PII scanning entirely.
+	needsResponseScan := responsePIIAction != "allow" && responsePIIAction != ""
+	if needsResponseScan && isStreamingRequest(forwardBody) {
+		forwardBody = disableStreaming(forwardBody)
+	}
 	isStreaming := isStreamingRequest(forwardBody)
 
 	var tokenUsage TokenUsage

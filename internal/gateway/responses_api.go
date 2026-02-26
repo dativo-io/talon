@@ -28,3 +28,21 @@ func ensureResponsesStore(body []byte) []byte {
 	}
 	return out
 }
+
+// disableStreaming sets "stream":false in the request body. Used when
+// response PII scanning is enabled — we need the full response body to
+// scan/redact before returning it to the client. Without this, streaming
+// clients (e.g. OpenClaw) send "stream":true and the response bypasses
+// PII scanning entirely.
+func disableStreaming(body []byte) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	m["stream"] = json.RawMessage("false")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.10] - 2026-02-26
+
+### Fixed
+
+- **fix(gateway): response PII scanning now works when clients send `stream:true`**. Previously, clients like OpenClaw that send `"stream":true` in Responses API (or Chat Completions) requests caused the gateway to skip response PII scanning entirely — model-generated emails, IBANs, and phone numbers passed through to the user unredacted. The gateway now forces `"stream":false` on upstream requests whenever the response PII action is `redact`, `block`, or `warn`, captures the full response, scans/redacts it, and returns the result. Streaming is preserved when the response PII action is `allow`.
+
+### Test
+
+- **test(gateway):** Added `TestGateway_ResponsesAPI_StreamingResponsePIIRedacted`, `TestGateway_ChatCompletions_StreamingResponsePIIRedacted`, and `TestGateway_StreamingAllowed_WhenPIIActionAllow` — verify that `stream:true` is overridden to `false` when response PII scanning is active, that model-generated PII in responses is correctly redacted, and that streaming is preserved when PII action is `allow`.
+
 ## [0.8.9] - 2026-02-26
 
 ### Fixed
