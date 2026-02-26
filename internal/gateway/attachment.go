@@ -203,12 +203,14 @@ func scanSingleFileBlock(
 }
 
 func resolveFileAction(result AttachmentScanResult, policy *AttachmentPolicyConfig) string {
+	action := "allowed"
+
 	if result.InjectionsFound > 0 {
 		switch policy.InjectionAction {
 		case "block":
 			return "blocked"
 		case "strip":
-			return "stripped"
+			action = "stripped"
 		}
 	}
 	if result.PIIFound {
@@ -216,10 +218,12 @@ func resolveFileAction(result AttachmentScanResult, policy *AttachmentPolicyConf
 		case "block":
 			return "blocked"
 		case "strip":
-			return "stripped"
+			if action == "allowed" {
+				action = "stripped"
+			}
 		}
 	}
-	return "allowed"
+	return action
 }
 
 func decideOnExtractFailure(policy *AttachmentPolicyConfig) string {
