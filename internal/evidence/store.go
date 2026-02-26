@@ -40,6 +40,7 @@ type Evidence struct {
 	PolicyDecision          PolicyDecision  `json:"policy_decision"`
 	Classification          Classification  `json:"classification"`
 	AttachmentScan          *AttachmentScan `json:"attachment_scan,omitempty"`
+	ToolGovernance          *ToolGovernance `json:"tool_governance,omitempty"`
 	Execution               Execution       `json:"execution"`
 	ModelRoutingRationale   string          `json:"model_routing_rationale,omitempty"` // Why this model was chosen: "primary", "degraded to fallback", etc.
 	SecretsAccessed         []string        `json:"secrets_accessed,omitempty"`
@@ -68,6 +69,13 @@ type Classification struct {
 	PIIRedacted       bool     `json:"pii_redacted"`
 	OutputPIIDetected bool     `json:"output_pii_detected,omitempty"`
 	OutputPIITypes    []string `json:"output_pii_types,omitempty"`
+}
+
+// ToolGovernance captures tool filtering/blocking decisions for gateway requests.
+type ToolGovernance struct {
+	ToolsRequested []string `json:"tools_requested,omitempty"`
+	ToolsFiltered  []string `json:"tools_filtered,omitempty"`
+	ToolsForwarded []string `json:"tools_forwarded,omitempty"`
 }
 
 // AttachmentScan captures prompt injection scan results and PII detected in attachment content.

@@ -40,11 +40,13 @@ type GatewayConfig struct {
 
 // ProviderConfig holds per-provider gateway settings.
 type ProviderConfig struct {
-	Enabled       bool     `yaml:"enabled" json:"enabled"`
-	SecretName    string   `yaml:"secret_name,omitempty" json:"secret_name,omitempty"`
-	BaseURL       string   `yaml:"base_url" json:"base_url"`
-	AllowedModels []string `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
-	BlockedModels []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
+	Enabled          bool     `yaml:"enabled" json:"enabled"`
+	SecretName       string   `yaml:"secret_name,omitempty" json:"secret_name,omitempty"`
+	BaseURL          string   `yaml:"base_url" json:"base_url"`
+	AllowedModels    []string `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
+	BlockedModels    []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
+	ForbiddenTools   []string `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
+	ToolPolicyAction string   `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"` // filter | block
 }
 
 // CallerConfig identifies an application or team that uses the gateway.
@@ -69,6 +71,9 @@ type CallerPolicyOverrides struct {
 	BlockedModels     []string                `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
 	MaxDataTier       *int                    `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"` // 0, 1, or 2
 	AttachmentPolicy  *AttachmentPolicyConfig `yaml:"attachment_policy,omitempty" json:"attachment_policy,omitempty"`
+	AllowedTools      []string                `yaml:"allowed_tools,omitempty" json:"allowed_tools,omitempty"`
+	ForbiddenTools    []string                `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
+	ToolPolicyAction  string                  `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"` // filter | block
 }
 
 // AttachmentPolicyConfig controls scanning of base64-encoded file attachments
@@ -92,6 +97,8 @@ type DefaultPolicyConfig struct {
 	LogResponses            bool                    `yaml:"log_responses" json:"log_responses"`
 	LogResponsePreviewChars int                     `yaml:"log_response_preview_chars" json:"log_response_preview_chars"`
 	AttachmentPolicy        *AttachmentPolicyConfig `yaml:"attachment_policy,omitempty" json:"attachment_policy,omitempty"`
+	ForbiddenTools          []string                `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
+	ToolPolicyAction        string                  `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"` // filter (default) | block
 }
 
 // CallerIDRequired returns whether anonymous requests must be rejected. Default is true when unset.
@@ -161,6 +168,7 @@ const (
 	DefaultAttachmentAction        = "warn"
 	DefaultAttachmentInjAction     = "warn"
 	DefaultAttachmentMaxFileSizeMB = 10
+	DefaultToolPolicyAction        = "filter" // "filter" removes disallowed tools; "block" rejects the request
 )
 
 // LoadGatewayConfig loads gateway configuration from a YAML file.
@@ -268,7 +276,8 @@ func (c *GatewayConfig) Validate() error {
 	default:
 		return fmt.Errorf("gateway mode must be enforce, shadow, or log_only")
 	}
-	for name, p := range c.Providers {
+	for name := range c.Providers {
+		p := c.Providers[name]
 		if !p.Enabled {
 			continue
 		}
@@ -342,6 +351,60 @@ func ResolveAttachmentPolicy(defaultPolicy *DefaultPolicyConfig, overrides *Call
 		merged.BlockedTypes = ov.BlockedTypes
 	}
 	return &merged
+}
+
+// ToolPolicyResolution holds the resolved tool governance parameters from the
+// three-level config hierarchy (default → provider → caller).
+type ToolPolicyResolution struct {
+	AllowedTools   []string // Most-specific non-empty list wins; empty = allow all.
+	ForbiddenTools []string // Union across all levels (additive).
+	Action         string   // "filter" (default) or "block".
+}
+
+// ResolveToolPolicy merges tool governance config from default policy, provider,
+// and caller overrides. allowed_tools: most-specific non-empty list wins.
+// forbidden_tools: union of all levels. action: most-specific wins.
+func ResolveToolPolicy(dp *DefaultPolicyConfig, prov ProviderConfig, overrides *CallerPolicyOverrides) ToolPolicyResolution {
+	res := ToolPolicyResolution{Action: DefaultToolPolicyAction}
+
+	// Action: most-specific wins (caller > provider > default).
+	if dp.ToolPolicyAction != "" {
+		res.Action = dp.ToolPolicyAction
+	}
+	if prov.ToolPolicyAction != "" {
+		res.Action = prov.ToolPolicyAction
+	}
+	if overrides != nil && overrides.ToolPolicyAction != "" {
+		res.Action = overrides.ToolPolicyAction
+	}
+
+	// Allowed tools: most-specific non-empty list wins.
+	if overrides != nil && len(overrides.AllowedTools) > 0 {
+		res.AllowedTools = overrides.AllowedTools
+	}
+
+	// Forbidden tools: union across all levels.
+	seen := make(map[string]bool)
+	for _, lists := range [][]string{
+		dp.ForbiddenTools,
+		prov.ForbiddenTools,
+	} {
+		for _, f := range lists {
+			if !seen[f] {
+				seen[f] = true
+				res.ForbiddenTools = append(res.ForbiddenTools, f)
+			}
+		}
+	}
+	if overrides != nil {
+		for _, f := range overrides.ForbiddenTools {
+			if !seen[f] {
+				seen[f] = true
+				res.ForbiddenTools = append(res.ForbiddenTools, f)
+			}
+		}
+	}
+	return res
 }
 
 // ParseTimeouts returns parsed time.Duration values for the configured timeout strings.

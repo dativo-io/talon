@@ -11,8 +11,9 @@ import (
 
 // ExtractedRequest holds text and model extracted from a provider request body for governance.
 type ExtractedRequest struct {
-	Text  string // Concatenated message text for PII scanning
-	Model string
+	Text      string // Concatenated message text for PII scanning
+	Model     string
+	ToolNames []string // Tool function names declared in the request (for tool governance)
 }
 
 // ExtractOpenAI extracts message text and model from an OpenAI request body.
@@ -45,10 +46,44 @@ func ExtractOpenAI(body []byte) (ExtractedRequest, error) {
 		sb.WriteString(extractResponsesInput(rawInput))
 	}
 
+	toolNames := extractOpenAIToolNames(raw)
+
 	return ExtractedRequest{
-		Text:  strings.TrimSpace(sb.String()),
-		Model: strings.TrimSpace(model),
+		Text:      strings.TrimSpace(sb.String()),
+		Model:     strings.TrimSpace(model),
+		ToolNames: toolNames,
 	}, nil
+}
+
+// extractOpenAIToolNames extracts tool function names from an OpenAI request body.
+// Handles both Chat Completions (tools[].function.name) and Responses API (tools[].name).
+func extractOpenAIToolNames(raw map[string]json.RawMessage) []string {
+	rawTools, ok := raw["tools"]
+	if !ok {
+		return nil
+	}
+
+	// Chat Completions format: [{"type":"function","function":{"name":"..."}}]
+	var chatTools []struct {
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+		Name string `json:"name"` // Responses API format: {"type":"function","name":"..."}
+	}
+	if err := json.Unmarshal(rawTools, &chatTools); err != nil {
+		return nil
+	}
+	var names []string
+	for _, t := range chatTools {
+		n := t.Function.Name
+		if n == "" {
+			n = t.Name
+		}
+		if n != "" {
+			names = append(names, n)
+		}
+	}
+	return names
 }
 
 // extractResponsesInput extracts text from the Responses API input field,
@@ -130,10 +165,33 @@ func ExtractAnthropic(body []byte) (ExtractedRequest, error) {
 		sb.WriteString(anthropicContentToText(m.Content))
 		sb.WriteString("\n")
 	}
+	toolNames := extractAnthropicToolNames(body)
+
 	return ExtractedRequest{
-		Text:  strings.TrimSpace(sb.String()),
-		Model: strings.TrimSpace(req.Model),
+		Text:      strings.TrimSpace(sb.String()),
+		Model:     strings.TrimSpace(req.Model),
+		ToolNames: toolNames,
 	}, nil
+}
+
+// extractAnthropicToolNames extracts tool names from an Anthropic request body.
+// Format: tools[].name
+func extractAnthropicToolNames(body []byte) []string {
+	var req struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+	var names []string
+	for _, t := range req.Tools {
+		if t.Name != "" {
+			names = append(names, t.Name)
+		}
+	}
+	return names
 }
 
 type anthropicMsg struct {

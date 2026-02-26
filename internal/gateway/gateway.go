@@ -158,7 +158,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"Request blocked: attachment violates policy")
 		_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
 			g.classifier.Scan(ctx, extracted.Text), nil, 0, 0, 0, false,
-			[]string{"attachment policy block"}, false, nil, attSummary)
+			[]string{"attachment policy block"}, false, nil, attSummary, nil)
 		return
 	}
 	if attSummary != nil && attSummary.ModifiedBody != nil {
@@ -196,7 +196,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if piiAction == "block" && classification.HasPII {
 		WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request contains PII that is not allowed")
-		_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"}, false, nil, attSummary)
+		_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"}, false, nil, attSummary, nil)
 		return
 	}
 
@@ -213,15 +213,47 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if !allowed {
 			WriteProviderError(w, route.Provider, http.StatusForbidden, reasons[0])
-			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons, false, nil, attSummary)
+			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons, false, nil, attSummary, nil)
 			return
 		}
 	}
 
-	// Step 7: Redact (if policy says redact and PII found)
+	// Step 6b: Tool governance — filter or block forbidden tools before the LLM sees them.
+	prov, _ := g.config.Provider(route.Provider)
+	toolPolicy := ResolveToolPolicy(&g.config.DefaultPolicy, prov, caller.PolicyOverrides)
+	var toolResult *ToolGovernanceResult
 	forwardBody := body
+	if len(extracted.ToolNames) > 0 && (len(toolPolicy.AllowedTools) > 0 || len(toolPolicy.ForbiddenTools) > 0) {
+		tr := EvaluateToolPolicy(extracted.ToolNames, toolPolicy.AllowedTools, toolPolicy.ForbiddenTools)
+		toolResult = &tr
+		if len(tr.Removed) > 0 {
+			if toolPolicy.Action == "block" {
+				log.Warn().
+					Str("caller", caller.Name).
+					Strs("forbidden", tr.Removed).
+					Msg("gateway_tool_blocked")
+				WriteProviderError(w, route.Provider, http.StatusForbidden,
+					fmt.Sprintf("Request contains forbidden tools: %v", tr.Removed))
+				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
+					classification, nil, 0, 0, 0, false, []string{"tool governance block"}, false, nil, attSummary, toolResult)
+				return
+			}
+			// Filter mode: remove disallowed tools from the body.
+			filtered, err := FilterRequestBodyTools(route.Provider, forwardBody, tr.Kept)
+			if err == nil {
+				forwardBody = filtered
+			}
+			log.Info().
+				Str("caller", caller.Name).
+				Strs("removed", tr.Removed).
+				Strs("kept", tr.Kept).
+				Msg("gateway_tools_filtered")
+		}
+	}
+
+	// Step 7: Redact (if policy says redact and PII found)
 	if piiAction == "redact" && classification.HasPII {
-		redacted, err := RedactRequestBody(ctx, route.Provider, body, g.classifier)
+		redacted, err := RedactRequestBody(ctx, route.Provider, forwardBody, g.classifier)
 		if err == nil {
 			forwardBody = redacted
 		}
@@ -237,7 +269,6 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 8: Reroute (same-provider model override) — MVP: no model change, just forward
 
 	// Step 9: Forward — get provider key and proxy
-	prov, _ := g.config.Provider(route.Provider)
 	headers := make(map[string]string)
 	for k, v := range r.Header {
 		switch k {
@@ -346,13 +377,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		outputPIITypes = responsePII.PIITypes
 	}
 
-	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes, attSummary)
+	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes, attSummary, toolResult)
 	if err != nil {
 		log.Warn().Err(err).Msg("gateway_forward_error")
 	}
 }
 
-func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary) error {
+func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult) error {
 	inputTokens, outputTokens := 0, 0
 	if usage != nil {
 		inputTokens, outputTokens = usage.Input, usage.Output
@@ -383,7 +414,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		}
 	}
 
-	return RecordGatewayEvidence(ctx, g.evidenceStore, RecordGatewayEvidenceParams{
+	params := RecordGatewayEvidenceParams{
 		CorrelationID:     correlationID,
 		TenantID:          caller.TenantID,
 		CallerName:        caller.Name,
@@ -404,7 +435,13 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		DurationMS:        durationMS,
 		SecretsAccessed:   secretsAccessed,
 		AttachmentScan:    attScan,
-	})
+	}
+	if toolResult != nil {
+		params.ToolsRequested = toolResult.Requested
+		params.ToolsFiltered = toolResult.Removed
+		params.ToolsForwarded = toolResult.Kept
+	}
+	return RecordGatewayEvidence(ctx, g.evidenceStore, params)
 }
 
 func buildGatewayPolicyInput(caller *CallerConfig, provider, model string, dataTier int, estimatedCost, dailyCost, monthlyCost float64) map[string]interface{} {

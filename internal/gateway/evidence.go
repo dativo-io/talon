@@ -33,11 +33,23 @@ type RecordGatewayEvidenceParams struct {
 	Error                   string
 	SecretsAccessed         []string // secret names only; never real keys
 	AttachmentScan          *evidence.AttachmentScan
+	ToolsRequested          []string
+	ToolsFiltered           []string
+	ToolsForwarded          []string
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
 // Never logs or stores real provider API keys.
 func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params RecordGatewayEvidenceParams) error {
+	var toolGov *evidence.ToolGovernance
+	if len(params.ToolsRequested) > 0 {
+		toolGov = &evidence.ToolGovernance{
+			ToolsRequested: params.ToolsRequested,
+			ToolsFiltered:  params.ToolsFiltered,
+			ToolsForwarded: params.ToolsForwarded,
+		}
+	}
+
 	ev := &evidence.Evidence{
 		ID:              "gw_" + uuid.New().String()[:12],
 		CorrelationID:   params.CorrelationID,
@@ -69,6 +81,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		},
 		SecretsAccessed:         params.SecretsAccessed,
 		AttachmentScan:          params.AttachmentScan,
+		ToolGovernance:          toolGov,
 		ObservationModeOverride: params.ObservationModeOverride,
 		AuditTrail:              evidence.AuditTrail{},
 		Compliance:              evidence.Compliance{},
