@@ -42,7 +42,7 @@ type RecordGatewayEvidenceParams struct {
 // Never logs or stores real provider API keys.
 func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params RecordGatewayEvidenceParams) error {
 	var toolGov *evidence.ToolGovernance
-	if len(params.ToolsRequested) > 0 {
+	if len(params.ToolsRequested) > 0 || len(params.ToolsFiltered) > 0 || len(params.ToolsForwarded) > 0 {
 		toolGov = &evidence.ToolGovernance{
 			ToolsRequested: params.ToolsRequested,
 			ToolsFiltered:  params.ToolsFiltered,

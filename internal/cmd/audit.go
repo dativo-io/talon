@@ -373,6 +373,24 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		toolsStr = "(none)"
 	}
 	fmt.Fprintf(w, "Tools Called:  %s\n", toolsStr)
+	if ev.ToolGovernance != nil {
+		fmt.Fprintln(w, "Tool Governance (gateway)")
+		req := strings.Join(ev.ToolGovernance.ToolsRequested, ", ")
+		if req == "" {
+			req = "(none)"
+		}
+		filt := strings.Join(ev.ToolGovernance.ToolsFiltered, ", ")
+		if filt == "" {
+			filt = "(none)"
+		}
+		fwd := strings.Join(ev.ToolGovernance.ToolsForwarded, ", ")
+		if fwd == "" {
+			fwd = "(none)"
+		}
+		fmt.Fprintf(w, "  Requested:  %s\n", req)
+		fmt.Fprintf(w, "  Filtered:   %s\n", filt)
+		fmt.Fprintf(w, "  Forwarded:  %s\n", fwd)
+	}
 	if ev.Execution.MemoryTokens > 0 {
 		fmt.Fprintf(w, "Memory Tokens: %d (injected into prompt)\n", ev.Execution.MemoryTokens)
 	}

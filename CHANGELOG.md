@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.14] - 2026-02-26
+
+### Added
+
+- **feat(audit): show tool governance in `talon audit show`**. Gateway evidence records now display a "Tool Governance (gateway)" section with Requested, Filtered, and Forwarded tool names when the request included a tools array, so operators can verify which tools were stripped by `forbidden_tools` before the LLM saw them.
+- **docs(gateway):** Added `gateway-default-policy-tool-governance-snippet.yaml` in the OpenClaw primer for pasting `forbidden_tools` and `tool_policy_action` into `talon.config.yaml`.
+
+### Fixed
+
+- **fix(gateway): persist tool governance when any of requested/filtered/forwarded is non-empty**. Previously `RecordGatewayEvidence` only set `tool_governance` when `ToolsRequested` had length; it now persists whenever any of the three slices is non-empty.
+
+### Test
+
+- **test(gateway):** `TestRecordGatewayEvidence_ToolGovernanceRoundTrip` ensures tool governance is stored and returned by `Get()` (same path as `talon audit show`).
+
 ## [0.8.13] - 2026-02-26
 
 (No notable changes in this release.)

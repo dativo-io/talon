@@ -1,0 +1,17 @@
+# Add this block under gateway.default_policy in your talon.config.yaml
+# (after log_responses: false, before rate_limits:).
+#
+# Tool governance: strip dangerous tools from LLM requests before the model sees them.
+# When OpenClaw sends a request with a "tools" array, Talon removes any tool whose
+# name matches a forbidden_tools pattern (glob, case-insensitive). The LLM never
+# sees those tools. Evidence records will show tools_requested / tools_filtered /
+# tools_forwarded (visible via "talon audit show <id>").
+#
+  tool_policy_action: "filter"   # "filter" = remove forbidden; "block" = reject whole request
+  forbidden_tools:
+    - "delete_*"
+    - "admin_*"
+    - "export_all_*"
+    - "bulk_*"
+    - "rm_*"
+    - "drop_*"
