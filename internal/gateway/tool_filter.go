@@ -57,7 +57,8 @@ func isForbiddenTool(name string, forbidden []string) bool {
 
 // FilterRequestBodyTools removes tools not in keepSet from the JSON request body.
 // Handles OpenAI (Chat Completions + Responses API) and Anthropic formats.
-// If tool_choice references a removed tool, it is reset to "auto".
+// If tool_choice references a removed tool, it is reset to the provider's auto
+// format: "auto" (string) for OpenAI, {"type":"auto"} (object) for Anthropic.
 func FilterRequestBodyTools(provider string, body []byte, keep []string) ([]byte, error) {
 	switch provider {
 	case "openai", "ollama":
@@ -98,7 +99,7 @@ func filterOpenAITools(body []byte, keep []string) ([]byte, error) {
 		delete(m, "tool_choice")
 	} else {
 		m["tools"] = filtered
-		fixToolChoice(m, keepSet)
+		fixToolChoice(m, keepSet, "openai")
 	}
 
 	return json.Marshal(m)
@@ -147,7 +148,7 @@ func filterAnthropicTools(body []byte, keep []string) ([]byte, error) {
 		delete(m, "tool_choice")
 	} else {
 		m["tools"] = filtered
-		fixToolChoice(m, keepSet)
+		fixToolChoice(m, keepSet, "anthropic")
 	}
 
 	return json.Marshal(m)
@@ -156,14 +157,17 @@ func filterAnthropicTools(body []byte, keep []string) ([]byte, error) {
 // fixToolChoice resets tool_choice to "auto" if it references a tool not in keepSet.
 // Handles both OpenAI object format ({"type":"function","function":{"name":"..."}})
 // and Anthropic object format ({"type":"tool","name":"..."}).
-func fixToolChoice(m map[string]interface{}, keepSet map[string]bool) {
+// OpenAI expects the string "auto"; Anthropic expects {"type":"auto"}.
+func fixToolChoice(m map[string]interface{}, keepSet map[string]bool, provider string) {
 	tc, ok := m["tool_choice"]
 	if !ok {
 		return
 	}
 	switch v := tc.(type) {
 	case string:
-		// "auto", "none", "required" — leave as-is.
+		// "auto", "none", "required" — leave as-is for OpenAI.
+		// Anthropic uses objects but also accepts {"type":"auto"} via its own format;
+		// string values here are not provider-specific, so leave them.
 	case map[string]interface{}:
 		name := ""
 		if fn, ok := v["function"].(map[string]interface{}); ok {
@@ -173,7 +177,11 @@ func fixToolChoice(m map[string]interface{}, keepSet map[string]bool) {
 			name, _ = v["name"].(string)
 		}
 		if name != "" && !keepSet[name] {
-			m["tool_choice"] = "auto"
+			if provider == "anthropic" {
+				m["tool_choice"] = map[string]interface{}{"type": "auto"}
+			} else {
+				m["tool_choice"] = "auto"
+			}
 		}
 	default:
 		_ = v

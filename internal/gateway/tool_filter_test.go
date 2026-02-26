@@ -588,8 +588,10 @@ func TestFilterRequestBodyTools_Anthropic_ToolChoiceFixup(t *testing.T) {
 	var m map[string]interface{}
 	require.NoError(t, json.Unmarshal(filtered, &m))
 
-	assert.Equal(t, "auto", m["tool_choice"],
-		"Anthropic tool_choice referencing a removed tool must reset to 'auto'")
+	tcObj, ok := m["tool_choice"].(map[string]interface{})
+	require.True(t, ok, "Anthropic tool_choice must be an object, not a string")
+	assert.Equal(t, "auto", tcObj["type"],
+		"Anthropic tool_choice referencing a removed tool must reset to {\"type\":\"auto\"}")
 	tools := m["tools"].([]interface{})
 	assert.Len(t, tools, 1)
 	assert.Equal(t, "search_web", tools[0].(map[string]interface{})["name"])
