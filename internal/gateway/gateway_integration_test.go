@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 	"github.com/go-chi/chi/v5"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -194,4 +196,35 @@ func TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied(t *testing.T) {
 	require.False(t, list[0].PolicyDecision.Allowed, "PII block must record evidence with allowed=false")
 	require.Equal(t, "deny", list[0].PolicyDecision.Action)
 	require.Contains(t, list[0].PolicyDecision.Reasons, "PII block")
+}
+
+func TestGateway_RealAPIKeyNeverExposed(t *testing.T) {
+	var capturedAuth string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"1","choices":[{"message":{"content":"Safe"}}],"usage":{"prompt_tokens":2,"completion_tokens":1}}`))
+	})
+
+	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
+
+	requestBody := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}`
+	w := makeGatewayRequest(gw, requestBody)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	assert.True(t, strings.HasPrefix(capturedAuth, "Bearer sk-test-"),
+		"upstream should receive the real API key")
+
+	responseBody := w.Body.String()
+	assert.NotContains(t, responseBody, "sk-test-",
+		"response to caller must not contain the real API key")
+
+	records, err := evStore.List(context.Background(), "test-tenant", "",
+		time.Time{}, time.Time{}, 10)
+	require.NoError(t, err)
+	for _, ev := range records {
+		assert.NotContains(t, ev.AuditTrail.InputHash, "sk-test-",
+			"evidence must not contain the real API key")
+	}
 }

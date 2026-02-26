@@ -35,7 +35,7 @@ var (
 	otelShutdown func(context.Context) error
 
 	// Version info injected via ldflags at build time
-	Version   = "dev"
+	Version   = "v0.8.12"
 	Commit    = "none"
 	BuildDate = "unknown"
 

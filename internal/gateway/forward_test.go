@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -325,4 +327,114 @@ func TestHTTPClientForGateway(t *testing.T) {
 	client := HTTPClientForGateway(timeouts)
 	require.NotNil(t, client)
 	require.Equal(t, 10*time.Second, client.Timeout)
+}
+
+// ---------------------------------------------------------------------------
+// Component tests — upstream error forwarding through the Gateway handler
+// ---------------------------------------------------------------------------
+
+func TestGateway_Upstream404_ReadableResponse(t *testing.T) {
+	errorBody := `{"error":{"message":"The model 'gpt-nonexistent' does not exist","type":"invalid_request_error","code":"model_not_found"}}`
+	gw, _, _ := setupOpenClawGateway(t, "allow", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(errorBody))
+	})
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}`
+	w := makeGatewayRequest(gw, body)
+
+	assert.Equal(t, http.StatusNotFound, w.Code, "404 status must be forwarded to client")
+	assert.Contains(t, w.Body.String(), "model_not_found",
+		"error body must be readable JSON, not binary")
+	assert.Contains(t, w.Body.String(), "gpt-nonexistent",
+		"original error message must be preserved")
+}
+
+func TestGateway_Upstream500_ReadableResponse(t *testing.T) {
+	errorBody := `{"error":{"message":"Internal server error","type":"server_error"}}`
+	gw, _, _ := setupOpenClawGateway(t, "allow", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(errorBody))
+	})
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}`
+	w := makeGatewayRequest(gw, body)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "Internal server error",
+		"500 error body must be readable")
+}
+
+func TestGateway_Upstream404WithSSEContentType(t *testing.T) {
+	errorBody := `{"error":{"message":"Not found","type":"not_found"}}`
+	gw, _, _ := setupOpenClawGateway(t, "allow", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(errorBody))
+	})
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}`
+	w := makeGatewayRequest(gw, body)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Contains(t, w.Body.String(), "Not found",
+		"404 with SSE content-type must still return readable error")
+}
+
+func TestGateway_UpstreamError_EvidenceStillRecorded(t *testing.T) {
+	gw, _, evStore := setupOpenClawGateway(t, "allow", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Not found"}}`))
+	})
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}`
+	w := makeGatewayRequest(gw, body)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+
+	records, err := evStore.List(context.Background(), "test-tenant", "",
+		time.Time{}, time.Now().Add(time.Second), 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, records, "evidence must be recorded even when upstream returns an error")
+	assert.Equal(t, "openclaw-main", records[0].AgentID)
+	assert.Equal(t, "gpt-4o-mini", records[0].Execution.ModelUsed)
+}
+
+func TestGateway_PIIRedact_ThenUpstream404(t *testing.T) {
+	var capturedBody []byte
+	gw, _, _ := setupOpenClawGateway(t, "redact", func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Model not found","type":"invalid_request_error","code":"model_not_found"}}`))
+	})
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Contact mike@johnson.com about the project"}]}`
+	w := makeGatewayRequest(gw, body)
+
+	assert.Equal(t, http.StatusNotFound, w.Code, "404 status must be forwarded")
+	assert.Contains(t, w.Body.String(), "Model not found",
+		"error body must be readable even when PII was redacted")
+	assert.NotContains(t, string(capturedBody), "mike@johnson.com",
+		"PII must be redacted before forwarding to upstream")
+}
+
+func TestGateway_Upstream429_RateLimitError(t *testing.T) {
+	gw, _, _ := setupOpenClawGateway(t, "allow", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("x-ratelimit-remaining-requests", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"Rate limit reached","type":"rate_limit_error"}}`))
+	})
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}`
+	w := makeGatewayRequest(gw, body)
+
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+	assert.Contains(t, w.Body.String(), "Rate limit reached")
+	assert.Equal(t, "0", w.Header().Get("x-ratelimit-remaining-requests"),
+		"rate-limit headers from upstream must be forwarded")
 }

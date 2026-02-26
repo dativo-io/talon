@@ -440,8 +440,17 @@ func isStreamingRequest(body []byte) bool {
 }
 
 // handleStreamingPIIScan processes a buffered SSE stream for PII scanning.
-// The full SSE response is already in capture.body. We extract text content,
-// scan for PII, and either forward the original stream or a redacted version.
+//
+// Streaming PII redaction is fundamentally limited: the client (e.g. OpenClaw)
+// builds content from delta events, so we can't replace content after the fact
+// without reconstructing the full SSE event sequence — which is fragile and
+// client-specific. Instead we take a forward-first approach:
+//
+//  1. Always forward the original buffered SSE events to the client (preserving UX).
+//  2. Post-completion, extract content and scan for PII.
+//  3. Record findings in evidence for compliance auditing.
+//
+// Non-streaming requests still get full redaction/blocking via scanResponseForPII.
 func handleStreamingPIIScan(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -451,12 +460,15 @@ func handleStreamingPIIScan(
 ) *ResponsePIIScanResult {
 	raw := capture.body.Bytes()
 
-	// Extract the completed response JSON from the SSE stream.
-	// For Responses API: the response.completed event contains the full response object.
-	// For Chat Completions: accumulate delta content from all chunks.
-	completedJSON := extractCompletedResponseFromSSE(raw)
+	// Always forward the original SSE stream first — the client needs it.
+	forwardBufferedSSE(w, capture)
 
-	// If we can't find a completed response, fall back to delta accumulation
+	if scanner == nil {
+		return nil
+	}
+
+	// Extract content from the completed response or accumulated deltas.
+	completedJSON := extractCompletedResponseFromSSE(raw)
 	contentText := ""
 	if completedJSON != nil {
 		contentText = extractResponseContentText(completedJSON)
@@ -464,15 +476,12 @@ func handleStreamingPIIScan(
 	if contentText == "" {
 		contentText = accumulateSSEContent(raw)
 	}
-
-	if contentText == "" || scanner == nil {
-		forwardBufferedSSE(w, capture)
+	if contentText == "" {
 		return nil
 	}
 
 	cls := scanner.Scan(ctx, contentText)
 	if cls == nil || !cls.HasPII {
-		forwardBufferedSSE(w, capture)
 		return &ResponsePIIScanResult{PIIDetected: false}
 	}
 
@@ -484,39 +493,16 @@ func handleStreamingPIIScan(
 	for t := range types {
 		piiTypes = append(piiTypes, t)
 	}
-	result := &ResponsePIIScanResult{
+
+	log.Warn().
+		Str("action", action).
+		Strs("pii_types", piiTypes).
+		Msg("response_pii_detected_in_stream (audit only — streaming prevents inline redaction)")
+
+	return &ResponsePIIScanResult{
 		PIIDetected: true,
 		PIITypes:    piiTypes,
-	}
-
-	switch action {
-	case "block":
-		log.Warn().Strs("pii_types", result.PIITypes).Msg("response_pii_blocked")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		//nolint:gosec // G705: gateway PII block response, not user-controlled HTML
-		_, _ = w.Write([]byte(`{"error":{"message":"Response blocked: PII detected in model output","type":"pii_blocked"}}`))
-		return result
-
-	case "redact":
-		log.Info().Strs("pii_types", result.PIITypes).Msg("response_pii_redacted")
-		result.Redacted = true
-
-		if completedJSON != nil {
-			// Redact the completed response JSON and wrap in SSE
-			redacted := redactResponseContentFields(ctx, completedJSON, scanner)
-			writeRedactedSSE(w, capture, redacted)
-		} else {
-			// No completed JSON available; forward original and log warning
-			log.Warn().Msg("response_pii_detected_but_no_completed_json_for_redaction")
-			forwardBufferedSSE(w, capture)
-		}
-		return result
-
-	default: // "warn"
-		log.Warn().Strs("pii_types", result.PIITypes).Msg("response_pii_detected_warn")
-		forwardBufferedSSE(w, capture)
-		return result
+		Redacted:    false,
 	}
 }
 
@@ -527,29 +513,6 @@ func forwardBufferedSSE(w http.ResponseWriter, capture *responseCapture) {
 	}
 	//nolint:gosec // G705: forwarding buffered upstream SSE response
 	_, _ = w.Write(capture.body.Bytes())
-}
-
-// writeRedactedSSE constructs an SSE response containing the redacted JSON
-// and sends it to the client. This replaces the original stream with a single
-// event containing the full (redacted) response.
-func writeRedactedSSE(w http.ResponseWriter, capture *responseCapture, redactedJSON []byte) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	if capture.statusCode != 0 {
-		w.WriteHeader(capture.statusCode)
-	} else {
-		w.WriteHeader(http.StatusOK)
-	}
-
-	// Write as: "event: response.completed\ndata: {json}\n\ndata: [DONE]\n\n"
-	// This is compatible with both OpenAI Responses API and Chat Completions
-	// SSE parsers — they look for "data:" lines and parse the JSON.
-	var buf bytes.Buffer
-	buf.WriteString("event: response.completed\ndata: ")
-	buf.Write(redactedJSON)
-	buf.WriteString("\n\ndata: [DONE]\n\n")
-	//nolint:gosec // G705: gateway PII-redacted SSE response
-	_, _ = w.Write(buf.Bytes())
 }
 
 // extractCompletedResponseFromSSE finds the response.completed event or the

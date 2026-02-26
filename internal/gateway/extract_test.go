@@ -2,9 +2,12 @@ package gateway
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"testing"
 
 	"github.com/dativo-io/talon/internal/classifier"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -190,4 +193,54 @@ func TestExtractOpenAI_ResponsesAPI(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "Still works", got.Text)
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Component tests — request-path PII through the Gateway handler
+// ---------------------------------------------------------------------------
+
+func TestGateway_PIIRedactedBeforeForwarding(t *testing.T) {
+	var capturedBody []byte
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"1","choices":[{"message":{"content":"Processed"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	})
+
+	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
+
+	requestBody := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Send report to hans.mueller@example.de with IBAN DE89370400440532013000, phone +34612345678, and VAT ESB12345678"}]}`
+	w := makeGatewayRequest(gw, requestBody)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	forwarded := string(capturedBody)
+
+	assert.NotContains(t, forwarded, "hans.mueller@example.de",
+		"email address must be redacted before forwarding to upstream")
+	assert.NotContains(t, forwarded, "DE89370400440532013000",
+		"IBAN must be redacted before forwarding to upstream")
+
+	assert.Contains(t, forwarded, "Send report to",
+		"non-PII content must be preserved in forwarded request")
+}
+
+func TestGateway_PIIBlockModePreventsForwarding(t *testing.T) {
+	upstreamCalled := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	gw, _, _ := setupOpenClawGateway(t, "block", handler)
+
+	requestBody := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Contact hans.mueller@example.de about IBAN DE89370400440532013000"}]}`
+	w := makeGatewayRequest(gw, requestBody)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code,
+		"block mode should return 400 when PII detected")
+	assert.False(t, upstreamCalled,
+		"upstream must NOT be called when PII is blocked")
+	assert.Contains(t, w.Body.String(), "PII",
+		"error response should mention PII")
 }
