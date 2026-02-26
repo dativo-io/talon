@@ -165,6 +165,47 @@ func TestExtractFileBlocks_Anthropic_Document(t *testing.T) {
 	assert.Equal(t, content, blocks[0].Data)
 }
 
+// Regression: Anthropic multi-turn conversations include assistant messages with
+// plain string content (e.g. "content": "Here's my analysis..."). The extractor
+// must skip those messages gracefully and still find document blocks in user
+// messages that use array content.
+func TestExtractFileBlocks_Anthropic_StringContentSkipped(t *testing.T) {
+	docContent := []byte("Customer IBAN: DE89370400440532013000")
+	body, _ := json.Marshal(map[string]interface{}{
+		"model": "claude-sonnet-4-20250514",
+		"messages": []interface{}{
+			map[string]interface{}{
+				"role":    "user",
+				"content": "Analyze the attached document for PII",
+			},
+			map[string]interface{}{
+				"role":    "assistant",
+				"content": "Sure, please share the document.",
+			},
+			map[string]interface{}{
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type": "document",
+						"source": map[string]interface{}{
+							"type":       "base64",
+							"media_type": "text/plain",
+							"data":       base64.StdEncoding.EncodeToString(docContent),
+						},
+					},
+					map[string]interface{}{"type": "text", "text": "Here it is"},
+				},
+			},
+		},
+	})
+
+	blocks := extractFileBlocks(body, "anthropic")
+	require.Len(t, blocks, 1, "must find the document block despite string-content messages")
+	assert.Equal(t, "document", blocks[0].Type)
+	assert.Equal(t, docContent, blocks[0].Data)
+	assert.Equal(t, 2, blocks[0].MsgIndex, "document is in the third message (index 2)")
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests — ScanRequestAttachments
 // ---------------------------------------------------------------------------
@@ -604,6 +645,45 @@ func TestScanRequestAttachments_Anthropic_PIIWarn(t *testing.T) {
 	assert.Equal(t, 1, result.FilesScanned)
 	assert.True(t, result.Results[0].PIIFound)
 	assert.False(t, result.BlockRequest)
+}
+
+// Regression: Anthropic multi-turn with string content must not bypass scanning.
+func TestScanRequestAttachments_Anthropic_MultiTurnStringContent(t *testing.T) {
+	docContent := []byte("IBAN: DE89370400440532013000")
+	body, _ := json.Marshal(map[string]interface{}{
+		"model": "claude-sonnet-4-20250514",
+		"messages": []interface{}{
+			map[string]interface{}{"role": "user", "content": "What PII is in the file?"},
+			map[string]interface{}{"role": "assistant", "content": "Please share the document."},
+			map[string]interface{}{
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type": "document",
+						"source": map[string]interface{}{
+							"type":       "base64",
+							"media_type": "text/plain",
+							"data":       base64.StdEncoding.EncodeToString(docContent),
+						},
+					},
+				},
+			},
+		},
+	})
+	policy := &AttachmentPolicyConfig{
+		Action:          "block",
+		InjectionAction: "warn",
+		MaxFileSizeMB:   10,
+	}
+
+	result := ScanRequestAttachments(
+		context.Background(), body, "anthropic",
+		newTestExtractor(), classifier.MustNewScanner(), newTestInjScanner(t), policy,
+	)
+	require.NotNil(t, result, "must not return nil — string-content messages must not abort extraction")
+	assert.Equal(t, 1, result.FilesScanned)
+	assert.True(t, result.Results[0].PIIFound, "PII in the document must be detected")
+	assert.True(t, result.BlockRequest, "block mode must reject when PII found")
 }
 
 func TestScanRequestAttachments_Anthropic_StripDocument(t *testing.T) {

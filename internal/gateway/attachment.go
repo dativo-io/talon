@@ -441,11 +441,11 @@ func extractInputFileBlock(p map[string]interface{}, msgIdx, ci int) *FileBlock 
 
 // extractAnthropicFileBlocks finds base64-encoded content in Anthropic messages.
 // Handles: content[].source.type=="base64" for type "document" and "image".
+// Uses map[string]interface{} to tolerate messages where content is a plain string
+// (e.g. assistant turns), which would cause UnmarshalTypeError with a typed struct.
 func extractAnthropicFileBlocks(body []byte) []FileBlock {
 	var raw struct {
-		Messages []struct {
-			Content []map[string]interface{} `json:"content"`
-		} `json:"messages"`
+		Messages []map[string]interface{} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil
@@ -453,7 +453,15 @@ func extractAnthropicFileBlocks(body []byte) []FileBlock {
 
 	var blocks []FileBlock
 	for mi, msg := range raw.Messages {
-		for ci, block := range msg.Content {
+		content, ok := msg["content"].([]interface{})
+		if !ok {
+			continue
+		}
+		for ci, item := range content {
+			block, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
 			typ, _ := block["type"].(string)
 			if typ != "document" && typ != "image" {
 				continue
