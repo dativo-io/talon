@@ -61,25 +61,37 @@ type CallerConfig struct {
 
 // CallerPolicyOverrides are per-caller policy overrides.
 type CallerPolicyOverrides struct {
-	MaxDailyCost      float64  `yaml:"max_daily_cost,omitempty" json:"max_daily_cost,omitempty"`
-	MaxMonthlyCost    float64  `yaml:"max_monthly_cost,omitempty" json:"max_monthly_cost,omitempty"`
-	PIIAction         string   `yaml:"pii_action,omitempty" json:"pii_action,omitempty"`                   // block | redact | warn | allow
-	ResponsePIIAction string   `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from pii_action
-	AllowedModels     []string `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
-	BlockedModels     []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
-	MaxDataTier       *int     `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"` // 0, 1, or 2
+	MaxDailyCost      float64                 `yaml:"max_daily_cost,omitempty" json:"max_daily_cost,omitempty"`
+	MaxMonthlyCost    float64                 `yaml:"max_monthly_cost,omitempty" json:"max_monthly_cost,omitempty"`
+	PIIAction         string                  `yaml:"pii_action,omitempty" json:"pii_action,omitempty"`                   // block | redact | warn | allow
+	ResponsePIIAction string                  `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from pii_action
+	AllowedModels     []string                `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
+	BlockedModels     []string                `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
+	MaxDataTier       *int                    `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"` // 0, 1, or 2
+	AttachmentPolicy  *AttachmentPolicyConfig `yaml:"attachment_policy,omitempty" json:"attachment_policy,omitempty"`
+}
+
+// AttachmentPolicyConfig controls scanning of base64-encoded file attachments
+// embedded in LLM API requests (PDFs, images, HTML, etc.).
+type AttachmentPolicyConfig struct {
+	Action          string   `yaml:"action" json:"action"`                                         // block | strip | warn | allow (default: warn)
+	InjectionAction string   `yaml:"injection_action,omitempty" json:"injection_action,omitempty"` // block | strip | warn (default: warn)
+	MaxFileSizeMB   int      `yaml:"max_file_size_mb,omitempty" json:"max_file_size_mb,omitempty"` // default: 10
+	AllowedTypes    []string `yaml:"allowed_types,omitempty" json:"allowed_types,omitempty"`
+	BlockedTypes    []string `yaml:"blocked_types,omitempty" json:"blocked_types,omitempty"`
 }
 
 // DefaultPolicyConfig holds server-wide default policy for the gateway.
 type DefaultPolicyConfig struct {
-	DefaultPIIAction        string  `yaml:"default_pii_action" json:"default_pii_action"`                       // warn | block | redact | allow
-	ResponsePIIAction       string  `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from default_pii_action
-	MaxDailyCost            float64 `yaml:"max_daily_cost" json:"max_daily_cost"`
-	MaxMonthlyCost          float64 `yaml:"max_monthly_cost" json:"max_monthly_cost"`
-	RequireCallerID         *bool   `yaml:"require_caller_id" json:"require_caller_id"` // nil = true (default)
-	LogPrompts              bool    `yaml:"log_prompts" json:"log_prompts"`
-	LogResponses            bool    `yaml:"log_responses" json:"log_responses"`
-	LogResponsePreviewChars int     `yaml:"log_response_preview_chars" json:"log_response_preview_chars"`
+	DefaultPIIAction        string                  `yaml:"default_pii_action" json:"default_pii_action"`                       // warn | block | redact | allow
+	ResponsePIIAction       string                  `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from default_pii_action
+	MaxDailyCost            float64                 `yaml:"max_daily_cost" json:"max_daily_cost"`
+	MaxMonthlyCost          float64                 `yaml:"max_monthly_cost" json:"max_monthly_cost"`
+	RequireCallerID         *bool                   `yaml:"require_caller_id" json:"require_caller_id"` // nil = true (default)
+	LogPrompts              bool                    `yaml:"log_prompts" json:"log_prompts"`
+	LogResponses            bool                    `yaml:"log_responses" json:"log_responses"`
+	LogResponsePreviewChars int                     `yaml:"log_response_preview_chars" json:"log_response_preview_chars"`
+	AttachmentPolicy        *AttachmentPolicyConfig `yaml:"attachment_policy,omitempty" json:"attachment_policy,omitempty"`
 }
 
 // CallerIDRequired returns whether anonymous requests must be rejected. Default is true when unset.
@@ -136,16 +148,19 @@ type NetworkInterceptionTLS struct {
 
 // Default gateway config values.
 const (
-	DefaultListenPrefix      = "/v1/proxy"
-	DefaultMode              = ModeEnforce
-	DefaultRequireCallerID   = true
-	DefaultLogPrompts        = true
-	DefaultPIIAction         = "warn"
-	DefaultGlobalRPM         = 300
-	DefaultPerCallerRPM      = 60
-	DefaultConnectTimeout    = "10s"
-	DefaultRequestTimeout    = "120s"
-	DefaultStreamIdleTimeout = "60s"
+	DefaultListenPrefix            = "/v1/proxy"
+	DefaultMode                    = ModeEnforce
+	DefaultRequireCallerID         = true
+	DefaultLogPrompts              = true
+	DefaultPIIAction               = "warn"
+	DefaultGlobalRPM               = 300
+	DefaultPerCallerRPM            = 60
+	DefaultConnectTimeout          = "10s"
+	DefaultRequestTimeout          = "120s"
+	DefaultStreamIdleTimeout       = "60s"
+	DefaultAttachmentAction        = "warn"
+	DefaultAttachmentInjAction     = "warn"
+	DefaultAttachmentMaxFileSizeMB = 10
 )
 
 // LoadGatewayConfig loads gateway configuration from a YAML file.
@@ -220,7 +235,25 @@ func (c *GatewayConfig) ApplyDefaults() error {
 	if c.Timeouts.StreamIdleTimeout == "" {
 		c.Timeouts.StreamIdleTimeout = DefaultStreamIdleTimeout
 	}
+	c.DefaultPolicy.AttachmentPolicy = applyAttachmentPolicyDefaults(c.DefaultPolicy.AttachmentPolicy)
 	return nil
+}
+
+// applyAttachmentPolicyDefaults fills in missing values for an AttachmentPolicyConfig.
+func applyAttachmentPolicyDefaults(p *AttachmentPolicyConfig) *AttachmentPolicyConfig {
+	if p == nil {
+		p = &AttachmentPolicyConfig{}
+	}
+	if p.Action == "" {
+		p.Action = DefaultAttachmentAction
+	}
+	if p.InjectionAction == "" {
+		p.InjectionAction = DefaultAttachmentInjAction
+	}
+	if p.MaxFileSizeMB <= 0 {
+		p.MaxFileSizeMB = DefaultAttachmentMaxFileSizeMB
+	}
+	return p
 }
 
 // Validate checks that the configuration is valid.
@@ -246,6 +279,18 @@ func (c *GatewayConfig) Validate() error {
 			return fmt.Errorf("gateway provider %q: secret_name is required", name)
 		}
 	}
+	if p := c.DefaultPolicy.AttachmentPolicy; p != nil {
+		switch p.Action {
+		case "block", "strip", "warn", "allow":
+		default:
+			return fmt.Errorf("gateway default_policy.attachment_policy.action must be block, strip, warn, or allow")
+		}
+		switch p.InjectionAction {
+		case "block", "strip", "warn", "":
+		default:
+			return fmt.Errorf("gateway default_policy.attachment_policy.injection_action must be block, strip, or warn")
+		}
+	}
 	for i := range c.Callers {
 		caller := &c.Callers[i]
 		if caller.Name == "" {
@@ -263,6 +308,40 @@ func (c *GatewayConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// ResolveAttachmentPolicy returns the effective attachment policy for a caller,
+// merging caller overrides on top of the server default.
+func ResolveAttachmentPolicy(defaultPolicy *DefaultPolicyConfig, overrides *CallerPolicyOverrides) *AttachmentPolicyConfig {
+	base := defaultPolicy.AttachmentPolicy
+	if base == nil {
+		base = &AttachmentPolicyConfig{
+			Action:          DefaultAttachmentAction,
+			InjectionAction: DefaultAttachmentInjAction,
+			MaxFileSizeMB:   DefaultAttachmentMaxFileSizeMB,
+		}
+	}
+	if overrides == nil || overrides.AttachmentPolicy == nil {
+		return base
+	}
+	merged := *base
+	ov := overrides.AttachmentPolicy
+	if ov.Action != "" {
+		merged.Action = ov.Action
+	}
+	if ov.InjectionAction != "" {
+		merged.InjectionAction = ov.InjectionAction
+	}
+	if ov.MaxFileSizeMB > 0 {
+		merged.MaxFileSizeMB = ov.MaxFileSizeMB
+	}
+	if len(ov.AllowedTypes) > 0 {
+		merged.AllowedTypes = ov.AllowedTypes
+	}
+	if len(ov.BlockedTypes) > 0 {
+		merged.BlockedTypes = ov.BlockedTypes
+	}
+	return &merged
 }
 
 // ParseTimeouts returns parsed time.Duration values for the configured timeout strings.

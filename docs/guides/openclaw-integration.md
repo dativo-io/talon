@@ -173,6 +173,43 @@ The default `response_pii_action` is **`warn`** because LLM-generated content is
 
 Escalation ladder when needed: `warn` → `redact` → `block`. Configure in `default_policy.response_pii_action` or per-caller via `policy_overrides.response_pii_action`.
 
+#### Attachment scanning
+
+Talon scans base64-encoded file attachments (PDF, TXT, CSV, HTML, images) embedded in LLM API requests. This covers OpenAI's `file` and `image_url` content blocks, the Responses API `input_file` blocks, and Anthropic's `document` / `image` blocks with `source.type: "base64"`.
+
+The gateway extracts text from supported file formats, scans for PII (using the same classifier as request text), and scans for prompt injection patterns (using the attachment injection scanner). Images are logged for evidence but skip text-based scanning since no text can be extracted.
+
+Configure via `default_policy.attachment_policy` or per-caller via `policy_overrides.attachment_policy`:
+
+| Setting | Values | Default | Description |
+|---------|--------|---------|-------------|
+| `action` | `block`, `strip`, `warn`, `allow` | `warn` | What to do when PII is found in an attachment |
+| `injection_action` | `block`, `strip`, `warn` | `warn` | What to do when prompt injection is detected |
+| `max_file_size_mb` | integer | `10` | Maximum decoded file size in MB |
+| `allowed_types` | list of extensions | (all) | Only allow these file types (e.g. `["pdf", "txt", "csv"]`) |
+| `blocked_types` | list of extensions | (none) | Block these file types (e.g. `["exe", "bat", "sh"]`) |
+
+Action behaviour:
+
+| Action | Behaviour |
+|--------|-----------|
+| `allow` | No attachment scanning (pass through) |
+| `warn` | Scan attachments, log findings in evidence, forward unchanged **(default)** |
+| `strip` | Remove file content blocks from the request before forwarding |
+| `block` | Reject the entire request with HTTP 400 |
+
+Example config:
+
+```yaml
+gateway:
+  default_policy:
+    attachment_policy:
+      action: "warn"
+      injection_action: "block"
+      max_file_size_mb: 10
+      blocked_types: ["exe", "bat", "sh"]
+```
+
 ### 7. Monitor and respond
 
 Once traffic is flowing, use these operational controls:
@@ -217,6 +254,8 @@ For a complete incident response workflow, see the [Incident Response Playbook](
 
 | Failure mode | Talon defense | Config / control |
 |---|---|---|
+| PII in file attachments (PDF, CSV, etc.) | Attachment scanning with PII detection | `attachment_policy.action: warn` (default), escalate to `strip` or `block` |
+| Prompt injection via file attachment | Attachment injection scanning | `attachment_policy.injection_action: warn` (default), escalate to `strip` or `block` |
 | LLM returns PII in response | Response-path PII scanning (streaming + non-streaming) | `response_pii_action: warn` (default), escalate to `redact` or `block` |
 | Agent calls destructive tool | Destructive operation detection | `tool_access.rego` blocks `delete`, `drop`, `remove` patterns |
 | Runaway cost accumulation | Per-caller cost caps | `max_daily_cost`, `max_monthly_cost` in caller config |

@@ -66,6 +66,12 @@ gateway:
     require_caller_id: true
     log_prompts: true
     log_responses: false
+    # Attachment scanning: scans base64-encoded files (PDF, TXT, CSV, HTML)
+    # in LLM API requests for PII and prompt injection.
+    attachment_policy:
+      action: "warn"            # block | strip | warn | allow
+      injection_action: "warn"  # block | strip | warn
+      max_file_size_mb: 10
 
   rate_limits:
     global_requests_per_min: 300

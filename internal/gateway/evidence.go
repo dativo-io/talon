@@ -32,6 +32,7 @@ type RecordGatewayEvidenceParams struct {
 	DurationMS              int64
 	Error                   string
 	SecretsAccessed         []string // secret names only; never real keys
+	AttachmentScan          *evidence.AttachmentScan
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -67,6 +68,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			Error:      params.Error,
 		},
 		SecretsAccessed:         params.SecretsAccessed,
+		AttachmentScan:          params.AttachmentScan,
 		ObservationModeOverride: params.ObservationModeOverride,
 		AuditTrail:              evidence.AuditTrail{},
 		Compliance:              evidence.Compliance{},

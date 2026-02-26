@@ -1,0 +1,4 @@
+name,email,phone,iban,department
+Jan Kowalski,jan.kowalski@gmail.com,+49 170 1234567,DE89370400440532013000,Engineering
+Maria Schmidt,maria.schmidt@company.eu,+49 171 9876543,DE27100777770209299700,Finance
+Tomek Nowak,tomek.nowak@example.com,+48 600 123456,PL61109010140000071219812874,Operations
