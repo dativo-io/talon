@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -219,6 +221,99 @@ func TestForward_SuccessStreamStillWorks(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Contains(t, w.Body.String(), "OK", "streaming data must be forwarded")
 	require.Contains(t, w.Body.String(), "[DONE]", "stream must complete")
+}
+
+// TestForward_GzipErrorDecompressed verifies that when the upstream returns a
+// gzip-compressed error body, the client receives readable JSON — not raw binary.
+// This reproduces the OpenClaw "404 + binary garbage" bug caused by forwarding
+// the client's Accept-Encoding header to the upstream.
+func TestForward_GzipErrorDecompressed(t *testing.T) {
+	errorJSON := `{"error":{"message":"The model 'gpt-99' does not exist","type":"invalid_request_error","code":"model_not_found"}}`
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate OpenAI responding with gzip when Accept-Encoding allows it
+		if r.Header.Get("Accept-Encoding") != "" {
+			var buf bytes.Buffer
+			gz := gzip.NewWriter(&buf)
+			_, _ = gz.Write([]byte(errorJSON))
+			_ = gz.Close()
+
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Encoding", "gzip")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write(buf.Bytes())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(errorJSON))
+	}))
+	defer upstream.Close()
+
+	var usage TokenUsage
+	w := httptest.NewRecorder()
+	err := Forward(w, ForwardParams{
+		Context:     context.Background(),
+		UpstreamURL: upstream.URL,
+		Method:      http.MethodPost,
+		Body:        []byte(`{"model":"gpt-99","messages":[]}`),
+		Headers: map[string]string{
+			"Content-Type":    "application/json",
+			"Accept-Encoding": "gzip, deflate, br",
+		},
+		Timeouts:   ParsedTimeouts{ConnectTimeout: 5 * time.Second, RequestTimeout: 30 * time.Second, StreamIdleTimeout: 60 * time.Second},
+		TokenUsage: &usage,
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, w.Code)
+	require.JSONEq(t, errorJSON, w.Body.String(),
+		"gzip-compressed 404 body must arrive decompressed as readable JSON")
+}
+
+// TestForward_GzipSuccessDecompressed verifies that gzip-compressed 200 bodies
+// are transparently decompressed so PII scanning and usage parsing work correctly.
+func TestForward_GzipSuccessDecompressed(t *testing.T) {
+	successJSON := `{"id":"chatcmpl-gz","choices":[{"message":{"role":"assistant","content":"Hello!"}}],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}`
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept-Encoding") != "" {
+			var buf bytes.Buffer
+			gz := gzip.NewWriter(&buf)
+			_, _ = gz.Write([]byte(successJSON))
+			_ = gz.Close()
+
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Encoding", "gzip")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(buf.Bytes())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(successJSON))
+	}))
+	defer upstream.Close()
+
+	var usage TokenUsage
+	w := httptest.NewRecorder()
+	err := Forward(w, ForwardParams{
+		Context:     context.Background(),
+		UpstreamURL: upstream.URL,
+		Method:      http.MethodPost,
+		Body:        []byte(`{"model":"gpt-4o","messages":[]}`),
+		Headers: map[string]string{
+			"Content-Type":    "application/json",
+			"Accept-Encoding": "gzip, deflate, br",
+		},
+		Timeouts:   ParsedTimeouts{ConnectTimeout: 5 * time.Second, RequestTimeout: 30 * time.Second, StreamIdleTimeout: 60 * time.Second},
+		TokenUsage: &usage,
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 8, usage.Input, "token usage must be parsed from decompressed body")
+	require.Equal(t, 1, usage.Output)
+	require.Contains(t, w.Body.String(), "Hello!",
+		"gzip-compressed 200 body must arrive decompressed")
 }
 
 func TestHTTPClientForGateway(t *testing.T) {

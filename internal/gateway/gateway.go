@@ -197,7 +197,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	prov, _ := g.config.Provider(route.Provider)
 	headers := make(map[string]string)
 	for k, v := range r.Header {
-		if k == "Authorization" || k == "X-Api-Key" || k == "X-Request-Id" {
+		switch k {
+		case "Authorization", "X-Api-Key", "X-Request-Id":
+			continue
+		case "Accept-Encoding":
+			// Never forward Accept-Encoding: Go's http.Transport adds it
+			// automatically and transparently decompresses. If we forward
+			// the client's value, Go treats compression as user-managed and
+			// hands us raw gzip bytes, which causes binary garbage in
+			// error responses (and breaks PII scanning on success responses).
+			continue
+		case "Content-Length":
+			// Stale after request-body modifications (PII redaction); let
+			// the HTTP stack recalculate from ForwardParams.Body.
 			continue
 		}
 		if len(v) > 0 {

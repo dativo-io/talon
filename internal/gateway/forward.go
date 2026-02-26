@@ -43,6 +43,9 @@ func Forward(w http.ResponseWriter, p ForwardParams) error {
 	}
 	req.ContentLength = int64(len(p.Body))
 	for k, v := range p.Headers {
+		if strings.EqualFold(k, "Accept-Encoding") {
+			continue // let Go's transport manage compression transparently
+		}
 		req.Header.Set(k, v)
 	}
 	// Content-Type from body if not set

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"runtime"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
 )
@@ -14,7 +15,13 @@ var versionCmd = &cobra.Command{
 		_, span := tracer.Start(cmd.Context(), "version")
 		defer span.End()
 
-		fmt.Printf("Talon %s\n", Version)
+		version := Version
+		if version == "dev" {
+			if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+				version = info.Main.Version
+			}
+		}
+		fmt.Printf("Talon %s\n", version)
 		fmt.Printf("Commit: %s\n", Commit)
 		fmt.Printf("Built:  %s\n", BuildDate)
 		fmt.Printf("Go:     %s\n", runtime.Version())
