@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -13,6 +14,18 @@ import (
 
 	"github.com/dativo-io/talon/internal/otel"
 )
+
+// resolvedVersion returns Version unless it is "dev" and Go build info
+// contains a real module version (e.g. from go install ...@v0.8.5).
+func resolvedVersion() string {
+	if Version != "dev" {
+		return Version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return Version
+}
 
 // tracer is the package-level tracer for all CLI commands
 var tracer = otel.Tracer("github.com/dativo-io/talon/internal/cmd")
@@ -53,7 +66,7 @@ It enforces policies on AI agent execution with:
 
 		// Initialize OpenTelemetry when --otel, -v, or TALON_OTEL_ENABLED=true
 		otelEnabled := otelFlag || verbose || os.Getenv("TALON_OTEL_ENABLED") == "true"
-		shutdown, err := otel.Setup("dativo-talon", Version, otelEnabled)
+		shutdown, err := otel.Setup("dativo-talon", resolvedVersion(), otelEnabled)
 		if err != nil {
 			return fmt.Errorf("initializing OpenTelemetry: %w", err)
 		}

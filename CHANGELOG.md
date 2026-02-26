@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **fix(gateway):** Strip `Accept-Encoding` from headers forwarded to upstream providers. Go's `http.Transport` only auto-decompresses gzip responses when it manages the header itself; forwarding the client's `Accept-Encoding` caused raw gzip bytes to be written back to the client, producing "404 + binary garbage" in OpenClaw and other clients. Also strip stale `Content-Length` (invalid after PII redaction). Defensive strip added in both the gateway handler and the `Forward()` function.
-- **fix(version):** `talon version` now uses `runtime/debug.ReadBuildInfo()` as fallback when ldflags are not injected (e.g. `go install ...@v0.8.5`), so the correct module version is displayed instead of "dev".
+- **fix(version):** `talon version` and OTel `service.version` resource now use `runtime/debug.ReadBuildInfo()` as fallback when ldflags are not injected (e.g. `go install ...@v0.8.5`), so the correct module version is displayed instead of "dev" in both CLI output and trace spans.
 
 ### Docs
 
