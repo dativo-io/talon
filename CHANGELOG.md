@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-02-26
+
+### Fixed
+
+- **fix(gateway):** Automatically inject `store: true` into OpenAI Responses API requests (`/v1/responses`) when not explicitly set. Without this, OpenAI does not persist response items, causing 404 errors on multi-turn conversations when the client (e.g. OpenClaw) references previous response IDs. Explicit `store: false` from the client is preserved.
+
+### Test
+
+- **test(gateway):** Added `TestIsResponsesAPIPath` and `TestEnsureResponsesStore` — path detection for Responses API, store injection with field preservation, explicit store override, and invalid JSON safety.
+
 ## [0.8.5] - 2026-02-26
 
 ### Fixed

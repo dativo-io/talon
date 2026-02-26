@@ -191,6 +191,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Step 7b: Ensure Responses API requests use store:true so multi-turn works through a proxy.
+	// Without this, OpenAI doesn't persist response items and follow-up messages that reference
+	// previous response IDs get 404 "Items are not persisted when store is set to false".
+	if route.Provider == "openai" && isResponsesAPIPath(route.Path) {
+		forwardBody = ensureResponsesStore(forwardBody)
+	}
+
 	// Step 8: Reroute (same-provider model override) — MVP: no model change, just forward
 
 	// Step 9: Forward — get provider key and proxy
