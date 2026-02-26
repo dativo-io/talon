@@ -189,6 +189,39 @@ curl -s http://localhost:8080/v1/proxy/openai/v1/chat/completions \
 # With response_pii_action: "redact", the IBAN in the response is replaced with [REDACTED].
 ```
 
+### Attachment scanning
+
+Talon scans base64-encoded file attachments embedded in LLM API requests (OpenAI `file`/`image_url` blocks, Anthropic `document`/`image` blocks). Text is extracted from supported formats (PDF, TXT, CSV, HTML), scanned for PII and prompt injection, then governed by `attachment_policy`:
+
+| Action | Behaviour |
+|--------|-----------|
+| `allow` | No attachment scanning |
+| `warn` | Scan and log findings in evidence, forward unchanged **(default)** |
+| `strip` | Remove file content blocks from the request before forwarding |
+| `block` | Reject the entire request with HTTP 400 |
+
+Configure `injection_action` separately for prompt injection detection (`block`, `strip`, or `warn`). Use `allowed_types` / `blocked_types` to control which file extensions are permitted, and `max_file_size_mb` for size limits.
+
+Test it by sending a base64-encoded text file containing PII:
+
+```bash
+PII_FILE=$(echo -n "Customer IBAN: DE89370400440532013000" | base64)
+curl -s http://localhost:8080/v1/proxy/openai/v1/chat/completions \
+  -H "Authorization: Bearer talon-gw-openclaw-001" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"model\": \"gpt-4o-mini\",
+    \"messages\": [{\"role\":\"user\",\"content\":[
+      {\"type\":\"text\",\"text\":\"Summarize this file\"},
+      {\"type\":\"file\",\"file\":{\"file_data\":\"data:text/plain;base64,$PII_FILE\",\"filename\":\"data.txt\"}}
+    ]}]
+  }"
+# With attachment_policy.action: "warn" (default), the request passes through and PII is logged.
+# With attachment_policy.action: "block", the request is rejected with HTTP 400.
+# With attachment_policy.action: "strip", the file block is removed before forwarding.
+
+```
+
 ### Circuit breaker
 
 When an agent accumulates repeated policy denials (e.g. hitting cost caps or forbidden tools), the circuit breaker trips and suspends the agent automatically. Configured via `circuit_breaker_threshold` (default 5 denials) and `circuit_breaker_window` (default 60 s). States:

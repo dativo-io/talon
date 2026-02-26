@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
+	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/secrets"
@@ -36,6 +38,8 @@ type Gateway struct {
 	timeouts      ParsedTimeouts
 	client        *http.Client
 	rateLimiter   *RateLimiter
+	attExtractor  *attachment.Extractor
+	attInjScanner *attachment.Scanner
 }
 
 // NewGateway creates a new Gateway.
@@ -59,6 +63,17 @@ func NewGateway(
 		config.RateLimits.GlobalRequestsPerMin,
 		config.RateLimits.PerCallerRequestsPerMin,
 	)
+
+	maxMB := DefaultAttachmentMaxFileSizeMB
+	if p := config.DefaultPolicy.AttachmentPolicy; p != nil && p.MaxFileSizeMB > 0 {
+		maxMB = p.MaxFileSizeMB
+	}
+	ext := attachment.NewExtractor(maxMB)
+	injScan, err := attachment.NewScanner()
+	if err != nil {
+		return nil, fmt.Errorf("creating attachment injection scanner: %w", err)
+	}
+
 	return &Gateway{
 		config:        config,
 		classifier:    classifier,
@@ -69,6 +84,8 @@ func NewGateway(
 		timeouts:      timeouts,
 		client:        client,
 		rateLimiter:   rl,
+		attExtractor:  ext,
+		attInjScanner: injScan,
 	}, nil
 }
 
@@ -129,6 +146,25 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Step 3b: Scan attachments (base64-encoded file blocks)
+	attPolicy := ResolveAttachmentPolicy(&g.config.DefaultPolicy, caller.PolicyOverrides)
+	var attSummary *AttachmentsScanSummary
+	if attPolicy.Action != "allow" {
+		attSummary = ScanRequestAttachments(ctx, body, route.Provider,
+			g.attExtractor, g.classifier, g.attInjScanner, attPolicy)
+	}
+	if attSummary != nil && attSummary.BlockRequest {
+		WriteProviderError(w, route.Provider, http.StatusBadRequest,
+			"Request blocked: attachment violates policy")
+		_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
+			g.classifier.Scan(ctx, extracted.Text), nil, 0, 0, 0, false,
+			[]string{"attachment policy block"}, false, nil, attSummary)
+		return
+	}
+	if attSummary != nil && attSummary.ModifiedBody != nil {
+		body = attSummary.ModifiedBody
+	}
+
 	// Step 4: Scan PII
 	classification := g.classifier.Scan(ctx, extracted.Text)
 
@@ -160,7 +196,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if piiAction == "block" && classification.HasPII {
 		WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request contains PII that is not allowed")
-		_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"}, false, nil)
+		_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"}, false, nil, attSummary)
 		return
 	}
 
@@ -177,7 +213,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if !allowed {
 			WriteProviderError(w, route.Provider, http.StatusForbidden, reasons[0])
-			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons, false, nil)
+			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons, false, nil, attSummary)
 			return
 		}
 	}
@@ -310,13 +346,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		outputPIITypes = responsePII.PIITypes
 	}
 
-	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes)
+	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes, attSummary)
 	if err != nil {
 		log.Warn().Err(err).Msg("gateway_forward_error")
 	}
 }
 
-func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string) error {
+func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary) error {
 	inputTokens, outputTokens := 0, 0
 	if usage != nil {
 		inputTokens, outputTokens = usage.Input, usage.Output
@@ -329,6 +365,24 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	for _, e := range classification.Entities {
 		piiDetected = append(piiDetected, e.Type)
 	}
+
+	var attScan *evidence.AttachmentScan
+	if attSummary != nil && attSummary.FilesScanned > 0 {
+		var blocked []string
+		for _, r := range attSummary.Results {
+			if r.ActionTaken == "blocked" || r.ActionTaken == "stripped" {
+				blocked = append(blocked, r.Filename)
+			}
+		}
+		attScan = &evidence.AttachmentScan{
+			FilesProcessed:           attSummary.FilesScanned,
+			InjectionsDetected:       attSummary.InjectionsFound,
+			ActionTaken:              attSummary.ActionTaken,
+			BlockedFiles:             blocked,
+			PIIDetectedInAttachments: attSummary.PIITypes,
+		}
+	}
+
 	return RecordGatewayEvidence(ctx, g.evidenceStore, RecordGatewayEvidenceParams{
 		CorrelationID:     correlationID,
 		TenantID:          caller.TenantID,
@@ -349,6 +403,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		OutputTokens:      outputTokens,
 		DurationMS:        durationMS,
 		SecretsAccessed:   secretsAccessed,
+		AttachmentScan:    attScan,
 	})
 }
 

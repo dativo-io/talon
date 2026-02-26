@@ -1,0 +1,10 @@
+Employee Directory Extract
+
+Name: Jan Kowalski
+Email: jan.kowalski@gmail.com
+Phone: +49 170 1234567
+IBAN: DE89370400440532013000
+
+Name: Maria Schmidt
+Email: maria.schmidt@company.eu
+IBAN: DE27100777770209299700

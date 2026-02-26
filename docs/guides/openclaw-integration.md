@@ -120,7 +120,7 @@ You should see new evidence rows; the caller name (e.g. `openclaw-main`) appears
 
 **Troubleshooting**
 
-- **`go install ...@v0.8.9` fails with "reading https://sum.golang.org/lookup/... 404 Not Found" or "invalid version: unknown revision"** — The Go checksum database hasn't indexed the new tag yet (common in the first minutes after a release). Install directly from the module and skip checksum verification: `GONOSUMDB=github.com/dativo-io/talon GOPROXY=direct go install github.com/dativo-io/talon/cmd/talon@v0.8.9`. After a few minutes, the normal `go install ...@v0.8.9` usually works without these env vars.
+- **`go install ...@v0.8.9` fails with "reading `https://sum.golang.org/lookup/...` 404 Not Found" or "invalid version: unknown revision"** — The Go checksum database hasn't indexed the new tag yet (common in the first minutes after a release). Install directly from the module and skip checksum verification: `GONOSUMDB=github.com/dativo-io/talon GOPROXY=direct go install github.com/dativo-io/talon/cmd/talon@v0.8.9`. After a few minutes, the normal `go install ...@v0.8.9` usually works without these env vars.
 - **macOS: `go install ...@latest` fails with "unsupported tapi file type '!tapi-tbd'"** — Go is using Homebrew's LLVM; Apple's SDK uses a format that LLVM's linker doesn't support. Use system Clang: `CC=/usr/bin/clang go install github.com/dativo-io/talon/cmd/talon@latest`. Or clone the repo and run `make install`.
 - **`talon serve --gateway` fails with "agent is required" / "policies is required"** — Talon loads `agent.talon.yaml` from the current working directory. Run `talon serve --gateway` from the directory that contains a valid `agent.talon.yaml` (with top-level `agent:` and `policies:` keys). Easiest: use `talon init --pack openclaw` in a new directory so both `agent.talon.yaml` and gateway-enabled `talon.config.yaml` are generated.
 - **OpenClaw reports "Invalid config … models.providers.openai.models"** — The `models` array must contain objects with both `id` and `name` (e.g. `{ "id": "gpt-4o-mini", "name": "gpt-4o-mini" }`). Plain strings or objects with only `id` or only `name` will fail validation.
@@ -173,6 +173,44 @@ The default `response_pii_action` is **`warn`** because LLM-generated content is
 
 Escalation ladder when needed: `warn` → `redact` → `block`. Configure in `default_policy.response_pii_action` or per-caller via `policy_overrides.response_pii_action`.
 
+#### Attachment scanning
+
+Talon scans base64-encoded file attachments (PDF, TXT, CSV, HTML, images) embedded in LLM API requests. This covers OpenAI's `file` and `image_url` content blocks, the Responses API `input_file` blocks, and Anthropic's `document` / `image` blocks with `source.type: "base64"`.
+
+The gateway extracts text from supported file formats, scans for PII (using the same classifier as request text), and scans for prompt injection patterns (using the attachment injection scanner). Images are logged for evidence but skip text-based scanning since no text can be extracted.
+
+Configure via `default_policy.attachment_policy` or per-caller via `policy_overrides.attachment_policy`:
+
+| Setting | Values | Default | Description |
+|---------|--------|---------|-------------|
+| `action` | `block`, `strip`, `warn`, `allow` | `warn` | What to do when PII is found in an attachment |
+| `injection_action` | `block`, `strip`, `warn` | `warn` | What to do when prompt injection is detected |
+| `max_file_size_mb` | integer | `10` | Maximum decoded file size in MB |
+| `allowed_types` | list of extensions | (all) | Only allow these file types (e.g. `["pdf", "txt", "csv"]`) |
+| `blocked_types` | list of extensions | (none) | Block these file types (e.g. `["exe", "bat", "sh"]`) |
+
+Action behaviour:
+
+| Action | Behaviour |
+|--------|-----------|
+| `allow` | No attachment scanning (pass through) |
+| `warn` | Scan attachments, log findings in evidence, forward unchanged **(default)** |
+| `strip` | Remove file content blocks from the request before forwarding |
+| `block` | Reject the entire request with HTTP 400 |
+
+Example config:
+
+```yaml
+gateway:
+  default_policy:
+    attachment_policy:
+      action: "warn"
+      injection_action: "block"
+      max_file_size_mb: 10
+      blocked_types: ["exe", "bat", "sh"]
+```
+
+
 ### 7. Monitor and respond
 
 Once traffic is flowing, use these operational controls:
@@ -217,6 +255,8 @@ For a complete incident response workflow, see the [Incident Response Playbook](
 
 | Failure mode | Talon defense | Config / control |
 |---|---|---|
+| PII in file attachments (PDF, CSV, etc.) | Attachment scanning with PII detection | `attachment_policy.action: warn` (default), escalate to `strip` or `block` |
+| Prompt injection via file attachment | Attachment injection scanning | `attachment_policy.injection_action: warn` (default), escalate to `strip` or `block` |
 | LLM returns PII in response | Response-path PII scanning (streaming + non-streaming) | `response_pii_action: warn` (default), escalate to `redact` or `block` |
 | Agent calls destructive tool | Destructive operation detection | `tool_access.rego` blocks `delete`, `drop`, `remove` patterns |
 | Runaway cost accumulation | Per-caller cost caps | `max_daily_cost`, `max_monthly_cost` in caller config |
