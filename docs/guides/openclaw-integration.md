@@ -210,6 +210,7 @@ gateway:
       blocked_types: ["exe", "bat", "sh"]
 ```
 
+
 ### 7. Monitor and respond
 
 Once traffic is flowing, use these operational controls:

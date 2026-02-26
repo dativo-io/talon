@@ -219,6 +219,7 @@ curl -s http://localhost:8080/v1/proxy/openai/v1/chat/completions \
 # With attachment_policy.action: "warn" (default), the request passes through and PII is logged.
 # With attachment_policy.action: "block", the request is rejected with HTTP 400.
 # With attachment_policy.action: "strip", the file block is removed before forwarding.
+
 ```
 
 ### Circuit breaker
