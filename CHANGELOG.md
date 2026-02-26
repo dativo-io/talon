@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-02-26
+
+### Fixed
+
+- **fix(gateway):** Force `store: true` on OpenAI Responses API requests instead of only adding it when missing. OpenClaw (and other clients) may send `store: false` explicitly; the gateway now overwrites it so multi-turn conversations work through the proxy.
+
 ## [0.8.6] - 2026-02-26
 
 ### Fixed

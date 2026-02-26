@@ -39,13 +39,13 @@ func TestEnsureResponsesStore(t *testing.T) {
 		assert.Equal(t, "Hello", m["input"])
 	})
 
-	t.Run("preserves store false when explicitly set", func(t *testing.T) {
+	t.Run("overwrites store false so multi-turn works through proxy", func(t *testing.T) {
 		input := `{"model":"gpt-4o","input":"Hello","store":false}`
 		result := ensureResponsesStore([]byte(input))
 
 		var m map[string]interface{}
 		require.NoError(t, json.Unmarshal(result, &m))
-		assert.Equal(t, false, m["store"], "explicit store:false must be preserved")
+		assert.Equal(t, true, m["store"], "gateway forces store:true so referenced response IDs persist")
 	})
 
 	t.Run("preserves store true when already set", func(t *testing.T) {
