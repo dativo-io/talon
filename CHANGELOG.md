@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-02-26
+
+### Fixed
+
+- **fix(gateway):** PII scanning and redaction now handles the OpenAI Responses API format (`output[].content[].text` with `type: "output_text"`) in addition to Chat Completions (`choices[].message.content`) and Anthropic (`content[].text`). Previously, emails and other PII in Responses API output passed through unredacted.
+- **fix(gateway):** Request-path PII extraction and redaction now handles the Responses API `input` field (string or array of message objects), in addition to Chat Completions `messages[]`. All other request fields (`store`, `previous_response_id`, etc.) are preserved during redaction.
+
+### Test
+
+- **test(gateway):** Added Responses API test cases for response PII scanning (email, IBAN in `output[].content`), content extraction (single/multiple outputs, non-text outputs ignored), request extraction (`input` as string/array/content blocks), and request redaction (string input, array input, field preservation).
+
 ## [0.8.7] - 2026-02-26
 
 ### Fixed

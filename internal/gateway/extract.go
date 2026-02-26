@@ -15,25 +15,71 @@ type ExtractedRequest struct {
 	Model string
 }
 
-// ExtractOpenAI extracts message text and model from an OpenAI chat completions request body.
-// Handles content as string or array of content blocks (multi-modal); only text is concatenated.
+// ExtractOpenAI extracts message text and model from an OpenAI request body.
+// Handles both Chat Completions (messages[]) and Responses API (input as string or array).
 func ExtractOpenAI(body []byte) (ExtractedRequest, error) {
-	var req struct {
-		Model    string      `json:"model"`
-		Messages []openAIMsg `json:"messages"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
 		return ExtractedRequest{}, fmt.Errorf("openai request body: %w", err)
 	}
-	var sb strings.Builder
-	for _, m := range req.Messages {
-		sb.WriteString(openAIContentToText(m.Content))
-		sb.WriteString("\n")
+	var model string
+	if m, ok := raw["model"]; ok {
+		_ = json.Unmarshal(m, &model)
 	}
+
+	var sb strings.Builder
+
+	// Chat Completions: messages[]
+	if rawMsgs, ok := raw["messages"]; ok {
+		var msgs []openAIMsg
+		if err := json.Unmarshal(rawMsgs, &msgs); err == nil {
+			for _, m := range msgs {
+				sb.WriteString(openAIContentToText(m.Content))
+				sb.WriteString("\n")
+			}
+		}
+	}
+
+	// Responses API: input (string or array of message objects)
+	if rawInput, ok := raw["input"]; ok {
+		sb.WriteString(extractResponsesInput(rawInput))
+	}
+
 	return ExtractedRequest{
 		Text:  strings.TrimSpace(sb.String()),
-		Model: strings.TrimSpace(req.Model),
+		Model: strings.TrimSpace(model),
 	}, nil
+}
+
+// extractResponsesInput extracts text from the Responses API input field,
+// which can be a plain string or an array of message objects with content.
+func extractResponsesInput(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var items []map[string]interface{}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, item := range items {
+		if content, ok := item["content"].(string); ok {
+			sb.WriteString(content)
+			sb.WriteString("\n")
+		}
+		if content, ok := item["content"].([]interface{}); ok {
+			for _, block := range content {
+				if b, ok := block.(map[string]interface{}); ok {
+					if text, ok := b["text"].(string); ok {
+						sb.WriteString(text)
+						sb.WriteString("\n")
+					}
+				}
+			}
+		}
+	}
+	return sb.String()
 }
 
 type openAIMsg struct {
@@ -158,17 +204,32 @@ func RedactRequestBody(ctx context.Context, provider string, body []byte, scanne
 }
 
 func redactOpenAIBody(ctx context.Context, body []byte, scanner *classifier.Scanner) ([]byte, error) {
-	var req struct {
-		Model    string      `json:"model"`
-		Messages []openAIMsg `json:"messages"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, err
 	}
-	for i := range req.Messages {
-		req.Messages[i].Content = redactOpenAIContent(ctx, req.Messages[i].Content, scanner)
+
+	// Chat Completions: messages[].content
+	if msgs, ok := m["messages"].([]interface{}); ok {
+		for _, raw := range msgs {
+			if msg, ok := raw.(map[string]interface{}); ok {
+				msg["content"] = redactOpenAIContent(ctx, msg["content"], scanner)
+			}
+		}
 	}
-	return json.Marshal(req)
+
+	// Responses API: input (string or array of message objects)
+	if input, ok := m["input"].(string); ok {
+		m["input"] = scanner.Redact(ctx, input)
+	} else if input, ok := m["input"].([]interface{}); ok {
+		for _, raw := range input {
+			if item, ok := raw.(map[string]interface{}); ok {
+				item["content"] = redactOpenAIContent(ctx, item["content"], scanner)
+			}
+		}
+	}
+
+	return json.Marshal(m)
 }
 
 func redactOpenAIContent(ctx context.Context, c interface{}, scanner *classifier.Scanner) interface{} {

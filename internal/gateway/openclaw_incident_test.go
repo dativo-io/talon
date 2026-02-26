@@ -568,6 +568,20 @@ func TestScanResponseForPII_ContentPII_EnvelopePreserved(t *testing.T) {
 			mustNotContain:    []string{"+48505977880"},
 			envelopePreserved: []string{"chatcmpl-mm", "1772057232"},
 		},
+		{
+			name:              "email_in_responses_api_output",
+			body:              `{"id":"resp_abc","output":[{"type":"message","content":[{"type":"output_text","text":"The support email is support@company.eu"}]}],"usage":{"input_tokens":10,"output_tokens":15}}`,
+			wantPIITypes:      []string{"email"},
+			mustNotContain:    []string{"support@company.eu"},
+			envelopePreserved: []string{"resp_abc", `"input_tokens":10`, `"output_tokens":15`},
+		},
+		{
+			name:              "iban_in_responses_api_output",
+			body:              `{"id":"resp_def","output":[{"type":"message","content":[{"type":"output_text","text":"Your IBAN is DE89370400440532013000"}]}],"usage":{"input_tokens":8,"output_tokens":12}}`,
+			wantPIITypes:      []string{"iban"},
+			mustNotContain:    []string{"DE89370400440532013000"},
+			envelopePreserved: []string{"resp_def", `"input_tokens":8`},
+		},
 	}
 
 	for _, tt := range tests {
@@ -637,6 +651,21 @@ func TestExtractResponseContentText_Unit(t *testing.T) {
 			name:     "envelope_numbers_not_extracted",
 			body:     `{"id":"c-1","created":1772057232,"choices":[{"message":{"content":"OK"}}],"usage":{"prompt_tokens":123456789}}`,
 			wantText: "OK",
+		},
+		{
+			name:     "responses_api_output_text",
+			body:     `{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"Hello from Responses API"}]}]}`,
+			wantText: "Hello from Responses API",
+		},
+		{
+			name:     "responses_api_multiple_outputs",
+			body:     `{"id":"resp_2","output":[{"type":"message","content":[{"type":"output_text","text":"First part"}]},{"type":"message","content":[{"type":"output_text","text":" Second part"}]}]}`,
+			wantText: "First part Second part",
+		},
+		{
+			name:     "responses_api_non_text_output_ignored",
+			body:     `{"id":"resp_3","output":[{"type":"function_call","name":"get_weather","arguments":"{}"},{"type":"message","content":[{"type":"output_text","text":"Here is the weather"}]}]}`,
+			wantText: "Here is the weather",
 		},
 	}
 

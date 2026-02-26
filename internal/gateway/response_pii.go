@@ -162,6 +162,25 @@ func extractResponseContentText(body []byte) string {
 		}
 	}
 
+	// OpenAI Responses API: output[].content[].text (type "output_text")
+	if output, ok := m["output"].([]interface{}); ok {
+		for _, item := range output {
+			if obj, ok := item.(map[string]interface{}); ok {
+				if content, ok := obj["content"].([]interface{}); ok {
+					for _, block := range content {
+						if b, ok := block.(map[string]interface{}); ok {
+							if typ, _ := b["type"].(string); typ == "output_text" {
+								if text, ok := b["text"].(string); ok {
+									sb.WriteString(text)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	return sb.String()
 }
 
@@ -218,6 +237,25 @@ func redactResponseContentFields(ctx context.Context, body []byte, scanner *clas
 			if b, ok := block.(map[string]interface{}); ok {
 				if text, ok := b["text"].(string); ok {
 					b["text"] = scanner.Redact(ctx, text)
+				}
+			}
+		}
+	}
+
+	// OpenAI Responses API: output[].content[].text (type "output_text")
+	if output, ok := m["output"].([]interface{}); ok {
+		for _, item := range output {
+			if obj, ok := item.(map[string]interface{}); ok {
+				if content, ok := obj["content"].([]interface{}); ok {
+					for _, block := range content {
+						if b, ok := block.(map[string]interface{}); ok {
+							if typ, _ := b["type"].(string); typ == "output_text" {
+								if text, ok := b["text"].(string); ok {
+									b["text"] = scanner.Redact(ctx, text)
+								}
+							}
+						}
+					}
 				}
 			}
 		}
