@@ -6,7 +6,7 @@ For a Docker-based cloud setup, see the [OpenClaw + Talon primer](openclaw-talon
 
 ## Prerequisites
 
-- Talon installed (`go install github.com/dativo-io/talon/cmd/talon@latest` or a specific tag like `@v0.8.9`, or `curl -sL https://install.gettalon.dev | sh`). On macOS, if `go install` fails with a linker error (e.g. `unsupported tapi file type`), use `CC=/usr/bin/clang go install ...@latest` or `make install` from a clone. If you get a **404 from sum.golang.org** when installing a newly released tag, see the troubleshooting section below.
+- Talon installed (`go install github.com/dativo-io/talon/cmd/talon@latest` or a specific tag like `@v0.8.12`, or `curl -sL https://install.gettalon.dev | sh`). On macOS, if `go install` fails with a linker error (e.g. `unsupported tapi file type`), use `CC=/usr/bin/clang go install ...@latest` or `make install` from a clone. If you get a **404 from sum.golang.org** when installing a newly released tag, see the troubleshooting section below.
 - OpenClaw installed and configured
 - Your real OpenAI (or other provider) API key
 
@@ -120,7 +120,7 @@ You should see new evidence rows; the caller name (e.g. `openclaw-main`) appears
 
 **Troubleshooting**
 
-- **`go install ...@v0.8.9` fails with "reading `https://sum.golang.org/lookup/...` 404 Not Found" or "invalid version: unknown revision"** — The Go checksum database hasn't indexed the new tag yet (common in the first minutes after a release). Install directly from the module and skip checksum verification: `GONOSUMDB=github.com/dativo-io/talon GOPROXY=direct go install github.com/dativo-io/talon/cmd/talon@v0.8.9`. After a few minutes, the normal `go install ...@v0.8.9` usually works without these env vars.
+- **`go install ...@v0.8.12` fails with "reading `https://sum.golang.org/lookup/...` 404 Not Found" or "invalid version: unknown revision"** — The Go checksum database hasn't indexed the new tag yet (common in the first minutes after a release). Install directly from the module and skip checksum verification: `GONOSUMDB=github.com/dativo-io/talon GOPROXY=direct go install github.com/dativo-io/talon/cmd/talon@v0.8.12`. After a few minutes, the normal `go install ...@v0.8.12` usually works without these env vars.
 - **macOS: `go install ...@latest` fails with "unsupported tapi file type '!tapi-tbd'"** — Go is using Homebrew's LLVM; Apple's SDK uses a format that LLVM's linker doesn't support. Use system Clang: `CC=/usr/bin/clang go install github.com/dativo-io/talon/cmd/talon@latest`. Or clone the repo and run `make install`.
 - **`talon serve --gateway` fails with "agent is required" / "policies is required"** — Talon loads `agent.talon.yaml` from the current working directory. Run `talon serve --gateway` from the directory that contains a valid `agent.talon.yaml` (with top-level `agent:` and `policies:` keys). Easiest: use `talon init --pack openclaw` in a new directory so both `agent.talon.yaml` and gateway-enabled `talon.config.yaml` are generated.
 - **OpenClaw reports "Invalid config … models.providers.openai.models"** — The `models` array must contain objects with both `id` and `name` (e.g. `{ "id": "gpt-4o-mini", "name": "gpt-4o-mini" }`). Plain strings or objects with only `id` or only `name` will fail validation.

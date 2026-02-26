@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.12] - 2026-02-26
+
+### Added
+
+- **feat(gateway): attachment scanning for base64-encoded file blocks** (#23). The gateway now detects base64-encoded file blocks in OpenAI (Chat Completions `file`/`image_url` + Responses API `input_file`) and Anthropic (`document`/`image` with `source.type: "base64"`) requests. Text is extracted from supported formats (PDF, TXT, CSV, HTML), scanned for PII and prompt injection, and governed by a new `attachment_policy` with four actions: `allow`, `warn` (default — log findings, forward unchanged), `strip` (remove file blocks before forwarding), `block` (reject request with HTTP 400). Per-caller overrides via `policy_overrides.attachment_policy`. Images are logged for evidence but skip text-based scanning.
+- **feat(gateway): enforce PII actions on streaming responses**. `handleStreamingPIIScan` now buffers the SSE stream, scans the completed content, and either forwards as-is (`warn`), rewrites the SSE payload with redacted content (`redact`), or returns HTTP 451 (`block`). Default `response_pii_action` is `warn`.
+
+### Changed
+
+- **refactor(gateway): decompose `openclaw_incident_test.go` by testing pyramid**. The 1134-line monolith is now split into layered test files: `gateway_test_helpers_test.go`, `response_pii_test.go`, `extract_test.go`, `forward_test.go`, `gateway_integration_test.go`, `responses_api_test.go`, `evidence_test.go`.
+
+### Test
+
+- **test(gateway):** Extensive attachment scanning coverage: multi-file requests, size/type enforcement, Responses API `input_file`, Anthropic base64 document/image blocks, multi-turn string content tolerance, corrupt/empty/unsupported formats, warn/strip/block/allow modes, per-caller override propagation, and full gateway integration tests.
+- **test(attachment):** PDF extraction tests with `buildTestPDF` helper generating valid PDFs; `ExtractBytesWithLimit` override tests.
+- **test(gateway):** Streaming response PII tests covering warn/redact/block behaviours with real SSE format.
+
 ## [0.8.11] - 2026-02-26
 
 ### Fixed
@@ -213,7 +230,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v0.8.12...HEAD
+[0.8.12]: https://github.com/dativo-io/talon/compare/v0.8.11...v0.8.12
+[0.8.11]: https://github.com/dativo-io/talon/compare/v0.8.10...v0.8.11
+[0.8.10]: https://github.com/dativo-io/talon/compare/v0.8.9...v0.8.10
+[0.8.9]: https://github.com/dativo-io/talon/compare/v0.8.8...v0.8.9
+[0.8.8]: https://github.com/dativo-io/talon/compare/v0.8.7...v0.8.8
+[0.8.7]: https://github.com/dativo-io/talon/compare/v0.8.6...v0.8.7
+[0.8.6]: https://github.com/dativo-io/talon/compare/v0.8.5...v0.8.6
+[0.8.5]: https://github.com/dativo-io/talon/compare/v0.8.4...v0.8.5
+[0.8.4]: https://github.com/dativo-io/talon/compare/v0.8.2...v0.8.4
+[0.8.2]: https://github.com/dativo-io/talon/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/dativo-io/talon/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/dativo-io/talon/compare/v0.7.6...v0.8.0
 [0.7.6]: https://github.com/dativo-io/talon/compare/v0.7.5...v0.7.6
