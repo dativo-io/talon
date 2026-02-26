@@ -161,16 +161,18 @@ Talon detects destructive operations via configurable pattern matching in `capab
 
 Rate limits are enforced per caller identity. The `per_caller_requests_per_min` field in the gateway config caps how many requests a single caller (e.g. `openclaw-main`) can make per minute. The default is 60 RPM. Global limits (`global_requests_per_min`) apply across all callers.
 
-### Response PII redaction
+### Response PII scanning
 
-Talon scans LLM responses **before** returning them to the caller. Configure via `response_pii_action` in `default_policy` or per-caller `policy_overrides`:
+Talon scans LLM responses **before** returning them to the caller, including streaming (SSE) responses. Configure via `response_pii_action` in `default_policy` or per-caller `policy_overrides`:
 
 | Action | Behaviour |
 |--------|-----------|
-| `allow` | No scanning (default) |
-| `warn` | Log PII detection to evidence, forward unchanged |
-| `redact` | Replace PII in the response with `[REDACTED]` |
-| `block` | Replace the entire response with a policy violation error |
+| `allow` | No scanning |
+| `warn` | Log PII detection to evidence, forward unchanged **(default)** |
+| `redact` | Replace PII in the response with `[REDACTED]` (works for both streaming and non-streaming) |
+| `block` | Reject the response with HTTP 451 and a policy violation error |
+
+The default is `warn` because LLM-generated content is not company data — the primary compliance value is the audit trail. Escalate to `redact` or `block` if your environment requires active response filtering.
 
 Test it with a prompt that asks the model to generate a German IBAN:
 
@@ -183,7 +185,8 @@ curl -s http://localhost:8080/v1/proxy/openai/v1/chat/completions \
     "model": "gpt-4o-mini",
     "messages": [{"role":"user","content":"Generate a sample German IBAN for testing."}]
   }' | jq '.choices[0].message.content'
-# With response_pii_action: "redact", the IBAN in the response is replaced with [REDACTED]
+# With response_pii_action: "warn" (default), the response passes through and PII is logged in evidence.
+# With response_pii_action: "redact", the IBAN in the response is replaced with [REDACTED].
 ```
 
 ### Circuit breaker

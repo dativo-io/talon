@@ -64,10 +64,9 @@ talon audit export --from <start_time> --to <end_time> --format json
 **Remediate:**
 
 1. Escalate the `response_pii_action` in the agent's policy:
-   - `"warn"` → `"redact"` (strips PII from responses, logs original in evidence)
-   - `"redact"` → `"block"` (rejects the entire response)
+   - `"warn"` → `"redact"` (strips PII from responses, works for both streaming and non-streaming)
+   - `"redact"` → `"block"` (rejects the entire response with HTTP 451)
 2. Review `tool_policies` for any tools configured with `pii_action: "audit"` — determine whether they should be upgraded to `"redact"`.
-3. Check for streaming boundary PII: the post-completion scanner catches PII that spans chunk boundaries. If these alerts are frequent, consider switching the agent to non-streaming mode.
 
 ---
 

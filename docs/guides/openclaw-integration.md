@@ -152,10 +152,26 @@ echo "=== Processes ===" && ps aux | grep -E 'talon|openclaw' | grep -v grep
 Edit your gateway config and add or adjust `callers` and `policy_overrides`:
 
 - `max_daily_cost` / `max_monthly_cost` — cost caps per caller
-- `pii_action` — `block`, `redact`, `warn`, or `allow` when PII is detected
+- `pii_action` — `block`, `redact`, `warn`, or `allow` when PII is detected in **requests**
+- `response_pii_action` — same actions for PII in **LLM responses** (default: `warn`)
 - `allowed_models` — restrict which models this caller can use
 
 Restart `talon serve --gateway` after config changes.
+
+#### Response PII scanning
+
+Talon scans LLM responses before returning them to the caller. This works for both streaming (SSE) and non-streaming responses — the gateway buffers the stream, scans the completed response, then forwards the original or redacted version.
+
+The default `response_pii_action` is **`warn`** because LLM-generated content is not company data. The real DLP boundary is the request path (where company data enters the LLM). Response scanning provides an audit trail that satisfies EU AI Act Art. 14 (human oversight) without breaking UX.
+
+| Action | Behaviour |
+|--------|-----------|
+| `allow` | No scanning |
+| `warn` | Log PII to evidence, forward unchanged **(default)** |
+| `redact` | Replace PII with `[REDACTED]` in the response (streaming and non-streaming) |
+| `block` | Reject the response with HTTP 451 |
+
+Escalation ladder when needed: `warn` → `redact` → `block`. Configure in `default_policy.response_pii_action` or per-caller via `policy_overrides.response_pii_action`.
 
 ### 7. Monitor and respond
 
@@ -201,7 +217,7 @@ For a complete incident response workflow, see the [Incident Response Playbook](
 
 | Failure mode | Talon defense | Config / control |
 |---|---|---|
-| LLM returns PII in response | Response-path PII scanning | `pii_action: redact` or `block` in gateway config |
+| LLM returns PII in response | Response-path PII scanning (streaming + non-streaming) | `response_pii_action: warn` (default), escalate to `redact` or `block` |
 | Agent calls destructive tool | Destructive operation detection | `tool_access.rego` blocks `delete`, `drop`, `remove` patterns |
 | Runaway cost accumulation | Per-caller cost caps | `max_daily_cost`, `max_monthly_cost` in caller config |
 | Repeated policy denials (bug loop) | Circuit breaker with half-open recovery | Automatic after configurable denial threshold |

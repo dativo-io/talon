@@ -333,66 +333,6 @@ func redactContentField(ctx context.Context, c interface{}, scanner *classifier.
 	return c
 }
 
-// scanSSEChunkForPII scans a single SSE chunk's content field for PII.
-// Returns the (possibly modified) chunk and whether PII was found.
-// Scaffolding for streaming PII scanning (Gap F Phase 2).
-//
-//nolint:unused // scaffolding for streaming PII scanning
-func scanSSEChunkForPII(ctx context.Context, chunk []byte, action string, scanner *classifier.Scanner) ([]byte, bool) {
-	if scanner == nil || action == "allow" || action == "" {
-		return chunk, false
-	}
-
-	lines := bytes.Split(chunk, []byte("\n"))
-	modified := false
-	piiFound := false
-	for i, line := range lines {
-		trimmed := bytes.TrimSpace(line)
-		if !bytes.HasPrefix(trimmed, []byte("data: ")) {
-			continue
-		}
-		payload := bytes.TrimPrefix(trimmed, []byte("data: "))
-		payload = bytes.TrimSpace(payload)
-		if bytes.Equal(payload, []byte("[DONE]")) {
-			continue
-		}
-
-		var m map[string]interface{}
-		if err := json.Unmarshal(payload, &m); err != nil {
-			continue
-		}
-
-		content := extractContentFromSSE(m)
-		if content == "" {
-			continue
-		}
-
-		cls := scanner.Scan(ctx, content)
-		if cls == nil || !cls.HasPII {
-			continue
-		}
-		piiFound = true
-
-		if action == "redact" {
-			redacted := scanner.Redact(ctx, content)
-			if redacted != content {
-				setContentInSSE(m, redacted)
-				newPayload, err := json.Marshal(m)
-				if err == nil {
-					lines[i] = []byte("data: " + string(newPayload))
-					modified = true
-				}
-			}
-		}
-	}
-
-	if modified {
-		return bytes.Join(lines, []byte("\n")), piiFound
-	}
-	return chunk, piiFound
-}
-
-//nolint:unused // scaffolding for streaming PII scanning
 func extractContentFromSSE(m map[string]interface{}) string {
 	// OpenAI: choices[0].delta.content
 	if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
@@ -413,22 +353,6 @@ func extractContentFromSSE(m map[string]interface{}) string {
 	return ""
 }
 
-//nolint:unused // scaffolding for streaming PII scanning
-func setContentInSSE(m map[string]interface{}, content string) {
-	if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
-		if choice, ok := choices[0].(map[string]interface{}); ok {
-			if delta, ok := choice["delta"].(map[string]interface{}); ok {
-				delta["content"] = content
-			}
-		}
-	}
-	if delta, ok := m["delta"].(map[string]interface{}); ok {
-		if _, ok := delta["text"]; ok {
-			delta["text"] = content
-		}
-	}
-}
-
 // isStreamingRequest checks if the request body asks for streaming.
 func isStreamingRequest(body []byte) bool {
 	var m map[string]interface{}
@@ -439,18 +363,16 @@ func isStreamingRequest(body []byte) bool {
 	return ok && v
 }
 
-// handleStreamingPIIScan processes a buffered SSE stream for PII scanning.
+// handleStreamingPIIScan implements scan-first PII handling for buffered SSE
+// streams. The entire response is already buffered in capture, so we extract
+// content, scan for PII, then decide what to forward:
 //
-// Streaming PII redaction is fundamentally limited: the client (e.g. OpenClaw)
-// builds content from delta events, so we can't replace content after the fact
-// without reconstructing the full SSE event sequence — which is fragile and
-// client-specific. Instead we take a forward-first approach:
-//
-//  1. Always forward the original buffered SSE events to the client (preserving UX).
-//  2. Post-completion, extract content and scan for PII.
-//  3. Record findings in evidence for compliance auditing.
-//
-// Non-streaming requests still get full redaction/blocking via scanResponseForPII.
+//   - allow / no scanner: forward original buffered events as-is.
+//   - No PII found: forward original (zero latency penalty for clean responses).
+//   - warn + PII: forward original, log findings for evidence.
+//   - redact + PII + completedJSON: redact content, re-wrap in SSE, forward redacted.
+//   - redact + PII + delta-only: forward original + log (no structured JSON to redact).
+//   - block + PII: return JSON error, discard original stream.
 func handleStreamingPIIScan(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -460,14 +382,11 @@ func handleStreamingPIIScan(
 ) *ResponsePIIScanResult {
 	raw := capture.body.Bytes()
 
-	// Always forward the original SSE stream first — the client needs it.
-	forwardBufferedSSE(w, capture)
-
-	if scanner == nil {
+	if scanner == nil || action == "allow" || action == "" {
+		forwardBufferedSSE(w, capture)
 		return nil
 	}
 
-	// Extract content from the completed response or accumulated deltas.
 	completedJSON := extractCompletedResponseFromSSE(raw)
 	contentText := ""
 	if completedJSON != nil {
@@ -477,11 +396,13 @@ func handleStreamingPIIScan(
 		contentText = accumulateSSEContent(raw)
 	}
 	if contentText == "" {
+		forwardBufferedSSE(w, capture)
 		return nil
 	}
 
 	cls := scanner.Scan(ctx, contentText)
 	if cls == nil || !cls.HasPII {
+		forwardBufferedSSE(w, capture)
 		return &ResponsePIIScanResult{PIIDetected: false}
 	}
 
@@ -493,17 +414,42 @@ func handleStreamingPIIScan(
 	for t := range types {
 		piiTypes = append(piiTypes, t)
 	}
+	result := &ResponsePIIScanResult{PIIDetected: true, PIITypes: piiTypes}
 
-	log.Warn().
-		Str("action", action).
-		Strs("pii_types", piiTypes).
-		Msg("response_pii_detected_in_stream (audit only — streaming prevents inline redaction)")
+	switch action {
+	case "warn":
+		forwardBufferedSSE(w, capture)
+		log.Warn().
+			Strs("pii_types", piiTypes).
+			Msg("response_pii_detected_warn_stream")
 
-	return &ResponsePIIScanResult{
-		PIIDetected: true,
-		PIITypes:    piiTypes,
-		Redacted:    false,
+	case "redact":
+		if completedJSON != nil {
+			redacted := redactResponseContentFields(ctx, completedJSON, scanner)
+			forwardRedactedAsSSE(w, capture, completedJSON, redacted)
+			result.Redacted = true
+			log.Info().
+				Strs("pii_types", piiTypes).
+				Msg("response_pii_redacted_stream")
+		} else {
+			forwardBufferedSSE(w, capture)
+			log.Warn().
+				Strs("pii_types", piiTypes).
+				Msg("response_pii_detected_stream_delta_only")
+		}
+
+	case "block":
+		forwardBlockedResponse(w)
+		result.Redacted = true
+		log.Warn().
+			Strs("pii_types", piiTypes).
+			Msg("response_pii_blocked_stream")
+
+	default:
+		forwardBufferedSSE(w, capture)
 	}
+
+	return result
 }
 
 // forwardBufferedSSE writes the original buffered SSE events to the client.
@@ -513,6 +459,57 @@ func forwardBufferedSSE(w http.ResponseWriter, capture *responseCapture) {
 	}
 	//nolint:gosec // G705: forwarding buffered upstream SSE response
 	_, _ = w.Write(capture.body.Bytes())
+}
+
+// forwardRedactedAsSSE wraps redacted response JSON in SSE format and writes
+// it to the client. For Responses API payloads (detected by the presence of an
+// "output" key), wraps in an event: response.completed envelope. For other
+// formats, sends as a plain data: event.
+func forwardRedactedAsSSE(w http.ResponseWriter, capture *responseCapture, originalJSON, redactedJSON []byte) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	if capture.statusCode != 0 {
+		w.WriteHeader(capture.statusCode)
+	}
+
+	var buf bytes.Buffer
+	var m map[string]interface{}
+	isResponsesAPI := false
+	if json.Unmarshal(originalJSON, &m) == nil {
+		_, isResponsesAPI = m["output"]
+	}
+
+	if isResponsesAPI {
+		wrapper, _ := json.Marshal(map[string]interface{}{
+			"type":     "response.completed",
+			"response": json.RawMessage(redactedJSON),
+		})
+		buf.WriteString("event: response.completed\ndata: ")
+		buf.Write(wrapper)
+		buf.WriteString("\n\n")
+	} else {
+		buf.WriteString("data: ")
+		buf.Write(redactedJSON)
+		buf.WriteString("\n\n")
+	}
+	buf.WriteString("data: [DONE]\n\n")
+	//nolint:gosec // G705: forwarding redacted SSE response
+	_, _ = w.Write(buf.Bytes())
+}
+
+// forwardBlockedResponse writes a JSON error for blocked streaming requests.
+// Since the SSE stream was buffered (never written to w), we can override
+// Content-Type and set an appropriate status code.
+func forwardBlockedResponse(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnavailableForLegalReasons)
+	safeErr, _ := json.Marshal(map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": "Response blocked: contains PII that violates policy",
+			"type":    "pii_policy_violation",
+		},
+	})
+	//nolint:gosec // G705: error response body (JSON), not HTML
+	_, _ = w.Write(safeErr)
 }
 
 // extractCompletedResponseFromSSE finds the response.completed event or the
