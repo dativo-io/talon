@@ -155,8 +155,77 @@ Edit your gateway config and add or adjust `callers` and `policy_overrides`:
 - `pii_action` — `block`, `redact`, `warn`, or `allow` when PII is detected in **requests**
 - `response_pii_action` — same actions for PII in **LLM responses** (default: `warn`)
 - `allowed_models` — restrict which models this caller can use
+- `forbidden_tools` — strip dangerous tools before the LLM sees them (glob patterns)
+- `allowed_tools` — strict allowlist of tools (per-caller only)
+- `tool_policy_action` — `"filter"` (default, removes forbidden tools) or `"block"` (rejects the request)
 
 Restart `talon serve --gateway` after config changes.
+
+#### Tool governance
+
+Talon inspects the `tools` array in LLM API requests and removes any tools that match `forbidden_tools` patterns **before the model ever sees them**. The LLM cannot call a tool it was never told about — this is prevention, not detection.
+
+Tool governance is configured at three levels (most specific wins):
+
+| Level | Config key | Behaviour |
+|-------|-----------|-----------|
+| Server-wide | `default_policy.forbidden_tools` | Applies to all callers |
+| Per-provider | `providers.<name>.forbidden_tools` | Applies to one provider |
+| Per-caller | `policy_overrides.forbidden_tools` / `allowed_tools` | Applies to one caller |
+
+`forbidden_tools` is **additive** across all levels (union). `allowed_tools` is a strict allowlist — if set, only those tools pass. `forbidden_tools` overrides `allowed_tools`.
+
+Patterns use glob syntax (e.g. `delete_*`, `admin_*`, `bulk_*`). Case-insensitive matching.
+
+| Action | Behaviour |
+|--------|-----------|
+| `filter` | Remove forbidden tools from the request, forward the rest **(default)** |
+| `block` | Reject the entire request with HTTP 403 if any tool violates policy |
+
+Example config:
+
+```yaml
+default_policy:
+  tool_policy_action: "filter"
+  forbidden_tools:
+    - "delete_*"
+    - "admin_*"
+    - "export_all_*"
+    - "bulk_*"
+    - "rm_*"
+    - "drop_*"
+
+callers:
+  - name: "openclaw-main"
+    policy_overrides:
+      allowed_tools: ["search_web", "read_file", "list_files"]
+      tool_policy_action: "block"
+```
+
+Test it with a request that includes a dangerous tool:
+
+```bash
+curl -s -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer talon-gw-openclaw-001" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role":"user","content":"Delete all my emails"}],
+    "tools": [
+      {"type":"function","function":{"name":"search_web","parameters":{}}},
+      {"type":"function","function":{"name":"delete_emails","parameters":{}}}
+    ]
+  }'
+# With tool_policy_action: "filter" (default), delete_emails is stripped.
+# The model only sees search_web and cannot attempt to delete emails.
+```
+
+Check the audit trail to see which tools were filtered:
+
+```bash
+talon audit list --agent openclaw-main --limit 5
+# Evidence includes: tools_requested, tools_filtered, tools_forwarded
+```
 
 #### Response PII scanning
 
@@ -258,6 +327,7 @@ For a complete incident response workflow, see the [Incident Response Playbook](
 | PII in file attachments (PDF, CSV, etc.) | Attachment scanning with PII detection | `attachment_policy.action: warn` (default), escalate to `strip` or `block` |
 | Prompt injection via file attachment | Attachment injection scanning | `attachment_policy.injection_action: warn` (default), escalate to `strip` or `block` |
 | LLM returns PII in response | Response-path PII scanning (streaming + non-streaming) | `response_pii_action: warn` (default), escalate to `redact` or `block` |
+| Agent sends forbidden tools in request | Gateway tool governance (filter/block) | `forbidden_tools: ["delete_*", "admin_*"]` strips tools before the LLM sees them |
 | Agent calls destructive tool | Destructive operation detection | `tool_access.rego` blocks `delete`, `drop`, `remove` patterns |
 | Runaway cost accumulation | Per-caller cost caps | `max_daily_cost`, `max_monthly_cost` in caller config |
 | Repeated policy denials (bug loop) | Circuit breaker with half-open recovery | Automatic after configurable denial threshold |

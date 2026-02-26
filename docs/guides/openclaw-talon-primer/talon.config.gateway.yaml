@@ -37,6 +37,16 @@ gateway:
     require_caller_id: true
     log_prompts: true
     log_responses: false
+    # Tool governance: strip dangerous tools from LLM requests before the model sees them.
+    # "filter" (default) removes forbidden tools; "block" rejects the entire request.
+    tool_policy_action: "filter"
+    forbidden_tools:
+      - "delete_*"
+      - "admin_*"
+      - "export_all_*"
+      - "bulk_*"
+      - "rm_*"
+      - "drop_*"
     # Attachment scanning: scans base64-encoded files (PDF, TXT, CSV, HTML)
     # in LLM API requests for PII and prompt injection.
     attachment_policy:
@@ -53,11 +63,8 @@ gateway:
     request_timeout: 120s
     stream_idle_timeout: 60s
 
-# NOTE: Per-tool PII policies (tool_policies) and circuit breaker settings are
-# configured in the agent .talon.yaml policy (agent.talon.yaml), not in the
-# gateway config. The gateway governs LLM API traffic; the agent runner governs
-# tool execution. See agent.talon.yaml for:
-#   tool_policies:      per-tool, per-argument PII actions (allow|audit|redact|block)
-#   rate_limits:
-#     circuit_breaker_threshold: 5
-#     circuit_breaker_window: "60s"
+# Tool governance controls which tools the LLM is told about — before it ever
+# tries to call one. forbidden_tools patterns (glob) are merged across
+# default_policy, provider, and per-caller policy_overrides. allowed_tools on
+# a caller act as a strict allowlist (only those tools pass through).
+# See docs/guides/openclaw-integration.md for the full tool governance guide.
