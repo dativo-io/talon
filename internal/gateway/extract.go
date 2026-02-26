@@ -98,7 +98,8 @@ func openAIContentToText(c interface{}) string {
 		var sb strings.Builder
 		for _, part := range v {
 			if m, ok := part.(map[string]interface{}); ok {
-				if typ, _ := m["type"].(string); typ == "text" {
+				typ, _ := m["type"].(string)
+				if typ == "text" || typ == "input_text" || typ == "output_text" {
 					if text, _ := m["text"].(string); text != "" {
 						sb.WriteString(text)
 					}
@@ -218,13 +219,15 @@ func redactOpenAIBody(ctx context.Context, body []byte, scanner *classifier.Scan
 		}
 	}
 
-	// Responses API: input (string or array of message objects)
+	// Responses API: input (string or array of message/reference items)
 	if input, ok := m["input"].(string); ok {
 		m["input"] = scanner.Redact(ctx, input)
 	} else if input, ok := m["input"].([]interface{}); ok {
 		for _, raw := range input {
 			if item, ok := raw.(map[string]interface{}); ok {
-				item["content"] = redactOpenAIContent(ctx, item["content"], scanner)
+				if c, exists := item["content"]; exists {
+					item["content"] = redactOpenAIContent(ctx, c, scanner)
+				}
 			}
 		}
 	}
@@ -243,7 +246,8 @@ func redactOpenAIContent(ctx context.Context, c interface{}, scanner *classifier
 		out := make([]interface{}, len(v))
 		for i, part := range v {
 			if m, ok := part.(map[string]interface{}); ok {
-				if typ, _ := m["type"].(string); typ == "text" {
+				typ, _ := m["type"].(string)
+				if typ == "text" || typ == "input_text" || typ == "output_text" {
 					if text, _ := m["text"].(string); text != "" {
 						m["text"] = scanner.Redact(ctx, text)
 					}

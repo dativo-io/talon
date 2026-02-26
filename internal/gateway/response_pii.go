@@ -138,7 +138,7 @@ func extractResponseContentText(body []byte) string {
 
 	var sb strings.Builder
 
-	// OpenAI: choices[].message.content (string or array of content blocks)
+	// OpenAI Chat Completions: choices[].message.content
 	if choices, ok := m["choices"].([]interface{}); ok {
 		for _, c := range choices {
 			choice, ok := c.(map[string]interface{})
@@ -152,36 +152,57 @@ func extractResponseContentText(body []byte) string {
 	}
 
 	// Anthropic: content[].text
-	if content, ok := m["content"].([]interface{}); ok {
+	extractAnthropicContentText(m, &sb)
+
+	// OpenAI Responses API: output[].content[].text (type "output_text")
+	extractResponsesOutputText(m, &sb)
+
+	return sb.String()
+}
+
+// extractAnthropicContentText appends Anthropic content[].text blocks.
+func extractAnthropicContentText(m map[string]interface{}, sb *strings.Builder) {
+	content, ok := m["content"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, block := range content {
+		if b, ok := block.(map[string]interface{}); ok {
+			if text, ok := b["text"].(string); ok {
+				sb.WriteString(text)
+			}
+		}
+	}
+}
+
+// extractResponsesOutputText appends text from OpenAI Responses API
+// output[].content[] blocks of type "output_text".
+func extractResponsesOutputText(m map[string]interface{}, sb *strings.Builder) {
+	output, ok := m["output"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, item := range output {
+		obj, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, ok := obj["content"].([]interface{})
+		if !ok {
+			continue
+		}
 		for _, block := range content {
-			if b, ok := block.(map[string]interface{}); ok {
+			b, ok := block.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if typ, _ := b["type"].(string); typ == "output_text" {
 				if text, ok := b["text"].(string); ok {
 					sb.WriteString(text)
 				}
 			}
 		}
 	}
-
-	// OpenAI Responses API: output[].content[].text (type "output_text")
-	if output, ok := m["output"].([]interface{}); ok {
-		for _, item := range output {
-			if obj, ok := item.(map[string]interface{}); ok {
-				if content, ok := obj["content"].([]interface{}); ok {
-					for _, block := range content {
-						if b, ok := block.(map[string]interface{}); ok {
-							if typ, _ := b["type"].(string); typ == "output_text" {
-								if text, ok := b["text"].(string); ok {
-									sb.WriteString(text)
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return sb.String()
 }
 
 // contentFieldToText converts an OpenAI message content field (string or
@@ -218,7 +239,7 @@ func redactResponseContentFields(ctx context.Context, body []byte, scanner *clas
 		return body
 	}
 
-	// OpenAI: choices[].message.content
+	// OpenAI Chat Completions: choices[].message.content
 	if choices, ok := m["choices"].([]interface{}); ok {
 		for _, c := range choices {
 			choice, ok := c.(map[string]interface{})
@@ -232,40 +253,61 @@ func redactResponseContentFields(ctx context.Context, body []byte, scanner *clas
 	}
 
 	// Anthropic: content[].text
-	if content, ok := m["content"].([]interface{}); ok {
-		for _, block := range content {
-			if b, ok := block.(map[string]interface{}); ok {
-				if text, ok := b["text"].(string); ok {
-					b["text"] = scanner.Redact(ctx, text)
-				}
-			}
-		}
-	}
+	redactAnthropicResponseContent(ctx, m, scanner)
 
 	// OpenAI Responses API: output[].content[].text (type "output_text")
-	if output, ok := m["output"].([]interface{}); ok {
-		for _, item := range output {
-			if obj, ok := item.(map[string]interface{}); ok {
-				if content, ok := obj["content"].([]interface{}); ok {
-					for _, block := range content {
-						if b, ok := block.(map[string]interface{}); ok {
-							if typ, _ := b["type"].(string); typ == "output_text" {
-								if text, ok := b["text"].(string); ok {
-									b["text"] = scanner.Redact(ctx, text)
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
+	redactResponsesOutputContent(ctx, m, scanner)
 
 	out, err := json.Marshal(m)
 	if err != nil {
 		return body
 	}
 	return out
+}
+
+// redactAnthropicResponseContent redacts PII in Anthropic response content[].text blocks.
+func redactAnthropicResponseContent(ctx context.Context, m map[string]interface{}, scanner *classifier.Scanner) {
+	content, ok := m["content"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, block := range content {
+		if b, ok := block.(map[string]interface{}); ok {
+			if text, ok := b["text"].(string); ok {
+				b["text"] = scanner.Redact(ctx, text)
+			}
+		}
+	}
+}
+
+// redactResponsesOutputContent redacts PII in OpenAI Responses API
+// output[].content[] blocks of type "output_text".
+func redactResponsesOutputContent(ctx context.Context, m map[string]interface{}, scanner *classifier.Scanner) {
+	output, ok := m["output"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, item := range output {
+		obj, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, ok := obj["content"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, block := range content {
+			b, ok := block.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if typ, _ := b["type"].(string); typ == "output_text" {
+				if text, ok := b["text"].(string); ok {
+					b["text"] = scanner.Redact(ctx, text)
+				}
+			}
+		}
+	}
 }
 
 // redactContentField redacts PII in an OpenAI content field (string or array).

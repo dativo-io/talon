@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-02-26
+
+### Fixed
+
+- **fix(gateway):** Refactored `extractResponseContentText` and `redactResponseContentFields` in `response_pii.go` to reduce cyclomatic complexity below the linter threshold (gocyclo > 15). Extracted Anthropic and Responses API parsing into dedicated helpers.
+- **fix(gateway):** `redactOpenAIBody` no longer injects `content: null` into Responses API `input` array items that have no `content` field (e.g. `item_reference` entries). Previously this caused `400 Unknown parameter: 'input[N].content'` from OpenAI.
+- **fix(gateway):** `openAIContentToText` and `redactOpenAIContent` now recognize `input_text` and `output_text` block types in addition to `text`, covering all Responses API content block formats.
+
+### Test
+
+- **test(gateway):** Added 8 full-pipeline integration tests for the Responses API path: request PII redaction (string input, array content, input_text blocks), item_reference preservation (no content:null injection), response PII redaction and blocking, clean passthrough, and block-mode request rejection. These tests exercise the complete gateway handler including routing, store:true injection, PII scanning, evidence recording, and upstream forwarding.
+
 ## [0.8.8] - 2026-02-26
 
 ### Fixed

@@ -141,6 +141,24 @@ func TestRedactRequestBody(t *testing.T) {
 		require.Contains(t, string(redacted), `"previous_response_id":"rs_abc"`)
 		require.NotContains(t, string(redacted), "alice@test.com")
 	})
+
+	t.Run("responses_api_input_text_blocks", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-4o","input":[{"role":"user","content":[{"type":"input_text","text":"Email bob@test.eu now"}]}]}`)
+		redacted, err := RedactRequestBody(ctx, "openai", body, scanner)
+		require.NoError(t, err)
+		require.NotContains(t, string(redacted), "bob@test.eu")
+		require.Contains(t, string(redacted), "[EMAIL]")
+	})
+
+	t.Run("responses_api_no_content_on_reference_items", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-4o","input":[{"type":"item_reference","id":"rs_abc123"},{"role":"user","content":"Email alice@test.com"}],"previous_response_id":"rs_prev"}`)
+		redacted, err := RedactRequestBody(ctx, "openai", body, scanner)
+		require.NoError(t, err)
+		require.NotContains(t, string(redacted), "alice@test.com")
+		require.Contains(t, string(redacted), "item_reference")
+		require.Contains(t, string(redacted), "rs_abc123")
+		require.NotContains(t, string(redacted), `"content":null`, "must not add content:null to items that had no content field")
+	})
 }
 
 func TestExtractOpenAI_ResponsesAPI(t *testing.T) {
