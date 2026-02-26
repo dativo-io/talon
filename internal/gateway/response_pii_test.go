@@ -486,6 +486,65 @@ func TestGateway_ResponsePII_NoPIIInContent_NoFalsePositive(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Unit tests — extractCompletedResponseFromSSE / isCompleteResponsePayload
+// ---------------------------------------------------------------------------
+
+func TestExtractCompletedResponseFromSSE_DeltaOnly(t *testing.T) {
+	// Chat Completions streaming: all chunks use "delta", final chunk has
+	// empty delta + finish_reason. extractCompletedResponseFromSSE must
+	// return nil so that handleStreamingPIIScan falls through to delta
+	// accumulation instead of trying to redact the empty final chunk.
+	stream := `data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"Hello "},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"world"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}` + "\n\n" +
+		"data: [DONE]\n\n"
+
+	result := extractCompletedResponseFromSSE([]byte(stream))
+	assert.Nil(t, result,
+		"delta-only Chat Completions stream must return nil (no completed response payload)")
+}
+
+func TestIsCompleteResponsePayload(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want bool
+	}{
+		{
+			name: "delta_chunk_with_content",
+			json: `{"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`,
+			want: false,
+		},
+		{
+			name: "delta_chunk_finish_reason",
+			json: `{"id":"chatcmpl-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10}}`,
+			want: false,
+		},
+		{
+			name: "complete_response_with_message",
+			json: `{"id":"chatcmpl-test","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}]}`,
+			want: true,
+		},
+		{
+			name: "responses_api_with_output",
+			json: `{"id":"resp_test","output":[{"type":"message","content":[{"type":"output_text","text":"Hello"}]}]}`,
+			want: true,
+		},
+		{
+			name: "usage_only_empty_choices",
+			json: `{"id":"chatcmpl-test","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}`,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isCompleteResponsePayload([]byte(tt.json))
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Chat Completions streaming (delta-based SSE) — PII scanning
 // ---------------------------------------------------------------------------
 
