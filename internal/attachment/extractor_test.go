@@ -261,6 +261,19 @@ func TestExtractBytes(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "exceeds limit")
 	})
+	t.Run("ExtractBytesWithLimit overrides default", func(t *testing.T) {
+		small := NewExtractor(1) // default 1 MB
+		data := make([]byte, 2*1024*1024)
+		copy(data, "hello")
+
+		_, err := small.ExtractBytesWithLimit(ctx, "big.txt", data, 0)
+		require.Error(t, err, "maxSizeMB=0 falls back to default 1 MB")
+		assert.Contains(t, err.Error(), "exceeds limit")
+
+		got, err := small.ExtractBytesWithLimit(ctx, "big.txt", data, 3)
+		require.NoError(t, err, "maxSizeMB=3 allows a 2 MB file")
+		assert.Contains(t, got, "hello")
+	})
 }
 
 // ---------------------------------------------------------------------------

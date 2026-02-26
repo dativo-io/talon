@@ -163,7 +163,7 @@ func scanSingleFileBlock(
 		return result
 	}
 
-	text, err := extractor.ExtractBytes(ctx, fb.Filename, fb.Data)
+	text, err := extractor.ExtractBytesWithLimit(ctx, fb.Filename, fb.Data, policy.MaxFileSizeMB)
 	if err != nil {
 		log.Warn().Err(err).Str("filename", fb.Filename).Msg("attachment_extract_failed")
 		result.ActionTaken = decideOnExtractFailure(policy)

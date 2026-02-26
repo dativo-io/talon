@@ -428,6 +428,46 @@ func TestScanRequestAttachments_FileSizeExceeded_BlockMode(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Regression: per-caller override allows a larger file than the extractor default.
+// Before the fix, ExtractBytes enforced the extractor's default limit, silently
+// skipping PII/injection scanning for files between the two limits.
+// ---------------------------------------------------------------------------
+
+func TestScanRequestAttachments_CallerOverrideLargerThanExtractorDefault(t *testing.T) {
+	defaultMaxMB := 1
+	callerMaxMB := 3
+	fileSizeMB := 2
+
+	extractor := attachment.NewExtractor(defaultMaxMB)
+	piiScanner := classifier.MustNewScanner()
+	injScanner := newTestInjScanner(t)
+
+	fileContent := make([]byte, fileSizeMB*1024*1024)
+	copy(fileContent, "Customer IBAN: DE89370400440532013000\nEmail: jan@example.com\n")
+
+	body := []byte(chatCompletionsWithFile("text/plain", "big-report.txt", fileContent))
+	policy := &AttachmentPolicyConfig{
+		Action:          "warn",
+		InjectionAction: "warn",
+		MaxFileSizeMB:   callerMaxMB,
+	}
+
+	result := ScanRequestAttachments(
+		context.Background(), body, "openai",
+		extractor, piiScanner, injScanner, policy,
+	)
+	require.NotNil(t, result)
+	assert.Equal(t, 1, result.FilesScanned)
+	require.Len(t, result.Results, 1)
+
+	r := result.Results[0]
+	assert.True(t, r.TextExtracted, "text must be extracted using the caller's larger limit")
+	assert.True(t, r.PIIFound, "PII in the file must be detected, not silently skipped")
+	assert.NotEmpty(t, r.PIITypes)
+	assert.Equal(t, "allowed", r.ActionTaken, "warn mode does not block")
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests — image passthrough
 // ---------------------------------------------------------------------------
 

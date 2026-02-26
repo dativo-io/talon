@@ -54,11 +54,21 @@ func (e *Extractor) Extract(ctx context.Context, path string) (string, error) {
 // Use this when attachments are already loaded (e.g. from --attach); avoids writing temp files.
 // Same supported formats and size limit as Extract.
 func (e *Extractor) ExtractBytes(ctx context.Context, filename string, content []byte) (string, error) {
+	return e.ExtractBytesWithLimit(ctx, filename, content, 0)
+}
+
+// ExtractBytesWithLimit is like ExtractBytes but allows overriding the size limit.
+// When maxSizeMB > 0 it is used instead of the Extractor's default.
+func (e *Extractor) ExtractBytesWithLimit(ctx context.Context, filename string, content []byte, maxSizeMB int) (string, error) {
 	_, span := tracer.Start(ctx, "attachment.extract_bytes")
 	defer span.End()
 
-	if int64(len(content)) > e.maxSize {
-		return "", fmt.Errorf("content size %d exceeds limit %d bytes", len(content), e.maxSize)
+	limit := e.maxSize
+	if maxSizeMB > 0 {
+		limit = int64(maxSizeMB) * 1024 * 1024
+	}
+	if int64(len(content)) > limit {
+		return "", fmt.Errorf("content size %d exceeds limit %d bytes", len(content), limit)
 	}
 
 	ext := strings.ToLower(filepath.Ext(filename))
