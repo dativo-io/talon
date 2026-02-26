@@ -266,7 +266,7 @@ func TestGateway_ResponsesAPI_BlockRequestPII(t *testing.T) {
 // Streaming tests — SSE responses through the Gateway
 // ---------------------------------------------------------------------------
 
-func TestGateway_ResponsesAPI_StreamingPIIAuditOnly(t *testing.T) {
+func TestGateway_ResponsesAPI_StreamingPIIRedacted(t *testing.T) {
 	respJSON := `{"id":"resp_stream","output":[{"type":"message","content":[{"type":"output_text","text":"aurora@stellarsystems.eu"}]}],"usage":{"input_tokens":10,"output_tokens":5}}`
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -282,10 +282,12 @@ func TestGateway_ResponsesAPI_StreamingPIIAuditOnly(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 
 	respBody := w.Body.String()
-	assert.Contains(t, respBody, "aurora@stellarsystems.eu",
-		"streaming response is forwarded as-is (PII audit only)")
+	assert.NotContains(t, respBody, "aurora@stellarsystems.eu",
+		"email must be redacted in streaming response")
+	assert.Contains(t, respBody, "[EMAIL]",
+		"redaction placeholder must be present")
 	assert.Contains(t, respBody, "response.completed",
-		"original SSE format must be preserved")
+		"SSE format must be preserved with response.completed event")
 	assert.Contains(t, respBody, "[DONE]",
 		"SSE stream must end with [DONE]")
 }
@@ -333,7 +335,7 @@ func TestGateway_StreamingAllowed_WhenPIIActionAllow(t *testing.T) {
 		"stream:true must be preserved when response PII action is allow")
 }
 
-func TestGateway_ResponsesAPI_StreamingPIIBlockAuditOnly(t *testing.T) {
+func TestGateway_ResponsesAPI_StreamingPIIBlocked(t *testing.T) {
 	respJSON := `{"id":"resp_block","output":[{"type":"message","content":[{"type":"output_text","text":"Your IBAN is DE89370400440532013000"}]}],"usage":{"input_tokens":10,"output_tokens":8}}`
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -346,11 +348,36 @@ func TestGateway_ResponsesAPI_StreamingPIIBlockAuditOnly(t *testing.T) {
 
 	body := `{"model":"gpt-4o","input":"What is the IBAN?","stream":true}`
 	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
+	require.Equal(t, http.StatusUnavailableForLegalReasons, w.Code,
+		"block mode must return HTTP 451 for streaming response with PII")
+
+	respBody := w.Body.String()
+	assert.NotContains(t, respBody, "DE89370400440532013000",
+		"IBAN must not appear in blocked response")
+	assert.Contains(t, respBody, "pii_policy_violation",
+		"block response must include violation type")
+}
+
+func TestGateway_ResponsesAPI_StreamingPIIWarn(t *testing.T) {
+	respJSON := `{"id":"resp_warn","output":[{"type":"message","content":[{"type":"output_text","text":"aurora@stellarsystems.eu"}]}],"usage":{"input_tokens":10,"output_tokens":5}}`
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseResponse(respJSON)))
+	})
+
+	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
+	gw.config.DefaultPolicy.ResponsePIIAction = "warn"
+
+	body := `{"model":"gpt-4o","input":"Invent a fictional European email","stream":true}`
+	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
 	require.Equal(t, http.StatusOK, w.Code)
 
 	respBody := w.Body.String()
-	assert.Contains(t, respBody, "DE89370400440532013000",
-		"streaming response forwarded as-is (block mode audits only for SSE)")
+	assert.Contains(t, respBody, "aurora@stellarsystems.eu",
+		"warn mode must forward PII unchanged in streaming response")
 	assert.Contains(t, respBody, "response.completed",
-		"SSE format preserved")
+		"original SSE format must be preserved")
+	assert.Contains(t, respBody, "[DONE]",
+		"SSE stream must end with [DONE]")
 }

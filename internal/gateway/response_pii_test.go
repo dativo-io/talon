@@ -484,3 +484,165 @@ func TestGateway_ResponsePII_NoPIIInContent_NoFalsePositive(t *testing.T) {
 			"no PII in content means no output PII should be detected (envelope must not trigger)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests — extractCompletedResponseFromSSE / isCompleteResponsePayload
+// ---------------------------------------------------------------------------
+
+func TestExtractCompletedResponseFromSSE_DeltaOnly(t *testing.T) {
+	// Chat Completions streaming: all chunks use "delta", final chunk has
+	// empty delta + finish_reason. extractCompletedResponseFromSSE must
+	// return nil so that handleStreamingPIIScan falls through to delta
+	// accumulation instead of trying to redact the empty final chunk.
+	stream := `data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"Hello "},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"world"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}` + "\n\n" +
+		"data: [DONE]\n\n"
+
+	result := extractCompletedResponseFromSSE([]byte(stream))
+	assert.Nil(t, result,
+		"delta-only Chat Completions stream must return nil (no completed response payload)")
+}
+
+func TestIsCompleteResponsePayload(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want bool
+	}{
+		{
+			name: "delta_chunk_with_content",
+			json: `{"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`,
+			want: false,
+		},
+		{
+			name: "delta_chunk_finish_reason",
+			json: `{"id":"chatcmpl-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10}}`,
+			want: false,
+		},
+		{
+			name: "complete_response_with_message",
+			json: `{"id":"chatcmpl-test","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}]}`,
+			want: true,
+		},
+		{
+			name: "responses_api_with_output",
+			json: `{"id":"resp_test","output":[{"type":"message","content":[{"type":"output_text","text":"Hello"}]}]}`,
+			want: true,
+		},
+		{
+			name: "usage_only_empty_choices",
+			json: `{"id":"chatcmpl-test","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}`,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isCompleteResponsePayload([]byte(tt.json))
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Chat Completions streaming (delta-based SSE) — PII scanning
+// ---------------------------------------------------------------------------
+
+// chatCompletionSSE builds a realistic Chat Completions SSE stream from a
+// series of content delta strings, ending with a finish_reason chunk.
+func chatCompletionSSE(deltas ...string) string {
+	var sb strings.Builder
+	for _, d := range deltas {
+		sb.WriteString(`data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"` + d + `"},"finish_reason":null}]}` + "\n\n")
+	}
+	sb.WriteString(`data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}` + "\n\n")
+	sb.WriteString("data: [DONE]\n\n")
+	return sb.String()
+}
+
+func TestGateway_ChatCompletions_StreamingPIIRedacted(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(chatCompletionSSE("Contact ", "jan.kowalski@gmail.com", " for info")))
+	})
+
+	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
+	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"give me the email"}],"stream":true}`
+	w := makeGatewayRequest(gw, body)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	respBody := w.Body.String()
+	assert.NotContains(t, respBody, "jan.kowalski@gmail.com",
+		"email must not appear in delta-based streaming response (redact mode)")
+	assert.Contains(t, respBody, "Contact",
+		"non-PII content should still be present")
+	assert.Contains(t, respBody, "[DONE]",
+		"SSE stream must end with [DONE]")
+}
+
+func TestGateway_ChatCompletions_StreamingPIIBlocked(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(chatCompletionSSE("Your IBAN is ", "DE89370400440532013000")))
+	})
+
+	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
+	gw.config.DefaultPolicy.ResponsePIIAction = "block"
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"what is my IBAN?"}],"stream":true}`
+	w := makeGatewayRequest(gw, body)
+	require.Equal(t, http.StatusUnavailableForLegalReasons, w.Code,
+		"block mode must return HTTP 451 for streaming Chat Completions with PII")
+
+	respBody := w.Body.String()
+	assert.NotContains(t, respBody, "DE89370400440532013000",
+		"IBAN must not appear in blocked response")
+	assert.Contains(t, respBody, "pii_policy_violation",
+		"blocked response must include violation type")
+}
+
+func TestGateway_ChatCompletions_StreamingPIIWarn(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(chatCompletionSSE("Contact ", "jan.kowalski@gmail.com", " for details")))
+	})
+
+	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
+	gw.config.DefaultPolicy.ResponsePIIAction = "warn"
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"give me the contact"}],"stream":true}`
+	w := makeGatewayRequest(gw, body)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	respBody := w.Body.String()
+	assert.Contains(t, respBody, "jan.kowalski@gmail.com",
+		"warn mode must forward PII unchanged in delta-based streaming response")
+	assert.Contains(t, respBody, "[DONE]",
+		"SSE stream must end with [DONE]")
+}
+
+func TestGateway_ChatCompletions_StreamingNoPII(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(chatCompletionSSE("Hello", " world")))
+	})
+
+	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
+	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"say hello"}],"stream":true}`
+	w := makeGatewayRequest(gw, body)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	respBody := w.Body.String()
+	assert.Contains(t, respBody, "Hello",
+		"clean streaming response must pass through")
+	assert.Contains(t, respBody, "world",
+		"all delta content must be forwarded")
+}
