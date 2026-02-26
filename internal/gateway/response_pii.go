@@ -371,7 +371,7 @@ func isStreamingRequest(body []byte) bool {
 //   - No PII found: forward original (zero latency penalty for clean responses).
 //   - warn + PII: forward original, log findings for evidence.
 //   - redact + PII + completedJSON: redact content, re-wrap in SSE, forward redacted.
-//   - redact + PII + delta-only: forward original + log (no structured JSON to redact).
+//   - redact + PII + delta-only: build synthetic response from accumulated deltas, redact, forward.
 //   - block + PII: return JSON error, discard original stream.
 func handleStreamingPIIScan(
 	ctx context.Context,
@@ -427,16 +427,14 @@ func handleStreamingPIIScan(
 		if completedJSON != nil {
 			redacted := redactResponseContentFields(ctx, completedJSON, scanner)
 			forwardRedactedAsSSE(w, capture, completedJSON, redacted)
-			result.Redacted = true
-			log.Info().
-				Strs("pii_types", piiTypes).
-				Msg("response_pii_redacted_stream")
 		} else {
-			forwardBufferedSSE(w, capture)
-			log.Warn().
-				Strs("pii_types", piiTypes).
-				Msg("response_pii_detected_stream_delta_only")
+			synthetic := buildSyntheticChatResponse(scanner.Redact(ctx, contentText))
+			forwardRedactedAsSSE(w, capture, synthetic, synthetic)
 		}
+		result.Redacted = true
+		log.Info().
+			Strs("pii_types", piiTypes).
+			Msg("response_pii_redacted_stream")
 
 	case "block":
 		forwardBlockedResponse(w)
@@ -459,6 +457,27 @@ func forwardBufferedSSE(w http.ResponseWriter, capture *responseCapture) {
 	}
 	//nolint:gosec // G705: forwarding buffered upstream SSE response
 	_, _ = w.Write(capture.body.Bytes())
+}
+
+// buildSyntheticChatResponse creates a minimal Chat Completions JSON response
+// from accumulated (and redacted) delta content. Used when the original stream
+// had no completed response event — we reconstruct one so the client receives
+// valid, redacted JSON instead of raw delta chunks containing PII.
+func buildSyntheticChatResponse(content string) []byte {
+	resp := map[string]interface{}{
+		"choices": []interface{}{
+			map[string]interface{}{
+				"index": 0,
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": content,
+				},
+				"finish_reason": "stop",
+			},
+		},
+	}
+	b, _ := json.Marshal(resp)
+	return b
 }
 
 // forwardRedactedAsSSE wraps redacted response JSON in SSE format and writes
@@ -557,22 +576,28 @@ func extractCompletedResponseFromSSE(raw []byte) []byte {
 		lastDataPayload = payload
 	}
 
-	// Fallback: for Chat Completions streaming, the last non-[DONE] data payload
-	// might contain usage info but not the full response. Return nil to fall
-	// back to delta accumulation.
-	if lastDataPayload != nil {
-		// Check if this looks like a complete response (has "choices" or "output")
-		var m map[string]interface{}
-		if err := json.Unmarshal(lastDataPayload, &m); err == nil {
-			if _, ok := m["choices"]; ok {
-				return lastDataPayload
-			}
-			if _, ok := m["output"]; ok {
-				return lastDataPayload
-			}
-		}
+	if lastDataPayload != nil && isCompleteResponsePayload(lastDataPayload) {
+		return lastDataPayload
 	}
 	return nil
+}
+
+// isCompleteResponsePayload checks whether a JSON payload is a complete
+// (non-streaming) response rather than a streaming delta chunk. Chat Completions
+// deltas have choices[].delta; only complete responses have choices[].message.
+func isCompleteResponsePayload(payload []byte) bool {
+	var m map[string]interface{}
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return false
+	}
+	if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			_, hasMsg := choice["message"]
+			return hasMsg
+		}
+	}
+	_, hasOutput := m["output"]
+	return hasOutput
 }
 
 // accumulateSSEContent extracts all content text from accumulated SSE events
