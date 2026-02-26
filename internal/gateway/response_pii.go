@@ -439,9 +439,184 @@ func isStreamingRequest(body []byte) bool {
 	return ok && v
 }
 
-// accumulateSSEContent extracts all content text from accumulated SSE events for post-completion scanning.
-//
-//nolint:unused // scaffolding for streaming PII scanning
+// handleStreamingPIIScan processes a buffered SSE stream for PII scanning.
+// The full SSE response is already in capture.body. We extract text content,
+// scan for PII, and either forward the original stream or a redacted version.
+func handleStreamingPIIScan(
+	ctx context.Context,
+	w http.ResponseWriter,
+	capture *responseCapture,
+	action string,
+	scanner *classifier.Scanner,
+) *ResponsePIIScanResult {
+	raw := capture.body.Bytes()
+
+	// Extract the completed response JSON from the SSE stream.
+	// For Responses API: the response.completed event contains the full response object.
+	// For Chat Completions: accumulate delta content from all chunks.
+	completedJSON := extractCompletedResponseFromSSE(raw)
+
+	// If we can't find a completed response, fall back to delta accumulation
+	contentText := ""
+	if completedJSON != nil {
+		contentText = extractResponseContentText(completedJSON)
+	}
+	if contentText == "" {
+		contentText = accumulateSSEContent(raw)
+	}
+
+	if contentText == "" || scanner == nil {
+		forwardBufferedSSE(w, capture)
+		return nil
+	}
+
+	cls := scanner.Scan(ctx, contentText)
+	if cls == nil || !cls.HasPII {
+		forwardBufferedSSE(w, capture)
+		return &ResponsePIIScanResult{PIIDetected: false}
+	}
+
+	types := make(map[string]bool)
+	for _, e := range cls.Entities {
+		types[e.Type] = true
+	}
+	var piiTypes []string
+	for t := range types {
+		piiTypes = append(piiTypes, t)
+	}
+	result := &ResponsePIIScanResult{
+		PIIDetected: true,
+		PIITypes:    piiTypes,
+	}
+
+	switch action {
+	case "block":
+		log.Warn().Strs("pii_types", result.PIITypes).Msg("response_pii_blocked")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		//nolint:gosec // G705: gateway PII block response, not user-controlled HTML
+		_, _ = w.Write([]byte(`{"error":{"message":"Response blocked: PII detected in model output","type":"pii_blocked"}}`))
+		return result
+
+	case "redact":
+		log.Info().Strs("pii_types", result.PIITypes).Msg("response_pii_redacted")
+		result.Redacted = true
+
+		if completedJSON != nil {
+			// Redact the completed response JSON and wrap in SSE
+			redacted := redactResponseContentFields(ctx, completedJSON, scanner)
+			writeRedactedSSE(w, capture, redacted)
+		} else {
+			// No completed JSON available; forward original and log warning
+			log.Warn().Msg("response_pii_detected_but_no_completed_json_for_redaction")
+			forwardBufferedSSE(w, capture)
+		}
+		return result
+
+	default: // "warn"
+		log.Warn().Strs("pii_types", result.PIITypes).Msg("response_pii_detected_warn")
+		forwardBufferedSSE(w, capture)
+		return result
+	}
+}
+
+// forwardBufferedSSE writes the original buffered SSE events to the client.
+func forwardBufferedSSE(w http.ResponseWriter, capture *responseCapture) {
+	if capture.statusCode != 0 {
+		w.WriteHeader(capture.statusCode)
+	}
+	//nolint:gosec // G705: forwarding buffered upstream SSE response
+	_, _ = w.Write(capture.body.Bytes())
+}
+
+// writeRedactedSSE constructs an SSE response containing the redacted JSON
+// and sends it to the client. This replaces the original stream with a single
+// event containing the full (redacted) response.
+func writeRedactedSSE(w http.ResponseWriter, capture *responseCapture, redactedJSON []byte) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	if capture.statusCode != 0 {
+		w.WriteHeader(capture.statusCode)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+
+	// Write as: "event: response.completed\ndata: {json}\n\ndata: [DONE]\n\n"
+	// This is compatible with both OpenAI Responses API and Chat Completions
+	// SSE parsers — they look for "data:" lines and parse the JSON.
+	var buf bytes.Buffer
+	buf.WriteString("event: response.completed\ndata: ")
+	buf.Write(redactedJSON)
+	buf.WriteString("\n\ndata: [DONE]\n\n")
+	//nolint:gosec // G705: gateway PII-redacted SSE response
+	_, _ = w.Write(buf.Bytes())
+}
+
+// extractCompletedResponseFromSSE finds the response.completed event or the
+// last data payload in an SSE stream and returns it as JSON bytes.
+func extractCompletedResponseFromSSE(raw []byte) []byte {
+	lines := bytes.Split(raw, []byte("\n"))
+	var lastDataPayload []byte
+	nextIsCompleted := false
+
+	for _, line := range lines {
+		trimmed := bytes.TrimSpace(line)
+
+		// Responses API: "event: response.completed" followed by "data: {...}"
+		if bytes.Equal(trimmed, []byte("event: response.completed")) {
+			nextIsCompleted = true
+			continue
+		}
+
+		if !bytes.HasPrefix(trimmed, []byte("data: ")) {
+			if len(trimmed) == 0 {
+				nextIsCompleted = false
+			}
+			continue
+		}
+
+		payload := bytes.TrimPrefix(trimmed, []byte("data: "))
+		payload = bytes.TrimSpace(payload)
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+
+		if nextIsCompleted {
+			// Responses API: the response.completed event data contains the
+			// full response. But it's wrapped as {"type":"response.completed","response":{...}}.
+			// Extract the inner "response" object.
+			var wrapper map[string]json.RawMessage
+			if err := json.Unmarshal(payload, &wrapper); err == nil {
+				if resp, ok := wrapper["response"]; ok {
+					return resp
+				}
+			}
+			return payload
+		}
+
+		lastDataPayload = payload
+	}
+
+	// Fallback: for Chat Completions streaming, the last non-[DONE] data payload
+	// might contain usage info but not the full response. Return nil to fall
+	// back to delta accumulation.
+	if lastDataPayload != nil {
+		// Check if this looks like a complete response (has "choices" or "output")
+		var m map[string]interface{}
+		if err := json.Unmarshal(lastDataPayload, &m); err == nil {
+			if _, ok := m["choices"]; ok {
+				return lastDataPayload
+			}
+			if _, ok := m["output"]; ok {
+				return lastDataPayload
+			}
+		}
+	}
+	return nil
+}
+
+// accumulateSSEContent extracts all content text from accumulated SSE events
+// (delta-based streaming). Used as fallback when no completed response is available.
 func accumulateSSEContent(events []byte) string {
 	var sb strings.Builder
 	lines := bytes.Split(events, []byte("\n"))

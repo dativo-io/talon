@@ -7,15 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.11] - 2026-02-26
+
+### Fixed
+
+- **fix(gateway): streaming response PII scanning no longer breaks SSE clients**. The v0.8.10 approach of forcing `stream:false` on upstream requests caused OpenClaw (and any SSE-expecting client) to hang — it received a plain JSON response but was waiting for SSE events. The gateway now buffers the full SSE stream from the upstream, extracts the completed response from the `response.completed` event (Responses API) or delta accumulation (Chat Completions), scans for PII, and either forwards the original buffered events (no PII) or returns a redacted response wrapped in valid SSE format. Streaming is preserved when PII action is `allow`.
+
+### Test
+
+- **test(gateway):** Replaced `disableStreaming`-based tests with SSE-native tests: `TestGateway_ResponsesAPI_StreamingResponsePIIRedacted` (redact mode with SSE), `TestGateway_ResponsesAPI_StreamingNoPII` (clean passthrough), `TestGateway_StreamingAllowed_WhenPIIActionAllow`, and `TestGateway_ResponsesAPI_StreamingPIIBlock`. All tests use real SSE response format.
+
 ## [0.8.10] - 2026-02-26
 
 ### Fixed
 
-- **fix(gateway): response PII scanning now works when clients send `stream:true`**. Previously, clients like OpenClaw that send `"stream":true` in Responses API (or Chat Completions) requests caused the gateway to skip response PII scanning entirely — model-generated emails, IBANs, and phone numbers passed through to the user unredacted. The gateway now forces `"stream":false` on upstream requests whenever the response PII action is `redact`, `block`, or `warn`, captures the full response, scans/redacts it, and returns the result. Streaming is preserved when the response PII action is `allow`.
+- **fix(gateway): response PII scanning now works when clients send `stream:true`** (superseded by v0.8.11 — see above). This version forced `stream:false` which broke SSE clients.
 
 ### Test
 
-- **test(gateway):** Added `TestGateway_ResponsesAPI_StreamingResponsePIIRedacted`, `TestGateway_ChatCompletions_StreamingResponsePIIRedacted`, and `TestGateway_StreamingAllowed_WhenPIIActionAllow` — verify that `stream:true` is overridden to `false` when response PII scanning is active, that model-generated PII in responses is correctly redacted, and that streaming is preserved when PII action is `allow`.
+- **test(gateway):** Added streaming PII scanning tests (updated in v0.8.11).
 
 ## [0.8.9] - 2026-02-26
 

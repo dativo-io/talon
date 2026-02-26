@@ -1023,77 +1023,73 @@ func TestGateway_ResponsesAPI_BlockRequestPII(t *testing.T) {
 		"error response should mention PII")
 }
 
+// sseResponse builds an SSE response body from a Responses API JSON payload,
+// simulating what OpenAI returns when stream:true.
+func sseResponse(responseJSON string) string {
+	return "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":" + responseJSON + "}\n\ndata: [DONE]\n\n"
+}
+
 // TestGateway_ResponsesAPI_StreamingResponsePIIRedacted verifies that when a
-// client sends "stream":true, the gateway forces non-streaming so response PII
-// scanning still works. This reproduces the bug where OpenClaw sends
-// "stream":true and model-generated PII in the response bypasses scanning.
+// client sends "stream":true, the gateway buffers the SSE stream, extracts the
+// completed response, scans for PII, and returns a redacted SSE response.
 func TestGateway_ResponsesAPI_StreamingResponsePIIRedacted(t *testing.T) {
-	var capturedBody []byte
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
+	respJSON := `{"id":"resp_stream","output":[{"type":"message","content":[{"type":"output_text","text":"aurora@stellarsystems.eu"}]}],"usage":{"input_tokens":10,"output_tokens":5}}`
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"resp_stream","output":[{"type":"message","content":[{"type":"output_text","text":"aurora@stellarsystems.eu"}]}],"usage":{"input_tokens":10,"output_tokens":5}}`))
+		_, _ = w.Write([]byte(sseResponse(respJSON)))
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
 	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
 
-	// Client sends stream:true (like OpenClaw does)
 	body := `{"model":"gpt-4o","input":"Invent a fictional European email","stream":true}`
 	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	// Upstream must receive stream:false (forced by gateway for PII scanning)
-	assert.Contains(t, string(capturedBody), `"stream":false`,
-		"gateway must force stream:false when response PII scanning is enabled")
-	assert.NotContains(t, string(capturedBody), `"stream":true`,
-		"client's stream:true must be overwritten")
-
-	// Response PII must be redacted
 	respBody := w.Body.String()
 	assert.NotContains(t, respBody, "aurora@stellarsystems.eu",
-		"email in response must be redacted even when client requested streaming")
-	assert.Contains(t, respBody, "output_text",
-		"response structure must be preserved")
+		"email in streaming response must be redacted")
+	assert.Contains(t, respBody, "response.completed",
+		"redacted response must be in SSE format")
+	assert.Contains(t, respBody, "[DONE]",
+		"SSE stream must end with [DONE]")
 }
 
-// TestGateway_ChatCompletions_StreamingResponsePIIRedacted verifies the same
-// fix works for Chat Completions API with stream:true.
-func TestGateway_ChatCompletions_StreamingResponsePIIRedacted(t *testing.T) {
-	var capturedBody []byte
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
+// TestGateway_ResponsesAPI_StreamingNoPII verifies that clean streaming
+// responses pass through unmodified.
+func TestGateway_ResponsesAPI_StreamingNoPII(t *testing.T) {
+	respJSON := `{"id":"resp_clean","output":[{"type":"message","content":[{"type":"output_text","text":"Hello world"}]}],"usage":{"input_tokens":5,"output_tokens":2}}`
+	sseBody := sseResponse(respJSON)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"Contact alice@company.eu for details"}}],"usage":{"prompt_tokens":10,"completion_tokens":8}}`))
+		_, _ = w.Write([]byte(sseBody))
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
 	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
 
-	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Invent an email"}],"stream":true}`
-	w := makeGatewayRequest(gw, body)
+	body := `{"model":"gpt-4o","input":"Say hello","stream":true}`
+	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	// Upstream must receive stream:false
-	assert.Contains(t, string(capturedBody), `"stream":false`,
-		"gateway must force stream:false for Chat Completions too")
-
-	// Response PII must be redacted
-	assert.NotContains(t, w.Body.String(), "alice@company.eu",
-		"email in Chat Completions response must be redacted when stream was forced off")
+	respBody := w.Body.String()
+	assert.Contains(t, respBody, "Hello world",
+		"clean response must pass through")
+	assert.Contains(t, respBody, "response.completed",
+		"original SSE format must be preserved when no PII")
 }
 
-// TestGateway_StreamingAllowed_WhenPIIActionAllow verifies that streaming is
-// NOT disabled when the response PII action is "allow".
+// TestGateway_StreamingAllowed_WhenPIIActionAllow verifies that streaming
+// responses are forwarded directly when PII action is "allow".
 func TestGateway_StreamingAllowed_WhenPIIActionAllow(t *testing.T) {
 	var capturedBody []byte
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedBody, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"resp_allow","output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}],"usage":{"input_tokens":5,"output_tokens":2}}`))
+		_, _ = w.Write([]byte("data: {\"id\":\"ok\"}\n\ndata: [DONE]\n\n"))
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "allow", handler)
@@ -1103,7 +1099,28 @@ func TestGateway_StreamingAllowed_WhenPIIActionAllow(t *testing.T) {
 	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	// When PII action is "allow", streaming should be preserved
 	assert.Contains(t, string(capturedBody), `"stream":true`,
 		"stream:true must be preserved when response PII action is allow")
+}
+
+// TestGateway_ResponsesAPI_StreamingPIIBlock verifies that block mode works
+// correctly for streaming responses.
+func TestGateway_ResponsesAPI_StreamingPIIBlock(t *testing.T) {
+	respJSON := `{"id":"resp_block","output":[{"type":"message","content":[{"type":"output_text","text":"Your IBAN is DE89370400440532013000"}]}],"usage":{"input_tokens":10,"output_tokens":8}}`
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(sseResponse(respJSON)))
+	})
+
+	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
+	gw.config.DefaultPolicy.ResponsePIIAction = "block"
+
+	body := `{"model":"gpt-4o","input":"What is the IBAN?","stream":true}`
+	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
+
+	assert.NotContains(t, w.Body.String(), "DE89370400440532013000",
+		"IBAN must not appear in blocked streaming response")
+	assert.Contains(t, w.Body.String(), "pii_blocked",
+		"blocked response should indicate PII was blocked")
 }

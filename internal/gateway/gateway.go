@@ -246,33 +246,28 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve response PII action
 	responsePIIAction := resolveResponsePIIAction(&g.config.DefaultPolicy, caller.PolicyOverrides)
-
-	// When response PII scanning is active, force non-streaming so we can
-	// capture and scan the full response body before returning it to the client.
-	// Streaming clients (e.g. OpenClaw) send "stream":true by default; without
-	// this override the response bypasses PII scanning entirely.
-	needsResponseScan := responsePIIAction != "allow" && responsePIIAction != ""
-	if needsResponseScan && isStreamingRequest(forwardBody) {
-		forwardBody = disableStreaming(forwardBody)
-	}
 	isStreaming := isStreamingRequest(forwardBody)
 
 	var tokenUsage TokenUsage
 	var responsePII *ResponsePIIScanResult
+	needsResponseScan := responsePIIAction != "allow" && responsePIIAction != ""
 
-	if !isStreaming && responsePIIAction != "allow" && responsePIIAction != "" {
+	fwdParams := ForwardParams{
+		Context:     ctx,
+		Client:      g.client,
+		UpstreamURL: route.UpstreamURL,
+		Method:      r.Method,
+		Body:        forwardBody,
+		Headers:     headers,
+		Timeouts:    g.timeouts,
+		TokenUsage:  &tokenUsage,
+	}
+
+	switch {
+	case needsResponseScan && !isStreaming:
 		// Non-streaming: capture response, scan, then write
 		capture := &responseCapture{ResponseWriter: w}
-		err = Forward(capture, ForwardParams{
-			Context:     ctx,
-			Client:      g.client,
-			UpstreamURL: route.UpstreamURL,
-			Method:      r.Method,
-			Body:        forwardBody,
-			Headers:     headers,
-			Timeouts:    g.timeouts,
-			TokenUsage:  &tokenUsage,
-		})
+		err = Forward(capture, fwdParams)
 		if err == nil {
 			scannedBody, scanResult := scanResponseForPII(ctx, capture.body.Bytes(), responsePIIAction, g.classifier)
 			responsePII = scanResult
@@ -284,17 +279,21 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			capture.flushTo(w)
 		}
-	} else {
-		err = Forward(w, ForwardParams{
-			Context:     ctx,
-			Client:      g.client,
-			UpstreamURL: route.UpstreamURL,
-			Method:      r.Method,
-			Body:        forwardBody,
-			Headers:     headers,
-			Timeouts:    g.timeouts,
-			TokenUsage:  &tokenUsage,
-		})
+
+	case needsResponseScan && isStreaming:
+		// Streaming + PII scan: buffer the entire SSE stream, extract text,
+		// scan for PII. If clean, forward the original buffered events. If
+		// PII found, return the redacted content wrapped in SSE format.
+		capture := &responseCapture{ResponseWriter: w}
+		err = Forward(capture, fwdParams)
+		if err == nil {
+			responsePII = handleStreamingPIIScan(ctx, w, capture, responsePIIAction, g.classifier)
+		} else {
+			capture.flushTo(w)
+		}
+
+	default:
+		err = Forward(w, fwdParams)
 	}
 
 	durationMS := time.Since(start).Milliseconds()
