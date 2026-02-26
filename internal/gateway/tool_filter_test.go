@@ -343,6 +343,16 @@ func TestFilterRequestBodyTools_NoTools(t *testing.T) {
 	assert.JSONEq(t, body, string(filtered), "body without tools should pass through unchanged")
 }
 
+func TestFilterRequestBodyTools_InvalidJSON(t *testing.T) {
+	_, err := FilterRequestBodyTools("openai", []byte(`{not json`), []string{"search_web"})
+	require.Error(t, err, "invalid JSON must return an error")
+}
+
+func TestFilterRequestBodyTools_InvalidJSON_Anthropic(t *testing.T) {
+	_, err := FilterRequestBodyTools("anthropic", []byte(`{not json`), []string{"search_web"})
+	require.Error(t, err, "invalid JSON must return an error for Anthropic provider")
+}
+
 // ---------------------------------------------------------------------------
 // Integration tests — Gateway with tool governance
 // ---------------------------------------------------------------------------

@@ -239,10 +239,21 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Filter mode: remove disallowed tools from the body.
+			// Fail closed: if filtering fails, block the request rather than
+			// forwarding forbidden tools to the LLM.
 			filtered, err := FilterRequestBodyTools(route.Provider, forwardBody, tr.Kept)
-			if err == nil {
-				forwardBody = filtered
+			if err != nil {
+				log.Error().Err(err).
+					Str("caller", caller.Name).
+					Strs("forbidden", tr.Removed).
+					Msg("gateway_tool_filter_failed")
+				WriteProviderError(w, route.Provider, http.StatusInternalServerError,
+					"Failed to filter forbidden tools from request")
+				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
+					classification, nil, 0, 0, 0, false, []string{"tool filter error"}, false, nil, attSummary, toolResult)
+				return
 			}
+			forwardBody = filtered
 			log.Info().
 				Str("caller", caller.Name).
 				Strs("removed", tr.Removed).
