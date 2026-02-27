@@ -336,7 +336,7 @@ func checkUpstream(ctx context.Context, name, baseURL string) []CheckResult {
 		}}
 	}
 	start := time.Now()
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // G704: URL from operator-controlled gateway config, not user input
 	latency := time.Since(start)
 
 	if err != nil {
@@ -377,7 +377,7 @@ func checkUpstream(ctx context.Context, name, baseURL string) []CheckResult {
 func checkModelsEndpoint(ctx context.Context, client *http.Client, name, baseURL string) []CheckResult {
 	modelsURL := baseURL + "/v1/models"
 	modelsReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
-	modelsResp, modelsErr := client.Do(modelsReq)
+	modelsResp, modelsErr := client.Do(modelsReq) //nolint:gosec // G704: URL from operator-controlled gateway config
 	if modelsErr != nil {
 		return []CheckResult{{
 			Name: "gateway_upstream_models_" + name, Category: "gateway", Status: "warn",
