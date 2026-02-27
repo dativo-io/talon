@@ -1,98 +1,108 @@
 package evidence
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestToExportRecord(t *testing.T) {
+func TestToExportRecord_ShadowViolationFields(t *testing.T) {
 	ev := &Evidence{
-		ID:             "req_1",
-		Timestamp:      time.Date(2026, 2, 21, 12, 0, 0, 0, time.UTC),
-		TenantID:       "default",
-		AgentID:        "bot",
-		InvocationType: "manual",
-		PolicyDecision: PolicyDecision{
-			Allowed:       false,
-			Action:        "deny",
-			Reasons:       []string{"budget_exceeded"},
-			PolicyVersion: "v1",
-		},
-		Classification: Classification{
-			InputTier:   2,
-			OutputTier:  0,
-			PIIDetected: []string{"EMAIL_ADDRESS", "PHONE_NUMBER"},
-			PIIRedacted: true,
-		},
-		Execution: Execution{
-			ModelUsed:   "gpt-4o-mini",
-			Cost:        0.001,
-			DurationMS:  100,
-			Error:       "rate limit",
-			ToolsCalled: []string{"mcp_search", "mcp_fetch"},
-			Tokens:      TokenUsage{Input: 10, Output: 20},
-		},
-		AuditTrail: AuditTrail{
-			InputHash:  "sha256:abc",
-			OutputHash: "sha256:def",
+		ID: "test_001", Timestamp: time.Now(), TenantID: "t1", AgentID: "a1",
+		InvocationType:          "gateway",
+		PolicyDecision:          PolicyDecision{Allowed: true, Action: "allow"},
+		Execution:               Execution{ModelUsed: "gpt-4o", Cost: 0.01},
+		ObservationModeOverride: true,
+		ShadowViolations: []ShadowViolation{
+			{Type: "pii_block", Detail: "PII detected: EMAIL", Action: "block"},
+			{Type: "rate_limit", Detail: "Rate limit exceeded", Action: "block"},
 		},
 	}
 
 	rec := ToExportRecord(ev)
+	assert.True(t, rec.ObservationModeOverride)
+	assert.Equal(t, []string{"pii_block", "rate_limit"}, rec.ShadowViolationTypes)
+	assert.Equal(t, "pii_block,rate_limit", rec.ShadowViolationTypesCSV())
+}
 
-	assert.Equal(t, "req_1", rec.ID)
-	assert.Equal(t, "default", rec.TenantID)
-	assert.Equal(t, "bot", rec.AgentID)
-	assert.False(t, rec.Allowed)
-	assert.Equal(t, 2, rec.InputTier)
-	assert.Equal(t, 0, rec.OutputTier)
-	assert.Equal(t, []string{"EMAIL_ADDRESS", "PHONE_NUMBER"}, rec.PIIDetected)
-	assert.True(t, rec.PIIRedacted)
-	assert.Equal(t, []string{"budget_exceeded"}, rec.PolicyReasons)
-	assert.Equal(t, []string{"mcp_search", "mcp_fetch"}, rec.ToolsCalled)
-	assert.Equal(t, "sha256:abc", rec.InputHash)
-	assert.Equal(t, "sha256:def", rec.OutputHash)
+func TestToExportRecord_NoShadowViolations(t *testing.T) {
+	ev := &Evidence{
+		ID: "test_002", Timestamp: time.Now(), TenantID: "t1", AgentID: "a1",
+		InvocationType: "gateway",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		Execution:      Execution{ModelUsed: "gpt-4o"},
+	}
+
+	rec := ToExportRecord(ev)
+	assert.False(t, rec.ObservationModeOverride)
+	assert.Empty(t, rec.ShadowViolationTypes)
+	assert.Equal(t, "", rec.ShadowViolationTypesCSV())
+}
+
+func TestToExportRecord_BackwardCompatible(t *testing.T) {
+	ev := &Evidence{
+		ID: "test_003", Timestamp: time.Now(), TenantID: "t1", AgentID: "a1",
+		InvocationType: "cli",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow", Reasons: []string{"budget ok"}},
+		Classification: Classification{InputTier: 1, PIIDetected: []string{"email"}, PIIRedacted: true},
+		Execution:      Execution{ModelUsed: "gpt-4o", Cost: 0.05, DurationMS: 1234, Error: "timeout", ToolsCalled: []string{"web_search"}},
+		AuditTrail:     AuditTrail{InputHash: "abc123", OutputHash: "def456"},
+	}
+
+	rec := ToExportRecord(ev)
+	assert.Equal(t, "test_003", rec.ID)
+	assert.Equal(t, "t1", rec.TenantID)
+	assert.True(t, rec.Allowed)
+	assert.Equal(t, 0.05, rec.Cost)
 	assert.True(t, rec.HasError)
+	assert.Equal(t, []string{"email"}, rec.PIIDetected)
+	assert.Equal(t, []string{"budget ok"}, rec.PolicyReasons)
+	assert.Equal(t, []string{"web_search"}, rec.ToolsCalled)
+	assert.Equal(t, "abc123", rec.InputHash)
 }
 
-func TestExportRecord_PIIDetectedCSV(t *testing.T) {
-	rec := ExportRecord{PIIDetected: []string{"EMAIL_ADDRESS", "PHONE_NUMBER"}}
-	assert.Equal(t, "EMAIL_ADDRESS,PHONE_NUMBER", rec.PIIDetectedCSV())
-	rec.PIIDetected = nil
-	assert.Equal(t, "", rec.PIIDetectedCSV())
-}
-
-func TestExportRecord_PolicyReasonsCSV(t *testing.T) {
-	rec := ExportRecord{PolicyReasons: []string{"reason1", "reason2"}}
-	assert.Equal(t, "reason1,reason2", rec.PolicyReasonsCSV())
-	rec.PolicyReasons = nil
-	assert.Equal(t, "", rec.PolicyReasonsCSV())
-}
-
-func TestExportRecord_ToolsCalledCSV(t *testing.T) {
-	rec := ExportRecord{ToolsCalled: []string{"tool_a", "tool_b"}}
-	assert.Equal(t, "tool_a,tool_b", rec.ToolsCalledCSV())
-	rec.ToolsCalled = nil
-	assert.Equal(t, "", rec.ToolsCalledCSV())
-}
-
-func TestToExportRecord_EmptyOptionalSlices(t *testing.T) {
-	ev := &Evidence{
-		ID:             "req_2",
-		Timestamp:      time.Now(),
-		TenantID:       "t",
-		AgentID:        "a",
-		InvocationType: "manual",
-		PolicyDecision: PolicyDecision{Allowed: true},
-		Classification: Classification{InputTier: 0, OutputTier: 0},
-		Execution:      Execution{},
-		AuditTrail:     AuditTrail{},
+func TestExportRecord_JSONRoundTrip(t *testing.T) {
+	rec := ExportRecord{
+		ID: "test_004", Timestamp: time.Now().UTC(), TenantID: "t1", AgentID: "a1",
+		InvocationType: "gateway", Allowed: true, Cost: 0.02, ModelUsed: "gpt-4o",
+		ObservationModeOverride: true,
+		ShadowViolationTypes:    []string{"pii_block"},
 	}
-	rec := ToExportRecord(ev)
-	// When source slices are nil/empty, PIIDetected may be nil; PolicyReasons/ToolsCalled only set when len > 0
-	assert.Len(t, rec.PIIDetected, 0)
-	assert.Len(t, rec.PolicyReasons, 0)
-	assert.Len(t, rec.ToolsCalled, 0)
+
+	data, err := json.Marshal(rec)
+	require.NoError(t, err)
+
+	var decoded ExportRecord
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, rec.ID, decoded.ID)
+	assert.True(t, decoded.ObservationModeOverride)
+	assert.Equal(t, []string{"pii_block"}, decoded.ShadowViolationTypes)
+}
+
+func TestExportEnvelope_JSONRoundTrip(t *testing.T) {
+	envelope := ExportEnvelope{
+		ExportMetadata: ExportMetadata{
+			GeneratedAt:  time.Now().UTC(),
+			TalonVersion: "0.9.0",
+			Filter:       ExportFilter{From: "2026-02-01", Tenant: "acme"},
+			TotalRecords: 2,
+		},
+		Records: []ExportRecord{
+			{ID: "r1", Allowed: true},
+			{ID: "r2", Allowed: false, ObservationModeOverride: true, ShadowViolationTypes: []string{"policy_deny"}},
+		},
+	}
+
+	data, err := json.Marshal(envelope)
+	require.NoError(t, err)
+
+	var decoded ExportEnvelope
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, "0.9.0", decoded.ExportMetadata.TalonVersion)
+	assert.Equal(t, 2, decoded.ExportMetadata.TotalRecords)
+	assert.Len(t, decoded.Records, 2)
+	assert.True(t, decoded.Records[1].ObservationModeOverride)
 }

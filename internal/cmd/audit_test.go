@@ -118,7 +118,7 @@ func TestRenderAuditExportJSON(t *testing.T) {
 	records := []evidence.ExportRecord{
 		{ID: "ev_2", Timestamp: ts, TenantID: "default", AgentID: "runner", InvocationType: "scheduled", Allowed: false, Cost: 0, ModelUsed: "", DurationMS: 0, HasError: true, PIIDetected: []string{"PHONE_NUMBER"}},
 	}
-	err := renderAuditExportJSON(&buf, records)
+	err := renderAuditExportJSONWrapped(&buf, records)
 	require.NoError(t, err)
 	out := buf.String()
 	assert.Contains(t, out, "ev_2")
@@ -127,6 +127,8 @@ func TestRenderAuditExportJSON(t *testing.T) {
 	assert.Contains(t, out, "false")
 	assert.Contains(t, out, "pii_detected")
 	assert.Contains(t, out, "PHONE_NUMBER")
+	assert.Contains(t, out, "export_metadata")
+	assert.Contains(t, out, "total_records")
 }
 
 func TestAuditListCmd_RunSuccess(t *testing.T) {

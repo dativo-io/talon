@@ -21,6 +21,7 @@ type RecordGatewayEvidenceParams struct {
 	PolicyReasons           []string
 	PolicyVersion           string
 	ObservationModeOverride bool
+	ShadowViolations        []evidence.ShadowViolation
 	InputTier               int
 	PIIDetected             []string
 	PIIRedacted             bool
@@ -83,6 +84,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		AttachmentScan:          params.AttachmentScan,
 		ToolGovernance:          toolGov,
 		ObservationModeOverride: params.ObservationModeOverride,
+		ShadowViolations:        params.ShadowViolations,
 		AuditTrail:              evidence.AuditTrail{},
 		Compliance:              evidence.Compliance{},
 	}

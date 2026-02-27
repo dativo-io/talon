@@ -34,7 +34,7 @@ tenants:
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "shadow"
+  mode: "shadow"  # Start safe. Run 'talon enforce report' after 24h, then 'talon enforce enable'.
 
   providers:
     openai:
