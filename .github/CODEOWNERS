@@ -1,0 +1,8 @@
+# Default: core maintainer reviews everything
+* @sergiusz
+
+# Security-sensitive areas require explicit review
+internal/secrets/ @sergiusz
+internal/evidence/ @sergiusz
+internal/gateway/ @sergiusz
+SECURITY.md @sergiusz

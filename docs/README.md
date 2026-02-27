@@ -13,19 +13,21 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 
 ## Quick start
 
-**New to Talon?** Start here:
+**New to Talon?** Start with the 60-second demo (no API key needed):
 
-- [QUICKSTART.md](QUICKSTART.md) — Short entry point; links to the tutorial and other docs.
+- [60-Second Demo](tutorials/quickstart-demo.md) — Docker Compose demo: `docker compose up`, send a curl request, see evidence immediately.
+- [QUICKSTART.md](QUICKSTART.md) — Short entry point for native Talon (requires Go).
 
 ---
 
 ## Documentation index
 
-### Tutorial (learning-oriented)
+### Tutorials (learning-oriented)
 
 | Doc | Description |
 |-----|-------------|
-| [Your first governed agent](tutorials/first-governed-agent.md) | A single-path lesson: install → init → run → see evidence. |
+| [60-Second Demo (no API key)](tutorials/quickstart-demo.md) | Docker Compose demo with mock provider — see governance in action in 60 seconds. |
+| [Your first governed agent](tutorials/first-governed-agent.md) | Install → init → run → see evidence. Native Talon (requires Go + API key). |
 
 ### How-to guides (goal-oriented)
 
@@ -42,6 +44,7 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 | [How to run a first-line support agent with Talon](guides/internal-support-agent.md) | Ticket summarization with PII and cost controls. |
 | [How to verify memory is used](guides/memory-verification.md) | CLI steps to confirm memory is written and injected into prompts. |
 | [How to offer Talon to multiple customers (multi-tenant/MSP)](guides/multi-tenant-msp.md) | Tenant isolation, API keys, and gateway callers. |
+| [Incident response playbook](guides/incident-response-playbook.md) | Common operational scenarios when running AI agents. |
 
 ### Reference (technical description)
 
@@ -53,6 +56,8 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 
 | Doc | Description |
 |-----|-------------|
+| [What Talon does to your request](explanation/what-talon-does-to-your-request.md) | Full request lifecycle: every check, every byte transformation, latency budget. |
+| [Evidence store](explanation/evidence-store.md) | HMAC signing, progressive disclosure, storage, and export. |
 | [Adoption scenarios](ADOPTION_SCENARIOS.md) | Greenfield, brownfield custom, brownfield vendor; timelines and ROI. |
 | [Persona guides](PERSONA_GUIDES.md) | Who uses Talon (DevOps, Compliance, CTO, SecOps, FinOps) and what they do. |
 | [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md) | Why vendor compliance matters; MCP proxy and patterns. |
@@ -66,3 +71,14 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 | Doc | Description |
 |-----|-------------|
 | [Policy cookbook](guides/policy-cookbook.md) | Copy-paste policy snippets for common needs. |
+| [Starter policy library](../examples/policies/README.md) | Ready-to-use Rego policies for cost, PII, model allowlists, data residency. |
+
+### Examples
+
+| Example | Description |
+|---------|-------------|
+| [Docker Compose demo](../examples/docker-compose/README.md) | Full demo stack with mock provider — no API key needed. |
+| [Gateway minimal](../examples/gateway-minimal/README.md) | Smallest working LLM gateway config. |
+| [MCP proxy minimal](../examples/mcp-proxy-minimal/README.md) | Smallest working MCP proxy config. |
+| [Plan review](../examples/plan-review/README.md) | Human-in-the-loop demo (EU AI Act Art. 14). |
+| [Starter policies](../examples/policies/README.md) | OPA/Rego policies for common governance scenarios. |

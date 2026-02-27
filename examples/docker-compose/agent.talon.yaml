@@ -1,0 +1,26 @@
+# Minimal agent policy for the demo.
+agent:
+  name: "demo-agent"
+  description: "Demo agent for the docker-compose quick start"
+  version: "0.1.0"
+  model_tier: 0
+
+capabilities:
+  allowed_tools: []
+  forbidden_patterns: []
+
+policies:
+  cost_limits:
+    per_request: 1.00
+    daily: 100.00
+    monthly: 1000.00
+  data_classification:
+    input_scan: true
+    output_scan: true
+    redact_pii: false
+
+audit:
+  log_level: "detailed"
+  retention_days: 90
+  include_prompts: true
+  include_responses: false

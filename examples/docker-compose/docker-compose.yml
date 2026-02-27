@@ -1,0 +1,52 @@
+# Talon demo stack — no API keys required.
+#
+# Usage:
+#   cd examples/docker-compose
+#   docker compose up
+#
+# Then in another terminal:
+#   curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"My email is jan@example.com, help me reset my password"}]}'
+#
+#   # Check the audit trail:
+#   docker compose exec talon /usr/local/bin/talon audit list
+
+services:
+  mock-openai:
+    build:
+      context: ./mock-provider
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  talon:
+    build:
+      context: ../../
+    command: serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
+    ports:
+      - "8080:8080"
+    environment:
+      - TALON_SECRETS_KEY=demo-secret-key-not-for-production
+      - TALON_LOG_LEVEL=info
+      - TALON_LOG_FORMAT=json
+    volumes:
+      - ./talon.config.yaml:/etc/talon/talon.config.yaml:ro
+      - ./agent.talon.yaml:/home/talon/.talon/agent.talon.yaml:ro
+      - talon-data:/home/talon/.talon
+    depends_on:
+      mock-openai:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  talon-data:
+    driver: local

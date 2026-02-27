@@ -1,0 +1,121 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/dativo-io/talon/schemas/talon.config.schema.json",
+  "title": "Talon Config",
+  "description": "JSON Schema for talon.config.yaml — the global server and gateway configuration.",
+  "type": "object",
+  "properties": {
+    "gateway": {
+      "type": "object",
+      "description": "LLM API Gateway configuration.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "listen_prefix": {
+          "type": "string",
+          "default": "/v1/proxy"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["enforce", "shadow", "log_only"],
+          "default": "shadow"
+        },
+        "trusted_proxy_cidrs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "providers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "secret_name": { "type": "string" },
+              "base_url": { "type": "string", "format": "uri" },
+              "allowed_models": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "blocked_models": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        },
+        "callers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string" },
+              "api_key": { "type": "string" },
+              "tenant_id": { "type": "string" },
+              "team": { "type": "string" },
+              "allowed_providers": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "identify_by": {
+                "type": "string",
+                "enum": ["api_key", "source_ip"]
+              },
+              "source_cidrs": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "policy_overrides": {
+                "type": "object",
+                "properties": {
+                  "max_daily_cost": { "type": "number", "minimum": 0 },
+                  "max_monthly_cost": { "type": "number", "minimum": 0 },
+                  "pii_action": {
+                    "type": "string",
+                    "enum": ["allow", "warn", "redact", "block"]
+                  },
+                  "allowed_models": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "default_policy": {
+          "type": "object",
+          "properties": {
+            "default_pii_action": {
+              "type": "string",
+              "enum": ["allow", "warn", "redact", "block"]
+            },
+            "max_daily_cost": { "type": "number", "minimum": 0 },
+            "max_monthly_cost": { "type": "number", "minimum": 0 },
+            "require_caller_id": { "type": "boolean" },
+            "log_prompts": { "type": "boolean" },
+            "log_responses": { "type": "boolean" },
+            "log_response_preview_chars": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "rate_limits": {
+          "type": "object",
+          "properties": {
+            "global_requests_per_min": { "type": "integer", "minimum": 1 },
+            "per_caller_requests_per_min": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "timeouts": {
+          "type": "object",
+          "properties": {
+            "connect_timeout": { "type": "string" },
+            "request_timeout": { "type": "string" },
+            "stream_idle_timeout": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

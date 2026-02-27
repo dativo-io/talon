@@ -1,0 +1,31 @@
+# Human-in-the-loop agent — requires approval before execution.
+# Demonstrates EU AI Act Article 14 (human oversight) compliance.
+agent:
+  name: "plan-review-demo"
+  description: "Agent that requires human approval before executing its plan"
+  version: "0.1.0"
+  model_tier: 0
+
+capabilities:
+  allowed_tools:
+    - "web_search"
+    - "summarize"
+  forbidden_patterns: []
+
+policies:
+  cost_limits:
+    per_request: 0.50
+    daily: 10.00
+  data_classification:
+    input_scan: true
+    output_scan: true
+
+compliance:
+  frameworks: ["eu-ai-act", "iso-27001"]
+  human_oversight: "always"
+  ai_act_risk_level: "high"
+
+audit:
+  log_level: "full"
+  include_prompts: true
+  include_responses: true

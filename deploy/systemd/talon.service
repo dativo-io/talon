@@ -1,0 +1,36 @@
+[Unit]
+Description=Dativo Talon — AI Governance Gateway
+Documentation=https://github.com/dativo-io/talon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=talon
+Group=talon
+ExecStart=/usr/local/bin/talon serve --port 8080 --gateway
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/talon
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# Environment
+Environment=TALON_LOG_LEVEL=info
+Environment=TALON_LOG_FORMAT=json
+EnvironmentFile=-/etc/talon/talon.env
+
+# Limits
+LimitNOFILE=65535
+TimeoutStartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

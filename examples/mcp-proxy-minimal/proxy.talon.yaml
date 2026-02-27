@@ -1,0 +1,35 @@
+# Minimal MCP proxy config — audit vendor AI tool calls.
+# Routes MCP traffic through Talon for PII scanning and evidence logging.
+#
+# Usage:
+#   talon serve --port 8080 --proxy-config examples/mcp-proxy-minimal/proxy.talon.yaml
+#
+# Then point your vendor AI at: http://localhost:8080/mcp/proxy
+proxy:
+  mode: shadow
+
+  upstream:
+    vendor: generic
+    url: "http://localhost:9091/mcp"
+    timeout: 30s
+
+  allowed_tools:
+    - "ticket_search"
+    - "ticket_create"
+    - "ticket_update"
+    - "user_lookup"
+
+  forbidden_tools:
+    - "user_delete"
+    - "bulk_export"
+    - "admin_*"
+
+  rate_limits:
+    requests_per_minute: 100
+
+  pii_handling:
+    redaction_rules:
+      - field: "email"
+        method: hash
+      - field: "phone"
+        method: mask_middle

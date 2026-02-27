@@ -1,22 +1,56 @@
 # Dativo Talon
 
-**Policy-enforced AI agents for European businesses. Governed, audited, compliant by default.**
 
-Talon is a single Go binary that wraps your AI agents in compliance guardrails — cost control, PII detection, data sovereignty, prompt injection prevention, and an immutable audit trail. It speaks MCP natively, works with any LLM provider, and maps directly to ISO 27001, GDPR, NIS2, DORA, and the EU AI Act.
+Talon is a single Go binary that acts as a transparent proxy in front of OpenAI, Anthropic, and Bedrock. Point your existing apps at `localhost:8080/v1/proxy/openai` instead of `api.openai.com` — same API, same response, but now every call is policy-checked, PII-scanned, cost-tracked, and audit-logged. Works with Slack bots, OpenClaw, anything OpenAI-compatible.
 
-**Works with existing AI automation.** Already using Zendesk AI Agent, Intercom, custom Slack bots, or OpenAI Assistants? Talon adds compliance in hours, not months. No rewrite needed.
+Built for EU companies facing GDPR, NIS2, DORA, and the EU AI Act (August 2026 deadline), but the governance features are useful anywhere. Apache 2.0.
 
-> "OpenClaw lets AI do things. Talon makes sure it does them safely — for your entire company."
+---
+<!-- badges -->
+[![CI](https://github.com/dativo-io/talon/actions/workflows/ci.yml/badge.svg)](https://github.com/dativo-io/talon/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/dativo-io/talon)](https://goreportcard.com/report/github.com/dativo-io/talon)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+```
+$ talon audit list
+ID          TIME                 CALLER        PII              COST(€)  MODEL         DECISION
+evt_a1b2c3  2026-03-15T10:23:45  slack-bot     email(1)         0.003    gpt-4o-mini   allowed
+evt_d4e5f6  2026-03-15T10:24:12  hr-assistant  iban(2)          0.008    gpt-4o        blocked:pii
+evt_g7h8i9  2026-03-15T10:25:01  eng-tools     none             0.012    claude-3.5    allowed
+evt_j0k1l2  2026-03-15T10:25:30  support-bot   email(1),phone   0.004    gpt-4o-mini   allowed:redacted
+```
+
+**Intercept every AI API call across your company. PII scanning, cost tracking per team, tamper-proof audit trail. One URL change, no code rewrites.**
+
+### 60-Second Demo (no API key needed)
+
+```bash
+git clone https://github.com/dativo-io/talon && cd talon
+cd examples/docker-compose && docker compose up
+
+# In another terminal — send a request with PII:
+curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"My email is jan@example.com and my IBAN is DE89370400440532013000. Help me reset my password."}]}'
+
+# Check the audit trail:
+docker compose exec talon /usr/local/bin/talon audit list
+```
+
+The mock provider handles the LLM call. Evidence appears immediately — PII detected, cost logged, HMAC-signed record created. [What exactly does Talon do to your request?](docs/explanation/what-talon-does-to-your-request.md)
+
+<!-- TODO: Replace with recorded terminal GIF (asciinema or vhs) showing the full flow -->
+
+---
 
 ## Why Talon?
 
-European SMBs face five simultaneous compliance mandates but only 28% have a dedicated security officer. Talon exists because:
-
-- **AI agents need governance.** CrowdStrike warned that ungoverned AI agents can be weaponized. Talon enforces policy-as-code on every agent action.
+- **Every AI call through one gateway.** Route all your apps — Slack bots, internal tools, vendor integrations — through Talon. One place to see costs, PII exposure, and policy violations across every team.
+- **No code changes required.** Set one environment variable (`OPENAI_BASE_URL`) and your existing code works through Talon. Shadow mode logs everything without blocking anything.
+- **Tamper-proof audit trail.** Every request generates an HMAC-signed evidence record in SQLite. Export to CSV for your compliance officer. Verify integrity with `talon audit verify`.
 - **EU AI Act enforcement starts August 2026.** Talon implements Articles 9 (risk management), 13 (transparency), and 14 (human oversight) as code.
-- **Data sovereignty isn't optional.** Talon routes sensitive data only to EU-hosted models. No data leaves your configured region.
-- **Compliance shouldn't cost €50K/year.** Open-source core, single binary, zero infrastructure to start.
-- **Third-party vendors are black boxes.** You're liable even if they claim compliance. Talon gives you independent audit trails.
+- **Single binary, zero infrastructure.** No Docker, no Postgres, no Redis to start. Embedded OPA for policies, SQLite for storage, OpenTelemetry for observability.
+- **Third-party vendors are black boxes.** You're liable even if they claim compliance. Talon gives you independent audit trails via MCP proxy.
 
 ## Three Ways to Adopt Talon
 

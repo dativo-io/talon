@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-all lint fmt clean vet mod-tidy check docker-build
+.PHONY: help build install test test-integration test-e2e test-all lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -73,5 +73,17 @@ docker-run: ## Run in Docker
 run: build ## Run agent with PROMPT="...". Example: make run PROMPT="Summarize EU AI Act"
 	@if [ -z "$(PROMPT)" ]; then echo "Usage: make run PROMPT=\"your query\""; exit 1; fi
 	@./bin/$(BINARY_NAME) run "$(PROMPT)"
+
+demo-gateway: build ## Run minimal gateway example (requires OpenAI key in vault)
+	@bash examples/gateway-minimal/run.sh
+
+demo-full: ## Run full docker-compose demo (no API key needed)
+	@cd examples/docker-compose && docker compose up --build
+
+demo-clean: ## Clean up docker-compose demo
+	@cd examples/docker-compose && docker compose down -v
+
+verify-flow0: ## Verify Flow 0 end-to-end (docker-compose demo)
+	@bash scripts/verify-flow0.sh --in-place
 
 .DEFAULT_GOAL := help
