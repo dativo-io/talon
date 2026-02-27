@@ -83,10 +83,15 @@ func TestDoctorCmd_JSONFormat(t *testing.T) {
 	doctorCmd.SetErr(&buf)
 	rootCmd.SetArgs([]string{"doctor", "--format", "json", "--skip-upstream"})
 
-	_ = rootCmd.Execute()
+	err := rootCmd.Execute()
 
 	out := buf.String()
 	assert.Contains(t, out, `"status"`)
 	assert.Contains(t, out, `"checks"`)
 	assert.Contains(t, out, `"summary"`)
+
+	// Without policy file or LLM key, JSON format must still return a non-zero exit code
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "doctor checks failed")
+	assert.Contains(t, out, `"fail"`)
 }

@@ -54,10 +54,13 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	if doctorFormat == "json" {
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
-		return enc.Encode(report)
+		if err := enc.Encode(report); err != nil {
+			return fmt.Errorf("encoding doctor report: %w", err)
+		}
+	} else {
+		renderDoctorText(out, report)
 	}
 
-	renderDoctorText(out, report)
 	if report.Status == "fail" {
 		return fmt.Errorf("doctor checks failed")
 	}
