@@ -195,6 +195,50 @@ func TestGateway_ShadowMode_PolicyDenyBypassedAndLogged(t *testing.T) {
 	assert.True(t, found, "should record policy_deny shadow violation")
 }
 
+func TestGateway_ShadowMode_PolicyErrorBypassedAndLogged(t *testing.T) {
+	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig) {
+		cfg.DefaultPolicy.ForbiddenTools = nil
+		cfg.DefaultPolicy.DefaultPIIAction = "warn"
+		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
+		cfg.RateLimits.GlobalRequestsPerMin = 300
+		cfg.RateLimits.PerCallerRequestsPerMin = 60
+	})
+
+	gw.policy = &errorPolicy{}
+
+	rr := makeGatewayRequest(gw, requestClean())
+	assert.Equal(t, http.StatusOK, rr.Code, "shadow mode should not block on policy evaluation errors")
+
+	ev := latestEvidence(t, evStore)
+	assert.True(t, ev.ObservationModeOverride)
+	found := false
+	for _, sv := range ev.ShadowViolations {
+		if sv.Type == "policy_deny" {
+			found = true
+			assert.Contains(t, sv.Detail, "policy evaluation error")
+			assert.Equal(t, "block", sv.Action)
+		}
+	}
+	assert.True(t, found, "should record policy error as shadow violation")
+}
+
+func TestGateway_EnforceMode_PolicyErrorStillReturns500(t *testing.T) {
+	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig) {
+		cfg.Mode = ModeEnforce
+		cfg.DefaultPolicy.ForbiddenTools = nil
+		cfg.DefaultPolicy.DefaultPIIAction = "warn"
+		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
+		cfg.RateLimits.GlobalRequestsPerMin = 300
+		cfg.RateLimits.PerCallerRequestsPerMin = 60
+	})
+
+	gw.policy = &errorPolicy{}
+
+	rr := makeGatewayRequest(gw, requestClean())
+	assert.Equal(t, http.StatusInternalServerError, rr.Code, "enforce mode should return 500 on policy errors")
+	assert.Contains(t, rr.Body.String(), "Policy evaluation failed")
+}
+
 func TestGateway_ShadowMode_EvidenceRecordsShadowViolations(t *testing.T) {
 	gw, evStore := setupShadowGateway(t)
 
@@ -255,6 +299,13 @@ type denyAllPolicy struct{}
 
 func (d *denyAllPolicy) EvaluateGateway(_ context.Context, _ map[string]interface{}) (allowed bool, reasons []string, err error) {
 	return false, []string{"test: always denied"}, nil
+}
+
+// errorPolicy is a test policy evaluator that always returns an error.
+type errorPolicy struct{}
+
+func (e *errorPolicy) EvaluateGateway(_ context.Context, _ map[string]interface{}) (allowed bool, reasons []string, err error) {
+	return false, nil, fmt.Errorf("OPA evaluation failed: test error")
 }
 
 // Verify shadow violations round-trip through the evidence store (store + retrieve).

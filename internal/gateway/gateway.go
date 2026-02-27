@@ -236,10 +236,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if g.policy != nil && (g.config.Mode == ModeEnforce || isShadow) {
 		allowed, reasons, policyErr := g.policy.EvaluateGateway(ctx, policyInput)
 		if policyErr != nil {
-			WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Policy evaluation failed")
-			return
+			if isShadow {
+				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+					Type: "policy_deny", Detail: fmt.Sprintf("policy evaluation error: %v", policyErr), Action: "block",
+				})
+				log.Warn().Err(policyErr).Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_policy_error")
+			} else {
+				WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Policy evaluation failed")
+				return
+			}
 		}
-		if !allowed {
+		if !allowed && policyErr == nil {
 			if isShadow {
 				detail := "policy denied"
 				if len(reasons) > 0 {
