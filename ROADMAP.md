@@ -1,6 +1,6 @@
 # Roadmap
 
-## v0.1.0 (March 2026) — MVP
+## v0.9.0 (February 2026) — Community & Launch Readiness
 
 - [x] Policy engine (embedded OPA/Rego)
 - [x] PII detection (25+ EU patterns across 27 member states)
@@ -13,19 +13,22 @@
 - [x] LLM API Gateway (transparent proxy at `/v1/proxy/*`)
 - [x] Attachment scanning (prompt injection prevention)
 - [x] Cron scheduler + webhook triggers
-- [ ] Mock provider + docker-compose demo (no API key)
-- [ ] Flow 0 verification (60-second demo)
+- [x] Mock provider + docker-compose demo (no API key)
+- [x] Flow 0 verification (60-second demo)
+- [x] JSON Schema for `talon.config.yaml` and `agent.talon.yaml`
+- [x] Quickstart tutorials (Diataxis)
+- [x] Starter OPA/Rego policy library
+- [x] Community governance files (CODE_OF_CONDUCT, MAINTAINERS, CODEOWNERS)
+- [x] Production deploy templates (systemd, docker-compose)
 
-## v0.2.0 (April 2026) — Gateway & Proxy Polish
+## v1.0.0 (March 2026) — Stable MVP
 
 - [ ] MCP Proxy (vendor integration for Zendesk, Intercom, etc.)
 - [ ] Shadow mode dashboard tab (AI usage discovery)
 - [ ] Per-caller/team cost dashboards
 - [ ] `talon init --pack` for more industry templates
-- [ ] Quickstart tutorials (Diataxis)
-- [ ] JSON Schema validation for configs
 
-## v0.3.0 (May 2026) — Enterprise
+## v1.1.0 (May 2026) — Enterprise
 
 - [ ] PostgreSQL backend (high-availability evidence store)
 - [ ] LGTM observability stack integration (Grafana, Loki, Tempo, Mimir)

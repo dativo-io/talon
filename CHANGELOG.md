@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-02-27
+
+### Added
+
+- **feat(community): implement PROMPT_10 launch track and quality track**. Full community adoption plan build-out with a launch-first approach — 36 new files across docs, examples, schemas, deploy templates, and community governance.
+
+#### Launch Track (demo-first for HN virality)
+
+- **Mock OpenAI provider** (`examples/docker-compose/mock-provider/main.go`): Standalone server with streaming + non-streaming support, realistic token counts, canned PII-triggering responses. No API key needed.
+- **Docker Compose demo stack** (`examples/docker-compose/`): `docker compose up` starts Talon + mock provider. 60-second demo from clone to evidence record.
+- **README hero rewrite**: Terminal output of `talon audit list` is now the first visible content. Proxy-as-hook framing, Flow 0 commands, CI/license badges. Compliance language moved below the fold.
+- **Show HN post updated** (`internal_docs/show-hn.md`): Reframed around "intercept all AI API calls with one URL change" narrative.
+- **Request lifecycle doc** (`docs/explanation/what-talon-does-to-your-request.md`): 10-step gateway pipeline breakdown, latency budget table (<15ms overhead), "What Talon Does NOT Do" section, streaming behavior, source code pointers.
+- **Verification scripts**: `scripts/verify-flow0.sh` (automated end-to-end Flow 0 test) and `scripts/demo-recorder.sh` (generates 10 varied evidence records for screenshots/GIFs).
+
+#### Quality Track (examples, docs, governance)
+
+- **examples/gateway-minimal/**: Smallest working LLM gateway config with `run.sh` and README.
+- **examples/mcp-proxy-minimal/**: Smallest working MCP proxy config with tool filtering.
+- **examples/plan-review/**: Human-in-the-loop demo for EU AI Act Article 14 compliance.
+- **examples/policies/**: Starter OPA/Rego library — cost-budget, pii-block, model-allowlist, data-residency.
+- **docs/explanation/evidence-store.md**: HMAC signing, progressive disclosure, storage, export, compliance mapping.
+- **docs/tutorials/quickstart-demo.md**: Flow 0 tutorial (no API key, Docker Compose).
+- **schemas/**: JSON Schema for `talon.config.yaml` and `agent.talon.yaml` — enables editor autocomplete and CI validation.
+- **deploy/**: systemd unit file (hardened, non-root) and production docker-compose (Talon + PostgreSQL + OTel Collector).
+- **Community files**: `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1), `MAINTAINERS.md`, `ROADMAP.md`, `.github/CODEOWNERS`.
+- **Makefile targets**: `demo-gateway`, `demo-full`, `demo-clean`, `verify-flow0`.
+- **docs/README.md**: Updated index with all new tutorials, explanations, examples, and policy reference.
+
 ## [0.8.14] - 2026-02-26
 
 ### Added
@@ -249,7 +278,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v0.8.13...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/dativo-io/talon/compare/v0.8.14...v0.9.0
+[0.8.14]: https://github.com/dativo-io/talon/compare/v0.8.13...v0.8.14
 [0.8.13]: https://github.com/dativo-io/talon/compare/v0.8.12...v0.8.13
 [0.8.12]: https://github.com/dativo-io/talon/compare/v0.8.11...v0.8.12
 [0.8.11]: https://github.com/dativo-io/talon/compare/v0.8.10...v0.8.11
