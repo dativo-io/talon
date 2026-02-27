@@ -42,7 +42,6 @@ type Report struct {
 
 // Options controls which check categories to run.
 type Options struct {
-	ConfigPath        string // Path to talon.config.yaml for gateway checks
 	GatewayConfigPath string // Explicit gateway config path (empty = skip gateway checks)
 	SkipUpstream      bool   // Skip upstream connectivity checks (for CI/offline)
 }
