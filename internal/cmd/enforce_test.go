@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +156,106 @@ func TestUpdateGatewayMode_PreservesOtherContent(t *testing.T) {
 	assert.Contains(t, string(data), "listen_prefix")
 	assert.Contains(t, string(data), "openai")
 	assert.Contains(t, string(data), "test-caller")
+}
+
+func TestUpdateGatewayMode_SkipsCommentBeforeMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "talon.config.yaml")
+	content := `gateway:
+  enabled: true
+  # old mode: "shadow"
+  mode: "shadow"
+  providers:
+    openai:
+      enabled: true
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	require.NoError(t, updateGatewayMode(path, "enforce"))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	s := string(data)
+	assert.Contains(t, s, `# old mode: "shadow"`, "comment should be untouched")
+	assert.Contains(t, s, `mode: "enforce"`)
+
+	// Verify the non-comment mode line was changed (comment still has "shadow")
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "mode:") {
+			assert.Contains(t, trimmed, "enforce", "non-comment mode line should be enforce")
+			assert.NotContains(t, trimmed, "shadow", "non-comment mode line should not be shadow")
+		}
+	}
+}
+
+func TestUpdateGatewayMode_PreservesUnquotedStyle(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "talon.config.yaml")
+	content := `gateway:
+  mode: shadow
+  providers: {}
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	require.NoError(t, updateGatewayMode(path, "enforce"))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "mode: enforce")
+	assert.NotContains(t, string(data), `"enforce"`)
+}
+
+func TestUpdateGatewayMode_PreservesSingleQuoteStyle(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "talon.config.yaml")
+	content := `gateway:
+  mode: 'shadow'
+  providers: {}
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	require.NoError(t, updateGatewayMode(path, "enforce"))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "mode: 'enforce'")
+}
+
+func TestUpdateGatewayMode_IgnoresModeInOtherSections(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "talon.config.yaml")
+	content := `other:
+  mode: shadow
+gateway:
+  mode: "shadow"
+  providers: {}
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	require.NoError(t, updateGatewayMode(path, "enforce"))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	s := string(data)
+	assert.Contains(t, s, `mode: "enforce"`)
+	assert.Contains(t, s, "other:\n  mode: shadow", "mode under other section should be untouched")
+}
+
+func TestUpdateGatewayMode_ErrorsWhenNoGatewaySection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "talon.config.yaml")
+	content := `agent:
+  name: test
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	err := updateGatewayMode(path, "enforce")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "could not find gateway.mode")
 }
 
 func TestRecordModeChangeEvidence(t *testing.T) {

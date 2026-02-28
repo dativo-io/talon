@@ -252,27 +252,74 @@ func parseEnforceTimeRange() (from, to time.Time, err error) {
 	return from, to, nil
 }
 
-// updateGatewayMode reads the YAML config, replaces the mode value, and writes back.
-// Uses simple string replacement to preserve comments and formatting.
+// updateGatewayMode reads the YAML config, finds the gateway.mode field by
+// walking lines structurally (skipping comments), replaces the value preserving
+// quoting style, and writes back.
 func updateGatewayMode(path, newMode string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
 
-	content := string(data)
-	for _, old := range []string{
-		`mode: "shadow"`, `mode: "enforce"`, `mode: "log_only"`,
-		`mode: shadow`, `mode: enforce`, `mode: log_only`,
-	} {
-		if strings.Contains(content, old) {
-			// Preserve the quoting style of the original
-			replacement := fmt.Sprintf(`mode: "%s"`, newMode)
-			content = strings.Replace(content, old, replacement, 1)
-			return os.WriteFile(path, []byte(content), 0o600)
+	lines := strings.Split(string(data), "\n")
+	idx := findGatewayModeLine(lines)
+	if idx < 0 {
+		return fmt.Errorf("could not find gateway.mode field in %s", path)
+	}
+
+	lines[idx] = replaceYAMLModeValue(lines[idx], newMode)
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600)
+}
+
+// findGatewayModeLine returns the index of the gateway.mode line, or -1.
+func findGatewayModeLine(lines []string) int {
+	inGateway := false
+	gatewayChildIndent := -1
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+
+		if indent == 0 && strings.HasPrefix(trimmed, "gateway:") {
+			inGateway = true
+			gatewayChildIndent = -1
+			continue
+		}
+		if indent == 0 && inGateway {
+			inGateway = false
+		}
+		if !inGateway {
+			continue
+		}
+		if gatewayChildIndent < 0 {
+			gatewayChildIndent = indent
+		}
+		if indent == gatewayChildIndent && strings.HasPrefix(trimmed, "mode:") {
+			return i
 		}
 	}
-	return fmt.Errorf("could not find mode field in %s", path)
+	return -1
+}
+
+// replaceYAMLModeValue rewrites a "  mode: <value>" line preserving indent and quoting style.
+func replaceYAMLModeValue(line, newMode string) string {
+	trimmed := strings.TrimSpace(line)
+	indent := len(line) - len(strings.TrimLeft(line, " "))
+	prefix := line[:indent]
+	valuePart := strings.TrimSpace(strings.TrimPrefix(trimmed, "mode:"))
+
+	switch {
+	case strings.HasPrefix(valuePart, "'"):
+		return fmt.Sprintf("%smode: '%s'", prefix, newMode)
+	case strings.HasPrefix(valuePart, `"`):
+		return fmt.Sprintf("%smode: \"%s\"", prefix, newMode)
+	default:
+		return fmt.Sprintf("%smode: %s", prefix, newMode)
+	}
 }
 
 func recordModeChangeEvidence(ctx context.Context, fromMode, toMode string) error {

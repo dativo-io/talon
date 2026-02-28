@@ -383,7 +383,7 @@ func checkModelsEndpoint(ctx context.Context, client *http.Client, name, baseURL
 			Fix:     "Check base_url in gateway provider config",
 		}}
 	}
-	modelsResp, modelsErr := client.Do(modelsReq)
+	modelsResp, modelsErr := client.Do(modelsReq) //nolint:gosec // G704: URL from operator-controlled gateway config, not user input
 	if modelsErr != nil {
 		return []CheckResult{{
 			Name: "gateway_upstream_models_" + name, Category: "gateway", Status: "warn",
