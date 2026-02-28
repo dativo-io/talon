@@ -375,8 +375,15 @@ func checkUpstream(ctx context.Context, name, baseURL string) []CheckResult {
 
 func checkModelsEndpoint(ctx context.Context, client *http.Client, name, baseURL string) []CheckResult {
 	modelsURL := baseURL + "/v1/models"
-	modelsReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
-	modelsResp, modelsErr := client.Do(modelsReq) //nolint:gosec // G704: URL from operator-controlled gateway config
+	modelsReq, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	if reqErr != nil {
+		return []CheckResult{{
+			Name: "gateway_upstream_models_" + name, Category: "gateway", Status: "fail",
+			Message: fmt.Sprintf("invalid models URL %s: %v", modelsURL, reqErr),
+			Fix:     "Check base_url in gateway provider config",
+		}}
+	}
+	modelsResp, modelsErr := client.Do(modelsReq)
 	if modelsErr != nil {
 		return []CheckResult{{
 			Name: "gateway_upstream_models_" + name, Category: "gateway", Status: "warn",
