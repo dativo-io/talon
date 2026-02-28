@@ -20,7 +20,8 @@ const (
 	ModeLogOnly Mode = "log_only" // Only generate evidence, no policy evaluation
 )
 
-// GatewayConfig is the top-level gateway configuration (server-wide).
+// GatewayConfig is the top-level gateway configuration from talon.config.yaml
+// (infrastructure config, owned by DevOps/platform team).
 //
 //revive:disable-next-line:exported
 type GatewayConfig struct {
@@ -29,7 +30,7 @@ type GatewayConfig struct {
 	Mode                Mode                       `yaml:"mode" json:"mode"`
 	Providers           map[string]ProviderConfig  `yaml:"providers" json:"providers"`
 	Callers             []CallerConfig             `yaml:"callers" json:"callers"`
-	DefaultPolicy       DefaultPolicyConfig        `yaml:"default_policy" json:"default_policy"`
+	ServerDefaults      ServerDefaults             `yaml:"default_policy" json:"default_policy"`
 	ResponseScanning    ResponseScanningConfig     `yaml:"response_scanning" json:"response_scanning"`
 	RateLimits          RateLimitsConfig           `yaml:"rate_limits" json:"rate_limits"`
 	Timeouts            TimeoutsConfig             `yaml:"timeouts" json:"timeouts"`
@@ -86,8 +87,11 @@ type AttachmentPolicyConfig struct {
 	BlockedTypes    []string `yaml:"blocked_types,omitempty" json:"blocked_types,omitempty"`
 }
 
-// DefaultPolicyConfig holds server-wide default policy for the gateway.
-type DefaultPolicyConfig struct {
+// ServerDefaults holds server-wide gateway defaults (PII action, cost limits,
+// tool governance, attachment scanning). Lives in talon.config.yaml under
+// gateway.default_policy. Not related to config.DefaultPolicy which is the
+// agent policy filename (agent.talon.yaml).
+type ServerDefaults struct {
 	DefaultPIIAction        string                  `yaml:"default_pii_action" json:"default_pii_action"`                       // warn | block | redact | allow
 	ResponsePIIAction       string                  `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from default_pii_action
 	MaxDailyCost            float64                 `yaml:"max_daily_cost" json:"max_daily_cost"`
@@ -102,7 +106,7 @@ type DefaultPolicyConfig struct {
 }
 
 // CallerIDRequired returns whether anonymous requests must be rejected. Default is true when unset.
-func (d *DefaultPolicyConfig) CallerIDRequired() bool {
+func (d *ServerDefaults) CallerIDRequired() bool {
 	if d == nil || d.RequireCallerID == nil {
 		return true
 	}
@@ -171,8 +175,8 @@ const (
 	DefaultToolPolicyAction        = "filter" // "filter" removes disallowed tools; "block" rejects the request
 )
 
-// LoadGatewayConfig loads gateway configuration from a YAML file.
-// If the file has a top-level "gateway" key, that subtree is unmarshaled; otherwise the whole file is GatewayConfig.
+// LoadGatewayConfig loads gateway configuration from a YAML file (typically talon.config.yaml).
+// If the file has a top-level "gateway" key, that subtree is unmarshaled; otherwise the whole file is treated as GatewayConfig.
 func LoadGatewayConfig(path string) (*GatewayConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -219,14 +223,14 @@ func (c *GatewayConfig) ApplyDefaults() error {
 	if c.Callers == nil {
 		c.Callers = []CallerConfig{}
 	}
-	if c.DefaultPolicy.DefaultPIIAction == "" {
-		c.DefaultPolicy.DefaultPIIAction = DefaultPIIAction
+	if c.ServerDefaults.DefaultPIIAction == "" {
+		c.ServerDefaults.DefaultPIIAction = DefaultPIIAction
 	}
-	if c.DefaultPolicy.MaxDailyCost == 0 {
-		c.DefaultPolicy.MaxDailyCost = 100
+	if c.ServerDefaults.MaxDailyCost == 0 {
+		c.ServerDefaults.MaxDailyCost = 100
 	}
-	if c.DefaultPolicy.MaxMonthlyCost == 0 {
-		c.DefaultPolicy.MaxMonthlyCost = 2000
+	if c.ServerDefaults.MaxMonthlyCost == 0 {
+		c.ServerDefaults.MaxMonthlyCost = 2000
 	}
 	if c.RateLimits.GlobalRequestsPerMin == 0 {
 		c.RateLimits.GlobalRequestsPerMin = DefaultGlobalRPM
@@ -243,7 +247,7 @@ func (c *GatewayConfig) ApplyDefaults() error {
 	if c.Timeouts.StreamIdleTimeout == "" {
 		c.Timeouts.StreamIdleTimeout = DefaultStreamIdleTimeout
 	}
-	c.DefaultPolicy.AttachmentPolicy = applyAttachmentPolicyDefaults(c.DefaultPolicy.AttachmentPolicy)
+	c.ServerDefaults.AttachmentPolicy = applyAttachmentPolicyDefaults(c.ServerDefaults.AttachmentPolicy)
 	return nil
 }
 
@@ -288,7 +292,7 @@ func (c *GatewayConfig) Validate() error {
 			return fmt.Errorf("gateway provider %q: secret_name is required", name)
 		}
 	}
-	if p := c.DefaultPolicy.AttachmentPolicy; p != nil {
+	if p := c.ServerDefaults.AttachmentPolicy; p != nil {
 		switch p.Action {
 		case "block", "strip", "warn", "allow":
 		default:
@@ -321,7 +325,7 @@ func (c *GatewayConfig) Validate() error {
 
 // ResolveAttachmentPolicy returns the effective attachment policy for a caller,
 // merging caller overrides on top of the server default.
-func ResolveAttachmentPolicy(defaultPolicy *DefaultPolicyConfig, overrides *CallerPolicyOverrides) *AttachmentPolicyConfig {
+func ResolveAttachmentPolicy(defaultPolicy *ServerDefaults, overrides *CallerPolicyOverrides) *AttachmentPolicyConfig {
 	base := defaultPolicy.AttachmentPolicy
 	if base == nil {
 		base = &AttachmentPolicyConfig{
@@ -364,7 +368,7 @@ type ToolPolicyResolution struct {
 // ResolveToolPolicy merges tool governance config from default policy, provider,
 // and caller overrides. allowed_tools: most-specific non-empty list wins.
 // forbidden_tools: union of all levels. action: most-specific wins.
-func ResolveToolPolicy(dp *DefaultPolicyConfig, prov ProviderConfig, overrides *CallerPolicyOverrides) ToolPolicyResolution {
+func ResolveToolPolicy(dp *ServerDefaults, prov ProviderConfig, overrides *CallerPolicyOverrides) ToolPolicyResolution {
 	res := ToolPolicyResolution{Action: DefaultToolPolicyAction}
 
 	// Action: most-specific wins (caller > provider > default).

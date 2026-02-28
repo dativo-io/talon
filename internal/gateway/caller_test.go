@@ -11,7 +11,7 @@ func TestResolveCaller_ByAPIKey(t *testing.T) {
 		Callers: []CallerConfig{
 			{Name: "test", APIKey: "talon-gw-test-123", TenantID: "default"},
 		},
-		DefaultPolicy: DefaultPolicyConfig{RequireCallerID: boolPtr(false)},
+		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(false)},
 	}
 	r := httptestNewRequest(context.Background(), "Bearer talon-gw-test-123")
 	caller, err := cfg.ResolveCaller(r)
@@ -28,7 +28,7 @@ func TestResolveCaller_NotFound(t *testing.T) {
 		Callers: []CallerConfig{
 			{Name: "test", APIKey: "talon-gw-test-123", TenantID: "default"},
 		},
-		DefaultPolicy: DefaultPolicyConfig{RequireCallerID: boolPtr(true)},
+		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(true)},
 	}
 	r := httptestNewRequest(context.Background(), "Bearer wrong-key")
 	_, err := cfg.ResolveCaller(r)
@@ -39,8 +39,8 @@ func TestResolveCaller_NotFound(t *testing.T) {
 
 func TestResolveCaller_MissingKey(t *testing.T) {
 	cfg := &GatewayConfig{
-		Callers:       []CallerConfig{},
-		DefaultPolicy: DefaultPolicyConfig{RequireCallerID: boolPtr(true)},
+		Callers:        []CallerConfig{},
+		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(true)},
 	}
 	r, _ := http.NewRequestWithContext(context.Background(), "POST", "/", nil)
 	_, err := cfg.ResolveCaller(r)
@@ -51,8 +51,8 @@ func TestResolveCaller_MissingKey(t *testing.T) {
 
 func TestResolveCaller_AnonymousAllowed(t *testing.T) {
 	cfg := &GatewayConfig{
-		Callers:       []CallerConfig{},
-		DefaultPolicy: DefaultPolicyConfig{RequireCallerID: boolPtr(false)},
+		Callers:        []CallerConfig{},
+		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(false)},
 	}
 	r, _ := http.NewRequestWithContext(context.Background(), "POST", "/", nil)
 	caller, err := cfg.ResolveCaller(r)
@@ -74,7 +74,7 @@ func TestResolveCaller_AnonymousAllowed_NonMatchingKey(t *testing.T) {
 		Callers: []CallerConfig{
 			{Name: "known", APIKey: "talon-gw-known", TenantID: "default"},
 		},
-		DefaultPolicy: DefaultPolicyConfig{RequireCallerID: boolPtr(false)},
+		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(false)},
 	}
 	r := httptestNewRequest(context.Background(), "Bearer wrong-or-missing-key")
 	caller, err := cfg.ResolveCaller(r)
@@ -168,7 +168,7 @@ func TestResolveCaller_BySourceIP_NoSpoofing(t *testing.T) {
 				TenantID:       "default",
 			},
 		},
-		DefaultPolicy:     DefaultPolicyConfig{RequireCallerID: boolPtr(true)},
+		ServerDefaults:    ServerDefaults{RequireCallerID: boolPtr(true)},
 		TrustedProxyCIDRs: nil, // no trusted proxy — X-Forwarded-For must be ignored
 	}
 	// Attacker at 192.168.1.1 sends X-Forwarded-For: 10.1.1.1 to try to match engineering's range.
@@ -193,7 +193,7 @@ func TestResolveCaller_BySourceIP_TrustedProxy(t *testing.T) {
 				TenantID:       "default",
 			},
 		},
-		DefaultPolicy:     DefaultPolicyConfig{RequireCallerID: boolPtr(true)},
+		ServerDefaults:    ServerDefaults{RequireCallerID: boolPtr(true)},
 		TrustedProxyCIDRs: []string{"127.0.0.0/8"},
 	}
 	// Request from proxy 127.0.0.1 with real client 10.1.1.1 in X-Forwarded-For.

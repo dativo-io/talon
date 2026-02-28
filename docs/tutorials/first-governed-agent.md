@@ -41,7 +41,12 @@ mkdir my-agents && cd my-agents
 talon init
 ```
 
-You will see `agent.talon.yaml` and `talon.config.yaml` created with sensible defaults (cost limits, PII detection, model routing). Optional: `talon init --name my-agent --owner you@company.com` to set name and owner.
+You will see two files created:
+
+- **`agent.talon.yaml`** — agent policy (owned by governance/compliance team). Defines what the agent is allowed to do: cost limits, PII detection, model routing, compliance declarations.
+- **`talon.config.yaml`** — infrastructure config (owned by DevOps/platform team). Defines how Talon runs: LLM provider connections, gateway settings, storage paths.
+
+Optional: `talon init --name my-agent --owner you@company.com` to set name and owner.
 
 ---
 

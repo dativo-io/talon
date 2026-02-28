@@ -336,7 +336,7 @@ func TestGateway_ResponsePIIRedaction(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(upstreamResponse))
 	})
-	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
+	gw.config.ServerDefaults.ResponsePIIAction = "redact"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
@@ -369,7 +369,7 @@ func TestGateway_ResponsePIIBlockMode(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(upstreamResponse))
 	})
-	gw.config.DefaultPolicy.ResponsePIIAction = "block"
+	gw.config.ServerDefaults.ResponsePIIAction = "block"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"what is my IBAN?"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
@@ -389,7 +389,7 @@ func TestGateway_ResponsePIIWarnModeRecordsEvidence(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(upstreamResponse))
 	})
-	gw.config.DefaultPolicy.ResponsePIIAction = "warn"
+	gw.config.ServerDefaults.ResponsePIIAction = "warn"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"what is the email?"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
@@ -420,7 +420,7 @@ func TestGateway_ResponsePII_TimestampNotFalsePositive(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(upstreamResponse))
 	})
-	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
+	gw.config.ServerDefaults.ResponsePIIAction = "redact"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
@@ -443,7 +443,7 @@ func TestGateway_ResponsePII_ContentStillRedacted(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(upstreamResponse))
 	})
-	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
+	gw.config.ServerDefaults.ResponsePIIAction = "redact"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
@@ -466,7 +466,7 @@ func TestGateway_ResponsePII_NoPIIInContent_NoFalsePositive(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(upstreamResponse))
 	})
-	gw.config.DefaultPolicy.ResponsePIIAction = "warn"
+	gw.config.ServerDefaults.ResponsePIIAction = "warn"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
@@ -568,7 +568,7 @@ func TestGateway_ChatCompletions_StreamingPIIRedacted(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
-	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
+	gw.config.ServerDefaults.ResponsePIIAction = "redact"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"give me the email"}],"stream":true}`
 	w := makeGatewayRequest(gw, body)
@@ -591,7 +591,7 @@ func TestGateway_ChatCompletions_StreamingPIIBlocked(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
-	gw.config.DefaultPolicy.ResponsePIIAction = "block"
+	gw.config.ServerDefaults.ResponsePIIAction = "block"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"what is my IBAN?"}],"stream":true}`
 	w := makeGatewayRequest(gw, body)
@@ -613,7 +613,7 @@ func TestGateway_ChatCompletions_StreamingPIIWarn(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.ResponsePIIAction = "warn"
+	gw.config.ServerDefaults.ResponsePIIAction = "warn"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"give me the contact"}],"stream":true}`
 	w := makeGatewayRequest(gw, body)
@@ -634,7 +634,7 @@ func TestGateway_ChatCompletions_StreamingNoPII(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
-	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
+	gw.config.ServerDefaults.ResponsePIIAction = "redact"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"say hello"}],"stream":true}`
 	w := makeGatewayRequest(gw, body)

@@ -76,7 +76,7 @@ func TestGateway_ServeHTTP_Integration(t *testing.T) {
 				},
 			},
 		},
-		DefaultPolicy: DefaultPolicyConfig{DefaultPIIAction: "warn"},
+		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",
@@ -129,8 +129,8 @@ func TestGateway_ServeHTTP_Unauthorized(t *testing.T) {
 		Callers: []CallerConfig{
 			{Name: "test", APIKey: "secret", TenantID: "default"},
 		},
-		DefaultPolicy: DefaultPolicyConfig{RequireCallerID: boolPtr(true)},
-		Timeouts:      TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(true)},
+		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	dir := t.TempDir()
 	evStore, _ := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
@@ -163,8 +163,8 @@ func TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied(t *testing.T) {
 		Callers: []CallerConfig{
 			{Name: "test", APIKey: "talon-gw-pii-test", TenantID: "default"},
 		},
-		DefaultPolicy: DefaultPolicyConfig{DefaultPIIAction: "block"},
-		Timeouts:      TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		ServerDefaults: ServerDefaults{DefaultPIIAction: "block"},
+		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)

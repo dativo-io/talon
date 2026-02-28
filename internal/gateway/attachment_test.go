@@ -835,7 +835,7 @@ func TestIsTypeAllowed(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveAttachmentPolicy_DefaultsOnly(t *testing.T) {
-	def := &DefaultPolicyConfig{
+	def := &ServerDefaults{
 		AttachmentPolicy: &AttachmentPolicyConfig{
 			Action:          "warn",
 			InjectionAction: "warn",
@@ -849,7 +849,7 @@ func TestResolveAttachmentPolicy_DefaultsOnly(t *testing.T) {
 }
 
 func TestResolveAttachmentPolicy_CallerOverride(t *testing.T) {
-	def := &DefaultPolicyConfig{
+	def := &ServerDefaults{
 		AttachmentPolicy: &AttachmentPolicyConfig{
 			Action:          "warn",
 			InjectionAction: "warn",
@@ -883,7 +883,7 @@ func TestGateway_Attachment_WarnMode_PIIDetected(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "warn",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -910,7 +910,7 @@ func TestGateway_Attachment_BlockMode_PIIDetected(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "block",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -934,7 +934,7 @@ func TestGateway_Attachment_StripMode_PIIDetected(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "strip",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -968,7 +968,7 @@ func TestGateway_Attachment_NoFiles_NoOverhead(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "block",
 		InjectionAction: "block",
 		MaxFileSizeMB:   10,
@@ -991,7 +991,7 @@ func TestGateway_Attachment_InjectionBlock(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "warn",
 		InjectionAction: "block",
 		MaxFileSizeMB:   10,
@@ -1015,7 +1015,7 @@ func TestGateway_Attachment_HTMLSanitization(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "warn",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -1046,7 +1046,7 @@ func TestGateway_Attachment_CSVWithPII(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = defaultAttPolicy()
+	gw.config.ServerDefaults.AttachmentPolicy = defaultAttPolicy()
 
 	w := makeGatewayRequest(gw, body)
 	require.Equal(t, http.StatusOK, w.Code)
@@ -1072,7 +1072,7 @@ func TestGateway_Attachment_MixedTextAndFilePII(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = defaultAttPolicy()
+	gw.config.ServerDefaults.AttachmentPolicy = defaultAttPolicy()
 
 	fileContent := []byte("IBAN: DE89370400440532013000")
 	fileBlock := map[string]interface{}{

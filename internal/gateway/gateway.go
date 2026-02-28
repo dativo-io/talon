@@ -65,7 +65,7 @@ func NewGateway(
 	)
 
 	maxMB := DefaultAttachmentMaxFileSizeMB
-	if p := config.DefaultPolicy.AttachmentPolicy; p != nil && p.MaxFileSizeMB > 0 {
+	if p := config.ServerDefaults.AttachmentPolicy; p != nil && p.MaxFileSizeMB > 0 {
 		maxMB = p.MaxFileSizeMB
 	}
 	ext := attachment.NewExtractor(maxMB)
@@ -157,7 +157,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 3b: Scan attachments (base64-encoded file blocks)
-	attPolicy := ResolveAttachmentPolicy(&g.config.DefaultPolicy, caller.PolicyOverrides)
+	attPolicy := ResolveAttachmentPolicy(&g.config.ServerDefaults, caller.PolicyOverrides)
 	var attSummary *AttachmentsScanSummary
 	if attPolicy.Action != "allow" {
 		attSummary = ScanRequestAttachments(ctx, body, route.Provider,
@@ -207,7 +207,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 6: Evaluate policy
-	piiAction := g.config.DefaultPolicy.DefaultPIIAction
+	piiAction := g.config.ServerDefaults.DefaultPIIAction
 	if caller.PolicyOverrides != nil && caller.PolicyOverrides.PIIAction != "" {
 		piiAction = caller.PolicyOverrides.PIIAction
 	}
@@ -266,7 +266,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Step 6b: Tool governance — filter or block forbidden tools before the LLM sees them.
 	prov, _ := g.config.Provider(route.Provider)
-	toolPolicy := ResolveToolPolicy(&g.config.DefaultPolicy, prov, caller.PolicyOverrides)
+	toolPolicy := ResolveToolPolicy(&g.config.ServerDefaults, prov, caller.PolicyOverrides)
 	var toolResult *ToolGovernanceResult
 	forwardBody := body
 	if len(extracted.ToolNames) > 0 && (len(toolPolicy.AllowedTools) > 0 || len(toolPolicy.ForbiddenTools) > 0) {
@@ -373,7 +373,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resolve response PII action
-	responsePIIAction := resolveResponsePIIAction(&g.config.DefaultPolicy, caller.PolicyOverrides)
+	responsePIIAction := resolveResponsePIIAction(&g.config.ServerDefaults, caller.PolicyOverrides)
 	isStreaming := isStreamingRequest(forwardBody)
 
 	var tokenUsage TokenUsage

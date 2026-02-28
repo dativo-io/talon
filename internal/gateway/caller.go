@@ -21,7 +21,7 @@ func (c *GatewayConfig) ResolveCaller(r *http.Request) (*CallerConfig, error) {
 		if caller := c.resolveCallerByAPIKey(r, apiKey); caller != nil {
 			return caller, nil
 		}
-		if c.DefaultPolicy.CallerIDRequired() {
+		if c.ServerDefaults.CallerIDRequired() {
 			return nil, ErrCallerNotFound
 		}
 	}
@@ -32,7 +32,7 @@ func (c *GatewayConfig) ResolveCaller(r *http.Request) (*CallerConfig, error) {
 		}
 	}
 
-	if c.DefaultPolicy.CallerIDRequired() {
+	if c.ServerDefaults.CallerIDRequired() {
 		return nil, ErrCallerIDRequired
 	}
 	return &CallerConfig{Name: "anonymous", TenantID: "default"}, nil

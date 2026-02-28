@@ -47,7 +47,7 @@ func setupOpenClawGateway(t *testing.T, piiAction string, upstreamHandler http.H
 				},
 			},
 		},
-		DefaultPolicy: DefaultPolicyConfig{
+		ServerDefaults: ServerDefaults{
 			DefaultPIIAction: piiAction,
 			MaxDailyCost:     100,
 			MaxMonthlyCost:   2000,

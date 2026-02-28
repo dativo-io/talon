@@ -59,7 +59,7 @@ type Config struct {
 	DataDir         string // Base directory for all state (~/.talon)
 	SecretsKey      string // AES-256 encryption key for the vault (exactly 32 bytes)
 	SigningKey      string // HMAC-SHA256 key for evidence signing (≥32 bytes)
-	DefaultPolicy   string // Default policy filename
+	DefaultPolicy   string // Filename of the agent policy file (agent.talon.yaml by default)
 	MaxAttachmentMB int    // Maximum attachment size in MB
 	OllamaBaseURL   string // Ollama API endpoint (operator infrastructure)
 

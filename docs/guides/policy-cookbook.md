@@ -1,6 +1,6 @@
 # Policy cookbook
 
-Copy-paste snippets for common policy needs. Use in `.talon.yaml` (native agents) or in gateway config (gateway callers). Each entry states the goal, the snippet, and where it goes.
+Copy-paste snippets for common policy needs. Use in `agent.talon.yaml` (agent policy, owned by governance/compliance) or in `talon.config.yaml` gateway block (infrastructure config, owned by DevOps). Each entry states the goal, the snippet, and where it goes.
 
 ---
 
@@ -8,7 +8,7 @@ Copy-paste snippets for common policy needs. Use in `.talon.yaml` (native agents
 
 **Goal:** Let the agent persist learnings with governance (categories, PII scan, conflict detection). Memory is injected into later runs so the model can use stored context.
 
-**Where:** `.talon.yaml` under `memory`.
+**Where:** `agent.talon.yaml` under `memory`.
 
 ```yaml
 memory:
@@ -33,7 +33,7 @@ Use `mode: shadow` to log what would be written without persisting. See [Memory 
 
 **Goal:** Restrict tier_2 (e.g. PII-bearing) requests to one or more models.
 
-**Where:** `.talon.yaml` under `policies.model_routing`.
+**Where:** `agent.talon.yaml` under `policies.model_routing`.
 
 ```yaml
 policies:
@@ -62,7 +62,7 @@ gateway:
 
 **Goal:** Deny requests on weekends (e.g. reduce cost or enforce working hours).
 
-**Where:** `.talon.yaml` under `policies.time_restrictions`.
+**Where:** `agent.talon.yaml` under `policies.time_restrictions`.
 
 ```yaml
 policies:
@@ -79,7 +79,7 @@ policies:
 
 **Goal:** Hard cap on daily spend.
 
-**Where (native agent):** `.talon.yaml`
+**Where (native agent):** `agent.talon.yaml`
 
 ```yaml
 policies:
@@ -102,7 +102,7 @@ policy_overrides:
 
 **Goal:** Redact or block PII before it reaches the LLM.
 
-**Where (native):** `.talon.yaml` — use classifier and policy PII action (e.g. in default_policy or capabilities).  
+**Where (native):** `agent.talon.yaml` — use classifier and policy PII action (e.g. in data_classification or capabilities).  
 **Where (gateway):** Gateway `default_policy.default_pii_action` or per-caller `policy_overrides.pii_action`.
 
 ```yaml
@@ -122,7 +122,7 @@ gateway:
 
 **Goal:** Deny the run (no LLM call) when the user prompt or any attachment content contains PII (e.g. email, IBAN). Both prompt and attachment text are scanned; if either has PII and `block_on_pii` is true, the run is denied and evidence is recorded.
 
-**Where:** `.talon.yaml` under `policies.data_classification`.
+**Where:** `agent.talon.yaml` under `policies.data_classification`.
 
 ```yaml
 policies:
@@ -140,7 +140,7 @@ With `block_on_pii: true`, requests whose prompt or attachments contain detected
 
 **Goal:** Pause execution until a human approves (EU AI Act Art. 14 style).
 
-**Where:** `.talon.yaml` under `compliance.human_oversight` and/or plan review configuration. When enabled, the runner generates an execution plan and waits for approval via dashboard or API (`POST /v1/plans/{id}/approve`).
+**Where:** `agent.talon.yaml` under `compliance.human_oversight` and/or plan review configuration. When enabled, the runner generates an execution plan and waits for approval via dashboard or API (`POST /v1/plans/{id}/approve`).
 
 ```yaml
 compliance:
@@ -155,7 +155,7 @@ See [Agent planning](../AGENT_PLANNING.md) for plan review details.
 
 **Goal:** Block or warn when attachments contain prompt-injection patterns.
 
-**Where:** `.talon.yaml` under `attachment_handling`.
+**Where:** `agent.talon.yaml` under `attachment_handling`.
 
 ```yaml
 attachment_handling:
@@ -169,11 +169,11 @@ attachment_handling:
 
 ## Where to put snippets
 
-| Snippet type | Native agents | Gateway |
-|--------------|---------------|---------|
-| Cost limits | `.talon.yaml` → `policies.cost_limits` | Gateway config → `callers[].policy_overrides.max_daily_cost` etc. |
-| Model allow/block | `.talon.yaml` → `policies.model_routing` | Gateway → `callers[].policy_overrides.allowed_models` / `blocked_models` |
-| Time restrictions | `.talon.yaml` → `policies.time_restrictions` | — |
-| PII action | `.talon.yaml` (policy/default) | Gateway → `default_policy.default_pii_action` or `callers[].policy_overrides.pii_action` |
-| Block on PII | `.talon.yaml` → `policies.data_classification.block_on_pii` | — |
-| Human oversight | `.talon.yaml` → `compliance.human_oversight` | — |
+| Snippet type | `agent.talon.yaml` (governance team) | `talon.config.yaml` gateway block (DevOps team) |
+|--------------|--------------------------------------|--------------------------------------------------|
+| Cost limits | `policies.cost_limits` | `gateway.callers[].policy_overrides.max_daily_cost` etc. |
+| Model allow/block | `policies.model_routing` | `gateway.callers[].policy_overrides.allowed_models` / `blocked_models` |
+| Time restrictions | `policies.time_restrictions` | -- |
+| PII action | `policies.data_classification` | `gateway.default_policy.default_pii_action` or `gateway.callers[].policy_overrides.pii_action` |
+| Block on PII | `policies.data_classification.block_on_pii` | -- |
+| Human oversight | `compliance.human_oversight` | -- |

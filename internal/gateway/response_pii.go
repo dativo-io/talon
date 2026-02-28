@@ -49,7 +49,7 @@ func (rc *responseCapture) flushTo(w http.ResponseWriter) {
 }
 
 // resolveResponsePIIAction determines the response PII action for a caller.
-func resolveResponsePIIAction(defaultPolicy *DefaultPolicyConfig, callerOverrides *CallerPolicyOverrides) string {
+func resolveResponsePIIAction(defaultPolicy *ServerDefaults, callerOverrides *CallerPolicyOverrides) string {
 	action := ""
 	if defaultPolicy != nil {
 		action = defaultPolicy.ResponsePIIAction

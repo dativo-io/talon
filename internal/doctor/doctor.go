@@ -264,7 +264,7 @@ func checkGatewayCallers(cfg *gateway.GatewayConfig) CheckResult {
 }
 
 func checkGatewayToolPolicy(cfg *gateway.GatewayConfig) CheckResult {
-	if len(cfg.DefaultPolicy.ForbiddenTools) == 0 {
+	if len(cfg.ServerDefaults.ForbiddenTools) == 0 {
 		return CheckResult{
 			Name: "gateway_forbidden_tools", Category: "gateway", Status: "warn",
 			Message: "No forbidden tools configured",
@@ -273,7 +273,7 @@ func checkGatewayToolPolicy(cfg *gateway.GatewayConfig) CheckResult {
 	}
 	return CheckResult{
 		Name: "gateway_forbidden_tools", Category: "gateway", Status: "pass",
-		Message: fmt.Sprintf("%d pattern(s)", len(cfg.DefaultPolicy.ForbiddenTools)),
+		Message: fmt.Sprintf("%d pattern(s)", len(cfg.ServerDefaults.ForbiddenTools)),
 	}
 }
 

@@ -1,7 +1,9 @@
-# Dativo Talon — Telecom EU Starter Pack
+# Talon Agent Policy — Telecom EU Starter Pack (agent.talon.yaml)
+# Owner: AI governance / compliance team
 # Agent: {{ .Name }}
 # EU defaults for telecom / eSIM operators (NIS2, GDPR, ePrivacy, TKG 2021).
 # Tier 2 uses OpenAI by default so you can run PII flows with only an OpenAI key (no AWS Bedrock required).
+# Infrastructure settings (providers, gateway, storage) live in talon.config.yaml.
 
 agent:
   name: {{ .Name }}

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/dativo-io/talon/schemas/agent.talon.schema.json",
   "title": "Talon Agent Policy",
-  "description": "JSON Schema for .talon.yaml — per-agent policy configuration.",
+  "description": "JSON Schema for agent.talon.yaml — per-agent policy configuration owned by the AI governance/compliance team. Defines capabilities, cost limits, compliance declarations, and audit settings. Infrastructure settings belong in talon.config.yaml.",
   "type": "object",
   "properties": {
     "agent": {

@@ -46,7 +46,7 @@ func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig)) (*Gateway, *
 				},
 			},
 		},
-		DefaultPolicy: DefaultPolicyConfig{
+		ServerDefaults: ServerDefaults{
 			DefaultPIIAction: "block",
 			MaxDailyCost:     100,
 			MaxMonthlyCost:   2000,
@@ -170,8 +170,8 @@ func TestGateway_ShadowMode_ToolBlockBypassedAndLogged(t *testing.T) {
 
 func TestGateway_ShadowMode_PolicyDenyBypassedAndLogged(t *testing.T) {
 	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig) {
-		cfg.DefaultPolicy.ForbiddenTools = nil
-		cfg.DefaultPolicy.DefaultPIIAction = "warn"
+		cfg.ServerDefaults.ForbiddenTools = nil
+		cfg.ServerDefaults.DefaultPIIAction = "warn"
 		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
 		cfg.RateLimits.PerCallerRequestsPerMin = 60
@@ -197,8 +197,8 @@ func TestGateway_ShadowMode_PolicyDenyBypassedAndLogged(t *testing.T) {
 
 func TestGateway_ShadowMode_PolicyErrorBypassedAndLogged(t *testing.T) {
 	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig) {
-		cfg.DefaultPolicy.ForbiddenTools = nil
-		cfg.DefaultPolicy.DefaultPIIAction = "warn"
+		cfg.ServerDefaults.ForbiddenTools = nil
+		cfg.ServerDefaults.DefaultPIIAction = "warn"
 		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
 		cfg.RateLimits.PerCallerRequestsPerMin = 60
@@ -225,8 +225,8 @@ func TestGateway_ShadowMode_PolicyErrorBypassedAndLogged(t *testing.T) {
 func TestGateway_EnforceMode_PolicyErrorStillReturns500(t *testing.T) {
 	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig) {
 		cfg.Mode = ModeEnforce
-		cfg.DefaultPolicy.ForbiddenTools = nil
-		cfg.DefaultPolicy.DefaultPIIAction = "warn"
+		cfg.ServerDefaults.ForbiddenTools = nil
+		cfg.ServerDefaults.DefaultPIIAction = "warn"
 		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
 		cfg.RateLimits.PerCallerRequestsPerMin = 60
@@ -279,8 +279,8 @@ func TestGateway_EnforceMode_ToolBlockStillBlocks(t *testing.T) {
 
 func TestGateway_ShadowMode_NoViolationsNoFlag(t *testing.T) {
 	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig) {
-		cfg.DefaultPolicy.DefaultPIIAction = "warn"
-		cfg.DefaultPolicy.ForbiddenTools = nil
+		cfg.ServerDefaults.DefaultPIIAction = "warn"
+		cfg.ServerDefaults.ForbiddenTools = nil
 		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
 		cfg.RateLimits.PerCallerRequestsPerMin = 60

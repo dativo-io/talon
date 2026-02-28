@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/dativo-io/talon/schemas/talon.config.schema.json",
-  "title": "Talon Config",
-  "description": "JSON Schema for talon.config.yaml — the global server and gateway configuration.",
+  "title": "Talon Infrastructure Config",
+  "description": "JSON Schema for talon.config.yaml — infrastructure configuration owned by the DevOps/platform team. Covers LLM provider connections, gateway settings, storage paths, and observability. Agent policy (capabilities, compliance, cost limits) belongs in agent.talon.yaml.",
   "type": "object",
   "properties": {
     "gateway": {
