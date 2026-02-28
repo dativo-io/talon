@@ -122,7 +122,7 @@ docker compose down -v
 
 | Goal | Next Tutorial |
 |------|--------------|
-| Govern a real app (Slack bot, script) | [Gateway Quick Start](quickstart-gateway.md) |
-| Audit a vendor AI (Zendesk, Intercom) | [MCP Proxy Quick Start](quickstart-mcp-proxy.md) |
-| Enterprise rollout (shadow → enforce) | [Enterprise Quick Start](quickstart-enterprise.md) |
+| Govern a real app (Slack bot, script) | [Gateway Minimal Example](../../examples/gateway-minimal/README.md) |
+| Audit a vendor AI (Zendesk, Intercom) | [MCP Proxy Minimal Example](../../examples/mcp-proxy-minimal/README.md) |
+| Enterprise rollout (shadow → enforce) | [Adoption Scenarios](../ADOPTION_SCENARIOS.md) |
 | Understand the request lifecycle | [What Talon Does to Your Request](../explanation/what-talon-does-to-your-request.md) |
