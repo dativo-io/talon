@@ -1,6 +1,11 @@
-# Dativo Talon Agent Configuration
-# Agent Type: {{ .Name }}
-# Schema: .talon.yaml v2.0
+# Talon Agent Policy (agent.talon.yaml)
+# Owner: AI governance / compliance team
+# Agent: {{ .Name }}
+# Schema: agent.talon.yaml v2.0
+#
+# This file defines WHAT the agent is allowed to do: capabilities, cost limits,
+# PII handling, compliance declarations, memory governance, and audit settings.
+# Infrastructure settings (providers, gateway, storage) live in talon.config.yaml.
 #
 # Review these settings before deploying to production.
 # Run 'talon validate --strict' to verify compliance requirements.

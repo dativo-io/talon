@@ -65,7 +65,7 @@ func NewGateway(
 	)
 
 	maxMB := DefaultAttachmentMaxFileSizeMB
-	if p := config.DefaultPolicy.AttachmentPolicy; p != nil && p.MaxFileSizeMB > 0 {
+	if p := config.ServerDefaults.AttachmentPolicy; p != nil && p.MaxFileSizeMB > 0 {
 		maxMB = p.MaxFileSizeMB
 	}
 	ext := attachment.NewExtractor(maxMB)
@@ -100,6 +100,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		correlationID = "gw_" + uuid.New().String()[:12]
 	}
 
+	isShadow := g.config.Mode == ModeShadow
+	var shadowViolations []evidence.ShadowViolation
+
 	// Step 1: Route
 	route, err := g.config.RouteRequest(r)
 	if err != nil {
@@ -121,9 +124,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Rate limit check (after caller identification, before any work)
 	if g.rateLimiter != nil && !g.rateLimiter.Allow(caller.Name) {
-		log.Warn().Str("caller", caller.Name).Msg("gateway_rate_limited")
-		WriteProviderError(w, route.Provider, http.StatusTooManyRequests, "Rate limit exceeded")
-		return
+		if isShadow {
+			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+				Type: "rate_limit", Detail: "Rate limit exceeded for " + caller.Name, Action: "block",
+			})
+			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_rate_limit_exceeded")
+		} else {
+			log.Warn().Str("caller", caller.Name).Msg("gateway_rate_limited")
+			WriteProviderError(w, route.Provider, http.StatusTooManyRequests, "Rate limit exceeded")
+			return
+		}
 	}
 
 	// Only POST
@@ -147,21 +157,28 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 3b: Scan attachments (base64-encoded file blocks)
-	attPolicy := ResolveAttachmentPolicy(&g.config.DefaultPolicy, caller.PolicyOverrides)
+	attPolicy := ResolveAttachmentPolicy(&g.config.ServerDefaults, caller.PolicyOverrides)
 	var attSummary *AttachmentsScanSummary
 	if attPolicy.Action != "allow" {
 		attSummary = ScanRequestAttachments(ctx, body, route.Provider,
 			g.attExtractor, g.classifier, g.attInjScanner, attPolicy)
 	}
 	if attSummary != nil && attSummary.BlockRequest {
-		WriteProviderError(w, route.Provider, http.StatusBadRequest,
-			"Request blocked: attachment violates policy")
-		_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
-			g.classifier.Scan(ctx, extracted.Text), nil, 0, 0, 0, false,
-			[]string{"attachment policy block"}, false, nil, attSummary, nil)
-		return
+		if isShadow {
+			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+				Type: "attachment_block", Detail: fmt.Sprintf("%d file(s) would be blocked", attSummary.FilesBlocked), Action: "block",
+			})
+			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_attachment_block")
+		} else {
+			WriteProviderError(w, route.Provider, http.StatusBadRequest,
+				"Request blocked: attachment violates policy")
+			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
+				g.classifier.Scan(ctx, extracted.Text), nil, 0, 0, 0, false,
+				[]string{"attachment policy block"}, false, nil, attSummary, nil, nil)
+			return
+		}
 	}
-	if attSummary != nil && attSummary.ModifiedBody != nil {
+	if !isShadow && attSummary != nil && attSummary.ModifiedBody != nil {
 		body = attSummary.ModifiedBody
 	}
 
@@ -189,15 +206,26 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Step 6: Evaluate policy (skip in log_only; in shadow we log but don't block)
-	piiAction := g.config.DefaultPolicy.DefaultPIIAction
+	// Step 6: Evaluate policy
+	piiAction := g.config.ServerDefaults.DefaultPIIAction
 	if caller.PolicyOverrides != nil && caller.PolicyOverrides.PIIAction != "" {
 		piiAction = caller.PolicyOverrides.PIIAction
 	}
 	if piiAction == "block" && classification.HasPII {
-		WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request contains PII that is not allowed")
-		_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"}, false, nil, attSummary, nil)
-		return
+		if isShadow {
+			piiTypes := make([]string, 0, len(classification.Entities))
+			for _, e := range classification.Entities {
+				piiTypes = append(piiTypes, e.Type)
+			}
+			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+				Type: "pii_block", Detail: fmt.Sprintf("PII detected: %v", piiTypes), Action: "block",
+			})
+			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("pii", piiTypes).Msg("shadow_pii_block")
+		} else {
+			WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request contains PII that is not allowed")
+			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"}, false, nil, attSummary, nil, nil)
+			return
+		}
 	}
 
 	// Estimated cost for policy (use default token estimate if we don't have real tokens yet)
@@ -205,29 +233,53 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	estimatedCost := g.costEstimate(extracted.Model, estTokensIn, estTokensOut)
 	dailyCost, monthlyCost := g.callerCostTotals(ctx, caller)
 	policyInput := buildGatewayPolicyInput(caller, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost)
-	if g.policy != nil && g.config.Mode == ModeEnforce {
-		allowed, reasons, err := g.policy.EvaluateGateway(ctx, policyInput)
-		if err != nil {
-			WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Policy evaluation failed")
-			return
+	if g.policy != nil && (g.config.Mode == ModeEnforce || isShadow) {
+		allowed, reasons, policyErr := g.policy.EvaluateGateway(ctx, policyInput)
+		if policyErr != nil {
+			if isShadow {
+				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+					Type: "policy_deny", Detail: fmt.Sprintf("policy evaluation error: %v", policyErr), Action: "block",
+				})
+				log.Warn().Err(policyErr).Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_policy_error")
+			} else {
+				WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Policy evaluation failed")
+				return
+			}
 		}
-		if !allowed {
-			WriteProviderError(w, route.Provider, http.StatusForbidden, reasons[0])
-			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons, false, nil, attSummary, nil)
-			return
+		if !allowed && policyErr == nil {
+			if isShadow {
+				detail := "policy denied"
+				if len(reasons) > 0 {
+					detail = reasons[0]
+				}
+				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+					Type: "policy_deny", Detail: detail, Action: "block",
+				})
+				log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("reasons", reasons).Msg("shadow_policy_deny")
+			} else {
+				WriteProviderError(w, route.Provider, http.StatusForbidden, reasons[0])
+				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons, false, nil, attSummary, nil, nil)
+				return
+			}
 		}
 	}
 
 	// Step 6b: Tool governance — filter or block forbidden tools before the LLM sees them.
 	prov, _ := g.config.Provider(route.Provider)
-	toolPolicy := ResolveToolPolicy(&g.config.DefaultPolicy, prov, caller.PolicyOverrides)
+	toolPolicy := ResolveToolPolicy(&g.config.ServerDefaults, prov, caller.PolicyOverrides)
 	var toolResult *ToolGovernanceResult
 	forwardBody := body
 	if len(extracted.ToolNames) > 0 && (len(toolPolicy.AllowedTools) > 0 || len(toolPolicy.ForbiddenTools) > 0) {
 		tr := EvaluateToolPolicy(extracted.ToolNames, toolPolicy.AllowedTools, toolPolicy.ForbiddenTools)
 		toolResult = &tr
 		if len(tr.Removed) > 0 {
-			if toolPolicy.Action == "block" {
+			switch {
+			case isShadow:
+				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+					Type: "tool_block", Detail: fmt.Sprintf("Forbidden tools: %v", tr.Removed), Action: toolPolicy.Action,
+				})
+				log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("tools", tr.Removed).Msg("shadow_tool_violation")
+			case toolPolicy.Action == "block":
 				log.Warn().
 					Str("caller", caller.Name).
 					Strs("forbidden", tr.Removed).
@@ -235,37 +287,35 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				WriteProviderError(w, route.Provider, http.StatusForbidden,
 					fmt.Sprintf("Request contains forbidden tools: %v", tr.Removed))
 				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
-					classification, nil, 0, 0, 0, false, []string{"tool governance block"}, false, nil, attSummary, toolResult)
+					classification, nil, 0, 0, 0, false, []string{"tool governance block"}, false, nil, attSummary, toolResult, nil)
 				return
-			}
-			// Filter mode: remove disallowed tools from the body.
-			// Fail closed: if filtering fails, block the request rather than
-			// forwarding forbidden tools to the LLM.
-			filtered, err := FilterRequestBodyTools(route.Provider, forwardBody, tr.Kept)
-			if err != nil {
-				log.Error().Err(err).
+			default:
+				filtered, filterErr := FilterRequestBodyTools(route.Provider, forwardBody, tr.Kept)
+				if filterErr != nil {
+					log.Error().Err(filterErr).
+						Str("caller", caller.Name).
+						Strs("forbidden", tr.Removed).
+						Msg("gateway_tool_filter_failed")
+					WriteProviderError(w, route.Provider, http.StatusInternalServerError,
+						"Failed to filter forbidden tools from request")
+					_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
+						classification, nil, 0, 0, 0, false, []string{"tool filter error"}, false, nil, attSummary, toolResult, nil)
+					return
+				}
+				forwardBody = filtered
+				log.Info().
 					Str("caller", caller.Name).
-					Strs("forbidden", tr.Removed).
-					Msg("gateway_tool_filter_failed")
-				WriteProviderError(w, route.Provider, http.StatusInternalServerError,
-					"Failed to filter forbidden tools from request")
-				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
-					classification, nil, 0, 0, 0, false, []string{"tool filter error"}, false, nil, attSummary, toolResult)
-				return
+					Strs("removed", tr.Removed).
+					Strs("kept", tr.Kept).
+					Msg("gateway_tools_filtered")
 			}
-			forwardBody = filtered
-			log.Info().
-				Str("caller", caller.Name).
-				Strs("removed", tr.Removed).
-				Strs("kept", tr.Kept).
-				Msg("gateway_tools_filtered")
 		}
 	}
 
-	// Step 7: Redact (if policy says redact and PII found)
-	if piiAction == "redact" && classification.HasPII {
-		redacted, err := RedactRequestBody(ctx, route.Provider, forwardBody, g.classifier)
-		if err == nil {
+	// Step 7: Redact (if policy says redact and PII found, skip in shadow mode)
+	if !isShadow && piiAction == "redact" && classification.HasPII {
+		redacted, redactErr := RedactRequestBody(ctx, route.Provider, forwardBody, g.classifier)
+		if redactErr == nil {
 			forwardBody = redacted
 		}
 	}
@@ -323,7 +373,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resolve response PII action
-	responsePIIAction := resolveResponsePIIAction(&g.config.DefaultPolicy, caller.PolicyOverrides)
+	responsePIIAction := resolveResponsePIIAction(&g.config.ServerDefaults, caller.PolicyOverrides)
 	isStreaming := isStreamingRequest(forwardBody)
 
 	var tokenUsage TokenUsage
@@ -388,13 +438,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		outputPIITypes = responsePII.PIITypes
 	}
 
-	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes, attSummary, toolResult)
+	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes, attSummary, toolResult, shadowViolations)
 	if err != nil {
 		log.Warn().Err(err).Msg("gateway_forward_error")
 	}
 }
 
-func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult) error {
+func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation) error {
 	inputTokens, outputTokens := 0, 0
 	if usage != nil {
 		inputTokens, outputTokens = usage.Input, usage.Output
@@ -426,26 +476,28 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	}
 
 	params := RecordGatewayEvidenceParams{
-		CorrelationID:     correlationID,
-		TenantID:          caller.TenantID,
-		CallerName:        caller.Name,
-		Team:              caller.Team,
-		Provider:          provider,
-		Model:             model,
-		PolicyAllowed:     allowed,
-		PolicyReasons:     reasons,
-		PolicyVersion:     "",
-		InputTier:         classification.Tier,
-		PIIDetected:       piiDetected,
-		PIIRedacted:       false,
-		OutputPIIDetected: outputPIIDetected,
-		OutputPIITypes:    outputPIITypes,
-		Cost:              cost,
-		InputTokens:       inputTokens,
-		OutputTokens:      outputTokens,
-		DurationMS:        durationMS,
-		SecretsAccessed:   secretsAccessed,
-		AttachmentScan:    attScan,
+		CorrelationID:           correlationID,
+		TenantID:                caller.TenantID,
+		CallerName:              caller.Name,
+		Team:                    caller.Team,
+		Provider:                provider,
+		Model:                   model,
+		PolicyAllowed:           allowed,
+		PolicyReasons:           reasons,
+		PolicyVersion:           "",
+		ObservationModeOverride: len(shadowViolations) > 0,
+		ShadowViolations:        shadowViolations,
+		InputTier:               classification.Tier,
+		PIIDetected:             piiDetected,
+		PIIRedacted:             false,
+		OutputPIIDetected:       outputPIIDetected,
+		OutputPIITypes:          outputPIITypes,
+		Cost:                    cost,
+		InputTokens:             inputTokens,
+		OutputTokens:            outputTokens,
+		DurationMS:              durationMS,
+		SecretsAccessed:         secretsAccessed,
+		AttachmentScan:          attScan,
 	}
 	if toolResult != nil {
 		params.ToolsRequested = toolResult.Requested

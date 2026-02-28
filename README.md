@@ -207,7 +207,7 @@ You'll see:
 ✓ Cost: €0.0018 | Duration: 1250ms
 ```
 
-Try a policy block — set `daily: 0.001` in your `.talon.yaml`, run again, and watch the policy engine deny the request:
+Try a policy block — set `daily: 0.001` in your `agent.talon.yaml`, run again, and watch the policy engine deny the request:
 ```
 ✗ Policy check: DENIED
   Reason: budget_exceeded
@@ -276,7 +276,7 @@ Talon identifies the caller, enforces per-caller model and cost policy, records 
 
 ## Features
 
-**Policy-as-Code** — Define agent governance in `.talon.yaml` files. Cost limits, data classification, model routing, tool access, time restrictions — all declarative, version-controlled, auditable.
+**Policy-as-Code** — Define agent governance in `agent.talon.yaml` files. Cost limits, data classification, model routing, tool access, time restrictions — all declarative, version-controlled, auditable.
 
 **MCP-Native** — Talon speaks Model Context Protocol. Connect any MCP-compatible agent or tool. Every MCP tool call passes through the policy engine. Works as transparent proxy for third-party vendors.
 
@@ -362,8 +362,8 @@ Detailed view:
           │                          │
           ─                          ─
    ┌──────────────┐          ┌──────────────────────┐
-   │  .talon.yaml │          │  LLM Providers       │
-   │  policies    │          │  OpenAI/Anthropic    │
+   │ agent.talon  │          │  LLM Providers       │
+   │  .yaml       │          │  OpenAI/Anthropic    │
    │              │          │  Bedrock/Ollama      │
    └──────────────┘          └──────────────────────┘
 ```
@@ -380,7 +380,7 @@ talon run --policy custom.talon.yaml "..."   # Use explicit policy file
 
 # Project setup
 talon init                                   # Scaffold new project
-talon validate                               # Validate .talon.yaml
+talon validate                               # Validate agent.talon.yaml
 
 # Audit trail
 talon audit list                             # List evidence records
@@ -415,7 +415,7 @@ talon costs [--tenant acme]                  # Cost and budget summary
 PII detection uses **Presidio-compatible** recognizer definitions. Defaults are embedded (EU-focused: email, phone, IBAN, credit card, VAT, SSNs, IP, passport). You can extend or override them without recompiling:
 
 - **Global overrides:** Put a `patterns.yaml` file in `~/.talon/` or the project directory. Same YAML format as the built-in `patterns/pii_eu.yaml`. Later layers override earlier (embedded → global → per-agent).
-- **Per-agent:** In `.talon.yaml` under `policies.data_classification` set `enabled_entities` (whitelist), `disabled_entities` (blacklist), and/or `custom_recognizers` (extra patterns). See the commented block in `talon init` output.
+- **Per-agent:** In `agent.talon.yaml` under `policies.data_classification` set `enabled_entities` (whitelist), `disabled_entities` (blacklist), and/or `custom_recognizers` (extra patterns). See the commented block in `talon init` output.
 
 Attachment (prompt-injection) patterns are configured the same way; see `patterns/injection.yaml` for the default set.
 

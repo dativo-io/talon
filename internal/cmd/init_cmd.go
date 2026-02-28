@@ -28,7 +28,7 @@ var supportedPacks = []string{"fintech-eu", "ecommerce-eu", "saas-eu", "telecom-
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new Talon project",
-	Long:  "Creates agent.talon.yaml and talon.config.yaml from templates. Use --minimal for a short config, or --pack for an industry starter.",
+	Long:  "Creates agent.talon.yaml (agent policy) and talon.config.yaml (infrastructure config) from templates. Use --minimal for a short config, or --pack for an industry starter.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		_, span := tracer.Start(cmd.Context(), "init")
 		defer span.End()
@@ -46,8 +46,8 @@ var initCmd = &cobra.Command{
 		fmt.Println("Initialized Talon project")
 		fmt.Println()
 		fmt.Println("Created files:")
-		fmt.Println("  - agent.talon.yaml (agent policy)")
-		fmt.Println("  - talon.config.yaml (global config)")
+		fmt.Println("  - agent.talon.yaml  (agent policy — governance/compliance team)")
+		fmt.Println("  - talon.config.yaml (infrastructure config — DevOps/platform team)")
 		fmt.Println()
 		if initPack == "openclaw" {
 			printOpenClawNextSteps()

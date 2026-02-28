@@ -105,7 +105,7 @@ func init() {
 	cobra.OnInitialize(initConfig)
 
 	// Global flags
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ~/.talon/config.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "infrastructure config file (default: ./talon.config.yaml or ~/.talon/talon.config.yaml)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "console", "log format (console, json)")

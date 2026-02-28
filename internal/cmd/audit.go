@@ -18,13 +18,16 @@ import (
 )
 
 var (
-	auditTenant      string
-	auditAgent       string
-	auditLimit       int // list: max records to show
-	auditExportLimit int // export: max records to export
-	auditExportFmt   string
-	auditFrom        string
-	auditTo          string
+	auditTenant         string
+	auditAgent          string
+	auditLimit          int // list: max records to show
+	auditExportLimit    int // export: max records to export
+	auditExportFmt      string
+	auditFrom           string
+	auditTo             string
+	auditCaller         string
+	auditViolationsOnly bool
+	auditOutputFile     string
 )
 
 var auditCmd = &cobra.Command{
@@ -54,7 +57,7 @@ var auditVerifyCmd = &cobra.Command{
 
 var auditExportCmd = &cobra.Command{
 	Use:   "export",
-	Short: "Export evidence records as CSV or JSON for compliance",
+	Short: "Export evidence records as CSV, JSON, or NDJSON for compliance",
 	RunE:  auditExport,
 }
 
@@ -63,11 +66,14 @@ func init() {
 	auditListCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
 	auditListCmd.Flags().IntVar(&auditLimit, "limit", 20, "Maximum records to show")
 
-	auditExportCmd.Flags().StringVar(&auditExportFmt, "format", "csv", "Output format: csv or json")
+	auditExportCmd.Flags().StringVar(&auditExportFmt, "format", "csv", "Output format: csv, json, or ndjson")
 	auditExportCmd.Flags().StringVar(&auditFrom, "from", "", "Start date (YYYY-MM-DD)")
 	auditExportCmd.Flags().StringVar(&auditTo, "to", "", "End date (YYYY-MM-DD)")
 	auditExportCmd.Flags().StringVar(&auditTenant, "tenant", "", "Filter by tenant ID")
 	auditExportCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
+	auditExportCmd.Flags().StringVar(&auditCaller, "caller", "", "Filter by caller name (alias for --agent in gateway context)")
+	auditExportCmd.Flags().BoolVar(&auditViolationsOnly, "violations-only", false, "Only export records with policy violations or shadow violations")
+	auditExportCmd.Flags().StringVar(&auditOutputFile, "output", "", "Write to file instead of stdout")
 	auditExportCmd.Flags().IntVar(&auditExportLimit, "limit", 10000, "Maximum records to export")
 
 	auditCmd.AddCommand(auditListCmd)
@@ -171,7 +177,7 @@ func auditVerify(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func auditExport(cmd *cobra.Command, args []string) error {
+func auditExport(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
 	defer cancel()
 
@@ -181,44 +187,85 @@ func auditExport(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	var from, to time.Time
-	if auditFrom != "" {
-		var errParse error
-		from, errParse = time.ParseInLocation("2006-01-02", auditFrom, time.UTC)
-		if errParse != nil {
-			return fmt.Errorf("invalid --from: %w", errParse)
+	from, to, err := parseAuditDateRange(auditFrom, auditTo)
+	if err != nil {
+		return err
+	}
+	agentFilter := resolveAgentFilter(auditAgent, auditCaller)
+
+	list, err := store.List(ctx, auditTenant, agentFilter, from, to, auditExportLimit)
+	if err != nil {
+		return fmt.Errorf("querying evidence: %w", err)
+	}
+	records := filterExportRecords(list, auditViolationsOnly)
+
+	out, cleanup, err := resolveExportOutput(cmd, auditOutputFile)
+	if err != nil {
+		return err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	switch auditExportFmt {
+	case "csv":
+		return renderAuditExportCSV(out, records)
+	case "json":
+		return renderAuditExportJSONWrapped(out, records)
+	case "ndjson":
+		return renderAuditExportNDJSON(out, records)
+	default:
+		return fmt.Errorf("unsupported --format %q; use csv, json, or ndjson", auditExportFmt)
+	}
+}
+
+func parseAuditDateRange(fromStr, toStr string) (from, to time.Time, err error) {
+	if fromStr != "" {
+		from, err = time.ParseInLocation("2006-01-02", fromStr, time.UTC)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid --from: %w", err)
 		}
 	}
-	if auditTo != "" {
-		var errParse error
-		to, errParse = time.ParseInLocation("2006-01-02", auditTo, time.UTC)
-		if errParse != nil {
-			return fmt.Errorf("invalid --to: %w", errParse)
+	if toStr != "" {
+		to, err = time.ParseInLocation("2006-01-02", toStr, time.UTC)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid --to: %w", err)
 		}
 		if !to.IsZero() {
 			to = to.Add(24 * time.Hour)
 		}
 	}
+	return from, to, nil
+}
 
-	// Single SQL scan of evidence_json for export (no N Get() calls).
-	// TODO: for very large exports (e.g. millions), consider cursor-based pagination.
-	list, err := store.List(ctx, auditTenant, auditAgent, from, to, auditExportLimit)
-	if err != nil {
-		return fmt.Errorf("querying evidence: %w", err)
+func resolveAgentFilter(agent, caller string) string {
+	if agent != "" {
+		return agent
 	}
-	records := make([]evidence.ExportRecord, len(list))
+	return caller
+}
+
+func filterExportRecords(list []evidence.Evidence, violationsOnly bool) []evidence.ExportRecord {
+	records := make([]evidence.ExportRecord, 0, len(list))
 	for i := range list {
-		records[i] = evidence.ToExportRecord(&list[i])
+		rec := evidence.ToExportRecord(&list[i])
+		if violationsOnly && !rec.ObservationModeOverride && rec.Allowed {
+			continue
+		}
+		records = append(records, rec)
 	}
+	return records
+}
 
-	switch auditExportFmt {
-	case "csv":
-		return renderAuditExportCSV(os.Stdout, records)
-	case "json":
-		return renderAuditExportJSON(os.Stdout, records)
-	default:
-		return fmt.Errorf("unsupported --format %q; use csv or json", auditExportFmt)
+func resolveExportOutput(cmd *cobra.Command, outputFile string) (io.Writer, func(), error) {
+	if outputFile == "" {
+		return cmd.OutOrStdout(), nil, nil
 	}
+	f, err := os.Create(outputFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating output file: %w", err)
+	}
+	return f, func() { _ = f.Close() }, nil
 }
 
 func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
@@ -226,6 +273,7 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 	header := []string{
 		"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "cost", "model_used", "duration_ms", "has_error",
 		"input_tier", "output_tier", "pii_detected", "pii_redacted", "policy_reasons", "tools_called", "input_hash", "output_hash",
+		"observation_mode_override", "shadow_violation_types",
 	}
 	if err := writer.Write(header); err != nil {
 		return err
@@ -251,6 +299,8 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 			r.ToolsCalledCSV(),
 			r.InputHash,
 			r.OutputHash,
+			strconv.FormatBool(r.ObservationModeOverride),
+			r.ShadowViolationTypesCSV(),
 		}
 		if err := writer.Write(row); err != nil {
 			return err
@@ -260,10 +310,35 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 	return writer.Error()
 }
 
-func renderAuditExportJSON(w io.Writer, records []evidence.ExportRecord) error {
+func renderAuditExportJSONWrapped(w io.Writer, records []evidence.ExportRecord) error {
+	envelope := evidence.ExportEnvelope{
+		ExportMetadata: evidence.ExportMetadata{
+			GeneratedAt:  time.Now().UTC(),
+			TalonVersion: resolvedVersion(),
+			Filter: evidence.ExportFilter{
+				From:   auditFrom,
+				To:     auditTo,
+				Tenant: auditTenant,
+				Agent:  auditAgent,
+				Caller: auditCaller,
+			},
+			TotalRecords: len(records),
+		},
+		Records: records,
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(records)
+	return enc.Encode(envelope)
+}
+
+func renderAuditExportNDJSON(w io.Writer, records []evidence.ExportRecord) error {
+	enc := json.NewEncoder(w)
+	for i := range records {
+		if err := enc.Encode(&records[i]); err != nil {
+			return fmt.Errorf("encoding record %s: %w", records[i].ID, err)
+		}
+	}
+	return nil
 }
 
 // renderAuditList writes evidence index lines to w (testable).

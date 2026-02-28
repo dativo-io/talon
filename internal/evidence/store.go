@@ -30,27 +30,36 @@ type Store struct {
 
 // Evidence is the full audit record for a single agent invocation.
 type Evidence struct {
-	ID                      string          `json:"id"`
-	CorrelationID           string          `json:"correlation_id"`
-	Timestamp               time.Time       `json:"timestamp"`
-	TenantID                string          `json:"tenant_id"`
-	AgentID                 string          `json:"agent_id"`
-	InvocationType          string          `json:"invocation_type"`
-	RequestSourceID         string          `json:"request_source_id,omitempty"` // Who triggered: "cli", "cron", "webhook:<name>", or caller-supplied identity (GDPR Art. 30)
-	PolicyDecision          PolicyDecision  `json:"policy_decision"`
-	Classification          Classification  `json:"classification"`
-	AttachmentScan          *AttachmentScan `json:"attachment_scan,omitempty"`
-	ToolGovernance          *ToolGovernance `json:"tool_governance,omitempty"`
-	Execution               Execution       `json:"execution"`
-	ModelRoutingRationale   string          `json:"model_routing_rationale,omitempty"` // Why this model was chosen: "primary", "degraded to fallback", etc.
-	SecretsAccessed         []string        `json:"secrets_accessed,omitempty"`
-	MemoryWrites            []MemoryWrite   `json:"memory_writes,omitempty"`
-	MemoryReads             []MemoryRead    `json:"memory_reads,omitempty"`
-	AuditTrail              AuditTrail      `json:"audit_trail"`
-	Compliance              Compliance      `json:"compliance"`
-	ObservationModeOverride bool            `json:"observation_mode_override,omitempty"` // True when request was allowed despite policy deny (audit-only shadow mode)
-	Status                  string          `json:"status,omitempty"`                    // "pending", "completed", "failed"; empty = completed (backward-compatible)
-	Signature               string          `json:"signature"`
+	ID                      string            `json:"id"`
+	CorrelationID           string            `json:"correlation_id"`
+	Timestamp               time.Time         `json:"timestamp"`
+	TenantID                string            `json:"tenant_id"`
+	AgentID                 string            `json:"agent_id"`
+	InvocationType          string            `json:"invocation_type"`
+	RequestSourceID         string            `json:"request_source_id,omitempty"` // Who triggered: "cli", "cron", "webhook:<name>", or caller-supplied identity (GDPR Art. 30)
+	PolicyDecision          PolicyDecision    `json:"policy_decision"`
+	Classification          Classification    `json:"classification"`
+	AttachmentScan          *AttachmentScan   `json:"attachment_scan,omitempty"`
+	ToolGovernance          *ToolGovernance   `json:"tool_governance,omitempty"`
+	Execution               Execution         `json:"execution"`
+	ModelRoutingRationale   string            `json:"model_routing_rationale,omitempty"` // Why this model was chosen: "primary", "degraded to fallback", etc.
+	SecretsAccessed         []string          `json:"secrets_accessed,omitempty"`
+	MemoryWrites            []MemoryWrite     `json:"memory_writes,omitempty"`
+	MemoryReads             []MemoryRead      `json:"memory_reads,omitempty"`
+	AuditTrail              AuditTrail        `json:"audit_trail"`
+	Compliance              Compliance        `json:"compliance"`
+	ObservationModeOverride bool              `json:"observation_mode_override,omitempty"` // True when request was allowed despite policy deny (audit-only shadow mode)
+	ShadowViolations        []ShadowViolation `json:"shadow_violations,omitempty"`         // What enforce mode would have done (populated only in shadow mode)
+	Status                  string            `json:"status,omitempty"`                    // "pending", "completed", "failed"; empty = completed (backward-compatible)
+	Signature               string            `json:"signature"`
+}
+
+// ShadowViolation records what enforce mode would have done for a request
+// that was allowed through in shadow mode.
+type ShadowViolation struct {
+	Type   string `json:"type"`   // "pii_block", "rate_limit", "attachment_block", "tool_block", "policy_deny"
+	Detail string `json:"detail"` // Human-readable: "PII detected: EMAIL, IBAN"
+	Action string `json:"action"` // What enforce mode would do: "block", "redact", "strip"
 }
 
 // PolicyDecision captures the OPA evaluation result.

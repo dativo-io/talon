@@ -841,7 +841,7 @@ func TestGateway_Attachment_PDF_WarnMode(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = defaultAttPolicy()
+	gw.config.ServerDefaults.AttachmentPolicy = defaultAttPolicy()
 
 	pdfBytes := buildTestPDF("Customer IBAN: DE89370400440532013000 Email: jan.kowalski@gmail.com")
 	body := chatCompletionsWithFile("application/pdf", "report.pdf", pdfBytes)
@@ -865,7 +865,7 @@ func TestGateway_Attachment_PDF_BlockMode(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "block",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -894,7 +894,7 @@ func TestGateway_Attachment_PDF_StripMode(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "strip",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -927,7 +927,7 @@ func TestGateway_Attachment_MultiFile_CSVandPDF(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = defaultAttPolicy()
+	gw.config.ServerDefaults.AttachmentPolicy = defaultAttPolicy()
 
 	pdfBytes := buildTestPDF("Employee: jan.kowalski@gmail.com")
 	csvContent := loadTestdata(t, "pii_customer_data.csv")
@@ -962,7 +962,7 @@ func TestGateway_Attachment_ResponsesAPI_PDF_Block(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "block",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -982,7 +982,7 @@ func TestGateway_Attachment_ResponsesAPI_CleanPDF_Passes(t *testing.T) {
 	handler := responsesAPIUpstream(&capturedBody, &capturedPath)
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "block",
 		InjectionAction: "block",
 		MaxFileSizeMB:   10,
@@ -1002,7 +1002,7 @@ func TestGateway_Attachment_InjectionInPDF_BlockMode(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "warn",
 		InjectionAction: "block",
 		MaxFileSizeMB:   10,
@@ -1028,7 +1028,7 @@ func TestGateway_Attachment_Testdata_CSV_BlockMode(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "block",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -1052,7 +1052,7 @@ func TestGateway_Attachment_Testdata_HTML_StripMode(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "strip",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,

@@ -166,7 +166,7 @@ func TestGateway_ResponsesAPI_ResponsePIIRedacted(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "redact", handler)
-	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
+	gw.config.ServerDefaults.ResponsePIIAction = "redact"
 
 	body := `{"model":"gpt-4o","input":"What is the support email?"}`
 	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
@@ -201,7 +201,7 @@ func TestGateway_ResponsesAPI_ResponsePIIBlock(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
-	gw.config.DefaultPolicy.ResponsePIIAction = "block"
+	gw.config.ServerDefaults.ResponsePIIAction = "block"
 
 	body := `{"model":"gpt-4o","input":"What is the IBAN?"}`
 	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
@@ -224,7 +224,7 @@ func TestGateway_ResponsesAPI_NoPIIPassesThrough(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
-	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
+	gw.config.ServerDefaults.ResponsePIIAction = "redact"
 
 	body := `{"model":"gpt-4o","input":"Who is the president of Greenland?"}`
 	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
@@ -275,7 +275,7 @@ func TestGateway_ResponsesAPI_StreamingPIIRedacted(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
-	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
+	gw.config.ServerDefaults.ResponsePIIAction = "redact"
 
 	body := `{"model":"gpt-4o","input":"Invent a fictional European email","stream":true}`
 	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
@@ -302,7 +302,7 @@ func TestGateway_ResponsesAPI_StreamingNoPII(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
-	gw.config.DefaultPolicy.ResponsePIIAction = "redact"
+	gw.config.ServerDefaults.ResponsePIIAction = "redact"
 
 	body := `{"model":"gpt-4o","input":"Say hello","stream":true}`
 	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
@@ -325,7 +325,7 @@ func TestGateway_StreamingAllowed_WhenPIIActionAllow(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "allow", handler)
-	gw.config.DefaultPolicy.ResponsePIIAction = "allow"
+	gw.config.ServerDefaults.ResponsePIIAction = "allow"
 
 	body := `{"model":"gpt-4o","input":"Hello","stream":true}`
 	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
@@ -344,7 +344,7 @@ func TestGateway_ResponsesAPI_StreamingPIIBlocked(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
-	gw.config.DefaultPolicy.ResponsePIIAction = "block"
+	gw.config.ServerDefaults.ResponsePIIAction = "block"
 
 	body := `{"model":"gpt-4o","input":"What is the IBAN?","stream":true}`
 	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
@@ -367,7 +367,7 @@ func TestGateway_ResponsesAPI_StreamingPIIWarn(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.DefaultPolicy.ResponsePIIAction = "warn"
+	gw.config.ServerDefaults.ResponsePIIAction = "warn"
 
 	body := `{"model":"gpt-4o","input":"Invent a fictional European email","stream":true}`
 	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
