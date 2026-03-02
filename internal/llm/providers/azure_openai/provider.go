@@ -25,7 +25,7 @@ type AzureOpenAIProvider struct {
 }
 
 type azureOpenAIConfig struct {
-	APIKey     string `yaml:"api_key"`
+	APIKey     string `yaml:"api_key"` // #nosec G117 -- config unmarshaling from operator/vault, not a hardcoded secret
 	Resource   string `yaml:"resource_name"`
 	Deployment string `yaml:"deployment_name"`
 	APIVersion string `yaml:"api_version"`

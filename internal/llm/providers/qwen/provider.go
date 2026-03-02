@@ -21,7 +21,7 @@ type QwenProvider struct {
 }
 
 type qwenConfig struct {
-	APIKey  string `yaml:"api_key"`
+	APIKey  string `yaml:"api_key"` // #nosec G117 -- config unmarshaling from operator/vault, not a hardcoded secret
 	BaseURL string `yaml:"base_url"`
 }
 

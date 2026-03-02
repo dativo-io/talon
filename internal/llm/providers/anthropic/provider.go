@@ -28,7 +28,7 @@ type AnthropicProvider struct {
 }
 
 type anthropicConfig struct {
-	APIKey  string `yaml:"api_key"`
+	APIKey  string `yaml:"api_key"` // #nosec G117 -- config unmarshaling from operator/vault, not a hardcoded secret
 	BaseURL string `yaml:"base_url"`
 }
 
@@ -136,7 +136,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *llm.Request) (*ll
 	httpReq.Header.Set("x-api-key", p.apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := p.httpClient.Do(httpReq)
+	resp, err := p.httpClient.Do(httpReq) // #nosec G704 -- URL from operator config (baseURL), not user input
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("anthropic api call: %w", err)
@@ -220,7 +220,7 @@ func (p *AnthropicProvider) HealthCheck(ctx context.Context) error {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/v1/messages", nil)
 	req.Header.Set("x-api-key", p.apiKey)
-	resp, err := p.httpClient.Do(req)
+	resp, err := p.httpClient.Do(req) // #nosec G704 -- URL from operator config (baseURL), not user input
 	if err != nil {
 		return fmt.Errorf("anthropic health check: %w", err)
 	}

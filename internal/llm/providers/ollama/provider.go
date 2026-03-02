@@ -110,7 +110,7 @@ func (p *OllamaProvider) Generate(ctx context.Context, req *llm.Request) (*llm.R
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := p.httpClient.Do(httpReq)
+	resp, err := p.httpClient.Do(httpReq) // #nosec G704 -- URL from operator config (Ollama baseURL), not user input
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("ollama api call: %w", err)
