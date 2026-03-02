@@ -27,6 +27,12 @@ test_eu_strict_blocks_azure_us_region if {
 	"Azure with non-EU region not allowed in eu_strict" in deny with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "US", "provider_id": "azure-openai", "provider_region": "eastus"}
 }
 
+# Azure metadata has Jurisdiction "EU"; when user selects US region (eastus), eu_strict must still deny.
+test_eu_strict_blocks_azure_eu_jurisdiction_us_region if {
+	count(deny) > 0 with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "EU", "provider_id": "azure-openai", "provider_region": "eastus"}
+	"provider region is not in allowed EU regions for eu_strict" in deny with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "EU", "provider_id": "azure-openai", "provider_region": "eastus"}
+}
+
 test_eu_strict_allows_azure_eu_region if {
 	allow with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "EU", "provider_id": "azure-openai", "provider_region": "westeurope"}
 	count(deny) == 0 with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "EU", "provider_id": "azure-openai", "provider_region": "westeurope"}

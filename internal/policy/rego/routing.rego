@@ -21,7 +21,7 @@ deny contains msg if {
 	msg := "provider jurisdiction CN not allowed in eu_strict"
 }
 
-# US jurisdiction: block unless Azure with EU region.
+# US jurisdiction: block unless Azure with EU region (legacy; region-based rule below also covers this).
 deny contains msg if {
 	input.sovereignty_mode == "eu_strict"
 	input.provider_jurisdiction == "US"
@@ -36,6 +36,15 @@ region_not_eu if {
 
 region_not_eu if {
 	not input.provider_region in valid_eu_regions
+}
+
+# eu_strict: if a provider has a selected region, it must be an EU region (Azure, Vertex, Bedrock, etc.).
+# This fires regardless of jurisdiction so Azure (EU jurisdiction) in eastus is denied.
+deny contains msg if {
+	input.sovereignty_mode == "eu_strict"
+	input.provider_region != ""
+	not input.provider_region in valid_eu_regions
+	msg := "provider region is not in allowed EU regions for eu_strict"
 }
 
 deny contains msg if {

@@ -77,10 +77,12 @@ func TestEvaluateRouting_EUStrictBlocksAzureUSRegion(t *testing.T) {
 	eng, err := NewEngine(ctx, pol)
 	require.NoError(t, err)
 
+	// Use actual Azure OpenAI metadata: Jurisdiction "EU" but user can select US region (eastus).
+	// eu_strict must deny non-EU region regardless of provider jurisdiction.
 	dec, err := eng.EvaluateRouting(ctx, &RoutingInput{
 		SovereigntyMode:      "eu_strict",
 		ProviderID:           "azure-openai",
-		ProviderJurisdiction: "US",
+		ProviderJurisdiction: "EU",
 		ProviderRegion:       "eastus",
 	})
 	require.NoError(t, err)
