@@ -40,3 +40,13 @@ func TestMistralGenerate_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Hi", resp.Content)
 }
+
+func TestMistralGenerate_InvalidBaseURL(t *testing.T) {
+	// Invalid URL causes NewRequestWithContext to fail; we must return error, not panic.
+	p := &MistralProvider{apiKey: "key", baseURL: "://invalid-scheme", httpClient: &http.Client{}}
+	_, err := p.Generate(context.Background(), &llm.Request{
+		Model: "m", Messages: []llm.Message{{Role: "user", Content: "x"}}, MaxTokens: 1,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mistral request:")
+}

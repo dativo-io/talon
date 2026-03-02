@@ -72,8 +72,14 @@ func (p *MistralProvider) Generate(ctx context.Context, req *llm.Request) (*llm.
 		"max_tokens":  req.MaxTokens,
 		"temperature": req.Temperature,
 	}
-	enc, _ := json.Marshal(body)
-	httpReq, _ := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/v1/chat/completions", strings.NewReader(string(enc)))
+	enc, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("mistral request marshal: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/v1/chat/completions", strings.NewReader(string(enc)))
+	if err != nil {
+		return nil, fmt.Errorf("mistral request: %w", err)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	resp, err := p.httpClient.Do(httpReq) // #nosec G704 -- URL from operator config (baseURL), not user input
