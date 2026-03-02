@@ -145,15 +145,20 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *llm.Request) (*ll
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		authErr := &llm.ProviderError{Code: "auth_failed", Message: "anthropic api error 401", Provider: "anthropic"}
+		// Record the ProviderError we return (not err, which is nil after successful Do)
 		span.RecordError(authErr)
 		return nil, authErr
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, &llm.ProviderError{Code: "rate_limit", Message: "anthropic rate limited", Provider: "anthropic"}
+		rateErr := &llm.ProviderError{Code: "rate_limit", Message: "anthropic rate limited", Provider: "anthropic"}
+		span.RecordError(rateErr)
+		return nil, rateErr
 	}
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("anthropic api error %d: %s", resp.StatusCode, string(respBody))
+		err := fmt.Errorf("anthropic api error %d: %s", resp.StatusCode, string(respBody))
+		span.RecordError(err)
+		return nil, err
 	}
 
 	var apiResp anthropicResponse

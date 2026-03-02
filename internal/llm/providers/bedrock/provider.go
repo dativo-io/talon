@@ -222,23 +222,15 @@ func (p *BedrockProvider) ValidateConfig() error {
 	return nil
 }
 
-// HealthCheck performs a lightweight check (optional list-foundation-models or skip).
+// HealthCheck performs a lightweight liveness check without calling the Converse API.
+// The Bedrock Runtime API has no free liveness endpoint; ListFoundationModels lives on
+// the control-plane client (service/bedrock), which we do not use. Do NOT use Converse
+// (e.g. a minimal prompt to anthropic.claude-3-haiku) for health checks—it is billable
+// and would incur ongoing inference costs when called periodically (e.g. every 30s).
+// We only verify the client is initialized; callers get nil (healthy) or ErrProviderUnhealthy.
 func (p *BedrockProvider) HealthCheck(ctx context.Context) error {
 	if p.client == nil {
 		return llm.ErrProviderUnhealthy
-	}
-	ctx, cancel := context.WithTimeout(ctx, 5*llm.TimeoutLLMCall/60)
-	defer cancel()
-	_, err := p.client.Converse(ctx, &bedrockruntime.ConverseInput{
-		ModelId: aws.String("anthropic.claude-3-haiku-20240307-v1:0"),
-		Messages: []types.Message{{
-			Role:    types.ConversationRoleUser,
-			Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: "Hi"}},
-		}},
-		InferenceConfig: &types.InferenceConfiguration{MaxTokens: aws.Int32(2)},
-	})
-	if err != nil {
-		return fmt.Errorf("bedrock health check: %w", err)
 	}
 	return nil
 }

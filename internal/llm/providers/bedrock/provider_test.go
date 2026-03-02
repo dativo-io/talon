@@ -58,3 +58,20 @@ func TestBedrockGenerate_NoClient(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "client not initialized")
 }
+
+// TestBedrockHealthCheck verifies HealthCheck does not call Converse (no billable inference).
+// It only checks client initialization; no network or API calls.
+func TestBedrockHealthCheck(t *testing.T) {
+	// No client: unhealthy
+	provNoClient := &BedrockProvider{region: "eu-central-1"}
+	err := provNoClient.HealthCheck(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, llm.ErrProviderUnhealthy)
+
+	// With client (e.g. from init): returns nil, no Converse call
+	provWithClient := NewBedrockProvider("eu-central-1")
+	if provWithClient.client != nil {
+		err = provWithClient.HealthCheck(context.Background())
+		require.NoError(t, err)
+	}
+}
