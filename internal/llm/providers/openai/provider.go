@@ -193,12 +193,15 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req *llm.Request) (*llm.R
 }
 
 // Stream sends a completion request and streams response tokens to ch.
+// Must close ch when done (success or error) per Provider interface.
 func (p *OpenAIProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
 	if p.client == nil {
+		close(ch)
 		return fmt.Errorf("openai: provider not configured (no API key)")
 	}
 	stream, err := p.client.CreateChatCompletionStream(ctx, p.toStreamRequest(req))
 	if err != nil {
+		close(ch)
 		return fmt.Errorf("openai stream: %w", err)
 	}
 	defer stream.Close()

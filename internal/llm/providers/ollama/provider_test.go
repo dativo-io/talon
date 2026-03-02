@@ -100,3 +100,27 @@ func TestOllamaCostEstimation(t *testing.T) {
 	prov := NewOllamaProvider("")
 	assert.Equal(t, 0.0, prov.EstimateCost("llama3", 100, 50))
 }
+
+// TestOllamaStream_ClosesChannelOnError ensures Stream closes ch on error paths
+// so callers ranging over ch do not block forever (goroutine leak).
+func TestOllamaStream_ClosesChannelOnError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("internal error"))
+	}))
+	defer server.Close()
+
+	provider := NewOllamaProvider(server.URL)
+	ch := make(chan llm.StreamChunk, 4)
+	done := make(chan struct{})
+	go func() {
+		for range ch {
+		}
+		close(done)
+	}()
+	err := provider.Stream(context.Background(), &llm.Request{
+		Model: "llama3", Messages: []llm.Message{{Role: "user", Content: "Hi"}},
+	}, ch)
+	require.Error(t, err)
+	<-done // would block forever if ch were not closed
+}

@@ -148,6 +148,7 @@ func (p *OllamaProvider) Generate(ctx context.Context, req *llm.Request) (*llm.R
 }
 
 // Stream sends a streaming chat request to Ollama.
+// Must close ch when done (success or error) per Provider interface.
 func (p *OllamaProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
 	ctx, cancel := context.WithTimeout(ctx, llm.TimeoutLLMCall)
 	defer cancel()
@@ -159,23 +160,27 @@ func (p *OllamaProvider) Stream(ctx context.Context, req *llm.Request, ch chan<-
 	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: true}
 	body, err := json.Marshal(apiReq)
 	if err != nil {
+		close(ch)
 		return err
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/api/chat", bytes.NewReader(body))
 	if err != nil {
+		close(ch)
 		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := p.httpClient.Do(httpReq) // #nosec G704 -- URL from operator config (Ollama baseURL), not user input
 	if err != nil {
+		close(ch)
 		return fmt.Errorf("ollama stream: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
+		close(ch)
 		return fmt.Errorf("ollama stream error %d: %s", resp.StatusCode, string(b))
 	}
 

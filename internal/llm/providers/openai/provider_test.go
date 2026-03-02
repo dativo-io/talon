@@ -105,6 +105,24 @@ func TestOpenAIStream_Success(t *testing.T) {
 	assert.Equal(t, "Hi", chunks[0].Content)
 }
 
+// TestOpenAIStream_ClosesChannelOnError ensures Stream closes ch on error paths
+// so callers ranging over ch do not block forever (goroutine leak).
+func TestOpenAIStream_ClosesChannelOnError(t *testing.T) {
+	provider := &OpenAIProvider{client: nil}
+	ch := make(chan llm.StreamChunk, 4)
+	done := make(chan struct{})
+	go func() {
+		for range ch {
+		}
+		close(done)
+	}()
+	err := provider.Stream(context.Background(), &llm.Request{
+		Model: "gpt-4o", Messages: []llm.Message{{Role: "user", Content: "Hi"}}, MaxTokens: 10,
+	}, ch)
+	require.Error(t, err)
+	<-done // would block forever if ch were not closed
+}
+
 func TestOpenAIMetadata(t *testing.T) {
 	prov, _ := NewOpenAIProviderFromConfig("key", "")
 	meta := prov.Metadata()
