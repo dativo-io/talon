@@ -10,9 +10,11 @@ dist/
 # Test coverage
 coverage.out
 coverage-*.out
+coverage_*.out
 *_coverage.out
 coverage.html
 *.coverprofile
+c.out
 
 # IDE
 .idea/
