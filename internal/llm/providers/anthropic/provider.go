@@ -224,7 +224,10 @@ func (p *AnthropicProvider) ValidateConfig() error {
 func (p *AnthropicProvider) HealthCheck(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*llm.TimeoutLLMCall/60)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/v1/messages", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/v1/messages", nil)
+	if err != nil {
+		return fmt.Errorf("creating anthropic health check request: %w", err)
+	}
 	req.Header.Set("x-api-key", p.apiKey)
 	resp, err := p.httpClient.Do(req) // #nosec G704 -- URL from operator config (baseURL), not user input
 	if err != nil {
