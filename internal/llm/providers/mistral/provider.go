@@ -26,7 +26,7 @@ type MistralProvider struct {
 }
 
 type mistralConfig struct {
-	APIKey  string `yaml:"api_key"`
+	APIKey  string `yaml:"api_key"` // #nosec G117 -- config unmarshaling from operator/vault, not a hardcoded secret
 	BaseURL string `yaml:"base_url"`
 }
 
@@ -76,7 +76,7 @@ func (p *MistralProvider) Generate(ctx context.Context, req *llm.Request) (*llm.
 	httpReq, _ := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/v1/chat/completions", strings.NewReader(string(enc)))
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	resp, err := p.httpClient.Do(httpReq)
+	resp, err := p.httpClient.Do(httpReq) // #nosec G704 -- URL from operator config (baseURL), not user input
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("mistral: %w", err)

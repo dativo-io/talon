@@ -168,7 +168,7 @@ func (p *OllamaProvider) Stream(ctx context.Context, req *llm.Request, ch chan<-
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := p.httpClient.Do(httpReq)
+	resp, err := p.httpClient.Do(httpReq) // #nosec G704 -- URL from operator config (Ollama baseURL), not user input
 	if err != nil {
 		return fmt.Errorf("ollama stream: %w", err)
 	}
@@ -225,7 +225,7 @@ func (p *OllamaProvider) HealthCheck(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	resp, err := p.httpClient.Do(req)
+	resp, err := p.httpClient.Do(req) // #nosec G704 -- URL from operator config (Ollama baseURL), not user input
 	if err != nil {
 		if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "connect: connection refused") {
 			return fmt.Errorf("ollama not reachable at %s — is `ollama serve` running?", p.baseURL)
