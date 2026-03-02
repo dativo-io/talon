@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-03-02
+
+### Changed
+
+- Version bump to 0.9.1.
+
 ## [0.9.0] - 2026-02-27
 
 ### Added
@@ -278,7 +284,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/dativo-io/talon/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/dativo-io/talon/compare/v0.8.14...v0.9.0
 [0.8.14]: https://github.com/dativo-io/talon/compare/v0.8.13...v0.8.14
 [0.8.13]: https://github.com/dativo-io/talon/compare/v0.8.12...v0.8.13
