@@ -105,6 +105,21 @@ func (p *GenericOpenAIProvider) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+// WithHTTPClient returns a copy of the provider using the given HTTP client (for tests and transport injection).
 func (p *GenericOpenAIProvider) WithHTTPClient(client *http.Client) llm.Provider {
-	return p
+	if p.client == nil {
+		return p
+	}
+	config := openaisdk.DefaultConfig(p.apiKey)
+	config.BaseURL = strings.TrimRight(p.baseURL, "/")
+	if !strings.HasSuffix(config.BaseURL, "/v1") {
+		config.BaseURL += "/v1"
+	}
+	config.HTTPClient = client
+	return &GenericOpenAIProvider{
+		client:       openaisdk.NewClientWithConfig(config),
+		apiKey:       p.apiKey,
+		baseURL:      p.baseURL,
+		jurisdiction: p.jurisdiction,
+	}
 }

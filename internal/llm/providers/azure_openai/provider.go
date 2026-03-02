@@ -18,10 +18,12 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/llm/providers
 
 // AzureOpenAIProvider implements llm.Provider for Azure OpenAI (EU regions).
 type AzureOpenAIProvider struct {
-	client   *openaisdk.Client
-	apiKey   string
-	resource string
-	region   string
+	client     *openaisdk.Client
+	apiKey     string
+	resource   string
+	region     string
+	deployment string // optional; when set, used as AzureModelMapperFunc for all models
+	apiVersion string
 }
 
 type azureOpenAIConfig struct {
@@ -56,10 +58,12 @@ func NewAzureOpenAIProvider(apiKey, resource, deployment, apiVersion, region str
 		config.AzureModelMapperFunc = func(model string) string { return deployment }
 	}
 	return &AzureOpenAIProvider{
-		client:   openaisdk.NewClientWithConfig(config),
-		apiKey:   apiKey,
-		resource: resource,
-		region:   region,
+		client:     openaisdk.NewClientWithConfig(config),
+		apiKey:     apiKey,
+		resource:   resource,
+		region:     region,
+		deployment: deployment,
+		apiVersion: apiVersion,
 	}, nil
 }
 
@@ -137,6 +141,28 @@ func (p *AzureOpenAIProvider) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+// WithHTTPClient returns a copy of the provider using the given HTTP client (for tests and transport injection).
 func (p *AzureOpenAIProvider) WithHTTPClient(client *http.Client) llm.Provider {
-	return p
+	if p.client == nil {
+		return p
+	}
+	apiVersion := p.apiVersion
+	if apiVersion == "" {
+		apiVersion = "2024-02-15-preview"
+	}
+	config := openaisdk.DefaultAzureConfig(p.apiKey, "https://"+p.resource+".openai.azure.com/")
+	config.APIVersion = apiVersion
+	config.HTTPClient = client
+	if p.deployment != "" {
+		deployment := p.deployment
+		config.AzureModelMapperFunc = func(model string) string { return deployment }
+	}
+	return &AzureOpenAIProvider{
+		client:     openaisdk.NewClientWithConfig(config),
+		apiKey:     p.apiKey,
+		resource:   p.resource,
+		region:     p.region,
+		deployment: p.deployment,
+		apiVersion: p.apiVersion,
+	}
 }

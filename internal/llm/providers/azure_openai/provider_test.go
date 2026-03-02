@@ -2,6 +2,7 @@ package azure_openai
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,4 +33,16 @@ func TestAzureOpenAIGenerate_NotConfigured(t *testing.T) {
 	_, err := p.Generate(context.Background(), &llm.Request{Model: "gpt-4o", Messages: []llm.Message{{Role: "user", Content: "Hi"}}, MaxTokens: 10})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not configured")
+}
+
+func TestAzureOpenAIWithHTTPClient(t *testing.T) {
+	prov, err := NewAzureOpenAIProvider("key", "res", "dep", "", "westeurope")
+	require.NoError(t, err)
+	p2 := prov.WithHTTPClient(&http.Client{})
+	assert.NotNil(t, p2)
+	assert.Equal(t, "azure-openai", p2.Name())
+	// Returned provider must be a copy so tests can inject httptest transport
+	copy, ok := p2.(*AzureOpenAIProvider)
+	require.True(t, ok)
+	assert.NotSame(t, prov, copy)
 }
