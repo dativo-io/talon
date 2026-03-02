@@ -52,6 +52,20 @@ type Evidence struct {
 	ShadowViolations        []ShadowViolation `json:"shadow_violations,omitempty"`         // What enforce mode would have done (populated only in shadow mode)
 	Status                  string            `json:"status,omitempty"`                    // "pending", "completed", "failed"; empty = completed (backward-compatible)
 	Signature               string            `json:"signature"`
+	RoutingDecision         *RoutingDecision  `json:"routing_decision,omitempty"` // Provider selection and rejected candidates (EU routing)
+}
+
+// RoutingDecision records which provider/model was selected and why others were rejected.
+type RoutingDecision struct {
+	SelectedProvider   string              `json:"selected_provider"`
+	SelectedModel      string              `json:"selected_model"`
+	RejectedCandidates []RejectedCandidate `json:"rejected_candidates,omitempty"`
+}
+
+// RejectedCandidate is a provider that was considered but rejected by routing policy.
+type RejectedCandidate struct {
+	ProviderID string `json:"provider_id"`
+	Reason     string `json:"reason"`
 }
 
 // ShadowViolation records what enforce mode would have done for a request

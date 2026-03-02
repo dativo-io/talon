@@ -100,6 +100,12 @@ func TestGenAIAttributeKeys(t *testing.T) {
 		{"usage output tokens", string(GenAIUsageOutputTokens), "gen_ai.usage.output_tokens"},
 		{"response finish reason", string(GenAIResponseFinishReason), "gen_ai.response.finish_reason"},
 		{"response id", string(GenAIResponseID), "gen_ai.response.id"},
+		{"talon provider jurisdiction", string(TalonProviderJurisdiction), "talon.provider.jurisdiction"},
+		{"talon provider region", string(TalonProviderRegion), "talon.provider.region"},
+		{"talon routing sovereignty mode", string(TalonRoutingSovereigntyMode), "talon.routing.sovereignty_mode"},
+		{"talon routing selection reason", string(TalonRoutingSelectionReason), "talon.routing.selection_reason"},
+		{"talon data tier", string(TalonDataTier), "talon.data.tier"},
+		{"talon routing rejected count", string(TalonRoutingRejectedCount), "talon.routing.rejected_count"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

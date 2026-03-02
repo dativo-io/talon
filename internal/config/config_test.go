@@ -163,3 +163,40 @@ func TestDeriveDefaultKey_DifferentPaths(t *testing.T) {
 	k2 := deriveDefaultKey("/home/bob/.talon", "salt")
 	assert.NotEqual(t, k1, k2)
 }
+
+func TestLoad_WithoutLLMBlock(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Nil(t, cfg.LLM, "LLM should be nil when llm block is absent")
+}
+
+func TestLoad_WithLLMBlock(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+
+	viper.Set("llm", map[string]interface{}{
+		"routing": map[string]interface{}{
+			"data_sovereignty_mode": "eu_strict",
+		},
+		"providers": map[string]interface{}{
+			"openai": map[string]interface{}{
+				"type":    "openai",
+				"enabled": true,
+			},
+		},
+	})
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.NotNil(t, cfg.LLM)
+	assert.NotNil(t, cfg.LLM.Routing)
+	assert.Equal(t, "eu_strict", cfg.LLM.Routing.DataSovereigntyMode)
+	assert.NotEmpty(t, cfg.LLM.Providers)
+	assert.Contains(t, cfg.LLM.Providers, "openai")
+	assert.Equal(t, "openai", cfg.LLM.Providers["openai"].Type)
+}

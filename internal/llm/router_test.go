@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,6 +18,10 @@ type mockProvider struct {
 }
 
 func (m *mockProvider) Name() string { return m.name }
+func (m *mockProvider) Metadata() ProviderMetadata {
+	return ProviderMetadata{ID: m.name, DisplayName: m.name, Jurisdiction: "US", Wizard: WizardHint{Order: 0}}
+}
+
 func (m *mockProvider) Generate(ctx context.Context, req *Request) (*Response, error) {
 	return &Response{
 		Content:      "mock response",
@@ -27,8 +32,19 @@ func (m *mockProvider) Generate(ctx context.Context, req *Request) (*Response, e
 	}, nil
 }
 
+func (m *mockProvider) Stream(ctx context.Context, req *Request, ch chan<- StreamChunk) error {
+	ch <- StreamChunk{Content: "mock", FinishReason: "stop"}
+	close(ch)
+	return nil
+}
+
 func (m *mockProvider) EstimateCost(model string, inputTokens, outputTokens int) float64 {
 	return 0.001
+}
+func (m *mockProvider) ValidateConfig() error                 { return nil }
+func (m *mockProvider) HealthCheck(ctx context.Context) error { return nil }
+func (m *mockProvider) WithHTTPClient(client *http.Client) Provider {
+	return m
 }
 
 func TestRouterRoute(t *testing.T) {
@@ -60,28 +76,28 @@ func TestRouterRoute(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("tier 0 routes to OpenAI", func(t *testing.T) {
-		provider, model, err := router.Route(ctx, 0)
+		provider, model, _, err := router.Route(ctx, 0, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "openai", provider.Name())
 		assert.Equal(t, "gpt-4o-mini", model)
 	})
 
 	t.Run("tier 1 routes to Anthropic", func(t *testing.T) {
-		provider, model, err := router.Route(ctx, 1)
+		provider, model, _, err := router.Route(ctx, 1, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "anthropic", provider.Name())
 		assert.Equal(t, "claude-sonnet-4-20250514", model)
 	})
 
 	t.Run("tier 2 routes to Bedrock", func(t *testing.T) {
-		provider, model, err := router.Route(ctx, 2)
+		provider, model, _, err := router.Route(ctx, 2, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "bedrock", provider.Name())
 		assert.Equal(t, "anthropic.claude-3-sonnet-20240229-v1:0", model)
 	})
 
 	t.Run("invalid tier returns error", func(t *testing.T) {
-		_, _, err := router.Route(ctx, 5)
+		_, _, _, err := router.Route(ctx, 5, nil)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, ErrInvalidTier)
 	})
@@ -94,7 +110,7 @@ func TestRouterRoute(t *testing.T) {
 			},
 		}
 		r := NewRouter(emptyPrimaryRouting, providers, nil)
-		_, _, err := r.Route(ctx, 0)
+		_, _, _, err := r.Route(ctx, 0, nil)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, ErrNoPrimaryModel)
 	})
@@ -118,7 +134,7 @@ func TestRouterFallback(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("falls back to openai when anthropic unavailable", func(t *testing.T) {
-		provider, model, err := router.Route(ctx, 1)
+		provider, model, _, err := router.Route(ctx, 1, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "openai", provider.Name())
 		assert.Equal(t, "gpt-4o", model)
@@ -140,7 +156,7 @@ func TestRouterNoProvider(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("returns error when no provider available", func(t *testing.T) {
-		_, _, err := router.Route(ctx, 0)
+		_, _, _, err := router.Route(ctx, 0, nil)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, ErrProviderNotAvailable)
 	})
@@ -150,7 +166,7 @@ func TestRouterNilRouting(t *testing.T) {
 	router := NewRouter(nil, map[string]Provider{}, nil)
 	ctx := context.Background()
 
-	_, _, err := router.Route(ctx, 0)
+	_, _, _, err := router.Route(ctx, 0, nil)
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrNoRoutingConfig)
 }
@@ -167,18 +183,18 @@ func TestRouterMissingTierConfig(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("tier 0 works", func(t *testing.T) {
-		_, _, err := router.Route(ctx, 0)
+		_, _, _, err := router.Route(ctx, 0, nil)
 		require.NoError(t, err)
 	})
 
 	t.Run("tier 1 returns error", func(t *testing.T) {
-		_, _, err := router.Route(ctx, 1)
+		_, _, _, err := router.Route(ctx, 1, nil)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, ErrNoRoutingConfig)
 	})
 
 	t.Run("tier 2 returns error", func(t *testing.T) {
-		_, _, err := router.Route(ctx, 2)
+		_, _, _, err := router.Route(ctx, 2, nil)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, ErrNoRoutingConfig)
 	})
@@ -201,7 +217,7 @@ func TestRouterBedrockOnlyEnforcement(t *testing.T) {
 		}
 
 		router := NewRouter(routing, providers, nil)
-		provider, model, err := router.Route(ctx, 2)
+		provider, model, _, err := router.Route(ctx, 2, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "bedrock", provider.Name(), "must route through bedrock for sovereignty")
 		assert.Equal(t, "claude-sonnet-4-20250514", model)
@@ -222,7 +238,7 @@ func TestRouterBedrockOnlyEnforcement(t *testing.T) {
 		}
 
 		router := NewRouter(routing, providers, nil)
-		_, _, err := router.Route(ctx, 2)
+		_, _, _, err := router.Route(ctx, 2, nil)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, ErrProviderNotAvailable,
 			"must not silently route to non-bedrock provider")
@@ -242,7 +258,7 @@ func TestRouterBedrockOnlyEnforcement(t *testing.T) {
 		}
 
 		router := NewRouter(routing, providers, nil)
-		provider, model, err := router.Route(ctx, 1)
+		provider, model, _, err := router.Route(ctx, 1, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "bedrock", provider.Name(), "bedrock_only must override inferred provider")
 		assert.Equal(t, "claude-sonnet-4-20250514", model)
@@ -262,7 +278,7 @@ func TestRouterBedrockOnlyEnforcement(t *testing.T) {
 		}
 
 		router := NewRouter(routing, providers, nil)
-		provider, _, err := router.Route(ctx, 1)
+		provider, _, _, err := router.Route(ctx, 1, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "anthropic", provider.Name(), "should use inferred provider when bedrock_only is false")
 	})
@@ -303,7 +319,7 @@ func TestSovereigntyInvariant(t *testing.T) {
 				},
 			}
 			router := NewRouter(routing, allProviders, nil)
-			provider, _, err := router.Route(ctx, 2)
+			provider, _, _, err := router.Route(ctx, 2, nil)
 			require.NoError(t, err)
 			assert.Equal(t, "bedrock", provider.Name(),
 				"SOVEREIGNTY VIOLATION: bedrock_only=true but routed to %s for model %s",
@@ -324,7 +340,7 @@ func TestSovereigntyInvariant(t *testing.T) {
 				},
 			}
 			router := NewRouter(routing, allProviders, nil)
-			provider, _, err := router.Route(ctx, 2)
+			provider, _, _, err := router.Route(ctx, 2, nil)
 			require.NoError(t, err)
 			assert.Equal(t, "bedrock", provider.Name(),
 				"SOVEREIGNTY VIOLATION: fallback %s escaped bedrock_only", fallback)
@@ -360,7 +376,7 @@ func TestBedrockOnlyFailsClosed(t *testing.T) {
 				},
 			}
 			router := NewRouter(routing, providers, nil)
-			_, _, err := router.Route(ctx, 2)
+			_, _, _, err := router.Route(ctx, 2, nil)
 			assert.Error(t, err, "must fail when bedrock unavailable with bedrock_only=true")
 			assert.ErrorIs(t, err, ErrProviderNotAvailable)
 		})
@@ -386,8 +402,8 @@ func TestTierConfigFieldInfluence(t *testing.T) {
 			Tier0: &policy.TierConfig{Primary: "gpt-4o-mini"},
 		}, allProviders, nil)
 
-		_, m1, _ := r1.Route(ctx, 0)
-		_, m2, _ := r2.Route(ctx, 0)
+		_, m1, _, _ := r1.Route(ctx, 0, nil)
+		_, m2, _, _ := r2.Route(ctx, 0, nil)
 		assert.NotEqual(t, m1, m2, "changing Primary must change the selected model")
 	})
 
@@ -403,8 +419,8 @@ func TestTierConfigFieldInfluence(t *testing.T) {
 			Tier0: &policy.TierConfig{Primary: "claude-sonnet-4-20250514", Fallback: "gpt-4o-mini"},
 		}, limitedProviders, nil)
 
-		_, m1, err1 := r1.Route(ctx, 0)
-		_, m2, err2 := r2.Route(ctx, 0)
+		_, m1, _, err1 := r1.Route(ctx, 0, nil)
+		_, m2, _, err2 := r2.Route(ctx, 0, nil)
 		require.NoError(t, err1)
 		require.NoError(t, err2)
 		assert.NotEqual(t, m1, m2, "changing Fallback must change the selected model when primary is unavailable")
@@ -419,8 +435,8 @@ func TestTierConfigFieldInfluence(t *testing.T) {
 			Tier0: &policy.TierConfig{Primary: "claude-sonnet-4-20250514", BedrockOnly: true},
 		}, allProviders, nil)
 
-		pOff, _, _ := rOff.Route(ctx, 0)
-		pOn, _, _ := rOn.Route(ctx, 0)
+		pOff, _, _, _ := rOff.Route(ctx, 0, nil)
+		pOn, _, _, _ := rOn.Route(ctx, 0, nil)
 		assert.NotEqual(t, pOff.Name(), pOn.Name(),
 			"toggling BedrockOnly must change the selected provider")
 		assert.Equal(t, "bedrock", pOn.Name())
@@ -468,42 +484,18 @@ func TestInferProvider(t *testing.T) {
 }
 
 func TestProviderCostEstimation(t *testing.T) {
-	t.Run("openai cost", func(t *testing.T) {
-		p := &OpenAIProvider{}
-		cost := p.EstimateCost("gpt-4o", 1000, 500)
-		assert.Greater(t, cost, 0.0)
-	})
-
-	t.Run("anthropic cost", func(t *testing.T) {
-		p := &AnthropicProvider{}
-		cost := p.EstimateCost("claude-sonnet-4-20250514", 1000, 500)
-		assert.Greater(t, cost, 0.0)
-	})
-
-	t.Run("ollama cost is zero", func(t *testing.T) {
-		p := &OllamaProvider{}
-		cost := p.EstimateCost("llama3.1:70b", 1000, 500)
-		assert.Equal(t, 0.0, cost)
-	})
-
-	t.Run("bedrock cost", func(t *testing.T) {
-		p := &BedrockProvider{region: "eu-central-1"}
-		cost := p.EstimateCost("anthropic.claude-3-sonnet-20240229-v1:0", 1000, 500)
-		assert.Greater(t, cost, 0.0)
-	})
-
-	t.Run("unknown model uses default pricing", func(t *testing.T) {
-		p := &OpenAIProvider{}
-		cost := p.EstimateCost("unknown-model", 1000, 500)
-		assert.Greater(t, cost, 0.0, "should use default gpt-4o pricing")
-	})
+	// Router uses whatever provider is in the map; cost is from provider.EstimateCost.
+	// Real provider cost logic is tested in each provider's package (e.g. openai/provider_test.go).
+	mock := &mockProvider{name: "openai"}
+	cost := mock.EstimateCost("gpt-4o", 1000, 500)
+	assert.Equal(t, 0.001, cost)
 }
 
 func TestProviderNames(t *testing.T) {
-	assert.Equal(t, "openai", (&OpenAIProvider{}).Name())
-	assert.Equal(t, "anthropic", (&AnthropicProvider{}).Name())
-	assert.Equal(t, "ollama", (&OllamaProvider{}).Name())
-	assert.Equal(t, "bedrock", (&BedrockProvider{}).Name())
+	assert.Equal(t, "openai", (&mockProvider{name: "openai"}).Name())
+	assert.Equal(t, "anthropic", (&mockProvider{name: "anthropic"}).Name())
+	assert.Equal(t, "ollama", (&mockProvider{name: "ollama"}).Name())
+	assert.Equal(t, "bedrock", (&mockProvider{name: "bedrock"}).Name())
 }
 
 func TestGracefulRoute(t *testing.T) {
@@ -528,7 +520,7 @@ func TestGracefulRoute(t *testing.T) {
 		}
 		router := NewRouter(routing, providers, costLimits)
 		costCtx := &CostContext{DailyTotal: 50, TenantID: "t1", AgentName: "a1"}
-		provider, model, degraded, originalModel, err := router.GracefulRoute(ctx, 0, costCtx)
+		provider, model, degraded, originalModel, _, err := router.GracefulRoute(ctx, 0, costCtx, nil)
 		require.NoError(t, err)
 		assert.False(t, degraded)
 		assert.Empty(t, originalModel)
@@ -548,7 +540,7 @@ func TestGracefulRoute(t *testing.T) {
 		}
 		router := NewRouter(routing, providers, costLimits)
 		costCtx := &CostContext{DailyTotal: 80, TenantID: "t1", AgentName: "a1"}
-		provider, model, degraded, originalModel, err := router.GracefulRoute(ctx, 0, costCtx)
+		provider, model, degraded, originalModel, _, err := router.GracefulRoute(ctx, 0, costCtx, nil)
 		require.NoError(t, err)
 		assert.True(t, degraded)
 		assert.Equal(t, "gpt-4o", originalModel)
@@ -563,7 +555,7 @@ func TestGracefulRoute(t *testing.T) {
 		}
 		router := NewRouter(routing, providers, costLimits)
 		costCtx := &CostContext{DailyTotal: 90, TenantID: "t1", AgentName: "a1"}
-		provider, model, degraded, _, err := router.GracefulRoute(ctx, 0, costCtx)
+		provider, model, degraded, _, _, err := router.GracefulRoute(ctx, 0, costCtx, nil)
 		require.NoError(t, err)
 		assert.False(t, degraded)
 		assert.Equal(t, "gpt-4o", model)
@@ -585,7 +577,7 @@ func TestGracefulRoute(t *testing.T) {
 			Tier0: &policy.TierConfig{Primary: "claude-sonnet-4-20250514", Fallback: "gpt-4o-mini"},
 		}
 		router := NewRouter(routing1, limitedProviders, costLimits)
-		provider, model, degraded, _, err := router.GracefulRoute(ctx, 0, costCtx)
+		provider, model, degraded, _, _, err := router.GracefulRoute(ctx, 0, costCtx, nil)
 		require.NoError(t, err)
 		// Fallback gpt-4o-mini -> openai, not in providers; so we get primary (anthropic) and not degraded
 		assert.False(t, degraded)
@@ -599,7 +591,7 @@ func TestGracefulRoute(t *testing.T) {
 			Degradation: &policy.DegradationConfig{Enabled: true, ThresholdPercent: 80, FallbackModel: "gpt-4o-mini"},
 		}
 		router := NewRouter(routing, providers, costLimits)
-		provider, model, degraded, _, err := router.GracefulRoute(ctx, 0, nil)
+		provider, model, degraded, _, _, err := router.GracefulRoute(ctx, 0, nil, nil)
 		require.NoError(t, err)
 		assert.False(t, degraded)
 		assert.Equal(t, "gpt-4o", model)
@@ -630,7 +622,7 @@ func TestGracefulRoute(t *testing.T) {
 		}
 		router := NewRouter(routingT2, bedrockProviders, costLimits)
 		costCtx := &CostContext{DailyTotal: 85, TenantID: "t1", AgentName: "a1"}
-		provider, model, degraded, _, err := router.GracefulRoute(ctx, 2, costCtx)
+		provider, model, degraded, _, _, err := router.GracefulRoute(ctx, 2, costCtx, nil)
 		require.NoError(t, err)
 		assert.False(t, degraded, "must not degrade when tier is bedrock_only and fallback is non-Bedrock")
 		assert.Equal(t, "bedrock", provider.Name(), "must stay on Bedrock for data sovereignty")
@@ -653,6 +645,37 @@ func BenchmarkRouterRoute(b *testing.B) {
 	ctx := context.Background()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, _ = router.Route(ctx, i%3)
+		_, _, _, _ = router.Route(ctx, i%3, nil)
 	}
+}
+
+// TestRoute_WithComplianceOpts verifies that when RouteOptions has PolicyEngine and SovereigntyMode,
+// the router uses compliance-aware routing and returns a RouteDecision for evidence.
+func TestRoute_WithComplianceOpts(t *testing.T) {
+	ctx := context.Background()
+	pol := &policy.Policy{VersionTag: "v1", Policies: policy.PoliciesConfig{}}
+	eng, err := policy.NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	providers := map[string]Provider{
+		"openai": &mockProvider{name: "openai"},
+	}
+	routing := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4o-mini"},
+	}
+	router := NewRouter(routing, providers, nil)
+
+	opts := &RouteOptions{
+		PolicyEngine:    eng,
+		SovereigntyMode: "global",
+		DataTier:        0,
+	}
+	provider, model, decision, err := router.Route(ctx, 0, opts)
+	require.NoError(t, err)
+	require.NotNil(t, provider)
+	assert.Equal(t, "gpt-4o-mini", model)
+	require.NotNil(t, decision)
+	assert.Equal(t, "openai", decision.SelectedProvider)
+	assert.Equal(t, "gpt-4o-mini", decision.SelectedModel)
+	assert.Empty(t, decision.Rejected, "global mode should not reject any candidate")
 }

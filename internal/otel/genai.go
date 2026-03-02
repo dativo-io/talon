@@ -24,6 +24,14 @@ const (
 	// Response attributes
 	GenAIResponseFinishReason = attribute.Key("gen_ai.response.finish_reason")
 	GenAIResponseID           = attribute.Key("gen_ai.response.id")
+
+	// Talon compliance routing attributes (provider registry + EU sovereignty)
+	TalonProviderJurisdiction   = attribute.Key("talon.provider.jurisdiction")
+	TalonProviderRegion         = attribute.Key("talon.provider.region")
+	TalonRoutingSovereigntyMode = attribute.Key("talon.routing.sovereignty_mode")
+	TalonRoutingSelectionReason = attribute.Key("talon.routing.selection_reason")
+	TalonDataTier               = attribute.Key("talon.data.tier")
+	TalonRoutingRejectedCount   = attribute.Key("talon.routing.rejected_count")
 )
 
 // LLMRequestAttributes creates standard attributes for LLM requests

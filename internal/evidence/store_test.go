@@ -64,6 +64,62 @@ func TestStoreAndGet(t *testing.T) {
 	assert.Equal(t, "gpt-4", retrieved.Execution.ModelUsed)
 }
 
+func TestStoreEvidence_WithRoutingDecision(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	rd := &RoutingDecision{
+		SelectedProvider: "openai",
+		SelectedModel:    "gpt-4",
+		RejectedCandidates: []RejectedCandidate{
+			{ProviderID: "anthropic", Reason: "jurisdiction not allowed"},
+		},
+	}
+	ev, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:   "corr_routing",
+		TenantID:        "acme",
+		AgentID:         "agent",
+		InvocationType:  "manual",
+		PolicyDecision:  PolicyDecision{Allowed: true, Action: "allow"},
+		ModelUsed:       "gpt-4",
+		Cost:            0.001,
+		RoutingDecision: rd,
+	})
+	require.NoError(t, err)
+
+	retrieved, err := store.Get(ctx, ev.ID)
+	require.NoError(t, err)
+	require.NotNil(t, retrieved.RoutingDecision)
+	assert.Equal(t, "openai", retrieved.RoutingDecision.SelectedProvider)
+	assert.Equal(t, "gpt-4", retrieved.RoutingDecision.SelectedModel)
+	require.Len(t, retrieved.RoutingDecision.RejectedCandidates, 1)
+	assert.Equal(t, "anthropic", retrieved.RoutingDecision.RejectedCandidates[0].ProviderID)
+	assert.Equal(t, "jurisdiction not allowed", retrieved.RoutingDecision.RejectedCandidates[0].Reason)
+}
+
+func TestStoreEvidence_WithoutRoutingDecision(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	ev, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr_no_routing",
+		TenantID:       "acme",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		ModelUsed:      "gpt-4",
+		Cost:           0.001,
+		// RoutingDecision intentionally nil (backward compat)
+	})
+	require.NoError(t, err)
+
+	retrieved, err := store.Get(ctx, ev.ID)
+	require.NoError(t, err)
+	assert.Nil(t, retrieved.RoutingDecision, "existing evidence without routing_decision should remain nil")
+}
+
 func TestGenerate_InputHashDeterministic(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

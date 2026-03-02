@@ -3,6 +3,7 @@ package testutil
 
 import (
 	"context"
+	"net/http"
 	"sync"
 
 	"github.com/dativo-io/talon/internal/llm"
@@ -19,6 +20,11 @@ type MockProvider struct {
 
 // Name returns the provider identifier (implements llm.Provider).
 func (m *MockProvider) Name() string { return m.ProviderName }
+
+// Metadata returns minimal metadata for tests.
+func (m *MockProvider) Metadata() llm.ProviderMetadata {
+	return llm.ProviderMetadata{ID: m.ProviderName, DisplayName: m.ProviderName, Jurisdiction: "US", Wizard: llm.WizardHint{Order: 0}}
+}
 
 // Generate returns a canned response or the configured error.
 func (m *MockProvider) Generate(_ context.Context, req *llm.Request) (*llm.Response, error) {
@@ -40,6 +46,20 @@ func (m *MockProvider) Generate(_ context.Context, req *llm.Request) (*llm.Respo
 
 // EstimateCost returns a fixed cost for tests.
 func (m *MockProvider) EstimateCost(_ string, _, _ int) float64 { return 0.001 }
+
+// Stream is not implemented; returns llm.ErrNotImplemented.
+func (m *MockProvider) Stream(_ context.Context, _ *llm.Request, _ chan<- llm.StreamChunk) error {
+	return llm.ErrNotImplemented
+}
+
+// ValidateConfig always succeeds for tests.
+func (m *MockProvider) ValidateConfig() error { return nil }
+
+// HealthCheck always succeeds for tests.
+func (m *MockProvider) HealthCheck(_ context.Context) error { return nil }
+
+// WithHTTPClient returns the receiver unchanged (tests do not need client injection).
+func (m *MockProvider) WithHTTPClient(_ *http.Client) llm.Provider { return m }
 
 // ToolCallMockProvider implements llm.Provider for testing the agentic loop.
 // It returns a configurable sequence of responses (e.g. tool calls then final answer),
@@ -112,3 +132,22 @@ func (p *ToolCallMockProvider) EstimateCost(_ string, _, _ int) float64 {
 	}
 	return 0.001
 }
+
+// Metadata returns minimal metadata for tests.
+func (p *ToolCallMockProvider) Metadata() llm.ProviderMetadata {
+	return llm.ProviderMetadata{ID: "openai", DisplayName: "openai", Jurisdiction: "US", Wizard: llm.WizardHint{Order: 0}}
+}
+
+// Stream is not implemented; returns llm.ErrNotImplemented.
+func (p *ToolCallMockProvider) Stream(_ context.Context, _ *llm.Request, _ chan<- llm.StreamChunk) error {
+	return llm.ErrNotImplemented
+}
+
+// ValidateConfig always succeeds for tests.
+func (p *ToolCallMockProvider) ValidateConfig() error { return nil }
+
+// HealthCheck always succeeds for tests.
+func (p *ToolCallMockProvider) HealthCheck(_ context.Context) error { return nil }
+
+// WithHTTPClient returns the receiver unchanged.
+func (p *ToolCallMockProvider) WithHTTPClient(_ *http.Client) llm.Provider { return p }

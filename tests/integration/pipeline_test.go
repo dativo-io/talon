@@ -53,7 +53,7 @@ func TestUserQueryWorkflow(t *testing.T) {
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
-		provider, model, err := router.Route(ctx, classification.Tier)
+		provider, model, _, err := router.Route(ctx, classification.Tier, nil)
 		require.NoError(t, err)
 
 		assert.Equal(t, "openai", provider.Name(), "public data should route to OpenAI")
@@ -93,7 +93,7 @@ func TestUserQueryWorkflow(t *testing.T) {
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
-		provider, model, err := router.Route(ctx, classification.Tier)
+		provider, model, _, err := router.Route(ctx, classification.Tier, nil)
 		require.NoError(t, err)
 
 		assert.Equal(t, "anthropic", provider.Name(), "PII data should route to EU provider")
@@ -121,7 +121,7 @@ func TestUserQueryWorkflow(t *testing.T) {
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
-		provider, _, err := router.Route(ctx, classification.Tier)
+		provider, _, _, err := router.Route(ctx, classification.Tier, nil)
 		require.NoError(t, err)
 
 		assert.Equal(t, "bedrock", provider.Name(), "confidential data must route to Bedrock (EU)")
@@ -325,7 +325,7 @@ func TestPIIAndAttachmentCombined(t *testing.T) {
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
-		provider, _, err := router.Route(ctx, effectiveTier)
+		provider, _, _, err := router.Route(ctx, effectiveTier, nil)
 		require.NoError(t, err)
 
 		assert.Equal(t, "bedrock", provider.Name(),
@@ -464,14 +464,14 @@ compliance:
 
 		// Tier 0 input
 		c := piiScanner.Scan(ctx, "What is the weather?")
-		provider, model, err := router.Route(ctx, c.Tier)
+		provider, model, _, err := router.Route(ctx, c.Tier, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "openai", provider.Name())
 		assert.Equal(t, "gpt-4o-mini", model)
 
 		// Tier 2 input (IBAN)
 		c = piiScanner.Scan(ctx, "Refund to DE89370400440532013000")
-		provider, model, err = router.Route(ctx, c.Tier)
+		provider, model, _, err = router.Route(ctx, c.Tier, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "bedrock", provider.Name())
 		assert.Equal(t, "anthropic.claude-3-sonnet-20240229-v1:0", model)
@@ -517,7 +517,7 @@ func TestSovereigntyEnforcement(t *testing.T) {
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
-		provider, model, err := router.Route(ctx, classification.Tier)
+		provider, model, _, err := router.Route(ctx, classification.Tier, nil)
 		require.NoError(t, err)
 
 		assert.Equal(t, "bedrock", provider.Name(),
@@ -549,7 +549,7 @@ func TestSovereigntyEnforcement(t *testing.T) {
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
-		provider, _, err := router.Route(ctx, classification.Tier)
+		provider, _, _, err := router.Route(ctx, classification.Tier, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "bedrock", provider.Name(),
 			"credit card data must never leave EU — bedrock_only must be enforced")
@@ -575,7 +575,7 @@ func TestSovereigntyEnforcement(t *testing.T) {
 		}
 
 		router := llm.NewRouter(routing, providers, nil)
-		_, _, err := router.Route(ctx, classification.Tier)
+		_, _, _, err := router.Route(ctx, classification.Tier, nil)
 		assert.Error(t, err, "must fail closed when bedrock unavailable for tier 2 bedrock_only data")
 	})
 

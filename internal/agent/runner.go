@@ -239,6 +239,7 @@ type RunRequest struct {
 	PolicyPath      string           // explicit path to .talon.yaml
 	ToolInvocations []ToolInvocation // optional; when set, each is policy-checked and executed, and names recorded in evidence
 	SkipMemory      bool             // if true, do not write memory observation for this run (e.g. --no-memory)
+	SovereigntyMode string           // optional: eu_strict | eu_preferred | global; when set, router uses OPA routing and records RouteDecision for evidence
 }
 
 // ToolInvocation represents a single tool call (e.g. from MCP or a future agent loop).
@@ -736,7 +737,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		}
 	}
 
-	resp, err = r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine,
+	resp, err = r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine, engine,
 		effectiveTier, effectivePIINames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
 		observationOverride, originalDecision, estimatedCost)
 	if err != nil {
@@ -803,12 +804,26 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 // costEstimate is the pre-run cost estimate from Run() (same value used for policy input and plan-review gate).
 //
 //nolint:gocyclo // orchestration flow is inherently branched; splitting would obscure the pipeline
-func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64) (*RunResponse, error) {
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64) (*RunResponse, error) {
 	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
-	provider, model, degraded, originalModel, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx)
+	provider, model, degraded, originalModel, routeDecision, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx, routingEngine, req.SovereigntyMode)
 	if err != nil {
 		span.RecordError(err)
 		return nil, err
+	}
+	var evRouting *evidence.RoutingDecision
+	if routeDecision != nil {
+		evRouting = &evidence.RoutingDecision{
+			SelectedProvider:   routeDecision.SelectedProvider,
+			SelectedModel:      routeDecision.SelectedModel,
+			RejectedCandidates: make([]evidence.RejectedCandidate, len(routeDecision.Rejected)),
+		}
+		for i := range routeDecision.Rejected {
+			evRouting.RejectedCandidates[i] = evidence.RejectedCandidate{
+				ProviderID: routeDecision.Rejected[i].ProviderID,
+				Reason:     routeDecision.Rejected[i].Reason,
+			}
+		}
 	}
 	span.SetAttributes(
 		attribute.String("gen_ai.system", provider.Name()),
@@ -881,7 +896,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, Compliance: compliance,
 					ObservationModeOverride: observationOverride,
 					ToolsCalled:             toolsCalled, Cost: cost,
-					Tokens: evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
+					Tokens:          evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
+					RoutingDecision: evRouting,
 				})
 				return nil, fmt.Errorf("calling LLM: %w", err)
 			}
@@ -1044,6 +1060,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(), Error: err.Error(),
 				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, Compliance: compliance,
 				ObservationModeOverride: observationOverride,
+				RoutingDecision:         evRouting,
 			})
 			return nil, fmt.Errorf("calling LLM: %w", err)
 		}
@@ -1095,6 +1112,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		AttachmentHashes:        attachmentHashesFromRequest(req),
 		Compliance:              compliance,
 		ObservationModeOverride: observationOverride,
+		RoutingDecision:         evRouting,
 	})
 	evidenceID := ""
 	if err != nil {
@@ -1525,18 +1543,27 @@ func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *p
 }
 
 // resolveProvider routes to an LLM provider (with optional cost degradation) and resolves
-// a tenant-scoped API key from the vault. Returns (provider, model, degraded, originalModel, secrets, err).
-func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int, costCtx *llm.CostContext) (provider llm.Provider, model string, degraded bool, originalModel string, secretsAccessed []string, err error) {
+// a tenant-scoped API key from the vault. When policyEngine and sovereigntyMode are set,
+// compliance-aware routing is used and routeDecision is populated for evidence.
+func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int, costCtx *llm.CostContext, policyEngine llm.RoutingPolicyEvaluator, sovereigntyMode string) (provider llm.Provider, model string, degraded bool, originalModel string, routeDecision *llm.RouteDecision, secretsAccessed []string, err error) {
+	opts := (*llm.RouteOptions)(nil)
+	if policyEngine != nil && sovereigntyMode != "" {
+		opts = &llm.RouteOptions{
+			PolicyEngine:    policyEngine,
+			SovereigntyMode: sovereigntyMode,
+			DataTier:        tier,
+		}
+	}
 	if costCtx != nil {
 		var routeErr error
-		provider, model, degraded, originalModel, routeErr = r.router.GracefulRoute(ctx, tier, costCtx)
+		provider, model, degraded, originalModel, routeDecision, routeErr = r.router.GracefulRoute(ctx, tier, costCtx, opts)
 		if routeErr != nil {
-			return nil, "", false, "", nil, fmt.Errorf("routing LLM: %w", routeErr)
+			return nil, "", false, "", nil, nil, fmt.Errorf("routing LLM: %w", routeErr)
 		}
 	} else {
-		provider, model, err = r.router.Route(ctx, tier)
+		provider, model, routeDecision, err = r.router.Route(ctx, tier, opts)
 		if err != nil {
-			return nil, "", false, "", nil, fmt.Errorf("routing LLM: %w", err)
+			return nil, "", false, "", nil, nil, fmt.Errorf("routing LLM: %w", err)
 		}
 	}
 
@@ -1544,7 +1571,7 @@ func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int,
 		provider, secretsAccessed = r.applyProviderKeyFromVaultOrEnv(ctx, req, provider)
 	}
 
-	return provider, model, degraded, originalModel, secretsAccessed, nil
+	return provider, model, degraded, originalModel, routeDecision, secretsAccessed, nil
 }
 
 // applyProviderKeyFromVaultOrEnv resolves the provider's API key from the vault (or env fallback)
@@ -1578,7 +1605,8 @@ func (r *Runner) applyProviderKeyFromVaultOrEnv(ctx context.Context, req *RunReq
 			return
 		}
 		secretsAccessed = append(secretsAccessed, secretName)
-		if p := llm.NewProviderWithKey(providerName, string(secret.Value)); p != nil {
+		p, err := llm.NewProviderWithKey(providerName, string(secret.Value))
+		if err == nil && p != nil {
 			resolved = p
 			return
 		}

@@ -6,9 +6,6 @@ package llm
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -88,84 +85,12 @@ func TestBug8c_RouteReturnsErrorForUnknownModel(t *testing.T) {
 	}
 	router := NewRouter(routing, providers, nil)
 
-	_, _, err := router.Route(context.Background(), 0)
+	_, _, _, err := router.Route(context.Background(), 0, nil)
 	assert.Error(t, err,
 		"BUG-8c: Route must return error when model is unknown")
 	assert.ErrorIs(t, err, ErrUnknownModel,
 		"BUG-8c: error must wrap ErrUnknownModel")
 }
 
-// BUG-9: OllamaProvider.Generate() did not check HTTP status before decoding.
-// A non-200 response (e.g. 404 "model not found", 500 "internal error")
-// caused json.Decoder to attempt to parse the error body as an ollamaResponse.
-// This returned no error and an empty Content string — a silent failure.
-//
-// Anthropic and OpenAI both checked status. Ollama was missed.
-// Fix: add `if resp.StatusCode != http.StatusOK { return nil, fmt.Errorf(...) }`
-// immediately after p.httpClient.Do().
-func TestBug9_OllamaDoesNotCheckHTTPStatus(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":"model 'nonexistent' not found, try pulling it first"}`))
-	}))
-	defer server.Close()
-
-	provider := NewOllamaProvider(server.URL)
-
-	resp, err := provider.Generate(context.Background(), &Request{
-		Model:    "nonexistent-model",
-		Messages: []Message{{Role: "user", Content: "Hello"}},
-	})
-
-	// BROKEN BEHAVIOUR: err is nil, resp.Content is ""
-	// CORRECT BEHAVIOUR: err is non-nil containing the status code and body
-	assert.Error(t, err,
-		"BUG-9: Ollama 500 response must return an error, not silently succeed with empty content")
-	assert.Nil(t, resp,
-		"BUG-9: response must be nil when HTTP error occurs")
-
-	if err != nil {
-		assert.Contains(t, err.Error(), "500",
-			"BUG-9: error message must include the HTTP status code")
-	}
-}
-
-// BUG-9b: Ollama 404 (model not pulled) must also return an error.
-func TestBug9b_OllamaDoesNotCheck404Status(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":"model not found"}`))
-	}))
-	defer server.Close()
-
-	provider := NewOllamaProvider(server.URL)
-	_, err := provider.Generate(context.Background(), &Request{
-		Model:    "llama-not-pulled",
-		Messages: []Message{{Role: "user", Content: "Hello"}},
-	})
-
-	assert.Error(t, err, "BUG-9b: Ollama 404 must return an error")
-}
-
-// BUG-9c: Ollama 200 must still work correctly after the status check is added.
-func TestBug9c_Ollama200StillWorks(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"message": map[string]string{
-				"role":    "assistant",
-				"content": "Hello from Ollama",
-			},
-		})
-	}))
-	defer server.Close()
-
-	provider := NewOllamaProvider(server.URL)
-	resp, err := provider.Generate(context.Background(), &Request{
-		Model:    "llama3.1:8b",
-		Messages: []Message{{Role: "user", Content: "Hello"}},
-	})
-
-	require.NoError(t, err, "BUG-9c: Ollama 200 must not return an error")
-	assert.Equal(t, "Hello from Ollama", resp.Content)
-}
+// BUG-9, BUG-9b, BUG-9c: Ollama HTTP status checks are tested in internal/llm/providers/ollama/provider_test.go
+// (TestOllamaGenerate_Non2xx and related) to avoid import cycles.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/agent/tools"
@@ -18,6 +19,7 @@ import (
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/llm"
+	_ "github.com/dativo-io/talon/internal/llm/providers"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
@@ -180,6 +182,9 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		PolicyPath:     policyPath,
 		SkipMemory:     runNoMemory,
 	}
+	if cfg.LLM != nil && cfg.LLM.Routing != nil && cfg.LLM.Routing.DataSovereigntyMode != "" {
+		req.SovereigntyMode = cfg.LLM.Routing.DataSovereigntyMode
+	}
 
 	resp, err := runner.Run(ctx, req)
 	if err != nil {
@@ -222,38 +227,47 @@ func runAgent(cmd *cobra.Command, args []string) error {
 }
 
 // buildProviders creates LLM providers from OPERATOR-LEVEL environment variables
-// and ensures openai/anthropic are always registered so vault-only keys work.
-//
-// Env vars (OPENAI_API_KEY, ANTHROPIC_API_KEY) are used as fallbacks when set.
-// When not set, the provider is still registered with an empty key; the runner
-// resolves the key from the vault at request time (resolveProvider). Use
-// "talon secrets set openai-api-key <key>" or "talon secrets set anthropic-api-key <key>".
+// via the provider registry. Ensures openai/anthropic/ollama are always registered
+// so vault-only keys work. Use "talon secrets set openai-api-key <key>" etc.
 func buildProviders(cfg *config.Config) map[string]llm.Provider {
 	providers := make(map[string]llm.Provider)
 
-	// OpenAI: env fallback or placeholder so vault-only works
+	openaiCfg := map[string]string{"api_key": os.Getenv("OPENAI_API_KEY")}
+	if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
+		openaiCfg["base_url"] = baseURL
+	}
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		log.Debug().Msg("OPENAI_API_KEY set — using as operator fallback (use vault for production)")
-		if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
-			providers["openai"] = llm.NewOpenAIProviderWithBaseURL(key, baseURL)
-		} else {
-			providers["openai"] = llm.NewOpenAIProvider(key)
-		}
-	} else {
-		providers["openai"] = llm.NewOpenAIProvider("")
 	}
-	// Anthropic: env fallback or placeholder so vault-only works
+	openaiYAML, _ := yaml.Marshal(openaiCfg)
+	if p, err := llm.NewProvider("openai", openaiYAML); err == nil {
+		providers["openai"] = p
+	}
+
+	anthropicCfg := map[string]string{"api_key": os.Getenv("ANTHROPIC_API_KEY")}
+	anthropicYAML, _ := yaml.Marshal(anthropicCfg)
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
 		log.Debug().Msg("ANTHROPIC_API_KEY set — using as operator fallback (use vault for production)")
-		providers["anthropic"] = llm.NewAnthropicProvider(key)
-	} else {
-		providers["anthropic"] = llm.NewAnthropicProvider("")
+	}
+	if p, err := llm.NewProvider("anthropic", anthropicYAML); err == nil {
+		providers["anthropic"] = p
 	}
 
-	providers["ollama"] = llm.NewOllamaProvider(cfg.OllamaBaseURL)
+	ollamaCfg := map[string]string{"base_url": cfg.OllamaBaseURL}
+	if ollamaCfg["base_url"] == "" {
+		ollamaCfg["base_url"] = "http://localhost:11434"
+	}
+	ollamaYAML, _ := yaml.Marshal(ollamaCfg)
+	if p, err := llm.NewProvider("ollama", ollamaYAML); err == nil {
+		providers["ollama"] = p
+	}
 
 	if region := os.Getenv("AWS_REGION"); region != "" {
-		providers["bedrock"] = llm.NewBedrockProvider(region)
+		bedrockCfg := map[string]string{"region": region}
+		bedrockYAML, _ := yaml.Marshal(bedrockCfg)
+		if p, err := llm.NewProvider("bedrock", bedrockYAML); err == nil {
+			providers["bedrock"] = p
+		}
 	}
 
 	return providers

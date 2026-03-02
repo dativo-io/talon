@@ -52,16 +52,36 @@ const (
 	DefaultOllamaURL   = "http://localhost:11434"
 )
 
+// LLMProviderConfig is per-provider config from talon.config.yaml llm.providers.
+type LLMProviderConfig struct {
+	Type    string                 `mapstructure:"type"`    // e.g. "openai", "anthropic"
+	Config  map[string]interface{} `mapstructure:"config"`  // provider-specific (api_key, base_url, region, etc.)
+	Enabled bool                   `mapstructure:"enabled"` // default true when present
+}
+
+// LLMRoutingConfig holds data sovereignty and routing options.
+type LLMRoutingConfig struct {
+	DataSovereigntyMode string `mapstructure:"data_sovereignty_mode"` // eu_strict | eu_preferred | global
+}
+
+// LLMConfig is the optional llm block from talon.config.yaml.
+// When nil, buildProviders uses env vars only (backward compatible).
+type LLMConfig struct {
+	Providers map[string]LLMProviderConfig `mapstructure:"providers"` // key = provider id
+	Routing   *LLMRoutingConfig            `mapstructure:"routing"`
+}
+
 // Config holds resolved operator-level configuration for a Talon process.
 // For tenant-level secrets (LLM API keys, webhook tokens), use the
 // secrets vault (internal/secrets.SecretStore).
 type Config struct {
-	DataDir         string // Base directory for all state (~/.talon)
-	SecretsKey      string // AES-256 encryption key for the vault (exactly 32 bytes)
-	SigningKey      string // HMAC-SHA256 key for evidence signing (≥32 bytes)
-	DefaultPolicy   string // Filename of the agent policy file (agent.talon.yaml by default)
-	MaxAttachmentMB int    // Maximum attachment size in MB
-	OllamaBaseURL   string // Ollama API endpoint (operator infrastructure)
+	DataDir         string     // Base directory for all state (~/.talon)
+	SecretsKey      string     // AES-256 encryption key for the vault (exactly 32 bytes)
+	SigningKey      string     // HMAC-SHA256 key for evidence signing (≥32 bytes)
+	DefaultPolicy   string     // Filename of the agent policy file (agent.talon.yaml by default)
+	MaxAttachmentMB int        // Maximum attachment size in MB
+	OllamaBaseURL   string     // Ollama API endpoint (operator infrastructure)
+	LLM             *LLMConfig // Optional: llm block from config file (providers, routing)
 
 	usingDefaultSecretsKey bool
 	usingDefaultSigningKey bool
@@ -140,6 +160,7 @@ func Load() (*Config, error) {
 		DefaultPolicy:   viper.GetString(KeyDefaultPolicy),
 		MaxAttachmentMB: viper.GetInt(KeyMaxAttachmentMB),
 		OllamaBaseURL:   viper.GetString(KeyOllamaBaseURL),
+		LLM:             loadLLMConfig(),
 	}
 
 	if cfg.SecretsKey == "" {
@@ -156,6 +177,18 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// loadLLMConfig reads the optional llm block from Viper. Returns nil when absent.
+func loadLLMConfig() *LLMConfig {
+	if !viper.IsSet("llm") {
+		return nil
+	}
+	var llm LLMConfig
+	if err := viper.UnmarshalKey("llm", &llm); err != nil {
+		return nil
+	}
+	return &llm
 }
 
 func resolveDataDir() string {

@@ -1,4 +1,4 @@
-package llm
+package anthropic
 
 import (
 	"bytes"
@@ -10,29 +10,26 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/otel/trace"
+	"gopkg.in/yaml.v3"
 
+	"github.com/dativo-io/talon/internal/llm"
 	talonotel "github.com/dativo-io/talon/internal/otel"
 )
 
-// AnthropicProvider implements Provider for the Anthropic Messages API.
+var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/llm/providers/anthropic")
+
+// AnthropicProvider implements llm.Provider for the Anthropic Messages API.
+//
+//nolint:revive // type name matches package for clarity at call sites
 type AnthropicProvider struct {
 	apiKey     string
 	httpClient *http.Client
 	baseURL    string
 }
 
-// NewAnthropicProvider creates an Anthropic provider with the given API key.
-func NewAnthropicProvider(apiKey string) *AnthropicProvider {
-	return &AnthropicProvider{
-		apiKey:     apiKey,
-		httpClient: &http.Client{},
-		baseURL:    "https://api.anthropic.com",
-	}
-}
-
-// Name returns the provider identifier.
-func (p *AnthropicProvider) Name() string {
-	return "anthropic"
+type anthropicConfig struct {
+	APIKey  string `yaml:"api_key"`
+	BaseURL string `yaml:"base_url"`
 }
 
 type anthropicRequest struct {
@@ -61,8 +58,39 @@ type anthropicResponse struct {
 	} `json:"usage"`
 }
 
+func init() {
+	llm.Register("anthropic", func(configYAML []byte) (llm.Provider, error) {
+		if len(configYAML) == 0 {
+			return &AnthropicProvider{apiKey: "", httpClient: &http.Client{}, baseURL: "https://api.anthropic.com"}, nil
+		}
+		var cfg anthropicConfig
+		if err := yaml.Unmarshal(configYAML, &cfg); err != nil {
+			return nil, fmt.Errorf("anthropic config: %w", err)
+		}
+		baseURL := cfg.BaseURL
+		if baseURL == "" {
+			baseURL = "https://api.anthropic.com"
+		}
+		return &AnthropicProvider{
+			apiKey:     cfg.APIKey,
+			httpClient: &http.Client{},
+			baseURL:    baseURL,
+		}, nil
+	})
+}
+
+// Name returns the provider identifier.
+func (p *AnthropicProvider) Name() string {
+	return "anthropic"
+}
+
+// Metadata returns static compliance and identity information.
+func (p *AnthropicProvider) Metadata() llm.ProviderMetadata {
+	return anthropicMetadata()
+}
+
 // Generate sends a completion request to Anthropic.
-func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Response, error) {
+func (p *AnthropicProvider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	ctx, span := tracer.Start(ctx, "gen_ai.generate",
 		trace.WithAttributes(
 			talonotel.GenAISystem.String("anthropic"),
@@ -72,12 +100,9 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Respon
 		))
 	defer span.End()
 
-	// Apply timeout
-	ctx, cancel := context.WithTimeout(ctx, TimeoutLLMCall)
+	ctx, cancel := context.WithTimeout(ctx, llm.TimeoutLLMCall)
 	defer cancel()
 
-	// Anthropic uses a separate "system" field rather than a system message.
-	// Collect ALL system messages and concatenate them so no directive is lost.
 	var systemParts []string
 	messages := make([]anthropicMessage, 0, len(req.Messages))
 	for _, msg := range req.Messages {
@@ -111,7 +136,6 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Respon
 	httpReq.Header.Set("x-api-key", p.apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
-	// #nosec G704 -- request URL is constant (api.anthropic.com), not user-controlled
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		span.RecordError(err)
@@ -119,6 +143,13 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Respon
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		span.RecordError(err)
+		return nil, &llm.ProviderError{Code: "auth_failed", Message: "anthropic api error 401", Provider: "anthropic"}
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, &llm.ProviderError{Code: "rate_limit", Message: "anthropic rate limited", Provider: "anthropic"}
+	}
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("anthropic api error %d: %s", resp.StatusCode, string(respBody))
@@ -136,8 +167,6 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Respon
 		talonotel.GenAIResponseID.String(apiResp.ID),
 	)
 
-	// Concatenate all text blocks; Anthropic can return multiple content blocks
-	// (e.g. multiple text segments or non-text blocks like tool_use first).
 	var content strings.Builder
 	for _, block := range apiResp.Content {
 		if block.Type == "text" && block.Text != "" {
@@ -145,7 +174,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Respon
 		}
 	}
 
-	return &Response{
+	return &llm.Response{
 		Content:      content.String(),
 		FinishReason: apiResp.StopReason,
 		InputTokens:  apiResp.Usage.InputTokens,
@@ -154,27 +183,59 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *Request) (*Respon
 	}, nil
 }
 
+// Stream is not implemented for Anthropic in this version.
+func (p *AnthropicProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
+	return llm.ErrNotImplemented
+}
+
 // EstimateCost estimates the cost in EUR for the given model and token counts.
 func (p *AnthropicProvider) EstimateCost(model string, inputTokens, outputTokens int) float64 {
 	type pricing struct {
 		input  float64
 		output float64
 	}
-
-	// Anthropic pricing in EUR per 1K tokens (Feb 2026)
 	prices := map[string]pricing{
 		"claude-sonnet-4-20250514":  {input: 0.003, output: 0.015},
 		"claude-opus-4-5-20251101":  {input: 0.015, output: 0.075},
 		"claude-haiku-3-5-20241022": {input: 0.0008, output: 0.004},
 	}
-
 	pr, ok := prices[model]
 	if !ok {
 		pr = prices["claude-sonnet-4-20250514"]
 	}
+	return (float64(inputTokens)/1000.0)*pr.input + (float64(outputTokens)/1000.0)*pr.output
+}
 
-	inputCost := (float64(inputTokens) / 1000.0) * pr.input
-	outputCost := (float64(outputTokens) / 1000.0) * pr.output
+// ValidateConfig checks configuration at startup.
+func (p *AnthropicProvider) ValidateConfig() error {
+	if strings.TrimSpace(p.apiKey) == "" {
+		return fmt.Errorf("anthropic: api_key is required")
+	}
+	return nil
+}
 
-	return inputCost + outputCost
+// HealthCheck performs a lightweight liveness check (optional endpoint or list models).
+func (p *AnthropicProvider) HealthCheck(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*llm.TimeoutLLMCall/60)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/v1/messages", nil)
+	req.Header.Set("x-api-key", p.apiKey)
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("anthropic health check: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("anthropic health check: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// WithHTTPClient returns a copy of the provider using the given HTTP client.
+func (p *AnthropicProvider) WithHTTPClient(client *http.Client) llm.Provider {
+	return &AnthropicProvider{
+		apiKey:     p.apiKey,
+		httpClient: client,
+		baseURL:    p.baseURL,
+	}
 }
