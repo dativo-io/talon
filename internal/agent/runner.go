@@ -508,9 +508,10 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		return nil, fmt.Errorf("creating policy engine: %w", err)
 	}
 
+	// Use conservative default when pricing unknown so cost-based deny policies still apply (e2e, no pricing file).
 	estimatedCost := 0.01
 	if r.router != nil {
-		if c, err := r.router.PreRunEstimate(effectiveTier); err == nil {
+		if c, err := r.router.PreRunEstimate(effectiveTier); err == nil && c > 0 {
 			estimatedCost = c
 		}
 	}
