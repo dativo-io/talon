@@ -1099,8 +1099,10 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 
 	// Step 9: Generate evidence (attach post-request cost to routing decision when pricing table is set)
 	var costPricingKnown bool
-	if evRouting != nil && r.pricing != nil {
+	if r.pricing != nil {
 		_, costPricingKnown = r.pricing.Estimate(provider.Name(), model, totalInputTokens, totalOutputTokens)
+	}
+	if evRouting != nil && r.pricing != nil {
 		evRouting.PostRequestCost = &evidence.CostEstimate{
 			ProviderID:   provider.Name(),
 			Model:        model,
