@@ -1,0 +1,86 @@
+// Package scaffold is a template for new LLM providers.
+// Copy this directory: cp -r _scaffold myprovider
+// Then edit provider.go (implement the 7 interface methods) and metadata.go (compliance metadata).
+package scaffold
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/pricing"
+)
+
+// ScaffoldProvider implements llm.Provider.
+// TODO: Rename to YourProvider and replace "scaffold" with your provider ID everywhere.
+type ScaffoldProvider struct {
+	apiKey     string
+	httpClient *http.Client
+	pricing    *pricing.PricingTable
+}
+
+type scaffoldConfig struct {
+	APIKey string `yaml:"api_key"`
+}
+
+// TODO: Add init() to register your provider:
+//   func init() {
+//     llm.Register("myprovider", func(configYAML []byte) (llm.Provider, error) { ... })
+//   }
+
+func (p *ScaffoldProvider) Name() string { return "scaffold" }
+
+func (p *ScaffoldProvider) Metadata() llm.ProviderMetadata {
+	meta := scaffoldMetadata()
+	if p.pricing != nil {
+		meta.PricingAvailable = p.pricing.ModelCount(p.Name()) > 0
+	}
+	return meta
+}
+
+func (p *ScaffoldProvider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+	// TODO: Implement real API call. For stub, return ErrNotImplemented.
+	// If using http.NewRequestWithContext: always check err and return on non-nil to avoid nil pointer dereference.
+	return nil, fmt.Errorf("scaffold: %w", llm.ErrNotImplemented)
+}
+
+func (p *ScaffoldProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
+	// TODO: If your API supports streaming, implement; otherwise close(ch) and return ErrNotImplemented.
+	close(ch)
+	return llm.ErrNotImplemented
+}
+
+// SetPricing injects the config-driven pricing table for cost estimation.
+func (p *ScaffoldProvider) SetPricing(pt *pricing.PricingTable) { p.pricing = pt }
+
+func (p *ScaffoldProvider) EstimateCost(model string, in, out int) float64 {
+	if p.pricing == nil {
+		return 0
+	}
+	cost, known := p.pricing.Estimate(p.Metadata().ID, model, in, out)
+	if !known {
+		pricing.WarnUnknownModelOnce(p.Metadata().ID, model)
+	}
+	return cost
+}
+
+func (p *ScaffoldProvider) ValidateConfig() error {
+	// TODO: Validate required config (e.g. api_key, region).
+	if strings.TrimSpace(p.apiKey) == "" {
+		return fmt.Errorf("scaffold: api_key is required")
+	}
+	return nil
+}
+
+func (p *ScaffoldProvider) HealthCheck(ctx context.Context) error {
+	// TODO: Optional lightweight liveness check (e.g. GET /health). Return nil to skip.
+	// If using http.NewRequestWithContext: always check err and return immediately on non-nil
+	// to avoid nil pointer dereference (e.g. if err != nil { return err }).
+	return nil
+}
+
+func (p *ScaffoldProvider) WithHTTPClient(client *http.Client) llm.Provider {
+	return &ScaffoldProvider{apiKey: p.apiKey, httpClient: client, pricing: p.pricing}
+}

@@ -52,6 +52,32 @@ type Evidence struct {
 	ShadowViolations        []ShadowViolation `json:"shadow_violations,omitempty"`         // What enforce mode would have done (populated only in shadow mode)
 	Status                  string            `json:"status,omitempty"`                    // "pending", "completed", "failed"; empty = completed (backward-compatible)
 	Signature               string            `json:"signature"`
+	RoutingDecision         *RoutingDecision  `json:"routing_decision,omitempty"` // Provider selection and rejected candidates (EU routing)
+}
+
+// CostEstimate holds per-request cost estimation (pre-call estimate or post-call actual).
+type CostEstimate struct {
+	ProviderID   string  `json:"provider_id"`
+	Model        string  `json:"model"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	EstimatedUSD float64 `json:"estimated_usd"`
+	PricingKnown bool    `json:"pricing_known"`
+}
+
+// RoutingDecision records which provider/model was selected and why others were rejected.
+type RoutingDecision struct {
+	SelectedProvider   string              `json:"selected_provider"`
+	SelectedModel      string              `json:"selected_model"`
+	RejectedCandidates []RejectedCandidate `json:"rejected_candidates,omitempty"`
+	PreRequestEstimate *CostEstimate       `json:"pre_request_estimate,omitempty"`
+	PostRequestCost    *CostEstimate       `json:"post_request_cost,omitempty"`
+}
+
+// RejectedCandidate is a provider that was considered but rejected by routing policy.
+type RejectedCandidate struct {
+	ProviderID string `json:"provider_id"`
+	Reason     string `json:"reason"`
 }
 
 // ShadowViolation records what enforce mode would have done for a request

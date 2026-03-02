@@ -25,32 +25,33 @@ func NewGenerator(store *Store) *Generator {
 // Callers populate this struct at the end of the agent pipeline; the
 // Generator hashes prompts/responses, signs the record, and persists it.
 type GenerateParams struct {
-	CorrelationID           string          // Unique trace identifier for this invocation
-	TenantID                string          // Tenant scope
-	AgentID                 string          // Agent that was invoked
-	InvocationType          string          // "manual", "scheduled", or "webhook:<name>"
-	RequestSourceID         string          // Who triggered (CLI user, webhook name, cron) — for GDPR Art. 30
-	PolicyDecision          PolicyDecision  // OPA evaluation result
-	Classification          Classification  // PII detection on input and output
-	AttachmentScan          *AttachmentScan // nil when no attachments were provided
-	ModelUsed               string          // LLM model that was called (empty on deny/dry-run)
-	OriginalModel           string          // Primary model when degraded (empty when not degraded)
-	Degraded                bool            // True when cost degradation used fallback model
-	ModelRoutingRationale   string          // Why this model was chosen (e.g. "primary", "degraded to fallback")
-	ToolsCalled             []string        // MCP tools invoked during execution
-	Cost                    float64         // Estimated cost
-	Tokens                  TokenUsage      // Input/output token counts
-	MemoryTokens            int             // Tokens injected from memory context
-	DurationMS              int64           // Wall-clock duration of the full pipeline
-	Error                   string          // Non-empty on LLM or tool errors
-	SecretsAccessed         []string        // Vault secret names accessed during this run
-	MemoryWrites            []MemoryWrite   // Soul directory writes (if any)
-	MemoryReads             []MemoryRead    // Memory entries injected into the LLM prompt
-	InputPrompt             string          // Raw user prompt (hashed in evidence, not stored verbatim)
-	OutputResponse          string          // LLM response text (hashed in evidence)
-	AttachmentHashes        []string        // SHA256 hex of each attachment content (optional); same prompt+same attachments → same InputHash
-	Compliance              Compliance      // Applicable compliance frameworks and data location
-	ObservationModeOverride bool            // True when allowed despite policy deny (shadow/observation-only mode)
+	CorrelationID           string           // Unique trace identifier for this invocation
+	TenantID                string           // Tenant scope
+	AgentID                 string           // Agent that was invoked
+	InvocationType          string           // "manual", "scheduled", or "webhook:<name>"
+	RequestSourceID         string           // Who triggered (CLI user, webhook name, cron) — for GDPR Art. 30
+	PolicyDecision          PolicyDecision   // OPA evaluation result
+	Classification          Classification   // PII detection on input and output
+	AttachmentScan          *AttachmentScan  // nil when no attachments were provided
+	ModelUsed               string           // LLM model that was called (empty on deny/dry-run)
+	OriginalModel           string           // Primary model when degraded (empty when not degraded)
+	Degraded                bool             // True when cost degradation used fallback model
+	ModelRoutingRationale   string           // Why this model was chosen (e.g. "primary", "degraded to fallback")
+	ToolsCalled             []string         // MCP tools invoked during execution
+	Cost                    float64          // Estimated cost
+	Tokens                  TokenUsage       // Input/output token counts
+	MemoryTokens            int              // Tokens injected from memory context
+	DurationMS              int64            // Wall-clock duration of the full pipeline
+	Error                   string           // Non-empty on LLM or tool errors
+	SecretsAccessed         []string         // Vault secret names accessed during this run
+	MemoryWrites            []MemoryWrite    // Soul directory writes (if any)
+	MemoryReads             []MemoryRead     // Memory entries injected into the LLM prompt
+	InputPrompt             string           // Raw user prompt (hashed in evidence, not stored verbatim)
+	OutputResponse          string           // LLM response text (hashed in evidence)
+	AttachmentHashes        []string         // SHA256 hex of each attachment content (optional); same prompt+same attachments → same InputHash
+	Compliance              Compliance       // Applicable compliance frameworks and data location
+	ObservationModeOverride bool             // True when allowed despite policy deny (shadow/observation-only mode)
+	RoutingDecision         *RoutingDecision // Provider selection and rejected candidates (EU routing)
 }
 
 // StepParams holds inputs for creating a step-level evidence record (one LLM call or one tool call within a run).
@@ -160,6 +161,7 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 		SecretsAccessed: params.SecretsAccessed,
 		MemoryWrites:    params.MemoryWrites,
 		MemoryReads:     params.MemoryReads,
+		RoutingDecision: params.RoutingDecision,
 		AuditTrail: AuditTrail{
 			InputHash:  inputHashFromParams(params),
 			OutputHash: hashString(params.OutputResponse),

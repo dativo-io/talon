@@ -1,0 +1,15 @@
+# Minimal compose for integration tests (e.g. Ollama provider).
+# Usage: docker compose -f docker-compose.test.yml up -d ollama
+# Then run tests that need a local Ollama endpoint (e.g. go test ./internal/llm/providers/ollama/...).
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    # Optional: pull a small model before tests, e.g. docker compose -f docker-compose.test.yml run ollama ollama pull llama3.2:3b
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

@@ -115,6 +115,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
 
 	providers := buildProviders(cfg)
+	pricingTable := loadPricingTable(cfg)
+	injectPricingInProviders(providers, pricingTable)
 	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, policyBaseDir)
 	router := llm.NewRouter(routing, providers, costLimits)
 
@@ -197,6 +199,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		CircuitBreaker:    circuitBreaker,
 		ToolFailures:      toolFailureTracker,
 		Memory:            memStore,
+		Pricing:           pricingTable,
 	})
 
 	if memStore != nil && pol.Memory != nil && pol.Memory.Enabled {

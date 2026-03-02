@@ -40,6 +40,7 @@ var allPolicies = []regoPolicy{
 	{file: "rego/secret_access.rego", query: "data.talon.policy.secret_access.deny"},
 	{file: "rego/memory_governance.rego", query: "data.talon.policy.memory_governance.deny"},
 	{file: "rego/data_classification.rego", query: "data.talon.policy.data_classification.tier"},
+	{file: "rego/routing.rego", query: "data.talon.policy.routing.result"},
 }
 
 // Engine evaluates governance policies using embedded OPA.
@@ -366,6 +367,78 @@ func (e *Engine) EvaluateDataClassification(ctx context.Context, input map[strin
 	}
 
 	return defaultDataTier, nil
+}
+
+// RoutingInput is the input for EU sovereignty routing policy evaluation.
+type RoutingInput struct {
+	SovereigntyMode      string `json:"sovereignty_mode"` // eu_strict | eu_preferred | global
+	ProviderID           string `json:"provider_id"`
+	ProviderJurisdiction string `json:"provider_jurisdiction"`
+	ProviderRegion       string `json:"provider_region,omitempty"`
+	DataTier             int    `json:"data_tier"`
+	RequireEURouting     bool   `json:"require_eu_routing"`
+}
+
+// EvaluateRouting evaluates the routing policy (EU sovereignty, confidential tier).
+// Returns a Decision where Allowed is true if the provider is allowed for the given input.
+func (e *Engine) EvaluateRouting(ctx context.Context, input *RoutingInput) (*Decision, error) {
+	ctx, span := tracer.Start(ctx, "policy.evaluate_routing",
+		trace.WithAttributes(
+			attribute.String("routing.sovereignty_mode", input.SovereigntyMode),
+			attribute.String("routing.provider_id", input.ProviderID),
+			attribute.String("routing.provider_jurisdiction", input.ProviderJurisdiction),
+		))
+	defer span.End()
+
+	prepared, ok := e.prepared["rego/routing.rego"]
+	if !ok {
+		span.RecordError(fmt.Errorf("routing policy not prepared"))
+		return nil, fmt.Errorf("routing policy not prepared")
+	}
+
+	in := map[string]interface{}{
+		"sovereignty_mode":      input.SovereigntyMode,
+		"provider_id":           input.ProviderID,
+		"provider_jurisdiction": input.ProviderJurisdiction,
+		"provider_region":       input.ProviderRegion,
+		"data_tier":             input.DataTier,
+		"require_eu_routing":    input.RequireEURouting,
+	}
+	results, err := prepared.Eval(ctx, rego.EvalInput(in))
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("evaluating routing policy: %w", err)
+	}
+
+	decision := &Decision{
+		Allowed:       true,
+		Action:        "allow",
+		PolicyVersion: e.policy.VersionTag,
+	}
+	if len(results) == 0 || len(results[0].Expressions) == 0 {
+		return decision, nil
+	}
+
+	resultMap, ok := results[0].Expressions[0].Value.(map[string]interface{})
+	if !ok {
+		return decision, nil
+	}
+	if allow, _ := resultMap["allow"].(bool); !allow {
+		decision.Allowed = false
+		decision.Action = "deny"
+	}
+	if deny, ok := resultMap["deny"].([]interface{}); ok {
+		for _, d := range deny {
+			if s, ok := d.(string); ok {
+				decision.Reasons = append(decision.Reasons, s)
+			}
+		}
+	}
+	span.SetAttributes(
+		attribute.Bool("policy.allowed", decision.Allowed),
+		attribute.Int("policy.deny_reasons", len(decision.Reasons)),
+	)
+	return decision, nil
 }
 
 // evaluateDenyPolicy delegates to the shared evaluateDenyReasons helper.

@@ -82,6 +82,33 @@ export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 export TALON_SIGNING_KEY=$(openssl rand -hex 32)
 ```
 
+### LLM block
+
+Optional. When present, the `llm:` block configures the provider registry and data sovereignty routing used by `talon run` and the agent runner.
+
+| Section | Purpose |
+|---------|---------|
+| `llm.providers` | Map of provider IDs to `type`, `config`, and `enabled`. Used when building providers from config instead of env vars only. |
+| `llm.routing.data_sovereignty_mode` | `eu_strict`, `eu_preferred`, or `global`. When set, the router evaluates each candidate with OPA `routing.rego` and records the selected provider and rejected candidates in evidence. |
+| `llm.pricing_file` | Path to the LLM pricing table (default: `pricing/models.yaml`). Used for cost estimation in evidence and OTel; see [Provider registry — Cost estimation](provider-registry.md#cost-estimation). |
+
+Example:
+
+```yaml
+llm:
+  pricing_file: "pricing/models.yaml"
+  routing:
+    data_sovereignty_mode: eu_strict
+  providers:
+    openai:
+      type: openai
+      enabled: true
+```
+
+See [Provider registry](provider-registry.md) for the full reference.
+
+---
+
 ### Gateway block
 
 When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml` configures the LLM API proxy. Key sections:
