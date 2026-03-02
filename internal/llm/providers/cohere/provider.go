@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 // CohereProvider implements llm.Provider for Cohere API v2.
@@ -17,6 +18,7 @@ import (
 type CohereProvider struct {
 	apiKey     string
 	httpClient *http.Client
+	pricing    *pricing.PricingTable
 }
 
 type cohereConfig struct {
@@ -37,8 +39,14 @@ func init() {
 	})
 }
 
-func (p *CohereProvider) Name() string                   { return "cohere" }
-func (p *CohereProvider) Metadata() llm.ProviderMetadata { return cohereMetadata() }
+func (p *CohereProvider) Name() string { return "cohere" }
+func (p *CohereProvider) Metadata() llm.ProviderMetadata {
+	meta := cohereMetadata()
+	if p.pricing != nil {
+		meta.PricingAvailable = p.pricing.ModelCount(p.Name()) > 0
+	}
+	return meta
+}
 
 func (p *CohereProvider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	return nil, fmt.Errorf("cohere: %w", llm.ErrNotImplemented)
@@ -48,7 +56,21 @@ func (p *CohereProvider) Stream(ctx context.Context, req *llm.Request, ch chan<-
 	close(ch)
 	return llm.ErrNotImplemented
 }
-func (p *CohereProvider) EstimateCost(model string, in, out int) float64 { return 0 }
+
+// SetPricing injects the config-driven pricing table for cost estimation.
+func (p *CohereProvider) SetPricing(pt *pricing.PricingTable) { p.pricing = pt }
+
+func (p *CohereProvider) EstimateCost(model string, in, out int) float64 {
+	if p.pricing == nil {
+		return 0
+	}
+	cost, known := p.pricing.Estimate(p.Metadata().ID, model, in, out)
+	if !known {
+		pricing.WarnUnknownModelOnce(p.Metadata().ID, model)
+	}
+	return cost
+}
+
 func (p *CohereProvider) ValidateConfig() error {
 	if strings.TrimSpace(p.apiKey) == "" {
 		return fmt.Errorf("cohere: api_key is required")
@@ -57,5 +79,5 @@ func (p *CohereProvider) ValidateConfig() error {
 }
 func (p *CohereProvider) HealthCheck(ctx context.Context) error { return nil }
 func (p *CohereProvider) WithHTTPClient(client *http.Client) llm.Provider {
-	return &CohereProvider{apiKey: p.apiKey, httpClient: client}
+	return &CohereProvider{apiKey: p.apiKey, httpClient: client, pricing: p.pricing}
 }

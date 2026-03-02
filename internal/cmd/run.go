@@ -22,6 +22,7 @@ import (
 	_ "github.com/dativo-io/talon/internal/llm/providers"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/pricing"
 	"github.com/dativo-io/talon/internal/secrets"
 )
 
@@ -123,6 +124,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
 
 	providers := buildProviders(cfg)
+	pricingTable := loadPricingTable(cfg)
+	injectPricingInProviders(providers, pricingTable)
 	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, baseDir)
 	router := llm.NewRouter(routing, providers, costLimits)
 
@@ -157,6 +160,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		ToolRegistry:     tools.NewRegistry(),
 		ActiveRunTracker: runActiveRunTracker,
 		Memory:           memStore,
+		Pricing:          pricingTable,
 	})
 
 	var attachments []agent.Attachment
@@ -271,6 +275,24 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 	}
 
 	return providers
+}
+
+// loadPricingTable returns the pricing table from config path (or default).
+func loadPricingTable(cfg *config.Config) *pricing.PricingTable {
+	pricingPath := config.DefaultPricingFile
+	if cfg.LLM != nil && cfg.LLM.PricingFile != "" {
+		pricingPath = cfg.LLM.PricingFile
+	}
+	return pricing.LoadOrDefault(pricingPath)
+}
+
+// injectPricingInProviders injects the pricing table into all providers that implement llm.PricingAware.
+func injectPricingInProviders(providers map[string]llm.Provider, pt *pricing.PricingTable) {
+	for _, p := range providers {
+		if pa, ok := p.(llm.PricingAware); ok {
+			pa.SetPricing(pt)
+		}
+	}
 }
 
 // validatePolicyFile runs the same checks as "talon validate" (schema, engine compile, PII scanner).

@@ -12,6 +12,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/llm"
 	talonotel "github.com/dativo-io/talon/internal/otel"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/llm/providers/azure_openai")
@@ -24,6 +25,7 @@ type AzureOpenAIProvider struct {
 	region     string
 	deployment string // optional; when set, used as AzureModelMapperFunc for all models
 	apiVersion string
+	pricing    *pricing.PricingTable
 }
 
 type azureOpenAIConfig struct {
@@ -67,8 +69,14 @@ func NewAzureOpenAIProvider(apiKey, resource, deployment, apiVersion, region str
 	}, nil
 }
 
-func (p *AzureOpenAIProvider) Name() string                   { return "azure-openai" }
-func (p *AzureOpenAIProvider) Metadata() llm.ProviderMetadata { return azureOpenAIMetadata() }
+func (p *AzureOpenAIProvider) Name() string { return "azure-openai" }
+func (p *AzureOpenAIProvider) Metadata() llm.ProviderMetadata {
+	meta := azureOpenAIMetadata()
+	if p.pricing != nil {
+		meta.PricingAvailable = p.pricing.ModelCount(p.Name()) > 0
+	}
+	return meta
+}
 
 func (p *AzureOpenAIProvider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	if p.client == nil {
@@ -124,8 +132,18 @@ func (p *AzureOpenAIProvider) Stream(ctx context.Context, req *llm.Request, ch c
 	return llm.ErrNotImplemented
 }
 
+// SetPricing injects the config-driven pricing table for cost estimation.
+func (p *AzureOpenAIProvider) SetPricing(pt *pricing.PricingTable) { p.pricing = pt }
+
 func (p *AzureOpenAIProvider) EstimateCost(model string, in, out int) float64 {
-	return 0.0025*float64(in)/1000 + 0.01*float64(out)/1000
+	if p.pricing == nil {
+		return 0
+	}
+	cost, known := p.pricing.Estimate(p.Metadata().ID, model, in, out)
+	if !known {
+		pricing.WarnUnknownModelOnce(p.Metadata().ID, model)
+	}
+	return cost
 }
 
 func (p *AzureOpenAIProvider) ValidateConfig() error {
@@ -147,7 +165,7 @@ func (p *AzureOpenAIProvider) WithHTTPClient(client *http.Client) llm.Provider {
 	if p.client == nil {
 		return &AzureOpenAIProvider{
 			apiKey: p.apiKey, resource: p.resource, region: p.region,
-			deployment: p.deployment, apiVersion: p.apiVersion,
+			deployment: p.deployment, apiVersion: p.apiVersion, pricing: p.pricing,
 		}
 	}
 	apiVersion := p.apiVersion
@@ -168,5 +186,6 @@ func (p *AzureOpenAIProvider) WithHTTPClient(client *http.Client) llm.Provider {
 		region:     p.region,
 		deployment: p.deployment,
 		apiVersion: p.apiVersion,
+		pricing:    p.pricing,
 	}
 }

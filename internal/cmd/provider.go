@@ -12,6 +12,7 @@ import (
 	"github.com/dativo-io/talon/internal/llm"
 	_ "github.com/dativo-io/talon/internal/llm/providers"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 var providerCmd = &cobra.Command{
@@ -90,6 +91,17 @@ func runProviderInfo(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "SOC2:         %v  ISO27001: %v\n", meta.SOC2, meta.ISO27001)
 	if meta.Wizard.Suffix != "" {
 		fmt.Fprintf(cmd.OutOrStdout(), "Wizard suffix: %s\n", meta.Wizard.Suffix)
+	}
+	// Pricing status from config-driven table (same path as run/serve)
+	pricingPath := config.DefaultPricingFile
+	if cfg, _ := config.Load(); cfg != nil && cfg.LLM != nil && cfg.LLM.PricingFile != "" {
+		pricingPath = cfg.LLM.PricingFile
+	}
+	pt := pricing.LoadOrDefault(pricingPath)
+	if n := pt.ModelCount(providerType); n > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "Pricing:       available (%d models configured)\n", n)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Pricing:       not configured\n")
 	}
 	return nil
 }

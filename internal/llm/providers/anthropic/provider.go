@@ -14,6 +14,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/llm"
 	talonotel "github.com/dativo-io/talon/internal/otel"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/llm/providers/anthropic")
@@ -25,6 +26,7 @@ type AnthropicProvider struct {
 	apiKey     string
 	httpClient *http.Client
 	baseURL    string
+	pricing    *pricing.PricingTable
 }
 
 type anthropicConfig struct {
@@ -86,7 +88,11 @@ func (p *AnthropicProvider) Name() string {
 
 // Metadata returns static compliance and identity information.
 func (p *AnthropicProvider) Metadata() llm.ProviderMetadata {
-	return anthropicMetadata()
+	meta := anthropicMetadata()
+	if p.pricing != nil {
+		meta.PricingAvailable = p.pricing.ModelCount(p.Name()) > 0
+	}
+	return meta
 }
 
 // Generate sends a completion request to Anthropic.
@@ -195,22 +201,19 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *llm.Request, ch cha
 	return llm.ErrNotImplemented
 }
 
-// EstimateCost estimates the cost in EUR for the given model and token counts.
+// SetPricing injects the config-driven pricing table for cost estimation.
+func (p *AnthropicProvider) SetPricing(pt *pricing.PricingTable) { p.pricing = pt }
+
+// EstimateCost returns estimated cost in USD from the pricing table; 0 if not configured or unknown model.
 func (p *AnthropicProvider) EstimateCost(model string, inputTokens, outputTokens int) float64 {
-	type pricing struct {
-		input  float64
-		output float64
+	if p.pricing == nil {
+		return 0
 	}
-	prices := map[string]pricing{
-		"claude-sonnet-4-20250514":  {input: 0.003, output: 0.015},
-		"claude-opus-4-5-20251101":  {input: 0.015, output: 0.075},
-		"claude-haiku-3-5-20241022": {input: 0.0008, output: 0.004},
+	cost, known := p.pricing.Estimate(p.Metadata().ID, model, inputTokens, outputTokens)
+	if !known {
+		pricing.WarnUnknownModelOnce(p.Metadata().ID, model)
 	}
-	pr, ok := prices[model]
-	if !ok {
-		pr = prices["claude-sonnet-4-20250514"]
-	}
-	return (float64(inputTokens)/1000.0)*pr.input + (float64(outputTokens)/1000.0)*pr.output
+	return cost
 }
 
 // ValidateConfig checks configuration at startup.
@@ -247,5 +250,6 @@ func (p *AnthropicProvider) WithHTTPClient(client *http.Client) llm.Provider {
 		apiKey:     p.apiKey,
 		httpClient: client,
 		baseURL:    p.baseURL,
+		pricing:    p.pricing,
 	}
 }

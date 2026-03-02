@@ -43,6 +43,7 @@ import (
 	"github.com/dativo-io/talon/internal/memory"
 	talonotel "github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/pricing"
 	"github.com/dativo-io/talon/internal/secrets"
 )
 
@@ -177,7 +178,8 @@ type Runner struct {
 	hooks             *HookRegistry
 	memory            *memory.Store
 	governance        *memory.Governance
-	consolidator      *memory.Consolidator // optional; when set, memory writes go through AUDN consolidation
+	consolidator      *memory.Consolidator  // optional; when set, memory writes go through AUDN consolidation
+	pricing           *pricing.PricingTable // optional; when set, evidence gets pre/post cost estimates
 }
 
 // RunnerConfig holds the dependencies for constructing a Runner.
@@ -192,11 +194,12 @@ type RunnerConfig struct {
 	Evidence          *evidence.Store
 	PlanReview        *PlanReviewStore
 	ToolRegistry      *tools.ToolRegistry
-	ActiveRunTracker  *ActiveRunTracker   // optional; when set, rate-limit policy receives concurrent_executions
-	CircuitBreaker    *CircuitBreaker     // optional; when set, suspends agents after repeated policy denials
-	ToolFailures      *ToolFailureTracker // optional; tracks tool execution failures separately from circuit breaker
-	Hooks             *HookRegistry       // optional; nil = no hooks
-	Memory            *memory.Store       // optional; nil = memory disabled
+	ActiveRunTracker  *ActiveRunTracker     // optional; when set, rate-limit policy receives concurrent_executions
+	CircuitBreaker    *CircuitBreaker       // optional; when set, suspends agents after repeated policy denials
+	ToolFailures      *ToolFailureTracker   // optional; tracks tool execution failures separately from circuit breaker
+	Hooks             *HookRegistry         // optional; nil = no hooks
+	Memory            *memory.Store         // optional; nil = memory disabled
+	Pricing           *pricing.PricingTable // optional; when set, evidence gets pre_request_estimate and post_request_cost
 }
 
 // NewRunner creates an agent runner with the given dependencies.
@@ -218,6 +221,7 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		toolFailures:      cfg.ToolFailures,
 		hooks:             cfg.Hooks,
 		memory:            cfg.Memory,
+		pricing:           cfg.Pricing,
 	}
 	if cfg.Memory != nil && cfg.Classifier != nil {
 		r.governance = memory.NewGovernance(cfg.Memory, cfg.Classifier)
@@ -811,6 +815,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		span.RecordError(err)
 		return nil, err
 	}
+	const preRunEstimateInput, preRunEstimateOutput = 300, 300
 	var evRouting *evidence.RoutingDecision
 	if routeDecision != nil {
 		evRouting = &evidence.RoutingDecision{
@@ -822,6 +827,17 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			evRouting.RejectedCandidates[i] = evidence.RejectedCandidate{
 				ProviderID: routeDecision.Rejected[i].ProviderID,
 				Reason:     routeDecision.Rejected[i].Reason,
+			}
+		}
+		if r.pricing != nil {
+			est, known := r.pricing.Estimate(provider.Name(), model, preRunEstimateInput, preRunEstimateOutput)
+			evRouting.PreRequestEstimate = &evidence.CostEstimate{
+				ProviderID:   provider.Name(),
+				Model:        model,
+				InputTokens:  preRunEstimateInput,
+				OutputTokens: preRunEstimateOutput,
+				EstimatedUSD: est,
+				PricingKnown: known,
 			}
 		}
 	}
@@ -1080,7 +1096,28 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	outputClass := r.classifier.Scan(ctx, llmResp.Content)
 	outputEntityNames := entityNames(outputClass.Entities)
 
-	// Step 9: Generate evidence
+	// Step 9: Generate evidence (attach post-request cost to routing decision when pricing table is set)
+	var costPricingKnown bool
+	if evRouting != nil && r.pricing != nil {
+		_, costPricingKnown = r.pricing.Estimate(provider.Name(), model, totalInputTokens, totalOutputTokens)
+		evRouting.PostRequestCost = &evidence.CostEstimate{
+			ProviderID:   provider.Name(),
+			Model:        model,
+			InputTokens:  totalInputTokens,
+			OutputTokens: totalOutputTokens,
+			EstimatedUSD: cost,
+			PricingKnown: costPricingKnown,
+		}
+	}
+	if span.IsRecording() {
+		span.SetAttributes(
+			talonotel.TalonCostEstimatedUSD.Float64(cost),
+			talonotel.TalonCostPricingKnown.Bool(costPricingKnown),
+			talonotel.TalonCostInputTokens.Int(totalInputTokens),
+			talonotel.TalonCostOutputTokens.Int(totalOutputTokens),
+		)
+	}
+
 	duration := time.Since(startTime)
 	ev, err := r.evidence.Generate(ctx, evidence.GenerateParams{
 		CorrelationID:   correlationID,

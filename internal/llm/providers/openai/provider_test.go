@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 func newOpenAITestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *OpenAIProvider) {
@@ -170,7 +171,12 @@ func TestOpenAIWithHTTPClient(t *testing.T) {
 }
 
 func TestOpenAICostEstimation(t *testing.T) {
+	pt, err := pricing.Load("../../../../pricing/models.yaml")
+	if err != nil {
+		t.Skipf("pricing file not found: %v", err)
+	}
 	provider, _ := NewOpenAIProviderFromConfig("dummy", "")
+	provider.SetPricing(pt)
 	tests := []struct {
 		name         string
 		model        string
@@ -180,7 +186,7 @@ func TestOpenAICostEstimation(t *testing.T) {
 	}{
 		{"known model gpt-4o", "gpt-4o", 1000, 500, true},
 		{"known model gpt-4o-mini", "gpt-4o-mini", 1000, 500, true},
-		{"unknown model defaults", "gpt-new-model", 1000, 500, true},
+		{"unknown model returns zero", "gpt-new-model", 1000, 500, false},
 		{"zero tokens", "gpt-4o", 0, 0, false},
 	}
 	for _, tt := range tests {

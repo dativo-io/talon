@@ -29,6 +29,11 @@
               "description": "EU data sovereignty: eu_strict (only EU/LOCAL), eu_preferred (prefer EU, allow fallback), global (no restriction)."
             }
           }
+        },
+        "pricing_file": {
+          "type": "string",
+          "default": "pricing/models.yaml",
+          "description": "Path to the LLM pricing table (per-1M-token USD). Used for cost estimation in evidence and OTel."
         }
       }
     },

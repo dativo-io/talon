@@ -41,6 +41,7 @@ The router and CLI never depend on concrete provider types; they use this interf
 | `GDPRCompliant` | bool | Self-declared / verified. |
 | `AIActScope` | string | `in_scope`, `third_country`, or `exempt`. |
 | `DataRetention` | string | Short summary. |
+| `PricingAvailable` | bool | True when the pricing table has at least one model for this provider (set dynamically in `Metadata()`). |
 | `Wizard` | WizardHint | Suffix, order, hidden, region list. |
 
 ---
@@ -70,12 +71,24 @@ To add a provider, use the [contributor guide](../contributor/adding-a-provider.
 
 ---
 
+## Cost estimation
+
+Talon estimates per-request LLM costs using a static pricing table at `pricing/models.yaml`. This file ships with current prices for all bundled providers and is operator-editable without recompilation. The path is configurable via `llm.pricing_file` in `talon.config.yaml` (default: `pricing/models.yaml`).
+
+Cost estimates appear in the evidence trail (`pre_request_estimate` and `post_request_cost` on the routing decision) and as OTel span attributes (`talon.cost.estimated_usd`, `talon.cost.pricing_known`, etc.). They are **not** used for routing decisions in this version.
+
+To update pricing, edit `pricing/models.yaml` and restart Talon. Hot-reload is not currently supported.
+
+For providers with `models: {}` (ollama, generic-openai), operators can add custom model pricing as needed. Run `talon init` to generate a project that includes `pricing/models.yaml` and `llm.pricing_file` in the config.
+
+---
+
 ## talon provider CLI
 
 | Command | Purpose |
 |---------|---------|
 | `talon provider list` | Table of all registered providers with ID, jurisdiction, GDPR, EU regions, DPA. |
-| `talon provider info <type>` | Detailed compliance info for one provider. |
+| `talon provider info <type>` | Detailed compliance info for one provider (includes pricing status: available models or not configured). |
 | `talon provider allowed` | List providers and whether they are allowed under the current `data_sovereignty_mode` (from config). |
 
 Example:

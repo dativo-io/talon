@@ -5,7 +5,11 @@
 # storage paths, encryption keys, and observability. It does NOT define agent
 # behaviour — for that, see agent.talon.yaml (owned by governance/compliance).
 
-# LLM Provider (openai, anthropic, bedrock, ollama)
+# LLM: provider registry and cost estimation (pricing table path)
+llm:
+  pricing_file: "pricing/models.yaml"
+
+# Legacy: single provider (openai, anthropic, bedrock, ollama)
 llm_provider: openai
 
 # Logging

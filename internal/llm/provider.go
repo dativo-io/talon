@@ -59,17 +59,18 @@ type Provider interface {
 
 // ProviderMetadata carries static compliance and identity information.
 type ProviderMetadata struct {
-	ID            string   // canonical identifier, e.g. "azure-openai", "openai", "ollama"
-	DisplayName   string   // human-readable, shown in CLI and dashboard
-	Jurisdiction  string   // "EU", "US", "CN", "CA", "LOCAL"
-	DPAAvailable  bool     // Data Processing Agreement available
-	EURegions     []string // EU region identifiers; empty if no EU regions
-	GDPRCompliant bool     // self-declared + verified; use false if uncertain
-	AIActScope    string   // "in_scope", "third_country", "exempt"
-	DataRetention string   // human-readable summary; cite source URL in code comment
-	SOC2          bool     // SOC 2 Type II
-	ISO27001      bool     // ISO 27001
-	Wizard        WizardHint
+	ID               string   // canonical identifier, e.g. "azure-openai", "openai", "ollama"
+	DisplayName      string   // human-readable, shown in CLI and dashboard
+	Jurisdiction     string   // "EU", "US", "CN", "CA", "LOCAL"
+	DPAAvailable     bool     // Data Processing Agreement available
+	EURegions        []string // EU region identifiers; empty if no EU regions
+	GDPRCompliant    bool     // self-declared + verified; use false if uncertain
+	AIActScope       string   // "in_scope", "third_country", "exempt"
+	DataRetention    string   // human-readable summary; cite source URL in code comment
+	SOC2             bool     // SOC 2 Type II
+	ISO27001         bool     // ISO 27001
+	Wizard           WizardHint
+	PricingAvailable bool // true when pricing table has at least one model for this provider (set dynamically in Metadata())
 }
 
 // WizardHint is the display information consumed by the talon init wizard.

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 func TestBedrockMetadata(t *testing.T) {
@@ -36,11 +37,15 @@ func TestBedrockValidateConfig(t *testing.T) {
 }
 
 func TestBedrockCostEstimation(t *testing.T) {
-	prov := &BedrockProvider{}
-	cost := prov.EstimateCost("anthropic.claude-3-sonnet-20240229-v1:0", 1000, 500)
+	pt, err := pricing.Load("../../../../pricing/models.yaml")
+	if err != nil {
+		t.Skipf("pricing file not found: %v", err)
+	}
+	prov := &BedrockProvider{pricing: pt}
+	cost := prov.EstimateCost("anthropic.claude-sonnet-4-20250514-v1:0", 1000, 500)
 	assert.Greater(t, cost, 0.0)
 	costUnknown := prov.EstimateCost("unknown-model", 100, 50)
-	assert.Greater(t, costUnknown, 0.0)
+	assert.Equal(t, 0.0, costUnknown, "unknown model should return 0")
 }
 
 func TestBedrockWithHTTPClient(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 // GenericOpenAIProvider wraps an OpenAI-compatible endpoint with user-declared jurisdiction.
@@ -18,6 +19,7 @@ type GenericOpenAIProvider struct {
 	apiKey       string
 	baseURL      string
 	jurisdiction string
+	pricing      *pricing.PricingTable
 }
 
 type genericOpenAIConfig struct {
@@ -57,7 +59,11 @@ func init() {
 
 func (p *GenericOpenAIProvider) Name() string { return "generic-openai" }
 func (p *GenericOpenAIProvider) Metadata() llm.ProviderMetadata {
-	return genericOpenAIMetadata(p.jurisdiction)
+	meta := genericOpenAIMetadata(p.jurisdiction)
+	if p.pricing != nil {
+		meta.PricingAvailable = p.pricing.ModelCount(p.Name()) > 0
+	}
+	return meta
 }
 
 func (p *GenericOpenAIProvider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
@@ -91,7 +97,21 @@ func (p *GenericOpenAIProvider) Stream(ctx context.Context, req *llm.Request, ch
 	close(ch)
 	return llm.ErrNotImplemented
 }
-func (p *GenericOpenAIProvider) EstimateCost(model string, in, out int) float64 { return 0 }
+
+// SetPricing injects the config-driven pricing table for cost estimation.
+func (p *GenericOpenAIProvider) SetPricing(pt *pricing.PricingTable) { p.pricing = pt }
+
+func (p *GenericOpenAIProvider) EstimateCost(model string, in, out int) float64 {
+	if p.pricing == nil {
+		return 0
+	}
+	cost, known := p.pricing.Estimate(p.Metadata().ID, model, in, out)
+	if !known {
+		pricing.WarnUnknownModelOnce(p.Metadata().ID, model)
+	}
+	return cost
+}
+
 func (p *GenericOpenAIProvider) ValidateConfig() error {
 	if strings.TrimSpace(p.apiKey) == "" || strings.TrimSpace(p.baseURL) == "" {
 		return fmt.Errorf("generic-openai: api_key and base_url are required")
@@ -109,7 +129,7 @@ func (p *GenericOpenAIProvider) HealthCheck(ctx context.Context) error {
 // WithHTTPClient returns a copy of the provider using the given HTTP client (for tests and transport injection).
 func (p *GenericOpenAIProvider) WithHTTPClient(client *http.Client) llm.Provider {
 	if p.client == nil {
-		return &GenericOpenAIProvider{apiKey: p.apiKey, baseURL: p.baseURL, jurisdiction: p.jurisdiction}
+		return &GenericOpenAIProvider{apiKey: p.apiKey, baseURL: p.baseURL, jurisdiction: p.jurisdiction, pricing: p.pricing}
 	}
 	config := openaisdk.DefaultConfig(p.apiKey)
 	config.BaseURL = strings.TrimRight(p.baseURL, "/")
@@ -122,5 +142,6 @@ func (p *GenericOpenAIProvider) WithHTTPClient(client *http.Client) llm.Provider
 		apiKey:       p.apiKey,
 		baseURL:      p.baseURL,
 		jurisdiction: p.jurisdiction,
+		pricing:      p.pricing,
 	}
 }

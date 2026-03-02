@@ -67,8 +67,9 @@ type LLMRoutingConfig struct {
 // LLMConfig is the optional llm block from talon.config.yaml.
 // When nil, buildProviders uses env vars only (backward compatible).
 type LLMConfig struct {
-	Providers map[string]LLMProviderConfig `mapstructure:"providers"` // key = provider id
-	Routing   *LLMRoutingConfig            `mapstructure:"routing"`
+	Providers   map[string]LLMProviderConfig `mapstructure:"providers"`    // key = provider id
+	Routing     *LLMRoutingConfig            `mapstructure:"routing"`      // data sovereignty
+	PricingFile string                       `mapstructure:"pricing_file"` // path to pricing/models.yaml; default "pricing/models.yaml"
 }
 
 // Config holds resolved operator-level configuration for a Talon process.
@@ -179,6 +180,9 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// DefaultPricingFile is the default path to the LLM pricing table.
+const DefaultPricingFile = "pricing/models.yaml"
+
 // loadLLMConfig reads the optional llm block from Viper. Returns nil when absent.
 func loadLLMConfig() *LLMConfig {
 	if !viper.IsSet("llm") {
@@ -187,6 +191,9 @@ func loadLLMConfig() *LLMConfig {
 	var llm LLMConfig
 	if err := viper.UnmarshalKey("llm", &llm); err != nil {
 		return nil
+	}
+	if llm.PricingFile == "" {
+		llm.PricingFile = DefaultPricingFile
 	}
 	return &llm
 }

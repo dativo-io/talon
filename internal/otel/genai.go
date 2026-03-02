@@ -32,6 +32,12 @@ const (
 	TalonRoutingSelectionReason = attribute.Key("talon.routing.selection_reason")
 	TalonDataTier               = attribute.Key("talon.data.tier")
 	TalonRoutingRejectedCount   = attribute.Key("talon.routing.rejected_count")
+
+	// Talon cost estimation attributes (from pricing table)
+	TalonCostEstimatedUSD = attribute.Key("talon.cost.estimated_usd")
+	TalonCostPricingKnown = attribute.Key("talon.cost.pricing_known")
+	TalonCostInputTokens  = attribute.Key("talon.cost.input_tokens")
+	TalonCostOutputTokens = attribute.Key("talon.cost.output_tokens")
 )
 
 // LLMRequestAttributes creates standard attributes for LLM requests

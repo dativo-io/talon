@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/template"
 	"time"
@@ -14,6 +15,9 @@ import (
 
 //go:embed templates/init/*.tmpl
 var initTemplates embed.FS
+
+//go:embed templates/init/pricing_models.yaml
+var initPricingModelsYAML []byte
 
 var (
 	initName    string
@@ -46,8 +50,9 @@ var initCmd = &cobra.Command{
 		fmt.Println("Initialized Talon project")
 		fmt.Println()
 		fmt.Println("Created files:")
-		fmt.Println("  - agent.talon.yaml  (agent policy — governance/compliance team)")
-		fmt.Println("  - talon.config.yaml (infrastructure config — DevOps/platform team)")
+		fmt.Println("  - agent.talon.yaml     (agent policy — governance/compliance team)")
+		fmt.Println("  - talon.config.yaml    (infrastructure config — DevOps/platform team)")
+		fmt.Println("  - pricing/models.yaml  (LLM cost estimation table; edit when provider prices change)")
 		fmt.Println()
 		if initPack == "openclaw" {
 			printOpenClawNextSteps()
@@ -140,6 +145,14 @@ func initializeProject() error {
 
 	if err := renderTemplate(configTmpl, "talon.config.yaml", data); err != nil {
 		return fmt.Errorf("creating talon.config.yaml: %w", err)
+	}
+
+	if err := os.MkdirAll("pricing", 0o755); err != nil {
+		return fmt.Errorf("creating pricing directory: %w", err)
+	}
+	//nolint:gosec // G306: pricing file is not secret; 0644 allows operator to edit without recompilation
+	if err := os.WriteFile(filepath.Join("pricing", "models.yaml"), initPricingModelsYAML, 0o644); err != nil {
+		return fmt.Errorf("creating pricing/models.yaml: %w", err)
 	}
 
 	return nil

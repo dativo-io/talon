@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 // ScaffoldProvider implements llm.Provider.
@@ -17,6 +18,7 @@ import (
 type ScaffoldProvider struct {
 	apiKey     string
 	httpClient *http.Client
+	pricing    *pricing.PricingTable
 }
 
 type scaffoldConfig struct {
@@ -31,7 +33,11 @@ type scaffoldConfig struct {
 func (p *ScaffoldProvider) Name() string { return "scaffold" }
 
 func (p *ScaffoldProvider) Metadata() llm.ProviderMetadata {
-	return scaffoldMetadata()
+	meta := scaffoldMetadata()
+	if p.pricing != nil {
+		meta.PricingAvailable = p.pricing.ModelCount(p.Name()) > 0
+	}
+	return meta
 }
 
 func (p *ScaffoldProvider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
@@ -46,9 +52,18 @@ func (p *ScaffoldProvider) Stream(ctx context.Context, req *llm.Request, ch chan
 	return llm.ErrNotImplemented
 }
 
+// SetPricing injects the config-driven pricing table for cost estimation.
+func (p *ScaffoldProvider) SetPricing(pt *pricing.PricingTable) { p.pricing = pt }
+
 func (p *ScaffoldProvider) EstimateCost(model string, in, out int) float64 {
-	// TODO: Return real cost in EUR based on model and token counts.
-	return 0
+	if p.pricing == nil {
+		return 0
+	}
+	cost, known := p.pricing.Estimate(p.Metadata().ID, model, in, out)
+	if !known {
+		pricing.WarnUnknownModelOnce(p.Metadata().ID, model)
+	}
+	return cost
 }
 
 func (p *ScaffoldProvider) ValidateConfig() error {
@@ -67,5 +82,5 @@ func (p *ScaffoldProvider) HealthCheck(ctx context.Context) error {
 }
 
 func (p *ScaffoldProvider) WithHTTPClient(client *http.Client) llm.Provider {
-	return &ScaffoldProvider{apiKey: p.apiKey, httpClient: client}
+	return &ScaffoldProvider{apiKey: p.apiKey, httpClient: client, pricing: p.pricing}
 }

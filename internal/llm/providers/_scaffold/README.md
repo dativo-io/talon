@@ -15,7 +15,7 @@ This directory is a **template** for adding a new LLM provider to Talon. Do not 
    - Replace `ScaffoldProvider` with `MyProvider`.
    - Replace `"scaffold"` in `Name()` and `llm.Register("scaffold", ...)` with `"myprovider"`.
    - Implement `Generate()` (and optionally `Stream()`).
-   - Implement `EstimateCost()` and `ValidateConfig()`.
+   - Cost estimation uses the config-driven pricing table: add your provider and models to `pricing/models.yaml` (see `llm.pricing_file` in talon.config.yaml). The scaffold's `EstimateCost` and `SetPricing` already use this; implement `ValidateConfig()`.
 
 4. In `metadata.go`:
    - Set `ID`, `DisplayName`, `Jurisdiction`, `EURegions`, `GDPRCompliant`, `DataRetention`, and `Wizard` to real values.

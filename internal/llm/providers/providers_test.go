@@ -13,6 +13,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/llm"
 	_ "github.com/dativo-io/talon/internal/llm/providers"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 // TestListForWizard_AllRealProviders ensures all real provider factories accept nil config
@@ -89,6 +90,55 @@ func TestAllProviders_StreamClosesChannelOnError(t *testing.T) {
 			case <-timer.C:
 				t.Fatal("Stream did not close channel within timeout")
 			}
+		})
+	}
+}
+
+// TestAllProviders_EstimateCost_NoHardcodedValues loads the pricing table, injects it into all
+// providers, and verifies that EstimateCost for a known model matches the table lookup.
+func TestAllProviders_EstimateCost_NoHardcodedValues(t *testing.T) {
+	pt, err := pricing.Load("../../../pricing/models.yaml")
+	if err != nil {
+		t.Skipf("pricing file not available: %v", err)
+	}
+	all := llm.AllRegisteredProviders()
+	require.Greater(t, len(all), 0, "no providers registered")
+	for _, p := range all {
+		t.Run(p.Name(), func(t *testing.T) {
+			if pa, ok := p.(llm.PricingAware); ok {
+				pa.SetPricing(pt)
+			}
+			pp, ok := pt.Providers[p.Name()]
+			if !ok || len(pp.Models) == 0 {
+				t.Skipf("no models in pricing table for %s", p.Name())
+			}
+			var firstModel string
+			for m := range pp.Models {
+				firstModel = m
+				break
+			}
+			require.NotEmpty(t, firstModel, "empty models map")
+			cost := p.EstimateCost(firstModel, 1000, 1000)
+			expected, known := pt.Estimate(p.Name(), firstModel, 1000, 1000)
+			assert.True(t, known, "pricing table should have model %s for %s", firstModel, p.Name())
+			assert.InDelta(t, expected, cost, 0.0001, "EstimateCost should match pricing table")
+		})
+	}
+}
+
+// TestAllProviders_EstimateCost_UnknownModel verifies that EstimateCost with an unknown model
+// returns 0.0 and does not panic.
+func TestAllProviders_EstimateCost_UnknownModel(t *testing.T) {
+	pt := pricing.LoadOrDefault("../../../pricing/models.yaml")
+	all := llm.AllRegisteredProviders()
+	require.Greater(t, len(all), 0, "no providers registered")
+	for _, p := range all {
+		t.Run(p.Name(), func(t *testing.T) {
+			if pa, ok := p.(llm.PricingAware); ok {
+				pa.SetPricing(pt)
+			}
+			cost := p.EstimateCost("nonexistent-model-xyz", 1000, 1000)
+			assert.Equal(t, 0.0, cost, "unknown model should return 0")
 		})
 	}
 }

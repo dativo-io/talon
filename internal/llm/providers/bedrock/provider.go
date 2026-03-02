@@ -16,6 +16,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/llm"
 	talonotel "github.com/dativo-io/talon/internal/otel"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/llm/providers/bedrock")
@@ -24,8 +25,9 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/llm/providers
 //
 //nolint:revive // type name matches package for clarity at call sites
 type BedrockProvider struct {
-	client *bedrockruntime.Client
-	region string
+	client  *bedrockruntime.Client
+	region  string
+	pricing *pricing.PricingTable
 }
 
 type bedrockConfig struct {
@@ -74,7 +76,11 @@ func (p *BedrockProvider) Name() string {
 
 // Metadata returns static compliance and identity information.
 func (p *BedrockProvider) Metadata() llm.ProviderMetadata {
-	return bedrockMetadata()
+	meta := bedrockMetadata()
+	if p.pricing != nil {
+		meta.PricingAvailable = p.pricing.ModelCount(p.Name()) > 0
+	}
+	return meta
 }
 
 // Generate sends a completion request to Bedrock using the Converse API.
@@ -194,22 +200,19 @@ func (p *BedrockProvider) Stream(ctx context.Context, req *llm.Request, ch chan<
 	return llm.ErrNotImplemented
 }
 
-// EstimateCost estimates the cost in EUR for Bedrock models.
+// SetPricing injects the config-driven pricing table for cost estimation.
+func (p *BedrockProvider) SetPricing(pt *pricing.PricingTable) { p.pricing = pt }
+
+// EstimateCost returns estimated cost in USD from the pricing table; 0 if not configured or unknown model.
 func (p *BedrockProvider) EstimateCost(model string, inputTokens, outputTokens int) float64 {
-	type pricing struct {
-		input  float64
-		output float64
+	if p.pricing == nil {
+		return 0
 	}
-	prices := map[string]pricing{
-		"anthropic.claude-3-sonnet-20240229-v1:0": {input: 0.003, output: 0.015},
-		"anthropic.claude-3-haiku-20240307-v1:0":  {input: 0.00025, output: 0.00125},
-		"amazon.titan-text-premier-v1:0":          {input: 0.0005, output: 0.0015},
+	cost, known := p.pricing.Estimate(p.Metadata().ID, model, inputTokens, outputTokens)
+	if !known {
+		pricing.WarnUnknownModelOnce(p.Metadata().ID, model)
 	}
-	pr, ok := prices[model]
-	if !ok {
-		pr = pricing{input: 0.003, output: 0.015}
-	}
-	return (float64(inputTokens)/1000.0)*pr.input + (float64(outputTokens)/1000.0)*pr.output
+	return cost
 }
 
 // ValidateConfig checks that region is set.
@@ -239,12 +242,12 @@ func (p *BedrockProvider) HealthCheck(ctx context.Context) error {
 // WithHTTPClient returns a copy of the provider with a custom HTTP client (for tests).
 func (p *BedrockProvider) WithHTTPClient(client *http.Client) llm.Provider {
 	if p.client == nil {
-		return &BedrockProvider{region: p.region}
+		return &BedrockProvider{region: p.region, pricing: p.pricing}
 	}
 	ctx := context.Background()
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(p.region), config.WithHTTPClient(client))
 	if err != nil {
-		return &BedrockProvider{region: p.region}
+		return &BedrockProvider{region: p.region, pricing: p.pricing}
 	}
-	return &BedrockProvider{client: bedrockruntime.NewFromConfig(cfg), region: p.region}
+	return &BedrockProvider{client: bedrockruntime.NewFromConfig(cfg), region: p.region, pricing: p.pricing}
 }

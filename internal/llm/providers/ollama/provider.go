@@ -14,6 +14,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/llm"
 	talonotel "github.com/dativo-io/talon/internal/otel"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/llm/providers/ollama")
@@ -24,6 +25,7 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/llm/providers
 type OllamaProvider struct {
 	baseURL    string
 	httpClient *http.Client
+	pricing    *pricing.PricingTable
 }
 
 type ollamaConfig struct {
@@ -78,7 +80,11 @@ func (p *OllamaProvider) Name() string {
 
 // Metadata returns static compliance and identity information.
 func (p *OllamaProvider) Metadata() llm.ProviderMetadata {
-	return ollamaMetadata()
+	meta := ollamaMetadata()
+	if p.pricing != nil {
+		meta.PricingAvailable = p.pricing.ModelCount(p.Name()) > 0
+	}
+	return meta
 }
 
 // Generate sends a chat request to the local Ollama instance.
@@ -212,9 +218,16 @@ func (p *OllamaProvider) Stream(ctx context.Context, req *llm.Request, ch chan<-
 	return nil
 }
 
-// EstimateCost returns 0 for Ollama (local models have no API cost).
+// SetPricing injects the config-driven pricing table for cost estimation.
+func (p *OllamaProvider) SetPricing(pt *pricing.PricingTable) { p.pricing = pt }
+
+// EstimateCost returns cost from pricing table (typically 0 for ollama's empty models map).
 func (p *OllamaProvider) EstimateCost(model string, inputTokens, outputTokens int) float64 {
-	return 0.0
+	if p.pricing == nil {
+		return 0
+	}
+	cost, _ := p.pricing.Estimate(p.Metadata().ID, model, inputTokens, outputTokens)
+	return cost
 }
 
 // ValidateConfig always succeeds for Ollama (base_url is optional).
@@ -246,5 +259,5 @@ func (p *OllamaProvider) HealthCheck(ctx context.Context) error {
 
 // WithHTTPClient returns a copy of the provider using the given HTTP client.
 func (p *OllamaProvider) WithHTTPClient(client *http.Client) llm.Provider {
-	return &OllamaProvider{baseURL: p.baseURL, httpClient: client}
+	return &OllamaProvider{baseURL: p.baseURL, httpClient: client, pricing: p.pricing}
 }

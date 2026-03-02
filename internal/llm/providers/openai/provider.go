@@ -13,6 +13,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/llm"
 	talonotel "github.com/dativo-io/talon/internal/otel"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/llm/providers/openai")
@@ -24,6 +25,7 @@ type OpenAIProvider struct {
 	client  *openaisdk.Client
 	apiKey  string
 	baseURL string
+	pricing *pricing.PricingTable
 }
 
 type openaiConfig struct {
@@ -76,7 +78,11 @@ func (p *OpenAIProvider) Name() string {
 
 // Metadata returns static compliance and identity information.
 func (p *OpenAIProvider) Metadata() llm.ProviderMetadata {
-	return openaiMetadata()
+	meta := openaiMetadata()
+	if p.pricing != nil {
+		meta.PricingAvailable = p.pricing.ModelCount(p.Name()) > 0
+	}
+	return meta
 }
 
 // Generate sends a chat completion request to OpenAI.
@@ -238,23 +244,19 @@ func (p *OpenAIProvider) toStreamRequest(req *llm.Request) openaisdk.ChatComplet
 	}
 }
 
-// EstimateCost estimates the cost in EUR for the given model and token counts.
+// SetPricing injects the config-driven pricing table for cost estimation.
+func (p *OpenAIProvider) SetPricing(pt *pricing.PricingTable) { p.pricing = pt }
+
+// EstimateCost returns estimated cost in USD from the pricing table; 0 if not configured or unknown model.
 func (p *OpenAIProvider) EstimateCost(model string, inputTokens, outputTokens int) float64 {
-	type pricing struct {
-		input  float64
-		output float64
+	if p.pricing == nil {
+		return 0
 	}
-	prices := map[string]pricing{
-		"gpt-4o":        {input: 0.0025, output: 0.01},
-		"gpt-4o-mini":   {input: 0.00015, output: 0.0006},
-		"gpt-4-turbo":   {input: 0.01, output: 0.03},
-		"gpt-3.5-turbo": {input: 0.0005, output: 0.0015},
+	cost, known := p.pricing.Estimate(p.Metadata().ID, model, inputTokens, outputTokens)
+	if !known {
+		pricing.WarnUnknownModelOnce(p.Metadata().ID, model)
 	}
-	pr, ok := prices[model]
-	if !ok {
-		pr = prices["gpt-4o"]
-	}
-	return (float64(inputTokens)/1000.0)*pr.input + (float64(outputTokens)/1000.0)*pr.output
+	return cost
 }
 
 // ValidateConfig checks configuration at startup.
@@ -282,12 +284,12 @@ func (p *OpenAIProvider) HealthCheck(ctx context.Context) error {
 // WithHTTPClient returns a copy of the provider using the given HTTP client.
 func (p *OpenAIProvider) WithHTTPClient(client *http.Client) llm.Provider {
 	if p.client == nil {
-		return &OpenAIProvider{apiKey: p.apiKey, baseURL: p.baseURL}
+		return &OpenAIProvider{apiKey: p.apiKey, baseURL: p.baseURL, pricing: p.pricing}
 	}
 	config := openaisdk.DefaultConfig(p.apiKey)
 	if p.baseURL != "" {
 		config.BaseURL = NormalizeBaseURL(p.baseURL)
 	}
 	config.HTTPClient = client
-	return &OpenAIProvider{client: openaisdk.NewClientWithConfig(config), apiKey: p.apiKey, baseURL: p.baseURL}
+	return &OpenAIProvider{client: openaisdk.NewClientWithConfig(config), apiKey: p.apiKey, baseURL: p.baseURL, pricing: p.pricing}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 func newAnthropicTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *AnthropicProvider) {
@@ -95,7 +96,11 @@ func TestAnthropicWithHTTPClient(t *testing.T) {
 }
 
 func TestAnthropicCostEstimation(t *testing.T) {
-	prov := &AnthropicProvider{}
+	pt, err := pricing.Load("../../../../pricing/models.yaml")
+	if err != nil {
+		t.Skipf("pricing file not found: %v", err)
+	}
+	prov := &AnthropicProvider{pricing: pt}
 	cost := prov.EstimateCost("claude-sonnet-4-20250514", 1000, 500)
 	assert.Greater(t, cost, 0.0)
 }

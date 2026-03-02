@@ -90,11 +90,13 @@ Optional. When present, the `llm:` block configures the provider registry and da
 |---------|---------|
 | `llm.providers` | Map of provider IDs to `type`, `config`, and `enabled`. Used when building providers from config instead of env vars only. |
 | `llm.routing.data_sovereignty_mode` | `eu_strict`, `eu_preferred`, or `global`. When set, the router evaluates each candidate with OPA `routing.rego` and records the selected provider and rejected candidates in evidence. |
+| `llm.pricing_file` | Path to the LLM pricing table (default: `pricing/models.yaml`). Used for cost estimation in evidence and OTel; see [Provider registry — Cost estimation](provider-registry.md#cost-estimation). |
 
 Example:
 
 ```yaml
 llm:
+  pricing_file: "pricing/models.yaml"
   routing:
     data_sovereignty_mode: eu_strict
   providers:

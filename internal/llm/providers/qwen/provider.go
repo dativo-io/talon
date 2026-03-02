@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 // QwenProvider implements llm.Provider for Alibaba Dashscope (Qwen) API.
@@ -18,6 +19,7 @@ type QwenProvider struct {
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
+	pricing    *pricing.PricingTable
 }
 
 type qwenConfig struct {
@@ -43,8 +45,14 @@ func init() {
 	})
 }
 
-func (p *QwenProvider) Name() string                   { return "qwen" }
-func (p *QwenProvider) Metadata() llm.ProviderMetadata { return qwenMetadata() }
+func (p *QwenProvider) Name() string { return "qwen" }
+func (p *QwenProvider) Metadata() llm.ProviderMetadata {
+	meta := qwenMetadata()
+	if p.pricing != nil {
+		meta.PricingAvailable = p.pricing.ModelCount(p.Name()) > 0
+	}
+	return meta
+}
 
 func (p *QwenProvider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	return nil, fmt.Errorf("qwen: %w", llm.ErrNotImplemented)
@@ -54,7 +62,21 @@ func (p *QwenProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- l
 	close(ch)
 	return llm.ErrNotImplemented
 }
-func (p *QwenProvider) EstimateCost(model string, in, out int) float64 { return 0 }
+
+// SetPricing injects the config-driven pricing table for cost estimation.
+func (p *QwenProvider) SetPricing(pt *pricing.PricingTable) { p.pricing = pt }
+
+func (p *QwenProvider) EstimateCost(model string, in, out int) float64 {
+	if p.pricing == nil {
+		return 0
+	}
+	cost, known := p.pricing.Estimate(p.Metadata().ID, model, in, out)
+	if !known {
+		pricing.WarnUnknownModelOnce(p.Metadata().ID, model)
+	}
+	return cost
+}
+
 func (p *QwenProvider) ValidateConfig() error {
 	if strings.TrimSpace(p.apiKey) == "" {
 		return fmt.Errorf("qwen: api_key is required")
@@ -63,5 +85,5 @@ func (p *QwenProvider) ValidateConfig() error {
 }
 func (p *QwenProvider) HealthCheck(ctx context.Context) error { return nil }
 func (p *QwenProvider) WithHTTPClient(client *http.Client) llm.Provider {
-	return &QwenProvider{apiKey: p.apiKey, baseURL: p.baseURL, httpClient: client}
+	return &QwenProvider{apiKey: p.apiKey, baseURL: p.baseURL, httpClient: client, pricing: p.pricing}
 }
