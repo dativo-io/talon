@@ -9,7 +9,7 @@ test_eu_strict_blocks_cn_jurisdiction if {
 
 test_eu_strict_blocks_us_jurisdiction if {
 	count(deny) > 0 with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "US", "provider_id": "openai"}
-	"provider jurisdiction US not allowed in eu_strict" in deny with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "US", "provider_id": "openai"}
+	"provider jurisdiction US without EU region not allowed in eu_strict" in deny with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "US", "provider_id": "openai"}
 }
 
 test_eu_strict_allows_eu_jurisdiction if {
@@ -22,9 +22,9 @@ test_eu_strict_allows_local_jurisdiction if {
 	count(deny) == 0 with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "LOCAL", "provider_id": "ollama"}
 }
 
-test_eu_strict_blocks_azure_us_region if {
+test_eu_strict_blocks_us_provider_non_eu_region if {
 	count(deny) > 0 with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "US", "provider_id": "azure-openai", "provider_region": "eastus"}
-	"Azure with non-EU region not allowed in eu_strict" in deny with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "US", "provider_id": "azure-openai", "provider_region": "eastus"}
+	"provider jurisdiction US without EU region not allowed in eu_strict" in deny with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "US", "provider_id": "azure-openai", "provider_region": "eastus"}
 }
 
 # Azure metadata has Jurisdiction "EU"; when user selects US region (eastus), eu_strict must still deny.
@@ -36,6 +36,16 @@ test_eu_strict_blocks_azure_eu_jurisdiction_us_region if {
 test_eu_strict_allows_azure_eu_region if {
 	allow with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "EU", "provider_id": "azure-openai", "provider_region": "westeurope"}
 	count(deny) == 0 with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "EU", "provider_id": "azure-openai", "provider_region": "westeurope"}
+}
+
+test_eu_strict_allows_bedrock_eu_region if {
+	allow with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "US", "provider_id": "bedrock", "provider_region": "eu-central-1"}
+	count(deny) == 0 with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "US", "provider_id": "bedrock", "provider_region": "eu-central-1"}
+}
+
+test_eu_strict_allows_vertex_eu_region if {
+	allow with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "US", "provider_id": "vertex", "provider_region": "europe-west1"}
+	count(deny) == 0 with input as {"sovereignty_mode": "eu_strict", "provider_jurisdiction": "US", "provider_id": "vertex", "provider_region": "europe-west1"}
 }
 
 test_eu_preferred_allows_us_when_eu_down if {

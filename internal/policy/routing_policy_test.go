@@ -106,6 +106,38 @@ func TestEvaluateRouting_EUStrictAllowsAzureEURegion(t *testing.T) {
 	assert.True(t, dec.Allowed)
 }
 
+func TestEvaluateRouting_EUStrictAllowsBedrockEURegion(t *testing.T) {
+	ctx := context.Background()
+	pol := &Policy{VersionTag: "v1", Policies: PoliciesConfig{}}
+	eng, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	dec, err := eng.EvaluateRouting(ctx, &RoutingInput{
+		SovereigntyMode:      "eu_strict",
+		ProviderID:           "bedrock",
+		ProviderJurisdiction: "US",
+		ProviderRegion:       "eu-central-1",
+	})
+	require.NoError(t, err)
+	assert.True(t, dec.Allowed)
+}
+
+func TestEvaluateRouting_EUStrictAllowsVertexEURegion(t *testing.T) {
+	ctx := context.Background()
+	pol := &Policy{VersionTag: "v1", Policies: PoliciesConfig{}}
+	eng, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	dec, err := eng.EvaluateRouting(ctx, &RoutingInput{
+		SovereigntyMode:      "eu_strict",
+		ProviderID:           "vertex",
+		ProviderJurisdiction: "US",
+		ProviderRegion:       "europe-west1",
+	})
+	require.NoError(t, err)
+	assert.True(t, dec.Allowed)
+}
+
 func TestEvaluateRouting_GlobalAllowsAll(t *testing.T) {
 	ctx := context.Background()
 	pol := &Policy{VersionTag: "v1", Policies: PoliciesConfig{}}

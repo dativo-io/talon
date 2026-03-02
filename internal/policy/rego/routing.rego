@@ -21,21 +21,18 @@ deny contains msg if {
 	msg := "provider jurisdiction CN not allowed in eu_strict"
 }
 
-# US jurisdiction: block unless Azure with EU region (legacy; region-based rule below also covers this).
-deny contains msg if {
-	input.sovereignty_mode == "eu_strict"
-	input.provider_jurisdiction == "US"
-	input.provider_id == "azure-openai"
-	region_not_eu
-	msg := "Azure with non-EU region not allowed in eu_strict"
-}
-
+# region_not_eu: no region selected or selected region is not in allowed EU list.
 region_not_eu if {
 	input.provider_region == null
 }
 
 region_not_eu if {
+	input.provider_region != ""
 	not input.provider_region in valid_eu_regions
+}
+
+region_not_eu if {
+	input.provider_region == ""
 }
 
 # eu_strict: if a provider has a selected region, it must be an EU region (Azure, Vertex, Bedrock, etc.).
@@ -47,11 +44,12 @@ deny contains msg if {
 	msg := "provider region is not in allowed EU regions for eu_strict"
 }
 
+# US jurisdiction in eu_strict: allow only when an EU region is selected (Bedrock, Vertex, etc.).
 deny contains msg if {
 	input.sovereignty_mode == "eu_strict"
 	input.provider_jurisdiction == "US"
-	input.provider_id != "azure-openai"
-	msg := "provider jurisdiction US not allowed in eu_strict"
+	region_not_eu
+	msg := "provider jurisdiction US without EU region not allowed in eu_strict"
 }
 
 # eu_strict allows EU and LOCAL.
