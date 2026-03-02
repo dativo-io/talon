@@ -15,8 +15,9 @@ import (
 //
 //nolint:revive // type name matches package for clarity at call sites
 type VertexProvider struct {
-	project string
-	region  string
+	project    string
+	region     string
+	httpClient *http.Client // optional; used when set (e.g. tests)
 }
 
 type vertexConfig struct {
@@ -58,7 +59,10 @@ func (p *VertexProvider) ValidateConfig() error {
 	}
 	return nil
 }
+
 func (p *VertexProvider) HealthCheck(ctx context.Context) error { return nil }
+
+// WithHTTPClient returns a copy of the provider using the given HTTP client (for tests).
 func (p *VertexProvider) WithHTTPClient(client *http.Client) llm.Provider {
-	return p
+	return &VertexProvider{project: p.project, region: p.region, httpClient: client}
 }

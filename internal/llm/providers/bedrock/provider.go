@@ -236,12 +236,14 @@ func (p *BedrockProvider) HealthCheck(ctx context.Context) error {
 }
 
 // WithHTTPClient returns a copy of the provider with a custom HTTP client (for tests).
-// The AWS SDK v2 is used with default transport; for full injection tests use a custom endpoint resolver.
 func (p *BedrockProvider) WithHTTPClient(client *http.Client) llm.Provider {
 	if p.client == nil {
 		return p
 	}
-	// SDK v2: create new client with same config but custom HTTPClient
-	// We cannot easily replace HTTPClient on existing client; return receiver for now.
-	return p
+	ctx := context.Background()
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(p.region), config.WithHTTPClient(client))
+	if err != nil {
+		return p
+	}
+	return &BedrockProvider{client: bedrockruntime.NewFromConfig(cfg), region: p.region}
 }

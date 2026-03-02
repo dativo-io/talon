@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -43,9 +44,21 @@ func TestBedrockCostEstimation(t *testing.T) {
 }
 
 func TestBedrockWithHTTPClient(t *testing.T) {
+	// When client is nil, returns receiver (no copy to modify).
 	prov := &BedrockProvider{region: "eu-central-1"}
 	p2 := prov.WithHTTPClient(nil)
 	assert.NotNil(t, p2)
+
+	// When provider has a client, WithHTTPClient must return a copy using the given client.
+	provWithClient := NewBedrockProvider("eu-central-1")
+	if provWithClient.client != nil {
+		custom := &http.Client{}
+		p3 := provWithClient.WithHTTPClient(custom)
+		require.NotNil(t, p3)
+		copy, ok := p3.(*BedrockProvider)
+		require.True(t, ok)
+		assert.NotSame(t, provWithClient, copy, "WithHTTPClient must return a copy of the provider")
+	}
 }
 
 func TestBedrockGenerate_NoClient(t *testing.T) {
