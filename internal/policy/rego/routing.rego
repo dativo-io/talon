@@ -21,18 +21,16 @@ deny contains msg if {
 	msg := "provider jurisdiction CN not allowed in eu_strict"
 }
 
-# region_not_eu: no region selected or selected region is not in allowed EU list.
-region_not_eu if {
-	input.provider_region == null
-}
-
-region_not_eu if {
+# has_valid_eu_region: provider has a non-empty region that is in the allowed EU list.
+has_valid_eu_region if {
 	input.provider_region != ""
-	not input.provider_region in valid_eu_regions
+	input.provider_region in valid_eu_regions
 }
 
+# region_not_eu: no region selected or selected region is not in allowed EU list.
+# When provider_region is missing (undefined), empty, or not in valid_eu_regions, treat as not EU.
 region_not_eu if {
-	input.provider_region == ""
+	not has_valid_eu_region
 }
 
 # eu_strict: if a provider has a selected region, it must be an EU region (Azure, Vertex, Bedrock, etc.).
