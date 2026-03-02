@@ -7,6 +7,7 @@ func azureOpenAIMetadata() llm.ProviderMetadata {
 		ID:            "azure-openai",
 		DisplayName:   "Azure OpenAI",
 		Jurisdiction:  "EU",
+		AIActScope:    "in_scope",
 		DPAAvailable:  true,
 		GDPRCompliant: true,
 		ISO27001:      true,

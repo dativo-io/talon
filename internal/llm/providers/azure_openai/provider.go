@@ -120,6 +120,7 @@ func (p *AzureOpenAIProvider) Generate(ctx context.Context, req *llm.Request) (*
 }
 
 func (p *AzureOpenAIProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
+	close(ch)
 	return llm.ErrNotImplemented
 }
 
@@ -144,7 +145,10 @@ func (p *AzureOpenAIProvider) HealthCheck(ctx context.Context) error {
 // WithHTTPClient returns a copy of the provider using the given HTTP client (for tests and transport injection).
 func (p *AzureOpenAIProvider) WithHTTPClient(client *http.Client) llm.Provider {
 	if p.client == nil {
-		return p
+		return &AzureOpenAIProvider{
+			apiKey: p.apiKey, resource: p.resource, region: p.region,
+			deployment: p.deployment, apiVersion: p.apiVersion,
+		}
 	}
 	apiVersion := p.apiVersion
 	if apiVersion == "" {

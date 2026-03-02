@@ -130,6 +130,7 @@ func (p *MistralProvider) Generate(ctx context.Context, req *llm.Request) (*llm.
 }
 
 func (p *MistralProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
+	close(ch)
 	return llm.ErrNotImplemented
 }
 

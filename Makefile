@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-all lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0
+.PHONY: help build install test test-integration test-e2e test-all lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -99,11 +99,17 @@ test-provider: ## Run tests for one provider. Usage: make test-provider PROVIDER
 	@if [ -z "$(PROVIDER)" ]; then echo "Usage: make test-provider PROVIDER=openai"; exit 1; fi; \
 	go test ./internal/llm/providers/$(PROVIDER)/... -v -count=1
 
-test-provider-compliance: ## Run compliance metadata checks for all registered providers
-	go test ./internal/llm/... -v -run TestAllProviders_MetadataComplete -count=1
+test-provider-compliance: ## Run compliance metadata checks for all registered providers (run from providers pkg so registry is populated)
+	go test ./internal/llm/providers/... -v -run 'TestAllProviders_|TestListForWizard_AllRealProviders' -count=1
 
 opa-test: ## Run OPA policy tests (routing.rego and others)
 	@command -v opa >/dev/null 2>&1 || { echo "opa not installed (brew install opa)"; exit 1; }; \
 	opa test internal/policy/rego/ -v
+
+nosec-count: ## Count #nosec directives (track gosec suppressions; review before adding more)
+	@echo "=== #nosec directive count ==="; \
+	grep -r '#nosec' --include='*.go' . 2>/dev/null | grep -v vendor | wc -l | tr -d ' '; \
+	echo "locations:"; \
+	grep -rn '#nosec' --include='*.go' . 2>/dev/null | grep -v vendor || true
 
 .DEFAULT_GOAL := help

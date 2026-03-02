@@ -7,6 +7,7 @@ func anthropicMetadata() llm.ProviderMetadata {
 		ID:            "anthropic",
 		DisplayName:   "Anthropic",
 		Jurisdiction:  "US",
+		AIActScope:    "in_scope",
 		DPAAvailable:  true,
 		GDPRCompliant: false,
 		Wizard: llm.WizardHint{

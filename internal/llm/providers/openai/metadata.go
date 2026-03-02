@@ -7,6 +7,7 @@ func openaiMetadata() llm.ProviderMetadata {
 		ID:            "openai",
 		DisplayName:   "OpenAI",
 		Jurisdiction:  "US",
+		AIActScope:    "in_scope",
 		DPAAvailable:  true,
 		GDPRCompliant: true,
 		Wizard: llm.WizardHint{

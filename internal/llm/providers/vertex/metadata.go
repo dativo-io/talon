@@ -7,6 +7,7 @@ func vertexMetadata() llm.ProviderMetadata {
 		ID:           "vertex",
 		DisplayName:  "Google Vertex AI",
 		Jurisdiction: "US",
+		AIActScope:   "in_scope",
 		EURegions:    []string{"europe-west1", "europe-west4", "europe-west9"},
 		Wizard: llm.WizardHint{
 			Suffix:          "EU regions available",

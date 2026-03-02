@@ -7,6 +7,7 @@ func qwenMetadata() llm.ProviderMetadata {
 		ID:            "qwen",
 		DisplayName:   "Qwen (Alibaba Cloud)",
 		Jurisdiction:  "CN",
+		AIActScope:    "third_country",
 		DPAAvailable:  false,
 		GDPRCompliant: false,
 		Wizard: llm.WizardHint{

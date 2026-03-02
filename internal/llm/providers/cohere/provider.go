@@ -45,6 +45,7 @@ func (p *CohereProvider) Generate(ctx context.Context, req *llm.Request) (*llm.R
 }
 
 func (p *CohereProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
+	close(ch)
 	return llm.ErrNotImplemented
 }
 func (p *CohereProvider) EstimateCost(model string, in, out int) float64 { return 0 }

@@ -282,7 +282,7 @@ func (p *OpenAIProvider) HealthCheck(ctx context.Context) error {
 // WithHTTPClient returns a copy of the provider using the given HTTP client.
 func (p *OpenAIProvider) WithHTTPClient(client *http.Client) llm.Provider {
 	if p.client == nil {
-		return p
+		return &OpenAIProvider{apiKey: p.apiKey, baseURL: p.baseURL}
 	}
 	config := openaisdk.DefaultConfig(p.apiKey)
 	if p.baseURL != "" {

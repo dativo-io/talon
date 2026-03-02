@@ -7,6 +7,7 @@ func ollamaMetadata() llm.ProviderMetadata {
 		ID:            "ollama",
 		DisplayName:   "Ollama",
 		Jurisdiction:  "LOCAL",
+		AIActScope:    "exempt",
 		DPAAvailable:  false,
 		GDPRCompliant: true,
 		Wizard: llm.WizardHint{

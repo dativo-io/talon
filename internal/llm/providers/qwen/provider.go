@@ -51,6 +51,7 @@ func (p *QwenProvider) Generate(ctx context.Context, req *llm.Request) (*llm.Res
 }
 
 func (p *QwenProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
+	close(ch)
 	return llm.ErrNotImplemented
 }
 func (p *QwenProvider) EstimateCost(model string, in, out int) float64 { return 0 }

@@ -7,6 +7,7 @@ func bedrockMetadata() llm.ProviderMetadata {
 		ID:            "bedrock",
 		DisplayName:   "AWS Bedrock",
 		Jurisdiction:  "US",
+		AIActScope:    "in_scope",
 		DPAAvailable:  true,
 		EURegions:     []string{"eu-central-1", "eu-west-1", "eu-west-3"},
 		GDPRCompliant: false,

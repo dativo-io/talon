@@ -50,6 +50,7 @@ func (p *VertexProvider) Generate(ctx context.Context, req *llm.Request) (*llm.R
 }
 
 func (p *VertexProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
+	close(ch)
 	return llm.ErrNotImplemented
 }
 func (p *VertexProvider) EstimateCost(model string, in, out int) float64 { return 0 }

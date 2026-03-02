@@ -191,6 +191,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, req *llm.Request) (*ll
 
 // Stream is not implemented for Anthropic in this version.
 func (p *AnthropicProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
+	close(ch)
 	return llm.ErrNotImplemented
 }
 

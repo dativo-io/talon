@@ -190,6 +190,7 @@ func (p *BedrockProvider) Generate(ctx context.Context, req *llm.Request) (*llm.
 
 // Stream is not implemented for Bedrock in this version.
 func (p *BedrockProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
+	close(ch)
 	return llm.ErrNotImplemented
 }
 
@@ -238,12 +239,12 @@ func (p *BedrockProvider) HealthCheck(ctx context.Context) error {
 // WithHTTPClient returns a copy of the provider with a custom HTTP client (for tests).
 func (p *BedrockProvider) WithHTTPClient(client *http.Client) llm.Provider {
 	if p.client == nil {
-		return p
+		return &BedrockProvider{region: p.region}
 	}
 	ctx := context.Background()
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(p.region), config.WithHTTPClient(client))
 	if err != nil {
-		return p
+		return &BedrockProvider{region: p.region}
 	}
 	return &BedrockProvider{client: bedrockruntime.NewFromConfig(cfg), region: p.region}
 }

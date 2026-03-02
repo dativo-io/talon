@@ -88,6 +88,7 @@ func (p *GenericOpenAIProvider) Generate(ctx context.Context, req *llm.Request) 
 }
 
 func (p *GenericOpenAIProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
+	close(ch)
 	return llm.ErrNotImplemented
 }
 func (p *GenericOpenAIProvider) EstimateCost(model string, in, out int) float64 { return 0 }
@@ -108,7 +109,7 @@ func (p *GenericOpenAIProvider) HealthCheck(ctx context.Context) error {
 // WithHTTPClient returns a copy of the provider using the given HTTP client (for tests and transport injection).
 func (p *GenericOpenAIProvider) WithHTTPClient(client *http.Client) llm.Provider {
 	if p.client == nil {
-		return p
+		return &GenericOpenAIProvider{apiKey: p.apiKey, baseURL: p.baseURL, jurisdiction: p.jurisdiction}
 	}
 	config := openaisdk.DefaultConfig(p.apiKey)
 	config.BaseURL = strings.TrimRight(p.baseURL, "/")

@@ -36,11 +36,13 @@ func (p *ScaffoldProvider) Metadata() llm.ProviderMetadata {
 
 func (p *ScaffoldProvider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
 	// TODO: Implement real API call. For stub, return ErrNotImplemented.
+	// If using http.NewRequestWithContext: always check err and return on non-nil to avoid nil pointer dereference.
 	return nil, fmt.Errorf("scaffold: %w", llm.ErrNotImplemented)
 }
 
 func (p *ScaffoldProvider) Stream(ctx context.Context, req *llm.Request, ch chan<- llm.StreamChunk) error {
-	// TODO: If your API supports streaming, implement; otherwise return ErrNotImplemented.
+	// TODO: If your API supports streaming, implement; otherwise close(ch) and return ErrNotImplemented.
+	close(ch)
 	return llm.ErrNotImplemented
 }
 
@@ -59,6 +61,8 @@ func (p *ScaffoldProvider) ValidateConfig() error {
 
 func (p *ScaffoldProvider) HealthCheck(ctx context.Context) error {
 	// TODO: Optional lightweight liveness check (e.g. GET /health). Return nil to skip.
+	// If using http.NewRequestWithContext: always check err and return immediately on non-nil
+	// to avoid nil pointer dereference (e.g. if err != nil { return err }).
 	return nil
 }
 

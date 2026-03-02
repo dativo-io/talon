@@ -7,6 +7,7 @@ func mistralMetadata() llm.ProviderMetadata {
 		ID:            "mistral",
 		DisplayName:   "Mistral AI",
 		Jurisdiction:  "EU",
+		AIActScope:    "in_scope",
 		DPAAvailable:  true,
 		GDPRCompliant: true,
 		Wizard: llm.WizardHint{
