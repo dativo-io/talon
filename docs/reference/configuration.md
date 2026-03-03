@@ -12,11 +12,17 @@ Talon uses **two configuration files** with distinct ownership and purpose. Unde
 | **Owner** | AI governance / compliance team | DevOps / platform team |
 | **Contains** | Agent name and description, capabilities (allowed tools, forbidden patterns), memory governance, triggers (cron + webhooks), secrets ACL, attachment handling, compliance framework declarations, cost limits, audit settings | LLM provider connections (endpoint, key env var, region, timeout), gateway settings (callers, mode, rate limits), data directory, secrets encryption key, evidence storage path, observability, multi-tenant defaults |
 | **Schema** | `schemas/agent.talon.schema.json` | `schemas/talon.config.schema.json` |
-| **Created by** | `talon init` | `talon init` |
+| **Created by** | `talon init` (wizard or `--scaffold` / `--pack`) | `talon init` (wizard or `--scaffold` / `--pack`) |
 | **Loaded by** | `policy.LoadPolicy()` | `config.Load()` (Viper) + `gateway.LoadGatewayConfig()` |
 | **CLI override** | `--policy <path>` | `--config <path>`, `--gateway-config <path>` |
 
 **Rule of thumb:** if a change affects *what an agent may do*, edit `agent.talon.yaml`. If it affects *where traffic goes or how the platform is wired*, edit `talon.config.yaml`.
+
+### How the files are created (`talon init`)
+
+- **In a terminal (TTY):** `talon init` runs an interactive wizard: you choose workload type, framework pack (e.g. OpenClaw), LLM provider, data residency (EU strict / preferred / global), and compliance features. The wizard writes both `agent.talon.yaml` and `talon.config.yaml` and prints vault-first next steps.
+- **Non-interactive:** Use `talon init --scaffold` for default templates, or `talon init --pack <id>` for a starter pack (e.g. `openclaw`, `fintech-eu`). For scripts you can also use `talon init --provider openai --name my-agent` (and optional `--data-sovereignty`, `--features`).
+- **List options:** `talon init --list-providers`, `talon init --list-packs`, `talon init --list-features`.
 
 ---
 

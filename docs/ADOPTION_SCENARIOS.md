@@ -33,12 +33,14 @@ This guide shows realistic timelines, effort, and ROI for each path.
 wget https://github.com/dativo-io/talon/releases/download/v1.0.0/talon-linux-amd64
 sudo mv talon-linux-amd64 /usr/local/bin/talon
 
-# Initialize workspace
-talon init --org "FinTech" --compliance "gdpr,pci-dss"
+# Initialize workspace (interactive wizard, or --scaffold for defaults)
+talon init
+# Or non-interactive: talon init --scaffold --name my-agent
 
-# Configure secrets
-talon secrets set OPENAI_API_KEY "sk-proj-..."
-talon secrets set STRIPE_API_KEY "sk_live_..."
+# Configure secrets (set TALON_SECRETS_KEY first; then store keys in vault)
+export TALON_SECRETS_KEY=$(openssl rand -hex 32)
+talon secrets set openai-api-key "sk-proj-..."
+talon secrets set stripe-api-key "sk_live_..."
 ```
 
 #### Day 2-3: Create First Agent (4 hours)

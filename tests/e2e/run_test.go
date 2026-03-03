@@ -13,7 +13,7 @@ import (
 
 func TestE2E_RunWithMockLLM(t *testing.T) {
 	dir := t.TempDir()
-	_, _, code := RunTalon(t, dir, nil, "init", "--name", "e2e-agent")
+	_, _, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", "e2e-agent")
 	if code != 0 {
 		t.Fatalf("talon init failed: %d", code)
 	}
@@ -67,7 +67,7 @@ func TestE2E_RunPolicyDeny(t *testing.T) {
 // TestE2E_RunDryRun asserts doc-promised dry-run output (QUICKSTART §5).
 func TestE2E_RunDryRun(t *testing.T) {
 	dir := t.TempDir()
-	_, _, code := RunTalon(t, dir, nil, "init", "--name", "dryrun-agent")
+	_, _, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", "dryrun-agent")
 	if code != 0 {
 		t.Fatalf("talon init failed: %d", code)
 	}
@@ -96,7 +96,7 @@ func TestE2E_RunDryRun(t *testing.T) {
 // TestE2E_RunWithTenantAndAgent asserts doc-promised usage (QUICKSTART §10).
 func TestE2E_RunWithTenantAndAgent(t *testing.T) {
 	dir := t.TempDir()
-	_, _, code := RunTalon(t, dir, nil, "init", "--name", "sales-analyst")
+	_, _, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", "sales-analyst")
 	if code != 0 {
 		t.Fatalf("talon init failed: %d", code)
 	}
@@ -122,7 +122,7 @@ func TestE2E_RunWithTenantAndAgent(t *testing.T) {
 // TestE2E_RunWithAttachment asserts doc-promised attachment flow (QUICKSTART §7).
 func TestE2E_RunWithAttachment(t *testing.T) {
 	dir := t.TempDir()
-	_, _, code := RunTalon(t, dir, nil, "init", "--name", "attach-agent")
+	_, _, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", "attach-agent")
 	if code != 0 {
 		t.Fatalf("talon init failed: %d", code)
 	}

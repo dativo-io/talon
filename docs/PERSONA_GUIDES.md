@@ -27,7 +27,8 @@ Use **`talon run`** (not `talon` alone) to run an agent; flags like `--attach` g
 ```bash
 # Install and bootstrap
 make build                                    # or: go install .../cmd/talon@latest
-talon init --name my-agent --owner dev@co.at  # Create agent.talon.yaml + talon.config.yaml
+talon init                                    # Interactive wizard (in terminal); or:
+talon init --scaffold --name my-agent --owner dev@co.at  # Non-interactive: create agent.talon.yaml + talon.config.yaml
 talon validate                                # Check policy is valid
 talon validate --strict                       # Strict compliance check
 
@@ -43,7 +44,7 @@ talon serve --port 8080
 
 ### Workflow example
 
-1. Clone repo, `make build`, then `cd my-project && talon init`.
+1. Clone repo, `make build`, then `cd my-project && talon init` (wizard) or `talon init --scaffold` for quick defaults.
 2. Set LLM key: `export OPENAI_API_KEY=sk-...` or `talon secrets set openai-api-key "sk-..."`.
 3. `talon validate` to confirm policy loads.
 4. `talon run "First query"` to run with real LLM; check evidence with `talon audit list`.
