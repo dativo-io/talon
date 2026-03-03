@@ -29,7 +29,7 @@ The router and CLI never depend on concrete provider types; they use this interf
 
 - **EU routing** — OPA `routing.rego` allows or denies a provider by jurisdiction and region (see [EU data sovereignty](#eu-data-sovereignty)).
 - **Evidence** — Traces and evidence can record provider jurisdiction and region.
-- **Init wizard** — `talon init` uses `ListForWizard()` to show providers with `WizardHint` (display name, suffix, order, region options).
+- **Init wizard** — In a terminal, `talon init` runs an interactive wizard that uses `ListForWizard()` to show providers with `WizardHint` (display name, suffix, order, region options). Use `talon init --list-providers` to print the same list and exit.
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -79,7 +79,7 @@ Cost estimates appear in the evidence trail (`pre_request_estimate` and `post_re
 
 To update pricing, edit `pricing/models.yaml` and restart Talon. Hot-reload is not currently supported.
 
-For providers with `models: {}` (ollama, generic-openai), operators can add custom model pricing as needed. Run `talon init` to generate a project that includes `pricing/models.yaml` and `llm.pricing_file` in the config.
+For providers with `models: {}` (ollama, generic-openai), operators can add custom model pricing as needed. Run `talon init` (wizard or `talon init --scaffold`) to generate a project that includes `pricing/models.yaml` and `llm.pricing_file` in the config.
 
 ---
 

@@ -36,8 +36,9 @@ If you want a single guided path (install → init → run → see evidence), fo
 # Install (from repo)
 make build    # → bin/talon
 
-# New project
+# New project (in a terminal: interactive wizard; in scripts/CI: use --scaffold or --pack)
 mkdir my-agents && cd my-agents && talon init
+# Non-interactive: talon init --scaffold   or   talon init --pack openclaw
 
 # Set key and run
 export OPENAI_API_KEY=sk-proj-...

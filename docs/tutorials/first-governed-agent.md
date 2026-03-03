@@ -34,7 +34,7 @@ You should see the list of commands.
 
 ## 2. Initialize a project
 
-Create a new directory and run `talon init` to scaffold a project.
+Create a new directory and run `talon init`. In a terminal, this starts the **interactive wizard**: you answer a few questions (workload type, framework pack, LLM provider, data residency, compliance features) and Talon generates both config files.
 
 ```bash
 mkdir my-agents && cd my-agents
@@ -46,7 +46,11 @@ You will see two files created:
 - **`agent.talon.yaml`** — agent policy (owned by governance/compliance team). Defines what the agent is allowed to do: cost limits, PII detection, model routing, compliance declarations.
 - **`talon.config.yaml`** — infrastructure config (owned by DevOps/platform team). Defines how Talon runs: LLM provider connections, gateway settings, storage paths.
 
-Optional: `talon init --name my-agent --owner you@company.com` to set name and owner.
+**Other ways to init (no wizard):**
+
+- `talon init --scaffold` — quick defaults (good for scripts or CI).
+- `talon init --pack openclaw` (or `fintech-eu`, etc.) — starter pack for a specific use case.
+- `talon init --name my-agent --owner you@company.com` — use with `--scaffold` or after the wizard to set name and owner.
 
 ---
 
@@ -60,7 +64,7 @@ export OPENAI_API_KEY=sk-proj-...
 # Or: nothing needed for Ollama (runs on localhost:11434)
 ```
 
-**First run without AWS?** The default template may set tier_2 to a Bedrock-only model. If you only have OpenAI or Anthropic, either run `talon init --pack telecom-eu` in a new directory, or edit `agent.talon.yaml`: set `policies.model_routing.tier_2.bedrock_only: false` and set `primary` to e.g. `gpt-4o` or `gpt-4o-mini`. Otherwise tier-2 requests will fail.
+**First run without AWS?** The default template may set tier_2 to a Bedrock-only model. If you only have OpenAI or Anthropic, either run the wizard and pick a provider that fits, use `talon init --pack telecom-eu` in a new directory, or edit `agent.talon.yaml`: set `policies.model_routing.tier_2.bedrock_only: false` and set `primary` to e.g. `gpt-4o` or `gpt-4o-mini`. Otherwise tier-2 requests will fail.
 
 ---
 
