@@ -1,0 +1,102 @@
+# Default LLM pricing table embedded in binary.
+# When pricing/models.yaml is not found, this table is used so cost estimation still works.
+# Keep in sync with repo root pricing/models.yaml when updating provider/model prices.
+
+version: "1"
+
+providers:
+  openai:
+    models:
+      gpt-4o:
+        input_per_1m: 2.50
+        output_per_1m: 10.00
+      gpt-4o-mini:
+        input_per_1m: 0.15
+        output_per_1m: 0.60
+      gpt-4-turbo:
+        input_per_1m: 10.00
+        output_per_1m: 30.00
+      o1:
+        input_per_1m: 15.00
+        output_per_1m: 60.00
+      o1-mini:
+        input_per_1m: 1.10
+        output_per_1m: 4.40
+      o3-mini:
+        input_per_1m: 1.10
+        output_per_1m: 4.40
+
+  anthropic:
+    models:
+      claude-sonnet-4-20250514:
+        input_per_1m: 3.00
+        output_per_1m: 15.00
+      claude-haiku-3-5:
+        input_per_1m: 0.80
+        output_per_1m: 4.00
+      claude-opus-4-20250514:
+        input_per_1m: 15.00
+        output_per_1m: 75.00
+
+  azure-openai:
+    inherit: openai
+
+  mistral:
+    models:
+      mistral-large-latest:
+        input_per_1m: 2.00
+        output_per_1m: 6.00
+      mistral-small-latest:
+        input_per_1m: 0.20
+        output_per_1m: 0.60
+      codestral-latest:
+        input_per_1m: 0.30
+        output_per_1m: 0.90
+
+  cohere:
+    models:
+      command-r-plus:
+        input_per_1m: 2.50
+        output_per_1m: 10.00
+      command-r:
+        input_per_1m: 0.15
+        output_per_1m: 0.60
+
+  qwen:
+    models:
+      qwen-max:
+        input_per_1m: 1.60
+        output_per_1m: 6.40
+      qwen-plus:
+        input_per_1m: 0.40
+        output_per_1m: 1.20
+      qwen-turbo:
+        input_per_1m: 0.05
+        output_per_1m: 0.20
+
+  vertex:
+    models:
+      gemini-1.5-pro:
+        input_per_1m: 1.25
+        output_per_1m: 5.00
+      gemini-1.5-flash:
+        input_per_1m: 0.075
+        output_per_1m: 0.30
+      gemini-2.0-flash:
+        input_per_1m: 0.10
+        output_per_1m: 0.40
+
+  bedrock:
+    models:
+      anthropic.claude-sonnet-4-20250514-v1:0:
+        input_per_1m: 3.00
+        output_per_1m: 15.00
+      amazon.titan-text-express-v1:
+        input_per_1m: 0.20
+        output_per_1m: 0.60
+
+  ollama:
+    models: {}
+
+  generic-openai:
+    models: {}

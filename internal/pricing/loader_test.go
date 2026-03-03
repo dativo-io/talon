@@ -45,13 +45,24 @@ func TestLoad_MissingFile(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading pricing file")
 
-	empty := LoadOrDefault("/nonexistent/pricing/models.yaml")
-	require.NotNil(t, empty)
-	assert.NotNil(t, empty.Providers)
-	assert.Empty(t, empty.Providers)
-	cost, known := empty.Estimate("openai", "gpt-4o", 1000, 1000)
-	assert.False(t, known)
-	assert.Equal(t, 0.0, cost)
+	// When file is missing, LoadOrDefault falls back to embedded default (so cost estimation still works)
+	table := LoadOrDefault("/nonexistent/pricing/models.yaml")
+	require.NotNil(t, table)
+	require.NotNil(t, table.Providers)
+	assert.NotEmpty(t, table.Providers, "embedded default should contain providers")
+	require.Contains(t, table.Providers, "openai")
+	cost, known := table.Estimate("openai", "gpt-4o", 1000, 1000)
+	assert.True(t, known, "embedded default should provide openai/gpt-4o pricing")
+	assert.InDelta(t, (2.50+10.00)/1000, cost, 0.0001)
+}
+
+func TestLoadOrDefault_EmbeddedDefaultParses(t *testing.T) {
+	// When file is missing, embedded default must provide usable pricing so cost estimation works out of the box
+	table := LoadOrDefault("/nonexistent/pricing/models.yaml")
+	require.NotNil(t, table)
+	cost, known := table.Estimate("anthropic", "claude-sonnet-4-20250514", 1_000_000, 0)
+	assert.True(t, known)
+	assert.InDelta(t, 3.00, cost, 0.001)
 }
 
 func TestLoad_MalformedYAML(t *testing.T) {
