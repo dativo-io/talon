@@ -24,7 +24,7 @@ func TestFullFlow(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-test-mock")
 
 	t.Run("init", func(t *testing.T) {
-		out := runCmd(t, binary, workDir, "init", "--scaffold", "--name", "test-agent")
+		out := runCmd(t, binary, workDir, "init", "--name", "test-agent")
 		assert.Contains(t, out, "Initialized")
 		assert.FileExists(t, filepath.Join(workDir, "agent.talon.yaml"))
 		assert.FileExists(t, filepath.Join(workDir, "talon.config.yaml"))
@@ -84,7 +84,7 @@ func TestTenantIsolation(t *testing.T) {
 	t.Setenv("TALON_DATA_DIR", workDir)
 	t.Setenv("TALON_SECRETS_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 
-	runCmd(t, binary, workDir, "init", "--scaffold")
+	runCmd(t, binary, workDir, "init")
 
 	// Set secret for tenant A; list shows it (CLI list is global; tenant-scoped access is tested in runner TestTenantIsolation_FullStack)
 	t.Setenv("TALON_TENANT", "tenant-a")
@@ -101,7 +101,7 @@ func TestPolicyEnforcement(t *testing.T) {
 	t.Setenv("TALON_DATA_DIR", workDir)
 	t.Setenv("TALON_SECRETS_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 
-	runCmd(t, binary, workDir, "init", "--scaffold")
+	runCmd(t, binary, workDir, "init")
 
 	policyPath := filepath.Join(workDir, "agent.talon.yaml")
 	content, err := os.ReadFile(policyPath)
@@ -137,7 +137,7 @@ func TestEvidenceIntegrity(t *testing.T) {
 	t.Setenv("TALON_SECRETS_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	t.Setenv("OPENAI_API_KEY", "sk-test-mock")
 
-	runCmd(t, binary, workDir, "init", "--scaffold")
+	runCmd(t, binary, workDir, "init")
 	runCmd(t, binary, workDir, "run", "--dry-run", "test evidence integrity")
 
 	listOut := runCmd(t, binary, workDir, "audit", "list")

@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
-
-- **feat(init): zero-config init wizard.** In a terminal, `talon init` runs an interactive wizard: choose workload type (agent/proxy), framework pack (OpenClaw, generic, etc.), primary LLM provider, region (if applicable), data residency (EU strict / preferred / global), and compliance features (PII, audit, cost, injection, EU AI Act, DORA). Non-interactive options: `talon init --scaffold` for quick defaults, `talon init --pack <id>` for starter packs, or scripted `talon init --provider openai --name my-agent` with optional `--data-sovereignty`, `--features`. New list commands: `--list-providers`, `--list-packs`, `--list-features`. When stdin is not a TTY, init prints guidance instead of running the wizard. Pack and feature registries (`internal/pack`, `internal/feature`) drive wizard choices; post-init verification reuses `talon doctor`; next steps are vault-first (TALON_SECRETS_KEY then `talon secrets set`).
-
 ## [0.9.1] - 2026-03-02
 
 ### Changed

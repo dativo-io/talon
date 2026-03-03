@@ -135,7 +135,7 @@ go install github.com/dativo-io/talon/cmd/talon@latest
 #   CC=/usr/bin/clang go install github.com/dativo-io/talon/cmd/talon@latest
 # or: curl -sSL https://install.gettalon.dev | sh
 
-# Initialize (interactive wizard in a terminal; use --scaffold for quick defaults)
+# Initialize
 mkdir my-agents && cd my-agents
 talon init
 
@@ -186,7 +186,7 @@ go install github.com/dativo-io/talon/cmd/talon@latest
 ```bash
 # Install (see Install section above), then:
 mkdir my-agents && cd my-agents
-talon init          # Interactive wizard (in a terminal); or: talon init --scaffold for quick defaults
+talon init
 
 # Set your LLM provider key (or use vault: talon secrets set openai-api-key "sk-...")
 export OPENAI_API_KEY=sk-your-key
@@ -379,10 +379,7 @@ talon run --agent sales --tenant acme "..."  # Specify agent and tenant
 talon run --policy custom.talon.yaml "..."   # Use explicit policy file
 
 # Project setup
-talon init                                   # Interactive wizard (TTY); creates agent + infra config
-talon init --scaffold                        # Quick defaults without wizard (e.g. in CI/scripts)
-talon init --pack openclaw                   # Starter pack (openclaw, fintech-eu, etc.)
-talon init --list-providers                  # List LLM providers; --list-packs, --list-features
+talon init                                   # Scaffold new project
 talon validate                               # Validate agent.talon.yaml
 
 # Audit trail
@@ -418,7 +415,7 @@ talon costs [--tenant acme]                  # Cost and budget summary
 PII detection uses **Presidio-compatible** recognizer definitions. Defaults are embedded (EU-focused: email, phone, IBAN, credit card, VAT, SSNs, IP, passport). You can extend or override them without recompiling:
 
 - **Global overrides:** Put a `patterns.yaml` file in `~/.talon/` or the project directory. Same YAML format as the built-in `patterns/pii_eu.yaml`. Later layers override earlier (embedded → global → per-agent).
-- **Per-agent:** In `agent.talon.yaml` under `policies.data_classification` set `enabled_entities` (whitelist), `disabled_entities` (blacklist), and/or `custom_recognizers` (extra patterns). See the commented block in `talon init --scaffold` or wizard-generated output.
+- **Per-agent:** In `agent.talon.yaml` under `policies.data_classification` set `enabled_entities` (whitelist), `disabled_entities` (blacklist), and/or `custom_recognizers` (extra patterns). See the commented block in `talon init` output.
 
 Attachment (prompt-injection) patterns are configured the same way; see `patterns/injection.yaml` for the default set.
 

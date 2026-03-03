@@ -13,7 +13,7 @@ import (
 
 func TestE2E_AuditListAndVerify(t *testing.T) {
 	dir := t.TempDir()
-	_, _, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", "audit-agent")
+	_, _, code := RunTalon(t, dir, nil, "init", "--name", "audit-agent")
 	if code != 0 {
 		t.Fatalf("talon init failed: %d", code)
 	}
@@ -51,7 +51,7 @@ func TestE2E_AuditListAndVerify(t *testing.T) {
 // TestE2E_AuditShow_NoArgs_ShowsLatest asserts that `talon audit show` with no ID shows the latest evidence.
 func TestE2E_AuditShow_NoArgs_ShowsLatest(t *testing.T) {
 	dir := t.TempDir()
-	_, _, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", "audit-show-agent")
+	_, _, code := RunTalon(t, dir, nil, "init", "--name", "audit-show-agent")
 	if code != 0 {
 		t.Fatalf("talon init failed: %d", code)
 	}

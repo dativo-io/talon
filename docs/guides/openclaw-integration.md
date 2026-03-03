@@ -22,7 +22,6 @@ go install github.com/dativo-io/talon/cmd/talon@latest
 # Generate a gateway-ready project pre-configured for OpenClaw:
 mkdir talon-openclaw && cd talon-openclaw
 talon init --pack openclaw --name openclaw-gateway
-# In a terminal you can also run bare `talon init` and choose OpenClaw from the wizard.
 ```
 
 This creates `agent.talon.yaml` (agent policy with PII scanning, cost limits, circuit breaker) and `talon.config.yaml` (gateway config with OpenAI provider, pre-configured `openclaw-main` caller, shadow mode). You can also create these files manually — see the [Docker-based primer](openclaw-talon-primer/docker-openclaw-talon-primer.md) for a full example config.
@@ -123,7 +122,7 @@ You should see new evidence rows; the caller name (e.g. `openclaw-main`) appears
 
 - **`go install ...@v0.9.0` fails with "reading `https://sum.golang.org/lookup/...` 404 Not Found" or "invalid version: unknown revision"** — The Go checksum database hasn't indexed the new tag yet (common in the first minutes after a release). Install directly from the module and skip checksum verification: `GONOSUMDB=github.com/dativo-io/talon GOPROXY=direct go install github.com/dativo-io/talon/cmd/talon@v0.9.0`. After a few minutes, the normal `go install ...@v0.9.0` usually works without these env vars.
 - **macOS: `go install ...@latest` fails with "unsupported tapi file type '!tapi-tbd'"** — Go is using Homebrew's LLVM; Apple's SDK uses a format that LLVM's linker doesn't support. Use system Clang: `CC=/usr/bin/clang go install github.com/dativo-io/talon/cmd/talon@latest`. Or clone the repo and run `make install`.
-- **`talon serve --gateway` fails with "agent is required" / "policies is required"** — Talon loads `agent.talon.yaml` from the current working directory. Run `talon serve --gateway` from the directory that contains a valid `agent.talon.yaml` (with top-level `agent:` and `policies:` keys). Easiest: run `talon init` (wizard) or `talon init --pack openclaw` in a new directory so both `agent.talon.yaml` and gateway-enabled `talon.config.yaml` are generated.
+- **`talon serve --gateway` fails with "agent is required" / "policies is required"** — Talon loads `agent.talon.yaml` from the current working directory. Run `talon serve --gateway` from the directory that contains a valid `agent.talon.yaml` (with top-level `agent:` and `policies:` keys). Easiest: use `talon init --pack openclaw` in a new directory so both `agent.talon.yaml` and gateway-enabled `talon.config.yaml` are generated.
 - **OpenClaw reports "Invalid config … models.providers.openai.models"** — The `models` array must contain objects with both `id` and `name` (e.g. `{ "id": "gpt-4o-mini", "name": "gpt-4o-mini" }`). Plain strings or objects with only `id` or only `name` will fail validation.
 - **"systemctl --user unavailable" when running `openclaw gateway stop`** — Your shell (e.g. SSH or `su`) may not have access to the user D-Bus session. Stop the gateway process directly: `pkill openclaw-gateway`, then start OpenClaw again as you normally do.
 - **`gateway_secret_get_failed` / "cipher: message authentication failed"** — Talon can't decrypt the stored OpenAI key. Use the **same** `TALON_SECRETS_KEY` when running `talon secrets set` and `talon serve`. If you lost the key, set a new one and run `talon secrets set openai-api-key "sk-..."` again.

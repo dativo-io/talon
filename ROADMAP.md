@@ -26,8 +26,7 @@
 - [ ] MCP Proxy (vendor integration for Zendesk, Intercom, etc.)
 - [ ] Shadow mode dashboard tab (AI usage discovery)
 - [ ] Per-caller/team cost dashboards
-- [x] `talon init` interactive wizard (default in TTY); `--scaffold`, `--pack`, `--list-providers` / `--list-packs` / `--list-features`
-- [ ] Additional industry packs (beyond openclaw, fintech-eu, etc.)
+- [ ] `talon init --pack` for more industry templates
 
 ## v1.1.0 (May 2026) — Enterprise
 

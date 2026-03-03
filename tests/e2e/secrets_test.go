@@ -9,7 +9,7 @@ import (
 
 func TestE2E_SecretsLifecycle(t *testing.T) {
 	dir := t.TempDir()
-	_, _, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", "secrets-agent")
+	_, _, code := RunTalon(t, dir, nil, "init", "--name", "secrets-agent")
 	if code != 0 {
 		t.Fatalf("talon init failed: %d", code)
 	}

@@ -11,7 +11,7 @@ import (
 
 func TestE2E_InitCreatesFiles(t *testing.T) {
 	dir := t.TempDir()
-	_, _, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", "test-agent")
+	_, _, code := RunTalon(t, dir, nil, "init", "--name", "test-agent")
 	if code != 0 {
 		t.Fatalf("talon init exited %d", code)
 	}
@@ -29,7 +29,7 @@ func TestE2E_InitCreatesFiles(t *testing.T) {
 // TestE2E_InitWithNameAndOwner asserts doc-promised init flags (QUICKSTART §2).
 func TestE2E_InitWithNameAndOwner(t *testing.T) {
 	dir := t.TempDir()
-	_, _, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", "my-agent", "--owner", "you@company.com")
+	_, _, code := RunTalon(t, dir, nil, "init", "--name", "my-agent", "--owner", "you@company.com")
 	if code != 0 {
 		t.Fatalf("talon init --name my-agent --owner you@company.com exited %d", code)
 	}

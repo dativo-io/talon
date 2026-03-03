@@ -13,7 +13,7 @@ import (
 
 func TestE2E_CostsShowsSpend(t *testing.T) {
 	dir := t.TempDir()
-	_, _, code := RunTalon(t, dir, nil, "init", "--scaffold", "--name", "cost-agent")
+	_, _, code := RunTalon(t, dir, nil, "init", "--name", "cost-agent")
 	if code != 0 {
 		t.Fatalf("talon init failed: %d", code)
 	}

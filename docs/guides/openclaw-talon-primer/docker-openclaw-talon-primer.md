@@ -33,7 +33,7 @@ Important:
 - Talon repo clone (image is built from repo root)
 - Your **real** OpenAI API key (only for `.env`; never put it in OpenClaw)
 
-> **Tip — non-Docker alternative:** If you prefer a local binary over Docker, run `talon init` (wizard, then choose OpenClaw) or `talon init --pack openclaw` to generate a gateway-ready project, then follow the [local integration guide](../openclaw-integration.md).
+> **Tip — non-Docker alternative:** If you prefer a local binary over Docker, run `talon init --pack openclaw` to generate a gateway-ready project in one command, then follow the [local integration guide](../openclaw-integration.md).
 
 ## Quick start
 
