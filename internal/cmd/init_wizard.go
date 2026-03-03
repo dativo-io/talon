@@ -8,7 +8,7 @@
 //	OwnerEmail, Department             → metadata.owner, metadata.department
 //	WorkloadType="agent"               → agent.model_tier=1, capabilities.allowed_tools=[sql_query,file_read,web_search]
 //	WorkloadType="proxy"               → agent.model_tier=0, capabilities.allowed_tools=[]
-//	PackID                             → base template selection (wizard builds struct directly)
+//	PackID                             → applyPackToAgent (openclaw → gateway proxy: model_tier=0, no tools, tags; langchain → tags)
 //	DataSovereignty="eu_strict"        → compliance.data_residency=eu, policies.model_routing.*.location=EU region
 //	DataSovereignty="eu_preferred"     → compliance.data_residency=eu
 //	DataSovereignty="global"           → compliance.data_residency=any
@@ -22,6 +22,7 @@
 //
 // talon.config.yaml:
 //
+//	PackID=openclaw                    → gateway block in talon.config.yaml (enabled, callers, providers) so talon serve --gateway works
 //	ProviderID, RegionID               → llm.providers.<id> block (type, config with region/key_env, enabled)
 //	ProviderID                         → llm primary provider
 //	DataSovereignty                    → llm.routing.data_sovereignty_mode
@@ -37,6 +38,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -79,6 +81,62 @@ type WizardState struct {
 	EnabledFeatures  []string
 }
 
+// GatewayBlock is the gateway section written to talon.config.yaml when PackID is openclaw.
+// Structure matches gateway.GatewayConfig so LoadGatewayConfig parses it correctly.
+type GatewayBlock struct {
+	Enabled        bool                       `yaml:"enabled"`
+	ListenPrefix   string                     `yaml:"listen_prefix"`
+	Mode           string                     `yaml:"mode"`
+	Providers      map[string]GatewayProvider `yaml:"providers"`
+	Callers        []GatewayCaller            `yaml:"callers"`
+	ServerDefaults *GatewayServerDefaults     `yaml:"default_policy,omitempty"`
+	RateLimits     *GatewayRateLimits         `yaml:"rate_limits,omitempty"`
+	Timeouts       *GatewayTimeouts           `yaml:"timeouts,omitempty"`
+}
+
+type GatewayProvider struct {
+	Enabled       bool     `yaml:"enabled"`
+	SecretName    string   `yaml:"secret_name"`
+	BaseURL       string   `yaml:"base_url"`
+	AllowedModels []string `yaml:"allowed_models,omitempty"`
+}
+
+type GatewayCaller struct {
+	Name             string                  `yaml:"name"`
+	APIKey           string                  `yaml:"api_key"` // #nosec G101 -- caller identifier from config
+	TenantID         string                  `yaml:"tenant_id"`
+	AllowedProviders []string                `yaml:"allowed_providers,omitempty"`
+	PolicyOverrides  *GatewayCallerOverrides `yaml:"policy_overrides,omitempty"`
+}
+
+type GatewayCallerOverrides struct {
+	MaxDailyCost   float64  `yaml:"max_daily_cost,omitempty"`
+	MaxMonthlyCost float64  `yaml:"max_monthly_cost,omitempty"`
+	PIIAction      string   `yaml:"pii_action,omitempty"`
+	AllowedModels  []string `yaml:"allowed_models,omitempty"`
+}
+
+type GatewayServerDefaults struct {
+	DefaultPIIAction  string  `yaml:"default_pii_action"`
+	ResponsePIIAction string  `yaml:"response_pii_action,omitempty"`
+	MaxDailyCost      float64 `yaml:"max_daily_cost"`
+	MaxMonthlyCost    float64 `yaml:"max_monthly_cost"`
+	RequireCallerID   bool    `yaml:"require_caller_id"`
+	LogPrompts        bool    `yaml:"log_prompts"`
+	LogResponses      bool    `yaml:"log_responses"`
+}
+
+type GatewayRateLimits struct {
+	GlobalRequestsPerMin    int `yaml:"global_requests_per_min"`
+	PerCallerRequestsPerMin int `yaml:"per_caller_requests_per_min"`
+}
+
+type GatewayTimeouts struct {
+	ConnectTimeout    string `yaml:"connect_timeout"`
+	RequestTimeout    string `yaml:"request_timeout"`
+	StreamIdleTimeout string `yaml:"stream_idle_timeout"`
+}
+
 // InfraYAML is the structure written to talon.config.yaml.
 type InfraYAML struct {
 	LLM *struct {
@@ -94,6 +152,7 @@ type InfraYAML struct {
 	} `yaml:"evidence"`
 	SecretsKeyEnv string        `yaml:"secrets_key_env"`
 	Tenants       []TenantBlock `yaml:"tenants"`
+	Gateway       *GatewayBlock `yaml:"gateway,omitempty"`
 }
 
 // ProviderBlock is one entry in llm.providers.
@@ -442,6 +501,7 @@ func BuildConfigs(state WizardState) (*policy.Policy, *InfraYAML, error) {
 			return nil, nil, fmt.Errorf("applying feature %q: %w", id, err)
 		}
 	}
+	applyPackToAgent(agentCfg, state)
 	infraCfg := buildInfraConfig(state)
 	agentYAML, err := yaml.Marshal(agentCfg)
 	if err != nil {
@@ -565,6 +625,64 @@ func applyWorkloadType(pol *policy.Policy, workload string) {
 		if pol.Capabilities != nil && len(pol.Capabilities.AllowedTools) == 0 {
 			pol.Capabilities.AllowedTools = []string{"sql_query", "file_read"}
 		}
+	}
+}
+
+// applyPackToAgent applies pack-specific agent policy so wizard output matches the nature of each pack.
+// OpenClaw = gateway proxy (model_tier 0, no tools, gateway/openclaw tags, tighter cost limits).
+// LangChain = proxy-oriented tags. Generic = no overrides.
+func applyPackToAgent(pol *policy.Policy, state WizardState) {
+	if pol.Metadata == nil {
+		pol.Metadata = &policy.MetadataConfig{}
+	}
+	tags := make(map[string]bool)
+	for _, t := range pol.Metadata.Tags {
+		tags[t] = true
+	}
+	switch state.PackID {
+	case "openclaw":
+		// OpenClaw pack is a gateway: proxy-style policy (tier 0, no tools), gateway tags, pack-aligned costs.
+		pol.Agent.ModelTier = 0
+		if pol.Capabilities != nil {
+			pol.Capabilities.AllowedTools = nil
+		}
+		pol.Agent.Description = "Talon gateway policy for OpenClaw LLM traffic"
+		tags["gateway"] = true
+		tags["openclaw"] = true
+		tags["governed"] = true
+		if pol.Policies.CostLimits != nil {
+			pol.Policies.CostLimits.Daily = 25.0
+			pol.Policies.CostLimits.Monthly = 500.0
+		}
+	case "langchain":
+		tags["langchain"] = true
+		tags["proxy"] = true
+	default:
+		// generic or unknown: leave agent as built from workload + features
+		return
+	}
+	pol.Metadata.Tags = make([]string, 0, len(tags))
+	for t := range tags {
+		pol.Metadata.Tags = append(pol.Metadata.Tags, t)
+	}
+	// Keep stable order for tests and diffs
+	packTagOrder := map[string]int{"ai-agent": 0, "governed": 1, "gateway": 2, "openclaw": 3, "langchain": 4, "proxy": 5}
+	if len(pol.Metadata.Tags) > 1 {
+		// Sort by packTagOrder then alphabetically
+		sort.Slice(pol.Metadata.Tags, func(i, j int) bool {
+			oi, oki := packTagOrder[pol.Metadata.Tags[i]]
+			oj, okj := packTagOrder[pol.Metadata.Tags[j]]
+			if oki && okj {
+				return oi < oj
+			}
+			if oki {
+				return true
+			}
+			if okj {
+				return false
+			}
+			return pol.Metadata.Tags[i] < pol.Metadata.Tags[j]
+		})
 	}
 }
 
@@ -706,7 +824,89 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 	}}
 	cfg.Tenants[0].Budgets.Daily = 200.0
 	cfg.Tenants[0].Budgets.Monthly = 3000.0
+
+	// When user selected a pack that uses the gateway, enable it so "talon serve --gateway" works.
+	if packRequiresGateway(state.PackID) {
+		secretName := VaultSecretName(state.ProviderID)
+		if secretName == "" {
+			secretName = "openai-api-key" // #nosec G101 -- vault key name, not a credential
+		}
+		baseURL := defaultGatewayBaseURL(state.ProviderID)
+		cfg.Gateway = &GatewayBlock{
+			Enabled:      true,
+			ListenPrefix: "/v1/proxy",
+			Mode:         "shadow",
+			Providers: map[string]GatewayProvider{
+				state.ProviderID: {
+					Enabled:       true,
+					SecretName:    secretName,
+					BaseURL:       baseURL,
+					AllowedModels: []string{"gpt-4o", "gpt-4o-mini", "gpt-4-turbo"},
+				},
+			},
+			Callers: []GatewayCaller{{
+				Name:             "openclaw-main",
+				APIKey:           "talon-gw-openclaw-001",
+				TenantID:         tenantID,
+				AllowedProviders: []string{state.ProviderID},
+				PolicyOverrides: &GatewayCallerOverrides{
+					MaxDailyCost:   25.00,
+					MaxMonthlyCost: 500.00,
+					PIIAction:      "redact",
+					AllowedModels:  []string{"gpt-4o", "gpt-4o-mini"},
+				},
+			}},
+			ServerDefaults: &GatewayServerDefaults{
+				DefaultPIIAction:  "warn",
+				ResponsePIIAction: "warn",
+				MaxDailyCost:      100.00,
+				MaxMonthlyCost:    2000.00,
+				RequireCallerID:   true,
+				LogPrompts:        true,
+				LogResponses:      false,
+			},
+			RateLimits: &GatewayRateLimits{
+				GlobalRequestsPerMin:    300,
+				PerCallerRequestsPerMin: 60,
+			},
+			Timeouts: &GatewayTimeouts{
+				ConnectTimeout:    "10s",
+				RequestTimeout:    "120s",
+				StreamIdleTimeout: "60s",
+			},
+		}
+	}
+
 	return cfg
+}
+
+// PacksWithGateway returns pack IDs that use the LLM gateway (talon.config.yaml gateway block + talon serve --gateway).
+// Used so wizard infra and next-steps stay consistent with pack nature.
+func PacksWithGateway() []string {
+	return []string{"openclaw"}
+}
+
+func packRequiresGateway(packID string) bool {
+	for _, id := range PacksWithGateway() {
+		if id == packID {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultGatewayBaseURL returns the default upstream base URL for the gateway for a given provider.
+func defaultGatewayBaseURL(providerID string) string {
+	switch providerID {
+	case "openai", "generic-openai":
+		return "https://api.openai.com"
+	case "anthropic":
+		return "https://api.anthropic.com"
+	case "ollama":
+		return "http://localhost:11434"
+	default:
+		return "https://api.openai.com"
+	}
 }
 
 // vaultSecretEnvVar returns the env var name used to pass the vault secret to the provider, or empty if no key (ollama, bedrock use other auth).

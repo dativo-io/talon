@@ -567,6 +567,75 @@ func TestBuildConfigs_EUPreferred_ResidencyLabel(t *testing.T) {
 	assert.Equal(t, "eu", agentCfg.Compliance.DataResidency)
 }
 
+func TestBuildConfigs_OpenClawPack_EnablesGateway(t *testing.T) {
+	state := WizardState{
+		AgentName:       "my-agent",
+		WorkloadType:    "agent",
+		PackID:          "openclaw",
+		ProviderID:      "openai",
+		DataSovereignty: "eu_preferred",
+		EnabledFeatures: []string{"pii", "audit"},
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	// Infra: openclaw pack gets gateway so talon serve --gateway works
+	require.NotNil(t, infraCfg.Gateway, "openclaw pack must generate gateway block")
+	assert.True(t, infraCfg.Gateway.Enabled, "gateway must be enabled so talon serve --gateway starts")
+	assert.Equal(t, "/v1/proxy", infraCfg.Gateway.ListenPrefix)
+	assert.Equal(t, "shadow", infraCfg.Gateway.Mode)
+	require.NotEmpty(t, infraCfg.Gateway.Callers)
+	assert.Equal(t, "openclaw-main", infraCfg.Gateway.Callers[0].Name)
+	assert.Equal(t, "talon-gw-openclaw-001", infraCfg.Gateway.Callers[0].APIKey)
+	openai, ok := infraCfg.Gateway.Providers["openai"]
+	require.True(t, ok)
+	assert.True(t, openai.Enabled)
+	assert.Equal(t, "https://api.openai.com", openai.BaseURL)
+	assert.Equal(t, "openai-api-key", openai.SecretName)
+	// Agent: openclaw pack nature = gateway proxy (tier 0, no tools, gateway/openclaw tags)
+	assert.Equal(t, 0, agentCfg.Agent.ModelTier, "openclaw pack is gateway proxy")
+	assert.Empty(t, agentCfg.Capabilities.AllowedTools, "openclaw gateway has no tools")
+	assert.Equal(t, "Talon gateway policy for OpenClaw LLM traffic", agentCfg.Agent.Description)
+	assert.Contains(t, agentCfg.Metadata.Tags, "gateway")
+	assert.Contains(t, agentCfg.Metadata.Tags, "openclaw")
+	assert.Equal(t, 25.0, agentCfg.Policies.CostLimits.Daily)
+	assert.Equal(t, 500.0, agentCfg.Policies.CostLimits.Monthly)
+}
+
+func TestBuildConfigs_LangChainPack_AddsTags(t *testing.T) {
+	state := WizardState{
+		AgentName:       "lc-agent",
+		WorkloadType:    "agent",
+		PackID:          "langchain",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+		EnabledFeatures: []string{"pii"},
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	assert.Nil(t, infraCfg.Gateway, "langchain pack has no gateway block in wizard")
+	assert.Contains(t, agentCfg.Metadata.Tags, "langchain")
+	assert.Contains(t, agentCfg.Metadata.Tags, "proxy")
+}
+
+func TestBuildConfigs_GenericPack_NoOverrides(t *testing.T) {
+	state := WizardState{
+		AgentName:       "gen-agent",
+		WorkloadType:    "agent",
+		PackID:          "generic",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+		EnabledFeatures: []string{"pii"},
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	assert.Nil(t, infraCfg.Gateway, "generic pack has no gateway block")
+	assert.NotContains(t, agentCfg.Metadata.Tags, "gateway")
+	assert.NotContains(t, agentCfg.Metadata.Tags, "openclaw")
+	// Workload agent => model_tier 1, has tools
+	assert.Equal(t, 1, agentCfg.Agent.ModelTier)
+	assert.NotEmpty(t, agentCfg.Capabilities.AllowedTools)
+}
+
 // --- Unit tests: marshalWithHeader and WriteConfigs branches ---
 
 func TestMarshalWithHeader_WithVersionAndRegion(t *testing.T) {

@@ -31,8 +31,8 @@ install: ## Install to $GOPATH/bin (or go env GOPATH/bin)
 	@$(GO_ENV) go install $(LDFLAGS) ./cmd/talon/
 
 test: ## Run tests (unit + integration). Coverage excludes cmd/talon and internal/testutil.
-	@go test -race -coverprofile=coverage.out $$(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v 'cmd/talon')
-	@go test -race -tags=integration ./tests/integration/...
+	@$(GO_ENV) go test -race -coverprofile=coverage.out $$(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v 'cmd/talon')
+	@$(GO_ENV) go test -race -tags=integration ./tests/integration/...
 
 test-coverage: test ## Show test coverage
 	@go tool cover -html=coverage.out -o coverage.html

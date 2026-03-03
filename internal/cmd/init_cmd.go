@@ -200,7 +200,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 			log.Warn().Err(fail).Msg("Post-init verification had failures")
 		}
 	}
-	PrintNextSteps(state.AgentName, state.ProviderID, out)
+	if packRequiresGateway(state.PackID) {
+		printOpenClawNextSteps()
+	} else {
+		PrintNextSteps(state.AgentName, state.ProviderID, out)
+	}
 	return nil
 }
 
