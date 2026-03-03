@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"io"
 	"os"
@@ -228,8 +229,11 @@ func TestWriteConfigs_AtomicWrite_NoPartialOnInterrupt(t *testing.T) {
 func TestVaultSecretName(t *testing.T) {
 	assert.Equal(t, "openai-api-key", VaultSecretName("openai"))
 	assert.Equal(t, "azure-openai-key", VaultSecretName("azure-openai"))
+	assert.Equal(t, "anthropic-api-key", VaultSecretName("anthropic"))
 	assert.Equal(t, "", VaultSecretName("ollama"))
 	assert.Equal(t, "", VaultSecretName("bedrock"))
+	assert.Equal(t, "mistral-api-key", VaultSecretName("mistral"))
+	assert.Equal(t, "vertex-api-key", VaultSecretName("vertex"))
 	assert.Equal(t, "custom-api-key", VaultSecretName("custom"))
 }
 
@@ -314,6 +318,239 @@ func TestDefaultsForWorkload_Proxy_ThreeFeatures(t *testing.T) {
 	assert.Contains(t, ids, "pii")
 	assert.Contains(t, ids, "audit")
 	assert.Contains(t, ids, "cost")
+}
+
+func TestBuildConfigs_Bedrock_NoKeyEnv(t *testing.T) {
+	state := WizardState{
+		AgentName:       "bedrock-agent",
+		ProviderID:      "bedrock",
+		DataSovereignty: "global",
+		EnabledFeatures: []string{"pii"},
+	}
+	_, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	require.NotNil(t, infraCfg.LLM)
+	blk, ok := infraCfg.LLM.Providers["bedrock"]
+	require.True(t, ok)
+	_, hasKeyEnv := blk.Config["key_env"]
+	assert.False(t, hasKeyEnv)
+}
+
+func TestBuildConfigs_Vertex_EURegion(t *testing.T) {
+	state := WizardState{
+		AgentName:       "vertex-agent",
+		WorkloadType:    "agent",
+		ProviderID:      "vertex",
+		RegionID:        "europe-west1",
+		DataSovereignty: "eu_strict",
+		EnabledFeatures: []string{"audit"},
+	}
+	agentCfg, _, err := BuildConfigs(state)
+	require.NoError(t, err)
+	require.NotNil(t, agentCfg.Policies.ModelRouting)
+	require.NotNil(t, agentCfg.Policies.ModelRouting.Tier1)
+	assert.Equal(t, "europe-west1", agentCfg.Policies.ModelRouting.Tier1.Location)
+}
+
+func TestIsTerminal(t *testing.T) {
+	// Just ensure it doesn't panic; in tests stdin is usually not a TTY
+	_ = IsTerminal()
+}
+
+// Test runList* functions (same package) to improve coverage.
+func TestRunListProviders(t *testing.T) {
+	var buf bytes.Buffer
+	err := runListProviders(&buf)
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Contains(t, out, "provider")
+	assert.Contains(t, out, "Add a provider")
+}
+
+func TestRunListPacks(t *testing.T) {
+	var buf bytes.Buffer
+	err := runListPacks(&buf)
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Contains(t, out, "pack")
+	assert.Contains(t, out, "openclaw")
+}
+
+func TestRunListFeatures(t *testing.T) {
+	var buf bytes.Buffer
+	err := runListFeatures(&buf)
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Contains(t, out, "feature")
+	assert.Contains(t, out, "pii")
+}
+
+// --- Unit tests: wizard helpers (pyramid base) ---
+
+func TestPackName(t *testing.T) {
+	assert.Equal(t, "OpenClaw", packName("openclaw"))
+	assert.Contains(t, packName("generic"), "Generic") // registry may use "Custom / Generic"
+	assert.Equal(t, "unknown-pack", packName("unknown-pack"))
+}
+
+func TestProviderName(t *testing.T) {
+	assert.Equal(t, "OpenAI", providerName("openai"))
+	assert.Equal(t, "Anthropic", providerName("anthropic"))
+	assert.Equal(t, "unknown-provider", providerName("unknown-provider"))
+}
+
+func TestDataResidencyLabel(t *testing.T) {
+	assert.Contains(t, dataResidencyLabel("eu_strict"), "EU")
+	assert.Equal(t, "EU preferred", dataResidencyLabel("eu_preferred"))
+	assert.Equal(t, "Global", dataResidencyLabel("global"))
+	assert.Equal(t, "Global", dataResidencyLabel(""))
+}
+
+func TestReadLine_EmptyInput_ReturnsDefault(t *testing.T) {
+	scan := bufio.NewScanner(strings.NewReader("\n"))
+	var out bytes.Buffer
+	got := readLine(scan, &out, "Prompt", "default-val")
+	assert.Equal(t, "default-val", got)
+}
+
+func TestReadLine_NonEmpty_ReturnsTrimmed(t *testing.T) {
+	scan := bufio.NewScanner(strings.NewReader("  my-agent  \n"))
+	var out bytes.Buffer
+	got := readLine(scan, &out, "Name", "default")
+	assert.Equal(t, "my-agent", got)
+}
+
+func TestReadChoice_InvalidNumber_ReturnsDefault(t *testing.T) {
+	scan := bufio.NewScanner(strings.NewReader("99\n"))
+	var out bytes.Buffer
+	choice, err := readChoice(scan, &out, "Q?", []string{"A", "B"}, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 1, choice)
+}
+
+func TestReadChoice_EmptyInput_ReturnsDefault(t *testing.T) {
+	scan := bufio.NewScanner(strings.NewReader("\n"))
+	var out bytes.Buffer
+	choice, err := readChoice(scan, &out, "Q?", []string{"A", "B"}, 2)
+	require.NoError(t, err)
+	assert.Equal(t, 2, choice)
+}
+
+func TestReadChoice_ValidChoice_ReturnsChoice(t *testing.T) {
+	scan := bufio.NewScanner(strings.NewReader("2\n"))
+	var out bytes.Buffer
+	choice, err := readChoice(scan, &out, "Q?", []string{"A", "B"}, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 2, choice)
+}
+
+// --- Unit tests: BuildConfigs provider/sovereignty branches ---
+
+func TestBuildConfigs_Mistral_Cohere_Qwen_GenericOpenAI(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+	}{
+		{"mistral"},
+		{"cohere"},
+		{"qwen"},
+		{"generic-openai"},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			state := WizardState{
+				AgentName:       "x",
+				WorkloadType:    "agent",
+				ProviderID:      tc.provider,
+				DataSovereignty: "global",
+				EnabledFeatures: []string{"pii"},
+			}
+			agentCfg, infraCfg, err := BuildConfigs(state)
+			require.NoError(t, err)
+			require.NotNil(t, agentCfg)
+			require.NotNil(t, infraCfg)
+			_, ok := infraCfg.LLM.Providers[tc.provider]
+			assert.True(t, ok)
+		})
+	}
+}
+
+func TestBuildConfigs_EUPreferred_ResidencyLabel(t *testing.T) {
+	state := WizardState{
+		AgentName:       "eu-pref",
+		ProviderID:      "openai",
+		DataSovereignty: "eu_preferred",
+		EnabledFeatures: []string{"audit"},
+	}
+	agentCfg, _, err := BuildConfigs(state)
+	require.NoError(t, err)
+	assert.Equal(t, "eu", agentCfg.Compliance.DataResidency)
+}
+
+// --- Unit tests: marshalWithHeader and WriteConfigs branches ---
+
+func TestMarshalWithHeader_WithVersionAndRegion(t *testing.T) {
+	state := WizardState{
+		AgentName:       "h",
+		ProviderID:      "openai",
+		RegionID:        "westeurope",
+		EnabledFeatures: []string{"pii"},
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	opts := WriteOptions{
+		AgentPath:   "agent.talon.yaml",
+		InfraPath:   "talon.config.yaml",
+		ProviderID:  state.ProviderID,
+		RegionID:    state.RegionID,
+		Sovereignty: state.DataSovereignty,
+		PackID:      state.PackID,
+		Features:    state.EnabledFeatures,
+		Version:     "v1.0.0",
+	}
+	agentYAML, infraYAML, err := marshalWithHeader(agentCfg, infraCfg, opts)
+	require.NoError(t, err)
+	assert.Contains(t, string(agentYAML), "v1.0.0")
+	assert.Contains(t, string(agentYAML), "westeurope")
+	assert.Contains(t, string(infraYAML), "v1.0.0")
+}
+
+func TestWriteConfigs_InfraExists_RefusesWithoutForce(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "agent.talon.yaml")
+	infraPath := filepath.Join(dir, "talon.config.yaml")
+	require.NoError(t, os.WriteFile(infraPath, []byte("existing"), 0o644))
+	state := WizardState{
+		AgentName:       "x",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	opts := WriteOptions{
+		AgentPath:   agentPath,
+		InfraPath:   infraPath,
+		Force:       false,
+		ProviderID:  state.ProviderID,
+		Sovereignty: state.DataSovereignty,
+		PackID:      state.PackID,
+		Features:    state.EnabledFeatures,
+	}
+	err = WriteConfigs(agentCfg, infraCfg, opts)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+}
+
+func TestPostInitVerify_RunsWithoutPanic(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	warnings, fail := PostInitVerify(
+		filepath.Join(dir, "agent.talon.yaml"),
+		filepath.Join(dir, "talon.config.yaml"),
+		&buf,
+	)
+	// Doctor runs from cwd; may fail or warn, but must not panic
+	_ = warnings
+	_ = fail
+	assert.Contains(t, buf.String(), "Verifying")
 }
 
 func TestBuildConfigs_ValidatesAgentSchema(t *testing.T) {

@@ -371,9 +371,9 @@ func readLine(scan *bufio.Scanner, out io.Writer, prompt, defaultVal string) str
 func readChoice(scan *bufio.Scanner, out io.Writer, question string, options []string, defaultChoice int) (int, error) {
 	fmt.Fprintf(out, "? %s\n\n", question)
 	for i, o := range options {
-		fmt.Fprintf(out, "  %d) %s\n", i+1, o)
+		fmt.Fprintf(out, "  %d) %s\n", i+1, o) // #nosec G705 -- options from wizard built-in lists, out is stdout
 	}
-	fmt.Fprintf(out, "\nEnter 1-%d [default: %d]: ", len(options), defaultChoice)
+	fmt.Fprintf(out, "\nEnter 1-%d [default: %d]: ", len(options), defaultChoice) // #nosec G705 -- format args are integers
 	if !scan.Scan() {
 		return defaultChoice, io.EOF
 	}
@@ -795,17 +795,17 @@ func atomicWrite(path string, data []byte, force bool) error {
 	tmpPath := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
+		_ = os.Remove(tmpPath) // #nosec G703 -- tmpPath from os.CreateTemp in our dir
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
+		_ = os.Remove(tmpPath) // #nosec G703 -- tmpPath from os.CreateTemp
 		return err
 	}
 	if force {
 		_ = os.Remove(path)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := os.Rename(tmpPath, path); err != nil { // #nosec G703 -- tmpPath from CreateTemp, path from WriteOptions
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("renaming temp file: %w", err)
 	}
@@ -883,5 +883,5 @@ func PrintNextSteps(agentName, providerID string, out io.Writer) {
 
 // IsTerminal returns true if stdin is a TTY.
 func IsTerminal() bool {
-	return term.IsTerminal(int(os.Stdin.Fd()))
+	return term.IsTerminal(int(os.Stdin.Fd())) // #nosec G115 -- stdin Fd() is small on supported platforms
 }
