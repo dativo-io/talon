@@ -308,6 +308,88 @@ func TestRunWizard_ProxyWorkload_SkipsPackAndReducesFeatures(t *testing.T) {
 	assert.Equal(t, "generic", state.PackID)
 }
 
+func TestRunWizard_ComplianceFeatures_AcceptsNumbers(t *testing.T) {
+	// Agent workload: name, desc, owner, workload=1, pack=1, provider=1, residency=3, features "1,2,3,4", confirm
+	// For agent, first 4 features are pii, audit, cost, injection
+	input := "num-agent\n\n\n1\n1\n1\n3\n1,2,3,4\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    io.Discard,
+		ErrOut: io.Discard,
+	}
+	state, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	assert.Equal(t, []string{"pii", "audit", "cost", "injection"}, state.EnabledFeatures)
+}
+
+func TestRunWizard_ComplianceFeatures_AcceptsIDs(t *testing.T) {
+	// Same flow but features line "pii,audit,cost"
+	input := "id-agent\n\n\n1\n1\n1\n3\npii,audit,cost\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    io.Discard,
+		ErrOut: io.Discard,
+	}
+	state, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	assert.Equal(t, []string{"pii", "audit", "cost"}, state.EnabledFeatures)
+}
+
+func TestRunWizard_ComplianceFeatures_AcceptsMixedAndDedupes(t *testing.T) {
+	// Features "1,2,audit,dora" -> 1=pii, 2=audit (dedupe with "audit"), dora
+	input := "mix-agent\n\n\n1\n1\n1\n3\n1,2,audit,dora\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    io.Discard,
+		ErrOut: io.Discard,
+	}
+	state, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	assert.Contains(t, state.EnabledFeatures, "pii")
+	assert.Contains(t, state.EnabledFeatures, "audit")
+	assert.Contains(t, state.EnabledFeatures, "dora")
+	assert.Len(t, state.EnabledFeatures, 3)
+}
+
+func TestRunWizard_QwenAndEUStrict_ShowsWarning(t *testing.T) {
+	// Provider 8 = Qwen (non-EU), residency 1 = eu_strict -> warning must appear
+	// name, desc, owner, workload=1, pack=1, provider=8, residency=1, features default, confirm
+	var out bytes.Buffer
+	input := "qwen-eu\n\n\n1\n1\n8\n1\n\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    &out,
+		ErrOut: io.Discard,
+	}
+	_, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	outStr := out.String()
+	assert.Contains(t, outStr, "Qwen", "warning should mention chosen provider")
+	assert.Contains(t, outStr, "blocked", "warning should say requests will be blocked")
+	assert.Contains(t, outStr, "CN", "warning should mention jurisdiction")
+}
+
+func TestRunWizard_AzureAndEUStrict_NoWarning(t *testing.T) {
+	// Azure OpenAI is EU; selecting eu_strict should not show the non-EU warning
+	// name, desc, owner, workload=1, pack=1, provider=3 (Azure), region=1, residency=1, features default, confirm
+	var out bytes.Buffer
+	input := "azure-eu\n\n\n1\n1\n3\n1\n1\n\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    &out,
+		ErrOut: io.Discard,
+	}
+	_, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	outStr := out.String()
+	assert.NotContains(t, outStr, "requests to this provider will be blocked", "EU provider with eu_strict should not show block warning")
+}
+
 func TestDefaultsForWorkload_Proxy_ThreeFeatures(t *testing.T) {
 	feats := feature.DefaultsForWorkload("proxy")
 	require.Len(t, feats, 3)

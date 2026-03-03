@@ -141,7 +141,12 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 	state.AgentDescription = readLine(scan, out, "Description", "AI agent with policy enforcement")
 	state.OwnerEmail = readLine(scan, out, "Owner email", "")
 
+	const totalSteps = 6
+	currentStep := 0
+
 	// Q1: Workload type
+	currentStep++
+	fmt.Fprintf(out, "Step %d of %d\n", currentStep, totalSteps)
 	workload, err := readChoice(scan, out, "What type of AI workload are you governing?", []string{
 		"AI agent framework  (OpenClaw, n8n, Flowise, custom agent)",
 		"Direct LLM API calls  (OpenAI SDK, LangChain, bare HTTP calls)",
@@ -165,6 +170,8 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 	if state.WorkloadType == "proxy" {
 		state.PackID = "generic"
 	} else {
+		currentStep++
+		fmt.Fprintf(out, "Step %d of %d\n", currentStep, totalSteps)
 		packs := pack.ListForWizard()
 		opts := make([]string, len(packs))
 		for i, p := range packs {
@@ -182,6 +189,8 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 	}
 
 	// Q3: Primary LLM provider
+	currentStep++
+	fmt.Fprintf(out, "Step %d of %d\n", currentStep, totalSteps)
 	providers := llm.ListForWizard(false)
 	providerOpts := make([]string, len(providers)+1)
 	for i := range providers {
@@ -232,6 +241,8 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 	}
 
 	// Q4: Data residency (default from provider SuggestEUStrict)
+	currentStep++
+	fmt.Fprintf(out, "Step %d of %d\n", currentStep, totalSteps)
 	defaultResidency := 3 // global
 	if state.ProviderID != "" {
 		if p, err := llm.NewProvider(state.ProviderID, nil); err == nil && p.Metadata().Wizard.SuggestEUStrict {
@@ -256,7 +267,19 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 		state.DataSovereignty = "global"
 	}
 
+	// Warn if user selected EU strict with a non-EU provider
+	if state.DataSovereignty == "eu_strict" && state.ProviderID != "" {
+		if p, err := llm.NewProvider(state.ProviderID, nil); err == nil {
+			meta := p.Metadata()
+			if meta.Jurisdiction != "EU" && meta.Jurisdiction != "LOCAL" {
+				fmt.Fprintf(out, "Note: %s is %s jurisdiction; with EU only — strict, requests to this provider will be blocked.\n", meta.DisplayName, meta.Jurisdiction)
+			}
+		}
+	}
+
 	// Q5: Compliance features (workload-adaptive list)
+	currentStep++
+	fmt.Fprintf(out, "Step %d of %d\n", currentStep, totalSteps)
 	featuresForWorkload := feature.DefaultsForWorkload(state.WorkloadType)
 	defaultIDs := feature.DefaultEnabledIDs()
 	// Build default comma-separated from default-enabled that are in featuresForWorkload
@@ -269,10 +292,20 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 			}
 		}
 	}
-	defaultFeaturesStr := strings.Join(defaultFeatureList, ",")
-	prompt := "Features to enable (comma-separated)"
+	// Build default as numbers (1-based indices) for display
+	var defaultNums []string
+	for i, f := range featuresForWorkload {
+		for _, id := range defaultFeatureList {
+			if id == f.ID {
+				defaultNums = append(defaultNums, strconv.Itoa(i+1))
+				break
+			}
+		}
+	}
+	defaultNumsStr := strings.Join(defaultNums, ",")
 	fmt.Fprintf(out, "? Which compliance features do you need?\n")
-	for _, f := range featuresForWorkload {
+	fmt.Fprintln(out, "Press Enter to keep the selected features, or enter numbers (e.g. 1,2,3) or feature IDs (e.g. pii,audit) separated by commas.")
+	for i, f := range featuresForWorkload {
 		mark := " "
 		for _, id := range defaultFeatureList {
 			if id == f.ID {
@@ -280,9 +313,9 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 				break
 			}
 		}
-		fmt.Fprintf(out, "  [%s] %s\n", mark, f.DisplayName)
+		fmt.Fprintf(out, "  %d. [%s] %s\n", i+1, mark, f.DisplayName)
 	}
-	fmt.Fprintf(out, "  %s [%s]: ", prompt, defaultFeaturesStr)
+	fmt.Fprintf(out, "  Enter [%s] or press Enter: ", defaultNumsStr)
 	var line string
 	if scan.Scan() {
 		line = strings.TrimSpace(scan.Text())
@@ -295,10 +328,21 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 		for _, id := range feature.ValidFeatureIDs() {
 			validIDs[id] = true
 		}
+		seen := make(map[string]bool)
 		for _, p := range parts {
-			id := strings.TrimSpace(strings.ToLower(p))
-			if validIDs[id] {
-				state.EnabledFeatures = append(state.EnabledFeatures, id)
+			trimmed := strings.TrimSpace(strings.ToLower(p))
+			if trimmed == "" {
+				continue
+			}
+			if n, err := strconv.Atoi(trimmed); err == nil && n >= 1 && n <= len(featuresForWorkload) {
+				id := featuresForWorkload[n-1].ID
+				if !seen[id] {
+					seen[id] = true
+					state.EnabledFeatures = append(state.EnabledFeatures, id)
+				}
+			} else if validIDs[trimmed] && !seen[trimmed] {
+				seen[trimmed] = true
+				state.EnabledFeatures = append(state.EnabledFeatures, trimmed)
 			}
 		}
 		if len(state.EnabledFeatures) == 0 {
