@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-03-03
+
 ### Added
 
 - **feat(init): zero-config init wizard.** In a terminal, `talon init` runs an interactive wizard: choose workload type (agent/proxy), framework pack (OpenClaw, generic, etc.), primary LLM provider, region (if applicable), data residency (EU strict / preferred / global), and compliance features (PII, audit, cost, injection, EU AI Act, DORA). Non-interactive options: `talon init --scaffold` for quick defaults, `talon init --pack <id>` for starter packs, or scripted `talon init --provider openai --name my-agent` with optional `--data-sovereignty`, `--features`. New list commands: `--list-providers`, `--list-packs`, `--list-features`. When stdin is not a TTY, init prints guidance instead of running the wizard. Pack and feature registries (`internal/pack`, `internal/feature`) drive wizard choices; post-init verification reuses `talon doctor`; next steps are vault-first (TALON_SECRETS_KEY then `talon secrets set`).
+
+### Fixed
+
+- **fix(init):** gosec nolint for init wizard (G705/G703/G115 false positives). Unit tests added for coverage ≥70% (packName, providerName, dataResidencyLabel, readLine, readChoice, BuildConfigs branches, marshalWithHeader, WriteConfigs, PostInitVerify, runList*).
+
+### Changed
+
+- **docs:** All user-facing docs updated for init wizard (README, QUICKSTART, configuration reference, first-governed-agent tutorial, persona guides, OpenClaw guides, provider-registry, ADOPTION_SCENARIOS, ROADMAP).
 
 ## [0.9.1] - 2026-03-02
 
@@ -288,7 +298,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/dativo-io/talon/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/dativo-io/talon/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/dativo-io/talon/compare/v0.8.14...v0.9.0
 [0.8.14]: https://github.com/dativo-io/talon/compare/v0.8.13...v0.8.14

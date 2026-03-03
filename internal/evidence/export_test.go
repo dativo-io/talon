@@ -86,7 +86,7 @@ func TestExportEnvelope_JSONRoundTrip(t *testing.T) {
 	envelope := ExportEnvelope{
 		ExportMetadata: ExportMetadata{
 			GeneratedAt:  time.Now().UTC(),
-			TalonVersion: "0.9.1",
+			TalonVersion: "0.9.2",
 			Filter:       ExportFilter{From: "2026-02-01", Tenant: "acme"},
 			TotalRecords: 2,
 		},
@@ -101,7 +101,7 @@ func TestExportEnvelope_JSONRoundTrip(t *testing.T) {
 
 	var decoded ExportEnvelope
 	require.NoError(t, json.Unmarshal(data, &decoded))
-	assert.Equal(t, "0.9.1", decoded.ExportMetadata.TalonVersion)
+	assert.Equal(t, "0.9.2", decoded.ExportMetadata.TalonVersion)
 	assert.Equal(t, 2, decoded.ExportMetadata.TotalRecords)
 	assert.Len(t, decoded.Records, 2)
 	assert.True(t, decoded.Records[1].ObservationModeOverride)
