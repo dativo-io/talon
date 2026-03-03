@@ -5,11 +5,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 
 	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
 )
+
+// apiModelSuffix matches common API model ID suffixes so we can fall back to base model in pricing.
+// e.g. gpt-4o-2024-08-06 -> gpt-4o, claude-3-5-sonnet-20241022-v2 -> claude-3-5-sonnet
+var apiModelSuffix = regexp.MustCompile(`-(?:20\d{2}-\d{2}-\d{2}|v\d+(?::\d+)?)$`)
 
 // unknownModelWarned tracks (providerID, model) pairs we have already logged to avoid spam.
 var unknownModelWarned sync.Map
@@ -121,6 +126,8 @@ func LoadOrDefault(path string) *PricingTable {
 // Estimate looks up provider and model, computes cost in USD, and returns (cost, true) if found.
 // Returns (0.0, false) if provider or model is not in the table. Safe for concurrent use.
 // If the provider exists with an empty models map (e.g. ollama), returns (0.0, true) for any model (free).
+// Model lookup tries exact key first, then a base name (e.g. gpt-4o-2024-08-06 -> gpt-4o) so API-returned
+// model IDs still match pricing table keys.
 func (t *PricingTable) Estimate(providerID, model string, inputTokens, outputTokens int) (cost float64, known bool) {
 	if t == nil || t.Providers == nil {
 		return 0, false
@@ -138,7 +145,13 @@ func (t *PricingTable) Estimate(providerID, model string, inputTokens, outputTok
 		if len(pp.Models) == 0 {
 			return 0, true
 		}
-		return 0, false
+		// Try base model name (strip API-style suffix like -2024-08-06 or -v1:0).
+		if base := apiModelSuffix.ReplaceAllString(model, ""); base != model {
+			m, ok = pp.Models[base]
+		}
+		if !ok {
+			return 0, false
+		}
 	}
 	// Per 1M tokens: (input/1e6)*input_per_1m + (output/1e6)*output_per_1m
 	cost = (float64(inputTokens)/1e6)*m.InputPer1M + (float64(outputTokens)/1e6)*m.OutputPer1M

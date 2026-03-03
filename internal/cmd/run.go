@@ -107,6 +107,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("policy file: %w", err)
 	}
 	policyPath = safePath
+	baseDir = filepath.Dir(safePath) // so pricing and other project paths resolve relative to policy directory
 
 	agentName := resolveRunAgentName(ctx, policyPath, baseDir, runAgentName)
 
@@ -124,7 +125,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
 
 	providers := buildProviders(cfg)
-	pricingTable := loadPricingTable(cfg)
+	pricingTable := loadPricingTable(cfg, baseDir)
 	injectPricingInProviders(providers, pricingTable)
 	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, baseDir)
 	router := llm.NewRouter(routing, providers, costLimits)
@@ -278,10 +279,15 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 }
 
 // loadPricingTable returns the pricing table from config path (or default).
-func loadPricingTable(cfg *config.Config) *pricing.PricingTable {
+// When pricingPath is relative, it is resolved against baseDir (directory containing the policy file)
+// so that pricing/models.yaml is loaded from the project directory regardless of process CWD.
+func loadPricingTable(cfg *config.Config, baseDir string) *pricing.PricingTable {
 	pricingPath := config.DefaultPricingFile
 	if cfg.LLM != nil && cfg.LLM.PricingFile != "" {
 		pricingPath = cfg.LLM.PricingFile
+	}
+	if !filepath.IsAbs(pricingPath) && baseDir != "" {
+		pricingPath = filepath.Join(baseDir, pricingPath)
 	}
 	return pricing.LoadOrDefault(pricingPath)
 }
