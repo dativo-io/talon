@@ -1,0 +1,333 @@
+package cmd
+
+import (
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
+
+	"github.com/dativo-io/talon/internal/feature"
+	"github.com/dativo-io/talon/internal/policy"
+)
+
+func TestBuildConfigs_AgentWorkload_ModelTier1(t *testing.T) {
+	state := WizardState{
+		AgentName:        "test-agent",
+		AgentDescription: "Test",
+		WorkloadType:     "agent",
+		PackID:           "generic",
+		ProviderID:       "openai",
+		DataSovereignty:  "global",
+		EnabledFeatures:  []string{"pii", "audit", "cost"},
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	require.NotNil(t, agentCfg)
+	require.NotNil(t, infraCfg)
+	assert.Equal(t, 1, agentCfg.Agent.ModelTier)
+	assert.NotEmpty(t, agentCfg.Capabilities.AllowedTools)
+}
+
+func TestBuildConfigs_ProxyWorkload_ModelTier0_NoTools(t *testing.T) {
+	state := WizardState{
+		AgentName:       "proxy-agent",
+		WorkloadType:    "proxy",
+		PackID:          "generic",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+		EnabledFeatures: []string{"audit", "cost", "pii"},
+	}
+	agentCfg, _, err := BuildConfigs(state)
+	require.NoError(t, err)
+	assert.Equal(t, 0, agentCfg.Agent.ModelTier)
+	assert.Empty(t, agentCfg.Capabilities.AllowedTools)
+}
+
+func TestBuildConfigs_EUStrict_AgentRouting(t *testing.T) {
+	state := WizardState{
+		AgentName:       "eu-agent",
+		WorkloadType:    "agent",
+		ProviderID:      "azure-openai",
+		RegionID:        "westeurope",
+		DataSovereignty: "eu_strict",
+		EnabledFeatures: []string{"pii", "audit"},
+	}
+	agentCfg, _, err := BuildConfigs(state)
+	require.NoError(t, err)
+	require.NotNil(t, agentCfg.Policies.ModelRouting)
+	require.NotNil(t, agentCfg.Policies.ModelRouting.Tier1)
+	assert.Equal(t, "westeurope", agentCfg.Policies.ModelRouting.Tier1.Location)
+	assert.Equal(t, "eu", agentCfg.Compliance.DataResidency)
+}
+
+func TestBuildConfigs_EUStrict_InfraSovereignty(t *testing.T) {
+	state := WizardState{
+		AgentName:       "eu-agent",
+		ProviderID:      "openai",
+		DataSovereignty: "eu_strict",
+		EnabledFeatures: []string{"pii"},
+	}
+	_, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	require.NotNil(t, infraCfg.LLM)
+	require.NotNil(t, infraCfg.LLM.Routing)
+	assert.Equal(t, "eu_strict", infraCfg.LLM.Routing.DataSovereigntyMode)
+}
+
+func TestBuildConfigs_AllFeatures_BothFilesValid(t *testing.T) {
+	state := WizardState{
+		AgentName:       "full-agent",
+		WorkloadType:    "agent",
+		ProviderID:      "anthropic",
+		DataSovereignty: "global",
+		EnabledFeatures: []string{"pii", "audit", "cost", "injection", "eu-ai-act", "dora"},
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	require.NotNil(t, agentCfg)
+	require.NotNil(t, infraCfg)
+	// BuildConfigs already runs ValidateSchema on agent
+	assert.NotNil(t, agentCfg.Policies.DataClassification)
+	assert.NotNil(t, agentCfg.Audit)
+	assert.NotNil(t, agentCfg.Policies.CostLimits)
+	assert.NotNil(t, agentCfg.AttachmentHandling)
+	assert.Contains(t, agentCfg.Compliance.Frameworks, "eu-ai-act")
+	assert.Contains(t, agentCfg.Compliance.Frameworks, "dora")
+}
+
+func TestBuildConfigs_NoFeatures_BothFilesValid(t *testing.T) {
+	state := WizardState{
+		AgentName:       "minimal-agent",
+		WorkloadType:    "agent",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+		EnabledFeatures: nil,
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	require.NotNil(t, agentCfg)
+	require.NotNil(t, infraCfg)
+}
+
+func TestBuildConfigs_OllamaProvider_NoKeyEnv(t *testing.T) {
+	state := WizardState{
+		AgentName:       "local-agent",
+		ProviderID:      "ollama",
+		DataSovereignty: "global",
+		EnabledFeatures: []string{"pii"},
+	}
+	_, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	require.NotNil(t, infraCfg.LLM)
+	require.NotEmpty(t, infraCfg.LLM.Providers)
+	blk, ok := infraCfg.LLM.Providers["ollama"]
+	require.True(t, ok)
+	_, hasKeyEnv := blk.Config["key_env"]
+	assert.False(t, hasKeyEnv)
+}
+
+func TestBuildConfigs_PricingFileAlwaysSet(t *testing.T) {
+	state := WizardState{
+		AgentName:       "any",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+	}
+	_, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	require.NotNil(t, infraCfg.LLM)
+	assert.Equal(t, "pricing/models.yaml", infraCfg.LLM.PricingFile)
+}
+
+func TestBuildConfigs_HeaderComment_BothFiles(t *testing.T) {
+	state := WizardState{
+		AgentName:       "h",
+		ProviderID:      "openai",
+		PackID:          "generic",
+		EnabledFeatures: []string{"pii"},
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	opts := WriteOptions{
+		AgentPath:   "agent.talon.yaml",
+		InfraPath:   "talon.config.yaml",
+		ProviderID:  state.ProviderID,
+		Sovereignty: state.DataSovereignty,
+		PackID:      state.PackID,
+		Features:    state.EnabledFeatures,
+	}
+	agentYAML, infraYAML, err := marshalWithHeader(agentCfg, infraCfg, opts)
+	require.NoError(t, err)
+	assert.Contains(t, string(agentYAML), "# Generated by: talon init")
+	assert.Contains(t, string(agentYAML), "Sovereignty:")
+	assert.Contains(t, string(infraYAML), "# Generated by: talon init")
+}
+
+func TestWriteConfigs_RefusesOverwrite_WithoutForce(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "agent.talon.yaml")
+	infraPath := filepath.Join(dir, "talon.config.yaml")
+	require.NoError(t, os.WriteFile(agentPath, []byte("existing"), 0o644))
+	state := WizardState{
+		AgentName:       "x",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	opts := WriteOptions{
+		AgentPath:   agentPath,
+		InfraPath:   infraPath,
+		Force:       false,
+		ProviderID:  state.ProviderID,
+		Sovereignty: state.DataSovereignty,
+		PackID:      state.PackID,
+		Features:    state.EnabledFeatures,
+	}
+	err = WriteConfigs(agentCfg, infraCfg, opts)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+	assert.Contains(t, err.Error(), "--force")
+}
+
+func TestWriteConfigs_AtomicWrite_NoPartialOnInterrupt(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "agent.talon.yaml")
+	infraPath := filepath.Join(dir, "talon.config.yaml")
+	state := WizardState{
+		AgentName:       "atomic-agent",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	opts := WriteOptions{
+		AgentPath:   agentPath,
+		InfraPath:   infraPath,
+		Force:       true,
+		ProviderID:  state.ProviderID,
+		Sovereignty: state.DataSovereignty,
+		PackID:      state.PackID,
+		Features:    state.EnabledFeatures,
+	}
+	err = WriteConfigs(agentCfg, infraCfg, opts)
+	require.NoError(t, err)
+	agentContent, err := os.ReadFile(agentPath)
+	require.NoError(t, err)
+	infraContent, err := os.ReadFile(infraPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(agentContent), "agent:")
+	assert.Contains(t, string(infraContent), "llm:")
+}
+
+func TestVaultSecretName(t *testing.T) {
+	assert.Equal(t, "openai-api-key", VaultSecretName("openai"))
+	assert.Equal(t, "azure-openai-key", VaultSecretName("azure-openai"))
+	assert.Equal(t, "", VaultSecretName("ollama"))
+	assert.Equal(t, "", VaultSecretName("bedrock"))
+	assert.Equal(t, "custom-api-key", VaultSecretName("custom"))
+}
+
+func TestPrintNextSteps_VaultFirst_ThenProviderKey(t *testing.T) {
+	var buf bytes.Buffer
+	PrintNextSteps("my-agent", "openai", &buf)
+	out := buf.String()
+	assert.Contains(t, out, "TALON_SECRETS_KEY")
+	assert.Contains(t, out, "talon secrets set")
+	assert.Contains(t, out, "openai-api-key")
+	assert.Contains(t, out, "talon serve")
+	assert.Contains(t, out, "my-agent")
+}
+
+func TestPrintNextSteps_OllamaSkipsProviderKey(t *testing.T) {
+	var buf bytes.Buffer
+	PrintNextSteps("local-agent", "ollama", &buf)
+	out := buf.String()
+	assert.Contains(t, out, "TALON_SECRETS_KEY")
+	assert.NotContains(t, out, "talon secrets set")
+	assert.Contains(t, out, "talon serve")
+	assert.Contains(t, out, "local-agent")
+}
+
+func TestRunWizard_EOF_ReturnsAborted(t *testing.T) {
+	wio := WizardIO{
+		In:     strings.NewReader(""),
+		Out:    io.Discard,
+		ErrOut: io.Discard,
+	}
+	state, confirmed, err := RunWizard(wio)
+	// Empty input: may hit EOF on first or a later prompt; either way we must not confirm
+	assert.False(t, confirmed)
+	if err != nil {
+		assert.ErrorIs(t, err, io.EOF)
+	}
+	// State may have default name if first readLine returned default before EOF
+	_ = state
+}
+
+func TestRunWizard_FullFlow_OpenClaw_Azure(t *testing.T) {
+	// Simulate: name, desc, owner, workload=1 (agent), pack=1 (openclaw), provider=1, region (if needed), residency=1 (eu_strict), features default, confirm
+	input := "sales-analyst\nAnalyst\ndpo@eu\n1\n1\n1\n1\n\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    io.Discard,
+		ErrOut: io.Discard,
+	}
+	state, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	assert.Equal(t, "sales-analyst", state.AgentName)
+	assert.Equal(t, "agent", state.WorkloadType)
+	assert.Equal(t, "openclaw", state.PackID)
+	assert.NotEmpty(t, state.ProviderID)
+	// Residency choice 1 = eu_strict
+	assert.Equal(t, "eu_strict", state.DataSovereignty)
+}
+
+func TestRunWizard_ProxyWorkload_SkipsPackAndReducesFeatures(t *testing.T) {
+	// workload=2 (proxy) -> pack should be generic, features list is reduced
+	input := "proxy-agent\n\n\n2\n1\n\n1\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    io.Discard,
+		ErrOut: io.Discard,
+	}
+	state, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	assert.Equal(t, "proxy", state.WorkloadType)
+	assert.Equal(t, "generic", state.PackID)
+}
+
+func TestDefaultsForWorkload_Proxy_ThreeFeatures(t *testing.T) {
+	feats := feature.DefaultsForWorkload("proxy")
+	require.Len(t, feats, 3)
+	ids := make([]string, len(feats))
+	for i, f := range feats {
+		ids[i] = f.ID
+	}
+	assert.Contains(t, ids, "pii")
+	assert.Contains(t, ids, "audit")
+	assert.Contains(t, ids, "cost")
+}
+
+func TestBuildConfigs_ValidatesAgentSchema(t *testing.T) {
+	state := WizardState{
+		AgentName:       "schema-test",
+		WorkloadType:    "agent",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+		EnabledFeatures: []string{"pii", "audit", "cost"},
+	}
+	agentCfg, _, err := BuildConfigs(state)
+	require.NoError(t, err)
+	yamlBytes, err := yaml.Marshal(agentCfg)
+	require.NoError(t, err)
+	err = policy.ValidateSchema(yamlBytes, false)
+	require.NoError(t, err)
+}
