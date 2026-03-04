@@ -2,12 +2,15 @@
 # Used when Talon governs CoPaw skill invocations (e.g. via MCP bridge).
 # Input: { "skill_name": string, "skill_category": string, "params": object }
 # Optional data.policy.copaw.skills for .talon.yaml copaw.skills block.
+#
+# Semantics: default allow := false so that when any deny rule fires, allow is false.
+# (With default true, allow would remain true despite non-empty deny.)
 
 package talon.policy.copaw_skills
 
 import rego.v1
 
-default allow := true
+default allow := false
 
 allow if {
 	not deny
@@ -15,6 +18,33 @@ allow if {
 
 # Skill category policy: when data.policy.copaw is present, enforce per-category rules.
 # Categories: web_search, file_read, file_write, external_api, digest_send
+
+# web_search: deny when policy explicitly denies.
+deny contains msg if {
+	data.policy.copaw.skills != null
+	input.skill_category == "web_search"
+	data.policy.copaw.skills.web_search == "deny"
+	msg := "CoPaw skill web_search denied by policy"
+}
+
+# file_read: deny when policy explicitly denies.
+deny contains msg if {
+	data.policy.copaw.skills != null
+	input.skill_category == "file_read"
+	data.policy.copaw.skills.file_read == "deny"
+	msg := "CoPaw skill file_read denied by policy"
+}
+
+# file_read: deny when policy allows but path is sensitive (e.g. secrets, .env).
+deny contains msg if {
+	data.policy.copaw.skills != null
+	input.skill_category == "file_read"
+	data.policy.copaw.skills.file_read != "deny"
+	sensitive_path(input.params)
+	msg := "CoPaw skill file_read denied: path is sensitive"
+}
+
+# file_write: deny when path is sensitive and policy uses deny_sensitive_paths.
 deny contains msg if {
 	data.policy.copaw.skills != null
 	input.skill_category == "file_write"
@@ -23,6 +53,7 @@ deny contains msg if {
 	msg := "CoPaw skill file_write denied: path is sensitive"
 }
 
+# file_write: deny when policy explicitly denies.
 deny contains msg if {
 	data.policy.copaw.skills != null
 	input.skill_category == "file_write"
@@ -30,25 +61,28 @@ deny contains msg if {
 	msg := "CoPaw skill file_write denied by policy"
 }
 
+# external_api: when allowlist is set, host must be in allowlist or empty.
 deny contains msg if {
 	data.policy.copaw.skills != null
 	input.skill_category == "external_api"
 	data.policy.copaw.skills.external_api.allowlist != null
 	request_host := input.params.host
+	request_host != ""
 	not allowed_host(request_host, data.policy.copaw.skills.external_api.allowlist)
 	msg := sprintf("CoPaw external_api skill: host %s not in allowlist", [request_host])
 }
 
-# digest_send: when require_approval is tier_1 or higher, deny unless approval present (input.approved).
+# digest_send: when require_approval is tier_1 or tier_2, deny unless approval present (input.approved).
 deny contains msg if {
 	data.policy.copaw.skills != null
 	input.skill_category == "digest_send"
-	data.policy.copaw.skills.digest_send.require_approval == "tier_1"
+	data.policy.copaw.skills.digest_send.require_approval in {"tier_1", "tier_2"}
 	input.approved != true
 	msg := "CoPaw digest_send requires approval"
 }
 
-# Helper: sensitive path patterns (simplified; extend as needed).
+# Helper: sensitive path patterns for file_read/file_write governance.
+# Covers common secrets, config, and system paths that should not be read/written by skills.
 sensitive_path(params) if {
 	path := params.path
 	path != ""
@@ -59,6 +93,36 @@ sensitive_path(params) if {
 	path := params.path
 	path != ""
 	contains(path, ".env")
+}
+
+sensitive_path(params) if {
+	path := params.path
+	path != ""
+	contains(path, ".ssh")
+}
+
+sensitive_path(params) if {
+	path := params.path
+	path != ""
+	contains(path, "/var/log/")
+}
+
+sensitive_path(params) if {
+	path := params.path
+	path != ""
+	contains(path, ".talon")
+}
+
+sensitive_path(params) if {
+	path := params.path
+	path != ""
+	contains(path, "secrets")
+}
+
+sensitive_path(params) if {
+	path := params.path
+	path != ""
+	contains(path, "credentials")
 }
 
 allowed_host(host, allowlist) if {
