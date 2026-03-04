@@ -70,7 +70,8 @@ func (b *Bridge) ListSkills(ctx context.Context) ([]SkillInfo, error) {
 		return nil, fmt.Errorf("copaw list skills request: %w", err)
 	}
 
-	resp, err := b.client.Do(req)
+	// G704: URL is from BridgeConfig.BaseURL (operator-configured), not user input; path is fixed "/api/skills".
+	resp, err := b.client.Do(req) //nolint:gosec
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
