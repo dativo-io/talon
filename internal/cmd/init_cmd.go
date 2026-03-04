@@ -201,7 +201,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if packRequiresGateway(state.PackID) {
-		printOpenClawNextSteps()
+		printOpenClawNextSteps(out)
 	} else {
 		PrintNextSteps(state.AgentName, state.ProviderID, out)
 	}
@@ -282,7 +282,7 @@ func runPackInit(out, errOut io.Writer) error {
 	fmt.Fprintln(out, "  - pricing/models.yaml  (LLM cost estimation table)")
 	fmt.Fprintln(out)
 	if initPack == "openclaw" {
-		printOpenClawNextSteps()
+		printOpenClawNextSteps(out)
 	} else {
 		fmt.Fprintln(out, "Next steps:")
 		fmt.Fprintln(out, "  1. Set the vault encryption key: export TALON_SECRETS_KEY=$(openssl rand -hex 32)")
@@ -437,22 +437,22 @@ func writePricingFile() error {
 	return nil
 }
 
-func printOpenClawNextSteps() {
-	fmt.Println("Next steps (OpenClaw gateway):")
-	fmt.Println("  1. Set the vault key (use the same shell for steps 2–3):")
-	fmt.Println("     export TALON_SECRETS_KEY=$(openssl rand -hex 32)")
-	fmt.Println("  2. Store your real OpenAI key in the vault:")
-	fmt.Println("     talon secrets set openai-api-key \"sk-your-key\"")
-	fmt.Println("  3. Start the gateway (keep TALON_SECRETS_KEY set):")
-	fmt.Println("     talon serve --gateway")
-	fmt.Println("  4. Point OpenClaw at Talon:")
-	fmt.Println("     Base URL:  http://localhost:8080/v1/proxy/openai/v1  (trailing /v1 required for correct paths)")
-	fmt.Println("     API key:   talon-gw-openclaw-001")
-	fmt.Println("  5. Send a message through OpenClaw, then check the audit trail:")
-	fmt.Println("     talon audit list")
-	fmt.Println()
-	fmt.Println("  The gateway starts in shadow mode (log only, no blocking).")
-	fmt.Println("  Switch to enforce mode in talon.config.yaml when ready.")
+func printOpenClawNextSteps(out io.Writer) {
+	fmt.Fprintln(out, "Next steps (OpenClaw gateway):")
+	fmt.Fprintln(out, "  1. Set the vault key (use the same shell for steps 2–3):")
+	fmt.Fprintln(out, "     export TALON_SECRETS_KEY=$(openssl rand -hex 32)")
+	fmt.Fprintln(out, "  2. Store your real OpenAI key in the vault:")
+	fmt.Fprintln(out, "     talon secrets set openai-api-key \"sk-your-key\"")
+	fmt.Fprintln(out, "  3. Start the gateway (keep TALON_SECRETS_KEY set):")
+	fmt.Fprintln(out, "     talon serve --gateway")
+	fmt.Fprintln(out, "  4. Point OpenClaw at Talon:")
+	fmt.Fprintln(out, "     Base URL:  http://localhost:8080/v1/proxy/openai/v1  (trailing /v1 required for correct paths)")
+	fmt.Fprintln(out, "     API key:   talon-gw-openclaw-001")
+	fmt.Fprintln(out, "  5. Send a message through OpenClaw, then check the audit trail:")
+	fmt.Fprintln(out, "     talon audit list")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "  The gateway starts in shadow mode (log only, no blocking).")
+	fmt.Fprintln(out, "  Switch to enforce mode in talon.config.yaml when ready.")
 }
 
 func initializeProject() error {
