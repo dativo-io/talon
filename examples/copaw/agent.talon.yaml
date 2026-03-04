@@ -1,0 +1,59 @@
+# Example agent policy when governing CoPaw via Talon gateway.
+# Use with talon init --pack copaw or copy and adjust for your tenant.
+
+agent:
+  name: copaw-gateway
+  description: Talon gateway policy for CoPaw LLM traffic
+  version: 1.0.0
+  model_tier: 0
+
+capabilities:
+  allowed_tools: []
+  forbidden_patterns:
+    - ".env"
+    - "secrets"
+    - "credentials"
+
+policies:
+  cost_limits:
+    per_request: 1.0
+    daily: 25.0
+    monthly: 500.0
+  resource_limits:
+    timeout:
+      operation: "60s"
+      tool_execution: "5m"
+      agent_total: "30m"
+  rate_limits:
+    requests_per_minute: 60
+    concurrent_executions: 10
+    per_agent_requests_per_minute: 30
+    circuit_breaker_threshold: 5
+    circuit_breaker_window: "60s"
+  data_classification:
+    input_scan: true
+    output_scan: true
+    redact_pii: false
+  model_routing:
+    tier_0:
+      primary: gpt-4o-mini
+      location: any
+
+audit:
+  log_level: detailed
+  retention_days: 365
+  include_prompts: true
+  include_responses: false
+
+compliance:
+  frameworks:
+    - gdpr
+  data_residency: eu
+
+metadata:
+  department: platform
+  owner: platform@company.eu
+  tags:
+    - gateway
+    - copaw
+    - governed

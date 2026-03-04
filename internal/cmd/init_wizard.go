@@ -105,6 +105,8 @@ type GatewayCaller struct {
 	Name             string                  `yaml:"name"`
 	APIKey           string                  `yaml:"api_key"` //nolint:gosec // G117 — caller identifier, not a credential
 	TenantID         string                  `yaml:"tenant_id"`
+	Team             string                  `yaml:"team,omitempty"`
+	Tags             []string                `yaml:"tags,omitempty"`
 	AllowedProviders []string                `yaml:"allowed_providers,omitempty"`
 	PolicyOverrides  *GatewayCallerOverrides `yaml:"policy_overrides,omitempty"`
 }
@@ -636,6 +638,8 @@ func applyWorkloadType(pol *policy.Policy, workload string) {
 // applyPackToAgent applies pack-specific agent policy so wizard output matches the nature of each pack.
 // OpenClaw = gateway proxy (model_tier 0, no tools, gateway/openclaw tags, tighter cost limits).
 // LangChain = proxy-oriented tags. Generic = no overrides.
+//
+//nolint:gocyclo // switch on pack ID plus tag ordering yields complexity > 15
 func applyPackToAgent(pol *policy.Policy, state WizardState) {
 	if pol.Metadata == nil {
 		pol.Metadata = &policy.MetadataConfig{}
@@ -659,6 +663,20 @@ func applyPackToAgent(pol *policy.Policy, state WizardState) {
 			pol.Policies.CostLimits.Daily = 25.0
 			pol.Policies.CostLimits.Monthly = 500.0
 		}
+	case "copaw":
+		// CoPaw pack is a gateway: proxy-style policy (tier 0, no tools), gateway tags, pack-aligned costs.
+		pol.Agent.ModelTier = 0
+		if pol.Capabilities != nil {
+			pol.Capabilities.AllowedTools = nil
+		}
+		pol.Agent.Description = "Talon gateway policy for CoPaw LLM traffic"
+		tags["gateway"] = true
+		tags["copaw"] = true
+		tags["governed"] = true
+		if pol.Policies.CostLimits != nil {
+			pol.Policies.CostLimits.Daily = 25.0
+			pol.Policies.CostLimits.Monthly = 500.0
+		}
 	case "langchain":
 		tags["langchain"] = true
 		tags["proxy"] = true
@@ -671,7 +689,7 @@ func applyPackToAgent(pol *policy.Policy, state WizardState) {
 		pol.Metadata.Tags = append(pol.Metadata.Tags, t)
 	}
 	// Keep stable order for tests and diffs
-	packTagOrder := map[string]int{"ai-agent": 0, "governed": 1, "gateway": 2, "openclaw": 3, "langchain": 4, "proxy": 5}
+	packTagOrder := map[string]int{"ai-agent": 0, "governed": 1, "gateway": 2, "openclaw": 3, "copaw": 4, "langchain": 5, "proxy": 6}
 	if len(pol.Metadata.Tags) > 1 {
 		// Sort by packTagOrder then alphabetically
 		sort.Slice(pol.Metadata.Tags, func(i, j int) bool {
@@ -837,6 +855,7 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 			secretName = "openai-api-key" // #nosec G101 -- vault key name, not a credential
 		}
 		baseURL := defaultGatewayBaseURL(state.ProviderID)
+		callerName, callerKey := gatewayCallerForPack(state.PackID)
 		cfg.Gateway = &GatewayBlock{
 			Enabled:      true,
 			ListenPrefix: "/v1/proxy",
@@ -849,10 +868,12 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 					AllowedModels: []string{"gpt-4o", "gpt-4o-mini", "gpt-4-turbo"},
 				},
 			},
-			Callers: []GatewayCaller{{ //nolint:gosec // G101 — default placeholder key, not a real credential
-				Name:             "openclaw-main",
-				APIKey:           "talon-gw-openclaw-001",
+			Callers: []GatewayCaller{{
+				Name:             callerName,
+				APIKey:           callerKey,
 				TenantID:         tenantID,
+				Team:             "engineering",
+				Tags:             gatewayCallerTagsForPack(state.PackID),
 				AllowedProviders: []string{state.ProviderID},
 				PolicyOverrides: &GatewayCallerOverrides{
 					MaxDailyCost:   25.00,
@@ -888,7 +909,7 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 // PacksWithGateway returns pack IDs that use the LLM gateway (talon.config.yaml gateway block + talon serve --gateway).
 // Used so wizard infra and next-steps stay consistent with pack nature.
 func PacksWithGateway() []string {
-	return []string{"openclaw"}
+	return []string{"openclaw", "copaw"}
 }
 
 func packRequiresGateway(packID string) bool {
@@ -900,6 +921,29 @@ func packRequiresGateway(packID string) bool {
 	return false
 }
 
+// gatewayCallerForPack returns the gateway caller name and API key for the given pack.
+// Used so CoPaw gets copaw-main/talon-gw-copaw-001 and OpenClaw gets openclaw-main/talon-gw-openclaw-001.
+func gatewayCallerForPack(packID string) (name, apiKey string) {
+	switch packID {
+	case "copaw":
+		return "copaw-main", "talon-gw-copaw-001"
+	case "openclaw":
+		return "openclaw-main", "talon-gw-openclaw-001"
+	default:
+		return "gateway-main", "talon-gw-001"
+	}
+}
+
+// gatewayCallerTagsForPack returns tags for the gateway caller (e.g. ["copaw"]) for OTel/dashboard classification.
+func gatewayCallerTagsForPack(packID string) []string {
+	switch packID {
+	case "copaw":
+		return []string{"copaw"}
+	default:
+		return nil
+	}
+}
+
 // defaultGatewayBaseURL returns the default upstream base URL for the gateway for a given provider.
 func defaultGatewayBaseURL(providerID string) string {
 	switch providerID {
@@ -909,6 +953,10 @@ func defaultGatewayBaseURL(providerID string) string {
 		return "https://api.anthropic.com"
 	case "ollama":
 		return "http://localhost:11434"
+	case "dashscope", "qwen":
+		// DashScope compatible-mode is OpenAI-compatible; CoPaw default.
+		// Omit trailing /v1 — gateway appends path (e.g. /v1/chat/completions) to base URL.
+		return "https://dashscope.aliyuncs.com/compatible-mode"
 	default:
 		return "https://api.openai.com"
 	}
@@ -929,7 +977,7 @@ func vaultSecretEnvVar(providerID string) string {
 		return "MISTRAL_API_KEY"
 	case "vertex":
 		return "GOOGLE_CLOUD_PROJECT" // or vertex uses ADC
-	case "qwen":
+	case "qwen", "dashscope":
 		return "DASHSCOPE_API_KEY"
 	case "cohere":
 		return "COHERE_API_KEY"
@@ -955,8 +1003,8 @@ func VaultSecretName(providerID string) string {
 		return "mistral-api-key"
 	case "vertex":
 		return "vertex-api-key"
-	case "qwen":
-		return "qwen-api-key"
+	case "qwen", "dashscope":
+		return "dashscope-api-key"
 	case "cohere":
 		return "cohere-api-key"
 	case "generic-openai":

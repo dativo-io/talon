@@ -1,7 +1,7 @@
 # Dativo Talon
 
 
-Talon is a single Go binary that acts as a transparent proxy in front of OpenAI, Anthropic, and Bedrock. Point your existing apps at `localhost:8080/v1/proxy/openai` instead of `api.openai.com` — same API, same response, but now every call is policy-checked, PII-scanned, cost-tracked, and audit-logged. Works with Slack bots, OpenClaw, anything OpenAI-compatible.
+Talon is a single Go binary that acts as a transparent proxy in front of OpenAI, Anthropic, and Bedrock. Point your existing apps at `localhost:8080/v1/proxy/openai` instead of `api.openai.com` — same API, same response, but now every call is policy-checked, PII-scanned, cost-tracked, and audit-logged. Works with Slack bots, OpenClaw, CoPaw, anything OpenAI-compatible.
 
 Built for EU companies facing GDPR, NIS2, DORA, and the EU AI Act (August 2026 deadline), but the governance features are useful anywhere. Apache 2.0.
 
@@ -272,7 +272,7 @@ Route raw LLM API traffic (OpenAI, Anthropic, Ollama) through Talon so desktop a
 
 Talon identifies the caller, enforces per-caller model and cost policy, records evidence, and forwards to the configured upstream. Costs appear in `GET /v1/costs` for the caller's tenant.
 
-**See:** [OpenClaw integration](docs/guides/openclaw-integration.md), [Slack bot integration](docs/guides/slack-bot-integration.md), [Desktop app governance](docs/guides/desktop-app-governance.md).
+**See:** [OpenClaw integration](docs/guides/openclaw-integration.md), [CoPaw integration](docs/guides/copaw-integration.md), [Slack bot integration](docs/guides/slack-bot-integration.md), [Desktop app governance](docs/guides/desktop-app-governance.md).
 
 ## Features
 

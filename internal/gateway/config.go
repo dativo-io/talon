@@ -56,6 +56,7 @@ type CallerConfig struct {
 	APIKey           string                 `yaml:"api_key,omitempty" json:"api_key,omitempty"` // #nosec G117 -- auth identifier from config, not a hardcoded secret
 	TenantID         string                 `yaml:"tenant_id" json:"tenant_id"`
 	Team             string                 `yaml:"team,omitempty" json:"team,omitempty"`
+	Tags             []string               `yaml:"tags,omitempty" json:"tags,omitempty"`               // e.g. ["copaw"] for OTel/dashboard classification
 	IdentifyBy       string                 `yaml:"identify_by,omitempty" json:"identify_by,omitempty"` // "source_ip" for IP-based
 	SourceIPRanges   []string               `yaml:"source_ip_ranges,omitempty" json:"source_ip_ranges,omitempty"`
 	AllowedProviders []string               `yaml:"allowed_providers,omitempty" json:"allowed_providers,omitempty"`

@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -20,7 +22,17 @@ func TestMain(m *testing.M) {
 	}
 	binaryPath = filepath.Join(dir, "talon")
 	cmd := exec.Command("go", "build", "-o", binaryPath, "../../cmd/talon")
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+	env := os.Environ()
+	if runtime.GOOS == "darwin" {
+		filtered := env[:0]
+		for _, e := range env {
+			if !strings.HasPrefix(e, "CC=") {
+				filtered = append(filtered, e)
+			}
+		}
+		env = append(filtered, "CC=/usr/bin/clang")
+	}
+	cmd.Env = append(env, "CGO_ENABLED=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e TestMain: build: %v\n%s\n", err, out)
 		os.RemoveAll(dir)

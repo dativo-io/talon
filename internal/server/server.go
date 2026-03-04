@@ -192,6 +192,10 @@ func (s *Server) Routes() http.Handler {
 
 			r.Get("/v1/policies", s.handlePoliciesList)
 			r.Post("/v1/policies/evaluate", s.handlePoliciesEvaluate)
+
+			// CoPaw dashboard: stats and alerts for CoPaw gateway callers
+			r.Get("/v1/copaw/stats", s.handleCoPawStats)
+			r.Get("/v1/copaw/alerts", s.handleCoPawAlerts)
 		})
 	})
 

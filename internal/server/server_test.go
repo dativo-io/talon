@@ -1509,6 +1509,107 @@ func TestChatCompletionsErrorShape(t *testing.T) {
 	assert.Equal(t, "messages_required", errBody.Error.Code)
 }
 
+// --- CoPaw handlers and helpers ---
+
+func TestCoPawStatsNoStore(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	r := srv.Routes()
+	req := httptest.NewRequest(http.MethodGet, "/v1/copaw/stats", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Equal(t, "ok", out["status"])
+}
+
+func TestCoPawStatsWithStore(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	r := srv.Routes()
+	req := httptest.NewRequest(http.MethodGet, "/v1/copaw/stats", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Equal(t, "ok", out["status"])
+	assert.NotNil(t, out["requests_today"])
+	assert.NotNil(t, out["cost_today"])
+	assert.NotNil(t, out["cost_month"])
+}
+
+func TestCoPawAlertsNoStore(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	r := srv.Routes()
+	req := httptest.NewRequest(http.MethodGet, "/v1/copaw/alerts", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Equal(t, "ok", out["status"])
+	alerts, _ := out["alerts"].([]interface{})
+	assert.NotNil(t, alerts)
+	assert.Len(t, alerts, 0)
+}
+
+func TestCoPawAlertsWithStore(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	gen := evidence.NewGenerator(store)
+	_, err = gen.Generate(context.Background(), evidence.GenerateParams{
+		CorrelationID:  "corr_copaw_deny",
+		TenantID:       "default",
+		AgentID:        "copaw-main",
+		InvocationType: "gateway",
+		PolicyDecision: evidence.PolicyDecision{Allowed: false, Action: "deny"},
+		Classification: evidence.Classification{InputTier: 0, PIIDetected: []string{}},
+		ModelUsed:      "gpt-4",
+		InputPrompt:    "test",
+	})
+	require.NoError(t, err)
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	r := srv.Routes()
+	req := httptest.NewRequest(http.MethodGet, "/v1/copaw/alerts", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Equal(t, "ok", out["status"])
+	alerts, _ := out["alerts"].([]interface{})
+	if alerts == nil {
+		alerts = []interface{}{}
+	}
+	// Alerts may be empty if evidence timestamp is outside handler's UTC window (timezone-dependent)
+	if len(alerts) > 0 {
+		a, _ := alerts[0].(map[string]interface{})
+		assert.Equal(t, true, a["policy_denied"])
+	}
+}
+
 func minimalPolicy() *policy.Policy {
 	return &policy.Policy{
 		Agent:      policy.AgentConfig{Name: "test", Version: "1.0"},

@@ -22,6 +22,7 @@ type Policy struct {
 	Audit              *AuditConfig              `yaml:"audit,omitempty" json:"audit,omitempty"`
 	Compliance         *ComplianceConfig         `yaml:"compliance,omitempty" json:"compliance,omitempty"`
 	Metadata           *MetadataConfig           `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	Copaw              *CopawConfig              `yaml:"copaw,omitempty" json:"copaw,omitempty"` // CoPaw skill governance (when using CoPaw integration)
 
 	// Computed fields (not serialized from YAML)
 	Hash       string `yaml:"-" json:"-"`
@@ -244,6 +245,38 @@ type ToolPIIPolicy struct {
 	ArgumentDefault PIIAction            `yaml:"argument_default,omitempty" json:"argument_default,omitempty"`
 	Result          PIIAction            `yaml:"result,omitempty" json:"result,omitempty"`
 	Timeout         string               `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+// CopawConfig holds CoPaw integration policy (skill governance when using CoPaw with Talon).
+type CopawConfig struct {
+	Skills *CopawSkillsConfig `yaml:"skills,omitempty" json:"skills,omitempty"`
+	Memory *CopawMemoryConfig `yaml:"memory,omitempty" json:"memory,omitempty"`
+}
+
+// CopawMemoryConfig holds memory governance settings (forbidden phrases for Constitutional AI).
+type CopawMemoryConfig struct {
+	ForbiddenPhrases []string `yaml:"forbidden_phrases,omitempty" json:"forbidden_phrases,omitempty"`
+}
+
+// CopawSkillsConfig defines allow/deny and allowlist for CoPaw skill categories.
+// Used by internal/policy/rego/copaw_skills.rego.
+type CopawSkillsConfig struct {
+	WebSearch   string            `yaml:"web_search,omitempty" json:"web_search,omitempty"` // allow | deny
+	FileRead    string            `yaml:"file_read,omitempty" json:"file_read,omitempty"`   // allow | deny
+	FileWrite   string            `yaml:"file_write,omitempty" json:"file_write,omitempty"` // allow | deny | deny_sensitive_paths
+	ExternalAPI *CopawExternalAPI `yaml:"external_api,omitempty" json:"external_api,omitempty"`
+	DigestSend  *CopawDigestSend  `yaml:"digest_send,omitempty" json:"digest_send,omitempty"`
+}
+
+// CopawExternalAPI restricts which hosts external_api skills may call.
+type CopawExternalAPI struct {
+	Allowlist []string `yaml:"allowlist,omitempty" json:"allowlist,omitempty"`
+}
+
+// CopawDigestSend controls digest/newsletter skill (PII scan, approval).
+type CopawDigestSend struct {
+	PIIScan         bool   `yaml:"pii_scan,omitempty" json:"pii_scan,omitempty"`
+	RequireApproval string `yaml:"require_approval,omitempty" json:"require_approval,omitempty"` // tier_1 | tier_2 | none
 }
 
 // DefaultDestructivePatterns is the compiled-in default for destructive operation detection.

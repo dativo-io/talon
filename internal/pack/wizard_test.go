@@ -31,6 +31,7 @@ func TestListForWizard_ContainsExpectedPacks(t *testing.T) {
 		ids[p.ID] = true
 	}
 	assert.True(t, ids["openclaw"], "openclaw should be visible")
+	assert.True(t, ids["copaw"], "copaw should be visible")
 	assert.True(t, ids["langchain"], "langchain should be visible")
 	assert.True(t, ids["generic"], "generic should be visible")
 	assert.False(t, ids["n8n"], "n8n should be hidden")

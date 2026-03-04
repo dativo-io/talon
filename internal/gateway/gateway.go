@@ -9,6 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/classifier"
@@ -26,6 +28,17 @@ type GatewayPolicyEvaluator interface {
 
 // CostEstimator returns estimated cost in EUR for a request. Used for policy and evidence.
 type CostEstimator func(model string, inputTokens, outputTokens int) float64
+
+// hasCallerTag returns true when the caller has the given tag (e.g. "copaw" for CoPaw).
+// Classification is driven by CallerConfig.Tags, not name prefix.
+func hasCallerTag(caller *CallerConfig, tag string) bool {
+	for _, t := range caller.Tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
 
 // Gateway is the LLM API gateway handler.
 type Gateway struct {
@@ -120,6 +133,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		WriteProviderError(w, route.Provider, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if span := trace.SpanFromContext(ctx); span.IsRecording() && hasCallerTag(caller, "copaw") {
+		span.SetAttributes(
+			attribute.String("copaw.caller", caller.Name),
+			attribute.String("copaw.channel", "gateway"),
+		)
 	}
 
 	// Rate limit check (after caller identification, before any work)
