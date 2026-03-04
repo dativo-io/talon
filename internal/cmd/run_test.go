@@ -174,3 +174,30 @@ func TestResolveRunAgentName_Default_PolicySaysDefault_ReturnsDefault(t *testing
 	got := resolveRunAgentName(ctx, policyPath, dir, "default")
 	assert.Equal(t, "default", got)
 }
+
+// TestLoadPricingTable_ResolvesRelativeToBaseDir ensures the pricing file path
+// is resolved relative to baseDir (policy directory), so cost estimation works
+// when CWD differs from the project directory.
+func TestLoadPricingTable_ResolvesRelativeToBaseDir(t *testing.T) {
+	dir := t.TempDir()
+	pricingDir := filepath.Join(dir, "pricing")
+	require.NoError(t, os.MkdirAll(pricingDir, 0o755))
+	minimalPricing := `
+version: "1"
+providers:
+  openai:
+    models:
+      gpt-4o:
+        input_per_1m: 2.50
+        output_per_1m: 10.00
+`
+	require.NoError(t, os.WriteFile(filepath.Join(pricingDir, "models.yaml"), []byte(minimalPricing), 0o600))
+
+	cfg := &config.Config{}
+	table := loadPricingTable(cfg, dir)
+	require.NotNil(t, table)
+	assert.Greater(t, table.ModelCount("openai"), 0)
+	cost, known := table.Estimate("openai", "gpt-4o", 1000, 1000)
+	assert.True(t, known)
+	assert.Greater(t, cost, 0.0)
+}

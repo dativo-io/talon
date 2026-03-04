@@ -2,14 +2,26 @@
 package pricing
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 
 	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
 )
+
+// defaultModelsYAML is the embedded default pricing table used when pricing/models.yaml is not found.
+// Keep in sync with repo root pricing/models.yaml when updating provider/model prices.
+//
+//go:embed default_models.yaml
+var defaultModelsYAML []byte
+
+// apiModelSuffix matches common API model ID suffixes so we can fall back to base model in pricing.
+// e.g. gpt-4o-2024-08-06 -> gpt-4o, claude-3-5-sonnet-20241022-v2 -> claude-3-5-sonnet
+var apiModelSuffix = regexp.MustCompile(`-(?:20\d{2}-\d{2}-\d{2}|v\d+(?::\d+)?)$`)
 
 // unknownModelWarned tracks (providerID, model) pairs we have already logged to avoid spam.
 var unknownModelWarned sync.Map
@@ -42,14 +54,9 @@ type PricingTable struct {
 	Providers map[string]ProviderPricing `yaml:"providers"`
 }
 
-// Load parses the YAML file at path, resolves inherit references (single depth, no chains),
-// and validates that no prices are negative. Returns an error if the file is missing or malformed.
-func Load(path string) (*PricingTable, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading pricing file %s: %w", path, err)
-	}
-
+// loadFromData parses YAML bytes, resolves inherit references (single depth, no chains),
+// and validates that no prices are negative. Used by Load and by the embedded default.
+func loadFromData(data []byte) (*PricingTable, error) {
 	var raw PricingTable
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parsing pricing YAML: %w", err)
@@ -90,6 +97,20 @@ func Load(path string) (*PricingTable, error) {
 	return &PricingTable{Version: raw.Version, Providers: resolved}, nil
 }
 
+// Load parses the YAML file at path, resolves inherit references (single depth, no chains),
+// and validates that no prices are negative. Returns an error if the file is missing or malformed.
+func Load(path string) (*PricingTable, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading pricing file %s: %w", path, err)
+	}
+	table, err := loadFromData(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return table, nil
+}
+
 func validateProviderPricing(providerID string, pp ProviderPricing) error {
 	for model, m := range pp.Models {
 		if m.InputPer1M < 0 || m.OutputPer1M < 0 {
@@ -100,8 +121,9 @@ func validateProviderPricing(providerID string, pp ProviderPricing) error {
 	return nil
 }
 
-// LoadOrDefault calls Load and on error logs a warning and returns an empty table (zero-cost fallback).
-// Never panics.
+// LoadOrDefault calls Load and on error falls back to the embedded default pricing table
+// (so cost estimation still works when pricing/models.yaml is missing). Logs at info when
+// using the embedded default. Never panics.
 func LoadOrDefault(path string) *PricingTable {
 	if path == "" {
 		path = "pricing/models.yaml"
@@ -112,8 +134,13 @@ func LoadOrDefault(path string) *PricingTable {
 	}
 	table, err := Load(path)
 	if err != nil {
-		log.Warn().Err(err).Str("path", abs).Msg("pricing file not loaded; cost estimation will return 0")
-		return &PricingTable{Version: "1", Providers: map[string]ProviderPricing{}}
+		defaultTable, defaultErr := loadFromData(defaultModelsYAML)
+		if defaultErr != nil {
+			log.Warn().Err(defaultErr).Msg("embedded default pricing invalid; cost estimation will return 0")
+			return &PricingTable{Version: "1", Providers: map[string]ProviderPricing{}}
+		}
+		log.Info().Err(err).Str("path_attempted", abs).Msg("pricing file not found; using embedded default pricing")
+		return defaultTable
 	}
 	return table
 }
@@ -121,6 +148,8 @@ func LoadOrDefault(path string) *PricingTable {
 // Estimate looks up provider and model, computes cost in USD, and returns (cost, true) if found.
 // Returns (0.0, false) if provider or model is not in the table. Safe for concurrent use.
 // If the provider exists with an empty models map (e.g. ollama), returns (0.0, true) for any model (free).
+// Model lookup tries exact key first, then a base name (e.g. gpt-4o-2024-08-06 -> gpt-4o) so API-returned
+// model IDs still match pricing table keys.
 func (t *PricingTable) Estimate(providerID, model string, inputTokens, outputTokens int) (cost float64, known bool) {
 	if t == nil || t.Providers == nil {
 		return 0, false
@@ -138,7 +167,13 @@ func (t *PricingTable) Estimate(providerID, model string, inputTokens, outputTok
 		if len(pp.Models) == 0 {
 			return 0, true
 		}
-		return 0, false
+		// Try base model name (strip API-style suffix like -2024-08-06 or -v1:0).
+		if base := apiModelSuffix.ReplaceAllString(model, ""); base != model {
+			m, ok = pp.Models[base]
+		}
+		if !ok {
+			return 0, false
+		}
 	}
 	// Per 1M tokens: (input/1e6)*input_per_1m + (output/1e6)*output_per_1m
 	cost = (float64(inputTokens)/1e6)*m.InputPer1M + (float64(outputTokens)/1e6)*m.OutputPer1M

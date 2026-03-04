@@ -21,6 +21,7 @@ import (
 	"github.com/dativo-io/talon/internal/llm"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/pricing"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 )
@@ -851,6 +852,137 @@ func TestRun_PolicyDeny(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, resp.PolicyAllow)
 	assert.NotEmpty(t, resp.DenyReason)
+}
+
+// TestRun_SingleCall_CostInResponseAndEvidence ensures cost from provider.EstimateCost
+// is returned in RunResponse and stored in the evidence record.
+func TestRun_SingleCall_CostInResponseAndEvidence(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, dir, "cost-agent")
+	require.FileExists(t, policyPath)
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	// MockProvider returns EstimateCost 0.001
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "ok"},
+	}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, providers, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:       "default",
+		AgentName:      "cost-agent",
+		Prompt:         "hello",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+	require.True(t, resp.PolicyAllow)
+	require.NotEmpty(t, resp.EvidenceID)
+
+	assert.InDelta(t, 0.001, resp.Cost, 0.0001, "RunResponse.Cost should match provider EstimateCost")
+
+	ev, err := evidenceStore.Get(ctx, resp.EvidenceID)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.001, ev.Execution.Cost, 0.0001, "evidence Execution.Cost should match provider EstimateCost")
+}
+
+// TestRun_SingleCall_CostWithPricingTable ensures that when a pricing table is set on
+// the runner, cost is still computed from the provider and stored in response and evidence.
+func TestRun_SingleCall_CostWithPricingTable(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, dir, "cost-agent")
+	require.FileExists(t, policyPath)
+
+	pricingPath := filepath.Join(dir, "pricing_models.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(pricingPath), 0o755))
+	require.NoError(t, os.WriteFile(pricingPath, []byte(`
+version: "1"
+providers:
+  openai:
+    models:
+      gpt-4:
+        input_per_1m: 1.0
+        output_per_1m: 2.0
+`), 0o600))
+	pt, err := pricing.Load(pricingPath)
+	require.NoError(t, err)
+
+	cls := classifier.MustNewScanner()
+	attScanner := attachment.MustNewScanner()
+	extractor := attachment.NewExtractor(10)
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "ok"},
+	}
+	router := llm.NewRouter(&policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}, providers, nil)
+
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        cls,
+		AttScanner:        attScanner,
+		Extractor:         extractor,
+		Router:            router,
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		Pricing:           pt,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := runner.Run(ctx, &RunRequest{
+		TenantID:       "default",
+		AgentName:      "cost-agent",
+		Prompt:         "hello",
+		InvocationType: "manual",
+		PolicyPath:     policyPath,
+	})
+	require.NoError(t, err)
+	require.True(t, resp.PolicyAllow)
+	require.NotEmpty(t, resp.EvidenceID)
+
+	assert.InDelta(t, 0.001, resp.Cost, 0.0001, "cost should come from provider even when pricing table is set")
+	ev, err := evidenceStore.Get(ctx, resp.EvidenceID)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.001, ev.Execution.Cost, 0.0001, "evidence should store cost from provider")
 }
 
 func TestRun_WithAttachments(t *testing.T) {

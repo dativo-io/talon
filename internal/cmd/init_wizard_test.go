@@ -308,6 +308,88 @@ func TestRunWizard_ProxyWorkload_SkipsPackAndReducesFeatures(t *testing.T) {
 	assert.Equal(t, "generic", state.PackID)
 }
 
+func TestRunWizard_ComplianceFeatures_AcceptsNumbers(t *testing.T) {
+	// Agent workload: name, desc, owner, workload=1, pack=1, provider=1, residency=3, features "1,2,3,4", confirm
+	// For agent, first 4 features are pii, audit, cost, injection
+	input := "num-agent\n\n\n1\n1\n1\n3\n1,2,3,4\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    io.Discard,
+		ErrOut: io.Discard,
+	}
+	state, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	assert.Equal(t, []string{"pii", "audit", "cost", "injection"}, state.EnabledFeatures)
+}
+
+func TestRunWizard_ComplianceFeatures_AcceptsIDs(t *testing.T) {
+	// Same flow but features line "pii,audit,cost"
+	input := "id-agent\n\n\n1\n1\n1\n3\npii,audit,cost\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    io.Discard,
+		ErrOut: io.Discard,
+	}
+	state, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	assert.Equal(t, []string{"pii", "audit", "cost"}, state.EnabledFeatures)
+}
+
+func TestRunWizard_ComplianceFeatures_AcceptsMixedAndDedupes(t *testing.T) {
+	// Features "1,2,audit,dora" -> 1=pii, 2=audit (dedupe with "audit"), dora
+	input := "mix-agent\n\n\n1\n1\n1\n3\n1,2,audit,dora\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    io.Discard,
+		ErrOut: io.Discard,
+	}
+	state, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	assert.Contains(t, state.EnabledFeatures, "pii")
+	assert.Contains(t, state.EnabledFeatures, "audit")
+	assert.Contains(t, state.EnabledFeatures, "dora")
+	assert.Len(t, state.EnabledFeatures, 3)
+}
+
+func TestRunWizard_QwenAndEUStrict_ShowsWarning(t *testing.T) {
+	// Provider 8 = Qwen (non-EU), residency 1 = eu_strict -> warning must appear
+	// name, desc, owner, workload=1, pack=1, provider=8, residency=1, features default, confirm
+	var out bytes.Buffer
+	input := "qwen-eu\n\n\n1\n1\n8\n1\n\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    &out,
+		ErrOut: io.Discard,
+	}
+	_, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	outStr := out.String()
+	assert.Contains(t, outStr, "Qwen", "warning should mention chosen provider")
+	assert.Contains(t, outStr, "blocked", "warning should say requests will be blocked")
+	assert.Contains(t, outStr, "CN", "warning should mention jurisdiction")
+}
+
+func TestRunWizard_AzureAndEUStrict_NoWarning(t *testing.T) {
+	// Azure OpenAI is EU; selecting eu_strict should not show the non-EU warning
+	// name, desc, owner, workload=1, pack=1, provider=3 (Azure), region=1, residency=1, features default, confirm
+	var out bytes.Buffer
+	input := "azure-eu\n\n\n1\n1\n3\n1\n1\n\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    &out,
+		ErrOut: io.Discard,
+	}
+	_, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	outStr := out.String()
+	assert.NotContains(t, outStr, "requests to this provider will be blocked", "EU provider with eu_strict should not show block warning")
+}
+
 func TestDefaultsForWorkload_Proxy_ThreeFeatures(t *testing.T) {
 	feats := feature.DefaultsForWorkload("proxy")
 	require.Len(t, feats, 3)
@@ -483,6 +565,75 @@ func TestBuildConfigs_EUPreferred_ResidencyLabel(t *testing.T) {
 	agentCfg, _, err := BuildConfigs(state)
 	require.NoError(t, err)
 	assert.Equal(t, "eu", agentCfg.Compliance.DataResidency)
+}
+
+func TestBuildConfigs_OpenClawPack_EnablesGateway(t *testing.T) {
+	state := WizardState{
+		AgentName:       "my-agent",
+		WorkloadType:    "agent",
+		PackID:          "openclaw",
+		ProviderID:      "openai",
+		DataSovereignty: "eu_preferred",
+		EnabledFeatures: []string{"pii", "audit"},
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	// Infra: openclaw pack gets gateway so talon serve --gateway works
+	require.NotNil(t, infraCfg.Gateway, "openclaw pack must generate gateway block")
+	assert.True(t, infraCfg.Gateway.Enabled, "gateway must be enabled so talon serve --gateway starts")
+	assert.Equal(t, "/v1/proxy", infraCfg.Gateway.ListenPrefix)
+	assert.Equal(t, "shadow", infraCfg.Gateway.Mode)
+	require.NotEmpty(t, infraCfg.Gateway.Callers)
+	assert.Equal(t, "openclaw-main", infraCfg.Gateway.Callers[0].Name)
+	assert.Equal(t, "talon-gw-openclaw-001", infraCfg.Gateway.Callers[0].APIKey)
+	openai, ok := infraCfg.Gateway.Providers["openai"]
+	require.True(t, ok)
+	assert.True(t, openai.Enabled)
+	assert.Equal(t, "https://api.openai.com", openai.BaseURL)
+	assert.Equal(t, "openai-api-key", openai.SecretName)
+	// Agent: openclaw pack nature = gateway proxy (tier 0, no tools, gateway/openclaw tags)
+	assert.Equal(t, 0, agentCfg.Agent.ModelTier, "openclaw pack is gateway proxy")
+	assert.Empty(t, agentCfg.Capabilities.AllowedTools, "openclaw gateway has no tools")
+	assert.Equal(t, "Talon gateway policy for OpenClaw LLM traffic", agentCfg.Agent.Description)
+	assert.Contains(t, agentCfg.Metadata.Tags, "gateway")
+	assert.Contains(t, agentCfg.Metadata.Tags, "openclaw")
+	assert.Equal(t, 25.0, agentCfg.Policies.CostLimits.Daily)
+	assert.Equal(t, 500.0, agentCfg.Policies.CostLimits.Monthly)
+}
+
+func TestBuildConfigs_LangChainPack_AddsTags(t *testing.T) {
+	state := WizardState{
+		AgentName:       "lc-agent",
+		WorkloadType:    "agent",
+		PackID:          "langchain",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+		EnabledFeatures: []string{"pii"},
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	assert.Nil(t, infraCfg.Gateway, "langchain pack has no gateway block in wizard")
+	assert.Contains(t, agentCfg.Metadata.Tags, "langchain")
+	assert.Contains(t, agentCfg.Metadata.Tags, "proxy")
+}
+
+func TestBuildConfigs_GenericPack_NoOverrides(t *testing.T) {
+	state := WizardState{
+		AgentName:       "gen-agent",
+		WorkloadType:    "agent",
+		PackID:          "generic",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+		EnabledFeatures: []string{"pii"},
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	assert.Nil(t, infraCfg.Gateway, "generic pack has no gateway block")
+	assert.NotContains(t, agentCfg.Metadata.Tags, "gateway")
+	assert.NotContains(t, agentCfg.Metadata.Tags, "openclaw")
+	// Workload agent => model_tier 1, has tools
+	assert.Equal(t, 1, agentCfg.Agent.ModelTier)
+	assert.NotEmpty(t, agentCfg.Capabilities.AllowedTools)
 }
 
 // --- Unit tests: marshalWithHeader and WriteConfigs branches ---
