@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-03-04
+
 ### Added
 
 - **feat(copaw): CoPaw integration.** Govern CoPaw (AgentScope/Alibaba DAMO personal AI assistant) via Talon's LLM API gateway. One URL change in CoPaw (Base URL → Talon, API Key → caller key) routes all LLM traffic through Talon for PII scanning, cost limits, and audit. New init pack `talon init --pack copaw`, caller `copaw-main` / `talon-gw-copaw-001`, DashScope support in wizard, CoPaw dashboard tab and `/v1/copaw/stats`, `/v1/copaw/alerts` API, OTel span attributes `copaw.caller` and `copaw.channel`, MCP-to-CoPaw skill bridge (internal/copaw/bridge.go), memory governor (internal/copaw/memory_governor.go), Rego policy `copaw_skills.rego` and `.talon.yaml` `copaw.skills` schema. Docs: [CoPaw integration guide](docs/guides/copaw-integration.md), [Docker primer](docs/guides/copaw-talon-primer/docker-copaw-talon-primer.md), [examples/copaw](examples/copaw). Design doc: internal_docs/copaw_integration_design_doc.md.
+
+### Fixed
+
+- **fix(copaw):** `/v1/copaw/alerts` now returns `"alerts": []` instead of `"alerts": null` when no matching evidence records are found, consistent with the no-store path and clients expecting an array.
 
 ## [0.9.2] - 2026-03-03
 
