@@ -103,6 +103,6 @@ Evidence rows will show `agent_id: copaw-main`. The Talon dashboard (`/dashboard
 
 ## See also
 
-- [Choosing an integration path](../explanation/choosing-integration-path.md)
+- [Choosing an integration path](choosing-integration-path.md)
 - [OpenClaw integration](openclaw-integration.md) (same gateway pattern)
 - [CoPaw + Talon Docker primer](copaw-talon-primer/docker-copaw-talon-primer.md)
