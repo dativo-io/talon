@@ -61,7 +61,16 @@ deny contains msg if {
 	msg := "CoPaw skill file_write denied by policy"
 }
 
-# external_api: when allowlist is set, host must be in allowlist or empty.
+# external_api: when allowlist is set, host is required and must be in allowlist.
+# Empty or missing host is denied so skills cannot bypass the allowlist.
+deny contains msg if {
+	data.policy.copaw.skills != null
+	input.skill_category == "external_api"
+	data.policy.copaw.skills.external_api.allowlist != null
+	not external_api_host_non_empty(input.params.host)
+	msg := "CoPaw external_api skill: host is required when allowlist is set"
+}
+
 deny contains msg if {
 	data.policy.copaw.skills != null
 	input.skill_category == "external_api"
@@ -79,6 +88,13 @@ deny contains msg if {
 	data.policy.copaw.skills.digest_send.require_approval in {"tier_1", "tier_2"}
 	input.approved != true
 	msg := "CoPaw digest_send requires approval"
+}
+
+# external_api_host_non_empty: true only when host is a non-empty string.
+# Used to deny missing/empty host when allowlist is set (no bypass).
+external_api_host_non_empty(host) if {
+	host != null
+	host != ""
 }
 
 # Helper: sensitive path patterns for file_read/file_write governance.
@@ -125,10 +141,8 @@ sensitive_path(params) if {
 	contains(path, "credentials")
 }
 
-allowed_host(host, allowlist) if {
-	host == ""
-}
-
+# allowed_host is true only when host explicitly matches the allowlist.
+# Empty host is not allowed when allowlist is set (enforced by deny rule above).
 allowed_host(host, allowlist) if {
 	some allowed in allowlist
 	host == allowed
