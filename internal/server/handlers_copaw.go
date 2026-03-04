@@ -78,7 +78,7 @@ func (s *Server) handleCoPawAlerts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	var alerts []map[string]interface{}
+	alerts := make([]map[string]interface{}, 0)
 	for i := range list {
 		ev := &list[i]
 		denied := !ev.PolicyDecision.Allowed
