@@ -200,12 +200,11 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 	state.AgentDescription = readLine(scan, out, "Description", "AI agent with policy enforcement")
 	state.OwnerEmail = readLine(scan, out, "Owner email", "")
 
-	const totalSteps = 6
 	currentStep := 0
 
-	// Q1: Workload type
+	// Q1: Workload type — determines totalSteps (Q2/pack is skipped for proxy)
 	currentStep++
-	fmt.Fprintf(out, "Step %d of %d\n", currentStep, totalSteps)
+	fmt.Fprintf(out, "Step %d …\n", currentStep)
 	workload, err := readChoice(scan, out, "What type of AI workload are you governing?", []string{
 		"AI agent framework  (OpenClaw, n8n, Flowise, custom agent)",
 		"Direct LLM API calls  (OpenAI SDK, LangChain, bare HTTP calls)",
@@ -223,6 +222,12 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 		state.WorkloadType = "hybrid"
 	default:
 		state.WorkloadType = "agent"
+	}
+
+	// Q2 (pack selection) is skipped for proxy, so total differs by workload.
+	totalSteps := 5 // agent/hybrid: Q1, Q2(pack), Q3(provider), Q4(residency), Q5(features)
+	if state.WorkloadType == "proxy" {
+		totalSteps = 4 // proxy: Q1, Q3(provider), Q4(residency), Q5(features)
 	}
 
 	// Q2: Framework pack (skipped for proxy)
