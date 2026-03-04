@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/classifier"
@@ -26,6 +29,11 @@ type GatewayPolicyEvaluator interface {
 
 // CostEstimator returns estimated cost in EUR for a request. Used for policy and evidence.
 type CostEstimator func(model string, inputTokens, outputTokens int) float64
+
+// isCoPawCaller returns true when the caller is a CoPaw gateway caller (e.g. copaw-main).
+func isCoPawCaller(name string) bool {
+	return name == "copaw-main" || strings.HasPrefix(name, "copaw-")
+}
 
 // Gateway is the LLM API gateway handler.
 type Gateway struct {
@@ -120,6 +128,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		WriteProviderError(w, route.Provider, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if span := trace.SpanFromContext(ctx); span.IsRecording() && isCoPawCaller(caller.Name) {
+		span.SetAttributes(
+			attribute.String("copaw.caller", caller.Name),
+			attribute.String("copaw.channel", "gateway"),
+		)
 	}
 
 	// Rate limit check (after caller identification, before any work)

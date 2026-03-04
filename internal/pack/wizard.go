@@ -25,6 +25,12 @@ var builtinPacks = []PackDescriptor{
 		Order:       10,
 	},
 	{
+		ID:          "copaw",
+		DisplayName: "CoPaw",
+		Description: "Personal AI assistant governance — PII, cost, audit for CoPaw channels",
+		Order:       15,
+	},
+	{
 		// n8n pack deferred to post-v0.2 (requires workflow-node-level interception).
 		ID:          "n8n",
 		DisplayName: "n8n",

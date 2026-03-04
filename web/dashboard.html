@@ -43,6 +43,7 @@
     <button class="active" data-tab="evidence">Evidence</button>
     <button data-tab="plans">Plans Awaiting Review</button>
     <button data-tab="memory">Memory Review</button>
+    <button data-tab="copaw">CoPaw Agents</button>
   </div>
   <div class="refresh">Auto-refresh every 30s. Set <code>window.TALON_API_KEY</code> for API calls.</div>
 
@@ -63,6 +64,19 @@
     <table>
       <thead><tr><th>Time</th><th>Category</th><th>Title</th><th>Actions</th></tr></thead>
       <tbody id="memory-tbody"></tbody>
+    </table>
+  </div>
+  <div id="panel-copaw" class="panel">
+    <h3 style="margin-top:0">CoPaw gateway stats</h3>
+    <div class="cards">
+      <div class="card"><div class="label">Requests today</div><div class="value" id="copaw-requests">—</div></div>
+      <div class="card"><div class="label">Cost today (€)</div><div class="value" id="copaw-cost-today">—</div></div>
+      <div class="card"><div class="label">Cost month (€)</div><div class="value" id="copaw-cost-month">—</div></div>
+    </div>
+    <h3>Recent alerts (denials, PII)</h3>
+    <table>
+      <thead><tr><th>Time</th><th>Agent</th><th>Model</th><th>Policy denied</th><th>PII detected</th></tr></thead>
+      <tbody id="copaw-alerts-tbody"></tbody>
     </table>
   </div>
 
@@ -198,6 +212,33 @@
         sel.addEventListener('change', renderMemory);
       }
 
+      function renderCoPaw() {
+        get('/v1/copaw/stats').then(function(d) {
+          var el = document.getElementById('copaw-requests');
+          if (el) el.textContent = d.requests_today != null ? d.requests_today : '—';
+          el = document.getElementById('copaw-cost-today');
+          if (el) el.textContent = d.cost_today != null ? d.cost_today.toFixed(2) : '—';
+          el = document.getElementById('copaw-cost-month');
+          if (el) el.textContent = d.cost_month != null ? d.cost_month.toFixed(2) : '—';
+        }).catch(function() {});
+        get('/v1/copaw/alerts').then(function(d) {
+          var tbody = document.getElementById('copaw-alerts-tbody');
+          if (!tbody) return;
+          tbody.innerHTML = '';
+          (d.alerts || []).forEach(function(a) {
+            var tr = document.createElement('tr');
+            var time = a.timestamp ? new Date(a.timestamp).toLocaleString() : '—';
+            var denied = a.policy_denied ? '<span class="status-deny">yes</span>' : '—';
+            var pii = a.pii_detected ? '<span class="status-deny">yes</span>' : '—';
+            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(a.agent_id || '—') + '</td><td>' + escapeHtml(a.model || '—') + '</td><td>' + denied + '</td><td>' + pii + '</td>';
+            tbody.appendChild(tr);
+          });
+        }).catch(function(e) {
+          var tbody = document.getElementById('copaw-alerts-tbody');
+          if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="error">' + escapeHtml(e.message) + '</td></tr>';
+        });
+      }
+
       document.querySelectorAll('.tabs button').forEach(function(btn) {
         btn.addEventListener('click', function() {
           document.querySelectorAll('.tabs button').forEach(function(b) { b.classList.remove('active'); });
@@ -208,6 +249,7 @@
           if (panel) panel.classList.add('active');
           if (tab === 'plans') renderPlans();
           if (tab === 'memory') { loadAgents(); renderMemory(); }
+          if (tab === 'copaw') renderCoPaw();
         });
       });
 
@@ -216,6 +258,7 @@
         renderEvidence();
         if (document.getElementById('panel-plans').classList.contains('active')) renderPlans();
         if (document.getElementById('panel-memory').classList.contains('active')) renderMemory();
+        if (document.getElementById('panel-copaw').classList.contains('active')) renderCoPaw();
       }
       refresh();
       setInterval(refresh, 30000);
