@@ -1610,30 +1610,6 @@ func TestCoPawAlertsWithStore(t *testing.T) {
 	}
 }
 
-func TestCopawAgentIDs(t *testing.T) {
-	ids := CopawAgentIDs()
-	assert.Contains(t, ids, "copaw-main")
-}
-
-func TestIsCopawAgent(t *testing.T) {
-	assert.True(t, IsCopawAgent("copaw-main"))
-	assert.True(t, IsCopawAgent("copaw-other"))
-	assert.False(t, IsCopawAgent("openclaw-main"))
-	assert.False(t, IsCopawAgent(""))
-}
-
-func TestFilterEvidenceForCopaw(t *testing.T) {
-	list := []evidence.Evidence{
-		{AgentID: "copaw-main"},
-		{AgentID: "other"},
-		{AgentID: "copaw-channel-a"},
-	}
-	filtered := FilterEvidenceForCopaw(list)
-	assert.Len(t, filtered, 2)
-	assert.Equal(t, "copaw-main", filtered[0].AgentID)
-	assert.Equal(t, "copaw-channel-a", filtered[1].AgentID)
-}
-
 func minimalPolicy() *policy.Policy {
 	return &policy.Policy{
 		Agent:      policy.AgentConfig{Name: "test", Version: "1.0"},

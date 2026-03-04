@@ -4,12 +4,7 @@ package server
 import (
 	"net/http"
 	"time"
-
-	"github.com/dativo-io/talon/internal/evidence"
 )
-
-// CoPaw agent ID prefix used by the init wizard and gateway caller config.
-const copawAgentPrefix = "copaw-"
 
 // handleCoPawStats returns per-CoPaw-instance request count, cost, and policy summary.
 // Query: tenant_id (optional), agent_id (optional, default copaw-main).
@@ -107,25 +102,4 @@ func (s *Server) handleCoPawAlerts(w http.ResponseWriter, r *http.Request) {
 		"agent_id":  agentID,
 		"alerts":    alerts,
 	})
-}
-
-// CopawAgentIDs returns agent IDs that are considered CoPaw callers for dashboard filtering.
-func CopawAgentIDs() []string {
-	return []string{"copaw-main"}
-}
-
-// IsCopawAgent returns true if the evidence record is from a CoPaw gateway caller.
-func IsCopawAgent(agentID string) bool {
-	return agentID == "copaw-main" || (len(agentID) > len(copawAgentPrefix) && agentID[:len(copawAgentPrefix)] == copawAgentPrefix)
-}
-
-// FilterEvidenceForCopaw filters a list of evidence to CoPaw agents only (for channels/stats).
-func FilterEvidenceForCopaw(list []evidence.Evidence) []evidence.Evidence {
-	out := make([]evidence.Evidence, 0, len(list))
-	for i := range list {
-		if IsCopawAgent(list[i].AgentID) {
-			out = append(out, list[i])
-		}
-	}
-	return out
 }
