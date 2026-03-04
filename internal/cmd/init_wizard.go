@@ -103,7 +103,7 @@ type GatewayProvider struct {
 
 type GatewayCaller struct {
 	Name             string                  `yaml:"name"`
-	APIKey           string                  `yaml:"api_key"` // #nosec G101 -- caller identifier from config
+	APIKey           string                  `yaml:"api_key"` //nolint:gosec // G117 — caller identifier, not a credential
 	TenantID         string                  `yaml:"tenant_id"`
 	AllowedProviders []string                `yaml:"allowed_providers,omitempty"`
 	PolicyOverrides  *GatewayCallerOverrides `yaml:"policy_overrides,omitempty"`
@@ -849,7 +849,7 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 					AllowedModels: []string{"gpt-4o", "gpt-4o-mini", "gpt-4-turbo"},
 				},
 			},
-			Callers: []GatewayCaller{{
+			Callers: []GatewayCaller{{ //nolint:gosec // G101 — default placeholder key, not a real credential
 				Name:             "openclaw-main",
 				APIKey:           "talon-gw-openclaw-001",
 				TenantID:         tenantID,
