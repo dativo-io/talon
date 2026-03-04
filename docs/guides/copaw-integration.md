@@ -99,7 +99,7 @@ Evidence rows will show `agent_id: copaw-main`. The Talon dashboard (`/dashboard
 | "Invalid or missing API key" | CoPaw is not sending the caller key, or key mismatch | Set CoPaw's API Key to exactly `talon-gw-copaw-001` (or the value in `talon.config.yaml`). |
 | "Service configuration error" | Vault key mismatch | Use the same `TALON_SECRETS_KEY` for `talon secrets set` and `talon serve`. |
 | 404 on chat/completions | Base URL missing `/v1` | Use `http://talon-host:8080/v1/proxy/openai/v1` (trailing `/v1`). |
-| CoPaw uses DashScope | Provider base URL | Add a `dashscope` provider in Talon gateway config with `base_url: https://dashscope.aliyuncs.com/compatible-mode/v1` and point CoPaw at `http://talon-host:8080/v1/proxy/dashscope/v1`. |
+| CoPaw uses DashScope | Provider base URL | Add a `dashscope` provider in Talon gateway config with `base_url: https://dashscope.aliyuncs.com/compatible-mode` (no trailing `/v1`; gateway appends the path) and point CoPaw at `http://talon-host:8080/v1/proxy/dashscope/v1`. |
 
 ## See also
 

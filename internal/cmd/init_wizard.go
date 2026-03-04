@@ -955,7 +955,8 @@ func defaultGatewayBaseURL(providerID string) string {
 		return "http://localhost:11434"
 	case "dashscope", "qwen":
 		// DashScope compatible-mode is OpenAI-compatible; CoPaw default.
-		return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+		// Omit trailing /v1 — gateway appends path (e.g. /v1/chat/completions) to base URL.
+		return "https://dashscope.aliyuncs.com/compatible-mode"
 	default:
 		return "https://api.openai.com"
 	}
