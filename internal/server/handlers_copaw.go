@@ -53,6 +53,7 @@ func (s *Server) handleCoPawStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCoPawAlerts returns recent policy denials and PII detections for CoPaw callers.
+// Query: tenant_id (optional), agent_id (optional, default copaw-main).
 func (s *Server) handleCoPawAlerts(w http.ResponseWriter, r *http.Request) {
 	if s.evidenceStore == nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -68,11 +69,15 @@ func (s *Server) handleCoPawAlerts(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
+	agentID := r.URL.Query().Get("agent_id")
+	if agentID == "" {
+		agentID = "copaw-main"
+	}
 	limit := 20
 	from := time.Now().UTC().Add(-24 * time.Hour)
 	to := time.Now().UTC()
 
-	list, err := s.evidenceStore.List(r.Context(), tenantID, "copaw-main", from, to, limit*2)
+	list, err := s.evidenceStore.List(r.Context(), tenantID, agentID, from, to, limit*2)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -97,8 +102,10 @@ func (s *Server) handleCoPawAlerts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status": "ok",
-		"alerts": alerts,
+		"status":    "ok",
+		"tenant_id": tenantID,
+		"agent_id":  agentID,
+		"alerts":    alerts,
 	})
 }
 
