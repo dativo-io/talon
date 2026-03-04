@@ -14,6 +14,12 @@ default allow := false
 
 allow if {
 	not deny
+	known_category(input.skill_category)
+}
+
+# Only known skill categories can be allowed; unknown/future categories are denied (fail-closed).
+known_category(cat) if {
+	cat in {"web_search", "file_read", "file_write", "external_api", "digest_send"}
 }
 
 # Skill category policy: when data.policy.copaw is present, enforce per-category rules.

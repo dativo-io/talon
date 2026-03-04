@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -55,12 +56,24 @@ type SkillInfo struct {
 	Enabled     bool   `json:"enabled"`
 }
 
+func (b *Bridge) listSkillsTimeout() time.Duration {
+	if b.cfg.Timeout > 0 {
+		return b.cfg.Timeout
+	}
+	return 30 * time.Second
+}
+
 // ListSkills calls CoPaw's GET /api/skills and returns skill names and metadata.
+// Enforces a context deadline so the caller cannot block indefinitely.
 // Returns nil, nil when CoPaw is unreachable (caller may log and continue without bridge tools).
 func (b *Bridge) ListSkills(ctx context.Context) ([]SkillInfo, error) {
 	ctx, span := tracer.Start(ctx, "copaw.bridge.list_skills",
 		trace.WithAttributes(attribute.String("copaw.base_url", b.cfg.BaseURL)))
 	defer span.End()
+
+	timeout := b.listSkillsTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	url := b.cfg.BaseURL + "/api/skills"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -116,10 +129,12 @@ func truncateDescription(s string, max int) string {
 
 // RegisterAsTools discovers CoPaw skills and registers each as an MCP tool in the given registry.
 // Only enabled skills are registered. Each tool execution is forwarded to CoPaw (invoke path TBD).
+// On CoPaw unreachable (e.g. network error), logs a warning and returns nil so gateway boot does not fail.
 func (b *Bridge) RegisterAsTools(ctx context.Context, reg *tools.ToolRegistry) error {
 	skills, err := b.ListSkills(ctx)
 	if err != nil {
-		return err
+		log.Warn().Err(err).Str("base_url", b.cfg.BaseURL).Msg("copaw bridge: CoPaw unreachable, no skills registered")
+		return nil
 	}
 	for _, s := range skills {
 		if !s.Enabled {
@@ -148,6 +163,7 @@ func (t *copawSkillTool) Description() string {
 
 func (t *copawSkillTool) InputSchema() json.RawMessage {
 	// CoPaw skills accept arbitrary JSON; minimal schema for tool discovery.
+	// TODO(v2): When MCP invoke path is implemented, use per-skill schemas from CoPaw API so policy evaluation has accurate input schemas for tool-call decisions.
 	return json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"params":{"type":"object"}}}`)
 }
 
@@ -159,12 +175,7 @@ func (t *copawSkillTool) Execute(ctx context.Context, params json.RawMessage) (j
 	defer span.End()
 
 	// CoPaw does not expose a generic "invoke skill by name" HTTP endpoint in the current API;
-	// skills are executed in-process when the agent runs. For MVP, return a placeholder that
-	// documents the intended flow: when CoPaw adds an invoke API, forward params here.
-	out := map[string]interface{}{
-		"skill":   t.info.Name,
-		"status":  "governed",
-		"message": "CoPaw skill invocation is governed; invoke via CoPaw agent run with Talon as LLM gateway.",
-	}
-	return json.Marshal(out)
+	// skills are executed in-process when the agent runs. Return an error so tool policy and
+	// evidence store classify this as unsupported, not successful.
+	return nil, fmt.Errorf("copaw skill direct invocation not yet supported: route CoPaw through Talon gateway for governed execution (skill: %s)", t.info.Name)
 }

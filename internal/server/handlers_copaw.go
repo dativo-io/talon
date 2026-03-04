@@ -72,6 +72,7 @@ func (s *Server) handleCoPawAlerts(w http.ResponseWriter, r *http.Request) {
 	from := time.Now().UTC().Add(-24 * time.Hour)
 	to := time.Now().UTC()
 
+	// Over-fetch by 2x: List does not filter by denied/pii_detected; we filter in memory and may discard up to half.
 	list, err := s.evidenceStore.List(r.Context(), tenantID, agentID, from, to, limit*2)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())

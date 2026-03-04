@@ -105,6 +105,8 @@ type GatewayCaller struct {
 	Name             string                  `yaml:"name"`
 	APIKey           string                  `yaml:"api_key"` //nolint:gosec // G117 — caller identifier, not a credential
 	TenantID         string                  `yaml:"tenant_id"`
+	Team             string                  `yaml:"team,omitempty"`
+	Tags             []string                `yaml:"tags,omitempty"`
 	AllowedProviders []string                `yaml:"allowed_providers,omitempty"`
 	PolicyOverrides  *GatewayCallerOverrides `yaml:"policy_overrides,omitempty"`
 }
@@ -866,10 +868,12 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 					AllowedModels: []string{"gpt-4o", "gpt-4o-mini", "gpt-4-turbo"},
 				},
 			},
-			Callers: []GatewayCaller{{ //nolint:gosec // G101 — default placeholder key, not a real credential
+			Callers: []GatewayCaller{{
 				Name:             callerName,
 				APIKey:           callerKey,
 				TenantID:         tenantID,
+				Team:             "engineering",
+				Tags:             gatewayCallerTagsForPack(state.PackID),
 				AllowedProviders: []string{state.ProviderID},
 				PolicyOverrides: &GatewayCallerOverrides{
 					MaxDailyCost:   25.00,
@@ -927,6 +931,16 @@ func gatewayCallerForPack(packID string) (name, apiKey string) {
 		return "openclaw-main", "talon-gw-openclaw-001"
 	default:
 		return "gateway-main", "talon-gw-001"
+	}
+}
+
+// gatewayCallerTagsForPack returns tags for the gateway caller (e.g. ["copaw"]) for OTel/dashboard classification.
+func gatewayCallerTagsForPack(packID string) []string {
+	switch packID {
+	case "copaw":
+		return []string{"copaw"}
+	default:
+		return nil
 	}
 }
 
@@ -988,9 +1002,7 @@ func VaultSecretName(providerID string) string {
 		return "mistral-api-key"
 	case "vertex":
 		return "vertex-api-key"
-	case "qwen":
-		return "qwen-api-key"
-	case "dashscope":
+	case "qwen", "dashscope":
 		return "dashscope-api-key"
 	case "cohere":
 		return "cohere-api-key"

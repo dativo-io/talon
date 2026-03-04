@@ -20,12 +20,18 @@ import (
 // a webhook or sync). CoPaw's in-process memory compaction that uses the LLM is already
 // governed when CoPaw points at the Talon gateway.
 type MemoryGovernor struct {
-	Scanner *classifier.Scanner
+	Scanner          *classifier.Scanner
+	ForbiddenPhrases []string // optional; nil/empty uses defaultForbiddenMemoryPhrases
 }
 
 // NewMemoryGovernor creates a governor that validates CoPaw memory content with the given PII scanner.
-func NewMemoryGovernor(scanner *classifier.Scanner) *MemoryGovernor {
-	return &MemoryGovernor{Scanner: scanner}
+// forbiddenPhrases is optional (e.g. from policy.Copaw.Memory.ForbiddenPhrases); nil or empty uses built-in defaults.
+func NewMemoryGovernor(scanner *classifier.Scanner, forbiddenPhrases []string) *MemoryGovernor {
+	phrases := forbiddenPhrases
+	if len(phrases) == 0 {
+		phrases = defaultForbiddenMemoryPhrases
+	}
+	return &MemoryGovernor{Scanner: scanner, ForbiddenPhrases: phrases}
 }
 
 // ValidateWrite checks content for PII and forbidden categories (Constitutional AI).
@@ -48,7 +54,7 @@ func (g *MemoryGovernor) ValidateWrite(ctx context.Context, tenantID, agentID, c
 
 	// 2. Policy override / poisoning detection
 	contentLower := strings.ToLower(content)
-	for _, phrase := range forbiddenMemoryPhrases {
+	for _, phrase := range g.ForbiddenPhrases {
 		if strings.Contains(contentLower, phrase) {
 			span.SetAttributes(attribute.String("governance.denied_reason", "policy_override_phrase"))
 			span.SetStatus(codes.Error, "policy override attempt")
@@ -76,8 +82,8 @@ func (g *MemoryGovernor) ValidateWrite(ctx context.Context, tenantID, agentID, c
 	return nil
 }
 
-// Forbidden phrases that indicate memory poisoning or governance override (Constitutional AI).
-var forbiddenMemoryPhrases = []string{
+// defaultForbiddenMemoryPhrases: built-in list when copaw.memory.forbidden_phrases is not set in .talon.yaml.
+var defaultForbiddenMemoryPhrases = []string{
 	"ignore policy",
 	"bypass policy",
 	"override policy",

@@ -12,7 +12,7 @@ Talon stores the real provider key in its vault; CoPaw only sends the caller key
 ## Prerequisites
 
 - Docker and Docker Compose
-- Talon repo clone (image built from repo root)
+- **Image build:** This primer builds the Talon image from the repo root (`context: ../..`). You need a clone of the [Talon repo](https://github.com/dativo-io/talon). Alternatively, use a pre-built image if available (e.g. `ghcr.io/dativo-io/talon:latest`) and set `image: ghcr.io/dativo-io/talon:latest` in `docker-compose.yaml` instead of the `build` block.
 - Your real OpenAI (or DashScope) API key for `.env`
 
 ## Quick start

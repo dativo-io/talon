@@ -13,13 +13,13 @@ import (
 )
 
 func TestNewMemoryGovernor(t *testing.T) {
-	g := NewMemoryGovernor(nil)
+	g := NewMemoryGovernor(nil, nil)
 	require.NotNil(t, g)
 	assert.Nil(t, g.Scanner)
 }
 
 func TestMemoryGovernor_ValidateWrite_ForbiddenCategory(t *testing.T) {
-	g := NewMemoryGovernor(nil)
+	g := NewMemoryGovernor(nil, nil)
 	ctx := context.Background()
 
 	err := g.ValidateWrite(ctx, "tenant1", "agent1", "policy_modifications", "some content")
@@ -37,7 +37,7 @@ func TestMemoryGovernor_ValidateWrite_ForbiddenCategory(t *testing.T) {
 }
 
 func TestMemoryGovernor_ValidateWrite_ForbiddenPhrase(t *testing.T) {
-	g := NewMemoryGovernor(nil)
+	g := NewMemoryGovernor(nil, nil)
 	ctx := context.Background()
 
 	for _, phrase := range []string{"ignore policy", "bypass policy", "override policy", "disable policy", "policy: false", "allowed: true", "cost_limits: null", "budget: infinity"} {
@@ -48,7 +48,7 @@ func TestMemoryGovernor_ValidateWrite_ForbiddenPhrase(t *testing.T) {
 }
 
 func TestMemoryGovernor_ValidateWrite_AllowedCategory_NoScanner(t *testing.T) {
-	g := NewMemoryGovernor(nil)
+	g := NewMemoryGovernor(nil, nil)
 	ctx := context.Background()
 
 	err := g.ValidateWrite(ctx, "tenant1", "agent1", memory.CategoryDomainKnowledge, "safe content")
@@ -61,7 +61,7 @@ func TestMemoryGovernor_ValidateWrite_AllowedCategory_NoScanner(t *testing.T) {
 func TestMemoryGovernor_ValidateWrite_PIIDetected(t *testing.T) {
 	scanner, err := classifier.NewScanner()
 	require.NoError(t, err)
-	g := NewMemoryGovernor(scanner)
+	g := NewMemoryGovernor(scanner, nil)
 	ctx := context.Background()
 
 	err = g.ValidateWrite(ctx, "tenant1", "agent1", memory.CategoryDomainKnowledge, "contact user@example.com for details")
@@ -73,9 +73,26 @@ func TestMemoryGovernor_ValidateWrite_PIIDetected(t *testing.T) {
 func TestMemoryGovernor_ValidateWrite_NoPII_Success(t *testing.T) {
 	scanner, err := classifier.NewScanner()
 	require.NoError(t, err)
-	g := NewMemoryGovernor(scanner)
+	g := NewMemoryGovernor(scanner, nil)
 	ctx := context.Background()
 
 	err = g.ValidateWrite(ctx, "tenant1", "agent1", memory.CategoryDomainKnowledge, "plain factual content with no PII")
+	assert.NoError(t, err)
+}
+
+func TestMemoryGovernor_ValidateWrite_CustomForbiddenPhrases(t *testing.T) {
+	// Custom phrases from .talon.yaml copaw.memory.forbidden_phrases override defaults.
+	g := NewMemoryGovernor(nil, []string{"custom_phrase", "another_custom"})
+	ctx := context.Background()
+
+	err := g.ValidateWrite(ctx, "t", "a", memory.CategoryDomainKnowledge, "content with custom_phrase")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, memory.ErrMemoryWriteDenied))
+
+	err = g.ValidateWrite(ctx, "t", "a", memory.CategoryDomainKnowledge, "content with another_custom")
+	require.Error(t, err)
+
+	// Default built-in phrases are not applied when custom list is set.
+	err = g.ValidateWrite(ctx, "t", "a", memory.CategoryDomainKnowledge, "content with ignore policy")
 	assert.NoError(t, err)
 }

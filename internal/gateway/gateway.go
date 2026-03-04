@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,9 +29,15 @@ type GatewayPolicyEvaluator interface {
 // CostEstimator returns estimated cost in EUR for a request. Used for policy and evidence.
 type CostEstimator func(model string, inputTokens, outputTokens int) float64
 
-// isCoPawCaller returns true when the caller is a CoPaw gateway caller (e.g. copaw-main).
-func isCoPawCaller(name string) bool {
-	return name == "copaw-main" || strings.HasPrefix(name, "copaw-")
+// hasCallerTag returns true when the caller has the given tag (e.g. "copaw" for CoPaw).
+// Classification is driven by CallerConfig.Tags, not name prefix.
+func hasCallerTag(caller *CallerConfig, tag string) bool {
+	for _, t := range caller.Tags {
+		if t == tag {
+			return true
+		}
+	}
+	return false
 }
 
 // Gateway is the LLM API gateway handler.
@@ -129,7 +134,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteProviderError(w, route.Provider, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if span := trace.SpanFromContext(ctx); span.IsRecording() && isCoPawCaller(caller.Name) {
+	if span := trace.SpanFromContext(ctx); span.IsRecording() && hasCallerTag(caller, "copaw") {
 		span.SetAttributes(
 			attribute.String("copaw.caller", caller.Name),
 			attribute.String("copaw.channel", "gateway"),

@@ -118,9 +118,8 @@ func TestCopawSkillTool_Execute(t *testing.T) {
 	require.NoError(t, err)
 	tool, _ := reg.Get("copaw_skill_test_skill")
 	out, err := tool.Execute(context.Background(), json.RawMessage(`{}`))
-	require.NoError(t, err)
-	var m map[string]interface{}
-	require.NoError(t, json.Unmarshal(out, &m))
-	assert.Equal(t, "test_skill", m["skill"])
-	assert.Equal(t, "governed", m["status"])
+	require.Error(t, err)
+	assert.Nil(t, out)
+	assert.Contains(t, err.Error(), "not yet supported")
+	assert.Contains(t, err.Error(), "test_skill")
 }

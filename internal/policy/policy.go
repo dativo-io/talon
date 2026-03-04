@@ -250,6 +250,12 @@ type ToolPIIPolicy struct {
 // CopawConfig holds CoPaw integration policy (skill governance when using CoPaw with Talon).
 type CopawConfig struct {
 	Skills *CopawSkillsConfig `yaml:"skills,omitempty" json:"skills,omitempty"`
+	Memory *CopawMemoryConfig `yaml:"memory,omitempty" json:"memory,omitempty"`
+}
+
+// CopawMemoryConfig holds memory governance settings (forbidden phrases for Constitutional AI).
+type CopawMemoryConfig struct {
+	ForbiddenPhrases []string `yaml:"forbidden_phrases,omitempty" json:"forbidden_phrases,omitempty"`
 }
 
 // CopawSkillsConfig defines allow/deny and allowlist for CoPaw skill categories.
