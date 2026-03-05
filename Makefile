@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-all lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-all lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -44,7 +44,10 @@ test-integration: ## Run integration tests
 test-e2e: ## Run e2e tests (builds binary in TestMain)
 	@go test -tags=e2e -timeout 5m ./tests/e2e/...
 
-test-all: test test-e2e ## Run unit, integration, and e2e tests
+test-smoke: build ## Run black-box smoke test (prereqs: TALON_SECRETS_KEY, OPENAI_API_KEY; see tests/smoke_test.sh)
+	@PATH="$(CURDIR)/bin:$$PATH" bash ./tests/smoke_test.sh
+
+test-all: test test-e2e ## Run unit, integration, and e2e tests (does not include test-smoke)
 
 lint: ## Run linter
 	@golangci-lint run ./...
