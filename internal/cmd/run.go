@@ -169,7 +169,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		content, err := os.ReadFile(path)
 		if err != nil {
 			log.Warn().Err(err).Str("path", path).Msg("failed to read attachment")
-			continue
+			return fmt.Errorf("attachment file not found or unreadable: %s: %w", path, err)
 		}
 		attachments = append(attachments, agent.Attachment{
 			Filename: filepath.Base(path),
