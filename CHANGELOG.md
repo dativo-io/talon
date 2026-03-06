@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-03-06
+
+### Added
+
+- **feat(docs): self-adoption overhaul (Gates 1–5).** README hero shows `talon audit list` with blocked tool + blocked PII; one-line mechanism and inline 60-second demo. "What it stops" replaces "Why Talon?" with four failure-first bullets (LiteLLM, CloakLLM, DIY proxy). QUICKSTART simplified to 3-path job-to-be-done (existing app / new agent / understand first). New guide [Add Talon to your existing app](docs/guides/add-talon-to-existing-app.md) (Gate 4, first real request). Quickstart-demo: "What you just proved", "Now wire this to your app" (Python/Node/curl), "You're done". "You're done" + next-steps table added to all guides. New [comment-playbook](docs/community/comment-playbook.md) (internal Reddit/HN templates) and [Why not just a PII proxy?](docs/explanation/why-not-a-pii-proxy.md). Docs index updated; P8 buzzwords removed from reader-facing copy.
+
+### Changed
+
+- **chore(build):** `make test` and `make test-e2e` now run with `-count=1` so the test cache is disabled and results are always fresh.
+
 ## [0.9.5] - 2026-03-04
 
 ### Added

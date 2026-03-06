@@ -30,9 +30,9 @@ build: ## Build the binary to ./bin/talon (run from repo root: ./bin/talon)
 install: ## Install to $GOPATH/bin (or go env GOPATH/bin)
 	@$(GO_ENV) go install $(LDFLAGS) ./cmd/talon/
 
-test: ## Run tests (unit + integration). Coverage excludes cmd/talon and internal/testutil.
-	@$(GO_ENV) go test -race -coverprofile=coverage.out $$(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v 'cmd/talon')
-	@$(GO_ENV) go test -race -tags=integration ./tests/integration/...
+test: ## Run tests (unit + integration). Coverage excludes cmd/talon and internal/testutil. Uses -count=1 so cache is disabled.
+	@$(GO_ENV) go test -count=1 -race -coverprofile=coverage.out $$(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v 'cmd/talon')
+	@$(GO_ENV) go test -count=1 -race -tags=integration ./tests/integration/...
 
 test-coverage: test ## Show test coverage
 	@go tool cover -html=coverage.out -o coverage.html
@@ -41,8 +41,8 @@ test-coverage: test ## Show test coverage
 test-integration: ## Run integration tests
 	@go test -race -tags=integration ./tests/integration/...
 
-test-e2e: ## Run e2e tests (builds binary in TestMain)
-	@go test -tags=e2e -timeout 5m ./tests/e2e/...
+test-e2e: ## Run e2e tests (builds binary in TestMain). Uses -count=1 so cache is disabled.
+	@go test -count=1 -tags=e2e -timeout 5m ./tests/e2e/...
 
 test-smoke: build ## Run black-box smoke test (prereqs: TALON_SECRETS_KEY, OPENAI_API_KEY; see tests/smoke_test.sh)
 	@PATH="$(CURDIR)/bin:$$PATH" bash ./tests/smoke_test.sh
