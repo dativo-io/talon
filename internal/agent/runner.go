@@ -1593,7 +1593,7 @@ func emitBudgetAlertIfNeeded(ctx context.Context, tenantID string, dailyCost, mo
 	}
 	if fired && limits.BudgetAlertWebhook != "" {
 		if budgetAlertClaimFire(tenantID, alertType) {
-			go postBudgetAlert(limits.BudgetAlertWebhook, payload)
+			go postBudgetAlert(ctx, limits.BudgetAlertWebhook, payload)
 		}
 	}
 }
@@ -1616,7 +1616,7 @@ func allowedBudgetAlertURL(raw string) bool {
 	}
 }
 
-func postBudgetAlert(webhookURL string, payload map[string]interface{}) {
+func postBudgetAlert(ctx context.Context, webhookURL string, payload map[string]interface{}) {
 	if !allowedBudgetAlertURL(webhookURL) {
 		log.Warn().Str("url", webhookURL).Msg("budget_alert_webhook_url_rejected")
 		return
@@ -1626,7 +1626,7 @@ func postBudgetAlert(webhookURL string, payload map[string]interface{}) {
 		log.Warn().Err(err).Msg("budget_alert_marshal_failed")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
 	if err != nil {

@@ -339,7 +339,7 @@ func TestGateway_ResponsePIIRedaction(t *testing.T) {
 	gw.config.ServerDefaults.ResponsePIIAction = "redact"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer talon-gw-openclaw-001")
 	rec := httptest.NewRecorder()
 	gw.ServeHTTP(rec, req)
@@ -372,7 +372,7 @@ func TestGateway_ResponsePIIBlockMode(t *testing.T) {
 	gw.config.ServerDefaults.ResponsePIIAction = "block"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"what is my IBAN?"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer talon-gw-openclaw-001")
 	rec := httptest.NewRecorder()
 	gw.ServeHTTP(rec, req)
@@ -392,7 +392,7 @@ func TestGateway_ResponsePIIWarnModeRecordsEvidence(t *testing.T) {
 	gw.config.ServerDefaults.ResponsePIIAction = "warn"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"what is the email?"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer talon-gw-openclaw-001")
 	rec := httptest.NewRecorder()
 	gw.ServeHTTP(rec, req)
