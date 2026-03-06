@@ -423,7 +423,7 @@ func TestGateway_ResponsePII_TimestampNotFalsePositive(t *testing.T) {
 	gw.config.ServerDefaults.ResponsePIIAction = "redact"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hi"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer talon-gw-openclaw-001")
 	rec := httptest.NewRecorder()
 	gw.ServeHTTP(rec, req)
@@ -446,7 +446,7 @@ func TestGateway_ResponsePII_ContentStillRedacted(t *testing.T) {
 	gw.config.ServerDefaults.ResponsePIIAction = "redact"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer talon-gw-openclaw-001")
 	rec := httptest.NewRecorder()
 	gw.ServeHTTP(rec, req)
@@ -469,7 +469,7 @@ func TestGateway_ResponsePII_NoPIIInContent_NoFalsePositive(t *testing.T) {
 	gw.config.ServerDefaults.ResponsePIIAction = "warn"
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hello"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/proxy/openai/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer talon-gw-openclaw-001")
 	rec := httptest.NewRecorder()
 	gw.ServeHTTP(rec, req)

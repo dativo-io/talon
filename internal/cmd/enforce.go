@@ -273,6 +273,7 @@ func updateGatewayMode(path, newMode string) error {
 	}
 
 	lines[idx] = replaceYAMLModeValue(lines[idx], newMode)
+	//nolint:gosec // G703: path is operator config path, validated (no "..") and filepath.Clean'd
 	return os.WriteFile(clean, []byte(strings.Join(lines, "\n")), 0o600)
 }
 
