@@ -66,3 +66,18 @@ If the runner can call your Talon server or run the Talon binary:
 - **CLI:** Install Talon on the runner and run `talon run "Summarize this PR"` with appropriate policy and secrets. Use `TALON_DATA_DIR` and vault/keys so the runner has access.
 
 Use Option B when you need full agent features (tools, memory) or when the pipeline runner is already a controlled environment with Talon installed.
+
+---
+
+## You're done
+
+You now have CI/CD jobs calling Talon (gateway or native) so every LLM call is logged and cost-controlled. Talon is recording evidence for each request from your pipeline.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Export evidence from Talon for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
+| Cap cost for the CI caller | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Add Talon in front of another app | [Add Talon to your existing app](add-talon-to-existing-app.md) |
+| Understand the request lifecycle | [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) |

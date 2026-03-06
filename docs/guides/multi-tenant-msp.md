@@ -62,3 +62,18 @@ Customers use their own caller API key; they never see other customers’ keys o
 | Exports | Use tenant-scoped export (API with tenant key or tenant filter) for each customer |
 
 For deeper context on adoption and architecture see [Adoption scenarios](../ADOPTION_SCENARIOS.md) and [Architecture: MCP proxy](../ARCHITECTURE_MCP_PROXY.md).
+
+---
+
+## You're done
+
+You now have tenant isolation and (optionally) gateway callers per customer. Talon is scoping evidence and costs by tenant so each customer sees only their own data.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Cap cost per tenant or caller | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Export evidence for one tenant | [How to export evidence for auditors](compliance-export-runbook.md) |
+| Wrap a vendor (Zendesk, Intercom) per tenant | [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md) |
+| Understand the gateway pipeline | [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) |

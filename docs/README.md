@@ -34,6 +34,7 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 | Doc | Description |
 |-----|-------------|
 | [How to choose your integration path](guides/choosing-integration-path.md) | Pick MCP proxy vs LLM gateway vs native Talon. |
+| [Add Talon to your existing app](guides/add-talon-to-existing-app.md) | Point your existing app (Python, Node, curl) at Talon in a few minutes; first real request and evidence. |
 | [How to govern OpenClaw with Talon](guides/openclaw-integration.md) | Route OpenClaw LLM traffic through the gateway. |
 | [Docker primer: OpenClaw + Talon (cloud-ready)](guides/openclaw-talon-primer/docker-openclaw-talon-primer.md) | Predefined Docker setup to run Talon gateway for OpenClaw; deploy in the cloud. |
 | [How to add compliance to your Slack bot](guides/slack-bot-integration.md) | Route your Slack bot's LLM calls through Talon. |
@@ -57,6 +58,7 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 | Doc | Description |
 |-----|-------------|
 | [What Talon does to your request](explanation/what-talon-does-to-your-request.md) | Full request lifecycle: every check, every byte transformation, latency budget. |
+| [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md) | Five failure scenarios: what a PII-only proxy misses, what Talon does, and how to verify. |
 | [Evidence store](explanation/evidence-store.md) | HMAC signing, progressive disclosure, storage, and export. |
 | [Adoption scenarios](ADOPTION_SCENARIOS.md) | Greenfield, brownfield custom, brownfield vendor; timelines and ROI. |
 | [Persona guides](PERSONA_GUIDES.md) | Who uses Talon (DevOps, Compliance, CTO, SecOps, FinOps) and what they do. |
@@ -72,6 +74,12 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 |-----|-------------|
 | [Policy cookbook](guides/policy-cookbook.md) | Copy-paste policy snippets for common needs. |
 | [Starter policy library](../examples/policies/README.md) | Ready-to-use Rego policies for cost, PII, model allowlists, data residency. |
+
+### Community / internal
+
+| Doc | Description |
+|-----|-------------|
+| [Comment playbook (Reddit/HN)](community/comment-playbook.md) | Internal: copy-paste reply templates for common thread types. |
 
 ### Examples
 

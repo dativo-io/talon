@@ -69,3 +69,18 @@ Evidence is recorded per request; costs appear in `GET /v1/costs` for the tenant
 
 - **Native:** `talon audit list`, `talon audit show <evidence-id>`, or API `GET /v1/evidence` with optional filters. Evidence includes correlation_id, tenant_id, agent_id, timestamp, policy decision, cost.
 - **Gateway:** Same evidence store; gateway requests are recorded with caller identity. Use tenant and date (and caller if exposed in evidence) to scope exports for auditors. See [How to export evidence for auditors](compliance-export-runbook.md).
+
+---
+
+## You're done
+
+You now have a first-line support agent (native or via gateway) with PII and cost controls. Talon is recording every run and applying your policy.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Route another bot through the gateway | [Add Talon to your existing app](add-talon-to-existing-app.md), [Slack bot](slack-bot-integration.md) |
+| Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
+| Add plan review for high-risk suggestions | [Agent planning](../AGENT_PLANNING.md), [Policy cookbook](policy-cookbook.md) |
+| Cap cost for this agent or caller | [How to cap daily spend per team or application](cost-governance-by-caller.md) |

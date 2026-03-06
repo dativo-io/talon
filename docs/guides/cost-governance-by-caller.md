@@ -87,3 +87,18 @@ policies:
 ```
 
 See [Policy cookbook](policy-cookbook.md) for more snippets.
+
+---
+
+## You're done
+
+You now have per-caller cost caps (daily and optionally monthly) in your gateway config. Talon is denying or allowing requests based on those limits before the LLM call is made.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Export evidence or verify records | [How to export evidence for auditors](compliance-export-runbook.md) |
+| Add more callers or restrict models | [Configuration and environment](../reference/configuration.md) |
+| Route another app through the gateway | [Add Talon to your existing app](add-talon-to-existing-app.md) |
+| Copy more policy snippets | [Policy cookbook](policy-cookbook.md) |

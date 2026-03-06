@@ -68,3 +68,18 @@ When memory was injected, the evidence shows **Memory reads** and **Memory token
 - **Point-in-time (compliance):** `talon memory as-of <RFC3339> --agent <name>` — entries valid at that time.
 
 See [Memory governance](../MEMORY_GOVERNANCE.md) for configuration, modes, and compliance.
+
+---
+
+## You're done
+
+You now know how to confirm that Talon loads and injects memory into the prompt. Evidence shows memory reads and tokens when memory was used.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Configure memory categories and retention | [Memory governance](../MEMORY_GOVERNANCE.md) |
+| Run an agent with tools or triggers | [Your first agent with Talon](../tutorials/first-governed-agent.md) |
+| Export evidence that includes memory | [How to export evidence for auditors](compliance-export-runbook.md) |
+| Understand the request lifecycle | [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) |

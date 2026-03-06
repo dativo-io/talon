@@ -1,32 +1,19 @@
 # Talon Quick Start
 
-Get from zero to a policy-enforced AI agent in under 5 minutes. This page is your entry point; it points to the right doc for what you want to do.
+This page points you to the right doc for what you want to do.
 
 ---
 
-## 5-minute path
+## Which path is yours?
 
-If you want a single guided path (install → init → run → see evidence), follow the **tutorial**:
+**1.** I have an existing app that calls OpenAI or Anthropic.  
+→ [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
 
-- **[Your first governed agent](tutorials/first-governed-agent.md)** — One path, step by step. By the end you will have run a governed agent and seen the audit trail.
+**2.** I'm building something new and want controls from day one.  
+→ [Your first agent with Talon](tutorials/first-governed-agent.md)
 
----
-
-## I want to…
-
-| Goal | Doc |
-|------|-----|
-| **Learn by doing** (one guided path) | [Your first governed agent](tutorials/first-governed-agent.md) (Tutorial) |
-| **Pick the right way to use Talon** (MCP proxy vs gateway vs native) | [How to choose your integration path](guides/choosing-integration-path.md) |
-| **Route OpenClaw / Slack bot / desktop app** through Talon | [OpenClaw](guides/openclaw-integration.md) (bidirectional PII scanning, tool-aware redaction, rate limiting, kill switch), [Slack bot](guides/slack-bot-integration.md), [Desktop apps](guides/desktop-app-governance.md) |
-| **Look up config and env vars** | [Configuration and environment](reference/configuration.md) (Reference) |
-| **Cap cost per team or app** | [How to cap daily spend per team or application](guides/cost-governance-by-caller.md) |
-| **Export evidence for auditors** | [How to export evidence for auditors](guides/compliance-export-runbook.md) |
-| **Use Talon from CI/CD** | [How to run governed LLM calls in CI/CD](guides/cicd-pipeline-governance.md) |
-| **Copy policy snippets** (cost limits, time restrictions, etc.) | [Policy cookbook](guides/policy-cookbook.md) |
-| **Understand adoption paths and ROI** | [Adoption scenarios](ADOPTION_SCENARIOS.md) |
-| **See who uses Talon and how** | [Persona guides](PERSONA_GUIDES.md) |
-| **Wrap a third-party AI vendor** (Zendesk, Intercom) | [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md) |
+**3.** I want to understand how it works before touching anything.  
+→ [60-second demo (no API key)](tutorials/quickstart-demo.md)
 
 ---
 

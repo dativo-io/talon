@@ -67,3 +67,18 @@ Article 30 requires records of processing activities. Talon evidence provides a 
 ## If you need NIS2 / incident evidence
 
 For incident response, use the same export and verification steps. Use timeline or evidence ID to correlate with the incident window. The signed evidence supports non-repudiation and integrity for regulators.
+
+---
+
+## You're done
+
+You now know how to export evidence, verify signatures, and package records for auditors. Talon evidence is HMAC-signed and can be handed off with a verification log.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Cap cost per team or app | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Understand what each evidence record contains | [Evidence store](../explanation/evidence-store.md) |
+| Run Talon in CI/CD with evidence | [How to run governed LLM calls in CI/CD](cicd-pipeline-governance.md) |
+| Configure retention or scope | [Configuration and environment](../reference/configuration.md) |

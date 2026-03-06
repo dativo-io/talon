@@ -106,3 +106,18 @@ Evidence rows will show `agent_id: copaw-main`. The Talon dashboard (`/dashboard
 - [Choosing an integration path](choosing-integration-path.md)
 - [OpenClaw integration](openclaw-integration.md) (same gateway pattern)
 - [CoPaw + Talon Docker primer](copaw-talon-primer/docker-copaw-talon-primer.md)
+
+---
+
+## You're done
+
+You now have CoPaw sending all LLM traffic through Talon. Talon is logging every request, scanning for PII, and enforcing per-caller policy and cost limits.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Cap cost or restrict models for CoPaw | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Run CoPaw + Talon in Docker | [CoPaw + Talon Docker primer](copaw-talon-primer/docker-copaw-talon-primer.md) |
+| Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
+| Add another app through the gateway | [Add Talon to your existing app](add-talon-to-existing-app.md) |

@@ -86,3 +86,18 @@ Restart Talon after editing the config.
 | Gateway URL| `http://<talon>:8080/v1/proxy/openai/v1` (trailing `/v1` for correct paths; or anthropic/v1) |
 | Auth       | Talon-issued API key in gateway `callers`            |
 | Audit      | `talon audit list`                                   |
+
+---
+
+## You're done
+
+You now have your Slack bot sending LLM calls through Talon. Talon is logging every request, scanning for PII, and applying per-bot limits you configured.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Cap cost or restrict models for this bot | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Add Talon to another app (e.g. script or API) | [Add Talon to your existing app](add-talon-to-existing-app.md) |
+| Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
+| Understand the request lifecycle | [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) |

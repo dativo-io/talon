@@ -177,3 +177,18 @@ attachment_handling:
 | PII action | `policies.data_classification` | `gateway.default_policy.default_pii_action` or `gateway.callers[].policy_overrides.pii_action` |
 | Block on PII | `policies.data_classification.block_on_pii` | -- |
 | Human oversight | `compliance.human_oversight` | -- |
+
+---
+
+## You're done
+
+You now have copy-paste policy snippets for memory, models, cost, time, PII, and human oversight. Drop them into `agent.talon.yaml` or the gateway block as needed.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Cap cost per caller in the gateway | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Verify memory is loaded and injected | [How to verify memory is used](memory-verification.md) |
+| Add Talon in front of my app | [Add Talon to your existing app](add-talon-to-existing-app.md) |
+| Understand the full config schema | [Configuration and environment](../reference/configuration.md) |

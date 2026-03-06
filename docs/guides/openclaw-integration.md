@@ -377,3 +377,18 @@ This model ensures that governance is proportional — low-risk tools stay fast 
 | OpenClaw → OpenAI directly     | OpenClaw → Talon → OpenAI      |
 | No central audit               | Every request in `talon audit` |
 | No PII or cost controls        | Per-caller policy and limits   |
+
+---
+
+## You're done
+
+You now have OpenClaw sending all LLM traffic through Talon. Talon is logging every request, scanning for PII, and enforcing per-caller policy and cost limits.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Cap cost or restrict models for OpenClaw | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Run OpenClaw + Talon in Docker (cloud-ready) | [Docker primer: OpenClaw + Talon](openclaw-talon-primer/docker-openclaw-talon-primer.md) |
+| Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
+| Add another app (e.g. Slack bot) through the gateway | [Add Talon to your existing app](add-talon-to-existing-app.md) |

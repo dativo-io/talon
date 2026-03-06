@@ -71,3 +71,18 @@ gateway:
 
 - **Now:** Gateway supports caller identification by API key and by source IP (`identify_by: "source_ip"`, `source_ip_ranges`). Use the gateway as a **proxy** by pointing clients at `http://talon:8080/v1/proxy/openai/v1` (trailing `/v1` so paths like `chat/completions` become `.../v1/chat/completions`) with a Talon-issued key.
 - **Phase 2:** Full DNS interception (Talon as TLS endpoint for `api.openai.com` / `api.anthropic.com`) so desktop apps need no config change.
+
+---
+
+## You're done
+
+You now know how to route ChatGPT/Claude Desktop traffic through Talon (DNS + gateway, or proxy with Talon-issued key). Talon logs every request and applies policy by caller or source IP.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Cap cost per team or by source IP | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Route a Slack bot or script through Talon | [Add Talon to your existing app](add-talon-to-existing-app.md), [Slack bot](slack-bot-integration.md) |
+| Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
+| Understand the gateway pipeline | [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) |

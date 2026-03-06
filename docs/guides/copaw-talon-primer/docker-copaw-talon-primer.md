@@ -45,3 +45,18 @@ Talon stores the real provider key in its vault; CoPaw only sends the caller key
    `talon audit list --agent copaw-main` and the dashboard **CoPaw Agents** tab.
 
 See [CoPaw integration](../copaw-integration.md) for full steps and troubleshooting.
+
+---
+
+## You're done
+
+You now have CoPaw + Talon running in Docker. Talon is the gateway in front of your LLM provider; every request is logged, policy-checked, and recorded.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Cap cost or restrict models | [How to cap daily spend per team or application](../cost-governance-by-caller.md) |
+| Run CoPaw + Talon without Docker | [How to govern CoPaw with Talon](../copaw-integration.md) |
+| Export evidence for auditors | [How to export evidence for auditors](../compliance-export-runbook.md) |
+| Add another app through the gateway | [Add Talon to your existing app](../add-talon-to-existing-app.md) |

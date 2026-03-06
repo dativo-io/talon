@@ -170,3 +170,18 @@ circuitBreaker.Reset(tenantID, agentID)
 | Budget alerts or unexpected spend | [Cost Overrun](#scenario-3-cost-overrun) | `talon costs --tenant <tenant_id>` |
 | `[REDACTED:*]` in tool arguments | [Redaction Breaking Process](#scenario-4-redaction-breaking-a-business-process) | `talon audit list --agent <agent> --limit 20` |
 | Agent stopped, circuit breaker open | [Circuit Breaker (False Positive)](#scenario-5-circuit-breaker-tripped-false-positive) | `talon audit list --agent <agent> --limit 20` |
+
+---
+
+## You're done
+
+You now have a playbook for containing and investigating runaway agents, PII leaks, cost overruns, redaction issues, and circuit breaker trips. Use the quick reference table to jump to the right scenario.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Export evidence after an incident | [How to export evidence for auditors](compliance-export-runbook.md) |
+| Tighten policy to prevent recurrence | [Policy cookbook](policy-cookbook.md) |
+| Cap cost per team or app | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Understand the evidence record | [Evidence store](../explanation/evidence-store.md) |

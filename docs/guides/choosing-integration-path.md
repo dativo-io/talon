@@ -21,3 +21,18 @@ Use this guide to pick the right Talon entry point for your situation: MCP proxy
 - **Native Talon** — You run agents via `talon run` or the REST API. Full policy-as-code, triggers, memory, and audit. No proxy; Talon is the agent runtime.
 
 You can use **both** MCP proxy and LLM gateway on the same server (e.g. MCP proxy for Zendesk, gateway for internal Slack bot).
+
+---
+
+## You're done
+
+You now know which Talon path fits your situation (MCP proxy, LLM gateway, or native). Pick the doc from the table above and follow it.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Route my existing app through Talon | [Add Talon to your existing app](add-talon-to-existing-app.md) |
+| Route OpenClaw or CoPaw through Talon | [OpenClaw](openclaw-integration.md), [CoPaw](copaw-integration.md) |
+| Wrap a third-party AI vendor (Zendesk, Intercom) | [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md) |
+| Build a new agent from scratch | [Your first agent with Talon](../tutorials/first-governed-agent.md) |

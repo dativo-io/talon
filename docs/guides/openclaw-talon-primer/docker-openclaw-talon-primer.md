@@ -276,4 +276,19 @@ openclaw-talon-primer/
 | 3 | In `~/.openclaw/openclaw.json`: add top-level `models.providers.openai` with `baseUrl`, `apiKey`, `api: "openai-responses"`, and `models: [{ "id": "...", "name": "..." }, ...]`. Then `openclaw gateway stop` and `openclaw gateway start` (or `pkill openclaw-gateway` if systemctl --user is unavailable). |
 | 4 | Use OpenClaw as usual; all requests are governed and audited by Talon. |
 
-Only the OpenAI key is used. Configure OpenClaw so it **sends** every request to Talon and uses the **caller** key; Talon then forwards to AI and keeps an audit trail. For more options (cost, PII, models), edit `talon.config.gateway.yaml` or see [How to govern OpenClaw with Talon](../openclaw-integration.md).
+Only the OpenAI key is used. Configure OpenClaw so it **sends** every request to Talon and uses the **caller** key; Talon then forwards to AI and records evidence. For more options (cost, PII, models), edit `talon.config.gateway.yaml` or see [How to govern OpenClaw with Talon](../openclaw-integration.md).
+
+---
+
+## You're done
+
+You now have OpenClaw + Talon running in Docker. Talon is the gateway in front of OpenAI; every request is logged, policy-checked, and recorded.
+
+**Next steps:**
+
+| I want to… | Doc |
+|------------|-----|
+| Cap cost or restrict models | [How to cap daily spend per team or application](../cost-governance-by-caller.md) |
+| Run OpenClaw + Talon without Docker | [How to govern OpenClaw with Talon](../openclaw-integration.md) |
+| Export evidence for auditors | [How to export evidence for auditors](../compliance-export-runbook.md) |
+| Add another app through the gateway | [Add Talon to your existing app](../add-talon-to-existing-app.md) |

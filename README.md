@@ -1,26 +1,24 @@
 # Dativo Talon
 
+```
+$ talon audit list
+ID          TIME                 CALLER        PII              COST(€)  MODEL         DECISION
+evt_a1b2c3  2026-03-15T10:23:45  support-bot   email(1)         0.003    gpt-4o-mini   allowed
+evt_d4e5f6  2026-03-15T10:24:12  hr-assistant  iban(2)          0.008    gpt-4o        blocked:pii
+evt_x9y0z1  2026-03-15T10:24:45  eng-tools     none             0.000    —            blocked:tool
+evt_g7h8i9  2026-03-15T10:25:01  eng-tools     none             0.012    claude-3.5    allowed
+evt_j0k1l2  2026-03-15T10:25:30  support-bot   email(1),phone   0.004    gpt-4o-mini   allowed:redacted
+```
 
-Talon is a single Go binary that acts as a transparent proxy in front of OpenAI, Anthropic, and Bedrock. Point your existing apps at `localhost:8080/v1/proxy/openai` instead of `api.openai.com` — same API, same response, but now every call is policy-checked, PII-scanned, cost-tracked, and audit-logged. Works with Slack bots, OpenClaw, CoPaw, anything OpenAI-compatible.
+One URL change. PII scan, tool block, tamper-proof record. No code rewrites.
 
-Built for EU companies facing GDPR, NIS2, DORA, and the EU AI Act (August 2026 deadline), but the governance features are useful anywhere. Apache 2.0.
+Talon is a single Go binary in front of OpenAI, Anthropic, and Bedrock. Point your app at `localhost:8080/v1/proxy/openai` instead of `api.openai.com` — same API, same response. Every call is policy-checked, PII-scanned, cost-tracked, and logged. Works with Slack bots, OpenClaw, CoPaw, anything OpenAI-compatible. Built for EU companies (GDPR, NIS2, DORA, EU AI Act); Apache 2.0.
 
 ---
 <!-- badges -->
 [![CI](https://github.com/dativo-io/talon/actions/workflows/ci.yml/badge.svg)](https://github.com/dativo-io/talon/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/dativo-io/talon)](https://goreportcard.com/report/github.com/dativo-io/talon)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-
-```
-$ talon audit list
-ID          TIME                 CALLER        PII              COST(€)  MODEL         DECISION
-evt_a1b2c3  2026-03-15T10:23:45  slack-bot     email(1)         0.003    gpt-4o-mini   allowed
-evt_d4e5f6  2026-03-15T10:24:12  hr-assistant  iban(2)          0.008    gpt-4o        blocked:pii
-evt_g7h8i9  2026-03-15T10:25:01  eng-tools     none             0.012    claude-3.5    allowed
-evt_j0k1l2  2026-03-15T10:25:30  support-bot   email(1),phone   0.004    gpt-4o-mini   allowed:redacted
-```
-
-**Intercept every AI API call across your company. PII scanning, cost tracking per team, tamper-proof audit trail. One URL change, no code rewrites.**
 
 ### 60-Second Demo (no API key needed)
 
@@ -33,24 +31,22 @@ curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"My email is jan@example.com and my IBAN is DE89370400440532013000. Help me reset my password."}]}'
 
-# Check the audit trail:
+# See the record (PII detected, cost, decision):
 docker compose exec talon /usr/local/bin/talon audit list
 ```
 
-The mock provider handles the LLM call. Evidence appears immediately — PII detected, cost logged, HMAC-signed record created. [What exactly does Talon do to your request?](docs/explanation/what-talon-does-to-your-request.md)
+The mock provider handles the LLM call. Evidence appears immediately — PII detected, cost logged, HMAC-signed record. [What exactly does Talon do to your request?](docs/explanation/what-talon-does-to-your-request.md)
 
 <!-- TODO: Replace with recorded terminal GIF (asciinema or vhs) showing the full flow -->
 
 ---
 
-## Why Talon?
+## What it stops
 
-- **Every AI call through one gateway.** Route all your apps — Slack bots, internal tools, vendor integrations — through Talon. One place to see costs, PII exposure, and policy violations across every team.
-- **No code changes required.** Set one environment variable (`OPENAI_BASE_URL`) and your existing code works through Talon. Shadow mode logs everything without blocking anything.
-- **Tamper-proof audit trail.** Every request generates an HMAC-signed evidence record in SQLite. Export to CSV for your compliance officer. Verify integrity with `talon audit verify`.
-- **EU AI Act enforcement starts August 2026.** Talon implements Articles 9 (risk management), 13 (transparency), and 14 (human oversight) as code.
-- **Single binary, zero infrastructure.** No Docker, no Postgres, no Redis to start. Embedded OPA for policies, SQLite for storage, OpenTelemetry for observability.
-- **Third-party vendors are black boxes.** You're liable even if they claim compliance. Talon gives you independent audit trails via MCP proxy.
+- **Your agent called `bulk_delete_users`.** A PII-only proxy (e.g. CloakLLM, or a DIY FastAPI proxy) never sees tool names — the LLM talks directly to your backend. Talon sits in front of the LLM and the tool layer: MCP `tools/call` and gateway requests are policy-checked before execution. Forbidden tools are blocked; every call is logged. You get a record nobody can quietly edit.
+- **A prompt contained an IBAN and the model replied with it.** Logging after the fact does not stop the leak. Talon scans input (and optionally response) before the call completes; you can block, redact, or restrict to EU-only models when PII is detected. Budget is evaluated before the call, not after — unlike LiteLLM-style post-spend alerts.
+- **You have no proof of what ran.** Spreadsheets and ad-hoc logs are easy to alter. Talon writes an HMAC-signed evidence record per request to SQLite; verify with `talon audit verify`. Export to CSV for your compliance officer.
+- **Third-party AI (Zendesk, Intercom) is a black box.** You are liable even if they say they are compliant. Route them through Talon's MCP proxy: you get the same PII scan, tool filter, and tamper-proof record without the vendor rewriting their stack.
 
 ## Three Ways to Adopt Talon
 
@@ -83,7 +79,7 @@ compliance:
 
 **Result:**
 - ✅ Vendor keeps working (transparent proxy)
-- ✅ You have audit trail (GDPR Article 30 exports)
+- ✅ You have a tamper-proof record (GDPR Article 30 exports)
 - ✅ PII redacted before vendor access
 - ✅ Can block forbidden operations
 
@@ -93,7 +89,7 @@ compliance:
 
 ### 2. Already Have Custom AI Automation? (Wrap with Talon)
 
-**Scenario:** You built a Slack bot 6 months ago. Works great, but compliance officer needs audit trails.
+**Scenario:** You built a Slack bot 6 months ago. Works great, but compliance officer needs verifiable records.
 
 **Solution:** Add 5 lines of code to route through Talon (4 hours setup).
 
@@ -148,7 +144,7 @@ talon run "Summarize EU AI regulation trends"
 
 **Result:**
 - ✅ Compliant from Day 1
-- ✅ No custom governance code
+- ✅ No custom policy code
 - ✅ Policy-as-code in YAML
 - ✅ Audit trail automatic
 
@@ -213,7 +209,7 @@ Try a policy block — set `daily: 0.001` in your `agent.talon.yaml`, run again,
   Reason: budget_exceeded
 ```
 
-Inspect and verify the audit trail:
+Inspect and verify the evidence:
 ```bash
 talon audit list --limit 10                    # List recent evidence
 talon audit show <evidence-id>                 # Full record (classification, PII, HMAC status)
@@ -261,7 +257,7 @@ Talon intercepts MCP traffic, enforces policy, redacts PII, and records evidence
 
 ## LLM API Gateway (Proxy Mode)
 
-Route raw LLM API traffic (OpenAI, Anthropic, Ollama) through Talon so desktop apps, Slack bots, and scripts get the same governance without code changes:
+Route raw LLM API traffic (OpenAI, Anthropic, Ollama) through Talon so desktop apps, Slack bots, and scripts get the same controls without code changes:
 
 1. Create a gateway config (see `examples/gateway/talon.config.gateway.yaml`) with providers, caller API keys, and optional policy overrides (allowed models, cost limits).
 2. Start Talon with `--gateway` and `--gateway-config`:
@@ -272,23 +268,23 @@ Route raw LLM API traffic (OpenAI, Anthropic, Ollama) through Talon so desktop a
 
 Talon identifies the caller, enforces per-caller model and cost policy, records evidence, and forwards to the configured upstream. Costs appear in `GET /v1/costs` for the caller's tenant.
 
-**See:** [OpenClaw integration](docs/guides/openclaw-integration.md), [CoPaw integration](docs/guides/copaw-integration.md), [Slack bot integration](docs/guides/slack-bot-integration.md), [Desktop app governance](docs/guides/desktop-app-governance.md).
+**See:** [OpenClaw integration](docs/guides/openclaw-integration.md), [CoPaw integration](docs/guides/copaw-integration.md), [Slack bot integration](docs/guides/slack-bot-integration.md), [Desktop apps](docs/guides/desktop-app-governance.md).
 
 ## Features
 
-**Policy-as-Code** — Define agent governance in `agent.talon.yaml` files. Cost limits, data classification, model routing, tool access, time restrictions — all declarative, version-controlled, auditable.
+**Policy-as-Code** — Define agent policy in `agent.talon.yaml` files. Cost limits, data classification, model routing, tool access, time restrictions — all declarative, version-controlled, auditable.
 
 **MCP-Native** — Talon speaks Model Context Protocol. Connect any MCP-compatible agent or tool. Every MCP tool call passes through the policy engine. Works as transparent proxy for third-party vendors.
 
-**Vendor Integration** — Route third-party AI vendors (Zendesk, Intercom, HubSpot) through Talon's MCP proxy. Gain audit trails, PII redaction, and policy enforcement without vendor rewrites. You stay compliant even with black-box SaaS.
+**Vendor Integration** — Route third-party AI vendors (Zendesk, Intercom, HubSpot) through Talon's MCP proxy. Gain tamper-proof records, PII redaction, and policy enforcement without vendor rewrites. You stay compliant even with black-box SaaS.
 
-**LLM API Gateway** — Route raw LLM API traffic (OpenAI, Anthropic, Ollama) through Talon at `/v1/proxy/*`. Desktop apps, Slack bots, and scripts use caller API keys; Talon enforces per-caller model and cost policy and records evidence. Same governance as native agents, zero app code changes beyond base URL.
+**LLM API Gateway** — Route raw LLM API traffic (OpenAI, Anthropic, Ollama) through Talon at `/v1/proxy/*`. Desktop apps, Slack bots, and scripts use caller API keys; Talon enforces per-caller model and cost policy and records evidence. Same controls as native agents, zero app code changes beyond base URL.
 
 **Audited Secrets Vault** — API keys encrypted at rest (AES-256-GCM). Per-agent ACLs. Every secret retrieval logged. Upgrade path to Infisical for rotation and SAML.
 
 **Prompt Injection Prevention** — PDF/DOCX/HTML attachments are sandboxed automatically. Instruction-detection scanner flags injection attempts. Configurable: block, warn, or log.
 
-**Governed Agent Memory** — Agents write learnings to an audited soul directory. Every memory write passes through a multi-layer governance pipeline (hardcoded forbidden categories, OPA policy, PII scan, conflict detection) and is HMAC-signed. Shadow mode lets operators observe memory behavior before enabling writes. Retention policies auto-purge expired entries. Prompt injection controls filter which memories enter LLM context. Rollback to any previous state if memory poisoning is detected. Unlike MemOS or mem0, Talon's memory is a compliance asset — not just a developer convenience.
+**Agent Memory** — Agents write learnings to an audited soul directory. Every memory write passes through a multi-layer pipeline (hardcoded forbidden categories, OPA policy, PII scan, conflict detection) and is HMAC-signed. Shadow mode lets operators observe memory behavior before enabling writes. Retention policies auto-purge expired entries. Prompt injection controls filter which memories enter LLM context. Rollback to any previous state if memory poisoning is detected. Unlike MemOS or mem0, Talon's memory is a compliance asset — not just a developer convenience.
 
 **Scheduled & Event-Driven** — Cron schedules and webhook triggers. Same policy enforcement whether an agent runs manually, on schedule, or from a GitHub webhook.
 
@@ -305,15 +301,15 @@ Talon identifies the caller, enforces per-caller model and cost policy, records 
 | Policy enforcement | Yes (OPA) | No | No | No | No |
 | Cost control | Yes (per-request) | No | No | No | No |
 | PII detection | Yes (EU patterns, configurable) | No | No | No | No |
-| Audit trail | Yes (HMAC-signed) | No | No | No | No |
-| Data sovereignty | Yes (EU routing) | No | No | No | No |
+| Signed evidence record | Yes (HMAC-signed) | No | No | No | No |
+| EU data stays in EU | Yes (EU routing) | No | No | No | No |
 | MCP support | Yes (native) | Yes | Partial | Partial | No |
 | **Vendor proxy** | **Yes (MCP proxy)** | **No** | **No** | **No** | **No** |
 | **LLM API gateway** | **Yes (/v1/proxy/\*)** | **No** | **No** | **No** | **No** |
 | Secrets vault | Yes (audited) | No | No | No | No |
 | Prompt injection prev. | Yes (3-layer) | No | No | No | No |
-| Agent memory | Yes (governed) | Yes (advanced: KV-cache, graph, LoRA) | No | No | Partial |
-| **Memory governance** | **Yes (PII scan, HMAC, rollback)** | **No** | **No** | **No** | **No** |
+| Agent memory | Yes (policy-controlled) | Yes (advanced: KV-cache, graph, LoRA) | No | No | Partial |
+| **Memory controls** | **Yes (PII scan, HMAC, rollback)** | **No** | **No** | **No** | **No** |
 | Multi-tenant | Yes | No | No | No | No |
 | Open source | Apache 2.0 | Apache 2.0 | Yes | Yes | Yes |
 | EU AI Act alignment | Yes | No | No | No | No |
@@ -426,16 +422,16 @@ Attachment (prompt-injection) patterns are configured the same way; see `pattern
 
 | Framework | Status | Key Talon Features |
 |-----------|--------|-------------------|
-| GDPR | ✅ Core | PII detection, data residency, right to erasure, audit trail |
+| GDPR | ✅ Core | PII detection, data residency, right to erasure, tamper-proof record |
 | ISO 27001 | ✅ Core | Secrets management (A.8.24), logging (A.8.15), access control (A.5.15) |
 | NIS2 | ✅ Core | Incident evidence, supply chain controls, risk management |
 | DORA | ⚡️ Partial | ICT incident logging, cost tracking, third-party risk |
 | EU AI Act | ✅ Core | Risk classification, human oversight, transparency, documentation |
-| SOC 2 | ⚡️ Partial | Trust services criteria via evidence + audit trail |
+| SOC 2 | ⚡️ Partial | Trust services criteria via evidence + signed record |
 
 **GDPR Article 30 Exports:** Generate processing records in one command. Proves what data was processed, by which agent, when, and with what legal basis.
 
-**NIS2 Article 21 Evidence:** Complete incident logs with timestamps, policy decisions, and audit trails. Required for cyber incident reporting.
+**NIS2 Article 21 Evidence:** Complete incident logs with timestamps, policy decisions, and signed records. Required for cyber incident reporting.
 
 **EU AI Act Articles 9, 13, 14:** Risk management system (OPA policies), transparency logs (evidence store), human oversight (plan review UI).
 
@@ -443,20 +439,20 @@ Attachment (prompt-injection) patterns are configured the same way; see `pattern
 
 ### Spanish Telecom (150 employees)
 
-**Before:** Custom Slack bot for eSIM support. Works great, but no audit trail.
+**Before:** Custom Slack bot for eSIM support. Works great, but no verifiable record.
 **After:** Added Talon in 4 hours (5 lines of code). Now GDPR + NIS2 compliant.
 **ROI:** €15,000 saved (avoided rewrite) + eliminated fine risk.
 
 ### German Healthcare (400 employees)
 
 **Before:** Zendesk AI Agent (€3,000/month). Black box, no visibility.
-**After:** Routed through Talon MCP proxy in 1 week. Full audit trail.
+**After:** Routed through Talon MCP proxy in 1 week. Full tamper-proof record.
 **ROI:** €100,000 saved (kept vendor) + GDPR compliance proven.
 
 ### French FinTech (80 employees)
 
 **Before:** Building custom AI support from scratch.
-**After:** Used Talon from Day 1. Compliant without custom governance code.
+**After:** Used Talon from Day 1. Compliant without custom policy code.
 **ROI:** €25,000 saved (didn't build compliance layer) + faster time to market.
 
 **See:** [ADOPTION_SCENARIOS.md](docs/ADOPTION_SCENARIOS.md) for detailed timelines.
@@ -465,7 +461,7 @@ Attachment (prompt-injection) patterns are configured the same way; see `pattern
 
 See `examples/` for ready-to-use agent configurations:
 - `examples/sales-analyst/` — Financial data analysis with PII redaction
-- `examples/support-agent/` — Customer support with data sovereignty
+- `examples/support-agent/` — Customer support with EU data routing
 - `examples/code-reviewer/` — Code review with tool access controls
 - `examples/vendor-proxy/` — Third-party vendor compliance wrapper
 
