@@ -53,6 +53,11 @@ type Evidence struct {
 	Status                  string            `json:"status,omitempty"`                    // "pending", "completed", "failed"; empty = completed (backward-compatible)
 	Signature               string            `json:"signature"`
 	RoutingDecision         *RoutingDecision  `json:"routing_decision,omitempty"` // Provider selection and rejected candidates (EU routing)
+	// Semantic cache: set when response was served from cache (Cost=0, CostSaved=estimated LLM cost).
+	CacheHit        bool    `json:"cache_hit,omitempty"`
+	CacheEntryID    string  `json:"cache_entry_id,omitempty"`
+	CacheSimilarity float64 `json:"cache_similarity,omitempty"`
+	CostSaved       float64 `json:"cost_saved,omitempty"`
 }
 
 // CostEstimate holds per-request cost estimation (pre-call estimate or post-call actual).
@@ -492,6 +497,26 @@ func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, t
 	return total, nil
 }
 
+// CacheSavings returns the count of cache hits and total cost saved from evidence in the half-open time range [from, to).
+// Used by talon costs and talon report to surface semantic cache savings.
+func (s *Store) CacheSavings(ctx context.Context, tenantID string, from, to time.Time) (hits int64, costSaved float64, err error) {
+	query := `SELECT COUNT(*), COALESCE(SUM(CAST(json_extract(evidence_json, '$.cost_saved') AS REAL)), 0) FROM evidence WHERE tenant_id = ? AND json_extract(evidence_json, '$.cache_hit') = 1`
+	args := []interface{}{tenantID}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	err = s.db.QueryRowContext(ctx, query, args...).Scan(&hits, &costSaved)
+	if err != nil {
+		return 0, 0, fmt.Errorf("querying cache savings: %w", err)
+	}
+	return hits, costSaved, nil
+}
+
 // CountInRange returns the number of evidence records in the half-open time range [from, to) for the tenant (and optional agent).
 // Used for rate-limit policy input (e.g. requests_last_minute).
 func (s *Store) CountInRange(ctx context.Context, tenantID, agentID string, from, to time.Time) (int, error) {
@@ -653,6 +678,8 @@ type Index struct {
 	ModelUsed      string    `json:"model_used"`
 	DurationMS     int64     `json:"duration_ms"`
 	HasError       bool      `json:"has_error"`
+	CacheHit       bool      `json:"cache_hit,omitempty"`
+	CostSaved      float64   `json:"cost_saved,omitempty"`
 }
 
 // ListIndex returns lightweight evidence summaries (Layer 1).
@@ -807,5 +834,7 @@ func toIndex(full *Evidence) Index {
 		ModelUsed:      full.Execution.ModelUsed,
 		DurationMS:     full.Execution.DurationMS,
 		HasError:       full.Execution.Error != "",
+		CacheHit:       full.CacheHit,
+		CostSaved:      full.CostSaved,
 	}
 }

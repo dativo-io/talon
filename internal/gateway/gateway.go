@@ -2,6 +2,9 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/dativo-io/talon/internal/attachment"
+	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/secrets"
@@ -53,6 +57,36 @@ type Gateway struct {
 	rateLimiter   *RateLimiter
 	attExtractor  *attachment.Extractor
 	attInjScanner *attachment.Scanner
+	// Optional semantic cache (when nil or disabled, cache is skipped)
+	cacheStore    *cache.Store
+	cacheEmbedder *cache.BM25
+	cacheScrubber *cache.PIIScrubber
+	cachePolicy   *cache.Evaluator
+	cacheConfig   *gatewayCacheConfig
+}
+
+type gatewayCacheConfig struct {
+	Enabled             bool
+	DefaultTTL          int
+	SimilarityThreshold float64
+	MaxEntriesPerTenant int
+}
+
+// SetCache wires the optional semantic cache into the gateway. Call after NewGateway when cache is enabled.
+func (g *Gateway) SetCache(store *cache.Store, embedder *cache.BM25, scrubber *cache.PIIScrubber, policy *cache.Evaluator, enabled bool, defaultTTL int, similarityThreshold float64, maxEntriesPerTenant int) {
+	if store == nil || embedder == nil || policy == nil || !enabled {
+		return
+	}
+	g.cacheStore = store
+	g.cacheEmbedder = embedder
+	g.cacheScrubber = scrubber
+	g.cachePolicy = policy
+	g.cacheConfig = &gatewayCacheConfig{
+		Enabled:             enabled,
+		DefaultTTL:          defaultTTL,
+		SimilarityThreshold: similarityThreshold,
+		MaxEntriesPerTenant: maxEntriesPerTenant,
+	}
 }
 
 // NewGateway creates a new Gateway.
@@ -193,7 +227,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"Request blocked: attachment violates policy")
 			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
 				g.classifier.Scan(ctx, extracted.Text), nil, 0, 0, 0, false,
-				[]string{"attachment policy block"}, false, nil, attSummary, nil, nil)
+				[]string{"attachment policy block"}, false, nil, attSummary, nil, nil, false, "", 0, 0)
 			return
 		}
 	}
@@ -242,7 +276,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("pii", piiTypes).Msg("shadow_pii_block")
 		} else {
 			WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request contains PII that is not allowed")
-			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"}, false, nil, attSummary, nil, nil)
+			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"}, false, nil, attSummary, nil, nil, false, "", 0, 0)
 			return
 		}
 	}
@@ -277,7 +311,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("reasons", reasons).Msg("shadow_policy_deny")
 			} else {
 				WriteProviderError(w, route.Provider, http.StatusForbidden, reasons[0])
-				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons, false, nil, attSummary, nil, nil)
+				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0)
 				return
 			}
 		}
@@ -306,7 +340,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				WriteProviderError(w, route.Provider, http.StatusForbidden,
 					fmt.Sprintf("Request contains forbidden tools: %v", tr.Removed))
 				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
-					classification, nil, 0, 0, 0, false, []string{"tool governance block"}, false, nil, attSummary, toolResult, nil)
+					classification, nil, 0, 0, 0, false, []string{"tool governance block"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0)
 				return
 			default:
 				filtered, filterErr := FilterRequestBodyTools(route.Provider, forwardBody, tr.Kept)
@@ -318,7 +352,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					WriteProviderError(w, route.Provider, http.StatusInternalServerError,
 						"Failed to filter forbidden tools from request")
 					_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
-						classification, nil, 0, 0, 0, false, []string{"tool filter error"}, false, nil, attSummary, toolResult, nil)
+						classification, nil, 0, 0, 0, false, []string{"tool filter error"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0)
 					return
 				}
 				forwardBody = filtered
@@ -347,6 +381,56 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 8: Reroute (same-provider model override) — MVP: no model change, just forward
+
+	// Step 8b: Semantic cache lookup (skip for tool calls and when disabled)
+	var cacheAllowLookup, cacheAllowStore bool
+	if g.cacheStore != nil && g.cacheConfig != nil && g.cacheConfig.Enabled && g.cachePolicy != nil && g.cacheEmbedder != nil && len(extracted.ToolNames) == 0 {
+		dataTierStr := "public"
+		switch tier {
+		case 1:
+			dataTierStr = "internal"
+		case 2:
+			dataTierStr = "confidential"
+		}
+		piiSev := "none"
+		if classification.HasPII {
+			if tier == 2 {
+				piiSev = "high"
+			} else {
+				piiSev = "low"
+			}
+		}
+		cin := &cache.PolicyInput{
+			TenantID: caller.TenantID, DataTier: dataTierStr, PIIDetected: classification.HasPII,
+			PIISeverity: piiSev, Model: extracted.Model, RequestType: "completion", CacheEnabled: true,
+		}
+		if cres, err := g.cachePolicy.Evaluate(ctx, cin); err == nil && cres != nil {
+			cacheAllowLookup = cres.AllowLookup
+			cacheAllowStore = cres.AllowStore
+		}
+		if cacheAllowLookup && extracted.Text != "" {
+			queryBlob, err := g.cacheEmbedder.Embed(extracted.Text)
+			if err == nil {
+				threshold := g.cacheConfig.SimilarityThreshold
+				if threshold <= 0 {
+					threshold = 0.92
+				}
+				maxCand := 1000
+				if g.cacheConfig.MaxEntriesPerTenant > 0 && g.cacheConfig.MaxEntriesPerTenant < maxCand {
+					maxCand = g.cacheConfig.MaxEntriesPerTenant
+				}
+				hit, err := g.cacheStore.Lookup(ctx, caller.TenantID, queryBlob, threshold, maxCand, g.cacheEmbedder.SimilarityFunc())
+				if err == nil && hit != nil {
+					_ = g.cacheStore.IncrementHitCount(ctx, hit.ID)
+					costSaved := g.costEstimate(extracted.Model, 300, 300)
+					durationMS := time.Since(start).Milliseconds()
+					_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, true, nil, false, nil, attSummary, toolResult, shadowViolations, true, hit.ID, threshold, costSaved)
+					writeCachedCompletion(w, route.Provider, extracted.Model, hit.ResponseText)
+					return
+				}
+			}
+		}
+	}
 
 	// Step 9: Forward — get provider key and proxy
 	headers := make(map[string]string)
@@ -423,6 +507,26 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			//nolint:gosec // G705: LLM API response body (JSON), not HTML; PII-scanned/redacted before write
 			_, _ = w.Write(scannedBody)
+			// Store in semantic cache when allowed (non-streaming path; content already PII-scrubbed)
+			if cacheAllowStore && g.cacheStore != nil && g.cacheEmbedder != nil && g.cacheConfig != nil && extracted.Text != "" && capture.statusCode == 200 {
+				if content := extractContentFromOpenAIResponse(scannedBody); content != "" {
+					emb, err := g.cacheEmbedder.Embed(extracted.Text)
+					if err == nil {
+						keyHash := hex.EncodeToString(cacheKeyHash(caller.TenantID, extracted.Model, extracted.Text))
+						ttl := time.Duration(g.cacheConfig.DefaultTTL) * time.Second
+						if ttl <= 0 {
+							ttl = time.Hour
+						}
+						now := time.Now().UTC()
+						entry := &cache.Entry{
+							TenantID: caller.TenantID, CacheKey: keyHash, EmbeddingData: emb, ResponseText: content,
+							Model: extracted.Model, DataTier: "public", PIIScrubbed: true,
+							CreatedAt: now, ExpiresAt: now.Add(ttl),
+						}
+						_ = g.cacheStore.Insert(ctx, entry)
+					}
+				}
+			}
 		} else {
 			capture.flushTo(w)
 		}
@@ -457,13 +561,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		outputPIITypes = responsePII.PIITypes
 	}
 
-	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes, attSummary, toolResult, shadowViolations)
+	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes, attSummary, toolResult, shadowViolations, false, "", 0, 0)
 	if err != nil {
 		log.Warn().Err(err).Msg("gateway_forward_error")
 	}
 }
 
-func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation) error {
+func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64) error {
 	inputTokens, outputTokens := 0, 0
 	if usage != nil {
 		inputTokens, outputTokens = usage.Input, usage.Output
@@ -523,6 +627,10 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		params.ToolsFiltered = toolResult.Removed
 		params.ToolsForwarded = toolResult.Kept
 	}
+	params.CacheHit = cacheHit
+	params.CacheEntryID = cacheEntryID
+	params.CacheSimilarity = cacheSimilarity
+	params.CostSaved = costSaved
 	return RecordGatewayEvidence(ctx, g.evidenceStore, params)
 }
 
@@ -573,4 +681,46 @@ func defaultCostEstimator(model string, inputTokens, outputTokens int) float64 {
 		n = 0.01
 	}
 	return n * 0.002
+}
+
+func cacheKeyHash(tenantID, model, prompt string) []byte {
+	h := sha256.Sum256([]byte(prompt))
+	sum := sha256.Sum256([]byte(tenantID + "|" + model + "|" + hex.EncodeToString(h[:])))
+	return sum[:]
+}
+
+func extractContentFromOpenAIResponse(body []byte) string {
+	var v struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil || len(v.Choices) == 0 {
+		return ""
+	}
+	return v.Choices[0].Message.Content
+}
+
+// writeCachedCompletion writes a minimal OpenAI-compatible chat completion JSON with the cached content.
+func writeCachedCompletion(w http.ResponseWriter, provider, model string, content string) {
+	w.Header().Set("Content-Type", "application/json")
+	resp := map[string]interface{}{
+		"id":     "cache-" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		"object": "chat.completion",
+		"model":  model,
+		"choices": []map[string]interface{}{
+			{
+				"index": 0,
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": content,
+				},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]interface{}{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }

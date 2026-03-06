@@ -94,6 +94,7 @@ func checkConfig() []CheckResult {
 	results = append(results, checkLLMKeys())
 	results = append(results, checkCryptoKeys(cfg)...)
 	results = append(results, checkEvidenceDB(cfg))
+	results = append(results, checkCache(cfg))
 	return results
 }
 
@@ -205,6 +206,58 @@ func checkEvidenceDB(cfg *config.Config) CheckResult {
 	return CheckResult{
 		Name: "evidence_db", Category: "config", Status: "pass",
 		Message: cfg.EvidenceDBPath(),
+	}
+}
+
+// checkCache validates cache config when present. Pass when disabled; when enabled, validate config and writable path.
+func checkCache(cfg *config.Config) CheckResult {
+	if cfg.Cache == nil || !cfg.Cache.Enabled {
+		return CheckResult{
+			Name: "cache", Category: "config", Status: "pass",
+			Message: "Cache disabled (optional)",
+		}
+	}
+	if cfg.Cache.DefaultTTL <= 0 {
+		return CheckResult{
+			Name: "cache", Category: "config", Status: "fail",
+			Message: "cache.default_ttl must be positive when cache is enabled",
+			Fix:     "Set cache.default_ttl to a positive value (e.g. 3600) in talon.config.yaml",
+		}
+	}
+	if cfg.Cache.SimilarityThreshold <= 0 || cfg.Cache.SimilarityThreshold > 1 {
+		return CheckResult{
+			Name: "cache", Category: "config", Status: "fail",
+			Message: "cache.similarity_threshold must be in (0, 1] when cache is enabled",
+			Fix:     "Set cache.similarity_threshold (e.g. 0.92) in talon.config.yaml",
+		}
+	}
+	if cfg.Cache.MaxEntriesPerTenant <= 0 {
+		return CheckResult{
+			Name: "cache", Category: "config", Status: "fail",
+			Message: "cache.max_entries_per_tenant must be positive when cache is enabled",
+			Fix:     "Set cache.max_entries_per_tenant (e.g. 10000) in talon.config.yaml",
+		}
+	}
+	cacheDir := filepath.Dir(cfg.CacheDBPath())
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		return CheckResult{
+			Name: "cache", Category: "config", Status: "fail",
+			Message: fmt.Sprintf("Cache path directory %s: %v", cacheDir, err),
+			Fix:     "Ensure data_dir is writable or create the cache directory",
+		}
+	}
+	testPath := filepath.Join(cacheDir, ".doctor-cache-write-test")
+	if err := os.WriteFile(testPath, []byte("ok"), 0o600); err != nil {
+		return CheckResult{
+			Name: "cache", Category: "config", Status: "fail",
+			Message: fmt.Sprintf("Cache path not writable: %s — %v", cfg.CacheDBPath(), err),
+			Fix:     "Ensure data_dir is writable",
+		}
+	}
+	_ = os.Remove(testPath)
+	return CheckResult{
+		Name: "cache", Category: "config", Status: "pass",
+		Message: fmt.Sprintf("%s (enabled, writable)", cfg.CacheDBPath()),
 	}
 }
 

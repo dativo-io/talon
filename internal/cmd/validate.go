@@ -19,7 +19,7 @@ var (
 var validateCmd = &cobra.Command{
 	Use:   "validate",
 	Short: "Validate agent policy and configuration",
-	Long:  "Validates .talon.yaml against schema and runs policy compilation checks",
+	Long:  "Validates agent policy (.talon.yaml) against schema and runs policy compilation checks. To check infrastructure config (talon.config.yaml, including cache), run 'talon doctor'.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 

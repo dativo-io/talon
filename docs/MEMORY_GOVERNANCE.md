@@ -13,6 +13,20 @@ Talon's agent memory is a compliance asset. Every learning is governed, audited,
 | **Deduplication** | With `dedup_window_minutes`, the same prompt (and attachments) within the window does not create a duplicate entry. |
 | **Shadow evaluation** | Use `mode: shadow` to log what would be written and injected without persisting; then switch to `active`. |
 
+## Cache vs memory
+
+Talon has two different mechanisms that are sometimes confused:
+
+| | **Semantic cache** (gateway/proxy) | **Agent memory** (this document) |
+|---|---|---|
+| **Purpose** | Cost and latency: reuse LLM responses for similar prompts so fewer calls hit the model. | Safety and compliance: what the agent is allowed to *remember* across sessions. |
+| **When** | Checked *before* every LLM call; if a similar request was seen recently, return cached (PII-scrubbed) response. | Injected into prompts for *later* runs so the model can use stored context (facts, preferences, procedures). |
+| **Duration** | Minutes to days (TTL, eviction). | Weeks to indefinitely (retention, max entries). |
+| **Governance** | Cache TTL, data tier, PII scrubbing, GDPR erasure. | Categories, PII policy, conflict detection, constitutional AI. |
+| **Config** | `talon.config.yaml` under `cache` (infrastructure). | `agent.talon.yaml` under `memory` (agent policy). |
+
+The **cache** sits at the proxy/request layer (gateway or runner LLM path). **Memory** sits at the agent layer. Both can use similarity-style techniques for different goals: cache avoids redundant LLM calls; memory shapes what the agent “knows” over time.
+
 ## How It Works
 
 - Agents compress each run into ~500-token observations (not raw transcripts)

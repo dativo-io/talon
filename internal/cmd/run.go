@@ -15,6 +15,7 @@ import (
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/attachment"
+	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
@@ -150,7 +151,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		defer memStore.Close()
 	}
 
-	runner := agent.NewRunner(agent.RunnerConfig{
+	runnerCfg := agent.RunnerConfig{
 		PolicyDir:        ".",
 		Classifier:       cls,
 		AttScanner:       attScanner,
@@ -162,7 +163,31 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		ActiveRunTracker: runActiveRunTracker,
 		Memory:           memStore,
 		Pricing:          pricingTable,
-	})
+	}
+	if cfg.Cache != nil && cfg.Cache.Enabled {
+		cacheStore, err := cache.NewStore(cfg.CacheDBPath(), cfg.SigningKey)
+		if err != nil {
+			log.Warn().Err(err).Msg("cache store unavailable, running without semantic cache")
+		} else {
+			defer cacheStore.Close()
+			cachePolicy, err := cache.NewEvaluator(ctx)
+			if err != nil {
+				log.Warn().Err(err).Msg("cache policy evaluator unavailable, running without semantic cache")
+			} else {
+				runnerCfg.CacheStore = cacheStore
+				runnerCfg.CacheEmbedder = cache.NewBM25()
+				runnerCfg.CacheScrubber = cache.NewPIIScrubber(cls)
+				runnerCfg.CachePolicy = cachePolicy
+				runnerCfg.CacheConfig = &agent.RunnerCacheConfig{
+					Enabled:             cfg.Cache.Enabled,
+					DefaultTTL:          cfg.Cache.DefaultTTL,
+					SimilarityThreshold: cfg.Cache.SimilarityThreshold,
+					MaxEntriesPerTenant: cfg.Cache.MaxEntriesPerTenant,
+				}
+			}
+		}
+	}
+	runner := agent.NewRunner(runnerCfg)
 
 	var attachments []agent.Attachment
 	for _, path := range runAttachments {

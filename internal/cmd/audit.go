@@ -274,6 +274,7 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 		"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "cost", "model_used", "duration_ms", "has_error",
 		"input_tier", "output_tier", "pii_detected", "pii_redacted", "policy_reasons", "tools_called", "input_hash", "output_hash",
 		"observation_mode_override", "shadow_violation_types",
+		"cache_hit", "cache_entry_id", "cost_saved",
 	}
 	if err := writer.Write(header); err != nil {
 		return err
@@ -301,6 +302,9 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 			r.OutputHash,
 			strconv.FormatBool(r.ObservationModeOverride),
 			r.ShadowViolationTypesCSV(),
+			strconv.FormatBool(r.CacheHit),
+			r.CacheEntryID,
+			formatCostNumeric(r.CostSaved),
 		}
 		if err := writer.Write(row); err != nil {
 			return err
@@ -354,7 +358,11 @@ func renderAuditList(w io.Writer, index []evidence.Index) {
 		if entry.HasError {
 			errorMark = " [ERROR]"
 		}
-		fmt.Fprintf(w, "  %s %s | %s | %s/%s | %s | €%s | %dms%s\n",
+		cacheMark := ""
+		if entry.CacheHit {
+			cacheMark = " [CACHE]"
+		}
+		fmt.Fprintf(w, "  %s %s | %s | %s/%s | %s | €%s | %dms%s%s\n",
 			status,
 			entry.ID,
 			entry.Timestamp.Format("2006-01-02 15:04:05"),
@@ -364,6 +372,7 @@ func renderAuditList(w io.Writer, index []evidence.Index) {
 			formatCost(entry.Cost),
 			entry.DurationMS,
 			errorMark,
+			cacheMark,
 		)
 	}
 }
@@ -406,6 +415,8 @@ func renderVerifyResult(w io.Writer, evidenceID string, valid bool, ev *evidence
 }
 
 // renderAuditShow writes a full evidence record (Layer 3) to w. HMAC status is shown prominently.
+//
+//nolint:gocyclo // display logic for all evidence fields including cache, tool gov, memory
 func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 	const sep = "─────────────────────────────────────────────────────"
 	fmt.Fprintf(w, "Evidence: %s\n", ev.ID)
@@ -465,6 +476,13 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		fmt.Fprintf(w, "  Requested:  %s\n", req)
 		fmt.Fprintf(w, "  Filtered:   %s\n", filt)
 		fmt.Fprintf(w, "  Forwarded:  %s\n", fwd)
+	}
+	if ev.CacheHit {
+		fmt.Fprintln(w, "Cache")
+		fmt.Fprintf(w, "  Hit:         true\n")
+		fmt.Fprintf(w, "  Entry ID:    %s\n", ev.CacheEntryID)
+		fmt.Fprintf(w, "  Similarity:  %.2f\n", ev.CacheSimilarity)
+		fmt.Fprintf(w, "  Cost Saved:  €%s\n", formatCost(ev.CostSaved))
 	}
 	if ev.Execution.MemoryTokens > 0 {
 		fmt.Fprintf(w, "Memory Tokens: %d (injected into prompt)\n", ev.Execution.MemoryTokens)

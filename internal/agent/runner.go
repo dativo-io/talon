@@ -36,6 +36,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/attachment"
+	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/classifier"
 	talonctx "github.com/dativo-io/talon/internal/context"
 	"github.com/dativo-io/talon/internal/evidence"
@@ -180,6 +181,20 @@ type Runner struct {
 	governance        *memory.Governance
 	consolidator      *memory.Consolidator  // optional; when set, memory writes go through AUDN consolidation
 	pricing           *pricing.PricingTable // optional; when set, evidence gets pre/post cost estimates
+	// Semantic cache (optional; when nil or cacheConfig.Enabled false, cache is skipped)
+	cacheStore    *cache.Store
+	cacheEmbedder *cache.BM25
+	cacheScrubber *cache.PIIScrubber
+	cachePolicy   *cache.Evaluator
+	cacheConfig   *cacheConfig
+}
+
+// cacheConfig is a minimal view of cache config for the runner (avoids importing config in agent).
+type cacheConfig struct {
+	Enabled             bool
+	DefaultTTL          int
+	SimilarityThreshold float64
+	MaxEntriesPerTenant int
 }
 
 // RunnerConfig holds the dependencies for constructing a Runner.
@@ -200,6 +215,20 @@ type RunnerConfig struct {
 	Hooks             *HookRegistry         // optional; nil = no hooks
 	Memory            *memory.Store         // optional; nil = memory disabled
 	Pricing           *pricing.PricingTable // optional; when set, evidence gets pre_request_estimate and post_request_cost
+	// Semantic cache (all optional; when nil or CacheConfig.Enabled false, cache is skipped)
+	CacheStore    *cache.Store
+	CacheEmbedder *cache.BM25
+	CacheScrubber *cache.PIIScrubber
+	CachePolicy   *cache.Evaluator
+	CacheConfig   *RunnerCacheConfig
+}
+
+// RunnerCacheConfig is a subset of config.CacheConfig for the runner (avoids circular import).
+type RunnerCacheConfig struct {
+	Enabled             bool
+	DefaultTTL          int
+	SimilarityThreshold float64
+	MaxEntriesPerTenant int
 }
 
 // NewRunner creates an agent runner with the given dependencies.
@@ -228,6 +257,18 @@ func NewRunner(cfg RunnerConfig) *Runner {
 	}
 	if cfg.Memory != nil {
 		r.consolidator = memory.NewConsolidator(cfg.Memory)
+	}
+	if cfg.CacheStore != nil && cfg.CacheEmbedder != nil && cfg.CachePolicy != nil && cfg.CacheConfig != nil && cfg.CacheConfig.Enabled {
+		r.cacheStore = cfg.CacheStore
+		r.cacheEmbedder = cfg.CacheEmbedder
+		r.cacheScrubber = cfg.CacheScrubber
+		r.cachePolicy = cfg.CachePolicy
+		r.cacheConfig = &cacheConfig{
+			Enabled:             cfg.CacheConfig.Enabled,
+			DefaultTTL:          cfg.CacheConfig.DefaultTTL,
+			SimilarityThreshold: cfg.CacheConfig.SimilarityThreshold,
+			MaxEntriesPerTenant: cfg.CacheConfig.MaxEntriesPerTenant,
+		}
 	}
 	return r
 }
@@ -877,6 +918,77 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	// Only OpenAI supports tool calls in the API; other providers would ignore or error on tool messages
 	useAgenticLoop := len(llmTools) > 0 && maxIterations >= 2 && provider.Name() == "openai"
 
+	var cacheAllowLookup, cacheAllowStore bool
+	if !useAgenticLoop && r.cacheStore != nil && r.cacheConfig != nil && r.cacheConfig.Enabled && r.cachePolicy != nil && r.cacheEmbedder != nil {
+		dataTierStr := "public"
+		switch tier {
+		case 1:
+			dataTierStr = "internal"
+		case 2:
+			dataTierStr = "confidential"
+		}
+		piiSev := "none"
+		if len(piiNames) > 0 {
+			if tier == 2 {
+				piiSev = "high"
+			} else {
+				piiSev = "low"
+			}
+		}
+		cin := &cache.PolicyInput{
+			TenantID: req.TenantID, DataTier: dataTierStr, PIIDetected: len(piiNames) > 0,
+			PIISeverity: piiSev, Model: model, RequestType: "completion", CacheEnabled: true,
+		}
+		if cres, err := r.cachePolicy.Evaluate(ctx, cin); err == nil && cres != nil {
+			cacheAllowLookup = cres.AllowLookup
+			cacheAllowStore = cres.AllowStore
+		}
+		if cacheAllowLookup {
+			queryBlob, err := r.cacheEmbedder.Embed(prompt)
+			if err == nil {
+				threshold := r.cacheConfig.SimilarityThreshold
+				if threshold <= 0 {
+					threshold = 0.92
+				}
+				maxCand := 1000
+				if r.cacheConfig.MaxEntriesPerTenant > 0 && r.cacheConfig.MaxEntriesPerTenant < maxCand {
+					maxCand = r.cacheConfig.MaxEntriesPerTenant
+				}
+				hit, err := r.cacheStore.Lookup(ctx, req.TenantID, queryBlob, threshold, maxCand, r.cacheEmbedder.SimilarityFunc())
+				if err == nil && hit != nil {
+					_ = r.cacheStore.IncrementHitCount(ctx, hit.ID)
+					costSaved := 0.0
+					if r.pricing != nil {
+						costSaved, _ = r.pricing.Estimate(provider.Name(), model, 300, 300)
+					}
+					duration := time.Since(startTime)
+					cacheEv, _ := r.evidence.Generate(ctx, evidence.GenerateParams{
+						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+						InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
+						PolicyDecision: policyDec, Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
+						AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
+						ModelRoutingRationale: modelRationale + " (cache hit)", DurationMS: duration.Milliseconds(),
+						SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, Compliance: compliance,
+						ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
+						CacheHit: true, CacheEntryID: hit.ID, CacheSimilarity: threshold, CostSaved: costSaved,
+						Cost: 0, Tokens: evidence.TokenUsage{}, OutputResponse: hit.ResponseText,
+					})
+					resp := &RunResponse{
+						Response:    hit.ResponseText,
+						Cost:        0,
+						DurationMS:  duration.Milliseconds(),
+						PolicyAllow: true,
+						ModelUsed:   model,
+					}
+					if cacheEv != nil {
+						resp.EvidenceID = cacheEv.ID
+					}
+					return resp, nil
+				}
+			}
+		}
+	}
+
 	var messages []llm.Message
 	var llmResp *llm.Response
 	var cost float64
@@ -1089,6 +1201,27 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		_, _ = r.fireHook(ctx, HookPostLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 			"model": model, "cost_estimate": cost, "input_tokens": resp.InputTokens, "output_tokens": resp.OutputTokens,
 		})
+		// Store in semantic cache when allowed (PII-scrubbed response)
+		if cacheAllowStore && r.cacheStore != nil && r.cacheScrubber != nil && r.cacheEmbedder != nil && r.cacheConfig != nil {
+			scrubbed := r.cacheScrubber.Scrub(ctx, resp.Content)
+			emb, err := r.cacheEmbedder.Embed(prompt)
+			if err == nil {
+				promptHash := sha256.Sum256([]byte(prompt))
+				keyHash := sha256.Sum256([]byte(req.TenantID + "|" + model + "|" + hex.EncodeToString(promptHash[:])))
+				cacheKey := hex.EncodeToString(keyHash[:])
+				ttl := time.Duration(r.cacheConfig.DefaultTTL) * time.Second
+				if ttl <= 0 {
+					ttl = time.Hour
+				}
+				now := time.Now().UTC()
+				entry := &cache.Entry{
+					TenantID: req.TenantID, CacheKey: cacheKey, EmbeddingData: emb, ResponseText: scrubbed,
+					Model: model, DataTier: "public", PIIScrubbed: scrubbed != resp.Content,
+					CreatedAt: now, ExpiresAt: now.Add(ttl),
+				}
+				_ = r.cacheStore.Insert(ctx, entry)
+			}
+		}
 		// Step 7.5: Pre-specified tool invocations (legacy path)
 		toolsCalled = r.executeToolInvocations(ctx, span, req, policyEval, pol)
 	}

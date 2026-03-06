@@ -25,6 +25,13 @@ evidence:
   type: sqlite
   path: ~/.talon/evidence.db
 
+# Governed semantic cache (optional, off by default)
+cache:
+  enabled: false
+  default_ttl: 3600
+  similarity_threshold: 0.92
+  max_entries_per_tenant: 10000
+
 secrets_key_env: TALON_SECRETS_KEY
 
 tenants:

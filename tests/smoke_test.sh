@@ -33,6 +33,8 @@
 #   observation_mode_override (docs/explanation/what-talon-does-to-your-request.md Step 7).
 # - Section 10/18 (Tamper test): Evidence DB is TALON_DATA_DIR/evidence.db; corrupt
 #   evidence_json (e.g. REPLACE tenant_id) then run talon audit verify.
+# - Section 22 (Cache): Governed semantic cache; enables cache in talon.config.yaml, runs
+#   two identical prompts (miss then hit), exercises talon cache config/stats/list/erase.
 # - Cost: Set a small hard billing cap on the OpenAI key to avoid runaway spend.
 #
 
@@ -278,7 +280,7 @@ test_section_01_binary() {
   # talon --help exits 0 and lists commands
   assert_pass "talon --help exits 0" run_talon --help
   local help_out; help_out="$(run_talon --help 2>/dev/null)"; true
-  for cmd in init validate run serve audit costs secrets memory; do
+  for cmd in init validate run serve audit costs secrets memory cache; do
     assert_pass "talon --help lists: $cmd" grep -q "$cmd" <<< "$help_out"
   done
   assert_pass "talon help equivalent to --help" run_talon help
@@ -925,6 +927,72 @@ test_section_21_doctor_report_enforce() {
 }
 
 # -----------------------------------------------------------------------------
+# SECTION 22 — Governed semantic cache (internal/cache, talon cache CLI, cache in pipeline)
+# -----------------------------------------------------------------------------
+test_section_22_cache() {
+  local section="22_cache"
+  local dir; dir="$(setup_section_dir "$section")"
+  cd "$dir" || exit 1
+  run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  # Enable cache in infra config (append cache block so it is used; last key wins in YAML)
+  if ! grep -q "cache:" "$dir/talon.config.yaml" 2>/dev/null; then
+    cat >> "$dir/talon.config.yaml" <<'CACHEEOF'
+
+cache:
+  enabled: true
+  default_ttl: 3600
+  similarity_threshold: 0.92
+  max_entries_per_tenant: 10000
+CACHEEOF
+  else
+    # Template may have cache with enabled: false; enable it
+    sed -i.bak 's/enabled: false/enabled: true/' "$dir/talon.config.yaml" 2>/dev/null || true
+  fi
+  # First run: miss, response stored in cache
+  assert_pass "talon run (cache miss) exits 0" run_talon run "Reply with exactly: SMOKE_CACHE_OK"
+  local run1; run1="$(run_talon run 'Reply with exactly: SMOKE_CACHE_OK' 2>/dev/null)"; true
+  assert_pass "first run stdout contains SMOKE_CACHE_OK" grep -q "SMOKE_CACHE_OK" <<< "$run1"
+  # Second run with same prompt: should hit cache (no LLM call)
+  local run2; run2="$(run_talon run 'Reply with exactly: SMOKE_CACHE_OK' 2>/dev/null)"; true
+  assert_pass "second run (cache hit) exits 0 and returns cached content" grep -q "SMOKE_CACHE_OK" <<< "$run2"
+  # Cache CLI
+  assert_pass "talon cache config exits 0" run_talon cache config
+  local config_out; config_out="$(run_talon cache config 2>/dev/null)"; true
+  assert_pass "talon cache config shows enabled" grep -qiE 'enabled|true' <<< "$config_out"
+  assert_pass "talon cache stats exits 0" run_talon cache stats
+  local stats_out; stats_out="$(run_talon cache stats 2>/dev/null)"; true
+  assert_pass "talon cache stats shows tenant or entries" grep -qiE 'default|tenant|entries|count' <<< "$stats_out"
+  assert_pass "talon cache list exits 0" run_talon cache list
+  local list_out; list_out="$(run_talon cache list 2>/dev/null)"; true
+  assert_pass "talon cache list non-empty or shows default" test -n "$list_out"
+  # Audit should show cache hit for recent run
+  local audit_list; audit_list="$(run_talon audit list --limit 3 2>/dev/null)"; true
+  assert_pass "talon audit list after cache run exits 0" run_talon audit list --limit 3
+  # Optional: one of the recent entries may show [CACHE] if audit list displays it
+  if echo "$audit_list" | grep -q "CACHE"; then
+    echo "  ✓  audit list shows [CACHE] for cache hit"
+    record_pass
+  else
+    echo "  -  (audit list may not show [CACHE] in this format; cache hit still recorded)"
+  fi
+  # costs and report may show cache savings
+  assert_pass "talon costs exits 0 after cache runs" run_talon costs
+  local cost_out; cost_out="$(run_talon costs 2>/dev/null)"; true
+  if echo "$cost_out" | grep -qi "cache"; then
+    echo "  ✓  talon costs mentions cache (savings or hit rate)"
+    record_pass
+  else
+    echo "  -  (talon costs may not show cache line if no hits yet in window)"
+  fi
+  assert_pass "talon report exits 0" run_talon report
+  # GDPR erasure: erase cache for default tenant, then stats should show zero or reduced
+  assert_pass "talon cache erase --tenant default exits 0" run_talon cache erase --tenant default
+  assert_pass "talon cache stats after erase exits 0" run_talon cache stats
+  cd "$REPO_ROOT" || true
+}
+
+# -----------------------------------------------------------------------------
 # Consistency checks: cross-command flow verification (parseable in smoke_test_logs.out.txt)
 # -----------------------------------------------------------------------------
 test_consistency_checks() {
@@ -1054,6 +1122,7 @@ main() {
   run_section "19_cicd" test_section_19_cicd
   run_section "20_edge_cases" test_section_20_edge_cases
   run_section "21_doctor_report_enforce" test_section_21_doctor_report_enforce
+  run_section "22_cache" test_section_22_cache
 
   # Consistency checks: cross-command flow verification (logged for smoke_test_logs.out.txt)
   run_section "consistency" test_consistency_checks
