@@ -683,6 +683,9 @@ func defaultCostEstimator(model string, inputTokens, outputTokens int) float64 {
 	return n * 0.002
 }
 
+// cacheKeyHash returns a deterministic digest for semantic cache lookup.
+// This is not password hashing: it hashes tenant+model+prompt for cache key derivation.
+// SHA-256 is appropriate here (OWASP: use SHA-2 for non-password hashing).
 func cacheKeyHash(tenantID, model, prompt string) []byte {
 	h := sha256.Sum256([]byte(prompt))
 	sum := sha256.Sum256([]byte(tenantID + "|" + model + "|" + hex.EncodeToString(h[:])))
