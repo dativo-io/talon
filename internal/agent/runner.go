@@ -1207,9 +1207,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			scrubbed := r.cacheScrubber.Scrub(ctx, resp.Content)
 			emb, err := r.cacheEmbedder.Embed(prompt)
 			if err == nil {
-				promptHash := sha256.Sum256([]byte(prompt))
-				keyHash := sha256.Sum256([]byte(req.TenantID + "|" + model + "|" + hex.EncodeToString(promptHash[:])))
-				cacheKey := hex.EncodeToString(keyHash[:])
+				cacheKey := cache.DeriveEntryKey(req.TenantID, model, prompt)
 				ttl := time.Duration(r.cacheConfig.DefaultTTL) * time.Second
 				if ttl <= 0 {
 					ttl = time.Hour

@@ -2,8 +2,6 @@ package gateway
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -513,7 +511,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if content := extractContentFromOpenAIResponse(scannedBody); content != "" {
 					emb, err := g.cacheEmbedder.Embed(extracted.Text)
 					if err == nil {
-						keyHash := hex.EncodeToString(cacheKeyHash(caller.TenantID, extracted.Model, extracted.Text))
+						keyHash := cache.DeriveEntryKey(caller.TenantID, extracted.Model, extracted.Text)
 						ttl := time.Duration(g.cacheConfig.DefaultTTL) * time.Second
 						if ttl <= 0 {
 							ttl = time.Hour
@@ -682,15 +680,6 @@ func defaultCostEstimator(model string, inputTokens, outputTokens int) float64 {
 		n = 0.01
 	}
 	return n * 0.002
-}
-
-// cacheKeyHash returns a deterministic digest for semantic cache lookup.
-// This is not password hashing: it hashes tenant+model+prompt for cache key derivation.
-// SHA-256 is appropriate here (OWASP: use SHA-2 for non-password hashing).
-func cacheKeyHash(tenantID, model, prompt string) []byte {
-	h := sha256.Sum256([]byte(prompt))
-	sum := sha256.Sum256([]byte(tenantID + "|" + model + "|" + hex.EncodeToString(h[:])))
-	return sum[:]
 }
 
 func extractContentFromOpenAIResponse(body []byte) string {
