@@ -954,8 +954,9 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				if r.cacheConfig.MaxEntriesPerTenant > 0 && r.cacheConfig.MaxEntriesPerTenant < maxCand {
 					maxCand = r.cacheConfig.MaxEntriesPerTenant
 				}
-				hit, err := r.cacheStore.Lookup(ctx, req.TenantID, queryBlob, threshold, maxCand, r.cacheEmbedder.SimilarityFunc())
-				if err == nil && hit != nil {
+				lookupResult, err := r.cacheStore.Lookup(ctx, req.TenantID, queryBlob, threshold, maxCand, r.cacheEmbedder.SimilarityFunc())
+				if err == nil && lookupResult != nil {
+					hit := lookupResult.Entry
 					_ = r.cacheStore.IncrementHitCount(ctx, hit.ID)
 					costSaved := 0.0
 					if r.pricing != nil {
@@ -970,7 +971,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						ModelRoutingRationale: modelRationale + " (cache hit)", DurationMS: duration.Milliseconds(),
 						SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, Compliance: compliance,
 						ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
-						CacheHit: true, CacheEntryID: hit.ID, CacheSimilarity: threshold, CostSaved: costSaved,
+						CacheHit: true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity, CostSaved: costSaved,
 						Cost: 0, Tokens: evidence.TokenUsage{}, OutputResponse: hit.ResponseText,
 					})
 					resp := &RunResponse{

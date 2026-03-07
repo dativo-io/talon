@@ -419,12 +419,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if g.cacheConfig.MaxEntriesPerTenant > 0 && g.cacheConfig.MaxEntriesPerTenant < maxCand {
 					maxCand = g.cacheConfig.MaxEntriesPerTenant
 				}
-				hit, err := g.cacheStore.Lookup(ctx, caller.TenantID, queryBlob, threshold, maxCand, g.cacheEmbedder.SimilarityFunc())
-				if err == nil && hit != nil {
+				lookupResult, err := g.cacheStore.Lookup(ctx, caller.TenantID, queryBlob, threshold, maxCand, g.cacheEmbedder.SimilarityFunc())
+				if err == nil && lookupResult != nil {
+					hit := lookupResult.Entry
 					_ = g.cacheStore.IncrementHitCount(ctx, hit.ID)
 					costSaved := g.costEstimate(extracted.Model, 300, 300)
 					durationMS := time.Since(start).Milliseconds()
-					_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, true, nil, false, nil, attSummary, toolResult, shadowViolations, true, hit.ID, threshold, costSaved)
+					_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, true, nil, false, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved)
 					writeCachedCompletion(w, route.Provider, extracted.Model, hit.ResponseText)
 					return
 				}

@@ -43,6 +43,14 @@ type Entry struct {
 	HMACSignature string
 }
 
+// LookupResult is the return type of Store.Lookup. It includes the matching
+// entry and the actual similarity score (in [0, 1]) so callers can record
+// accurate audit data instead of the configured threshold.
+type LookupResult struct {
+	Entry      *Entry
+	Similarity float64
+}
+
 // Store persists semantic cache entries in SQLite with HMAC integrity.
 type Store struct {
 	db     *sql.DB
@@ -183,7 +191,9 @@ func nullStr(s string) interface{} {
 // Lookup finds the best-matching cache entry for the tenant and query embedding
 // using the provided similarity function. Returns nil if no candidate exceeds the threshold.
 // maxCandidates limits how many entries are loaded for comparison (e.g. 1000).
-func (s *Store) Lookup(ctx context.Context, tenantID string, queryEmbedding []byte, threshold float64, maxCandidates int, sim SimilarityFunc) (*Entry, error) {
+// The returned LookupResult includes the actual similarity score so callers can
+// record it in evidence (audit trail) instead of the configured threshold.
+func (s *Store) Lookup(ctx context.Context, tenantID string, queryEmbedding []byte, threshold float64, maxCandidates int, sim SimilarityFunc) (*LookupResult, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, tenant_id, user_id, cache_key, embedding_data, response_text, model, data_tier, pii_scrubbed,
 			hit_count, created_at, expires_at, last_accessed, hmac_signature
@@ -233,8 +243,9 @@ func (s *Store) Lookup(ctx context.Context, tenantID string, queryEmbedding []by
 	}
 	if best != nil {
 		best.HitCount++
+		return &LookupResult{Entry: best, Similarity: bestScore}, nil
 	}
-	return best, nil
+	return nil, nil
 }
 
 // GetByID returns the cache entry by ID, or nil if not found.
