@@ -79,6 +79,7 @@ type WizardState struct {
 	RegionID         string
 	DataSovereignty  string // "eu_strict" | "eu_preferred" | "global"
 	EnabledFeatures  []string
+	CacheEnabled     bool // semantic cache for cost savings (off by default)
 }
 
 // GatewayBlock is the gateway section written to talon.config.yaml when PackID is openclaw.
@@ -139,6 +140,14 @@ type GatewayTimeouts struct {
 	StreamIdleTimeout string `yaml:"stream_idle_timeout"`
 }
 
+// CacheBlock is the cache section in talon.config.yaml (governed semantic cache).
+type CacheBlock struct {
+	Enabled             bool    `yaml:"enabled"`
+	DefaultTTL          int     `yaml:"default_ttl"`
+	SimilarityThreshold float64 `yaml:"similarity_threshold"`
+	MaxEntriesPerTenant int     `yaml:"max_entries_per_tenant"`
+}
+
 // InfraYAML is the structure written to talon.config.yaml.
 type InfraYAML struct {
 	LLM *struct {
@@ -152,6 +161,7 @@ type InfraYAML struct {
 		Type string `yaml:"type"`
 		Path string `yaml:"path"`
 	} `yaml:"evidence"`
+	Cache         *CacheBlock   `yaml:"cache,omitempty"`
 	SecretsKeyEnv string        `yaml:"secrets_key_env"`
 	Tenants       []TenantBlock `yaml:"tenants"`
 	Gateway       *GatewayBlock `yaml:"gateway,omitempty"`
@@ -416,6 +426,10 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 		}
 	}
 
+	// Q6: Enable semantic cache (optional)
+	cachePrompt := readLine(scan, out, "Enable semantic cache for cost savings? (Y/n)", "n")
+	state.CacheEnabled = strings.ToLower(strings.TrimSpace(cachePrompt)) != "n" && strings.ToLower(strings.TrimSpace(cachePrompt)) != "no"
+
 	// Confirmation
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "─────────────────────────────────────────────────────────")
@@ -429,6 +443,7 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "  Data residency:    %s\n", dataResidencyLabel(state.DataSovereignty))
 	fmt.Fprintf(out, "  Features:          %s\n", strings.Join(state.EnabledFeatures, ", "))
+	fmt.Fprintf(out, "  Semantic cache:    %s\n", map[bool]string{true: "enabled", false: "disabled"}[state.CacheEnabled])
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "  Files to create:")
 	fmt.Fprintln(out, "    agent.talon.yaml    — agent policy (capabilities, memory, compliance)")
@@ -835,6 +850,13 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 		Type string `yaml:"type"`
 		Path string `yaml:"path"`
 	}{Type: "sqlite", Path: "~/.talon/evidence.db"}
+	// Cache block: always emit so the option is documented; enabled from wizard answer.
+	cfg.Cache = &CacheBlock{
+		Enabled:             state.CacheEnabled,
+		DefaultTTL:          3600,
+		SimilarityThreshold: 0.92,
+		MaxEntriesPerTenant: 10000,
+	}
 	cfg.SecretsKeyEnv = "TALON_SECRETS_KEY"
 	tenantID := state.AgentName
 	if tenantID == "" {

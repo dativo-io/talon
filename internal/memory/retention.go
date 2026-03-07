@@ -66,6 +66,7 @@ func RunRetention(ctx context.Context, store *Store, pol *policy.Policy) {
 // StartRetentionLoop runs retention every interval in a goroutine.
 // Returns a cancel function to stop the loop.
 func StartRetentionLoop(ctx context.Context, store *Store, pol *policy.Policy, interval time.Duration) func() {
+	//nolint:gosec // G118: cancel is returned to caller for shutdown
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		ticker := time.NewTicker(interval)

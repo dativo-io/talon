@@ -72,17 +72,28 @@ type LLMConfig struct {
 	PricingFile string                       `mapstructure:"pricing_file"` // path to pricing/models.yaml; default "pricing/models.yaml"
 }
 
+// CacheConfig is the optional cache block from talon.config.yaml (governed semantic cache).
+// When nil or Enabled false, no cache lookup or storage occurs.
+type CacheConfig struct {
+	Enabled             bool           `mapstructure:"enabled"`                // default false when section present
+	DefaultTTL          int            `mapstructure:"default_ttl"`            // seconds; e.g. 3600
+	TTLByTier           map[string]int `mapstructure:"ttl_by_tier"`            // optional tier-specific TTLs
+	SimilarityThreshold float64        `mapstructure:"similarity_threshold"`   // e.g. 0.92
+	MaxEntriesPerTenant int            `mapstructure:"max_entries_per_tenant"` // cap per tenant
+}
+
 // Config holds resolved operator-level configuration for a Talon process.
 // For tenant-level secrets (LLM API keys, webhook tokens), use the
 // secrets vault (internal/secrets.SecretStore).
 type Config struct {
-	DataDir         string     // Base directory for all state (~/.talon)
-	SecretsKey      string     // AES-256 encryption key for the vault (exactly 32 bytes)
-	SigningKey      string     // HMAC-SHA256 key for evidence signing (≥32 bytes)
-	DefaultPolicy   string     // Filename of the agent policy file (agent.talon.yaml by default)
-	MaxAttachmentMB int        // Maximum attachment size in MB
-	OllamaBaseURL   string     // Ollama API endpoint (operator infrastructure)
-	LLM             *LLMConfig // Optional: llm block from config file (providers, routing)
+	DataDir         string       // Base directory for all state (~/.talon)
+	SecretsKey      string       // AES-256 encryption key for the vault (exactly 32 bytes)
+	SigningKey      string       // HMAC-SHA256 key for evidence signing (≥32 bytes)
+	DefaultPolicy   string       // Filename of the agent policy file (agent.talon.yaml by default)
+	MaxAttachmentMB int          // Maximum attachment size in MB
+	OllamaBaseURL   string       // Ollama API endpoint (operator infrastructure)
+	LLM             *LLMConfig   // Optional: llm block from config file (providers, routing)
+	Cache           *CacheConfig // Optional: governed semantic cache (off by default)
 
 	usingDefaultSecretsKey bool
 	usingDefaultSigningKey bool
@@ -117,6 +128,12 @@ func (c *Config) EvidenceDBPath() string {
 // MemoryDBPath returns the full path to the memory SQLite database.
 func (c *Config) MemoryDBPath() string {
 	return filepath.Join(c.DataDir, "memory.db")
+}
+
+// CacheDBPath returns the full path to the semantic cache SQLite database.
+// Only relevant when Config.Cache != nil && Config.Cache.Enabled.
+func (c *Config) CacheDBPath() string {
+	return filepath.Join(c.DataDir, "cache.db")
 }
 
 // EnsureDataDir creates the data directory if it doesn't exist.
@@ -162,6 +179,7 @@ func Load() (*Config, error) {
 		MaxAttachmentMB: viper.GetInt(KeyMaxAttachmentMB),
 		OllamaBaseURL:   viper.GetString(KeyOllamaBaseURL),
 		LLM:             loadLLMConfig(),
+		Cache:           loadCacheConfig(),
 	}
 
 	if cfg.SecretsKey == "" {
@@ -196,6 +214,36 @@ func loadLLMConfig() *LLMConfig {
 		llm.PricingFile = DefaultPricingFile
 	}
 	return &llm
+}
+
+// Default cache values when the cache section is present.
+const (
+	DefaultCacheTTL                 = 3600 // 1 hour
+	DefaultCacheSimilarity          = 0.92
+	DefaultCacheMaxEntriesPerTenant = 10000
+)
+
+// loadCacheConfig reads the optional cache block from Viper. Returns nil when absent.
+// When present, Enabled defaults to false so cache is off unless explicitly enabled.
+func loadCacheConfig() *CacheConfig {
+	if !viper.IsSet("cache") {
+		return nil
+	}
+	var cache CacheConfig
+	if err := viper.UnmarshalKey("cache", &cache); err != nil {
+		return nil
+	}
+	// Defaults for optional fields when section exists
+	if cache.DefaultTTL <= 0 {
+		cache.DefaultTTL = DefaultCacheTTL
+	}
+	if cache.SimilarityThreshold <= 0 {
+		cache.SimilarityThreshold = DefaultCacheSimilarity
+	}
+	if cache.MaxEntriesPerTenant <= 0 {
+		cache.MaxEntriesPerTenant = DefaultCacheMaxEntriesPerTenant
+	}
+	return &cache
 }
 
 func resolveDataDir() string {

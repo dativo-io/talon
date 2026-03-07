@@ -37,6 +37,11 @@ type RecordGatewayEvidenceParams struct {
 	ToolsRequested          []string
 	ToolsFiltered           []string
 	ToolsForwarded          []string
+	// Semantic cache (set when response was served from cache)
+	CacheHit        bool
+	CacheEntryID    string
+	CacheSimilarity float64
+	CostSaved       float64
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -87,6 +92,10 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		ShadowViolations:        params.ShadowViolations,
 		AuditTrail:              evidence.AuditTrail{},
 		Compliance:              evidence.Compliance{},
+		CacheHit:                params.CacheHit,
+		CacheEntryID:            params.CacheEntryID,
+		CacheSimilarity:         params.CacheSimilarity,
+		CostSaved:               params.CostSaved,
 	}
 	if !params.PolicyAllowed {
 		ev.PolicyDecision.Action = "deny"

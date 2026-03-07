@@ -211,9 +211,12 @@ func (s *Server) Routes() http.Handler {
 		}
 	})
 
-	// Dashboard (no auth for same-origin MVP; optional to protect later)
+	// Dashboard (no auth for same-origin MVP; optional to protect later).
+	// HEAD supported so curl -I and health checks get 200 + Content-Type without body.
 	r.Get("/", s.handleDashboard)
 	r.Get("/dashboard", s.handleDashboard)
+	r.Head("/", s.handleDashboard)
+	r.Head("/dashboard", s.handleDashboard)
 
 	return r
 }

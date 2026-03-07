@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -254,21 +255,26 @@ func parseEnforceTimeRange() (from, to time.Time, err error) {
 
 // updateGatewayMode reads the YAML config, finds the gateway.mode field by
 // walking lines structurally (skipping comments), replaces the value preserving
-// quoting style, and writes back.
+// quoting style, and writes back. Path is validated to prevent traversal.
 func updateGatewayMode(path, newMode string) error {
-	data, err := os.ReadFile(path)
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("invalid config path: %s", path)
+	}
+	clean := filepath.Clean(path)
+	data, err := os.ReadFile(clean)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", path, err)
+		return fmt.Errorf("reading %s: %w", clean, err)
 	}
 
 	lines := strings.Split(string(data), "\n")
 	idx := findGatewayModeLine(lines)
 	if idx < 0 {
-		return fmt.Errorf("could not find gateway.mode field in %s", path)
+		return fmt.Errorf("could not find gateway.mode field in %s", clean)
 	}
 
 	lines[idx] = replaceYAMLModeValue(lines[idx], newMode)
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600)
+	//nolint:gosec // G703: path is operator config path, validated (no "..") and filepath.Clean'd
+	return os.WriteFile(clean, []byte(strings.Join(lines, "\n")), 0o600)
 }
 
 // findGatewayModeLine returns the index of the gateway.mode line, or -1.

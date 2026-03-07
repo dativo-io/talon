@@ -139,6 +139,7 @@ func readDirectory(dir string) (string, error) {
 		if !supportedExts[filepath.Ext(path)] {
 			return nil
 		}
+		//nolint:gosec // G122: path from filepath.Walk; dir is trusted mount path from policy
 		content, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("reading %s: %w", path, err)

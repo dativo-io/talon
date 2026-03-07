@@ -33,6 +33,11 @@ type ExportRecord struct {
 	// Shadow mode fields
 	ObservationModeOverride bool     `json:"observation_mode_override"`
 	ShadowViolationTypes    []string `json:"shadow_violation_types,omitempty"`
+	// Semantic cache (audit export)
+	CacheHit        bool    `json:"cache_hit,omitempty"`
+	CacheEntryID    string  `json:"cache_entry_id,omitempty"`
+	CacheSimilarity float64 `json:"cache_similarity,omitempty"`
+	CostSaved       float64 `json:"cost_saved,omitempty"`
 }
 
 // ExportMetadata wraps JSON export with context about the export run.
@@ -79,6 +84,10 @@ func ToExportRecord(e *Evidence) ExportRecord {
 		InputHash:               e.AuditTrail.InputHash,
 		OutputHash:              e.AuditTrail.OutputHash,
 		ObservationModeOverride: e.ObservationModeOverride,
+		CacheHit:                e.CacheHit,
+		CacheEntryID:            e.CacheEntryID,
+		CacheSimilarity:         e.CacheSimilarity,
+		CostSaved:               e.CostSaved,
 	}
 	if len(e.PolicyDecision.Reasons) > 0 {
 		rec.PolicyReasons = append([]string(nil), e.PolicyDecision.Reasons...)

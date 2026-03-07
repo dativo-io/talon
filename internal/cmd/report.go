@@ -64,6 +64,25 @@ func runReport(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "  Cost today (EUR):        %.4f\n", costToday)
 	fmt.Fprintf(out, "  Cost this month (EUR):   %.4f\n", costMonth)
 
+	hits7d, saved7d, _ := store.CacheSavings(ctx, reportTenant, weekStart, todayEnd)
+	if hits7d > 0 || saved7d > 0 {
+		total7d := countWeek
+		hitRate7d := 0.0
+		if total7d > 0 {
+			hitRate7d = 100 * float64(hits7d) / float64(total7d)
+		}
+		fmt.Fprintf(out, "  Cache (7d):   %d from cache, €%.4f saved, %.1f%% hit rate\n", hits7d, saved7d, hitRate7d)
+	}
+	hits30d, saved30d, _ := store.CacheSavings(ctx, reportTenant, monthStart, monthEnd)
+	if hits30d > 0 || saved30d > 0 {
+		total30d, _ := store.CountInRange(ctx, reportTenant, "", monthStart, monthEnd)
+		hitRate30d := 0.0
+		if total30d > 0 {
+			hitRate30d = 100 * float64(hits30d) / float64(total30d)
+		}
+		fmt.Fprintf(out, "  Cache (30d):  %d from cache, €%.4f saved, %.1f%% hit rate\n", hits30d, saved30d, hitRate30d)
+	}
+
 	// Enriched stats over 7-day window
 	list, err := store.List(ctx, reportTenant, "", weekStart, todayEnd, 10000)
 	if err == nil && len(list) > 0 {

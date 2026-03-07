@@ -19,6 +19,7 @@ import (
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/attachment"
+	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
@@ -186,7 +187,28 @@ func runServe(cmd *cobra.Command, args []string) error {
 	toolFailureTracker := agent.NewToolFailureTracker(tfThreshold, tfWindow)
 
 	toolRegistry := tools.NewRegistry()
-	runner := agent.NewRunner(agent.RunnerConfig{
+	var serveCacheStore *cache.Store
+	var serveCacheEmbedder *cache.BM25
+	var serveCacheScrubber *cache.PIIScrubber
+	var serveCachePolicy *cache.Evaluator
+	if cfg.Cache != nil && cfg.Cache.Enabled {
+		cacheStore, err := cache.NewStore(cfg.CacheDBPath(), cfg.SigningKey)
+		if err != nil {
+			log.Warn().Err(err).Msg("cache store unavailable, running without semantic cache")
+		} else {
+			defer cacheStore.Close()
+			serveCacheStore = cacheStore
+			cachePolicy, err := cache.NewEvaluator(ctx)
+			if err != nil {
+				log.Warn().Err(err).Msg("cache policy evaluator unavailable, running without semantic cache")
+			} else {
+				serveCachePolicy = cachePolicy
+				serveCacheEmbedder = cache.NewBM25()
+				serveCacheScrubber = cache.NewPIIScrubber(cls)
+			}
+		}
+	}
+	runnerCfg := agent.RunnerConfig{
 		PolicyDir:         ".",
 		DefaultPolicyPath: policyPath,
 		Classifier:        cls,
@@ -202,7 +224,20 @@ func runServe(cmd *cobra.Command, args []string) error {
 		ToolFailures:      toolFailureTracker,
 		Memory:            memStore,
 		Pricing:           pricingTable,
-	})
+	}
+	if serveCacheStore != nil && serveCachePolicy != nil {
+		runnerCfg.CacheStore = serveCacheStore
+		runnerCfg.CacheEmbedder = serveCacheEmbedder
+		runnerCfg.CacheScrubber = serveCacheScrubber
+		runnerCfg.CachePolicy = serveCachePolicy
+		runnerCfg.CacheConfig = &agent.RunnerCacheConfig{
+			Enabled:             cfg.Cache.Enabled,
+			DefaultTTL:          cfg.Cache.DefaultTTL,
+			SimilarityThreshold: cfg.Cache.SimilarityThreshold,
+			MaxEntriesPerTenant: cfg.Cache.MaxEntriesPerTenant,
+		}
+	}
+	runner := agent.NewRunner(runnerCfg)
 
 	if memStore != nil && pol.Memory != nil && pol.Memory.Enabled {
 		stopRetention := memory.StartRetentionLoop(ctx, memStore, pol, 24*time.Hour)
@@ -263,10 +298,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("gateway policy engine: %w", err)
 			}
-			gatewayHandler, err = gateway.NewGateway(gatewayCfg, cls, evidenceStore, secretsStore, gatewayPolicy, nil)
+			gw, err := gateway.NewGateway(gatewayCfg, cls, evidenceStore, secretsStore, gatewayPolicy, nil)
 			if err != nil {
 				return fmt.Errorf("initializing gateway: %w", err)
 			}
+			if serveCacheStore != nil && serveCachePolicy != nil && cfg.Cache != nil {
+				gw.SetCache(serveCacheStore, serveCacheEmbedder, serveCacheScrubber, serveCachePolicy,
+					cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.SimilarityThreshold, cfg.Cache.MaxEntriesPerTenant)
+			}
+			gatewayHandler = gw
 			opts = append(opts, server.WithGateway(gatewayHandler))
 		}
 	}
