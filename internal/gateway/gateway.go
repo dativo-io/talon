@@ -511,7 +511,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if content := extractContentFromOpenAIResponse(scannedBody); content != "" {
 					emb, err := g.cacheEmbedder.Embed(extracted.Text)
 					if err == nil {
-						keyHash := cache.DeriveEntryKey(caller.TenantID, extracted.Model, extracted.Text)
+						// TenantID from caller config (identifier only); DeriveEntryKey expects non-secret scope id.
+						scopeTenantID := cache.TenantIDForCacheKey(caller.TenantID)
+						keyHash := cache.DeriveEntryKey(scopeTenantID, extracted.Model, extracted.Text)
 						ttl := time.Duration(g.cacheConfig.DefaultTTL) * time.Second
 						if ttl <= 0 {
 							ttl = time.Hour

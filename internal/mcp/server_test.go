@@ -37,7 +37,7 @@ func TestHandler_ToolsList(t *testing.T) {
 		"method":  "tools/list",
 		"id":      1,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -72,7 +72,7 @@ func TestHandler_ToolsCall_InvalidParams(t *testing.T) {
 		"params":  map[string]interface{}{},
 		"id":      2,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -120,7 +120,7 @@ func TestHandler_ToolsCall_Success(t *testing.T) {
 		"jsonrpc": "2.0", "method": "tools/call", "id": 3,
 		"params": map[string]interface{}{"name": "echo", "arguments": map[string]interface{}{}},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -158,7 +158,7 @@ func TestHandler_ToolsCall_PolicyDenied(t *testing.T) {
 		"jsonrpc": "2.0", "method": "tools/call", "id": 4,
 		"params": map[string]interface{}{"name": "denied_tool", "arguments": map[string]interface{}{}},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -191,7 +191,7 @@ func TestHandler_ToolsCall_ToolNotFound(t *testing.T) {
 		"jsonrpc": "2.0", "method": "tools/call", "id": 5,
 		"params": map[string]interface{}{"name": "missing_tool", "arguments": map[string]interface{}{}},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()

@@ -65,7 +65,7 @@ func TestProxyHandler_ServeHTTP_methodAndJSON(t *testing.T) {
 	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
 
 	// GET not allowed
-	req := httptest.NewRequest(http.MethodGet, "/mcp/proxy", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/mcp/proxy", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -75,7 +75,7 @@ func TestProxyHandler_ServeHTTP_methodAndJSON(t *testing.T) {
 	assert.Equal(t, codeInvalidRequest, r.Error.Code)
 
 	// Invalid JSON
-	req = httptest.NewRequest(http.MethodPost, "/mcp/proxy", bytes.NewReader([]byte("{")))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader([]byte("{")))
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -86,7 +86,7 @@ func TestProxyHandler_ServeHTTP_methodAndJSON(t *testing.T) {
 
 	// Wrong jsonrpc version
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "1.0", "method": "tools/list", "id": 1})
-	req = httptest.NewRequest(http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -113,7 +113,7 @@ func TestProxyHandler_toolsCall_missingName(t *testing.T) {
 	body, _ := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0", "method": "tools/call", "params": map[string]interface{}{}, "id": 1,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -153,7 +153,7 @@ func TestProxyHandler_forbiddenTool_shadowBlocks(t *testing.T) {
 		"jsonrpc": "2.0", "method": "tools/call", "id": 1,
 		"params": map[string]interface{}{"name": "zendesk_user_delete", "arguments": map[string]interface{}{}},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -170,7 +170,7 @@ func TestProxyHandler_forbiddenTool_shadowBlocks(t *testing.T) {
 		"jsonrpc": "2.0", "method": "tools/call", "id": 2,
 		"params": map[string]interface{}{"name": "zendesk_admin_export", "arguments": map[string]interface{}{}},
 	})
-	req = httptest.NewRequest(http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec = httptest.NewRecorder()
@@ -285,7 +285,7 @@ func TestProxyHandler_toolsList_filteringAndShapes(t *testing.T) {
 	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
 
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
-	req := httptest.NewRequest(http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -335,7 +335,7 @@ func TestProxyHandler_toolsList_arrayShapeAndUnknownSafe(t *testing.T) {
 	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
 
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
-	req := httptest.NewRequest(http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
@@ -378,7 +378,7 @@ func TestProxyHandler_toolsList_unknownShapeReturnsEmpty(t *testing.T) {
 	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
 
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
-	req := httptest.NewRequest(http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
 	rec := httptest.NewRecorder()
