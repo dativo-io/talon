@@ -427,7 +427,7 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 	}
 
 	// Q6: Enable semantic cache (optional)
-	cachePrompt := readLine(scan, out, "Enable semantic cache for cost savings? (Y/n)", "n")
+	cachePrompt := readLine(scan, out, "Enable semantic cache for cost savings? (y/N)", "n")
 	state.CacheEnabled = strings.ToLower(strings.TrimSpace(cachePrompt)) != "n" && strings.ToLower(strings.TrimSpace(cachePrompt)) != "no"
 
 	// Confirmation
