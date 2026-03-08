@@ -1,6 +1,7 @@
 package otel
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,7 +16,7 @@ func TestMiddlewareWithStatus(t *testing.T) {
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -24,7 +25,7 @@ func TestMiddlewareWithStatus(t *testing.T) {
 	h500 := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	req = httptest.NewRequest(http.MethodGet, "/err", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/err", nil)
 	rec = httptest.NewRecorder()
 	h500.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
@@ -37,7 +38,7 @@ func TestMiddlewareWithStatus_ChiRouteContext(t *testing.T) {
 	r.Get("/v1/triggers/{name}", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	req := httptest.NewRequest(http.MethodGet, "/v1/triggers/foo", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/triggers/foo", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)

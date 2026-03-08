@@ -139,17 +139,17 @@ func NewGateway(
 		canonical[tid] = tid
 	}
 	return &Gateway{
-		config:            config,
-		classifier:        classifier,
-		evidenceStore:     evidenceStore,
-		secretsStore:      secretsStore,
-		policy:            policy,
-		costEstimate:      costEstimate,
-		timeouts:          timeouts,
-		client:            client,
-		rateLimiter:       rl,
-		attExtractor:      ext,
-		attInjScanner:     injScan,
+		config:             config,
+		classifier:         classifier,
+		evidenceStore:      evidenceStore,
+		secretsStore:       secretsStore,
+		policy:             policy,
+		costEstimate:       costEstimate,
+		timeouts:           timeouts,
+		client:             client,
+		rateLimiter:        rl,
+		attExtractor:       ext,
+		attInjScanner:      injScan,
 		canonicalTenantIDs: canonical,
 	}, nil
 }
