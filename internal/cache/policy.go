@@ -4,7 +4,6 @@ package cache
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"fmt"
 
 	"github.com/open-policy-agent/opa/rego"
@@ -92,34 +91,4 @@ func (e *Evaluator) Evaluate(ctx context.Context, input *PolicyInput) (*PolicyRe
 		}
 	}
 	return out, nil
-}
-
-// EvaluateMap evaluates with a map input (for callers that build input from JSON).
-func (e *Evaluator) EvaluateMap(ctx context.Context, input map[string]interface{}) (*PolicyResult, error) {
-	results, err := e.query.Eval(ctx, rego.EvalInput(input))
-	if err != nil {
-		return nil, fmt.Errorf("evaluating cache policy: %w", err)
-	}
-	out := &PolicyResult{}
-	if len(results) == 0 || len(results[0].Expressions) == 0 {
-		return out, nil
-	}
-	exprs := results[0].Expressions
-	if len(exprs) >= 2 {
-		if b, ok := exprs[0].Value.(bool); ok {
-			out.AllowLookup = b
-		}
-		if b, ok := exprs[1].Value.(bool); ok {
-			out.AllowStore = b
-		}
-	}
-	return out, nil
-}
-
-// InputToMap converts PolicyInput to a map for Rego.
-func InputToMap(in *PolicyInput) map[string]interface{} {
-	b, _ := json.Marshal(in)
-	var m map[string]interface{}
-	_ = json.Unmarshal(b, &m)
-	return m
 }
