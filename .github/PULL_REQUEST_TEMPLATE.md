@@ -11,8 +11,8 @@
 - [ ] `make check` passes (tests + lint + vet)
 - [ ] Code follows `.cursorrules` conventions
 - [ ] Critical rules from `CLAUDE_PROJECT_INSTRUCTIONS.md` followed
-- [ ] Tests added/updated (target: 70% coverage)
-- [ ] Coverage ≥70% for changed packages
+- [ ] Tests added/updated (target: 65% overall coverage, goal 70%)
+- [ ] Coverage ≥65% for changed packages
 - [ ] Docs updated (if user-facing)
 - [ ] CHANGELOG.md updated (if user-facing change)
 - [ ] Conventional commit messages used

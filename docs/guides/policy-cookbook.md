@@ -27,6 +27,32 @@ memory:
 
 Use `mode: shadow` to log what would be written without persisting. See [Memory governance](../MEMORY_GOVERNANCE.md) and [How to verify memory is used](memory-verification.md).
 
+**Cache vs memory:** Memory is agent-level learning (what the agent may remember). The semantic cache is infrastructure-level: it reuses LLM responses for similar prompts to save cost; it is configured in `talon.config.yaml` under `cache`, not in agent policy. See [Memory governance — Cache vs memory](../MEMORY_GOVERNANCE.md#cache-vs-memory).
+
+---
+
+## Enable governed semantic cache (infrastructure)
+
+**Goal:** Reduce LLM cost and latency by serving similar queries from a GDPR-safe, PII-scrubbed cache. Cache is checked before each LLM call; hits return a cached response and skip the provider.
+
+**Where:** `talon.config.yaml` (infrastructure — owned by DevOps), not in `agent.talon.yaml`.
+
+```yaml
+cache:
+  enabled: true
+  default_ttl: 3600              # 1 hour for public tier
+  ttl_by_tier:
+    public: 3600
+    internal: 900                # 15 minutes
+  similarity_threshold: 0.92      # 0–1; higher = stricter match
+  max_entries_per_tenant: 10000
+```
+
+- Cache stores **embeddings/hashes** of prompts (not raw text) and **PII-scrubbed** responses only.
+- Confidential/restricted data tier and high-severity PII requests are not cached (OPA policy).
+- Tool calls and MCP messages are never cached.
+- Use `talon cache erase --tenant <id>` for GDPR Article 17 erasure. See [Configuration reference](../reference/configuration.md) when the cache feature is available.
+
 ---
 
 ## Only allow specific models for tier_2
@@ -151,6 +177,31 @@ See [Agent planning](../AGENT_PLANNING.md) for plan review details.
 
 ---
 
+## Govern tools by operation class (recommended over manual lists)
+
+**Goal:** Require human review for destructive, bulk, or install operations without maintaining long `forbidden_tools` lists. Talon classifies tools by intent (delete, purge, bulk, execute, install); you declare which classes always need review.
+
+**Where:** `agent.talon.yaml` under `policies.plan_review`.
+
+```yaml
+policies:
+  plan_review:
+    volume_threshold: 50              # Any operation affecting 50+ records requires review
+    require_review_for_classes:       # These classes always require review
+      - "delete"
+      - "purge"
+      - "bulk"
+      - "execute"
+      - "install"
+    circuit_breaker:
+      consecutive_denial_threshold: 5
+      action: "require_human_review"
+```
+
+Unlike `forbidden_tools` lists, this works even with broad allowlists. Use `talon intent classify <tool-name>` to see the class and risk level for any tool. **Helps with:** EU AI Act Art. 14 (human oversight), ISO 27001 A.8.25.
+
+---
+
 ## Limit attachment handling (injection prevention)
 
 **Goal:** Block or warn when attachments contain prompt-injection patterns.
@@ -177,6 +228,7 @@ attachment_handling:
 | PII action | `policies.data_classification` | `gateway.default_policy.default_pii_action` or `gateway.callers[].policy_overrides.pii_action` |
 | Block on PII | `policies.data_classification.block_on_pii` | -- |
 | Human oversight | `compliance.human_oversight` | -- |
+| Semantic cache (TTL, enabled) | — | `talon.config.yaml` only (`cache` section, infrastructure) |
 
 ---
 
@@ -192,3 +244,13 @@ You now have copy-paste policy snippets for memory, models, cost, time, PII, and
 | Verify memory is loaded and injected | [How to verify memory is used](memory-verification.md) |
 | Add Talon in front of my app | [Add Talon to your existing app](add-talon-to-existing-app.md) |
 | Understand the full config schema | [Configuration and environment](../reference/configuration.md) |
+
+**Verify intent classification** (when intent governance is enabled):
+
+```bash
+talon intent classify email_delete '{"count": 100}'
+# Expect: adjusted_risk critical, is_bulk: true, plan_review: required
+
+talon intent classes
+# Shows full taxonomy — use to build require_review_for_classes lists
+```

@@ -98,8 +98,36 @@ var costsCmd = &cobra.Command{
 		weekTotal, _ := store.CostTotal(ctx, tenantID, "", weekStart, dayEnd)
 		fmt.Fprintf(out, "  7d total: €%s\n", formatCost(weekTotal))
 		printBudgetUtilization(out, ctx, cfg, tenantID, dailyTotal, monthlyTotal)
+		printCacheSavings(out, ctx, store, tenantID, weekStart, dayEnd, monthStart, monthEnd)
 		return nil
 	},
+}
+
+func printCacheSavings(w io.Writer, ctx context.Context, store *evidence.Store, tenantID string, weekStart, dayEnd, monthStart, monthEnd time.Time) {
+	hits7d, saved7d, err := store.CacheSavings(ctx, tenantID, weekStart, dayEnd)
+	if err != nil {
+		return
+	}
+	total7d, _ := store.CountInRange(ctx, tenantID, "", weekStart, dayEnd)
+	hitRate7d := 0.0
+	if total7d > 0 {
+		hitRate7d = 100 * float64(hits7d) / float64(total7d)
+	}
+	if hits7d > 0 || saved7d > 0 {
+		fmt.Fprintf(w, "  Cache (7d):   %d requests from cache, €%s saved, %.1f%% hit rate\n", hits7d, formatCost(saved7d), hitRate7d)
+	}
+	hits30d, saved30d, err := store.CacheSavings(ctx, tenantID, monthStart, monthEnd)
+	if err != nil {
+		return
+	}
+	total30d, _ := store.CountInRange(ctx, tenantID, "", monthStart, monthEnd)
+	hitRate30d := 0.0
+	if total30d > 0 {
+		hitRate30d = 100 * float64(hits30d) / float64(total30d)
+	}
+	if hits30d > 0 || saved30d > 0 {
+		fmt.Fprintf(w, "  Cache (30d):  %d requests from cache, €%s saved, %.1f%% hit rate\n", hits30d, formatCost(saved30d), hitRate30d)
+	}
 }
 
 func printBudgetUtilization(w io.Writer, ctx context.Context, cfg *config.Config, tenantID string, daily, monthly float64) {

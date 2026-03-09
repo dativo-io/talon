@@ -52,6 +52,11 @@ type GenerateParams struct {
 	Compliance              Compliance       // Applicable compliance frameworks and data location
 	ObservationModeOverride bool             // True when allowed despite policy deny (shadow/observation-only mode)
 	RoutingDecision         *RoutingDecision // Provider selection and rejected candidates (EU routing)
+	// Semantic cache: set on cache hit (Cost=0, CostSaved=estimated equivalent LLM cost).
+	CacheHit        bool    // True when response was served from cache
+	CacheEntryID    string  // Cache entry ID for audit correlation
+	CacheSimilarity float64 // Similarity score that produced the hit
+	CostSaved       float64 // Estimated cost saved by not calling the LLM
 }
 
 // StepParams holds inputs for creating a step-level evidence record (one LLM call or one tool call within a run).
@@ -166,7 +171,11 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 			InputHash:  inputHashFromParams(params),
 			OutputHash: hashString(params.OutputResponse),
 		},
-		Compliance: params.Compliance,
+		Compliance:      params.Compliance,
+		CacheHit:        params.CacheHit,
+		CacheEntryID:    params.CacheEntryID,
+		CacheSimilarity: params.CacheSimilarity,
+		CostSaved:       params.CostSaved,
 	}
 
 	if err := g.store.Store(ctx, ev); err != nil {

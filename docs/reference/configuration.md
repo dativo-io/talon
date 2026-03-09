@@ -18,6 +18,8 @@ Talon uses **two configuration files** with distinct ownership and purpose. Unde
 
 **Rule of thumb:** if a change affects *what an agent may do*, edit `agent.talon.yaml`. If it affects *where traffic goes or how the platform is wired*, edit `talon.config.yaml`.
 
+**Validation:** Agent policy (`agent.talon.yaml`) is validated by `talon validate`. Infrastructure config (`talon.config.yaml`), including the optional cache section, is checked by `talon doctor` — run `talon doctor` to verify infrastructure settings (e.g. cache, evidence path, gateway).
+
 ### How the files are created (`talon init`)
 
 - **In a terminal (TTY):** `talon init` runs an interactive wizard: you choose workload type, framework pack (e.g. OpenClaw), LLM provider, data residency (EU strict / preferred / global), and compliance features. The wizard writes both `agent.talon.yaml` and `talon.config.yaml` and prints vault-first next steps.
