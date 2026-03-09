@@ -37,7 +37,7 @@ func TestHealthEndpoint(t *testing.T) {
 	)
 	r := srv.Routes()
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -58,7 +58,7 @@ func TestHealthDetail(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{})
 	r := srv.Routes()
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/health?detail=true", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/health?detail=true", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -82,7 +82,7 @@ func TestAuthMiddlewareRejectsMissingKey(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"secret": "default"})
 	r := srv.Routes()
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/evidence", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
@@ -103,7 +103,7 @@ func TestAuthMiddlewareAcceptsValidKey(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"mykey": "default"})
 	r := srv.Routes()
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/evidence?limit=1", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=1", nil)
 	req.Header.Set("X-Talon-Key", "mykey")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -121,7 +121,7 @@ func TestStatusEndpoint(t *testing.T) {
 
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/status", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -150,7 +150,7 @@ func TestStatusEndpoint_ActiveRunsFromTracker(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, apiKeys, WithActiveRunTracker(tracker))
 	r := srv.Routes()
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/status", nil)
 	req.Header.Set("X-Talon-Key", "k-acme")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -160,7 +160,7 @@ func TestStatusEndpoint_ActiveRunsFromTracker(t *testing.T) {
 	assert.Equal(t, "ok", out["status"])
 	assert.Equal(t, float64(2), out["active_runs"], "active_runs must reflect tracker count for tenant")
 
-	req = httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/status", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -179,7 +179,7 @@ func TestCostsAndBudgetEndpoints(t *testing.T) {
 
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/costs", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/costs", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -188,7 +188,7 @@ func TestCostsAndBudgetEndpoints(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
 	assert.Equal(t, "default", out["tenant_id"])
 
-	req = httptest.NewRequest(http.MethodGet, "/v1/costs/budget", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/costs/budget", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -206,7 +206,7 @@ func TestTriggersListAndHistory(t *testing.T) {
 
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/triggers", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/triggers", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -215,7 +215,7 @@ func TestTriggersListAndHistory(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
 	assert.NotNil(t, out["triggers"])
 
-	req = httptest.NewRequest(http.MethodGet, "/v1/triggers/some-webhook/history", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/triggers/some-webhook/history", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -235,7 +235,7 @@ func TestPlansPendingDisabled(t *testing.T) {
 
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/plans/pending", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/plans/pending", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -259,7 +259,7 @@ func TestPlansPendingAndGetWithStore(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/plans/pending", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/plans/pending", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -270,7 +270,7 @@ func TestPlansPendingAndGetWithStore(t *testing.T) {
 	_, hasPlans := out["plans"]
 	assert.True(t, hasPlans)
 
-	req = httptest.NewRequest(http.MethodGet, "/v1/plans/nonexistent-id", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/plans/nonexistent-id", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -298,7 +298,7 @@ func TestPlanApproveSuccess(t *testing.T) {
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
 	body := `{"reviewed_by":"reviewer@test"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/plans/"+plan.ID+"/approve", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+plan.ID+"/approve", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
@@ -325,7 +325,7 @@ func TestPlanApproveMissingID(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodPost, "/v1/plans//approve", strings.NewReader(`{"reviewed_by":"x"}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans//approve", strings.NewReader(`{"reviewed_by":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
@@ -352,7 +352,7 @@ func TestPlanRejectSuccess(t *testing.T) {
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
 	body := `{"reviewed_by":"admin","reason":"too expensive"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/plans/"+plan.ID+"/reject", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+plan.ID+"/reject", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
@@ -379,7 +379,7 @@ func TestPlanRejectMissingID(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodPost, "/v1/plans//reject", strings.NewReader(`{"reviewed_by":"x","reason":"y"}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans//reject", strings.NewReader(`{"reviewed_by":"x","reason":"y"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
@@ -406,7 +406,7 @@ func TestPlanModifySuccess(t *testing.T) {
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
 	body := `{"reviewed_by":"admin","annotations":[{"type":"comment","content":"use cheaper model"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/plans/"+plan.ID+"/modify", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+plan.ID+"/modify", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
@@ -440,7 +440,7 @@ func TestPlanApproveRejectModify_NonexistentPlanReturns404(t *testing.T) {
 	apiKey := "k"
 
 	// Approve nonexistent plan -> 404
-	req := httptest.NewRequest(http.MethodPost, "/v1/plans/"+nonexistentID+"/approve", strings.NewReader(`{"reviewed_by":"u"}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+nonexistentID+"/approve", strings.NewReader(`{"reviewed_by":"u"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(key, apiKey)
 	rec := httptest.NewRecorder()
@@ -451,7 +451,7 @@ func TestPlanApproveRejectModify_NonexistentPlanReturns404(t *testing.T) {
 	assert.Equal(t, "not_found", errResp["error"])
 
 	// Reject nonexistent plan -> 404
-	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+nonexistentID+"/reject", strings.NewReader(`{"reviewed_by":"u","reason":"x"}`))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+nonexistentID+"/reject", strings.NewReader(`{"reviewed_by":"u","reason":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(key, apiKey)
 	rec = httptest.NewRecorder()
@@ -461,7 +461,7 @@ func TestPlanApproveRejectModify_NonexistentPlanReturns404(t *testing.T) {
 	assert.Equal(t, "not_found", errResp["error"])
 
 	// Modify nonexistent plan -> 404
-	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+nonexistentID+"/modify", strings.NewReader(`{"reviewed_by":"u","annotations":[]}`))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+nonexistentID+"/modify", strings.NewReader(`{"reviewed_by":"u","annotations":[]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(key, apiKey)
 	rec = httptest.NewRecorder()
@@ -497,7 +497,7 @@ func TestPlanApproveRejectModify_AlreadyReviewedReturns409(t *testing.T) {
 	apiKey := "k"
 
 	// Second approve -> 409
-	req := httptest.NewRequest(http.MethodPost, "/v1/plans/"+plan.ID+"/approve", strings.NewReader(`{"reviewed_by":"other"}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+plan.ID+"/approve", strings.NewReader(`{"reviewed_by":"other"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(key, apiKey)
 	rec := httptest.NewRecorder()
@@ -509,7 +509,7 @@ func TestPlanApproveRejectModify_AlreadyReviewedReturns409(t *testing.T) {
 	assert.Contains(t, errResp["message"], "not pending")
 
 	// Reject already-approved plan -> 409
-	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+plan.ID+"/reject", strings.NewReader(`{"reviewed_by":"u","reason":"x"}`))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+plan.ID+"/reject", strings.NewReader(`{"reviewed_by":"u","reason":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(key, apiKey)
 	rec = httptest.NewRecorder()
@@ -519,7 +519,7 @@ func TestPlanApproveRejectModify_AlreadyReviewedReturns409(t *testing.T) {
 	assert.Equal(t, "conflict", errResp["error"])
 
 	// Modify already-approved plan -> 409
-	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+plan.ID+"/modify", strings.NewReader(`{"reviewed_by":"u","annotations":[]}`))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+plan.ID+"/modify", strings.NewReader(`{"reviewed_by":"u","annotations":[]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(key, apiKey)
 	rec = httptest.NewRecorder()
@@ -540,7 +540,7 @@ func TestEvidenceExportInvalidFormat(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
 	body := `{"tenant_id":"default","format":"xml"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/evidence/export", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/evidence/export", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
@@ -562,7 +562,7 @@ func TestMemoryApproveInvalidJSON(t *testing.T) {
 	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodPost, "/v1/memory/agent1/approve", strings.NewReader(`{`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/memory/agent1/approve", strings.NewReader(`{`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
@@ -584,7 +584,7 @@ func TestMemoryReviewMissingAgentID(t *testing.T) {
 	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/memory//review", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory//review", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -603,7 +603,7 @@ func TestPoliciesList(t *testing.T) {
 
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/policies", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/policies", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -625,7 +625,7 @@ func TestPoliciesEvaluate(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
 	body := `{"input":{"agent_id":"test","tool":"search"}}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/policies/evaluate", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/policies/evaluate", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
@@ -646,7 +646,7 @@ func TestPoliciesEvaluateInvalidJSON(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodPost, "/v1/policies/evaluate", strings.NewReader(`{`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/policies/evaluate", strings.NewReader(`{`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
@@ -665,7 +665,7 @@ func TestMemoryListDisabled(t *testing.T) {
 
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/memory?agent_id=a1", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory?agent_id=a1", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -687,7 +687,7 @@ func TestMemoryListWithStore(t *testing.T) {
 	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/memory?agent_id=agent1&limit=10", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory?agent_id=agent1&limit=10", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -712,7 +712,7 @@ func TestSecretsList(t *testing.T) {
 
 	srv := NewServer(nil, evStore, nil, engine, pol, "", secretsStore, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/secrets", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/secrets", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -736,7 +736,7 @@ func TestSecretsAudit(t *testing.T) {
 	t.Cleanup(func() { _ = secretsStore.Close() })
 	srv := NewServer(nil, evStore, nil, engine, pol, "", secretsStore, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/secrets/audit?limit=10", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/secrets/audit?limit=10", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -771,7 +771,7 @@ func TestSecretsAuditTenantIsolation(t *testing.T) {
 	r := srv.Routes()
 
 	// Tenant acme sees only acme records
-	reqAcme := httptest.NewRequest(http.MethodGet, "/v1/secrets/audit?limit=50", nil)
+	reqAcme := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/secrets/audit?limit=50", nil)
 	reqAcme.Header.Set("X-Talon-Key", "key-acme")
 	recAcme := httptest.NewRecorder()
 	r.ServeHTTP(recAcme, reqAcme)
@@ -787,7 +787,7 @@ func TestSecretsAuditTenantIsolation(t *testing.T) {
 	}
 
 	// Tenant other sees only other records
-	reqOther := httptest.NewRequest(http.MethodGet, "/v1/secrets/audit?limit=50", nil)
+	reqOther := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/secrets/audit?limit=50", nil)
 	reqOther.Header.Set("X-Talon-Key", "key-other")
 	recOther := httptest.NewRecorder()
 	r.ServeHTTP(recOther, reqOther)
@@ -817,7 +817,7 @@ func TestMemorySearchMissingParams(t *testing.T) {
 	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/memory/search?agent_id=a1", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory/search?agent_id=a1", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -838,7 +838,7 @@ func TestMemorySearchWithStore(t *testing.T) {
 	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/memory/search?agent_id=a1&q=test&limit=5", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory/search?agent_id=a1&q=test&limit=5", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -863,13 +863,13 @@ func TestMemoryReviewAndApproveWithStore(t *testing.T) {
 	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/memory/agent1/review?limit=10", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory/agent1/review?limit=10", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	body := `{"entry_id":"mem_123","review_status":"approved"}`
-	req = httptest.NewRequest(http.MethodPost, "/v1/memory/agent1/approve", strings.NewReader(body))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/memory/agent1/approve", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec = httptest.NewRecorder()
@@ -892,7 +892,7 @@ func TestMemoryGetWithStore(t *testing.T) {
 	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/memory/nonexistent-id", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory/nonexistent-id", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -919,7 +919,7 @@ func TestMemoryAsOfWithStore(t *testing.T) {
 		WithMemoryStore(memStore))
 	r := srv.Routes()
 	asOf := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
-	req := httptest.NewRequest(http.MethodGet, "/v1/memory/as-of?agent_id=agent1&as_of="+asOf+"&limit=10", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory/as-of?agent_id=agent1&as_of="+asOf+"&limit=10", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -944,7 +944,7 @@ func TestMemoryAsOfBadRequest(t *testing.T) {
 	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/memory/as-of?agent_id=agent1", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory/as-of?agent_id=agent1", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -969,7 +969,7 @@ func TestPlanGetSuccess(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/plans/"+plan.ID, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/plans/"+plan.ID, nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1003,14 +1003,14 @@ func TestPlanCrossTenantAccess(t *testing.T) {
 	r := srv.Routes()
 
 	// Globex user cannot GET acme's plan -> 404
-	req := httptest.NewRequest(http.MethodGet, "/v1/plans/"+acmePlan.ID, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/plans/"+acmePlan.ID, nil)
 	req.Header.Set("X-Talon-Key", "key_globex")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code, "GET plan from other tenant must return 404")
 
 	// Acme user can GET acme's plan -> 200
-	req = httptest.NewRequest(http.MethodGet, "/v1/plans/"+acmePlan.ID, nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/plans/"+acmePlan.ID, nil)
 	req.Header.Set("X-Talon-Key", "key_acme")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1020,7 +1020,7 @@ func TestPlanCrossTenantAccess(t *testing.T) {
 	assert.Equal(t, acmePlan.ID, out["id"])
 
 	// Globex user cannot APPROVE acme's plan -> 404 (plan not found for that tenant)
-	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+acmePlan.ID+"/approve", strings.NewReader(`{"reviewed_by":"attacker"}`))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+acmePlan.ID+"/approve", strings.NewReader(`{"reviewed_by":"attacker"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "key_globex")
 	rec = httptest.NewRecorder()
@@ -1032,7 +1032,7 @@ func TestPlanCrossTenantAccess(t *testing.T) {
 	assert.Equal(t, "pending", string(got.Status))
 
 	// Globex user cannot REJECT acme's plan -> 404
-	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+acmePlan.ID+"/reject", strings.NewReader(`{"reviewed_by":"attacker","reason":"x"}`))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+acmePlan.ID+"/reject", strings.NewReader(`{"reviewed_by":"attacker","reason":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "key_globex")
 	rec = httptest.NewRecorder()
@@ -1043,7 +1043,7 @@ func TestPlanCrossTenantAccess(t *testing.T) {
 	assert.Equal(t, "pending", string(got.Status))
 
 	// Globex user cannot MODIFY acme's plan -> 404
-	req = httptest.NewRequest(http.MethodPost, "/v1/plans/"+acmePlan.ID+"/modify", strings.NewReader(`{"reviewed_by":"attacker","annotations":[]}`))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+acmePlan.ID+"/modify", strings.NewReader(`{"reviewed_by":"attacker","annotations":[]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "key_globex")
 	rec = httptest.NewRecorder()
@@ -1061,7 +1061,7 @@ func TestDashboardEndpoint(t *testing.T) {
 	srv := NewServer(nil, nil, nil, engine, pol, "", nil, map[string]string{},
 		WithDashboard("<html></html>"))
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/dashboard", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -1075,7 +1075,7 @@ func TestDashboardNotConfigured(t *testing.T) {
 	require.NoError(t, err)
 	srv := NewServer(nil, nil, nil, engine, pol, "", nil, map[string]string{})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/dashboard", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
@@ -1093,13 +1093,13 @@ func TestEvidenceGetAndVerify(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
 	// Get non-existent id -> 404
-	req := httptest.NewRequest(http.MethodGet, "/v1/evidence/nonexistent", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/nonexistent", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 	// Verify non-existent id -> internal error or not found depending on store impl
-	req = httptest.NewRequest(http.MethodGet, "/v1/evidence/nonexistent/verify", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/nonexistent/verify", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1118,7 +1118,7 @@ func TestEvidenceTimelineMissingParam(t *testing.T) {
 
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/evidence/timeline", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/timeline", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1135,7 +1135,7 @@ func TestEvidenceExportInvalidJSON(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodPost, "/v1/evidence/export", strings.NewReader(`{`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/evidence/export", strings.NewReader(`{`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
@@ -1155,7 +1155,7 @@ func TestEvidenceExport(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
 	body := `{"tenant_id":"default","format":"json","limit":10}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/evidence/export", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/evidence/export", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
@@ -1166,7 +1166,7 @@ func TestEvidenceExport(t *testing.T) {
 	assert.NotNil(t, arr)
 	// CSV path
 	body = `{"tenant_id":"default","format":"csv"}`
-	req = httptest.NewRequest(http.MethodPost, "/v1/evidence/export", strings.NewReader(body))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/evidence/export", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec = httptest.NewRecorder()
@@ -1200,12 +1200,12 @@ func TestEvidenceGetAndVerifySuccess(t *testing.T) {
 
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/evidence/ev_test_1", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/ev_test_1", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	req = httptest.NewRequest(http.MethodGet, "/v1/evidence/ev_test_1/verify", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/ev_test_1/verify", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1215,7 +1215,7 @@ func TestEvidenceGetAndVerifySuccess(t *testing.T) {
 	assert.True(t, out["valid"].(bool))
 
 	// Timeline with stored id
-	req = httptest.NewRequest(http.MethodGet, "/v1/evidence/timeline?around=ev_test_1&before=2&after=2", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/timeline?around=ev_test_1&before=2&after=2", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1253,21 +1253,21 @@ func TestEvidenceGetVerifyTimelineTenantIsolation(t *testing.T) {
 	r := srv.Routes()
 
 	// GET with default tenant must not return acme's evidence
-	req := httptest.NewRequest(http.MethodGet, "/v1/evidence/ev_acme_1", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/ev_acme_1", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code, "GET must return 404 for other tenant's evidence")
 
 	// Verify with default tenant must not reveal acme's evidence
-	req = httptest.NewRequest(http.MethodGet, "/v1/evidence/ev_acme_1/verify", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/ev_acme_1/verify", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code, "verify must return 404 for other tenant's evidence")
 
 	// Timeline around acme's id with default tenant must return 404
-	req = httptest.NewRequest(http.MethodGet, "/v1/evidence/timeline?around=ev_acme_1&before=2&after=2", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/timeline?around=ev_acme_1&before=2&after=2", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1303,7 +1303,7 @@ func TestEvidenceTenantIsolation_SameTenantSucceeds(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k_acme": "acme"})
 	r := srv.Routes()
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/evidence/ev_acme_2", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/ev_acme_2", nil)
 	req.Header.Set("X-Talon-Key", "k_acme")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1312,7 +1312,7 @@ func TestEvidenceTenantIsolation_SameTenantSucceeds(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&got))
 	assert.Equal(t, "acme", got["tenant_id"], "response must be acme's evidence")
 
-	req = httptest.NewRequest(http.MethodGet, "/v1/evidence/ev_acme_2/verify", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/ev_acme_2/verify", nil)
 	req.Header.Set("X-Talon-Key", "k_acme")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1320,7 +1320,7 @@ func TestEvidenceTenantIsolation_SameTenantSucceeds(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&got))
 	assert.True(t, got["valid"].(bool))
 
-	req = httptest.NewRequest(http.MethodGet, "/v1/evidence/timeline?around=ev_acme_2&before=1&after=1", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/timeline?around=ev_acme_2&before=1&after=1", nil)
 	req.Header.Set("X-Talon-Key", "k_acme")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1369,7 +1369,7 @@ func TestEvidenceTenantIsolation_ListOnlyReturnsOwnTenant(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k_acme": "acme", "k_default": "default"})
 	r := srv.Routes()
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/evidence", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence", nil)
 	req.Header.Set("X-Talon-Key", "k_acme")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1383,7 +1383,7 @@ func TestEvidenceTenantIsolation_ListOnlyReturnsOwnTenant(t *testing.T) {
 		assert.Equal(t, "acme", ent["tenant_id"], "every list entry must be acme tenant")
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/v1/evidence", nil)
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence", nil)
 	req.Header.Set("X-Talon-Key", "k_default")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1411,7 +1411,7 @@ func TestEvidenceTenantIsolation_NonexistentIDReturns404(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/evidence/nonexistent_id_12345", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/nonexistent_id_12345", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1451,7 +1451,7 @@ func TestEvidenceTenantIsolation_ContextOverQueryParam(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/evidence?tenant_id=acme", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?tenant_id=acme", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1486,7 +1486,7 @@ func TestChatCompletionsErrorShape(t *testing.T) {
 	}
 
 	// Invalid JSON -> 400 with nested error
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
@@ -1498,7 +1498,7 @@ func TestChatCompletionsErrorShape(t *testing.T) {
 	assert.Equal(t, "invalid_json", errBody.Error.Code)
 
 	// Empty messages -> 400 with nested error
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4","messages":[]}`))
+	req2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4","messages":[]}`))
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("X-Talon-Key", "k")
 	rec2 := httptest.NewRecorder()
@@ -1517,7 +1517,7 @@ func TestCoPawStatsNoStore(t *testing.T) {
 	require.NoError(t, err)
 	srv := NewServer(nil, nil, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/copaw/stats", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/copaw/stats", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1537,7 +1537,7 @@ func TestCoPawStatsWithStore(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/copaw/stats", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/copaw/stats", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1556,7 +1556,7 @@ func TestCoPawAlertsNoStore(t *testing.T) {
 	require.NoError(t, err)
 	srv := NewServer(nil, nil, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/copaw/alerts", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/copaw/alerts", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -1591,7 +1591,7 @@ func TestCoPawAlertsWithStore(t *testing.T) {
 	require.NoError(t, err)
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
 	r := srv.Routes()
-	req := httptest.NewRequest(http.MethodGet, "/v1/copaw/alerts", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/copaw/alerts", nil)
 	req.Header.Set("X-Talon-Key", "k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)

@@ -1,0 +1,12 @@
+# CodeQL code scanning configuration.
+# See: https://docs.github.com/en/code-security/code-scanning/automatically-scanning-your-code-for-vulnerabilities-and-errors/customizing-code-scanning-analysis
+name: "Talon CodeQL config"
+
+# Exclude go/weak-sensitive-data-hashing: we use SHA-2 (SHA-256) only for cache key
+# derivation and content hashes (tenant id, model, prompt text). No passwords or
+# secrets are hashed; inputs are non-secret identifiers and prompt text. The query
+# can taint "prompt" or request-derived data as sensitive and flag SHA-256 use—
+# a false positive for this codebase. Evidence and cache integrity use HMAC-SHA256.
+query-filters:
+  - exclude:
+      id: go/weak-sensitive-data-hashing

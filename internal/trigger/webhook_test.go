@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +35,7 @@ func TestHandleWebhook_RendersTemplate(t *testing.T) {
 	router := webhookRouter(handler)
 
 	body, _ := json.Marshal(map[string]string{"action": "completed"})
-	req := httptest.NewRequest(http.MethodPost, "/v1/triggers/deploy", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/triggers/deploy", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -53,7 +54,7 @@ func TestHandleWebhook_UnknownTrigger(t *testing.T) {
 	router := webhookRouter(handler)
 
 	body, _ := json.Marshal(map[string]string{"action": "test"})
-	req := httptest.NewRequest(http.MethodPost, "/v1/triggers/unknown", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/triggers/unknown", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
@@ -73,7 +74,7 @@ func TestHandleWebhook_InvalidJSON(t *testing.T) {
 	handler := NewWebhookHandler(runner, pol)
 	router := webhookRouter(handler)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/triggers/test", bytes.NewReader([]byte("not json")))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/triggers/test", bytes.NewReader([]byte("not json")))
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
@@ -94,7 +95,7 @@ func TestHandleWebhook_ReturnsSuccess(t *testing.T) {
 	router := webhookRouter(handler)
 
 	body, _ := json.Marshal(map[string]string{"msg": "server down"})
-	req := httptest.NewRequest(http.MethodPost, "/v1/triggers/notify", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/triggers/notify", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
@@ -124,7 +125,7 @@ func TestHandleWebhook_RequireApproval_GatesExecution(t *testing.T) {
 	router := webhookRouter(handler)
 
 	body, _ := json.Marshal(map[string]interface{}{"issue": map[string]string{"key": "PROJ-123"}})
-	req := httptest.NewRequest(http.MethodPost, "/v1/triggers/jira-update", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/triggers/jira-update", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
