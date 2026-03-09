@@ -1,5 +1,10 @@
-# CodeQL analysis for code scanning. Uses .github/codeql-config.yml to exclude
-# false positives (e.g. go/weak-sensitive-data-hashing on cache key derivation).
+# CodeQL analysis for code scanning (advanced setup). Uses .github/codeql-config.yml
+# to exclude false positives (e.g. go/weak-sensitive-data-hashing on cache key derivation).
+#
+# If you see "CodeQL analyses from advanced configurations cannot be processed when
+# the default setup is enabled": disable Default setup so this workflow is used instead.
+# Repo: Settings > Code security and analysis > Code scanning > turn off Default setup,
+# or use "Advanced" so only this workflow runs. Org: ensure policy allows advanced setup.
 name: "CodeQL"
 
 on:
