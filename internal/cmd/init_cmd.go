@@ -12,11 +12,13 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/dativo-io/talon/internal/feature"
 	"github.com/dativo-io/talon/internal/llm"
 	_ "github.com/dativo-io/talon/internal/llm/providers"
 	"github.com/dativo-io/talon/internal/pack"
+	"github.com/dativo-io/talon/internal/policy"
 )
 
 //go:embed templates/init/*.tmpl
@@ -44,10 +46,14 @@ var (
 	initListProviders   bool
 	initListPacks       bool
 	initListFeatures    bool
+	initCompliance      string
 )
 
 // supportedPacks are the allowed values for --pack (industry starter packs + wizard packs).
-var supportedPacks = []string{"fintech-eu", "ecommerce-eu", "saas-eu", "telecom-eu", "openclaw", "langchain", "generic"}
+var supportedPacks = []string{"fintech-eu", "ecommerce-eu", "saas-eu", "telecom-eu", "openclaw", "copaw", "langchain", "crewai", "generic"}
+
+// validComplianceValues are the allowed values for --compliance.
+var validComplianceValues = []string{"gdpr", "nis2", "dora", "eu-ai-act", "all"}
 
 var initCmd = &cobra.Command{
 	Use:   "init",
@@ -77,6 +83,7 @@ func init() {
 	initCmd.Flags().StringVar(&initRegion, "region", "", "provider region when provider requires one (e.g. westeurope for azure-openai)")
 	initCmd.Flags().StringVar(&initDataSovereignty, "data-sovereignty", "", "data residency: eu-strict, eu-preferred, or global")
 	initCmd.Flags().StringVar(&initFeatures, "features", "", "comma-separated feature IDs (e.g. pii,audit,cost)")
+	initCmd.Flags().StringVar(&initCompliance, "compliance", "", "compliance overlay: gdpr, nis2, dora, eu-ai-act, all")
 }
 
 //nolint:gocyclo // init dispatch has many branches (wizard, scaffold, pack, scripted, list)
@@ -254,6 +261,7 @@ func runListFeatures(out io.Writer) error {
 	return nil
 }
 
+//nolint:gocyclo // runPackInit dispatches pack validation, init, and post-message by pack type
 func runPackInit(out, errOut io.Writer) error {
 	ok := false
 	for _, p := range supportedPacks {
@@ -270,6 +278,18 @@ func runPackInit(out, errOut io.Writer) error {
 	if !ok {
 		return fmt.Errorf("unsupported --pack %q; use one of: %s, or run: talon init --list-packs", initPack, strings.Join(supportedPacks, ", "))
 	}
+	if initCompliance != "" {
+		valid := false
+		for _, c := range validComplianceValues {
+			if strings.EqualFold(c, initCompliance) {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("unsupported --compliance %q; use one of: %s", initCompliance, strings.Join(validComplianceValues, ", "))
+		}
+	}
 	if err := initializeProject(); err != nil {
 		return fmt.Errorf("initializing project: %w", err)
 	}
@@ -281,7 +301,9 @@ func runPackInit(out, errOut io.Writer) error {
 	fmt.Fprintln(out, "  - talon.config.yaml    (infrastructure config — DevOps/platform team)")
 	fmt.Fprintln(out, "  - pricing/models.yaml  (LLM cost estimation table)")
 	fmt.Fprintln(out)
-	if initPack == "openclaw" {
+	if p, ok := pack.FindByID(initPack); ok && p.PostMessage != "" {
+		fmt.Fprintln(out, strings.TrimSpace(p.PostMessage))
+	} else if initPack == "openclaw" {
 		printOpenClawNextSteps(out)
 	} else {
 		fmt.Fprintln(out, "Next steps:")
@@ -455,6 +477,7 @@ func printOpenClawNextSteps(out io.Writer) {
 	fmt.Fprintln(out, "  Switch to enforce mode in talon.config.yaml when ready.")
 }
 
+//nolint:gocyclo // initializeProject branches on pack templates vs legacy, compliance overlay, and file paths
 func initializeProject() error {
 	agentPath := "agent.talon.yaml"
 	configPath := "talon.config.yaml"
@@ -475,38 +498,234 @@ func initializeProject() error {
 		"Date":  time.Now().Format(time.RFC3339),
 	}
 
-	agentTmpl := "templates/init/agent.talon.yaml.tmpl"
-	switch {
-	case initPack != "":
-		agentTmpl = "templates/init/pack_" + strings.ReplaceAll(initPack, "-", "_") + ".talon.yaml.tmpl"
-		if _, err := initTemplates.ReadFile(agentTmpl); err != nil {
-			agentTmpl = "templates/init/agent.talon.yaml.tmpl"
+	p, hasPack := pack.FindByID(initPack)
+	usePackTemplates := hasPack && len(p.Files) > 0
+
+	if usePackTemplates {
+		fs := pack.TemplateFS()
+		for _, f := range p.Files {
+			content, err := fs.ReadFile(f.TemplatePath)
+			if err != nil {
+				return fmt.Errorf("reading pack template %s: %w", f.TemplatePath, err)
+			}
+			var outPath string
+			switch f.OutputPath {
+			case "agent.talon.yaml":
+				outPath = agentPath
+			case "talon.config.yaml":
+				outPath = configPath
+			default:
+				outPath = f.OutputPath
+			}
+			//nolint:gosec // G306: config files are not secret
+			if err := os.WriteFile(outPath, content, 0o644); err != nil {
+				return fmt.Errorf("writing %s: %w", outPath, err)
+			}
 		}
-	case initMinimal:
-		agentTmpl = "templates/init/agent.talon.yaml.minimal.tmpl"
-	}
-
-	if err := renderTemplate(agentTmpl, agentPath, data); err != nil {
-		return fmt.Errorf("creating agent.talon.yaml: %w", err)
-	}
-
-	configTmpl := "templates/init/talon.config.yaml.tmpl"
-	if initPack != "" {
-		packConfig := "templates/init/pack_" + strings.ReplaceAll(initPack, "-", "_") + ".config.yaml.tmpl"
-		if _, err := initTemplates.ReadFile(packConfig); err == nil {
-			configTmpl = packConfig
+	} else {
+		agentTmpl := "templates/init/agent.talon.yaml.tmpl"
+		switch {
+		case initPack != "":
+			agentTmpl = "templates/init/pack_" + strings.ReplaceAll(initPack, "-", "_") + ".talon.yaml.tmpl"
+			if _, err := initTemplates.ReadFile(agentTmpl); err != nil {
+				agentTmpl = "templates/init/agent.talon.yaml.tmpl"
+			}
+		case initMinimal:
+			agentTmpl = "templates/init/agent.talon.yaml.minimal.tmpl"
 		}
-	}
 
-	if err := renderTemplate(configTmpl, configPath, data); err != nil {
-		return fmt.Errorf("creating talon.config.yaml: %w", err)
+		if err := renderTemplate(agentTmpl, agentPath, data); err != nil {
+			return fmt.Errorf("creating agent.talon.yaml: %w", err)
+		}
+
+		configTmpl := "templates/init/talon.config.yaml.tmpl"
+		if initPack != "" {
+			packConfig := "templates/init/pack_" + strings.ReplaceAll(initPack, "-", "_") + ".config.yaml.tmpl"
+			if _, err := initTemplates.ReadFile(packConfig); err == nil {
+				configTmpl = packConfig
+			}
+		}
+
+		if err := renderTemplate(configTmpl, configPath, data); err != nil {
+			return fmt.Errorf("creating talon.config.yaml: %w", err)
+		}
 	}
 
 	if err := writePricingFile(); err != nil {
 		return err
 	}
 
+	if initCompliance != "" {
+		if err := applyComplianceOverlays(agentPath); err != nil {
+			return fmt.Errorf("applying compliance overlay: %w", err)
+		}
+	}
+
 	return nil
+}
+
+// applyComplianceOverlays reads agent.talon.yaml, merges the selected compliance overlay(s), and writes back.
+func applyComplianceOverlays(agentPath string) error {
+	content, err := os.ReadFile(agentPath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", agentPath, err)
+	}
+	var base policy.Policy
+	if err := yaml.Unmarshal(content, &base); err != nil {
+		return fmt.Errorf("parsing agent policy: %w", err)
+	}
+
+	names := []string{strings.ToLower(initCompliance)}
+	if initCompliance == "all" {
+		names = pack.ComplianceOverlayNames()
+	}
+	for _, name := range names {
+		overlayContent, err := pack.ReadComplianceOverlay(name)
+		if err != nil {
+			return fmt.Errorf("reading compliance overlay %q: %w", name, err)
+		}
+		var overlay policy.Policy
+		if err := yaml.Unmarshal(overlayContent, &overlay); err != nil {
+			return fmt.Errorf("parsing overlay %q: %w", name, err)
+		}
+		mergeComplianceOverlay(&base, &overlay)
+	}
+
+	out, err := yaml.Marshal(&base)
+	if err != nil {
+		return fmt.Errorf("marshaling merged policy: %w", err)
+	}
+	//nolint:gosec // G306: agent policy is not secret
+	if err := os.WriteFile(agentPath, out, 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", agentPath, err)
+	}
+	return nil
+}
+
+// mergeComplianceOverlay merges overlay onto base in place. Stricter settings win (e.g. higher retention, union frameworks).
+//
+//nolint:gocyclo // merge is inherently branchy per policy section
+func mergeComplianceOverlay(base, overlay *policy.Policy) {
+	if overlay.Policies.CostLimits != nil {
+		if base.Policies.CostLimits == nil {
+			base.Policies.CostLimits = overlay.Policies.CostLimits
+		} else {
+			if overlay.Policies.CostLimits.Daily > 0 {
+				base.Policies.CostLimits.Daily = overlay.Policies.CostLimits.Daily
+			}
+			if overlay.Policies.CostLimits.Monthly > 0 {
+				base.Policies.CostLimits.Monthly = overlay.Policies.CostLimits.Monthly
+			}
+		}
+	}
+	if overlay.Policies.RateLimits != nil {
+		if base.Policies.RateLimits == nil {
+			base.Policies.RateLimits = overlay.Policies.RateLimits
+		} else {
+			if overlay.Policies.RateLimits.RequestsPerMinute > 0 {
+				base.Policies.RateLimits.RequestsPerMinute = overlay.Policies.RateLimits.RequestsPerMinute
+			}
+			if overlay.Policies.RateLimits.ConcurrentExecutions > 0 {
+				base.Policies.RateLimits.ConcurrentExecutions = overlay.Policies.RateLimits.ConcurrentExecutions
+			}
+		}
+	}
+	if overlay.Policies.DataClassification != nil {
+		if base.Policies.DataClassification == nil {
+			base.Policies.DataClassification = overlay.Policies.DataClassification
+		} else {
+			base.Policies.DataClassification.InputScan = base.Policies.DataClassification.InputScan || overlay.Policies.DataClassification.InputScan
+			base.Policies.DataClassification.OutputScan = base.Policies.DataClassification.OutputScan || overlay.Policies.DataClassification.OutputScan
+			base.Policies.DataClassification.RedactPII = base.Policies.DataClassification.RedactPII || overlay.Policies.DataClassification.RedactPII
+			base.Policies.DataClassification.BlockOnPII = base.Policies.DataClassification.BlockOnPII || overlay.Policies.DataClassification.BlockOnPII
+		}
+	}
+	if overlay.Policies.ModelRouting != nil {
+		if base.Policies.ModelRouting == nil {
+			base.Policies.ModelRouting = overlay.Policies.ModelRouting
+		} else {
+			mergeModelRouting(base.Policies.ModelRouting, overlay.Policies.ModelRouting)
+		}
+	}
+	if overlay.Policies.TimeRestrictions != nil {
+		base.Policies.TimeRestrictions = overlay.Policies.TimeRestrictions
+	}
+	if overlay.Audit != nil {
+		if base.Audit == nil {
+			base.Audit = overlay.Audit
+		} else {
+			if overlay.Audit.RetentionDays > base.Audit.RetentionDays {
+				base.Audit.RetentionDays = overlay.Audit.RetentionDays
+			}
+			if overlay.Audit.LogLevel != "" {
+				base.Audit.LogLevel = overlay.Audit.LogLevel
+			}
+			base.Audit.IncludePrompts = base.Audit.IncludePrompts || overlay.Audit.IncludePrompts
+			base.Audit.IncludeResponses = base.Audit.IncludeResponses || overlay.Audit.IncludeResponses
+		}
+	}
+	if overlay.Compliance != nil {
+		if base.Compliance == nil {
+			base.Compliance = overlay.Compliance
+		} else {
+			base.Compliance.Frameworks = uniqueStrings(append(base.Compliance.Frameworks, overlay.Compliance.Frameworks...))
+			if overlay.Compliance.DataResidency != "" {
+				base.Compliance.DataResidency = overlay.Compliance.DataResidency
+			}
+			if overlay.Compliance.AIActRiskLevel != "" {
+				base.Compliance.AIActRiskLevel = overlay.Compliance.AIActRiskLevel
+			}
+			if overlay.Compliance.HumanOversight != "" {
+				base.Compliance.HumanOversight = overlay.Compliance.HumanOversight
+			}
+			if overlay.Compliance.PlanReview != nil {
+				base.Compliance.PlanReview = overlay.Compliance.PlanReview
+			}
+		}
+	}
+}
+
+func mergeModelRouting(base, overlay *policy.ModelRoutingConfig) {
+	if overlay.Tier0 != nil {
+		if base.Tier0 == nil {
+			base.Tier0 = overlay.Tier0
+		} else if overlay.Tier0.Location != "" {
+			base.Tier0.Location = overlay.Tier0.Location
+		}
+	}
+	if overlay.Tier1 != nil {
+		if base.Tier1 == nil {
+			base.Tier1 = overlay.Tier1
+		} else {
+			if overlay.Tier1.Location != "" {
+				base.Tier1.Location = overlay.Tier1.Location
+			}
+			base.Tier1.BedrockOnly = base.Tier1.BedrockOnly || overlay.Tier1.BedrockOnly
+		}
+	}
+	if overlay.Tier2 != nil {
+		if base.Tier2 == nil {
+			base.Tier2 = overlay.Tier2
+		} else {
+			if overlay.Tier2.Location != "" {
+				base.Tier2.Location = overlay.Tier2.Location
+			}
+			base.Tier2.BedrockOnly = base.Tier2.BedrockOnly || overlay.Tier2.BedrockOnly
+		}
+	}
+}
+
+func uniqueStrings(s []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, v := range s {
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
 }
 
 func renderTemplate(tmplPath, outPath string, data interface{}) error {
