@@ -575,8 +575,9 @@ func applyComplianceOverlays(agentPath string) error {
 		return fmt.Errorf("parsing agent policy: %w", err)
 	}
 
-	names := []string{strings.ToLower(initCompliance)}
-	if initCompliance == "all" {
+	lower := strings.ToLower(initCompliance)
+	names := []string{lower}
+	if lower == "all" {
 		names = pack.ComplianceOverlayNames()
 	}
 	for _, name := range names {
