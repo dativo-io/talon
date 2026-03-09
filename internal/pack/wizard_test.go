@@ -33,30 +33,59 @@ func TestListForWizard_ContainsExpectedPacks(t *testing.T) {
 	assert.True(t, ids["openclaw"], "openclaw should be visible")
 	assert.True(t, ids["copaw"], "copaw should be visible")
 	assert.True(t, ids["langchain"], "langchain should be visible")
+	assert.True(t, ids["crewai"], "crewai should be visible")
 	assert.True(t, ids["generic"], "generic should be visible")
 	assert.False(t, ids["n8n"], "n8n should be hidden")
 	assert.False(t, ids["flowise"], "flowise should be hidden")
+}
+
+func TestFindByID_CrewAIHasFilesAndPostMessage(t *testing.T) {
+	p, ok := FindByID("crewai")
+	require.True(t, ok)
+	assert.Equal(t, "CrewAI", p.DisplayName)
+	assert.Equal(t, "CrewAI", p.Framework)
+	assert.NotEmpty(t, p.Files, "crewai pack should have template files")
+	assert.NotEmpty(t, p.PostMessage, "crewai pack should have post-init message")
+	assert.Len(t, p.Files, 2, "crewai should have agent and config templates")
+}
+
+func TestReadComplianceOverlay(t *testing.T) {
+	for _, name := range []string{"gdpr", "nis2", "dora", "eu-ai-act"} {
+		content, err := ReadComplianceOverlay(name)
+		require.NoError(t, err, "overlay %q", name)
+		assert.NotEmpty(t, content)
+		assert.Contains(t, string(content), "compliance:")
+	}
+	t.Run("invalid", func(t *testing.T) {
+		_, err := ReadComplianceOverlay("invalid")
+		assert.Error(t, err)
+	})
+}
+
+func TestComplianceOverlayNames(t *testing.T) {
+	names := ComplianceOverlayNames()
+	assert.Equal(t, []string{"gdpr", "nis2", "dora", "eu-ai-act"}, names)
 }
 
 func TestRegisterPack(t *testing.T) {
 	t.Cleanup(resetForTest)
 
 	RegisterPack(PackDescriptor{
-		ID:          "crewai",
-		DisplayName: "CrewAI",
-		Description: "Multi-agent orchestration governance",
+		ID:          "custom-pack",
+		DisplayName: "Custom Pack",
+		Description: "Custom multi-agent orchestration governance",
 		Order:       35,
 	})
 
 	packs := ListForWizard()
 	found := false
 	for _, p := range packs {
-		if p.ID == "crewai" {
+		if p.ID == "custom-pack" {
 			found = true
 			break
 		}
 	}
-	assert.True(t, found, "registered pack crewai should appear in list")
+	assert.True(t, found, "registered pack custom-pack should appear in list")
 }
 
 func TestValidPackIDs(t *testing.T) {
