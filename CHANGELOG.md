@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-03-09
+
+### Added
+
+- **feat(cache): governed semantic cache.** Optional semantic cache for LLM requests: SQLite store, BM25 embedder, PII scrubber, OPA policy (`internal/cache`, `cache.rego`). Config section `cache` (disabled by default), wizard and doctor support, init templates. Integration in agent runner and gateway (lookup/store, policy, evidence). Evidence: `CacheHit`, `CacheEntryID`, `CacheSimilarity`, `CostSaved`; `CacheEvent` for erasure. CLI: `talon cache config|stats|list|erase`; `talon audit`, `talon costs`, `talon report` show cache savings. Docs: cache vs memory, policy cookbook, config reference; smoke test section for cache.
+
+- **ci: CodeQL workflow.** `.github/workflows/codeql.yml` for Go analysis with advanced config; `.github/codeql-config.yml` to exclude go/weak-sensitive-data-hashing (SHA-2 used for cache key derivation, not secrets).
+
+### Fixed
+
+- **fix(cache):** Record actual similarity score in evidence instead of threshold; centralize cache key derivation in `cache.DeriveEntryKey`; gateway uses config-derived tenant ID for cache key (CodeQL taint); remove dead code and clarify cache key hashing docs.
+- **fix(server):** HEAD support for dashboard so `curl -I` returns 200 (health checks / smoke tests).
+- **fix(cmd):** Cache prompt (y/N) to match default `n` and `readLine [n]`.
+- **fix(lint):** Resolve golangci-lint gosec and noctx (agent postBudgetAlert ctx, enforce path validation, mounts/retention nolint, gateway tests with `NewRequestWithContext`); gofmt gateway.go, noctx in otel chi_test and MCP tests.
+
+### Changed
+
+- **ci:** Coverage threshold lowered to 65%; enforce.go nolint G703 for validated path; response_pii_test noctx.
+- **docs(gateway):** Clarify `cacheKeyHash` is cache lookup, not password hashing (CodeQL).
+
 ## [1.0.0] - 2026-03-06
 
 ### Added
@@ -318,7 +338,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/dativo-io/talon/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/dativo-io/talon/compare/v0.9.5...v1.0.0
 [0.9.2]: https://github.com/dativo-io/talon/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/dativo-io/talon/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/dativo-io/talon/compare/v0.8.14...v0.9.0
