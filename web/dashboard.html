@@ -86,7 +86,8 @@
       var key = window.TALON_API_KEY || '';
       function headers() {
         var h = { 'Content-Type': 'application/json' };
-        if (key) h['X-Talon-Key'] = key;
+        var k = window.TALON_API_KEY || '';
+        if (k) h['X-Talon-Key'] = k;
         return h;
       }
       function get(url) {
