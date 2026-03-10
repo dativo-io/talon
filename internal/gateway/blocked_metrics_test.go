@@ -3,7 +3,6 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -320,7 +319,7 @@ func TestBlockedPath_AllBlockedPathsConsistent(t *testing.T) {
 			setupOverrides: func(c *GatewayConfig) {
 				c.ServerDefaults.DefaultPIIAction = "block"
 			},
-			body:       fmt.Sprintf(`{"model":"gpt-4o","messages":[{"role":"user","content":"Email: user@example.com"}]}`),
+			body:       `{"model":"gpt-4o","messages":[{"role":"user","content":"Email: user@example.com"}]}`,
 			wantStatus: http.StatusBadRequest,
 		},
 		{

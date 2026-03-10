@@ -164,3 +164,73 @@ func TestCLIDashboardParity(t *testing.T) {
 	assert.InDelta(t, 0.25, snap.Summary.TotalCostEUR, 0.001)
 	assert.Equal(t, 0, snap.Summary.BlockedRequests)
 }
+
+// TestDashboardCountMayLeadPersistedEvidence verifies the known semantic gap:
+// dashboard total_requests is event-based in memory, while CLI report counts
+// persisted evidence rows. A small positive drift is expected and acceptable.
+func TestDashboardCountMayLeadPersistedEvidence(t *testing.T) {
+	dir := t.TempDir()
+	store, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), "test-hmac-key-that-is-at-least-32-bytes-long")
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+	tenantID := "default"
+	now := time.Now().UTC()
+
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+
+	// Seed persisted evidence rows (CLI report source).
+	for i := 0; i < 32; i++ {
+		ev := evidence.Evidence{
+			ID:              "ev-drift-" + intToStr(i+1),
+			CorrelationID:   "corr-drift-" + intToStr(i+1),
+			Timestamp:       now.Add(-10 * time.Minute),
+			TenantID:        tenantID,
+			AgentID:         "metrics-caller",
+			InvocationType:  "gateway",
+			RequestSourceID: "smoke-test",
+			PolicyDecision:  evidence.PolicyDecision{Allowed: true},
+			Execution: evidence.Execution{
+				ModelUsed: "gpt-4o-mini",
+				Cost:      0.0001,
+			},
+		}
+		require.NoError(t, store.Store(ctx, &ev))
+	}
+
+	collector := NewCollector("enforce", store, WithTenantID(tenantID))
+	defer collector.Close()
+
+	// Backfill makes dashboard start from persisted evidence (=32).
+	require.NoError(t, collector.BackfillFromStore(ctx, store))
+
+	// Emit extra in-memory events that are not persisted yet.
+	for i := 0; i < 4; i++ {
+		collector.Record(GatewayEvent{
+			Timestamp:       now,
+			CallerID:        "metrics-caller",
+			Model:           "gpt-4o-mini",
+			EnforcementMode: "enforce",
+			CostEUR:         0.0,
+		})
+	}
+
+	require.Eventually(t, func() bool {
+		return collector.Snapshot(ctx).Summary.TotalRequests >= 36
+	}, 2*time.Second, 20*time.Millisecond)
+
+	reportCount, err := store.CountInRange(ctx, tenantID, "", dayStart, dayEnd)
+	require.NoError(t, err)
+	snap := collector.Snapshot(ctx)
+	dashboardCount := snap.Summary.TotalRequests
+
+	require.Equal(t, 32, reportCount, "CLI report source should only include persisted evidence")
+	require.Equal(t, 36, dashboardCount, "dashboard should include in-memory events")
+
+	// Mirrors smoke-test tolerance: dashboard can lead by up to 5 events.
+	drift := dashboardCount - reportCount
+	require.GreaterOrEqual(t, drift, 0)
+	require.LessOrEqual(t, drift, 5)
+}

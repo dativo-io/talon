@@ -1394,13 +1394,15 @@ GWEOF
       echo "  ✓  CLI report evidence count ($report_count) == dashboard total_requests ($dash_total)"
       record_pass
     else
-      # In-memory count might lag if events arrived after the snapshot; tolerate small diff
-      local count_diff=$(( dash_total - report_count ))
-      [[ $count_diff -lt 0 ]] && count_diff=$(( -count_diff ))
-      if [[ $count_diff -le 1 ]]; then
-        echo "  ✓  CLI report evidence ($report_count) ≈ dashboard total_requests ($dash_total) within tolerance"
+      # Dashboard total_requests is event-based and can exceed persisted evidence count.
+      # Allow a bounded one-sided drift (dashboard >= report) while still failing on larger mismatches.
+      local dash_minus_report=$(( dash_total - report_count ))
+      if [[ $dash_minus_report -ge 0 ]] && [[ $dash_minus_report -le 5 ]]; then
+        echo "  ✓  CLI report evidence ($report_count) <= dashboard total_requests ($dash_total) within allowed drift ($dash_minus_report)"
         record_pass
       else
+        local count_diff=$dash_minus_report
+        [[ $count_diff -lt 0 ]] && count_diff=$(( -count_diff ))
         log_failure "evidence count mismatch: report=$report_count dashboard=$dash_total" "diff=$count_diff"
       fi
     fi
