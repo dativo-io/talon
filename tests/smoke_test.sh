@@ -216,9 +216,9 @@ check_prereqs() {
   export TALON_SIGNING_KEY="${TALON_SIGNING_KEY:-$(openssl rand -hex 32 2>/dev/null || echo "smoke-signing-key-32-bytes-long")}"
   export TALON_API_KEYS="${TALON_API_KEYS:-smoke-test-key:default}"
   export TALON_API_KEYS_ORIGINAL="${TALON_API_KEYS}"
-  # Port 8080 not in use
-  if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 http://127.0.0.1:8080/health 2>/dev/null | grep -q '200'; then
-    echo "Port 8080 is in use; free it before running the smoke test."
+  # Keep standard port and ask user to free it if occupied (re-check every 10s).
+  if ! wait_port_free 8080 180 10; then
+    echo "Port 8080 is still in use; cannot run smoke tests on the standard port."
     exit 2
   fi
   echo "Prerequisites OK. TALON_DATA_DIR=$TALON_DATA_DIR"
@@ -266,13 +266,42 @@ run_talon() {
   env TALON_DATA_DIR="$TALON_DATA_DIR" talon "$@"
 }
 
-# Wait until port 8080 is free (up to N seconds). Prevents races between server sections.
+# Return 0 when a TCP port is currently in LISTEN state, else 1.
+is_port_in_use() {
+  local port="${1:-8080}"
+  if command -v lsof &>/dev/null; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN &>/dev/null && return 0
+  fi
+  # Fallback when lsof is unavailable: health probe catches common Talon conflicts.
+  curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 "http://127.0.0.1:$port/health" 2>/dev/null | grep -q '200'
+}
+
+# Wait until a port is free. If occupied, prompt the user to stop the process and
+# re-check every N seconds for up to max_wait_sec.
 wait_port_free() {
-  local port="${1:-8080}" max="${2:-15}" i=0
-  while curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 "http://127.0.0.1:$port/health" 2>/dev/null | grep -q 200; do
-    sleep 1; ((i++))
-    [[ $i -ge $max ]] && { echo "  -  (port $port still in use after ${max}s)"; return 1; }
+  local port="${1:-8080}" max_wait_sec="${2:-180}" check_every_sec="${3:-10}" waited=0
+
+  if ! is_port_in_use "$port"; then
+    return 0
+  fi
+
+  echo "  -  Port $port is in use. Please stop the process using it."
+  if command -v lsof &>/dev/null; then
+    echo "     Current listener(s):"
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | sed 's/^/     /'
+  fi
+
+  while is_port_in_use "$port"; do
+    if [[ $waited -ge $max_wait_sec ]]; then
+      echo "  -  Port $port is still in use after ${max_wait_sec}s."
+      return 1
+    fi
+    echo "  -  Waiting ${check_every_sec}s, then checking port $port again..."
+    sleep "$check_every_sec"
+    ((waited += check_every_sec))
   done
+
+  echo "  ✓  Port $port is now free."
   # Extra pause for TCP TIME_WAIT
   sleep 1
   return 0
@@ -683,9 +712,15 @@ test_section_12_http_api() {
 # -----------------------------------------------------------------------------
 test_section_13_gateway() {
   local section="13_gateway"
+  local gateway_port="8080"
+  local gateway_base_url="http://127.0.0.1:${gateway_port}"
   local dir; dir="$(setup_section_dir "$section")"
   cd "$dir" || exit 1
-  wait_port_free 8080 15 || true
+  if ! wait_port_free "$gateway_port" 180 10; then
+    log_failure "gateway section could not acquire port ${gateway_port}" "port remained busy"
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   # Gateway config: inject minimal gateway block if scaffold did not provide one
@@ -718,13 +753,14 @@ gateway:
 GWEOF
   fi
   TALON_GATEWAY_PID=""
-  run_talon serve --port 8080 --gateway --gateway-config "$dir/talon.config.yaml" &>/dev/null &
+  run_talon serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.config.yaml" &>/dev/null &
   TALON_GATEWAY_PID=$!
   local i=0
-  while ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health 2>/dev/null | grep -q 200; do
+  while ! curl -s -o /dev/null -w "%{http_code}" "${gateway_base_url}/health" 2>/dev/null | grep -q 200; do
     sleep 1; ((i++)); [[ $i -ge 10 ]] && break
   done
-  if ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health 2>/dev/null | grep -q 200; then
+  if ! curl -s -o /dev/null -w "%{http_code}" "${gateway_base_url}/health" 2>/dev/null | grep -q 200; then
+    log_failure "gateway server did not start on port ${gateway_port}" "url=${gateway_base_url}/health"
     kill "$TALON_GATEWAY_PID" 2>/dev/null || true
     TALON_GATEWAY_PID=""
     cd "$REPO_ROOT" || true
@@ -732,13 +768,13 @@ GWEOF
   fi
   local gw_key="talon-gw-smoke-001"
   grep -q "talon-gw-smoke-001" "$dir/talon.config.yaml" 2>/dev/null || gw_key="$(grep -oE 'api_key:\s*[^[:space:]]+' "$dir/talon.config.yaml" | head -1 | sed 's/api_key:\s*//')"
-  local code; code="$(curl -s -o /tmp/talon_gw_resp.json -w '%{http_code}' -X POST http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions \
+  local code; code="$(curl -s -o /tmp/talon_gw_resp.json -w '%{http_code}' -X POST "${gateway_base_url}/v1/proxy/openai/v1/chat/completions" \
     -H "Authorization: Bearer $gw_key" -H "Content-Type: application/json" \
     -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Reply PONG"}]}')"
   assert_pass "POST gateway chat/completions 200" test "$code" = "200"
   assert_fail "response must not contain sk- (no API key leak)" grep -q "sk-" /tmp/talon_gw_resp.json 2>/dev/null
   assert_pass "Wrong gateway key → 401" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer wrong-key" -H "Content-Type: application/json" -d '{"model":"gpt-4o-mini","messages":[]}' http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions)" = "401"
+    test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer wrong-key" -H "Content-Type: application/json" -d '{"model":"gpt-4o-mini","messages":[]}' "${gateway_base_url}/v1/proxy/openai/v1/chat/completions")" = "401"
   kill "$TALON_GATEWAY_PID" 2>/dev/null || true
   wait "$TALON_GATEWAY_PID" 2>/dev/null || true
   TALON_GATEWAY_PID=""
@@ -1028,11 +1064,17 @@ CACHEEOF
 # -----------------------------------------------------------------------------
 test_section_23_dashboard_metrics() {
   local section="23_dashboard_metrics"
+  local dashboard_port="8080"
+  local dashboard_base_url="http://127.0.0.1:${dashboard_port}"
   echo ""
   echo "=== SECTION 23 — Gateway Dashboard Metrics ==="
   local dir; dir="$(setup_section_dir "$section")"
   cd "$dir" || exit 1
-  wait_port_free 8080 15 || true
+  if ! wait_port_free "$dashboard_port" 180 10; then
+    log_failure "dashboard metrics section could not acquire port ${dashboard_port}" "port remained busy"
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   # Add gateway config with dashboard token
@@ -1064,23 +1106,23 @@ GWEOF
     fi
   fi
   local GW_PID=""
-  run_talon serve --port 8080 --gateway --gateway-config "$dir/talon.config.yaml" &>/dev/null &
+  run_talon serve --port "$dashboard_port" --gateway --gateway-config "$dir/talon.config.yaml" &>/dev/null &
   GW_PID=$!
   local i=0
-  while ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health 2>/dev/null | grep -q 200; do
+  while ! curl -s -o /dev/null -w "%{http_code}" "${dashboard_base_url}/health" 2>/dev/null | grep -q 200; do
     sleep 1; ((i++)); [[ $i -ge 10 ]] && break
   done
-  if ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health 2>/dev/null | grep -q 200; then
-    echo "  -  (skip dashboard metrics: server did not start)"
+  if ! curl -s -o /dev/null -w "%{http_code}" "${dashboard_base_url}/health" 2>/dev/null | grep -q 200; then
+    log_failure "dashboard gateway server did not start on port ${dashboard_port}" "url=${dashboard_base_url}/health"
     kill "$GW_PID" 2>/dev/null || true
     cd "$REPO_ROOT" || true
     return 0
   fi
   # Verify the gateway routes are actually registered (not just health)
   local gw_probe; gw_probe="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer talon-gw-metrics-001" \
-    -X POST -H "Content-Type: application/json" -d '{}' http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions 2>/dev/null)"
+    -X POST -H "Content-Type: application/json" -d '{}' "${dashboard_base_url}/v1/proxy/openai/v1/chat/completions" 2>/dev/null)"
   if [[ "$gw_probe" == "404" ]]; then
-    echo "  -  (skip dashboard metrics: gateway routes not registered — got 404 on proxy)"
+    log_failure "gateway routes not registered for dashboard metrics section" "proxy=${dashboard_base_url}/v1/proxy/openai/v1/chat/completions got=404"
     kill "$GW_PID" 2>/dev/null || true
     wait "$GW_PID" 2>/dev/null || true
     cd "$REPO_ROOT" || true
@@ -1092,13 +1134,13 @@ GWEOF
 
   # --- 23.1: Dashboard HTML served ---
   assert_pass "GET /gateway/dashboard 200 (with token)" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/gateway/dashboard)" = "200"
-  local dash_html; dash_html="$(curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/gateway/dashboard)"
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $dash_token" "${dashboard_base_url}/gateway/dashboard")" = "200"
+  local dash_html; dash_html="$(curl -s -H "Authorization: Bearer $dash_token" "${dashboard_base_url}/gateway/dashboard")"
   assert_pass "dashboard HTML contains Talon" grep -qi "talon" <<< "$dash_html"
   assert_pass "dashboard HTML contains <script>" grep -qi "<script" <<< "$dash_html"
 
   # --- 23.2: Metrics JSON endpoint structure (before any requests) ---
-  local snap_before; snap_before="$(curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/api/v1/metrics)"
+  local snap_before; snap_before="$(curl -s -H "Authorization: Bearer $dash_token" "${dashboard_base_url}/api/v1/metrics")"
   assert_pass "GET /api/v1/metrics returns valid JSON" jq -e '.' <<< "$snap_before" &>/dev/null
   assert_pass "metrics snapshot has summary.total_requests" \
     jq -e '.summary.total_requests >= 0' <<< "$snap_before" &>/dev/null
@@ -1131,17 +1173,17 @@ GWEOF
 
   # --- 23.3: Make gateway requests so metrics accumulate ---
   # Request 1: normal request (should increment total_requests, model_breakdown, caller_stats)
-  curl -s -o /dev/null -X POST http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions \
+  curl -s -o /dev/null -X POST "${dashboard_base_url}/v1/proxy/openai/v1/chat/completions" \
     -H "Authorization: Bearer $gw_key" -H "Content-Type: application/json" \
     -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Reply METRICS_OK"}]}' 2>/dev/null || true
   # Request 2: PII-containing request (should increment pii_detections, pii_breakdown)
-  curl -s -o /dev/null -X POST http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions \
+  curl -s -o /dev/null -X POST "${dashboard_base_url}/v1/proxy/openai/v1/chat/completions" \
     -H "Authorization: Bearer $gw_key" -H "Content-Type: application/json" \
     -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Contact jan.kowalski@example.com about IBAN DE89370400440532013000"}]}' 2>/dev/null || true
   sleep 3
 
   # --- 23.4: Metrics reflect the gateway requests ---
-  local snap_after; snap_after="$(curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/api/v1/metrics)"
+  local snap_after; snap_after="$(curl -s -H "Authorization: Bearer $dash_token" "${dashboard_base_url}/api/v1/metrics")"
   assert_pass "metrics snapshot after requests is valid JSON" jq -e '.' <<< "$snap_after" &>/dev/null
   local after_count; after_count="$(jq '.summary.total_requests' <<< "$snap_after")"
   if [[ -n "$after_count" ]] && [[ -n "$before_count" ]] && [[ "$after_count" -gt "$before_count" ]]; then
@@ -1432,19 +1474,19 @@ GWEOF
 
   # --- 23.8: Dashboard token auth works ---
   assert_pass "dashboard HTML without token → 401" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/gateway/dashboard)" = "401"
+    test "$(curl -s -o /dev/null -w '%{http_code}' "${dashboard_base_url}/gateway/dashboard")" = "401"
   assert_pass "dashboard metrics without token → 401" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/metrics)" = "401"
+    test "$(curl -s -o /dev/null -w '%{http_code}' "${dashboard_base_url}/api/v1/metrics")" = "401"
   assert_pass "dashboard metrics with wrong token → 401" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer wrong" http://127.0.0.1:8080/api/v1/metrics)" = "401"
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer wrong" "${dashboard_base_url}/api/v1/metrics")" = "401"
   assert_pass "SSE stream without token → 401" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/metrics/stream)" = "401"
+    test "$(curl -s -o /dev/null -w '%{http_code}' "${dashboard_base_url}/api/v1/metrics/stream")" = "401"
   # Token via query param
   assert_pass "dashboard metrics with token query param → 200" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8080/api/v1/metrics?token=$dash_token")" = "200"
+    test "$(curl -s -o /dev/null -w '%{http_code}' "${dashboard_base_url}/api/v1/metrics?token=$dash_token")" = "200"
 
   # --- 23.9: SSE stream works ---
-  local sse_out; sse_out="$(timeout 8 curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/api/v1/metrics/stream 2>/dev/null)" || true
+  local sse_out; sse_out="$(timeout 8 curl -s -H "Authorization: Bearer $dash_token" "${dashboard_base_url}/api/v1/metrics/stream" 2>/dev/null)" || true
   if echo "$sse_out" | grep -q "data:"; then
     echo "  ✓  SSE stream returns data events"
     record_pass
