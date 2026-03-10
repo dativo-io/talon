@@ -71,7 +71,6 @@ func resolveResponsePIIAction(defaultPolicy *ServerDefaults, callerOverrides *Ca
 // usage, model, etc.) are never scanned, preventing false positives on timestamps
 // and token counts.
 func scanResponseForPII(ctx context.Context, body []byte, action string, scanner *classifier.Scanner) ([]byte, *ResponsePIIScanResult) {
-	ctx = classifier.ContextWithPIIDirection(ctx, "response")
 	result := &ResponsePIIScanResult{}
 	if scanner == nil || action == "allow" || action == "" {
 		return body, result
@@ -381,7 +380,6 @@ func handleStreamingPIIScan(
 	action string,
 	scanner *classifier.Scanner,
 ) *ResponsePIIScanResult {
-	ctx = classifier.ContextWithPIIDirection(ctx, "response")
 	raw := capture.body.Bytes()
 
 	if scanner == nil || action == "allow" || action == "" {

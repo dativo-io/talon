@@ -461,7 +461,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	}
 
 	// Step 2: Classify input
-	inputClass := r.classifier.Scan(ctx, req.Prompt)
+	inputClass := r.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), req.Prompt)
 	inputEntityNames := entityNames(inputClass.Entities)
 	span.SetAttributes(
 		attribute.Int("classification.input_tier", inputClass.Tier),
@@ -753,7 +753,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				// Re-classify memory content to detect tier upgrades from persisted
 				// classified data — prevents sending tier-1/tier-2 memory content
 				// to a lower-tier model (data sovereignty protection).
-				memClass := r.classifier.Scan(ctx, memPrompt)
+				memClass := r.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), memPrompt)
 				if memClass.Tier > effectiveTier {
 					effectiveTier = memClass.Tier
 					span.SetAttributes(attribute.Int("classification.tier_upgraded_by_memory", effectiveTier))
@@ -1226,7 +1226,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	}
 
 	// Step 8: Classify output
-	outputClass := r.classifier.Scan(ctx, llmResp.Content)
+	outputClass := r.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), llmResp.Content)
 	outputEntityNames := entityNames(outputClass.Entities)
 
 	// Step 9: Generate evidence (attach post-request cost to routing decision when pricing table is set)
@@ -1450,7 +1450,7 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 	}
 
 	if r.classifier != nil && pol != nil && len(pol.ToolPolicies) > 0 {
-		piiResult := applyToolArgumentPII(ctx, r.classifier, tc.Name, params, pol)
+		piiResult := applyToolArgumentPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), r.classifier, tc.Name, params, pol)
 		if piiResult != nil {
 			result.PIIFindings = append(result.PIIFindings, piiResult.Findings...)
 			if piiResult.Blocked {
@@ -1511,7 +1511,7 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 
 	// Step 4: Tool-aware PII scanning on result
 	if r.classifier != nil && pol != nil && len(pol.ToolPolicies) > 0 {
-		redacted, findings := applyToolResultPII(ctx, r.classifier, tc.Name, resultStr, pol)
+		redacted, findings := applyToolResultPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), r.classifier, tc.Name, resultStr, pol)
 		result.PIIFindings = append(result.PIIFindings, findings...)
 		resultStr = redacted
 	}
@@ -1675,7 +1675,7 @@ func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *p
 			text = string(att.Content)
 		}
 		if r.classifier != nil {
-			attachClass := r.classifier.Scan(ctx, text)
+			attachClass := r.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), text)
 			if attachClass.Tier > maxAttachmentTier {
 				maxAttachmentTier = attachClass.Tier
 			}

@@ -80,6 +80,7 @@ func TestRecordPIIRedaction(t *testing.T) {
 func TestPIIDetectionWiredInScan(t *testing.T) {
 	scanner := MustNewScanner()
 	metrics := collectClassifierMetrics(t, func(ctx context.Context) {
+		ctx = WithPIIDirection(ctx, PIIDirectionRequest)
 		result := scanner.Scan(ctx, "Contact me at user@example.com")
 		require.True(t, result.HasPII)
 	})
@@ -100,6 +101,7 @@ func TestPIIDetectionWiredInScan(t *testing.T) {
 func TestPIIRedactionWiredInRedact(t *testing.T) {
 	scanner := MustNewScanner()
 	metrics := collectClassifierMetrics(t, func(ctx context.Context) {
+		ctx = WithPIIDirection(ctx, PIIDirectionResponse)
 		result := scanner.Redact(ctx, "My email is test@company.eu")
 		assert.Contains(t, result, "[EMAIL]")
 	})

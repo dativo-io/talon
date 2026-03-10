@@ -177,7 +177,7 @@ func scanSingleFileBlock(
 
 	// PII scan
 	if piiScanner != nil {
-		cls := piiScanner.Scan(ctx, text)
+		cls := piiScanner.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), text)
 		if cls != nil && cls.HasPII {
 			result.PIIFound = true
 			types := map[string]bool{}

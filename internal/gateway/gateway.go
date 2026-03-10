@@ -259,7 +259,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			WriteProviderError(w, route.Provider, http.StatusBadRequest,
 				"Request blocked: attachment violates policy")
 			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
-				g.classifier.Scan(ctx, extracted.Text), nil, 0, 0, 0, false,
+				g.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text), nil, 0, 0, 0, false,
 				[]string{"attachment policy block"}, false, nil, attSummary, nil, nil, false, "", 0, 0)
 			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0)
 			return
@@ -270,7 +270,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 4: Scan PII
-	classification := g.classifier.Scan(ctx, extracted.Text)
+	classification := g.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text)
 
 	// Step 5: Classify (tier from PII)
 	tier := classification.Tier
@@ -415,7 +415,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Step 7: Redact (if policy says redact and PII found, skip in shadow mode)
 	if !isShadow && piiAction == "redact" && classification.HasPII {
-		redacted, redactErr := RedactRequestBody(ctx, route.Provider, forwardBody, g.classifier)
+		redacted, redactErr := RedactRequestBody(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), route.Provider, forwardBody, g.classifier)
 		if redactErr == nil {
 			forwardBody = redacted
 		}
@@ -549,7 +549,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		capture := &responseCapture{ResponseWriter: w}
 		err = Forward(capture, fwdParams)
 		if err == nil {
-			scannedBody, scanResult := scanResponseForPII(ctx, capture.body.Bytes(), responsePIIAction, g.classifier)
+			scannedBody, scanResult := scanResponseForPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), capture.body.Bytes(), responsePIIAction, g.classifier)
 			responsePII = scanResult
 			if capture.statusCode != 0 {
 				w.WriteHeader(capture.statusCode)
@@ -589,7 +589,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		capture := &responseCapture{ResponseWriter: w}
 		err = Forward(capture, fwdParams)
 		if err == nil {
-			responsePII = handleStreamingPIIScan(ctx, w, capture, responsePIIAction, g.classifier)
+			responsePII = handleStreamingPIIScan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), w, capture, responsePIIAction, g.classifier)
 		} else {
 			capture.flushTo(w)
 		}
