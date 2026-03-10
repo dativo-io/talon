@@ -124,16 +124,15 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/metrics |
   "budget_status": {
     "daily_used": 4.82,
     "daily_limit": 50.0,
-    "daily_pct": 9.64,
+    "daily_percent": 9.64,
     "monthly_used": 142.50,
     "monthly_limit": 500.0,
-    "monthly_pct": 28.5
+    "monthly_percent": 28.5
   },
   "cache_stats": {
     "hits": 312,
-    "misses": 935,
     "hit_rate": 0.25,
-    "cost_saved_eur": 1.20
+    "cost_saved": 1.20
   }
 }
 ```
@@ -232,19 +231,18 @@ Per-model request counts and cost. One entry per distinct model seen.
 |-------|------|-------------|
 | `daily_used` | float | EUR spent today. |
 | `daily_limit` | float | Daily cost cap from policy. |
-| `daily_pct` | float | Daily utilization percentage. |
+| `daily_percent` | float | Daily utilization percentage. |
 | `monthly_used` | float | EUR spent this month. |
 | `monthly_limit` | float | Monthly cost cap from policy. |
-| `monthly_pct` | float | Monthly utilization percentage. |
+| `monthly_percent` | float | Monthly utilization percentage. |
 
 ### `cache_stats`
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `hits` | int | Cache hits (served from semantic cache). |
-| `misses` | int | Cache misses (forwarded to LLM provider). |
 | `hit_rate` | float | Cache hit ratio (0.0–1.0). |
-| `cost_saved_eur` | float | Estimated cost saved by cache hits. |
+| `cost_saved` | float | Estimated cost saved by cache hits (EUR). |
 
 ---
 

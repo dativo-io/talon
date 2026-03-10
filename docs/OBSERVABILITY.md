@@ -158,7 +158,7 @@ The dashboard snapshot includes:
 | `tool_governance` | object | Tool filtering stats (total, filtered, by risk level, anomalous agents). |
 | `shadow_summary` | object | Shadow mode violation summary (only present in shadow mode). |
 | `budget_status` | object | Budget utilization (daily/monthly used, limit, percentage). |
-| `cache_stats` | object | Semantic cache performance (hits, misses, hit rate, cost saved). |
+| `cache_stats` | object | Semantic cache performance (hits, hit rate, cost saved). |
 
 See [Gateway dashboard reference](reference/gateway-dashboard.md) for full configuration, authentication, and API details.
 

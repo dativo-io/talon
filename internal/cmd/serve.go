@@ -292,9 +292,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("loading gateway config: %w", err)
 		}
+		// --gateway flag explicitly opts in; override config's enabled field
 		if !gatewayCfg.Enabled {
-			log.Warn().Msg("gateway config has enabled: false — gateway not started")
-		} else {
+			log.Info().Msg("--gateway flag set; enabling gateway (config had enabled: false)")
+			gatewayCfg.Enabled = true
+		}
+		{
 			gatewayPolicy, err := policy.NewGatewayEngine(ctx)
 			if err != nil {
 				return fmt.Errorf("gateway policy engine: %w", err)

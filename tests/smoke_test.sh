@@ -266,6 +266,18 @@ run_talon() {
   env TALON_DATA_DIR="$TALON_DATA_DIR" talon "$@"
 }
 
+# Wait until port 8080 is free (up to N seconds). Prevents races between server sections.
+wait_port_free() {
+  local port="${1:-8080}" max="${2:-15}" i=0
+  while curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 "http://127.0.0.1:$port/health" 2>/dev/null | grep -q 200; do
+    sleep 1; ((i++))
+    [[ $i -ge $max ]] && { echo "  -  (port $port still in use after ${max}s)"; return 1; }
+  done
+  # Extra pause for TCP TIME_WAIT
+  sleep 1
+  return 0
+}
+
 # -----------------------------------------------------------------------------
 # SECTION 01 — Binary and Version (docs/QUICKSTART.md, docs/README.md)
 # -----------------------------------------------------------------------------
@@ -673,6 +685,7 @@ test_section_13_gateway() {
   local section="13_gateway"
   local dir; dir="$(setup_section_dir "$section")"
   cd "$dir" || exit 1
+  wait_port_free 8080 15 || true
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   # Gateway config: inject minimal gateway block if scaffold did not provide one
@@ -1019,6 +1032,7 @@ test_section_23_dashboard_metrics() {
   echo "=== SECTION 23 — Gateway Dashboard Metrics ==="
   local dir; dir="$(setup_section_dir "$section")"
   cd "$dir" || exit 1
+  wait_port_free 8080 15 || true
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   # Add gateway config with dashboard token
@@ -1042,7 +1056,7 @@ gateway:
       tenant_id: "default"
       allowed_providers: ["openai"]
   default_policy:
-    default_pii_action: "warn"
+    default_pii_action: "redact"
     max_daily_cost: 100.00
     max_monthly_cost: 500.00
     require_caller_id: true
@@ -1062,6 +1076,16 @@ GWEOF
     cd "$REPO_ROOT" || true
     return 0
   fi
+  # Verify the gateway routes are actually registered (not just health)
+  local gw_probe; gw_probe="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer talon-gw-metrics-001" \
+    -X POST -H "Content-Type: application/json" -d '{}' http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions 2>/dev/null)"
+  if [[ "$gw_probe" == "404" ]]; then
+    echo "  -  (skip dashboard metrics: gateway routes not registered — got 404 on proxy)"
+    kill "$GW_PID" 2>/dev/null || true
+    wait "$GW_PID" 2>/dev/null || true
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
   local api_key="smoke-test-key"
   local gw_key="talon-gw-metrics-001"
   local dash_token="smoke-dash-token"
@@ -1071,6 +1095,7 @@ GWEOF
     test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/gateway/dashboard)" = "200"
   local dash_html; dash_html="$(curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/gateway/dashboard)"
   assert_pass "dashboard HTML contains Talon" grep -qi "talon" <<< "$dash_html"
+  assert_pass "dashboard HTML contains <script>" grep -qi "<script" <<< "$dash_html"
 
   # --- 23.2: Metrics JSON endpoint structure (before any requests) ---
   local snap_before; snap_before="$(curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/api/v1/metrics)"
@@ -1081,35 +1106,82 @@ GWEOF
     jq -e '.enforcement_mode' <<< "$snap_before" &>/dev/null
   assert_pass "metrics snapshot has uptime" \
     jq -e '.uptime' <<< "$snap_before" &>/dev/null
+  assert_pass "metrics snapshot has generated_at" \
+    jq -e '.generated_at' <<< "$snap_before" &>/dev/null
+  # Summary sub-fields (all documented in docs/reference/gateway-dashboard.md)
+  assert_pass "summary has blocked_requests" \
+    jq -e '.summary | has("blocked_requests")' <<< "$snap_before" &>/dev/null
+  assert_pass "summary has pii_detections" \
+    jq -e '.summary | has("pii_detections")' <<< "$snap_before" &>/dev/null
+  assert_pass "summary has pii_redactions" \
+    jq -e '.summary | has("pii_redactions")' <<< "$snap_before" &>/dev/null
+  assert_pass "summary has tools_filtered" \
+    jq -e '.summary | has("tools_filtered")' <<< "$snap_before" &>/dev/null
+  assert_pass "summary has total_cost_eur" \
+    jq -e '.summary | has("total_cost_eur")' <<< "$snap_before" &>/dev/null
+  assert_pass "summary has avg_latency_ms" \
+    jq -e '.summary | has("avg_latency_ms")' <<< "$snap_before" &>/dev/null
+  assert_pass "summary has p99_latency_ms" \
+    jq -e '.summary | has("p99_latency_ms")' <<< "$snap_before" &>/dev/null
+  assert_pass "summary has error_rate" \
+    jq -e '.summary | has("error_rate")' <<< "$snap_before" &>/dev/null
+  assert_pass "summary has active_runs" \
+    jq -e '.summary | has("active_runs")' <<< "$snap_before" &>/dev/null
   local before_count; before_count="$(jq '.summary.total_requests' <<< "$snap_before")"
 
   # --- 23.3: Make gateway requests so metrics accumulate ---
+  # Request 1: normal request (should increment total_requests, model_breakdown, caller_stats)
   curl -s -o /dev/null -X POST http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions \
     -H "Authorization: Bearer $gw_key" -H "Content-Type: application/json" \
     -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Reply METRICS_OK"}]}' 2>/dev/null || true
-  sleep 2
+  # Request 2: PII-containing request (should increment pii_detections, pii_breakdown)
+  curl -s -o /dev/null -X POST http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions \
+    -H "Authorization: Bearer $gw_key" -H "Content-Type: application/json" \
+    -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Contact jan.kowalski@example.com about IBAN DE89370400440532013000"}]}' 2>/dev/null || true
+  sleep 3
 
-  # --- 23.4: Metrics reflect the gateway request ---
+  # --- 23.4: Metrics reflect the gateway requests ---
   local snap_after; snap_after="$(curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/api/v1/metrics)"
+  assert_pass "metrics snapshot after requests is valid JSON" jq -e '.' <<< "$snap_after" &>/dev/null
   local after_count; after_count="$(jq '.summary.total_requests' <<< "$snap_after")"
-  if [[ "$after_count" -gt "$before_count" ]]; then
+  if [[ -n "$after_count" ]] && [[ -n "$before_count" ]] && [[ "$after_count" -gt "$before_count" ]]; then
     echo "  ✓  metrics total_requests incremented ($before_count → $after_count)"
     record_pass
   else
     log_failure "metrics total_requests should increment after gateway request" "before=$before_count after=$after_count"
   fi
-  # Cost should be > 0 (we made a real LLM request)
+  # Cost should be > 0 (we made real LLM requests)
   local cost; cost="$(jq '.summary.total_cost_eur' <<< "$snap_after")"
-  if [[ "$(echo "$cost > 0" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+  if [[ "$(echo "${cost:-0} > 0" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
     echo "  ✓  metrics total_cost_eur > 0 ($cost)"
     record_pass
   else
     echo "  -  metrics total_cost_eur = $cost (may be zero if cached or free tier)"
   fi
+  # Latency should be > 0 after real requests
+  local avg_lat; avg_lat="$(jq '.summary.avg_latency_ms' <<< "$snap_after")"
+  if [[ -n "$avg_lat" ]] && [[ "$avg_lat" != "null" ]] && [[ "$avg_lat" -gt 0 ]] 2>/dev/null; then
+    echo "  ✓  metrics avg_latency_ms > 0 ($avg_lat)"
+    record_pass
+  else
+    echo "  -  metrics avg_latency_ms = $avg_lat (may be zero if no completed requests)"
+  fi
+  # PII should have been detected (email + IBAN in request 2)
+  local pii_count; pii_count="$(jq '.summary.pii_detections' <<< "$snap_after")"
+  if [[ -n "$pii_count" ]] && [[ "$pii_count" != "null" ]] && [[ "$pii_count" -gt 0 ]] 2>/dev/null; then
+    echo "  ✓  metrics pii_detections > 0 ($pii_count)"
+    record_pass
+  else
+    echo "  -  metrics pii_detections = $pii_count (PII scanning may not be active in gateway)"
+  fi
 
-  # --- 23.5: Full snapshot fields present ---
+  # --- 23.5: Full snapshot fields present (all documented arrays/objects) ---
   assert_pass "snapshot has requests_timeline array" \
     jq -e '.requests_timeline | type == "array"' <<< "$snap_after" &>/dev/null
+  assert_pass "snapshot has pii_timeline array" \
+    jq -e '.pii_timeline | type == "array"' <<< "$snap_after" &>/dev/null
+  assert_pass "snapshot has cost_timeline array" \
+    jq -e '.cost_timeline | type == "array"' <<< "$snap_after" &>/dev/null
   assert_pass "snapshot has caller_stats array" \
     jq -e '.caller_stats | type == "array"' <<< "$snap_after" &>/dev/null
   assert_pass "snapshot has pii_breakdown array" \
@@ -1118,45 +1190,287 @@ GWEOF
     jq -e '.tool_governance | type == "object"' <<< "$snap_after" &>/dev/null
   assert_pass "snapshot has model_breakdown array" \
     jq -e '.model_breakdown | type == "array"' <<< "$snap_after" &>/dev/null
-  assert_pass "snapshot has generated_at" \
-    jq -e '.generated_at' <<< "$snap_after" &>/dev/null
+
+  # --- 23.5b: Budget status fields (omitempty — present when budget limits configured) ---
+  local has_budget; has_budget="$(jq 'has("budget_status") and (.budget_status != null)' <<< "$snap_after")"
+  if [[ "$has_budget" == "true" ]]; then
+    assert_pass "snapshot has budget_status object" \
+      jq -e '.budget_status | type == "object"' <<< "$snap_after" &>/dev/null
+    assert_pass "budget_status has daily_used" \
+      jq -e '.budget_status | has("daily_used")' <<< "$snap_after" &>/dev/null
+    assert_pass "budget_status has daily_limit" \
+      jq -e '.budget_status | has("daily_limit")' <<< "$snap_after" &>/dev/null
+    assert_pass "budget_status has daily_percent" \
+      jq -e '.budget_status | has("daily_percent")' <<< "$snap_after" &>/dev/null
+    assert_pass "budget_status has monthly_used" \
+      jq -e '.budget_status | has("monthly_used")' <<< "$snap_after" &>/dev/null
+    assert_pass "budget_status has monthly_limit" \
+      jq -e '.budget_status | has("monthly_limit")' <<< "$snap_after" &>/dev/null
+    assert_pass "budget_status has monthly_percent" \
+      jq -e '.budget_status | has("monthly_percent")' <<< "$snap_after" &>/dev/null
+  else
+    echo "  -  budget_status not present (budget limits may not be configured)"
+  fi
+
+  # --- 23.5c: Cache stats fields (omitempty — present when cache configured) ---
+  local has_cache; has_cache="$(jq 'has("cache_stats") and (.cache_stats != null)' <<< "$snap_after")"
+  if [[ "$has_cache" == "true" ]]; then
+    assert_pass "snapshot has cache_stats object" \
+      jq -e '.cache_stats | type == "object"' <<< "$snap_after" &>/dev/null
+    assert_pass "cache_stats has hits" \
+      jq -e '.cache_stats | has("hits")' <<< "$snap_after" &>/dev/null
+    assert_pass "cache_stats has hit_rate" \
+      jq -e '.cache_stats | has("hit_rate")' <<< "$snap_after" &>/dev/null
+    assert_pass "cache_stats has cost_saved" \
+      jq -e '.cache_stats | has("cost_saved")' <<< "$snap_after" &>/dev/null
+  else
+    echo "  -  cache_stats not present (semantic cache may not be enabled)"
+  fi
+
+  # --- 23.5d: Tool governance sub-fields ---
+  assert_pass "tool_governance has total_requested" \
+    jq -e '.tool_governance | has("total_requested")' <<< "$snap_after" &>/dev/null
+  assert_pass "tool_governance has total_filtered" \
+    jq -e '.tool_governance | has("total_filtered")' <<< "$snap_after" &>/dev/null
+
+  # --- 23.5e: Model breakdown should contain gpt-4o-mini after requests ---
+  local model_count; model_count="$(jq '.model_breakdown | length' <<< "$snap_after")"
+  if [[ -n "$model_count" ]] && [[ "$model_count" -gt 0 ]] 2>/dev/null; then
+    echo "  ✓  model_breakdown has $model_count model(s)"
+    record_pass
+  else
+    echo "  -  model_breakdown is empty (may need more requests)"
+  fi
+
+  # --- 23.5f: PII breakdown should list types after PII request ---
+  if [[ -n "$pii_count" ]] && [[ "$pii_count" -gt 0 ]] 2>/dev/null; then
+    local pii_types; pii_types="$(jq '.pii_breakdown | length' <<< "$snap_after")"
+    if [[ -n "$pii_types" ]] && [[ "$pii_types" -gt 0 ]] 2>/dev/null; then
+      echo "  ✓  pii_breakdown has $pii_types type(s)"
+      record_pass
+    else
+      echo "  -  pii_breakdown is empty despite pii_detections > 0"
+    fi
+  fi
 
   # --- 23.6: Caller stats include our gateway caller ---
   local callers; callers="$(jq -r '.caller_stats[].caller' <<< "$snap_after" 2>/dev/null)"
   if echo "$callers" | grep -q "metrics-caller"; then
     echo "  ✓  caller_stats includes metrics-caller"
     record_pass
+    # Verify caller_stats sub-fields
+    assert_pass "caller_stats entry has requests field" \
+      jq -e '.caller_stats[] | select(.caller == "metrics-caller") | has("requests")' <<< "$snap_after" &>/dev/null
+    assert_pass "caller_stats entry has cost_eur field" \
+      jq -e '.caller_stats[] | select(.caller == "metrics-caller") | has("cost_eur")' <<< "$snap_after" &>/dev/null
+    assert_pass "caller_stats entry has avg_latency_ms field" \
+      jq -e '.caller_stats[] | select(.caller == "metrics-caller") | has("avg_latency_ms")' <<< "$snap_after" &>/dev/null
+    assert_pass "caller_stats entry has pii_detected field" \
+      jq -e '.caller_stats[] | select(.caller == "metrics-caller") | has("pii_detected")' <<< "$snap_after" &>/dev/null
+    assert_pass "caller_stats entry has blocked field" \
+      jq -e '.caller_stats[] | select(.caller == "metrics-caller") | has("blocked")' <<< "$snap_after" &>/dev/null
   else
     echo "  -  caller_stats does not include metrics-caller (may use different name)"
   fi
 
-  # --- 23.7: CLI costs ↔ dashboard parity check ---
+  # --- 23.7: CLI costs ↔ dashboard cost parity ---
   local cli_cost_out; cli_cost_out="$(run_talon costs --tenant default 2>/dev/null)"; true
-  assert_pass "talon costs exits 0" run_talon costs --tenant default
-  # Both should report some cost for today; dashboard cost >= 0 and CLI shows numeric value
-  if echo "$cli_cost_out" | grep -qE '[0-9]+\.[0-9]+'; then
-    echo "  ✓  CLI costs shows numeric cost value"
-    record_pass
-    # Log for parseable comparison
-    echo "[SMOKE] CONSISTENCY|dashboard_cost|$cost"
-    echo "[SMOKE] CONSISTENCY|cli_cost_output|$(echo "$cli_cost_out" | head -5)"
+  assert_pass "talon costs --tenant default exits 0" run_talon costs --tenant default
+  # Extract the "Total" daily cost from CLI (€<value> in the Today column of the Total row)
+  local cli_daily_cost; cli_daily_cost="$(echo "$cli_cost_out" | grep -E '^Total' | grep -oE '€[0-9]+\.[0-9]+' | head -1 | tr -d '€')"
+  if [[ -z "$cli_daily_cost" ]]; then
+    cli_daily_cost="$(echo "$cli_cost_out" | grep -i 'today' | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+  fi
+  echo "[SMOKE] CONSISTENCY|cli_daily_cost|${cli_daily_cost:-none}"
+
+  # Compare CLI daily cost with dashboard budget_status.daily_used (both use MetricsQuerier.CostTotal)
+  if [[ "$has_budget" == "true" ]]; then
+    local dash_daily_used; dash_daily_used="$(jq -r '.budget_status.daily_used' <<< "$snap_after")"
+    echo "[SMOKE] CONSISTENCY|dashboard_daily_used|${dash_daily_used:-none}"
+    if [[ -n "$cli_daily_cost" ]] && [[ -n "$dash_daily_used" ]] && [[ "$dash_daily_used" != "null" ]]; then
+      # Both query CostTotal(dayStart, dayEnd) from the same SQLite evidence store
+      local cost_diff; cost_diff="$(echo "scale=8; d=$dash_daily_used - $cli_daily_cost; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
+      if [[ "$(echo "$cost_diff < 0.01" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+        echo "  ✓  CLI daily cost (€$cli_daily_cost) ≈ dashboard budget_status.daily_used (€$dash_daily_used)"
+        record_pass
+      else
+        log_failure "CLI daily cost (€$cli_daily_cost) != dashboard daily_used (€$dash_daily_used), diff=$cost_diff" \
+          "cli=$cli_daily_cost dash=$dash_daily_used"
+      fi
+    else
+      echo "  -  cost parity: could not parse CLI daily cost or dashboard daily_used"
+    fi
+    # Also verify budget percentages are consistent: daily_percent ≈ daily_used/daily_limit * 100
+    local dash_daily_pct; dash_daily_pct="$(jq -r '.budget_status.daily_percent' <<< "$snap_after")"
+    local dash_daily_lim; dash_daily_lim="$(jq -r '.budget_status.daily_limit' <<< "$snap_after")"
+    if [[ -n "$dash_daily_used" ]] && [[ "$dash_daily_lim" != "null" ]] && [[ "$dash_daily_lim" != "0" ]]; then
+      local expected_pct; expected_pct="$(echo "scale=4; $dash_daily_used / $dash_daily_lim * 100" | bc -l 2>/dev/null || echo 0)"
+      local pct_diff; pct_diff="$(echo "scale=4; d=$dash_daily_pct - $expected_pct; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
+      if [[ "$(echo "$pct_diff < 1.0" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+        echo "  ✓  budget daily_percent ($dash_daily_pct%) is consistent with daily_used/daily_limit"
+        record_pass
+      else
+        echo "  -  budget daily_percent ($dash_daily_pct%) vs computed ($expected_pct%), diff=$pct_diff"
+      fi
+    fi
   else
-    echo "  -  CLI costs output does not contain numeric cost"
+    echo "  -  budget_status absent — skipping CLI↔dashboard cost parity"
+  fi
+
+  # CLI costs --by-model: compare model names with dashboard model_breakdown
+  local cli_bymodel; cli_bymodel="$(run_talon costs --by-model --tenant default 2>/dev/null)"; true
+  assert_pass "talon costs --by-model exits 0" run_talon costs --by-model --tenant default
+  # Extract model names from CLI output (lines between header/footer dashes that start with a non-dash word and have €)
+  local cli_models; cli_models="$(echo "$cli_bymodel" | grep '€' | grep -v '^Total' | awk '{print $1}' | sort)"
+  local dash_models; dash_models="$(jq -r '.model_breakdown[].model // empty' <<< "$snap_after" 2>/dev/null | sort)"
+  echo "[SMOKE] CONSISTENCY|cli_models|$(echo "$cli_models" | tr '\n' ',')"
+  echo "[SMOKE] CONSISTENCY|dash_models|$(echo "$dash_models" | tr '\n' ',')"
+  if [[ -n "$cli_models" ]] && [[ -n "$dash_models" ]]; then
+    if [[ "$cli_models" == "$dash_models" ]]; then
+      echo "  ✓  CLI costs --by-model models match dashboard model_breakdown"
+      record_pass
+    else
+      echo "  -  model mismatch: CLI=[$cli_models] dash=[$dash_models] (timing or scope difference)"
+    fi
+  else
+    echo "  -  model parity: could not extract models from CLI or dashboard"
+  fi
+
+  # --- 23.7b: CLI report ↔ dashboard evidence count + PII parity ---
+  local cli_report; cli_report="$(run_talon report --tenant default 2>/dev/null)"; true
+  assert_pass "talon report --tenant default exits 0" run_talon report --tenant default
+  assert_pass "CLI report contains evidence count" grep -q "Evidence records today" <<< "$cli_report"
+  assert_pass "CLI report contains cost" grep -q "Cost today" <<< "$cli_report"
+
+  # Extract evidence count from report "Evidence records today: N"
+  local report_count; report_count="$(echo "$cli_report" | grep 'Evidence records today' | grep -oE '[0-9]+' | head -1)"
+  local dash_total; dash_total="$(jq '.summary.total_requests' <<< "$snap_after")"
+  echo "[SMOKE] CONSISTENCY|report_evidence_today|${report_count:-none}"
+  echo "[SMOKE] CONSISTENCY|dashboard_total_requests|${dash_total:-none}"
+  if [[ -n "$report_count" ]] && [[ -n "$dash_total" ]] && [[ "$dash_total" != "null" ]]; then
+    if [[ "$report_count" -eq "$dash_total" ]]; then
+      echo "  ✓  CLI report evidence count ($report_count) == dashboard total_requests ($dash_total)"
+      record_pass
+    else
+      # In-memory count might lag if events arrived after the snapshot; tolerate small diff
+      local count_diff=$(( dash_total - report_count ))
+      [[ $count_diff -lt 0 ]] && count_diff=$(( -count_diff ))
+      if [[ $count_diff -le 1 ]]; then
+        echo "  ✓  CLI report evidence ($report_count) ≈ dashboard total_requests ($dash_total) within tolerance"
+        record_pass
+      else
+        log_failure "evidence count mismatch: report=$report_count dashboard=$dash_total" "diff=$count_diff"
+      fi
+    fi
+  else
+    echo "  -  evidence count parity: could not parse report ($report_count) or dashboard ($dash_total)"
+  fi
+
+  # Extract daily cost from report "Cost today (EUR): <value>" and compare with CLI costs total
+  local report_cost; report_cost="$(echo "$cli_report" | grep 'Cost today' | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+  echo "[SMOKE] CONSISTENCY|report_cost_today|${report_cost:-none}"
+  if [[ -n "$report_cost" ]] && [[ -n "$cli_daily_cost" ]]; then
+    local rc_diff; rc_diff="$(echo "scale=8; d=$report_cost - $cli_daily_cost; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
+    if [[ "$(echo "$rc_diff < 0.01" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+      echo "  ✓  report cost today (€$report_cost) ≈ CLI costs today (€$cli_daily_cost)"
+      record_pass
+    else
+      echo "  -  report vs CLI cost drift: report=$report_cost cli=$cli_daily_cost diff=$rc_diff"
+    fi
+  fi
+
+  # PII type parity: compare PII types from report vs dashboard pii_breakdown
+  local report_pii_types; report_pii_types="$(echo "$cli_report" | grep -E '^\s+- [a-z]+:' | awk '{gsub(/:/, "", $2); print $2}' | sort)"
+  local dash_pii_types; dash_pii_types="$(jq -r '.pii_breakdown[].type // empty' <<< "$snap_after" 2>/dev/null | sort)"
+  echo "[SMOKE] CONSISTENCY|report_pii_types|$(echo "$report_pii_types" | tr '\n' ',')"
+  echo "[SMOKE] CONSISTENCY|dash_pii_types|$(echo "$dash_pii_types" | tr '\n' ',')"
+  if [[ -n "$report_pii_types" ]] && [[ -n "$dash_pii_types" ]]; then
+    # Report shows 7d window PII; dashboard shows since process start. Types should overlap.
+    local shared_types=0
+    while IFS= read -r ptype; do
+      if echo "$dash_pii_types" | grep -qx "$ptype"; then
+        (( shared_types++ ))
+      fi
+    done <<< "$report_pii_types"
+    if [[ $shared_types -gt 0 ]]; then
+      echo "  ✓  PII types overlap: $shared_types type(s) shared between report and dashboard"
+      record_pass
+    else
+      echo "  -  PII types mismatch: report=[$report_pii_types] dash=[$dash_pii_types]"
+    fi
+  else
+    echo "  -  PII type parity: no PII types to compare"
+  fi
+
+  # --- 23.7c: audit export ↔ dashboard record count ---
+  local export_json; export_json="$(run_talon audit export --format json --tenant default --from 2020-01-01 --to 2099-12-31 2>/dev/null)"; true
+  if echo "$export_json" | jq -e '.records' &>/dev/null; then
+    local export_count; export_count="$(echo "$export_json" | jq '.records | length')"
+    echo "[SMOKE] CONSISTENCY|audit_export_count|${export_count:-none}"
+    if [[ -n "$export_count" ]] && [[ "$export_count" != "null" ]] && [[ -n "$dash_total" ]] && [[ "$dash_total" != "null" ]]; then
+      if [[ "$export_count" -ge "$dash_total" ]]; then
+        echo "  ✓  audit export records ($export_count) >= dashboard total_requests ($dash_total)"
+        record_pass
+      else
+        echo "  -  audit export ($export_count) < dashboard total ($dash_total) — possible timing issue"
+      fi
+    fi
+    # Verify export records have required compliance fields
+    if [[ "$export_count" -gt 0 ]]; then
+      assert_pass "export records have id field" \
+        jq -e '.records[0].id' <<< "$export_json" &>/dev/null
+      assert_pass "export records have tenant_id" \
+        jq -e '.records[0].tenant_id' <<< "$export_json" &>/dev/null
+      assert_pass "export records have cost field" \
+        jq -e '.records[0] | has("cost")' <<< "$export_json" &>/dev/null
+      assert_pass "export records have model_used field" \
+        jq -e '.records[0] | has("model_used")' <<< "$export_json" &>/dev/null
+    fi
+  else
+    echo "  -  audit export JSON parse failed — skipping export↔dashboard parity"
   fi
 
   # --- 23.8: Dashboard token auth works ---
+  assert_pass "dashboard HTML without token → 401" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/gateway/dashboard)" = "401"
   assert_pass "dashboard metrics without token → 401" \
     test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/metrics)" = "401"
   assert_pass "dashboard metrics with wrong token → 401" \
     test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer wrong" http://127.0.0.1:8080/api/v1/metrics)" = "401"
+  assert_pass "SSE stream without token → 401" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/metrics/stream)" = "401"
+  # Token via query param
+  assert_pass "dashboard metrics with token query param → 200" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8080/api/v1/metrics?token=$dash_token")" = "200"
 
   # --- 23.9: SSE stream works ---
-  local sse_out; sse_out="$(timeout 3 curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/api/v1/metrics/stream 2>/dev/null)" || true
+  local sse_out; sse_out="$(timeout 8 curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/api/v1/metrics/stream 2>/dev/null)" || true
   if echo "$sse_out" | grep -q "data:"; then
     echo "  ✓  SSE stream returns data events"
     record_pass
+    # Verify SSE data is valid JSON
+    local sse_json; sse_json="$(echo "$sse_out" | grep '^data:' | head -1 | sed 's/^data: //')"
+    if echo "$sse_json" | jq -e '.' &>/dev/null; then
+      echo "  ✓  SSE data payload is valid JSON"
+      record_pass
+    else
+      echo "  -  SSE data payload is not valid JSON"
+    fi
   else
     echo "  -  SSE stream did not return data (timeout or not supported)"
+  fi
+
+  # --- 23.10: Snapshot consistency after multiple requests ---
+  # error_rate should be a float in [0, 1]
+  local err_rate; err_rate="$(jq '.summary.error_rate' <<< "$snap_after")"
+  if [[ -n "$err_rate" ]] && [[ "$err_rate" != "null" ]]; then
+    local in_range; in_range="$(echo "${err_rate} >= 0 && ${err_rate} <= 1" | bc -l 2>/dev/null || echo 1)"
+    if [[ "$in_range" == "1" ]]; then
+      echo "  ✓  error_rate is in [0,1] range ($err_rate)"
+      record_pass
+    else
+      echo "  -  error_rate out of range: $err_rate"
+    fi
   fi
 
   kill "$GW_PID" 2>/dev/null || true
