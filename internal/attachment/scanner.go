@@ -141,6 +141,7 @@ func (s *Scanner) Scan(ctx context.Context, text string) *ScanResult {
 			}
 
 			result.Safe = false
+			RecordInjectionAttempt(ctx, pattern.Name, "detected")
 		}
 	}
 

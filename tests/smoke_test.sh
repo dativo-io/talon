@@ -1011,6 +1011,160 @@ CACHEEOF
 }
 
 # -----------------------------------------------------------------------------
+# SECTION 23 — Gateway Dashboard Metrics (dashboard API, CLI↔dashboard parity)
+# -----------------------------------------------------------------------------
+test_section_23_dashboard_metrics() {
+  local section="23_dashboard_metrics"
+  echo ""
+  echo "=== SECTION 23 — Gateway Dashboard Metrics ==="
+  local dir; dir="$(setup_section_dir "$section")"
+  cd "$dir" || exit 1
+  run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  # Add gateway config with dashboard token
+  if [[ -f "$dir/talon.config.yaml" ]]; then
+    if ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
+      cat >> "$dir/talon.config.yaml" <<'GWEOF'
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "enforce"
+  dashboard_token: "smoke-dash-token"
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+  callers:
+    - name: "metrics-caller"
+      api_key: "talon-gw-metrics-001"
+      tenant_id: "default"
+      allowed_providers: ["openai"]
+  default_policy:
+    default_pii_action: "warn"
+    max_daily_cost: 100.00
+    max_monthly_cost: 500.00
+    require_caller_id: true
+GWEOF
+    fi
+  fi
+  local GW_PID=""
+  run_talon serve --port 8080 --gateway --gateway-config "$dir/talon.config.yaml" &>/dev/null &
+  GW_PID=$!
+  local i=0
+  while ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health 2>/dev/null | grep -q 200; do
+    sleep 1; ((i++)); [[ $i -ge 10 ]] && break
+  done
+  if ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health 2>/dev/null | grep -q 200; then
+    echo "  -  (skip dashboard metrics: server did not start)"
+    kill "$GW_PID" 2>/dev/null || true
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
+  local api_key="smoke-test-key"
+  local gw_key="talon-gw-metrics-001"
+  local dash_token="smoke-dash-token"
+
+  # --- 23.1: Dashboard HTML served ---
+  assert_pass "GET /gateway/dashboard 200 (with token)" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/gateway/dashboard)" = "200"
+  local dash_html; dash_html="$(curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/gateway/dashboard)"
+  assert_pass "dashboard HTML contains Talon" grep -qi "talon" <<< "$dash_html"
+
+  # --- 23.2: Metrics JSON endpoint structure (before any requests) ---
+  local snap_before; snap_before="$(curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/api/v1/metrics)"
+  assert_pass "GET /api/v1/metrics returns valid JSON" jq -e '.' <<< "$snap_before" &>/dev/null
+  assert_pass "metrics snapshot has summary.total_requests" \
+    jq -e '.summary.total_requests >= 0' <<< "$snap_before" &>/dev/null
+  assert_pass "metrics snapshot has enforcement_mode" \
+    jq -e '.enforcement_mode' <<< "$snap_before" &>/dev/null
+  assert_pass "metrics snapshot has uptime" \
+    jq -e '.uptime' <<< "$snap_before" &>/dev/null
+  local before_count; before_count="$(jq '.summary.total_requests' <<< "$snap_before")"
+
+  # --- 23.3: Make gateway requests so metrics accumulate ---
+  curl -s -o /dev/null -X POST http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions \
+    -H "Authorization: Bearer $gw_key" -H "Content-Type: application/json" \
+    -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Reply METRICS_OK"}]}' 2>/dev/null || true
+  sleep 2
+
+  # --- 23.4: Metrics reflect the gateway request ---
+  local snap_after; snap_after="$(curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/api/v1/metrics)"
+  local after_count; after_count="$(jq '.summary.total_requests' <<< "$snap_after")"
+  if [[ "$after_count" -gt "$before_count" ]]; then
+    echo "  ✓  metrics total_requests incremented ($before_count → $after_count)"
+    record_pass
+  else
+    log_failure "metrics total_requests should increment after gateway request" "before=$before_count after=$after_count"
+  fi
+  # Cost should be > 0 (we made a real LLM request)
+  local cost; cost="$(jq '.summary.total_cost_eur' <<< "$snap_after")"
+  if [[ "$(echo "$cost > 0" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+    echo "  ✓  metrics total_cost_eur > 0 ($cost)"
+    record_pass
+  else
+    echo "  -  metrics total_cost_eur = $cost (may be zero if cached or free tier)"
+  fi
+
+  # --- 23.5: Full snapshot fields present ---
+  assert_pass "snapshot has requests_timeline array" \
+    jq -e '.requests_timeline | type == "array"' <<< "$snap_after" &>/dev/null
+  assert_pass "snapshot has caller_stats array" \
+    jq -e '.caller_stats | type == "array"' <<< "$snap_after" &>/dev/null
+  assert_pass "snapshot has pii_breakdown array" \
+    jq -e '.pii_breakdown | type == "array"' <<< "$snap_after" &>/dev/null
+  assert_pass "snapshot has tool_governance object" \
+    jq -e '.tool_governance | type == "object"' <<< "$snap_after" &>/dev/null
+  assert_pass "snapshot has model_breakdown array" \
+    jq -e '.model_breakdown | type == "array"' <<< "$snap_after" &>/dev/null
+  assert_pass "snapshot has generated_at" \
+    jq -e '.generated_at' <<< "$snap_after" &>/dev/null
+
+  # --- 23.6: Caller stats include our gateway caller ---
+  local callers; callers="$(jq -r '.caller_stats[].caller' <<< "$snap_after" 2>/dev/null)"
+  if echo "$callers" | grep -q "metrics-caller"; then
+    echo "  ✓  caller_stats includes metrics-caller"
+    record_pass
+  else
+    echo "  -  caller_stats does not include metrics-caller (may use different name)"
+  fi
+
+  # --- 23.7: CLI costs ↔ dashboard parity check ---
+  local cli_cost_out; cli_cost_out="$(run_talon costs --tenant default 2>/dev/null)"; true
+  assert_pass "talon costs exits 0" run_talon costs --tenant default
+  # Both should report some cost for today; dashboard cost >= 0 and CLI shows numeric value
+  if echo "$cli_cost_out" | grep -qE '[0-9]+\.[0-9]+'; then
+    echo "  ✓  CLI costs shows numeric cost value"
+    record_pass
+    # Log for parseable comparison
+    echo "[SMOKE] CONSISTENCY|dashboard_cost|$cost"
+    echo "[SMOKE] CONSISTENCY|cli_cost_output|$(echo "$cli_cost_out" | head -5)"
+  else
+    echo "  -  CLI costs output does not contain numeric cost"
+  fi
+
+  # --- 23.8: Dashboard token auth works ---
+  assert_pass "dashboard metrics without token → 401" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/metrics)" = "401"
+  assert_pass "dashboard metrics with wrong token → 401" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer wrong" http://127.0.0.1:8080/api/v1/metrics)" = "401"
+
+  # --- 23.9: SSE stream works ---
+  local sse_out; sse_out="$(timeout 3 curl -s -H "Authorization: Bearer $dash_token" http://127.0.0.1:8080/api/v1/metrics/stream 2>/dev/null)" || true
+  if echo "$sse_out" | grep -q "data:"; then
+    echo "  ✓  SSE stream returns data events"
+    record_pass
+  else
+    echo "  -  SSE stream did not return data (timeout or not supported)"
+  fi
+
+  kill "$GW_PID" 2>/dev/null || true
+  wait "$GW_PID" 2>/dev/null || true
+  cd "$REPO_ROOT" || true
+}
+
+# -----------------------------------------------------------------------------
 # Consistency checks: cross-command flow verification (parseable in smoke_test_logs.out.txt)
 # -----------------------------------------------------------------------------
 test_consistency_checks() {
@@ -1141,6 +1295,7 @@ main() {
   run_section "20_edge_cases" test_section_20_edge_cases
   run_section "21_doctor_report_enforce" test_section_21_doctor_report_enforce
   run_section "22_cache" test_section_22_cache
+  run_section "23_dashboard_metrics" test_section_23_dashboard_metrics
 
   # Consistency checks: cross-command flow verification (logged for smoke_test_logs.out.txt)
   run_section "consistency" test_consistency_checks

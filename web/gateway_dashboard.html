@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Talon Gateway Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232736;
+    --border: #2e3348;
+    --text: #e1e4ed;
+    --text-dim: #8b8fa4;
+    --accent: #6c72cb;
+    --accent-light: #8e93df;
+    --green: #4ade80;
+    --red: #f87171;
+    --yellow: #facc15;
+    --blue: #60a5fa;
+    --orange: #fb923c;
+    --radius: 8px;
+    --gap: 16px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
+  .header { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; border-bottom: 1px solid var(--border); }
+  .header h1 { font-size: 18px; font-weight: 600; }
+  .header h1 span { color: var(--accent-light); }
+  .header-meta { display: flex; gap: 16px; font-size: 12px; color: var(--text-dim); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+  .badge-enforce { background: rgba(74,222,128,.15); color: var(--green); }
+  .badge-shadow { background: rgba(250,204,21,.15); color: var(--yellow); }
+  .badge-log_only { background: rgba(96,165,250,.15); color: var(--blue); }
+  .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--gap); padding: var(--gap) 24px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  .kpi-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+  .kpi-value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .kpi-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); padding: 0 24px var(--gap); }
+  .grid-full { grid-column: 1 / -1; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  .panel-title { font-size: 13px; font-weight: 600; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+  .sparkline { width: 100%; height: 80px; }
+  .sparkline path { fill: none; stroke-width: 2; }
+  .sparkline .area { stroke: none; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--text-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+  .bar-container { width: 100%; height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; transition: width .3s ease; }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot-green { background: var(--green); }
+  .dot-red { background: var(--red); }
+  .dot-yellow { background: var(--yellow); }
+  .shadow-panel { border: 1px solid rgba(250,204,21,.3); }
+  .pii-tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin: 1px 2px; background: rgba(108,114,203,.15); color: var(--accent-light); }
+  .footer { text-align: center; padding: 12px; font-size: 11px; color: var(--text-dim); }
+  @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Talon <span>Gateway</span></h1>
+  <div class="header-meta">
+    <span id="mode-badge" class="badge">--</span>
+    <span>Uptime: <strong id="uptime">--</strong></span>
+    <span id="last-updated">--</span>
+  </div>
+</div>
+
+<div class="kpi-row">
+  <div class="kpi">
+    <div class="kpi-label">Total Requests</div>
+    <div class="kpi-value" id="kpi-requests">--</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Blocked</div>
+    <div class="kpi-value" id="kpi-blocked">--</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">PII Detections</div>
+    <div class="kpi-value" id="kpi-pii">--</div>
+    <div class="kpi-sub" id="kpi-pii-sub"></div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Tools Filtered</div>
+    <div class="kpi-value" id="kpi-tools">--</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Total Cost</div>
+    <div class="kpi-value" id="kpi-cost">--</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Avg Latency</div>
+    <div class="kpi-value" id="kpi-latency">--</div>
+    <div class="kpi-sub" id="kpi-p99"></div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Error Rate</div>
+    <div class="kpi-value" id="kpi-errors">--</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Active Runs</div>
+    <div class="kpi-value" id="kpi-runs">--</div>
+  </div>
+</div>
+
+<div class="grid">
+  <!-- Requests Sparkline -->
+  <div class="panel">
+    <div class="panel-title">Requests (24h)</div>
+    <svg id="chart-requests" class="sparkline" viewBox="0 0 400 80" preserveAspectRatio="none"></svg>
+  </div>
+
+  <!-- Cost Sparkline -->
+  <div class="panel">
+    <div class="panel-title">Cost (24h)</div>
+    <svg id="chart-cost" class="sparkline" viewBox="0 0 400 80" preserveAspectRatio="none"></svg>
+  </div>
+
+  <!-- PII Sparkline -->
+  <div class="panel">
+    <div class="panel-title">PII Events (24h)</div>
+    <svg id="chart-pii" class="sparkline" viewBox="0 0 400 80" preserveAspectRatio="none"></svg>
+  </div>
+
+  <!-- Budget Status -->
+  <div class="panel" id="panel-budget" style="display:none">
+    <div class="panel-title">Budget Utilization</div>
+    <div id="budget-content"></div>
+  </div>
+
+  <!-- Caller Stats -->
+  <div class="panel grid-full">
+    <div class="panel-title">Caller Breakdown</div>
+    <table>
+      <thead><tr><th>Caller</th><th>Requests</th><th>PII</th><th>Blocked</th><th>Cost (EUR)</th><th>Avg Latency</th></tr></thead>
+      <tbody id="caller-table"></tbody>
+    </table>
+  </div>
+
+  <!-- PII Breakdown -->
+  <div class="panel">
+    <div class="panel-title">PII Types</div>
+    <div id="pii-breakdown"></div>
+  </div>
+
+  <!-- Model Breakdown -->
+  <div class="panel" id="panel-models">
+    <div class="panel-title">Model Breakdown (today)</div>
+    <table>
+      <thead><tr><th>Model</th><th>Cost (EUR)</th></tr></thead>
+      <tbody id="model-table"></tbody>
+    </table>
+  </div>
+
+  <!-- Tool Governance -->
+  <div class="panel">
+    <div class="panel-title">Tool Governance</div>
+    <div id="tool-content">
+      <table>
+        <thead><tr><th>Tool</th><th>Filtered</th></tr></thead>
+        <tbody id="tool-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Cache Stats -->
+  <div class="panel" id="panel-cache" style="display:none">
+    <div class="panel-title">Cache Performance</div>
+    <div id="cache-content"></div>
+  </div>
+
+  <!-- Shadow Mode Summary (conditional) -->
+  <div class="panel shadow-panel grid-full" id="panel-shadow" style="display:none">
+    <div class="panel-title"><span class="dot-yellow status-dot"></span> Shadow Mode Analysis</div>
+    <div id="shadow-content"></div>
+  </div>
+</div>
+
+<div class="footer">Talon Gateway Dashboard &mdash; Data refreshes every 5 seconds via SSE</div>
+
+<script>
+(function() {
+  'use strict';
+
+  var eventSource = null;
+  var pollTimer = null;
+
+  function startSSE() {
+    var url = '/api/v1/metrics/stream';
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('token')) url += '?token=' + encodeURIComponent(params.get('token'));
+
+    eventSource = new EventSource(url);
+    eventSource.onmessage = function(e) {
+      try { update(JSON.parse(e.data)); } catch(err) { console.error('SSE parse:', err); }
+    };
+    eventSource.onerror = function() {
+      eventSource.close();
+      eventSource = null;
+      startPolling();
+    };
+  }
+
+  function startPolling() {
+    if (pollTimer) return;
+    fetchMetrics();
+    pollTimer = setInterval(fetchMetrics, 5000);
+  }
+
+  function fetchMetrics() {
+    var url = '/api/v1/metrics';
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('token')) url += '?token=' + encodeURIComponent(params.get('token'));
+
+    fetch(url).then(function(r) { return r.json(); }).then(update).catch(function(err) {
+      console.error('Poll error:', err);
+    });
+  }
+
+  function update(d) {
+    var badge = document.getElementById('mode-badge');
+    badge.textContent = d.enforcement_mode || '--';
+    badge.className = 'badge badge-' + (d.enforcement_mode || '');
+
+    document.getElementById('uptime').textContent = d.uptime || '--';
+    document.getElementById('last-updated').textContent = 'Updated: ' + new Date(d.generated_at).toLocaleTimeString();
+
+    var s = d.summary || {};
+    document.getElementById('kpi-requests').textContent = fmt(s.total_requests);
+    document.getElementById('kpi-blocked').textContent = fmt(s.blocked_requests);
+    document.getElementById('kpi-pii').textContent = fmt(s.pii_detections);
+    document.getElementById('kpi-pii-sub').textContent = s.pii_redactions ? s.pii_redactions + ' redacted' : '';
+    document.getElementById('kpi-tools').textContent = fmt(s.tools_filtered);
+    document.getElementById('kpi-cost').textContent = '€' + (s.total_cost_eur || 0).toFixed(4);
+    document.getElementById('kpi-latency').textContent = s.avg_latency_ms + 'ms';
+    document.getElementById('kpi-p99').textContent = 'P99: ' + s.p99_latency_ms + 'ms';
+    document.getElementById('kpi-errors').textContent = ((s.error_rate || 0) * 100).toFixed(1) + '%';
+    document.getElementById('kpi-runs').textContent = fmt(s.active_runs);
+
+    renderSparkline('chart-requests', d.requests_timeline, 'count', 'rgba(108,114,203,1)', 'rgba(108,114,203,.15)');
+    renderSparkline('chart-cost', d.cost_timeline, 'cost_eur', 'rgba(96,165,250,1)', 'rgba(96,165,250,.15)');
+    renderSparkline('chart-pii', d.pii_timeline, 'count', 'rgba(248,113,113,1)', 'rgba(248,113,113,.15)');
+
+    renderCallerTable(d.caller_stats || []);
+    renderPIIBreakdown(d.pii_breakdown || []);
+    renderToolGovernance(d.tool_governance);
+    renderShadow(d.shadow_summary);
+    renderModels(d.model_breakdown || []);
+    renderBudget(d.budget_status);
+    renderCache(d.cache_stats);
+  }
+
+  function fmt(n) { return (n == null ? 0 : n).toLocaleString(); }
+
+  function renderSparkline(id, data, key, stroke, fill) {
+    var svg = document.getElementById(id);
+    if (!data || data.length === 0) { svg.innerHTML = '<text x="200" y="45" text-anchor="middle" fill="#8b8fa4" font-size="12">No data</text>'; return; }
+    var vals = data.map(function(d) { return d[key] || 0; });
+    var max = Math.max.apply(null, vals) || 1;
+    var w = 400, h = 80, pad = 2;
+    var pts = vals.map(function(v, i) {
+      var x = (i / Math.max(vals.length - 1, 1)) * w;
+      var y = h - pad - ((v / max) * (h - pad * 2));
+      return x + ',' + y;
+    });
+    var line = pts.join(' ');
+    var area = '0,' + h + ' ' + line + ' ' + w + ',' + h;
+    svg.innerHTML = '<polygon class="area" points="' + area + '" fill="' + fill + '"/><polyline points="' + line + '" stroke="' + stroke + '" fill="none" stroke-width="2"/>';
+  }
+
+  function renderCallerTable(callers) {
+    var tb = document.getElementById('caller-table');
+    if (callers.length === 0) { tb.innerHTML = '<tr><td colspan="6" style="color:var(--text-dim)">No caller data</td></tr>'; return; }
+    tb.innerHTML = callers.map(function(c) {
+      return '<tr><td>' + esc(c.caller) + '</td><td>' + fmt(c.requests) + '</td><td>' + fmt(c.pii_detected) + '</td><td>' + fmt(c.blocked) + '</td><td>€' + (c.cost_eur || 0).toFixed(4) + '</td><td>' + c.avg_latency_ms + 'ms</td></tr>';
+    }).join('');
+  }
+
+  function renderPIIBreakdown(types) {
+    var el = document.getElementById('pii-breakdown');
+    if (types.length === 0) { el.innerHTML = '<span style="color:var(--text-dim)">No PII detected</span>'; return; }
+    el.innerHTML = types.map(function(t) {
+      return '<span class="pii-tag">' + esc(t.type) + ': ' + t.count + '</span>';
+    }).join(' ');
+  }
+
+  function renderToolGovernance(tg) {
+    var tb = document.getElementById('tool-table');
+    if (!tg || !tg.top_filtered || tg.top_filtered.length === 0) {
+      tb.innerHTML = '<tr><td colspan="2" style="color:var(--text-dim)">No tools filtered</td></tr>';
+      return;
+    }
+    tb.innerHTML = tg.top_filtered.slice(0, 10).map(function(t) {
+      return '<tr><td>' + esc(t.tool) + '</td><td>' + t.count + '</td></tr>';
+    }).join('');
+  }
+
+  function renderShadow(ss) {
+    var panel = document.getElementById('panel-shadow');
+    if (!ss) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    var html = '<p>Would have blocked: <strong>' + ss.would_have_blocked + '</strong> | Would have redacted: <strong>' + ss.would_have_redacted + '</strong></p>';
+    if (ss.violations_by_type && ss.violations_by_type.length > 0) {
+      html += '<table><thead><tr><th>Type</th><th>Count</th><th>Action</th></tr></thead><tbody>';
+      ss.violations_by_type.forEach(function(v) {
+        html += '<tr><td>' + esc(v.type) + '</td><td>' + v.count + '</td><td>' + esc(v.action) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    }
+    document.getElementById('shadow-content').innerHTML = html;
+  }
+
+  function renderModels(models) {
+    var tb = document.getElementById('model-table');
+    if (models.length === 0) { tb.innerHTML = '<tr><td colspan="2" style="color:var(--text-dim)">No model data</td></tr>'; return; }
+    tb.innerHTML = models.map(function(m) {
+      return '<tr><td>' + esc(m.model) + '</td><td>€' + (m.cost_eur || 0).toFixed(4) + '</td></tr>';
+    }).join('');
+  }
+
+  function renderBudget(bs) {
+    var panel = document.getElementById('panel-budget');
+    if (!bs) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    var html = '';
+    if (bs.daily_limit > 0) {
+      var color = bs.daily_percent > 90 ? 'var(--red)' : bs.daily_percent > 70 ? 'var(--yellow)' : 'var(--green)';
+      html += '<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Daily</span><span>€' + bs.daily_used.toFixed(2) + ' / €' + bs.daily_limit.toFixed(2) + ' (' + bs.daily_percent.toFixed(1) + '%)</span></div><div class="bar-container"><div class="bar-fill" style="width:' + Math.min(bs.daily_percent, 100) + '%;background:' + color + '"></div></div></div>';
+    }
+    if (bs.monthly_limit > 0) {
+      var color2 = bs.monthly_percent > 90 ? 'var(--red)' : bs.monthly_percent > 70 ? 'var(--yellow)' : 'var(--green)';
+      html += '<div><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Monthly</span><span>€' + bs.monthly_used.toFixed(2) + ' / €' + bs.monthly_limit.toFixed(2) + ' (' + bs.monthly_percent.toFixed(1) + '%)</span></div><div class="bar-container"><div class="bar-fill" style="width:' + Math.min(bs.monthly_percent, 100) + '%;background:' + color2 + '"></div></div></div>';
+    }
+    document.getElementById('budget-content').innerHTML = html || '<span style="color:var(--text-dim)">No budget limits configured</span>';
+  }
+
+  function renderCache(cs) {
+    var panel = document.getElementById('panel-cache');
+    if (!cs) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    document.getElementById('cache-content').innerHTML =
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;text-align:center">' +
+      '<div><div class="kpi-label">Hits</div><div style="font-size:20px;font-weight:700">' + cs.hits + '</div></div>' +
+      '<div><div class="kpi-label">Cost Saved</div><div style="font-size:20px;font-weight:700">€' + (cs.cost_saved || 0).toFixed(4) + '</div></div>' +
+      '<div><div class="kpi-label">Hit Rate</div><div style="font-size:20px;font-weight:700">' + ((cs.hit_rate || 0) * 100).toFixed(1) + '%</div></div>' +
+      '</div>';
+  }
+
+  function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+  if (typeof EventSource !== 'undefined') { startSSE(); } else { startPolling(); }
+})();
+</script>
+</body>
+</html>

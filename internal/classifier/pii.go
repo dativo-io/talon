@@ -216,6 +216,7 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 			}
 			result.Entities = append(result.Entities, entity)
 			result.HasPII = true
+			RecordPIIDetection(ctx, pattern.Type, "request", "detected")
 		}
 	}
 
@@ -296,6 +297,7 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 		m := merged[i]
 		placeholder := "[" + strings.ToUpper(m.ptype) + "]"
 		result = append(result[:m.start], append([]byte(placeholder), result[m.end:]...)...)
+		RecordPIIRedaction(ctx, m.ptype, "request")
 	}
 
 	return string(result)

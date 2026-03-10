@@ -287,6 +287,7 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 		return fmt.Errorf("storing evidence: %w", err)
 	}
 
+	RecordEvidenceStored(ctx, ev.InvocationType)
 	return nil
 }
 
@@ -321,6 +322,7 @@ func (s *Store) StoreStep(ctx context.Context, step *StepEvidence) error {
 	if err != nil {
 		return fmt.Errorf("storing step evidence: %w", err)
 	}
+	RecordEvidenceStored(ctx, "step")
 	return nil
 }
 
@@ -643,7 +645,9 @@ func (s *Store) Verify(ctx context.Context, id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return s.VerifyRecord(ev), nil
+	valid := s.VerifyRecord(ev)
+	RecordSignatureVerification(ctx, valid)
+	return valid, nil
 }
 
 // VerifyRecord checks the HMAC signature of an already-loaded Evidence.

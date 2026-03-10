@@ -17,6 +17,7 @@ import (
 	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/llm"
 	"github.com/dativo-io/talon/internal/secrets"
 )
 
@@ -30,6 +31,12 @@ type GatewayPolicyEvaluator interface {
 
 // CostEstimator returns estimated cost in EUR for a request. Used for policy and evidence.
 type CostEstimator func(model string, inputTokens, outputTokens int) float64
+
+// MetricsRecorder receives gateway events for dashboard aggregation.
+// Implemented by *metrics.Collector via an adapter to avoid import cycles.
+type MetricsRecorder interface {
+	RecordGatewayEvent(event interface{})
+}
 
 // hasCallerTag returns true when the caller has the given tag (e.g. "copaw" for CoPaw).
 // Classification is driven by CallerConfig.Tags, not name prefix.
@@ -63,6 +70,7 @@ type Gateway struct {
 	cacheConfig   *gatewayCacheConfig
 	// canonicalTenantIDs maps tenant ID -> same ID from config (populated at init); used for cache key scope so static analysis sees value from config, not from request.
 	canonicalTenantIDs map[string]string
+	metricsRecorder    MetricsRecorder
 }
 
 type gatewayCacheConfig struct {
@@ -82,6 +90,11 @@ func (g *Gateway) canonicalTenantIDForCache(fromCaller string) string {
 		return s
 	}
 	return fromCaller
+}
+
+// SetMetricsRecorder attaches a dashboard metrics collector. Call after NewGateway.
+func (g *Gateway) SetMetricsRecorder(mr MetricsRecorder) {
+	g.metricsRecorder = mr
 }
 
 // SetCache wires the optional semantic cache into the gateway. Call after NewGateway when cache is enabled.
@@ -303,6 +316,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	estTokensIn, estTokensOut := 500, 500
 	estimatedCost := g.costEstimate(extracted.Model, estTokensIn, estTokensOut)
 	dailyCost, monthlyCost := g.callerCostTotals(ctx, caller)
+	if d := g.config.ServerDefaults.MaxDailyCost; d > 0 {
+		RecordBudgetUtilization(ctx, caller.TenantID, "daily", (dailyCost/d)*100)
+	}
+	if m := g.config.ServerDefaults.MaxMonthlyCost; m > 0 {
+		RecordBudgetUtilization(ctx, caller.TenantID, "monthly", (monthlyCost/m)*100)
+	}
 	policyInput := buildGatewayPolicyInput(caller, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost)
 	if g.policy != nil && (g.config.Mode == ModeEnforce || isShadow) {
 		allowed, reasons, policyErr := g.policy.EvaluateGateway(ctx, policyInput)
@@ -583,6 +602,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes, attSummary, toolResult, shadowViolations, false, "", 0, 0)
+
+	// Emit OTel + dashboard metrics
+	g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations,
+		&tokenUsage, cost, durationMS, err != nil, false, piiAction, false, 0)
 	if err != nil {
 		log.Warn().Err(err).Msg("gateway_forward_error")
 	}
@@ -716,6 +739,100 @@ func extractContentFromOpenAIResponse(body []byte) string {
 		return ""
 	}
 	return v.Choices[0].Message.Content
+}
+
+// emitMetrics records OTel counters and optionally fires a dashboard event.
+//
+//nolint:gocyclo // sequential metric recording
+func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provider, model string,
+	classification *classifier.Classification, toolResult *ToolGovernanceResult,
+	shadowViolations []evidence.ShadowViolation, usage *TokenUsage,
+	cost float64, durationMS int64, hasError, blocked bool, piiAction string,
+	cacheHit bool, costSaved float64,
+) {
+	status := "ok"
+	if hasError {
+		status = "error"
+	} else if blocked {
+		status = "blocked"
+	}
+	RecordGatewayRequest(ctx, caller.Name, model, provider, status)
+	if hasError {
+		RecordGatewayError(ctx, "upstream_error")
+	}
+	if classification != nil {
+		RecordDataTier(ctx, classification.Tier, caller.Name)
+	}
+
+	if toolResult != nil {
+		for _, tool := range toolResult.Kept {
+			RecordToolGovernance(ctx, tool, "allowed")
+		}
+		for _, tool := range toolResult.Removed {
+			RecordToolGovernance(ctx, tool, "filtered")
+		}
+	}
+
+	for _, sv := range shadowViolations {
+		RecordShadowViolation(ctx, sv.Type)
+	}
+
+	RecordCacheResult(ctx, caller.TenantID, cacheHit)
+
+	// GenAI SemConv: token usage and operation duration
+	tokIn, tokOut := 0, 0
+	if usage != nil {
+		tokIn, tokOut = usage.Input, usage.Output
+	}
+	if tokIn > 0 || tokOut > 0 {
+		llm.RecordTokenUsage(ctx, tokIn, tokOut, model, provider)
+	}
+	if durationMS > 0 {
+		llm.RecordOperationDuration(ctx, float64(durationMS)/1000.0, model, provider)
+	}
+	llm.RecordProviderAvailability(ctx, provider, !hasError)
+
+	if g.metricsRecorder != nil {
+		var piiTypes []string
+		if classification != nil {
+			for _, e := range classification.Entities {
+				piiTypes = append(piiTypes, e.Type)
+			}
+		}
+		var toolsRequested, toolsFiltered []string
+		if toolResult != nil {
+			toolsRequested = toolResult.Requested
+			toolsFiltered = toolResult.Removed
+		}
+		var svTypes []string
+		for _, sv := range shadowViolations {
+			svTypes = append(svTypes, sv.Type)
+		}
+		tokIn, tokOut := 0, 0
+		if usage != nil {
+			tokIn, tokOut = usage.Input, usage.Output
+		}
+		g.metricsRecorder.RecordGatewayEvent(map[string]interface{}{
+			"timestamp":          time.Now(),
+			"caller_id":          caller.Name,
+			"model":              model,
+			"pii_detected":       piiTypes,
+			"pii_action":         piiAction,
+			"tools_requested":    toolsRequested,
+			"tools_filtered":     toolsFiltered,
+			"blocked":            blocked,
+			"cost_eur":           cost,
+			"tokens_input":       tokIn,
+			"tokens_output":      tokOut,
+			"latency_ms":         durationMS,
+			"enforcement_mode":   g.config.Mode,
+			"would_have_blocked": len(shadowViolations) > 0,
+			"shadow_violations":  svTypes,
+			"has_error":          hasError,
+			"cache_hit":          cacheHit,
+			"cost_saved":         costSaved,
+		})
+	}
 }
 
 // writeCachedCompletion writes a minimal OpenAI-compatible chat completion JSON with the cached content.

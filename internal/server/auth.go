@@ -124,6 +124,31 @@ func CORSMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 	}
 }
 
+// DashboardTokenMiddleware returns a middleware that checks the Authorization: Bearer <token>
+// header against the configured dashboard token. When token is empty, access is unrestricted.
+func DashboardTokenMiddleware(token string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if token == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			bearer := ""
+			if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+				bearer = strings.TrimPrefix(auth, "Bearer ")
+			}
+			if bearer == "" {
+				bearer = r.URL.Query().Get("token")
+			}
+			if bearer == "" || subtle.ConstantTimeCompare([]byte(bearer), []byte(token)) != 1 {
+				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing dashboard token")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // writeError writes a JSON error response. Defined here so AuthMiddleware can use it;
 // handlers.go will use the same helper.
 func writeError(w http.ResponseWriter, status int, code, message string) {

@@ -288,6 +288,7 @@ func (r *Router) GracefulRoute(ctx context.Context, tier int, costCtx *CostConte
 		attribute.String("cost.fallback_model", fallbackModel),
 		attribute.Float64("cost.budget_used_pct", budgetUsedPct),
 	)
+	RecordFailover(ctx, model, fallbackModel, "cost_degradation")
 	if routeDecision != nil {
 		routeDecision = &RouteDecision{
 			SelectedProvider: fallbackProviderName,

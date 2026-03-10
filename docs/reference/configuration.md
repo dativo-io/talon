@@ -130,8 +130,37 @@ When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml
 | `gateway.rate_limits` | Global and per-caller request rate limits |
 | `gateway.timeouts` | Connect, request, and stream idle timeouts |
 
+### Gateway dashboard
+
+When the gateway is enabled, Talon serves a real-time metrics dashboard. Configure it via the `gateway:` block:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `gateway.dashboard_token` | string | `""` | Bearer token for dashboard authentication. When empty, dashboard endpoints are open. |
+
+Dashboard endpoints:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /gateway/dashboard` | Single-page HTML dashboard with auto-refreshing charts. |
+| `GET /api/v1/metrics` | Metrics snapshot as JSON (programmatic access). |
+| `GET /api/v1/metrics/stream` | Server-Sent Events stream (one snapshot every 5 seconds). |
+
+When `dashboard_token` is set, all three endpoints require `Authorization: Bearer <token>`.
+
+See [Gateway dashboard reference](gateway-dashboard.md) for the full API schema and snapshot field descriptions.
+
 ### Server and API
 
 - **API keys:** Set `TALON_API_KEYS` as comma-separated entries; each entry is a key or `key:tenant_id`.
 - **Gateway:** Enable with `--gateway` and `--gateway-config <path>`. See [How to choose your integration path](../guides/choosing-integration-path.md) and gateway guides.
 - **MCP proxy:** Enable with `--proxy-config <path>`. See [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md).
+
+### Observability
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `TALON_OTEL_ENABLED` | Enable OpenTelemetry traces and metrics export. | `false` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint (e.g. `http://localhost:4317`). | stdout |
+
+See [Observability](../OBSERVABILITY.md) for the full metrics catalogue and [examples/observability](../../examples/observability/) for a local Prometheus + Grafana stack.

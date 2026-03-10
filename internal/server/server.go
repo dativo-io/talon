@@ -10,6 +10,7 @@ import (
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/memory"
+	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
@@ -21,25 +22,28 @@ const defaultTimeout = 60 * time.Second
 
 // Server holds all dependencies for the HTTP API and MCP endpoints.
 type Server struct {
-	router           *chi.Mux
-	runner           *agent.Runner
-	evidenceStore    *evidence.Store
-	mcpServer        http.Handler // native MCP at POST /mcp
-	mcpProxy         http.Handler // optional MCP proxy at POST /mcp/proxy
-	gateway          http.Handler // optional LLM API gateway at /v1/proxy/*
-	tenantManager    *tenant.Manager
-	webhookHandler   *trigger.WebhookHandler
-	planReviewStore  *agent.PlanReviewStore
-	memoryStore      *memory.Store
-	policyEngine     *policy.Engine
-	secretsStore     *secrets.SecretStore
-	policy           *policy.Policy
-	dashboardHTML    string
-	apiKeys          map[string]string
-	corsOrigins      []string
-	policyPath       string
-	startTime        time.Time
-	activeRunTracker *agent.ActiveRunTracker
+	router               *chi.Mux
+	runner               *agent.Runner
+	evidenceStore        *evidence.Store
+	mcpServer            http.Handler // native MCP at POST /mcp
+	mcpProxy             http.Handler // optional MCP proxy at POST /mcp/proxy
+	gateway              http.Handler // optional LLM API gateway at /v1/proxy/*
+	tenantManager        *tenant.Manager
+	webhookHandler       *trigger.WebhookHandler
+	planReviewStore      *agent.PlanReviewStore
+	memoryStore          *memory.Store
+	policyEngine         *policy.Engine
+	secretsStore         *secrets.SecretStore
+	policy               *policy.Policy
+	dashboardHTML        string
+	gatewayDashboardHTML string
+	metricsCollector     *metrics.Collector
+	dashboardToken       string
+	apiKeys              map[string]string
+	corsOrigins          []string
+	policyPath           string
+	startTime            time.Time
+	activeRunTracker     *agent.ActiveRunTracker
 }
 
 // Option configures the Server.
@@ -88,6 +92,16 @@ func WithActiveRunTracker(tracker *agent.ActiveRunTracker) Option {
 // WithGateway sets the LLM API gateway handler (optional). Mounted at /v1/proxy/* with its own caller auth.
 func WithGateway(h http.Handler) Option {
 	return func(s *Server) { s.gateway = h }
+}
+
+// WithGatewayDashboard sets the embedded gateway dashboard HTML and optional auth token.
+func WithGatewayDashboard(html, token string) Option {
+	return func(s *Server) { s.gatewayDashboardHTML = html; s.dashboardToken = token }
+}
+
+// WithMetricsCollector sets the metrics collector for the gateway dashboard API.
+func WithMetricsCollector(c *metrics.Collector) Option {
+	return func(s *Server) { s.metricsCollector = c }
 }
 
 // NewServer builds a Server with the required dependencies and optional Option(s).
@@ -217,6 +231,16 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/dashboard", s.handleDashboard)
 	r.Head("/", s.handleDashboard)
 	r.Head("/dashboard", s.handleDashboard)
+
+	// Gateway dashboard (with optional token auth)
+	if s.metricsCollector != nil && s.gatewayDashboardHTML != "" {
+		r.Group(func(r chi.Router) {
+			r.Use(DashboardTokenMiddleware(s.dashboardToken))
+			r.Get("/gateway/dashboard", s.handleGatewayDashboard)
+			r.Get("/api/v1/metrics", s.handleMetricsJSON)
+			r.Get("/api/v1/metrics/stream", s.handleMetricsStream)
+		})
+	}
 
 	return r
 }

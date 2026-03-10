@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"time"
 
 	"github.com/open-policy-agent/opa/rego"
 	"go.opentelemetry.io/otel/attribute"
@@ -35,6 +36,7 @@ func NewGatewayEngine(ctx context.Context) (*GatewayEngine, error) {
 
 // EvaluateGateway runs the gateway access policy and returns whether the request is allowed and any deny reasons.
 func (e *GatewayEngine) EvaluateGateway(ctx context.Context, input map[string]interface{}) (allowed bool, reasons []string, err error) {
+	start := time.Now()
 	ctx, span := tracer.Start(ctx, "policy.gateway.evaluate",
 		trace.WithAttributes(
 			attribute.String("input.model", stringOr(input["model"])),
@@ -46,9 +48,15 @@ func (e *GatewayEngine) EvaluateGateway(ctx context.Context, input map[string]in
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
+		RecordPolicyEvaluation(ctx, "error", stringOr(input["tenant_id"]), stringOr(input["caller_name"]), time.Since(start))
 		return false, nil, err
 	}
 	allowed = len(reasons) == 0
+	decision := "allow"
+	if !allowed {
+		decision = "deny"
+	}
+	RecordPolicyEvaluation(ctx, decision, stringOr(input["tenant_id"]), stringOr(input["caller_name"]), time.Since(start))
 	span.SetAttributes(
 		attribute.Bool("policy.allowed", allowed),
 		attribute.Int("policy.deny_reasons", len(reasons)),

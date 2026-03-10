@@ -37,6 +37,14 @@ type GatewayConfig struct {
 	NetworkInterception *NetworkInterceptionConfig `yaml:"network_interception,omitempty" json:"network_interception,omitempty"`
 	// TrustedProxyCIDRs: when set, X-Forwarded-For is used for client IP only when the direct peer (RemoteAddr) is in one of these CIDRs. Prevents spoofing when gateway is not behind a trusted proxy. Empty = never trust X-Forwarded-For for source_ip.
 	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs,omitempty" json:"trusted_proxy_cidrs,omitempty"`
+	// DashboardListen is the optional separate bind address for the gateway
+	// dashboard (e.g. "127.0.0.1:9091"). When empty, routes are served on the
+	// main API server. Binding to localhost prevents accidental exposure.
+	DashboardListen string `yaml:"dashboard_listen,omitempty" json:"dashboard_listen,omitempty"`
+	// DashboardToken is an optional Bearer token for gateway dashboard access.
+	// When set, requests to /gateway/dashboard and /api/v1/metrics must carry
+	// this token in the Authorization header.
+	DashboardToken string `yaml:"dashboard_token,omitempty" json:"dashboard_token,omitempty"`
 }
 
 // ProviderConfig holds per-provider gateway settings.
