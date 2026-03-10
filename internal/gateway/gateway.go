@@ -215,6 +215,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_rate_limit_exceeded")
 		} else {
 			log.Warn().Str("caller", caller.Name).Msg("gateway_rate_limited")
+			g.emitMetrics(ctx, caller, route.Provider, "", nil, nil, nil, nil, 0, time.Since(start).Milliseconds(), false, true, "", false, 0)
 			WriteProviderError(w, route.Provider, http.StatusTooManyRequests, "Rate limit exceeded")
 			return
 		}
@@ -254,11 +255,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_attachment_block")
 		} else {
+			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, route.Provider, http.StatusBadRequest,
 				"Request blocked: attachment violates policy")
 			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
 				g.classifier.Scan(ctx, extracted.Text), nil, 0, 0, 0, false,
 				[]string{"attachment policy block"}, false, nil, attSummary, nil, nil, false, "", 0, 0)
+			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0)
 			return
 		}
 	}
@@ -306,8 +309,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("pii", piiTypes).Msg("shadow_pii_block")
 		} else {
+			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request contains PII that is not allowed")
 			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"}, false, nil, attSummary, nil, nil, false, "", 0, 0)
+			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, piiAction, false, 0)
 			return
 		}
 	}
@@ -347,8 +352,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				})
 				log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("reasons", reasons).Msg("shadow_policy_deny")
 			} else {
+				durationMS := time.Since(start).Milliseconds()
 				WriteProviderError(w, route.Provider, http.StatusForbidden, reasons[0])
 				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0)
+				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, piiAction, false, 0)
 				return
 			}
 		}
@@ -370,6 +377,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				})
 				log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("tools", tr.Removed).Msg("shadow_tool_violation")
 			case toolPolicy.Action == "block":
+				durationMS := time.Since(start).Milliseconds()
 				log.Warn().
 					Str("caller", caller.Name).
 					Strs("forbidden", tr.Removed).
@@ -378,10 +386,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					fmt.Sprintf("Request contains forbidden tools: %v", tr.Removed))
 				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
 					classification, nil, 0, 0, 0, false, []string{"tool governance block"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0)
+				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, false, true, piiAction, false, 0)
 				return
 			default:
 				filtered, filterErr := FilterRequestBodyTools(route.Provider, forwardBody, tr.Kept)
 				if filterErr != nil {
+					durationMS := time.Since(start).Milliseconds()
 					log.Error().Err(filterErr).
 						Str("caller", caller.Name).
 						Strs("forbidden", tr.Removed).
@@ -390,6 +400,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						"Failed to filter forbidden tools from request")
 					_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
 						classification, nil, 0, 0, 0, false, []string{"tool filter error"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0)
+					g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, true, true, piiAction, false, 0)
 					return
 				}
 				forwardBody = filtered
@@ -807,10 +818,6 @@ func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provide
 		var svTypes []string
 		for _, sv := range shadowViolations {
 			svTypes = append(svTypes, sv.Type)
-		}
-		tokIn, tokOut := 0, 0
-		if usage != nil {
-			tokIn, tokOut = usage.Input, usage.Output
 		}
 		g.metricsRecorder.RecordGatewayEvent(map[string]interface{}{
 			"timestamp":          time.Now(),

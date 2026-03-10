@@ -191,6 +191,8 @@ type riskLevelAccum struct {
 	blocked int
 }
 
+const maxLatencySamples = 10000
+
 // Collector aggregates gateway events in memory for dashboard display.
 // Real-time metrics (sparklines, PII, tools, latency) are maintained in-memory.
 // Aggregate metrics (model breakdown, budget, cache) are delegated to
@@ -217,7 +219,9 @@ type Collector struct {
 	totalErrors         int
 	totalCostEUR        float64
 	totalLatencyMS      int64
-	allLatencies        []int64
+	latencyRing         [maxLatencySamples]int64
+	latencyRingPos      int
+	latencyRingLen      int
 
 	metricsQuerier evidence.MetricsQuerier
 	activeRunsFn   func() int
@@ -305,7 +309,11 @@ func (c *Collector) processEvent(e GatewayEvent) {
 	}
 	c.totalCostEUR += e.CostEUR
 	c.totalLatencyMS += e.LatencyMS
-	c.allLatencies = append(c.allLatencies, e.LatencyMS)
+	c.latencyRing[c.latencyRingPos] = e.LatencyMS
+	c.latencyRingPos = (c.latencyRingPos + 1) % maxLatencySamples
+	if c.latencyRingLen < maxLatencySamples {
+		c.latencyRingLen++
+	}
 
 	c.updateBucket(e)
 	c.updateCallerStats(e)
@@ -436,9 +444,9 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 	if c.totalRequests > 0 {
 		avgLatency = c.totalLatencyMS / int64(c.totalRequests)
 		errorRate = float64(c.totalErrors) / float64(c.totalRequests)
-		if len(c.allLatencies) > 0 {
-			sorted := make([]int64, len(c.allLatencies))
-			copy(sorted, c.allLatencies)
+		if c.latencyRingLen > 0 {
+			sorted := make([]int64, c.latencyRingLen)
+			copy(sorted, c.latencyRing[:c.latencyRingLen])
 			sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 			idx := int(float64(len(sorted)) * 0.99)
 			if idx >= len(sorted) {
