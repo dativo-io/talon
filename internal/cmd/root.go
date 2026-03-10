@@ -15,15 +15,49 @@ import (
 	"github.com/dativo-io/talon/internal/otel"
 )
 
-// resolvedVersion returns Version unless it is "dev" and Go build info
-// contains a real module version (e.g. from go install ...@v0.8.5).
+func init() {
+	initBuildInfo()
+}
+
+// initBuildInfo fills Version, Commit, and BuildDate from Go's embedded VCS
+// metadata when they were not set via ldflags (i.e. still at defaults).
+// This covers `go install ...@tag` and plain `go build` from a git checkout.
+func initBuildInfo() {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+
+	if Version == "dev" {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			Version = v
+		}
+	}
+
+	settings := make(map[string]string, len(info.Settings))
+	for _, s := range info.Settings {
+		settings[s.Key] = s.Value
+	}
+
+	if Commit == "none" {
+		if rev, ok := settings["vcs.revision"]; ok && len(rev) >= 7 {
+			short := rev[:7]
+			if settings["vcs.modified"] == "true" {
+				short += "-dirty"
+			}
+			Commit = short
+		}
+	}
+
+	if BuildDate == "unknown" {
+		if t, ok := settings["vcs.time"]; ok {
+			BuildDate = t
+		}
+	}
+}
+
+// resolvedVersion returns the current Version string (already resolved by initBuildInfo).
 func resolvedVersion() string {
-	if Version != "dev" {
-		return Version
-	}
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
-	}
 	return Version
 }
 
