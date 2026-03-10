@@ -1,0 +1,187 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "title": "Gateway Requests / min",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "rate(talon_talon_gateway_requests_total[5m]) * 60",
+        "legendFormat": "{{caller}} / {{status}}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "title": "Gateway Errors / min",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{
+        "expr": "rate(talon_talon_gateway_errors_total[5m]) * 60",
+        "legendFormat": "{{error_type}}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "reqps", "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "title": "Token Usage (Input vs Output)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "rate(talon_gen_ai_client_token_usage_sum{gen_ai_token_type=\"input\"}[5m])", "legendFormat": "Input ({{gen_ai_request_model}})" },
+        { "expr": "rate(talon_gen_ai_client_token_usage_sum{gen_ai_token_type=\"output\"}[5m])", "legendFormat": "Output ({{gen_ai_request_model}})" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "LLM Operation Duration (P50 / P99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(talon_gen_ai_client_operation_duration_bucket[5m]))", "legendFormat": "P50" },
+        { "expr": "histogram_quantile(0.99, rate(talon_gen_ai_client_operation_duration_bucket[5m]))", "legendFormat": "P99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "title": "Policy Evaluations",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [{
+        "expr": "rate(talon_talon_policy_evaluations_total[5m]) * 60",
+        "legendFormat": "{{decision}}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "title": "Policy Evaluation Duration (ms)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(talon_talon_policy_evaluation_duration_bucket[5m]))", "legendFormat": "P50" },
+        { "expr": "histogram_quantile(0.99, rate(talon_talon_policy_evaluation_duration_bucket[5m]))", "legendFormat": "P99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
+    },
+    {
+      "title": "PII Detections by Type",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [{
+        "expr": "rate(talon_talon_pii_detections_total[5m]) * 60",
+        "legendFormat": "{{pii_type}} ({{direction}})"
+      }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "PII Redactions",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [{
+        "expr": "rate(talon_talon_pii_redactions_total[5m]) * 60",
+        "legendFormat": "{{pii_type}} ({{direction}})"
+      }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Evidence Records Stored",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 32 },
+      "targets": [{ "expr": "talon_talon_evidence_records_total" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Secrets Access",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 32 },
+      "targets": [{ "expr": "talon_talon_secrets_access_total" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Injection Attempts",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 32 },
+      "targets": [{ "expr": "talon_talon_injection_attempts_total" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Provider Availability",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 32 },
+      "targets": [{ "expr": "talon_talon_provider_availability", "legendFormat": "{{provider}}" }],
+      "fieldConfig": { "defaults": { "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0.5 }] } } }
+    },
+    {
+      "title": "Budget Utilization (%)",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "targets": [{ "expr": "talon_talon_budget_utilization", "legendFormat": "{{tenant_id}} ({{period}})" }],
+      "fieldConfig": { "defaults": { "min": 0, "max": 100, "unit": "percent", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] } } }
+    },
+    {
+      "title": "Cache Hit / Miss Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "targets": [
+        { "expr": "rate(talon_talon_cache_hits[5m]) * 60", "legendFormat": "Hits" },
+        { "expr": "rate(talon_talon_cache_misses[5m]) * 60", "legendFormat": "Misses" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Shadow Violations",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 },
+      "targets": [{
+        "expr": "rate(talon_talon_shadow_violations_total[5m]) * 60",
+        "legendFormat": "{{violation_type}}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Tool Governance Decisions",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 44 },
+      "targets": [{
+        "expr": "rate(talon_talon_tools_governance_total[5m]) * 60",
+        "legendFormat": "{{tool}} ({{action}})"
+      }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Cost per Request (EUR)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 52 },
+      "targets": [{
+        "expr": "histogram_quantile(0.50, rate(talon_talon_cost_request_bucket[5m]))",
+        "legendFormat": "P50"
+      }, {
+        "expr": "histogram_quantile(0.99, rate(talon_talon_cost_request_bucket[5m]))",
+        "legendFormat": "P99"
+      }],
+      "fieldConfig": { "defaults": { "unit": "currencyEUR" } }
+    },
+    {
+      "title": "Provider Failovers",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 52 },
+      "targets": [{
+        "expr": "sum(rate(talon_talon_provider_failover_total[5m])) by (reason)",
+        "legendFormat": "{{reason}}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["talon", "gateway", "llm"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Talon Gateway",
+  "uid": "talon-gateway",
+  "version": 1
+}
