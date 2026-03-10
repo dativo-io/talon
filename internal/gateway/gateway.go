@@ -193,9 +193,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	caller, err := g.config.ResolveCaller(r)
 	if err != nil {
 		if err == ErrCallerIDRequired || err == ErrCallerNotFound {
+			RecordGatewayError(ctx, "auth")
 			WriteProviderError(w, route.Provider, http.StatusUnauthorized, "Invalid or missing API key")
 			return
 		}
+		RecordGatewayError(ctx, "auth")
 		WriteProviderError(w, route.Provider, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -288,7 +290,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !allowed {
+			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, route.Provider, http.StatusForbidden, "Caller not allowed for this provider")
+			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, false, []string{"provider not allowed"}, false, nil, attSummary, nil, nil, false, "", 0, 0)
+			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, "", false, 0)
 			return
 		}
 	}
@@ -337,7 +342,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				})
 				log.Warn().Err(policyErr).Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_policy_error")
 			} else {
+				durationMS := time.Since(start).Milliseconds()
 				WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Policy evaluation failed")
+				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, false, []string{"policy evaluation error"}, false, nil, attSummary, nil, nil, false, "", 0, 0)
+				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, true, true, piiAction, false, 0)
 				return
 			}
 		}
@@ -474,6 +482,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					costSaved := g.costEstimate(extracted.Model, 300, 300)
 					durationMS := time.Since(start).Milliseconds()
 					_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, true, nil, false, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved)
+					g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, false, false, piiAction, true, costSaved)
 					writeCachedCompletion(w, route.Provider, extracted.Model, hit.ResponseText)
 					return
 				}
@@ -513,8 +522,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if prov.SecretName != "" {
 		secret, err := g.secretsStore.Get(ctx, prov.SecretName, caller.TenantID, caller.Name)
 		if err != nil {
+			durationMS := time.Since(start).Milliseconds()
 			log.Warn().Err(err).Str("secret", prov.SecretName).Msg("gateway_secret_get_failed")
 			WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Service configuration error")
+			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, false, []string{"secret retrieval error"}, false, nil, attSummary, toolResult, shadowViolations, false, "", 0, 0)
+			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, true, true, piiAction, false, 0)
 			return
 		}
 		if route.Provider == "anthropic" {
