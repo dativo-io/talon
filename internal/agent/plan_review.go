@@ -109,6 +109,55 @@ func (s *PlanReviewStore) GetPending(ctx context.Context, tenantID string) ([]*E
 	return plans, nil
 }
 
+// ReviewHistoryEntry is a minimal record for the dashboard review history.
+type ReviewHistoryEntry struct {
+	PlanID     string     `json:"plan_id"`
+	TenantID   string     `json:"tenant_id"`
+	AgentID    string     `json:"agent_id"`
+	Status     PlanStatus `json:"status"`
+	ReviewedBy string     `json:"reviewed_by"`
+	ReviewedAt *time.Time `json:"reviewed_at"`
+}
+
+// ListReviewed returns recently reviewed plans (approved/rejected/modified) for the dashboard review history.
+func (s *PlanReviewStore) ListReviewed(ctx context.Context, tenantID string, limit int) ([]ReviewHistoryEntry, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	query := `SELECT id, tenant_id, agent_id, status, reviewed_by, reviewed_at FROM execution_plans
+		WHERE status IN ('approved','rejected','modified') AND reviewed_at IS NOT NULL`
+	args := []interface{}{}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	query += ` ORDER BY reviewed_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ReviewHistoryEntry
+	for rows.Next() {
+		var e ReviewHistoryEntry
+		var reviewedBy sql.NullString
+		var reviewedAt sql.NullTime
+		if err := rows.Scan(&e.PlanID, &e.TenantID, &e.AgentID, &e.Status, &reviewedBy, &reviewedAt); err != nil {
+			continue
+		}
+		if reviewedBy.Valid {
+			e.ReviewedBy = reviewedBy.String
+		}
+		if reviewedAt.Valid {
+			t := reviewedAt.Time
+			e.ReviewedAt = &t
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // Get returns a single plan by ID, scoped to tenantID. Returns ErrPlanNotFound if the plan does not exist or belongs to another tenant.
 func (s *PlanReviewStore) Get(ctx context.Context, planID, tenantID string) (*ExecutionPlan, error) {
 	var planJSON, status string

@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -143,6 +145,19 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 	defer evidenceStore.Close()
 
+	var planReviewStore *agent.PlanReviewStore
+	dbPlan, err := sql.Open("sqlite3", cfg.EvidenceDBPath()+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err == nil {
+		defer dbPlan.Close()
+		planReviewStore, err = agent.NewPlanReviewStore(dbPlan)
+		if err != nil {
+			log.Warn().Err(err).Msg("plan review store unavailable, plans will not be persisted")
+			planReviewStore = nil
+		}
+	} else {
+		log.Warn().Err(err).Msg("plan review DB unavailable")
+	}
+
 	var memStore *memory.Store
 	memStore, err = memory.NewStore(cfg.MemoryDBPath())
 	if err != nil {
@@ -159,6 +174,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		Router:           router,
 		Secrets:          secretsStore,
 		Evidence:         evidenceStore,
+		PlanReview:       planReviewStore,
 		ToolRegistry:     tools.NewRegistry(),
 		ActiveRunTracker: runActiveRunTracker,
 		Memory:           memStore,

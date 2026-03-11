@@ -12,6 +12,8 @@
     .card { background: #1e293b; padding: 1rem; border-radius: 8px; }
     .card .label { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; }
     .card .value { font-size: 1.5rem; font-weight: 600; }
+    .card-link { cursor: pointer; }
+    .card-link:hover { background: #334155; }
     .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
     .tabs button { padding: 0.5rem 1rem; background: #334155; border: none; border-radius: 6px; color: #e2e8f0; cursor: pointer; }
     .tabs button.active { background: #3b82f6; }
@@ -29,35 +31,85 @@
     .refresh { font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.5rem; }
     .error { color: #f87171; }
     select { background: #334155; color: #e2e8f0; border: 1px solid #475569; padding: 0.5rem; border-radius: 4px; }
+    .dashboard-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem; }
+    .dashboard-badge { font-size: 0.75rem; color: #94a3b8; background: #334155; padding: 0.25rem 0.5rem; border-radius: 4px; }
+    .evidence-filters { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem; }
+    .evidence-filters label { display: flex; align-items: center; gap: 0.25rem; font-size: 0.875rem; color: #94a3b8; }
+    .evidence-filters input, .evidence-filters select { background: #334155; color: #e2e8f0; border: 1px solid #475569; padding: 0.25rem 0.5rem; border-radius: 4px; }
+    .compliance-overlay { font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.5rem; }
+    .governance-widget { margin-bottom: 1rem; padding: 0.75rem; background: #1e293b; border-radius: 8px; }
+    .denials-summary { font-size: 0.875rem; color: #e2e8f0; margin: 0; }
+    .denials-summary a { color: #94a3b8; }
+    .denials-summary a:hover { color: #e2e8f0; }
+    .gov-alerts-table { width: 100%; font-size: 0.875rem; margin-top: 0.25rem; }
+    .gov-alerts-table th { color: #94a3b8; text-align: left; padding: 0.25rem 0.5rem 0.25rem 0; }
+    .gov-alerts-table td { padding: 0.25rem 0.5rem 0.25rem 0; }
+    .tenant-cards { margin-bottom: 1rem; }
+    .tenant-cards .card .label { font-size: 0.65rem; }
+    .tenant-cards .card .value { font-size: 1rem; }
+    .dashboard-nav a { color: #94a3b8; text-decoration: none; font-size: 0.875rem; }
+    .dashboard-nav a:hover { color: #e2e8f0; }
   </style>
 </head>
 <body>
-  <h1>Talon Dashboard</h1>
+  <header class="dashboard-header">
+    <h1>Talon Dashboard</h1>
+    <span class="dashboard-badge" id="header-badge" title="Enforcement mode and tenant scope"></span>
+    <nav class="dashboard-nav"><a href="/gateway/dashboard">Gateway telemetry &rarr;</a></nav>
+  </header>
   <div class="cards">
-    <div class="card"><div class="label">Today&rsquo;s requests</div><div class="value" id="card-requests">—</div></div>
-    <div class="card"><div class="label">Daily cost</div><div class="value" id="card-daily">— &euro;</div></div>
-    <div class="card"><div class="label">Monthly cost</div><div class="value" id="card-monthly">— &euro;</div></div>
-    <div class="card"><div class="label">Pending plans</div><div class="value" id="card-plans">—</div></div>
+    <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Today&rsquo;s requests</div><div class="value" id="card-requests">—</div></div>
+    <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Daily cost</div><div class="value" id="card-daily">— &euro;</div></div>
+    <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Monthly cost</div><div class="value" id="card-monthly">— &euro;</div></div>
+    <div class="card card-link" data-tab="plans" data-filter=""><div class="label">Pending plans</div><div class="value" id="card-plans">—</div></div>
+    <div class="card card-link" data-tab="memory" data-filter=""><div class="label">Pending memory</div><div class="value" id="card-memory-pending">—</div></div>
+    <div class="card card-link" data-tab="evidence" data-filter="blocked"><div class="label">Blocked</div><div class="value" id="card-blocked">—</div></div>
+    <div class="card" id="card-budget"><div class="label">Budget</div><div class="value" id="card-budget-value">—</div><div class="value budget-warn" id="card-budget-warn" style="display:none; font-size:0.75rem; color:#f87171;">Approaching limit</div></div>
+  </div>
+  <div id="governance-denials" class="governance-widget">
+    <h3 style="margin:0 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Policy outcome</h3>
+    <p class="denials-summary" id="policy-outcome-summary">—</p>
+    <h3 style="margin:0.75rem 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Denials by reason</h3>
+    <p class="denials-summary"><span id="denials-total">—</span> denied. <span id="denials-by-reason"></span> <a href="#" id="denials-drill-down">View in Evidence &rarr;</a></p>
+    <h3 style="margin:0.75rem 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Security &amp; PII</h3>
+    <p class="denials-summary">PII detections and injection attempts (see Risky tool / attachment table below and FinOps for counts). <a href="#" id="governance-evidence-link">View evidence</a></p>
+    <h3 style="margin:0.75rem 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Risky tool / attachment injection</h3>
+    <table class="gov-alerts-table"><thead><tr><th>Time</th><th>Agent</th><th>Type</th><th>Evidence</th></tr></thead><tbody id="governance-alerts-tbody"></tbody></table>
   </div>
   <div class="tabs">
     <button class="active" data-tab="evidence">Evidence</button>
     <button data-tab="plans">Plans Awaiting Review</button>
     <button data-tab="memory">Memory Review</button>
-    <button data-tab="copaw">CoPaw Agents</button>
+    <button data-tab="finops">FinOps &amp; Runtime</button>
+    <button data-tab="tenants">Tenants &amp; Agents</button>
   </div>
-  <div class="refresh">Auto-refresh every 30s. Set <code>window.TALON_API_KEY</code> for API calls.</div>
+  <div class="refresh">Auto-refresh every 30s. Set <code>window.TALON_API_KEY</code> for API calls. Evidence retention: see server/config docs. <a href="#" id="stakeholder-view">Audit report view</a></div>
 
   <div id="panel-evidence" class="panel active">
+    <p class="compliance-overlay">Evidence supports: GDPR Art. 30, EU AI Act documentation (when present in metadata).</p>
+    <div class="evidence-filters">
+      <label>Tenant <input type="text" id="filter-tenant" placeholder="optional" /></label>
+      <label>Agent <input type="text" id="filter-agent" placeholder="optional" /></label>
+      <label>Decision <select id="filter-decision"><option value="">All</option><option value="true">Allowed</option><option value="false">Denied</option></select></label>
+      <label>Model <input type="text" id="filter-model" placeholder="optional" /></label>
+      <label>From <input type="datetime-local" id="filter-from" /></label>
+      <label>To <input type="datetime-local" id="filter-to" /></label>
+      <button type="button" id="evidence-apply-filters" class="btn">Apply</button>
+    </div>
+    <p><button type="button" id="evidence-export-btn" class="btn">Export (CSV)</button> <button type="button" id="audit-pack-btn" class="btn">Audit pack (JSON)</button></p>
     <table>
-      <thead><tr><th>Time</th><th>Agent</th><th>Status</th><th>Cost (€)</th><th>ID</th></tr></thead>
+      <thead><tr><th>Time</th><th>Agent</th><th>Status</th><th>Cost (€)</th><th>ID</th><th>Trace</th><th>Verify</th></tr></thead>
       <tbody id="evidence-tbody"></tbody>
     </table>
   </div>
   <div id="panel-plans" class="panel">
+    <h3 style="margin-top:0">Pending</h3>
     <table>
       <thead><tr><th>Time</th><th>Agent</th><th>Model</th><th>Tier</th><th>Est. cost (€)</th><th>Actions</th></tr></thead>
       <tbody id="plans-tbody"></tbody>
     </table>
+    <h3 style="margin-top:1rem">Review history</h3>
+    <table><thead><tr><th>Plan ID</th><th>Agent</th><th>Status</th><th>Reviewed by</th><th>When</th></tr></thead><tbody id="review-history-tbody"></tbody></table>
   </div>
   <div id="panel-memory" class="panel">
     <p>Agent: <select id="memory-agent"></select></p>
@@ -66,17 +118,30 @@
       <tbody id="memory-tbody"></tbody>
     </table>
   </div>
-  <div id="panel-copaw" class="panel">
-    <h3 style="margin-top:0">CoPaw gateway stats</h3>
-    <div class="cards">
-      <div class="card"><div class="label">Requests today</div><div class="value" id="copaw-requests">—</div></div>
-      <div class="card"><div class="label">Cost today (€)</div><div class="value" id="copaw-cost-today">—</div></div>
-      <div class="card"><div class="label">Cost month (€)</div><div class="value" id="copaw-cost-month">—</div></div>
+  <div id="panel-finops" class="panel">
+    <h3 style="margin-top:0">Gateway metrics</h3>
+    <div class="cards" id="finops-cards">
+      <div class="card"><div class="label">Total requests</div><div class="value" id="finops-requests">—</div></div>
+      <div class="card"><div class="label">Blocked</div><div class="value" id="finops-blocked">—</div></div>
+      <div class="card"><div class="label">Total cost (€)</div><div class="value" id="finops-cost">—</div></div>
+      <div class="card"><div class="label">Avg latency</div><div class="value" id="finops-latency">—</div></div>
+      <div class="card"><div class="label">PII detections</div><div class="value" id="finops-pii">—</div></div>
     </div>
-    <h3>Recent alerts (denials, PII)</h3>
+    <p class="refresh"><span id="metrics-source-indicator" class="compliance-overlay">Polling</span> <a href="/gateway/dashboard">Open full Gateway telemetry &rarr;</a></p>
+  </div>
+  <div id="panel-tenants" class="panel">
+    <h3 style="margin-top:0">Tenant overview</h3>
+    <p class="refresh">Request volume, spend, denials, and pending reviews per tenant.</p>
+    <div id="tenant-cards" class="cards tenant-cards"></div>
     <table>
-      <thead><tr><th>Time</th><th>Agent</th><th>Model</th><th>Policy denied</th><th>PII detected</th></tr></thead>
-      <tbody id="copaw-alerts-tbody"></tbody>
+      <thead><tr><th>Tenant</th><th>Requests (today)</th><th>Spend today (€)</th><th>Spend month (€)</th><th>Denials</th><th>Pending plans</th></tr></thead>
+      <tbody id="tenants-tbody"></tbody>
+    </table>
+    <h3>Agent registry</h3>
+    <p class="refresh">Agents by tenant: request volume, cost (budget burn), blocked (risk), last activity. Owner and model tier from config when available.</p>
+    <table>
+      <thead><tr><th>Tenant</th><th>Agent</th><th>Owner</th><th>Requests</th><th>Budget burn (€)</th><th>Blocked</th><th>Risk</th><th>Last run</th></tr></thead>
+      <tbody id="agents-tbody"></tbody>
     </table>
   </div>
 
@@ -121,15 +186,126 @@
           if (el) el.textContent = (d.cost_today != null ? d.cost_today.toFixed(2) : '—') + ' €';
           el = document.getElementById('card-monthly');
           if (el) el.textContent = (d.monthly != null ? d.monthly.toFixed(2) : '—') + ' €';
+          el = document.getElementById('card-memory-pending');
+          if (el) el.textContent = d.pending_memory_reviews != null ? d.pending_memory_reviews : '—';
+          el = document.getElementById('card-blocked');
+          if (el) el.textContent = d.blocked_count != null ? d.blocked_count : '—';
+          get('/v1/costs/budget').then(function(b) {
+            var v = document.getElementById('card-budget-value');
+            var w = document.getElementById('card-budget-warn');
+            if (!v) return;
+            var dailyUsed = b.daily_used != null ? b.daily_used : 0;
+            var monthlyUsed = b.monthly_used != null ? b.monthly_used : 0;
+            var dailyLimit = b.daily_limit;
+            var monthlyLimit = b.monthly_limit;
+            if (dailyLimit != null && dailyLimit > 0) {
+              var pct = (dailyUsed / dailyLimit) * 100;
+              v.textContent = 'Daily ' + dailyUsed.toFixed(2) + ' / ' + dailyLimit + ' € (' + pct.toFixed(0) + '%)';
+              if (w) { w.style.display = pct >= 80 ? 'block' : 'none'; }
+            } else if (monthlyLimit != null && monthlyLimit > 0) {
+              var pct = (monthlyUsed / monthlyLimit) * 100;
+              v.textContent = 'Monthly ' + monthlyUsed.toFixed(2) + ' / ' + monthlyLimit + ' € (' + pct.toFixed(0) + '%)';
+              if (w) { w.style.display = pct >= 80 ? 'block' : 'none'; }
+            } else {
+              v.textContent = 'Daily ' + dailyUsed.toFixed(2) + ' €';
+              if (w) w.style.display = 'none';
+            }
+          }).catch(function() {
+            var v = document.getElementById('card-budget-value');
+            if (v) v.textContent = '—';
+          });
+          var badge = document.getElementById('header-badge');
+          if (badge) {
+            var mode = (d.enforcement_mode && String(d.enforcement_mode).trim()) ? String(d.enforcement_mode) : '—';
+            var tenant = (d.tenant_id && String(d.tenant_id).trim()) ? String(d.tenant_id) : '—';
+            badge.textContent = mode + ' | tenant: ' + tenant;
+          }
         }).catch(function() {});
         get('/v1/plans/pending').then(function(d) {
           var el = document.getElementById('card-plans');
           if (el && d.plans) el.textContent = d.plans.length;
         }).catch(function() {});
+        get('/v1/status').then(function(st) {
+          var req = st.evidence_count_today != null ? st.evidence_count_today : 0;
+          var block = st.blocked_count != null ? st.blocked_count : 0;
+          var allowed = Math.max(0, req - block);
+          var po = document.getElementById('policy-outcome-summary');
+          if (po) po.textContent = 'Allowed: ' + allowed + ', Denied: ' + block + (req > 0 ? ' (today)' : '');
+        }).catch(function() {});
+        get('/v1/dashboard/denials-by-reason').then(function(d) {
+          var totalEl = document.getElementById('denials-total');
+          var byEl = document.getElementById('denials-by-reason');
+          if (totalEl) totalEl.textContent = d.total != null ? d.total : '0';
+          if (byEl && d.by_reason) {
+            var parts = [];
+            if (d.by_reason.policy_deny) parts.push('policy: ' + d.by_reason.policy_deny);
+            if (d.by_reason.attachment_block) parts.push('attachment: ' + d.by_reason.attachment_block);
+            if (d.by_reason.tool_filtered) parts.push('tool: ' + d.by_reason.tool_filtered);
+            if (d.by_reason.pii_block) parts.push('PII: ' + d.by_reason.pii_block);
+            byEl.textContent = parts.length ? parts.join(', ') : '—';
+          }
+        }).catch(function() {
+          var totalEl = document.getElementById('denials-total');
+          if (totalEl) totalEl.textContent = '—';
+        });
+        get('/v1/dashboard/governance-alerts?limit=10').then(function(d) {
+          var tbody = document.getElementById('governance-alerts-tbody');
+          if (!tbody) return;
+          tbody.innerHTML = '';
+          (d.alerts || []).forEach(function(a) {
+            var tr = document.createElement('tr');
+            var time = a.timestamp ? new Date(a.timestamp).toLocaleString() : '—';
+            var link = '<a href="#" class="gov-alert-link" data-id="' + escapeHtml(a.id || '') + '">' + escapeHtml(a.id || '—') + '</a>';
+            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(a.agent_id || '—') + '</td><td>' + escapeHtml(a.event_type || '—') + '</td><td>' + link + '</td>';
+            tbody.appendChild(tr);
+          });
+          if ((d.alerts || []).length === 0) tbody.innerHTML = '<tr><td colspan="4" class="refresh">No recent alerts</td></tr>';
+          tbody.querySelectorAll('.gov-alert-link').forEach(function(link) {
+            link.addEventListener('click', function(e) {
+              e.preventDefault();
+              var id = link.getAttribute('data-id');
+              if (!id) return;
+              document.querySelectorAll('.tabs button').forEach(function(b) { b.classList.remove('active'); });
+              document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
+              var evidenceTab = document.querySelector('.tabs button[data-tab="evidence"]');
+              var evidencePanel = document.getElementById('panel-evidence');
+              if (evidenceTab) evidenceTab.classList.add('active');
+              if (evidencePanel) evidencePanel.classList.add('active');
+              renderEvidence();
+            });
+          });
+        }).catch(function() {
+          var tbody = document.getElementById('governance-alerts-tbody');
+          if (tbody) tbody.innerHTML = '<tr><td colspan="4" class="refresh">—</td></tr>';
+        });
       }
 
+      function buildEvidenceQuery() {
+        var limit = 50;
+        var params = ['limit=' + limit];
+        var tenant = document.getElementById('filter-tenant');
+        var agent = document.getElementById('filter-agent');
+        var decision = document.getElementById('filter-decision');
+        var model = document.getElementById('filter-model');
+        var fromEl = document.getElementById('filter-from');
+        var toEl = document.getElementById('filter-to');
+        if (tenant && tenant.value && tenant.value.trim()) params.push('tenant_id=' + encodeURIComponent(tenant.value.trim()));
+        if (agent && agent.value && agent.value.trim()) params.push('agent_id=' + encodeURIComponent(agent.value.trim()));
+        if (decision && decision.value) params.push('allowed=' + encodeURIComponent(decision.value));
+        if (model && model.value && model.value.trim()) params.push('model=' + encodeURIComponent(model.value.trim()));
+        if (fromEl && fromEl.value) {
+          var fromDate = new Date(fromEl.value);
+          if (!isNaN(fromDate.getTime())) params.push('from=' + encodeURIComponent(fromDate.toISOString()));
+        }
+        if (toEl && toEl.value) {
+          var toDate = new Date(toEl.value);
+          if (!isNaN(toDate.getTime())) params.push('to=' + encodeURIComponent(toDate.toISOString()));
+        }
+        return params.join('&');
+      }
       function renderEvidence() {
-        get('/v1/evidence?limit=10').then(function(d) {
+        var q = buildEvidenceQuery();
+        get('/v1/evidence?' + q).then(function(d) {
           var tbody = document.getElementById('evidence-tbody');
           if (!tbody) return;
           tbody.innerHTML = '';
@@ -138,15 +314,71 @@
             var time = ev.timestamp ? new Date(ev.timestamp).toLocaleString() : '—';
             var status = ev.allowed ? '<span class="status-ok">allowed</span>' : '<span class="status-deny">denied</span>';
             var cost = ev.cost != null ? ev.cost.toFixed(4) : '—';
-            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(ev.agent_id || '—') + '</td><td>' + status + '</td><td>' + escapeHtml(cost) + '</td><td>' + escapeHtml(ev.id || '—') + '</td>';
+            var id = ev.id || '';
+            var idEsc = escapeHtml(id || '—');
+            var verifyBtn = '<button type="button" class="btn evidence-verify" data-id="' + String(id).replace(/"/g, '&quot;') + '">Verify</button>';
+            var traceBtn = '<button type="button" class="btn evidence-trace" data-id="' + String(id).replace(/"/g, '&quot;') + '">Trace</button>';
+            var complianceTip = '';
+            if (ev.compliance && ev.compliance.frameworks && ev.compliance.frameworks.length) {
+              complianceTip = ' title="Frameworks: ' + escapeHtml(ev.compliance.frameworks.join(', ')) + (ev.compliance.data_location ? '; Location: ' + ev.compliance.data_location : '') + '"';
+            }
+            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(ev.agent_id || '—') + '</td><td>' + status + '</td><td>' + escapeHtml(cost) + '</td><td' + complianceTip + '>' + idEsc + '</td><td>' + traceBtn + '</td><td>' + verifyBtn + '</td>';
             tbody.appendChild(tr);
+          });
+          tbody.querySelectorAll('.evidence-verify').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+              var id = btn.getAttribute('data-id');
+              if (!id || id === '—') return;
+              get('/v1/evidence/' + encodeURIComponent(id) + '/verify').then(function(res) {
+                var msg = res.valid ? 'Signature valid' : 'Signature invalid';
+                var span = document.createElement('span');
+                span.className = res.valid ? 'status-ok' : 'status-deny';
+                span.textContent = msg;
+                btn.parentNode.replaceChild(span, btn);
+              }).catch(function(e) {
+                var span = document.createElement('span');
+                span.className = 'error';
+                span.textContent = e.message || 'Error';
+                btn.parentNode.replaceChild(span, btn);
+              });
+            });
           });
         }).catch(function(e) {
           var tbody = document.getElementById('evidence-tbody');
-          if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="error">' + escapeHtml(e.message) + '</td></tr>';
+          if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="error">' + escapeHtml(e.message) + '</td></tr>';
+        });
+        tbody.querySelectorAll('.evidence-trace').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            var id = btn.getAttribute('data-id');
+            if (!id || id === '—') return;
+            get('/v1/evidence/' + encodeURIComponent(id) + '/trace').then(function(trace) {
+              var ev = trace.evidence || trace;
+              var steps = trace.steps || [];
+              var lines = ['Evidence: ' + (ev.id || id), 'Correlation: ' + (ev.correlation_id || '—'), 'Model: ' + (ev.execution && ev.execution.model_used ? ev.execution.model_used : '—'), 'Cost: ' + (ev.execution && ev.execution.cost != null ? ev.execution.cost : '—'), 'Steps: ' + steps.length];
+              steps.forEach(function(s, i) { lines.push('  ' + (i+1) + '. ' + (s.step_type || s.type || 'step') + (s.tool_name ? ' ' + s.tool_name : '')); });
+              alert(lines.join('\n'));
+            }).catch(function(e) { alert('Trace failed: ' + (e.message || e)); });
+          });
         });
       }
 
+      function renderReviewHistory() {
+        get('/v1/dashboard/review-history?limit=15').then(function(d) {
+          var tbody = document.getElementById('review-history-tbody');
+          if (!tbody) return;
+          tbody.innerHTML = '';
+          (d.reviews || []).forEach(function(r) {
+            var tr = document.createElement('tr');
+            var when = r.reviewed_at ? new Date(r.reviewed_at).toLocaleString() : '—';
+            tr.innerHTML = '<td>' + escapeHtml(r.plan_id || '—') + '</td><td>' + escapeHtml(r.agent_id || '—') + '</td><td>' + escapeHtml(r.status || '—') + '</td><td>' + escapeHtml(r.reviewed_by || '—') + '</td><td>' + escapeHtml(when) + '</td>';
+            tbody.appendChild(tr);
+          });
+          if ((d.reviews || []).length === 0) tbody.innerHTML = '<tr><td colspan="5" class="refresh">No review history</td></tr>';
+        }).catch(function() {
+          var tbody = document.getElementById('review-history-tbody');
+          if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="error">—</td></tr>';
+        });
+      }
       function renderPlans() {
         get('/v1/plans/pending').then(function(d) {
           var tbody = document.getElementById('plans-tbody');
@@ -213,30 +445,71 @@
         sel.addEventListener('change', renderMemory);
       }
 
-      function renderCoPaw() {
-        get('/v1/copaw/stats').then(function(d) {
-          var el = document.getElementById('copaw-requests');
-          if (el) el.textContent = d.requests_today != null ? d.requests_today : '—';
-          el = document.getElementById('copaw-cost-today');
-          if (el) el.textContent = d.cost_today != null ? d.cost_today.toFixed(2) : '—';
-          el = document.getElementById('copaw-cost-month');
-          if (el) el.textContent = d.cost_month != null ? d.cost_month.toFixed(2) : '—';
-        }).catch(function() {});
-        get('/v1/copaw/alerts').then(function(d) {
-          var tbody = document.getElementById('copaw-alerts-tbody');
-          if (!tbody) return;
-          tbody.innerHTML = '';
-          (d.alerts || []).forEach(function(a) {
-            var tr = document.createElement('tr');
-            var time = a.timestamp ? new Date(a.timestamp).toLocaleString() : '—';
-            var denied = a.policy_denied ? '<span class="status-deny">yes</span>' : '—';
-            var pii = a.pii_detected ? '<span class="status-deny">yes</span>' : '—';
-            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(a.agent_id || '—') + '</td><td>' + escapeHtml(a.model || '—') + '</td><td>' + denied + '</td><td>' + pii + '</td>';
-            tbody.appendChild(tr);
-          });
+      function renderFinops() {
+        var base = window.TALON_BASE_URL || '';
+        var opts = { headers: headers() };
+        fetch(base + '/api/v1/metrics', opts).then(function(r) {
+          if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+          return r.json();
+        }).then(function(d) {
+          var s = d.summary || {};
+          var set = function(id, text) { var el = document.getElementById(id); if (el) el.textContent = text; };
+          set('finops-requests', s.total_requests != null ? s.total_requests : '—');
+          set('finops-blocked', s.blocked_requests != null ? s.blocked_requests : '—');
+          set('finops-cost', s.total_cost_eur != null ? s.total_cost_eur.toFixed(4) : '—');
+          set('finops-latency', s.avg_latency_ms != null ? s.avg_latency_ms + 'ms' : '—');
+          set('finops-pii', s.pii_detections != null ? s.pii_detections : '—');
+        }).catch(function() {
+          var set = function(id, text) { var el = document.getElementById(id); if (el) el.textContent = text; };
+          set('finops-requests', '—');
+          set('finops-blocked', '—');
+          set('finops-cost', '—');
+          set('finops-latency', '—');
+          set('finops-pii', '—');
+        });
+      }
+
+      function renderTenants() {
+        get('/v1/dashboard/tenants-summary').then(function(d) {
+          var container = document.getElementById('tenant-cards');
+          if (container) {
+            container.innerHTML = '';
+            (d.tenants || []).forEach(function(t) {
+              var card = document.createElement('div');
+              card.className = 'card';
+              card.innerHTML = '<div class="label">' + escapeHtml(t.tenant_id || '—') + '</div><div class="value">' + (t.request_volume != null ? t.request_volume : '—') + ' req</div><div class="label">Today €' + (t.spend_today != null ? t.spend_today.toFixed(2) : '—') + ' | Month €' + (t.spend_month != null ? t.spend_month.toFixed(2) : '—') + '</div><div class="label">Denials: ' + (t.denials != null ? t.denials : '—') + ' | Pending plans: ' + (t.pending_plans != null ? t.pending_plans : '—') + '</div>';
+              container.appendChild(card);
+            });
+          }
+          var tbody = document.getElementById('tenants-tbody');
+          if (tbody) {
+            tbody.innerHTML = '';
+            (d.tenants || []).forEach(function(t) {
+              var tr = document.createElement('tr');
+              tr.innerHTML = '<td>' + escapeHtml(t.tenant_id || '—') + '</td><td>' + (t.request_volume != null ? t.request_volume : '—') + '</td><td>' + (t.spend_today != null ? t.spend_today.toFixed(2) : '—') + '</td><td>' + (t.spend_month != null ? t.spend_month.toFixed(2) : '—') + '</td><td>' + (t.denials != null ? t.denials : '—') + '</td><td>' + (t.pending_plans != null ? t.pending_plans : '—') + '</td>';
+              tbody.appendChild(tr);
+            });
+            if ((d.tenants || []).length === 0) tbody.innerHTML = '<tr><td colspan="6" class="refresh">No tenant data</td></tr>';
+          }
+          var agentsBody = document.getElementById('agents-tbody');
+          if (agentsBody) {
+            agentsBody.innerHTML = '';
+            (d.agents || []).forEach(function(a) {
+              var tr = document.createElement('tr');
+              var lastRun = a.last_run ? new Date(a.last_run).toLocaleString() : '—';
+              var risk = (a.blocked != null && a.blocked > 0) ? 'elevated' : '—';
+              var owner = a.owner != null ? a.owner : '—';
+              var tier = a.model_tier != null ? a.model_tier : '—';
+              tr.innerHTML = '<td>' + escapeHtml(a.tenant_id || '—') + '</td><td>' + escapeHtml(a.agent_id || '—') + '</td><td>' + escapeHtml(owner) + '</td><td>' + (a.requests != null ? a.requests : '—') + '</td><td>' + (a.cost_eur != null ? a.cost_eur.toFixed(4) : '—') + '</td><td>' + (a.blocked != null ? a.blocked : '—') + '</td><td>' + escapeHtml(risk) + '</td><td>' + escapeHtml(lastRun) + '</td>';
+              agentsBody.appendChild(tr);
+            });
+            if ((d.agents || []).length === 0) agentsBody.innerHTML = '<tr><td colspan="8" class="refresh">No agent data</td></tr>';
+          }
         }).catch(function(e) {
-          var tbody = document.getElementById('copaw-alerts-tbody');
-          if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="error">' + escapeHtml(e.message) + '</td></tr>';
+          var tbody = document.getElementById('tenants-tbody');
+          if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="error">' + escapeHtml(e.message) + '</td></tr>';
+          var agentsBody = document.getElementById('agents-tbody');
+          if (agentsBody) agentsBody.innerHTML = '<tr><td colspan="8" class="refresh">Unable to load agent registry</td></tr>';
         });
       }
 
@@ -248,18 +521,108 @@
           var tab = btn.dataset.tab;
           var panel = document.getElementById('panel-' + tab);
           if (panel) panel.classList.add('active');
-          if (tab === 'plans') renderPlans();
+          if (tab === 'evidence') renderEvidence();
+          if (tab === 'plans') { renderPlans(); renderReviewHistory(); }
           if (tab === 'memory') { loadAgents(); renderMemory(); }
-          if (tab === 'copaw') renderCoPaw();
+          if (tab === 'finops') renderFinops();
+          if (tab === 'tenants') renderTenants();
         });
+      });
+      var applyFiltersBtn = document.getElementById('evidence-apply-filters');
+      if (applyFiltersBtn) applyFiltersBtn.addEventListener('click', renderEvidence);
+      var stakeholderView = document.getElementById('stakeholder-view');
+      if (stakeholderView) stakeholderView.addEventListener('click', function(e) {
+        e.preventDefault();
+        window.print();
+      });
+      var drillDown = document.getElementById('denials-drill-down');
+      var govEvidenceLink = document.getElementById('governance-evidence-link');
+      if (govEvidenceLink) govEvidenceLink.addEventListener('click', function(e) {
+        e.preventDefault();
+        document.querySelectorAll('.tabs button').forEach(function(b) { b.classList.remove('active'); });
+        document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
+        document.querySelector('.tabs button[data-tab="evidence"]').classList.add('active');
+        document.getElementById('panel-evidence').classList.add('active');
+        renderEvidence();
+      });
+      if (drillDown) drillDown.addEventListener('click', function(e) {
+        e.preventDefault();
+        var decision = document.getElementById('filter-decision');
+        if (decision) decision.value = 'false';
+        document.querySelectorAll('.tabs button').forEach(function(b) { b.classList.remove('active'); });
+        document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
+        var evidenceTab = document.querySelector('.tabs button[data-tab="evidence"]');
+        var evidencePanel = document.getElementById('panel-evidence');
+        if (evidenceTab) evidenceTab.classList.add('active');
+        if (evidencePanel) evidencePanel.classList.add('active');
+        renderEvidence();
+      });
+      document.querySelectorAll('.card-link').forEach(function(card) {
+        card.addEventListener('click', function() {
+          var tab = card.dataset.tab;
+          var filter = card.dataset.filter || '';
+          if (tab === 'evidence' && filter === 'blocked') {
+            var decision = document.getElementById('filter-decision');
+            if (decision) decision.value = 'false';
+          }
+          document.querySelectorAll('.tabs button').forEach(function(b) { b.classList.remove('active'); });
+          document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
+          var tabBtn = document.querySelector('.tabs button[data-tab="' + tab + '"]');
+          var panel = document.getElementById('panel-' + tab);
+          if (tabBtn) tabBtn.classList.add('active');
+          if (panel) panel.classList.add('active');
+          if (tab === 'evidence') renderEvidence();
+          if (tab === 'plans') { renderPlans(); renderReviewHistory(); }
+          if (tab === 'memory') { loadAgents(); renderMemory(); }
+        });
+      });
+      var exportBtn = document.getElementById('evidence-export-btn');
+      var auditPackBtn = document.getElementById('audit-pack-btn');
+      if (auditPackBtn) auditPackBtn.addEventListener('click', function() {
+        fetch(base + '/v1/dashboard/audit-pack', { headers: headers() }).then(function(r) {
+          if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+          return r.json();
+        }).then(function(data) {
+          var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'talon-audit-pack.json';
+          a.click();
+          URL.revokeObjectURL(url);
+        }).catch(function(e) { alert('Audit pack failed: ' + (e.message || e)); });
+      });
+      if (exportBtn) exportBtn.addEventListener('click', function() {
+        var fromEl = document.getElementById('filter-from');
+        var toEl = document.getElementById('filter-to');
+        var tenantEl = document.getElementById('filter-tenant');
+        var agentEl = document.getElementById('filter-agent');
+        var body = { limit: 1000, format: 'csv' };
+        if (tenantEl && tenantEl.value && tenantEl.value.trim()) body.tenant_id = tenantEl.value.trim();
+        if (agentEl && agentEl.value && agentEl.value.trim()) body.agent_id = agentEl.value.trim();
+        if (fromEl && fromEl.value) { var d = new Date(fromEl.value); if (!isNaN(d.getTime())) body.from = d.toISOString(); }
+        if (toEl && toEl.value) { var d = new Date(toEl.value); if (!isNaN(d.getTime())) body.to = d.toISOString(); }
+        fetch(base + '/v1/evidence/export', { method: 'POST', headers: headers(), body: JSON.stringify(body) }).then(function(r) {
+          if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+          return r.text();
+        }).then(function(csv) {
+          var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'talon-evidence-export.csv';
+          a.click();
+          URL.revokeObjectURL(url);
+        }).catch(function(e) { alert('Export failed: ' + (e.message || e)); });
       });
 
       function refresh() {
         renderCards();
         renderEvidence();
-        if (document.getElementById('panel-plans').classList.contains('active')) renderPlans();
+        if (document.getElementById('panel-plans').classList.contains('active')) { renderPlans(); renderReviewHistory(); }
         if (document.getElementById('panel-memory').classList.contains('active')) renderMemory();
-        if (document.getElementById('panel-copaw').classList.contains('active')) renderCoPaw();
+        if (document.getElementById('panel-finops').classList.contains('active')) renderFinops();
+        if (document.getElementById('panel-tenants').classList.contains('active')) renderTenants();
       }
       refresh();
       setInterval(refresh, 30000);

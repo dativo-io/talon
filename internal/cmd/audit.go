@@ -105,7 +105,7 @@ func auditList(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	index, err := store.ListIndex(ctx, auditTenant, auditAgent, time.Time{}, time.Time{}, auditLimit, "")
+	index, err := store.ListIndex(ctx, auditTenant, auditAgent, time.Time{}, time.Time{}, auditLimit, "", "", "")
 	if err != nil {
 		return fmt.Errorf("querying evidence: %w", err)
 	}
@@ -132,7 +132,7 @@ func auditShow(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 {
 		evidenceID = args[0]
 	} else {
-		index, err := store.ListIndex(ctx, "", "", time.Time{}, time.Time{}, 1, "")
+		index, err := store.ListIndex(ctx, "", "", time.Time{}, time.Time{}, 1, "", "", "")
 		if err != nil {
 			return fmt.Errorf("listing evidence: %w", err)
 		}

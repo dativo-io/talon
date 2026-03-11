@@ -16,6 +16,13 @@ policies:
   cost_limits:
     per_request: 0.50
     daily: 10.00
+  model_routing:
+    tier_0:
+      primary: "gpt-4o-mini"
+    tier_1:
+      primary: "gpt-4o-mini"
+    tier_2:
+      primary: "gpt-4o-mini"
   data_classification:
     input_scan: true
     output_scan: true

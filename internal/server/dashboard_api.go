@@ -24,12 +24,10 @@ func (s *Server) handleMetricsJSON(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMetricsStream sends metrics snapshots as Server-Sent Events.
+// If the response writer does not implement http.Flusher (e.g. behind a buffering proxy),
+// events are still sent but may be delayed until the buffer fills or the connection closes.
 func (s *Server) handleMetricsStream(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
+	flusher, _ := w.(http.Flusher)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -41,10 +39,16 @@ func (s *Server) handleMetricsStream(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	flush := func() {
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+
 	snap := s.metricsCollector.Snapshot(ctx)
 	data, _ := json.Marshal(snap)
 	fmt.Fprintf(w, "data: %s\n\n", data)
-	flusher.Flush()
+	flush()
 
 	for {
 		select {
@@ -60,7 +64,7 @@ func (s *Server) handleMetricsStream(w http.ResponseWriter, r *http.Request) {
 			if writeErr != nil {
 				return
 			}
-			flusher.Flush()
+			flush()
 		}
 	}
 }

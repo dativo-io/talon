@@ -178,12 +178,14 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/v1/evidence", s.handleEvidenceList)
 			r.Get("/v1/evidence/timeline", s.handleEvidenceTimeline)
 			r.Get("/v1/evidence/{id}", s.handleEvidenceGet)
+			r.Get("/v1/evidence/{id}/trace", s.handleEvidenceTrace)
 			r.Get("/v1/evidence/{id}/verify", s.handleEvidenceVerify)
 			r.Post("/v1/evidence/export", s.handleEvidenceExport)
 
 			r.Get("/v1/status", s.handleStatus)
 			r.Get("/v1/costs", s.handleCosts)
 			r.Get("/v1/costs/budget", s.handleCostsBudget)
+			r.Get("/v1/costs/report", s.handleCostsReport)
 
 			r.Get("/v1/secrets", s.handleSecretsList)
 			r.Get("/v1/secrets/audit", s.handleSecretsAudit)
@@ -206,6 +208,12 @@ func (s *Server) Routes() http.Handler {
 
 			r.Get("/v1/policies", s.handlePoliciesList)
 			r.Post("/v1/policies/evaluate", s.handlePoliciesEvaluate)
+
+			r.Get("/v1/dashboard/tenants-summary", s.handleTenantsSummary)
+			r.Get("/v1/dashboard/denials-by-reason", s.handleDenialsByReason)
+			r.Get("/v1/dashboard/governance-alerts", s.handleGovernanceAlerts)
+			r.Get("/v1/dashboard/audit-pack", s.handleAuditPack)
+			r.Get("/v1/dashboard/review-history", s.handleReviewHistory)
 
 			// CoPaw dashboard: stats and alerts for CoPaw gateway callers
 			r.Get("/v1/copaw/stats", s.handleCoPawStats)
@@ -232,10 +240,10 @@ func (s *Server) Routes() http.Handler {
 	r.Head("/", s.handleDashboard)
 	r.Head("/dashboard", s.handleDashboard)
 
-	// Gateway dashboard (with optional token auth)
+	// Gateway dashboard and metrics (token or API key for unified dashboard)
 	if s.metricsCollector != nil && s.gatewayDashboardHTML != "" {
 		r.Group(func(r chi.Router) {
-			r.Use(DashboardTokenMiddleware(s.dashboardToken))
+			r.Use(DashboardOrAPIKeyMiddleware(s.dashboardToken, s.apiKeys))
 			r.Get("/gateway/dashboard", s.handleGatewayDashboard)
 			r.Get("/api/v1/metrics", s.handleMetricsJSON)
 			r.Get("/api/v1/metrics/stream", s.handleMetricsStream)

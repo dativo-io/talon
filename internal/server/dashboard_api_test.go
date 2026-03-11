@@ -232,3 +232,33 @@ func TestDashboardTokenMiddleware_QueryParam(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
+
+func TestDashboardOrAPIKeyMiddleware_AllowsAPIKey(t *testing.T) {
+	mw := DashboardOrAPIKeyMiddleware("dashboard-token", map[string]string{"api-key-1": "tenant-default"})
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+
+	req := httptest.NewRequest("GET", "/api/v1/metrics", nil)
+	req.Header.Set("X-Talon-Key", "api-key-1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "ok", rec.Body.String())
+}
+
+func TestDashboardOrAPIKeyMiddleware_AllowsToken(t *testing.T) {
+	mw := DashboardOrAPIKeyMiddleware("dashboard-token", map[string]string{"k": "default"})
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer dashboard-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}

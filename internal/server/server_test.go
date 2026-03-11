@@ -131,6 +131,11 @@ func TestStatusEndpoint(t *testing.T) {
 	assert.Equal(t, "ok", out["status"])
 	assert.NotNil(t, out["evidence_count_today"])
 	assert.NotNil(t, out["cost_today"])
+	assert.Contains(t, out, "pending_memory_reviews")
+	assert.Contains(t, out, "blocked_count")
+	assert.Contains(t, out, "error_rate")
+	assert.Contains(t, out, "enforcement_mode")
+	assert.Equal(t, "default", out["tenant_id"])
 }
 
 func TestStatusEndpoint_ActiveRunsFromTracker(t *testing.T) {
@@ -1397,6 +1402,91 @@ func TestEvidenceTenantIsolation_ListOnlyReturnsOwnTenant(t *testing.T) {
 	}
 }
 
+// TestEvidenceListQueryParams ensures GET /v1/evidence accepts tenant_id, agent_id, allowed, model, from, to.
+func TestEvidenceListQueryParams(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, e := range []struct {
+		id       string
+		tenantID string
+		agentID  string
+		allowed  bool
+		model    string
+	}{
+		{"ev_q1", "default", "agent-a", true, "gpt-4"},
+		{"ev_q2", "default", "agent-a", false, "gpt-4"},
+		{"ev_q3", "default", "agent-b", true, "claude-3"},
+	} {
+		err = store.Store(ctx, &evidence.Evidence{
+			ID:             e.id,
+			CorrelationID:  "c",
+			Timestamp:      now,
+			TenantID:       e.tenantID,
+			AgentID:        e.agentID,
+			InvocationType: "test",
+			PolicyDecision: evidence.PolicyDecision{Allowed: e.allowed, Action: "allow", PolicyVersion: "v1"},
+			Execution:      evidence.Execution{ModelUsed: e.model, Cost: 0.01},
+			AuditTrail:     evidence.AuditTrail{},
+		})
+		require.NoError(t, err)
+	}
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	r := srv.Routes()
+
+	// No filter: all 3
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var listResp map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ := listResp["entries"].([]interface{})
+	require.Len(t, entries, 3)
+
+	// allowed=false: 1
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10&allowed=false", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ = listResp["entries"].([]interface{})
+	require.Len(t, entries, 1)
+	assert.Equal(t, false, entries[0].(map[string]interface{})["allowed"])
+
+	// model=claude-3: 1
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10&model=claude-3", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ = listResp["entries"].([]interface{})
+	require.Len(t, entries, 1)
+	assert.Equal(t, "claude-3", entries[0].(map[string]interface{})["model_used"])
+
+	// agent_id=agent-b: 1
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10&agent_id=agent-b", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ = listResp["entries"].([]interface{})
+	require.Len(t, entries, 1)
+	assert.Equal(t, "agent-b", entries[0].(map[string]interface{})["agent_id"])
+}
+
 // TestEvidenceTenantIsolation_NonexistentIDReturns404 ensures that requesting a
 // nonexistent evidence ID returns 404 (not 403) so we don't leak existence.
 func TestEvidenceTenantIsolation_NonexistentIDReturns404(t *testing.T) {
@@ -1548,6 +1638,45 @@ func TestCoPawStatsWithStore(t *testing.T) {
 	assert.NotNil(t, out["requests_today"])
 	assert.NotNil(t, out["cost_today"])
 	assert.NotNil(t, out["cost_month"])
+}
+
+func TestHandleTenantsSummary(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	gen := evidence.NewGenerator(store)
+	_, err = gen.Generate(context.Background(), evidence.GenerateParams{
+		CorrelationID:  "corr_ts",
+		TenantID:       "default",
+		AgentID:        "agent-1",
+		InvocationType: "manual",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		Cost:           0.1,
+		InputPrompt:    "x",
+		OutputResponse: "y",
+	})
+	require.NoError(t, err)
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	r := srv.Routes()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/dashboard/tenants-summary", nil)
+	req.Header.Set("X-Talon-Key", "k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	tenants, _ := out["tenants"].([]interface{})
+	agents, _ := out["agents"].([]interface{})
+	require.NotNil(t, tenants)
+	require.NotNil(t, agents)
+	assert.GreaterOrEqual(t, len(tenants), 1)
+	assert.GreaterOrEqual(t, len(agents), 1)
 }
 
 func TestCoPawAlertsNoStore(t *testing.T) {

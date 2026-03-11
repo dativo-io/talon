@@ -149,6 +149,45 @@ func DashboardTokenMiddleware(token string) func(http.Handler) http.Handler {
 	}
 }
 
+// DashboardOrAPIKeyMiddleware allows access if either the dashboard token (query or Bearer)
+// or a valid API key (X-Talon-Key or Bearer) is present. Used so the unified dashboard
+// can call /api/v1/metrics with the same API key as other /v1/* endpoints.
+func DashboardOrAPIKeyMiddleware(dashboardToken string, apiKeys map[string]string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 1) Dashboard token (unrestricted when empty)
+			if dashboardToken == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			bearer := ""
+			if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+				bearer = strings.TrimPrefix(auth, "Bearer ")
+			}
+			if bearer == "" {
+				bearer = r.URL.Query().Get("token")
+			}
+			if bearer != "" && subtle.ConstantTimeCompare([]byte(bearer), []byte(dashboardToken)) == 1 {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// 2) API key
+			key := r.Header.Get("X-Talon-Key")
+			if key == "" && strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+				key = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			}
+			for k, tenantID := range apiKeys {
+				if subtle.ConstantTimeCompare([]byte(k), []byte(key)) == 1 {
+					r = r.WithContext(requestctx.SetTenantID(r.Context(), tenantID))
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing dashboard token or API key")
+		})
+	}
+}
+
 // writeError writes a JSON error response. Defined here so AuthMiddleware can use it;
 // handlers.go will use the same helper.
 func writeError(w http.ResponseWriter, status int, code, message string) {

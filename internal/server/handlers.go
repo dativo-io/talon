@@ -276,7 +276,9 @@ func (s *Server) handleEvidenceList(w http.ResponseWriter, r *http.Request) {
 	if t := r.URL.Query().Get("to"); t != "" {
 		to, _ = time.Parse(time.RFC3339, t)
 	}
-	entries, err := s.evidenceStore.ListIndex(r.Context(), tenantID, agentID, from, to, limit, "")
+	allowed := r.URL.Query().Get("allowed") // "true", "false", "1", "0" or empty
+	model := r.URL.Query().Get("model")     // exact match on execution.model_used
+	entries, err := s.evidenceStore.ListIndex(r.Context(), tenantID, agentID, from, to, limit, "", allowed, model)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -357,6 +359,36 @@ func (s *Server) handleEvidenceGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ev)
+}
+
+// handleEvidenceTrace returns the full evidence record plus step evidence (request → policy → model → tools → response) for trace detail view.
+func (s *Server) handleEvidenceTrace(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "id is required")
+		return
+	}
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	ev, err := s.evidenceStore.Get(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if ev.TenantID != tenantID {
+		writeError(w, http.StatusNotFound, "not_found", "evidence not found")
+		return
+	}
+	steps, _ := s.evidenceStore.ListStepsByCorrelationID(r.Context(), ev.CorrelationID)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"evidence": ev,
+		"steps":    steps,
+	})
 }
 
 func (s *Server) handleEvidenceVerify(w http.ResponseWriter, r *http.Request) {
@@ -472,7 +504,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	dayEnd := dayStart.Add(24 * time.Hour)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	monthEnd := monthStart.AddDate(0, 1, 0)
-	resp := map[string]interface{}{"status": "ok", "evidence_count_today": 0, "cost_today": 0.0, "monthly": 0.0, "active_runs": 0}
+	resp := map[string]interface{}{
+		"status": "ok", "evidence_count_today": 0, "cost_today": 0.0, "monthly": 0.0, "active_runs": 0,
+		"pending_memory_reviews": 0, "blocked_count": 0, "error_rate": 0.0, "enforcement_mode": "", "tenant_id": tenantID,
+	}
 	if s.evidenceStore != nil {
 		if n, err := s.evidenceStore.CountInRange(r.Context(), tenantID, "", dayStart, dayEnd); err == nil {
 			resp["evidence_count_today"] = n
@@ -483,6 +518,19 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		if cost, err := s.evidenceStore.CostTotal(r.Context(), tenantID, "", monthStart, monthEnd); err == nil {
 			resp["monthly"] = cost
 		}
+		if blocked, err := s.evidenceStore.CountDeniedInRange(r.Context(), tenantID, "", dayStart, dayEnd); err == nil {
+			resp["blocked_count"] = blocked
+		}
+	}
+	if s.memoryStore != nil {
+		if n, err := s.memoryStore.CountPendingReviewForTenant(r.Context(), tenantID); err == nil {
+			resp["pending_memory_reviews"] = n
+		}
+	}
+	if s.metricsCollector != nil {
+		snap := s.metricsCollector.Snapshot(r.Context())
+		resp["error_rate"] = snap.Summary.ErrorRate
+		resp["enforcement_mode"] = snap.EnforcementMode
 	}
 	if s.activeRunTracker != nil {
 		resp["active_runs"] = s.activeRunTracker.Count(tenantID)
@@ -537,6 +585,42 @@ func (s *Server) handleCostsBudget(w http.ResponseWriter, r *http.Request) {
 		out["monthly_limit"] = s.policy.Policies.CostLimits.Monthly
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleCostsReport returns aggregate spend for a time range (for trends/summary). Query params: from, to (RFC3339), tenant_id, agent_id.
+func (s *Server) handleCostsReport(w http.ResponseWriter, r *http.Request) {
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	agentID := r.URL.Query().Get("agent_id")
+	var from, to time.Time
+	if f := r.URL.Query().Get("from"); f != "" {
+		from, _ = time.Parse(time.RFC3339, f)
+	}
+	if t := r.URL.Query().Get("to"); t != "" {
+		to, _ = time.Parse(time.RFC3339, t)
+	}
+	if from.IsZero() {
+		from = time.Now().UTC().AddDate(0, 0, -30) // default last 30 days
+	}
+	if to.IsZero() {
+		to = time.Now().UTC()
+	}
+	total := 0.0
+	if s.evidenceStore != nil {
+		total, _ = s.evidenceStore.CostTotal(r.Context(), tenantID, agentID, from, to)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"tenant_id": tenantID,
+		"agent_id":  agentID,
+		"from":      from.Format(time.RFC3339),
+		"to":        to.Format(time.RFC3339),
+		"total_eur": total,
+	})
 }
 
 func (s *Server) handleSecretsList(w http.ResponseWriter, r *http.Request) {
@@ -768,7 +852,7 @@ func (s *Server) handleTriggerHistory(w http.ResponseWriter, r *http.Request) {
 		tenantID = "default"
 	}
 	invocationType := "webhook:" + name
-	entries, err := s.evidenceStore.ListIndex(r.Context(), tenantID, "", time.Time{}, time.Time{}, 50, invocationType)
+	entries, err := s.evidenceStore.ListIndex(r.Context(), tenantID, "", time.Time{}, time.Time{}, 50, invocationType, "", "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -794,6 +878,195 @@ func (s *Server) handlePlansPending(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"plans": plans})
+}
+
+// handleDenialsByReason returns denial counts by reason (policy_deny, attachment_block, tool_filtered, pii_block) for the dashboard Governance widget.
+func (s *Server) handleDenialsByReason(w http.ResponseWriter, r *http.Request) {
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	var from, to time.Time
+	if f := r.URL.Query().Get("from"); f != "" {
+		from, _ = time.Parse(time.RFC3339, f)
+	}
+	if t := r.URL.Query().Get("to"); t != "" {
+		to, _ = time.Parse(time.RFC3339, t)
+	}
+	if s.evidenceStore == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"total": 0, "by_reason": map[string]int{}})
+		return
+	}
+	total, byReason, err := s.evidenceStore.DenialsByReason(r.Context(), tenantID, from, to)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"total": total, "by_reason": byReason})
+}
+
+// handleGovernanceAlerts returns recent tool_filtered and attachment_injection events for the Governance widget.
+//
+//nolint:dupl // similar to handleReviewHistory but different store and response
+func (s *Server) handleGovernanceAlerts(w http.ResponseWriter, r *http.Request) {
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 20
+	}
+	if s.evidenceStore == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"alerts": []interface{}{}})
+		return
+	}
+	alerts, err := s.evidenceStore.ListGovernanceAlerts(r.Context(), tenantID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"alerts": alerts})
+}
+
+// handleAuditPack returns a JSON audit pack (date range, evidence summary, plan stats, memory reviews, cost) for one-click export.
+func (s *Server) handleAuditPack(w http.ResponseWriter, r *http.Request) {
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+	from, to := dayStart, dayEnd
+	if f := r.URL.Query().Get("from"); f != "" {
+		from, _ = time.Parse(time.RFC3339, f)
+	}
+	if t := r.URL.Query().Get("to"); t != "" {
+		to, _ = time.Parse(time.RFC3339, t)
+	}
+	out := map[string]interface{}{
+		"tenant_id":              tenantID,
+		"from":                   from.Format(time.RFC3339),
+		"to":                     to.Format(time.RFC3339),
+		"generated_at":           time.Now().UTC().Format(time.RFC3339),
+		"evidence_count":         0,
+		"cost_eur":               0.0,
+		"pending_plans":          0,
+		"pending_memory_reviews": 0,
+	}
+	if s.evidenceStore != nil {
+		n, _ := s.evidenceStore.CountInRange(r.Context(), tenantID, "", from, to)
+		out["evidence_count"] = n
+		cost, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, "", from, to)
+		out["cost_eur"] = cost
+	}
+	if s.planReviewStore != nil {
+		pending, _ := s.planReviewStore.GetPending(r.Context(), tenantID)
+		out["pending_plans"] = len(pending)
+	}
+	if s.memoryStore != nil {
+		n, _ := s.memoryStore.CountPendingReviewForTenant(r.Context(), tenantID)
+		out["pending_memory_reviews"] = n
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="talon-audit-pack.json"`)
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleReviewHistory returns recent plan review history (who, when, approve/reject) for the dashboard.
+//
+//nolint:dupl // similar to handleGovernanceAlerts but different store and response
+func (s *Server) handleReviewHistory(w http.ResponseWriter, r *http.Request) {
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 20
+	}
+	if s.planReviewStore == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"reviews": []interface{}{}})
+		return
+	}
+	reviews, err := s.planReviewStore.ListReviewed(r.Context(), tenantID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"reviews": reviews})
+}
+
+// handleTenantsSummary returns tenant and agent aggregates for the unified dashboard Tenants & Agents tab.
+// Response: { tenants: [{ tenant_id, request_volume, spend_today, spend_month, denials, pending_plans }], agents: [{ tenant_id, agent_id, requests, cost_eur, blocked, last_run }] }.
+func (s *Server) handleTenantsSummary(w http.ResponseWriter, r *http.Request) {
+	tenantID := TenantIDFromContext(r.Context())
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	monthEnd := monthStart.AddDate(0, 1, 0)
+
+	var tenants []evidence.TenantSummary
+	if s.evidenceStore != nil {
+		var err error
+		tenants, err = s.evidenceStore.TenantsSummary(r.Context(), dayStart, dayEnd, monthStart, monthEnd, tenantID)
+		if err != nil {
+			log.Warn().Err(err).Msg("tenants summary")
+			writeError(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+	}
+
+	pendingByTenant := make(map[string]int)
+	if s.planReviewStore != nil {
+		pending, err := s.planReviewStore.GetPending(r.Context(), "")
+		if err == nil {
+			for _, p := range pending {
+				if p != nil {
+					pendingByTenant[p.TenantID]++
+				}
+			}
+		}
+	}
+
+	tenantResp := make([]map[string]interface{}, 0, len(tenants))
+	for _, t := range tenants {
+		tenantResp = append(tenantResp, map[string]interface{}{
+			"tenant_id":      t.TenantID,
+			"request_volume": t.RequestVolume,
+			"spend_today":    t.SpendToday,
+			"spend_month":    t.SpendMonth,
+			"denials":        t.Denials,
+			"pending_plans":  pendingByTenant[t.TenantID],
+		})
+	}
+
+	var agents []evidence.AgentSummary
+	if s.evidenceStore != nil {
+		var err error
+		agents, err = s.evidenceStore.AgentsSummary(r.Context(), monthStart, monthEnd, tenantID)
+		if err != nil {
+			log.Warn().Err(err).Msg("agents summary")
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"tenants": tenantResp,
+		"agents":  agents,
+	})
 }
 
 func (s *Server) handlePlanGet(w http.ResponseWriter, r *http.Request) {
