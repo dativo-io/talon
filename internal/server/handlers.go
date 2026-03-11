@@ -385,6 +385,9 @@ func (s *Server) handleEvidenceTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	steps, _ := s.evidenceStore.ListStepsByCorrelationID(r.Context(), ev.CorrelationID)
+	if steps == nil {
+		steps = []evidence.StepEvidence{}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"evidence": ev,
 		"steps":    steps,
@@ -1005,6 +1008,9 @@ func (s *Server) handleReviewHistory(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
+	}
+	if reviews == nil {
+		reviews = []agent.ReviewHistoryEntry{}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"reviews": reviews})
 }
