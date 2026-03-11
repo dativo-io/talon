@@ -207,8 +207,8 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 	fmt.Fprintln(out, "Let's configure your agent. Press Enter to accept defaults.")
 	fmt.Fprintln(out)
 
-	// Prologue
-	state.AgentName = readLine(scan, out, "Agent name", "my-agent")
+	// Prologue (agent name must match ^[a-z0-9_-]+$; we normalize so "Super" -> "super")
+	state.AgentName = normalizeAgentName(readLine(scan, out, "Agent name (a-z, 0-9, _, -)", "my-agent"))
 	state.AgentDescription = readLine(scan, out, "Description", "AI agent with policy enforcement")
 	state.OwnerEmail = readLine(scan, out, "Owner email", "")
 
@@ -480,6 +480,39 @@ func dataResidencyLabel(s string) string {
 	default:
 		return "Global"
 	}
+}
+
+// normalizeAgentName returns a value matching ^[a-z0-9_-]+$ so schema validation passes.
+// Lowercases and keeps only allowed runes; spaces become hyphens; multiple hyphens collapse.
+func normalizeAgentName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "my-agent"
+	}
+	var b strings.Builder
+	prevHyphen := false
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+			prevHyphen = false
+		case r == '-':
+			if !prevHyphen {
+				b.WriteRune(r)
+				prevHyphen = true
+			}
+		case r == ' ' || r == '\t':
+			if !prevHyphen {
+				b.WriteRune('-')
+				prevHyphen = true
+			}
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "my-agent"
+	}
+	return out
 }
 
 func readLine(scan *bufio.Scanner, out io.Writer, prompt, defaultVal string) string {
