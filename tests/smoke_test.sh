@@ -669,8 +669,10 @@ test_section_12_http_api() {
   fi
   local key="${TALON_API_KEYS%%:*}"
   assert_pass "GET /health 200" test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health)" = "200"
-  assert_pass "GET /status 200 with status field" \
-    jq -e '.status' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/status)" &>/dev/null
+  local status_json; status_json="$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/status)"
+  assert_pass "GET /status 200 with status field" jq -e '.status' <<< "$status_json" &>/dev/null
+  assert_pass "GET /status has dashboard fields (pending_memory_reviews, blocked_count, tenant_id)" \
+    jq -e 'has("pending_memory_reviews") and has("blocked_count") and has("tenant_id")' <<< "$status_json" &>/dev/null
   assert_pass "GET /v1/evidence 200 JSON array" \
     jq -e 'type == "object" and (.entries | type == "array")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/evidence)" &>/dev/null
   local ev_list; ev_list="$(curl -s -H "X-Talon-Key: $key" 'http://127.0.0.1:8080/v1/evidence?limit=1')"
@@ -688,9 +690,32 @@ test_section_12_http_api() {
   if [[ -n "$ev_id" ]] && [[ "$ev_id" != "null" ]]; then
     assert_pass "GET /v1/evidence/timeline?around=<id> 200" \
       test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Key: $key" "http://127.0.0.1:8080/v1/evidence/timeline?around=$ev_id")" = "200"
+    assert_pass "GET /v1/evidence/<id>/trace 200 with evidence and steps" \
+      jq -e '.evidence and (.steps | type == "array")' <<< "$(curl -s -H "X-Talon-Key: $key" "http://127.0.0.1:8080/v1/evidence/$ev_id/trace")" &>/dev/null
   fi
+  assert_pass "GET /v1/evidence with query params (allowed, model) 200" \
+    jq -e 'type == "object" and (.entries | type == "array")' <<< "$(curl -s -H "X-Talon-Key: $key" 'http://127.0.0.1:8080/v1/evidence?limit=3&allowed=true')" &>/dev/null
   assert_pass "GET /v1/costs 200 with daily/monthly" \
     jq -e 'type == "object"' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/costs)" &>/dev/null
+  assert_pass "GET /v1/costs/budget 200 with daily_used and monthly_used" \
+    jq -e 'has("daily_used") and has("monthly_used")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/costs/budget)" &>/dev/null
+  assert_pass "GET /v1/costs/report 200 with total_eur and from/to" \
+    jq -e 'has("total_eur") and has("from") and has("to")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/costs/report)" &>/dev/null
+  assert_pass "GET /v1/dashboard/tenants-summary 200 with tenants and agents" \
+    jq -e 'has("tenants") and has("agents")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/dashboard/tenants-summary)" &>/dev/null
+  assert_pass "GET /v1/dashboard/denials-by-reason 200 with total and by_reason" \
+    jq -e 'has("total") and has("by_reason")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/dashboard/denials-by-reason)" &>/dev/null
+  assert_pass "GET /v1/dashboard/governance-alerts 200 with alerts array" \
+    jq -e 'has("alerts") and (.alerts | type == "array")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/dashboard/governance-alerts)" &>/dev/null
+  assert_pass "GET /v1/dashboard/audit-pack 200 with evidence_count" \
+    jq -e 'has("evidence_count") and has("generated_at")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/dashboard/audit-pack)" &>/dev/null
+  assert_pass "GET /v1/dashboard/review-history 200 with reviews array" \
+    jq -e 'has("reviews") and (.reviews | type == "array")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/dashboard/review-history)" &>/dev/null
+  assert_pass "POST /v1/evidence/export 200 with CSV or JSON body" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Talon-Key: $key" -H "Content-Type: application/json" -d '{"limit":10,"format":"json"}' http://127.0.0.1:8080/v1/evidence/export)" = "200"
+  local export_body; export_body="$(curl -s -X POST -H "X-Talon-Key: $key" -H "Content-Type: application/json" -d '{"limit":10,"format":"json"}' http://127.0.0.1:8080/v1/evidence/export)"
+  assert_pass "POST /v1/evidence/export JSON returns array of records" \
+    jq -e 'type == "array"' <<< "$export_body" &>/dev/null
   local dash_headers
   dash_headers="$(curl -sI http://127.0.0.1:8080/dashboard 2>/dev/null | head -10)"
   assert_pass "GET /dashboard 200" bash -c 'echo "$1" | grep -qi "200"' _ "$dash_headers"
