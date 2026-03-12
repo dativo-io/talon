@@ -194,7 +194,7 @@ func TestHandleMetricsJSON_MetricsCrossChecks(t *testing.T) {
 	}
 	time.Sleep(80 * time.Millisecond)
 
-	req := httptest.NewRequest("GET", "/api/v1/metrics", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/metrics", nil)
 	rec := httptest.NewRecorder()
 	s.handleMetricsJSON(rec, req)
 

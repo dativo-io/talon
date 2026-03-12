@@ -102,7 +102,7 @@ func TestDashboardIntegration_EvidenceToAPI(t *testing.T) {
 	}
 
 	// Call dashboard API
-	req := httptest.NewRequest("GET", "/api/v1/metrics", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/api/v1/metrics", nil)
 	rec := httptest.NewRecorder()
 	srv.handleMetricsJSON(rec, req)
 
