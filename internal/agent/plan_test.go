@@ -191,6 +191,52 @@ func TestPlanReviewStore_GetApprovedUndispatchedAndMarkDispatched(t *testing.T) 
 	assert.ErrorIs(t, err, ErrPlanNotFound)
 }
 
+func TestPlanReviewStore_Stats(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	store, err := NewPlanReviewStore(db)
+	require.NoError(t, err)
+
+	// acme: pending, approved+dispatched(success), rejected, modified
+	acmePending := GenerateExecutionPlan("stats_pending", "acme", "agent", "gpt-4", 0, nil, 0.01, "allow", "", "", 30)
+	acmeApproved := GenerateExecutionPlan("stats_approved", "acme", "agent", "gpt-4", 0, nil, 0.01, "allow", "", "", 30)
+	acmeRejected := GenerateExecutionPlan("stats_rejected", "acme", "agent", "gpt-4", 0, nil, 0.01, "allow", "", "", 30)
+	acmeModified := GenerateExecutionPlan("stats_modified", "acme", "agent", "gpt-4", 0, nil, 0.01, "allow", "", "", 30)
+	require.NoError(t, store.Save(ctx, acmePending))
+	require.NoError(t, store.Save(ctx, acmeApproved))
+	require.NoError(t, store.Save(ctx, acmeRejected))
+	require.NoError(t, store.Save(ctx, acmeModified))
+	require.NoError(t, store.Approve(ctx, acmeApproved.ID, "acme", "reviewer"))
+	require.NoError(t, store.MarkDispatched(ctx, acmeApproved.ID, "acme", ""))
+	require.NoError(t, store.Reject(ctx, acmeRejected.ID, "acme", "reviewer", "risk"))
+	require.NoError(t, store.Modify(ctx, acmeModified.ID, "acme", "reviewer", []Annotation{{ID: "a1", Type: "note", Content: "ok"}}))
+
+	// globex: approved+dispatched(failed)
+	globexApproved := GenerateExecutionPlan("stats_globex_approved", "globex", "agent", "gpt-4", 0, nil, 0.01, "allow", "", "", 30)
+	require.NoError(t, store.Save(ctx, globexApproved))
+	require.NoError(t, store.Approve(ctx, globexApproved.ID, "globex", "reviewer"))
+	require.NoError(t, store.MarkDispatched(ctx, globexApproved.ID, "globex", "dispatch failed"))
+
+	acmeStats, err := store.Stats(ctx, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, 1, acmeStats.Pending)
+	assert.Equal(t, 1, acmeStats.Approved)
+	assert.Equal(t, 1, acmeStats.Rejected)
+	assert.Equal(t, 1, acmeStats.Modified)
+	assert.Equal(t, 1, acmeStats.Dispatched)
+	assert.Equal(t, 0, acmeStats.DispatchFailures)
+
+	allStats, err := store.Stats(ctx, "")
+	require.NoError(t, err)
+	assert.Equal(t, 1, allStats.Pending)
+	assert.Equal(t, 2, allStats.Approved)
+	assert.Equal(t, 1, allStats.Rejected)
+	assert.Equal(t, 1, allStats.Modified)
+	assert.Equal(t, 2, allStats.Dispatched)
+	assert.Equal(t, 1, allStats.DispatchFailures)
+}
+
 func TestPlanReviewStore_Reject(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

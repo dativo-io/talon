@@ -25,6 +25,7 @@ type Snapshot struct {
 	ModelBreakdown   []ModelStat         `json:"model_breakdown"`
 	BudgetStatus     *BudgetStatus       `json:"budget_status,omitempty"`
 	CacheStats       *CacheStats         `json:"cache_stats,omitempty"`
+	PlanStats        *PlanStats          `json:"plan_stats,omitempty"`
 }
 
 // Summary holds top-level KPIs.
@@ -41,6 +42,12 @@ type Summary struct {
 	ActiveRuns      int     `json:"active_runs"`
 	AvgTTFTMS       int64   `json:"avg_ttft_ms,omitempty"` // average time to first token (streaming)
 	AvgTPOTMS       float64 `json:"avg_tpot_ms,omitempty"` // average time per output token (streaming)
+	PendingPlans    int     `json:"pending_plans,omitempty"`
+	ApprovedPlans   int     `json:"approved_plans,omitempty"`
+	RejectedPlans   int     `json:"rejected_plans,omitempty"`
+	ModifiedPlans   int     `json:"modified_plans,omitempty"`
+	DispatchedPlans int     `json:"dispatched_plans,omitempty"`
+	PlanDispatchErr int     `json:"plan_dispatch_errors,omitempty"`
 }
 
 // TimePoint is a count at a 5-minute bucket.
@@ -131,6 +138,16 @@ type CacheStats struct {
 	Hits      int     `json:"hits"`
 	CostSaved float64 `json:"cost_saved"`
 	HitRate   float64 `json:"hit_rate"`
+}
+
+// PlanStats aggregates plan review and dispatch lifecycle counters.
+type PlanStats struct {
+	Pending          int `json:"pending"`
+	Approved         int `json:"approved"`
+	Rejected         int `json:"rejected"`
+	Modified         int `json:"modified"`
+	Dispatched       int `json:"dispatched"`
+	DispatchFailures int `json:"dispatch_failures"`
 }
 
 // GatewayEvent is the input from the gateway for real-time dashboard aggregation.
@@ -236,6 +253,7 @@ type Collector struct {
 	budgetDaily    float64
 	budgetMonthly  float64
 	tenantID       string
+	planStatsFn    func(context.Context, string) (PlanStats, error)
 }
 
 // CollectorOption configures a Collector.
@@ -254,6 +272,11 @@ func WithActiveRunsFn(fn func() int) CollectorOption {
 // WithTenantID scopes aggregate queries to a specific tenant.
 func WithTenantID(tenantID string) CollectorOption {
 	return func(c *Collector) { c.tenantID = tenantID }
+}
+
+// WithPlanStatsFn sets a callback for plan lifecycle counters.
+func WithPlanStatsFn(fn func(context.Context, string) (PlanStats, error)) CollectorOption {
+	return func(c *Collector) { c.planStatsFn = fn }
 }
 
 // NewCollector creates a metrics collector. querier may be nil (aggregate
@@ -603,6 +626,7 @@ func (c *Collector) buildShadowSummary() *ShadowSummary {
 }
 
 func (c *Collector) fillAggregateMetrics(ctx context.Context, snap *Snapshot) {
+	c.applyPlanStats(ctx, snap)
 	if c.metricsQuerier == nil {
 		return
 	}
@@ -614,42 +638,74 @@ func (c *Collector) fillAggregateMetrics(ctx context.Context, snap *Snapshot) {
 	monthEnd := monthStart.AddDate(0, 1, 0)
 	last24h := now.Add(-24 * time.Hour)
 
-	if byModel, err := c.metricsQuerier.CostByModel(ctx, c.tenantID, "", dayStart, dayEnd); err == nil && len(byModel) > 0 {
-		models := make([]ModelStat, 0, len(byModel))
-		for model, cost := range byModel {
-			models = append(models, ModelStat{Model: model, CostEUR: cost})
-		}
-		sort.Slice(models, func(i, j int) bool { return models[i].CostEUR > models[j].CostEUR })
-		snap.ModelBreakdown = models
-	}
+	c.fillModelBreakdown(ctx, snap, dayStart, dayEnd)
+	c.fillBudgetStatus(ctx, snap, dayStart, dayEnd, monthStart, monthEnd)
+	c.fillCacheStats(ctx, snap, last24h, now)
+}
 
-	if c.budgetDaily > 0 || c.budgetMonthly > 0 {
-		bs := &BudgetStatus{DailyLimit: c.budgetDaily, MonthlyLimit: c.budgetMonthly}
-		if dailyUsed, err := c.metricsQuerier.CostTotal(ctx, c.tenantID, "", dayStart, dayEnd); err == nil {
-			bs.DailyUsed = dailyUsed
-			if c.budgetDaily > 0 {
-				bs.DailyPercent = (dailyUsed / c.budgetDaily) * 100
-			}
-		}
-		if monthlyUsed, err := c.metricsQuerier.CostTotal(ctx, c.tenantID, "", monthStart, monthEnd); err == nil {
-			bs.MonthlyUsed = monthlyUsed
-			if c.budgetMonthly > 0 {
-				bs.MonthlyPercent = (monthlyUsed / c.budgetMonthly) * 100
-			}
-		}
-		snap.BudgetStatus = bs
+func (c *Collector) applyPlanStats(ctx context.Context, snap *Snapshot) {
+	if c.planStatsFn == nil {
+		return
 	}
+	planStats, err := c.planStatsFn(ctx, c.tenantID)
+	if err != nil {
+		return
+	}
+	snap.PlanStats = &planStats
+	snap.Summary.PendingPlans = planStats.Pending
+	snap.Summary.ApprovedPlans = planStats.Approved
+	snap.Summary.RejectedPlans = planStats.Rejected
+	snap.Summary.ModifiedPlans = planStats.Modified
+	snap.Summary.DispatchedPlans = planStats.Dispatched
+	snap.Summary.PlanDispatchErr = planStats.DispatchFailures
+}
 
-	if hits, costSaved, err := c.metricsQuerier.CacheSavings(ctx, c.tenantID, last24h, now); err == nil && hits > 0 {
-		hitRate := 0.0
-		if snap.Summary.TotalRequests > 0 {
-			hitRate = float64(hits) / float64(snap.Summary.TotalRequests)
+func (c *Collector) fillModelBreakdown(ctx context.Context, snap *Snapshot, dayStart, dayEnd time.Time) {
+	byModel, err := c.metricsQuerier.CostByModel(ctx, c.tenantID, "", dayStart, dayEnd)
+	if err != nil || len(byModel) == 0 {
+		return
+	}
+	models := make([]ModelStat, 0, len(byModel))
+	for model, cost := range byModel {
+		models = append(models, ModelStat{Model: model, CostEUR: cost})
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].CostEUR > models[j].CostEUR })
+	snap.ModelBreakdown = models
+}
+
+func (c *Collector) fillBudgetStatus(ctx context.Context, snap *Snapshot, dayStart, dayEnd, monthStart, monthEnd time.Time) {
+	if c.budgetDaily <= 0 && c.budgetMonthly <= 0 {
+		return
+	}
+	bs := &BudgetStatus{DailyLimit: c.budgetDaily, MonthlyLimit: c.budgetMonthly}
+	if dailyUsed, err := c.metricsQuerier.CostTotal(ctx, c.tenantID, "", dayStart, dayEnd); err == nil {
+		bs.DailyUsed = dailyUsed
+		if c.budgetDaily > 0 {
+			bs.DailyPercent = (dailyUsed / c.budgetDaily) * 100
 		}
-		snap.CacheStats = &CacheStats{
-			Hits:      int(hits),
-			CostSaved: costSaved,
-			HitRate:   hitRate,
+	}
+	if monthlyUsed, err := c.metricsQuerier.CostTotal(ctx, c.tenantID, "", monthStart, monthEnd); err == nil {
+		bs.MonthlyUsed = monthlyUsed
+		if c.budgetMonthly > 0 {
+			bs.MonthlyPercent = (monthlyUsed / c.budgetMonthly) * 100
 		}
+	}
+	snap.BudgetStatus = bs
+}
+
+func (c *Collector) fillCacheStats(ctx context.Context, snap *Snapshot, from, to time.Time) {
+	hits, costSaved, err := c.metricsQuerier.CacheSavings(ctx, c.tenantID, from, to)
+	if err != nil || hits <= 0 {
+		return
+	}
+	hitRate := 0.0
+	if snap.Summary.TotalRequests > 0 {
+		hitRate = float64(hits) / float64(snap.Summary.TotalRequests)
+	}
+	snap.CacheStats = &CacheStats{
+		Hits:      int(hits),
+		CostSaved: costSaved,
+		HitRate:   hitRate,
 	}
 }
 

@@ -288,6 +288,36 @@ func TestNoBudgetWithoutLimits(t *testing.T) {
 	assert.Nil(t, snap.BudgetStatus)
 }
 
+func TestPlanStatsCallback(t *testing.T) {
+	c := newTestCollector("enforce", nil, WithPlanStatsFn(func(_ context.Context, _ string) (PlanStats, error) {
+		return PlanStats{
+			Pending:          2,
+			Approved:         5,
+			Rejected:         1,
+			Modified:         3,
+			Dispatched:       4,
+			DispatchFailures: 1,
+		}, nil
+	}))
+	defer c.Close()
+
+	snap := c.Snapshot(context.Background())
+	require.NotNil(t, snap.PlanStats)
+	assert.Equal(t, 2, snap.PlanStats.Pending)
+	assert.Equal(t, 5, snap.PlanStats.Approved)
+	assert.Equal(t, 1, snap.PlanStats.Rejected)
+	assert.Equal(t, 3, snap.PlanStats.Modified)
+	assert.Equal(t, 4, snap.PlanStats.Dispatched)
+	assert.Equal(t, 1, snap.PlanStats.DispatchFailures)
+
+	assert.Equal(t, 2, snap.Summary.PendingPlans)
+	assert.Equal(t, 5, snap.Summary.ApprovedPlans)
+	assert.Equal(t, 1, snap.Summary.RejectedPlans)
+	assert.Equal(t, 3, snap.Summary.ModifiedPlans)
+	assert.Equal(t, 4, snap.Summary.DispatchedPlans)
+	assert.Equal(t, 1, snap.Summary.PlanDispatchErr)
+}
+
 func TestPIITimelineAndCostTimeline(t *testing.T) {
 	c := newTestCollector("enforce", nil)
 	defer c.Close()

@@ -71,7 +71,13 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/metrics |
     "avg_latency_ms": 340,
     "p99_latency_ms": 1200,
     "error_rate": 0.018,
-    "active_runs": 2
+    "active_runs": 2,
+    "pending_plans": 4,
+    "approved_plans": 11,
+    "rejected_plans": 2,
+    "modified_plans": 1,
+    "dispatched_plans": 8,
+    "plan_dispatch_errors": 1
   },
   "requests_timeline": [
     {"time": "14:25", "count": 42},
@@ -133,6 +139,14 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/metrics |
     "hits": 312,
     "hit_rate": 0.25,
     "cost_saved": 1.20
+  },
+  "plan_stats": {
+    "pending": 4,
+    "approved": 11,
+    "rejected": 2,
+    "modified": 1,
+    "dispatched": 8,
+    "dispatch_failures": 1
   }
 }
 ```
@@ -175,6 +189,12 @@ The HTML dashboard connects to this endpoint automatically for live updates. If 
 | `p99_latency_ms` | int | 99th percentile request latency (milliseconds). |
 | `error_rate` | float | Fraction of requests that resulted in an error (0.0–1.0). |
 | `active_runs` | int | Currently executing agent runs. |
+| `pending_plans` | int | Plans currently awaiting human review. |
+| `approved_plans` | int | Plans approved by a reviewer. |
+| `rejected_plans` | int | Plans rejected by a reviewer. |
+| `modified_plans` | int | Plans approved with modifications. |
+| `dispatched_plans` | int | Approved plans already dispatched/executed. |
+| `plan_dispatch_errors` | int | Dispatched plans that recorded a dispatch error. |
 
 ### `requests_timeline`, `pii_timeline`, `cost_timeline`
 
@@ -243,6 +263,19 @@ Per-model request counts and cost. One entry per distinct model seen.
 | `hits` | int | Cache hits (served from semantic cache). |
 | `hit_rate` | float | Cache hit ratio (0.0–1.0). |
 | `cost_saved` | float | Estimated cost saved by cache hits (EUR). |
+
+### `plan_stats`
+
+Plan lifecycle counters (same values surfaced in `summary.*_plans` fields).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pending` | int | Plans in pending review state. |
+| `approved` | int | Plans approved by reviewer. |
+| `rejected` | int | Plans rejected by reviewer. |
+| `modified` | int | Plans approved with modifications. |
+| `dispatched` | int | Approved plans marked as dispatched. |
+| `dispatch_failures` | int | Dispatched plans with non-empty `dispatch_error`. |
 
 ---
 

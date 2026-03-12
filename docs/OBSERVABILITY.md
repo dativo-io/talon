@@ -151,6 +151,12 @@ The dashboard snapshot includes:
 | `summary.p99_latency_ms` | int | P99 request latency. |
 | `summary.error_rate` | float | Error rate (0.0–1.0). |
 | `summary.active_runs` | int | Currently executing agent runs. |
+| `summary.pending_plans` | int | Plans awaiting human review. |
+| `summary.approved_plans` | int | Plans approved by reviewers. |
+| `summary.rejected_plans` | int | Plans rejected by reviewers. |
+| `summary.modified_plans` | int | Plans approved with modifications. |
+| `summary.dispatched_plans` | int | Approved plans already dispatched/executed. |
+| `summary.plan_dispatch_errors` | int | Dispatched plans that recorded execution/dispatch errors. |
 | `requests_timeline` | array | 5-minute bucketed request counts. |
 | `pii_timeline` | array | 5-minute bucketed PII detection counts. |
 | `cost_timeline` | array | 5-minute bucketed cost in EUR. |
@@ -161,6 +167,7 @@ The dashboard snapshot includes:
 | `shadow_summary` | object | Shadow mode violation summary (only present in shadow mode). |
 | `budget_status` | object | Budget utilization (daily/monthly used, limit, percentage). |
 | `cache_stats` | object | Semantic cache performance (hits, hit rate, cost saved). |
+| `plan_stats` | object | Plan lifecycle counters (pending/approved/rejected/modified/dispatched/failures). |
 
 See [Gateway dashboard reference](reference/gateway-dashboard.md) for full configuration, authentication, and API details.
 

@@ -104,6 +104,14 @@
   </div>
   <div id="panel-plans" class="panel">
     <h3 style="margin-top:0">Pending</h3>
+    <p class="refresh">
+      Pending: <span id="plans-metric-pending">—</span> |
+      Approved: <span id="plans-metric-approved">—</span> |
+      Rejected: <span id="plans-metric-rejected">—</span> |
+      Modified: <span id="plans-metric-modified">—</span> |
+      Dispatched: <span id="plans-metric-dispatched">—</span> |
+      Dispatch failures: <span id="plans-metric-dispatch-failures">—</span>
+    </p>
     <table>
       <thead><tr><th>Time</th><th>Agent</th><th>Model</th><th>Tier</th><th>Est. cost (€)</th><th>Actions</th></tr></thead>
       <tbody id="plans-tbody"></tbody>
@@ -126,6 +134,9 @@
       <div class="card"><div class="label">Total cost (€)</div><div class="value" id="finops-cost">—</div></div>
       <div class="card"><div class="label">Avg latency</div><div class="value" id="finops-latency">—</div></div>
       <div class="card"><div class="label">PII detections</div><div class="value" id="finops-pii">—</div></div>
+      <div class="card"><div class="label">Pending plans</div><div class="value" id="finops-plans-pending">—</div></div>
+      <div class="card"><div class="label">Dispatched plans</div><div class="value" id="finops-plans-dispatched">—</div></div>
+      <div class="card"><div class="label">Dispatch failures</div><div class="value" id="finops-plans-failures">—</div></div>
     </div>
     <p class="refresh"><span id="metrics-source-indicator" class="compliance-overlay">Polling</span> <a href="/gateway/dashboard">Open full Gateway telemetry &rarr;</a></p>
   </div>
@@ -221,9 +232,10 @@
             badge.textContent = mode + ' | tenant: ' + tenant;
           }
         }).catch(function() {});
-        get('/v1/plans/pending').then(function(d) {
+        get('/api/v1/metrics').then(function(m) {
+          var s = (m && m.summary) ? m.summary : {};
           var el = document.getElementById('card-plans');
-          if (el && d.plans) el.textContent = d.plans.length;
+          if (el) el.textContent = s.pending_plans != null ? s.pending_plans : '—';
         }).catch(function() {});
         // Policy outcome and denial counters are synced from the currently visible
         // evidence list in renderEvidence() so they stay consistent with this table.
@@ -391,6 +403,19 @@
         });
       }
       function renderPlans() {
+        get('/api/v1/metrics').then(function(d) {
+          var s = (d && d.summary) ? d.summary : {};
+          var set = function(id, value) {
+            var el = document.getElementById(id);
+            if (el) el.textContent = value != null ? value : '—';
+          };
+          set('plans-metric-pending', s.pending_plans);
+          set('plans-metric-approved', s.approved_plans);
+          set('plans-metric-rejected', s.rejected_plans);
+          set('plans-metric-modified', s.modified_plans);
+          set('plans-metric-dispatched', s.dispatched_plans);
+          set('plans-metric-dispatch-failures', s.plan_dispatch_errors);
+        }).catch(function() {});
         get('/v1/plans/pending').then(function(d) {
           var tbody = document.getElementById('plans-tbody');
           if (!tbody) return;
@@ -470,6 +495,9 @@
           set('finops-cost', s.total_cost_eur != null ? s.total_cost_eur.toFixed(4) : '—');
           set('finops-latency', s.avg_latency_ms != null ? s.avg_latency_ms + 'ms' : '—');
           set('finops-pii', s.pii_detections != null ? s.pii_detections : '—');
+          set('finops-plans-pending', s.pending_plans != null ? s.pending_plans : '—');
+          set('finops-plans-dispatched', s.dispatched_plans != null ? s.dispatched_plans : '—');
+          set('finops-plans-failures', s.plan_dispatch_errors != null ? s.plan_dispatch_errors : '—');
         }).catch(function() {
           var set = function(id, text) { var el = document.getElementById(id); if (el) el.textContent = text; };
           set('finops-requests', '—');
@@ -477,6 +505,9 @@
           set('finops-cost', '—');
           set('finops-latency', '—');
           set('finops-pii', '—');
+          set('finops-plans-pending', '—');
+          set('finops-plans-dispatched', '—');
+          set('finops-plans-failures', '—');
         });
       }
 

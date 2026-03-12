@@ -155,6 +155,44 @@ func TestHandleMetricsJSON_FullSnapshot(t *testing.T) {
 	assert.Nil(t, snap.ShadowSummary)
 }
 
+func TestHandleMetricsJSON_IncludesPlanStats(t *testing.T) {
+	collector := metrics.NewCollector("enforce", nil, metrics.WithPlanStatsFn(func(_ context.Context, _ string) (metrics.PlanStats, error) {
+		return metrics.PlanStats{
+			Pending:          3,
+			Approved:         7,
+			Rejected:         1,
+			Modified:         2,
+			Dispatched:       5,
+			DispatchFailures: 1,
+		}, nil
+	}))
+	t.Cleanup(collector.Close)
+
+	s := &Server{
+		metricsCollector:     collector,
+		gatewayDashboardHTML: "<html>test dashboard</html>",
+		apiKeys:              map[string]string{},
+	}
+
+	req := newTestRequest("GET", "/api/v1/metrics")
+	rec := httptest.NewRecorder()
+	s.handleMetricsJSON(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var snap metrics.Snapshot
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &snap))
+	require.NotNil(t, snap.PlanStats)
+	assert.Equal(t, 3, snap.PlanStats.Pending)
+	assert.Equal(t, 7, snap.PlanStats.Approved)
+	assert.Equal(t, 1, snap.PlanStats.Rejected)
+	assert.Equal(t, 2, snap.PlanStats.Modified)
+	assert.Equal(t, 5, snap.PlanStats.Dispatched)
+	assert.Equal(t, 1, snap.PlanStats.DispatchFailures)
+	assert.Equal(t, 3, snap.Summary.PendingPlans)
+	assert.Equal(t, 5, snap.Summary.DispatchedPlans)
+}
+
 // TestHandleMetricsJSON_MetricsCrossChecks sends ~20 events through the collector,
 // fetches /api/v1/metrics, and asserts cross-checks between summary and breakdowns
 // (same invariants as unit TestSnapshotCrossChecks and smoke test section 23).

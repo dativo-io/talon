@@ -332,6 +332,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}),
 			metrics.WithTenantID("default"),
 		}
+		if planReviewStore != nil {
+			collectorOpts = append(collectorOpts, metrics.WithPlanStatsFn(func(ctx context.Context, tenantID string) (metrics.PlanStats, error) {
+				stats, err := planReviewStore.Stats(ctx, tenantID)
+				if err != nil {
+					return metrics.PlanStats{}, err
+				}
+				return metrics.PlanStats{
+					Pending:          stats.Pending,
+					Approved:         stats.Approved,
+					Rejected:         stats.Rejected,
+					Modified:         stats.Modified,
+					Dispatched:       stats.Dispatched,
+					DispatchFailures: stats.DispatchFailures,
+				}, nil
+			}))
+		}
 
 		if pol.Policies.CostLimits != nil {
 			collectorOpts = append(collectorOpts,

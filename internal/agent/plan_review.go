@@ -26,6 +26,16 @@ type PlanReviewStore struct {
 	db *sql.DB
 }
 
+// PlanStats aggregates plan lifecycle counters for dashboards/CLI summaries.
+type PlanStats struct {
+	Pending          int `json:"pending"`
+	Approved         int `json:"approved"`
+	Rejected         int `json:"rejected"`
+	Modified         int `json:"modified"`
+	Dispatched       int `json:"dispatched"`
+	DispatchFailures int `json:"dispatch_failures"`
+}
+
 // NewPlanReviewStore creates the plan review store with SQLite backend.
 func NewPlanReviewStore(db *sql.DB) (*PlanReviewStore, error) {
 	_, err := db.ExecContext(context.Background(), `
@@ -356,6 +366,68 @@ func (s *PlanReviewStore) MarkDispatched(ctx context.Context, planID, tenantID, 
 		return ErrPlanNotFound
 	}
 	return nil
+}
+
+// Stats returns aggregate plan lifecycle counters, optionally scoped by tenant.
+func (s *PlanReviewStore) Stats(ctx context.Context, tenantID string) (PlanStats, error) {
+	stats := PlanStats{}
+
+	statusQuery := `SELECT status, COUNT(*) FROM execution_plans`
+	statusArgs := []interface{}{}
+	if tenantID != "" {
+		statusQuery += ` WHERE tenant_id = ?`
+		statusArgs = append(statusArgs, tenantID)
+	}
+	statusQuery += ` GROUP BY status`
+
+	rows, err := s.db.QueryContext(ctx, statusQuery, statusArgs...)
+	if err != nil {
+		return stats, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return stats, err
+		}
+		switch PlanStatus(status) {
+		case PlanPending:
+			stats.Pending = count
+		case PlanApproved:
+			stats.Approved = count
+		case PlanRejected:
+			stats.Rejected = count
+		case PlanModified:
+			stats.Modified = count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return stats, err
+	}
+
+	dispatchQuery := `SELECT COUNT(*) FROM execution_plans WHERE dispatched_at IS NOT NULL`
+	dispatchArgs := []interface{}{}
+	if tenantID != "" {
+		dispatchQuery += ` AND tenant_id = ?`
+		dispatchArgs = append(dispatchArgs, tenantID)
+	}
+	if err := s.db.QueryRowContext(ctx, dispatchQuery, dispatchArgs...).Scan(&stats.Dispatched); err != nil {
+		return stats, err
+	}
+
+	failedQuery := `SELECT COUNT(*) FROM execution_plans WHERE dispatched_at IS NOT NULL AND dispatch_error IS NOT NULL AND trim(dispatch_error) != ''`
+	failedArgs := []interface{}{}
+	if tenantID != "" {
+		failedQuery += ` AND tenant_id = ?`
+		failedArgs = append(failedArgs, tenantID)
+	}
+	if err := s.db.QueryRowContext(ctx, failedQuery, failedArgs...).Scan(&stats.DispatchFailures); err != nil {
+		return stats, err
+	}
+
+	return stats, nil
 }
 
 // PlanReviewConfig from .talon.yaml.

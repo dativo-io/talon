@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/cobra"
 
+	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 )
@@ -137,6 +140,22 @@ func runReport(cmd *cobra.Command, args []string) error {
 			sort.Strings(models)
 			for _, m := range models {
 				fmt.Fprintf(out, "    - %s: %d\n", m, modelCount[m])
+			}
+		}
+	}
+
+	planDB, err := sql.Open("sqlite3", cfg.EvidenceDBPath()+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err == nil {
+		defer planDB.Close()
+		planStore, planErr := agent.NewPlanReviewStore(planDB)
+		if planErr == nil {
+			if stats, statsErr := planStore.Stats(ctx, reportTenant); statsErr == nil {
+				fmt.Fprintf(out, "  Plans pending:           %d\n", stats.Pending)
+				fmt.Fprintf(out, "  Plans approved:          %d\n", stats.Approved)
+				fmt.Fprintf(out, "  Plans rejected:          %d\n", stats.Rejected)
+				fmt.Fprintf(out, "  Plans modified:          %d\n", stats.Modified)
+				fmt.Fprintf(out, "  Plans dispatched:        %d\n", stats.Dispatched)
+				fmt.Fprintf(out, "  Plan dispatch failures:  %d\n", stats.DispatchFailures)
 			}
 		}
 	}
