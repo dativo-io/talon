@@ -192,6 +192,8 @@
 
   var eventSource = null;
   var pollTimer = null;
+  var lastUpdateAt = 0;
+  var sseWatchdog = null;
 
   function startSSE() {
     var url = '/api/v1/metrics/stream';
@@ -199,8 +201,16 @@
     if (params.get('token')) url += '?token=' + encodeURIComponent(params.get('token'));
 
     eventSource = new EventSource(url);
+    eventSource.onopen = function() {
+      armSSEWatchdog();
+    };
     eventSource.onmessage = function(e) {
-      try { update(JSON.parse(e.data)); } catch(err) { console.error('SSE parse:', err); }
+      try {
+        update(JSON.parse(e.data));
+      } catch(err) {
+        console.error('SSE parse:', err);
+      }
+      armSSEWatchdog();
     };
     eventSource.onerror = function() {
       eventSource.close();
@@ -220,12 +230,30 @@
     var params = new URLSearchParams(window.location.search);
     if (params.get('token')) url += '?token=' + encodeURIComponent(params.get('token'));
 
-    fetch(url).then(function(r) { return r.json(); }).then(update).catch(function(err) {
-      console.error('Poll error:', err);
-    });
+    fetch(url)
+      .then(function(r) {
+        if (!r.ok) throw new Error('metrics request failed: HTTP ' + r.status);
+        return r.json();
+      })
+      .then(update)
+      .catch(function(err) {
+        console.error('Poll error:', err);
+      });
+  }
+
+  function armSSEWatchdog() {
+    if (sseWatchdog) clearTimeout(sseWatchdog);
+    sseWatchdog = setTimeout(function() {
+      // Some reverse proxies keep SSE connection open but buffer events.
+      // If no update arrives for too long, start polling so KPIs don't stay stale.
+      if (Date.now() - lastUpdateAt > 12000) {
+        startPolling();
+      }
+    }, 12000);
   }
 
   function update(d) {
+    lastUpdateAt = Date.now();
     var badge = document.getElementById('mode-badge');
     badge.textContent = d.enforcement_mode || '--';
     badge.className = 'badge badge-' + (d.enforcement_mode || '');
@@ -356,6 +384,9 @@
 
   function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
+  // Always fetch once immediately so the dashboard populates even if SSE is
+  // connected but buffered by an intermediary proxy.
+  fetchMetrics();
   if (typeof EventSource !== 'undefined') { startSSE(); } else { startPolling(); }
 })();
 </script>
