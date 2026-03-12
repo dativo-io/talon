@@ -28,9 +28,13 @@ func newTestServerWithDashboard(t *testing.T, token string) (*Server, *metrics.C
 	return s, collector
 }
 
+func newTestRequest(method, target string) *http.Request {
+	return httptest.NewRequestWithContext(context.Background(), method, target, nil)
+}
+
 func TestHandleGatewayDashboard(t *testing.T) {
 	s, _ := newTestServerWithDashboard(t, "")
-	req := httptest.NewRequest("GET", "/gateway/dashboard", nil)
+	req := newTestRequest("GET", "/gateway/dashboard")
 	rec := httptest.NewRecorder()
 
 	s.handleGatewayDashboard(rec, req)
@@ -50,7 +54,7 @@ func TestHandleMetricsJSON(t *testing.T) {
 	})
 	time.Sleep(50 * time.Millisecond)
 
-	req := httptest.NewRequest("GET", "/api/v1/metrics", nil)
+	req := newTestRequest("GET", "/api/v1/metrics")
 	rec := httptest.NewRecorder()
 
 	s.handleMetricsJSON(rec, req)
@@ -93,7 +97,7 @@ func TestHandleMetricsJSON_FullSnapshot(t *testing.T) {
 	})
 	time.Sleep(80 * time.Millisecond)
 
-	req := httptest.NewRequest("GET", "/api/v1/metrics", nil)
+	req := newTestRequest("GET", "/api/v1/metrics")
 	rec := httptest.NewRecorder()
 	s.handleMetricsJSON(rec, req)
 
@@ -240,7 +244,7 @@ func TestHandleMetricsStreamSSE(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	req := httptest.NewRequest("GET", "/api/v1/metrics/stream", nil).WithContext(ctx)
+	req := httptest.NewRequestWithContext(ctx, "GET", "/api/v1/metrics/stream", nil)
 	rec := httptest.NewRecorder()
 
 	s.handleMetricsStream(rec, req)
@@ -255,7 +259,7 @@ func TestDashboardTokenMiddleware_NoTokenRequired(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := newTestRequest("GET", "/")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -268,7 +272,7 @@ func TestDashboardTokenMiddleware_ValidToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := newTestRequest("GET", "/")
 	req.Header.Set("Authorization", "Bearer s3cr3t")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -282,7 +286,7 @@ func TestDashboardTokenMiddleware_InvalidToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := newTestRequest("GET", "/")
 	req.Header.Set("Authorization", "Bearer wrong")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -296,7 +300,7 @@ func TestDashboardTokenMiddleware_MissingToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := newTestRequest("GET", "/")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -309,7 +313,7 @@ func TestDashboardTokenMiddleware_QueryParam(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("GET", "/?token=s3cr3t", nil)
+	req := newTestRequest("GET", "/?token=s3cr3t")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -323,7 +327,7 @@ func TestDashboardOrAPIKeyMiddleware_AllowsAPIKey(t *testing.T) {
 		w.Write([]byte("ok"))
 	}))
 
-	req := httptest.NewRequest("GET", "/api/v1/metrics", nil)
+	req := newTestRequest("GET", "/api/v1/metrics")
 	req.Header.Set("X-Talon-Key", "api-key-1")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -338,7 +342,7 @@ func TestDashboardOrAPIKeyMiddleware_AllowsToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := newTestRequest("GET", "/")
 	req.Header.Set("Authorization", "Bearer dashboard-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
