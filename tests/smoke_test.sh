@@ -669,9 +669,31 @@ test_section_12_http_api() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  # Add minimal gateway block so serve loads tenant keys and "tenant key can read /v1/evidence" can pass
+  if [[ -f "$dir/talon.config.yaml" ]] && ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
+    cat >> "$dir/talon.config.yaml" <<'GWEOF'
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "shadow"
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+  callers:
+    - name: "api-tenant"
+      tenant_key: "talon-api-tenant-001"
+      tenant_id: "default"
+      allowed_providers: ["openai"]
+  default_policy:
+    require_caller_id: true
+GWEOF
+  fi
   run_talon run "Seed" &>/dev/null; true
   TALON_SERVE_PID=""
-  run_talon serve --port 8080 &>/dev/null &
+  run_talon serve --port 8080 --gateway --gateway-config "$dir/talon.config.yaml" &>/dev/null &
   TALON_SERVE_PID=$!
   local i=0
   while ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health 2>/dev/null | grep -q 200; do
@@ -685,7 +707,8 @@ test_section_12_http_api() {
     return 0
   fi
   local admin_key="${TALON_ADMIN_KEY}"
-  local tenant_key="${TALON_TENANT_KEY}"
+  # Use caller tenant_key so server (which loads gateway callers) accepts Bearer for /v1/evidence
+  local tenant_key="${TALON_TENANT_KEY:-talon-api-tenant-001}"
   assert_pass "GET /health 200" test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health)" = "200"
   local status_json; status_json="$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/status)"
   assert_pass "GET /status 200 with status field" jq -e '.status' <<< "$status_json" &>/dev/null
@@ -1164,8 +1187,16 @@ gateway:
     require_caller_id: true
 GWEOF
     fi
-    # Enable semantic cache so dashboard cache_stats and CLI cache metrics can be tested (append so it overrides scaffold)
-    cat >> "$dir/talon.config.yaml" <<'CACHEEOF'
+    # Enable semantic cache so dashboard cache_stats and CLI cache metrics can be tested.
+    # Scaffold already has a cache: key; avoid duplicating it (YAML forbids duplicate keys).
+    if grep -qE '^\s*cache\s*:' "$dir/talon.config.yaml" 2>/dev/null; then
+      if command -v yq &>/dev/null; then
+        yq -i '.cache.enabled = true | .cache.default_ttl = 3600 | .cache.similarity_threshold = 0.92 | .cache.max_entries_per_tenant = 1000' "$dir/talon.config.yaml" 2>/dev/null || true
+      else
+        sed -i.bak 's/enabled: false/enabled: true/' "$dir/talon.config.yaml" 2>/dev/null || true
+      fi
+    else
+      cat >> "$dir/talon.config.yaml" <<'CACHEEOF'
 
 cache:
   enabled: true
@@ -1173,6 +1204,7 @@ cache:
   similarity_threshold: 0.92
   max_entries_per_tenant: 1000
 CACHEEOF
+    fi
   fi
   local GW_PID=""
   local gw_log_file="$dir/dashboard_gateway_serve.log"
