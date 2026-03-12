@@ -52,6 +52,7 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 | Doc | Description |
 |-----|-------------|
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
+| [Authentication and key scopes](reference/authentication-and-key-scopes.md) | Which keys authenticate which endpoint families (gateway vs control plane vs dashboard). |
 | [Gateway dashboard](reference/gateway-dashboard.md) | Dashboard endpoints, metrics API schema, snapshot fields, and authentication. |
 
 ### Explanation (understanding-oriented)

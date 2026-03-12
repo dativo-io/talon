@@ -20,6 +20,7 @@ func TestRootCommand_HasExpectedSubcommands(t *testing.T) {
 		"costs",
 		"secrets",
 		"memory",
+		"plan",
 		"config",
 		"report",
 	}

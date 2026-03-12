@@ -155,6 +155,7 @@ See [Gateway dashboard reference](gateway-dashboard.md) for the full API schema 
 - **API keys:** Set `TALON_API_KEYS` as comma-separated entries; each entry is a key or `key:tenant_id`.
 - **Gateway:** Enable with `--gateway` and `--gateway-config <path>`. See [How to choose your integration path](../guides/choosing-integration-path.md) and gateway guides.
 - **MCP proxy:** Enable with `--proxy-config <path>`. See [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md).
+- **Auth model:** See [Authentication and key scopes](authentication-and-key-scopes.md) for endpoint-to-key mapping (gateway caller keys vs control-plane API keys vs dashboard token).
 
 ### Observability
 

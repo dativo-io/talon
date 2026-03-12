@@ -275,16 +275,17 @@ func NewRunner(cfg RunnerConfig) *Runner {
 
 // RunRequest is the input for a single agent invocation.
 type RunRequest struct {
-	TenantID        string
-	AgentName       string
-	Prompt          string
-	Attachments     []Attachment
-	InvocationType  string // "manual", "scheduled", "webhook:name"
-	DryRun          bool
-	PolicyPath      string           // explicit path to .talon.yaml
-	ToolInvocations []ToolInvocation // optional; when set, each is policy-checked and executed, and names recorded in evidence
-	SkipMemory      bool             // if true, do not write memory observation for this run (e.g. --no-memory)
-	SovereigntyMode string           // optional: eu_strict | eu_preferred | global; when set, router uses OPA routing and records RouteDecision for evidence
+	TenantID         string
+	AgentName        string
+	Prompt           string
+	Attachments      []Attachment
+	InvocationType   string // "manual", "scheduled", "webhook:name"
+	DryRun           bool
+	PolicyPath       string           // explicit path to .talon.yaml
+	ToolInvocations  []ToolInvocation // optional; when set, each is policy-checked and executed, and names recorded in evidence
+	SkipMemory       bool             // if true, do not write memory observation for this run (e.g. --no-memory)
+	SovereigntyMode  string           // optional: eu_strict | eu_preferred | global; when set, router uses OPA routing and records RouteDecision for evidence
+	BypassPlanReview bool             // internal: when true, skip plan-review gate (used by approved-plan dispatcher)
 }
 
 // ToolInvocation represents a single tool call (e.g. from MCP or a future agent loop).
@@ -1863,6 +1864,9 @@ func complianceFromPolicy(pol *policy.Policy) evidence.Compliance {
 // maybeGateForPlanReview runs the plan review gate; returns (response, true, nil) if execution is gated.
 // costEstimate is the pre-run cost estimate from Run() (same value used for policy input).
 func (r *Runner) maybeGateForPlanReview(ctx context.Context, pol *policy.Policy, req *RunRequest, correlationID string, dataTier int, processedPrompt string, costEstimate float64) (*RunResponse, bool, error) {
+	if req.BypassPlanReview {
+		return nil, false, nil
+	}
 	if r.planReview == nil {
 		return nil, false, nil
 	}
@@ -1887,6 +1891,8 @@ func (r *Runner) maybeGateForPlanReview(ctx context.Context, pol *policy.Policy,
 		dataTier, nil, costEstimate, "allow",
 		"", processedPrompt, timeoutMin,
 	)
+	plan.Prompt = processedPrompt
+	plan.PolicyPath = req.PolicyPath
 	if err := r.planReview.Save(ctx, plan); err != nil {
 		return nil, false, fmt.Errorf("saving plan for review: %w", err)
 	}

@@ -33,12 +33,12 @@
 #   requests and canonical payloads (PII, cache, tool block/filter, normal) live there.
 #   Use smoke_gw_post_chat, smoke_gw_get_metrics, smoke_health, SMOKE_BODY_*, etc. so we
 #   don't duplicate URLs or request bodies across sections.
-# - Sections: test_section_01_binary .. test_section_23_dashboard_metrics + test_consistency_checks.
+# - Sections: test_section_01_binary .. test_section_24_plan_dispatch + test_consistency_checks.
 #   Each is run via run_section in main(); failures are recorded, suite continues.
 # - Section index: 01 binary | 02 init | 03 validate | 04 secrets | 05 dry-run | 06 live-run |
 #   07 PII | 08 attachments | 09 cost | 10 audit | 11 memory | 12 HTTP API | 13 gateway |
 #   14 deny | 15 multi-tenant | 16 shadow | 17 config-provider | 18 compliance-export |
-#   19 CI/CD | 20 edge-cases | 21 doctor/report/enforce | 22 cache | 23 dashboard-metrics | consistency.
+#   19 CI/CD | 20 edge-cases | 21 doctor/report/enforce | 22 cache | 23 dashboard-metrics | 24 plan-dispatch | consistency.
 #
 # QA notes (from brief):
 # - Section 16 (Shadow mode): Evidence shadow signal is in shadow_violations or
@@ -1762,6 +1762,118 @@ CACHEEOF
 }
 
 # -----------------------------------------------------------------------------
+# SECTION 24 — Plan review dispatch (non-serve CLI execute + serve auto-dispatch)
+# -----------------------------------------------------------------------------
+test_section_24_plan_dispatch() {
+  local section="24_plan_dispatch"
+  local dir; dir="$(setup_section_dir "$section")"
+  local serve_port="8080"
+  local base_url="http://127.0.0.1:${serve_port}"
+  local plan_id=""
+  local serve_plan_id=""
+  local S_PID=""
+  echo ""
+  echo "=== SECTION 24 — Plan Review Dispatch ==="
+  cd "$dir" || exit 1
+  run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+
+  # Ensure plan review gate is enabled for this section.
+  if command -v yq >/dev/null 2>&1; then
+    yq -i '.compliance.human_oversight = "always"' "$dir/agent.talon.yaml" 2>/dev/null || true
+  elif grep -q "human_oversight:" "$dir/agent.talon.yaml" 2>/dev/null; then
+    sed -i.bak 's/human_oversight:.*/human_oversight: "always"/' "$dir/agent.talon.yaml" 2>/dev/null || true
+  else
+    cat >> "$dir/agent.talon.yaml" <<'PREVIEWEOF'
+
+compliance:
+  human_oversight: "always"
+PREVIEWEOF
+  fi
+
+  # --- 24.1: Non-serve CLI workflow (run -> pending -> approve -> execute) ---
+  local run_out; run_out="$(run_talon run "Summarize EU AI Act milestones for compliance teams" 2>/dev/null)"; true
+  plan_id="$(echo "$run_out" | grep -oE 'plan_[A-Za-z0-9_-]+' | head -1 || true)"
+  if [[ -n "$plan_id" ]]; then
+    echo "  ✓  talon run produced pending plan id: $plan_id"
+    record_pass
+  else
+    log_failure "talon run should produce PlanPending when human_oversight is always" "stdout=$run_out"
+  fi
+  local pending_out; pending_out="$(run_talon plan pending --tenant default 2>/dev/null)"; true
+  if [[ -n "$plan_id" ]]; then
+    assert_pass "talon plan pending contains created plan id" grep -q "$plan_id" <<< "$pending_out"
+    assert_pass "talon plan approve exits 0" run_talon plan approve "$plan_id" --tenant default --reviewed-by smoke-test
+    local pending_after_approve; pending_after_approve="$(run_talon plan pending --tenant default 2>/dev/null)"; true
+    if echo "$pending_after_approve" | grep -q "$plan_id"; then
+      log_failure "approved plan should not remain in pending list" "plan_id=$plan_id"
+    else
+      echo "  ✓  approved plan removed from pending list"
+      record_pass
+    fi
+    local exec_out; exec_out="$(run_talon plan execute "$plan_id" --tenant default 2>/dev/null)"; local exec_code=$?
+    if [[ $exec_code -eq 0 ]]; then
+      echo "  ✓  talon plan execute exits 0 for approved plan"
+      record_pass
+    else
+      log_failure "talon plan execute should exit 0 for approved plan" "plan_id=$plan_id exit=$exec_code output=$exec_out"
+    fi
+    if echo "$exec_out" | grep -qi "Evidence stored"; then
+      echo "  ✓  manual plan execute produced evidence output"
+      record_pass
+    else
+      echo "  -  manual plan execute output did not include evidence line (already dispatched or provider response formatting)"
+    fi
+  fi
+
+  # --- 24.2: Serve auto-dispatch workflow (approve -> background execute) ---
+  if ! wait_port_free "$serve_port" 90 5; then
+    log_failure "plan dispatch section could not acquire port ${serve_port}" "port remained busy"
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
+  run_talon serve --port "$serve_port" >"$dir/plan_dispatch_serve.log" 2>&1 &
+  S_PID=$!
+  if ! smoke_wait_health "$base_url" 45 1; then
+    log_failure "serve did not become healthy for plan dispatch section" "url=${base_url}/health"
+    kill "$S_PID" 2>/dev/null || true
+    wait "$S_PID" 2>/dev/null || true
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
+
+  local run_json
+  run_json="$(curl -s -X POST "${base_url}/v1/agents/run" -H "X-Talon-Key: smoke-test-key" -H "Content-Type: application/json" \
+    -d '{"tenant_id":"default","agent_name":"default","prompt":"Create a concise compliance rollout plan for Q3"}')"
+  serve_plan_id="$(echo "$run_json" | jq -r '.plan_pending // empty' 2>/dev/null || true)"
+  if [[ -n "$serve_plan_id" ]]; then
+    echo "  ✓  API run returned plan_pending: $serve_plan_id"
+    record_pass
+  else
+    log_failure "API run should return plan_pending under human oversight" "json=$run_json"
+  fi
+  if [[ -n "$serve_plan_id" ]]; then
+    assert_pass "approve pending plan via API exits 200" \
+      test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "${base_url}/v1/plans/${serve_plan_id}/approve" -H "X-Talon-Key: smoke-test-key" -H "Content-Type: application/json" -d '{"reviewed_by":"smoke-test"}')" = "200"
+    sleep 4
+    local pending_json
+    pending_json="$(curl -s -H "X-Talon-Key: smoke-test-key" "${base_url}/v1/plans/pending")"
+    if echo "$pending_json" | jq -e --arg pid "$serve_plan_id" '.plans[]? | select(.id == $pid)' &>/dev/null; then
+      log_failure "serve auto-dispatch should remove approved plan from pending list" "plan_id=$serve_plan_id"
+    else
+      echo "  ✓  serve auto-dispatch removed approved plan from pending list"
+      record_pass
+    fi
+    assert_pass "evidence index contains plan_dispatch invocation after approval" \
+      bash -c "curl -s -H 'X-Talon-Key: smoke-test-key' '${base_url}/v1/evidence?limit=50' | jq -e '.entries[]? | select(.invocation_type == \"plan_dispatch\")' >/dev/null"
+  fi
+
+  kill "$S_PID" 2>/dev/null || true
+  wait "$S_PID" 2>/dev/null || true
+  cd "$REPO_ROOT" || true
+}
+
+# -----------------------------------------------------------------------------
 # Consistency checks: cross-command flow verification (parseable in smoke_test_logs.out.txt)
 # -----------------------------------------------------------------------------
 test_consistency_checks() {
@@ -2028,6 +2140,7 @@ main() {
   run_section "21_doctor_report_enforce" test_section_21_doctor_report_enforce
   run_section "22_cache" test_section_22_cache
   run_section "23_dashboard_metrics" test_section_23_dashboard_metrics
+  run_section "24_plan_dispatch" test_section_24_plan_dispatch
 
   # Consistency checks: cross-command flow verification (logged for smoke_test_logs.out.txt)
   run_section "consistency" test_consistency_checks

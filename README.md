@@ -405,6 +405,12 @@ talon memory audit [--agent name]            # Evidence chain verification
 # Trigger server
 talon serve [--port 8080]                    # Start HTTP server + cron scheduler
 
+# Plan review
+talon plan pending [--tenant acme]           # List pending plans for review
+talon plan approve <plan-id> [--tenant acme] # Approve pending plan
+talon plan reject <plan-id> [--tenant acme]  # Reject pending plan
+talon plan execute <plan-id> [--tenant acme] # Execute an approved plan in non-serve mode
+
 # Coming soon
 talon costs [--tenant acme]                  # Cost and budget summary
 ```

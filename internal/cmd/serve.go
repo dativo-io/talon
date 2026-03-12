@@ -239,6 +239,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 	runner := agent.NewRunner(runnerCfg)
+	startPlanAutoDispatcher(ctx, planReviewStore, runner)
 
 	if memStore != nil && pol.Memory != nil && pol.Memory.Enabled {
 		stopRetention := memory.StartRetentionLoop(ctx, memStore, pol, 24*time.Hour)

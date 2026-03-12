@@ -162,6 +162,35 @@ func TestPlanReviewStore_CRUD(t *testing.T) {
 	assert.Len(t, pending, 0)
 }
 
+func TestPlanReviewStore_GetApprovedUndispatchedAndMarkDispatched(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	store, err := NewPlanReviewStore(db)
+	require.NoError(t, err)
+
+	pending := GenerateExecutionPlan("corr_pending", "acme", "agent", "gpt-4", 0, nil, 0.01, "allow", "", "", 30)
+	approved := GenerateExecutionPlan("corr_approved", "acme", "agent", "gpt-4", 0, nil, 0.01, "allow", "", "", 30)
+	approved.Prompt = "dispatch me"
+	require.NoError(t, store.Save(ctx, pending))
+	require.NoError(t, store.Save(ctx, approved))
+	require.NoError(t, store.Approve(ctx, approved.ID, "acme", "reviewer"))
+
+	toDispatch, err := store.GetApprovedUndispatched(ctx, "acme")
+	require.NoError(t, err)
+	require.Len(t, toDispatch, 1)
+	assert.Equal(t, approved.ID, toDispatch[0].ID)
+
+	require.NoError(t, store.MarkDispatched(ctx, approved.ID, "acme", ""))
+	toDispatch, err = store.GetApprovedUndispatched(ctx, "acme")
+	require.NoError(t, err)
+	assert.Len(t, toDispatch, 0)
+
+	// Marking again should fail (already dispatched)
+	err = store.MarkDispatched(ctx, approved.ID, "acme", "")
+	assert.ErrorIs(t, err, ErrPlanNotFound)
+}
+
 func TestPlanReviewStore_Reject(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

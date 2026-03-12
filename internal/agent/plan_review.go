@@ -49,7 +49,56 @@ func NewPlanReviewStore(db *sql.DB) (*PlanReviewStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating execution_plans table: %w", err)
 	}
+	if err := ensureDispatchColumns(context.Background(), db); err != nil {
+		return nil, fmt.Errorf("ensuring execution plan dispatch columns: %w", err)
+	}
 	return &PlanReviewStore{db: db}, nil
+}
+
+func ensureDispatchColumns(ctx context.Context, db *sql.DB) error {
+	hasDispatchedAt, err := hasColumn(ctx, db, "execution_plans", "dispatched_at")
+	if err != nil {
+		return err
+	}
+	if !hasDispatchedAt {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE execution_plans ADD COLUMN dispatched_at DATETIME`); err != nil {
+			return err
+		}
+	}
+	hasDispatchError, err := hasColumn(ctx, db, "execution_plans", "dispatch_error")
+	if err != nil {
+		return err
+	}
+	if !hasDispatchError {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE execution_plans ADD COLUMN dispatch_error TEXT`); err != nil {
+			return err
+		}
+	}
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plans_dispatch ON execution_plans(status, dispatched_at)`)
+	return nil
+}
+
+func hasColumn(ctx context.Context, db *sql.DB, tableName, columnName string) (bool, error) {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, tableName))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name string
+		var colType string
+		var notNull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return false, err
+		}
+		if name == columnName {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // Save persists a new execution plan.
@@ -257,6 +306,56 @@ func (s *PlanReviewStore) updateStatus(ctx context.Context, planID, tenantID str
 		return err
 	}
 	return ErrPlanNotPending
+}
+
+// GetApprovedUndispatched returns approved plans that have not been auto-dispatched yet.
+// If tenantID is empty, all tenants are included.
+func (s *PlanReviewStore) GetApprovedUndispatched(ctx context.Context, tenantID string) ([]*ExecutionPlan, error) {
+	now := time.Now()
+	query := `SELECT plan_json FROM execution_plans WHERE status = 'approved' AND timeout_at > ? AND dispatched_at IS NULL`
+	args := []interface{}{now}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	query += ` ORDER BY reviewed_at ASC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var plans []*ExecutionPlan
+	for rows.Next() {
+		var planJSON string
+		if err := rows.Scan(&planJSON); err != nil {
+			return nil, err
+		}
+		var plan ExecutionPlan
+		if err := json.Unmarshal([]byte(planJSON), &plan); err != nil {
+			continue
+		}
+		plans = append(plans, &plan)
+	}
+	return plans, rows.Err()
+}
+
+// MarkDispatched marks an approved plan as dispatched so it won't be executed again.
+// dispatchErr is persisted for diagnostics (empty string means success).
+func (s *PlanReviewStore) MarkDispatched(ctx context.Context, planID, tenantID, dispatchErr string) error {
+	now := time.Now()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE execution_plans SET dispatched_at = ?, dispatch_error = ?
+		WHERE id = ? AND tenant_id = ? AND status = 'approved' AND dispatched_at IS NULL`,
+		now, dispatchErr, planID, tenantID,
+	)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrPlanNotFound
+	}
+	return nil
 }
 
 // PlanReviewConfig from .talon.yaml.
