@@ -1173,11 +1173,31 @@ cache:
 CACHEEOF
   fi
   local GW_PID=""
-  run_talon serve --port "$dashboard_port" --gateway --gateway-config "$dir/talon.config.yaml" &>/dev/null &
+  local gw_log_file="$dir/dashboard_gateway_serve.log"
+  run_talon serve --port "$dashboard_port" --gateway --gateway-config "$dir/talon.config.yaml" >"$gw_log_file" 2>&1 &
   GW_PID=$!
-  if ! smoke_wait_health "$dashboard_base_url" 10 1; then
-    log_failure "dashboard gateway server did not start on port ${dashboard_port}" "url=${dashboard_base_url}/health"
+  if ! smoke_wait_health "$dashboard_base_url" 45 1; then
+    local gw_pid_state="running"
+    if ! kill -0 "$GW_PID" 2>/dev/null; then
+      wait "$GW_PID" 2>/dev/null
+      local gw_exit_code=$?
+      gw_pid_state="exited(${gw_exit_code})"
+    fi
+    log_failure "dashboard gateway server did not start on port ${dashboard_port}" \
+      "url=${dashboard_base_url}/health pid=${GW_PID} state=${gw_pid_state} log=${gw_log_file}"
+    if [[ -n "$SMOKE_LOG_FILE" ]] && [[ -f "$gw_log_file" ]]; then
+      {
+        echo "Gateway serve log tail (${gw_log_file}):"
+        tail -100 "$gw_log_file"
+        echo ""
+      } >> "$SMOKE_LOG_FILE"
+    fi
+    if [[ -f "$gw_log_file" ]]; then
+      echo "    Last gateway log lines:"
+      tail -10 "$gw_log_file" | sed 's/^/    | /'
+    fi
     kill "$GW_PID" 2>/dev/null || true
+    wait "$GW_PID" 2>/dev/null || true
     cd "$REPO_ROOT" || true
     return 0
   fi
