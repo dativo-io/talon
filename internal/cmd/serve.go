@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -56,30 +55,6 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveGateway, "gateway", false, "Enable LLM API gateway at /v1/proxy/*")
 	serveCmd.Flags().StringVar(&serveGatewayConfig, "gateway-config", "talon.config.yaml", "Path to config file with gateway block (used when --gateway is set)")
 	rootCmd.AddCommand(serveCmd)
-}
-
-// parseAPIKeys returns a map of key -> tenant_id from TALON_API_KEYS (comma-separated; each entry key or key:tenant_id).
-func parseAPIKeys(env string) map[string]string {
-	m := make(map[string]string)
-	if env == "" {
-		return m
-	}
-	for _, part := range strings.Split(env, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		tenantID := "default"
-		if idx := strings.Index(part, ":"); idx > 0 {
-			tenantID = strings.TrimSpace(part[idx+1:])
-			if tenantID == "" {
-				tenantID = "default"
-			}
-			part = strings.TrimSpace(part[:idx])
-		}
-		m[part] = tenantID
-	}
-	return m
 }
 
 //nolint:gocyclo // orchestration flow is inherently branched
@@ -255,9 +230,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	webhookHandler := trigger.NewWebhookHandler(runner, pol)
 
-	apiKeys := parseAPIKeys(os.Getenv("TALON_API_KEYS"))
-	if len(apiKeys) == 0 {
-		log.Warn().Msg("TALON_API_KEYS not set — all API endpoints will return 401. Set for production.")
+	adminKey := os.Getenv("TALON_ADMIN_KEY")
+	if adminKey == "" {
+		log.Warn().Msg("TALON_ADMIN_KEY not set — admin-only endpoints will be unrestricted. Set for production.")
 	}
 
 	opts := []server.Option{
@@ -288,11 +263,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	var gatewayHandler http.Handler
+	tenantKeys := map[string]string{}
 	if serveGateway {
 		gatewayCfg, err := gateway.LoadGatewayConfig(serveGatewayConfig)
 		if err != nil {
 			return fmt.Errorf("loading gateway config: %w", err)
 		}
+		tenantKeys = gatewayCfg.TenantKeyMap()
 		// --gateway flag explicitly opts in; override config's enabled field
 		if !gatewayCfg.Enabled {
 			log.Info().Msg("--gateway flag set; enabling gateway (config had enabled: false)")
@@ -368,13 +345,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 		opts = append(opts,
 			server.WithMetricsCollector(metricsCollector),
-			server.WithGatewayDashboard(web.GatewayDashboardHTML, ""),
+			server.WithGatewayDashboard(web.GatewayDashboardHTML),
 		)
-		if serveGateway {
-			if gwCfg, err := gateway.LoadGatewayConfig(serveGatewayConfig); err == nil && gwCfg.DashboardToken != "" {
-				opts[len(opts)-1] = server.WithGatewayDashboard(web.GatewayDashboardHTML, gwCfg.DashboardToken)
-			}
-		}
 	}
 
 	srv := server.NewServer(
@@ -385,7 +357,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		pol,
 		policyPath,
 		secretsStore,
-		apiKeys,
+		adminKey,
+		tenantKeys,
 		opts...,
 	)
 

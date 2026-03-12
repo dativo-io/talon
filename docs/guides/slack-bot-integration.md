@@ -48,9 +48,9 @@ export ANTHROPIC_BASE_URL=http://talon:8080/v1/proxy/anthropic
 
 No code changes are required — the bot still uses the same SDK; only the base URL changes.
 
-### 4. Use a Talon-issued API key for the bot
+### 4. Use a Talon-issued tenant key for the bot
 
-In your gateway config, define a caller for the Slack bot and give it an `api_key` (e.g. `talon-gw-slack-xyz`). Configure the bot to send this key as `Authorization: Bearer <talon-gw-slack-xyz>` (or `x-api-key` for Anthropic). Talon will accept that key, resolve the caller, and use the vault-stored key when calling the real provider.
+In your gateway config, define a caller for the Slack bot and give it a `tenant_key` (e.g. `talon-gw-slack-xyz`). Configure the bot to send this key as `Authorization: Bearer <talon-gw-slack-xyz>` (or `x-api-key` for Anthropic). Talon will accept that key, resolve the caller, and use the vault-stored key when calling the real provider.
 
 ### 5. Verify
 
@@ -68,7 +68,7 @@ In the gateway config, under `callers`, add or edit the Slack bot caller with `p
 
 ```yaml
 - name: "support-slack-bot"
-  api_key: "talon-gw-support-xyz789"
+  tenant_key: "talon-gw-support-xyz789"
   tenant_id: "default"
   allowed_providers: ["openai"]
   policy_overrides:
@@ -84,7 +84,7 @@ Restart Talon after editing the config.
 | Item        | Value                                                |
 |------------|------------------------------------------------------|
 | Gateway URL| `http://<talon>:8080/v1/proxy/openai/v1` (trailing `/v1` for correct paths; or anthropic/v1) |
-| Auth       | Talon-issued API key in gateway `callers`            |
+| Auth       | Talon-issued tenant key in gateway `callers`         |
 | Audit      | `talon audit list`                                   |
 
 ---

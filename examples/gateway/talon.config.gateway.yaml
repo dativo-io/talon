@@ -31,7 +31,7 @@ gateway:
 
   callers:
     - name: "openclaw-main"
-      api_key: "talon-gw-openclaw-001"
+      tenant_key: "talon-gw-openclaw-001"
       tenant_id: "default"
       team: "engineering"
       allowed_providers: ["openai", "anthropic"]
@@ -42,7 +42,7 @@ gateway:
         allowed_models: ["gpt-4o", "gpt-4o-mini"]
 
     - name: "support-bot"
-      api_key: "talon-gw-support-xyz789"
+      tenant_key: "talon-gw-support-xyz789"
       tenant_id: "default"
       team: "support"
       allowed_providers: ["openai"]

@@ -53,7 +53,7 @@ gateway:
       secret_name: "openai-api-key"
   callers:
     - name: "my-app"
-      api_key: "talon-gw-myapp-001"
+      tenant_key: "talon-gw-myapp-001"
   default_policy:
     log_prompts: true
 ```

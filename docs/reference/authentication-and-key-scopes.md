@@ -1,92 +1,66 @@
 # Authentication and key scopes
 
-This reference clarifies how Talon authenticates requests across API surfaces. It is intentionally explicit because users often assume one API key works for all endpoints.
-
----
-
-## Why this matters
-
-Talon has two main HTTP surfaces:
-
-- **Gateway data plane** (`/v1/proxy/...`) for runtime LLM traffic.
-- **Control plane** (`/v1/agents/...`, `/v1/plans/...`, `/v1/evidence/...`, `/v1/status`, etc.) for operations, governance, and review workflows.
-
-These surfaces are related but use different key sources by design.
+This reference describes Talon's current auth model across gateway traffic, tenant APIs, and admin/control-plane endpoints.
 
 ---
 
 ## Key types
 
-| Key type | Config source | Primary use | Typical endpoints |
+| Key type | Source | Primary use | Header |
 |---|---|---|---|
-| **Gateway caller key** | `talon.config.yaml` -> `gateway.callers[].api_key` | Authenticate application/agent traffic routed through Talon gateway | `/v1/proxy/{provider}/...` |
-| **Talon API key** | `TALON_API_KEYS` env var | Authenticate Talon control-plane API calls | `/v1/agents/run`, `/v1/plans/pending`, `/v1/plans/{id}/approve`, `/v1/evidence`, `/v1/status` |
-| **Dashboard token** | `talon.config.yaml` -> `gateway.dashboard_token` | Protect gateway dashboard telemetry pages/API | `/gateway/dashboard`, `/api/v1/metrics`, `/api/v1/metrics/stream` |
+| **Tenant key** | `talon.config.yaml` -> `gateway.callers[].tenant_key` | Authenticate gateway callers and tenant-scoped API access | `Authorization: Bearer <tenant_key>` |
+| **Admin key** | `TALON_ADMIN_KEY` env var | Authenticate admin/control-plane + dashboard/metrics | `X-Talon-Admin-Key: <key>` (preferred), `Authorization: Bearer <key>` (fallback) |
+
+Notes:
+
+- `tenant_key` is configured per caller and maps to a `tenant_id`.
+- `TALON_ADMIN_KEY` is server-wide.
 
 ---
 
 ## Endpoint-to-key matrix
 
-| Endpoint family | Accepted auth | Notes |
+| Endpoint family | Accepted auth | Scope |
 |---|---|---|
-| `/v1/proxy/...` | Gateway caller key (`Authorization: Bearer <gateway-caller-key>`) | Enforces caller-specific gateway policy overrides. |
-| `/v1/*` (control plane) | Talon API key (`X-Talon-Key` or `Authorization: Bearer`) | Tenant context is derived from `TALON_API_KEYS` mapping. |
-| `/gateway/dashboard` | Dashboard token OR Talon API key | Uses dashboard-or-API-key middleware when gateway dashboard is enabled. |
-| `/api/v1/metrics*` | Dashboard token OR Talon API key | Same as above. |
-
-Practical rule:
-
-- If you call **proxy endpoints**, use a **gateway caller key**.
-- If you call **core Talon endpoints** (plans/evidence/run/status), use a **Talon API key**.
+| `/v1/proxy/...` | Tenant key (bearer) | Gateway data plane (caller-specific policy) |
+| Tenant-only write paths (`/v1/agents/run`, `/v1/chat/completions`, `/mcp`, `/mcp/proxy`) | Tenant key (bearer) | Tenant-scoped execution |
+| Tenant-or-admin read paths (`/v1/evidence*`, `/v1/status`, `/v1/costs*`, `/v1/memory*`, `/v1/triggers*`, `/v1/plans/pending`, `/v1/plans/{id}`) | Tenant key (bearer) **or** admin key | Tenant visibility for tenant keys; cross-tenant admin visibility for admin key |
+| Admin-only paths (`/v1/plans/{id}/approve`, `/v1/plans/{id}/reject`, `/v1/plans/{id}/modify`, `/v1/memory/{agent_id}/approve`, `/v1/secrets*`, `/v1/policies*`, `/v1/dashboard/*`, `/v1/copaw/*`) | Admin key | Control-plane actions |
+| Gateway dashboard + metrics (`/gateway/dashboard`, `/api/v1/metrics`, `/api/v1/metrics/stream`) | Admin key | Operational dashboards and telemetry streams |
 
 ---
 
-## `TALON_API_KEYS` format
+## Practical rules
 
-`TALON_API_KEYS` is a comma-separated list. Each entry is one of:
+- Use a **tenant key** for normal tenant workloads, including `POST /v1/agents/run`.
+- Use **`TALON_ADMIN_KEY`** for admin/reviewer/operator actions and all dashboard/metrics endpoints.
+- Prefer `X-Talon-Admin-Key` for admin calls; bearer fallback is accepted.
 
-- `key` (implicitly tenant `default`), or
-- `key:tenant_id`
+---
 
-Example:
+## Common confusion
+
+### "My caller key works on `/v1/proxy` but fails on admin endpoints"
+
+Expected behavior. Caller/tenant keys are not admin keys.
+
+Quick checks:
 
 ```bash
-export TALON_API_KEYS="admin-key:admin,tenant-a-key:acme,tenant-b-key:globex"
+# Tenant-key path
+curl -i -H "Authorization: Bearer <tenant_key>" http://localhost:8080/v1/status
+
+# Admin-only path
+curl -i -H "X-Talon-Admin-Key: <admin_key>" http://localhost:8080/v1/secrets
 ```
 
-This supports key rotation and multiple clients per tenant.
-
 ---
 
-## Common confusion and how to resolve it
+## Production guidance
 
-### "My gateway key works on `/v1/proxy` but fails on `/v1/plans/pending`"
-
-Expected behavior unless that same key is also present in `TALON_API_KEYS`.
-
-Quick check:
-
-```bash
-curl -i -H "Authorization: Bearer <key>" http://localhost:8080/v1/status
-```
-
-- `200` -> key is valid as Talon API key.
-- `401` -> key is not a Talon API key (likely gateway-only).
-
----
-
-## Recommended production pattern
-
-- Keep **gateway caller keys** for application traffic only.
-- Keep **Talon API keys** for operator/control-plane actions.
-- Use distinct keys per tenant and per integration where possible.
-- Rotate keys by running old+new concurrently in `TALON_API_KEYS`, then removing old keys.
-
----
-
-## Naming guidance and future ergonomics
-
-Today, `TALON_API_KEYS` is the canonical control-plane key variable. A single-key alias (for example `TALON_API_KEY`) can be added later for convenience, but plural should remain canonical for safe rotation and phased rollout.
+- Issue distinct tenant keys per tenant/integration.
+- Keep tenant keys and admin keys separate.
+- Rotate tenant keys in `gateway.callers` entries (`tenant_key`) and rotate `TALON_ADMIN_KEY` through your secret manager/deploy workflow.
 
 ---
 

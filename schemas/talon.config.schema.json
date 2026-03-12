@@ -84,7 +84,7 @@
             "required": ["name"],
             "properties": {
               "name": { "type": "string" },
-              "api_key": { "type": "string" },
+              "tenant_key": { "type": "string" },
               "tenant_id": { "type": "string" },
               "team": { "type": "string" },
               "allowed_providers": {
@@ -93,7 +93,7 @@
               },
               "identify_by": {
                 "type": "string",
-                "enum": ["api_key", "source_ip"]
+                "enum": ["tenant_key", "source_ip"]
               },
               "source_cidrs": {
                 "type": "array",

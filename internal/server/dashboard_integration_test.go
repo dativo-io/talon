@@ -98,7 +98,7 @@ func TestDashboardIntegration_EvidenceToAPI(t *testing.T) {
 	srv := &Server{
 		metricsCollector:     collector,
 		gatewayDashboardHTML: "<html></html>",
-		apiKeys:              map[string]string{},
+		tenantKeys:           map[string]string{},
 	}
 
 	// Call dashboard API

@@ -52,7 +52,7 @@ If you use a different shell or process to start Talon, set `TALON_SECRETS_KEY` 
 | Key | Purpose | Where it lives |
 |-----|---------|----------------|
 | **TALON_SECRETS_KEY** | Encrypts/decrypts the vault. Must be the **same** when running `talon secrets set` and `talon serve`. | Environment. Set before step 2 and 3 above. |
-| **Caller api_key** (e.g. `talon-gw-openclaw-001`) | Token OpenClaw sends in `Authorization: Bearer ...`. Not used for encryption. | `talon.config.yaml` → `gateway.callers[].api_key`, and the same value in OpenClaw's `openclaw.json` as `models.providers.openai.apiKey`. |
+| **Caller tenant_key** (e.g. `talon-gw-openclaw-001`) | Token OpenClaw sends in `Authorization: Bearer ...`. Not used for encryption. | `talon.config.yaml` → `gateway.callers[].tenant_key`, and the same value in OpenClaw's `openclaw.json` as `models.providers.openai.apiKey`. |
 
 ### 3. Confirm the gateway is running
 
@@ -102,7 +102,7 @@ openclaw gateway start
 On SSH or headless servers, `openclaw gateway stop` may report "systemctl --user unavailable: Failed to connect to bus". In that case, stop the gateway process directly (e.g. `pkill openclaw-gateway`), then start it again however you normally run OpenClaw.
 
 **Important:**
-- The `apiKey` here is the Talon **caller key** from your gateway config (`talon.config.yaml` → `gateway.callers[].api_key`), **not** your real OpenAI key. Talon identifies the caller by this key and injects the real OpenAI key when forwarding.
+- The `apiKey` here is the Talon **caller key** from your gateway config (`talon.config.yaml` → `gateway.callers[].tenant_key`), **not** your real OpenAI key. Talon identifies the caller by this key and injects the real OpenAI key when forwarding.
 - The `api: "openai-responses"` field is required for OpenAI-compatible proxy endpoints.
 - Each model must be an object with both `id` and `name` (OpenClaw's schema requires both).
 - Your real OpenAI key stays only in Talon's encrypted vault — OpenClaw never sees it.

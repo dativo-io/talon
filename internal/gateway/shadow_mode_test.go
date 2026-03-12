@@ -35,9 +35,9 @@ func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig)) (*Gateway, *
 		},
 		Callers: []CallerConfig{
 			{
-				Name:     "openclaw-main",
-				APIKey:   "talon-gw-openclaw-001",
-				TenantID: "test-tenant",
+				Name:      "openclaw-main",
+				TenantKey: "talon-gw-openclaw-001",
+				TenantID:  "test-tenant",
 				PolicyOverrides: &CallerPolicyOverrides{
 					PIIAction:      "block",
 					MaxDailyCost:   100,

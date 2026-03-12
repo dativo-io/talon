@@ -606,7 +606,7 @@ func TestBuildConfigs_OpenClawPack_EnablesGateway(t *testing.T) {
 	assert.Equal(t, "shadow", infraCfg.Gateway.Mode)
 	require.NotEmpty(t, infraCfg.Gateway.Callers)
 	assert.Equal(t, "openclaw-main", infraCfg.Gateway.Callers[0].Name)
-	assert.Equal(t, "talon-gw-openclaw-001", infraCfg.Gateway.Callers[0].APIKey)
+	assert.Equal(t, "talon-gw-openclaw-001", infraCfg.Gateway.Callers[0].TenantKey)
 	openai, ok := infraCfg.Gateway.Providers["openai"]
 	require.True(t, ok)
 	assert.True(t, openai.Enabled)

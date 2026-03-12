@@ -52,7 +52,7 @@ func proxyTestServer(t *testing.T, upstreamBody string) (baseURL string, talonAP
 			"ollama": {Enabled: true, BaseURL: mockUpstream.URL},
 		},
 		Callers: []gateway.CallerConfig{
-			{Name: "proxy-caller", APIKey: "gateway-secret-key", TenantID: "default"},
+			{Name: "proxy-caller", TenantKey: "gateway-secret-key", TenantID: "default"},
 		},
 		Timeouts: gateway.TimeoutsConfig{
 			ConnectTimeout:    "5s",
@@ -76,7 +76,7 @@ func proxyTestServer(t *testing.T, upstreamBody string) (baseURL string, talonAP
 	gatewayAPIKey = "gateway-secret-key"
 	apiKeys := map[string]string{talonAPIKey: "default"}
 
-	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, apiKeys, WithGateway(gw))
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, "", apiKeys, WithGateway(gw))
 	s := httptest.NewServer(srv.Routes())
 	t.Cleanup(s.Close)
 
@@ -106,7 +106,7 @@ func TestProxyBlackBox_Success(t *testing.T) {
 
 	// 2) Verify side effect via Talon API only (black box: we use the public costs endpoint)
 	costsReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/v1/costs", nil)
-	costsReq.Header.Set("X-Talon-Key", talonKey)
+	costsReq.Header.Set("Authorization", "Bearer "+talonKey)
 	costsResp, err := http.DefaultClient.Do(costsReq)
 	require.NoError(t, err)
 	defer costsResp.Body.Close()
@@ -133,7 +133,7 @@ func TestProxyBlackBox_NoGateway_Returns404(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	// Server without WithGateway
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	s := httptest.NewServer(srv.Routes())
 	t.Cleanup(s.Close)
 

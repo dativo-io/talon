@@ -25,7 +25,7 @@ gateway:
       base_url: "http://localhost:11434"
   callers:
     - name: test
-      api_key: "talon-gw-abc"
+      tenant_key: "talon-gw-abc"
       tenant_id: "default"
   default_policy:
     default_pii_action: warn

@@ -64,7 +64,7 @@ func TestRun_GatewayCategory_WithConfig(t *testing.T) {
       secret_name: "openai-api-key"
   callers:
     - name: "test"
-      api_key: "test-key"
+      tenant_key: "test-key"
       tenant_id: "default"
   default_policy:
     default_pii_action: "warn"

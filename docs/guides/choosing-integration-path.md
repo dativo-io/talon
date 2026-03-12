@@ -8,9 +8,9 @@ Use this guide to pick the right Talon entry point for your situation: MCP proxy
 
 | Your situation | Talon path | Auth | Where to go next |
 |----------------|------------|------|-------------------|
-| **Third-party SaaS** (Zendesk AI, Intercom, HubSpot) | MCP proxy at `POST /mcp/proxy`. Response PII scanning, `tools/list` filtering (agents only see allowed tools) | Talon API key (`X-Talon-Key`) for the server; vendor talks to Talon | [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md) |
+| **Third-party SaaS** (Zendesk AI, Intercom, HubSpot) | MCP proxy at `POST /mcp/proxy`. Response PII scanning, `tools/list` filtering (agents only see allowed tools) | Tenant key (`Authorization: Bearer <tenant-key>`) | [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md) |
 | **Your app calls LLM APIs** (Slack bot, desktop app, OpenClaw, CoPaw, script) | LLM API gateway at `POST /v1/proxy/{provider}/v1/...`. Response-path PII scanning, kill switch, tool-aware redaction | Gateway caller API key (`Authorization: Bearer <caller-key>`) | [OpenClaw](openclaw-integration.md), [CoPaw](copaw-integration.md), [Slack bot](slack-bot-integration.md), [Desktop apps](desktop-app-governance.md) |
-| **New agent from scratch** | Native Talon (`talon run`, `POST /v1/agents/run`, `POST /v1/chat/completions`) | Talon API key (`X-Talon-Key`) | [Your first governed agent](../tutorials/first-governed-agent.md), [QUICKSTART](../QUICKSTART.md) |
+| **New agent from scratch** | Native Talon (`talon run`, `POST /v1/agents/run`, `POST /v1/chat/completions`) | Tenant key (`Authorization: Bearer <tenant-key>`) | [Your first governed agent](../tutorials/first-governed-agent.md), [QUICKSTART](../QUICKSTART.md) |
 
 ---
 

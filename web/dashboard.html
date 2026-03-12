@@ -83,7 +83,7 @@
     <button data-tab="finops">FinOps &amp; Runtime</button>
     <button data-tab="tenants">Tenants &amp; Agents</button>
   </div>
-  <div class="refresh">Auto-refresh every 30s. Set <code>window.TALON_API_KEY</code> for API calls. Evidence retention: see server/config docs. <a href="#" id="stakeholder-view">Audit report view</a></div>
+  <div class="refresh">Auto-refresh every 30s. Set <code>window.TALON_ADMIN_KEY</code> for API calls. Evidence retention: see server/config docs. <a href="#" id="stakeholder-view">Audit report view</a></div>
 
   <div id="panel-evidence" class="panel active">
     <p class="compliance-overlay">Evidence supports: GDPR Art. 30, EU AI Act documentation (when present in metadata).</p>
@@ -159,11 +159,11 @@
   <script>
     (function() {
       var base = window.TALON_BASE_URL || '';
-      var key = window.TALON_API_KEY || '';
+      var key = window.TALON_ADMIN_KEY || '';
       function headers() {
         var h = { 'Content-Type': 'application/json' };
-        var k = window.TALON_API_KEY || '';
-        if (k) h['X-Talon-Key'] = k;
+        var k = window.TALON_ADMIN_KEY || '';
+        if (k) h['X-Talon-Admin-Key'] = k;
         return h;
       }
       function get(url) {

@@ -14,7 +14,7 @@
 #   - TALON_SECRETS_KEY set (32-byte for AES-256-GCM vault)
 #   - openai-api-key in vault: either set OPENAI_API_KEY (script sets it), or use existing vault by
 #     exporting TALON_DATA_DIR to a directory where you already ran: talon secrets set openai-api-key <key>
-# Optional: TALON_SIGNING_KEY, TALON_API_KEYS (defaults applied for smoke run). curl, jq; port 8080 free.
+# Optional: TALON_SIGNING_KEY, TALON_ADMIN_KEY, TALON_TENANT_KEY (defaults applied for smoke run). curl, jq; port 8080 free.
 #
 # Output: All sections run regardless of failures. Failures print exit code and
 # last 5 lines of stderr to the terminal; full stdout/stderr per failure is
@@ -224,10 +224,10 @@ check_prereqs() {
     echo "Missing: ${missing[*]}"
     exit 2
   fi
-  # Optional: default signing key and API keys for smoke run so full HTTP tests work
+  # Optional: default signing key, admin key, and tenant API keys for smoke run
   export TALON_SIGNING_KEY="${TALON_SIGNING_KEY:-$(openssl rand -hex 32 2>/dev/null || echo "smoke-signing-key-32-bytes-long")}"
-  export TALON_API_KEYS="${TALON_API_KEYS:-smoke-test-key:default}"
-  export TALON_API_KEYS_ORIGINAL="${TALON_API_KEYS}"
+  export TALON_ADMIN_KEY="${TALON_ADMIN_KEY:-smoke-admin-key}"
+  export TALON_TENANT_KEY="${TALON_TENANT_KEY:-smoke-test-key}"
   # Keep standard port and ask user to free it if occupied (re-check every 10s).
   if ! wait_port_free 8080 180 10; then
     echo "Port 8080 is still in use; cannot run smoke tests on the standard port."
@@ -684,53 +684,54 @@ test_section_12_http_api() {
     cd "$REPO_ROOT" || true
     return 0
   fi
-  local key="${TALON_API_KEYS%%:*}"
+  local admin_key="${TALON_ADMIN_KEY}"
+  local tenant_key="${TALON_TENANT_KEY}"
   assert_pass "GET /health 200" test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health)" = "200"
-  local status_json; status_json="$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/status)"
+  local status_json; status_json="$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/status)"
   assert_pass "GET /status 200 with status field" jq -e '.status' <<< "$status_json" &>/dev/null
   assert_pass "GET /status has dashboard fields (pending_memory_reviews, blocked_count, tenant_id)" \
     jq -e 'has("pending_memory_reviews") and has("blocked_count") and has("tenant_id")' <<< "$status_json" &>/dev/null
   assert_pass "GET /v1/evidence 200 JSON array" \
-    jq -e 'type == "object" and (.entries | type == "array")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/evidence)" &>/dev/null
-  local ev_list; ev_list="$(curl -s -H "X-Talon-Key: $key" 'http://127.0.0.1:8080/v1/evidence?limit=1')"
+    jq -e 'type == "object" and (.entries | type == "array")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/evidence)" &>/dev/null
+  local ev_list; ev_list="$(curl -s -H "X-Talon-Admin-Key: $admin_key" 'http://127.0.0.1:8080/v1/evidence?limit=1')"
   assert_pass "GET /v1/evidence?limit=1 at most one entry" \
     test "$(echo "$ev_list" | jq '.entries | length')" -le 1
   local ev_id; ev_id="$(echo "$ev_list" | jq -r '.entries[0].id // empty')"
   if [[ -n "$ev_id" ]] && [[ "$ev_id" != "null" ]]; then
     assert_pass "GET /v1/evidence/<id> 200 with policy_decision" \
-      jq -e '.policy_decision' <<< "$(curl -s -H "X-Talon-Key: $key" "http://127.0.0.1:8080/v1/evidence/$ev_id")" &>/dev/null
+      jq -e '.policy_decision' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" "http://127.0.0.1:8080/v1/evidence/$ev_id")" &>/dev/null
     assert_pass "GET /v1/evidence/<id>/verify 200 valid: true" \
-      grep -q true <<< "$(curl -s -H "X-Talon-Key: $key" "http://127.0.0.1:8080/v1/evidence/$ev_id/verify")"
+      grep -q true <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" "http://127.0.0.1:8080/v1/evidence/$ev_id/verify")"
   fi
   assert_pass "GET /v1/evidence/nonexistent-id-00000 404" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/evidence/nonexistent-id-00000)" = "404"
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/evidence/nonexistent-id-00000)" = "404"
   if [[ -n "$ev_id" ]] && [[ "$ev_id" != "null" ]]; then
     assert_pass "GET /v1/evidence/timeline?around=<id> 200" \
-      test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Key: $key" "http://127.0.0.1:8080/v1/evidence/timeline?around=$ev_id")" = "200"
+      test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" "http://127.0.0.1:8080/v1/evidence/timeline?around=$ev_id")" = "200"
     assert_pass "GET /v1/evidence/<id>/trace 200 with evidence and steps" \
-      jq -e '.evidence and (.steps | type == "array")' <<< "$(curl -s -H "X-Talon-Key: $key" "http://127.0.0.1:8080/v1/evidence/$ev_id/trace")" &>/dev/null
+      jq -e '.evidence and (.steps | type == "array")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" "http://127.0.0.1:8080/v1/evidence/$ev_id/trace")" &>/dev/null
   fi
   assert_pass "GET /v1/evidence with query params (allowed, model) 200" \
-    jq -e 'type == "object" and (.entries | type == "array")' <<< "$(curl -s -H "X-Talon-Key: $key" 'http://127.0.0.1:8080/v1/evidence?limit=3&allowed=true')" &>/dev/null
+    jq -e 'type == "object" and (.entries | type == "array")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" 'http://127.0.0.1:8080/v1/evidence?limit=3&allowed=true')" &>/dev/null
   assert_pass "GET /v1/costs 200 with daily/monthly" \
-    jq -e 'type == "object"' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/costs)" &>/dev/null
+    jq -e 'type == "object"' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/costs)" &>/dev/null
   assert_pass "GET /v1/costs/budget 200 with daily_used and monthly_used" \
-    jq -e 'has("daily_used") and has("monthly_used")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/costs/budget)" &>/dev/null
+    jq -e 'has("daily_used") and has("monthly_used")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/costs/budget)" &>/dev/null
   assert_pass "GET /v1/costs/report 200 with total_eur and from/to" \
-    jq -e 'has("total_eur") and has("from") and has("to")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/costs/report)" &>/dev/null
+    jq -e 'has("total_eur") and has("from") and has("to")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/costs/report)" &>/dev/null
   assert_pass "GET /v1/dashboard/tenants-summary 200 with tenants and agents" \
-    jq -e 'has("tenants") and has("agents")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/dashboard/tenants-summary)" &>/dev/null
+    jq -e 'has("tenants") and has("agents")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/dashboard/tenants-summary)" &>/dev/null
   assert_pass "GET /v1/dashboard/denials-by-reason 200 with total and by_reason" \
-    jq -e 'has("total") and has("by_reason")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/dashboard/denials-by-reason)" &>/dev/null
+    jq -e 'has("total") and has("by_reason")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/dashboard/denials-by-reason)" &>/dev/null
   assert_pass "GET /v1/dashboard/governance-alerts 200 with alerts array" \
-    jq -e 'has("alerts") and (.alerts | type == "array")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/dashboard/governance-alerts)" &>/dev/null
+    jq -e 'has("alerts") and (.alerts | type == "array")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/dashboard/governance-alerts)" &>/dev/null
   assert_pass "GET /v1/dashboard/audit-pack 200 with evidence_count" \
-    jq -e 'has("evidence_count") and has("generated_at")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/dashboard/audit-pack)" &>/dev/null
+    jq -e 'has("evidence_count") and has("generated_at")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/dashboard/audit-pack)" &>/dev/null
   assert_pass "GET /v1/dashboard/review-history 200 with reviews array" \
-    jq -e 'has("reviews") and (.reviews | type == "array")' <<< "$(curl -s -H "X-Talon-Key: $key" http://127.0.0.1:8080/v1/dashboard/review-history)" &>/dev/null
+    jq -e 'has("reviews") and (.reviews | type == "array")' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/v1/dashboard/review-history)" &>/dev/null
   assert_pass "POST /v1/evidence/export 200 with CSV or JSON body" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Talon-Key: $key" -H "Content-Type: application/json" -d '{"limit":10,"format":"json"}' http://127.0.0.1:8080/v1/evidence/export)" = "200"
-  local export_body; export_body="$(curl -s -X POST -H "X-Talon-Key: $key" -H "Content-Type: application/json" -d '{"limit":10,"format":"json"}' http://127.0.0.1:8080/v1/evidence/export)"
+    test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Talon-Admin-Key: $admin_key" -H "Content-Type: application/json" -d '{"limit":10,"format":"json"}' http://127.0.0.1:8080/v1/evidence/export)" = "200"
+  local export_body; export_body="$(curl -s -X POST -H "X-Talon-Admin-Key: $admin_key" -H "Content-Type: application/json" -d '{"limit":10,"format":"json"}' http://127.0.0.1:8080/v1/evidence/export)"
   assert_pass "POST /v1/evidence/export JSON returns array of records" \
     jq -e 'type == "array"' <<< "$export_body" &>/dev/null
   local dash_headers
@@ -738,11 +739,11 @@ test_section_12_http_api() {
   assert_pass "GET /dashboard 200" bash -c 'echo "$1" | grep -qi "200"' _ "$dash_headers"
   assert_pass "GET /dashboard Content-Type text/html" grep -qi 'text/html' <<< "$dash_headers"
   assert_pass "No key → 401" test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/evidence)" = "401"
-  assert_pass "Authorization Bearer key 200" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $key" http://127.0.0.1:8080/v1/evidence)" = "200"
-  assert_pass "Wrong key → 401" test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Key: wrong-key" http://127.0.0.1:8080/v1/evidence)" = "401"
+  assert_pass "tenant key can read /v1/evidence (Authorization Bearer) → 200" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tenant_key" http://127.0.0.1:8080/v1/evidence)" = "200"
+  assert_pass "Wrong admin key → 401" test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: wrong-key" http://127.0.0.1:8080/v1/evidence)" = "401"
   assert_pass "POST /mcp tools/list 200 with result" \
-    jq -e '.result' <<< "$(curl -s -X POST -H "X-Talon-Key: $key" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' http://127.0.0.1:8080/mcp)" &>/dev/null
+    jq -e '.result' <<< "$(curl -s -X POST -H "X-Talon-Admin-Key: $admin_key" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' http://127.0.0.1:8080/mcp)" &>/dev/null
   kill "$TALON_SERVE_PID" 2>/dev/null || true
   wait "$TALON_SERVE_PID" 2>/dev/null || true
   TALON_SERVE_PID=""
@@ -785,7 +786,7 @@ gateway:
       base_url: "https://api.openai.com"
   callers:
     - name: "smoke-caller"
-      api_key: "talon-gw-smoke-001"
+      tenant_key: "talon-gw-smoke-001"
       tenant_id: "default"
       allowed_providers: ["openai"]
   default_policy:
@@ -805,7 +806,7 @@ GWEOF
     return 0
   fi
   local gw_key="talon-gw-smoke-001"
-  grep -q "talon-gw-smoke-001" "$dir/talon.config.yaml" 2>/dev/null || gw_key="$(grep -oE 'api_key:\s*[^[:space:]]+' "$dir/talon.config.yaml" | head -1 | sed 's/api_key:\s*//')"
+  grep -q "talon-gw-smoke-001" "$dir/talon.config.yaml" 2>/dev/null || gw_key="$(grep -oE 'tenant_key:\s*[^[:space:]]+' "$dir/talon.config.yaml" | head -1 | sed 's/tenant_key:\s*//')"
   local code; code="$(smoke_gw_post_chat_to_file "$gateway_base_url" "Bearer $gw_key" "$SMOKE_BODY_SIMPLE" /tmp/talon_gw_resp.json)"
   assert_pass "POST gateway chat/completions 200" test "$code" = "200"
   assert_fail "response must not contain sk- (no API key leak)" grep -q "sk-" /tmp/talon_gw_resp.json 2>/dev/null
@@ -851,7 +852,9 @@ test_section_15_multi_tenant() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
-  export TALON_API_KEYS="key-tenant-a:tenant-a,key-tenant-b:tenant-b"
+  local tenant_key_a="key-tenant-a"
+  local tenant_key_b="key-tenant-b"
+  export TALON_TENANT_KEY="$tenant_key_a"
   run_talon run --tenant tenant-a "Hello from A" &>/dev/null; true
   run_talon run --tenant tenant-b "Hello from B" &>/dev/null; true
   assert_pass "talon run --tenant tenant-a exits 0" run_talon run --tenant tenant-a "Hello from A"
@@ -859,7 +862,7 @@ test_section_15_multi_tenant() {
   local list_a; list_a="$(run_talon audit list --tenant tenant-a 2>/dev/null)"; true
   assert_fail "audit list tenant-a has no tenant-b entries" env SMOKE_LIST_A="$list_a" bash -c 'echo "$SMOKE_LIST_A" | grep -q "tenant-b"'
   # Restore default API keys for remaining sections
-  export TALON_API_KEYS="${TALON_API_KEYS_ORIGINAL:-smoke-test-key:default}"
+  export TALON_TENANT_KEY="${TALON_TENANT_KEY:-smoke-test-key}"
   cd "$REPO_ROOT" || true
 }
 
@@ -1129,7 +1132,6 @@ gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
   mode: "enforce"
-  dashboard_token: "smoke-dash-token"
   providers:
     openai:
       enabled: true
@@ -1137,17 +1139,17 @@ gateway:
       base_url: "https://api.openai.com"
   callers:
     - name: "metrics-caller"
-      api_key: "talon-gw-metrics-001"
+      tenant_key: "talon-gw-metrics-001"
       tenant_id: "default"
       allowed_providers: ["openai"]
     - name: "pii-block-caller"
-      api_key: "talon-gw-pii-block-001"
+      tenant_key: "talon-gw-pii-block-001"
       tenant_id: "default"
       allowed_providers: ["openai"]
       policy_overrides:
         pii_action: "block"
     - name: "tool-filter-caller"
-      api_key: "talon-gw-tool-filter-001"
+      tenant_key: "talon-gw-tool-filter-001"
       tenant_id: "default"
       allowed_providers: ["openai"]
       policy_overrides:
@@ -1210,19 +1212,18 @@ CACHEEOF
     cd "$REPO_ROOT" || true
     return 0
   fi
-  local api_key="smoke-test-key"
+  local admin_key="${TALON_ADMIN_KEY}"
   local gw_key="talon-gw-metrics-001"
-  local dash_token="smoke-dash-token"
 
   # --- 23.1: Dashboard HTML served ---
-  assert_pass "GET /gateway/dashboard 200 (with token)" \
-    test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_GATEWAY_DASHBOARD" "Bearer $dash_token")" = "200"
-  local dash_html; dash_html="$(smoke_gw_get_dashboard "$dashboard_base_url" "Bearer $dash_token")"
+  assert_pass "GET /gateway/dashboard 200 (with admin key)" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" "${dashboard_base_url}${SMOKE_PATH_GATEWAY_DASHBOARD}")" = "200"
+  local dash_html; dash_html="$(smoke_gw_get_dashboard "$dashboard_base_url" "$admin_key")"
   assert_pass "dashboard HTML contains Talon" grep -qi "talon" <<< "$dash_html"
   assert_pass "dashboard HTML contains <script>" grep -qi "<script" <<< "$dash_html"
 
   # --- 23.2: Metrics JSON endpoint structure (before any requests) ---
-  local snap_before; snap_before="$(smoke_gw_get_metrics "$dashboard_base_url" "Bearer $dash_token")"
+  local snap_before; snap_before="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
   assert_pass "GET /api/v1/metrics returns valid JSON" jq -e '.' <<< "$snap_before" &>/dev/null
   assert_pass "metrics snapshot has summary.total_requests" \
     jq -e '.summary.total_requests >= 0' <<< "$snap_before" &>/dev/null
@@ -1294,7 +1295,7 @@ CACHEEOF
   sleep 3
 
   # --- 23.4: Metrics reflect the gateway requests ---
-  local snap_after; snap_after="$(smoke_gw_get_metrics "$dashboard_base_url" "Bearer $dash_token")"
+  local snap_after; snap_after="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
   assert_pass "metrics snapshot after requests is valid JSON" jq -e '.' <<< "$snap_after" &>/dev/null
   local after_count; after_count="$(jq '.summary.total_requests' <<< "$snap_after")"
   if [[ -n "$after_count" ]] && [[ -n "$before_count" ]] && [[ "$after_count" -gt "$before_count" ]]; then
@@ -1713,21 +1714,20 @@ CACHEEOF
     echo "  -  audit export JSON parse failed — skipping export↔dashboard parity"
   fi
 
-  # --- 23.8: Dashboard token auth works ---
-  assert_pass "dashboard HTML without token → 401" \
+  # --- 23.8: Dashboard admin-key auth works ---
+  assert_pass "dashboard HTML without admin key → 401" \
     test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_GATEWAY_DASHBOARD")" = "401"
-  assert_pass "dashboard metrics without token → 401" \
+  assert_pass "dashboard metrics without admin key → 401" \
     test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_METRICS")" = "401"
-  assert_pass "dashboard metrics with wrong token → 401" \
-    test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_METRICS" "Bearer wrong")" = "401"
-  assert_pass "SSE stream without token → 401" \
+  assert_pass "dashboard metrics with wrong admin key → 401" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: wrong" "${dashboard_base_url}${SMOKE_PATH_METRICS}")" = "401"
+  assert_pass "SSE stream without admin key → 401" \
     test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_METRICS_STREAM")" = "401"
-  # Token via query param
-  assert_pass "dashboard metrics with token query param → 200" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' "${dashboard_base_url}${SMOKE_PATH_METRICS}?token=$dash_token")" = "200"
+  assert_pass "dashboard metrics with admin key → 200" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" "${dashboard_base_url}${SMOKE_PATH_METRICS}")" = "200"
 
   # --- 23.9: SSE stream works ---
-  local sse_out; sse_out="$(timeout 8 curl -s -H "Authorization: Bearer $dash_token" "${dashboard_base_url}${SMOKE_PATH_METRICS_STREAM}" 2>/dev/null)" || true
+  local sse_out; sse_out="$(timeout 8 curl -s -H "X-Talon-Admin-Key: $admin_key" "${dashboard_base_url}${SMOKE_PATH_METRICS_STREAM}" 2>/dev/null)" || true
   if echo "$sse_out" | grep -q "data:"; then
     echo "  ✓  SSE stream returns data events"
     record_pass
@@ -1771,6 +1771,8 @@ test_section_24_plan_dispatch() {
   local base_url="http://127.0.0.1:${serve_port}"
   local plan_id=""
   local serve_plan_id=""
+  local tenant_key="${TALON_TENANT_KEY}"
+  local admin_key="${TALON_ADMIN_KEY}"
   local S_PID=""
   echo ""
   echo "=== SECTION 24 — Plan Review Dispatch ==="
@@ -1843,8 +1845,13 @@ PREVIEWEOF
   fi
 
   local run_json
-  run_json="$(curl -s -X POST "${base_url}/v1/agents/run" -H "X-Talon-Key: smoke-test-key" -H "Content-Type: application/json" \
+  local run_code
+  run_json="$(curl -s -o /tmp/talon_plan_run_resp.json -w '%{http_code}' -X POST "${base_url}/v1/agents/run" -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" \
     -d '{"tenant_id":"default","agent_name":"default","prompt":"Create a concise compliance rollout plan for Q3"}')"
+  run_code="$run_json"
+  run_json="$(< /tmp/talon_plan_run_resp.json 2>/dev/null || true)"
+  rm -f /tmp/talon_plan_run_resp.json 2>/dev/null || true
+  assert_pass "tenant key can call /v1/agents/run (Authorization Bearer) → 200" test "$run_code" = "200"
   serve_plan_id="$(echo "$run_json" | jq -r '.plan_pending // empty' 2>/dev/null || true)"
   if [[ -n "$serve_plan_id" ]]; then
     echo "  ✓  API run returned plan_pending: $serve_plan_id"
@@ -1853,19 +1860,29 @@ PREVIEWEOF
     log_failure "API run should return plan_pending under human oversight" "json=$run_json"
   fi
   if [[ -n "$serve_plan_id" ]]; then
+    local tenant_approve_code
+    tenant_approve_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${base_url}/v1/plans/${serve_plan_id}/approve" -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" -d '{"reviewed_by":"smoke-test"}')"
+    if [[ "$tenant_approve_code" == "401" ]] || [[ "$tenant_approve_code" == "403" ]]; then
+      echo "  ✓  tenant key cannot approve pending plan via API (HTTP ${tenant_approve_code})"
+      record_pass
+    else
+      log_failure "tenant key must not approve pending plan via API" "expected 401 or 403, got ${tenant_approve_code}"
+    fi
     assert_pass "approve pending plan via API exits 200" \
-      test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "${base_url}/v1/plans/${serve_plan_id}/approve" -H "X-Talon-Key: smoke-test-key" -H "Content-Type: application/json" -d '{"reviewed_by":"smoke-test"}')" = "200"
+      test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "${base_url}/v1/plans/${serve_plan_id}/approve" -H "X-Talon-Admin-Key: ${admin_key}" -H "Content-Type: application/json" -d '{"reviewed_by":"smoke-test"}')" = "200"
     sleep 4
     local pending_json
-    pending_json="$(curl -s -H "X-Talon-Key: smoke-test-key" "${base_url}/v1/plans/pending")"
+    pending_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/plans/pending")"
     if echo "$pending_json" | jq -e --arg pid "$serve_plan_id" '.plans[]? | select(.id == $pid)' &>/dev/null; then
       log_failure "serve auto-dispatch should remove approved plan from pending list" "plan_id=$serve_plan_id"
     else
       echo "  ✓  serve auto-dispatch removed approved plan from pending list"
       record_pass
     fi
+    assert_pass "tenant key can read /v1/evidence (Authorization Bearer) → 200" \
+      test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${tenant_key}" "${base_url}/v1/evidence?limit=10")" = "200"
     assert_pass "evidence index contains plan_dispatch invocation after approval" \
-      bash -c "curl -s -H 'X-Talon-Key: smoke-test-key' '${base_url}/v1/evidence?limit=50' | jq -e '.entries[]? | select(.invocation_type == \"plan_dispatch\")' >/dev/null"
+      bash -c "curl -s -H 'X-Talon-Admin-Key: ${admin_key}' '${base_url}/v1/evidence?limit=50' | jq -e '.entries[]? | select(.invocation_type == \"plan_dispatch\")' >/dev/null"
   fi
 
   kill "$S_PID" 2>/dev/null || true

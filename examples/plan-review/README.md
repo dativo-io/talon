@@ -31,14 +31,14 @@ curl http://localhost:8080/v1/plans/pending
 
 # Approve a plan
 curl -X POST http://localhost:8080/v1/plans/<plan-id>/approve \
-  -H "X-Talon-Key: your-api-key"
+  -H "X-Talon-Admin-Key: your-admin-key"
 
 # Non-serve mode: execute an approved plan manually
 talon plan execute <plan-id> --tenant default
 
 # Reject a plan
 curl -X POST http://localhost:8080/v1/plans/<plan-id>/reject \
-  -H "X-Talon-Key: your-api-key" \
+  -H "X-Talon-Admin-Key: your-admin-key" \
   -d '{"reason": "Too broad — narrow the search scope"}'
 ```
 

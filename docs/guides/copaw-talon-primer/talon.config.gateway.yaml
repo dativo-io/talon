@@ -14,7 +14,7 @@ gateway:
 
   callers:
     - name: "copaw-main"
-      api_key: "talon-gw-copaw-001"
+      tenant_key: "talon-gw-copaw-001"
       tenant_id: "default"
       team: "engineering"
       tags: ["copaw"]

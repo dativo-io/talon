@@ -98,7 +98,7 @@ func TestBlockedPath_ProviderNotAllowed_EmitsMetrics(t *testing.T) {
 		},
 		Callers: []CallerConfig{
 			{
-				Name: "test-caller", APIKey: "talon-gw-test-001", TenantID: "default",
+				Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default",
 				AllowedProviders: []string{"anthropic"},
 			},
 		},
@@ -132,7 +132,7 @@ func TestBlockedPath_PolicyEvalError_EmitsMetrics(t *testing.T) {
 			"ollama": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
 		Callers: []CallerConfig{
-			{Name: "test-caller", APIKey: "talon-gw-test-001", TenantID: "default"},
+			{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
 		},
 		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
 		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
@@ -165,7 +165,7 @@ func TestBlockedPath_SecretFailure_EmitsMetrics(t *testing.T) {
 			"openai": {Enabled: true, BaseURL: "http://localhost:1", SecretName: "nonexistent-secret"},
 		},
 		Callers: []CallerConfig{
-			{Name: "test-caller", APIKey: "talon-gw-test-001", TenantID: "default"},
+			{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
 		},
 		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
 		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
@@ -210,7 +210,7 @@ func TestBlockedPath_AuthFailure_EmitsErrorCounter(t *testing.T) {
 			"ollama": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
 		Callers: []CallerConfig{
-			{Name: "test", APIKey: "correct-key", TenantID: "default"},
+			{Name: "test", TenantKey: "correct-key", TenantID: "default"},
 		},
 		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(true)},
 		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
@@ -261,7 +261,7 @@ func TestBlockedPath_PIIBlock_EmitsDashboardEvent(t *testing.T) {
 			"ollama": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
 		Callers: []CallerConfig{
-			{Name: "test-caller", APIKey: "talon-gw-test-001", TenantID: "default"},
+			{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
 		},
 		ServerDefaults: ServerDefaults{DefaultPIIAction: "block"},
 		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
@@ -288,7 +288,7 @@ func TestBlockedPath_PolicyDeny_EmitsDashboardEvent(t *testing.T) {
 			"ollama": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
 		Callers: []CallerConfig{
-			{Name: "test-caller", APIKey: "talon-gw-test-001", TenantID: "default"},
+			{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
 		},
 		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
 		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
@@ -348,7 +348,7 @@ func TestBlockedPath_AllBlockedPathsConsistent(t *testing.T) {
 					"openai": {Enabled: true, BaseURL: "http://localhost:1"},
 				},
 				Callers: []CallerConfig{
-					{Name: "test-caller", APIKey: "talon-gw-test-001", TenantID: "default"},
+					{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
 				},
 				ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
 				Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},

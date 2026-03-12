@@ -16,17 +16,7 @@ The dashboard is served on the same port as the API (default `:8080`).
 
 ### Configuration
 
-Add the following to the `gateway:` block in `talon.config.yaml`:
-
-```yaml
-gateway:
-  # ... providers, callers, etc.
-  dashboard_token: "your-secret-token"   # optional; when set, all dashboard endpoints require this token
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `gateway.dashboard_token` | string | `""` (no auth) | Bearer token for dashboard access. When empty, dashboard is open. |
+No dedicated dashboard token is required. Dashboard and metrics endpoints use the server admin key from `TALON_ADMIN_KEY`.
 
 ---
 
@@ -38,10 +28,10 @@ All dashboard endpoints are served on the main server port (same as `/health`, `
 
 Returns the single-file HTML dashboard. The page auto-connects to the SSE stream for live updates, with a polling fallback.
 
-**Authentication:** Requires `Authorization: Bearer <dashboard_token>` when `dashboard_token` is configured.
+**Authentication:** Requires admin auth (`X-Talon-Admin-Key: <key>` preferred, bearer fallback accepted).
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/gateway/dashboard
+curl -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/gateway/dashboard
 ```
 
 ### `GET /api/v1/metrics`
@@ -51,7 +41,7 @@ Returns the current metrics snapshot as JSON.
 **Authentication:** Same as above.
 
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/metrics | jq .
+curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/metrics | jq .
 ```
 
 **Response:**
@@ -158,7 +148,7 @@ Server-Sent Events stream. Pushes one JSON snapshot every 5 seconds.
 **Authentication:** Same as above.
 
 ```bash
-curl -N -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/metrics/stream
+curl -N -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/metrics/stream
 ```
 
 Each event has the format:
@@ -295,7 +285,7 @@ The in-memory collector adds real-time aggregation (5-minute buckets, latency pe
 
 | Concern | Approach |
 |---------|----------|
-| Authentication | `dashboard_token` in gateway config. When set, all dashboard endpoints require `Authorization: Bearer <token>`. Token comparison uses `crypto/subtle.ConstantTimeCompare`. |
+| Authentication | `TALON_ADMIN_KEY` on the server. Clients send `X-Talon-Admin-Key` (preferred) or bearer fallback. Token comparison uses `crypto/subtle.ConstantTimeCompare`. |
 | Network binding | Dashboard is served on the main listen address. Bind to `127.0.0.1:8080` (default) to prevent external access. Use a reverse proxy with TLS for production. |
 | No secrets in responses | The metrics snapshot never contains API keys, secrets, or raw prompt/response content. |
 | CORS | Not enabled by default. Add CORS middleware if the dashboard is accessed from a different origin. |

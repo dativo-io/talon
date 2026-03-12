@@ -198,7 +198,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if err == ErrCallerIDRequired || err == ErrCallerNotFound {
 			RecordGatewayError(ctx, "auth")
-			WriteProviderError(w, route.Provider, http.StatusUnauthorized, "Invalid or missing API key")
+			WriteProviderError(w, route.Provider, http.StatusUnauthorized, "Invalid or missing tenant key")
 			return
 		}
 		RecordGatewayError(ctx, "auth")

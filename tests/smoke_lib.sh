@@ -2,7 +2,7 @@
 # Sourced by smoke_test.sh. Use these helpers so we don't duplicate URLs or request bodies.
 #
 # Usage: set SMOKE_BASE_URL (e.g. http://127.0.0.1:8080), then call the functions below.
-# Gateway auth: pass "Bearer <token>" or "Bearer <api_key>" for caller keys.
+# Gateway caller auth: pass "Bearer <tenant_key>" for proxy calls.
 
 # --- Canonical paths (single source of truth) ---
 SMOKE_PATH_HEALTH="/health"
@@ -74,18 +74,18 @@ smoke_get_code() {
 }
 
 # --- Dashboard: GET metrics JSON ---
-# Usage: smoke_gw_get_metrics base_url "Bearer <dash_token>"
+# Usage: smoke_gw_get_metrics base_url "<admin_key>"
 # Outputs: JSON body (stdout)
 smoke_gw_get_metrics() {
-  local base="$1" auth="$2"
-  curl -s -H "Authorization: $auth" "${base}${SMOKE_PATH_METRICS}" 2>/dev/null
+  local base="$1" admin_key="$2"
+  curl -s -H "X-Talon-Admin-Key: $admin_key" "${base}${SMOKE_PATH_METRICS}" 2>/dev/null
 }
 
 # --- Dashboard: GET dashboard HTML ---
-# Usage: smoke_gw_get_dashboard base_url "Bearer <dash_token>"
+# Usage: smoke_gw_get_dashboard base_url "<admin_key>"
 smoke_gw_get_dashboard() {
-  local base="$1" auth="$2"
-  curl -s -H "Authorization: $auth" "${base}${SMOKE_PATH_GATEWAY_DASHBOARD}" 2>/dev/null
+  local base="$1" admin_key="$2"
+  curl -s -H "X-Talon-Admin-Key: $admin_key" "${base}${SMOKE_PATH_GATEWAY_DASHBOARD}" 2>/dev/null
 }
 
 # --- Wait until health returns 200 (for server startup) ---

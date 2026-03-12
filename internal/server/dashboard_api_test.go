@@ -22,8 +22,8 @@ func newTestServerWithDashboard(t *testing.T, token string) (*Server, *metrics.C
 	s := &Server{
 		metricsCollector:     collector,
 		gatewayDashboardHTML: "<html>test dashboard</html>",
-		dashboardToken:       token,
-		apiKeys:              map[string]string{},
+		adminKey:             token,
+		tenantKeys:           map[string]string{},
 	}
 	return s, collector
 }
@@ -171,7 +171,7 @@ func TestHandleMetricsJSON_IncludesPlanStats(t *testing.T) {
 	s := &Server{
 		metricsCollector:     collector,
 		gatewayDashboardHTML: "<html>test dashboard</html>",
-		apiKeys:              map[string]string{},
+		tenantKeys:           map[string]string{},
 	}
 
 	req := newTestRequest("GET", "/api/v1/metrics")
@@ -291,8 +291,8 @@ func TestHandleMetricsStreamSSE(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "data: ")
 }
 
-func TestDashboardTokenMiddleware_NoTokenRequired(t *testing.T) {
-	mw := DashboardTokenMiddleware("")
+func TestAdminKeyMiddleware_NoKeyRequired(t *testing.T) {
+	mw := AdminKeyMiddleware("")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -304,8 +304,22 @@ func TestDashboardTokenMiddleware_NoTokenRequired(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-func TestDashboardTokenMiddleware_ValidToken(t *testing.T) {
-	mw := DashboardTokenMiddleware("s3cr3t")
+func TestAdminKeyMiddleware_ValidAdminHeader(t *testing.T) {
+	mw := AdminKeyMiddleware("s3cr3t")
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := newTestRequest("GET", "/")
+	req.Header.Set("X-Talon-Admin-Key", "s3cr3t")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestAdminKeyMiddleware_BearerFallback(t *testing.T) {
+	mw := AdminKeyMiddleware("s3cr3t")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -318,72 +332,57 @@ func TestDashboardTokenMiddleware_ValidToken(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-func TestDashboardTokenMiddleware_InvalidToken(t *testing.T) {
-	mw := DashboardTokenMiddleware("s3cr3t")
+func TestAdminKeyMiddleware_InvalidKey(t *testing.T) {
+	mw := AdminKeyMiddleware("s3cr3t")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := newTestRequest("GET", "/")
-	req.Header.Set("Authorization", "Bearer wrong")
+	req.Header.Set("X-Talon-Admin-Key", "wrong")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
-func TestDashboardTokenMiddleware_MissingToken(t *testing.T) {
-	mw := DashboardTokenMiddleware("s3cr3t")
+func TestTenantOrAdminMiddleware_AllowsTenantBearer(t *testing.T) {
+	mw := TenantOrAdminMiddleware(map[string]string{"tenant-key-1": "tenant-default"}, "admin-secret")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := newTestRequest("GET", "/")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-}
-
-func TestDashboardTokenMiddleware_QueryParam(t *testing.T) {
-	mw := DashboardTokenMiddleware("s3cr3t")
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := newTestRequest("GET", "/?token=s3cr3t")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
-
-func TestDashboardOrAPIKeyMiddleware_AllowsAPIKey(t *testing.T) {
-	mw := DashboardOrAPIKeyMiddleware("dashboard-token", map[string]string{"api-key-1": "tenant-default"})
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
 	}))
 
 	req := newTestRequest("GET", "/api/v1/metrics")
-	req.Header.Set("X-Talon-Key", "api-key-1")
+	req.Header.Set("Authorization", "Bearer tenant-key-1")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "ok", rec.Body.String())
 }
 
-func TestDashboardOrAPIKeyMiddleware_AllowsToken(t *testing.T) {
-	mw := DashboardOrAPIKeyMiddleware("dashboard-token", map[string]string{"k": "default"})
+func TestTenantOrAdminMiddleware_AllowsAdminKey(t *testing.T) {
+	mw := TenantOrAdminMiddleware(map[string]string{"tenant-key-1": "tenant-default"}, "admin-secret")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := newTestRequest("GET", "/")
-	req.Header.Set("Authorization", "Bearer dashboard-token")
+	req := newTestRequest("GET", "/api/v1/metrics")
+	req.Header.Set("X-Talon-Admin-Key", "admin-secret")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestTenantOrAdminMiddleware_RejectsMissingAuth(t *testing.T) {
+	mw := TenantOrAdminMiddleware(map[string]string{"tenant-key-1": "tenant-default"}, "admin-secret")
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := newTestRequest("GET", "/api/v1/metrics")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }

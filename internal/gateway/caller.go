@@ -13,12 +13,12 @@ var (
 	ErrCallerIDRequired = errors.New("caller identification required")
 )
 
-// ResolveCaller identifies the caller from the request using API key or source IP.
-// Uses timing-safe comparison for API key lookup. Returns the CallerConfig or an error.
+// ResolveCaller identifies the caller from the request using tenant key or source IP.
+// Uses timing-safe comparison for tenant key lookup. Returns the CallerConfig or an error.
 func (c *GatewayConfig) ResolveCaller(r *http.Request) (*CallerConfig, error) {
-	apiKey := extractAPIKey(r)
-	if apiKey != "" {
-		if caller := c.resolveCallerByAPIKey(r, apiKey); caller != nil {
+	tenantKey := extractTenantKey(r)
+	if tenantKey != "" {
+		if caller := c.resolveCallerByTenantKey(r, tenantKey); caller != nil {
 			return caller, nil
 		}
 		if c.ServerDefaults.CallerIDRequired() {
@@ -38,14 +38,14 @@ func (c *GatewayConfig) ResolveCaller(r *http.Request) (*CallerConfig, error) {
 	return &CallerConfig{Name: "anonymous", TenantID: "default"}, nil
 }
 
-// resolveCallerByAPIKey finds a caller by API key (timing-safe). Returns nil if no match.
-func (c *GatewayConfig) resolveCallerByAPIKey(_ *http.Request, apiKey string) *CallerConfig {
+// resolveCallerByTenantKey finds a caller by tenant key (timing-safe). Returns nil if no match.
+func (c *GatewayConfig) resolveCallerByTenantKey(_ *http.Request, tenantKey string) *CallerConfig {
 	for i := range c.Callers {
 		caller := &c.Callers[i]
-		if caller.IdentifyBy == "source_ip" || caller.APIKey == "" {
+		if caller.IdentifyBy == "source_ip" || caller.TenantKey == "" {
 			continue
 		}
-		if subtle.ConstantTimeCompare([]byte(caller.APIKey), []byte(apiKey)) == 1 {
+		if subtle.ConstantTimeCompare([]byte(caller.TenantKey), []byte(tenantKey)) == 1 {
 			return caller
 		}
 	}
@@ -72,7 +72,7 @@ func (c *GatewayConfig) resolveCallerBySourceIP(clientIP net.IP) *CallerConfig {
 	return nil
 }
 
-func extractAPIKey(r *http.Request) string {
+func extractTenantKey(r *http.Request) string {
 	// OpenAI-style and common: Authorization: Bearer <key>
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		if strings.HasPrefix(auth, "Bearer ") {

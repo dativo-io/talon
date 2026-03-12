@@ -223,8 +223,8 @@ talon audit export --format csv --from ... --to ...  # Export for compliance (in
 Run the full REST API, MCP server, and embedded dashboard:
 
 ```bash
-# Set API keys (comma-separated: key or key:tenant_id)
-export TALON_API_KEYS="your-secret-key:default"
+# Set admin key (for admin + dashboard/metrics endpoints)
+export TALON_ADMIN_KEY="replace-with-strong-admin-key"
 
 # Start server (dashboard at / and /dashboard)
 talon serve --port 8080
@@ -236,7 +236,7 @@ talon serve --port 8080 --proxy-config examples/vendor-proxy/zendesk-proxy.talon
 talon serve --port 8080 --gateway --gateway-config examples/gateway/talon.config.gateway.yaml
 ```
 
-Endpoints include: `GET /v1/health`, `GET /v1/status`, `POST /v1/agents/run`, `POST /v1/chat/completions` (OpenAI-compatible), `GET /v1/evidence`, `GET /v1/costs`, `GET /v1/plans/pending` (plan review), `POST /mcp` (native MCP), `POST /mcp/proxy` (when proxy is configured), and **`POST /v1/proxy/{provider}/v1/chat/completions`** (LLM API gateway when `--gateway` is set; caller auth via `Authorization: Bearer <gateway-caller-key>`). Talon API routes use `X-Talon-Key: <key>` or `Authorization: Bearer <key>`.
+Endpoints include: `GET /v1/health`, `GET /v1/status`, `POST /v1/agents/run`, `POST /v1/chat/completions` (OpenAI-compatible), `GET /v1/evidence`, `GET /v1/costs`, `GET /v1/plans/pending` (plan review), `POST /mcp` (native MCP), `POST /mcp/proxy` (when proxy is configured), and **`POST /v1/proxy/{provider}/v1/chat/completions`** (LLM API gateway when `--gateway` is set; caller auth via `Authorization: Bearer <tenant-key>`). Tenant-scoped API routes use `Authorization: Bearer <tenant-key>`. Admin-only routes use `X-Talon-Admin-Key: <key>` (or bearer fallback).
 
 **See:** [QUICKSTART.md](docs/QUICKSTART.md) for serve and dashboard usage.
 
@@ -259,7 +259,7 @@ Talon intercepts MCP traffic, enforces policy, redacts PII, and records evidence
 
 Route raw LLM API traffic (OpenAI, Anthropic, Ollama) through Talon so desktop apps, Slack bots, and scripts get the same controls without code changes:
 
-1. Create a gateway config (see `examples/gateway/talon.config.gateway.yaml`) with providers, caller API keys, and optional policy overrides (allowed models, cost limits).
+1. Create a gateway config (see `examples/gateway/talon.config.gateway.yaml`) with providers, caller tenant keys, and optional policy overrides (allowed models, cost limits).
 2. Start Talon with `--gateway` and `--gateway-config`:
    ```bash
    talon serve --port 8080 --gateway --gateway-config path/to/gateway.yaml
