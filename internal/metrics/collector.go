@@ -39,6 +39,8 @@ type Summary struct {
 	P99LatencyMS    int64   `json:"p99_latency_ms"`
 	ErrorRate       float64 `json:"error_rate"`
 	ActiveRuns      int     `json:"active_runs"`
+	AvgTTFTMS       int64   `json:"avg_ttft_ms,omitempty"` // average time to first token (streaming)
+	AvgTPOTMS       float64 `json:"avg_tpot_ms,omitempty"` // average time per output token (streaming)
 }
 
 // TimePoint is a count at a 5-minute bucket.
@@ -151,6 +153,8 @@ type GatewayEvent struct {
 	HasError         bool
 	CacheHit         bool
 	CostSaved        float64
+	TTFTMS           int64   // time to first token (streaming); 0 when not streaming
+	TPOTMS           float64 // time per output token (streaming); 0 when not applicable
 
 	IntentClassification *IntentClassificationEvent
 	IsBulk               bool
@@ -219,6 +223,10 @@ type Collector struct {
 	totalErrors         int
 	totalCostEUR        float64
 	totalLatencyMS      int64
+	totalTTFTMS         int64   // sum of TTFT for streaming requests (for average)
+	ttftCount           int     // number of events with TTFT > 0
+	totalTPOTMS         float64 // sum of TPOT for streaming requests (for average)
+	tpotCount           int     // number of events with TPOT > 0
 	latencyRing         [maxLatencySamples]int64
 	latencyRingPos      int
 	latencyRingLen      int
@@ -313,6 +321,15 @@ func (c *Collector) processEvent(e GatewayEvent) {
 	c.latencyRingPos = (c.latencyRingPos + 1) % maxLatencySamples
 	if c.latencyRingLen < maxLatencySamples {
 		c.latencyRingLen++
+	}
+
+	if e.TTFTMS > 0 {
+		c.totalTTFTMS += e.TTFTMS
+		c.ttftCount++
+	}
+	if e.TPOTMS > 0 {
+		c.totalTPOTMS += e.TPOTMS
+		c.tpotCount++
 	}
 
 	c.updateBucket(e)
@@ -439,11 +456,19 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 		costTimeline = append(costTimeline, CostTimePoint{Time: k, CostEUR: b.costEUR})
 	}
 
-	var avgLatency, p99Latency int64
-	var errorRate float64
+	var avgLatency, p99Latency, avgTTFTMS int64
+	var errorRate, avgTPOTMS float64
 	if c.totalRequests > 0 {
 		avgLatency = c.totalLatencyMS / int64(c.totalRequests)
 		errorRate = float64(c.totalErrors) / float64(c.totalRequests)
+	}
+	if c.ttftCount > 0 {
+		avgTTFTMS = c.totalTTFTMS / int64(c.ttftCount)
+	}
+	if c.tpotCount > 0 {
+		avgTPOTMS = c.totalTPOTMS / float64(c.tpotCount)
+	}
+	if c.totalRequests > 0 {
 		if c.latencyRingLen > 0 {
 			sorted := make([]int64, c.latencyRingLen)
 			copy(sorted, c.latencyRing[:c.latencyRingLen])
@@ -506,6 +531,8 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 			P99LatencyMS:    p99Latency,
 			ErrorRate:       errorRate,
 			ActiveRuns:      activeRuns,
+			AvgTTFTMS:       avgTTFTMS,
+			AvgTPOTMS:       avgTPOTMS,
 		},
 		RequestsTimeline: reqTimeline,
 		PIITimeline:      piiTimeline,

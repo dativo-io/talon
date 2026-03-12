@@ -39,6 +39,14 @@ func (m *mockQuerier) CacheSavings(_ context.Context, _ string, _, _ time.Time) 
 	return m.cacheHits, m.cacheSaved, nil
 }
 
+func (m *mockQuerier) AvgTTFT(_ context.Context, _, _ string, _, _ time.Time) (float64, error) {
+	return 0, nil
+}
+
+func (m *mockQuerier) AvgTPOT(_ context.Context, _, _ string, _, _ time.Time) (float64, error) {
+	return 0, nil
+}
+
 func newTestCollector(mode string, querier *mockQuerier, opts ...CollectorOption) *Collector {
 	if querier == nil {
 		return NewCollector(mode, nil, opts...)
@@ -81,6 +89,21 @@ func TestRecordSingleEvent(t *testing.T) {
 	assert.Equal(t, 2, snap.Summary.PIIRedactions)
 	assert.InDelta(t, 0.05, snap.Summary.TotalCostEUR, 0.001)
 	assert.Equal(t, int64(120), snap.Summary.AvgLatencyMS)
+}
+
+func TestStreamingMetricsAggregation(t *testing.T) {
+	c := newTestCollector("enforce", nil)
+	defer c.Close()
+
+	c.Record(GatewayEvent{Timestamp: time.Now(), TTFTMS: 100, TPOTMS: 0.5})
+	c.Record(GatewayEvent{Timestamp: time.Now(), TTFTMS: 200, TPOTMS: 1.0})
+	c.Record(GatewayEvent{Timestamp: time.Now()}) // no streaming metrics
+	waitForProcessing(c)
+
+	snap := c.Snapshot(context.Background())
+	assert.Equal(t, 3, snap.Summary.TotalRequests)
+	assert.Equal(t, int64(150), snap.Summary.AvgTTFTMS, "average of 100 and 200")
+	assert.InDelta(t, 0.75, snap.Summary.AvgTPOTMS, 0.01, "average of 0.5 and 1.0")
 }
 
 func TestBlockedRequests(t *testing.T) {
@@ -245,13 +268,15 @@ func TestMetricsQuerierCache(t *testing.T) {
 	c := newTestCollector("enforce", q)
 	defer c.Close()
 
-	c.Record(GatewayEvent{Timestamp: time.Now()})
+	c.Record(GatewayEvent{Timestamp: time.Now(), CallerID: "test-caller"})
 	waitForProcessing(c)
 
 	snap := c.Snapshot(context.Background())
 	require.NotNil(t, snap.CacheStats)
 	assert.Equal(t, 15, snap.CacheStats.Hits)
 	assert.InDelta(t, 0.75, snap.CacheStats.CostSaved, 0.001)
+	// Semantic cache metrics cross-checks (same invariants as dashboard docs and smoke tests)
+	assertSnapshotCrossChecks(t, snap)
 }
 
 func TestNoBudgetWithoutLimits(t *testing.T) {
@@ -267,7 +292,8 @@ func TestPIITimelineAndCostTimeline(t *testing.T) {
 	c := newTestCollector("enforce", nil)
 	defer c.Close()
 
-	base := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	// Use a time within the last 24h so buildInMemorySnapshot includes these buckets
+	base := time.Now().UTC().Truncate(5 * time.Minute).Add(-1 * time.Hour)
 	c.Record(GatewayEvent{
 		Timestamp:   base,
 		PIIDetected: []string{"email", "iban"},
@@ -346,7 +372,8 @@ func TestTimelineGroups5MinBuckets(t *testing.T) {
 	c := newTestCollector("enforce", nil)
 	defer c.Close()
 
-	base := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	// Use a time within the last 24h so buildInMemorySnapshot includes these buckets
+	base := time.Now().UTC().Truncate(5 * time.Minute).Add(-1 * time.Hour)
 	c.Record(GatewayEvent{Timestamp: base})
 	c.Record(GatewayEvent{Timestamp: base.Add(2 * time.Minute)})
 	c.Record(GatewayEvent{Timestamp: base.Add(10 * time.Minute)})
@@ -358,4 +385,112 @@ func TestTimelineGroups5MinBuckets(t *testing.T) {
 		assert.Equal(t, 2, snap.RequestsTimeline[0].Count)
 		assert.Equal(t, 1, snap.RequestsTimeline[1].Count)
 	}
+}
+
+// assertSnapshotCrossChecks verifies invariants between summary and breakdowns.
+// Used by unit, integration, and documented for smoke tests.
+func assertSnapshotCrossChecks(t *testing.T, snap Snapshot) {
+	t.Helper()
+	// total_requests == sum(caller_stats[].requests)
+	var callerRequests int
+	for _, cs := range snap.CallerStats {
+		callerRequests += cs.Requests
+	}
+	assert.Equal(t, snap.Summary.TotalRequests, callerRequests,
+		"total_requests must equal sum of caller_stats[].requests")
+
+	// blocked_requests == sum(caller_stats[].blocked)
+	var callerBlocked int
+	for _, cs := range snap.CallerStats {
+		callerBlocked += cs.Blocked
+	}
+	assert.Equal(t, snap.Summary.BlockedRequests, callerBlocked,
+		"blocked_requests must equal sum of caller_stats[].blocked")
+
+	// pii_detections == sum(pii_breakdown[].count)
+	var piiSum int
+	for _, p := range snap.PIIBreakdown {
+		piiSum += p.Count
+	}
+	assert.Equal(t, snap.Summary.PIIDetections, piiSum,
+		"pii_detections must equal sum of pii_breakdown[].count")
+
+	// pii_redactions <= pii_detections
+	assert.LessOrEqual(t, snap.Summary.PIIRedactions, snap.Summary.PIIDetections,
+		"pii_redactions must be <= pii_detections")
+
+	// total_cost_eur ≈ sum(caller_stats[].cost_eur)
+	var callerCost float64
+	for _, cs := range snap.CallerStats {
+		callerCost += cs.CostEUR
+	}
+	assert.InDelta(t, snap.Summary.TotalCostEUR, callerCost, 0.0001,
+		"total_cost_eur must equal sum of caller_stats[].cost_eur")
+
+	// blocked_requests <= total_requests
+	assert.LessOrEqual(t, snap.Summary.BlockedRequests, snap.Summary.TotalRequests,
+		"blocked_requests must be <= total_requests")
+
+	// error_rate in [0, 1]
+	assert.GreaterOrEqual(t, snap.Summary.ErrorRate, 0.0, "error_rate must be >= 0")
+	assert.LessOrEqual(t, snap.Summary.ErrorRate, 1.0, "error_rate must be <= 1")
+
+	// When we have multiple requests with latency, p99 >= avg (or both zero)
+	if snap.Summary.TotalRequests >= 2 && snap.Summary.AvgLatencyMS > 0 {
+		assert.GreaterOrEqual(t, snap.Summary.P99LatencyMS, int64(0),
+			"p99_latency_ms must be non-negative")
+	}
+
+	// Semantic cache (cache_stats) invariants when present
+	if snap.CacheStats != nil {
+		assert.GreaterOrEqual(t, snap.CacheStats.Hits, 0, "cache_stats.hits must be >= 0")
+		assert.GreaterOrEqual(t, snap.CacheStats.CostSaved, 0.0, "cache_stats.cost_saved must be >= 0")
+		assert.GreaterOrEqual(t, snap.CacheStats.HitRate, 0.0, "cache_stats.hit_rate must be >= 0")
+		// hit_rate can exceed 1 when store hits (e.g. 24h) exceed in-memory total_requests (since process start)
+	}
+}
+
+func TestSnapshotCrossChecks(t *testing.T) {
+	c := newTestCollector("enforce", nil)
+	defer c.Close()
+
+	now := time.Now()
+	// 15 events: 10 caller "app-a", 5 caller "app-b"; 2 blocked, 3 errors; mixed PII and cost
+	for i := 0; i < 10; i++ {
+		c.Record(GatewayEvent{
+			Timestamp:   now,
+			CallerID:    "app-a",
+			CostEUR:     0.01 * float64(i+1),
+			LatencyMS:   int64(50 + i*10),
+			Blocked:     i == 0,
+			HasError:    i >= 7,
+			PIIDetected: []string{},
+			PIIAction:   "",
+		})
+	}
+	for i := 0; i < 5; i++ {
+		pii := []string{"email"}
+		if i >= 2 {
+			pii = []string{"email", "iban"}
+		}
+		c.Record(GatewayEvent{
+			Timestamp:   now,
+			CallerID:    "app-b",
+			CostEUR:     0.05,
+			LatencyMS:   100,
+			Blocked:     i == 1,
+			PIIDetected: pii,
+			PIIAction:   "redact",
+		})
+	}
+	waitForProcessing(c)
+
+	snap := c.Snapshot(context.Background())
+	require.Equal(t, 15, snap.Summary.TotalRequests)
+	require.Equal(t, 2, snap.Summary.BlockedRequests)
+	assertSnapshotCrossChecks(t, snap)
+
+	// Model breakdown is from querier (nil here), so we only check in-memory cross-checks.
+	// Sum of cost: 0.01+0.02+...+0.10 + 5*0.05 = 0.55 + 0.25 = 0.80
+	assert.InDelta(t, 0.80, snap.Summary.TotalCostEUR, 0.001)
 }

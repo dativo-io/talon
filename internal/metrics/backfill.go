@@ -45,6 +45,8 @@ func evidenceToEvent(e *evidence.Evidence) GatewayEvent {
 		TokensInput:      e.Execution.Tokens.Input,
 		TokensOutput:     e.Execution.Tokens.Output,
 		LatencyMS:        e.Execution.DurationMS,
+		TTFTMS:           e.Execution.TTFTMS,
+		TPOTMS:           e.Execution.TPOTMS,
 		HasError:         e.Execution.Error != "",
 		WouldHaveBlocked: e.ObservationModeOverride,
 		CacheHit:         e.CacheHit,

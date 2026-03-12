@@ -15,4 +15,8 @@ type MetricsQuerier interface {
 	CostByModel(ctx context.Context, tenantID, agentID string, from, to time.Time) (map[string]float64, error)
 	CountInRange(ctx context.Context, tenantID, agentID string, from, to time.Time) (int, error)
 	CacheSavings(ctx context.Context, tenantID string, from, to time.Time) (hits int64, costSaved float64, err error)
+	// AvgTTFT returns average time to first token (ms) for streaming requests in the range; 0 if none.
+	AvgTTFT(ctx context.Context, tenantID, agentID string, from, to time.Time) (float64, error)
+	// AvgTPOT returns average time per output token (ms) for streaming requests in the range; 0 if none.
+	AvgTPOT(ctx context.Context, tenantID, agentID string, from, to time.Time) (float64, error)
 }

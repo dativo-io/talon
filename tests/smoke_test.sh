@@ -28,6 +28,18 @@
 # [SMOKE] CONSISTENCY|name|PASS|... or FAIL|... [SMOKE] SUMMARY|PASS_COUNT|n FAIL_COUNT|n FAILED_TEST|...
 # Share smoke_test_logs.out.txt to verify flows and consistency.
 #
+# Structure:
+# - Request layer: tests/smoke_lib.sh is sourced early. All Talon gateway/dashboard HTTP
+#   requests and canonical payloads (PII, cache, tool block/filter, normal) live there.
+#   Use smoke_gw_post_chat, smoke_gw_get_metrics, smoke_health, SMOKE_BODY_*, etc. so we
+#   don't duplicate URLs or request bodies across sections.
+# - Sections: test_section_01_binary .. test_section_23_dashboard_metrics + test_consistency_checks.
+#   Each is run via run_section in main(); failures are recorded, suite continues.
+# - Section index: 01 binary | 02 init | 03 validate | 04 secrets | 05 dry-run | 06 live-run |
+#   07 PII | 08 attachments | 09 cost | 10 audit | 11 memory | 12 HTTP API | 13 gateway |
+#   14 deny | 15 multi-tenant | 16 shadow | 17 config-provider | 18 compliance-export |
+#   19 CI/CD | 20 edge-cases | 21 doctor/report/enforce | 22 cache | 23 dashboard-metrics | consistency.
+#
 # QA notes (from brief):
 # - Section 16 (Shadow mode): Evidence shadow signal is in shadow_violations or
 #   observation_mode_override (docs/explanation/what-talon-does-to-your-request.md Step 7).
@@ -266,14 +278,19 @@ run_talon() {
   env TALON_DATA_DIR="$TALON_DATA_DIR" talon "$@"
 }
 
+# Central request layer: canonical payloads and HTTP helpers (no duplicate URLs/bodies)
+# shellcheck source=./smoke_lib.sh
+source "$SCRIPT_DIR/smoke_lib.sh"
+
 # Return 0 when a TCP port is currently in LISTEN state, else 1.
 is_port_in_use() {
   local port="${1:-8080}"
   if command -v lsof &>/dev/null; then
     lsof -nP -iTCP:"$port" -sTCP:LISTEN &>/dev/null && return 0
   fi
-  # Fallback when lsof is unavailable: health probe catches common Talon conflicts.
-  curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 "http://127.0.0.1:$port/health" 2>/dev/null | grep -q '200'
+  # Fallback: health probe (uses canonical path from smoke_lib)
+  smoke_health "http://127.0.0.1:$port" && return 0
+  return 1
 }
 
 # Wait until a port is free. If occupied, prompt the user to stop the process and
@@ -780,11 +797,7 @@ GWEOF
   TALON_GATEWAY_PID=""
   run_talon serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.config.yaml" &>/dev/null &
   TALON_GATEWAY_PID=$!
-  local i=0
-  while ! curl -s -o /dev/null -w "%{http_code}" "${gateway_base_url}/health" 2>/dev/null | grep -q 200; do
-    sleep 1; ((i++)); [[ $i -ge 10 ]] && break
-  done
-  if ! curl -s -o /dev/null -w "%{http_code}" "${gateway_base_url}/health" 2>/dev/null | grep -q 200; then
+  if ! smoke_wait_health "$gateway_base_url" 10 1; then
     log_failure "gateway server did not start on port ${gateway_port}" "url=${gateway_base_url}/health"
     kill "$TALON_GATEWAY_PID" 2>/dev/null || true
     TALON_GATEWAY_PID=""
@@ -793,13 +806,10 @@ GWEOF
   fi
   local gw_key="talon-gw-smoke-001"
   grep -q "talon-gw-smoke-001" "$dir/talon.config.yaml" 2>/dev/null || gw_key="$(grep -oE 'api_key:\s*[^[:space:]]+' "$dir/talon.config.yaml" | head -1 | sed 's/api_key:\s*//')"
-  local code; code="$(curl -s -o /tmp/talon_gw_resp.json -w '%{http_code}' -X POST "${gateway_base_url}/v1/proxy/openai/v1/chat/completions" \
-    -H "Authorization: Bearer $gw_key" -H "Content-Type: application/json" \
-    -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Reply PONG"}]}')"
+  local code; code="$(smoke_gw_post_chat_to_file "$gateway_base_url" "Bearer $gw_key" "$SMOKE_BODY_SIMPLE" /tmp/talon_gw_resp.json)"
   assert_pass "POST gateway chat/completions 200" test "$code" = "200"
   assert_fail "response must not contain sk- (no API key leak)" grep -q "sk-" /tmp/talon_gw_resp.json 2>/dev/null
-  assert_pass "Wrong gateway key → 401" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer wrong-key" -H "Content-Type: application/json" -d '{"model":"gpt-4o-mini","messages":[]}' "${gateway_base_url}/v1/proxy/openai/v1/chat/completions")" = "401"
+  assert_pass "Wrong gateway key → 401" test "$(smoke_gw_post_chat "$gateway_base_url" "Bearer wrong-key" "$SMOKE_BODY_EMPTY")" = "401"
   kill "$TALON_GATEWAY_PID" 2>/dev/null || true
   wait "$TALON_GATEWAY_PID" 2>/dev/null || true
   TALON_GATEWAY_PID=""
@@ -1078,6 +1088,14 @@ CACHEEOF
     echo "  -  (talon costs may not show cache line if no hits yet in window)"
   fi
   assert_pass "talon report exits 0" run_talon report
+  # Semantic cache metrics in CLI: report and costs must mention cache when we had a hit
+  local report_out; report_out="$(run_talon report 2>/dev/null)"; true
+  if echo "$report_out" | grep -qiE 'Cache|from cache|cache.*saved'; then
+    echo "  ✓  talon report shows semantic cache metrics (7d/30d hits or saved)"
+    record_pass
+  else
+    echo "  -  talon report may not show cache line (format or window); cache hit was recorded"
+  fi
   # GDPR erasure: erase cache for default tenant, then stats should show zero or reduced
   assert_pass "talon cache erase --tenant default exits 0" run_talon cache erase --tenant default
   assert_pass "talon cache stats after erase exits 0" run_talon cache stats
@@ -1122,32 +1140,51 @@ gateway:
       api_key: "talon-gw-metrics-001"
       tenant_id: "default"
       allowed_providers: ["openai"]
+    - name: "pii-block-caller"
+      api_key: "talon-gw-pii-block-001"
+      tenant_id: "default"
+      allowed_providers: ["openai"]
+      policy_overrides:
+        pii_action: "block"
+    - name: "tool-filter-caller"
+      api_key: "talon-gw-tool-filter-001"
+      tenant_id: "default"
+      allowed_providers: ["openai"]
+      policy_overrides:
+        forbidden_tools: ["exec_cmd"]
+        tool_policy_action: "filter"
   default_policy:
     default_pii_action: "redact"
+    forbidden_tools: ["delete_*"]
+    tool_policy_action: "block"
     max_daily_cost: 100.00
     max_monthly_cost: 500.00
     require_caller_id: true
 GWEOF
     fi
+    # Enable semantic cache so dashboard cache_stats and CLI cache metrics can be tested (append so it overrides scaffold)
+    cat >> "$dir/talon.config.yaml" <<'CACHEEOF'
+
+cache:
+  enabled: true
+  default_ttl: 3600
+  similarity_threshold: 0.92
+  max_entries_per_tenant: 1000
+CACHEEOF
   fi
   local GW_PID=""
   run_talon serve --port "$dashboard_port" --gateway --gateway-config "$dir/talon.config.yaml" &>/dev/null &
   GW_PID=$!
-  local i=0
-  while ! curl -s -o /dev/null -w "%{http_code}" "${dashboard_base_url}/health" 2>/dev/null | grep -q 200; do
-    sleep 1; ((i++)); [[ $i -ge 10 ]] && break
-  done
-  if ! curl -s -o /dev/null -w "%{http_code}" "${dashboard_base_url}/health" 2>/dev/null | grep -q 200; then
+  if ! smoke_wait_health "$dashboard_base_url" 10 1; then
     log_failure "dashboard gateway server did not start on port ${dashboard_port}" "url=${dashboard_base_url}/health"
     kill "$GW_PID" 2>/dev/null || true
     cd "$REPO_ROOT" || true
     return 0
   fi
   # Verify the gateway routes are actually registered (not just health)
-  local gw_probe; gw_probe="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer talon-gw-metrics-001" \
-    -X POST -H "Content-Type: application/json" -d '{}' "${dashboard_base_url}/v1/proxy/openai/v1/chat/completions" 2>/dev/null)"
+  local gw_probe; gw_probe="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-metrics-001" "$SMOKE_BODY_EMPTY")"
   if [[ "$gw_probe" == "404" ]]; then
-    log_failure "gateway routes not registered for dashboard metrics section" "proxy=${dashboard_base_url}/v1/proxy/openai/v1/chat/completions got=404"
+    log_failure "gateway routes not registered for dashboard metrics section" "proxy=${dashboard_base_url}${SMOKE_PATH_GW_PROXY} got=404"
     kill "$GW_PID" 2>/dev/null || true
     wait "$GW_PID" 2>/dev/null || true
     cd "$REPO_ROOT" || true
@@ -1159,13 +1196,13 @@ GWEOF
 
   # --- 23.1: Dashboard HTML served ---
   assert_pass "GET /gateway/dashboard 200 (with token)" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $dash_token" "${dashboard_base_url}/gateway/dashboard")" = "200"
-  local dash_html; dash_html="$(curl -s -H "Authorization: Bearer $dash_token" "${dashboard_base_url}/gateway/dashboard")"
+    test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_GATEWAY_DASHBOARD" "Bearer $dash_token")" = "200"
+  local dash_html; dash_html="$(smoke_gw_get_dashboard "$dashboard_base_url" "Bearer $dash_token")"
   assert_pass "dashboard HTML contains Talon" grep -qi "talon" <<< "$dash_html"
   assert_pass "dashboard HTML contains <script>" grep -qi "<script" <<< "$dash_html"
 
   # --- 23.2: Metrics JSON endpoint structure (before any requests) ---
-  local snap_before; snap_before="$(curl -s -H "Authorization: Bearer $dash_token" "${dashboard_base_url}/api/v1/metrics")"
+  local snap_before; snap_before="$(smoke_gw_get_metrics "$dashboard_base_url" "Bearer $dash_token")"
   assert_pass "GET /api/v1/metrics returns valid JSON" jq -e '.' <<< "$snap_before" &>/dev/null
   assert_pass "metrics snapshot has summary.total_requests" \
     jq -e '.summary.total_requests >= 0' <<< "$snap_before" &>/dev/null
@@ -1196,19 +1233,48 @@ GWEOF
     jq -e '.summary | has("active_runs")' <<< "$snap_before" &>/dev/null
   local before_count; before_count="$(jq '.summary.total_requests' <<< "$snap_before")"
 
-  # --- 23.3: Make gateway requests so metrics accumulate ---
-  # Request 1: normal request (should increment total_requests, model_breakdown, caller_stats)
-  curl -s -o /dev/null -X POST "${dashboard_base_url}/v1/proxy/openai/v1/chat/completions" \
-    -H "Authorization: Bearer $gw_key" -H "Content-Type: application/json" \
-    -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Reply METRICS_OK"}]}' 2>/dev/null || true
-  # Request 2: PII-containing request (should increment pii_detections, pii_breakdown)
-  curl -s -o /dev/null -X POST "${dashboard_base_url}/v1/proxy/openai/v1/chat/completions" \
-    -H "Authorization: Bearer $gw_key" -H "Content-Type: application/json" \
-    -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Contact jan.kowalski@example.com about IBAN DE89370400440532013000"}]}' 2>/dev/null || true
+  # --- 23.2b: PII and tool governance config behaviour (different callers / default_policy) ---
+  # (1) PII block: caller with pii_action: "block" must get 400 on PII body
+  local pii_block_code; pii_block_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-pii-block-001" "$SMOKE_BODY_PII")"
+  if [[ "$pii_block_code" == "400" ]]; then
+    echo "  ✓  PII block config: request with pii-block-caller returns 400"
+    record_pass
+  else
+    log_failure "PII block config: expected 400 for pii-block-caller + PII body" "got HTTP $pii_block_code"
+  fi
+  # (2) Tool block: default_policy forbidden_tools delete_* + tool_policy_action block → 403
+  local tool_block_code; tool_block_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer $gw_key" "$SMOKE_BODY_TOOL_BLOCK")"
+  if [[ "$tool_block_code" == "403" ]]; then
+    echo "  ✓  Tool block config: request with forbidden tool delete_all returns 403"
+    record_pass
+  else
+    log_failure "Tool block config: expected 403 for request with forbidden tool delete_all" "got HTTP $tool_block_code"
+  fi
+  # (3) Tool filter: caller with forbidden_tools exec_cmd + tool_policy_action filter → 200, tools stripped
+  local tool_filter_code; tool_filter_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-tool-filter-001" "$SMOKE_BODY_TOOL_FILTER")"
+  if [[ "$tool_filter_code" == "200" ]]; then
+    echo "  ✓  Tool filter config: request with allowed+forbidden tools returns 200 (forbidden stripped)"
+    record_pass
+  else
+    log_failure "Tool filter config: expected 200 for tool-filter-caller with read_file+exec_cmd" "got HTTP $tool_filter_code"
+  fi
+
+  # --- 23.3: Make 20 gateway requests so metrics accumulate (cross-checks need volume) ---
+  # Requests 1–2: cache (identical body); 3–12: normal (varied); 13–20: PII (canonical body)
+  local req_num
+  for req_num in $(seq 1 20); do
+    if [[ "$req_num" -eq 1 ]] || [[ "$req_num" -eq 2 ]]; then
+      smoke_gw_post_chat "$dashboard_base_url" "Bearer $gw_key" "$SMOKE_BODY_CACHE" >/dev/null || true
+    elif [[ "$req_num" -le 12 ]]; then
+      smoke_gw_post_chat "$dashboard_base_url" "Bearer $gw_key" "$(smoke_body_normal "$req_num")" >/dev/null || true
+    else
+      smoke_gw_post_chat "$dashboard_base_url" "Bearer $gw_key" "$SMOKE_BODY_PII" >/dev/null || true
+    fi
+  done
   sleep 3
 
   # --- 23.4: Metrics reflect the gateway requests ---
-  local snap_after; snap_after="$(curl -s -H "Authorization: Bearer $dash_token" "${dashboard_base_url}/api/v1/metrics")"
+  local snap_after; snap_after="$(smoke_gw_get_metrics "$dashboard_base_url" "Bearer $dash_token")"
   assert_pass "metrics snapshot after requests is valid JSON" jq -e '.' <<< "$snap_after" &>/dev/null
   local after_count; after_count="$(jq '.summary.total_requests' <<< "$snap_after")"
   if [[ -n "$after_count" ]] && [[ -n "$before_count" ]] && [[ "$after_count" -gt "$before_count" ]]; then
@@ -1240,6 +1306,105 @@ GWEOF
     record_pass
   else
     echo "  -  metrics pii_detections = $pii_count (PII scanning may not be active in gateway)"
+  fi
+
+  # --- 23.4a: PII and tool governance metrics (from config-driven block/filter requests) ---
+  local blocked_count; blocked_count="$(jq '.summary.blocked_requests' <<< "$snap_after")"
+  if [[ -n "$blocked_count" ]] && [[ "$blocked_count" != "null" ]] && [[ "$blocked_count" -ge 2 ]]; then
+    echo "  ✓  blocked_requests >= 2 from PII block + tool block ($blocked_count)"
+    record_pass
+  else
+    echo "  -  blocked_requests = ${blocked_count:-null} (expected >= 2 after PII block and tool block)"
+  fi
+  local tools_filt; tools_filt="$(jq '.summary.tools_filtered' <<< "$snap_after")"
+  if [[ -n "$tools_filt" ]] && [[ "$tools_filt" != "null" ]] && [[ "$tools_filt" -ge 1 ]]; then
+    echo "  ✓  tools_filtered >= 1 from tool filter request ($tools_filt)"
+    record_pass
+  else
+    log_failure "tool filter config: expected tools_filtered >= 1" "got $tools_filt"
+  fi
+  local pii_blocker_blocked; pii_blocker_blocked="$(jq -r '[.caller_stats[] | select(.caller == "pii-block-caller") | .blocked] | add // 0' <<< "$snap_after")"
+  if [[ -n "$pii_blocker_blocked" ]] && [[ "$pii_blocker_blocked" != "null" ]] && [[ "$pii_blocker_blocked" -ge 1 ]]; then
+    echo "  ✓  caller pii-block-caller has blocked >= 1 ($pii_blocker_blocked)"
+    record_pass
+  else
+    echo "  -  pii-block-caller blocked = ${pii_blocker_blocked:-null}"
+  fi
+  local tg_filtered; tg_filtered="$(jq '.tool_governance.total_filtered' <<< "$snap_after")"
+  if [[ -n "$tg_filtered" ]] && [[ "$tg_filtered" != "null" ]] && [[ "$tg_filtered" -ge 1 ]]; then
+    echo "  ✓  tool_governance.total_filtered >= 1 ($tg_filtered)"
+    record_pass
+  else
+    echo "  -  tool_governance.total_filtered = ${tg_filtered:-null}"
+  fi
+
+  # --- 23.4b: Cross-checks between metrics (same invariants as unit/integration tests) ---
+  local total_req; total_req="$(jq '.summary.total_requests' <<< "$snap_after")"
+  if [[ -n "$total_req" ]] && [[ "$total_req" != "null" ]] && [[ "$total_req" -ge 15 ]] 2>/dev/null; then
+    echo "  ✓  total_requests >= 15 ($total_req) after 20 gateway requests"
+    record_pass
+  else
+    echo "  -  total_requests = $total_req (expected >= 15)"
+  fi
+  # total_requests == sum(caller_stats[].requests)
+  local caller_sum; caller_sum="$(jq '[.caller_stats[].requests] | add // 0' <<< "$snap_after")"
+  if [[ -n "$total_req" ]] && [[ -n "$caller_sum" ]] && [[ "$caller_sum" != "null" ]]; then
+    if [[ "$total_req" -eq "$caller_sum" ]]; then
+      echo "  ✓  cross-check: total_requests ($total_req) == sum(caller_stats[].requests) ($caller_sum)"
+      record_pass
+    else
+      log_failure "metrics cross-check: total_requests ($total_req) != sum(caller_stats[].requests) ($caller_sum)" "invariant violation"
+    fi
+  fi
+  # blocked_requests == sum(caller_stats[].blocked)
+  local blocked_req; blocked_req="$(jq '.summary.blocked_requests' <<< "$snap_after")"
+  local caller_blocked_sum; caller_blocked_sum="$(jq '[.caller_stats[].blocked] | add // 0' <<< "$snap_after")"
+  if [[ -n "$blocked_req" ]] && [[ "$blocked_req" != "null" ]] && [[ -n "$caller_blocked_sum" ]] && [[ "$caller_blocked_sum" != "null" ]]; then
+    if [[ "$blocked_req" -eq "$caller_blocked_sum" ]]; then
+      echo "  ✓  cross-check: blocked_requests ($blocked_req) == sum(caller_stats[].blocked) ($caller_blocked_sum)"
+      record_pass
+    else
+      log_failure "metrics cross-check: blocked_requests ($blocked_req) != sum(caller_stats[].blocked) ($caller_blocked_sum)" "invariant violation"
+    fi
+  fi
+  # pii_detections == sum(pii_breakdown[].count)
+  local pii_breakdown_sum; pii_breakdown_sum="$(jq '[.pii_breakdown[].count] | add // 0' <<< "$snap_after")"
+  if [[ -n "$pii_count" ]] && [[ "$pii_count" != "null" ]] && [[ -n "$pii_breakdown_sum" ]] && [[ "$pii_breakdown_sum" != "null" ]]; then
+    if [[ "$pii_count" -eq "$pii_breakdown_sum" ]]; then
+      echo "  ✓  cross-check: pii_detections ($pii_count) == sum(pii_breakdown[].count) ($pii_breakdown_sum)"
+      record_pass
+    else
+      log_failure "metrics cross-check: pii_detections ($pii_count) != sum(pii_breakdown[].count) ($pii_breakdown_sum)" "invariant violation"
+    fi
+  fi
+  # total_cost_eur ≈ sum(model_breakdown[].cost_eur) when model_breakdown present
+  local cost_sum; cost_sum="$(jq '[.model_breakdown[].cost_eur] | add // 0' <<< "$snap_after")"
+  if [[ -n "$cost" ]] && [[ "$cost" != "null" ]] && [[ -n "$cost_sum" ]] && [[ "$cost_sum" != "null" ]]; then
+    local cost_diff; cost_diff="$(echo "scale=8; d=$cost - $cost_sum; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
+    if [[ "$(echo "$cost_diff < 0.02" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+      echo "  ✓  cross-check: total_cost_eur ($cost) ≈ sum(model_breakdown[].cost_eur) ($cost_sum)"
+      record_pass
+    else
+      echo "  -  cross-check: total_cost_eur ($cost) vs model_breakdown sum ($cost_sum), diff=$cost_diff (dashboard may use store)"
+    fi
+  fi
+  # error_rate in [0, 1]
+  local err_rate; err_rate="$(jq '.summary.error_rate' <<< "$snap_after")"
+  if [[ -n "$err_rate" ]] && [[ "$err_rate" != "null" ]]; then
+    if [[ "$(echo "$err_rate >= 0 && $err_rate <= 1" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+      echo "  ✓  cross-check: error_rate in [0,1] ($err_rate)"
+      record_pass
+    else
+      log_failure "metrics cross-check: error_rate out of range" "error_rate=$err_rate"
+    fi
+  fi
+  # p99_latency_ms >= 0 when we have requests
+  local p99_lat; p99_lat="$(jq '.summary.p99_latency_ms' <<< "$snap_after")"
+  if [[ -n "$total_req" ]] && [[ "$total_req" -gt 0 ]] && [[ -n "$p99_lat" ]] && [[ "$p99_lat" != "null" ]]; then
+    if [[ "$p99_lat" -ge 0 ]]; then
+      echo "  ✓  cross-check: p99_latency_ms >= 0 ($p99_lat)"
+      record_pass
+    fi
   fi
 
   # --- 23.5: Full snapshot fields present (all documented arrays/objects) ---
@@ -1279,7 +1444,7 @@ GWEOF
     echo "  -  budget_status not present (budget limits may not be configured)"
   fi
 
-  # --- 23.5c: Cache stats fields (omitempty — present when cache configured) ---
+  # --- 23.5c: Semantic cache stats (dashboard + CLI parity) ---
   local has_cache; has_cache="$(jq 'has("cache_stats") and (.cache_stats != null)' <<< "$snap_after")"
   if [[ "$has_cache" == "true" ]]; then
     assert_pass "snapshot has cache_stats object" \
@@ -1290,8 +1455,37 @@ GWEOF
       jq -e '.cache_stats | has("hit_rate")' <<< "$snap_after" &>/dev/null
     assert_pass "cache_stats has cost_saved" \
       jq -e '.cache_stats | has("cost_saved")' <<< "$snap_after" &>/dev/null
+    local cache_hits; cache_hits="$(jq '.cache_stats.hits' <<< "$snap_after")"
+    local cache_saved; cache_saved="$(jq '.cache_stats.cost_saved' <<< "$snap_after")"
+    if [[ -n "$cache_hits" ]] && [[ "$cache_hits" != "null" ]] && [[ "$cache_hits" -ge 1 ]]; then
+      echo "  ✓  semantic cache metrics: cache_stats.hits >= 1 ($cache_hits)"
+      record_pass
+    else
+      echo "  -  semantic cache: cache_stats.hits = ${cache_hits:-null} (expected >= 1 after identical requests)"
+    fi
+    if [[ -n "$cache_saved" ]] && [[ "$cache_saved" != "null" ]]; then
+      if [[ "$(echo "${cache_saved:-0} >= 0" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+        echo "  ✓  semantic cache metrics: cache_stats.cost_saved >= 0 (€$cache_saved)"
+        record_pass
+      fi
+    fi
+    # CLI parity: talon cache stats and talon costs cache line vs dashboard cache_stats
+    assert_pass "talon cache stats exits 0 (semantic cache CLI)" run_talon cache stats
+    local costs_cache_line; costs_cache_line="$(run_talon costs 2>/dev/null | grep -i "Cache (7d)" || true)"
+    if [[ -n "$costs_cache_line" ]] && [[ -n "$cache_saved" ]] && [[ "$cache_saved" != "null" ]]; then
+      local costs_saved; costs_saved="$(echo "$costs_cache_line" | grep -oE '€[0-9]+\.[0-9]+' | head -1 | tr -d '€')"
+      if [[ -n "$costs_saved" ]]; then
+        local saved_diff; saved_diff="$(echo "scale=8; d=$cache_saved - $costs_saved; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
+        if [[ "$(echo "$saved_diff < 0.02" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+          echo "  ✓  semantic cache CLI↔dashboard parity: cache_stats.cost_saved (€$cache_saved) ≈ talon costs (€$costs_saved)"
+          record_pass
+        else
+          echo "  -  cache cost_saved: dashboard €$cache_saved vs CLI €$costs_saved (diff=$saved_diff)"
+        fi
+      fi
+    fi
   else
-    echo "  -  cache_stats not present (semantic cache may not be enabled)"
+    echo "  -  cache_stats not present (semantic cache may not be enabled or no hits yet)"
   fi
 
   # --- 23.5d: Tool governance sub-fields ---
@@ -1501,19 +1695,19 @@ GWEOF
 
   # --- 23.8: Dashboard token auth works ---
   assert_pass "dashboard HTML without token → 401" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' "${dashboard_base_url}/gateway/dashboard")" = "401"
+    test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_GATEWAY_DASHBOARD")" = "401"
   assert_pass "dashboard metrics without token → 401" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' "${dashboard_base_url}/api/v1/metrics")" = "401"
+    test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_METRICS")" = "401"
   assert_pass "dashboard metrics with wrong token → 401" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer wrong" "${dashboard_base_url}/api/v1/metrics")" = "401"
+    test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_METRICS" "Bearer wrong")" = "401"
   assert_pass "SSE stream without token → 401" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' "${dashboard_base_url}/api/v1/metrics/stream")" = "401"
+    test "$(smoke_get_code "$dashboard_base_url" "$SMOKE_PATH_METRICS_STREAM")" = "401"
   # Token via query param
   assert_pass "dashboard metrics with token query param → 200" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' "${dashboard_base_url}/api/v1/metrics?token=$dash_token")" = "200"
+    test "$(curl -s -o /dev/null -w '%{http_code}' "${dashboard_base_url}${SMOKE_PATH_METRICS}?token=$dash_token")" = "200"
 
   # --- 23.9: SSE stream works ---
-  local sse_out; sse_out="$(timeout 8 curl -s -H "Authorization: Bearer $dash_token" "${dashboard_base_url}/api/v1/metrics/stream" 2>/dev/null)" || true
+  local sse_out; sse_out="$(timeout 8 curl -s -H "Authorization: Bearer $dash_token" "${dashboard_base_url}${SMOKE_PATH_METRICS_STREAM}" 2>/dev/null)" || true
   if echo "$sse_out" | grep -q "data:"; then
     echo "  ✓  SSE stream returns data events"
     record_pass

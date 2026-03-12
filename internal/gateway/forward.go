@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // TokenUsage holds input/output token counts from the upstream response.
@@ -16,16 +17,23 @@ type TokenUsage struct {
 	Output int
 }
 
+// StreamingMetrics holds timing and counts for streaming responses (filled by streamCopy).
+type StreamingMetrics struct {
+	TTFT       time.Duration // time from request sent to first content-bearing chunk
+	ChunkCount int           // number of SSE events that contained content (for TPOT)
+}
+
 // ForwardParams groups parameters for forwarding a request to the upstream provider.
 type ForwardParams struct {
-	Context     context.Context
-	Client      *http.Client
-	UpstreamURL string
-	Method      string
-	Body        []byte
-	Headers     map[string]string // auth and other headers to send upstream
-	Timeouts    ParsedTimeouts
-	TokenUsage  *TokenUsage // filled in from response (streaming or non-streaming)
+	Context          context.Context
+	Client           *http.Client
+	UpstreamURL      string
+	Method           string
+	Body             []byte
+	Headers          map[string]string // auth and other headers to send upstream
+	Timeouts         ParsedTimeouts
+	TokenUsage       *TokenUsage       // filled in from response (streaming or non-streaming)
+	StreamingMetrics *StreamingMetrics // filled in for streaming responses (TTFT, chunk count)
 }
 
 // Forward sends the request to the upstream provider and writes the response to w.
@@ -54,6 +62,7 @@ func Forward(w http.ResponseWriter, p ForwardParams) error {
 	}
 
 	// #nosec G704 -- upstream URL is from gateway config (provider base URL), not user-controlled
+	streamStart := time.Now()
 	resp, err := p.Client.Do(req)
 	if err != nil {
 		return err
@@ -73,7 +82,7 @@ func Forward(w http.ResponseWriter, p ForwardParams) error {
 	isStream := resp.StatusCode < 400 && strings.Contains(contentType, "text/event-stream")
 
 	if isStream {
-		return streamCopy(ctx, w, resp.Body, p.TokenUsage, resp.Header.Get("X-Request-Id"))
+		return streamCopy(ctx, w, resp.Body, streamStart, p.TokenUsage, p.StreamingMetrics, resp.Header.Get("X-Request-Id"))
 	}
 
 	// Non-streaming: read full body, parse usage if present, then write
@@ -102,7 +111,9 @@ func copyResponseHeaders(w http.ResponseWriter, from http.Header, upstreamHeader
 }
 
 // streamCopy copies the SSE stream to w, flushing after each event, and extracts token usage when seen.
-func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, usage *TokenUsage, requestID string) error {
+// streamStart is when the HTTP request was sent (for TTFT). If streamingMetrics is non-nil, TTFT is set
+// on the first content-bearing SSE event.
+func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, streamStart time.Time, usage *TokenUsage, streamingMetrics *StreamingMetrics, requestID string) error {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// Fallback: copy without flush
@@ -124,6 +135,13 @@ func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, usage *
 		buf = append(buf, '\n')
 		// Flush on empty line (end of SSE event)
 		if len(line) == 0 {
+			// Record time to first content-bearing chunk (TTFT) on first event that has data
+			if streamingMetrics != nil && streamingMetrics.TTFT == 0 && hasContentData(buf) {
+				streamingMetrics.TTFT = time.Since(streamStart)
+			}
+			if streamingMetrics != nil && hasContentData(buf) {
+				streamingMetrics.ChunkCount++
+			}
 			// #nosec G705 -- proxy forwards upstream LLM response; Content-Type controlled by upstream
 			if _, err := w.Write(buf); err != nil {
 				return err
@@ -142,6 +160,46 @@ func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, usage *
 		flusher.Flush()
 	}
 	return scanner.Err()
+}
+
+// hasContentData returns true if the SSE buffer contains a data: line with JSON that has content
+// (e.g. choices[].delta.content for OpenAI or content_block.delta.text for Anthropic).
+func hasContentData(buf []byte) bool {
+	lines := bytes.Split(buf, []byte("\n"))
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data: ")) {
+			continue
+		}
+		payload := bytes.TrimPrefix(line, []byte("data: "))
+		payload = bytes.TrimSpace(payload)
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal(payload, &m); err != nil {
+			continue
+		}
+		// OpenAI: choices[0].delta.content
+		if choices, _ := m["choices"].([]interface{}); len(choices) > 0 {
+			if choice, _ := choices[0].(map[string]interface{}); choice != nil {
+				if delta, _ := choice["delta"].(map[string]interface{}); delta != nil {
+					if _, has := delta["content"]; has {
+						return true
+					}
+				}
+			}
+		}
+		// Anthropic: type content_block_delta and delta.text
+		if typ, _ := m["type"].(string); typ == "content_block_delta" {
+			if delta, _ := m["delta"].(map[string]interface{}); delta != nil {
+				if _, has := delta["text"]; has {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func extractUsageFromSSELine(block []byte, usage *TokenUsage) {

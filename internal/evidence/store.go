@@ -138,6 +138,8 @@ type Execution struct {
 	Tokens        TokenUsage `json:"tokens"`
 	MemoryTokens  int        `json:"memory_tokens,omitempty"` // tokens injected from memory context
 	DurationMS    int64      `json:"duration_ms"`
+	TTFTMS        int64      `json:"ttft_ms,omitempty"` // time to first token (streaming)
+	TPOTMS        float64    `json:"tpot_ms,omitempty"` // time per output token (streaming)
 	Error         string     `json:"error,omitempty"`
 }
 
@@ -517,6 +519,60 @@ func (s *Store) CacheSavings(ctx context.Context, tenantID string, from, to time
 		return 0, 0, fmt.Errorf("querying cache savings: %w", err)
 	}
 	return hits, costSaved, nil
+}
+
+// AvgTTFT returns the average time to first token (ms) for streaming requests in the half-open range [from, to).
+// Returns 0 if no records have ttft_ms set.
+func (s *Store) AvgTTFT(ctx context.Context, tenantID, agentID string, from, to time.Time) (float64, error) {
+	query := `SELECT AVG(CAST(json_extract(evidence_json, '$.execution.ttft_ms') AS REAL)) FROM evidence WHERE tenant_id = ? AND json_extract(evidence_json, '$.execution.ttft_ms') IS NOT NULL AND CAST(json_extract(evidence_json, '$.execution.ttft_ms') AS REAL) > 0`
+	args := []interface{}{tenantID}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	var avg *float64
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&avg); err != nil {
+		return 0, fmt.Errorf("querying avg ttft: %w", err)
+	}
+	if avg == nil {
+		return 0, nil
+	}
+	return *avg, nil
+}
+
+// AvgTPOT returns the average time per output token (ms) for streaming requests in the half-open range [from, to).
+// Returns 0 if no records have tpot_ms set.
+func (s *Store) AvgTPOT(ctx context.Context, tenantID, agentID string, from, to time.Time) (float64, error) {
+	query := `SELECT AVG(CAST(json_extract(evidence_json, '$.execution.tpot_ms') AS REAL)) FROM evidence WHERE tenant_id = ? AND json_extract(evidence_json, '$.execution.tpot_ms') IS NOT NULL AND CAST(json_extract(evidence_json, '$.execution.tpot_ms') AS REAL) > 0`
+	args := []interface{}{tenantID}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	var avg *float64
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&avg); err != nil {
+		return 0, fmt.Errorf("querying avg tpot: %w", err)
+	}
+	if avg == nil {
+		return 0, nil
+	}
+	return *avg, nil
 }
 
 // CountInRange returns the number of evidence records in the half-open time range [from, to) for the tenant (and optional agent).

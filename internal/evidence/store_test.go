@@ -642,6 +642,50 @@ func TestGenerateWithSecretsAndMemory(t *testing.T) {
 	assert.Equal(t, []string{"search", "email"}, retrieved.Execution.ToolsCalled)
 }
 
+func TestAvgTTFTAndAvgTPOT(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	from := now.Add(-1 * time.Hour)
+	to := now.Add(1 * time.Hour)
+
+	// Store two evidence records with streaming metrics
+	for i, ttft := range []int64{100, 200} {
+		tpot := 0.5 + float64(i)*0.5 // 0.5 and 1.0
+		ev := &Evidence{
+			ID:             fmt.Sprintf("ev-ttft-%d", i),
+			CorrelationID:  "corr",
+			Timestamp:      now,
+			TenantID:       "default",
+			AgentID:        "caller-1",
+			InvocationType: "gateway",
+			PolicyDecision: PolicyDecision{Allowed: true},
+			Classification: Classification{},
+			Execution: Execution{
+				ModelUsed:  "gpt-4o",
+				Cost:       0.01,
+				Tokens:     TokenUsage{Input: 10, Output: 20},
+				DurationMS: 500,
+				TTFTMS:     ttft,
+				TPOTMS:     tpot,
+			},
+			AuditTrail: AuditTrail{},
+			Compliance: Compliance{},
+		}
+		err := store.Store(ctx, ev)
+		require.NoError(t, err)
+	}
+
+	avgTTFT, err := store.AvgTTFT(ctx, "default", "", from, to)
+	require.NoError(t, err)
+	assert.InDelta(t, 150.0, avgTTFT, 0.1, "avg of 100 and 200")
+
+	avgTPOT, err := store.AvgTPOT(ctx, "default", "", from, to)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.75, avgTPOT, 0.01, "avg of 0.5 and 1.0")
+}
+
 func TestVerifyNonexistentEvidence(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

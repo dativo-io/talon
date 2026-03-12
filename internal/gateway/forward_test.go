@@ -100,6 +100,7 @@ func TestForward_Streaming(t *testing.T) {
 	defer upstream.Close()
 
 	var usage TokenUsage
+	var streamingMetrics StreamingMetrics
 	w := httptest.NewRecorder()
 	timeouts := ParsedTimeouts{
 		ConnectTimeout:    5 * time.Second,
@@ -107,17 +108,21 @@ func TestForward_Streaming(t *testing.T) {
 		StreamIdleTimeout: 60 * time.Second,
 	}
 	err := Forward(w, ForwardParams{
-		Context:     context.Background(),
-		UpstreamURL: upstream.URL,
-		Method:      http.MethodPost,
-		Body:        []byte(`{"model":"gpt-4o","messages":[],"stream":true}`),
-		Headers:     map[string]string{"Content-Type": "application/json"},
-		Timeouts:    timeouts,
-		TokenUsage:  &usage,
+		Context:          context.Background(),
+		UpstreamURL:      upstream.URL,
+		Method:           http.MethodPost,
+		Body:             []byte(`{"model":"gpt-4o","messages":[],"stream":true}`),
+		Headers:          map[string]string{"Content-Type": "application/json"},
+		Timeouts:         timeouts,
+		TokenUsage:       &usage,
+		StreamingMetrics: &streamingMetrics,
 	})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Contains(t, w.Body.String(), "Hi")
+	// Time to first content chunk should be recorded (GenAI SemConv)
+	require.Greater(t, streamingMetrics.TTFT, time.Duration(0), "TTFT should be set on first content-bearing SSE event")
+	require.GreaterOrEqual(t, streamingMetrics.ChunkCount, 1)
 	// Usage may be filled from stream
 	if usage.Input != 0 || usage.Output != 0 {
 		require.Equal(t, 5, usage.Input)

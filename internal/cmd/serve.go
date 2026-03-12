@@ -489,6 +489,12 @@ func mapNumericFields(m map[string]interface{}, e *metrics.GatewayEvent) {
 	if v, ok := m["cost_saved"].(float64); ok {
 		e.CostSaved = v
 	}
+	if v, ok := m["ttft_ms"].(int64); ok {
+		e.TTFTMS = v
+	}
+	if v, ok := m["tpot_ms"].(float64); ok {
+		e.TPOTMS = v
+	}
 }
 
 func mapBoolFields(m map[string]interface{}, e *metrics.GatewayEvent) {

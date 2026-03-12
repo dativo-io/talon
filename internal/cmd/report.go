@@ -83,6 +83,13 @@ func runReport(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "  Cache (30d):  %d from cache, €%.4f saved, %.1f%% hit rate\n", hits30d, saved30d, hitRate30d)
 	}
 
+	if avgTTFT, err := store.AvgTTFT(ctx, reportTenant, "", weekStart, todayEnd); err == nil && avgTTFT > 0 {
+		fmt.Fprintf(out, "  Avg time to first token (7d): %.0f ms\n", avgTTFT)
+	}
+	if avgTPOT, err := store.AvgTPOT(ctx, reportTenant, "", weekStart, todayEnd); err == nil && avgTPOT > 0 {
+		fmt.Fprintf(out, "  Avg time per output token (7d): %.2f ms\n", avgTPOT)
+	}
+
 	// Enriched stats over 7-day window
 	list, err := store.List(ctx, reportTenant, "", weekStart, todayEnd, 10000)
 	if err == nil && len(list) > 0 {

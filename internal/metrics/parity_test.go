@@ -163,6 +163,37 @@ func TestCLIDashboardParity(t *testing.T) {
 	assert.Equal(t, 3, snap.Summary.TotalRequests)
 	assert.InDelta(t, 0.25, snap.Summary.TotalCostEUR, 0.001)
 	assert.Equal(t, 0, snap.Summary.BlockedRequests)
+
+	// 6. Cross-checks between summary and breakdowns (same invariants as smoke tests)
+	var callerRequests, callerBlocked int
+	var callerCost float64
+	for _, cs := range snap.CallerStats {
+		callerRequests += cs.Requests
+		callerBlocked += cs.Blocked
+		callerCost += cs.CostEUR
+	}
+	assert.Equal(t, snap.Summary.TotalRequests, callerRequests,
+		"total_requests must equal sum of caller_stats[].requests")
+	assert.Equal(t, snap.Summary.BlockedRequests, callerBlocked,
+		"blocked_requests must equal sum of caller_stats[].blocked")
+	assert.InDelta(t, snap.Summary.TotalCostEUR, callerCost, 0.0001,
+		"total_cost_eur must equal sum of caller_stats[].cost_eur")
+	var modelCostSum float64
+	for _, m := range snap.ModelBreakdown {
+		modelCostSum += m.CostEUR
+	}
+	assert.InDelta(t, snap.Summary.TotalCostEUR, modelCostSum, 0.0001,
+		"total_cost_eur must equal sum of model_breakdown[].cost_eur")
+	var piiSum int
+	for _, p := range snap.PIIBreakdown {
+		piiSum += p.Count
+	}
+	assert.Equal(t, snap.Summary.PIIDetections, piiSum,
+		"pii_detections must equal sum of pii_breakdown[].count")
+	assert.LessOrEqual(t, snap.Summary.PIIRedactions, snap.Summary.PIIDetections,
+		"pii_redactions must be <= pii_detections")
+	assert.GreaterOrEqual(t, snap.Summary.ErrorRate, 0.0)
+	assert.LessOrEqual(t, snap.Summary.ErrorRate, 1.0)
 }
 
 // TestDashboardCountMayLeadPersistedEvidence verifies the known semantic gap:

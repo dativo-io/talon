@@ -46,6 +46,8 @@ Registered by `internal/llm`. Emitted on every LLM call.
 | `talon.cost.request` | Float64Histogram | `eur` | `agent`, `model`, `degraded` | Cost in EUR per LLM request. |
 | `gen_ai.client.token.usage` | Int64Histogram | `{token}` | `gen_ai.system`, `gen_ai.request.model`, `gen_ai.token.type` | Token usage per LLM request (input/output). GenAI SemConv. |
 | `gen_ai.client.operation.duration` | Float64Histogram | `s` | `gen_ai.system`, `gen_ai.request.model` | End-to-end LLM operation duration. GenAI SemConv. |
+| `gen_ai.server.time_to_first_token` | Float64Histogram | `s` | `gen_ai.system`, `gen_ai.request.model` | Time from request sent to first content token (streaming). GenAI SemConv. |
+| `gen_ai.server.time_per_output_token` | Float64Histogram | `s` | `gen_ai.system`, `gen_ai.request.model` | Time per output token after first token (streaming decode phase). GenAI SemConv. |
 | `talon.provider.availability` | Float64Gauge | `1` | `provider` | Provider availability (1 = up, 0 = down). |
 | `talon.provider.failover.total` | Int64Counter | `{failover}` | `original_model`, `fallback_model`, `reason` | Provider failover events (cost degradation or unavailability). |
 

@@ -12,11 +12,13 @@ import (
 const llmMeterName = "github.com/dativo-io/talon/internal/llm"
 
 var (
-	costRequestHistogram       metric.Float64Histogram
-	tokenUsageHistogram        metric.Int64Histogram
-	operationDurationHistogram metric.Float64Histogram
-	providerAvailabilityGauge  metric.Float64Gauge
-	providerFailoverCounter    metric.Int64Counter
+	costRequestHistogram        metric.Float64Histogram
+	tokenUsageHistogram         metric.Int64Histogram
+	operationDurationHistogram  metric.Float64Histogram
+	timeToFirstTokenHistogram   metric.Float64Histogram
+	timePerOutputTokenHistogram metric.Float64Histogram
+	providerAvailabilityGauge   metric.Float64Gauge
+	providerFailoverCounter     metric.Int64Counter
 
 	metricsOnce       sync.Once
 	metricsRegistered bool
@@ -45,6 +47,22 @@ func initMetrics() {
 	operationDurationHistogram, err = meter.Float64Histogram(
 		"gen_ai.client.operation.duration",
 		metric.WithDescription("End-to-end LLM operation duration"),
+		metric.WithUnit("s"))
+	if err != nil {
+		return
+	}
+
+	timeToFirstTokenHistogram, err = meter.Float64Histogram(
+		"gen_ai.server.time_to_first_token",
+		metric.WithDescription("Time from request sent to first content token received (streaming)"),
+		metric.WithUnit("s"))
+	if err != nil {
+		return
+	}
+
+	timePerOutputTokenHistogram, err = meter.Float64Histogram(
+		"gen_ai.server.time_per_output_token",
+		metric.WithDescription("Time per output token after first token (streaming decode phase)"),
 		metric.WithUnit("s"))
 	if err != nil {
 		return
@@ -111,6 +129,30 @@ func RecordOperationDuration(ctx context.Context, durationSeconds float64, model
 		return
 	}
 	operationDurationHistogram.Record(ctx, durationSeconds, metric.WithAttributes(
+		attribute.String("gen_ai.system", system),
+		attribute.String("gen_ai.request.model", model),
+	))
+}
+
+// RecordTimeToFirstToken records time to first token for streaming requests (GenAI SemConv).
+func RecordTimeToFirstToken(ctx context.Context, durationSeconds float64, model, system string) {
+	ensureMetrics()
+	if !metricsRegistered {
+		return
+	}
+	timeToFirstTokenHistogram.Record(ctx, durationSeconds, metric.WithAttributes(
+		attribute.String("gen_ai.system", system),
+		attribute.String("gen_ai.request.model", model),
+	))
+}
+
+// RecordTimePerOutputToken records time per output token for streaming requests (GenAI SemConv).
+func RecordTimePerOutputToken(ctx context.Context, durationSeconds float64, model, system string) {
+	ensureMetrics()
+	if !metricsRegistered {
+		return
+	}
+	timePerOutputTokenHistogram.Record(ctx, durationSeconds, metric.WithAttributes(
 		attribute.String("gen_ai.system", system),
 		attribute.String("gen_ai.request.model", model),
 	))

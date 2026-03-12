@@ -151,6 +151,89 @@ func TestHandleMetricsJSON_FullSnapshot(t *testing.T) {
 	assert.Nil(t, snap.ShadowSummary)
 }
 
+// TestHandleMetricsJSON_MetricsCrossChecks sends ~20 events through the collector,
+// fetches /api/v1/metrics, and asserts cross-checks between summary and breakdowns
+// (same invariants as unit TestSnapshotCrossChecks and smoke test section 23).
+func TestHandleMetricsJSON_MetricsCrossChecks(t *testing.T) {
+	s, collector := newTestServerWithDashboard(t, "")
+
+	now := time.Now()
+	// 20 events: 12 caller "app-a", 8 caller "app-b"; 2 blocked, 4 errors; mixed PII and cost
+	for i := 0; i < 12; i++ {
+		collector.Record(metrics.GatewayEvent{
+			Timestamp:   now,
+			CallerID:    "app-a",
+			Model:       "gpt-4o-mini",
+			CostEUR:     0.01 * float64(i+1),
+			LatencyMS:   int64(50 + i*8),
+			Blocked:     i == 0,
+			HasError:    i >= 9,
+			PIIDetected: []string{},
+			PIIAction:   "",
+		})
+	}
+	for i := 0; i < 8; i++ {
+		pii := []string{"email"}
+		if i >= 3 {
+			pii = []string{"email", "iban"}
+		}
+		collector.Record(metrics.GatewayEvent{
+			Timestamp:   now,
+			CallerID:    "app-b",
+			Model:       "claude-3",
+			CostEUR:     0.05,
+			LatencyMS:   100,
+			Blocked:     i == 1,
+			PIIDetected: pii,
+			PIIAction:   "redact",
+		})
+	}
+	time.Sleep(80 * time.Millisecond)
+
+	req := httptest.NewRequest("GET", "/api/v1/metrics", nil)
+	rec := httptest.NewRecorder()
+	s.handleMetricsJSON(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var snap metrics.Snapshot
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &snap))
+
+	// Cross-checks: total_requests == sum(caller_stats[].requests)
+	var callerRequests, callerBlocked int
+	var callerCost float64
+	for _, cs := range snap.CallerStats {
+		callerRequests += cs.Requests
+		callerBlocked += cs.Blocked
+		callerCost += cs.CostEUR
+	}
+	assert.Equal(t, snap.Summary.TotalRequests, callerRequests,
+		"total_requests must equal sum of caller_stats[].requests")
+	assert.Equal(t, snap.Summary.BlockedRequests, callerBlocked,
+		"blocked_requests must equal sum of caller_stats[].blocked")
+	assert.InDelta(t, snap.Summary.TotalCostEUR, callerCost, 0.0001,
+		"total_cost_eur must equal sum of caller_stats[].cost_eur")
+
+	// pii_detections == sum(pii_breakdown[].count)
+	var piiSum int
+	for _, p := range snap.PIIBreakdown {
+		piiSum += p.Count
+	}
+	assert.Equal(t, snap.Summary.PIIDetections, piiSum,
+		"pii_detections must equal sum of pii_breakdown[].count")
+	assert.LessOrEqual(t, snap.Summary.PIIRedactions, snap.Summary.PIIDetections,
+		"pii_redactions must be <= pii_detections")
+
+	// Bounds
+	assert.LessOrEqual(t, snap.Summary.BlockedRequests, snap.Summary.TotalRequests,
+		"blocked_requests must be <= total_requests")
+	assert.GreaterOrEqual(t, snap.Summary.ErrorRate, 0.0, "error_rate must be >= 0")
+	assert.LessOrEqual(t, snap.Summary.ErrorRate, 1.0, "error_rate must be <= 1")
+
+	// We sent 20 requests
+	assert.Equal(t, 20, snap.Summary.TotalRequests)
+	assert.Equal(t, 2, snap.Summary.BlockedRequests)
+}
+
 func TestHandleMetricsStreamSSE(t *testing.T) {
 	s, _ := newTestServerWithDashboard(t, "")
 

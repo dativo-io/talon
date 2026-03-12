@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -71,6 +72,9 @@ type Gateway struct {
 	// canonicalTenantIDs maps tenant ID -> same ID from config (populated at init); used for cache key scope so static analysis sees value from config, not from request.
 	canonicalTenantIDs map[string]string
 	metricsRecorder    MetricsRecorder
+	// budgetAlertLast tracks last time we emitted a budget alert per tenant+period+threshold to avoid spamming
+	budgetAlertMu   sync.Mutex
+	budgetAlertLast map[string]time.Time
 }
 
 type gatewayCacheConfig struct {
@@ -217,7 +221,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_rate_limit_exceeded")
 		} else {
 			log.Warn().Str("caller", caller.Name).Msg("gateway_rate_limited")
-			g.emitMetrics(ctx, caller, route.Provider, "", nil, nil, nil, nil, 0, time.Since(start).Milliseconds(), false, true, "", false, 0)
+			g.emitMetrics(ctx, caller, route.Provider, "", nil, nil, nil, nil, 0, time.Since(start).Milliseconds(), false, true, "", false, 0, 0, 0)
 			WriteProviderError(w, route.Provider, http.StatusTooManyRequests, "Rate limit exceeded")
 			return
 		}
@@ -262,8 +266,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"Request blocked: attachment violates policy")
 			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
 				g.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text), nil, 0, 0, 0, false,
-				[]string{"attachment policy block"}, false, nil, attSummary, nil, nil, false, "", 0, 0)
-			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0)
+				[]string{"attachment policy block"}, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0)
+			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0)
 			return
 		}
 	}
@@ -292,8 +296,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !allowed {
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, route.Provider, http.StatusForbidden, "Caller not allowed for this provider")
-			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, false, []string{"provider not allowed"}, false, nil, attSummary, nil, nil, false, "", 0, 0)
-			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, "", false, 0)
+			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, false, []string{"provider not allowed"}, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0)
+			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0)
 			return
 		}
 	}
@@ -316,8 +320,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request contains PII that is not allowed")
-			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"}, false, nil, attSummary, nil, nil, false, "", 0, 0)
-			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, piiAction, false, 0)
+			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, []string{"PII block"}, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0)
+			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0)
 			return
 		}
 	}
@@ -327,10 +331,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	estimatedCost := g.costEstimate(extracted.Model, estTokensIn, estTokensOut)
 	dailyCost, monthlyCost := g.callerCostTotals(ctx, caller)
 	if d := g.config.ServerDefaults.MaxDailyCost; d > 0 {
-		RecordBudgetUtilization(ctx, caller.TenantID, "daily", (dailyCost/d)*100)
+		pct := (dailyCost / d) * 100
+		RecordBudgetUtilization(ctx, caller.TenantID, "daily", pct)
+		g.tryBudgetAlert(ctx, caller.TenantID, "daily", pct, 80)
+		g.tryBudgetAlert(ctx, caller.TenantID, "daily", pct, 95)
 	}
 	if m := g.config.ServerDefaults.MaxMonthlyCost; m > 0 {
-		RecordBudgetUtilization(ctx, caller.TenantID, "monthly", (monthlyCost/m)*100)
+		pct := (monthlyCost / m) * 100
+		RecordBudgetUtilization(ctx, caller.TenantID, "monthly", pct)
+		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 80)
+		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 95)
 	}
 	policyInput := buildGatewayPolicyInput(caller, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost)
 	if g.policy != nil && (g.config.Mode == ModeEnforce || isShadow) {
@@ -344,8 +354,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				durationMS := time.Since(start).Milliseconds()
 				WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Policy evaluation failed")
-				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, false, []string{"policy evaluation error"}, false, nil, attSummary, nil, nil, false, "", 0, 0)
-				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, true, true, piiAction, false, 0)
+				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, false, []string{"policy evaluation error"}, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0)
+				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0)
 				return
 			}
 		}
@@ -362,8 +372,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				durationMS := time.Since(start).Milliseconds()
 				WriteProviderError(w, route.Provider, http.StatusForbidden, reasons[0])
-				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0)
-				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, piiAction, false, 0)
+				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, 0, false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0)
+				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0)
 				return
 			}
 		}
@@ -393,8 +403,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				WriteProviderError(w, route.Provider, http.StatusForbidden,
 					fmt.Sprintf("Request contains forbidden tools: %v", tr.Removed))
 				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
-					classification, nil, 0, 0, 0, false, []string{"tool governance block"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0)
-				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, false, true, piiAction, false, 0)
+					classification, nil, 0, 0, 0, false, []string{"tool governance block"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, 0, 0)
+				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0)
 				return
 			default:
 				filtered, filterErr := FilterRequestBodyTools(route.Provider, forwardBody, tr.Kept)
@@ -407,8 +417,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					WriteProviderError(w, route.Provider, http.StatusInternalServerError,
 						"Failed to filter forbidden tools from request")
 					_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
-						classification, nil, 0, 0, 0, false, []string{"tool filter error"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0)
-					g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, true, true, piiAction, false, 0)
+						classification, nil, 0, 0, 0, false, []string{"tool filter error"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, 0, 0)
+					g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0)
 					return
 				}
 				forwardBody = filtered
@@ -481,8 +491,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					_ = g.cacheStore.IncrementHitCount(ctx, hit.ID)
 					costSaved := g.costEstimate(extracted.Model, 300, 300)
 					durationMS := time.Since(start).Milliseconds()
-					_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, true, nil, false, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved)
-					g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, false, false, piiAction, true, costSaved)
+					_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, true, nil, false, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved, 0, 0)
+					g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, false, false, piiAction, true, costSaved, 0, 0)
 					writeCachedCompletion(w, route.Provider, extracted.Model, hit.ResponseText)
 					return
 				}
@@ -525,8 +535,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			durationMS := time.Since(start).Milliseconds()
 			log.Warn().Err(err).Str("secret", prov.SecretName).Msg("gateway_secret_get_failed")
 			WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Service configuration error")
-			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, false, []string{"secret retrieval error"}, false, nil, attSummary, toolResult, shadowViolations, false, "", 0, 0)
-			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, true, true, piiAction, false, 0)
+			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, false, []string{"secret retrieval error"}, false, nil, attSummary, toolResult, shadowViolations, false, "", 0, 0, 0, 0)
+			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0)
 			return
 		}
 		if route.Provider == "anthropic" {
@@ -544,15 +554,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var responsePII *ResponsePIIScanResult
 	needsResponseScan := responsePIIAction != "allow" && responsePIIAction != ""
 
+	var streamingMetrics StreamingMetrics
 	fwdParams := ForwardParams{
-		Context:     ctx,
-		Client:      g.client,
-		UpstreamURL: route.UpstreamURL,
-		Method:      r.Method,
-		Body:        forwardBody,
-		Headers:     headers,
-		Timeouts:    g.timeouts,
-		TokenUsage:  &tokenUsage,
+		Context:          ctx,
+		Client:           g.client,
+		UpstreamURL:      route.UpstreamURL,
+		Method:           r.Method,
+		Body:             forwardBody,
+		Headers:          headers,
+		Timeouts:         g.timeouts,
+		TokenUsage:       &tokenUsage,
+		StreamingMetrics: &streamingMetrics,
 	}
 
 	switch {
@@ -616,6 +628,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		cost = estimatedCost
 	}
 
+	// Streaming metrics: TTFT and TPOT for GenAI SemConv
+	var ttftMS int64
+	var tpotMS float64
+	if streamingMetrics.TTFT > 0 {
+		ttftMS = streamingMetrics.TTFT.Milliseconds()
+		if tokenUsage.Output > 0 && durationMS > ttftMS {
+			tpotMS = float64(durationMS-ttftMS) / float64(tokenUsage.Output)
+		}
+	}
+
 	// Step 10: Evidence
 	var outputPIIDetected bool
 	var outputPIITypes []string
@@ -624,17 +646,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		outputPIITypes = responsePII.PIITypes
 	}
 
-	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes, attSummary, toolResult, shadowViolations, false, "", 0, 0)
+	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes, attSummary, toolResult, shadowViolations, false, "", 0, 0, ttftMS, tpotMS)
 
 	// Emit OTel + dashboard metrics
 	g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations,
-		&tokenUsage, cost, durationMS, err != nil, false, piiAction, false, 0)
+		&tokenUsage, cost, durationMS, err != nil, false, piiAction, false, 0, ttftMS, tpotMS)
 	if err != nil {
 		log.Warn().Err(err).Msg("gateway_forward_error")
 	}
 }
 
-func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64) error {
+func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, ttftMS int64, tpotMS float64) error {
 	inputTokens, outputTokens := 0, 0
 	if usage != nil {
 		inputTokens, outputTokens = usage.Input, usage.Output
@@ -698,6 +720,8 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	params.CacheEntryID = cacheEntryID
 	params.CacheSimilarity = cacheSimilarity
 	params.CostSaved = costSaved
+	params.TTFTMS = ttftMS
+	params.TPOTMS = tpotMS
 	return RecordGatewayEvidence(ctx, g.evidenceStore, params)
 }
 
@@ -722,6 +746,27 @@ func buildGatewayPolicyInput(caller *CallerConfig, provider, model string, dataT
 		}
 	}
 	return input
+}
+
+// tryBudgetAlert emits RecordBudgetAlert when utilization >= threshold, with a 1-hour cooldown per tenant+period+threshold.
+func (g *Gateway) tryBudgetAlert(ctx context.Context, tenantID, period string, utilizationPct float64, threshold float64) {
+	if utilizationPct < threshold {
+		return
+	}
+	key := tenantID + ":" + period + ":" + fmt.Sprintf("%.0f", threshold)
+	g.budgetAlertMu.Lock()
+	if g.budgetAlertLast == nil {
+		g.budgetAlertLast = make(map[string]time.Time)
+	}
+	last := g.budgetAlertLast[key]
+	now := time.Now()
+	if now.Sub(last) < time.Hour {
+		g.budgetAlertMu.Unlock()
+		return
+	}
+	g.budgetAlertLast[key] = now
+	g.budgetAlertMu.Unlock()
+	RecordBudgetAlert(ctx, tenantID, threshold)
 }
 
 func (g *Gateway) callerCostTotals(ctx context.Context, caller *CallerConfig) (daily, monthly float64) {
@@ -771,7 +816,7 @@ func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provide
 	classification *classifier.Classification, toolResult *ToolGovernanceResult,
 	shadowViolations []evidence.ShadowViolation, usage *TokenUsage,
 	cost float64, durationMS int64, hasError, blocked bool, piiAction string,
-	cacheHit bool, costSaved float64,
+	cacheHit bool, costSaved float64, ttftMS int64, tpotMS float64,
 ) {
 	status := "ok"
 	if hasError {
@@ -813,6 +858,12 @@ func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provide
 	if durationMS > 0 {
 		llm.RecordOperationDuration(ctx, float64(durationMS)/1000.0, model, provider)
 	}
+	if ttftMS > 0 {
+		llm.RecordTimeToFirstToken(ctx, float64(ttftMS)/1000.0, model, provider)
+	}
+	if tpotMS > 0 {
+		llm.RecordTimePerOutputToken(ctx, tpotMS/1000.0, model, provider)
+	}
 	llm.RecordProviderAvailability(ctx, provider, !hasError)
 
 	if g.metricsRecorder != nil {
@@ -831,7 +882,7 @@ func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provide
 		for _, sv := range shadowViolations {
 			svTypes = append(svTypes, sv.Type)
 		}
-		g.metricsRecorder.RecordGatewayEvent(map[string]interface{}{
+		evt := map[string]interface{}{
 			"timestamp":          time.Now(),
 			"caller_id":          caller.Name,
 			"model":              model,
@@ -850,7 +901,14 @@ func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provide
 			"has_error":          hasError,
 			"cache_hit":          cacheHit,
 			"cost_saved":         costSaved,
-		})
+		}
+		if ttftMS > 0 {
+			evt["ttft_ms"] = ttftMS
+		}
+		if tpotMS > 0 {
+			evt["tpot_ms"] = tpotMS
+		}
+		g.metricsRecorder.RecordGatewayEvent(evt)
 	}
 }
 
