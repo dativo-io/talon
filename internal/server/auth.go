@@ -202,10 +202,23 @@ func isValidAdminKey(r *http.Request, adminKey string) bool {
 	if adminKey == "" {
 		return false
 	}
-	headerKey := r.Header.Get("X-Talon-Admin-Key")
-	if headerKey != "" && subtle.ConstantTimeCompare([]byte(headerKey), []byte(adminKey)) == 1 {
-		return true
+	provided := adminKeyFromRequest(r)
+	return provided != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(adminKey)) == 1
+}
+
+// adminKeyFromRequest returns the admin key from X-Talon-Admin-Key, Authorization: Bearer,
+// or (for GET only) the query parameter "token". Empty string if none present.
+func adminKeyFromRequest(r *http.Request) string {
+	if k := r.Header.Get("X-Talon-Admin-Key"); k != "" {
+		return k
 	}
-	token := bearerToken(r)
-	return token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(adminKey)) == 1
+	if k := bearerToken(r); k != "" {
+		return k
+	}
+	if r.Method == http.MethodGet && r.URL != nil {
+		if k := r.URL.Query().Get("token"); k != "" {
+			return k
+		}
+	}
+	return ""
 }

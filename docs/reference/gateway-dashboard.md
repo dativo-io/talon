@@ -16,7 +16,14 @@ The dashboard is served on the same port as the API (default `:8080`).
 
 ### Configuration
 
-No dedicated dashboard token is required. Dashboard and metrics endpoints use the server admin key from `TALON_ADMIN_KEY`.
+Set the server admin key so dashboard and metrics endpoints are protected:
+
+```bash
+export TALON_ADMIN_KEY="your-secret-admin-key"
+talon serve --gateway --gateway-config talon.config.yaml
+```
+
+If `TALON_ADMIN_KEY` is unset, admin endpoints are unrestricted (dev only).
 
 ---
 
@@ -28,7 +35,19 @@ All dashboard endpoints are served on the main server port (same as `/health`, `
 
 Returns the single-file HTML dashboard. The page auto-connects to the SSE stream for live updates, with a polling fallback.
 
-**Authentication:** Requires admin auth (`X-Talon-Admin-Key: <key>` preferred, bearer fallback accepted).
+**Authentication:** Requires admin auth. Any of:
+
+- **Header (recommended):** `X-Talon-Admin-Key: <key>`
+- **Bearer:** `Authorization: Bearer <key>`
+- **Query (GET only, for browser bookmarks):** `?token=<key>`
+
+Use the query parameter when opening the dashboard in a browser (browsers cannot send custom headers on navigation). Example:
+
+```
+http://localhost:8080/gateway/dashboard?token=YOUR_TALON_ADMIN_KEY
+```
+
+The in-page script forwards the same `token` to the metrics and SSE endpoints so data loads without extra setup. Ensure the server was started with `TALON_ADMIN_KEY` set to the same value.
 
 ```bash
 curl -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/gateway/dashboard

@@ -346,6 +346,46 @@ func TestAdminKeyMiddleware_InvalidKey(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
+func TestAdminKeyMiddleware_ValidTokenQueryParam(t *testing.T) {
+	mw := AdminKeyMiddleware("s3cr3t")
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := newTestRequest("GET", "/gateway/dashboard?token=s3cr3t")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestAdminKeyMiddleware_InvalidTokenQueryParam(t *testing.T) {
+	mw := AdminKeyMiddleware("s3cr3t")
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := newTestRequest("GET", "/gateway/dashboard?token=wrong")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestAdminKeyMiddleware_TokenQueryParamIgnoredForPost(t *testing.T) {
+	mw := AdminKeyMiddleware("s3cr3t")
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := newTestRequest("POST", "/api/v1/something?token=s3cr3t")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// POST must not use query param for auth (avoid leaking key in logs)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
 func TestTenantOrAdminMiddleware_AllowsTenantBearer(t *testing.T) {
 	mw := TenantOrAdminMiddleware(map[string]string{"tenant-key-1": "tenant-default"}, "admin-secret")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
