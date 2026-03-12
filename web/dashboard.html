@@ -58,8 +58,8 @@
     <nav class="dashboard-nav"><a href="/gateway/dashboard">Gateway telemetry &rarr;</a></nav>
   </header>
   <div class="cards">
-    <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Today&rsquo;s requests</div><div class="value" id="card-requests">—</div></div>
-    <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Daily cost</div><div class="value" id="card-daily">— &euro;</div></div>
+    <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Visible requests</div><div class="value" id="card-requests">—</div></div>
+    <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Visible cost</div><div class="value" id="card-daily">— &euro;</div></div>
     <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Monthly cost</div><div class="value" id="card-monthly">— &euro;</div></div>
     <div class="card card-link" data-tab="plans" data-filter=""><div class="label">Pending plans</div><div class="value" id="card-plans">—</div></div>
     <div class="card card-link" data-tab="memory" data-filter=""><div class="label">Pending memory</div><div class="value" id="card-memory-pending">—</div></div>
@@ -67,9 +67,9 @@
     <div class="card" id="card-budget"><div class="label">Budget</div><div class="value" id="card-budget-value">—</div><div class="value budget-warn" id="card-budget-warn" style="display:none; font-size:0.75rem; color:#f87171;">Approaching limit</div></div>
   </div>
   <div id="governance-denials" class="governance-widget">
-    <h3 style="margin:0 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Policy outcome</h3>
+    <h3 style="margin:0 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Policy outcome (visible evidence)</h3>
     <p class="denials-summary" id="policy-outcome-summary">—</p>
-    <h3 style="margin:0.75rem 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Denials by reason</h3>
+    <h3 style="margin:0.75rem 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Denials in current view</h3>
     <p class="denials-summary"><span id="denials-total">—</span> denied. <span id="denials-by-reason"></span> <a href="#" id="denials-drill-down">View in Evidence &rarr;</a></p>
     <h3 style="margin:0.75rem 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Security &amp; PII</h3>
     <p class="denials-summary">PII detections and injection attempts (see Risky tool / attachment table below and FinOps for counts). <a href="#" id="governance-evidence-link">View evidence</a></p>
@@ -225,29 +225,8 @@
           var el = document.getElementById('card-plans');
           if (el && d.plans) el.textContent = d.plans.length;
         }).catch(function() {});
-        get('/v1/status').then(function(st) {
-          var req = st.evidence_count_today != null ? st.evidence_count_today : 0;
-          var block = st.blocked_count != null ? st.blocked_count : 0;
-          var allowed = Math.max(0, req - block);
-          var po = document.getElementById('policy-outcome-summary');
-          if (po) po.textContent = 'Allowed: ' + allowed + ', Denied: ' + block + (req > 0 ? ' (today)' : '');
-        }).catch(function() {});
-        get('/v1/dashboard/denials-by-reason').then(function(d) {
-          var totalEl = document.getElementById('denials-total');
-          var byEl = document.getElementById('denials-by-reason');
-          if (totalEl) totalEl.textContent = d.total != null ? d.total : '0';
-          if (byEl && d.by_reason) {
-            var parts = [];
-            if (d.by_reason.policy_deny) parts.push('policy: ' + d.by_reason.policy_deny);
-            if (d.by_reason.attachment_block) parts.push('attachment: ' + d.by_reason.attachment_block);
-            if (d.by_reason.tool_filtered) parts.push('tool: ' + d.by_reason.tool_filtered);
-            if (d.by_reason.pii_block) parts.push('PII: ' + d.by_reason.pii_block);
-            byEl.textContent = parts.length ? parts.join(', ') : '—';
-          }
-        }).catch(function() {
-          var totalEl = document.getElementById('denials-total');
-          if (totalEl) totalEl.textContent = '—';
-        });
+        // Policy outcome and denial counters are synced from the currently visible
+        // evidence list in renderEvidence() so they stay consistent with this table.
         get('/v1/dashboard/governance-alerts?limit=10').then(function(d) {
           var tbody = document.getElementById('governance-alerts-tbody');
           if (!tbody) return;
@@ -303,11 +282,43 @@
         }
         return params.join('&');
       }
+      function syncCardsFromEvidence(entries) {
+        var list = Array.isArray(entries) ? entries : [];
+        var total = list.length;
+        var blocked = 0;
+        var visibleCost = 0;
+        list.forEach(function(ev) {
+          if (ev && ev.allowed === false) blocked += 1;
+          if (ev && ev.cost != null && !isNaN(Number(ev.cost))) visibleCost += Number(ev.cost);
+        });
+        var el = document.getElementById('card-requests');
+        if (el) el.textContent = total;
+        el = document.getElementById('card-daily');
+        if (el) el.textContent = visibleCost.toFixed(2) + ' €';
+        el = document.getElementById('card-blocked');
+        if (el) el.textContent = blocked;
+      }
+      function syncPolicyOutcomeFromEvidence(entries) {
+        var list = Array.isArray(entries) ? entries : [];
+        var denied = 0;
+        list.forEach(function(ev) {
+          if (ev && ev.allowed === false) denied += 1;
+        });
+        var allowed = Math.max(0, list.length - denied);
+        var po = document.getElementById('policy-outcome-summary');
+        if (po) po.textContent = 'Allowed: ' + allowed + ', Denied: ' + denied + ' (current evidence list)';
+        var totalEl = document.getElementById('denials-total');
+        if (totalEl) totalEl.textContent = denied;
+        var byEl = document.getElementById('denials-by-reason');
+        if (byEl) byEl.textContent = 'Reason breakdown is available in per-record Trace.';
+      }
       function renderEvidence() {
         var q = buildEvidenceQuery();
         get('/v1/evidence?' + q).then(function(d) {
           var tbody = document.getElementById('evidence-tbody');
           if (!tbody) return;
+          syncCardsFromEvidence(d.entries || []);
+          syncPolicyOutcomeFromEvidence(d.entries || []);
           tbody.innerHTML = '';
           (d.entries || []).forEach(function(ev) {
             var tr = document.createElement('tr');
@@ -343,22 +354,22 @@
               });
             });
           });
+          tbody.querySelectorAll('.evidence-trace').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+              var id = btn.getAttribute('data-id');
+              if (!id || id === '—') return;
+              get('/v1/evidence/' + encodeURIComponent(id) + '/trace').then(function(trace) {
+                var ev = trace.evidence || trace;
+                var steps = trace.steps || [];
+                var lines = ['Evidence: ' + (ev.id || id), 'Correlation: ' + (ev.correlation_id || '—'), 'Model: ' + (ev.execution && ev.execution.model_used ? ev.execution.model_used : '—'), 'Cost: ' + (ev.execution && ev.execution.cost != null ? ev.execution.cost : '—'), 'Steps: ' + steps.length];
+                steps.forEach(function(s, i) { lines.push('  ' + (i+1) + '. ' + (s.step_type || s.type || 'step') + (s.tool_name ? ' ' + s.tool_name : '')); });
+                alert(lines.join('\n'));
+              }).catch(function(e) { alert('Trace failed: ' + (e.message || e)); });
+            });
+          });
         }).catch(function(e) {
           var tbody = document.getElementById('evidence-tbody');
           if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="error">' + escapeHtml(e.message) + '</td></tr>';
-        });
-        tbody.querySelectorAll('.evidence-trace').forEach(function(btn) {
-          btn.addEventListener('click', function() {
-            var id = btn.getAttribute('data-id');
-            if (!id || id === '—') return;
-            get('/v1/evidence/' + encodeURIComponent(id) + '/trace').then(function(trace) {
-              var ev = trace.evidence || trace;
-              var steps = trace.steps || [];
-              var lines = ['Evidence: ' + (ev.id || id), 'Correlation: ' + (ev.correlation_id || '—'), 'Model: ' + (ev.execution && ev.execution.model_used ? ev.execution.model_used : '—'), 'Cost: ' + (ev.execution && ev.execution.cost != null ? ev.execution.cost : '—'), 'Steps: ' + steps.length];
-              steps.forEach(function(s, i) { lines.push('  ' + (i+1) + '. ' + (s.step_type || s.type || 'step') + (s.tool_name ? ' ' + s.tool_name : '')); });
-              alert(lines.join('\n'));
-            }).catch(function(e) { alert('Trace failed: ' + (e.message || e)); });
-          });
         });
       }
 
