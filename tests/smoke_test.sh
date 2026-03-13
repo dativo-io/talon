@@ -2406,6 +2406,15 @@ compliance:
 PREVIEWEOF
   fi
 
+  # Relax rate_limits: all sections share one TALON_DATA_DIR/evidence.db, so by
+  # section 24 the evidence count from prior sections easily exceeds the scaffold
+  # default of 30 requests_per_minute, causing an OPA rate-limit deny.
+  if command -v yq >/dev/null 2>&1; then
+    yq -i '.policies.rate_limits.requests_per_minute = 300' "$dir/agent.talon.yaml" 2>/dev/null || true
+  elif grep -q "requests_per_minute:" "$dir/agent.talon.yaml" 2>/dev/null; then
+    sed -i.bak 's/requests_per_minute:.*/requests_per_minute: 300/' "$dir/agent.talon.yaml" 2>/dev/null || true
+  fi
+
   # Dump the final agent.talon.yaml so we can see whether human_oversight was set.
   dump_diag_file "agent.talon.yaml after compliance modification" "$dir/agent.talon.yaml"
 
@@ -2447,13 +2456,21 @@ PREVIEWEOF
       echo "  ✓  approved plan removed from pending list"
       record_pass
     fi
-    local exec_out; exec_out="$(run_talon plan execute "$plan_id" --tenant default 2>/dev/null)"; local exec_code=$?
+    local exec_err_file; exec_err_file="$(mktemp)"
+    local exec_out; exec_out="$(run_talon plan execute "$plan_id" --tenant default 2>"$exec_err_file")"; local exec_code=$?
     if [[ $exec_code -eq 0 ]]; then
       echo "  ✓  talon plan execute exits 0 for approved plan"
       record_pass
     else
-      log_failure "talon plan execute should exit 0 for approved plan" "plan_id=$plan_id exit=$exec_code output=$exec_out"
+      log_failure "talon plan execute should exit 0 for approved plan" "plan_id=$plan_id exit=$exec_code"
+      dump_diag_kv "plan execute diagnostics" \
+        "exit_code=$exec_code" \
+        "stdout_length=${#exec_out}" \
+        "stdout_first_200=${exec_out:0:200}"
+      dump_diag_file "plan execute stderr" "$exec_err_file"
+      dump_diag_file "agent.talon.yaml" "$dir/agent.talon.yaml"
     fi
+    rm -f "$exec_err_file" 2>/dev/null || true
     if echo "$exec_out" | grep -qi "Evidence stored"; then
       echo "  ✓  manual plan execute produced evidence output"
       record_pass
