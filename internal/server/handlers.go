@@ -2,17 +2,24 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
 
 	"github.com/dativo-io/talon/internal/agent"
+	"github.com/dativo-io/talon/internal/approver"
+	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/drift"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/memory"
 )
@@ -21,6 +28,70 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
+}
+
+func reasoningFromRequestHeaderOrBody(headerValue, bodyValue string) string {
+	if headerValue != "" {
+		return headerValue
+	}
+	return bodyValue
+}
+
+func (s *Server) resolveApproverFromRequest(ctx context.Context, r *http.Request) (*approver.Record, error) {
+	key := bearerToken(r)
+	if key == "" || !strings.HasPrefix(key, "talon_appr_") {
+		return nil, nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	store, err := approver.NewStore(cfg.EvidenceDBPath())
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	rec, err := store.Resolve(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+func (s *Server) approverRoleAllowed(role string) bool {
+	if s.policy == nil || s.policy.Compliance == nil || s.policy.Compliance.PlanReview == nil {
+		return true
+	}
+	chain := s.policy.Compliance.PlanReview.ApprovalChain
+	if len(chain) == 0 {
+		return true
+	}
+	for _, lvl := range chain {
+		if lvl.Role == role {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) verifyAgentRequestSignature(ctx context.Context, r *http.Request, tenantID, agentID, prompt string) (bool, error) {
+	sigHex := strings.TrimSpace(r.Header.Get("X-Talon-Agent-Signature"))
+	ts := strings.TrimSpace(r.Header.Get("X-Talon-Agent-Timestamp"))
+	if sigHex == "" || ts == "" {
+		return false, nil
+	}
+	if s.secretsStore == nil {
+		return false, errors.New("agent signature provided but secrets store is not configured")
+	}
+	secretName := "agent-signing-" + agentID
+	sec, err := s.secretsStore.Get(ctx, secretName, tenantID, agentID)
+	if err != nil {
+		return false, err
+	}
+	mac := hmac.New(sha256.New, sec.Value)
+	_, _ = mac.Write([]byte(tenantID + "|" + agentID + "|" + prompt + "|" + ts))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(strings.ToLower(sigHex))), nil
 }
 
 // openAIErrorBody is the OpenAI API error response shape so SDKs can parse error.message.
@@ -75,11 +146,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 type agentRunRequest struct {
-	TenantID  string `json:"tenant_id"`
-	AgentID   string `json:"agent_id"`
-	AgentName string `json:"agent_name"`
-	Prompt    string `json:"prompt"`
-	DryRun    bool   `json:"dry_run"`
+	TenantID       string `json:"tenant_id"`
+	AgentID        string `json:"agent_id"`
+	AgentName      string `json:"agent_name"`
+	Prompt         string `json:"prompt"`
+	AgentReasoning string `json:"_talon_reasoning"`
+	SessionID      string `json:"_talon_session_id"`
+	DryRun         bool   `json:"dry_run"`
 }
 
 func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
@@ -114,9 +187,17 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		TenantID:       tenantID,
 		AgentName:      agentName,
 		Prompt:         req.Prompt,
+		AgentReasoning: reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Reasoning"), req.AgentReasoning),
+		SessionID:      reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Session-ID"), req.SessionID),
 		InvocationType: "api",
 		PolicyPath:     s.policyPath,
 		DryRun:         req.DryRun,
+	}
+	if verified, err := s.verifyAgentRequestSignature(r.Context(), r, tenantID, agentName, req.Prompt); err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid_signature", err.Error())
+		return
+	} else if verified {
+		runReq.AgentVerified = true
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
@@ -126,6 +207,9 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	if runReq.SessionID != "" {
+		w.Header().Set("X-Talon-Session-ID", runReq.SessionID)
+	}
 	if !resp.PolicyAllow {
 		writeError(w, http.StatusForbidden, "policy_denied", resp.DenyReason)
 		return
@@ -134,6 +218,7 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]string{
 			"plan_pending": resp.PlanPending,
 			"message":      "Execution pending human review",
+			"session_id":   runReq.SessionID,
 		})
 		return
 	}
@@ -146,6 +231,7 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		"tools_called":  resp.ToolsCalled,
 		"input_tokens":  resp.InputTokens,
 		"output_tokens": resp.OutputTokens,
+		"session_id":    runReq.SessionID,
 	})
 }
 
@@ -161,8 +247,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"messages"`
-		AgentID  string `json:"agent_id"`
-		TenantID string `json:"tenant_id"`
+		AgentID        string `json:"agent_id"`
+		TenantID       string `json:"tenant_id"`
+		AgentReasoning string `json:"_talon_reasoning"`
+		SessionID      string `json:"_talon_session_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_json", "invalid_request_error", "invalid JSON: "+err.Error())
@@ -208,8 +296,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		TenantID:       tenantID,
 		AgentName:      agentName,
 		Prompt:         prompt,
+		AgentReasoning: reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Reasoning"), req.AgentReasoning),
+		SessionID:      reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Session-ID"), req.SessionID),
 		InvocationType: "http",
 		PolicyPath:     s.policyPath,
+	}
+	if verified, err := s.verifyAgentRequestSignature(r.Context(), r, tenantID, agentName, prompt); err != nil {
+		writeOpenAIError(w, http.StatusUnauthorized, "invalid_signature", "invalid_request_error", err.Error())
+		return
+	} else if verified {
+		runReq.AgentVerified = true
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
@@ -218,6 +314,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		log.Error().Err(err).Str("tenant_id", tenantID).Msg("chat_completions_run_error")
 		writeOpenAIError(w, http.StatusInternalServerError, "run_failed", "internal_error", err.Error())
 		return
+	}
+	if runReq.SessionID != "" {
+		w.Header().Set("X-Talon-Session-ID", runReq.SessionID)
 	}
 	if !resp.PolicyAllow {
 		writeOpenAIError(w, http.StatusForbidden, "policy_denied", "policy_denied", resp.DenyReason)
@@ -1075,6 +1174,55 @@ func (s *Server) handleTenantsSummary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAgentHealth returns per-agent risk-oriented health rows for fleet operations.
+func (s *Server) handleAgentHealth(w http.ResponseWriter, r *http.Request) {
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	if s.evidenceStore == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"agents": []interface{}{}})
+		return
+	}
+	now := time.Now().UTC()
+	from := now.Add(-24 * time.Hour)
+	rows, err := s.evidenceStore.AgentHealthSummary(r.Context(), from, now, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"agents": rows})
+}
+
+func (s *Server) handleDriftSignals(w http.ResponseWriter, r *http.Request) {
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	if s.evidenceStore == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"agents": []interface{}{}})
+		return
+	}
+	analyzer := drift.NewAnalyzer(s.evidenceStore)
+	rows, err := analyzer.ComputeSignals(r.Context(), tenantID, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	for _, row := range rows {
+		for _, sig := range row.Signals {
+			drift.RecordSignal(r.Context(), row.AgentID, sig)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"agents": rows})
+}
+
 func (s *Server) handlePlanGet(w http.ResponseWriter, r *http.Request) {
 	if s.planReviewStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "disabled", "plan review is disabled")
@@ -1122,7 +1270,23 @@ func (s *Server) handlePlanApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error())
 		return
 	}
-	err := s.planReviewStore.Approve(r.Context(), id, tenantID, req.ReviewedBy)
+	if rec, err := s.resolveApproverFromRequest(r.Context(), r); err == nil && rec != nil {
+		if !s.approverRoleAllowed(rec.Role) {
+			writeError(w, http.StatusForbidden, "forbidden", "approver role not allowed by policy approval_chain")
+			return
+		}
+		req.ReviewedBy = rec.Name
+	}
+	plan, err := s.planReviewStore.Get(r.Context(), id, tenantID)
+	if err != nil {
+		if errors.Is(err, agent.ErrPlanNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "plan not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	err = s.planReviewStore.Approve(r.Context(), id, tenantID, req.ReviewedBy)
 	if err != nil {
 		if errors.Is(err, agent.ErrPlanNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "plan not found")
@@ -1135,6 +1299,7 @@ func (s *Server) handlePlanApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	s.recordPlanReviewEvidence(r.Context(), plan, "plan_approved", req.ReviewedBy, "", nil)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "approved"})
 }
 
@@ -1160,7 +1325,23 @@ func (s *Server) handlePlanReject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error())
 		return
 	}
-	err := s.planReviewStore.Reject(r.Context(), id, tenantID, req.ReviewedBy, req.Reason)
+	if rec, err := s.resolveApproverFromRequest(r.Context(), r); err == nil && rec != nil {
+		if !s.approverRoleAllowed(rec.Role) {
+			writeError(w, http.StatusForbidden, "forbidden", "approver role not allowed by policy approval_chain")
+			return
+		}
+		req.ReviewedBy = rec.Name
+	}
+	plan, err := s.planReviewStore.Get(r.Context(), id, tenantID)
+	if err != nil {
+		if errors.Is(err, agent.ErrPlanNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "plan not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	err = s.planReviewStore.Reject(r.Context(), id, tenantID, req.ReviewedBy, req.Reason)
 	if err != nil {
 		if errors.Is(err, agent.ErrPlanNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "plan not found")
@@ -1173,6 +1354,7 @@ func (s *Server) handlePlanReject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	s.recordPlanReviewEvidence(r.Context(), plan, "plan_rejected", req.ReviewedBy, req.Reason, nil)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
 }
 
@@ -1198,7 +1380,23 @@ func (s *Server) handlePlanModify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error())
 		return
 	}
-	err := s.planReviewStore.Modify(r.Context(), id, tenantID, req.ReviewedBy, req.Annotations)
+	if rec, err := s.resolveApproverFromRequest(r.Context(), r); err == nil && rec != nil {
+		if !s.approverRoleAllowed(rec.Role) {
+			writeError(w, http.StatusForbidden, "forbidden", "approver role not allowed by policy approval_chain")
+			return
+		}
+		req.ReviewedBy = rec.Name
+	}
+	plan, err := s.planReviewStore.Get(r.Context(), id, tenantID)
+	if err != nil {
+		if errors.Is(err, agent.ErrPlanNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "plan not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	err = s.planReviewStore.Modify(r.Context(), id, tenantID, req.ReviewedBy, req.Annotations)
 	if err != nil {
 		if errors.Is(err, agent.ErrPlanNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "plan not found")
@@ -1211,7 +1409,42 @@ func (s *Server) handlePlanModify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	s.recordPlanReviewEvidence(r.Context(), plan, "plan_modified", req.ReviewedBy, "", req.Annotations)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "modified"})
+}
+
+func (s *Server) recordPlanReviewEvidence(ctx context.Context, plan *agent.ExecutionPlan, eventType, reviewedBy, reason string, annotations []agent.Annotation) {
+	if s.evidenceStore == nil || plan == nil {
+		return
+	}
+	gen := evidence.NewGenerator(s.evidenceStore)
+	if _, err := gen.Generate(ctx, evidence.GenerateParams{
+		CorrelationID:  plan.CorrelationID,
+		SessionID:      plan.SessionID,
+		TenantID:       plan.TenantID,
+		AgentID:        plan.AgentID,
+		InvocationType: "plan_review",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: true,
+			Action:  eventType,
+			Reasons: []string{"human_oversight"},
+		},
+		Classification:        evidence.Classification{},
+		InputPrompt:           eventType + ":" + plan.ID,
+		OutputResponse:        reviewedBy,
+		Compliance:            evidence.Compliance{},
+		ModelRoutingRationale: "plan_review",
+		PlanReview: &evidence.PlanReviewEvent{
+			PlanID:          plan.ID,
+			EventType:       eventType,
+			ReviewedBy:      reviewedBy,
+			PreviousStatus:  string(plan.Status),
+			Reason:          reason,
+			AnnotationCount: len(annotations),
+		},
+	}); err != nil {
+		log.Warn().Err(err).Str("plan_id", plan.ID).Msg("recording_plan_review_evidence")
+	}
 }
 
 func (s *Server) handlePoliciesList(w http.ResponseWriter, r *http.Request) {

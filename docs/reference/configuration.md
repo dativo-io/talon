@@ -76,6 +76,7 @@ All `TALON_*` environment variables map to fields in `talon.config.yaml`. Enviro
 | `TALON_DEFAULT_POLICY` | Filename of the agent policy file. | `agent.talon.yaml` |
 | `TALON_MAX_ATTACHMENT_MB` | Max attachment size in MB. | `10` |
 | `TALON_OLLAMA_BASE_URL` | Ollama endpoint. | `http://localhost:11434` |
+| `TALON_ADMIN_KEY` | Admin key for control-plane and dashboard (serve only). | — |
 | `OPENAI_API_KEY` | OpenAI key (dev fallback when not in vault). | -- |
 | `OPENAI_BASE_URL` | OpenAI-compatible API base URL (e.g. for tests). | -- |
 | `ANTHROPIC_API_KEY` | Anthropic key (dev fallback). | -- |

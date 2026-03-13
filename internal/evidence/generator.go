@@ -11,6 +11,25 @@ import (
 	"github.com/google/uuid"
 )
 
+type contextKey string
+
+const sessionIDContextKey contextKey = "session_id"
+
+// WithSessionID attaches a session ID to context so all evidence generated
+// within the request can inherit it without repeating params in every call.
+func WithSessionID(ctx context.Context, sessionID string) context.Context {
+	if sessionID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionIDContextKey, sessionID)
+}
+
+func sessionIDFromContext(ctx context.Context) string {
+	v := ctx.Value(sessionIDContextKey)
+	s, _ := v.(string)
+	return s
+}
+
 // Generator creates and persists evidence records.
 type Generator struct {
 	store *Store
@@ -26,6 +45,7 @@ func NewGenerator(store *Store) *Generator {
 // Generator hashes prompts/responses, signs the record, and persists it.
 type GenerateParams struct {
 	CorrelationID           string           // Unique trace identifier for this invocation
+	SessionID               string           // Optional lifecycle session identifier
 	TenantID                string           // Tenant scope
 	AgentID                 string           // Agent that was invoked
 	InvocationType          string           // "manual", "scheduled", or "webhook:<name>"
@@ -50,6 +70,8 @@ type GenerateParams struct {
 	OutputResponse          string           // LLM response text (hashed in evidence)
 	AttachmentHashes        []string         // SHA256 hex of each attachment content (optional); same prompt+same attachments → same InputHash
 	Compliance              Compliance       // Applicable compliance frameworks and data location
+	AgentReasoning          string           // Optional agent-provided rationale (e.g. X-Talon-Reasoning)
+	AgentVerified           bool             // Optional per-agent signature verification result
 	ObservationModeOverride bool             // True when allowed despite policy deny (shadow/observation-only mode)
 	RoutingDecision         *RoutingDecision // Provider selection and rejected candidates (EU routing)
 	// Semantic cache: set on cache hit (Cost=0, CostSaved=estimated equivalent LLM cost).
@@ -57,11 +79,13 @@ type GenerateParams struct {
 	CacheEntryID    string  // Cache entry ID for audit correlation
 	CacheSimilarity float64 // Similarity score that produced the hit
 	CostSaved       float64 // Estimated cost saved by not calling the LLM
+	PlanReview      *PlanReviewEvent
 }
 
 // StepParams holds inputs for creating a step-level evidence record (one LLM call or one tool call within a run).
 type StepParams struct {
 	CorrelationID string // Links to parent Evidence
+	SessionID     string
 	TenantID      string
 	AgentID       string
 	StepIndex     int
@@ -79,9 +103,13 @@ type StepParams struct {
 
 // GenerateStep creates and stores a step evidence record.
 func (g *Generator) GenerateStep(ctx context.Context, params StepParams) (*StepEvidence, error) {
+	if params.SessionID == "" {
+		params.SessionID = sessionIDFromContext(ctx)
+	}
 	step := &StepEvidence{
 		ID:            "step_" + uuid.New().String()[:12],
 		CorrelationID: params.CorrelationID,
+		SessionID:     params.SessionID,
 		TenantID:      params.TenantID,
 		AgentID:       params.AgentID,
 		StepIndex:     params.StepIndex,
@@ -139,9 +167,13 @@ func TruncateForSummary(s string, maxLen int) string {
 
 // Generate creates and stores an evidence record from the given parameters.
 func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evidence, error) {
+	if params.SessionID == "" {
+		params.SessionID = sessionIDFromContext(ctx)
+	}
 	ev := &Evidence{
 		ID:                      "req_" + uuid.New().String()[:8],
 		CorrelationID:           params.CorrelationID,
+		SessionID:               params.SessionID,
 		Timestamp:               time.Now(),
 		TenantID:                params.TenantID,
 		AgentID:                 params.AgentID,
@@ -172,10 +204,13 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 			OutputHash: hashString(params.OutputResponse),
 		},
 		Compliance:      params.Compliance,
+		AgentReasoning:  params.AgentReasoning,
+		AgentVerified:   params.AgentVerified,
 		CacheHit:        params.CacheHit,
 		CacheEntryID:    params.CacheEntryID,
 		CacheSimilarity: params.CacheSimilarity,
 		CostSaved:       params.CostSaved,
+		PlanReview:      params.PlanReview,
 	}
 
 	if err := g.store.Store(ctx, ev); err != nil {

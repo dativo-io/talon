@@ -18,6 +18,7 @@ var (
 	costsAgent   string
 	costsTenant  string
 	costsByModel bool
+	costsByTeam  bool
 )
 
 var costsCmd = &cobra.Command{
@@ -65,6 +66,18 @@ var costsCmd = &cobra.Command{
 			// Optional: 7d trend (same agent filter when --agent is set)
 			weekTotal, _ := store.CostTotal(ctx, tenantID, costsAgent, weekStart, dayEnd)
 			fmt.Fprintf(out, "  7d total: €%s\n", formatCost(weekTotal))
+			return nil
+		}
+		if costsByTeam {
+			byTeamDaily, err := store.CostByTeam(ctx, tenantID, dayStart, dayEnd)
+			if err != nil {
+				return fmt.Errorf("cost by team (daily): %w", err)
+			}
+			byTeamMonthly, err := store.CostByTeam(ctx, tenantID, monthStart, monthEnd)
+			if err != nil {
+				return fmt.Errorf("cost by team (monthly): %w", err)
+			}
+			renderCostByTeam(out, tenantID, byTeamDaily, byTeamMonthly)
 			return nil
 		}
 
@@ -190,6 +203,39 @@ func renderCostByModel(w io.Writer, tenantID, agentID string, byModelDaily, byMo
 	fmt.Fprintf(w, "%-32s €%13s €%13s\n", "Total", formatCost(dailyTotal), formatCost(monthlyTotal))
 }
 
+// renderCostByTeam writes per-team cost table to w (testable).
+//
+//nolint:dupl // similar to renderCostByModel but for team grouping; keeping separate for clarity
+func renderCostByTeam(w io.Writer, tenantID string, byTeamDaily, byTeamMonthly map[string]float64) {
+	teams := make(map[string]bool)
+	for t := range byTeamDaily {
+		teams[t] = true
+	}
+	for t := range byTeamMonthly {
+		teams[t] = true
+	}
+	var list []string
+	for t := range teams {
+		list = append(list, t)
+	}
+	sort.Strings(list)
+	fmt.Fprintf(w, "Tenant: %s (by team)\n", tenantID)
+	fmt.Fprintf(w, "%-32s %14s %14s\n", "Team", "Today", "Month")
+	fmt.Fprintf(w, "%-32s %14s %14s\n", "-----", "-----", "-----")
+	var dailyTotal, monthlyTotal float64
+	for _, team := range list {
+		d := byTeamDaily[team]
+		m := byTeamMonthly[team]
+		dailyTotal += d
+		monthlyTotal += m
+		fmt.Fprintf(w, "%-32s €%13s €%13s\n", team, formatCost(d), formatCost(m))
+	}
+	if len(list) > 0 {
+		fmt.Fprintf(w, "%-32s %14s %14s\n", "-----", "-----", "-----")
+	}
+	fmt.Fprintf(w, "%-32s €%13s €%13s\n", "Total", formatCost(dailyTotal), formatCost(monthlyTotal))
+}
+
 // renderCostReportAllAgents writes per-agent cost table to w (testable).
 //
 //nolint:dupl // similar to renderCostByModel but for agent grouping; keeping separate for clarity
@@ -228,4 +274,5 @@ func init() {
 	costsCmd.Flags().StringVar(&costsAgent, "agent", "", "filter by agent name")
 	costsCmd.Flags().StringVar(&costsTenant, "tenant", "", "tenant ID (default: default)")
 	costsCmd.Flags().BoolVar(&costsByModel, "by-model", false, "group output by model")
+	costsCmd.Flags().BoolVar(&costsByTeam, "by-team", false, "group output by caller team")
 }

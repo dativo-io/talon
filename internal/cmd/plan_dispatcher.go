@@ -64,6 +64,7 @@ func dispatchApprovedPlan(ctx context.Context, store *agent.PlanReviewStore, run
 		TenantID:         plan.TenantID,
 		AgentName:        plan.AgentID,
 		Prompt:           plan.Prompt,
+		SessionID:        plan.SessionID,
 		InvocationType:   "plan_dispatch",
 		PolicyPath:       plan.PolicyPath,
 		BypassPlanReview: true,

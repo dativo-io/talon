@@ -19,13 +19,15 @@ Each record contains these sections:
 
 | Section | Fields | Purpose |
 |---------|--------|---------|
-| **Identity** | `id`, `correlation_id`, `timestamp`, `tenant_id`, `agent_id` | Who, when, which tenant |
+| **Identity** | `id`, `session_id`, `correlation_id`, `timestamp`, `tenant_id`, `agent_id` | Who, when, which tenant; `session_id` links requests in the same lifecycle session |
 | **Policy Decision** | `allowed`, `action`, `reasons`, `policy_version` | What the policy engine decided |
 | **Classification** | `input_tier`, `output_tier`, `pii_detected`, `pii_redacted`, `output_pii_detected` | What PII was found |
 | **Execution** | `model_used`, `cost`, `tokens`, `duration_ms`, `tools_called`, `error` | What the LLM did |
 | **Audit Trail** | `input_hash`, `output_hash` | SHA-256 content hashes for forensics |
 | **Compliance** | `frameworks`, `data_location` | Which regulations apply |
 | **Signature** | `signature` | HMAC-SHA256 over all other fields |
+
+**Sessions:** When the server or CLI creates a lifecycle session (e.g. for `POST /v1/agents/run` or `talon run`), that session’s ID is stored in `session_id`. Plan-gated runs and their subsequent auto-dispatch share the same session so that all evidence for that flow can be correlated. Export and API responses include `session_id` when present.
 
 ## HMAC Signing
 
@@ -34,7 +36,7 @@ Every evidence record is signed at creation time using HMAC-SHA256.
 **How it works:**
 
 1. The evidence record is serialized to JSON (excluding the `signature` field)
-2. HMAC-SHA256 is computed using the server's `TALON_SECRETS_KEY`
+2. HMAC-SHA256 is computed using the server's `TALON_SIGNING_KEY`
 3. The hex-encoded signature is stored in the `signature` field
 4. The complete record (including signature) is written to SQLite
 
@@ -88,8 +90,7 @@ external dependencies. Suitable for single-instance deployments.
 **Upgrade path:** PostgreSQL for high-availability deployments. Same evidence
 schema, different storage backend. Configure via `talon.config.yaml`.
 
-**Retention:** Configurable via `audit.retention_days` in `.talon.yaml`.
-Default: 90 days.
+**Retention:** Configurable via `audit.retention_days` in `agent.talon.yaml`. Default: 90 days.
 
 ## Export
 
@@ -103,10 +104,7 @@ talon audit export --format csv --from 2026-03-01 --to 2026-03-31 > march-audit.
 talon audit export --format json --from 2026-03-01 > march-audit.json
 ```
 
-CSV columns: `id`, `timestamp`, `tenant_id`, `agent_id`, `invocation_type`,
-`allowed`, `cost`, `model_used`, `duration_ms`, `has_error`, `input_tier`,
-`output_tier`, `pii_detected`, `pii_redacted`, `policy_reasons`,
-`tools_called`, `input_hash`, `output_hash`.
+CSV columns: `id`, `session_id`, `timestamp`, `tenant_id`, `agent_id`, `invocation_type`, `allowed`, `cost`, `model_used`, `duration_ms`, `has_error`, `input_tier`, `output_tier`, `pii_detected`, `pii_redacted`, `policy_reasons`, `tools_called`, `input_hash`, `output_hash`, plus shadow/cache fields when applicable. JSON and NDJSON export include the same fields; `session_id` links evidence to a lifecycle session (e.g. plan-gated run and its dispatch).
 
 ## OpenTelemetry Export
 

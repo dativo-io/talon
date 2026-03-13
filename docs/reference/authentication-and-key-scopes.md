@@ -40,6 +40,10 @@ Notes:
 
 ## Common confusion
 
+### "Tenant key returns 401 on `/v1/evidence` or other tenant-or-admin paths"
+
+When `talon serve` is run **without** `--gateway` (and without a `gateway:` block in config), no tenant keys are loaded. Tenant-or-admin read paths (`/v1/evidence`, `/v1/status`, etc.) then accept only the **admin key** (`X-Talon-Admin-Key` or Bearer). Use the admin key for evidence and status when running a minimal server without the gateway.
+
 ### "My caller key works on `/v1/proxy` but fails on admin endpoints"
 
 Expected behavior. Caller/tenant keys are not admin keys.

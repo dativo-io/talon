@@ -319,11 +319,19 @@ type AuditConfig struct {
 // VolumeThreshold is defined in internal/agent/plan_review.go PlanReviewConfig
 // (the agent package owns plan review logic and runtime config).
 type PlanReviewConfig struct {
-	RequireForTools bool    `yaml:"require_for_tools" json:"require_for_tools"`
-	RequireForTier  string  `yaml:"require_for_tier" json:"require_for_tier"`
-	CostThreshold   float64 `yaml:"cost_threshold" json:"cost_threshold"`
-	TimeoutMinutes  int     `yaml:"timeout_minutes" json:"timeout_minutes"`
-	NotifyWebhook   string  `yaml:"notify_webhook" json:"notify_webhook"`
+	RequireForTools bool            `yaml:"require_for_tools" json:"require_for_tools"`
+	RequireForTier  string          `yaml:"require_for_tier" json:"require_for_tier"`
+	CostThreshold   float64         `yaml:"cost_threshold" json:"cost_threshold"`
+	TimeoutMinutes  int             `yaml:"timeout_minutes" json:"timeout_minutes"`
+	NotifyWebhook   string          `yaml:"notify_webhook" json:"notify_webhook"`
+	Mode            string          `yaml:"mode,omitempty" json:"mode,omitempty"`
+	ApprovalChain   []ApprovalLevel `yaml:"approval_chain,omitempty" json:"approval_chain,omitempty"`
+}
+
+type ApprovalLevel struct {
+	Role              string `yaml:"role" json:"role"`
+	TimeoutMinutes    int    `yaml:"timeout_minutes,omitempty" json:"timeout_minutes,omitempty"`
+	EscalateOnTimeout bool   `yaml:"escalate_on_timeout,omitempty" json:"escalate_on_timeout,omitempty"`
 }
 
 // ComplianceConfig declares regulatory framework alignment.

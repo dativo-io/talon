@@ -39,6 +39,13 @@ type MetricsRecorder interface {
 	RecordGatewayEvent(event interface{})
 }
 
+type gatewayContextKey string
+
+const (
+	gatewayAgentReasoningKey gatewayContextKey = "agent_reasoning"
+	gatewaySessionIDKey      gatewayContextKey = "session_id"
+)
+
 // hasCallerTag returns true when the caller has the given tag (e.g. "copaw" for CoPaw).
 // Classification is driven by CallerConfig.Tags, not name prefix.
 func hasCallerTag(caller *CallerConfig, tag string) bool {
@@ -181,6 +188,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if correlationID == "" {
 		correlationID = "gw_" + uuid.New().String()[:12]
 	}
+	sessionID := r.Header.Get("X-Talon-Session-ID")
+	if sessionID == "" {
+		sessionID = "sess_" + correlationID
+	}
+	w.Header().Set("X-Talon-Session-ID", sessionID)
+	ctx = context.WithValue(ctx, gatewayAgentReasoningKey, r.Header.Get("X-Talon-Reasoning"))
+	ctx = context.WithValue(ctx, gatewaySessionIDKey, sessionID)
 
 	isShadow := g.config.Mode == ModeShadow
 	var shadowViolations []evidence.ShadowViolation
@@ -188,6 +202,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 1: Route
 	route, err := g.config.RouteRequest(r)
 	if err != nil {
+		RecordGatewayRequest(ctx, "unknown", "", "openai", "error")
+		RecordGatewayError(ctx, "route_error")
 		log.Warn().Err(err).Str("path", r.URL.Path).Msg("gateway_route_failed")
 		WriteProviderError(w, "openai", http.StatusBadRequest, err.Error())
 		return
@@ -198,10 +214,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if err == ErrCallerIDRequired || err == ErrCallerNotFound {
 			RecordGatewayError(ctx, "auth")
+			RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
 			WriteProviderError(w, route.Provider, http.StatusUnauthorized, "Invalid or missing tenant key")
 			return
 		}
 		RecordGatewayError(ctx, "auth")
+		RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
 		WriteProviderError(w, route.Provider, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -229,12 +247,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Only POST
 	if r.Method != http.MethodPost {
+		RecordGatewayRequest(ctx, caller.Name, "", route.Provider, "error")
+		RecordGatewayError(ctx, "invalid_method")
 		WriteProviderError(w, route.Provider, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		RecordGatewayRequest(ctx, caller.Name, "", route.Provider, "error")
+		RecordGatewayError(ctx, "read_body")
 		WriteProviderError(w, route.Provider, http.StatusBadRequest, "Failed to read request body")
 		return
 	}
@@ -243,6 +265,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 3: Extract
 	extracted, err := ExtractForProvider(route.Provider, body)
 	if err != nil {
+		RecordGatewayRequest(ctx, caller.Name, "", route.Provider, "error")
+		RecordGatewayError(ctx, "extract_request")
 		WriteProviderError(w, route.Provider, http.StatusBadRequest, "Invalid request body")
 		return
 	}
@@ -689,6 +713,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 
 	params := RecordGatewayEvidenceParams{
 		CorrelationID:           correlationID,
+		SessionID:               sessionIDFromContext(ctx),
 		TenantID:                caller.TenantID,
 		CallerName:              caller.Name,
 		Team:                    caller.Team,
@@ -710,6 +735,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		DurationMS:              durationMS,
 		SecretsAccessed:         secretsAccessed,
 		AttachmentScan:          attScan,
+		AgentReasoning:          agentReasoningFromContext(ctx),
 	}
 	if toolResult != nil {
 		params.ToolsRequested = toolResult.Requested
@@ -723,6 +749,22 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	params.TTFTMS = ttftMS
 	params.TPOTMS = tpotMS
 	return RecordGatewayEvidence(ctx, g.evidenceStore, params)
+}
+
+func agentReasoningFromContext(ctx context.Context) string {
+	v := ctx.Value(gatewayAgentReasoningKey)
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func sessionIDFromContext(ctx context.Context) string {
+	v := ctx.Value(gatewaySessionIDKey)
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 func buildGatewayPolicyInput(caller *CallerConfig, provider, model string, dataTier int, estimatedCost, dailyCost, monthlyCost float64) map[string]interface{} {
@@ -857,6 +899,9 @@ func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provide
 	}
 	if tokIn > 0 || tokOut > 0 {
 		llm.RecordTokenUsage(ctx, tokIn, tokOut, model, provider)
+	}
+	if cost > 0 {
+		llm.RecordCostMetrics(ctx, cost, caller.Name, model, false)
 	}
 	if durationMS > 0 {
 		llm.RecordOperationDuration(ctx, float64(durationMS)/1000.0, model, provider)

@@ -323,3 +323,14 @@ The dashboard and OTel metrics are complementary:
 | **Granularity** | 5-minute buckets, per-caller | Per-request via attributes |
 
 Use the dashboard for at-a-glance monitoring. Use OTel + Grafana for historical analysis, alerting, and SLA tracking. See [Observability](../OBSERVABILITY.md) for the full OTel metrics catalogue and [`examples/observability/`](../../examples/observability/) for the local Grafana stack.
+
+---
+
+## Related governance dashboard endpoints
+
+When using the main governance dashboard (`/dashboard`), Talon also exposes:
+
+- `GET /v1/dashboard/agent-health` - per-agent risk-oriented health summary
+- `GET /v1/dashboard/drift-signals` - drift z-scores (cost anomaly, denial-rate spike, PII-rate change)
+
+These endpoints are used by the embedded UI and can also be queried directly for custom dashboards.

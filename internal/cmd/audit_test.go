@@ -103,7 +103,7 @@ func TestRenderAuditExportCSV(t *testing.T) {
 	err := renderAuditExportCSV(&buf, records)
 	require.NoError(t, err)
 	out := buf.String()
-	assert.Contains(t, out, "id,timestamp,tenant_id")
+	assert.Contains(t, out, "id,session_id,timestamp,tenant_id")
 	assert.Contains(t, out, "ev_1")
 	assert.Contains(t, out, "acme")
 	assert.Contains(t, out, "true")
@@ -129,6 +129,35 @@ func TestRenderAuditExportJSON(t *testing.T) {
 	assert.Contains(t, out, "PHONE_NUMBER")
 	assert.Contains(t, out, "export_metadata")
 	assert.Contains(t, out, "total_records")
+}
+
+func TestRenderAuditExportHTML_EscapesUserControlledFields(t *testing.T) {
+	var buf bytes.Buffer
+	ts := time.Date(2025, 2, 18, 10, 0, 0, 0, time.UTC)
+	records := []evidence.ExportRecord{
+		{
+			ID:         "ev_1",
+			Timestamp:  ts,
+			TenantID:   `<script>alert("tenant")</script>`,
+			AgentID:    `<img src=x onerror=alert("agent")>`,
+			ModelUsed:  `<svg onload=alert("model")>`,
+			Allowed:    true,
+			Cost:       0.01,
+			DurationMS: 100,
+		},
+	}
+
+	err := renderAuditExportHTML(&buf, records)
+	require.NoError(t, err)
+	out := buf.String()
+
+	assert.NotContains(t, out, `<script>alert("tenant")</script>`)
+	assert.NotContains(t, out, `<img src=x onerror=alert("agent")>`)
+	assert.NotContains(t, out, `<svg onload=alert("model")>`)
+
+	assert.Contains(t, out, `&lt;script&gt;alert(&#34;tenant&#34;)&lt;/script&gt;`)
+	assert.Contains(t, out, `&lt;img src=x onerror=alert(&#34;agent&#34;)&gt;`)
+	assert.Contains(t, out, `&lt;svg onload=alert(&#34;model&#34;)&gt;`)
 }
 
 func TestAuditListCmd_RunSuccess(t *testing.T) {
