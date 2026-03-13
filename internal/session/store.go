@@ -127,6 +127,13 @@ func (s *Store) Join(ctx context.Context, id, tenantID string) (*Session, error)
 	return ss, nil
 }
 
+func (s *Store) AddUsage(ctx context.Context, id string, cost float64, tokens int) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET updated_at = ?, total_cost = total_cost + ?, total_tokens = total_tokens + ? WHERE id = ?`,
+		now, cost, tokens, id)
+	return err
+}
+
 func (s *Store) Complete(ctx context.Context, id string, cost float64, tokens int) error {
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET status = ?, updated_at = ?, completed_at = ?, total_cost = total_cost + ?, total_tokens = total_tokens + ? WHERE id = ?`,

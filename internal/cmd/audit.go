@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"os"
 	"strconv"
@@ -362,7 +363,7 @@ func renderAuditExportHTML(w io.Writer, records []evidence.ExportRecord) error {
 	for i := range records {
 		r := records[i]
 		if _, err = fmt.Fprintf(w, "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td>%t</td><td>%s</td><td>%s</td><td>%d</td></tr>",
-			r.ID, r.Timestamp.Format(time.RFC3339), r.TenantID, r.AgentID, r.Allowed, formatCostNumeric(r.Cost), r.ModelUsed, r.DurationMS); err != nil {
+			html.EscapeString(r.ID), r.Timestamp.Format(time.RFC3339), html.EscapeString(r.TenantID), html.EscapeString(r.AgentID), r.Allowed, formatCostNumeric(r.Cost), html.EscapeString(r.ModelUsed), r.DurationMS); err != nil {
 			return err
 		}
 	}

@@ -1368,7 +1368,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	// Post-LLM: governed memory write
 	r.writeMemoryObservation(ctx, req, pol, policyEval, resp, ev)
 	if r.sessionStore != nil && req.SessionID != "" {
-		_ = r.sessionStore.Complete(ctx, req.SessionID, cost, totalInputTokens+totalOutputTokens)
+		_ = r.sessionStore.AddUsage(ctx, req.SessionID, cost, totalInputTokens+totalOutputTokens)
 	}
 
 	return resp, nil

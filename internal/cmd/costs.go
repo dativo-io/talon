@@ -77,8 +77,8 @@ var costsCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("cost by team (monthly): %w", err)
 			}
-			renderCostByModel(out, tenantID, "team", byTeamDaily, byTeamMonthly)
-			return nil
+		renderCostByTeam(out, tenantID, byTeamDaily, byTeamMonthly)
+		return nil
 		}
 
 		if costsAgent != "" {
@@ -196,6 +196,39 @@ func renderCostByModel(w io.Writer, tenantID, agentID string, byModelDaily, byMo
 		dailyTotal += d
 		monthlyTotal += m
 		fmt.Fprintf(w, "%-32s €%13s €%13s\n", model, formatCost(d), formatCost(m))
+	}
+	if len(list) > 0 {
+		fmt.Fprintf(w, "%-32s %14s %14s\n", "-----", "-----", "-----")
+	}
+	fmt.Fprintf(w, "%-32s €%13s €%13s\n", "Total", formatCost(dailyTotal), formatCost(monthlyTotal))
+}
+
+// renderCostByTeam writes per-team cost table to w (testable).
+//
+//nolint:dupl // similar to renderCostByModel but for team grouping; keeping separate for clarity
+func renderCostByTeam(w io.Writer, tenantID string, byTeamDaily, byTeamMonthly map[string]float64) {
+	teams := make(map[string]bool)
+	for t := range byTeamDaily {
+		teams[t] = true
+	}
+	for t := range byTeamMonthly {
+		teams[t] = true
+	}
+	var list []string
+	for t := range teams {
+		list = append(list, t)
+	}
+	sort.Strings(list)
+	fmt.Fprintf(w, "Tenant: %s (by team)\n", tenantID)
+	fmt.Fprintf(w, "%-32s %14s %14s\n", "Team", "Today", "Month")
+	fmt.Fprintf(w, "%-32s %14s %14s\n", "-----", "-----", "-----")
+	var dailyTotal, monthlyTotal float64
+	for _, team := range list {
+		d := byTeamDaily[team]
+		m := byTeamMonthly[team]
+		dailyTotal += d
+		monthlyTotal += m
+		fmt.Fprintf(w, "%-32s €%13s €%13s\n", team, formatCost(d), formatCost(m))
 	}
 	if len(list) > 0 {
 		fmt.Fprintf(w, "%-32s %14s %14s\n", "-----", "-----", "-----")

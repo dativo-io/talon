@@ -211,12 +211,22 @@ func runPlanApprove(cmd *cobra.Command, args []string) error {
 func runPlanReject(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
-	store, evidenceStore, dbPlan, _, err := openPlanReviewStore()
+	store, evidenceStore, dbPlan, cfg, err := openPlanReviewStore()
 	if err != nil {
 		return err
 	}
 	defer evidenceStore.Close()
 	defer dbPlan.Close()
+	if planApproverKey != "" {
+		approverStore, aerr := approver.NewStore(cfg.EvidenceDBPath())
+		if aerr != nil {
+			return aerr
+		}
+		defer approverStore.Close()
+		if rec, aerr := approverStore.Resolve(ctx, planApproverKey); aerr == nil && rec != nil {
+			planReviewedBy = rec.Name
+		}
+	}
 
 	plan, err := store.Get(ctx, args[0], planTenantID)
 	if err != nil {
