@@ -769,6 +769,7 @@ GWEOF
   else
     echo "  -  tenant key /v1/evidence returned $tenant_ev_code (gateway callers may not be loaded in this env)"
   fi
+  local base_url="http://127.0.0.1:8080"
   # Session lifecycle checks: create + join via API and confirm continuity.
   local run1_headers="/tmp/talon_smoke_run1_headers.txt"
   local run1_body="/tmp/talon_smoke_run1_body.json"
@@ -1322,36 +1323,11 @@ CACHEEOF
     cd "$REPO_ROOT" || true
     return 0
   fi
-  # Verify the gateway routes are actually registered (not just health)
-  local gw_probe; gw_probe="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-metrics-001" "$SMOKE_BODY_EMPTY")"
-  if [[ "$gw_probe" == "404" ]]; then
-    log_failure "gateway routes not registered for dashboard metrics section" "proxy=${dashboard_base_url}${SMOKE_PATH_GW_PROXY} got=404"
-    kill "$GW_PID" 2>/dev/null || true
-    wait "$GW_PID" 2>/dev/null || true
-    cd "$REPO_ROOT" || true
-    return 0
-  fi
   local admin_key="${TALON_ADMIN_KEY}"
   local gw_key="talon-gw-metrics-001"
 
-  # --- 23.1: Dashboard HTML served ---
-  assert_pass "GET /gateway/dashboard 200 (with admin key)" \
-    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" "${dashboard_base_url}${SMOKE_PATH_GATEWAY_DASHBOARD}")" = "200"
-  local dash_html; dash_html="$(smoke_gw_get_dashboard "$dashboard_base_url" "$admin_key")"
-  assert_pass "dashboard HTML contains Talon" grep -qi "talon" <<< "$dash_html"
-  assert_pass "dashboard HTML contains <script>" grep -qi "<script" <<< "$dash_html"
-  assert_pass "dashboard HTML contains Success Rate KPI" grep -qi "Success Rate" <<< "$dash_html"
-  assert_pass "dashboard HTML contains Timeouts KPI" grep -qi "Timeouts" <<< "$dash_html"
-  assert_pass "dashboard HTML contains Violation Trend (7d) panel" grep -qi "Violation Trend (7d)" <<< "$dash_html"
-  assert_pass "dashboard caller table contains EUR/Success column" grep -qi "EUR/Success" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Trend(7d) column" grep -qi "Trend(7d)" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Success column header" grep -q ">Success<" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Failed column header" grep -q ">Failed<" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Timeout column header" grep -q ">Timeout<" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Denied column header" grep -q ">Denied<" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Rate column header" grep -q ">Rate<" <<< "$dash_html"
-
-  # --- 23.2: Metrics JSON endpoint structure (before any requests) ---
+  # --- 23.2: Metrics JSON endpoint structure (before any proxy traffic) ---
+  # Take snapshot before gw_probe so pre-traffic counters are truly 0.
   local snap_before; snap_before="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
   assert_pass "GET /api/v1/metrics returns valid JSON" jq -e '.' <<< "$snap_before" &>/dev/null
   assert_pass "metrics snapshot has summary.total_requests" \
@@ -1404,6 +1380,33 @@ CACHEEOF
   assert_pass "pre-traffic success_rate == 0" \
     jq -e '.summary.success_rate == 0' <<< "$snap_before" &>/dev/null
   local before_count; before_count="$(jq '.summary.total_requests' <<< "$snap_before")"
+
+  # Verify the gateway routes are actually registered (not just health)
+  local gw_probe; gw_probe="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-metrics-001" "$SMOKE_BODY_EMPTY")"
+  if [[ "$gw_probe" == "404" ]]; then
+    log_failure "gateway routes not registered for dashboard metrics section" "proxy=${dashboard_base_url}${SMOKE_PATH_GW_PROXY} got=404"
+    kill "$GW_PID" 2>/dev/null || true
+    wait "$GW_PID" 2>/dev/null || true
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
+
+  # --- 23.1: Dashboard HTML served ---
+  assert_pass "GET /gateway/dashboard 200 (with admin key)" \
+    test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" "${dashboard_base_url}${SMOKE_PATH_GATEWAY_DASHBOARD}")" = "200"
+  local dash_html; dash_html="$(smoke_gw_get_dashboard "$dashboard_base_url" "$admin_key")"
+  assert_pass "dashboard HTML contains Talon" grep -qi "talon" <<< "$dash_html"
+  assert_pass "dashboard HTML contains <script>" grep -qi "<script" <<< "$dash_html"
+  assert_pass "dashboard HTML contains Success Rate KPI" grep -qi "Success Rate" <<< "$dash_html"
+  assert_pass "dashboard HTML contains Timeouts KPI" grep -qi "Timeouts" <<< "$dash_html"
+  assert_pass "dashboard HTML contains Violation Trend (7d) panel" grep -qi "Violation Trend (7d)" <<< "$dash_html"
+  assert_pass "dashboard caller table contains EUR/Success column" grep -qi "EUR/Success" <<< "$dash_html"
+  assert_pass "dashboard caller table contains Trend(7d) column" grep -qi "Trend(7d)" <<< "$dash_html"
+  assert_pass "dashboard caller table contains Success column header" grep -q ">Success<" <<< "$dash_html"
+  assert_pass "dashboard caller table contains Failed column header" grep -q ">Failed<" <<< "$dash_html"
+  assert_pass "dashboard caller table contains Timeout column header" grep -q ">Timeout<" <<< "$dash_html"
+  assert_pass "dashboard caller table contains Denied column header" grep -q ">Denied<" <<< "$dash_html"
+  assert_pass "dashboard caller table contains Rate column header" grep -q ">Rate<" <<< "$dash_html"
 
   # --- 23.2b: PII and tool governance config behaviour (different callers / default_policy) ---
   # (1) PII block: caller with pii_action: "block" must get 400 on PII body
