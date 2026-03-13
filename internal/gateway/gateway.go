@@ -818,6 +818,9 @@ func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provide
 	cost float64, durationMS int64, hasError, blocked bool, piiAction string,
 	cacheHit bool, costSaved float64, ttftMS int64, tpotMS float64,
 ) {
+	timedOut := hasError && g.timeouts.RequestTimeout > 0 &&
+		durationMS >= g.timeouts.RequestTimeout.Milliseconds()
+
 	status := "ok"
 	if hasError {
 		status = "error"
@@ -899,6 +902,7 @@ func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provide
 			"would_have_blocked": len(shadowViolations) > 0,
 			"shadow_violations":  svTypes,
 			"has_error":          hasError,
+			"timed_out":          timedOut,
 			"cache_hit":          cacheHit,
 			"cost_saved":         costSaved,
 		}

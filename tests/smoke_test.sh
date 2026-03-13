@@ -338,7 +338,7 @@ test_section_01_binary() {
   # talon --help exits 0 and lists commands
   assert_pass "talon --help exits 0" run_talon --help
   local help_out; help_out="$(run_talon --help 2>/dev/null)"; true
-  for cmd in init validate run serve audit costs secrets memory cache; do
+  for cmd in init validate run serve audit costs metrics secrets memory cache; do
     assert_pass "talon --help lists: $cmd" grep -q "$cmd" <<< "$help_out"
   done
   assert_pass "talon help equivalent to --help" run_talon help
@@ -1262,6 +1262,16 @@ CACHEEOF
   local dash_html; dash_html="$(smoke_gw_get_dashboard "$dashboard_base_url" "$admin_key")"
   assert_pass "dashboard HTML contains Talon" grep -qi "talon" <<< "$dash_html"
   assert_pass "dashboard HTML contains <script>" grep -qi "<script" <<< "$dash_html"
+  assert_pass "dashboard HTML contains Success Rate KPI" grep -qi "Success Rate" <<< "$dash_html"
+  assert_pass "dashboard HTML contains Timeouts KPI" grep -qi "Timeouts" <<< "$dash_html"
+  assert_pass "dashboard HTML contains Violation Trend (7d) panel" grep -qi "Violation Trend (7d)" <<< "$dash_html"
+  assert_pass "dashboard caller table contains EUR/Success column" grep -qi "EUR/Success" <<< "$dash_html"
+  assert_pass "dashboard caller table contains Trend(7d) column" grep -qi "Trend(7d)" <<< "$dash_html"
+  assert_pass "dashboard caller table contains Success column header" grep -q ">Success<" <<< "$dash_html"
+  assert_pass "dashboard caller table contains Failed column header" grep -q ">Failed<" <<< "$dash_html"
+  assert_pass "dashboard caller table contains Timeout column header" grep -q ">Timeout<" <<< "$dash_html"
+  assert_pass "dashboard caller table contains Denied column header" grep -q ">Denied<" <<< "$dash_html"
+  assert_pass "dashboard caller table contains Rate column header" grep -q ">Rate<" <<< "$dash_html"
 
   # --- 23.2: Metrics JSON endpoint structure (before any requests) ---
   local snap_before; snap_before="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
@@ -1293,6 +1303,28 @@ CACHEEOF
     jq -e '.summary | has("error_rate")' <<< "$snap_before" &>/dev/null
   assert_pass "summary has active_runs" \
     jq -e '.summary | has("active_runs")' <<< "$snap_before" &>/dev/null
+  # Prompt 16 enhanced summary fields
+  assert_pass "summary has total_successful" \
+    jq -e '.summary | has("total_successful")' <<< "$snap_before" &>/dev/null
+  assert_pass "summary has total_failed" \
+    jq -e '.summary | has("total_failed")' <<< "$snap_before" &>/dev/null
+  assert_pass "summary has total_timed_out" \
+    jq -e '.summary | has("total_timed_out")' <<< "$snap_before" &>/dev/null
+  assert_pass "summary has total_denied" \
+    jq -e '.summary | has("total_denied")' <<< "$snap_before" &>/dev/null
+  assert_pass "summary has success_rate" \
+    jq -e '.summary | has("success_rate")' <<< "$snap_before" &>/dev/null
+  # Before traffic: enhanced counters should all be 0
+  assert_pass "pre-traffic total_successful == 0" \
+    jq -e '.summary.total_successful == 0' <<< "$snap_before" &>/dev/null
+  assert_pass "pre-traffic total_failed == 0" \
+    jq -e '.summary.total_failed == 0' <<< "$snap_before" &>/dev/null
+  assert_pass "pre-traffic total_timed_out == 0" \
+    jq -e '.summary.total_timed_out == 0' <<< "$snap_before" &>/dev/null
+  assert_pass "pre-traffic total_denied == 0" \
+    jq -e '.summary.total_denied == 0' <<< "$snap_before" &>/dev/null
+  assert_pass "pre-traffic success_rate == 0" \
+    jq -e '.summary.success_rate == 0' <<< "$snap_before" &>/dev/null
   local before_count; before_count="$(jq '.summary.total_requests' <<< "$snap_before")"
 
   # --- 23.2b: PII and tool governance config behaviour (different callers / default_policy) ---
@@ -1394,6 +1426,26 @@ CACHEEOF
   else
     echo "  -  pii-block-caller blocked = ${pii_blocker_blocked:-null}"
   fi
+
+  # Prompt 16: enhanced caller fields + ranges + trend shape
+  assert_pass "caller_stats entries include successful" \
+    jq -e 'all(.caller_stats[]; has("successful"))' <<< "$snap_after" &>/dev/null
+  assert_pass "caller_stats entries include failed" \
+    jq -e 'all(.caller_stats[]; has("failed"))' <<< "$snap_after" &>/dev/null
+  assert_pass "caller_stats entries include timed_out" \
+    jq -e 'all(.caller_stats[]; has("timed_out"))' <<< "$snap_after" &>/dev/null
+  assert_pass "caller_stats entries include denied" \
+    jq -e 'all(.caller_stats[]; has("denied"))' <<< "$snap_after" &>/dev/null
+  assert_pass "caller_stats entries include success_rate" \
+    jq -e 'all(.caller_stats[]; has("success_rate"))' <<< "$snap_after" &>/dev/null
+  assert_pass "caller_stats entries include cost_per_success" \
+    jq -e 'all(.caller_stats[]; has("cost_per_success"))' <<< "$snap_after" &>/dev/null
+  assert_pass "caller_stats entries include violation_trend" \
+    jq -e 'all(.caller_stats[]; has("violation_trend"))' <<< "$snap_after" &>/dev/null
+  assert_pass "success_rate values are in [0,1]" \
+    jq -e 'all(.caller_stats[]; (.success_rate >= 0 and .success_rate <= 1))' <<< "$snap_after" &>/dev/null
+  assert_pass "violation_trend has 7 points per caller" \
+    jq -e 'all(.caller_stats[]; (.violation_trend | type=="array" and length==7))' <<< "$snap_after" &>/dev/null
   local tg_filtered; tg_filtered="$(jq '.tool_governance.total_filtered' <<< "$snap_after")"
   if [[ -n "$tg_filtered" ]] && [[ "$tg_filtered" != "null" ]] && [[ "$tg_filtered" -ge 1 ]]; then
     echo "  ✓  tool_governance.total_filtered >= 1 ($tg_filtered)"
@@ -1662,6 +1714,26 @@ CACHEEOF
   fi
 
   # --- 23.7b: CLI report ↔ dashboard evidence count + PII parity ---
+  # --- 23.7a: CLI metrics command (Prompt 16) ---
+  assert_pass "talon metrics exits 0" run_talon metrics --url "$dashboard_base_url"
+  local cli_metrics_out; cli_metrics_out="$(run_talon metrics --url "$dashboard_base_url" 2>/dev/null)"; true
+  assert_pass "talon metrics output contains AGENT column" grep -q "AGENT" <<< "$cli_metrics_out"
+  assert_pass "talon metrics output contains SUCCESS column" grep -q "SUCCESS" <<< "$cli_metrics_out"
+  assert_pass "talon metrics output contains FAILED column" grep -q "FAILED" <<< "$cli_metrics_out"
+  assert_pass "talon metrics output contains TIMEOUT column" grep -q "TIMEOUT" <<< "$cli_metrics_out"
+  assert_pass "talon metrics output contains DENIED column" grep -q "DENIED" <<< "$cli_metrics_out"
+  assert_pass "talon metrics output contains VIOLATIONS(7d) column" grep -q "VIOLATIONS(7d)" <<< "$cli_metrics_out"
+  local cli_metrics_json; cli_metrics_json="$(run_talon metrics --json --url "$dashboard_base_url" 2>/dev/null)"; true
+  assert_pass "talon metrics --json outputs valid JSON array" jq -e 'type=="array"' <<< "$cli_metrics_json" &>/dev/null
+  assert_pass "talon metrics --json includes success_rate field" jq -e 'all(.[]; has("success_rate"))' <<< "$cli_metrics_json" &>/dev/null
+  assert_pass "talon metrics --json includes cost_per_success field" jq -e 'all(.[]; has("cost_per_success"))' <<< "$cli_metrics_json" &>/dev/null
+  assert_pass "talon metrics --json includes timed_out field" jq -e 'all(.[]; has("timed_out"))' <<< "$cli_metrics_json" &>/dev/null
+  assert_pass "talon metrics --json includes violation_trend field" jq -e 'all(.[]; has("violation_trend"))' <<< "$cli_metrics_json" &>/dev/null
+  local cli_metrics_agent; cli_metrics_agent="$(run_talon metrics --agent metrics-caller --url "$dashboard_base_url" 2>/dev/null)"; true
+  assert_pass "talon metrics --agent shows single-agent heading" grep -q "Agent Metrics: metrics-caller" <<< "$cli_metrics_agent"
+  assert_pass "talon metrics --agent includes Violation trend (7d)" grep -q "Violation trend (7d)" <<< "$cli_metrics_agent"
+
+  # --- 23.7b: CLI report ↔ dashboard evidence count + PII parity ---
   local cli_report; cli_report="$(run_talon report --tenant default 2>/dev/null)"; true
   assert_pass "talon report --tenant default exits 0" run_talon report --tenant default
   assert_pass "CLI report contains evidence count" grep -q "Evidence records today" <<< "$cli_report"
@@ -1798,6 +1870,265 @@ CACHEEOF
       echo "  -  error_rate out of range: $err_rate"
     fi
   fi
+
+  # --- 23.11: Prompt 16 enhanced-metrics consistency (outcome accounting, cost efficiency, CLI↔dashboard parity) ---
+  echo ""
+  echo "  -- 23.11: Enhanced metrics consistency checks (Prompt 16) --"
+
+  # 23.11a: Per-caller outcome accounting: successful + failed + denied == requests
+  local caller_outcome_ok=true
+  for cname in $(jq -r '.caller_stats[].caller' <<< "$snap_after" 2>/dev/null); do
+    local cs; cs="$(jq --arg c "$cname" '.caller_stats[] | select(.caller == $c)' <<< "$snap_after")"
+    local c_req c_succ c_fail c_deny c_tout
+    c_req="$(jq '.requests' <<< "$cs")"
+    c_succ="$(jq '.successful' <<< "$cs")"
+    c_fail="$(jq '.failed' <<< "$cs")"
+    c_deny="$(jq '.denied' <<< "$cs")"
+    c_tout="$(jq '.timed_out' <<< "$cs")"
+    local c_sum=$(( c_succ + c_fail + c_deny ))
+    if [[ "$c_sum" -eq "$c_req" ]]; then
+      echo "  ✓  outcome accounting: $cname successful($c_succ)+failed($c_fail)+denied($c_deny)=$c_sum == requests($c_req)"
+      record_pass
+    else
+      log_failure "outcome accounting: $cname successful+failed+denied=$c_sum != requests=$c_req" \
+        "succ=$c_succ fail=$c_fail deny=$c_deny tout=$c_tout req=$c_req"
+      caller_outcome_ok=false
+    fi
+    # timed_out must be <= failed (timeouts are a subset of failures)
+    if [[ "$c_tout" -le "$c_fail" ]]; then
+      echo "  ✓  timeout subset: $cname timed_out($c_tout) <= failed($c_fail)"
+      record_pass
+    else
+      log_failure "timeout subset: $cname timed_out($c_tout) > failed($c_fail)" "invariant violation"
+      caller_outcome_ok=false
+    fi
+  done
+  echo "[SMOKE] CONSISTENCY|caller_outcome_accounting|${caller_outcome_ok}"
+
+  # 23.11b: Summary outcome accounting: total_successful + total_failed + total_denied == total_requests
+  local s_succ s_fail s_deny s_tout s_total
+  s_succ="$(jq '.summary.total_successful' <<< "$snap_after")"
+  s_fail="$(jq '.summary.total_failed' <<< "$snap_after")"
+  s_deny="$(jq '.summary.total_denied' <<< "$snap_after")"
+  s_tout="$(jq '.summary.total_timed_out' <<< "$snap_after")"
+  s_total="$(jq '.summary.total_requests' <<< "$snap_after")"
+  if [[ -n "$s_succ" ]] && [[ "$s_succ" != "null" ]]; then
+    local s_sum=$(( s_succ + s_fail + s_deny ))
+    if [[ "$s_sum" -eq "$s_total" ]]; then
+      echo "  ✓  summary outcome: total_successful($s_succ)+total_failed($s_fail)+total_denied($s_deny)=$s_sum == total_requests($s_total)"
+      record_pass
+    else
+      log_failure "summary outcome: $s_sum != total_requests $s_total" "succ=$s_succ fail=$s_fail deny=$s_deny"
+    fi
+    # summary.success_rate ≈ total_successful / total_requests
+    local s_rate; s_rate="$(jq '.summary.success_rate' <<< "$snap_after")"
+    if [[ -n "$s_total" ]] && [[ "$s_total" -gt 0 ]]; then
+      local expected_rate; expected_rate="$(echo "scale=6; $s_succ / $s_total" | bc -l 2>/dev/null || echo -1)"
+      if [[ "$expected_rate" != "-1" ]]; then
+        local rate_diff; rate_diff="$(echo "scale=6; d=$s_rate - $expected_rate; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
+        if [[ "$(echo "$rate_diff < 0.01" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+          echo "  ✓  summary success_rate ($s_rate) ≈ total_successful/total_requests ($expected_rate)"
+          record_pass
+        else
+          log_failure "summary success_rate ($s_rate) != expected ($expected_rate), diff=$rate_diff" "invariant"
+        fi
+      fi
+    fi
+    # summary total_timed_out <= total_failed
+    if [[ "$s_tout" -le "$s_fail" ]]; then
+      echo "  ✓  summary total_timed_out($s_tout) <= total_failed($s_fail)"
+      record_pass
+    else
+      log_failure "summary total_timed_out($s_tout) > total_failed($s_fail)" "invariant"
+    fi
+    # summary totals == sum of per-caller fields
+    local cs_succ_sum cs_fail_sum cs_deny_sum cs_tout_sum
+    cs_succ_sum="$(jq '[.caller_stats[].successful] | add // 0' <<< "$snap_after")"
+    cs_fail_sum="$(jq '[.caller_stats[].failed] | add // 0' <<< "$snap_after")"
+    cs_deny_sum="$(jq '[.caller_stats[].denied] | add // 0' <<< "$snap_after")"
+    cs_tout_sum="$(jq '[.caller_stats[].timed_out] | add // 0' <<< "$snap_after")"
+    if [[ "$s_succ" -eq "$cs_succ_sum" ]] && [[ "$s_fail" -eq "$cs_fail_sum" ]] && [[ "$s_deny" -eq "$cs_deny_sum" ]] && [[ "$s_tout" -eq "$cs_tout_sum" ]]; then
+      echo "  ✓  summary totals == sum(caller_stats): succ=$s_succ fail=$s_fail deny=$s_deny tout=$s_tout"
+      record_pass
+    else
+      log_failure "summary vs caller_stats sum mismatch" \
+        "summary: succ=$s_succ fail=$s_fail deny=$s_deny tout=$s_tout | callers: succ=$cs_succ_sum fail=$cs_fail_sum deny=$cs_deny_sum tout=$cs_tout_sum"
+    fi
+  fi
+  echo "[SMOKE] CONSISTENCY|summary_outcome_accounting|succ=$s_succ fail=$s_fail deny=$s_deny tout=$s_tout total=$s_total"
+
+  # 23.11c: Cost-per-success consistency per caller: cost_per_success * successful ≈ cost attributed to successes
+  for cname in $(jq -r '.caller_stats[] | select(.successful > 0) | .caller' <<< "$snap_after" 2>/dev/null); do
+    local cs; cs="$(jq --arg c "$cname" '.caller_stats[] | select(.caller == $c)' <<< "$snap_after")"
+    local cps c_succ c_cost
+    cps="$(jq '.cost_per_success' <<< "$cs")"
+    c_succ="$(jq '.successful' <<< "$cs")"
+    c_cost="$(jq '.cost_eur' <<< "$cs")"
+    # cost_per_success > 0 when there are successes and cost > 0
+    if [[ "$(echo "${c_cost:-0} > 0" | bc -l 2>/dev/null || echo 0)" == "1" ]] && [[ "$c_succ" -gt 0 ]]; then
+      if [[ "$(echo "${cps:-0} > 0" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+        echo "  ✓  $cname cost_per_success ($cps) > 0 with $c_succ successes"
+        record_pass
+      else
+        echo "  -  $cname cost_per_success ($cps) is 0 despite $c_succ successes and cost $c_cost"
+      fi
+      # cost_per_success * successful <= total caller cost (successes can't cost more than total)
+      local success_cost; success_cost="$(echo "scale=8; $cps * $c_succ" | bc -l 2>/dev/null || echo 0)"
+      if [[ "$(echo "$success_cost <= $c_cost + 0.0001" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+        echo "  ✓  $cname cost_per_success*successful (€$success_cost) <= total cost (€$c_cost)"
+        record_pass
+      else
+        log_failure "$cname cost_per_success*successful (€$success_cost) > total cost (€$c_cost)" "cps=$cps succ=$c_succ"
+      fi
+    fi
+  done
+
+  # 23.11d: Violation trend: today's date must appear in at least one caller's trend
+  local today_key; today_key="$(date -u +%Y-%m-%d)"
+  local trend_has_today; trend_has_today="$(jq --arg d "$today_key" '[.caller_stats[].violation_trend[] | select(.date == $d)] | length' <<< "$snap_after")"
+  if [[ -n "$trend_has_today" ]] && [[ "$trend_has_today" -gt 0 ]]; then
+    echo "  ✓  violation_trend contains today's date ($today_key) across callers"
+    record_pass
+  else
+    echo "  -  violation_trend does not contain today's date ($today_key) — may be UTC vs local"
+  fi
+  # All trend dates must be valid YYYY-MM-DD and ordered oldest→newest
+  assert_pass "violation_trend dates are valid and ordered" \
+    jq -e '
+      all(.caller_stats[];
+        (.violation_trend | length == 7)
+        and all(.violation_trend[]; .date | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))
+        and (
+          [.violation_trend[].date] |
+          . == (. | sort)
+        )
+      )' <<< "$snap_after" &>/dev/null
+
+  # 23.11e: CLI metrics --json ↔ dashboard parity (both hit /api/v1/metrics on the same running server)
+  echo ""
+  echo "  -- 23.11e: CLI metrics --json ↔ dashboard parity --"
+  local cli_snap; cli_snap="$(run_talon metrics --json --url "$dashboard_base_url" 2>/dev/null)"; true
+  local dash_snap; dash_snap="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
+  if jq -e 'type=="array"' <<< "$cli_snap" &>/dev/null && jq -e '.' <<< "$dash_snap" &>/dev/null; then
+    # CLI metrics --json returns caller_stats; compare counts for each caller
+    for cname in $(jq -r '.[].caller' <<< "$cli_snap" 2>/dev/null); do
+      local cli_req dash_req cli_sr dash_sr cli_cps dash_cps cli_tout dash_tout
+      cli_req="$(jq --arg c "$cname" '.[] | select(.caller == $c) | .requests' <<< "$cli_snap")"
+      dash_req="$(jq --arg c "$cname" '.caller_stats[] | select(.caller == $c) | .requests' <<< "$dash_snap")"
+      cli_sr="$(jq --arg c "$cname" '.[] | select(.caller == $c) | .success_rate' <<< "$cli_snap")"
+      dash_sr="$(jq --arg c "$cname" '.caller_stats[] | select(.caller == $c) | .success_rate' <<< "$dash_snap")"
+      cli_cps="$(jq --arg c "$cname" '.[] | select(.caller == $c) | .cost_per_success' <<< "$cli_snap")"
+      dash_cps="$(jq --arg c "$cname" '.caller_stats[] | select(.caller == $c) | .cost_per_success' <<< "$dash_snap")"
+      cli_tout="$(jq --arg c "$cname" '.[] | select(.caller == $c) | .timed_out' <<< "$cli_snap")"
+      dash_tout="$(jq --arg c "$cname" '.caller_stats[] | select(.caller == $c) | .timed_out' <<< "$dash_snap")"
+      # Requests: CLI may lag by 1-2 if a request lands between the two fetches
+      if [[ -n "$cli_req" ]] && [[ -n "$dash_req" ]] && [[ "$cli_req" != "null" ]] && [[ "$dash_req" != "null" ]]; then
+        local req_diff=$(( dash_req - cli_req ))
+        [[ $req_diff -lt 0 ]] && req_diff=$(( -req_diff ))
+        if [[ $req_diff -le 2 ]]; then
+          echo "  ✓  CLI↔dash parity: $cname requests cli=$cli_req dash=$dash_req (diff=$req_diff)"
+          record_pass
+        else
+          log_failure "CLI↔dash parity: $cname requests cli=$cli_req dash=$dash_req (diff=$req_diff)" "tolerance=2"
+        fi
+      fi
+      # Success rate: within 0.05 tolerance (tiny request-count drift)
+      if [[ -n "$cli_sr" ]] && [[ -n "$dash_sr" ]] && [[ "$cli_sr" != "null" ]] && [[ "$dash_sr" != "null" ]]; then
+        local sr_diff; sr_diff="$(echo "scale=6; d=$cli_sr - $dash_sr; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
+        if [[ "$(echo "$sr_diff < 0.05" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+          echo "  ✓  CLI↔dash parity: $cname success_rate cli=$cli_sr dash=$dash_sr"
+          record_pass
+        else
+          echo "  -  CLI↔dash drift: $cname success_rate cli=$cli_sr dash=$dash_sr diff=$sr_diff"
+        fi
+      fi
+      # Cost per success: within 20% tolerance (float drift from concurrent updates)
+      if [[ -n "$cli_cps" ]] && [[ -n "$dash_cps" ]] && [[ "$cli_cps" != "null" ]] && [[ "$dash_cps" != "null" ]]; then
+        local cps_diff; cps_diff="$(echo "scale=8; d=$cli_cps - $dash_cps; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
+        local cps_tol; cps_tol="$(echo "scale=8; t=$dash_cps * 0.2; if (t < 0.0001) 0.0001 else t" | bc -l 2>/dev/null || echo 0.0001)"
+        if [[ "$(echo "$cps_diff < $cps_tol" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+          echo "  ✓  CLI↔dash parity: $cname cost_per_success cli=$cli_cps dash=$dash_cps"
+          record_pass
+        else
+          echo "  -  CLI↔dash drift: $cname cost_per_success cli=$cli_cps dash=$dash_cps diff=$cps_diff"
+        fi
+      fi
+      # Timed out: exact match expected (no timeouts in normal smoke)
+      if [[ -n "$cli_tout" ]] && [[ -n "$dash_tout" ]] && [[ "$cli_tout" != "null" ]] && [[ "$dash_tout" != "null" ]]; then
+        if [[ "$cli_tout" -eq "$dash_tout" ]]; then
+          echo "  ✓  CLI↔dash parity: $cname timed_out=$cli_tout"
+          record_pass
+        else
+          echo "  -  CLI↔dash drift: $cname timed_out cli=$cli_tout dash=$dash_tout"
+        fi
+      fi
+    done
+    echo "[SMOKE] CONSISTENCY|cli_dash_metrics_parity|checked"
+  else
+    echo "  -  CLI↔dashboard parity: could not parse CLI or dashboard JSON"
+  fi
+
+  # 23.11f: Live-traffic monotonicity — fire 5 more requests, take a new snapshot, verify counters only grow
+  echo ""
+  echo "  -- 23.11f: Live-traffic monotonicity (fire 5 requests, verify counters grow) --"
+  local snap_before_live; snap_before_live="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
+  for i in 1 2 3 4 5; do
+    smoke_gw_post_chat "$dashboard_base_url" "Bearer $gw_key" "$(smoke_body_normal "live_$i")" >/dev/null || true
+  done
+  sleep 2
+  local snap_after_live; snap_after_live="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
+  local live_before_total live_after_total live_before_succ live_after_succ live_before_cost live_after_cost
+  live_before_total="$(jq '.summary.total_requests' <<< "$snap_before_live")"
+  live_after_total="$(jq '.summary.total_requests' <<< "$snap_after_live")"
+  live_before_succ="$(jq '.summary.total_successful' <<< "$snap_before_live")"
+  live_after_succ="$(jq '.summary.total_successful' <<< "$snap_after_live")"
+  live_before_cost="$(jq '.summary.total_cost_eur' <<< "$snap_before_live")"
+  live_after_cost="$(jq '.summary.total_cost_eur' <<< "$snap_after_live")"
+  if [[ -n "$live_after_total" ]] && [[ "$live_after_total" != "null" ]] && [[ "$live_after_total" -ge "$live_before_total" ]]; then
+    echo "  ✓  monotonicity: total_requests $live_before_total → $live_after_total"
+    record_pass
+  else
+    log_failure "monotonicity: total_requests decreased $live_before_total → $live_after_total" "invariant"
+  fi
+  if [[ -n "$live_after_succ" ]] && [[ "$live_after_succ" != "null" ]] && [[ "$live_after_succ" -ge "$live_before_succ" ]]; then
+    echo "  ✓  monotonicity: total_successful $live_before_succ → $live_after_succ"
+    record_pass
+  else
+    log_failure "monotonicity: total_successful decreased $live_before_succ → $live_after_succ" "invariant"
+  fi
+  if [[ "$(echo "${live_after_cost:-0} >= ${live_before_cost:-0}" | bc -l 2>/dev/null || echo 1)" == "1" ]]; then
+    echo "  ✓  monotonicity: total_cost_eur $live_before_cost → $live_after_cost"
+    record_pass
+  else
+    echo "  -  monotonicity: total_cost_eur decreased $live_before_cost → $live_after_cost (cache hit?)"
+  fi
+  # success_rate must still be in [0,1] after live traffic
+  local live_sr; live_sr="$(jq '.summary.success_rate' <<< "$snap_after_live")"
+  if [[ -n "$live_sr" ]] && [[ "$live_sr" != "null" ]]; then
+    if [[ "$(echo "$live_sr >= 0 && $live_sr <= 1" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+      echo "  ✓  live-traffic success_rate still in [0,1] ($live_sr)"
+      record_pass
+    else
+      log_failure "live-traffic success_rate out of range: $live_sr" "invariant"
+    fi
+  fi
+  # violation_trend still 7 entries per caller after live traffic
+  assert_pass "violation_trend still 7 entries after live traffic" \
+    jq -e 'all(.caller_stats[]; (.violation_trend | length == 7))' <<< "$snap_after_live" &>/dev/null
+  # outcome accounting still holds after live traffic
+  local live_s_succ live_s_fail live_s_deny live_s_total
+  live_s_succ="$(jq '.summary.total_successful' <<< "$snap_after_live")"
+  live_s_fail="$(jq '.summary.total_failed' <<< "$snap_after_live")"
+  live_s_deny="$(jq '.summary.total_denied' <<< "$snap_after_live")"
+  live_s_total="$(jq '.summary.total_requests' <<< "$snap_after_live")"
+  local live_sum=$(( live_s_succ + live_s_fail + live_s_deny ))
+  if [[ "$live_sum" -eq "$live_s_total" ]]; then
+    echo "  ✓  live-traffic outcome accounting: $live_sum == $live_s_total"
+    record_pass
+  else
+    log_failure "live-traffic outcome accounting: $live_sum != $live_s_total" "succ=$live_s_succ fail=$live_s_fail deny=$live_s_deny"
+  fi
+  echo "[SMOKE] CONSISTENCY|live_monotonicity|before_total=$live_before_total after_total=$live_after_total"
 
   kill "$GW_PID" 2>/dev/null || true
   wait "$GW_PID" 2>/dev/null || true

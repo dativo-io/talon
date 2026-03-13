@@ -39,6 +39,11 @@ type Summary struct {
 	AvgLatencyMS    int64   `json:"avg_latency_ms"`
 	P99LatencyMS    int64   `json:"p99_latency_ms"`
 	ErrorRate       float64 `json:"error_rate"`
+	TotalSuccessful int     `json:"total_successful"`
+	TotalFailed     int     `json:"total_failed"`
+	TotalTimedOut   int     `json:"total_timed_out"`
+	TotalDenied     int     `json:"total_denied"`
+	SuccessRate     float64 `json:"success_rate"`
 	ActiveRuns      int     `json:"active_runs"`
 	AvgTTFTMS       int64   `json:"avg_ttft_ms,omitempty"` // average time to first token (streaming)
 	AvgTPOTMS       float64 `json:"avg_tpot_ms,omitempty"` // average time per output token (streaming)
@@ -70,6 +75,20 @@ type CallerStat struct {
 	Blocked      int     `json:"blocked"`
 	CostEUR      float64 `json:"cost_eur"`
 	AvgLatencyMS int64   `json:"avg_latency_ms"`
+	Successful   int     `json:"successful"`
+	Failed       int     `json:"failed"`
+	TimedOut     int     `json:"timed_out"`
+	Denied       int     `json:"denied"`
+	SuccessRate  float64 `json:"success_rate"`
+	// CostPerSuccess uses total successful run cost divided by successful runs.
+	CostPerSuccess float64    `json:"cost_per_success"`
+	ViolationTrend []DayCount `json:"violation_trend"`
+}
+
+// DayCount tracks per-day counts for rolling trends.
+type DayCount struct {
+	Date  string `json:"date"`
+	Count int    `json:"count"`
 }
 
 // PIITypeStat is detection count per PII type.
@@ -168,6 +187,7 @@ type GatewayEvent struct {
 	WouldHaveBlocked bool
 	ShadowViolations []string
 	HasError         bool
+	TimedOut         bool
 	CacheHit         bool
 	CostSaved        float64
 	TTFTMS           int64   // time to first token (streaming); 0 when not streaming
@@ -200,6 +220,13 @@ type callerAccum struct {
 	blocked    int
 	costEUR    float64
 	totalLatMS int64
+
+	successful      int
+	failed          int
+	timedOut        int
+	denied          int
+	successCostEUR  float64
+	violationsByDay map[string]int
 }
 
 type shadowViolationAccum struct {
@@ -238,6 +265,10 @@ type Collector struct {
 	totalRequests       int
 	blockedRequests     int
 	totalErrors         int
+	totalSuccessful     int
+	totalFailed         int
+	totalTimedOut       int
+	totalDenied         int
 	totalCostEUR        float64
 	totalLatencyMS      int64
 	totalTTFTMS         int64   // sum of TTFT for streaming requests (for average)
@@ -338,6 +369,17 @@ func (c *Collector) processEvent(e GatewayEvent) {
 	if e.HasError {
 		c.totalErrors++
 	}
+	switch {
+	case e.TimedOut:
+		c.totalTimedOut++
+		c.totalFailed++
+	case e.Blocked:
+		c.totalDenied++
+	case e.HasError:
+		c.totalFailed++
+	default:
+		c.totalSuccessful++
+	}
 	c.totalCostEUR += e.CostEUR
 	c.totalLatencyMS += e.LatencyMS
 	c.latencyRing[c.latencyRingPos] = e.LatencyMS
@@ -396,6 +438,32 @@ func (c *Collector) updateCallerStats(e GatewayEvent) {
 	cs.pii += len(e.PIIDetected)
 	if e.Blocked {
 		cs.blocked++
+	}
+	switch {
+	case e.TimedOut:
+		cs.timedOut++
+		cs.failed++
+	case e.Blocked:
+		cs.denied++
+	case e.HasError:
+		cs.failed++
+	default:
+		cs.successful++
+		cs.successCostEUR += e.CostEUR
+	}
+
+	dayKey := e.Timestamp.Format("2006-01-02")
+	if e.Blocked || len(e.PIIDetected) > 0 || len(e.ToolsFiltered) > 0 {
+		if cs.violationsByDay == nil {
+			cs.violationsByDay = make(map[string]int)
+		}
+		cs.violationsByDay[dayKey]++
+		recordViolationDaily(dayKey, e.CallerID)
+	}
+
+	recordTaskOutcome(e.CallerID, e.Model, e.Blocked, e.HasError, e.TimedOut)
+	if !e.TimedOut && !e.Blocked && !e.HasError {
+		recordCostPerSuccess(e.CallerID, e.Model, e.CostEUR)
 	}
 }
 
@@ -480,10 +548,11 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 	}
 
 	var avgLatency, p99Latency, avgTTFTMS int64
-	var errorRate, avgTPOTMS float64
+	var errorRate, avgTPOTMS, successRate float64
 	if c.totalRequests > 0 {
 		avgLatency = c.totalLatencyMS / int64(c.totalRequests)
 		errorRate = float64(c.totalErrors) / float64(c.totalRequests)
+		successRate = float64(c.totalSuccessful) / float64(c.totalRequests)
 	}
 	if c.ttftCount > 0 {
 		avgTTFTMS = c.totalTTFTMS / int64(c.ttftCount)
@@ -506,18 +575,7 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 
 	callers := make([]CallerStat, 0, len(c.callerStats))
 	for caller, cs := range c.callerStats {
-		var avg int64
-		if cs.requests > 0 {
-			avg = cs.totalLatMS / int64(cs.requests)
-		}
-		callers = append(callers, CallerStat{
-			Caller:       caller,
-			Requests:     cs.requests,
-			PIIDetected:  cs.pii,
-			Blocked:      cs.blocked,
-			CostEUR:      cs.costEUR,
-			AvgLatencyMS: avg,
-		})
+		callers = append(callers, c.buildCallerStat(caller, cs))
 	}
 	sort.Slice(callers, func(i, j int) bool { return callers[i].Requests > callers[j].Requests })
 
@@ -553,6 +611,11 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 			AvgLatencyMS:    avgLatency,
 			P99LatencyMS:    p99Latency,
 			ErrorRate:       errorRate,
+			TotalSuccessful: c.totalSuccessful,
+			TotalFailed:     c.totalFailed,
+			TotalTimedOut:   c.totalTimedOut,
+			TotalDenied:     c.totalDenied,
+			SuccessRate:     successRate,
 			ActiveRuns:      activeRuns,
 			AvgTTFTMS:       avgTTFTMS,
 			AvgTPOTMS:       avgTPOTMS,
@@ -565,6 +628,47 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 		ToolGovernance:   toolGov,
 		ShadowSummary:    shadow,
 	}
+}
+
+func (c *Collector) buildCallerStat(caller string, cs *callerAccum) CallerStat {
+	stat := CallerStat{
+		Caller:      caller,
+		Requests:    cs.requests,
+		PIIDetected: cs.pii,
+		Blocked:     cs.blocked,
+		CostEUR:     cs.costEUR,
+		Successful:  cs.successful,
+		Failed:      cs.failed,
+		TimedOut:    cs.timedOut,
+		Denied:      cs.denied,
+	}
+	if cs.requests > 0 {
+		stat.AvgLatencyMS = cs.totalLatMS / int64(cs.requests)
+		stat.SuccessRate = float64(cs.successful) / float64(cs.requests)
+	}
+	if cs.successful > 0 {
+		stat.CostPerSuccess = cs.successCostEUR / float64(cs.successful)
+	}
+	stat.ViolationTrend = c.buildViolationTrend(cs.violationsByDay)
+	return stat
+}
+
+func (c *Collector) buildViolationTrend(byDay map[string]int) []DayCount {
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	trend := make([]DayCount, 7)
+	for i := 6; i >= 0; i-- {
+		day := today.AddDate(0, 0, -i)
+		key := day.Format("2006-01-02")
+		count := 0
+		if byDay != nil {
+			count = byDay[key]
+		}
+		trend[6-i] = DayCount{
+			Date:  key,
+			Count: count,
+		}
+	}
+	return trend
 }
 
 func (c *Collector) buildToolGovernance() (totalFiltered int, stats ToolGovernanceStats) {

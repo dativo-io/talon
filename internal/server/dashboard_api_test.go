@@ -69,6 +69,42 @@ func TestHandleMetricsJSON(t *testing.T) {
 	assert.Equal(t, "enforce", snap.EnforcementMode)
 }
 
+func TestMetricsEndpoint_ContainsNewFields(t *testing.T) {
+	s, collector := newTestServerWithDashboard(t, "")
+	now := time.Now().UTC()
+	collector.Record(metrics.GatewayEvent{Timestamp: now, CallerID: "agent-a", CostEUR: 0.02})
+	collector.Record(metrics.GatewayEvent{Timestamp: now, CallerID: "agent-a", Blocked: true})
+	collector.Record(metrics.GatewayEvent{Timestamp: now, CallerID: "agent-a", TimedOut: true, HasError: true})
+	time.Sleep(80 * time.Millisecond)
+
+	req := newTestRequest("GET", "/api/v1/metrics")
+	rec := httptest.NewRecorder()
+	s.handleMetricsJSON(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body map[string]interface{}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+
+	callersRaw, ok := body["caller_stats"].([]interface{})
+	require.True(t, ok)
+	require.NotEmpty(t, callersRaw)
+	first, ok := callersRaw[0].(map[string]interface{})
+	require.True(t, ok)
+	_, ok = first["success_rate"]
+	assert.True(t, ok)
+	_, ok = first["cost_per_success"]
+	assert.True(t, ok)
+	trendRaw, ok := first["violation_trend"].([]interface{})
+	require.True(t, ok)
+	assert.Len(t, trendRaw, 7)
+	if len(trendRaw) > 0 {
+		day, ok := trendRaw[0].(map[string]interface{})
+		require.True(t, ok)
+		assert.Contains(t, day, "date")
+		assert.Contains(t, day, "count")
+	}
+}
+
 func TestHandleMetricsJSON_FullSnapshot(t *testing.T) {
 	s, collector := newTestServerWithDashboard(t, "")
 

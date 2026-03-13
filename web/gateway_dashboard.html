@@ -58,6 +58,10 @@
   .dot-yellow { background: var(--yellow); }
   .shadow-panel { border: 1px solid rgba(250,204,21,.3); }
   .pii-tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin: 1px 2px; background: rgba(108,114,203,.15); color: var(--accent-light); }
+  .rate-good { color: var(--green); }
+  .rate-warn { color: var(--yellow); }
+  .rate-bad { color: var(--red); }
+  .cost-hot { color: var(--orange); }
   .footer { text-align: center; padding: 12px; font-size: 11px; color: var(--text-dim); }
   @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
 </style>
@@ -106,6 +110,14 @@
     <div class="kpi-value" id="kpi-errors">--</div>
   </div>
   <div class="kpi">
+    <div class="kpi-label">Success Rate</div>
+    <div class="kpi-value" id="kpi-success-rate">--</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Timeouts</div>
+    <div class="kpi-value" id="kpi-timeouts">--</div>
+  </div>
+  <div class="kpi">
     <div class="kpi-label">Active Runs</div>
     <div class="kpi-value" id="kpi-runs">--</div>
   </div>
@@ -130,6 +142,11 @@
     <svg id="chart-pii" class="sparkline" viewBox="0 0 400 80" preserveAspectRatio="none"></svg>
   </div>
 
+  <div class="panel">
+    <div class="panel-title">Violation Trend (7d)</div>
+    <svg id="chart-violations" class="sparkline" viewBox="0 0 400 80" preserveAspectRatio="none"></svg>
+  </div>
+
   <!-- Budget Status -->
   <div class="panel" id="panel-budget" style="display:none">
     <div class="panel-title">Budget Utilization</div>
@@ -140,7 +157,7 @@
   <div class="panel grid-full">
     <div class="panel-title">Caller Breakdown</div>
     <table>
-      <thead><tr><th>Caller</th><th>Requests</th><th>PII</th><th>Blocked</th><th>Cost (EUR)</th><th>Avg Latency</th></tr></thead>
+      <thead><tr><th>Caller</th><th>Requests</th><th>Success</th><th>Failed</th><th>Timeout</th><th>Denied</th><th>Rate</th><th>Cost (EUR)</th><th>EUR/Success</th><th>Avg Latency</th><th>Trend(7d)</th></tr></thead>
       <tbody id="caller-table"></tbody>
     </table>
   </div>
@@ -286,11 +303,16 @@
     document.getElementById('kpi-latency').textContent = s.avg_latency_ms + 'ms';
     document.getElementById('kpi-p99').textContent = 'P99: ' + s.p99_latency_ms + 'ms';
     document.getElementById('kpi-errors').textContent = ((s.error_rate || 0) * 100).toFixed(1) + '%';
+    document.getElementById('kpi-success-rate').textContent = ((s.success_rate || 0) * 100).toFixed(1) + '%';
+    document.getElementById('kpi-timeouts').textContent = fmt(s.total_timed_out);
     document.getElementById('kpi-runs').textContent = fmt(s.active_runs);
+    setSuccessRateColor(document.getElementById('kpi-success-rate'), s.success_rate || 0);
+    setTimeoutColor(document.getElementById('kpi-timeouts'), s.total_timed_out || 0);
 
     renderSparkline('chart-requests', d.requests_timeline, 'count', 'rgba(108,114,203,1)', 'rgba(108,114,203,.15)');
     renderSparkline('chart-cost', d.cost_timeline, 'cost_eur', 'rgba(96,165,250,1)', 'rgba(96,165,250,.15)');
     renderSparkline('chart-pii', d.pii_timeline, 'count', 'rgba(248,113,113,1)', 'rgba(248,113,113,.15)');
+    renderViolationTrend(d.caller_stats || []);
 
     renderCallerTable(d.caller_stats || []);
     renderPIIBreakdown(d.pii_breakdown || []);
@@ -321,10 +343,114 @@
 
   function renderCallerTable(callers) {
     var tb = document.getElementById('caller-table');
-    if (callers.length === 0) { tb.innerHTML = '<tr><td colspan="6" style="color:var(--text-dim)">No caller data</td></tr>'; return; }
+    if (callers.length === 0) { tb.innerHTML = '<tr><td colspan="11" style="color:var(--text-dim)">No caller data</td></tr>'; return; }
+    var totalCostPerSuccess = callers.reduce(function(acc, c) { return acc + (c.cost_per_success || 0); }, 0);
+    var avgCostPerSuccess = callers.length > 0 ? totalCostPerSuccess / callers.length : 0;
     tb.innerHTML = callers.map(function(c) {
-      return '<tr><td>' + esc(c.caller) + '</td><td>' + fmt(c.requests) + '</td><td>' + fmt(c.pii_detected) + '</td><td>' + fmt(c.blocked) + '</td><td>€' + (c.cost_eur || 0).toFixed(4) + '</td><td>' + c.avg_latency_ms + 'ms</td></tr>';
+      var rate = c.success_rate || 0;
+      var rateClass = rate >= 0.9 ? 'rate-good' : (rate >= 0.7 ? 'rate-warn' : 'rate-bad');
+      var cps = c.cost_per_success || 0;
+      var cpsClass = (avgCostPerSuccess > 0 && cps > (2 * avgCostPerSuccess)) ? 'cost-hot' : '';
+      return '<tr><td>' + esc(c.caller) + '</td><td>' + fmt(c.requests) + '</td><td>' + fmt(c.successful) + '</td><td>' + fmt(c.failed) + '</td><td>' + fmt(c.timed_out) + '</td><td>' + fmt(c.denied) + '</td><td class="' + rateClass + '">' + (rate * 100).toFixed(1) + '%</td><td>€' + (c.cost_eur || 0).toFixed(4) + '</td><td class="' + cpsClass + '">€' + cps.toFixed(4) + '</td><td>' + c.avg_latency_ms + 'ms</td><td>' + renderCallerTrend(c.violation_trend) + '</td></tr>';
     }).join('');
+  }
+
+  function setSuccessRateColor(el, rate) {
+    el.classList.remove('rate-good', 'rate-warn', 'rate-bad');
+    el.classList.add(rate >= 0.9 ? 'rate-good' : (rate >= 0.7 ? 'rate-warn' : 'rate-bad'));
+  }
+
+  function setTimeoutColor(el, timedOut) {
+    el.classList.remove('rate-good', 'rate-warn', 'rate-bad');
+    if (timedOut === 0) {
+      el.classList.add('rate-good');
+      return;
+    }
+    el.classList.add(timedOut > 3 ? 'rate-bad' : 'rate-warn');
+  }
+
+  function renderCallerTrend(trend) {
+    if (!trend || trend.length === 0) return '';
+    var max = Math.max.apply(null, trend.map(function(d) { return d.count || 0; })) || 1;
+    var barWidth = 4;
+    var height = 20;
+    var gap = 1;
+    var totalWidth = trend.length * (barWidth + gap);
+    var svg = '<svg width="' + totalWidth + '" height="' + height + '" style="vertical-align:middle">';
+    trend.forEach(function(d, i) {
+      var count = d.count || 0;
+      var barHeight = Math.max(2, (count / max) * height);
+      var x = i * (barWidth + gap);
+      var y = height - barHeight;
+      var color = count === 0 ? 'var(--text-dim)' : 'var(--orange)';
+      svg += '<rect x="' + x + '" y="' + y + '" width="' + barWidth + '" height="' + barHeight + '" fill="' + color + '" rx="1"/>';
+    });
+    svg += '</svg>';
+    return svg;
+  }
+
+  function renderViolationTrend(callerStats) {
+    var svg = document.getElementById('chart-violations');
+    if (!callerStats || callerStats.length === 0) {
+      svg.innerHTML = '<text x="200" y="45" text-anchor="middle" fill="#8b8fa4" font-size="12">No data</text>';
+      return;
+    }
+
+    var dayCount = 7;
+    var series = [];
+    callerStats.forEach(function(c) {
+      var trend = c.violation_trend || [];
+      if (trend.length === 0) return;
+      var values = [];
+      for (var i = 0; i < dayCount; i++) {
+        values.push((trend[i] && trend[i].count) ? trend[i].count : 0);
+      }
+      series.push({ caller: c.caller, values: values });
+    });
+    if (series.length === 0) {
+      svg.innerHTML = '<text x="200" y="45" text-anchor="middle" fill="#8b8fa4" font-size="12">No data</text>';
+      return;
+    }
+
+    var totals = new Array(dayCount).fill(0);
+    series.forEach(function(s) {
+      for (var i = 0; i < dayCount; i++) totals[i] += s.values[i];
+    });
+    var max = Math.max.apply(null, totals);
+    if (max <= 0) {
+      svg.innerHTML = '<text x="200" y="45" text-anchor="middle" fill="#8b8fa4" font-size="12">No violations in last 7d</text>';
+      return;
+    }
+
+    var w = 400, h = 80, pad = 2;
+    var palette = [
+      'rgba(108,114,203,0.45)', 'rgba(96,165,250,0.45)', 'rgba(251,146,60,0.45)',
+      'rgba(248,113,113,0.45)', 'rgba(74,222,128,0.45)', 'rgba(250,204,21,0.45)'
+    ];
+    var cumulative = new Array(dayCount).fill(0);
+    var layers = [];
+    for (var sIdx = 0; sIdx < series.length; sIdx++) {
+      var top = [];
+      var bottom = [];
+      for (var dIdx = 0; dIdx < dayCount; dIdx++) {
+        var x = (dIdx / Math.max(dayCount - 1, 1)) * w;
+        var lower = cumulative[dIdx];
+        var upper = lower + series[sIdx].values[dIdx];
+        var yTop = h - pad - ((upper / max) * (h - pad * 2));
+        var yBottom = h - pad - ((lower / max) * (h - pad * 2));
+        top.push(x + ',' + yTop);
+        bottom.push(x + ',' + yBottom);
+        cumulative[dIdx] = upper;
+      }
+      layers.push('<polygon points="' + top.join(' ') + ' ' + bottom.reverse().join(' ') + '" fill="' + palette[sIdx % palette.length] + '"/>');
+    }
+
+    var totalPoints = totals.map(function(v, i) {
+      var x = (i / Math.max(dayCount - 1, 1)) * w;
+      var y = h - pad - ((v / max) * (h - pad * 2));
+      return x + ',' + y;
+    }).join(' ');
+    svg.innerHTML = layers.join('') + '<polyline points="' + totalPoints + '" stroke="rgba(250,204,21,1)" fill="none" stroke-width="1.5"/>';
   }
 
   function renderPIIBreakdown(types) {

@@ -497,6 +497,9 @@ func mapBoolFields(m map[string]interface{}, e *metrics.GatewayEvent) {
 	if v, ok := m["has_error"].(bool); ok {
 		e.HasError = v
 	}
+	if v, ok := m["timed_out"].(bool); ok {
+		e.TimedOut = v
+	}
 	if v, ok := m["cache_hit"].(bool); ok {
 		e.CacheHit = v
 	}
