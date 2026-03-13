@@ -670,9 +670,10 @@ test_section_12_http_api() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
-  # Add minimal gateway block so serve loads tenant keys and "tenant key can read /v1/evidence" can pass
+  # Add minimal gateway block so serve loads tenant keys and "tenant key can read /v1/evidence" can pass.
+  # Use unquoted heredoc so $TALON_TENANT_KEY is expanded into the caller list.
   if [[ -f "$dir/talon.config.yaml" ]] && ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
-    cat >> "$dir/talon.config.yaml" <<'GWEOF'
+    cat >> "$dir/talon.config.yaml" <<GWEOF
 
 gateway:
   enabled: true
@@ -685,7 +686,7 @@ gateway:
       base_url: "https://api.openai.com"
   callers:
     - name: "api-tenant"
-      tenant_key: "talon-api-tenant-001"
+      tenant_key: "${TALON_TENANT_KEY}"
       tenant_id: "default"
       allowed_providers: ["openai"]
   default_policy:
@@ -1368,18 +1369,23 @@ CACHEEOF
     jq -e '.summary | has("total_denied")' <<< "$snap_before" &>/dev/null
   assert_pass "summary has success_rate" \
     jq -e '.summary | has("success_rate")' <<< "$snap_before" &>/dev/null
-  # Before traffic: enhanced counters should all be 0
-  assert_pass "pre-traffic total_successful == 0" \
-    jq -e '.summary.total_successful == 0' <<< "$snap_before" &>/dev/null
-  assert_pass "pre-traffic total_failed == 0" \
-    jq -e '.summary.total_failed == 0' <<< "$snap_before" &>/dev/null
-  assert_pass "pre-traffic total_timed_out == 0" \
-    jq -e '.summary.total_timed_out == 0' <<< "$snap_before" &>/dev/null
-  assert_pass "pre-traffic total_denied == 0" \
-    jq -e '.summary.total_denied == 0' <<< "$snap_before" &>/dev/null
-  assert_pass "pre-traffic success_rate == 0" \
-    jq -e '.summary.success_rate == 0' <<< "$snap_before" &>/dev/null
+  # Record pre-traffic baselines. BackfillFromStore replays recent evidence so
+  # counters may already be >0 from earlier sections sharing the same data dir.
   local before_count; before_count="$(jq '.summary.total_requests' <<< "$snap_before")"
+  local before_successful; before_successful="$(jq '.summary.total_successful' <<< "$snap_before")"
+  local before_failed; before_failed="$(jq '.summary.total_failed' <<< "$snap_before")"
+  local before_timed_out; before_timed_out="$(jq '.summary.total_timed_out' <<< "$snap_before")"
+  local before_denied; before_denied="$(jq '.summary.total_denied' <<< "$snap_before")"
+  assert_pass "pre-traffic total_successful is a number" \
+    jq -e '.summary.total_successful | type == "number"' <<< "$snap_before" &>/dev/null
+  assert_pass "pre-traffic total_failed is a number" \
+    jq -e '.summary.total_failed | type == "number"' <<< "$snap_before" &>/dev/null
+  assert_pass "pre-traffic total_timed_out is a number" \
+    jq -e '.summary.total_timed_out | type == "number"' <<< "$snap_before" &>/dev/null
+  assert_pass "pre-traffic total_denied is a number" \
+    jq -e '.summary.total_denied | type == "number"' <<< "$snap_before" &>/dev/null
+  assert_pass "pre-traffic success_rate is a number" \
+    jq -e '.summary.success_rate | type == "number"' <<< "$snap_before" &>/dev/null
 
   # Verify the gateway routes are actually registered (not just health)
   local gw_probe; gw_probe="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-metrics-001" "$SMOKE_BODY_EMPTY")"
@@ -2237,10 +2243,14 @@ test_section_24_plan_dispatch() {
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
 
   # Ensure plan review gate is enabled for this section.
+  # The scaffold already has a compliance: block, so we must insert into it
+  # rather than appending a duplicate key (which produces invalid YAML).
   if command -v yq >/dev/null 2>&1; then
     yq -i '.compliance.human_oversight = "always"' "$dir/agent.talon.yaml" 2>/dev/null || true
   elif grep -q "human_oversight:" "$dir/agent.talon.yaml" 2>/dev/null; then
     sed -i.bak 's/human_oversight:.*/human_oversight: "always"/' "$dir/agent.talon.yaml" 2>/dev/null || true
+  elif grep -q "^compliance:" "$dir/agent.talon.yaml" 2>/dev/null; then
+    sed -i.bak '/^compliance:/a\  human_oversight: "always"' "$dir/agent.talon.yaml" 2>/dev/null || true
   else
     cat >> "$dir/agent.talon.yaml" <<'PREVIEWEOF'
 
