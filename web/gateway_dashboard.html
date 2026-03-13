@@ -190,13 +190,19 @@
 (function() {
   'use strict';
 
-  // Unified auth with main dashboard: ?token= sets window.TALON_ADMIN_KEY, then we remove it from the URL.
+  // Unified auth with main dashboard: ?talon_admin_key= sets window.TALON_ADMIN_KEY, then we remove it from the URL.
   var params = new URLSearchParams(window.location.search);
-  var tokenFromUrl = params.get('token');
+  var tokenFromUrl = params.get('talon_admin_key') || params.get('token');
+  var tokenStorageKey = 'talon.admin.token';
+  var tokenFromStorage = '';
+  try { tokenFromStorage = window.sessionStorage.getItem(tokenStorageKey) || ''; } catch (_e) {}
   if (tokenFromUrl) {
     window.TALON_ADMIN_KEY = tokenFromUrl;
+    try { window.sessionStorage.setItem(tokenStorageKey, tokenFromUrl); } catch (_e) {}
     var cleanUrl = window.location.pathname + (window.location.hash || '');
     if (window.history && window.history.replaceState) window.history.replaceState(null, '', cleanUrl);
+  } else if (!window.TALON_ADMIN_KEY && tokenFromStorage) {
+    window.TALON_ADMIN_KEY = tokenFromStorage;
   }
 
   var eventSource = null;
@@ -208,7 +214,7 @@
 
   function startSSE() {
     var url = '/api/v1/metrics/stream';
-    if (authToken()) url += '?token=' + encodeURIComponent(authToken());
+    if (authToken()) url += '?talon_admin_key=' + encodeURIComponent(authToken());
 
     eventSource = new EventSource(url);
     eventSource.onopen = function() {
@@ -237,7 +243,7 @@
 
   function fetchMetrics() {
     var url = '/api/v1/metrics';
-    if (authToken()) url += '?token=' + encodeURIComponent(authToken());
+    if (authToken()) url += '?talon_admin_key=' + encodeURIComponent(authToken());
 
     fetch(url)
       .then(function(r) {

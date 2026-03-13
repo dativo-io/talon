@@ -39,14 +39,14 @@ Returns the single-file HTML dashboard. The page auto-connects to the SSE stream
 
 - **Header (recommended):** `X-Talon-Admin-Key: <key>`
 - **Bearer:** `Authorization: Bearer <key>`
-- **Query (GET only, for browser bookmarks):** `?token=<key>`
+- **Query (GET only, for browser bookmarks):** `?talon_admin_key=<key>` (legacy `?token=<key>` is still accepted)
 
 Use the query parameter when opening either dashboard in a browser (browsers cannot send custom headers on navigation). Same pattern for both:
 
-- **Governance dashboard:** `http://localhost:8080/dashboard?token=YOUR_TALON_ADMIN_KEY`
-- **Gateway dashboard:** `http://localhost:8080/gateway/dashboard?token=YOUR_TALON_ADMIN_KEY`
+- **Governance dashboard:** `http://localhost:8080/dashboard?talon_admin_key=YOUR_TALON_ADMIN_KEY`
+- **Gateway dashboard:** `http://localhost:8080/gateway/dashboard?talon_admin_key=YOUR_TALON_ADMIN_KEY`
 
-Each page reads `token`, sets `window.TALON_ADMIN_KEY`, and removes the query from the URL so the key is not left in the address bar. API calls then use the header. Ensure the server was started with `TALON_ADMIN_KEY` set to the same value.
+Each page reads `talon_admin_key` (or legacy `token`), sets `window.TALON_ADMIN_KEY`, and removes the query from the URL so the key is not left in the address bar. API calls then use the header. Ensure the server was started with `TALON_ADMIN_KEY` set to the same value.
 
 ```bash
 curl -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/gateway/dashboard

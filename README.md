@@ -238,6 +238,12 @@ talon serve --port 8080 --gateway --gateway-config examples/gateway/talon.config
 
 Endpoints include: `GET /v1/health`, `GET /v1/status`, `POST /v1/agents/run`, `POST /v1/chat/completions` (OpenAI-compatible), `GET /v1/evidence`, `GET /v1/costs`, `GET /v1/plans/pending` (plan review), `POST /mcp` (native MCP), `POST /mcp/proxy` (when proxy is configured), and **`POST /v1/proxy/{provider}/v1/chat/completions`** (LLM API gateway when `--gateway` is set; caller auth via `Authorization: Bearer <tenant-key>`). Tenant-scoped API routes use `Authorization: Bearer <tenant-key>`. Admin-only routes use `X-Talon-Admin-Key: <key>` (or bearer fallback).
 
+For browser navigation to dashboards, include the admin key in the URL once:
+- `http://localhost:8080/dashboard?talon_admin_key=YOUR_TALON_ADMIN_KEY`
+- `http://localhost:8080/gateway/dashboard?talon_admin_key=YOUR_TALON_ADMIN_KEY`
+
+Dashboard links preserve this key automatically for subsequent navigation.
+
 **See:** [QUICKSTART.md](docs/QUICKSTART.md) for serve and dashboard usage.
 
 ## Vendor Integration (MCP Proxy)

@@ -318,6 +318,46 @@ func TestAdminKeyMiddleware_ValidAdminHeader(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestAdminKeyMiddleware_ValidSessionCookie(t *testing.T) {
+	mw := AdminKeyMiddleware("s3cr3t")
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := newTestRequest("GET", "/gateway/dashboard")
+	req.AddCookie(&http.Cookie{Name: adminSessionCookieName, Value: "s3cr3t"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestAdminKeyMiddleware_SetsSessionCookieOnHeaderAuth(t *testing.T) {
+	mw := AdminKeyMiddleware("s3cr3t")
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := newTestRequest("GET", "/")
+	req.Header.Set("X-Talon-Admin-Key", "s3cr3t")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	cookies := rec.Result().Cookies()
+	found := false
+	for _, c := range cookies {
+		if c.Name == adminSessionCookieName {
+			found = true
+			assert.Equal(t, "s3cr3t", c.Value)
+			assert.True(t, c.HttpOnly)
+			assert.Equal(t, http.SameSiteLaxMode, c.SameSite)
+			assert.Equal(t, "/", c.Path)
+		}
+	}
+	assert.True(t, found, "expected admin session cookie to be set")
+}
+
 func TestAdminKeyMiddleware_BearerFallback(t *testing.T) {
 	mw := AdminKeyMiddleware("s3cr3t")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -346,7 +386,33 @@ func TestAdminKeyMiddleware_InvalidKey(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
-func TestAdminKeyMiddleware_ValidTokenQueryParam(t *testing.T) {
+func TestAdminKeyMiddleware_ValidTalonAdminKeyQueryParam(t *testing.T) {
+	mw := AdminKeyMiddleware("s3cr3t")
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := newTestRequest("GET", "/gateway/dashboard?talon_admin_key=s3cr3t")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestAdminKeyMiddleware_InvalidTalonAdminKeyQueryParam(t *testing.T) {
+	mw := AdminKeyMiddleware("s3cr3t")
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := newTestRequest("GET", "/gateway/dashboard?talon_admin_key=wrong")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestAdminKeyMiddleware_ValidLegacyTokenQueryParam(t *testing.T) {
 	mw := AdminKeyMiddleware("s3cr3t")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -359,26 +425,13 @@ func TestAdminKeyMiddleware_ValidTokenQueryParam(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-func TestAdminKeyMiddleware_InvalidTokenQueryParam(t *testing.T) {
+func TestAdminKeyMiddleware_TalonAdminKeyQueryParamIgnoredForPost(t *testing.T) {
 	mw := AdminKeyMiddleware("s3cr3t")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := newTestRequest("GET", "/gateway/dashboard?token=wrong")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-}
-
-func TestAdminKeyMiddleware_TokenQueryParamIgnoredForPost(t *testing.T) {
-	mw := AdminKeyMiddleware("s3cr3t")
-	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := newTestRequest("POST", "/api/v1/something?token=s3cr3t")
+	req := newTestRequest("POST", "/api/v1/something?talon_admin_key=s3cr3t")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -412,6 +465,29 @@ func TestTenantOrAdminMiddleware_AllowsAdminKey(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestTenantOrAdminMiddleware_SetsSessionCookieForAdmin(t *testing.T) {
+	mw := TenantOrAdminMiddleware(map[string]string{"tenant-key-1": "tenant-default"}, "admin-secret")
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := newTestRequest("GET", "/api/v1/metrics")
+	req.Header.Set("X-Talon-Admin-Key", "admin-secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	cookies := rec.Result().Cookies()
+	found := false
+	for _, c := range cookies {
+		if c.Name == adminSessionCookieName {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected admin session cookie to be set")
 }
 
 func TestTenantOrAdminMiddleware_RejectsMissingAuth(t *testing.T) {

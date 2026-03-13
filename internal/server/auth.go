@@ -12,6 +12,11 @@ import (
 	"github.com/dativo-io/talon/internal/tenant"
 )
 
+const (
+	adminSessionCookieName   = "talon_admin_session"
+	adminSessionCookieMaxAge = 8 * 60 * 60 // 8 hours
+)
+
 // SetTenantID stores tenant_id in the request context.
 func SetTenantID(ctx context.Context, tenantID string) context.Context {
 	return requestctx.SetTenantID(ctx, tenantID)
@@ -63,9 +68,13 @@ func AdminKeyMiddleware(adminKey string) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if !isValidAdminKey(r, adminKey) {
-				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing admin key")
+			provided, source := adminKeyFromRequestWithSource(r)
+			if !isValidAdminKeyValue(provided, adminKey) {
+				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing admin key. Provide X-Talon-Admin-Key header or ?talon_admin_key=YOUR_TALON_ADMIN_KEY")
 				return
+			}
+			if source != "cookie" {
+				setAdminSessionCookie(w, r, provided)
 			}
 			r = r.WithContext(requestctx.SetIsAdmin(r.Context(), true))
 			next.ServeHTTP(w, r)
@@ -84,7 +93,10 @@ func TenantOrAdminMiddleware(tenantKeys map[string]string, adminKey string) func
 				next.ServeHTTP(w, r)
 				return
 			}
-			if isValidAdminKey(r, adminKey) {
+			if provided, source := adminKeyFromRequestWithSource(r); isValidAdminKeyValue(provided, adminKey) {
+				if source != "cookie" {
+					setAdminSessionCookie(w, r, provided)
+				}
 				r = r.WithContext(requestctx.SetIsAdmin(r.Context(), true))
 				next.ServeHTTP(w, r)
 				return
@@ -96,7 +108,7 @@ func TenantOrAdminMiddleware(tenantKeys map[string]string, adminKey string) func
 				next.ServeHTTP(w, r)
 				return
 			}
-			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing tenant/admin key")
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing tenant/admin key. Use Authorization: Bearer <tenant_key> or ?talon_admin_key=YOUR_TALON_ADMIN_KEY for admin GET endpoints")
 		})
 	}
 }
@@ -198,27 +210,45 @@ func lookupTenantID(tenantKeys map[string]string, key string) string {
 	return ""
 }
 
-func isValidAdminKey(r *http.Request, adminKey string) bool {
-	if adminKey == "" {
-		return false
-	}
-	provided := adminKeyFromRequest(r)
+func isValidAdminKeyValue(provided, adminKey string) bool {
 	return provided != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(adminKey)) == 1
 }
 
-// adminKeyFromRequest returns the admin key from X-Talon-Admin-Key, Authorization: Bearer,
-// or (for GET only) the query parameter "token". Empty string if none present.
-func adminKeyFromRequest(r *http.Request) string {
+// adminKeyFromRequestWithSource returns admin key and source from X-Talon-Admin-Key,
+// Authorization: Bearer, GET query (`talon_admin_key` or legacy `token`), or
+// an HTTP-only session cookie.
+func adminKeyFromRequestWithSource(r *http.Request) (key string, source string) {
 	if k := r.Header.Get("X-Talon-Admin-Key"); k != "" {
-		return k
+		return k, "header"
 	}
 	if k := bearerToken(r); k != "" {
-		return k
+		return k, "bearer"
 	}
 	if r.Method == http.MethodGet && r.URL != nil {
+		if k := r.URL.Query().Get("talon_admin_key"); k != "" {
+			return k, "query"
+		}
 		if k := r.URL.Query().Get("token"); k != "" {
-			return k
+			return k, "query"
 		}
 	}
-	return ""
+	if c, err := r.Cookie(adminSessionCookieName); err == nil && c != nil && c.Value != "" {
+		return c.Value, "cookie"
+	}
+	return "", ""
+}
+
+func setAdminSessionCookie(w http.ResponseWriter, r *http.Request, key string) {
+	if key == "" {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     adminSessionCookieName,
+		Value:    key,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   adminSessionCookieMaxAge,
+	})
 }
