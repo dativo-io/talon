@@ -25,7 +25,7 @@ Content-Type: application/json
 {"tenant_id": "default", "format": "json", "limit": 1000}
 ```
 
-Exports include fields such as evidence ID, timestamp, tenant_id, agent_id, policy decision, cost, and (when configured) PII flags and data tier. For exact fields see the API response or CSV headers.
+Exports include evidence ID, session_id (lifecycle session linking), timestamp, tenant_id, agent_id, policy decision, cost, and (when configured) PII flags and data tier. For the full column list see [Evidence store — Export](../explanation/evidence-store.md#export) or the CSV header row.
 
 **Scope:** Use `tenant_id` (in API body or CLI context) so the export is scoped to the tenant you are responsible for. For GDPR Art. 30 you typically export processing records for a defined period and scope.
 

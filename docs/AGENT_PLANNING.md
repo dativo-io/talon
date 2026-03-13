@@ -73,8 +73,8 @@ Before the first LLM call (and before the agentic loop starts), Talon can **gate
 
 - When `compliance.human_oversight` is `always`, or when configured thresholds (cost, tier, tools) are met, an **execution plan** is created and stored.
 - The run returns immediately with `PlanPending` set; no LLM is called until the plan is approved (e.g. via dashboard or API).
-- The plan stores: selected model, data tier, tools available, cost estimate, policy decision, and optional **proposed steps** for transparency (EU AI Act Art. 11/13).
-- In `talon serve`, an internal dispatcher watches for newly approved plans and executes them once (bypassing the review gate for that replay only).
+- The plan stores: selected model, data tier, tools available, cost estimate, policy decision, **session_id** (so dispatch reuses the same lifecycle session), and optional **proposed steps** for transparency (EU AI Act Art. 11/13).
+- In `talon serve`, an internal dispatcher watches for newly approved plans and executes them once with the plan’s session_id (bypassing the review gate for that replay only).
 - Outside `talon serve`, execute approved plans manually with `talon plan execute <plan-id> --tenant <id>`.
 
 Plans can be approved, rejected, or modified (with annotations). This satisfies **EU AI Act Art. 14** (human oversight).
