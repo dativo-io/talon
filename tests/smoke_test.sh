@@ -125,20 +125,22 @@ assert_pass() {
     return 0
   fi
   local code=$?
-  echo "  ✗  $description (exit $code)"
-  write_cmd_log "$description" "$*" "$code" "$tmp_out" "$tmp_err"
+  # Build a human-readable version of the failed command with actual argument values.
+  local cmd_detail="$*"
+  echo "  ✗  $description (exit $code) [$cmd_detail]"
+  write_cmd_log "$description" "$cmd_detail" "$code" "$tmp_out" "$tmp_err"
   record_fail "$description"
   # Log full context for analysis
   if [[ -n "$SMOKE_LOG_FILE" ]]; then
     {
       echo "--- FAIL: $description ---"
       echo "Section: $CURRENT_SECTION"
-      echo "Command: $*"
+      echo "Command: $cmd_detail"
       echo "Exit code: $code"
-      echo "Stdout:"
-      cat "$tmp_out" | tail -100
-      echo "Stderr:"
-      cat "$tmp_err" | tail -100
+      echo "Stdout (last 100 lines):"
+      tail -100 "$tmp_out"
+      echo "Stderr (last 100 lines):"
+      tail -100 "$tmp_err"
       echo ""
     } >> "$SMOKE_LOG_FILE"
   fi
@@ -176,6 +178,8 @@ assert_fail() {
 }
 
 # --- Log a failure from manual checks (same as assert_pass but for custom if/else blocks) ---
+# Usage: log_failure "description" ["detail_string"]
+# For richer diagnostics, call dump_diag_* helpers after log_failure.
 log_failure() {
   local description="$1"
   local detail="${2:-}"
@@ -189,6 +193,68 @@ log_failure() {
       echo ""
     } >> "$SMOKE_LOG_FILE"
   fi
+}
+
+# --- Diagnostic helpers: append structured context to both log files on failure ---
+# Append key=value pairs to the failure log for post-mortem analysis.
+dump_diag_kv() {
+  local label="$1"; shift
+  if [[ -n "$SMOKE_LOG_FILE" ]]; then
+    { echo "  [DIAG] $label"; for kv in "$@"; do echo "    $kv"; done; echo ""; } >> "$SMOKE_LOG_FILE"
+  fi
+  if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]]; then
+    { echo "[SMOKE] DIAG|$label"; for kv in "$@"; do echo "[SMOKE] DIAG_KV|$kv"; done; } >> "$SMOKE_CONSOLIDATED_LOG"
+  fi
+}
+
+# Dump a file's content (truncated) to the failure log.
+dump_diag_file() {
+  local label="$1" filepath="$2" max_lines="${3:-80}"
+  if [[ -n "$SMOKE_LOG_FILE" ]] && [[ -f "$filepath" ]]; then
+    { echo "  [DIAG] $label ($filepath):"; tail -"$max_lines" "$filepath" | sed 's/^/    | /'; echo ""; } >> "$SMOKE_LOG_FILE"
+  fi
+  if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]] && [[ -f "$filepath" ]]; then
+    { echo "[SMOKE] DIAG_FILE|$label|$filepath"; tail -"$max_lines" "$filepath" | sed 's/^/[SMOKE] DIAG_LINE|/'; echo "[SMOKE] DIAG_FILE_END|$label"; } >> "$SMOKE_CONSOLIDATED_LOG"
+  fi
+}
+
+# Dump JSON body (pretty-printed via jq if available) to the failure log.
+dump_diag_json() {
+  local label="$1" json_str="$2" max_lines="${3:-60}"
+  if [[ -n "$SMOKE_LOG_FILE" ]] && [[ -n "$json_str" ]]; then
+    {
+      echo "  [DIAG] $label:"
+      if command -v jq &>/dev/null; then
+        echo "$json_str" | jq '.' 2>/dev/null | head -"$max_lines" | sed 's/^/    | /' || echo "    | (invalid JSON) ${json_str:0:500}"
+      else
+        echo "    | ${json_str:0:2000}"
+      fi
+      echo ""
+    } >> "$SMOKE_LOG_FILE"
+  fi
+  if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]] && [[ -n "$json_str" ]]; then
+    {
+      echo "[SMOKE] DIAG_JSON|$label"
+      if command -v jq &>/dev/null; then
+        echo "$json_str" | jq '.' 2>/dev/null | head -"$max_lines" | sed 's/^/[SMOKE] DIAG_LINE|/' || echo "[SMOKE] DIAG_LINE|(invalid JSON) ${json_str:0:500}"
+      else
+        echo "[SMOKE] DIAG_LINE|${json_str:0:2000}"
+      fi
+      echo "[SMOKE] DIAG_JSON_END|$label"
+    } >> "$SMOKE_CONSOLIDATED_LOG"
+  fi
+}
+
+# Dump environment snapshot relevant to smoke debugging.
+dump_diag_env() {
+  dump_diag_kv "smoke_env" \
+    "TALON_DATA_DIR=$TALON_DATA_DIR" \
+    "TALON_ADMIN_KEY=${TALON_ADMIN_KEY:+(set, ${#TALON_ADMIN_KEY} chars)}" \
+    "TALON_TENANT_KEY=${TALON_TENANT_KEY:+(set, ${#TALON_TENANT_KEY} chars, value=${TALON_TENANT_KEY})}" \
+    "TALON_SIGNING_KEY=${TALON_SIGNING_KEY:+(set)}" \
+    "OPENAI_API_KEY=${OPENAI_API_KEY:+(set, ${#OPENAI_API_KEY} chars)}" \
+    "PWD=$(pwd)" \
+    "section=$CURRENT_SECTION"
 }
 
 # --- Environment checks (Section 2) ---
@@ -260,9 +326,22 @@ run_section() {
   CURRENT_SECTION="$name"
   local code=0
   ( "$@" ) || code=$?
-  if [[ $code -ne 0 ]] && [[ -n "$SMOKE_LOG_FILE" ]]; then
-    echo "[Section $name exited with code $code — possible crash or unexpected exit]" >> "$SMOKE_LOG_FILE"
-    echo ""
+  if [[ $code -ne 0 ]]; then
+    echo "  !! Section $name crashed with exit code $code"
+    if [[ -n "$SMOKE_LOG_FILE" ]]; then
+      {
+        echo "=== SECTION CRASH: $name ==="
+        echo "Exit code: $code"
+        echo "TALON_DATA_DIR=$TALON_DATA_DIR"
+        echo "PWD=$(pwd)"
+        echo "TALON_TENANT_KEY=${TALON_TENANT_KEY:-}"
+        echo "TALON_ADMIN_KEY=${TALON_ADMIN_KEY:+(set)}"
+        echo ""
+      } >> "$SMOKE_LOG_FILE"
+    fi
+    if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]]; then
+      echo "[SMOKE] SECTION_CRASH|$name|exit_code=$code" >> "$SMOKE_CONSOLIDATED_LOG"
+    fi
   fi
   return 0
 }
@@ -695,14 +774,20 @@ GWEOF
   fi
   run_talon run "Seed" &>/dev/null; true
   TALON_SERVE_PID=""
-  run_talon serve --config "$dir/talon.config.yaml" --port 8080 --gateway --gateway-config "$dir/talon.config.yaml" &>/dev/null &
+  local serve_log_12="$dir/serve_section12.log"
+  run_talon serve --config "$dir/talon.config.yaml" --port 8080 --gateway --gateway-config "$dir/talon.config.yaml" >"$serve_log_12" 2>&1 &
   TALON_SERVE_PID=$!
-  local i=0
-  while ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health 2>/dev/null | grep -q 200; do
-    sleep 1; ((i++)); [[ $i -ge 10 ]] && break
-  done
-  if ! curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health 2>/dev/null | grep -q 200; then
-    log_failure "server did not become ready on 8080 within 10s" "check port 8080 and talon serve logs"
+  if ! smoke_wait_health "http://127.0.0.1:8080" 10 1; then
+    local s12_pid_state="running"
+    if ! kill -0 "$TALON_SERVE_PID" 2>/dev/null; then
+      wait "$TALON_SERVE_PID" 2>/dev/null; s12_pid_state="exited($?)"
+    fi
+    log_failure "server did not become ready on 8080 within 10s" \
+      "pid=$TALON_SERVE_PID state=$s12_pid_state"
+    dump_diag_file "section 12 serve log" "$serve_log_12"
+    dump_diag_file "talon.config.yaml" "$dir/talon.config.yaml"
+    dump_diag_file "agent.talon.yaml" "$dir/agent.talon.yaml"
+    dump_diag_env
     kill "$TALON_SERVE_PID" 2>/dev/null || true
     TALON_SERVE_PID=""
     cd "$REPO_ROOT" || true
@@ -779,7 +864,17 @@ GWEOF
     -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" \
     -H "X-Talon-Reasoning: smoke-http-session-create" \
     -d '{"tenant_id":"default","agent_name":"default","prompt":"Session smoke create (HTTP API)","_talon_reasoning":"smoke-fallback-reasoning"}')"
-  assert_pass "POST /v1/agents/run returns 200 for session create" test "$run1_code" = "200"
+  if ! assert_pass "POST /v1/agents/run returns 200 for session create" test "$run1_code" = "200"; then
+    dump_diag_kv "agents/run session create" \
+      "http_code=$run1_code" \
+      "tenant_key_used=$tenant_key" \
+      "base_url=$base_url" \
+      "endpoint=${base_url}/v1/agents/run"
+    dump_diag_json "run1 response body" "$(cat "$run1_body" 2>/dev/null || echo '(file missing)')"
+    dump_diag_file "run1 response headers" "$run1_headers"
+    dump_diag_file "talon.config.yaml (gateway callers)" "$dir/talon.config.yaml"
+    dump_diag_env
+  fi
   run1_session="$(awk 'BEGIN{IGNORECASE=1} /^X-Talon-Session-ID:/ {gsub("\r","",$2); print $2; exit}' "$run1_headers" 2>/dev/null || true)"
   if [[ -z "$run1_session" ]]; then
     run1_session="$(jq -r '.session_id // empty' < "$run1_body" 2>/dev/null || true)"
@@ -789,19 +884,29 @@ GWEOF
     record_pass
   else
     log_failure "/v1/agents/run should return session_id (header or body)" "headers=$(cat "$run1_headers" 2>/dev/null)"
+    dump_diag_json "run1 response body" "$(cat "$run1_body" 2>/dev/null || echo '(file missing)')"
+    dump_diag_file "run1 response headers" "$run1_headers"
   fi
   run1_ev="$(jq -r '.evidence_id // empty' < "$run1_body" 2>/dev/null || true)"
   run2_code="$(curl -s -o /tmp/talon_smoke_run2_body.json -w '%{http_code}' -X POST "${base_url}/v1/agents/run" \
     -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" \
     -H "X-Talon-Session-ID: ${run1_session}" \
     -d "{\"tenant_id\":\"default\",\"agent_name\":\"default\",\"prompt\":\"Session smoke join (HTTP API)\",\"_talon_session_id\":\"${run1_session}\"}")"
-  assert_pass "POST /v1/agents/run with session join returns 200" test "$run2_code" = "200"
+  if ! assert_pass "POST /v1/agents/run with session join returns 200" test "$run2_code" = "200"; then
+    dump_diag_kv "agents/run session join" \
+      "http_code=$run2_code" \
+      "session_id_sent=$run1_session" \
+      "tenant_key=$tenant_key"
+    dump_diag_json "run2 response body" "$(cat /tmp/talon_smoke_run2_body.json 2>/dev/null || echo '(missing)')"
+  fi
   run2_session="$(jq -r '.session_id // empty' < /tmp/talon_smoke_run2_body.json 2>/dev/null || true)"
   if [[ -n "$run1_session" ]] && [[ -n "$run2_session" ]] && [[ "$run1_session" == "$run2_session" ]]; then
     echo "  ✓  second /v1/agents/run joined same session id"
     record_pass
   else
-    log_failure "session join should preserve session_id across /v1/agents/run" "run1=$run1_session run2=$run2_session"
+    log_failure "session join should preserve session_id across /v1/agents/run" \
+      "run1=$run1_session run2=$run2_session"
+    dump_diag_json "run2 body" "$(cat /tmp/talon_smoke_run2_body.json 2>/dev/null || echo '(missing)')"
   fi
   run2_ev="$(jq -r '.evidence_id // empty' < /tmp/talon_smoke_run2_body.json 2>/dev/null || true)"
   if [[ -n "$run1_ev" ]] && [[ -n "$run2_ev" ]]; then
@@ -839,6 +944,10 @@ test_section_13_gateway() {
   cd "$dir" || exit 1
   if ! wait_port_free "$gateway_port" 180 10; then
     log_failure "gateway section could not acquire port ${gateway_port}" "port remained busy"
+    dump_diag_kv "port ${gateway_port} in use" \
+      "lsof=$(lsof -nP -iTCP:${gateway_port} -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')" \
+      "TALON_SERVE_PID=${TALON_SERVE_PID:-}" \
+      "TALON_GATEWAY_PID=${TALON_GATEWAY_PID:-}"
     cd "$REPO_ROOT" || true
     return 0
   fi
@@ -874,10 +983,19 @@ gateway:
 GWEOF
   fi
   TALON_GATEWAY_PID=""
-  run_talon serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.config.yaml" &>/dev/null &
+  local gw_log_13="$dir/gateway_serve.log"
+  run_talon serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.config.yaml" >"$gw_log_13" 2>&1 &
   TALON_GATEWAY_PID=$!
   if ! smoke_wait_health "$gateway_base_url" 10 1; then
-    log_failure "gateway server did not start on port ${gateway_port}" "url=${gateway_base_url}/health"
+    local gw_pid_state_13="running"
+    if ! kill -0 "$TALON_GATEWAY_PID" 2>/dev/null; then
+      wait "$TALON_GATEWAY_PID" 2>/dev/null; gw_pid_state_13="exited($?)"
+    fi
+    log_failure "gateway server did not start on port ${gateway_port}" \
+      "url=${gateway_base_url}/health pid=$TALON_GATEWAY_PID state=$gw_pid_state_13"
+    dump_diag_file "section 13 serve log" "$gw_log_13"
+    dump_diag_file "talon.config.yaml" "$dir/talon.config.yaml"
+    dump_diag_env
     kill "$TALON_GATEWAY_PID" 2>/dev/null || true
     TALON_GATEWAY_PID=""
     cd "$REPO_ROOT" || true
@@ -888,7 +1006,16 @@ GWEOF
   local gw_headers="/tmp/talon_gw_headers.txt"
   local gw_body="/tmp/talon_gw_resp.json"
   local code; code="$(smoke_gw_post_chat_capture "$gateway_base_url" "Bearer $gw_key" "$SMOKE_BODY_SIMPLE" "$gw_headers" "$gw_body")"
-  assert_pass "POST gateway chat/completions 200" test "$code" = "200"
+  if ! assert_pass "POST gateway chat/completions 200" test "$code" = "200"; then
+    dump_diag_kv "section 13 proxy POST" \
+      "http_code=$code" \
+      "gw_key=$gw_key" \
+      "base_url=$gateway_base_url" \
+      "endpoint=${gateway_base_url}${SMOKE_PATH_GW_PROXY}"
+    dump_diag_json "proxy response body" "$(cat "$gw_body" 2>/dev/null || echo '(missing)')"
+    dump_diag_file "proxy response headers" "$gw_headers"
+    dump_diag_file "section 13 serve log" "$gw_log_13" 50
+  fi
   assert_fail "response must not contain sk- (no API key leak)" grep -q "sk-" "$gw_body" 2>/dev/null
   local gw_sid
   gw_sid="$(awk 'BEGIN{IGNORECASE=1} /^X-Talon-Session-ID:/ {gsub("\r","",$2); print $2; exit}' "$gw_headers" 2>/dev/null || true)"
@@ -1230,6 +1357,10 @@ test_section_23_dashboard_metrics() {
   cd "$dir" || exit 1
   if ! wait_port_free "$dashboard_port" 180 10; then
     log_failure "dashboard metrics section could not acquire port ${dashboard_port}" "port remained busy"
+    dump_diag_kv "port ${dashboard_port} in use" \
+      "lsof=$(lsof -nP -iTCP:${dashboard_port} -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')" \
+      "TALON_SERVE_PID=${TALON_SERVE_PID:-}" \
+      "TALON_GATEWAY_PID=${TALON_GATEWAY_PID:-}"
     cd "$REPO_ROOT" || true
     return 0
   fi
@@ -1307,14 +1438,10 @@ CACHEEOF
       gw_pid_state="exited(${gw_exit_code})"
     fi
     log_failure "dashboard gateway server did not start on port ${dashboard_port}" \
-      "url=${dashboard_base_url}/health pid=${GW_PID} state=${gw_pid_state} log=${gw_log_file}"
-    if [[ -n "$SMOKE_LOG_FILE" ]] && [[ -f "$gw_log_file" ]]; then
-      {
-        echo "Gateway serve log tail (${gw_log_file}):"
-        tail -100 "$gw_log_file"
-        echo ""
-      } >> "$SMOKE_LOG_FILE"
-    fi
+      "url=${dashboard_base_url}/health pid=${GW_PID} state=${gw_pid_state}"
+    dump_diag_file "section 23 serve log" "$gw_log_file" 120
+    dump_diag_file "talon.config.yaml" "$dir/talon.config.yaml"
+    dump_diag_env
     if [[ -f "$gw_log_file" ]]; then
       echo "    Last gateway log lines:"
       tail -10 "$gw_log_file" | sed 's/^/    | /'
@@ -1376,6 +1503,15 @@ CACHEEOF
   local before_failed; before_failed="$(jq '.summary.total_failed' <<< "$snap_before")"
   local before_timed_out; before_timed_out="$(jq '.summary.total_timed_out' <<< "$snap_before")"
   local before_denied; before_denied="$(jq '.summary.total_denied' <<< "$snap_before")"
+  local before_success_rate; before_success_rate="$(jq '.summary.success_rate' <<< "$snap_before")"
+  dump_diag_kv "section 23 pre-traffic baselines" \
+    "total_requests=$before_count" \
+    "total_successful=$before_successful" \
+    "total_failed=$before_failed" \
+    "total_timed_out=$before_timed_out" \
+    "total_denied=$before_denied" \
+    "success_rate=$before_success_rate" \
+    "note=backfill from evidence.db means these may be >0"
   assert_pass "pre-traffic total_successful is a number" \
     jq -e '.summary.total_successful | type == "number"' <<< "$snap_before" &>/dev/null
   assert_pass "pre-traffic total_failed is a number" \
@@ -1460,11 +1596,22 @@ CACHEEOF
   local snap_after; snap_after="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
   assert_pass "metrics snapshot after requests is valid JSON" jq -e '.' <<< "$snap_after" &>/dev/null
   local after_count; after_count="$(jq '.summary.total_requests' <<< "$snap_after")"
+  local after_successful; after_successful="$(jq '.summary.total_successful' <<< "$snap_after")"
+  local after_failed; after_failed="$(jq '.summary.total_failed' <<< "$snap_after")"
+  local after_denied; after_denied="$(jq '.summary.total_denied' <<< "$snap_after")"
+  local after_success_rate; after_success_rate="$(jq '.summary.success_rate' <<< "$snap_after")"
+  dump_diag_kv "section 23 post-traffic snapshot" \
+    "total_requests: $before_count → $after_count" \
+    "total_successful: $before_successful → $after_successful" \
+    "total_failed: $before_failed → $after_failed" \
+    "total_denied: $before_denied → $after_denied" \
+    "success_rate: $before_success_rate → $after_success_rate"
   if [[ -n "$after_count" ]] && [[ -n "$before_count" ]] && [[ "$after_count" -gt "$before_count" ]]; then
     echo "  ✓  metrics total_requests incremented ($before_count → $after_count)"
     record_pass
   else
     log_failure "metrics total_requests should increment after gateway request" "before=$before_count after=$after_count"
+    dump_diag_json "snap_after full" "$snap_after"
   fi
   # Cost should be > 0 (we made real LLM requests)
   local cost; cost="$(jq '.summary.total_cost_eur' <<< "$snap_after")"
@@ -2259,15 +2406,36 @@ compliance:
 PREVIEWEOF
   fi
 
+  # Dump the final agent.talon.yaml so we can see whether human_oversight was set.
+  dump_diag_file "agent.talon.yaml after compliance modification" "$dir/agent.talon.yaml"
+
+  # Verify human_oversight was actually written (fail-fast with context)
+  if ! grep -q 'human_oversight.*always' "$dir/agent.talon.yaml" 2>/dev/null; then
+    log_failure "agent.talon.yaml does not contain human_oversight: always after modification" \
+      "grep did not match; YAML may be malformed"
+    dump_diag_file "agent.talon.yaml (full)" "$dir/agent.talon.yaml"
+  fi
+
   # --- 24.1: Non-serve CLI workflow (run -> pending -> approve -> execute) ---
-  local run_out; run_out="$(run_talon run "Summarize EU AI Act milestones for compliance teams" 2>/dev/null)"; true
+  local run_out run_err run_exit
+  run_err="$(mktemp)"
+  run_out="$(run_talon run "Summarize EU AI Act milestones for compliance teams" 2>"$run_err")"; run_exit=$?; true
   plan_id="$(echo "$run_out" | grep -oE 'plan_[A-Za-z0-9_-]+' | head -1 || true)"
   if [[ -n "$plan_id" ]]; then
     echo "  ✓  talon run produced pending plan id: $plan_id"
     record_pass
   else
-    log_failure "talon run should produce PlanPending when human_oversight is always" "stdout=$run_out"
+    log_failure "talon run should produce PlanPending when human_oversight is always" \
+      "exit=$run_exit stdout=$(echo "$run_out" | head -20)"
+    dump_diag_kv "talon run diagnostics" \
+      "exit_code=$run_exit" \
+      "stdout_length=${#run_out}" \
+      "stdout_first_200=${run_out:0:200}"
+    dump_diag_file "talon run stderr" "$run_err"
+    dump_diag_file "agent.talon.yaml" "$dir/agent.talon.yaml"
+    dump_diag_env
   fi
+  rm -f "$run_err" 2>/dev/null || true
   local pending_out; pending_out="$(run_talon plan pending --tenant default 2>/dev/null)"; true
   if [[ -n "$plan_id" ]]; then
     assert_pass "talon plan pending contains created plan id" grep -q "$plan_id" <<< "$pending_out"
@@ -2297,13 +2465,28 @@ PREVIEWEOF
   # --- 24.2: Serve auto-dispatch workflow (approve -> background execute) ---
   if ! wait_port_free "$serve_port" 90 5; then
     log_failure "plan dispatch section could not acquire port ${serve_port}" "port remained busy"
+    dump_diag_kv "port ${serve_port} in use" \
+      "lsof=$(lsof -nP -iTCP:${serve_port} -sTCP:LISTEN 2>/dev/null | head -5 || echo '(lsof unavailable)')" \
+      "TALON_SERVE_PID=${TALON_SERVE_PID:-}" \
+      "TALON_GATEWAY_PID=${TALON_GATEWAY_PID:-}"
     cd "$REPO_ROOT" || true
     return 0
   fi
   run_talon serve --port "$serve_port" >"$dir/plan_dispatch_serve.log" 2>&1 &
   S_PID=$!
   if ! smoke_wait_health "$base_url" 45 1; then
-    log_failure "serve did not become healthy for plan dispatch section" "url=${base_url}/health"
+    local s_pid_state="running"
+    if ! kill -0 "$S_PID" 2>/dev/null; then
+      wait "$S_PID" 2>/dev/null
+      local s_exit=$?
+      s_pid_state="exited($s_exit)"
+    fi
+    log_failure "serve did not become healthy for plan dispatch section" \
+      "url=${base_url}/health pid=$S_PID state=$s_pid_state"
+    dump_diag_file "plan_dispatch serve log" "$dir/plan_dispatch_serve.log"
+    dump_diag_file "agent.talon.yaml" "$dir/agent.talon.yaml"
+    dump_diag_file "talon.config.yaml" "$dir/talon.config.yaml" 120
+    dump_diag_env
     kill "$S_PID" 2>/dev/null || true
     wait "$S_PID" 2>/dev/null || true
     cd "$REPO_ROOT" || true
@@ -2318,13 +2501,23 @@ PREVIEWEOF
   run_code="$run_json"
   run_json="$(< /tmp/talon_plan_run_resp.json 2>/dev/null || true)"
   rm -f /tmp/talon_plan_run_resp.json 2>/dev/null || true
-  assert_pass "tenant key can call /v1/agents/run (Authorization Bearer) → 200" test "$run_code" = "200"
+  if ! assert_pass "tenant key can call /v1/agents/run (Authorization Bearer) → 200" test "$run_code" = "200"; then
+    dump_diag_kv "section 24 agents/run" \
+      "http_code=$run_code" \
+      "tenant_key=$tenant_key" \
+      "base_url=$base_url" \
+      "endpoint=${base_url}/v1/agents/run"
+    dump_diag_json "agents/run response" "$run_json"
+    dump_diag_file "plan_dispatch serve log" "$dir/plan_dispatch_serve.log" 50
+  fi
   serve_plan_id="$(echo "$run_json" | jq -r '.plan_pending // empty' 2>/dev/null || true)"
   if [[ -n "$serve_plan_id" ]]; then
     echo "  ✓  API run returned plan_pending: $serve_plan_id"
     record_pass
   else
-    log_failure "API run should return plan_pending under human oversight" "json=$run_json"
+    log_failure "API run should return plan_pending under human oversight" "json_length=${#run_json}"
+    dump_diag_json "agents/run response (no plan_pending)" "$run_json"
+    dump_diag_file "plan_dispatch serve log (recent)" "$dir/plan_dispatch_serve.log" 50
   fi
   serve_session_id="$(echo "$run_json" | jq -r '.session_id // empty' 2>/dev/null || true)"
   if [[ -n "$serve_session_id" ]]; then
@@ -2695,8 +2888,30 @@ main() {
     echo "Failed tests:"
     printf '  - %s\n' "${FAILED_TESTS[@]}"
     echo ""
+    echo "--- Diagnostic Environment ---"
+    echo "  TALON_DATA_DIR=$TALON_DATA_DIR"
+    echo "  TALON_TENANT_KEY=${TALON_TENANT_KEY:-}"
+    echo "  TALON_ADMIN_KEY=${TALON_ADMIN_KEY:+(set, ${#TALON_ADMIN_KEY} chars)}"
+    echo "  TALON_SIGNING_KEY=${TALON_SIGNING_KEY:+(set)}"
+    echo "  OPENAI_API_KEY=${OPENAI_API_KEY:+(set, ${#OPENAI_API_KEY} chars)}"
+    echo "  evidence.db size: $(du -h "$TALON_DATA_DIR/evidence.db" 2>/dev/null | cut -f1 || echo 'N/A')"
+    echo "  evidence count: $(sqlite3 "$TALON_DATA_DIR/evidence.db" 'SELECT COUNT(*) FROM evidence' 2>/dev/null || echo 'N/A')"
+    echo "  talon version: $(talon version 2>/dev/null || echo 'N/A')"
+    echo "  go version: $(go version 2>/dev/null || echo 'N/A')"
+    echo ""
     echo "For full stdout/stderr of each failure, see: $SMOKE_LOG_FILE"
     echo "Consolidated log (for verification): $SMOKE_CONSOLIDATED_LOG"
+    # Also write the diagnostic block into the consolidated log
+    if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]]; then
+      {
+        echo "[SMOKE] DIAG|FINAL_ENV"
+        echo "[SMOKE] DIAG_KV|TALON_DATA_DIR=$TALON_DATA_DIR"
+        echo "[SMOKE] DIAG_KV|TALON_TENANT_KEY=${TALON_TENANT_KEY:-}"
+        echo "[SMOKE] DIAG_KV|TALON_ADMIN_KEY=${TALON_ADMIN_KEY:+(set)}"
+        echo "[SMOKE] DIAG_KV|evidence_count=$(sqlite3 "$TALON_DATA_DIR/evidence.db" 'SELECT COUNT(*) FROM evidence' 2>/dev/null || echo 'N/A')"
+        echo "[SMOKE] DIAG_KV|talon_version=$(talon version 2>/dev/null || echo 'N/A')"
+      } >> "$SMOKE_CONSOLIDATED_LOG"
+    fi
     exit 1
   fi
   echo "All tests passed."
