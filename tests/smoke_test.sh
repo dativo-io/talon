@@ -2582,16 +2582,33 @@ PREVIEWEOF
       echo "  ✓  serve auto-dispatch removed approved plan from pending list"
       record_pass
     fi
-    assert_pass "tenant key can read /v1/evidence (Authorization Bearer) → 200" \
-      test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${tenant_key}" "${base_url}/v1/evidence?limit=10")" = "200"
+    # Section 24 runs without --gateway, so no tenant keys are loaded.
+    # Use the admin key to verify evidence read access.
+    assert_pass "admin key can read /v1/evidence → 200" \
+      test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=10")" = "200"
     assert_pass "evidence index contains plan_dispatch invocation after approval" \
       bash -c "curl -s -H 'X-Talon-Admin-Key: ${admin_key}' '${base_url}/v1/evidence?limit=50' | jq -e '.entries[]? | select(.invocation_type == \"plan_dispatch\")' >/dev/null"
     if [[ -n "$serve_session_id" ]]; then
       local dispatch_evidence_id=""
       dispatch_evidence_id="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=50" | jq -r '.entries[]? | select(.invocation_type=="plan_dispatch") | .id' | head -1)"
       if [[ -n "$dispatch_evidence_id" ]]; then
-        assert_pass "plan_dispatch evidence reuses session_id from plan-gated run" \
-          jq -e --arg sid "$serve_session_id" '.session_id == $sid' <<< "$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence/${dispatch_evidence_id}")" &>/dev/null
+        local dispatch_ev_json
+        dispatch_ev_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence/${dispatch_evidence_id}")"
+        local dispatch_sid
+        dispatch_sid="$(echo "$dispatch_ev_json" | jq -r '.session_id // empty' 2>/dev/null || true)"
+        if [[ "$dispatch_sid" == "$serve_session_id" ]]; then
+          echo "  ✓  plan_dispatch evidence reuses session_id from plan-gated run"
+          record_pass
+        else
+          log_failure "plan_dispatch evidence reuses session_id from plan-gated run" \
+            "expected=$serve_session_id actual=$dispatch_sid evidence_id=$dispatch_evidence_id"
+          dump_diag_kv "session_id mismatch" \
+            "expected_sid=$serve_session_id" \
+            "actual_sid=$dispatch_sid" \
+            "dispatch_evidence_id=$dispatch_evidence_id"
+          dump_diag_json "dispatch evidence" "$dispatch_ev_json"
+          dump_diag_file "plan_dispatch serve log (tail)" "$dir/plan_dispatch_serve.log" 80
+        fi
       fi
     fi
   fi
