@@ -26,6 +26,16 @@ type PlanReviewStore struct {
 	db *sql.DB
 }
 
+// PlanStats aggregates plan lifecycle counters for dashboards/CLI summaries.
+type PlanStats struct {
+	Pending          int `json:"pending"`
+	Approved         int `json:"approved"`
+	Rejected         int `json:"rejected"`
+	Modified         int `json:"modified"`
+	Dispatched       int `json:"dispatched"`
+	DispatchFailures int `json:"dispatch_failures"`
+}
+
 // NewPlanReviewStore creates the plan review store with SQLite backend.
 func NewPlanReviewStore(db *sql.DB) (*PlanReviewStore, error) {
 	_, err := db.ExecContext(context.Background(), `
@@ -49,7 +59,56 @@ func NewPlanReviewStore(db *sql.DB) (*PlanReviewStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating execution_plans table: %w", err)
 	}
+	if err := ensureDispatchColumns(context.Background(), db); err != nil {
+		return nil, fmt.Errorf("ensuring execution plan dispatch columns: %w", err)
+	}
 	return &PlanReviewStore{db: db}, nil
+}
+
+func ensureDispatchColumns(ctx context.Context, db *sql.DB) error {
+	hasDispatchedAt, err := hasColumn(ctx, db, "execution_plans", "dispatched_at")
+	if err != nil {
+		return err
+	}
+	if !hasDispatchedAt {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE execution_plans ADD COLUMN dispatched_at DATETIME`); err != nil {
+			return err
+		}
+	}
+	hasDispatchError, err := hasColumn(ctx, db, "execution_plans", "dispatch_error")
+	if err != nil {
+		return err
+	}
+	if !hasDispatchError {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE execution_plans ADD COLUMN dispatch_error TEXT`); err != nil {
+			return err
+		}
+	}
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_plans_dispatch ON execution_plans(status, dispatched_at)`)
+	return nil
+}
+
+func hasColumn(ctx context.Context, db *sql.DB, tableName, columnName string) (bool, error) {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, tableName))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name string
+		var colType string
+		var notNull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return false, err
+		}
+		if name == columnName {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // Save persists a new execution plan.
@@ -107,6 +166,55 @@ func (s *PlanReviewStore) GetPending(ctx context.Context, tenantID string) ([]*E
 		plans = append(plans, &plan)
 	}
 	return plans, nil
+}
+
+// ReviewHistoryEntry is a minimal record for the dashboard review history.
+type ReviewHistoryEntry struct {
+	PlanID     string     `json:"plan_id"`
+	TenantID   string     `json:"tenant_id"`
+	AgentID    string     `json:"agent_id"`
+	Status     PlanStatus `json:"status"`
+	ReviewedBy string     `json:"reviewed_by"`
+	ReviewedAt *time.Time `json:"reviewed_at"`
+}
+
+// ListReviewed returns recently reviewed plans (approved/rejected/modified) for the dashboard review history.
+func (s *PlanReviewStore) ListReviewed(ctx context.Context, tenantID string, limit int) ([]ReviewHistoryEntry, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	query := `SELECT id, tenant_id, agent_id, status, reviewed_by, reviewed_at FROM execution_plans
+		WHERE status IN ('approved','rejected','modified') AND reviewed_at IS NOT NULL`
+	args := []interface{}{}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	query += ` ORDER BY reviewed_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ReviewHistoryEntry
+	for rows.Next() {
+		var e ReviewHistoryEntry
+		var reviewedBy sql.NullString
+		var reviewedAt sql.NullTime
+		if err := rows.Scan(&e.PlanID, &e.TenantID, &e.AgentID, &e.Status, &reviewedBy, &reviewedAt); err != nil {
+			continue
+		}
+		if reviewedBy.Valid {
+			e.ReviewedBy = reviewedBy.String
+		}
+		if reviewedAt.Valid {
+			t := reviewedAt.Time
+			e.ReviewedAt = &t
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // Get returns a single plan by ID, scoped to tenantID. Returns ErrPlanNotFound if the plan does not exist or belongs to another tenant.
@@ -208,6 +316,118 @@ func (s *PlanReviewStore) updateStatus(ctx context.Context, planID, tenantID str
 		return err
 	}
 	return ErrPlanNotPending
+}
+
+// GetApprovedUndispatched returns approved plans that have not been auto-dispatched yet.
+// If tenantID is empty, all tenants are included.
+func (s *PlanReviewStore) GetApprovedUndispatched(ctx context.Context, tenantID string) ([]*ExecutionPlan, error) {
+	now := time.Now()
+	query := `SELECT plan_json FROM execution_plans WHERE status = 'approved' AND timeout_at > ? AND dispatched_at IS NULL`
+	args := []interface{}{now}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	query += ` ORDER BY reviewed_at ASC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var plans []*ExecutionPlan
+	for rows.Next() {
+		var planJSON string
+		if err := rows.Scan(&planJSON); err != nil {
+			return nil, err
+		}
+		var plan ExecutionPlan
+		if err := json.Unmarshal([]byte(planJSON), &plan); err != nil {
+			continue
+		}
+		plans = append(plans, &plan)
+	}
+	return plans, rows.Err()
+}
+
+// MarkDispatched marks an approved plan as dispatched so it won't be executed again.
+// dispatchErr is persisted for diagnostics (empty string means success).
+func (s *PlanReviewStore) MarkDispatched(ctx context.Context, planID, tenantID, dispatchErr string) error {
+	now := time.Now()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE execution_plans SET dispatched_at = ?, dispatch_error = ?
+		WHERE id = ? AND tenant_id = ? AND status = 'approved' AND dispatched_at IS NULL`,
+		now, dispatchErr, planID, tenantID,
+	)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrPlanNotFound
+	}
+	return nil
+}
+
+// Stats returns aggregate plan lifecycle counters, optionally scoped by tenant.
+func (s *PlanReviewStore) Stats(ctx context.Context, tenantID string) (PlanStats, error) {
+	stats := PlanStats{}
+
+	statusQuery := `SELECT status, COUNT(*) FROM execution_plans`
+	statusArgs := []interface{}{}
+	if tenantID != "" {
+		statusQuery += ` WHERE tenant_id = ?`
+		statusArgs = append(statusArgs, tenantID)
+	}
+	statusQuery += ` GROUP BY status`
+
+	rows, err := s.db.QueryContext(ctx, statusQuery, statusArgs...)
+	if err != nil {
+		return stats, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return stats, err
+		}
+		switch PlanStatus(status) {
+		case PlanPending:
+			stats.Pending = count
+		case PlanApproved:
+			stats.Approved = count
+		case PlanRejected:
+			stats.Rejected = count
+		case PlanModified:
+			stats.Modified = count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return stats, err
+	}
+
+	dispatchQuery := `SELECT COUNT(*) FROM execution_plans WHERE dispatched_at IS NOT NULL`
+	dispatchArgs := []interface{}{}
+	if tenantID != "" {
+		dispatchQuery += ` AND tenant_id = ?`
+		dispatchArgs = append(dispatchArgs, tenantID)
+	}
+	if err := s.db.QueryRowContext(ctx, dispatchQuery, dispatchArgs...).Scan(&stats.Dispatched); err != nil {
+		return stats, err
+	}
+
+	failedQuery := `SELECT COUNT(*) FROM execution_plans WHERE dispatched_at IS NOT NULL AND dispatch_error IS NOT NULL AND trim(dispatch_error) != ''`
+	failedArgs := []interface{}{}
+	if tenantID != "" {
+		failedQuery += ` AND tenant_id = ?`
+		failedArgs = append(failedArgs, tenantID)
+	}
+	if err := s.db.QueryRowContext(ctx, failedQuery, failedArgs...).Scan(&stats.DispatchFailures); err != nil {
+		return stats, err
+	}
+
+	return stats, nil
 }
 
 // PlanReviewConfig from .talon.yaml.

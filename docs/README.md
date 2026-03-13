@@ -52,6 +52,8 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 | Doc | Description |
 |-----|-------------|
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
+| [Authentication and key scopes](reference/authentication-and-key-scopes.md) | Which keys authenticate which endpoint families (gateway vs control plane vs dashboard). |
+| [Gateway dashboard](reference/gateway-dashboard.md) | Dashboard endpoints, metrics API schema, snapshot fields, and authentication. |
 
 ### Explanation (understanding-oriented)
 
@@ -90,3 +92,4 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 | [MCP proxy minimal](../examples/mcp-proxy-minimal/README.md) | Smallest working MCP proxy config. |
 | [Plan review](../examples/plan-review/README.md) | Human-in-the-loop demo (EU AI Act Art. 14). |
 | [Starter policies](../examples/policies/README.md) | OPA/Rego policies for common governance scenarios. |
+| [Observability stack](../examples/observability/README.md) | Local OTel Collector + Prometheus + Grafana with pre-built Talon dashboard. |

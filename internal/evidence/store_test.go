@@ -256,7 +256,7 @@ func TestListIndex(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	index, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 10, "")
+	index, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 10, "", "", "")
 	require.NoError(t, err)
 	assert.Len(t, index, 1)
 	assert.True(t, index[0].Allowed)
@@ -423,13 +423,13 @@ func TestListIndexWithTimeFilter(t *testing.T) {
 
 	from := time.Now().Add(-1 * time.Hour)
 	to := time.Now().Add(1 * time.Hour)
-	index, err := store.ListIndex(ctx, "acme", "agent", from, to, 10, "")
+	index, err := store.ListIndex(ctx, "acme", "agent", from, to, 10, "", "", "")
 	require.NoError(t, err)
 	assert.Len(t, index, 3)
 
 	futureFrom := time.Now().Add(1 * time.Hour)
 	futureTo := time.Now().Add(2 * time.Hour)
-	empty, err := store.ListIndex(ctx, "acme", "agent", futureFrom, futureTo, 10, "")
+	empty, err := store.ListIndex(ctx, "acme", "agent", futureFrom, futureTo, 10, "", "", "")
 	require.NoError(t, err)
 	assert.Len(t, empty, 0)
 }
@@ -456,12 +456,12 @@ func TestListIndexByInvocationType(t *testing.T) {
 	}
 
 	// Without filter: limit 50 returns up to 50 (we have 7)
-	all, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 50, "")
+	all, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 50, "", "", "")
 	require.NoError(t, err)
 	assert.Len(t, all, 7)
 
 	// With invocationType filter: limit applies *after* filter, so we get all 3 webhook:zendesk
-	webhook, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 50, "webhook:zendesk")
+	webhook, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 50, "webhook:zendesk", "", "")
 	require.NoError(t, err)
 	assert.Len(t, webhook, 3, "should return all webhook:zendesk entries when limit is 50")
 	for i := range webhook {
@@ -469,12 +469,94 @@ func TestListIndexByInvocationType(t *testing.T) {
 	}
 
 	// Limit 2 with filter returns 2 most recent webhook:zendesk only
-	webhook2, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 2, "webhook:zendesk")
+	webhook2, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 2, "webhook:zendesk", "", "")
 	require.NoError(t, err)
 	assert.Len(t, webhook2, 2)
 	for i := range webhook2 {
 		assert.Equal(t, "webhook:zendesk", webhook2[i].InvocationType)
 	}
+}
+
+func TestListIndexAllowedAndModelFilter(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	// One allowed gpt-4, one denied gpt-4, one allowed claude
+	_, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID: "corr_a1", TenantID: "acme", AgentID: "a",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		ModelUsed:      "gpt-4", InputPrompt: "p", OutputResponse: "r",
+	})
+	require.NoError(t, err)
+	_, err = gen.Generate(ctx, GenerateParams{
+		CorrelationID: "corr_a2", TenantID: "acme", AgentID: "a",
+		PolicyDecision: PolicyDecision{Allowed: false, Action: "deny"},
+		ModelUsed:      "gpt-4", InputPrompt: "p",
+	})
+	require.NoError(t, err)
+	_, err = gen.Generate(ctx, GenerateParams{
+		CorrelationID: "corr_a3", TenantID: "acme", AgentID: "a",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		ModelUsed:      "claude-3", InputPrompt: "p", OutputResponse: "r",
+	})
+	require.NoError(t, err)
+
+	all, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 10, "", "", "")
+	require.NoError(t, err)
+	assert.Len(t, all, 3)
+
+	allowedOnly, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 10, "", "true", "")
+	require.NoError(t, err)
+	assert.Len(t, allowedOnly, 2)
+	for i := range allowedOnly {
+		assert.True(t, allowedOnly[i].Allowed)
+	}
+
+	deniedOnly, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 10, "", "false", "")
+	require.NoError(t, err)
+	assert.Len(t, deniedOnly, 1)
+	assert.False(t, deniedOnly[0].Allowed)
+
+	modelGpt4, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 10, "", "", "gpt-4")
+	require.NoError(t, err)
+	assert.Len(t, modelGpt4, 2)
+	for i := range modelGpt4 {
+		assert.Equal(t, "gpt-4", modelGpt4[i].ModelUsed)
+	}
+
+	modelClaude, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 10, "", "", "claude-3")
+	require.NoError(t, err)
+	assert.Len(t, modelClaude, 1)
+	assert.Equal(t, "claude-3", modelClaude[0].ModelUsed)
+
+	allowedAndModel, err := store.ListIndex(ctx, "acme", "", time.Time{}, time.Time{}, 10, "", "true", "gpt-4")
+	require.NoError(t, err)
+	assert.Len(t, allowedAndModel, 1)
+	assert.True(t, allowedAndModel[0].Allowed)
+	assert.Equal(t, "gpt-4", allowedAndModel[0].ModelUsed)
+}
+
+func TestDenialsByReason(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	total, byReason, err := store.DenialsByReason(ctx, "acme", time.Time{}, time.Time{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, total)
+	assert.NotNil(t, byReason)
+
+	gen := NewGenerator(store)
+	_, err = gen.Generate(ctx, GenerateParams{
+		CorrelationID: "corr_dr1", TenantID: "acme", AgentID: "a",
+		PolicyDecision: PolicyDecision{Allowed: false, Action: "deny"},
+		InputPrompt:    "p",
+	})
+	require.NoError(t, err)
+	total, byReason, err = store.DenialsByReason(ctx, "acme", time.Time{}, time.Time{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, total)
+	assert.GreaterOrEqual(t, byReason["policy_deny"], 0)
 }
 
 func TestListWithAgentFilter(t *testing.T) {
@@ -558,6 +640,50 @@ func TestGenerateWithSecretsAndMemory(t *testing.T) {
 	assert.Equal(t, []string{"openai-api-key", "db-password"}, retrieved.SecretsAccessed)
 	assert.Len(t, retrieved.MemoryWrites, 1)
 	assert.Equal(t, []string{"search", "email"}, retrieved.Execution.ToolsCalled)
+}
+
+func TestAvgTTFTAndAvgTPOT(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	from := now.Add(-1 * time.Hour)
+	to := now.Add(1 * time.Hour)
+
+	// Store two evidence records with streaming metrics
+	for i, ttft := range []int64{100, 200} {
+		tpot := 0.5 + float64(i)*0.5 // 0.5 and 1.0
+		ev := &Evidence{
+			ID:             fmt.Sprintf("ev-ttft-%d", i),
+			CorrelationID:  "corr",
+			Timestamp:      now,
+			TenantID:       "default",
+			AgentID:        "caller-1",
+			InvocationType: "gateway",
+			PolicyDecision: PolicyDecision{Allowed: true},
+			Classification: Classification{},
+			Execution: Execution{
+				ModelUsed:  "gpt-4o",
+				Cost:       0.01,
+				Tokens:     TokenUsage{Input: 10, Output: 20},
+				DurationMS: 500,
+				TTFTMS:     ttft,
+				TPOTMS:     tpot,
+			},
+			AuditTrail: AuditTrail{},
+			Compliance: Compliance{},
+		}
+		err := store.Store(ctx, ev)
+		require.NoError(t, err)
+	}
+
+	avgTTFT, err := store.AvgTTFT(ctx, "default", "", from, to)
+	require.NoError(t, err)
+	assert.InDelta(t, 150.0, avgTTFT, 0.1, "avg of 100 and 200")
+
+	avgTPOT, err := store.AvgTPOT(ctx, "default", "", from, to)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.75, avgTPOT, 0.01, "avg of 0.5 and 1.0")
 }
 
 func TestVerifyNonexistentEvidence(t *testing.T) {
@@ -781,6 +907,179 @@ func TestStoreStepAndListSteps(t *testing.T) {
 	assert.Equal(t, "search", steps[1].ToolName)
 	assert.NotEmpty(t, steps[0].Signature)
 	assert.NotEmpty(t, steps[1].Signature)
+}
+
+func TestListTenantIDs(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+
+	for _, tt := range []struct{ tenant, agent string }{
+		{"acme", "agent1"},
+		{"acme", "agent2"},
+		{"beta", "agent1"},
+	} {
+		_, err := gen.Generate(ctx, GenerateParams{
+			CorrelationID:  "corr-" + tt.tenant + "-" + tt.agent,
+			TenantID:       tt.tenant,
+			AgentID:        tt.agent,
+			InvocationType: "manual",
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+			Cost:           0.001,
+			InputPrompt:    "x",
+			OutputResponse: "y",
+		})
+		require.NoError(t, err)
+	}
+
+	ids, err := store.ListTenantIDs(ctx, dayStart, dayEnd)
+	require.NoError(t, err)
+	assert.Len(t, ids, 2) // acme, beta
+	assert.Contains(t, ids, "acme")
+	assert.Contains(t, ids, "beta")
+}
+
+func TestCountDeniedInRange(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+
+	_, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr-allowed",
+		TenantID:       "acme",
+		AgentID:        "a1",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		Cost:           0.001,
+		InputPrompt:    "x",
+		OutputResponse: "y",
+	})
+	require.NoError(t, err)
+	_, err = gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr-denied",
+		TenantID:       "acme",
+		AgentID:        "a1",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: false, Action: "deny"},
+		Cost:           0,
+		InputPrompt:    "x",
+		OutputResponse: "",
+	})
+	require.NoError(t, err)
+
+	n, err := store.CountDeniedInRange(ctx, "acme", "", dayStart, dayEnd)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+}
+
+func TestTenantsSummary(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	monthEnd := monthStart.AddDate(0, 1, 0)
+
+	_, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "c1",
+		TenantID:       "acme",
+		AgentID:        "a1",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		Cost:           0.5,
+		InputPrompt:    "x",
+		OutputResponse: "y",
+	})
+	require.NoError(t, err)
+	_, err = gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "c2",
+		TenantID:       "beta",
+		AgentID:        "a1",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: false, Action: "deny"},
+		Cost:           0,
+		InputPrompt:    "x",
+		OutputResponse: "",
+	})
+	require.NoError(t, err)
+
+	summary, err := store.TenantsSummary(ctx, dayStart, dayEnd, monthStart, monthEnd, "")
+	require.NoError(t, err)
+	require.Len(t, summary, 2)
+	var acme, beta *TenantSummary
+	for i := range summary {
+		switch summary[i].TenantID {
+		case "acme":
+			acme = &summary[i]
+		case "beta":
+			beta = &summary[i]
+		}
+	}
+	require.NotNil(t, acme)
+	require.NotNil(t, beta)
+	assert.Equal(t, 1, acme.RequestVolume)
+	assert.InDelta(t, 0.5, acme.SpendToday, 1e-6)
+	assert.Equal(t, 0, acme.Denials)
+	assert.Equal(t, 1, beta.RequestVolume)
+	assert.Equal(t, 1, beta.Denials) // one denied request for beta
+}
+
+func TestAgentsSummary(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+	_, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "c1",
+		TenantID:       "acme",
+		AgentID:        "agent-x",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+		Cost:           0.1,
+		InputPrompt:    "x",
+		OutputResponse: "y",
+	})
+	require.NoError(t, err)
+	_, err = gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "c2",
+		TenantID:       "acme",
+		AgentID:        "agent-y",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: false, Action: "deny"},
+		Cost:           0,
+		InputPrompt:    "x",
+		OutputResponse: "",
+	})
+	require.NoError(t, err)
+
+	// No time filter to avoid SQLite timestamp format sensitivity; get all-time agent summary.
+	agents, err := store.AgentsSummary(ctx, time.Time{}, time.Time{}, "")
+	require.NoError(t, err)
+	require.Len(t, agents, 2)
+	var ax, ay *AgentSummary
+	for i := range agents {
+		switch agents[i].AgentID {
+		case "agent-x":
+			ax = &agents[i]
+		case "agent-y":
+			ay = &agents[i]
+		}
+	}
+	require.NotNil(t, ax)
+	require.NotNil(t, ay)
+	assert.Equal(t, "acme", ax.TenantID)
+	assert.Equal(t, 1, ax.Requests)
+	assert.InDelta(t, 0.1, ax.CostEUR, 1e-6)
+	assert.Equal(t, 0, ax.Blocked)
+	assert.Equal(t, "acme", ay.TenantID)
+	assert.Equal(t, 1, ay.Blocked)
 }
 
 func BenchmarkCostTotal(b *testing.B) {

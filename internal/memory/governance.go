@@ -90,6 +90,9 @@ func (g *Governance) ValidateWrite(ctx context.Context, entry *Entry, pol *polic
 	deny := func(reason string, err error) error {
 		writesDenied.Add(ctx, 1)
 		span.SetAttributes(attribute.String("governance.denied_by", reason))
+		if reason == "hardcoded_forbidden" || reason == "opa" || reason == "policy_override" {
+			RecordPoisoningBlocked(ctx)
+		}
 		return err
 	}
 

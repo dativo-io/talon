@@ -42,10 +42,10 @@ func setupCoPawGateway(t *testing.T, upstreamHandler http.HandlerFunc) (*gateway
 		},
 		Callers: []gateway.CallerConfig{
 			{
-				Name:     "copaw-main",
-				APIKey:   "talon-gw-copaw-001",
-				TenantID: "test-tenant",
-				Tags:     []string{"copaw"},
+				Name:      "copaw-main",
+				TenantKey: "talon-gw-copaw-001",
+				TenantID:  "test-tenant",
+				Tags:      []string{"copaw"},
 				PolicyOverrides: &gateway.CallerPolicyOverrides{
 					PIIAction:      "warn",
 					MaxDailyCost:   100,

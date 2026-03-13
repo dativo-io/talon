@@ -17,6 +17,7 @@ import (
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/memory"
+	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
@@ -33,6 +34,7 @@ func TestHealthEndpoint(t *testing.T) {
 
 	srv := NewServer(
 		nil, nil, nil, engine, pol, "", nil,
+		"",
 		map[string]string{}, // no keys - health is unauthenticated
 	)
 	r := srv.Routes()
@@ -55,7 +57,7 @@ func TestHealthDetail(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{})
 	r := srv.Routes()
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/health?detail=true", nil)
@@ -79,7 +81,7 @@ func TestAuthMiddlewareRejectsMissingKey(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"secret": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"secret": "default"})
 	r := srv.Routes()
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence", nil)
@@ -100,12 +102,116 @@ func TestAuthMiddlewareAcceptsValidKey(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"mykey": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"mykey": "default"})
 	r := srv.Routes()
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=1", nil)
-	req.Header.Set("X-Talon-Key", "mykey")
+	req.Header.Set("Authorization", "Bearer mykey")
 	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestRouteAuthBehavior_TenantOnlyRequiresTenantBearer(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "admin-secret", map[string]string{"tenant-secret": "default"})
+	r := srv.Routes()
+
+	// Tenant-only endpoint must reject admin auth.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Talon-Admin-Key", "admin-secret")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	// Tenant bearer is accepted by middleware and reaches handler (invalid JSON -> 400).
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer tenant-secret")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRouteAuthBehavior_ReadEndpointsAllowTenantOrAdmin(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "admin-secret", map[string]string{"tenant-secret": "default"})
+	r := srv.Routes()
+
+	// Tenant bearer can read.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer tenant-secret")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Admin key can read.
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/status", nil)
+	req.Header.Set("X-Talon-Admin-Key", "admin-secret")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// Missing credentials must fail.
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/status", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestRouteAuthBehavior_AdminEndpointsRequireAdminKey(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "admin-secret", map[string]string{"tenant-secret": "default"})
+	r := srv.Routes()
+
+	// Admin-only endpoint rejects tenant bearer.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/policies", nil)
+	req.Header.Set("Authorization", "Bearer tenant-secret")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	// Admin key is accepted.
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/policies", nil)
+	req.Header.Set("X-Talon-Admin-Key", "admin-secret")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestRouteAuthBehavior_GatewayMetricsRequireAdminKey(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	collector := metrics.NewCollector("enforce", nil)
+	t.Cleanup(collector.Close)
+
+	srv := NewServer(
+		nil, nil, nil, engine, pol, "", nil, "admin-secret", map[string]string{"tenant-secret": "default"},
+		WithMetricsCollector(collector),
+		WithGatewayDashboard("<html>gw</html>"),
+	)
+	r := srv.Routes()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/metrics", nil)
+	req.Header.Set("Authorization", "Bearer tenant-secret")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/metrics", nil)
+	req.Header.Set("X-Talon-Admin-Key", "admin-secret")
+	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
@@ -119,10 +225,10 @@ func TestStatusEndpoint(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/status", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -131,6 +237,11 @@ func TestStatusEndpoint(t *testing.T) {
 	assert.Equal(t, "ok", out["status"])
 	assert.NotNil(t, out["evidence_count_today"])
 	assert.NotNil(t, out["cost_today"])
+	assert.Contains(t, out, "pending_memory_reviews")
+	assert.Contains(t, out, "blocked_count")
+	assert.Contains(t, out, "error_rate")
+	assert.Contains(t, out, "enforcement_mode")
+	assert.Equal(t, "default", out["tenant_id"])
 }
 
 func TestStatusEndpoint_ActiveRunsFromTracker(t *testing.T) {
@@ -147,11 +258,11 @@ func TestStatusEndpoint_ActiveRunsFromTracker(t *testing.T) {
 	tracker.Increment("acme")
 
 	apiKeys := map[string]string{"k": "default", "k-acme": "acme"}
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, apiKeys, WithActiveRunTracker(tracker))
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", apiKeys, WithActiveRunTracker(tracker))
 	r := srv.Routes()
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/status", nil)
-	req.Header.Set("X-Talon-Key", "k-acme")
+	req.Header.Set("Authorization", "Bearer k-acme")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -161,7 +272,7 @@ func TestStatusEndpoint_ActiveRunsFromTracker(t *testing.T) {
 	assert.Equal(t, float64(2), out["active_runs"], "active_runs must reflect tracker count for tenant")
 
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/status", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
@@ -177,10 +288,10 @@ func TestCostsAndBudgetEndpoints(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/costs", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -189,7 +300,7 @@ func TestCostsAndBudgetEndpoints(t *testing.T) {
 	assert.Equal(t, "default", out["tenant_id"])
 
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/costs/budget", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -204,10 +315,10 @@ func TestTriggersListAndHistory(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/triggers", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -216,7 +327,7 @@ func TestTriggersListAndHistory(t *testing.T) {
 	assert.NotNil(t, out["triggers"])
 
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/triggers/some-webhook/history", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -233,10 +344,10 @@ func TestPlansPendingDisabled(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/plans/pending", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
@@ -256,11 +367,11 @@ func TestPlansPendingAndGetWithStore(t *testing.T) {
 	planStore, err := agent.NewPlanReviewStore(db)
 	require.NoError(t, err)
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/plans/pending", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -271,7 +382,7 @@ func TestPlansPendingAndGetWithStore(t *testing.T) {
 	assert.True(t, hasPlans)
 
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/plans/nonexistent-id", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
@@ -294,13 +405,13 @@ func TestPlanApproveSuccess(t *testing.T) {
 	err = planStore.Save(context.Background(), plan)
 	require.NoError(t, err)
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
 	body := `{"reviewed_by":"reviewer@test"}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+plan.ID+"/approve", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -322,12 +433,12 @@ func TestPlanApproveMissingID(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	planStore, err := agent.NewPlanReviewStore(db)
 	require.NoError(t, err)
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans//approve", strings.NewReader(`{"reviewed_by":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -348,13 +459,13 @@ func TestPlanRejectSuccess(t *testing.T) {
 	require.NoError(t, err)
 	plan := agent.GenerateExecutionPlan("corr2", "default", "agent1", "gpt-4", 0, nil, 0, "allow", "", "", 30)
 	require.NoError(t, planStore.Save(context.Background(), plan))
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
 	body := `{"reviewed_by":"admin","reason":"too expensive"}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+plan.ID+"/reject", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -376,12 +487,12 @@ func TestPlanRejectMissingID(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	planStore, err := agent.NewPlanReviewStore(db)
 	require.NoError(t, err)
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans//reject", strings.NewReader(`{"reviewed_by":"x","reason":"y"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -402,13 +513,13 @@ func TestPlanModifySuccess(t *testing.T) {
 	require.NoError(t, err)
 	plan := agent.GenerateExecutionPlan("corr3", "default", "agent1", "gpt-4", 0, nil, 0, "allow", "", "", 30)
 	require.NoError(t, planStore.Save(context.Background(), plan))
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
 	body := `{"reviewed_by":"admin","annotations":[{"type":"comment","content":"use cheaper model"}]}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+plan.ID+"/modify", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -432,12 +543,12 @@ func TestPlanApproveRejectModify_NonexistentPlanReturns404(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	planStore, err := agent.NewPlanReviewStore(db)
 	require.NoError(t, err)
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
 	nonexistentID := "plan_nonexistent_404_test"
-	key := "X-Talon-Key"
-	apiKey := "k"
+	key := "Authorization"
+	apiKey := "Bearer k"
 
 	// Approve nonexistent plan -> 404
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+nonexistentID+"/approve", strings.NewReader(`{"reviewed_by":"u"}`))
@@ -490,11 +601,11 @@ func TestPlanApproveRejectModify_AlreadyReviewedReturns409(t *testing.T) {
 	require.NoError(t, planStore.Save(context.Background(), plan))
 	require.NoError(t, planStore.Approve(context.Background(), plan.ID, "default", "reviewer@test"))
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
-	key := "X-Talon-Key"
-	apiKey := "k"
+	key := "Authorization"
+	apiKey := "Bearer k"
 
 	// Second approve -> 409
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+plan.ID+"/approve", strings.NewReader(`{"reviewed_by":"other"}`))
@@ -537,12 +648,12 @@ func TestEvidenceExportInvalidFormat(t *testing.T) {
 	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	body := `{"tenant_id":"default","format":"xml"}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/evidence/export", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -559,12 +670,12 @@ func TestMemoryApproveInvalidJSON(t *testing.T) {
 	memStore, err := memory.NewStore(dir + "/mem.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = memStore.Close() })
-	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/memory/agent1/approve", strings.NewReader(`{`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -581,11 +692,11 @@ func TestMemoryReviewMissingAgentID(t *testing.T) {
 	memStore, err := memory.NewStore(dir + "/mem.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = memStore.Close() })
-	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory//review", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -601,10 +712,10 @@ func TestPoliciesList(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/policies", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -622,12 +733,12 @@ func TestPoliciesEvaluate(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	body := `{"input":{"agent_id":"test","tool":"search"}}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/policies/evaluate", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -644,11 +755,11 @@ func TestPoliciesEvaluateInvalidJSON(t *testing.T) {
 	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/policies/evaluate", strings.NewReader(`{`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -663,10 +774,10 @@ func TestMemoryListDisabled(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory?agent_id=a1", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
@@ -684,11 +795,11 @@ func TestMemoryListWithStore(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = memStore.Close() })
 
-	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory?agent_id=agent1&limit=10", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -710,10 +821,10 @@ func TestSecretsList(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = secretsStore.Close() })
 
-	srv := NewServer(nil, evStore, nil, engine, pol, "", secretsStore, map[string]string{"k": "default"})
+	srv := NewServer(nil, evStore, nil, engine, pol, "", secretsStore, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/secrets", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -734,10 +845,10 @@ func TestSecretsAudit(t *testing.T) {
 	secretsStore, err := secrets.NewSecretStore(dir+"/secrets.db", testutil.TestEncryptionKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = secretsStore.Close() })
-	srv := NewServer(nil, evStore, nil, engine, pol, "", secretsStore, map[string]string{"k": "default"})
+	srv := NewServer(nil, evStore, nil, engine, pol, "", secretsStore, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/secrets/audit?limit=10", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -767,12 +878,12 @@ func TestSecretsAuditTenantIsolation(t *testing.T) {
 	_, _ = secretsStore.Get(ctx, "audit-key", "other", "agent2")
 
 	apiKeys := map[string]string{"key-acme": "acme", "key-other": "other"}
-	srv := NewServer(nil, evStore, nil, engine, pol, "", secretsStore, apiKeys)
+	srv := NewServer(nil, evStore, nil, engine, pol, "", secretsStore, "", apiKeys)
 	r := srv.Routes()
 
 	// Tenant acme sees only acme records
 	reqAcme := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/secrets/audit?limit=50", nil)
-	reqAcme.Header.Set("X-Talon-Key", "key-acme")
+	reqAcme.Header.Set("Authorization", "Bearer key-acme")
 	recAcme := httptest.NewRecorder()
 	r.ServeHTTP(recAcme, reqAcme)
 	require.Equal(t, http.StatusOK, recAcme.Code)
@@ -788,7 +899,7 @@ func TestSecretsAuditTenantIsolation(t *testing.T) {
 
 	// Tenant other sees only other records
 	reqOther := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/secrets/audit?limit=50", nil)
-	reqOther.Header.Set("X-Talon-Key", "key-other")
+	reqOther.Header.Set("Authorization", "Bearer key-other")
 	recOther := httptest.NewRecorder()
 	r.ServeHTTP(recOther, reqOther)
 	require.Equal(t, http.StatusOK, recOther.Code)
@@ -814,11 +925,11 @@ func TestMemorySearchMissingParams(t *testing.T) {
 	memStore, err := memory.NewStore(dir + "/mem.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = memStore.Close() })
-	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory/search?agent_id=a1", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -835,11 +946,11 @@ func TestMemorySearchWithStore(t *testing.T) {
 	memStore, err := memory.NewStore(dir + "/mem.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = memStore.Close() })
-	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory/search?agent_id=a1&q=test&limit=5", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -860,18 +971,18 @@ func TestMemoryReviewAndApproveWithStore(t *testing.T) {
 	memStore, err := memory.NewStore(dir + "/mem.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = memStore.Close() })
-	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory/agent1/review?limit=10", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	body := `{"entry_id":"mem_123","review_status":"approved"}`
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/memory/agent1/approve", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	// May be 200 or 404 depending on whether entry exists
@@ -889,11 +1000,11 @@ func TestMemoryGetWithStore(t *testing.T) {
 	memStore, err := memory.NewStore(dir + "/mem.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = memStore.Close() })
-	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory/nonexistent-id", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
@@ -915,12 +1026,12 @@ func TestMemoryAsOfWithStore(t *testing.T) {
 		TenantID: "default", AgentID: "agent1", Category: memory.CategoryDomainKnowledge,
 		Title: "AsOf test", Content: "content", EvidenceID: "req_1", SourceType: memory.SourceAgentRun,
 	}))
-	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
 	asOf := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory/as-of?agent_id=agent1&as_of="+asOf+"&limit=10", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -941,11 +1052,11 @@ func TestMemoryAsOfBadRequest(t *testing.T) {
 	memStore, err := memory.NewStore(dir + "/mem.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = memStore.Close() })
-	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithMemoryStore(memStore))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/memory/as-of?agent_id=agent1", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -966,11 +1077,11 @@ func TestPlanGetSuccess(t *testing.T) {
 	require.NoError(t, err)
 	plan := agent.GenerateExecutionPlan("corr4", "default", "agent1", "gpt-4", 0, nil, 0, "allow", "", "", 30)
 	require.NoError(t, planStore.Save(context.Background(), plan))
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"},
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"},
 		WithPlanReviewStore(planStore))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/plans/"+plan.ID, nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -999,19 +1110,19 @@ func TestPlanCrossTenantAccess(t *testing.T) {
 
 	// key_acme -> tenant acme, key_globex -> tenant globex
 	apiKeys := map[string]string{"key_acme": "acme", "key_globex": "globex"}
-	srv := NewServer(nil, evidenceStore, nil, engine, pol, "", nil, apiKeys, WithPlanReviewStore(planStore))
+	srv := NewServer(nil, evidenceStore, nil, engine, pol, "", nil, "", apiKeys, WithPlanReviewStore(planStore))
 	r := srv.Routes()
 
 	// Globex user cannot GET acme's plan -> 404
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/plans/"+acmePlan.ID, nil)
-	req.Header.Set("X-Talon-Key", "key_globex")
+	req.Header.Set("Authorization", "Bearer key_globex")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code, "GET plan from other tenant must return 404")
 
 	// Acme user can GET acme's plan -> 200
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/plans/"+acmePlan.ID, nil)
-	req.Header.Set("X-Talon-Key", "key_acme")
+	req.Header.Set("Authorization", "Bearer key_acme")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -1022,7 +1133,7 @@ func TestPlanCrossTenantAccess(t *testing.T) {
 	// Globex user cannot APPROVE acme's plan -> 404 (plan not found for that tenant)
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+acmePlan.ID+"/approve", strings.NewReader(`{"reviewed_by":"attacker"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "key_globex")
+	req.Header.Set("Authorization", "Bearer key_globex")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code, "approve other tenant's plan must return 404 not found")
@@ -1034,7 +1145,7 @@ func TestPlanCrossTenantAccess(t *testing.T) {
 	// Globex user cannot REJECT acme's plan -> 404
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+acmePlan.ID+"/reject", strings.NewReader(`{"reviewed_by":"attacker","reason":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "key_globex")
+	req.Header.Set("Authorization", "Bearer key_globex")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
@@ -1045,7 +1156,7 @@ func TestPlanCrossTenantAccess(t *testing.T) {
 	// Globex user cannot MODIFY acme's plan -> 404
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/plans/"+acmePlan.ID+"/modify", strings.NewReader(`{"reviewed_by":"attacker","annotations":[]}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "key_globex")
+	req.Header.Set("Authorization", "Bearer key_globex")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
@@ -1058,7 +1169,7 @@ func TestDashboardEndpoint(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
 	require.NoError(t, err)
-	srv := NewServer(nil, nil, nil, engine, pol, "", nil, map[string]string{},
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", map[string]string{},
 		WithDashboard("<html></html>"))
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/dashboard", nil)
@@ -1073,7 +1184,7 @@ func TestDashboardNotConfigured(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
 	require.NoError(t, err)
-	srv := NewServer(nil, nil, nil, engine, pol, "", nil, map[string]string{})
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", map[string]string{})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/dashboard", nil)
 	rec := httptest.NewRecorder()
@@ -1090,17 +1201,17 @@ func TestEvidenceGetAndVerify(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	// Get non-existent id -> 404
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/nonexistent", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 	// Verify non-existent id -> internal error or not found depending on store impl
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/nonexistent/verify", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	// Store may return 404 or 500; either exercises the handler
@@ -1116,10 +1227,10 @@ func TestEvidenceTimelineMissingParam(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/timeline", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -1133,11 +1244,11 @@ func TestEvidenceExportInvalidJSON(t *testing.T) {
 	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/evidence/export", strings.NewReader(`{`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -1152,12 +1263,12 @@ func TestEvidenceExport(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	body := `{"tenant_id":"default","format":"json","limit":10}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/evidence/export", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -1168,7 +1279,7 @@ func TestEvidenceExport(t *testing.T) {
 	body = `{"tenant_id":"default","format":"csv"}`
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/evidence/export", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -1198,15 +1309,15 @@ func TestEvidenceGetAndVerifySuccess(t *testing.T) {
 	err = store.Store(context.Background(), ev)
 	require.NoError(t, err)
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/ev_test_1", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/ev_test_1/verify", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -1216,7 +1327,7 @@ func TestEvidenceGetAndVerifySuccess(t *testing.T) {
 
 	// Timeline with stored id
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/timeline?around=ev_test_1&before=2&after=2", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -1249,26 +1360,26 @@ func TestEvidenceGetVerifyTimelineTenantIsolation(t *testing.T) {
 	require.NoError(t, err)
 
 	// API key "k" maps to tenant "default", not "acme"
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 
 	// GET with default tenant must not return acme's evidence
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/ev_acme_1", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code, "GET must return 404 for other tenant's evidence")
 
 	// Verify with default tenant must not reveal acme's evidence
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/ev_acme_1/verify", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code, "verify must return 404 for other tenant's evidence")
 
 	// Timeline around acme's id with default tenant must return 404
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/timeline?around=ev_acme_1&before=2&after=2", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code, "timeline must return 404 when around id belongs to other tenant")
@@ -1300,11 +1411,11 @@ func TestEvidenceTenantIsolation_SameTenantSucceeds(t *testing.T) {
 	require.NoError(t, err)
 
 	// Key "k_acme" maps to tenant "acme"
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k_acme": "acme"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k_acme": "acme"})
 	r := srv.Routes()
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/ev_acme_2", nil)
-	req.Header.Set("X-Talon-Key", "k_acme")
+	req.Header.Set("Authorization", "Bearer k_acme")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, "GET must succeed for same-tenant evidence")
@@ -1313,7 +1424,7 @@ func TestEvidenceTenantIsolation_SameTenantSucceeds(t *testing.T) {
 	assert.Equal(t, "acme", got["tenant_id"], "response must be acme's evidence")
 
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/ev_acme_2/verify", nil)
-	req.Header.Set("X-Talon-Key", "k_acme")
+	req.Header.Set("Authorization", "Bearer k_acme")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -1321,7 +1432,7 @@ func TestEvidenceTenantIsolation_SameTenantSucceeds(t *testing.T) {
 	assert.True(t, got["valid"].(bool))
 
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/timeline?around=ev_acme_2&before=1&after=1", nil)
-	req.Header.Set("X-Talon-Key", "k_acme")
+	req.Header.Set("Authorization", "Bearer k_acme")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -1366,11 +1477,11 @@ func TestEvidenceTenantIsolation_ListOnlyReturnsOwnTenant(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k_acme": "acme", "k_default": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k_acme": "acme", "k_default": "default"})
 	r := srv.Routes()
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence", nil)
-	req.Header.Set("X-Talon-Key", "k_acme")
+	req.Header.Set("Authorization", "Bearer k_acme")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -1384,7 +1495,7 @@ func TestEvidenceTenantIsolation_ListOnlyReturnsOwnTenant(t *testing.T) {
 	}
 
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence", nil)
-	req.Header.Set("X-Talon-Key", "k_default")
+	req.Header.Set("Authorization", "Bearer k_default")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -1395,6 +1506,91 @@ func TestEvidenceTenantIsolation_ListOnlyReturnsOwnTenant(t *testing.T) {
 		ent := e.(map[string]interface{})
 		assert.Equal(t, "default", ent["tenant_id"], "every list entry must be default tenant")
 	}
+}
+
+// TestEvidenceListQueryParams ensures GET /v1/evidence accepts tenant_id, agent_id, allowed, model, from, to.
+func TestEvidenceListQueryParams(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, e := range []struct {
+		id       string
+		tenantID string
+		agentID  string
+		allowed  bool
+		model    string
+	}{
+		{"ev_q1", "default", "agent-a", true, "gpt-4"},
+		{"ev_q2", "default", "agent-a", false, "gpt-4"},
+		{"ev_q3", "default", "agent-b", true, "claude-3"},
+	} {
+		err = store.Store(ctx, &evidence.Evidence{
+			ID:             e.id,
+			CorrelationID:  "c",
+			Timestamp:      now,
+			TenantID:       e.tenantID,
+			AgentID:        e.agentID,
+			InvocationType: "test",
+			PolicyDecision: evidence.PolicyDecision{Allowed: e.allowed, Action: "allow", PolicyVersion: "v1"},
+			Execution:      evidence.Execution{ModelUsed: e.model, Cost: 0.01},
+			AuditTrail:     evidence.AuditTrail{},
+		})
+		require.NoError(t, err)
+	}
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
+	r := srv.Routes()
+
+	// No filter: all 3
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var listResp map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ := listResp["entries"].([]interface{})
+	require.Len(t, entries, 3)
+
+	// allowed=false: 1
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10&allowed=false", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ = listResp["entries"].([]interface{})
+	require.Len(t, entries, 1)
+	assert.Equal(t, false, entries[0].(map[string]interface{})["allowed"])
+
+	// model=claude-3: 1
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10&model=claude-3", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ = listResp["entries"].([]interface{})
+	require.Len(t, entries, 1)
+	assert.Equal(t, "claude-3", entries[0].(map[string]interface{})["model_used"])
+
+	// agent_id=agent-b: 1
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10&agent_id=agent-b", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ = listResp["entries"].([]interface{})
+	require.Len(t, entries, 1)
+	assert.Equal(t, "agent-b", entries[0].(map[string]interface{})["agent_id"])
 }
 
 // TestEvidenceTenantIsolation_NonexistentIDReturns404 ensures that requesting a
@@ -1408,11 +1604,11 @@ func TestEvidenceTenantIsolation_NonexistentIDReturns404(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/nonexistent_id_12345", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code, "nonexistent ID must return 404")
@@ -1448,11 +1644,11 @@ func TestEvidenceTenantIsolation_ContextOverQueryParam(t *testing.T) {
 
 	// Key "k" -> default. Request list with ?tenant_id=acme (attempt to list acme).
 	// Context wins: we must see default's list, not acme's (acme would be empty).
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?tenant_id=acme", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -1474,7 +1670,7 @@ func TestChatCompletionsErrorShape(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 
 	var errBody struct {
@@ -1488,7 +1684,7 @@ func TestChatCompletionsErrorShape(t *testing.T) {
 	// Invalid JSON -> 400 with nested error
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code, "response: %s", rec.Body.String())
@@ -1500,7 +1696,7 @@ func TestChatCompletionsErrorShape(t *testing.T) {
 	// Empty messages -> 400 with nested error
 	req2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4","messages":[]}`))
 	req2.Header.Set("Content-Type", "application/json")
-	req2.Header.Set("X-Talon-Key", "k")
+	req2.Header.Set("Authorization", "Bearer k")
 	rec2 := httptest.NewRecorder()
 	r.ServeHTTP(rec2, req2)
 	assert.Equal(t, http.StatusBadRequest, rec2.Code, "response: %s", rec2.Body.String())
@@ -1515,10 +1711,10 @@ func TestCoPawStatsNoStore(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
 	require.NoError(t, err)
-	srv := NewServer(nil, nil, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/copaw/stats", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -1535,10 +1731,10 @@ func TestCoPawStatsWithStore(t *testing.T) {
 	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/copaw/stats", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -1550,14 +1746,53 @@ func TestCoPawStatsWithStore(t *testing.T) {
 	assert.NotNil(t, out["cost_month"])
 }
 
+func TestHandleTenantsSummary(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	gen := evidence.NewGenerator(store)
+	_, err = gen.Generate(context.Background(), evidence.GenerateParams{
+		CorrelationID:  "corr_ts",
+		TenantID:       "default",
+		AgentID:        "agent-1",
+		InvocationType: "manual",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		Cost:           0.1,
+		InputPrompt:    "x",
+		OutputResponse: "y",
+	})
+	require.NoError(t, err)
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
+	r := srv.Routes()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/dashboard/tenants-summary", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	tenants, _ := out["tenants"].([]interface{})
+	agents, _ := out["agents"].([]interface{})
+	require.NotNil(t, tenants)
+	require.NotNil(t, agents)
+	assert.GreaterOrEqual(t, len(tenants), 1)
+	assert.GreaterOrEqual(t, len(agents), 1)
+}
+
 func TestCoPawAlertsNoStore(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
 	require.NoError(t, err)
-	srv := NewServer(nil, nil, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/copaw/alerts", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -1589,10 +1824,10 @@ func TestCoPawAlertsWithStore(t *testing.T) {
 		InputPrompt:    "test",
 	})
 	require.NoError(t, err)
-	srv := NewServer(nil, store, nil, engine, pol, "", nil, map[string]string{"k": "default"})
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/copaw/alerts", nil)
-	req.Header.Set("X-Talon-Key", "k")
+	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)

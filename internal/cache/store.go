@@ -210,14 +210,17 @@ func (s *Store) Lookup(ctx context.Context, tenantID string, queryEmbedding []by
 
 	for rows.Next() {
 		var e Entry
-		var userID, createdAt, expiresAt, lastAccessed, sig string
+		var userID, lastAccessed sql.NullString
+		var createdAt, expiresAt, sig string
 		var embeddingData []byte
 		var piiScrubbed int
 		if err := rows.Scan(&e.ID, &e.TenantID, &userID, &e.CacheKey, &embeddingData, &e.ResponseText, &e.Model, &e.DataTier,
 			&piiScrubbed, &e.HitCount, &createdAt, &expiresAt, &lastAccessed, &sig); err != nil {
 			return nil, fmt.Errorf("scanning cache row: %w", err)
 		}
-		e.UserID = userID
+		if userID.Valid {
+			e.UserID = userID.String
+		}
 		e.EmbeddingData = embeddingData
 		e.PIIScrubbed = piiScrubbed != 0
 		e.HMACSignature = sig
@@ -227,8 +230,8 @@ func (s *Store) Lookup(ctx context.Context, tenantID string, queryEmbedding []by
 		if t, err := time.Parse(time.RFC3339, expiresAt); err == nil {
 			e.ExpiresAt = t
 		}
-		if lastAccessed != "" {
-			if t, err := time.Parse(time.RFC3339, lastAccessed); err == nil {
+		if lastAccessed.Valid && lastAccessed.String != "" {
+			if t, err := time.Parse(time.RFC3339, lastAccessed.String); err == nil {
 				e.LastAccessed = &t
 			}
 		}
@@ -256,7 +259,8 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Entry, error) {
 		 FROM semantic_cache WHERE id = ?`, id,
 	)
 	var e Entry
-	var userID, createdAt, expiresAt, lastAccessed, sig string
+	var userID, lastAccessed sql.NullString
+	var createdAt, expiresAt, sig string
 	var embeddingData []byte
 	var piiScrubbed int
 	err := row.Scan(&e.ID, &e.TenantID, &userID, &e.CacheKey, &embeddingData, &e.ResponseText, &e.Model, &e.DataTier,
@@ -267,7 +271,9 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get by id: %w", err)
 	}
-	e.UserID = userID
+	if userID.Valid {
+		e.UserID = userID.String
+	}
 	e.EmbeddingData = embeddingData
 	e.PIIScrubbed = piiScrubbed != 0
 	e.HMACSignature = sig
@@ -277,8 +283,8 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Entry, error) {
 	if t, err := time.Parse(time.RFC3339, expiresAt); err == nil {
 		e.ExpiresAt = t
 	}
-	if lastAccessed != "" {
-		if t, err := time.Parse(time.RFC3339, lastAccessed); err == nil {
+	if lastAccessed.Valid && lastAccessed.String != "" {
+		if t, err := time.Parse(time.RFC3339, lastAccessed.String); err == nil {
 			e.LastAccessed = &t
 		}
 	}

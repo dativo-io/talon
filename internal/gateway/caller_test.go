@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-func TestResolveCaller_ByAPIKey(t *testing.T) {
+func TestResolveCaller_ByTenantKey(t *testing.T) {
 	cfg := &GatewayConfig{
 		Callers: []CallerConfig{
-			{Name: "test", APIKey: "talon-gw-test-123", TenantID: "default"},
+			{Name: "test", TenantKey: "talon-gw-test-123", TenantID: "default"},
 		},
 		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(false)},
 	}
@@ -26,7 +26,7 @@ func TestResolveCaller_ByAPIKey(t *testing.T) {
 func TestResolveCaller_NotFound(t *testing.T) {
 	cfg := &GatewayConfig{
 		Callers: []CallerConfig{
-			{Name: "test", APIKey: "talon-gw-test-123", TenantID: "default"},
+			{Name: "test", TenantKey: "talon-gw-test-123", TenantID: "default"},
 		},
 		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(true)},
 	}
@@ -68,11 +68,11 @@ func TestResolveCaller_AnonymousAllowed(t *testing.T) {
 }
 
 // TestResolveCaller_AnonymousAllowed_NonMatchingKey ensures that when require_caller_id is false,
-// a request with a non-matching API key is treated as anonymous (not ErrCallerNotFound).
+// a request with a non-matching tenant key is treated as anonymous (not ErrCallerNotFound).
 func TestResolveCaller_AnonymousAllowed_NonMatchingKey(t *testing.T) {
 	cfg := &GatewayConfig{
 		Callers: []CallerConfig{
-			{Name: "known", APIKey: "talon-gw-known", TenantID: "default"},
+			{Name: "known", TenantKey: "talon-gw-known", TenantID: "default"},
 		},
 		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(false)},
 	}
@@ -89,10 +89,10 @@ func TestResolveCaller_AnonymousAllowed_NonMatchingKey(t *testing.T) {
 	}
 }
 
-func TestExtractAPIKey(t *testing.T) {
+func TestExtractTenantKey(t *testing.T) {
 	t.Run("bearer", func(t *testing.T) {
 		r := httptestNewRequest(context.Background(), "Bearer sk-abc")
-		key := extractAPIKey(r)
+		key := extractTenantKey(r)
 		if key != "sk-abc" {
 			t.Errorf("key = %q", key)
 		}
@@ -100,7 +100,7 @@ func TestExtractAPIKey(t *testing.T) {
 	t.Run("x-api-key", func(t *testing.T) {
 		r, _ := http.NewRequestWithContext(context.Background(), "POST", "/", nil)
 		r.Header.Set("x-api-key", "sk-xyz")
-		key := extractAPIKey(r)
+		key := extractTenantKey(r)
 		if key != "sk-xyz" {
 			t.Errorf("key = %q", key)
 		}

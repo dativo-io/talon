@@ -37,6 +37,10 @@ type GatewayConfig struct {
 	NetworkInterception *NetworkInterceptionConfig `yaml:"network_interception,omitempty" json:"network_interception,omitempty"`
 	// TrustedProxyCIDRs: when set, X-Forwarded-For is used for client IP only when the direct peer (RemoteAddr) is in one of these CIDRs. Prevents spoofing when gateway is not behind a trusted proxy. Empty = never trust X-Forwarded-For for source_ip.
 	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs,omitempty" json:"trusted_proxy_cidrs,omitempty"`
+	// DashboardListen is the optional separate bind address for the gateway
+	// dashboard (e.g. "127.0.0.1:9091"). When empty, routes are served on the
+	// main API server. Binding to localhost prevents accidental exposure.
+	DashboardListen string `yaml:"dashboard_listen,omitempty" json:"dashboard_listen,omitempty"`
 }
 
 // ProviderConfig holds per-provider gateway settings.
@@ -53,7 +57,7 @@ type ProviderConfig struct {
 // CallerConfig identifies an application or team that uses the gateway.
 type CallerConfig struct {
 	Name             string                 `yaml:"name" json:"name"`
-	APIKey           string                 `yaml:"api_key,omitempty" json:"api_key,omitempty"` // #nosec G117 -- auth identifier from config, not a hardcoded secret
+	TenantKey        string                 `yaml:"tenant_key,omitempty" json:"tenant_key,omitempty"` // #nosec G117 -- auth identifier from config, not a hardcoded secret
 	TenantID         string                 `yaml:"tenant_id" json:"tenant_id"`
 	Team             string                 `yaml:"team,omitempty" json:"team,omitempty"`
 	Tags             []string               `yaml:"tags,omitempty" json:"tags,omitempty"`               // e.g. ["copaw"] for OTel/dashboard classification
@@ -317,8 +321,8 @@ func (c *GatewayConfig) Validate() error {
 			if len(caller.SourceIPRanges) == 0 {
 				return fmt.Errorf("gateway caller %q: source_ip_ranges required when identify_by is source_ip", caller.Name)
 			}
-		} else if caller.APIKey == "" {
-			return fmt.Errorf("gateway caller %q: api_key or identify_by=source_ip with source_ip_ranges is required", caller.Name)
+		} else if caller.TenantKey == "" {
+			return fmt.Errorf("gateway caller %q: tenant_key or identify_by=source_ip with source_ip_ranges is required", caller.Name)
 		}
 	}
 	return nil
@@ -439,6 +443,23 @@ func (c *GatewayConfig) CallerByName(name string) *CallerConfig {
 		}
 	}
 	return nil
+}
+
+// TenantKeyMap returns a map of tenant_key -> tenant_id from configured callers.
+func (c *GatewayConfig) TenantKeyMap() map[string]string {
+	m := make(map[string]string)
+	for i := range c.Callers {
+		caller := c.Callers[i]
+		if caller.TenantKey == "" {
+			continue
+		}
+		tenantID := caller.TenantID
+		if tenantID == "" {
+			tenantID = "default"
+		}
+		m[caller.TenantKey] = tenantID
+	}
+	return m
 }
 
 // Provider returns the provider config for the given provider name (e.g. "openai", "anthropic", "ollama").

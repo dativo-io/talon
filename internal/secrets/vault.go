@@ -247,6 +247,7 @@ func (s *SecretStore) Get(ctx context.Context, name, tenantID, agentID string) (
 
 	if !acl.CheckAccess(tenantID, agentID) {
 		s.logAccess(ctx, name, tenantID, agentID, false, "ACL denied")
+		RecordSecretAccess(ctx, name, agentID, "denied")
 		span.SetStatus(codes.Error, "ACL denied")
 		return nil, fmt.Errorf("agent %s not authorized for secret %s: %w", agentID, name, ErrSecretAccessDenied)
 	}
@@ -274,6 +275,7 @@ func (s *SecretStore) Get(ctx context.Context, name, tenantID, agentID string) (
 		now, name)
 
 	s.logAccess(ctx, name, tenantID, agentID, true, "")
+	RecordSecretAccess(ctx, name, agentID, "allowed")
 
 	return &Secret{
 		Name:        name,

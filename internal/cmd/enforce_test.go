@@ -30,7 +30,7 @@ func writeTestGatewayConfig(t *testing.T, dir, mode string) string {
       base_url: "https://api.openai.com"
   callers:
     - name: "test-caller"
-      api_key: "test-key-001"
+      tenant_key: "test-key-001"
       tenant_id: "default"
   default_policy:
     default_pii_action: "warn"

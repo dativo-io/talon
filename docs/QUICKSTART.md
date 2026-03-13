@@ -32,7 +32,7 @@ export OPENAI_API_KEY=sk-proj-...
 talon run "Your query here"   # Uses agent name from policy when --agent omitted
 
 # Server (API + dashboard + optional gateway/proxy)
-export TALON_API_KEYS="your-key:default"
+export TALON_ADMIN_KEY="replace-with-strong-admin-key"
 talon serve --port 8080
 # With LLM gateway: talon serve --gateway --gateway-config examples/gateway/talon.config.gateway.yaml
 # With MCP proxy:   talon serve --proxy-config path/to/proxy.yaml

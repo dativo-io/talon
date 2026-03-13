@@ -29,7 +29,7 @@ func TestNewGateway(t *testing.T) {
 			"ollama": {Enabled: true, BaseURL: "http://localhost:11434"},
 		},
 		Callers: []CallerConfig{
-			{Name: "test", APIKey: "talon-gw-test", TenantID: "default"},
+			{Name: "test", TenantKey: "talon-gw-test", TenantID: "default"},
 		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
@@ -69,7 +69,7 @@ func TestGateway_ServeHTTP_Integration(t *testing.T) {
 		},
 		Callers: []CallerConfig{
 			{
-				Name: "test", APIKey: "talon-gw-key", TenantID: "default",
+				Name: "test", TenantKey: "talon-gw-key", TenantID: "default",
 				PolicyOverrides: &CallerPolicyOverrides{
 					AllowedModels: []string{"llama2", "gpt-4o"},
 					MaxDailyCost:  100,
@@ -127,7 +127,7 @@ func TestGateway_ServeHTTP_Unauthorized(t *testing.T) {
 			"ollama": {Enabled: true, BaseURL: "http://localhost:11434"},
 		},
 		Callers: []CallerConfig{
-			{Name: "test", APIKey: "secret", TenantID: "default"},
+			{Name: "test", TenantKey: "secret", TenantID: "default"},
 		},
 		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(true)},
 		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
@@ -161,7 +161,7 @@ func TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied(t *testing.T) {
 			"ollama": {Enabled: true, BaseURL: "http://localhost:11434"},
 		},
 		Callers: []CallerConfig{
-			{Name: "test", APIKey: "talon-gw-pii-test", TenantID: "default"},
+			{Name: "test", TenantKey: "talon-gw-pii-test", TenantID: "default"},
 		},
 		ServerDefaults: ServerDefaults{DefaultPIIAction: "block"},
 		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},

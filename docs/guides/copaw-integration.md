@@ -32,7 +32,7 @@ talon secrets set openai-api-key "sk-your-openai-key"
 talon serve --gateway
 ```
 
-Use the **same** `TALON_SECRETS_KEY` when running `talon secrets set` and `talon serve`. The **caller API key** (e.g. `talon-gw-copaw-001`) is the token CoPaw sends to Talon; it is configured in `talon.config.yaml` and in CoPaw's provider settings.
+Use the **same** `TALON_SECRETS_KEY` when running `talon secrets set` and `talon serve`. The **caller tenant key** (e.g. `talon-gw-copaw-001`) is the token CoPaw sends to Talon; it is configured in `talon.config.yaml` and set in CoPaw's provider `api_key` field.
 
 ### 3. Confirm the gateway is running
 
@@ -68,7 +68,7 @@ copaw run
 
 **Option C — CoPaw CLI / REST API:**
 
-Use `copaw providers` or the REST API to set the provider's `base_url` and `api_key` to the Talon gateway URL and caller key.
+Use `copaw providers` or the REST API to set the provider's `base_url` and `api_key` to the Talon gateway URL and caller tenant key.
 
 **Important:**
 

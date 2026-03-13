@@ -45,7 +45,7 @@ gateway:
 
   callers:
     - name: "talon-gw-crew-researcher"
-      api_key: "talon-gw-crew-researcher"
+      tenant_key: "talon-gw-crew-researcher"
       tenant_id: "default"
       team: "crewai"
       allowed_providers: ["openai"]
@@ -55,7 +55,7 @@ gateway:
         max_monthly_cost: 300.00
 
     - name: "talon-gw-crew-writer"
-      api_key: "talon-gw-crew-writer"
+      tenant_key: "talon-gw-crew-writer"
       tenant_id: "default"
       team: "crewai"
       allowed_providers: ["openai"]
@@ -65,7 +65,7 @@ gateway:
         max_monthly_cost: 300.00
 
     - name: "talon-gw-crew-reviewer"
-      api_key: "talon-gw-crew-reviewer"
+      tenant_key: "talon-gw-crew-reviewer"
       tenant_id: "default"
       team: "crewai"
       allowed_providers: ["openai"]

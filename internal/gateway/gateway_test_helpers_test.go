@@ -36,9 +36,9 @@ func setupOpenClawGateway(t *testing.T, piiAction string, upstreamHandler http.H
 		},
 		Callers: []CallerConfig{
 			{
-				Name:     "openclaw-main",
-				APIKey:   "talon-gw-openclaw-001",
-				TenantID: "test-tenant",
+				Name:      "openclaw-main",
+				TenantKey: "talon-gw-openclaw-001",
+				TenantID:  "test-tenant",
 				PolicyOverrides: &CallerPolicyOverrides{
 					PIIAction:      piiAction,
 					MaxDailyCost:   100,

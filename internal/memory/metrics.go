@@ -19,6 +19,7 @@ var (
 	consolidationNoops         metric.Int64Counter
 	consolidationInvalidations metric.Int64Counter
 	consolidationUpdates       metric.Int64Counter
+	poisoningBlocked           metric.Int64Counter
 )
 
 func init() {
@@ -74,9 +75,20 @@ func init() {
 	if err != nil {
 		consolidationUpdates, _ = meter.Int64Counter("memory.consolidation.updates.fallback")
 	}
+
+	poisoningBlocked, err = meter.Int64Counter("talon.memory.poisoning.blocked",
+		metric.WithDescription("Memory writes blocked by poisoning/governance defense"))
+	if err != nil {
+		poisoningBlocked, _ = meter.Int64Counter("talon.memory.poisoning.blocked.fallback")
+	}
 }
 
 // DedupSkipsAdd records memory writes skipped due to input-hash deduplication.
 func DedupSkipsAdd(ctx context.Context, n int64) {
 	dedupSkips.Add(ctx, n)
+}
+
+// RecordPoisoningBlocked increments the memory poisoning defense counter.
+func RecordPoisoningBlocked(ctx context.Context) {
+	poisoningBlocked.Add(ctx, 1)
 }

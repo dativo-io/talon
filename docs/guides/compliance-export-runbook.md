@@ -16,7 +16,7 @@ talon audit export --format csv --from 2026-02-01 --to 2026-02-28
 talon audit export --format json --limit 1000
 ```
 
-**API:** Authenticate with `X-Talon-Key` and call:
+**API:** Authenticate with `Authorization: Bearer <tenant-key>` (or admin key for operator workflows) and call:
 
 ```http
 POST /v1/evidence/export

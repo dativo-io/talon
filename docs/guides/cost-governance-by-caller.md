@@ -1,6 +1,6 @@
 # How to cap daily spend per team or application
 
-Use the LLM API gateway to cap daily (and optionally monthly) spend per caller (team or application). Each caller is identified by API key or source IP and can have its own limits. You can then monitor usage via the costs API or CLI.
+Use the LLM API gateway to cap daily (and optionally monthly) spend per caller (team or application). Each caller is identified by tenant key or source IP and can have its own limits. You can then monitor usage via the costs API or CLI.
 
 ---
 
@@ -24,20 +24,20 @@ gateway:
 
   callers:
     - name: "slack-bot"
-      api_key: "talon-gw-slack-abc"
+      tenant_key: "talon-gw-slack-abc"
       tenant_id: "default"
       policy_overrides:
         max_daily_cost: 15.00
         max_monthly_cost: 300.00
 
     - name: "desktop-engineering"
-      api_key: "talon-gw-eng-xyz"
+      tenant_key: "talon-gw-eng-xyz"
       tenant_id: "default"
       policy_overrides:
         max_daily_cost: 25.00
 
     - name: "ci-openai"
-      api_key: "talon-gw-ci-123"
+      tenant_key: "talon-gw-ci-123"
       tenant_id: "default"
       policy_overrides:
         max_daily_cost: 5.00
@@ -53,7 +53,7 @@ When a caller exceeds their daily or monthly limit, the gateway returns a policy
 talon serve --gateway --gateway-config=path/to/your/talon.config.yaml
 ```
 
-Ensure the real provider API keys are in the vault (e.g. `talon secrets set openai-api-key "sk-..."`). Callers only use their own gateway API keys; they never see the provider key.
+Ensure the real provider API keys are in the vault (e.g. `talon secrets set openai-api-key "sk-..."`). Callers only use their own gateway tenant keys; they never see the provider key.
 
 ---
 
@@ -61,7 +61,7 @@ Ensure the real provider API keys are in the vault (e.g. `talon secrets set open
 
 **Via API (per tenant):**
 
-- `GET /v1/costs` with `X-Talon-Key: <talon-api-key>` returns `daily` and `monthly` totals for the authenticated tenant. Gateway traffic is recorded under that tenant, so the totals include all callers in the tenant.
+- `GET /v1/costs` with `Authorization: Bearer <tenant-key>` returns `daily` and `monthly` totals for the authenticated tenant. Gateway traffic is recorded under that tenant, so the totals include all callers in the tenant.
 - `GET /v1/costs/budget` returns usage and optional limits (when set in policy).
 
 **Via CLI:**

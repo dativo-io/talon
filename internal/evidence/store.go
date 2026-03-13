@@ -138,6 +138,8 @@ type Execution struct {
 	Tokens        TokenUsage `json:"tokens"`
 	MemoryTokens  int        `json:"memory_tokens,omitempty"` // tokens injected from memory context
 	DurationMS    int64      `json:"duration_ms"`
+	TTFTMS        int64      `json:"ttft_ms,omitempty"` // time to first token (streaming)
+	TPOTMS        float64    `json:"tpot_ms,omitempty"` // time per output token (streaming)
 	Error         string     `json:"error,omitempty"`
 }
 
@@ -287,6 +289,7 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 		return fmt.Errorf("storing evidence: %w", err)
 	}
 
+	RecordEvidenceStored(ctx, ev.InvocationType)
 	return nil
 }
 
@@ -321,6 +324,7 @@ func (s *Store) StoreStep(ctx context.Context, step *StepEvidence) error {
 	if err != nil {
 		return fmt.Errorf("storing step evidence: %w", err)
 	}
+	RecordEvidenceStored(ctx, "step")
 	return nil
 }
 
@@ -517,6 +521,60 @@ func (s *Store) CacheSavings(ctx context.Context, tenantID string, from, to time
 	return hits, costSaved, nil
 }
 
+// AvgTTFT returns the average time to first token (ms) for streaming requests in the half-open range [from, to).
+// Returns 0 if no records have ttft_ms set.
+func (s *Store) AvgTTFT(ctx context.Context, tenantID, agentID string, from, to time.Time) (float64, error) {
+	query := `SELECT AVG(CAST(json_extract(evidence_json, '$.execution.ttft_ms') AS REAL)) FROM evidence WHERE tenant_id = ? AND json_extract(evidence_json, '$.execution.ttft_ms') IS NOT NULL AND CAST(json_extract(evidence_json, '$.execution.ttft_ms') AS REAL) > 0`
+	args := []interface{}{tenantID}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	var avg *float64
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&avg); err != nil {
+		return 0, fmt.Errorf("querying avg ttft: %w", err)
+	}
+	if avg == nil {
+		return 0, nil
+	}
+	return *avg, nil
+}
+
+// AvgTPOT returns the average time per output token (ms) for streaming requests in the half-open range [from, to).
+// Returns 0 if no records have tpot_ms set.
+func (s *Store) AvgTPOT(ctx context.Context, tenantID, agentID string, from, to time.Time) (float64, error) {
+	query := `SELECT AVG(CAST(json_extract(evidence_json, '$.execution.tpot_ms') AS REAL)) FROM evidence WHERE tenant_id = ? AND json_extract(evidence_json, '$.execution.tpot_ms') IS NOT NULL AND CAST(json_extract(evidence_json, '$.execution.tpot_ms') AS REAL) > 0`
+	args := []interface{}{tenantID}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	var avg *float64
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&avg); err != nil {
+		return 0, fmt.Errorf("querying avg tpot: %w", err)
+	}
+	if avg == nil {
+		return 0, nil
+	}
+	return *avg, nil
+}
+
 // CountInRange returns the number of evidence records in the half-open time range [from, to) for the tenant (and optional agent).
 // Used for rate-limit policy input (e.g. requests_last_minute).
 func (s *Store) CountInRange(ctx context.Context, tenantID, agentID string, from, to time.Time) (int, error) {
@@ -540,6 +598,258 @@ func (s *Store) CountInRange(ctx context.Context, tenantID, agentID string, from
 		return 0, fmt.Errorf("counting evidence: %w", err)
 	}
 	return n, nil
+}
+
+// ListTenantIDs returns distinct tenant IDs that have evidence in the half-open time range [from, to).
+func (s *Store) ListTenantIDs(ctx context.Context, from, to time.Time) ([]string, error) {
+	query := `SELECT DISTINCT tenant_id FROM evidence WHERE 1=1`
+	args := []interface{}{}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	query += ` ORDER BY tenant_id`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing tenant IDs: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// CountDeniedInRange returns the number of evidence records with policy_decision.allowed = false in the half-open time range [from, to).
+func (s *Store) CountDeniedInRange(ctx context.Context, tenantID, agentID string, from, to time.Time) (int, error) {
+	query := `SELECT COUNT(*) FROM evidence WHERE (json_extract(evidence_json, '$.policy_decision.allowed') = 0 OR json_extract(evidence_json, '$.policy_decision.allowed') = 0.0)`
+	args := []interface{}{}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	var n int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting denied evidence: %w", err)
+	}
+	return n, nil
+}
+
+// DenialsByReason returns counts of denied evidence by reason category (attachment_block, tool_filtered, pii_block, policy_deny) in the half-open time range [from, to).
+func (s *Store) DenialsByReason(ctx context.Context, tenantID string, from, to time.Time) (total int, byReason map[string]int, err error) {
+	byReason = map[string]int{"attachment_block": 0, "tool_filtered": 0, "pii_block": 0, "policy_deny": 0}
+	baseCond := `(json_extract(evidence_json, '$.policy_decision.allowed') = 0 OR json_extract(evidence_json, '$.policy_decision.allowed') = 0.0)`
+	runCount := func(extra string) int {
+		q := `SELECT COUNT(*) FROM evidence WHERE ` + baseCond + extra
+		args := []interface{}{}
+		if tenantID != "" {
+			q += ` AND tenant_id = ?`
+			args = append(args, tenantID)
+		}
+		if !from.IsZero() {
+			q += ` AND timestamp >= ?`
+			args = append(args, from)
+		}
+		if !to.IsZero() {
+			q += ` AND timestamp < ?`
+			args = append(args, to)
+		}
+		var n int
+		if e := s.db.QueryRowContext(ctx, q, args...).Scan(&n); e != nil {
+			return 0
+		}
+		return n
+	}
+	byReason["attachment_block"] = runCount(` AND (COALESCE(json_extract(evidence_json, '$.attachment_scan.injections_detected'), 0) > 0 OR json_extract(evidence_json, '$.attachment_scan.action_taken') = 'blocked')`)
+	byReason["tool_filtered"] = runCount(` AND json_type(json_extract(evidence_json, '$.tool_governance.tools_filtered')) = 'array' AND json_array_length(json_extract(evidence_json, '$.tool_governance.tools_filtered')) > 0`)
+	byReason["pii_block"] = runCount(` AND (json_type(json_extract(evidence_json, '$.classification.pii_detected')) = 'array' AND json_array_length(json_extract(evidence_json, '$.classification.pii_detected')) > 0)`)
+	total, err = s.CountDeniedInRange(ctx, tenantID, "", from, to)
+	if err != nil {
+		return 0, nil, err
+	}
+	other := total - byReason["attachment_block"] - byReason["tool_filtered"] - byReason["pii_block"]
+	if other > 0 {
+		byReason["policy_deny"] = other
+	}
+	return total, byReason, nil
+}
+
+// GovernanceAlert is a minimal record for the dashboard "risky tool / attachment injection" widget.
+type GovernanceAlert struct {
+	ID        string    `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	TenantID  string    `json:"tenant_id"`
+	AgentID   string    `json:"agent_id"`
+	EventType string    `json:"event_type"` // "tool_filtered" or "attachment_injection"
+}
+
+// ListGovernanceAlerts returns recent evidence records that have tool_filtered or attachment injection events (for Governance widget).
+func (s *Store) ListGovernanceAlerts(ctx context.Context, tenantID string, limit int) ([]GovernanceAlert, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	query := `SELECT id, timestamp, tenant_id, agent_id, evidence_json FROM evidence WHERE (
+		(json_type(json_extract(evidence_json, '$.tool_governance.tools_filtered')) = 'array' AND json_array_length(json_extract(evidence_json, '$.tool_governance.tools_filtered')) > 0)
+		OR (COALESCE(json_extract(evidence_json, '$.attachment_scan.injections_detected'), 0) > 0)
+	)`
+	args := []interface{}{}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	query += ` ORDER BY timestamp DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying governance alerts: %w", err)
+	}
+	defer rows.Close()
+	var out []GovernanceAlert
+	for rows.Next() {
+		var id, tenantIDOut, agentID string
+		var ts time.Time
+		var evidenceJSON string
+		if err := rows.Scan(&id, &ts, &tenantIDOut, &agentID, &evidenceJSON); err != nil {
+			continue
+		}
+		eventType := "tool_filtered"
+		var ev Evidence
+		if json.Unmarshal([]byte(evidenceJSON), &ev) == nil {
+			if ev.AttachmentScan != nil && ev.AttachmentScan.InjectionsDetected > 0 {
+				eventType = "attachment_injection"
+			} else if ev.ToolGovernance != nil && len(ev.ToolGovernance.ToolsFiltered) > 0 {
+				eventType = "tool_filtered"
+			}
+		}
+		out = append(out, GovernanceAlert{ID: id, Timestamp: ts, TenantID: tenantIDOut, AgentID: agentID, EventType: eventType})
+	}
+	return out, rows.Err()
+}
+
+type TenantSummary struct {
+	TenantID      string  `json:"tenant_id"`
+	RequestVolume int     `json:"request_volume"`
+	SpendToday    float64 `json:"spend_today"`
+	SpendMonth    float64 `json:"spend_month"`
+	Denials       int     `json:"denials"`
+}
+
+// TenantsSummary returns per-tenant aggregates for the given day and month ranges (day and month are half-open).
+// If tenantID is non-empty, only that tenant is returned.
+func (s *Store) TenantsSummary(ctx context.Context, dayStart, dayEnd, monthStart, monthEnd time.Time, tenantID string) ([]TenantSummary, error) {
+	query := `SELECT tenant_id,
+		SUM(CASE WHEN timestamp >= ? AND timestamp < ? THEN 1 ELSE 0 END),
+		SUM(CASE WHEN timestamp >= ? AND timestamp < ? THEN COALESCE(CAST(json_extract(evidence_json, '$.execution.cost') AS REAL), CAST(json_extract(evidence_json, '$.execution.cost_eur') AS REAL), 0) ELSE 0 END),
+		SUM(CASE WHEN timestamp >= ? AND timestamp < ? THEN COALESCE(CAST(json_extract(evidence_json, '$.execution.cost') AS REAL), CAST(json_extract(evidence_json, '$.execution.cost_eur') AS REAL), 0) ELSE 0 END),
+		SUM(CASE WHEN timestamp >= ? AND timestamp < ? AND (json_extract(evidence_json, '$.policy_decision.allowed') = 0 OR json_extract(evidence_json, '$.policy_decision.allowed') = 0.0) THEN 1 ELSE 0 END)
+		FROM evidence WHERE timestamp >= ? AND timestamp < ?`
+	args := []interface{}{
+		dayStart, dayEnd, dayStart, dayEnd,
+		monthStart, monthEnd,
+		dayStart, dayEnd,
+		monthStart, monthEnd,
+	}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	query += ` GROUP BY tenant_id`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying tenants summary: %w", err)
+	}
+	defer rows.Close()
+	var out []TenantSummary
+	for rows.Next() {
+		var t TenantSummary
+		if err := rows.Scan(&t.TenantID, &t.RequestVolume, &t.SpendToday, &t.SpendMonth, &t.Denials); err != nil {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// AgentSummary is a per-tenant-per-agent aggregate for the dashboard tenants-summary API.
+type AgentSummary struct {
+	TenantID string    `json:"tenant_id"`
+	AgentID  string    `json:"agent_id"`
+	Requests int       `json:"requests"`
+	CostEUR  float64   `json:"cost_eur"`
+	Blocked  int       `json:"blocked"`
+	LastRun  time.Time `json:"last_run"`
+}
+
+// AgentsSummary returns per-tenant-per-agent aggregates in the half-open time range [from, to).
+// If both from and to are zero, all evidence is included. If tenantID is non-empty, only that tenant's agents are returned.
+func (s *Store) AgentsSummary(ctx context.Context, from, to time.Time, tenantID string) ([]AgentSummary, error) {
+	query := `SELECT tenant_id, agent_id,
+		COUNT(*),
+		COALESCE(SUM(COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur'))), 0),
+		SUM(CASE WHEN (json_extract(evidence_json, '$.policy_decision.allowed') = 0 OR json_extract(evidence_json, '$.policy_decision.allowed') = 0.0) THEN 1 ELSE 0 END),
+		MAX(timestamp)
+		FROM evidence WHERE 1=1`
+	args := []interface{}{}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	query += ` GROUP BY tenant_id, agent_id ORDER BY tenant_id, agent_id`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying agents summary: %w", err)
+	}
+	defer rows.Close()
+	var out []AgentSummary
+	for rows.Next() {
+		var a AgentSummary
+		var lastRun interface{}
+		if err := rows.Scan(&a.TenantID, &a.AgentID, &a.Requests, &a.CostEUR, &a.Blocked, &lastRun); err != nil {
+			continue
+		}
+		switch v := lastRun.(type) {
+		case time.Time:
+			a.LastRun = v
+		case string:
+			if t, err := time.Parse(time.RFC3339, v); err == nil {
+				a.LastRun = t
+			} else if t, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", v); err == nil {
+				a.LastRun = t
+			}
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // CostByAgent returns cost per agent for the tenant in the half-open time range [from, to).
@@ -643,7 +953,9 @@ func (s *Store) Verify(ctx context.Context, id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return s.VerifyRecord(ev), nil
+	valid := s.VerifyRecord(ev)
+	RecordSignatureVerification(ctx, valid)
+	return valid, nil
 }
 
 // VerifyRecord checks the HMAC signature of an already-loaded Evidence.
@@ -668,28 +980,33 @@ func (s *Store) VerifyRecord(ev *Evidence) bool {
 
 // Index is a lightweight summary for progressive disclosure Layer 1.
 type Index struct {
-	ID             string    `json:"id"`
-	Timestamp      time.Time `json:"timestamp"`
-	TenantID       string    `json:"tenant_id"`
-	AgentID        string    `json:"agent_id"`
-	InvocationType string    `json:"invocation_type"`
-	Allowed        bool      `json:"allowed"`
-	Cost           float64   `json:"cost"`
-	ModelUsed      string    `json:"model_used"`
-	DurationMS     int64     `json:"duration_ms"`
-	HasError       bool      `json:"has_error"`
-	CacheHit       bool      `json:"cache_hit,omitempty"`
-	CostSaved      float64   `json:"cost_saved,omitempty"`
+	ID             string      `json:"id"`
+	Timestamp      time.Time   `json:"timestamp"`
+	TenantID       string      `json:"tenant_id"`
+	AgentID        string      `json:"agent_id"`
+	InvocationType string      `json:"invocation_type"`
+	Allowed        bool        `json:"allowed"`
+	Cost           float64     `json:"cost"`
+	ModelUsed      string      `json:"model_used"`
+	DurationMS     int64       `json:"duration_ms"`
+	HasError       bool        `json:"has_error"`
+	CacheHit       bool        `json:"cache_hit,omitempty"`
+	CostSaved      float64     `json:"cost_saved,omitempty"`
+	Compliance     *Compliance `json:"compliance,omitempty"` // Framework alignment (GDPR Art. 30, EU AI Act, etc.)
 }
 
 // ListIndex returns lightweight evidence summaries (Layer 1).
 // If invocationType is non-empty, only entries with that invocation_type are returned; limit applies after the filter.
-func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, from, to time.Time, limit int, invocationType string) ([]Index, error) {
+// allowedFilter: "true"/"1" = allowed only, "false"/"0" = denied only, "" = no filter.
+// modelFilter: exact match on execution.model_used when non-empty.
+func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, from, to time.Time, limit int, invocationType string, allowedFilter string, modelFilter string) ([]Index, error) {
 	ctx, span := tracer.Start(ctx, "evidence.list_index",
 		trace.WithAttributes(
 			attribute.String("tenant_id", tenantID),
 			attribute.String("agent_id", agentID),
 			attribute.String("invocation_type", invocationType),
+			attribute.String("allowed_filter", allowedFilter),
+			attribute.String("model_filter", modelFilter),
 		))
 	defer span.End()
 
@@ -707,6 +1024,16 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, from, t
 	if invocationType != "" {
 		query += ` AND invocation_type = ?`
 		args = append(args, invocationType)
+	}
+	switch allowedFilter {
+	case "true", "1":
+		query += ` AND (json_extract(evidence_json, '$.policy_decision.allowed') = 1 OR json_extract(evidence_json, '$.policy_decision.allowed') = 1.0)`
+	case "false", "0":
+		query += ` AND (json_extract(evidence_json, '$.policy_decision.allowed') = 0 OR json_extract(evidence_json, '$.policy_decision.allowed') = 0.0)`
+	}
+	if modelFilter != "" {
+		query += ` AND json_extract(evidence_json, '$.execution.model_used') = ?`
+		args = append(args, modelFilter)
 	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
@@ -823,7 +1150,7 @@ func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int
 
 // toIndex projects a full Evidence record into a lightweight Index.
 func toIndex(full *Evidence) Index {
-	return Index{
+	idx := Index{
 		ID:             full.ID,
 		Timestamp:      full.Timestamp,
 		TenantID:       full.TenantID,
@@ -837,4 +1164,8 @@ func toIndex(full *Evidence) Index {
 		CacheHit:       full.CacheHit,
 		CostSaved:      full.CostSaved,
 	}
+	if len(full.Compliance.Frameworks) > 0 || full.Compliance.DataLocation != "" {
+		idx.Compliance = &full.Compliance
+	}
+	return idx
 }

@@ -1,24 +1,30 @@
 # How to offer Talon to multiple customers (multi-tenant / MSP)
 
-If you are an MSP or ISV and want to offer Talon (or a compliance layer) to multiple customers, use tenant isolation, per-tenant API keys, and (optionally) gateway callers per customer. This guide gives the steps; for architecture and adoption narrative see [Adoption scenarios](../ADOPTION_SCENARIOS.md).
+If you are an MSP or ISV and want to offer Talon (or a compliance layer) to multiple customers, use tenant isolation, per-tenant tenant keys, and (optionally) multiple gateway callers per customer. This guide gives the steps; for architecture and adoption narrative see [Adoption scenarios](../ADOPTION_SCENARIOS.md).
 
 ---
 
 ## 1. Tenant isolation
 
-Talon scopes evidence and costs by **tenant**. Each customer is a tenant. You map API keys to tenants so that:
+Talon scopes evidence and costs by **tenant**. Each customer is a tenant. You map tenant keys to tenants so that:
 
 - Evidence and cost queries are scoped to the tenant.
 - One tenant cannot see or access another tenant’s data.
 
-**API keys:** Use the format `key:tenant_id` when setting `TALON_API_KEYS` (or your config equivalent). Example:
+**Tenant keys:** Define one or more `gateway.callers` entries with `tenant_key` and `tenant_id`. Example:
 
 ```bash
-# key_acme -> tenant acme, key_globex -> tenant globex
-export TALON_API_KEYS="key_acme:acme,key_globex:globex"
+gateway:
+  callers:
+    - name: "customer-acme-api"
+      tenant_key: "key_acme"
+      tenant_id: "acme"
+    - name: "customer-globex-api"
+      tenant_key: "key_globex"
+      tenant_id: "globex"
 ```
 
-When a request is made with `X-Talon-Key: key_acme`, Talon treats the tenant as `acme`. All evidence and cost APIs return only that tenant’s data.
+When a request is made with `Authorization: Bearer key_acme`, Talon treats the tenant as `acme`. Tenant-scoped evidence and cost APIs return only that tenant's data.
 
 ---
 
@@ -30,13 +36,13 @@ When using the LLM API gateway, define a caller per customer (or per application
 gateway:
   callers:
     - name: "customer-acme-app1"
-      api_key: "talon-gw-acme-abc"
+      tenant_key: "talon-gw-acme-abc"
       tenant_id: "acme"
       policy_overrides:
         max_daily_cost: 50.00
 
     - name: "customer-globex-bot"
-      api_key: "talon-gw-globex-xyz"
+      tenant_key: "talon-gw-globex-xyz"
       tenant_id: "globex"
       policy_overrides:
         max_daily_cost: 20.00
@@ -57,7 +63,7 @@ Customers use their own caller API key; they never see other customers’ keys o
 
 | Step | Action |
 |------|--------|
-| Map keys to tenants | `TALON_API_KEYS="key1:tenant1,key2:tenant2"` |
+| Map keys to tenants | `gateway.callers[]` with `tenant_key` + `tenant_id` |
 | Gateway callers | One or more callers per tenant with `tenant_id` and optional `policy_overrides` |
 | Exports | Use tenant-scoped export (API with tenant key or tenant filter) for each customer |
 

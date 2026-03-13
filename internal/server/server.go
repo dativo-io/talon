@@ -10,6 +10,7 @@ import (
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/memory"
+	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
@@ -21,25 +22,28 @@ const defaultTimeout = 60 * time.Second
 
 // Server holds all dependencies for the HTTP API and MCP endpoints.
 type Server struct {
-	router           *chi.Mux
-	runner           *agent.Runner
-	evidenceStore    *evidence.Store
-	mcpServer        http.Handler // native MCP at POST /mcp
-	mcpProxy         http.Handler // optional MCP proxy at POST /mcp/proxy
-	gateway          http.Handler // optional LLM API gateway at /v1/proxy/*
-	tenantManager    *tenant.Manager
-	webhookHandler   *trigger.WebhookHandler
-	planReviewStore  *agent.PlanReviewStore
-	memoryStore      *memory.Store
-	policyEngine     *policy.Engine
-	secretsStore     *secrets.SecretStore
-	policy           *policy.Policy
-	dashboardHTML    string
-	apiKeys          map[string]string
-	corsOrigins      []string
-	policyPath       string
-	startTime        time.Time
-	activeRunTracker *agent.ActiveRunTracker
+	router               *chi.Mux
+	runner               *agent.Runner
+	evidenceStore        *evidence.Store
+	mcpServer            http.Handler // native MCP at POST /mcp
+	mcpProxy             http.Handler // optional MCP proxy at POST /mcp/proxy
+	gateway              http.Handler // optional LLM API gateway at /v1/proxy/*
+	tenantManager        *tenant.Manager
+	webhookHandler       *trigger.WebhookHandler
+	planReviewStore      *agent.PlanReviewStore
+	memoryStore          *memory.Store
+	policyEngine         *policy.Engine
+	secretsStore         *secrets.SecretStore
+	policy               *policy.Policy
+	dashboardHTML        string
+	gatewayDashboardHTML string
+	metricsCollector     *metrics.Collector
+	adminKey             string
+	tenantKeys           map[string]string
+	corsOrigins          []string
+	policyPath           string
+	startTime            time.Time
+	activeRunTracker     *agent.ActiveRunTracker
 }
 
 // Option configures the Server.
@@ -90,6 +94,16 @@ func WithGateway(h http.Handler) Option {
 	return func(s *Server) { s.gateway = h }
 }
 
+// WithGatewayDashboard sets the embedded gateway dashboard HTML.
+func WithGatewayDashboard(html string) Option {
+	return func(s *Server) { s.gatewayDashboardHTML = html }
+}
+
+// WithMetricsCollector sets the metrics collector for the gateway dashboard API.
+func WithMetricsCollector(c *metrics.Collector) Option {
+	return func(s *Server) { s.metricsCollector = c }
+}
+
 // NewServer builds a Server with the required dependencies and optional Option(s).
 func NewServer(
 	runner *agent.Runner,
@@ -99,7 +113,8 @@ func NewServer(
 	policy *policy.Policy,
 	policyPath string,
 	secretsStore *secrets.SecretStore,
-	apiKeys map[string]string,
+	adminKey string,
+	tenantKeys map[string]string,
 	opts ...Option,
 ) *Server {
 	s := &Server{
@@ -111,15 +126,16 @@ func NewServer(
 		policy:         policy,
 		policyPath:     policyPath,
 		secretsStore:   secretsStore,
-		apiKeys:        apiKeys,
+		adminKey:       adminKey,
+		tenantKeys:     tenantKeys,
 		corsOrigins:    []string{"*"},
 		startTime:      time.Now(),
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
-	if s.apiKeys == nil {
-		s.apiKeys = make(map[string]string)
+	if s.tenantKeys == nil {
+		s.tenantKeys = make(map[string]string)
 	}
 	return s
 }
@@ -149,60 +165,14 @@ func (s *Server) Routes() http.Handler {
 		})
 	}
 
-	// Authenticated API group
+	// Tenant-only API group
 	r.Group(func(r chi.Router) {
-		r.Use(AuthMiddleware(s.apiKeys))
+		r.Use(TenantKeyMiddleware(s.tenantKeys))
 		r.Use(RateLimitMiddleware(s.tenantManager))
 
-		// Long-running: no request timeout so handler 30min deadline applies (middleware.Timeout would override)
+		// Long-running: no request timeout so handler 30min deadline applies (middleware.Timeout would override).
 		r.Post("/v1/agents/run", s.handleAgentRun)
 		r.Post("/v1/chat/completions", s.handleChatCompletions)
-
-		// Short routes: 60s request timeout
-		r.Group(func(r chi.Router) {
-			r.Use(middleware.Timeout(defaultTimeout))
-			r.Get("/v1/evidence", s.handleEvidenceList)
-			r.Get("/v1/evidence/timeline", s.handleEvidenceTimeline)
-			r.Get("/v1/evidence/{id}", s.handleEvidenceGet)
-			r.Get("/v1/evidence/{id}/verify", s.handleEvidenceVerify)
-			r.Post("/v1/evidence/export", s.handleEvidenceExport)
-
-			r.Get("/v1/status", s.handleStatus)
-			r.Get("/v1/costs", s.handleCosts)
-			r.Get("/v1/costs/budget", s.handleCostsBudget)
-
-			r.Get("/v1/secrets", s.handleSecretsList)
-			r.Get("/v1/secrets/audit", s.handleSecretsAudit)
-
-			r.Get("/v1/memory", s.handleMemoryList)
-			r.Get("/v1/memory/as-of", s.handleMemoryAsOf)
-			r.Get("/v1/memory/search", s.handleMemorySearch)
-			r.Get("/v1/memory/{id}", s.handleMemoryGet)
-			r.Get("/v1/memory/{agent_id}/review", s.handleMemoryReview)
-			r.Post("/v1/memory/{agent_id}/approve", s.handleMemoryApprove)
-
-			r.Get("/v1/triggers", s.handleTriggersList)
-			r.Get("/v1/triggers/{name}/history", s.handleTriggerHistory)
-
-			r.Get("/v1/plans/pending", s.handlePlansPending)
-			r.Get("/v1/plans/{id}", s.handlePlanGet)
-			r.Post("/v1/plans/{id}/approve", s.handlePlanApprove)
-			r.Post("/v1/plans/{id}/reject", s.handlePlanReject)
-			r.Post("/v1/plans/{id}/modify", s.handlePlanModify)
-
-			r.Get("/v1/policies", s.handlePoliciesList)
-			r.Post("/v1/policies/evaluate", s.handlePoliciesEvaluate)
-
-			// CoPaw dashboard: stats and alerts for CoPaw gateway callers
-			r.Get("/v1/copaw/stats", s.handleCoPawStats)
-			r.Get("/v1/copaw/alerts", s.handleCoPawAlerts)
-		})
-	})
-
-	// MCP (authenticated by same group in plan; but MCP clients often use separate auth — we apply auth to /mcp too)
-	r.Group(func(r chi.Router) {
-		r.Use(AuthMiddleware(s.apiKeys))
-		r.Use(RateLimitMiddleware(s.tenantManager))
 		if s.mcpServer != nil {
 			r.Post("/mcp", s.mcpServer.ServeHTTP)
 		}
@@ -211,12 +181,79 @@ func (s *Server) Routes() http.Handler {
 		}
 	})
 
+	// Tenant or admin API group (mostly read paths).
+	r.Group(func(r chi.Router) {
+		r.Use(TenantOrAdminMiddleware(s.tenantKeys, s.adminKey))
+		r.Use(RateLimitMiddleware(s.tenantManager))
+		r.Use(middleware.Timeout(defaultTimeout))
+
+		r.Get("/v1/evidence", s.handleEvidenceList)
+		r.Get("/v1/evidence/timeline", s.handleEvidenceTimeline)
+		r.Get("/v1/evidence/{id}", s.handleEvidenceGet)
+		r.Get("/v1/evidence/{id}/trace", s.handleEvidenceTrace)
+		r.Get("/v1/evidence/{id}/verify", s.handleEvidenceVerify)
+		r.Post("/v1/evidence/export", s.handleEvidenceExport)
+
+		r.Get("/v1/status", s.handleStatus)
+		r.Get("/v1/costs", s.handleCosts)
+		r.Get("/v1/costs/budget", s.handleCostsBudget)
+		r.Get("/v1/costs/report", s.handleCostsReport)
+
+		r.Get("/v1/memory", s.handleMemoryList)
+		r.Get("/v1/memory/as-of", s.handleMemoryAsOf)
+		r.Get("/v1/memory/search", s.handleMemorySearch)
+		r.Get("/v1/memory/{id}", s.handleMemoryGet)
+		r.Get("/v1/memory/{agent_id}/review", s.handleMemoryReview)
+
+		r.Get("/v1/triggers", s.handleTriggersList)
+		r.Get("/v1/triggers/{name}/history", s.handleTriggerHistory)
+
+		r.Get("/v1/plans/pending", s.handlePlansPending)
+		r.Get("/v1/plans/{id}", s.handlePlanGet)
+	})
+
+	// Admin-only API group.
+	r.Group(func(r chi.Router) {
+		r.Use(AdminKeyMiddleware(s.adminKey))
+		r.Use(middleware.Timeout(defaultTimeout))
+
+		r.Post("/v1/plans/{id}/approve", s.handlePlanApprove)
+		r.Post("/v1/plans/{id}/reject", s.handlePlanReject)
+		r.Post("/v1/plans/{id}/modify", s.handlePlanModify)
+		r.Post("/v1/memory/{agent_id}/approve", s.handleMemoryApprove)
+
+		r.Get("/v1/secrets", s.handleSecretsList)
+		r.Get("/v1/secrets/audit", s.handleSecretsAudit)
+		r.Get("/v1/policies", s.handlePoliciesList)
+		r.Post("/v1/policies/evaluate", s.handlePoliciesEvaluate)
+
+		r.Get("/v1/dashboard/tenants-summary", s.handleTenantsSummary)
+		r.Get("/v1/dashboard/denials-by-reason", s.handleDenialsByReason)
+		r.Get("/v1/dashboard/governance-alerts", s.handleGovernanceAlerts)
+		r.Get("/v1/dashboard/audit-pack", s.handleAuditPack)
+		r.Get("/v1/dashboard/review-history", s.handleReviewHistory)
+
+		// CoPaw dashboard: stats and alerts for CoPaw gateway callers.
+		r.Get("/v1/copaw/stats", s.handleCoPawStats)
+		r.Get("/v1/copaw/alerts", s.handleCoPawAlerts)
+	})
+
 	// Dashboard (no auth for same-origin MVP; optional to protect later).
 	// HEAD supported so curl -I and health checks get 200 + Content-Type without body.
 	r.Get("/", s.handleDashboard)
 	r.Get("/dashboard", s.handleDashboard)
 	r.Head("/", s.handleDashboard)
 	r.Head("/dashboard", s.handleDashboard)
+
+	// Gateway dashboard and metrics.
+	if s.metricsCollector != nil && s.gatewayDashboardHTML != "" {
+		r.Group(func(r chi.Router) {
+			r.Use(AdminKeyMiddleware(s.adminKey))
+			r.Get("/gateway/dashboard", s.handleGatewayDashboard)
+			r.Get("/api/v1/metrics", s.handleMetricsJSON)
+			r.Get("/api/v1/metrics/stream", s.handleMetricsStream)
+		})
+	}
 
 	return r
 }

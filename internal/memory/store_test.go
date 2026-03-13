@@ -1057,6 +1057,42 @@ func TestListPendingReview(t *testing.T) {
 	assert.Empty(t, other)
 }
 
+func TestCountPendingReviewForTenant(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	n, err := store.CountPendingReviewForTenant(ctx, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+
+	// One pending_review for agent1
+	e1 := Entry{
+		TenantID: "acme", AgentID: "agent1", Category: CategoryDomainKnowledge,
+		Title: "P1", Content: "c", EvidenceID: "ev1", SourceType: SourceAgentRun,
+		ReviewStatus: "pending_review",
+	}
+	require.NoError(t, store.Write(ctx, &e1))
+	n, err = store.CountPendingReviewForTenant(ctx, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	// Another tenant has none
+	n, err = store.CountPendingReviewForTenant(ctx, "other")
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+
+	// Second pending for same tenant, different agent
+	e2 := Entry{
+		TenantID: "acme", AgentID: "agent2", Category: CategoryDomainKnowledge,
+		Title: "P2", Content: "c", EvidenceID: "ev2", SourceType: SourceAgentRun,
+		ReviewStatus: "pending_review",
+	}
+	require.NoError(t, store.Write(ctx, &e2))
+	n, err = store.CountPendingReviewForTenant(ctx, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+}
+
 func TestUpdateReviewStatus(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

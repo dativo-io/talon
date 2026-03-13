@@ -125,13 +125,43 @@ When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml
 |---------|---------|
 | `gateway.mode` | `enforce`, `shadow`, or `log_only` |
 | `gateway.providers` | LLM provider connections (base URL, secret name, allowed/blocked models) |
-| `gateway.callers` | Application identities (API key, tenant, allowed providers, policy overrides) |
+| `gateway.callers` | Application identities (tenant key, tenant, allowed providers, policy overrides) |
 | `gateway.default_policy` | Server-wide defaults (PII action, cost caps, tool governance, attachment scanning) |
 | `gateway.rate_limits` | Global and per-caller request rate limits |
 | `gateway.timeouts` | Connect, request, and stream idle timeouts |
 
+### Gateway dashboard
+
+When the gateway is enabled, Talon serves a real-time metrics dashboard. Access is controlled by `TALON_ADMIN_KEY` (`X-Talon-Admin-Key` header).
+
+Dashboard endpoints:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /gateway/dashboard` | Single-page HTML dashboard with auto-refreshing charts. |
+| `GET /api/v1/metrics` | Metrics snapshot as JSON (programmatic access). |
+| `GET /api/v1/metrics/stream` | Server-Sent Events stream (one snapshot every 5 seconds). |
+
+All three endpoints require the admin key:
+
+- `X-Talon-Admin-Key: <TALON_ADMIN_KEY>` (preferred)
+- or `Authorization: Bearer <TALON_ADMIN_KEY>` (fallback)
+
+See [Gateway dashboard reference](gateway-dashboard.md) for the full API schema and snapshot field descriptions.
+
 ### Server and API
 
-- **API keys:** Set `TALON_API_KEYS` as comma-separated entries; each entry is a key or `key:tenant_id`.
+- **Admin key:** Set `TALON_ADMIN_KEY` to protect admin-only and dashboard/metrics endpoints.
+- **Tenant keys:** Configure per-caller `gateway.callers[].tenant_key` values for gateway and tenant-scoped API access.
 - **Gateway:** Enable with `--gateway` and `--gateway-config <path>`. See [How to choose your integration path](../guides/choosing-integration-path.md) and gateway guides.
 - **MCP proxy:** Enable with `--proxy-config <path>`. See [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md).
+- **Auth model:** See [Authentication and key scopes](authentication-and-key-scopes.md) for endpoint-to-key mapping (tenant keys vs admin key).
+
+### Observability
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `TALON_OTEL_ENABLED` | Enable OpenTelemetry traces and metrics export. | `false` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint (e.g. `http://localhost:4317`). | stdout |
+
+See [Observability](../OBSERVABILITY.md) for the full metrics catalogue and [examples/observability](../../examples/observability/) for a local Prometheus + Grafana stack.

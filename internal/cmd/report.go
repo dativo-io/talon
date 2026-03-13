@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/cobra"
 
+	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 )
@@ -83,6 +86,13 @@ func runReport(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "  Cache (30d):  %d from cache, €%.4f saved, %.1f%% hit rate\n", hits30d, saved30d, hitRate30d)
 	}
 
+	if avgTTFT, err := store.AvgTTFT(ctx, reportTenant, "", weekStart, todayEnd); err == nil && avgTTFT > 0 {
+		fmt.Fprintf(out, "  Avg time to first token (7d): %.0f ms\n", avgTTFT)
+	}
+	if avgTPOT, err := store.AvgTPOT(ctx, reportTenant, "", weekStart, todayEnd); err == nil && avgTPOT > 0 {
+		fmt.Fprintf(out, "  Avg time per output token (7d): %.2f ms\n", avgTPOT)
+	}
+
 	// Enriched stats over 7-day window
 	list, err := store.List(ctx, reportTenant, "", weekStart, todayEnd, 10000)
 	if err == nil && len(list) > 0 {
@@ -130,6 +140,22 @@ func runReport(cmd *cobra.Command, args []string) error {
 			sort.Strings(models)
 			for _, m := range models {
 				fmt.Fprintf(out, "    - %s: %d\n", m, modelCount[m])
+			}
+		}
+	}
+
+	planDB, err := sql.Open("sqlite3", cfg.EvidenceDBPath()+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err == nil {
+		defer planDB.Close()
+		planStore, planErr := agent.NewPlanReviewStore(planDB)
+		if planErr == nil {
+			if stats, statsErr := planStore.Stats(ctx, reportTenant); statsErr == nil {
+				fmt.Fprintf(out, "  Plans pending:           %d\n", stats.Pending)
+				fmt.Fprintf(out, "  Plans approved:          %d\n", stats.Approved)
+				fmt.Fprintf(out, "  Plans rejected:          %d\n", stats.Rejected)
+				fmt.Fprintf(out, "  Plans modified:          %d\n", stats.Modified)
+				fmt.Fprintf(out, "  Plans dispatched:        %d\n", stats.Dispatched)
+				fmt.Fprintf(out, "  Plan dispatch failures:  %d\n", stats.DispatchFailures)
 			}
 		}
 	}

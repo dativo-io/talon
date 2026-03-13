@@ -275,16 +275,17 @@ func NewRunner(cfg RunnerConfig) *Runner {
 
 // RunRequest is the input for a single agent invocation.
 type RunRequest struct {
-	TenantID        string
-	AgentName       string
-	Prompt          string
-	Attachments     []Attachment
-	InvocationType  string // "manual", "scheduled", "webhook:name"
-	DryRun          bool
-	PolicyPath      string           // explicit path to .talon.yaml
-	ToolInvocations []ToolInvocation // optional; when set, each is policy-checked and executed, and names recorded in evidence
-	SkipMemory      bool             // if true, do not write memory observation for this run (e.g. --no-memory)
-	SovereigntyMode string           // optional: eu_strict | eu_preferred | global; when set, router uses OPA routing and records RouteDecision for evidence
+	TenantID         string
+	AgentName        string
+	Prompt           string
+	Attachments      []Attachment
+	InvocationType   string // "manual", "scheduled", "webhook:name"
+	DryRun           bool
+	PolicyPath       string           // explicit path to .talon.yaml
+	ToolInvocations  []ToolInvocation // optional; when set, each is policy-checked and executed, and names recorded in evidence
+	SkipMemory       bool             // if true, do not write memory observation for this run (e.g. --no-memory)
+	SovereigntyMode  string           // optional: eu_strict | eu_preferred | global; when set, router uses OPA routing and records RouteDecision for evidence
+	BypassPlanReview bool             // internal: when true, skip plan-review gate (used by approved-plan dispatcher)
 }
 
 // ToolInvocation represents a single tool call (e.g. from MCP or a future agent loop).
@@ -461,7 +462,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	}
 
 	// Step 2: Classify input
-	inputClass := r.classifier.Scan(ctx, req.Prompt)
+	inputClass := r.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), req.Prompt)
 	inputEntityNames := entityNames(inputClass.Entities)
 	span.SetAttributes(
 		attribute.Int("classification.input_tier", inputClass.Tier),
@@ -753,7 +754,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				// Re-classify memory content to detect tier upgrades from persisted
 				// classified data — prevents sending tier-1/tier-2 memory content
 				// to a lower-tier model (data sovereignty protection).
-				memClass := r.classifier.Scan(ctx, memPrompt)
+				memClass := r.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), memPrompt)
 				if memClass.Tier > effectiveTier {
 					effectiveTier = memClass.Tier
 					span.SetAttributes(attribute.Int("classification.tier_upgraded_by_memory", effectiveTier))
@@ -1226,7 +1227,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	}
 
 	// Step 8: Classify output
-	outputClass := r.classifier.Scan(ctx, llmResp.Content)
+	outputClass := r.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), llmResp.Content)
 	outputEntityNames := entityNames(outputClass.Entities)
 
 	// Step 9: Generate evidence (attach post-request cost to routing decision when pricing table is set)
@@ -1450,7 +1451,7 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 	}
 
 	if r.classifier != nil && pol != nil && len(pol.ToolPolicies) > 0 {
-		piiResult := applyToolArgumentPII(ctx, r.classifier, tc.Name, params, pol)
+		piiResult := applyToolArgumentPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), r.classifier, tc.Name, params, pol)
 		if piiResult != nil {
 			result.PIIFindings = append(result.PIIFindings, piiResult.Findings...)
 			if piiResult.Blocked {
@@ -1511,7 +1512,7 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 
 	// Step 4: Tool-aware PII scanning on result
 	if r.classifier != nil && pol != nil && len(pol.ToolPolicies) > 0 {
-		redacted, findings := applyToolResultPII(ctx, r.classifier, tc.Name, resultStr, pol)
+		redacted, findings := applyToolResultPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), r.classifier, tc.Name, resultStr, pol)
 		result.PIIFindings = append(result.PIIFindings, findings...)
 		resultStr = redacted
 	}
@@ -1675,7 +1676,7 @@ func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *p
 			text = string(att.Content)
 		}
 		if r.classifier != nil {
-			attachClass := r.classifier.Scan(ctx, text)
+			attachClass := r.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), text)
 			if attachClass.Tier > maxAttachmentTier {
 				maxAttachmentTier = attachClass.Tier
 			}
@@ -1779,6 +1780,12 @@ func (r *Runner) applyProviderKeyFromVaultOrEnv(ctx context.Context, req *RunReq
 		secretsAccessed = append(secretsAccessed, secretName)
 		p, err := llm.NewProviderWithKey(providerName, string(secret.Value))
 		if err == nil && p != nil {
+			// Vault-created provider has no pricing table; inject so EstimateCost is non-zero.
+			if r.pricing != nil {
+				if pa, ok := p.(llm.PricingAware); ok {
+					pa.SetPricing(r.pricing)
+				}
+			}
 			resolved = p
 			return
 		}
@@ -1863,6 +1870,9 @@ func complianceFromPolicy(pol *policy.Policy) evidence.Compliance {
 // maybeGateForPlanReview runs the plan review gate; returns (response, true, nil) if execution is gated.
 // costEstimate is the pre-run cost estimate from Run() (same value used for policy input).
 func (r *Runner) maybeGateForPlanReview(ctx context.Context, pol *policy.Policy, req *RunRequest, correlationID string, dataTier int, processedPrompt string, costEstimate float64) (*RunResponse, bool, error) {
+	if req.BypassPlanReview {
+		return nil, false, nil
+	}
 	if r.planReview == nil {
 		return nil, false, nil
 	}
@@ -1887,6 +1897,8 @@ func (r *Runner) maybeGateForPlanReview(ctx context.Context, pol *policy.Policy,
 		dataTier, nil, costEstimate, "allow",
 		"", processedPrompt, timeoutMin,
 	)
+	plan.Prompt = processedPrompt
+	plan.PolicyPath = req.PolicyPath
 	if err := r.planReview.Save(ctx, plan); err != nil {
 		return nil, false, fmt.Errorf("saving plan for review: %w", err)
 	}

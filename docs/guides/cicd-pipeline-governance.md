@@ -6,17 +6,17 @@ Use Talon from GitHub Actions, GitLab CI, or any pipeline so every LLM call (e.g
 
 ## Option A: LLM API gateway (recommended for CI)
 
-The pipeline job has a **gateway caller API key**. It sends HTTP requests to your Talon server’s gateway; Talon forwards to the real provider and records evidence. No Talon binary is required in the runner.
+The pipeline job has a **gateway caller tenant key**. It sends HTTP requests to your Talon server's gateway; Talon forwards to the real provider and records evidence. No Talon binary is required in the runner.
 
 ### 1. Configure a caller for CI
 
-In your gateway config, add a caller (e.g. `ci-openai`) with a dedicated API key and cost limits:
+In your gateway config, add a caller (e.g. `ci-openai`) with a dedicated tenant key and cost limits:
 
 ```yaml
 gateway:
   callers:
     - name: "ci-openai"
-      api_key: "talon-gw-ci-secret"
+      tenant_key: "talon-gw-ci-secret"
       tenant_id: "default"
       policy_overrides:
         max_daily_cost: 5.00
@@ -62,7 +62,7 @@ Every LLM call gets an evidence ID and is stored with tenant, caller, cost, and 
 
 If the runner can call your Talon server or run the Talon binary:
 
-- **REST:** `POST https://talon.example.com/v1/chat/completions` with `X-Talon-Key: <talon-api-key>` and body `{"model":"gpt-4o","messages":[...]}`. Same evidence and cost tracking as native agents.
+- **REST:** `POST https://talon.example.com/v1/chat/completions` with `Authorization: Bearer <tenant-key>` and body `{"model":"gpt-4o","messages":[...]}`. Same evidence and cost tracking as native agents.
 - **CLI:** Install Talon on the runner and run `talon run "Summarize this PR"` with appropriate policy and secrets. Use `TALON_DATA_DIR` and vault/keys so the runner has access.
 
 Use Option B when you need full agent features (tools, memory) or when the pipeline runner is already a controlled environment with Talon installed.

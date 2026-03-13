@@ -104,7 +104,7 @@ type GatewayProvider struct {
 
 type GatewayCaller struct {
 	Name             string                  `yaml:"name"`
-	APIKey           string                  `yaml:"api_key"` //nolint:gosec // G117 — caller identifier, not a credential
+	TenantKey        string                  `yaml:"tenant_key"` //nolint:gosec // G117 — caller identifier, not a credential
 	TenantID         string                  `yaml:"tenant_id"`
 	Team             string                  `yaml:"team,omitempty"`
 	Tags             []string                `yaml:"tags,omitempty"`
@@ -207,8 +207,8 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 	fmt.Fprintln(out, "Let's configure your agent. Press Enter to accept defaults.")
 	fmt.Fprintln(out)
 
-	// Prologue
-	state.AgentName = readLine(scan, out, "Agent name", "my-agent")
+	// Prologue (agent name must match ^[a-z0-9_-]+$; we normalize so "Super" -> "super")
+	state.AgentName = normalizeAgentName(readLine(scan, out, "Agent name (a-z, 0-9, _, -)", "my-agent"))
 	state.AgentDescription = readLine(scan, out, "Description", "AI agent with policy enforcement")
 	state.OwnerEmail = readLine(scan, out, "Owner email", "")
 
@@ -480,6 +480,39 @@ func dataResidencyLabel(s string) string {
 	default:
 		return "Global"
 	}
+}
+
+// normalizeAgentName returns a value matching ^[a-z0-9_-]+$ so schema validation passes.
+// Lowercases and keeps only allowed runes; spaces become hyphens; multiple hyphens collapse.
+func normalizeAgentName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "my-agent"
+	}
+	var b strings.Builder
+	prevHyphen := false
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+			prevHyphen = false
+		case r == '-':
+			if !prevHyphen {
+				b.WriteRune(r)
+				prevHyphen = true
+			}
+		case r == ' ' || r == '\t':
+			if !prevHyphen {
+				b.WriteRune('-')
+				prevHyphen = true
+			}
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "my-agent"
+	}
+	return out
 }
 
 func readLine(scan *bufio.Scanner, out io.Writer, prompt, defaultVal string) string {
@@ -892,7 +925,7 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 			},
 			Callers: []GatewayCaller{{
 				Name:             callerName,
-				APIKey:           callerKey,
+				TenantKey:        callerKey,
 				TenantID:         tenantID,
 				Team:             "engineering",
 				Tags:             gatewayCallerTagsForPack(state.PackID),
@@ -943,9 +976,9 @@ func packRequiresGateway(packID string) bool {
 	return false
 }
 
-// gatewayCallerForPack returns the gateway caller name and API key for the given pack.
+// gatewayCallerForPack returns the gateway caller name and tenant key for the given pack.
 // Used so CoPaw gets copaw-main/talon-gw-copaw-001 and OpenClaw gets openclaw-main/talon-gw-openclaw-001.
-func gatewayCallerForPack(packID string) (name, apiKey string) {
+func gatewayCallerForPack(packID string) (name, tenantKey string) {
 	switch packID {
 	case "copaw":
 		return "copaw-main", "talon-gw-copaw-001"

@@ -258,6 +258,27 @@ func TestPrintNextSteps_OllamaSkipsProviderKey(t *testing.T) {
 	assert.Contains(t, out, "local-agent")
 }
 
+func TestNormalizeAgentName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"Super", "super"},
+		{"my-agent", "my-agent"},
+		{"My Agent", "my-agent"},
+		{"Test_Agent_01", "test_agent_01"},
+		{"", "my-agent"},
+		{"  default  ", "default"},
+		{"UPPER", "upper"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got := normalizeAgentName(tt.in)
+			assert.Equal(t, tt.want, got, "normalizeAgentName(%q)", tt.in)
+		})
+	}
+}
+
 func TestRunWizard_EOF_ReturnsAborted(t *testing.T) {
 	wio := WizardIO{
 		In:     strings.NewReader(""),
@@ -585,7 +606,7 @@ func TestBuildConfigs_OpenClawPack_EnablesGateway(t *testing.T) {
 	assert.Equal(t, "shadow", infraCfg.Gateway.Mode)
 	require.NotEmpty(t, infraCfg.Gateway.Callers)
 	assert.Equal(t, "openclaw-main", infraCfg.Gateway.Callers[0].Name)
-	assert.Equal(t, "talon-gw-openclaw-001", infraCfg.Gateway.Callers[0].APIKey)
+	assert.Equal(t, "talon-gw-openclaw-001", infraCfg.Gateway.Callers[0].TenantKey)
 	openai, ok := infraCfg.Gateway.Providers["openai"]
 	require.True(t, ok)
 	assert.True(t, openai.Enabled)

@@ -8,7 +8,7 @@ Article 14 (human oversight for high-risk AI systems).
 1. Agent receives a query and creates an execution plan
 2. Plan is held in `PENDING` state -- not executed until approved
 3. Operator reviews the plan via the dashboard or API
-4. On approval, the agent executes the plan with full evidence logging
+4. On approval, the `talon serve` auto-dispatch worker executes the plan once with full evidence logging
 
 ## Setup
 
@@ -31,11 +31,14 @@ curl http://localhost:8080/v1/plans/pending
 
 # Approve a plan
 curl -X POST http://localhost:8080/v1/plans/<plan-id>/approve \
-  -H "X-Talon-Key: your-api-key"
+  -H "X-Talon-Admin-Key: your-admin-key"
+
+# Non-serve mode: execute an approved plan manually
+talon plan execute <plan-id> --tenant default
 
 # Reject a plan
 curl -X POST http://localhost:8080/v1/plans/<plan-id>/reject \
-  -H "X-Talon-Key: your-api-key" \
+  -H "X-Talon-Admin-Key: your-admin-key" \
   -d '{"reason": "Too broad — narrow the search scope"}'
 ```
 

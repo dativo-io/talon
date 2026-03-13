@@ -31,6 +31,8 @@ type RecordGatewayEvidenceParams struct {
 	InputTokens             int
 	OutputTokens            int
 	DurationMS              int64
+	TTFTMS                  int64   // time to first token (streaming); 0 when not streaming
+	TPOTMS                  float64 // time per output token (streaming); 0 when not applicable
 	Error                   string
 	SecretsAccessed         []string // secret names only; never real keys
 	AttachmentScan          *evidence.AttachmentScan
@@ -83,6 +85,8 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			Cost:       params.Cost,
 			Tokens:     evidence.TokenUsage{Input: params.InputTokens, Output: params.OutputTokens},
 			DurationMS: params.DurationMS,
+			TTFTMS:     params.TTFTMS,
+			TPOTMS:     params.TPOTMS,
 			Error:      params.Error,
 		},
 		SecretsAccessed:         params.SecretsAccessed,

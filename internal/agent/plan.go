@@ -36,6 +36,8 @@ type ExecutionPlan struct {
 	PolicyDecision   string       `json:"policy_decision"`
 	SystemPromptHash string       `json:"system_prompt_hash"`
 	InputHash        string       `json:"input_hash"`
+	Prompt           string       `json:"prompt,omitempty"`      // canonical prompt to execute after approval
+	PolicyPath       string       `json:"policy_path,omitempty"` // resolved policy path used when plan was created
 	ReviewedBy       string       `json:"reviewed_by,omitempty"`
 	ReviewedAt       *time.Time   `json:"reviewed_at,omitempty"`
 	ReviewReason     string       `json:"review_reason,omitempty"`

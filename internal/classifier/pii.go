@@ -12,6 +12,28 @@ import (
 	talonotel "github.com/dativo-io/talon/internal/otel"
 )
 
+type piiDirectionKey struct{}
+
+const (
+	// PIIDirectionRequest marks PII scanning on inbound/request content.
+	PIIDirectionRequest = "request"
+	// PIIDirectionResponse marks PII scanning on outbound/response content.
+	PIIDirectionResponse = "response"
+)
+
+// WithPIIDirection returns a child context carrying the given PII scan direction
+// ("request" or "response"). Scan and Redact read this to attribute metrics correctly.
+func WithPIIDirection(ctx context.Context, direction string) context.Context {
+	return context.WithValue(ctx, piiDirectionKey{}, direction)
+}
+
+func piiDirection(ctx context.Context) string {
+	if v, ok := ctx.Value(piiDirectionKey{}).(string); ok && v != "" {
+		return v
+	}
+	return "unknown"
+}
+
 var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/classifier")
 
 const (
@@ -216,6 +238,7 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 			}
 			result.Entities = append(result.Entities, entity)
 			result.HasPII = true
+			RecordPIIDetection(ctx, pattern.Type, piiDirection(ctx), "detected")
 		}
 	}
 
@@ -296,6 +319,7 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 		m := merged[i]
 		placeholder := "[" + strings.ToUpper(m.ptype) + "]"
 		result = append(result[:m.start], append([]byte(placeholder), result[m.end:]...)...)
+		RecordPIIRedaction(ctx, m.ptype, piiDirection(ctx))
 	}
 
 	return string(result)

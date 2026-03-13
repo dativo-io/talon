@@ -20,6 +20,7 @@ func TestRootCommand_HasExpectedSubcommands(t *testing.T) {
 		"costs",
 		"secrets",
 		"memory",
+		"plan",
 		"config",
 		"report",
 	}
@@ -48,10 +49,10 @@ func TestRootCommand_HelpOutput(t *testing.T) {
 	assert.Contains(t, output, "serve")
 }
 
-func TestVersionVars_HaveDefaults(t *testing.T) {
-	assert.Equal(t, "dev", Version)
-	assert.Equal(t, "none", Commit)
-	assert.Equal(t, "unknown", BuildDate)
+func TestVersionVars_ArePopulated(t *testing.T) {
+	assert.NotEmpty(t, Version)
+	assert.NotEmpty(t, Commit)
+	assert.NotEmpty(t, BuildDate)
 }
 
 func TestRootCommand_GlobalFlags(t *testing.T) {

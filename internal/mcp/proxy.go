@@ -164,7 +164,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 	// PII scan on arguments
 	if h.classifier != nil {
 		argStr := string(params.Arguments)
-		result := h.classifier.Scan(ctx, argStr)
+		result := h.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
 		if result != nil && len(result.Entities) > 0 {
 			for _, e := range result.Entities {
 				proxyInput.DetectedPII = append(proxyInput.DetectedPII, e.Type)
@@ -202,7 +202,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 	if h.classifier != nil && out.Result != nil {
 		resultBytes, _ := json.Marshal(out.Result)
 		resultStr := string(resultBytes)
-		cls := h.classifier.Scan(ctx, resultStr)
+		cls := h.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
 		if cls != nil && cls.HasPII {
 			piiTypes := make([]string, 0, len(cls.Entities))
 			for _, e := range cls.Entities {
@@ -212,7 +212,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 				attribute.Bool("proxy.output_pii_detected", true),
 				attribute.StringSlice("proxy.output_pii_types", piiTypes),
 			)
-			redacted := h.classifier.Redact(ctx, resultStr)
+			redacted := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
 			var redactedResult interface{}
 			if err := json.Unmarshal([]byte(redacted), &redactedResult); err == nil {
 				out.Result = redactedResult

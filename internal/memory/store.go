@@ -791,6 +791,22 @@ func (s *Store) ListPendingReview(ctx context.Context, tenantID, agentID string,
 	return results, rows.Err()
 }
 
+// CountPendingReviewForTenant returns the number of memory entries in pending_review for the tenant (all agents).
+func (s *Store) CountPendingReviewForTenant(ctx context.Context, tenantID string) (int, error) {
+	ctx, span := tracer.Start(ctx, "memory.count_pending_review_for_tenant",
+		trace.WithAttributes(attribute.String("tenant_id", tenantID)))
+	defer span.End()
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_entries WHERE tenant_id = ? AND review_status = 'pending_review'
+		 AND COALESCE(consolidation_status, 'active') = 'active'`,
+		tenantID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting pending review for tenant: %w", err)
+	}
+	return count, nil
+}
+
 // UpdateReviewStatus sets review_status for a memory entry to "approved" or "rejected".
 func (s *Store) UpdateReviewStatus(ctx context.Context, tenantID, agentID, entryID, status string) error {
 	if status != "approved" && status != "rejected" {
