@@ -26,6 +26,7 @@ const (
 type ExecutionPlan struct {
 	ID               string       `json:"id"`
 	CorrelationID    string       `json:"correlation_id"`
+	SessionID        string       `json:"session_id,omitempty"`
 	TenantID         string       `json:"tenant_id"`
 	AgentID          string       `json:"agent_id"`
 	Status           PlanStatus   `json:"status"`

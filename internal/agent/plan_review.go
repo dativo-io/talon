@@ -432,12 +432,20 @@ func (s *PlanReviewStore) Stats(ctx context.Context, tenantID string) (PlanStats
 
 // PlanReviewConfig from .talon.yaml.
 type PlanReviewConfig struct {
-	RequireForTools bool    `yaml:"require_for_tools"`
-	RequireForTier  string  `yaml:"require_for_tier"`
-	CostThreshold   float64 `yaml:"cost_threshold"`
-	TimeoutMinutes  int     `yaml:"timeout_minutes"`
-	NotifyWebhook   string  `yaml:"notify_webhook"`
-	VolumeThreshold int     `yaml:"volume_threshold,omitempty"`
+	RequireForTools bool            `yaml:"require_for_tools"`
+	RequireForTier  string          `yaml:"require_for_tier"`
+	CostThreshold   float64         `yaml:"cost_threshold"`
+	TimeoutMinutes  int             `yaml:"timeout_minutes"`
+	NotifyWebhook   string          `yaml:"notify_webhook"`
+	VolumeThreshold int             `yaml:"volume_threshold,omitempty"`
+	Mode            string          `yaml:"mode,omitempty"` // sequential | any
+	ApprovalChain   []ApprovalLevel `yaml:"approval_chain,omitempty"`
+}
+
+type ApprovalLevel struct {
+	Role              string `yaml:"role"`
+	TimeoutMinutes    int    `yaml:"timeout_minutes,omitempty"`
+	EscalateOnTimeout bool   `yaml:"escalate_on_timeout,omitempty"`
 }
 
 // RequiresReview checks if the current request needs human review based on policy.

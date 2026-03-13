@@ -228,6 +228,8 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/v1/policies/evaluate", s.handlePoliciesEvaluate)
 
 		r.Get("/v1/dashboard/tenants-summary", s.handleTenantsSummary)
+		r.Get("/v1/dashboard/agent-health", s.handleAgentHealth)
+		r.Get("/v1/dashboard/drift-signals", s.handleDriftSignals)
 		r.Get("/v1/dashboard/denials-by-reason", s.handleDenialsByReason)
 		r.Get("/v1/dashboard/governance-alerts", s.handleGovernanceAlerts)
 		r.Get("/v1/dashboard/audit-pack", s.handleAuditPack)

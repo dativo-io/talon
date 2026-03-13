@@ -57,7 +57,7 @@ var auditVerifyCmd = &cobra.Command{
 
 var auditExportCmd = &cobra.Command{
 	Use:   "export",
-	Short: "Export evidence records as CSV, JSON, or NDJSON for compliance",
+	Short: "Export evidence records as CSV, JSON, NDJSON, or HTML for compliance",
 	RunE:  auditExport,
 }
 
@@ -66,7 +66,7 @@ func init() {
 	auditListCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
 	auditListCmd.Flags().IntVar(&auditLimit, "limit", 20, "Maximum records to show")
 
-	auditExportCmd.Flags().StringVar(&auditExportFmt, "format", "csv", "Output format: csv, json, or ndjson")
+	auditExportCmd.Flags().StringVar(&auditExportFmt, "format", "csv", "Output format: csv, json, ndjson, or html")
 	auditExportCmd.Flags().StringVar(&auditFrom, "from", "", "Start date (YYYY-MM-DD)")
 	auditExportCmd.Flags().StringVar(&auditTo, "to", "", "End date (YYYY-MM-DD)")
 	auditExportCmd.Flags().StringVar(&auditTenant, "tenant", "", "Filter by tenant ID")
@@ -214,8 +214,10 @@ func auditExport(cmd *cobra.Command, _ []string) error {
 		return renderAuditExportJSONWrapped(out, records)
 	case "ndjson":
 		return renderAuditExportNDJSON(out, records)
+	case "html":
+		return renderAuditExportHTML(out, records)
 	default:
-		return fmt.Errorf("unsupported --format %q; use csv, json, or ndjson", auditExportFmt)
+		return fmt.Errorf("unsupported --format %q; use csv, json, ndjson, or html", auditExportFmt)
 	}
 }
 
@@ -343,6 +345,29 @@ func renderAuditExportNDJSON(w io.Writer, records []evidence.ExportRecord) error
 		}
 	}
 	return nil
+}
+
+func renderAuditExportHTML(w io.Writer, records []evidence.ExportRecord) error {
+	_, err := fmt.Fprint(w, "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Talon Audit Export</title><style>body{font-family:ui-sans-serif,-apple-system,Segoe UI,sans-serif;margin:24px;color:#111}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px;font-size:13px}th{background:#f4f4f4}code{background:#f5f5f5;padding:1px 4px;border-radius:3px}.meta{color:#555}</style></head><body>")
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "<h1>Talon Audit Export</h1><p class=\"meta\">Generated: %s | Records: %d</p>", time.Now().UTC().Format(time.RFC3339), len(records))
+	if err != nil {
+		return err
+	}
+	if _, err = fmt.Fprint(w, "<table><thead><tr><th>ID</th><th>Timestamp</th><th>Tenant</th><th>Agent</th><th>Allowed</th><th>Cost(EUR)</th><th>Model</th><th>Duration(ms)</th></tr></thead><tbody>"); err != nil {
+		return err
+	}
+	for i := range records {
+		r := records[i]
+		if _, err = fmt.Fprintf(w, "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td>%t</td><td>%s</td><td>%s</td><td>%d</td></tr>",
+			r.ID, r.Timestamp.Format(time.RFC3339), r.TenantID, r.AgentID, r.Allowed, formatCostNumeric(r.Cost), r.ModelUsed, r.DurationMS); err != nil {
+			return err
+		}
+	}
+	_, err = fmt.Fprint(w, "</tbody></table></body></html>")
+	return err
 }
 
 // renderAuditList writes evidence index lines to w (testable).

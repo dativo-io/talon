@@ -14,6 +14,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/agent/tools"
+	"github.com/dativo-io/talon/internal/approver"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/classifier"
@@ -23,13 +24,16 @@ import (
 	_ "github.com/dativo-io/talon/internal/llm/providers"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/policy"
+	talonprompt "github.com/dativo-io/talon/internal/prompt"
 	"github.com/dativo-io/talon/internal/secrets"
+	talonsession "github.com/dativo-io/talon/internal/session"
 )
 
 var (
 	planTenantID     string
 	planReviewedBy   string
 	planRejectReason string
+	planApproverKey  string
 )
 
 var planCmd = &cobra.Command{
@@ -68,9 +72,11 @@ func init() {
 	planPendingCmd.Flags().StringVar(&planTenantID, "tenant", "default", "Tenant ID")
 	planApproveCmd.Flags().StringVar(&planTenantID, "tenant", "default", "Tenant ID")
 	planApproveCmd.Flags().StringVar(&planReviewedBy, "reviewed-by", "cli", "Reviewer identity")
+	planApproveCmd.Flags().StringVar(&planApproverKey, "key", "", "Approver bearer key (talon_appr_...)")
 	planRejectCmd.Flags().StringVar(&planTenantID, "tenant", "default", "Tenant ID")
 	planRejectCmd.Flags().StringVar(&planReviewedBy, "reviewed-by", "cli", "Reviewer identity")
 	planRejectCmd.Flags().StringVar(&planRejectReason, "reason", "rejected in CLI", "Rejection reason")
+	planRejectCmd.Flags().StringVar(&planApproverKey, "key", "", "Approver bearer key (talon_appr_...)")
 	planExecuteCmd.Flags().StringVar(&planTenantID, "tenant", "default", "Tenant ID")
 	planCmd.AddCommand(planPendingCmd)
 	planCmd.AddCommand(planApproveCmd)
@@ -109,12 +115,22 @@ func openPlanReviewStore() (*agent.PlanReviewStore, *evidence.Store, *sql.DB, *c
 func runPlanPending(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
-	store, evidenceStore, dbPlan, _, err := openPlanReviewStore()
+	store, evidenceStore, dbPlan, cfg, err := openPlanReviewStore()
 	if err != nil {
 		return err
 	}
 	defer evidenceStore.Close()
 	defer dbPlan.Close()
+	if planApproverKey != "" {
+		approverStore, aerr := approver.NewStore(cfg.EvidenceDBPath())
+		if aerr != nil {
+			return aerr
+		}
+		defer approverStore.Close()
+		if rec, aerr := approverStore.Resolve(ctx, planApproverKey); aerr == nil && rec != nil {
+			planReviewedBy = rec.Name
+		}
+	}
 
 	plans, err := store.GetPending(ctx, planTenantID)
 	if err != nil {
@@ -133,13 +149,30 @@ func runPlanPending(cmd *cobra.Command, _ []string) error {
 func runPlanApprove(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
-	store, evidenceStore, dbPlan, _, err := openPlanReviewStore()
+	store, evidenceStore, dbPlan, cfg, err := openPlanReviewStore()
 	if err != nil {
 		return err
 	}
 	defer evidenceStore.Close()
 	defer dbPlan.Close()
+	if planApproverKey != "" {
+		approverStore, aerr := approver.NewStore(cfg.EvidenceDBPath())
+		if aerr != nil {
+			return aerr
+		}
+		defer approverStore.Close()
+		if rec, aerr := approverStore.Resolve(ctx, planApproverKey); aerr == nil && rec != nil {
+			planReviewedBy = rec.Name
+		}
+	}
 
+	plan, err := store.Get(ctx, args[0], planTenantID)
+	if err != nil {
+		if errors.Is(err, agent.ErrPlanNotFound) {
+			return fmt.Errorf("plan %s not found for tenant %s", args[0], planTenantID)
+		}
+		return fmt.Errorf("loading plan %s: %w", args[0], err)
+	}
 	if err := store.Approve(ctx, args[0], planTenantID, planReviewedBy); err != nil {
 		if errors.Is(err, agent.ErrPlanNotFound) {
 			return fmt.Errorf("plan %s not found for tenant %s", args[0], planTenantID)
@@ -149,6 +182,28 @@ func runPlanApprove(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("approving plan %s: %w", args[0], err)
 	}
+	gen := evidence.NewGenerator(evidenceStore)
+	_, _ = gen.Generate(ctx, evidence.GenerateParams{
+		CorrelationID:  plan.CorrelationID,
+		SessionID:      plan.SessionID,
+		TenantID:       plan.TenantID,
+		AgentID:        plan.AgentID,
+		InvocationType: "plan_review",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: true,
+			Action:  "plan_approved",
+			Reasons: []string{"human_oversight"},
+		},
+		Classification: evidence.Classification{},
+		InputPrompt:    "plan_approved:" + plan.ID,
+		OutputResponse: planReviewedBy,
+		PlanReview: &evidence.PlanReviewEvent{
+			PlanID:         plan.ID,
+			EventType:      "plan_approved",
+			ReviewedBy:     planReviewedBy,
+			PreviousStatus: string(plan.Status),
+		},
+	})
 	fmt.Printf("✓ Plan approved: %s\n", args[0])
 	return nil
 }
@@ -163,6 +218,13 @@ func runPlanReject(cmd *cobra.Command, args []string) error {
 	defer evidenceStore.Close()
 	defer dbPlan.Close()
 
+	plan, err := store.Get(ctx, args[0], planTenantID)
+	if err != nil {
+		if errors.Is(err, agent.ErrPlanNotFound) {
+			return fmt.Errorf("plan %s not found for tenant %s", args[0], planTenantID)
+		}
+		return fmt.Errorf("loading plan %s: %w", args[0], err)
+	}
 	if err := store.Reject(ctx, args[0], planTenantID, planReviewedBy, planRejectReason); err != nil {
 		if errors.Is(err, agent.ErrPlanNotFound) {
 			return fmt.Errorf("plan %s not found for tenant %s", args[0], planTenantID)
@@ -172,6 +234,29 @@ func runPlanReject(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("rejecting plan %s: %w", args[0], err)
 	}
+	gen := evidence.NewGenerator(evidenceStore)
+	_, _ = gen.Generate(ctx, evidence.GenerateParams{
+		CorrelationID:  plan.CorrelationID,
+		SessionID:      plan.SessionID,
+		TenantID:       plan.TenantID,
+		AgentID:        plan.AgentID,
+		InvocationType: "plan_review",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: true,
+			Action:  "plan_rejected",
+			Reasons: []string{"human_oversight"},
+		},
+		Classification: evidence.Classification{},
+		InputPrompt:    "plan_rejected:" + plan.ID,
+		OutputResponse: planReviewedBy,
+		PlanReview: &evidence.PlanReviewEvent{
+			PlanID:         plan.ID,
+			EventType:      "plan_rejected",
+			ReviewedBy:     planReviewedBy,
+			PreviousStatus: string(plan.Status),
+			Reason:         planRejectReason,
+		},
+	})
 	fmt.Printf("✓ Plan rejected: %s\n", args[0])
 	return nil
 }
@@ -188,6 +273,16 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 	}
 	defer evidenceStore.Close()
 	defer dbPlan.Close()
+	sessionStore, err := talonsession.NewStore(cfg.EvidenceDBPath())
+	if err != nil {
+		return fmt.Errorf("initializing sessions: %w", err)
+	}
+	defer sessionStore.Close()
+	promptStore, err := talonprompt.NewStore(cfg.EvidenceDBPath())
+	if err != nil {
+		return fmt.Errorf("initializing prompt store: %w", err)
+	}
+	defer promptStore.Close()
 
 	plan, err := planReviewStore.Get(ctx, planID, planTenantID)
 	if err != nil {
@@ -258,6 +353,8 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 		Router:           router,
 		Secrets:          secretsStore,
 		Evidence:         evidenceStore,
+		SessionStore:     sessionStore,
+		PromptStore:      promptStore,
 		PlanReview:       planReviewStore,
 		ToolRegistry:     tools.NewRegistry(),
 		ActiveRunTracker: runActiveRunTracker,
@@ -293,6 +390,7 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 		TenantID:         plan.TenantID,
 		AgentName:        plan.AgentID,
 		Prompt:           plan.Prompt,
+		SessionID:        plan.SessionID,
 		InvocationType:   "plan_dispatch_manual",
 		PolicyPath:       policyPath,
 		BypassPlanReview: true,

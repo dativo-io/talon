@@ -61,6 +61,15 @@ smoke_gw_post_chat_to_file() {
     -H "Authorization: $auth" -H "Content-Type: application/json" -d "$body" 2>/dev/null
 }
 
+# Gateway POST with captured response headers and body.
+# Usage: smoke_gw_post_chat_capture base_url auth body headers_out body_out
+# Returns: HTTP status code (stdout)
+smoke_gw_post_chat_capture() {
+  local base="$1" auth="$2" body="$3" headers_out="$4" body_out="$5"
+  curl -s -D "$headers_out" -o "$body_out" -w '%{http_code}' -X POST "${base}${SMOKE_PATH_GW_PROXY}" \
+    -H "Authorization: $auth" -H "Content-Type: application/json" -d "$body" 2>/dev/null
+}
+
 # --- GET with optional auth, return HTTP status code (stdout) ---
 # Usage: smoke_get_code base_url path [auth_header]
 # Example: smoke_get_code "http://127.0.0.1:8080" "/api/v1/metrics" "Bearer token"

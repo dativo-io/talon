@@ -522,6 +522,7 @@ test_section_07_pii() {
   else
     log_failure "PII evidence check (no evidence id from audit list)" "run audit list first or check TALON_DATA_DIR"
   fi
+
   run_talon run "Reply OK. IBAN: PL61109010140000071219812874" &>/dev/null; true
   ev_id="$(run_talon audit list --limit 1 2>/dev/null | awk '/req_/{print $2; exit}')"
   if [[ -n "$ev_id" ]]; then
@@ -768,6 +769,49 @@ GWEOF
   else
     echo "  -  tenant key /v1/evidence returned $tenant_ev_code (gateway callers may not be loaded in this env)"
   fi
+  # Session lifecycle checks: create + join via API and confirm continuity.
+  local run1_headers="/tmp/talon_smoke_run1_headers.txt"
+  local run1_body="/tmp/talon_smoke_run1_body.json"
+  local run1_code run1_session run2_code run2_session run1_ev run2_ev
+  run1_code="$(curl -s -D "$run1_headers" -o "$run1_body" -w '%{http_code}' -X POST "${base_url}/v1/agents/run" \
+    -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" \
+    -H "X-Talon-Reasoning: smoke-http-session-create" \
+    -d '{"tenant_id":"default","agent_name":"default","prompt":"Session smoke create (HTTP API)","_talon_reasoning":"smoke-fallback-reasoning"}')"
+  assert_pass "POST /v1/agents/run returns 200 for session create" test "$run1_code" = "200"
+  run1_session="$(awk 'BEGIN{IGNORECASE=1} /^X-Talon-Session-ID:/ {gsub("\r","",$2); print $2; exit}' "$run1_headers" 2>/dev/null || true)"
+  if [[ -z "$run1_session" ]]; then
+    run1_session="$(jq -r '.session_id // empty' < "$run1_body" 2>/dev/null || true)"
+  fi
+  if [[ -n "$run1_session" ]]; then
+    echo "  ✓  /v1/agents/run returns session id: $run1_session"
+    record_pass
+  else
+    log_failure "/v1/agents/run should return session_id (header or body)" "headers=$(cat "$run1_headers" 2>/dev/null)"
+  fi
+  run1_ev="$(jq -r '.evidence_id // empty' < "$run1_body" 2>/dev/null || true)"
+  run2_code="$(curl -s -o /tmp/talon_smoke_run2_body.json -w '%{http_code}' -X POST "${base_url}/v1/agents/run" \
+    -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" \
+    -H "X-Talon-Session-ID: ${run1_session}" \
+    -d "{\"tenant_id\":\"default\",\"agent_name\":\"default\",\"prompt\":\"Session smoke join (HTTP API)\",\"_talon_session_id\":\"${run1_session}\"}")"
+  assert_pass "POST /v1/agents/run with session join returns 200" test "$run2_code" = "200"
+  run2_session="$(jq -r '.session_id // empty' < /tmp/talon_smoke_run2_body.json 2>/dev/null || true)"
+  if [[ -n "$run1_session" ]] && [[ -n "$run2_session" ]] && [[ "$run1_session" == "$run2_session" ]]; then
+    echo "  ✓  second /v1/agents/run joined same session id"
+    record_pass
+  else
+    log_failure "session join should preserve session_id across /v1/agents/run" "run1=$run1_session run2=$run2_session"
+  fi
+  run2_ev="$(jq -r '.evidence_id // empty' < /tmp/talon_smoke_run2_body.json 2>/dev/null || true)"
+  if [[ -n "$run1_ev" ]] && [[ -n "$run2_ev" ]]; then
+    local ev1 ev2
+    ev1="$(curl -s -H "X-Talon-Admin-Key: $admin_key" "http://127.0.0.1:8080/v1/evidence/$run1_ev")"
+    ev2="$(curl -s -H "X-Talon-Admin-Key: $admin_key" "http://127.0.0.1:8080/v1/evidence/$run2_ev")"
+    assert_pass "evidence for run1 contains matching session_id" \
+      jq -e --arg sid "$run1_session" '.session_id == $sid' <<< "$ev1" &>/dev/null
+    assert_pass "evidence for run2 contains matching session_id" \
+      jq -e --arg sid "$run1_session" '.session_id == $sid' <<< "$ev2" &>/dev/null
+  fi
+  rm -f "$run1_headers" "$run1_body" /tmp/talon_smoke_run2_body.json 2>/dev/null || true
   assert_pass "Wrong admin key → 401" test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: wrong-key" http://127.0.0.1:8080/v1/evidence)" = "401"
   # POST /mcp is tenant-only (TenantKeyMiddleware); use tenant key when available
   local mcp_resp; mcp_resp="$(curl -s -X POST -H "Authorization: Bearer $tenant_key" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' http://127.0.0.1:8080/mcp)"
@@ -839,10 +883,44 @@ GWEOF
   fi
   local gw_key="talon-gw-smoke-001"
   grep -q "talon-gw-smoke-001" "$dir/talon.config.yaml" 2>/dev/null || gw_key="$(grep -oE 'tenant_key:\s*[^[:space:]]+' "$dir/talon.config.yaml" | head -1 | sed 's/tenant_key:\s*//')"
-  local code; code="$(smoke_gw_post_chat_to_file "$gateway_base_url" "Bearer $gw_key" "$SMOKE_BODY_SIMPLE" /tmp/talon_gw_resp.json)"
+  local gw_headers="/tmp/talon_gw_headers.txt"
+  local gw_body="/tmp/talon_gw_resp.json"
+  local code; code="$(smoke_gw_post_chat_capture "$gateway_base_url" "Bearer $gw_key" "$SMOKE_BODY_SIMPLE" "$gw_headers" "$gw_body")"
   assert_pass "POST gateway chat/completions 200" test "$code" = "200"
-  assert_fail "response must not contain sk- (no API key leak)" grep -q "sk-" /tmp/talon_gw_resp.json 2>/dev/null
+  assert_fail "response must not contain sk- (no API key leak)" grep -q "sk-" "$gw_body" 2>/dev/null
+  local gw_sid
+  gw_sid="$(awk 'BEGIN{IGNORECASE=1} /^X-Talon-Session-ID:/ {gsub("\r","",$2); print $2; exit}' "$gw_headers" 2>/dev/null || true)"
+  if [[ -n "$gw_sid" ]]; then
+    echo "  ✓  gateway response includes X-Talon-Session-ID"
+    record_pass
+  else
+    log_failure "gateway should return X-Talon-Session-ID header" "headers=$(cat "$gw_headers" 2>/dev/null)"
+  fi
+  local code_join
+  code_join="$(curl -s -o /tmp/talon_gw_resp_join.json -w '%{http_code}' -X POST "${gateway_base_url}${SMOKE_PATH_GW_PROXY}" \
+    -H "Authorization: Bearer $gw_key" -H "Content-Type: application/json" -H "X-Talon-Session-ID: ${gw_sid}" -d "$SMOKE_BODY_SIMPLE" 2>/dev/null)"
+  assert_pass "POST gateway chat/completions with provided session id returns 200" test "$code_join" = "200"
+  local gw_ev_index gw_ev_id gw_sid_match=0
+  gw_ev_index="$(curl -s -H "X-Talon-Admin-Key: ${TALON_ADMIN_KEY}" "http://127.0.0.1:${gateway_port}/v1/evidence?limit=20")"
+  gw_ev_id="$(echo "$gw_ev_index" | jq -r '.entries[]? | select(.invocation_type=="gateway") | .id' | head -1)"
+  if [[ -n "$gw_sid" ]]; then
+    local evid
+    while read -r evid; do
+      [[ -z "$evid" ]] && continue
+      if curl -s -H "X-Talon-Admin-Key: ${TALON_ADMIN_KEY}" "http://127.0.0.1:${gateway_port}/v1/evidence/${evid}" | jq -e --arg sid "$gw_sid" '.session_id == $sid' >/dev/null 2>&1; then
+        gw_sid_match=1
+        break
+      fi
+    done < <(echo "$gw_ev_index" | jq -r '.entries[]? | .id')
+    if [[ "$gw_sid_match" -eq 1 ]]; then
+      echo "  ✓  gateway evidence carries provided session id"
+      record_pass
+    else
+      log_failure "gateway evidence should carry provided session id" "session_id=$gw_sid"
+    fi
+  fi
   assert_pass "Wrong gateway key → 401" test "$(smoke_gw_post_chat "$gateway_base_url" "Bearer wrong-key" "$SMOKE_BODY_EMPTY")" = "401"
+  rm -f "$gw_headers" "$gw_body" /tmp/talon_gw_resp_join.json 2>/dev/null || true
   kill "$TALON_GATEWAY_PID" 2>/dev/null || true
   wait "$TALON_GATEWAY_PID" 2>/dev/null || true
   TALON_GATEWAY_PID=""
@@ -2221,6 +2299,7 @@ PREVIEWEOF
 
   local run_json
   local run_code
+  local serve_session_id=""
   run_json="$(curl -s -o /tmp/talon_plan_run_resp.json -w '%{http_code}' -X POST "${base_url}/v1/agents/run" -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" \
     -d '{"tenant_id":"default","agent_name":"default","prompt":"Create a concise compliance rollout plan for Q3"}')"
   run_code="$run_json"
@@ -2233,6 +2312,13 @@ PREVIEWEOF
     record_pass
   else
     log_failure "API run should return plan_pending under human oversight" "json=$run_json"
+  fi
+  serve_session_id="$(echo "$run_json" | jq -r '.session_id // empty' 2>/dev/null || true)"
+  if [[ -n "$serve_session_id" ]]; then
+    echo "  ✓  API run returned session_id for plan-gated flow: $serve_session_id"
+    record_pass
+  else
+    log_failure "API run should return session_id for plan-gated flow" "json=$run_json"
   fi
   if [[ -n "$serve_plan_id" ]]; then
     local tenant_approve_code
@@ -2258,6 +2344,14 @@ PREVIEWEOF
       test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${tenant_key}" "${base_url}/v1/evidence?limit=10")" = "200"
     assert_pass "evidence index contains plan_dispatch invocation after approval" \
       bash -c "curl -s -H 'X-Talon-Admin-Key: ${admin_key}' '${base_url}/v1/evidence?limit=50' | jq -e '.entries[]? | select(.invocation_type == \"plan_dispatch\")' >/dev/null"
+    if [[ -n "$serve_session_id" ]]; then
+      local dispatch_evidence_id=""
+      dispatch_evidence_id="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=50" | jq -r '.entries[]? | select(.invocation_type=="plan_dispatch") | .id' | head -1)"
+      if [[ -n "$dispatch_evidence_id" ]]; then
+        assert_pass "plan_dispatch evidence reuses session_id from plan-gated run" \
+          jq -e --arg sid "$serve_session_id" '.session_id == $sid' <<< "$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence/${dispatch_evidence_id}")" &>/dev/null
+      fi
+    fi
   fi
 
   kill "$S_PID" 2>/dev/null || true
@@ -2388,6 +2482,33 @@ test_consistency_checks() {
   else
     echo "  -  CONSISTENCY: no evidence id available (skip evidence_id_in_export)"
     echo "[SMOKE] CONSISTENCY|evidence_id_in_export|SKIP|no_evidence_id"
+  fi
+
+  # Session consistency across the full smoke run.
+  local recent_json
+  recent_json="$(env TALON_DATA_DIR="$TALON_DATA_DIR" talon audit export --format json --from 2020-01-01 --to 2099-12-31 2>/dev/null)" || true
+  if echo "$recent_json" | jq -e '.records | type == "array"' &>/dev/null; then
+    local with_sid without_sid max_sid_count
+    with_sid="$(echo "$recent_json" | jq '[.records[] | select((.session_id // "") != "")] | length' 2>/dev/null || echo 0)"
+    without_sid="$(echo "$recent_json" | jq '[.records[] | select((.session_id // "") == "")] | length' 2>/dev/null || echo 0)"
+    max_sid_count="$(echo "$recent_json" | jq '[.records[] | select((.session_id // "") != "") | .session_id] | group_by(.) | map(length) | max // 0' 2>/dev/null || echo 0)"
+    if [[ "$with_sid" -gt 0 ]] && [[ "$without_sid" -eq 0 ]]; then
+      echo "  ✓  CONSISTENCY: all exported records include session_id"
+      echo "[SMOKE] CONSISTENCY|session_id_presence|PASS|with_sid=$with_sid without_sid=$without_sid"
+      record_pass
+    else
+      echo "  ✗  CONSISTENCY: session_id missing on some exported records"
+      echo "[SMOKE] CONSISTENCY|session_id_presence|FAIL|with_sid=$with_sid without_sid=$without_sid"
+      record_fail "CONSISTENCY: session_id_presence"
+    fi
+    if [[ "$max_sid_count" -ge 2 ]]; then
+      echo "  ✓  CONSISTENCY: at least one session links multiple records"
+      echo "[SMOKE] CONSISTENCY|session_join_behavior|PASS|max_sid_count=$max_sid_count"
+      record_pass
+    else
+      echo "  -  CONSISTENCY: no multi-record session observed in this run"
+      echo "[SMOKE] CONSISTENCY|session_join_behavior|SKIP|max_sid_count=$max_sid_count"
+    fi
   fi
 
   # export schema sanity: .records exists and is an array

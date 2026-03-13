@@ -18,6 +18,7 @@ var (
 	costsAgent   string
 	costsTenant  string
 	costsByModel bool
+	costsByTeam  bool
 )
 
 var costsCmd = &cobra.Command{
@@ -65,6 +66,18 @@ var costsCmd = &cobra.Command{
 			// Optional: 7d trend (same agent filter when --agent is set)
 			weekTotal, _ := store.CostTotal(ctx, tenantID, costsAgent, weekStart, dayEnd)
 			fmt.Fprintf(out, "  7d total: €%s\n", formatCost(weekTotal))
+			return nil
+		}
+		if costsByTeam {
+			byTeamDaily, err := store.CostByTeam(ctx, tenantID, dayStart, dayEnd)
+			if err != nil {
+				return fmt.Errorf("cost by team (daily): %w", err)
+			}
+			byTeamMonthly, err := store.CostByTeam(ctx, tenantID, monthStart, monthEnd)
+			if err != nil {
+				return fmt.Errorf("cost by team (monthly): %w", err)
+			}
+			renderCostByModel(out, tenantID, "team", byTeamDaily, byTeamMonthly)
 			return nil
 		}
 
@@ -228,4 +241,5 @@ func init() {
 	costsCmd.Flags().StringVar(&costsAgent, "agent", "", "filter by agent name")
 	costsCmd.Flags().StringVar(&costsTenant, "tenant", "", "tenant ID (default: default)")
 	costsCmd.Flags().BoolVar(&costsByModel, "by-model", false, "group output by model")
+	costsCmd.Flags().BoolVar(&costsByTeam, "by-team", false, "group output by caller team")
 }

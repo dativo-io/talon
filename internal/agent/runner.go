@@ -45,7 +45,9 @@ import (
 	talonotel "github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/pricing"
+	talonprompt "github.com/dativo-io/talon/internal/prompt"
 	"github.com/dativo-io/talon/internal/secrets"
+	talonsession "github.com/dativo-io/talon/internal/session"
 )
 
 var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/agent")
@@ -187,6 +189,8 @@ type Runner struct {
 	cacheScrubber *cache.PIIScrubber
 	cachePolicy   *cache.Evaluator
 	cacheConfig   *cacheConfig
+	sessionStore  *talonsession.Store
+	promptStore   *talonprompt.Store
 }
 
 // cacheConfig is a minimal view of cache config for the runner (avoids importing config in agent).
@@ -221,6 +225,8 @@ type RunnerConfig struct {
 	CacheScrubber *cache.PIIScrubber
 	CachePolicy   *cache.Evaluator
 	CacheConfig   *RunnerCacheConfig
+	SessionStore  *talonsession.Store
+	PromptStore   *talonprompt.Store
 }
 
 // RunnerCacheConfig is a subset of config.CacheConfig for the runner (avoids circular import).
@@ -251,6 +257,8 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		hooks:             cfg.Hooks,
 		memory:            cfg.Memory,
 		pricing:           cfg.Pricing,
+		sessionStore:      cfg.SessionStore,
+		promptStore:       cfg.PromptStore,
 	}
 	if cfg.Memory != nil && cfg.Classifier != nil {
 		r.governance = memory.NewGovernance(cfg.Memory, cfg.Classifier)
@@ -278,6 +286,9 @@ type RunRequest struct {
 	TenantID         string
 	AgentName        string
 	Prompt           string
+	AgentReasoning   string // Optional caller-provided reasoning (e.g. X-Talon-Reasoning)
+	AgentVerified    bool   // True when per-agent signature has been verified by API layer
+	SessionID        string // Optional session to join; empty means create a new one
 	Attachments      []Attachment
 	InvocationType   string // "manual", "scheduled", "webhook:name"
 	DryRun           bool
@@ -304,6 +315,7 @@ type Attachment struct {
 type RunResponse struct {
 	Response     string
 	EvidenceID   string
+	SessionID    string
 	Cost         float64
 	DurationMS   int64
 	PolicyAllow  bool
@@ -384,10 +396,27 @@ func safePolicyPathUnder(policyDir, path string) (string, error) {
 func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error) {
 	startTime := time.Now()
 	correlationID := "corr_" + uuid.New().String()[:12]
+	sessionID := req.SessionID
+	if r.sessionStore != nil {
+		if sessionID != "" {
+			if _, err := r.sessionStore.Join(ctx, sessionID, req.TenantID); err != nil {
+				sessionID = ""
+			}
+		}
+		if sessionID == "" {
+			ss, err := r.sessionStore.Create(ctx, req.TenantID, req.AgentName, req.AgentReasoning)
+			if err == nil {
+				sessionID = ss.ID
+			}
+		}
+	}
+	req.SessionID = sessionID
+	ctx = evidence.WithSessionID(ctx, sessionID)
 
 	ctx, span := tracer.Start(ctx, "agent.run",
 		trace.WithAttributes(
 			attribute.String("correlation_id", correlationID),
+			attribute.String("session_id", sessionID),
 			attribute.String("tenant_id", req.TenantID),
 			attribute.String("agent_id", req.AgentName),
 			attribute.String("invocation_type", req.InvocationType),
@@ -408,6 +437,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 
 	log.Info().
 		Str("correlation_id", correlationID).
+		Str("session_id", sessionID).
 		Str("tenant_id", req.TenantID).
 		Str("agent_id", req.AgentName).
 		Func(talonotel.LogTraceFields(ctx)).
@@ -459,6 +489,11 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("loading policy: %w", err)
+	}
+	if r.promptStore != nil && pol.Audit != nil && pol.Audit.IncludePrompts {
+		if _, err := r.promptStore.SaveIfNew(ctx, req.TenantID, req.AgentName, req.Prompt); err != nil {
+			log.Warn().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("prompt_version_store_failed")
+		}
 	}
 
 	// Step 2: Classify input
@@ -516,9 +551,11 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			Classification: evidence.Classification{InputTier: effectiveTier, PIIDetected: effectivePIINames},
 			AttachmentScan: attachmentScan,
 			InputPrompt:    req.Prompt,
+			AgentReasoning: req.AgentReasoning,
+			AgentVerified:  req.AgentVerified,
 			Compliance:     complianceFromPolicy(pol),
 		})
-		return &RunResponse{PolicyAllow: false, DenyReason: "Input contains PII (policy: block_on_pii)"}, nil
+		return &RunResponse{PolicyAllow: false, DenyReason: "Input contains PII (policy: block_on_pii)", SessionID: req.SessionID}, nil
 	}
 
 	// Step 4: Evaluate policy (with real cost totals for budget checks)
@@ -586,7 +623,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	if r.circuitBreaker != nil {
 		if cbErr := r.circuitBreaker.Check(req.TenantID, req.AgentName); cbErr != nil {
 			span.SetAttributes(attribute.String("circuit_breaker.state", "open"))
-			return &RunResponse{PolicyAllow: false, DenyReason: cbErr.Error()}, nil
+			return &RunResponse{PolicyAllow: false, DenyReason: cbErr.Error(), SessionID: req.SessionID}, nil
 		}
 	}
 
@@ -647,7 +684,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			if len(decision.Reasons) > 0 {
 				denyReason = strings.Join(decision.Reasons, "; ")
 			}
-			return &RunResponse{PolicyAllow: false, DenyReason: denyReason}, nil
+			return &RunResponse{PolicyAllow: false, DenyReason: denyReason, SessionID: req.SessionID}, nil
 		}
 	} else if r.circuitBreaker != nil {
 		r.circuitBreaker.RecordSuccess(req.TenantID, req.AgentName)
@@ -672,9 +709,11 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			AttachmentScan: attachmentScan,
 			DurationMS:     duration.Milliseconds(),
 			InputPrompt:    req.Prompt,
+			AgentReasoning: req.AgentReasoning,
+			AgentVerified:  req.AgentVerified,
 			Compliance:     complianceInfo,
 		})
-		resp := &RunResponse{PolicyAllow: true, PIIDetected: effectivePIINames, InputTier: effectiveTier}
+		resp := &RunResponse{PolicyAllow: true, PIIDetected: effectivePIINames, InputTier: effectiveTier, SessionID: req.SessionID}
 		if attachmentScan != nil {
 			resp.AttachmentInjectionsDetected = attachmentScan.InjectionsDetected
 			resp.AttachmentBlocked = len(attachmentScan.BlockedFiles) > 0
@@ -841,6 +880,8 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 		Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
 		AttachmentScan: attScan,
 		InputPrompt:    req.Prompt,
+		AgentReasoning: req.AgentReasoning,
+		AgentVerified:  req.AgentVerified,
 		Compliance:     compliance,
 	})
 }
@@ -970,7 +1011,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						PolicyDecision: policyDec, Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
 						AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
 						ModelRoutingRationale: modelRationale + " (cache hit)", DurationMS: duration.Milliseconds(),
-						SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, Compliance: compliance,
+						SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
 						ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
 						CacheHit: true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity, CostSaved: costSaved,
 						Cost: 0, Tokens: evidence.TokenUsage{}, OutputResponse: hit.ResponseText,
@@ -981,6 +1022,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						DurationMS:  duration.Milliseconds(),
 						PolicyAllow: true,
 						ModelUsed:   model,
+						SessionID:   req.SessionID,
 					}
 					if cacheEv != nil {
 						resp.EvidenceID = cacheEv.ID
@@ -1024,7 +1066,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					PolicyDecision: policyDec, Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
 					AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
 					ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(), Error: err.Error(),
-					SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, Compliance: compliance,
+					SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
 					ObservationModeOverride: observationOverride,
 					ToolsCalled:             toolsCalled, Cost: cost,
 					Tokens:          evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
@@ -1189,7 +1231,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				PolicyDecision: policyDec, Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
 				AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
 				ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(), Error: err.Error(),
-				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, Compliance: compliance,
+				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
 				ObservationModeOverride: observationOverride,
 				RoutingDecision:         evRouting,
 			})
@@ -1281,6 +1323,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		MemoryReads:             memReads,
 		MemoryTokens:            memTokens,
 		InputPrompt:             req.Prompt,
+		AgentReasoning:          req.AgentReasoning,
+		AgentVerified:           req.AgentVerified,
 		OutputResponse:          llmResp.Content,
 		AttachmentHashes:        attachmentHashesFromRequest(req),
 		Compliance:              compliance,
@@ -1311,6 +1355,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	resp := &RunResponse{
 		Response:     llmResp.Content,
 		EvidenceID:   evidenceID,
+		SessionID:    req.SessionID,
 		Cost:         cost,
 		DurationMS:   duration.Milliseconds(),
 		PolicyAllow:  true,
@@ -1322,6 +1367,9 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 
 	// Post-LLM: governed memory write
 	r.writeMemoryObservation(ctx, req, pol, policyEval, resp, ev)
+	if r.sessionStore != nil && req.SessionID != "" {
+		_ = r.sessionStore.Complete(ctx, req.SessionID, cost, totalInputTokens+totalOutputTokens)
+	}
 
 	return resp, nil
 }
@@ -1897,12 +1945,13 @@ func (r *Runner) maybeGateForPlanReview(ctx context.Context, pol *policy.Policy,
 		dataTier, nil, costEstimate, "allow",
 		"", processedPrompt, timeoutMin,
 	)
+	plan.SessionID = req.SessionID
 	plan.Prompt = processedPrompt
 	plan.PolicyPath = req.PolicyPath
 	if err := r.planReview.Save(ctx, plan); err != nil {
 		return nil, false, fmt.Errorf("saving plan for review: %w", err)
 	}
-	return &RunResponse{PolicyAllow: true, PlanPending: plan.ID}, true, nil
+	return &RunResponse{PolicyAllow: true, PlanPending: plan.ID, SessionID: req.SessionID}, true, nil
 }
 
 // fireHook is a nil-safe helper that fires a hook at the given point.

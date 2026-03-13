@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -32,9 +33,11 @@ type Store struct {
 type Evidence struct {
 	ID                      string            `json:"id"`
 	CorrelationID           string            `json:"correlation_id"`
+	SessionID               string            `json:"session_id,omitempty"`
 	Timestamp               time.Time         `json:"timestamp"`
 	TenantID                string            `json:"tenant_id"`
 	AgentID                 string            `json:"agent_id"`
+	Team                    string            `json:"team,omitempty"`
 	InvocationType          string            `json:"invocation_type"`
 	RequestSourceID         string            `json:"request_source_id,omitempty"` // Who triggered: "cli", "cron", "webhook:<name>", or caller-supplied identity (GDPR Art. 30)
 	PolicyDecision          PolicyDecision    `json:"policy_decision"`
@@ -48,16 +51,29 @@ type Evidence struct {
 	MemoryReads             []MemoryRead      `json:"memory_reads,omitempty"`
 	AuditTrail              AuditTrail        `json:"audit_trail"`
 	Compliance              Compliance        `json:"compliance"`
+	AgentReasoning          string            `json:"agent_reasoning,omitempty"`
+	AgentVerified           bool              `json:"agent_verified,omitempty"`
 	ObservationModeOverride bool              `json:"observation_mode_override,omitempty"` // True when request was allowed despite policy deny (audit-only shadow mode)
 	ShadowViolations        []ShadowViolation `json:"shadow_violations,omitempty"`         // What enforce mode would have done (populated only in shadow mode)
 	Status                  string            `json:"status,omitempty"`                    // "pending", "completed", "failed"; empty = completed (backward-compatible)
 	Signature               string            `json:"signature"`
 	RoutingDecision         *RoutingDecision  `json:"routing_decision,omitempty"` // Provider selection and rejected candidates (EU routing)
 	// Semantic cache: set when response was served from cache (Cost=0, CostSaved=estimated LLM cost).
-	CacheHit        bool    `json:"cache_hit,omitempty"`
-	CacheEntryID    string  `json:"cache_entry_id,omitempty"`
-	CacheSimilarity float64 `json:"cache_similarity,omitempty"`
-	CostSaved       float64 `json:"cost_saved,omitempty"`
+	CacheHit        bool             `json:"cache_hit,omitempty"`
+	CacheEntryID    string           `json:"cache_entry_id,omitempty"`
+	CacheSimilarity float64          `json:"cache_similarity,omitempty"`
+	CostSaved       float64          `json:"cost_saved,omitempty"`
+	PlanReview      *PlanReviewEvent `json:"plan_review,omitempty"`
+}
+
+// PlanReviewEvent captures human oversight actions performed on execution plans.
+type PlanReviewEvent struct {
+	PlanID          string `json:"plan_id"`
+	EventType       string `json:"event_type"` // "plan_approved" | "plan_rejected" | "plan_modified"
+	ReviewedBy      string `json:"reviewed_by,omitempty"`
+	PreviousStatus  string `json:"previous_status,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+	AnnotationCount int    `json:"annotation_count,omitempty"`
 }
 
 // CostEstimate holds per-request cost estimation (pre-call estimate or post-call actual).
@@ -178,6 +194,7 @@ type Compliance struct {
 type StepEvidence struct {
 	ID            string    `json:"id"`
 	CorrelationID string    `json:"correlation_id"`
+	SessionID     string    `json:"session_id,omitempty"`
 	TenantID      string    `json:"tenant_id"`
 	AgentID       string    `json:"agent_id"`
 	StepIndex     int       `json:"step_index"`
@@ -802,6 +819,20 @@ type AgentSummary struct {
 	LastRun  time.Time `json:"last_run"`
 }
 
+// AgentHealth is a derived fleet-health view for governance operations.
+type AgentHealth struct {
+	TenantID    string    `json:"tenant_id"`
+	AgentID     string    `json:"agent_id"`
+	Requests    int       `json:"requests"`
+	Blocked     int       `json:"blocked"`
+	CostEUR     float64   `json:"cost_eur"`
+	ErrorRate   float64   `json:"error_rate"`
+	BlockedRate float64   `json:"blocked_rate"`
+	RiskScore   float64   `json:"risk_score"`
+	RiskLevel   string    `json:"risk_level"` // low | medium | high
+	LastRun     time.Time `json:"last_run"`
+}
+
 // AgentsSummary returns per-tenant-per-agent aggregates in the half-open time range [from, to).
 // If both from and to are zero, all evidence is included. If tenantID is non-empty, only that tenant's agents are returned.
 func (s *Store) AgentsSummary(ctx context.Context, from, to time.Time, tenantID string) ([]AgentSummary, error) {
@@ -850,6 +881,65 @@ func (s *Store) AgentsSummary(ctx context.Context, from, to time.Time, tenantID 
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// AgentHealthSummary derives risk-oriented health rows from evidence aggregates.
+func (s *Store) AgentHealthSummary(ctx context.Context, from, to time.Time, tenantID string) ([]AgentHealth, error) {
+	agents, err := s.AgentsSummary(ctx, from, to, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AgentHealth, 0, len(agents))
+	for i := range agents {
+		a := agents[i]
+		denom := float64(a.Requests)
+		if denom <= 0 {
+			denom = 1
+		}
+		blockedRate := float64(a.Blocked) / denom
+		errQ := `SELECT COUNT(*) FROM evidence WHERE tenant_id = ? AND agent_id = ? AND json_extract(evidence_json, '$.execution.error') != ''`
+		args := []interface{}{a.TenantID, a.AgentID}
+		if !from.IsZero() {
+			errQ += ` AND timestamp >= ?`
+			args = append(args, from)
+		}
+		if !to.IsZero() {
+			errQ += ` AND timestamp < ?`
+			args = append(args, to)
+		}
+		var errorCount int
+		if err := s.db.QueryRowContext(ctx, errQ, args...).Scan(&errorCount); err != nil {
+			return nil, fmt.Errorf("querying agent error count: %w", err)
+		}
+		errorRate := float64(errorCount) / denom
+		// Weighted simple risk model tuned for explainability.
+		risk := (blockedRate * 60.0) + (errorRate * 30.0)
+		if a.CostEUR > 5 {
+			risk += 10
+		}
+		level := "low"
+		if risk >= 70 {
+			level = "high"
+		} else if risk >= 35 {
+			level = "medium"
+		}
+		out = append(out, AgentHealth{
+			TenantID:    a.TenantID,
+			AgentID:     a.AgentID,
+			Requests:    a.Requests,
+			Blocked:     a.Blocked,
+			CostEUR:     a.CostEUR,
+			ErrorRate:   errorRate,
+			BlockedRate: blockedRate,
+			RiskScore:   risk,
+			RiskLevel:   level,
+			LastRun:     a.LastRun,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].RiskScore > out[j].RiskScore
+	})
+	return out, nil
 }
 
 // CostByAgent returns cost per agent for the tenant in the half-open time range [from, to).
@@ -945,6 +1035,37 @@ func (s *Store) CostByModel(ctx context.Context, tenantID, agentID string, from,
 	}
 	span.SetAttributes(attribute.Int("model_count", len(byModel)))
 	return byModel, nil
+}
+
+// CostByTeam returns cost per team (gateway caller team) for the tenant in [from, to).
+func (s *Store) CostByTeam(ctx context.Context, tenantID string, from, to time.Time) (map[string]float64, error) {
+	query := `SELECT COALESCE(NULLIF(json_extract(evidence_json, '$.team'), ''), 'unassigned') AS team,
+		SUM(COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur'))) FROM evidence WHERE tenant_id = ?`
+	args := []interface{}{tenantID}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	query += ` GROUP BY team`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying evidence for cost by team: %w", err)
+	}
+	defer rows.Close()
+	byTeam := map[string]float64{}
+	for rows.Next() {
+		var team string
+		var total float64
+		if err := rows.Scan(&team, &total); err != nil {
+			continue
+		}
+		byTeam[team] = total
+	}
+	return byTeam, rows.Err()
 }
 
 // Verify checks the HMAC signature integrity of an evidence record.

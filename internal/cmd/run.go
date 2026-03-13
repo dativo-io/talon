@@ -26,7 +26,9 @@ import (
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/pricing"
+	talonprompt "github.com/dativo-io/talon/internal/prompt"
 	"github.com/dativo-io/talon/internal/secrets"
+	talonsession "github.com/dativo-io/talon/internal/session"
 )
 
 var (
@@ -144,6 +146,16 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("initializing evidence: %w", err)
 	}
 	defer evidenceStore.Close()
+	sessionStore, err := talonsession.NewStore(cfg.EvidenceDBPath())
+	if err != nil {
+		return fmt.Errorf("initializing sessions: %w", err)
+	}
+	defer sessionStore.Close()
+	promptStore, err := talonprompt.NewStore(cfg.EvidenceDBPath())
+	if err != nil {
+		return fmt.Errorf("initializing prompt store: %w", err)
+	}
+	defer promptStore.Close()
 
 	var planReviewStore *agent.PlanReviewStore
 	dbPlan, err := sql.Open("sqlite3", cfg.EvidenceDBPath()+"?_journal_mode=WAL&_busy_timeout=5000")
@@ -175,6 +187,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		Secrets:          secretsStore,
 		Evidence:         evidenceStore,
 		PlanReview:       planReviewStore,
+		SessionStore:     sessionStore,
+		PromptStore:      promptStore,
 		ToolRegistry:     tools.NewRegistry(),
 		ActiveRunTracker: runActiveRunTracker,
 		Memory:           memStore,

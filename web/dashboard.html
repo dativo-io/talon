@@ -542,7 +542,17 @@
       }
 
       function renderTenants() {
-        get('/v1/dashboard/tenants-summary').then(function(d) {
+        Promise.all([get('/v1/dashboard/tenants-summary'), get('/v1/dashboard/drift-signals')]).then(function(res) {
+          var d = res[0] || {};
+          var drift = res[1] || {};
+          var riskByAgent = {};
+          (drift.agents || []).forEach(function(a) {
+            var maxZ = 0;
+            (a.signals || []).forEach(function(s) { maxZ = Math.max(maxZ, Math.abs(s.z_score || 0)); });
+            if (maxZ >= 2) riskByAgent[a.agent_id] = 'high';
+            else if (maxZ >= 1) riskByAgent[a.agent_id] = 'medium';
+            else riskByAgent[a.agent_id] = 'low';
+          });
           var container = document.getElementById('tenant-cards');
           if (container) {
             container.innerHTML = '';
@@ -569,7 +579,7 @@
             (d.agents || []).forEach(function(a) {
               var tr = document.createElement('tr');
               var lastRun = a.last_run ? new Date(a.last_run).toLocaleString() : '—';
-              var risk = (a.blocked != null && a.blocked > 0) ? 'elevated' : '—';
+              var risk = riskByAgent[a.agent_id] || ((a.blocked != null && a.blocked > 0) ? 'elevated' : 'low');
               var owner = a.owner != null ? a.owner : '—';
               var tier = a.model_tier != null ? a.model_tier : '—';
               tr.innerHTML = '<td>' + escapeHtml(a.tenant_id || '—') + '</td><td>' + escapeHtml(a.agent_id || '—') + '</td><td>' + escapeHtml(owner) + '</td><td>' + (a.requests != null ? a.requests : '—') + '</td><td>' + (a.cost_eur != null ? a.cost_eur.toFixed(4) : '—') + '</td><td>' + (a.blocked != null ? a.blocked : '—') + '</td><td>' + escapeHtml(risk) + '</td><td>' + escapeHtml(lastRun) + '</td>';

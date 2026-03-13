@@ -12,6 +12,7 @@ import (
 // RecordGatewayEvidenceParams holds all inputs for a gateway evidence record.
 type RecordGatewayEvidenceParams struct {
 	CorrelationID           string
+	SessionID               string
 	TenantID                string
 	CallerName              string
 	Team                    string
@@ -44,6 +45,7 @@ type RecordGatewayEvidenceParams struct {
 	CacheEntryID    string
 	CacheSimilarity float64
 	CostSaved       float64
+	AgentReasoning  string
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -61,9 +63,11 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 	ev := &evidence.Evidence{
 		ID:              "gw_" + uuid.New().String()[:12],
 		CorrelationID:   params.CorrelationID,
+		SessionID:       params.SessionID,
 		Timestamp:       time.Now(),
 		TenantID:        params.TenantID,
 		AgentID:         params.CallerName,
+		Team:            params.Team,
 		InvocationType:  "gateway",
 		RequestSourceID: params.CallerName,
 		PolicyDecision: evidence.PolicyDecision{
@@ -96,6 +100,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		ShadowViolations:        params.ShadowViolations,
 		AuditTrail:              evidence.AuditTrail{},
 		Compliance:              evidence.Compliance{},
+		AgentReasoning:          params.AgentReasoning,
 		CacheHit:                params.CacheHit,
 		CacheEntryID:            params.CacheEntryID,
 		CacheSimilarity:         params.CacheSimilarity,
