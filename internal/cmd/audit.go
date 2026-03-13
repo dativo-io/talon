@@ -5,7 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"html"
+	"html/template"
 	"io"
 	"os"
 	"strconv"
@@ -349,26 +349,99 @@ func renderAuditExportNDJSON(w io.Writer, records []evidence.ExportRecord) error
 }
 
 func renderAuditExportHTML(w io.Writer, records []evidence.ExportRecord) error {
-	_, err := fmt.Fprint(w, "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Talon Audit Export</title><style>body{font-family:ui-sans-serif,-apple-system,Segoe UI,sans-serif;margin:24px;color:#111}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px;font-size:13px}th{background:#f4f4f4}code{background:#f5f5f5;padding:1px 4px;border-radius:3px}.meta{color:#555}</style></head><body>")
-	if err != nil {
-		return err
+	const exportTpl = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Talon Audit Export</title>
+  <style>
+    body{font-family:ui-sans-serif,-apple-system,Segoe UI,sans-serif;margin:24px;color:#111}
+    table{border-collapse:collapse;width:100%}
+    th,td{border:1px solid #ddd;padding:8px;font-size:13px}
+    th{background:#f4f4f4}
+    code{background:#f5f5f5;padding:1px 4px;border-radius:3px}
+    .meta{color:#555}
+  </style>
+</head>
+<body>
+  <h1>Talon Audit Export</h1>
+  <p class="meta">Generated: {{ .Generated }} | Records: {{ .RecordCount }}</p>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Timestamp</th>
+        <th>Tenant</th>
+        <th>Agent</th>
+        <th>Allowed</th>
+        <th>Cost(EUR)</th>
+        <th>Model</th>
+        <th>Duration(ms)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{- range .Rows }}
+      <tr>
+        <td><code>{{ .ID }}</code></td>
+        <td>{{ .Timestamp }}</td>
+        <td>{{ .TenantID }}</td>
+        <td>{{ .AgentID }}</td>
+        <td>{{ .Allowed }}</td>
+        <td>{{ .Cost }}</td>
+        <td>{{ .ModelUsed }}</td>
+        <td>{{ .DurationMS }}</td>
+      </tr>
+      {{- end }}
+    </tbody>
+  </table>
+</body>
+</html>`
+
+	type row struct {
+		ID         string
+		Timestamp  string
+		TenantID   string
+		AgentID    string
+		Allowed    bool
+		Cost       string
+		ModelUsed  string
+		DurationMS int64
 	}
-	_, err = fmt.Fprintf(w, "<h1>Talon Audit Export</h1><p class=\"meta\">Generated: %s | Records: %d</p>", time.Now().UTC().Format(time.RFC3339), len(records))
-	if err != nil {
-		return err
+	type viewData struct {
+		Generated  string
+		RecordCount int
+		Rows       []row
 	}
-	if _, err = fmt.Fprint(w, "<table><thead><tr><th>ID</th><th>Timestamp</th><th>Tenant</th><th>Agent</th><th>Allowed</th><th>Cost(EUR)</th><th>Model</th><th>Duration(ms)</th></tr></thead><tbody>"); err != nil {
-		return err
-	}
+
+	rows := make([]row, 0, len(records))
 	for i := range records {
 		r := records[i]
-		if _, err = fmt.Fprintf(w, "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td>%t</td><td>%s</td><td>%s</td><td>%d</td></tr>",
-			html.EscapeString(r.ID), r.Timestamp.Format(time.RFC3339), html.EscapeString(r.TenantID), html.EscapeString(r.AgentID), r.Allowed, formatCostNumeric(r.Cost), html.EscapeString(r.ModelUsed), r.DurationMS); err != nil {
-			return err
-		}
+		rows = append(rows, row{
+			ID:         r.ID,
+			Timestamp:  r.Timestamp.Format(time.RFC3339),
+			TenantID:   r.TenantID,
+			AgentID:    r.AgentID,
+			Allowed:    r.Allowed,
+			Cost:       formatCostNumeric(r.Cost),
+			ModelUsed:  r.ModelUsed,
+			DurationMS: r.DurationMS,
+		})
 	}
-	_, err = fmt.Fprint(w, "</tbody></table></body></html>")
-	return err
+
+	tpl, err := template.New("audit_export").Parse(exportTpl)
+	if err != nil {
+		return fmt.Errorf("parsing audit export html template: %w", err)
+	}
+
+	data := viewData{
+		Generated:  time.Now().UTC().Format(time.RFC3339),
+		RecordCount: len(records),
+		Rows:       rows,
+	}
+	if err := tpl.Execute(w, data); err != nil {
+		return fmt.Errorf("rendering audit export html: %w", err)
+	}
+	return nil
 }
 
 // renderAuditList writes evidence index lines to w (testable).
