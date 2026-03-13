@@ -408,9 +408,9 @@ func renderAuditExportHTML(w io.Writer, records []evidence.ExportRecord) error {
 		DurationMS int64
 	}
 	type viewData struct {
-		Generated  string
+		Generated   string
 		RecordCount int
-		Rows       []row
+		Rows        []row
 	}
 
 	rows := make([]row, 0, len(records))
@@ -434,9 +434,9 @@ func renderAuditExportHTML(w io.Writer, records []evidence.ExportRecord) error {
 	}
 
 	data := viewData{
-		Generated:  time.Now().UTC().Format(time.RFC3339),
+		Generated:   time.Now().UTC().Format(time.RFC3339),
 		RecordCount: len(records),
-		Rows:       rows,
+		Rows:        rows,
 	}
 	if err := tpl.Execute(w, data); err != nil {
 		return fmt.Errorf("rendering audit export html: %w", err)

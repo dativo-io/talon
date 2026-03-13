@@ -77,8 +77,8 @@ var costsCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("cost by team (monthly): %w", err)
 			}
-		renderCostByTeam(out, tenantID, byTeamDaily, byTeamMonthly)
-		return nil
+			renderCostByTeam(out, tenantID, byTeamDaily, byTeamMonthly)
+			return nil
 		}
 
 		if costsAgent != "" {
