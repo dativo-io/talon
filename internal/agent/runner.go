@@ -1780,6 +1780,12 @@ func (r *Runner) applyProviderKeyFromVaultOrEnv(ctx context.Context, req *RunReq
 		secretsAccessed = append(secretsAccessed, secretName)
 		p, err := llm.NewProviderWithKey(providerName, string(secret.Value))
 		if err == nil && p != nil {
+			// Vault-created provider has no pricing table; inject so EstimateCost is non-zero.
+			if r.pricing != nil {
+				if pa, ok := p.(llm.PricingAware); ok {
+					pa.SetPricing(r.pricing)
+				}
+			}
 			resolved = p
 			return
 		}

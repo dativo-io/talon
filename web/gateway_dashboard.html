@@ -190,15 +190,25 @@
 (function() {
   'use strict';
 
+  // Unified auth with main dashboard: ?token= sets window.TALON_ADMIN_KEY, then we remove it from the URL.
+  var params = new URLSearchParams(window.location.search);
+  var tokenFromUrl = params.get('token');
+  if (tokenFromUrl) {
+    window.TALON_ADMIN_KEY = tokenFromUrl;
+    var cleanUrl = window.location.pathname + (window.location.hash || '');
+    if (window.history && window.history.replaceState) window.history.replaceState(null, '', cleanUrl);
+  }
+
   var eventSource = null;
   var pollTimer = null;
   var lastUpdateAt = 0;
   var sseWatchdog = null;
 
+  function authToken() { return window.TALON_ADMIN_KEY || ''; }
+
   function startSSE() {
     var url = '/api/v1/metrics/stream';
-    var params = new URLSearchParams(window.location.search);
-    if (params.get('token')) url += '?token=' + encodeURIComponent(params.get('token'));
+    if (authToken()) url += '?token=' + encodeURIComponent(authToken());
 
     eventSource = new EventSource(url);
     eventSource.onopen = function() {
@@ -227,8 +237,7 @@
 
   function fetchMetrics() {
     var url = '/api/v1/metrics';
-    var params = new URLSearchParams(window.location.search);
-    if (params.get('token')) url += '?token=' + encodeURIComponent(params.get('token'));
+    if (authToken()) url += '?token=' + encodeURIComponent(authToken());
 
     fetch(url)
       .then(function(r) {

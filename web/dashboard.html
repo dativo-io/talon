@@ -32,6 +32,7 @@
     .error { color: #f87171; }
     select { background: #334155; color: #e2e8f0; border: 1px solid #475569; padding: 0.5rem; border-radius: 4px; }
     .dashboard-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem; }
+    .dashboard-header h1 { margin: 0; }
     .dashboard-badge { font-size: 0.75rem; color: #94a3b8; background: #334155; padding: 0.25rem 0.5rem; border-radius: 4px; }
     .evidence-filters { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem; }
     .evidence-filters label { display: flex; align-items: center; gap: 0.25rem; font-size: 0.875rem; color: #94a3b8; }
@@ -83,7 +84,7 @@
     <button data-tab="finops">FinOps &amp; Runtime</button>
     <button data-tab="tenants">Tenants &amp; Agents</button>
   </div>
-  <div class="refresh">Auto-refresh every 30s. Set <code>window.TALON_ADMIN_KEY</code> for API calls. Evidence retention: see server/config docs. <a href="#" id="stakeholder-view">Audit report view</a></div>
+  <div class="refresh">Auto-refresh every 30s. Use <code>?token=YOUR_ADMIN_KEY</code> in the URL or set <code>window.TALON_ADMIN_KEY</code> for API calls. Evidence retention: see server/config docs. <a href="#" id="stakeholder-view">Audit report view</a></div>
 
   <div id="panel-evidence" class="panel active">
     <p class="compliance-overlay">Evidence supports: GDPR Art. 30, EU AI Act documentation (when present in metadata).</p>
@@ -158,6 +159,14 @@
 
   <script>
     (function() {
+      // Unified auth: ?token= in URL works for both dashboards (same as /gateway/dashboard).
+      var params = new URLSearchParams(window.location.search);
+      var tokenFromUrl = params.get('token');
+      if (tokenFromUrl) {
+        window.TALON_ADMIN_KEY = tokenFromUrl;
+        var cleanUrl = window.location.pathname + (window.location.hash || '');
+        if (window.history && window.history.replaceState) window.history.replaceState(null, '', cleanUrl);
+      }
       var base = window.TALON_BASE_URL || '';
       var key = window.TALON_ADMIN_KEY || '';
       function headers() {
@@ -417,10 +426,16 @@
           set('plans-metric-dispatch-failures', s.plan_dispatch_errors);
         }).catch(function() {});
         get('/v1/plans/pending').then(function(d) {
+          var plans = d.plans || [];
+          var pendingCount = plans.length;
+          var cardEl = document.getElementById('card-plans');
+          if (cardEl) cardEl.textContent = pendingCount;
+          var metricEl = document.getElementById('plans-metric-pending');
+          if (metricEl) metricEl.textContent = pendingCount;
           var tbody = document.getElementById('plans-tbody');
           if (!tbody) return;
           tbody.innerHTML = '';
-          (d.plans || []).forEach(function(p) {
+          plans.forEach(function(p) {
             var tr = document.createElement('tr');
             var time = p.created_at ? new Date(p.created_at).toLocaleString() : '—';
             var cost = p.cost_estimate != null ? p.cost_estimate.toFixed(4) : '—';
