@@ -396,19 +396,9 @@ func safePolicyPathUnder(policyDir, path string) (string, error) {
 func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error) {
 	startTime := time.Now()
 	correlationID := "corr_" + uuid.New().String()[:12]
-	sessionID := req.SessionID
-	if r.sessionStore != nil {
-		if sessionID != "" {
-			if _, err := r.sessionStore.Join(ctx, sessionID, req.TenantID); err != nil {
-				sessionID = ""
-			}
-		}
-		if sessionID == "" {
-			ss, err := r.sessionStore.Create(ctx, req.TenantID, req.AgentName, req.AgentReasoning)
-			if err == nil {
-				sessionID = ss.ID
-			}
-		}
+	sessionID, err := r.resolveSession(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 	req.SessionID = sessionID
 	ctx = evidence.WithSessionID(ctx, sessionID)
@@ -840,6 +830,29 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		}
 	}
 	return resp, nil
+}
+
+func (r *Runner) resolveSession(ctx context.Context, req *RunRequest) (string, error) {
+	if r.sessionStore == nil {
+		return req.SessionID, nil
+	}
+	if req.SessionID != "" {
+		ss, err := r.sessionStore.Join(ctx, req.SessionID, req.TenantID)
+		if err != nil {
+			return "", fmt.Errorf("joining session %q: %w", req.SessionID, err)
+		}
+		return ss.ID, nil
+	}
+	ss, err := r.sessionStore.Create(ctx, req.TenantID, req.AgentName, req.AgentReasoning)
+	if err != nil {
+		log.Warn().
+			Err(err).
+			Str("tenant_id", req.TenantID).
+			Str("agent_id", req.AgentName).
+			Msg("session_create_failed")
+		return "", nil
+	}
+	return ss.ID, nil
 }
 
 // checkHook fires a hook and returns a deny RunResponse if the hook aborts the pipeline.

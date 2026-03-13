@@ -23,6 +23,7 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/pricing"
 	"github.com/dativo-io/talon/internal/secrets"
+	talonsession "github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/testutil"
 )
 
@@ -2074,6 +2075,65 @@ func TestBuildLLMTools(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveSessionWithProvidedClosedSessionFails(t *testing.T) {
+	ctx := context.Background()
+	s, err := talonsession.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+	require.NoError(t, err)
+	defer s.Close()
+
+	ss, err := s.Create(ctx, "acme", "agent-a", "reasoning")
+	require.NoError(t, err)
+	require.NoError(t, s.Complete(ctx, ss.ID, 0, 0))
+
+	r := NewRunner(RunnerConfig{SessionStore: s})
+	_, err = r.resolveSession(ctx, &RunRequest{
+		TenantID:  "acme",
+		AgentName: "agent-a",
+		SessionID: ss.ID,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "joining session")
+}
+
+func TestResolveSessionWithProvidedActiveSessionJoins(t *testing.T) {
+	ctx := context.Background()
+	s, err := talonsession.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+	require.NoError(t, err)
+	defer s.Close()
+
+	ss, err := s.Create(ctx, "acme", "agent-a", "reasoning")
+	require.NoError(t, err)
+
+	r := NewRunner(RunnerConfig{SessionStore: s})
+	got, err := r.resolveSession(ctx, &RunRequest{
+		TenantID:  "acme",
+		AgentName: "agent-a",
+		SessionID: ss.ID,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ss.ID, got)
+}
+
+func TestResolveSessionWithoutProvidedIDCreatesSession(t *testing.T) {
+	ctx := context.Background()
+	s, err := talonsession.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+	require.NoError(t, err)
+	defer s.Close()
+
+	r := NewRunner(RunnerConfig{SessionStore: s})
+	got, err := r.resolveSession(ctx, &RunRequest{
+		TenantID:       "acme",
+		AgentName:      "agent-a",
+		AgentReasoning: "first run",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, got)
+
+	joined, err := s.Join(ctx, got, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, "agent-a", joined.AgentID)
 }
 
 func mustEvidenceStore(t *testing.T, dir string) *evidence.Store {
