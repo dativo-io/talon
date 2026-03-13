@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-03-13
+
+### Added
+
+- **feat(evidence): session_id in export and API.** Evidence records and audit export (CSV, JSON, NDJSON) now include `session_id` for lifecycle session correlation. Plan-gated runs and their auto-dispatch share the same session; export and `GET /v1/evidence/{id}` include it when present.
+
+### Fixed
+
+- **fix(smoke):** Section 24 plan-dispatch: accept HTTP 202 for plan_pending (human_oversight); use section-local response file and admin key for evidence read when serve runs without gateway; relax rate limit (requests_per_minute=300) to avoid OPA deny from shared evidence DB; capture plan execute stderr and dispatch evidence session_id diagnostics on failure.
+
+### Changed
+
+- **docs:** Evidence store: document session_id, fix HMAC key (TALON_SIGNING_KEY), retention in agent.talon.yaml, CSV/export columns. Auth: note that serve without --gateway has no tenant keys (admin key only). Agent planning: plan stores session_id, dispatcher reuses it. Compliance export runbook and config reference (TALON_ADMIN_KEY) updated.
+
 ## [1.1.0] - 2026-03-09
 
 ### Added
@@ -338,7 +352,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/dativo-io/talon/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dativo-io/talon/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/dativo-io/talon/compare/v0.9.5...v1.0.0
 [0.9.2]: https://github.com/dativo-io/talon/compare/v0.9.1...v0.9.2
