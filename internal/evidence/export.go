@@ -12,6 +12,7 @@ import (
 // columns first, then classification and audit-trail fields at the end.
 type ExportRecord struct {
 	ID             string    `json:"id"`
+	SessionID      string    `json:"session_id,omitempty"`
 	Timestamp      time.Time `json:"timestamp"`
 	TenantID       string    `json:"tenant_id"`
 	AgentID        string    `json:"agent_id"`
@@ -68,6 +69,7 @@ type ExportEnvelope struct {
 func ToExportRecord(e *Evidence) ExportRecord {
 	rec := ExportRecord{
 		ID:                      e.ID,
+		SessionID:               e.SessionID,
 		Timestamp:               e.Timestamp,
 		TenantID:                e.TenantID,
 		AgentID:                 e.AgentID,

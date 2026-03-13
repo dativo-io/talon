@@ -103,7 +103,7 @@ func TestRenderAuditExportCSV(t *testing.T) {
 	err := renderAuditExportCSV(&buf, records)
 	require.NoError(t, err)
 	out := buf.String()
-	assert.Contains(t, out, "id,timestamp,tenant_id")
+	assert.Contains(t, out, "id,session_id,timestamp,tenant_id")
 	assert.Contains(t, out, "ev_1")
 	assert.Contains(t, out, "acme")
 	assert.Contains(t, out, "true")

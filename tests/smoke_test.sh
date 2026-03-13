@@ -2513,36 +2513,55 @@ PREVIEWEOF
   local run_json
   local run_code
   local serve_session_id=""
-  run_json="$(curl -s -o /tmp/talon_plan_run_resp.json -w '%{http_code}' -X POST "${base_url}/v1/agents/run" -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" \
+  local plan_run_resp_file="$dir/plan_run_resp.json"
+  run_code="$(curl -s -o "$plan_run_resp_file" -w '%{http_code}' -X POST "${base_url}/v1/agents/run" \
+    -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" \
     -d '{"tenant_id":"default","agent_name":"default","prompt":"Create a concise compliance rollout plan for Q3"}')"
-  run_code="$run_json"
-  run_json="$(< /tmp/talon_plan_run_resp.json 2>/dev/null || true)"
-  rm -f /tmp/talon_plan_run_resp.json 2>/dev/null || true
-  if ! assert_pass "tenant key can call /v1/agents/run (Authorization Bearer) → 200" test "$run_code" = "200"; then
+  run_json="$(cat "$plan_run_resp_file" 2>/dev/null || true)"
+  # With human_oversight: "always", the server returns 202 Accepted (plan_pending).
+  if [[ "$run_code" == "200" ]] || [[ "$run_code" == "202" ]]; then
+    echo "  ✓  POST /v1/agents/run returns $run_code"
+    record_pass
+  else
+    log_failure "POST /v1/agents/run should return 200 or 202 (got $run_code)"
     dump_diag_kv "section 24 agents/run" \
       "http_code=$run_code" \
       "tenant_key=$tenant_key" \
       "base_url=$base_url" \
-      "endpoint=${base_url}/v1/agents/run"
+      "endpoint=${base_url}/v1/agents/run" \
+      "resp_file=$plan_run_resp_file" \
+      "resp_file_size=$(wc -c < "$plan_run_resp_file" 2>/dev/null || echo 'missing')"
     dump_diag_json "agents/run response" "$run_json"
     dump_diag_file "plan_dispatch serve log" "$dir/plan_dispatch_serve.log" 50
   fi
-  serve_plan_id="$(echo "$run_json" | jq -r '.plan_pending // empty' 2>/dev/null || true)"
+  # Prefer reading from file (avoids variable truncation); fall back to $run_json.
+  serve_plan_id="$(jq -r '.plan_pending // empty' < "$plan_run_resp_file" 2>/dev/null || true)"
+  if [[ -z "$serve_plan_id" ]] && [[ -n "$run_json" ]]; then
+    serve_plan_id="$(echo "$run_json" | jq -r '.plan_pending // empty' 2>/dev/null || true)"
+  fi
   if [[ -n "$serve_plan_id" ]]; then
     echo "  ✓  API run returned plan_pending: $serve_plan_id"
     record_pass
   else
-    log_failure "API run should return plan_pending under human oversight" "json_length=${#run_json}"
+    log_failure "API run should return plan_pending under human oversight" \
+      "http_code=$run_code json_length=${#run_json}"
     dump_diag_json "agents/run response (no plan_pending)" "$run_json"
+    dump_diag_file "plan_run_resp.json (raw)" "$plan_run_resp_file"
     dump_diag_file "plan_dispatch serve log (recent)" "$dir/plan_dispatch_serve.log" 50
   fi
-  serve_session_id="$(echo "$run_json" | jq -r '.session_id // empty' 2>/dev/null || true)"
+  serve_session_id="$(jq -r '.session_id // empty' < "$plan_run_resp_file" 2>/dev/null || true)"
+  if [[ -z "$serve_session_id" ]] && [[ -n "$run_json" ]]; then
+    serve_session_id="$(echo "$run_json" | jq -r '.session_id // empty' 2>/dev/null || true)"
+  fi
   if [[ -n "$serve_session_id" ]]; then
     echo "  ✓  API run returned session_id for plan-gated flow: $serve_session_id"
     record_pass
   else
-    log_failure "API run should return session_id for plan-gated flow" "json=$run_json"
+    log_failure "API run should return session_id for plan-gated flow" \
+      "http_code=$run_code json_length=${#run_json}"
+    dump_diag_file "plan_run_resp.json (raw)" "$plan_run_resp_file"
   fi
+  rm -f "$plan_run_resp_file" 2>/dev/null || true
   if [[ -n "$serve_plan_id" ]]; then
     local tenant_approve_code
     tenant_approve_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${base_url}/v1/plans/${serve_plan_id}/approve" -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" -d '{"reviewed_by":"smoke-test"}')"

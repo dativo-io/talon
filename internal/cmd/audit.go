@@ -274,7 +274,7 @@ func resolveExportOutput(cmd *cobra.Command, outputFile string) (io.Writer, func
 func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 	writer := csv.NewWriter(w)
 	header := []string{
-		"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "cost", "model_used", "duration_ms", "has_error",
+		"id", "session_id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "cost", "model_used", "duration_ms", "has_error",
 		"input_tier", "output_tier", "pii_detected", "pii_redacted", "policy_reasons", "tools_called", "input_hash", "output_hash",
 		"observation_mode_override", "shadow_violation_types",
 		"cache_hit", "cache_entry_id", "cost_saved",
@@ -286,6 +286,7 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 		r := &records[i]
 		row := []string{
 			r.ID,
+			r.SessionID,
 			r.Timestamp.Format(time.RFC3339),
 			r.TenantID,
 			r.AgentID,

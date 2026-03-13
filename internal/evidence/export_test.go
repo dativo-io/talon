@@ -44,7 +44,7 @@ func TestToExportRecord_NoShadowViolations(t *testing.T) {
 
 func TestToExportRecord_BackwardCompatible(t *testing.T) {
 	ev := &Evidence{
-		ID: "test_003", Timestamp: time.Now(), TenantID: "t1", AgentID: "a1",
+		ID: "test_003", SessionID: "sess_abc123", Timestamp: time.Now(), TenantID: "t1", AgentID: "a1",
 		InvocationType: "cli",
 		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow", Reasons: []string{"budget ok"}},
 		Classification: Classification{InputTier: 1, PIIDetected: []string{"email"}, PIIRedacted: true},
@@ -54,6 +54,7 @@ func TestToExportRecord_BackwardCompatible(t *testing.T) {
 
 	rec := ToExportRecord(ev)
 	assert.Equal(t, "test_003", rec.ID)
+	assert.Equal(t, "sess_abc123", rec.SessionID)
 	assert.Equal(t, "t1", rec.TenantID)
 	assert.True(t, rec.Allowed)
 	assert.Equal(t, 0.05, rec.Cost)
