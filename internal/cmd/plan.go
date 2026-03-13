@@ -121,15 +121,8 @@ func runPlanPending(cmd *cobra.Command, _ []string) error {
 	}
 	defer evidenceStore.Close()
 	defer dbPlan.Close()
-	if planApproverKey != "" {
-		approverStore, aerr := approver.NewStore(cfg.EvidenceDBPath())
-		if aerr != nil {
-			return aerr
-		}
-		defer approverStore.Close()
-		if rec, aerr := approverStore.Resolve(ctx, planApproverKey); aerr == nil && rec != nil {
-			planReviewedBy = rec.Name
-		}
+	if err := resolvePlanReviewedByFromKey(ctx, cfg); err != nil {
+		return err
 	}
 
 	plans, err := store.GetPending(ctx, planTenantID)
@@ -155,15 +148,8 @@ func runPlanApprove(cmd *cobra.Command, args []string) error {
 	}
 	defer evidenceStore.Close()
 	defer dbPlan.Close()
-	if planApproverKey != "" {
-		approverStore, aerr := approver.NewStore(cfg.EvidenceDBPath())
-		if aerr != nil {
-			return aerr
-		}
-		defer approverStore.Close()
-		if rec, aerr := approverStore.Resolve(ctx, planApproverKey); aerr == nil && rec != nil {
-			planReviewedBy = rec.Name
-		}
+	if err := resolvePlanReviewedByFromKey(ctx, cfg); err != nil {
+		return err
 	}
 
 	plan, err := store.Get(ctx, args[0], planTenantID)
@@ -217,15 +203,8 @@ func runPlanReject(cmd *cobra.Command, args []string) error {
 	}
 	defer evidenceStore.Close()
 	defer dbPlan.Close()
-	if planApproverKey != "" {
-		approverStore, aerr := approver.NewStore(cfg.EvidenceDBPath())
-		if aerr != nil {
-			return aerr
-		}
-		defer approverStore.Close()
-		if rec, aerr := approverStore.Resolve(ctx, planApproverKey); aerr == nil && rec != nil {
-			planReviewedBy = rec.Name
-		}
+	if err := resolvePlanReviewedByFromKey(ctx, cfg); err != nil {
+		return err
 	}
 
 	plan, err := store.Get(ctx, args[0], planTenantID)
@@ -268,6 +247,21 @@ func runPlanReject(cmd *cobra.Command, args []string) error {
 		},
 	})
 	fmt.Printf("✓ Plan rejected: %s\n", args[0])
+	return nil
+}
+
+func resolvePlanReviewedByFromKey(ctx context.Context, cfg *config.Config) error {
+	if planApproverKey == "" {
+		return nil
+	}
+	approverStore, err := approver.NewStore(cfg.EvidenceDBPath())
+	if err != nil {
+		return err
+	}
+	defer approverStore.Close()
+	if rec, err := approverStore.Resolve(ctx, planApproverKey); err == nil && rec != nil {
+		planReviewedBy = rec.Name
+	}
 	return nil
 }
 
