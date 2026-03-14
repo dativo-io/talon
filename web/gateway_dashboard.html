@@ -9,16 +9,23 @@
     --bg: #0f1117;
     --surface: #1a1d27;
     --surface2: #232736;
+    --surface-2: #232736;
     --border: #2e3348;
     --text: #e1e4ed;
     --text-dim: #8b8fa4;
     --accent: #6c72cb;
     --accent-light: #8e93df;
+    --brand: #6c72cb;
+    --brand-light: #8e93df;
     --green: #4ade80;
     --red: #f87171;
     --yellow: #facc15;
     --blue: #60a5fa;
     --orange: #fb923c;
+    --ok: #4ade80;
+    --warn: #facc15;
+    --risk: #f87171;
+    --info: #60a5fa;
     --radius: 8px;
     --gap: 16px;
   }
@@ -31,15 +38,19 @@
   .header h1 span { color: var(--accent-light); }
   .header-meta { display: flex; gap: 16px; font-size: 12px; color: var(--text-dim); }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
-  .badge-enforce { background: rgba(74,222,128,.15); color: var(--green); }
-  .badge-shadow { background: rgba(250,204,21,.15); color: var(--yellow); }
-  .badge-log_only { background: rgba(96,165,250,.15); color: var(--blue); }
+  .badge-enforce, .badge-ok { background: rgba(74,222,128,.15); color: var(--green); }
+  .badge-shadow, .badge-warn { background: rgba(250,204,21,.15); color: var(--yellow); }
+  .badge-log_only, .badge-info { background: rgba(96,165,250,.15); color: var(--blue); }
+  .badge-risk { background: rgba(248,113,113,.15); color: var(--red); }
+  .mission-band { margin-bottom: 1rem; }
   .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--gap); padding: var(--gap) 24px; }
-  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  .quadrants { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; padding: 0 24px; }
+  .kpi, .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
   .kpi-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
   .kpi-value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .kpi-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); padding: 0 24px var(--gap); }
+  .split-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: var(--gap); padding: 0 24px var(--gap); align-items: start; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); }
   .grid-full { grid-column: 1 / -1; }
   .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
   .panel-title { font-size: 13px; font-weight: 600; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
@@ -63,19 +74,33 @@
   .rate-bad { color: var(--red); }
   .cost-hot { color: var(--orange); }
   .footer { text-align: center; padding: 12px; font-size: 11px; color: var(--text-dim); }
+  .context-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .context-pills span { border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; font-size: 10px; color: var(--text-dim); }
+  .mission-feed-list { list-style: none; margin: 0.5rem 0 0; padding: 0; }
+  .mission-feed-list li { border-bottom: 1px solid var(--border); padding: 0.45rem 0; font-size: 0.82rem; }
+  .mission-feed-list li:last-child { border-bottom: none; }
+  @media (max-width: 980px) {
+    .split-grid { grid-template-columns: 1fr; }
+  }
   @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 
+<section class="mission-band band-1">
 <div class="header">
-  <h1>Talon <span>Gateway</span></h1>
+  <h1>Talon <span>Mission Control</span></h1>
   <nav class="header-nav"><a href="/dashboard">← Governance dashboard</a></nav>
   <div class="header-meta">
     <span id="mode-badge" class="badge">--</span>
     <span>Uptime: <strong id="uptime">--</strong></span>
     <span id="last-updated">--</span>
   </div>
+</div>
+<div class="context-pills" style="padding:0 24px 12px;">
+  <span>Unified Mission Control</span>
+  <span>Compliance-aware telemetry</span>
+  <span>Realtime posture stream</span>
 </div>
 
 <div class="kpi-row">
@@ -122,6 +147,36 @@
     <div class="kpi-value" id="kpi-runs">--</div>
   </div>
 </div>
+</section>
+
+<section class="mission-band band-2">
+  <div class="quadrants">
+    <div class="card">
+      <div class="kpi-label">System Posture</div>
+      <div class="kpi-value" id="gw-posture">--</div>
+      <div class="kpi-sub" id="gw-scope">Tenant scope: all</div>
+    </div>
+    <div class="card">
+      <div class="kpi-label">Interventions</div>
+      <div class="kpi-value" id="gw-interventions">--</div>
+      <div class="kpi-sub">Plan review and risky operations</div>
+    </div>
+    <div class="card">
+      <div class="kpi-label">Fleet Risk Health</div>
+      <div class="kpi-value" id="gw-fleet-risk">--</div>
+      <div class="kpi-sub">Agent risk and degraded states</div>
+    </div>
+    <div class="card">
+      <div class="kpi-label">Drift Signals</div>
+      <div class="kpi-value" id="gw-drift">--</div>
+      <div class="kpi-sub" id="gw-pii-signals">PII/injection signals: --</div>
+    </div>
+  </div>
+</section>
+
+<section class="mission-band band-3">
+<div class="split-grid">
+  <div class="split-left">
 
 <div class="grid">
   <!-- Requests Sparkline -->
@@ -200,8 +255,29 @@
     <div id="shadow-content"></div>
   </div>
 </div>
+  </div>
+  <aside class="split-right">
+    <div class="card">
+      <div class="kpi-label">Session Timeline (Lifecycle)</div>
+      <div class="kpi-sub">Intent -> Guard -> Action -> Outcome -> Evidence</div>
+      <ul class="mission-feed-list" id="gw-lifecycle-feed">
+        <li>Waiting for telemetry events...</li>
+      </ul>
+    </div>
+    <div class="card" style="margin-top:12px;">
+      <div class="kpi-label">Compliance Report Preview</div>
+      <div class="kpi-sub" id="gw-compliance-preview">Collecting GDPR / EU AI Act / NIS2 / DORA coverage hints...</div>
+    </div>
+    <div class="card" style="margin-top:12px;">
+      <div class="kpi-label">Plan Review Workflow</div>
+      <div class="kpi-sub">Review approvals are available in Governance dashboard.</div>
+      <div class="kpi-sub"><a href="/dashboard" style="color: var(--brand-light); text-decoration:none;">Open approvals and evidence review →</a></div>
+    </div>
+  </aside>
+</div>
+</section>
 
-<div class="footer">Talon Gateway Dashboard &mdash; Data refreshes every 5 seconds via SSE</div>
+<div class="footer" aria-live="polite">Talon Gateway Dashboard &mdash; Data refreshes every 5 seconds via SSE</div>
 
 <script>
 (function() {
@@ -288,7 +364,9 @@
     lastUpdateAt = Date.now();
     var badge = document.getElementById('mode-badge');
     badge.textContent = d.enforcement_mode || '--';
-    badge.className = 'badge badge-' + (d.enforcement_mode || '');
+    var mode = String(d.enforcement_mode || '').toLowerCase();
+    var badgeKind = mode === 'enforce' ? 'ok' : mode === 'shadow' ? 'warn' : mode === 'log_only' ? 'info' : 'risk';
+    badge.className = 'badge badge-' + badgeKind;
 
     document.getElementById('uptime').textContent = d.uptime || '--';
     document.getElementById('last-updated').textContent = 'Updated: ' + new Date(d.generated_at).toLocaleTimeString();
@@ -308,6 +386,42 @@
     document.getElementById('kpi-runs').textContent = fmt(s.active_runs);
     setSuccessRateColor(document.getElementById('kpi-success-rate'), s.success_rate || 0);
     setTimeoutColor(document.getElementById('kpi-timeouts'), s.total_timed_out || 0);
+
+    var posture = 'NOMINAL';
+    if ((s.blocked_requests || 0) > 0 || (s.total_timed_out || 0) > 0) posture = 'ELEVATED';
+    if ((s.error_rate || 0) >= 0.2) posture = 'CRITICAL';
+    var postureEl = document.getElementById('gw-posture');
+    if (postureEl) postureEl.textContent = posture;
+    var scopeEl = document.getElementById('gw-scope');
+    if (scopeEl) scopeEl.textContent = 'Tenant scope: ' + (d.tenant_id || 'all');
+    var interventionsEl = document.getElementById('gw-interventions');
+    if (interventionsEl) interventionsEl.textContent = fmt((s.blocked_requests || 0) + (s.total_timed_out || 0));
+    var fleetEl = document.getElementById('gw-fleet-risk');
+    if (fleetEl) {
+      var riskState = (s.error_rate || 0) > 0.1 ? 'High' : (s.error_rate || 0) > 0.03 ? 'Medium' : 'Low';
+      fleetEl.textContent = riskState;
+    }
+    var driftEl = document.getElementById('gw-drift');
+    if (driftEl) driftEl.textContent = fmt((s.total_timed_out || 0) + (s.blocked_requests || 0));
+    var piiSignalEl = document.getElementById('gw-pii-signals');
+    if (piiSignalEl) piiSignalEl.textContent = 'PII/injection signals: ' + fmt((s.pii_detections || 0) + (s.tools_filtered || 0));
+
+    var lifecycle = document.getElementById('gw-lifecycle-feed');
+    if (lifecycle) {
+      lifecycle.innerHTML = '';
+      var items = [];
+      items.push('Guard decisions: ' + fmt(s.blocked_requests || 0) + ' blocked / ' + fmt(s.total_requests || 0) + ' total');
+      items.push('Execution outcomes: success ' + ((s.success_rate || 0) * 100).toFixed(1) + '%');
+      items.push('Runtime checks: ' + fmt(s.total_timed_out || 0) + ' timeout events');
+      items.push('Evidence stream: updated ' + new Date(d.generated_at).toLocaleTimeString());
+      items.slice(0, 5).forEach(function(text) {
+        lifecycle.innerHTML += '<li>' + esc(text) + '</li>';
+      });
+    }
+    var compliancePreview = document.getElementById('gw-compliance-preview');
+    if (compliancePreview) {
+      compliancePreview.textContent = 'Signals mapped from live telemetry: GDPR controls, EU AI Act oversight, NIS2 reliability, DORA resilience.';
+    }
 
     renderSparkline('chart-requests', d.requests_timeline, 'count', 'rgba(108,114,203,1)', 'rgba(108,114,203,.15)');
     renderSparkline('chart-cost', d.cost_timeline, 'cost_eur', 'rgba(96,165,250,1)', 'rgba(96,165,250,.15)');
