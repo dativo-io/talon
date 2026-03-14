@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/metrics"
+	"github.com/dativo-io/talon/web"
 )
 
 func newTestServerWithDashboard(t *testing.T, token string) (*Server, *metrics.Collector) {
@@ -42,6 +43,16 @@ func TestHandleGatewayDashboard(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Header().Get("Content-Type"), "text/html")
 	assert.Contains(t, rec.Body.String(), "test dashboard")
+}
+
+func TestEmbeddedDashboardsContainUnifiedMissionControlMarkers(t *testing.T) {
+	assert.Contains(t, web.DashboardHTML, "Talon Mission Control")
+	assert.Contains(t, web.DashboardHTML, "Session timeline (lifecycle)")
+	assert.Contains(t, web.DashboardHTML, "Compliance report preview")
+
+	assert.Contains(t, web.GatewayDashboardHTML, "Talon <span>Mission Control</span>")
+	assert.Contains(t, web.GatewayDashboardHTML, "Session Timeline (Lifecycle)")
+	assert.Contains(t, web.GatewayDashboardHTML, "Compliance Report Preview")
 }
 
 func TestHandleMetricsJSON(t *testing.T) {

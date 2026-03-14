@@ -848,6 +848,11 @@ GWEOF
   dash_headers="$(curl -sI http://127.0.0.1:8080/dashboard 2>/dev/null | head -10)"
   assert_pass "GET /dashboard 200" bash -c 'echo "$1" | grep -qi "200"' _ "$dash_headers"
   assert_pass "GET /dashboard Content-Type text/html" grep -qi 'text/html' <<< "$dash_headers"
+  local gov_dash_html
+  gov_dash_html="$(curl -s -H "X-Talon-Admin-Key: $admin_key" http://127.0.0.1:8080/dashboard)"
+  assert_pass "governance dashboard contains Talon Mission Control marker" grep -q "Talon Mission Control" <<< "$gov_dash_html"
+  assert_pass "governance dashboard contains session timeline marker" grep -q "Session timeline (lifecycle)" <<< "$gov_dash_html"
+  assert_pass "governance dashboard contains compliance preview marker" grep -q "Compliance report preview" <<< "$gov_dash_html"
   assert_pass "No key → 401" test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/evidence)" = "401"
   local tenant_ev_code; tenant_ev_code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tenant_key" http://127.0.0.1:8080/v1/evidence)"
   if [[ "$tenant_ev_code" == "200" ]]; then
@@ -1538,6 +1543,9 @@ CACHEEOF
     test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: $admin_key" "${dashboard_base_url}${SMOKE_PATH_GATEWAY_DASHBOARD}")" = "200"
   local dash_html; dash_html="$(smoke_gw_get_dashboard "$dashboard_base_url" "$admin_key")"
   assert_pass "dashboard HTML contains Talon" grep -qi "talon" <<< "$dash_html"
+  assert_pass "dashboard HTML contains Mission Control marker" grep -q "Talon <span>Mission Control</span>" <<< "$dash_html"
+  assert_pass "dashboard HTML contains Session Timeline marker" grep -q "Session Timeline (Lifecycle)" <<< "$dash_html"
+  assert_pass "dashboard HTML contains Compliance Report Preview marker" grep -q "Compliance Report Preview" <<< "$dash_html"
   assert_pass "dashboard HTML contains <script>" grep -qi "<script" <<< "$dash_html"
   assert_pass "dashboard HTML contains Success Rate KPI" grep -qi "Success Rate" <<< "$dash_html"
   assert_pass "dashboard HTML contains Timeouts KPI" grep -qi "Timeouts" <<< "$dash_html"
