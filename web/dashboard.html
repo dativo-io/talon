@@ -356,12 +356,6 @@
           var s = (m && m.summary) ? m.summary : {};
           var el = document.getElementById('card-plans');
           if (el) el.textContent = s.pending_plans != null ? s.pending_plans : '—';
-          var interventionsEl = document.getElementById('quad-interventions');
-          if (interventionsEl) {
-            var plans = Number(s.pending_plans || 0);
-            var memory = Number(document.getElementById('card-memory-pending') ? document.getElementById('card-memory-pending').textContent : 0);
-            interventionsEl.textContent = String(plans + (isNaN(memory) ? 0 : memory));
-          }
         }).catch(function() {});
         // Policy outcome and denial counters are synced from the currently visible
         // evidence list in renderEvidence() so they stay consistent with this table.
@@ -862,7 +856,6 @@
         if (document.getElementById('panel-plans').classList.contains('active')) { renderPlans(); renderReviewHistory(); }
         if (document.getElementById('panel-memory').classList.contains('active')) renderMemory();
         if (document.getElementById('panel-finops').classList.contains('active')) renderFinops();
-        if (document.getElementById('panel-tenants').classList.contains('active')) renderTenants();
       }
       refresh();
       setInterval(refresh, 30000);

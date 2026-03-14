@@ -395,14 +395,14 @@
     var scopeEl = document.getElementById('gw-scope');
     if (scopeEl) scopeEl.textContent = 'Tenant scope: ' + (d.tenant_id || 'all');
     var interventionsEl = document.getElementById('gw-interventions');
-    if (interventionsEl) interventionsEl.textContent = fmt((s.blocked_requests || 0) + (s.total_timed_out || 0));
+    if (interventionsEl) interventionsEl.textContent = fmt(s.blocked_requests || 0);
     var fleetEl = document.getElementById('gw-fleet-risk');
     if (fleetEl) {
       var riskState = (s.error_rate || 0) > 0.1 ? 'High' : (s.error_rate || 0) > 0.03 ? 'Medium' : 'Low';
       fleetEl.textContent = riskState;
     }
     var driftEl = document.getElementById('gw-drift');
-    if (driftEl) driftEl.textContent = fmt((s.total_timed_out || 0) + (s.blocked_requests || 0));
+    if (driftEl) driftEl.textContent = fmt(s.total_timed_out || 0);
     var piiSignalEl = document.getElementById('gw-pii-signals');
     if (piiSignalEl) piiSignalEl.textContent = 'PII/injection signals: ' + fmt((s.pii_detections || 0) + (s.tools_filtered || 0));
 
