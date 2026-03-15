@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ['1.24.13']
+        go-version: ['1.25.8']
 
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +46,7 @@ jobs:
       # All test tiers: unit (internal + cmd), integration (tests/integration), e2e (tests/e2e)
       # Coverage: exclude cmd/talon (main) and internal/testutil (test helpers); threshold 65% (goal 70%)
       - name: Run unit tests
-        run: go test -race -coverprofile=coverage-${{ matrix.go-version }}.out $(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v 'cmd/talon')
+        run: go test -race -coverprofile=coverage-${{ matrix.go-version }}.out $(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v internal/llm/testutil | grep -v 'cmd/talon')
 
       - name: Run integration tests
         run: go test -race -tags=integration ./tests/integration/...
@@ -79,10 +79,10 @@ jobs:
           path: coverage-${{ matrix.go-version }}.out
 
       - name: Upload to Codecov
-        if: matrix.go-version == '1.24.13'
+        if: matrix.go-version == '1.25.8'
         uses: codecov/codecov-action@v4
         with:
-          file: ./coverage-1.24.13.out
+          file: ./coverage-1.25.8.out
           fail_ci_if_error: false
 
   lint:
@@ -94,7 +94,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24.13'
+          go-version: '1.25.8'
           cache: true
 
       - name: golangci-lint
@@ -121,7 +121,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24.13'
+          go-version: '1.25.8'
           cache: true
 
       - name: Install cross-compilation tools

@@ -5,60 +5,89 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Talon Dashboard</title>
   <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface-2: #232736;
+      --border: #2e3348;
+      --text: #e1e4ed;
+      --text-dim: #8b8fa4;
+      --brand: #6c72cb;
+      --brand-light: #8e93df;
+      --ok: #4ade80;
+      --warn: #facc15;
+      --risk: #f87171;
+      --info: #60a5fa;
+    }
     * { box-sizing: border-box; }
-    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 1rem; background: #0f172a; color: #e2e8f0; }
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 1rem; background: var(--bg); color: var(--text); }
     h1 { margin: 0 0 1rem; font-size: 1.5rem; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
-    .card { background: #1e293b; padding: 1rem; border-radius: 8px; }
-    .card .label { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; }
-    .card .value { font-size: 1.5rem; font-weight: 600; }
+    .mission-band { margin-bottom: 1rem; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+    .quadrants { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+    .split-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: 1rem; align-items: start; }
+    .card { background: var(--surface); border: 1px solid var(--border); padding: 1rem; border-radius: 8px; }
+    .card .label { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
+    .card .value { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
     .card-link { cursor: pointer; }
-    .card-link:hover { background: #334155; }
-    .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
-    .tabs button { padding: 0.5rem 1rem; background: #334155; border: none; border-radius: 6px; color: #e2e8f0; cursor: pointer; }
-    .tabs button.active { background: #3b82f6; }
-    .tabs button:hover:not(.active) { background: #475569; }
-    .panel { display: none; background: #1e293b; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+    .card-link:hover { background: var(--surface-2); border-color: var(--brand); }
+    .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .tabs button { padding: 0.5rem 1rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; }
+    .tabs button.active { background: rgba(108, 114, 203, 0.2); border-color: rgba(108, 114, 203, 0.8); color: var(--brand-light); }
+    .tabs button:hover:not(.active) { border-color: rgba(141, 147, 223, 0.5); }
+    .panel { display: none; background: var(--surface); border: 1px solid var(--border); padding: 1rem; border-radius: 8px; overflow-x: auto; }
     .panel.active { display: block; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #334155; }
-    th { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; }
-    .status-ok { color: #22c55e; }
-    .status-deny { color: #ef4444; }
-    .btn { padding: 0.25rem 0.5rem; border-radius: 4px; border: none; cursor: pointer; font-size: 0.875rem; }
-    .btn-approve { background: #22c55e; color: #fff; }
-    .btn-reject { background: #ef4444; color: #fff; }
-    .refresh { font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.5rem; }
-    .error { color: #f87171; }
-    select { background: #334155; color: #e2e8f0; border: 1px solid #475569; padding: 0.5rem; border-radius: 4px; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
+    th { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; }
+    .status-ok { color: var(--ok); }
+    .status-deny { color: var(--risk); }
+    .btn { padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid var(--border); cursor: pointer; font-size: 0.875rem; background: var(--surface-2); color: var(--text); }
+    .btn-approve { background: rgba(74, 222, 128, 0.18); color: var(--ok); border-color: rgba(74, 222, 128, 0.4); }
+    .btn-reject { background: rgba(248, 113, 113, 0.18); color: var(--risk); border-color: rgba(248, 113, 113, 0.4); }
+    .refresh { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 0.5rem; }
+    .error { color: var(--risk); }
+    select { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); padding: 0.5rem; border-radius: 4px; }
     .dashboard-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem; }
     .dashboard-header h1 { margin: 0; }
-    .dashboard-badge { font-size: 0.75rem; color: #94a3b8; background: #334155; padding: 0.25rem 0.5rem; border-radius: 4px; }
+    .dashboard-badge { font-size: 0.75rem; color: var(--text-dim); background: var(--surface-2); border: 1px solid var(--border); padding: 0.25rem 0.5rem; border-radius: 4px; }
     .evidence-filters { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem; }
-    .evidence-filters label { display: flex; align-items: center; gap: 0.25rem; font-size: 0.875rem; color: #94a3b8; }
-    .evidence-filters input, .evidence-filters select { background: #334155; color: #e2e8f0; border: 1px solid #475569; padding: 0.25rem 0.5rem; border-radius: 4px; }
-    .compliance-overlay { font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.5rem; }
-    .governance-widget { margin-bottom: 1rem; padding: 0.75rem; background: #1e293b; border-radius: 8px; }
-    .denials-summary { font-size: 0.875rem; color: #e2e8f0; margin: 0; }
-    .denials-summary a { color: #94a3b8; }
-    .denials-summary a:hover { color: #e2e8f0; }
+    .evidence-filters label { display: flex; align-items: center; gap: 0.25rem; font-size: 0.875rem; color: var(--text-dim); }
+    .evidence-filters input, .evidence-filters select { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); padding: 0.25rem 0.5rem; border-radius: 4px; }
+    .compliance-overlay { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 0.5rem; }
+    .governance-widget { margin-bottom: 1rem; padding: 0.75rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+    .denials-summary { font-size: 0.875rem; color: var(--text); margin: 0; }
+    .denials-summary a { color: var(--brand-light); }
+    .denials-summary a:hover { color: var(--text); }
     .gov-alerts-table { width: 100%; font-size: 0.875rem; margin-top: 0.25rem; }
-    .gov-alerts-table th { color: #94a3b8; text-align: left; padding: 0.25rem 0.5rem 0.25rem 0; }
+    .gov-alerts-table th { color: var(--text-dim); text-align: left; padding: 0.25rem 0.5rem 0.25rem 0; }
     .gov-alerts-table td { padding: 0.25rem 0.5rem 0.25rem 0; }
     .tenant-cards { margin-bottom: 1rem; }
     .tenant-cards .card .label { font-size: 0.65rem; }
     .tenant-cards .card .value { font-size: 1rem; }
-    .dashboard-nav a { color: #94a3b8; text-decoration: none; font-size: 0.875rem; }
-    .dashboard-nav a:hover { color: #e2e8f0; }
+    .dashboard-nav a { color: var(--text-dim); text-decoration: none; font-size: 0.875rem; }
+    .dashboard-nav a:hover { color: var(--text); }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 0.375rem; margin-top: 0.5rem; }
+    .pill { display: inline-flex; border-radius: 999px; border: 1px solid var(--border); padding: 0.2rem 0.5rem; font-size: 0.7rem; color: var(--text-dim); }
+    .pill.ok { border-color: rgba(74, 222, 128, 0.4); color: var(--ok); }
+    .pill.warn { border-color: rgba(250, 204, 21, 0.4); color: var(--warn); }
+    .pill.risk { border-color: rgba(248, 113, 113, 0.4); color: var(--risk); }
+    .mission-feed-list { list-style: none; margin: 0.5rem 0 0; padding: 0; }
+    .mission-feed-list li { border-bottom: 1px solid var(--border); padding: 0.45rem 0; font-size: 0.82rem; }
+    .mission-feed-list li:last-child { border-bottom: none; }
+    @media (max-width: 980px) {
+      .split-grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
-  <header class="dashboard-header">
-    <h1>Talon Dashboard</h1>
-    <span class="dashboard-badge" id="header-badge" title="Enforcement mode and tenant scope"></span>
-    <nav class="dashboard-nav"><a id="gateway-nav-link" href="/gateway/dashboard">Gateway telemetry &rarr;</a></nav>
-  </header>
-  <div class="cards">
+  <section class="mission-band band-1">
+    <header class="dashboard-header">
+      <h1>Talon Mission Control</h1>
+      <span class="dashboard-badge" id="header-badge" title="Enforcement mode and tenant scope"></span>
+      <nav class="dashboard-nav"><a id="gateway-nav-link" href="/gateway/dashboard">Gateway telemetry &rarr;</a></nav>
+    </header>
+    <div class="cards">
     <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Visible requests</div><div class="value" id="card-requests">—</div></div>
     <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Visible cost</div><div class="value" id="card-daily">— &euro;</div></div>
     <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Monthly cost</div><div class="value" id="card-monthly">— &euro;</div></div>
@@ -66,8 +95,33 @@
     <div class="card card-link" data-tab="memory" data-filter=""><div class="label">Pending memory</div><div class="value" id="card-memory-pending">—</div></div>
     <div class="card card-link" data-tab="evidence" data-filter="blocked"><div class="label">Blocked</div><div class="value" id="card-blocked">—</div></div>
     <div class="card" id="card-budget"><div class="label">Budget</div><div class="value" id="card-budget-value">—</div><div class="value budget-warn" id="card-budget-warn" style="display:none; font-size:0.75rem; color:#f87171;">Approaching limit</div></div>
-  </div>
-  <div id="governance-denials" class="governance-widget">
+    </div>
+  </section>
+
+  <section class="mission-band band-2">
+    <div class="quadrants">
+      <div class="card">
+        <div class="label">System posture</div>
+        <div class="value" id="posture-card-value">—</div>
+        <div class="refresh" id="health-card-value">Health: —</div>
+      </div>
+      <div class="card">
+        <div class="label">Interventions</div>
+        <div class="value" id="quad-interventions">—</div>
+        <div class="refresh">Pending plans + memory reviews</div>
+      </div>
+      <div class="card">
+        <div class="label">Fleet risk</div>
+        <div class="value" id="fleet-risk-summary">—</div>
+        <div class="refresh" id="scope-card-value">Tenant scope: —</div>
+      </div>
+      <div class="card">
+        <div class="label">Drift signals</div>
+        <div class="value" id="drift-summary">—</div>
+        <div class="refresh" id="pii-signal-summary">PII/injection: —</div>
+      </div>
+    </div>
+    <div id="governance-denials" class="governance-widget">
     <h3 style="margin:0 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Policy outcome (visible evidence)</h3>
     <p class="denials-summary" id="policy-outcome-summary">—</p>
     <h3 style="margin:0.75rem 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Denials in current view</h3>
@@ -76,15 +130,25 @@
     <p class="denials-summary">PII detections and injection attempts (see Risky tool / attachment table below and FinOps for counts). <a href="#" id="governance-evidence-link">View evidence</a></p>
     <h3 style="margin:0.75rem 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Risky tool / attachment injection</h3>
     <table class="gov-alerts-table"><thead><tr><th>Time</th><th>Agent</th><th>Type</th><th>Evidence</th></tr></thead><tbody id="governance-alerts-tbody"></tbody></table>
-  </div>
-  <div class="tabs">
+      <div class="pill-row" id="compliance-preview-pills">
+        <span class="pill ok">GDPR</span>
+        <span class="pill ok">EU AI Act</span>
+        <span class="pill warn">NIS2</span>
+        <span class="pill warn">DORA</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="mission-band band-3 split-grid">
+    <div class="split-left">
+      <div class="tabs">
     <button class="active" data-tab="evidence">Evidence</button>
     <button data-tab="plans">Plans Awaiting Review</button>
     <button data-tab="memory">Memory Review</button>
     <button data-tab="finops">FinOps &amp; Runtime</button>
     <button data-tab="tenants">Tenants &amp; Agents</button>
-  </div>
-  <div class="refresh">Auto-refresh every 30s. Use <code>?talon_admin_key=YOUR_TALON_ADMIN_KEY</code> in the URL (preferred) or set <code>window.TALON_ADMIN_KEY</code> for API calls. Evidence retention: see server/config docs. <a href="#" id="stakeholder-view">Audit report view</a></div>
+      </div>
+      <div class="refresh">Auto-refresh every 30s. Use <code>?talon_admin_key=YOUR_TALON_ADMIN_KEY</code> in the URL (preferred) or set <code>window.TALON_ADMIN_KEY</code> for API calls. Evidence retention: see server/config docs. <a href="#" id="stakeholder-view">Audit report view</a></div>
 
   <div id="panel-evidence" class="panel active">
     <p class="compliance-overlay">Evidence supports: GDPR Art. 30, EU AI Act documentation (when present in metadata).</p>
@@ -156,6 +220,21 @@
       <tbody id="agents-tbody"></tbody>
     </table>
   </div>
+    </div>
+    <aside class="split-right">
+      <div class="card">
+        <div class="label">Session timeline (lifecycle)</div>
+        <div class="refresh">Intent -> Guard -> Action -> Outcome -> Evidence</div>
+        <ul class="mission-feed-list" id="session-timeline-list">
+          <li>Waiting for recent evidence...</li>
+        </ul>
+      </div>
+      <div class="card" style="margin-top:0.75rem;">
+        <div class="label">Compliance report preview</div>
+        <div class="refresh" id="compliance-preview-summary">Collecting framework evidence coverage...</div>
+      </div>
+    </aside>
+  </section>
 
   <script>
     (function() {
@@ -255,6 +334,23 @@
             var tenant = (d.tenant_id && String(d.tenant_id).trim()) ? String(d.tenant_id) : '—';
             badge.textContent = mode + ' | tenant: ' + tenant;
           }
+          var scope = document.getElementById('scope-card-value');
+          if (scope) scope.textContent = 'Tenant scope: ' + ((d.tenant_id && String(d.tenant_id).trim()) ? String(d.tenant_id) : 'all');
+          var blockedCount = Number(d.blocked_count || 0);
+          var posture = blockedCount > 0 ? 'ELEVATED' : 'NOMINAL';
+          var postureEl = document.getElementById('posture-card-value');
+          if (postureEl) postureEl.textContent = posture;
+          var healthEl = document.getElementById('health-card-value');
+          if (healthEl) {
+            var h = d.health || d.status || 'unknown';
+            healthEl.textContent = 'Health: ' + String(h);
+          }
+          var interventionsEl = document.getElementById('quad-interventions');
+          if (interventionsEl) {
+            var pendingPlans = Number(d.pending_plan_reviews || 0);
+            var pendingMemory = Number(d.pending_memory_reviews || 0);
+            interventionsEl.textContent = String(pendingPlans + pendingMemory);
+          }
         }).catch(function() {});
         get('/api/v1/metrics').then(function(m) {
           var s = (m && m.summary) ? m.summary : {};
@@ -274,6 +370,14 @@
             tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(a.agent_id || '—') + '</td><td>' + escapeHtml(a.event_type || '—') + '</td><td>' + link + '</td>';
             tbody.appendChild(tr);
           });
+          var piiSummary = document.getElementById('pii-signal-summary');
+          if (piiSummary) {
+            var piiLike = (d.alerts || []).filter(function(a) {
+              var t = String(a.event_type || '').toLowerCase();
+              return t.indexOf('pii') >= 0 || t.indexOf('inject') >= 0 || t.indexOf('attachment') >= 0;
+            }).length;
+            piiSummary.textContent = 'PII/injection: ' + piiLike + ' recent signal(s)';
+          }
           if ((d.alerts || []).length === 0) tbody.innerHTML = '<tr><td colspan="4" class="refresh">No recent alerts</td></tr>';
           tbody.querySelectorAll('.gov-alert-link').forEach(function(link) {
             link.addEventListener('click', function(e) {
@@ -292,6 +396,8 @@
         }).catch(function() {
           var tbody = document.getElementById('governance-alerts-tbody');
           if (tbody) tbody.innerHTML = '<tr><td colspan="4" class="refresh">—</td></tr>';
+          var piiSummary = document.getElementById('pii-signal-summary');
+          if (piiSummary) piiSummary.textContent = 'PII/injection: unavailable';
         });
       }
 
@@ -372,6 +478,29 @@
             tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(ev.agent_id || '—') + '</td><td>' + status + '</td><td>' + escapeHtml(cost) + '</td><td' + complianceTip + '>' + idEsc + '</td><td>' + traceBtn + '</td><td>' + verifyBtn + '</td>';
             tbody.appendChild(tr);
           });
+          var timeline = document.getElementById('session-timeline-list');
+          if (timeline) {
+            var latest = (d.entries || []).slice(0, 5);
+            timeline.innerHTML = '';
+            if (latest.length === 0) {
+              timeline.innerHTML = '<li>No recent sessions recorded.</li>';
+            } else {
+              latest.forEach(function(ev) {
+                var when = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '--';
+                var outcome = ev.allowed ? 'allow' : 'deny';
+                timeline.innerHTML += '<li>' + escapeHtml(when) + ' · ' + escapeHtml(ev.agent_id || 'agent') + ' · ' + escapeHtml(outcome) + ' · evidence ' + escapeHtml(ev.id || '—') + '</li>';
+              });
+            }
+          }
+          var complianceSummary = document.getElementById('compliance-preview-summary');
+          if (complianceSummary) {
+            var compliant = 0;
+            var total = (d.entries || []).length;
+            (d.entries || []).forEach(function(ev) {
+              if (ev && ev.compliance && ev.compliance.frameworks && ev.compliance.frameworks.length) compliant += 1;
+            });
+            complianceSummary.textContent = 'Coverage sample: ' + compliant + '/' + total + ' records carry framework metadata (GDPR / EU AI Act / NIS2 / DORA).';
+          }
           tbody.querySelectorAll('.evidence-verify').forEach(function(btn) {
             btn.addEventListener('click', function() {
               var id = btn.getAttribute('data-id');
@@ -553,6 +682,24 @@
             else if (maxZ >= 1) riskByAgent[a.agent_id] = 'medium';
             else riskByAgent[a.agent_id] = 'low';
           });
+          var fleetSummary = document.getElementById('fleet-risk-summary');
+          if (fleetSummary) {
+            var high = 0;
+            var medium = 0;
+            Object.keys(riskByAgent).forEach(function(id) {
+              if (riskByAgent[id] === 'high') high += 1;
+              else if (riskByAgent[id] === 'medium') medium += 1;
+            });
+            fleetSummary.textContent = 'High: ' + high + ' · Medium: ' + medium;
+          }
+          var driftSummary = document.getElementById('drift-summary');
+          if (driftSummary) {
+            var totalSignals = 0;
+            (drift.agents || []).forEach(function(a) {
+              totalSignals += (a.signals || []).length;
+            });
+            driftSummary.textContent = totalSignals + ' active';
+          }
           var container = document.getElementById('tenant-cards');
           if (container) {
             container.innerHTML = '';
@@ -592,6 +739,10 @@
           if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="error">' + escapeHtml(e.message) + '</td></tr>';
           var agentsBody = document.getElementById('agents-tbody');
           if (agentsBody) agentsBody.innerHTML = '<tr><td colspan="8" class="refresh">Unable to load agent registry</td></tr>';
+          var fleetSummary = document.getElementById('fleet-risk-summary');
+          if (fleetSummary) fleetSummary.textContent = 'Unavailable';
+          var driftSummary = document.getElementById('drift-summary');
+          if (driftSummary) driftSummary.textContent = 'Unavailable';
         });
       }
 
@@ -701,10 +852,10 @@
       function refresh() {
         renderCards();
         renderEvidence();
+        renderTenants();
         if (document.getElementById('panel-plans').classList.contains('active')) { renderPlans(); renderReviewHistory(); }
         if (document.getElementById('panel-memory').classList.contains('active')) renderMemory();
         if (document.getElementById('panel-finops').classList.contains('active')) renderFinops();
-        if (document.getElementById('panel-tenants').classList.contains('active')) renderTenants();
       }
       refresh();
       setInterval(refresh, 30000);
