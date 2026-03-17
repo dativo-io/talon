@@ -249,7 +249,12 @@ You now have copy-paste policy snippets for memory, models, cost, time, PII, and
 
 ```bash
 talon intent classify email_delete '{"count": 100}'
-# Expect: adjusted_risk critical, is_bulk: true, plan_review: required
+# Expect fields: operation_class, risk_level, is_bulk, requires_review
+# Example:
+#   Operation class: bulk
+#   Risk level:      critical
+#   Bulk detected:   true
+#   Plan review:     true
 
 talon intent classes
 # Shows full taxonomy — use to build require_review_for_classes lists
