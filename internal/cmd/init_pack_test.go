@@ -87,6 +87,50 @@ func TestInitPack_ComplianceAll_AppliesAllOverlays(t *testing.T) {
 		"merged policy should contain at least one compliance framework from overlays")
 }
 
+func TestInitPack_LangChain_UsesDedicatedTemplate(t *testing.T) {
+	dir := t.TempDir()
+	prevWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(prevWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	rootCmd.SetArgs([]string{"init", "--pack", "langchain", "--skip-verify"})
+	err = rootCmd.Execute()
+	require.NoError(t, err)
+
+	agentPath := filepath.Join(dir, "agent.talon.yaml")
+	require.FileExists(t, agentPath)
+	content, err := os.ReadFile(agentPath)
+	require.NoError(t, err)
+	str := string(content)
+
+	assert.Contains(t, str, "LangChain agent with policy governance")
+	assert.Contains(t, str, "sql_database_query")
+	assert.Contains(t, str, "os.system")
+}
+
+func TestInitPack_Generic_UsesDedicatedTemplate(t *testing.T) {
+	dir := t.TempDir()
+	prevWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(prevWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	rootCmd.SetArgs([]string{"init", "--pack", "generic", "--skip-verify"})
+	err = rootCmd.Execute()
+	require.NoError(t, err)
+
+	agentPath := filepath.Join(dir, "agent.talon.yaml")
+	require.FileExists(t, agentPath)
+	content, err := os.ReadFile(agentPath)
+	require.NoError(t, err)
+	str := string(content)
+
+	assert.Contains(t, str, "Generic AI agent with policy enforcement")
+	assert.Contains(t, str, "- generic")
+	assert.Contains(t, str, "human_oversight: on-demand")
+}
+
 func TestInitListPacks_ShowsCrewAI(t *testing.T) {
 	var buf strings.Builder
 	rootCmd.SetOut(&buf)
@@ -102,4 +146,8 @@ func TestInitListPacks_ShowsCrewAI(t *testing.T) {
 	out := buf.String()
 	assert.Contains(t, out, "crewai")
 	assert.Contains(t, out, "CrewAI")
+	assert.Contains(t, out, "fintech-eu")
+	assert.Contains(t, out, "ecommerce-eu")
+	assert.Contains(t, out, "saas-eu")
+	assert.Contains(t, out, "telecom-eu")
 }

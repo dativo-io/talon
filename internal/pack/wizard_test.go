@@ -35,6 +35,10 @@ func TestListForWizard_ContainsExpectedPacks(t *testing.T) {
 	assert.True(t, ids["langchain"], "langchain should be visible")
 	assert.True(t, ids["crewai"], "crewai should be visible")
 	assert.True(t, ids["generic"], "generic should be visible")
+	assert.True(t, ids["fintech-eu"], "fintech-eu should be visible")
+	assert.True(t, ids["ecommerce-eu"], "ecommerce-eu should be visible")
+	assert.True(t, ids["saas-eu"], "saas-eu should be visible")
+	assert.True(t, ids["telecom-eu"], "telecom-eu should be visible")
 	assert.False(t, ids["n8n"], "n8n should be hidden")
 	assert.False(t, ids["flowise"], "flowise should be hidden")
 }
