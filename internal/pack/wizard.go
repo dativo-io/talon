@@ -124,6 +124,34 @@ var builtinPacks = []PackDescriptor{
 		Order:       50,
 		Framework:   "Any",
 	},
+	{
+		ID:          "fintech-eu",
+		DisplayName: "Fintech EU",
+		Description: "Financial services compliance starter — DORA and GDPR defaults",
+		Order:       60,
+		Framework:   "Industry",
+	},
+	{
+		ID:          "ecommerce-eu",
+		DisplayName: "E-commerce EU",
+		Description: "E-commerce compliance starter — GDPR-focused retail defaults",
+		Order:       70,
+		Framework:   "Industry",
+	},
+	{
+		ID:          "saas-eu",
+		DisplayName: "SaaS EU",
+		Description: "SaaS platform compliance starter — GDPR and NIS2 defaults",
+		Order:       80,
+		Framework:   "Industry",
+	},
+	{
+		ID:          "telecom-eu",
+		DisplayName: "Telecom EU",
+		Description: "Telecom compliance starter — NIS2 and GDPR defaults",
+		Order:       90,
+		Framework:   "Industry",
+	},
 }
 
 var customPacks []PackDescriptor

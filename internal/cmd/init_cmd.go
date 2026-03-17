@@ -49,8 +49,9 @@ var (
 	initCompliance      string
 )
 
-// supportedPacks are the allowed values for --pack (industry starter packs + wizard packs).
-var supportedPacks = []string{"fintech-eu", "ecommerce-eu", "saas-eu", "telecom-eu", "openclaw", "copaw", "langchain", "crewai", "generic"}
+// supportedPacks are the allowed values for --pack.
+// Keep this derived from pack.ValidPackIDs() so --pack and --list-packs stay in sync.
+var supportedPacks = pack.ValidPackIDs()
 
 // validComplianceValues are the allowed values for --compliance.
 var validComplianceValues = []string{"gdpr", "nis2", "dora", "eu-ai-act", "all"}
