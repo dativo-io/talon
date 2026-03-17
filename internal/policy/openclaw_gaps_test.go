@@ -145,3 +145,152 @@ func TestRateLimiting_GapC_CircuitBreakerOnRepeatedDenials(t *testing.T) {
 	assert.False(t, decision.Allowed, "6th request should be denied by rate limit")
 	assert.Contains(t, decision.Reasons[0], "Rate limit exceeded")
 }
+
+// Gap T7: Row count guard — OPA denies tool calls that exceed max_row_count.
+func TestToolAccess_GapT7_RowCountGuard(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		rowCount    int
+		maxRows     int
+		wantAllowed bool
+	}{
+		{"above threshold", 2000, 1000, false},
+		{"below threshold", 500, 1000, true},
+		{"at threshold", 1000, 1000, true},
+		{"no limit (zero)", 999999, 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pol := &Policy{
+				Agent: AgentConfig{Name: "test-agent", Version: "1.0.0"},
+				Capabilities: &CapabilitiesConfig{
+					AllowedTools: []string{"update_records"},
+				},
+				ToolPolicies: map[string]ToolPIIPolicy{
+					"update_records": {MaxRowCount: tt.maxRows},
+				},
+				Policies: PoliciesConfig{
+					CostLimits: &CostLimitsConfig{PerRequest: 10, Daily: 100, Monthly: 1000},
+				},
+			}
+			pol.ComputeHash([]byte("test"))
+			engine, err := NewEngine(ctx, pol)
+			require.NoError(t, err)
+
+			decision, err := engine.EvaluateToolAccess(ctx, "update_records",
+				map[string]interface{}{"estimated_row_count": tt.rowCount}, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAllowed, decision.Allowed,
+				"rowCount=%d, maxRows=%d", tt.rowCount, tt.maxRows)
+		})
+	}
+}
+
+// Gap T7: Dry-run guard — OPA denies when dry_run is required but not set.
+func TestToolAccess_GapT7_RequiresDryRun(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		rowCount    int
+		dryRun      interface{} // nil = not present, true/false
+		wantAllowed bool
+	}{
+		{"above threshold without dry_run", 200, nil, false},
+		{"above threshold with dry_run=true", 200, true, true},
+		{"below threshold without dry_run", 50, nil, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pol := &Policy{
+				Agent: AgentConfig{Name: "test-agent", Version: "1.0.0"},
+				Capabilities: &CapabilitiesConfig{
+					AllowedTools: []string{"update_records"},
+				},
+				ToolPolicies: map[string]ToolPIIPolicy{
+					"update_records": {RequireDryRun: true, DryRunThreshold: 100},
+				},
+				Policies: PoliciesConfig{
+					CostLimits: &CostLimitsConfig{PerRequest: 10, Daily: 100, Monthly: 1000},
+				},
+			}
+			pol.ComputeHash([]byte("test"))
+			engine, err := NewEngine(ctx, pol)
+			require.NoError(t, err)
+
+			params := map[string]interface{}{"estimated_row_count": tt.rowCount}
+			if tt.dryRun != nil {
+				params["dry_run"] = tt.dryRun
+			}
+			decision, err := engine.EvaluateToolAccess(ctx, "update_records", params, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAllowed, decision.Allowed,
+				"rowCount=%d, dryRun=%v", tt.rowCount, tt.dryRun)
+		})
+	}
+}
+
+// Gap T9: Forbidden argument values — OPA denies tool calls with forbidden argument values.
+func TestToolAccess_GapT9_ForbiddenArgumentValues(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		params      map[string]interface{}
+		wantAllowed bool
+	}{
+		{
+			name:        "forbidden mode=overwrite blocked",
+			params:      map[string]interface{}{"mode": "overwrite"},
+			wantAllowed: false,
+		},
+		{
+			name:        "forbidden mode=truncate blocked",
+			params:      map[string]interface{}{"mode": "truncate"},
+			wantAllowed: false,
+		},
+		{
+			name:        "safe mode=upsert allowed",
+			params:      map[string]interface{}{"mode": "upsert"},
+			wantAllowed: true,
+		},
+		{
+			name:        "no mode param allowed",
+			params:      map[string]interface{}{"query": "SELECT 1"},
+			wantAllowed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pol := &Policy{
+				Agent: AgentConfig{Name: "test-agent", Version: "1.0.0"},
+				Capabilities: &CapabilitiesConfig{
+					AllowedTools: []string{"update_records"},
+				},
+				ToolPolicies: map[string]ToolPIIPolicy{
+					"update_records": {
+						ForbiddenArgumentValues: map[string][]string{
+							"mode": {"overwrite", "truncate", "replace_all"},
+						},
+					},
+				},
+				Policies: PoliciesConfig{
+					CostLimits: &CostLimitsConfig{PerRequest: 10, Daily: 100, Monthly: 1000},
+				},
+			}
+			pol.ComputeHash([]byte("test"))
+			engine, err := NewEngine(ctx, pol)
+			require.NoError(t, err)
+
+			decision, err := engine.EvaluateToolAccess(ctx, "update_records", tt.params, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAllowed, decision.Allowed,
+				"params=%v", tt.params)
+		})
+	}
+}

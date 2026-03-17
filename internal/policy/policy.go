@@ -237,7 +237,7 @@ const (
 	PIIActionBlock  PIIAction = "block"
 )
 
-// ToolPIIPolicy defines per-tool PII handling for arguments and results.
+// ToolPIIPolicy defines per-tool PII handling, safety guards, and argument restrictions.
 // When a tool has no explicit policy in tool_policies, the _default entry applies.
 // When tool_policies is entirely absent, the global pii_action from data_classification applies.
 type ToolPIIPolicy struct {
@@ -245,6 +245,14 @@ type ToolPIIPolicy struct {
 	ArgumentDefault PIIAction            `yaml:"argument_default,omitempty" json:"argument_default,omitempty"`
 	Result          PIIAction            `yaml:"result,omitempty" json:"result,omitempty"`
 	Timeout         string               `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+
+	// Row count guard (Gap T7): limit bulk operations and require dry_run above threshold.
+	MaxRowCount     int  `yaml:"max_row_count,omitempty" json:"max_row_count,omitempty"`         // 0 = no limit
+	RequireDryRun   bool `yaml:"require_dry_run,omitempty" json:"require_dry_run,omitempty"`     // require dry_run=true when rows exceed DryRunThreshold
+	DryRunThreshold int  `yaml:"dry_run_threshold,omitempty" json:"dry_run_threshold,omitempty"` // rows above which dry_run is required
+
+	// Argument value policy (Gap T9): block specific argument values by name.
+	ForbiddenArgumentValues map[string][]string `yaml:"forbidden_argument_values,omitempty" json:"forbidden_argument_values,omitempty"`
 }
 
 // CopawConfig holds CoPaw integration policy (skill governance when using CoPaw with Talon).

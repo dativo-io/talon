@@ -191,6 +191,7 @@ type Runner struct {
 	cacheConfig   *cacheConfig
 	sessionStore  *talonsession.Store
 	promptStore   *talonprompt.Store
+	idempotency   *IdempotencyStore // optional; when set, deduplicates tool calls by (agent, correlation, tool, args_hash)
 }
 
 // cacheConfig is a minimal view of cache config for the runner (avoids importing config in agent).
@@ -227,6 +228,7 @@ type RunnerConfig struct {
 	CacheConfig   *RunnerCacheConfig
 	SessionStore  *talonsession.Store
 	PromptStore   *talonprompt.Store
+	Idempotency   *IdempotencyStore // optional; deduplicates tool calls by (agent, correlation, tool, args_hash)
 }
 
 // RunnerCacheConfig is a subset of config.CacheConfig for the runner (avoids circular import).
@@ -259,6 +261,7 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		pricing:           cfg.Pricing,
 		sessionStore:      cfg.SessionStore,
 		promptStore:       cfg.PromptStore,
+		idempotency:       cfg.Idempotency,
 	}
 	if cfg.Memory != nil && cfg.Classifier != nil {
 		r.governance = memory.NewGovernance(cfg.Memory, cfg.Classifier)
@@ -1161,7 +1164,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					}
 
 					toolStart := time.Now()
-					tcResult := r.executeToolCallFull(ctx, policyEval, pol, tc, toolHistory)
+					tcResult := r.executeToolCallFull(ctx, policyEval, pol, tc, toolHistory, req.AgentName, correlationID)
 					resultContent = tcResult.Content
 					executed = tcResult.Executed
 					toolName = tcResult.ToolName
@@ -1475,12 +1478,13 @@ type ToolCallResult struct {
 	ExecutionError string // non-empty when tool.Execute() returned an error (distinct from policy denial)
 }
 
-// executeToolCallFull runs policy check, tool-aware PII scanning, argument validation,
-// registry lookup, per-tool timeout, and execution for a single LLM tool call.
+// executeToolCallFull runs policy check, idempotency dedup, tool-aware PII scanning,
+// argument validation, registry lookup, per-tool timeout, and execution for a single LLM tool call.
 // toolHistory is the sequence of tool calls in this run so far (for OPA tool-chain risk scoring).
+// agentID and correlationID are passed through for idempotency key derivation (Gap T8).
 //
-//nolint:gocyclo // tool execution pipeline: policy, PII, validation, timeout, execute, result PII
-func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.PolicyEvaluator, pol *policy.Policy, tc llm.ToolCall, toolHistory []map[string]interface{}) ToolCallResult {
+//nolint:gocyclo // tool execution pipeline: policy, idempotency, PII, validation, timeout, execute, result PII
+func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.PolicyEvaluator, pol *policy.Policy, tc llm.ToolCall, toolHistory []map[string]interface{}, agentID, correlationID string) ToolCallResult {
 	result := ToolCallResult{ToolName: tc.Name}
 	if r.toolRegistry == nil {
 		result.Content = `{"error":"tool registry not available"}`
@@ -1505,11 +1509,27 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 		}
 	}
 
-	// Step 2: Tool-aware PII scanning on arguments
+	// Step 1.5: Idempotency check (Gap T8) — skip re-execution if this exact call already completed.
 	params, _ := json.Marshal(tc.Arguments)
 	if len(params) == 0 {
 		params = []byte("{}")
 	}
+	var idemKey IdempotencyKey
+	if r.idempotency != nil {
+		idemKey = DeriveIdempotencyKey(agentID, correlationID, tc.Name, params)
+		idemResult, idemErr := r.idempotency.Check(ctx, idemKey)
+		if idemErr == nil && idemResult.Found && idemResult.Status == "completed" {
+			log.Info().Str("tool", tc.Name).Str("argument_hash", idemKey.ArgumentHash).Msg("idempotency_cache_hit")
+			result.Content = string(idemResult.Result)
+			result.Executed = true
+			return result
+		}
+		if idemErr == nil && !idemResult.Found {
+			_ = r.idempotency.RecordPending(ctx, idemKey)
+		}
+	}
+
+	// Step 2: Tool-aware PII scanning on arguments
 
 	if r.classifier != nil && pol != nil && len(pol.ToolPolicies) > 0 {
 		piiResult := applyToolArgumentPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), r.classifier, tc.Name, params, pol)
@@ -1532,6 +1552,16 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 	if !ok {
 		result.Content = `{"error":"tool not in registry"}`
 		return result
+	}
+
+	// Row count guard (Gap T7): enforce max_row_count and require_dry_run from policy before execution.
+	if tp := resolveToolPolicy(tc.Name, pol); tp != nil {
+		if valErr := validateRowCountGuard(tp, tc.Arguments); valErr != nil {
+			log.Warn().Err(valErr).Str("tool", tc.Name).Msg("tool row count guard failed")
+			b, _ := json.Marshal(map[string]string{"error": valErr.Error()})
+			result.Content = string(b)
+			return result
+		}
 	}
 
 	// Argument validation (Gap T6): if the tool implements ArgumentValidator, check before execution.
@@ -1565,6 +1595,11 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 		return result
 	}
 	result.Executed = true
+
+	// Idempotency: record successful completion so retries return cached result.
+	if r.idempotency != nil {
+		_ = r.idempotency.RecordCompleted(ctx, idemKey, out)
+	}
 
 	resultStr := string(out)
 	if len(out) == 0 {
@@ -2391,6 +2426,46 @@ func (r *Runner) RunFromTrigger(ctx context.Context, agentName, prompt, invocati
 	}
 	_, err := r.Run(ctx, req)
 	return err
+}
+
+// validateRowCountGuard enforces per-tool max_row_count and require_dry_run from ToolPIIPolicy.
+// Called before ArgumentValidator so every tool is protected regardless of whether it implements the interface.
+func validateRowCountGuard(tp *policy.ToolPIIPolicy, args map[string]interface{}) error {
+	if tp.MaxRowCount <= 0 && !tp.RequireDryRun {
+		return nil
+	}
+	rowCount, ok := args["estimated_row_count"]
+	if !ok {
+		return nil
+	}
+	rowCountInt := toIntFromInterface(rowCount)
+	if tp.MaxRowCount > 0 && rowCountInt > tp.MaxRowCount {
+		return fmt.Errorf("estimated_row_count %d exceeds limit %d", rowCountInt, tp.MaxRowCount)
+	}
+	if tp.RequireDryRun && tp.DryRunThreshold > 0 && rowCountInt > tp.DryRunThreshold {
+		dryRun, hasDryRun := args["dry_run"]
+		if !hasDryRun || dryRun != true {
+			return fmt.Errorf("dry_run required when estimated_row_count > %d", tp.DryRunThreshold)
+		}
+	}
+	return nil
+}
+
+// toIntFromInterface converts a numeric interface{} to int (handles float64 from JSON and int).
+func toIntFromInterface(v interface{}) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i)
+		}
+	}
+	return 0
 }
 
 // planReviewConfigFromPolicy converts policy-level plan review config to agent type.

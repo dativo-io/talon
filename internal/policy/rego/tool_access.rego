@@ -44,3 +44,32 @@ deny contains msg if {
 	contains(input.params.path, pattern)
 	msg := sprintf("File path contains forbidden pattern: %s", [pattern])
 }
+
+# Gap T7: Row count guard — block when estimated_row_count exceeds per-tool max_row_count.
+deny contains msg if {
+	pol := data.policy.tool_policies[input.tool_name]
+	pol.max_row_count > 0
+	input.params.estimated_row_count > pol.max_row_count
+	msg := sprintf("estimated_row_count %d exceeds policy limit %d for tool %s",
+		[input.params.estimated_row_count, pol.max_row_count, input.tool_name])
+}
+
+# Gap T7: Dry-run guard — require dry_run=true when estimated_row_count exceeds threshold.
+deny contains msg if {
+	pol := data.policy.tool_policies[input.tool_name]
+	pol.require_dry_run
+	pol.dry_run_threshold > 0
+	input.params.estimated_row_count > pol.dry_run_threshold
+	not input.params.dry_run
+	msg := sprintf("dry_run required for %s when estimated_row_count > %d",
+		[input.tool_name, pol.dry_run_threshold])
+}
+
+# Gap T9: Forbidden argument values — block specific argument values by name.
+deny contains msg if {
+	pol := data.policy.tool_policies[input.tool_name]
+	forbidden_val := pol.forbidden_argument_values[arg_name][_]
+	input.params[arg_name] == forbidden_val
+	msg := sprintf("argument %s=%s is forbidden for tool %s",
+		[arg_name, forbidden_val, input.tool_name])
+}

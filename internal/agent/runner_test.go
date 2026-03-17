@@ -2144,6 +2144,96 @@ func mustEvidenceStore(t *testing.T, dir string) *evidence.Store {
 	return s
 }
 
+func TestRowCountGuard_BlocksAboveThreshold(t *testing.T) {
+	tests := []struct {
+		name    string
+		maxRows int
+		rows    interface{}
+		wantErr bool
+	}{
+		{"above limit", 1000, 2000, true},
+		{"below limit", 1000, 500, false},
+		{"at limit", 1000, 1000, false},
+		{"no limit", 0, 999999, false},
+		{"float64 from JSON", 1000, float64(2000), true},
+		{"no param", 1000, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tp := &policy.ToolPIIPolicy{MaxRowCount: tt.maxRows}
+			args := map[string]interface{}{}
+			if tt.rows != nil {
+				args["estimated_row_count"] = tt.rows
+			}
+			err := validateRowCountGuard(tp, args)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "exceeds limit")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestRowCountGuard_RequiresDryRunAboveThreshold(t *testing.T) {
+	tests := []struct {
+		name    string
+		rows    int
+		dryRun  interface{} // nil = not present, true/false
+		wantErr bool
+	}{
+		{"above threshold no dry_run", 200, nil, true},
+		{"above threshold dry_run=true", 200, true, false},
+		{"above threshold dry_run=false", 200, false, true},
+		{"below threshold no dry_run", 50, nil, false},
+		{"at threshold no dry_run", 100, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tp := &policy.ToolPIIPolicy{RequireDryRun: true, DryRunThreshold: 100}
+			args := map[string]interface{}{"estimated_row_count": tt.rows}
+			if tt.dryRun != nil {
+				args["dry_run"] = tt.dryRun
+			}
+			err := validateRowCountGuard(tp, args)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "dry_run required")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestRowCountGuard_AllowsBelowThreshold(t *testing.T) {
+	tp := &policy.ToolPIIPolicy{MaxRowCount: 1000, RequireDryRun: true, DryRunThreshold: 100}
+	args := map[string]interface{}{"estimated_row_count": 50}
+	err := validateRowCountGuard(tp, args)
+	assert.NoError(t, err)
+}
+
+func TestToIntFromInterface(t *testing.T) {
+	tests := []struct {
+		name string
+		v    interface{}
+		want int
+	}{
+		{"int", 42, 42},
+		{"int64", int64(42), 42},
+		{"float64", float64(42), 42},
+		{"float64 with decimals", float64(42.9), 42},
+		{"string (unsupported)", "42", 0},
+		{"nil", nil, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, toIntFromInterface(tt.v))
+		})
+	}
+}
+
 func TestTruncateStr(t *testing.T) {
 	tests := []struct {
 		name   string
