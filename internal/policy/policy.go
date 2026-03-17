@@ -135,6 +135,13 @@ type SandboxingConfig struct {
 	WrapContent bool `yaml:"wrap_content" json:"wrap_content"`
 }
 
+// SessionLimitsConfig sets per-session budget and candidate/judge caps for RULER-style evaluation.
+type SessionLimitsConfig struct {
+	MaxCost       float64 `yaml:"max_cost,omitempty" json:"max_cost,omitempty"`
+	MaxCandidates int     `yaml:"max_candidates,omitempty" json:"max_candidates,omitempty"`
+	MaxJudgeCalls int     `yaml:"max_judge_calls,omitempty" json:"max_judge_calls,omitempty"`
+}
+
 // PoliciesConfig is the main governance section.
 type PoliciesConfig struct {
 	CostLimits         *CostLimitsConfig         `yaml:"cost_limits" json:"cost_limits"`
@@ -143,6 +150,7 @@ type PoliciesConfig struct {
 	DataClassification *DataClassificationConfig `yaml:"data_classification,omitempty" json:"data_classification,omitempty"`
 	ModelRouting       *ModelRoutingConfig       `yaml:"model_routing,omitempty" json:"model_routing,omitempty"`
 	TimeRestrictions   *TimeRestrictionsConfig   `yaml:"time_restrictions,omitempty" json:"time_restrictions,omitempty"`
+	SessionLimits      *SessionLimitsConfig      `yaml:"session_limits,omitempty" json:"session_limits,omitempty"`
 }
 
 // CostLimitsConfig sets per-request, daily, and monthly cost budgets.
@@ -253,6 +261,8 @@ type ToolPIIPolicy struct {
 
 	// Argument value policy (Gap T9): block specific argument values by name.
 	ForbiddenArgumentValues map[string][]string `yaml:"forbidden_argument_values,omitempty" json:"forbidden_argument_values,omitempty"`
+
+	SchemaValidation string `yaml:"schema_validation,omitempty" json:"schema_validation,omitempty"` // "enforce" (default), "shadow", or "disabled"
 }
 
 // CopawConfig holds CoPaw integration policy (skill governance when using CoPaw with Talon).

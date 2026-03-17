@@ -846,7 +846,7 @@ func (r *Runner) resolveSession(ctx context.Context, req *RunRequest) (string, e
 		}
 		return ss.ID, nil
 	}
-	ss, err := r.sessionStore.Create(ctx, req.TenantID, req.AgentName, req.AgentReasoning)
+	ss, err := r.sessionStore.Create(ctx, req.TenantID, req.AgentName, req.AgentReasoning, 0)
 	if err != nil {
 		log.Warn().
 			Err(err).
@@ -1567,6 +1567,26 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 			b, _ := json.Marshal(map[string]string{"error": valErr.Error()})
 			result.Content = string(b)
 			return result
+		}
+	}
+
+	// Automatic JSON Schema validation: validate params against the tool's InputSchema.
+	if schema := tool.InputSchema(); len(schema) > 0 && string(schema) != "null" {
+		schemaMode := "enforce"
+		if tp := resolveToolPolicy(tc.Name, pol); tp != nil && tp.SchemaValidation != "" {
+			schemaMode = tp.SchemaValidation
+		}
+		if schemaMode != "disabled" {
+			if valErr := tools.ValidateAgainstSchema(schema, params); valErr != nil {
+				if schemaMode == "shadow" {
+					log.Warn().Err(valErr).Str("tool", tc.Name).Str("mode", "shadow").Msg("schema validation failed (shadow)")
+				} else {
+					log.Warn().Err(valErr).Str("tool", tc.Name).Msg("schema validation failed")
+					b, _ := json.Marshal(map[string]string{"error": "schema validation failed: " + valErr.Error()})
+					result.Content = string(b)
+					return result
+				}
+			}
 		}
 	}
 

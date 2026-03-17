@@ -14,6 +14,7 @@ import (
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
+	"github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/tenant"
 	"github.com/dativo-io/talon/internal/trigger"
 )
@@ -32,6 +33,7 @@ type Server struct {
 	webhookHandler       *trigger.WebhookHandler
 	planReviewStore      *agent.PlanReviewStore
 	memoryStore          *memory.Store
+	sessionStore         *session.Store
 	policyEngine         *policy.Engine
 	secretsStore         *secrets.SecretStore
 	policy               *policy.Policy
@@ -82,6 +84,11 @@ func WithDashboard(html string) Option {
 // WithCORSOrigins sets allowed CORS origins (e.g. ["*"] for MVP).
 func WithCORSOrigins(origins []string) Option {
 	return func(s *Server) { s.corsOrigins = origins }
+}
+
+// WithSessionStore sets the session store (optional).
+func WithSessionStore(ss *session.Store) Option {
+	return func(s *Server) { s.sessionStore = ss }
 }
 
 // WithActiveRunTracker sets the in-flight run tracker for status/dashboard active_runs.
@@ -179,6 +186,7 @@ func (s *Server) Routes() http.Handler {
 		if s.mcpProxy != nil {
 			r.Post("/mcp/proxy", s.mcpProxy.ServeHTTP)
 		}
+		r.Post("/v1/sessions/{id}/complete", s.handleSessionComplete)
 	})
 
 	// Tenant or admin API group (mostly read paths).
@@ -207,6 +215,9 @@ func (s *Server) Routes() http.Handler {
 
 		r.Get("/v1/triggers", s.handleTriggersList)
 		r.Get("/v1/triggers/{name}/history", s.handleTriggerHistory)
+
+		r.Get("/v1/sessions/{id}", s.handleSessionGet)
+		r.Get("/v1/sessions", s.handleSessionList)
 
 		r.Get("/v1/plans/pending", s.handlePlansPending)
 		r.Get("/v1/plans/{id}", s.handlePlanGet)

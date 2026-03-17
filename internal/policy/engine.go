@@ -41,6 +41,7 @@ var allPolicies = []regoPolicy{
 	{file: "rego/memory_governance.rego", query: "data.talon.policy.memory_governance.deny"},
 	{file: "rego/data_classification.rego", query: "data.talon.policy.data_classification.tier"},
 	{file: "rego/routing.rego", query: "data.talon.policy.routing.result"},
+	{file: "rego/session_governance.rego", query: "data.talon.policy.session_governance.deny"},
 }
 
 // Engine evaluates governance policies using embedded OPA.

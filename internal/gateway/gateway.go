@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/llm"
 	"github.com/dativo-io/talon/internal/secrets"
+	"github.com/dativo-io/talon/internal/session"
 )
 
 // PolicyEvaluator evaluates gateway-specific policy (model allowlist, cost, data tier).
@@ -44,6 +46,9 @@ type gatewayContextKey string
 const (
 	gatewayAgentReasoningKey gatewayContextKey = "agent_reasoning"
 	gatewaySessionIDKey      gatewayContextKey = "session_id"
+	gatewayRetryAttemptKey   gatewayContextKey = "retry_attempt"
+	gatewayStageKey          gatewayContextKey = "stage"
+	gatewayCandidateIndexKey gatewayContextKey = "candidate_index"
 )
 
 // hasCallerTag returns true when the caller has the given tag (e.g. "copaw" for CoPaw).
@@ -79,6 +84,7 @@ type Gateway struct {
 	// canonicalTenantIDs maps tenant ID -> same ID from config (populated at init); used for cache key scope so static analysis sees value from config, not from request.
 	canonicalTenantIDs map[string]string
 	metricsRecorder    MetricsRecorder
+	sessionStore       *session.Store
 	// budgetAlertLast tracks last time we emitted a budget alert per tenant+period+threshold to avoid spamming
 	budgetAlertMu   sync.Mutex
 	budgetAlertLast map[string]time.Time
@@ -106,6 +112,11 @@ func (g *Gateway) canonicalTenantIDForCache(fromCaller string) string {
 // SetMetricsRecorder attaches a dashboard metrics collector. Call after NewGateway.
 func (g *Gateway) SetMetricsRecorder(mr MetricsRecorder) {
 	g.metricsRecorder = mr
+}
+
+// SetSessionStore attaches a session store for lifecycle tracking. Call after NewGateway.
+func (g *Gateway) SetSessionStore(ss *session.Store) {
+	g.sessionStore = ss
 }
 
 // SetCache wires the optional semantic cache into the gateway. Call after NewGateway when cache is enabled.
@@ -195,6 +206,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Talon-Session-ID", sessionID)
 	ctx = context.WithValue(ctx, gatewayAgentReasoningKey, r.Header.Get("X-Talon-Reasoning"))
 	ctx = context.WithValue(ctx, gatewaySessionIDKey, sessionID)
+	ctx = context.WithValue(ctx, gatewayRetryAttemptKey, r.Header.Get("X-Talon-Retry-Attempt"))
+	ctx = context.WithValue(ctx, gatewayStageKey, r.Header.Get("X-Talon-Stage"))
+	if ciStr := r.Header.Get("X-Talon-Candidate-Index"); ciStr != "" {
+		if ci, err := strconv.Atoi(ciStr); err == nil {
+			ctx = context.WithValue(ctx, gatewayCandidateIndexKey, ci)
+		}
+	}
 
 	isShadow := g.config.Mode == ModeShadow
 	var shadowViolations []evidence.ShadowViolation
@@ -367,6 +385,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 95)
 	}
 	policyInput := buildGatewayPolicyInput(caller, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost)
+	if g.sessionStore != nil && sessionID != "" {
+		if sess, err := g.sessionStore.Get(ctx, sessionID); err == nil {
+			policyInput["session_cost_total"] = sess.TotalCost
+		}
+		if sc, err := g.sessionStore.GetStageCounts(ctx, sessionID); err == nil {
+			policyInput["session_stage_counts"] = map[string]int{
+				"generation": sc.Generation,
+				"judge":      sc.Judge,
+				"commit":     sc.Commit,
+			}
+		}
+		policyInput["session_stage"] = stageFromContext(ctx)
+	}
 	if g.policy != nil && (g.config.Mode == ModeEnforce || isShadow) {
 		allowed, reasons, policyErr := g.policy.EvaluateGateway(ctx, policyInput)
 		if policyErr != nil {
@@ -671,6 +702,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, 0, true, nil, outputPIIDetected, outputPIITypes, attSummary, toolResult, shadowViolations, false, "", 0, 0, ttftMS, tpotMS)
+	g.trackSessionUsage(ctx, sessionID, caller.TenantID, caller.Name, cost, tokenUsage.Input+tokenUsage.Output)
 
 	// Emit OTel + dashboard metrics
 	g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations,
@@ -736,6 +768,9 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		SecretsAccessed:         secretsAccessed,
 		AttachmentScan:          attScan,
 		AgentReasoning:          agentReasoningFromContext(ctx),
+		RetryAttempt:            retryAttemptFromContext(ctx),
+		Stage:                   stageFromContext(ctx),
+		CandidateIndex:          candidateIndexFromContext(ctx),
 	}
 	if toolResult != nil {
 		params.ToolsRequested = toolResult.Requested
@@ -765,6 +800,55 @@ func sessionIDFromContext(ctx context.Context) string {
 		return s
 	}
 	return ""
+}
+
+func retryAttemptFromContext(ctx context.Context) string {
+	v := ctx.Value(gatewayRetryAttemptKey)
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func stageFromContext(ctx context.Context) string {
+	v := ctx.Value(gatewayStageKey)
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func candidateIndexFromContext(ctx context.Context) int {
+	v := ctx.Value(gatewayCandidateIndexKey)
+	if i, ok := v.(int); ok {
+		return i
+	}
+	return 0
+}
+
+// trackSessionUsage updates session cost/token counters when a session store is configured.
+func (g *Gateway) trackSessionUsage(ctx context.Context, sessionID, tenantID, callerName string, cost float64, tokens int) {
+	if g.sessionStore == nil || sessionID == "" {
+		return
+	}
+	_, err := g.sessionStore.Join(ctx, sessionID, tenantID)
+	if err != nil {
+		// Session doesn't exist or is closed; create a new one only if it was not found.
+		created, createErr := g.sessionStore.Create(ctx, tenantID, callerName, "", 0)
+		if createErr != nil {
+			log.Warn().Err(createErr).Str("session_id", sessionID).Msg("gateway_session_create_failed")
+			return
+		}
+		sessionID = created.ID
+	}
+	if usageErr := g.sessionStore.AddUsage(ctx, sessionID, cost, tokens); usageErr != nil {
+		log.Warn().Err(usageErr).Str("session_id", sessionID).Msg("gateway_session_usage_failed")
+	}
+	if stage := stageFromContext(ctx); stage != "" {
+		if err := g.sessionStore.IncrementStageCount(ctx, sessionID, stage); err != nil {
+			log.Warn().Err(err).Str("session_id", sessionID).Str("stage", stage).Msg("stage count increment failed")
+		}
+	}
 }
 
 func buildGatewayPolicyInput(caller *CallerConfig, provider, model string, dataTier int, estimatedCost, dailyCost, monthlyCost float64) map[string]interface{} {

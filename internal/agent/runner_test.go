@@ -2083,7 +2083,7 @@ func TestResolveSessionWithProvidedClosedSessionFails(t *testing.T) {
 	require.NoError(t, err)
 	defer s.Close()
 
-	ss, err := s.Create(ctx, "acme", "agent-a", "reasoning")
+	ss, err := s.Create(ctx, "acme", "agent-a", "reasoning", 0)
 	require.NoError(t, err)
 	require.NoError(t, s.Complete(ctx, ss.ID, 0, 0))
 
@@ -2103,7 +2103,7 @@ func TestResolveSessionWithProvidedActiveSessionJoins(t *testing.T) {
 	require.NoError(t, err)
 	defer s.Close()
 
-	ss, err := s.Create(ctx, "acme", "agent-a", "reasoning")
+	ss, err := s.Create(ctx, "acme", "agent-a", "reasoning", 0)
 	require.NoError(t, err)
 
 	r := NewRunner(RunnerConfig{SessionStore: s})

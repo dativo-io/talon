@@ -46,6 +46,9 @@ type RecordGatewayEvidenceParams struct {
 	CacheSimilarity float64
 	CostSaved       float64
 	AgentReasoning  string
+	RetryAttempt    string // X-Talon-Retry-Attempt header value; empty when not a retry
+	Stage           string // "generation", "judge", or "commit"
+	CandidateIndex  int
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -64,6 +67,8 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		ID:              "gw_" + uuid.New().String()[:12],
 		CorrelationID:   params.CorrelationID,
 		SessionID:       params.SessionID,
+		Stage:           params.Stage,
+		CandidateIndex:  params.CandidateIndex,
 		Timestamp:       time.Now(),
 		TenantID:        params.TenantID,
 		AgentID:         params.CallerName,
@@ -105,6 +110,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		CacheEntryID:            params.CacheEntryID,
 		CacheSimilarity:         params.CacheSimilarity,
 		CostSaved:               params.CostSaved,
+		RetryAttempt:            params.RetryAttempt,
 	}
 	if !params.PolicyAllowed {
 		ev.PolicyDecision.Action = "deny"
