@@ -150,7 +150,14 @@ func buildReason(opClass, risk string, isBulk, requiresReview bool) string {
 }
 
 func nameSuggestsBulk(name string) bool {
-	return containsAnyIntent(name, "bulk", "batch", "mass", "all", "many")
+	segments := strings.Split(name, "_")
+	for _, seg := range segments {
+		switch seg {
+		case "bulk", "batch", "mass", "all", "many":
+			return true
+		}
+	}
+	return false
 }
 
 func intentVolumeThreshold(cfg *PlanReviewConfig) int {

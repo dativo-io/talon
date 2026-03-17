@@ -15,8 +15,6 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 )
 
-var intentJSON bool
-
 var intentCmd = &cobra.Command{
 	Use:   "intent",
 	Short: "Inspect tool intent classification and risk classes",
@@ -37,7 +35,8 @@ var intentClassifyCmd = &cobra.Command{
 		}
 
 		classification := agent.ClassifyToolIntent(toolName, params, loadPlanReviewConfig(cmd.Context()))
-		if intentJSON {
+		jsonOut, _ := cmd.Flags().GetBool("json")
+		if jsonOut {
 			out, err := json.MarshalIndent(classification, "", "  ")
 			if err != nil {
 				return fmt.Errorf("encoding JSON output: %w", err)
@@ -64,7 +63,8 @@ var intentClassesCmd = &cobra.Command{
 		sort.Slice(catalog, func(i, j int) bool {
 			return catalog[i].Class < catalog[j].Class
 		})
-		if intentJSON {
+		jsonOut, _ := cmd.Flags().GetBool("json")
+		if jsonOut {
 			out, err := json.MarshalIndent(catalog, "", "  ")
 			if err != nil {
 				return fmt.Errorf("encoding JSON output: %w", err)
@@ -88,8 +88,8 @@ var intentClassesCmd = &cobra.Command{
 }
 
 func init() {
-	intentClassifyCmd.Flags().BoolVar(&intentJSON, "json", false, "output in JSON format")
-	intentClassesCmd.Flags().BoolVar(&intentJSON, "json", false, "output in JSON format")
+	intentClassifyCmd.Flags().Bool("json", false, "output in JSON format")
+	intentClassesCmd.Flags().Bool("json", false, "output in JSON format")
 
 	intentCmd.AddCommand(intentClassifyCmd)
 	intentCmd.AddCommand(intentClassesCmd)
