@@ -1524,6 +1524,12 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 			result.Executed = true
 			return result
 		}
+		if idemErr == nil && idemResult.Found && idemResult.Status == "pending" {
+			log.Warn().Str("tool", tc.Name).Str("argument_hash", idemKey.ArgumentHash).Msg("idempotency_pending_duplicate")
+			b, _ := json.Marshal(map[string]string{"error": "tool call already in progress"})
+			result.Content = string(b)
+			return result
+		}
 		if idemErr == nil && !idemResult.Found {
 			_ = r.idempotency.RecordPending(ctx, idemKey)
 		}
@@ -1596,11 +1602,6 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 	}
 	result.Executed = true
 
-	// Idempotency: record successful completion so retries return cached result.
-	if r.idempotency != nil {
-		_ = r.idempotency.RecordCompleted(ctx, idemKey, out)
-	}
-
 	resultStr := string(out)
 	if len(out) == 0 {
 		resultStr = "{}"
@@ -1611,6 +1612,11 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 		redacted, findings := applyToolResultPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), r.classifier, tc.Name, resultStr, pol)
 		result.PIIFindings = append(result.PIIFindings, findings...)
 		resultStr = redacted
+	}
+
+	// Idempotency: record successful completion after PII scanning so cached results are already redacted.
+	if r.idempotency != nil {
+		_ = r.idempotency.RecordCompleted(ctx, idemKey, []byte(resultStr))
 	}
 
 	result.Content = resultStr
