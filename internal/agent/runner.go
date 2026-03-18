@@ -1164,7 +1164,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					}
 
 					toolStart := time.Now()
-					tcResult := r.executeToolCallFull(ctx, policyEval, pol, tc, toolHistory, req.AgentName, correlationID)
+					tcResult := r.executeToolCallFull(ctx, policyEval, pol, tc, toolHistory, req.AgentName, correlationID, req.SessionID)
 					resultContent = tcResult.Content
 					executed = tcResult.Executed
 					toolName = tcResult.ToolName
@@ -1481,10 +1481,10 @@ type ToolCallResult struct {
 // executeToolCallFull runs policy check, idempotency dedup, tool-aware PII scanning,
 // argument validation, registry lookup, per-tool timeout, and execution for a single LLM tool call.
 // toolHistory is the sequence of tool calls in this run so far (for OPA tool-chain risk scoring).
-// agentID and correlationID are passed through for idempotency key derivation (Gap T8).
+// agentID, correlationID, and sessionID are used for idempotency key derivation when tool_governance is set (Gap T8).
 //
 //nolint:gocyclo // tool execution pipeline: policy, idempotency, PII, validation, timeout, execute, result PII
-func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.PolicyEvaluator, pol *policy.Policy, tc llm.ToolCall, toolHistory []map[string]interface{}, agentID, correlationID string) ToolCallResult {
+func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.PolicyEvaluator, pol *policy.Policy, tc llm.ToolCall, toolHistory []map[string]interface{}, agentID, correlationID, sessionID string) ToolCallResult {
 	result := ToolCallResult{ToolName: tc.Name}
 	if r.toolRegistry == nil {
 		result.Content = `{"error":"tool registry not available"}`
@@ -1509,29 +1509,73 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 		}
 	}
 
-	// Step 1.5: Idempotency check (Gap T8) — skip re-execution if this exact call already completed.
+	// Step 1.5: Idempotency check (Gap T8) — only for tools listed in tool_governance.
 	params, _ := json.Marshal(tc.Arguments)
 	if len(params) == 0 {
 		params = []byte("{}")
 	}
 	var idemKey IdempotencyKey
-	if r.idempotency != nil {
-		idemKey = DeriveIdempotencyKey(agentID, correlationID, tc.Name, params)
-		idemResult, idemErr := r.idempotency.Check(ctx, idemKey)
-		if idemErr == nil && idemResult.Found && idemResult.Status == "completed" {
-			log.Info().Str("tool", tc.Name).Str("argument_hash", idemKey.ArgumentHash).Msg("idempotency_cache_hit")
-			result.Content = string(idemResult.Result)
-			result.Executed = true
-			return result
-		}
-		if idemErr == nil && idemResult.Found && idemResult.Status == "pending" {
-			log.Warn().Str("tool", tc.Name).Str("argument_hash", idemKey.ArgumentHash).Msg("idempotency_pending_duplicate")
-			b, _ := json.Marshal(map[string]string{"error": "tool call already in progress"})
-			result.Content = string(b)
-			return result
-		}
-		if idemErr == nil && !idemResult.Found {
-			_ = r.idempotency.RecordPending(ctx, idemKey)
+	var idemRecordCompleted bool
+	if r.idempotency != nil && pol != nil && pol.ToolGovernance != nil {
+		if cfg, ok := pol.ToolGovernance[tc.Name]; ok {
+			idemRecordCompleted = true
+			scopeID := correlationID
+			if cfg.IdempotencyKey == "session_id" && sessionID != "" {
+				scopeID = sessionID
+			}
+			idemKey = DeriveIdempotencyKey(agentID, scopeID, tc.Name, params)
+			var maxAge time.Duration
+			if cfg.CacheTTL != "" {
+				var parseErr error
+				maxAge, parseErr = time.ParseDuration(cfg.CacheTTL)
+				if parseErr != nil {
+					log.Warn().Err(parseErr).Str("tool", tc.Name).Str("cache_ttl", cfg.CacheTTL).Msg("invalid cache_ttl in tool_governance")
+					b, _ := json.Marshal(map[string]string{"error": "invalid cache_ttl in tool_governance: " + parseErr.Error() + " (use e.g. 24h, 1h)"})
+					result.Content = string(b)
+					return result
+				}
+			}
+			idemResult, idemErr := r.idempotency.Check(ctx, idemKey, maxAge)
+			if idemErr != nil && cfg.StrictMode {
+				log.Warn().Err(idemErr).Str("tool", tc.Name).Msg("idempotency check failed strict_mode")
+				b, _ := json.Marshal(map[string]string{"error": "idempotency check failed: " + idemErr.Error()})
+				result.Content = string(b)
+				return result
+			}
+			if idemErr == nil && idemResult.Found && idemResult.Status == "completed" {
+				if cfg.OnDuplicate == "fail" {
+					b, _ := json.Marshal(map[string]string{"error": "duplicate tool call not allowed (on_duplicate: fail)"})
+					result.Content = string(b)
+					return result
+				}
+				log.Info().Str("tool", tc.Name).Str("argument_hash", idemKey.ArgumentHash).Msg("idempotency_cache_hit")
+				result.Content = string(idemResult.Result)
+				result.Executed = true
+				return result
+			}
+			if idemErr == nil && idemResult.Found && idemResult.Status == "pending" {
+				log.Warn().Str("tool", tc.Name).Str("argument_hash", idemKey.ArgumentHash).Msg("idempotency_pending_duplicate")
+				b, _ := json.Marshal(map[string]string{"error": "tool call already in progress"})
+				result.Content = string(b)
+				return result
+			}
+			if idemErr == nil && !idemResult.Found {
+				// Atomically claim the slot (insert new or transition TTL-expired completed to pending).
+				// If we don't claim, another request has the slot — don't execute to avoid duplicate side effects.
+				claimed, claimErr := r.idempotency.ClaimPending(ctx, idemKey, maxAge)
+				if claimErr != nil && cfg.StrictMode {
+					log.Warn().Err(claimErr).Str("tool", tc.Name).Msg("idempotency claim failed strict_mode")
+					b, _ := json.Marshal(map[string]string{"error": "idempotency claim failed: " + claimErr.Error()})
+					result.Content = string(b)
+					return result
+				}
+				if !claimed {
+					log.Warn().Str("tool", tc.Name).Str("argument_hash", idemKey.ArgumentHash).Msg("idempotency_slot_not_claimed")
+					b, _ := json.Marshal(map[string]string{"error": "tool call already in progress"})
+					result.Content = string(b)
+					return result
+				}
+			}
 		}
 	}
 
@@ -1635,7 +1679,7 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 	}
 
 	// Idempotency: record successful completion after PII scanning so cached results are already redacted.
-	if r.idempotency != nil {
+	if r.idempotency != nil && idemRecordCompleted {
 		_ = r.idempotency.RecordCompleted(ctx, idemKey, []byte(resultStr))
 	}
 

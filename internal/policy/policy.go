@@ -10,19 +10,20 @@ import (
 
 // Policy represents a complete .talon.yaml configuration (v2.0 schema).
 type Policy struct {
-	Agent              AgentConfig               `yaml:"agent" json:"agent"`
-	Capabilities       *CapabilitiesConfig       `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
-	Triggers           *TriggersConfig           `yaml:"triggers,omitempty" json:"triggers,omitempty"`
-	Secrets            *SecretsConfig            `yaml:"secrets,omitempty" json:"secrets,omitempty"`
-	Memory             *MemoryConfig             `yaml:"memory,omitempty" json:"memory,omitempty"`
-	Context            *ContextConfig            `yaml:"context,omitempty" json:"context,omitempty"`
-	AttachmentHandling *AttachmentHandlingConfig `yaml:"attachment_handling,omitempty" json:"attachment_handling,omitempty"`
-	Policies           PoliciesConfig            `yaml:"policies" json:"policies"`
-	ToolPolicies       map[string]ToolPIIPolicy  `yaml:"tool_policies,omitempty" json:"tool_policies,omitempty"`
-	Audit              *AuditConfig              `yaml:"audit,omitempty" json:"audit,omitempty"`
-	Compliance         *ComplianceConfig         `yaml:"compliance,omitempty" json:"compliance,omitempty"`
-	Metadata           *MetadataConfig           `yaml:"metadata,omitempty" json:"metadata,omitempty"`
-	Copaw              *CopawConfig              `yaml:"copaw,omitempty" json:"copaw,omitempty"` // CoPaw skill governance (when using CoPaw integration)
+	Agent              AgentConfig                      `yaml:"agent" json:"agent"`
+	Capabilities       *CapabilitiesConfig              `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	Triggers           *TriggersConfig                  `yaml:"triggers,omitempty" json:"triggers,omitempty"`
+	Secrets            *SecretsConfig                   `yaml:"secrets,omitempty" json:"secrets,omitempty"`
+	Memory             *MemoryConfig                    `yaml:"memory,omitempty" json:"memory,omitempty"`
+	Context            *ContextConfig                   `yaml:"context,omitempty" json:"context,omitempty"`
+	AttachmentHandling *AttachmentHandlingConfig        `yaml:"attachment_handling,omitempty" json:"attachment_handling,omitempty"`
+	Policies           PoliciesConfig                   `yaml:"policies" json:"policies"`
+	ToolPolicies       map[string]ToolPIIPolicy         `yaml:"tool_policies,omitempty" json:"tool_policies,omitempty"`
+	ToolGovernance     map[string]ToolIdempotencyConfig `yaml:"tool_governance,omitempty" json:"tool_governance,omitempty"`
+	Audit              *AuditConfig                     `yaml:"audit,omitempty" json:"audit,omitempty"`
+	Compliance         *ComplianceConfig                `yaml:"compliance,omitempty" json:"compliance,omitempty"`
+	Metadata           *MetadataConfig                  `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	Copaw              *CopawConfig                     `yaml:"copaw,omitempty" json:"copaw,omitempty"` // CoPaw skill governance (when using CoPaw integration)
 
 	// Computed fields (not serialized from YAML)
 	Hash       string `yaml:"-" json:"-"`
@@ -263,6 +264,16 @@ type ToolPIIPolicy struct {
 	ForbiddenArgumentValues map[string][]string `yaml:"forbidden_argument_values,omitempty" json:"forbidden_argument_values,omitempty"`
 
 	SchemaValidation string `yaml:"schema_validation,omitempty" json:"schema_validation,omitempty"` // "enforce" (default), "shadow", or "disabled"
+}
+
+// ToolIdempotencyConfig defines per-tool idempotency for side-effecting tools (e.g. send email, charge card).
+// When present under tool_governance.<tool_name>, the runner deduplicates repeated calls with the same key.
+// idempotency_key: "request_id" uses correlation_id (per run); "session_id" uses session_id (cross-run dedupe).
+type ToolIdempotencyConfig struct {
+	IdempotencyKey string `yaml:"idempotency_key,omitempty" json:"idempotency_key,omitempty"` // "request_id" (default) or "session_id"
+	CacheTTL       string `yaml:"cache_ttl,omitempty" json:"cache_ttl,omitempty"`             // e.g. "24h"; 0 or empty = no TTL
+	OnDuplicate    string `yaml:"on_duplicate,omitempty" json:"on_duplicate,omitempty"`       // "return_cached" (default) or "fail"
+	StrictMode     bool   `yaml:"strict_mode,omitempty" json:"strict_mode,omitempty"`         // if true, fail tool call when idempotency check errors
 }
 
 // CopawConfig holds CoPaw integration policy (skill governance when using CoPaw with Talon).
