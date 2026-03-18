@@ -1526,7 +1526,14 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 			idemKey = DeriveIdempotencyKey(agentID, scopeID, tc.Name, params)
 			var maxAge time.Duration
 			if cfg.CacheTTL != "" {
-				maxAge, _ = time.ParseDuration(cfg.CacheTTL)
+				var parseErr error
+				maxAge, parseErr = time.ParseDuration(cfg.CacheTTL)
+				if parseErr != nil {
+					log.Warn().Err(parseErr).Str("tool", tc.Name).Str("cache_ttl", cfg.CacheTTL).Msg("invalid cache_ttl in tool_governance")
+					b, _ := json.Marshal(map[string]string{"error": "invalid cache_ttl in tool_governance: " + parseErr.Error() + " (use e.g. 24h, 1h)"})
+					result.Content = string(b)
+					return result
+				}
 			}
 			idemResult, idemErr := r.idempotency.Check(ctx, idemKey, maxAge)
 			if idemErr != nil && cfg.StrictMode {

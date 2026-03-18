@@ -1277,6 +1277,27 @@ policies:
 	assert.Contains(t, resp.ToolsCalled, "echo")
 }
 
+func TestExecuteToolCallFull_InvalidCacheTTL_ReturnsError(t *testing.T) {
+	// Invalid cache_ttl (e.g. "24hours" instead of "24h") must not be silently ignored:
+	// we must fail the tool call so cached results don't effectively never expire.
+	store := newTestIdempotencyStore(t)
+	reg := tools.NewRegistry()
+	pol := &policy.Policy{
+		ToolGovernance: map[string]policy.ToolIdempotencyConfig{
+			"send_email": {CacheTTL: "24hours"}, // invalid for time.ParseDuration (expects "24h")
+		},
+	}
+	r := &Runner{idempotency: store, toolRegistry: reg}
+	tc := llm.ToolCall{Name: "send_email", Arguments: map[string]interface{}{"to": "a@b.com"}}
+
+	out := r.executeToolCallFull(context.Background(), nil, pol, tc, nil, "agent-1", "corr-1", "")
+
+	assert.Contains(t, out.Content, "invalid cache_ttl", "invalid cache_ttl should fail the tool call")
+	var m map[string]string
+	require.NoError(t, json.Unmarshal([]byte(out.Content), &m))
+	assert.Contains(t, m["error"], "invalid cache_ttl")
+}
+
 func TestAllowedBudgetAlertURL(t *testing.T) {
 	tests := []struct {
 		name string
