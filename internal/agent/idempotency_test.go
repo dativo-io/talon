@@ -217,3 +217,64 @@ func TestIdempotency_Check_RespectsMaxAge(t *testing.T) {
 	assert.Equal(t, "completed", res.Status)
 	assert.Equal(t, []byte(`{"ok":true}`), res.Result)
 }
+
+func TestIdempotency_ClaimPending_ExpiredRow_OnlyFirstClaimerWins(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "idem.db")
+	db, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+	store, err := NewIdempotencyStore(db)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	key := IdempotencyKey{
+		AgentID:       "agent-1",
+		CorrelationID: "corr-ttl",
+		ToolName:      "charge_card",
+		ArgumentHash:  "abc123",
+	}
+	oldTime := time.Now().UTC().Add(-25 * time.Hour)
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO tool_idempotency (composite_key, agent_id, correlation_id, tool_name, argument_hash, status, result, created_at, completed_at)
+		 VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?)`,
+		key.CompositeKey(), key.AgentID, key.CorrelationID, key.ToolName, key.ArgumentHash,
+		[]byte(`{"charged":true}`), oldTime, oldTime,
+	)
+	require.NoError(t, err)
+
+	// First claim: should transition expired row to pending (only one caller may execute)
+	claimed1, err := store.ClaimPending(ctx, key, 24*time.Hour)
+	require.NoError(t, err)
+	assert.True(t, claimed1)
+
+	// Second "concurrent" claim: row is now pending, INSERT OR IGNORE does nothing → not claimed
+	claimed2, err := store.ClaimPending(ctx, key, 24*time.Hour)
+	require.NoError(t, err)
+	assert.False(t, claimed2)
+
+	// Check sees pending (not completed), so no duplicate execution
+	res, err := store.Check(ctx, key, 24*time.Hour)
+	require.NoError(t, err)
+	assert.True(t, res.Found)
+	assert.Equal(t, "pending", res.Status)
+}
+
+func TestIdempotency_ClaimPending_NoRow_InsertClaims(t *testing.T) {
+	store := newTestIdempotencyStore(t)
+	ctx := context.Background()
+	key := IdempotencyKey{
+		AgentID:       "agent-1",
+		CorrelationID: "corr-new",
+		ToolName:      "send_email",
+		ArgumentHash:  "hash",
+	}
+
+	claimed, err := store.ClaimPending(ctx, key, 24*time.Hour)
+	require.NoError(t, err)
+	assert.True(t, claimed)
+
+	// Second claim fails (row exists, pending)
+	claimed2, err := store.ClaimPending(ctx, key, 24*time.Hour)
+	require.NoError(t, err)
+	assert.False(t, claimed2)
+}

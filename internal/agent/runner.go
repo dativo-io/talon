@@ -1553,7 +1553,21 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 				return result
 			}
 			if idemErr == nil && !idemResult.Found {
-				_ = r.idempotency.RecordPending(ctx, idemKey)
+				// Atomically claim the slot (insert new or transition TTL-expired completed to pending).
+				// If we don't claim, another request has the slot — don't execute to avoid duplicate side effects.
+				claimed, claimErr := r.idempotency.ClaimPending(ctx, idemKey, maxAge)
+				if claimErr != nil && cfg.StrictMode {
+					log.Warn().Err(claimErr).Str("tool", tc.Name).Msg("idempotency claim failed strict_mode")
+					b, _ := json.Marshal(map[string]string{"error": "idempotency claim failed: " + claimErr.Error()})
+					result.Content = string(b)
+					return result
+				}
+				if !claimed {
+					log.Warn().Str("tool", tc.Name).Str("argument_hash", idemKey.ArgumentHash).Msg("idempotency_slot_not_claimed")
+					b, _ := json.Marshal(map[string]string{"error": "tool call already in progress"})
+					result.Content = string(b)
+					return result
+				}
 			}
 		}
 	}

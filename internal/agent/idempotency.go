@@ -103,6 +103,7 @@ func (s *IdempotencyStore) Check(ctx context.Context, key IdempotencyKey, maxAge
 }
 
 // RecordPending inserts a "pending" entry before tool execution begins.
+// It does not transition an existing row (e.g. TTL-expired completed). Use ClaimPending when a TTL may have expired.
 func (s *IdempotencyStore) RecordPending(ctx context.Context, key IdempotencyKey) error {
 	ctx, span := tracer.Start(ctx, "idempotency.record_pending",
 		trace.WithAttributes(attribute.String("tool_name", key.ToolName)))
@@ -117,6 +118,50 @@ func (s *IdempotencyStore) RecordPending(ctx context.Context, key IdempotencyKey
 		return fmt.Errorf("recording pending idempotency key: %w", err)
 	}
 	return nil
+}
+
+// ClaimPending atomically claims the slot for this key so only one caller may execute the tool.
+// When maxAge > 0, it first tries to transition an expired completed row (completed_at older than maxAge) to pending;
+// otherwise it inserts a new pending row. Returns true if this caller claimed the slot, false if another request
+// already has it (pending or completed within TTL). Used to prevent duplicate execution after TTL expiry.
+func (s *IdempotencyStore) ClaimPending(ctx context.Context, key IdempotencyKey, maxAge time.Duration) (claimed bool, err error) {
+	ctx, span := tracer.Start(ctx, "idempotency.claim_pending",
+		trace.WithAttributes(
+			attribute.String("tool_name", key.ToolName),
+			attribute.String("argument_hash", key.ArgumentHash),
+		))
+	defer span.End()
+
+	now := time.Now().UTC()
+
+	if maxAge > 0 {
+		expiryBound := now.Add(-maxAge)
+		res, upErr := s.db.ExecContext(ctx,
+			`UPDATE tool_idempotency SET status = 'pending', result = NULL, completed_at = NULL, created_at = ? WHERE composite_key = ? AND status = 'completed' AND completed_at IS NOT NULL AND completed_at < ?`,
+			now, key.CompositeKey(), expiryBound,
+		)
+		if upErr != nil {
+			return false, fmt.Errorf("claiming expired idempotency row: %w", upErr)
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 1 {
+			span.SetAttributes(attribute.Bool("idempotency.claimed_expired", true))
+			return true, nil
+		}
+	}
+
+	res, insErr := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO tool_idempotency (composite_key, agent_id, correlation_id, tool_name, argument_hash, status, created_at)
+		 VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+		key.CompositeKey(), key.AgentID, key.CorrelationID, key.ToolName, key.ArgumentHash, now,
+	)
+	if insErr != nil {
+		return false, fmt.Errorf("inserting pending idempotency key: %w", insErr)
+	}
+	affected, _ := res.RowsAffected()
+	claimed = affected == 1
+	span.SetAttributes(attribute.Bool("idempotency.claimed", claimed))
+	return claimed, nil
 }
 
 // RecordCompleted updates a pending entry to "completed" with the tool result.
