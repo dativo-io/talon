@@ -33,7 +33,7 @@
 #   requests and canonical payloads (PII, cache, tool block/filter, normal) live there.
 #   Use smoke_gw_post_chat, smoke_gw_get_metrics, smoke_health, SMOKE_BODY_*, etc. so we
 #   don't duplicate URLs or request bodies across sections.
-# - Sections: test_section_01_binary .. test_section_25_sessions + test_consistency_checks.
+# - Sections: test_section_01_binary .. test_section_26_pii_enrichment + test_consistency_checks.
 #   Each is run via run_section in main(); failures are recorded, suite continues.
 # - Section index: 01 binary | 02 init | 03 validate | 04 secrets | 05 dry-run | 06 live-run |
 #   07 PII | 08 attachments | 09 cost | 10 audit | 11 memory | 12 HTTP API | 13 gateway |
@@ -2693,6 +2693,76 @@ test_section_25_sessions() {
 }
 
 # -----------------------------------------------------------------------------
+# SECTION 26 — PII semantic enrichment (redacted non-enriched vs enriched placeholders)
+# Plan: 5 requests with enrichment off, 5 with enrichment enforce; assert no raw PII, evidence has pii_detected/pii_redacted.
+# Placeholder format comparison (legacy [TYPE] vs <PII type=... id=...>) is covered by unit tests.
+# -----------------------------------------------------------------------------
+test_section_26_pii_enrichment() {
+  local section="26_pii_enrichment"
+  local dir; dir="$(setup_section_dir "$section")"
+  echo ""
+  echo "=== SECTION 26 — PII Semantic Enrichment ==="
+  cd "$dir" || exit 1
+  run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+
+  # Ensure data_classification has input_scan and redact_pii so PII is redacted
+  if command -v yq &>/dev/null; then
+    yq -i '.policies.data_classification.input_scan = true | .policies.data_classification.output_scan = true | .policies.data_classification.redact_pii = true' "$dir/agent.talon.yaml" 2>/dev/null || true
+    yq -i '.policies.semantic_enrichment.enabled = false' "$dir/agent.talon.yaml" 2>/dev/null || true
+  else
+    grep -q 'data_classification:' "$dir/agent.talon.yaml" || echo -e "\npolicies:\n  data_classification: { input_scan: true, output_scan: true, redact_pii: true }" >> "$dir/agent.talon.yaml"
+  fi
+
+  # Fixed PII prompts (person, location, email)
+  local prompts_a=(
+    "Reply OK. Mrs Smith lives in Berlin."
+    "Reply OK. Maria Schmidt from Germany."
+    "Reply OK. Herr Müller in Bavaria."
+    "Reply OK. Contact user@example.com and Jane in Munich."
+    "Reply OK. Frau Weber and Paris office."
+  )
+
+  # Variant A: enrichment off — 5 runs
+  local i
+  for i in 0 1 2 3 4; do
+    assert_pass "26_pii_enrichment: run A-$i (enrichment off) exits 0" \
+      run_talon run "${prompts_a[$i]}"
+  done
+  local ev_id
+  ev_id="$(run_talon audit list --limit 1 2>/dev/null | awk '/req_/{print $2; exit}')"
+  if [[ -n "$ev_id" ]]; then
+    local show_out; show_out="$(run_talon audit show "$ev_id" 2>/dev/null)"; true
+    assert_pass "26_pii_enrichment: evidence has pii_detected or pii_redacted (variant A)" \
+      grep -qE 'pii_detected|pii_redacted' <<< "$show_out"
+  fi
+
+  # Variant B: enrichment enforce — enable semantic_enrichment
+  if command -v yq &>/dev/null; then
+    yq -i '.policies.semantic_enrichment.enabled = true | .policies.semantic_enrichment.mode = "enforce" | .policies.semantic_enrichment.allowed_attributes = ["gender", "scope"]' "$dir/agent.talon.yaml" 2>/dev/null || true
+  else
+    # Append semantic_enrichment block if not present
+    grep -q 'semantic_enrichment:' "$dir/agent.talon.yaml" || \
+      sed -i.bak '/data_classification:/a\
+  semantic_enrichment: { enabled: true, mode: enforce, allowed_attributes: [gender, scope] }' "$dir/agent.talon.yaml" 2>/dev/null || true
+  fi
+
+  for i in 0 1 2 3 4; do
+    assert_pass "26_pii_enrichment: run B-$i (enrichment enforce) exits 0" \
+      run_talon run "${prompts_a[$i]}"
+  done
+  ev_id="$(run_talon audit list --limit 1 2>/dev/null | awk '/req_/{print $2; exit}')"
+  if [[ -n "$ev_id" ]]; then
+    show_out="$(run_talon audit show "$ev_id" 2>/dev/null)"; true
+    assert_pass "26_pii_enrichment: evidence has pii_detected or pii_redacted (variant B)" \
+      grep -qE 'pii_detected|pii_redacted' <<< "$show_out"
+  fi
+
+  echo "[SMOKE] SECTION|26_pii_enrichment"
+  cd "$REPO_ROOT" || true
+}
+
+# -----------------------------------------------------------------------------
 # Consistency checks: cross-command flow verification (parseable in smoke_test_logs.out.txt)
 # -----------------------------------------------------------------------------
 test_consistency_checks() {
@@ -2988,6 +3058,7 @@ main() {
   run_section "23_dashboard_metrics" test_section_23_dashboard_metrics
   run_section "24_plan_dispatch" test_section_24_plan_dispatch
   run_section "25_sessions" test_section_25_sessions
+  run_section "26_pii_enrichment" test_section_26_pii_enrichment
 
   # Consistency checks: cross-command flow verification (logged for smoke_test_logs.out.txt)
   run_section "consistency" test_consistency_checks

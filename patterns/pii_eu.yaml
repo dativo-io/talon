@@ -395,3 +395,35 @@ recognizers:
         context: ["nif", "número de identificação fiscal", "tax id"]
     sensitivity: 2
     countries: ["PT"]
+
+  # --- Named entities (for semantic enrichment: gender, scope) ---
+  - name: "Person (title + name)"
+    supported_entity: "PERSON"
+    enabled: true
+    patterns:
+      - name: "title and name"
+        regex: '\b(Mr|Mrs|Ms|Miss|Mister|Herr|Frau|Madame|Madam|Monsieur|Mme|Signor|Sra|Srta)\.?\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\-]*(?:\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\-]*)?\b'
+        score: 0.75
+      - name: "capitalized full name"
+        regex: '\b[A-Za-zÀ-ÿ][a-zà-ÿ\-]+\s+[A-Za-zÀ-ÿ][a-zà-ÿ\-]+\b'
+        score: 0.4
+    supported_languages:
+      - language: "en"
+        context: ["person", "name", "attendee"]
+      - language: "de"
+        context: ["person", "name", "teilnehmer"]
+    sensitivity: 1
+    countries: ["EU"]
+
+  - name: "Location (known places)"
+    supported_entity: "LOCATION"
+    enabled: true
+    patterns:
+      - name: "EU cities and countries"
+        regex: '\b(Berlin|Munich|Hamburg|Frankfurt|Paris|Lyon|Madrid|Barcelona|Rome|Milan|Amsterdam|Brussels|Vienna|Warsaw|Lisbon|Dublin|Athens|Prague|Bucharest|Budapest|Stockholm|Copenhagen|Helsinki|London|Manchester|Edinburgh|Zurich|Geneva|Germany|France|Spain|Italy|Bavaria|Catalonia|Scotland)\b'
+        score: 0.85
+    supported_languages:
+      - language: "en"
+        context: ["city", "country", "region", "office"]
+    sensitivity: 1
+    countries: ["EU"]

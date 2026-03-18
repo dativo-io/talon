@@ -9,7 +9,10 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
-	talonotel "github.com/dativo-io/talon/internal/otel"
+	"github.com/dativo-io/talon/internal/classifier/enrich"
+	"github.com/dativo-io/talon/internal/classifier/entity"
+	"github.com/dativo-io/talon/internal/classifier/render"
+	"github.com/dativo-io/talon/internal/otel"
 )
 
 type piiDirectionKey struct{}
@@ -34,7 +37,7 @@ func piiDirection(ctx context.Context) string {
 	return "unknown"
 }
 
-var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/classifier")
+var tracer = otel.Tracer("github.com/dativo-io/talon/internal/classifier")
 
 const (
 	// DefaultMinScore is the Presidio-compatible minimum confidence threshold.
@@ -68,9 +71,14 @@ type Classification struct {
 }
 
 // Scanner detects PII in text using configurable regex patterns.
+// Optional semantic enrichment: when Enricher, EnrichmentConfig, and EnrichmentPolicy
+// are set and config.Enabled and config.Mode != "off", Redact uses enriched placeholders.
 type Scanner struct {
-	patterns []PIIPattern
-	minScore float64
+	patterns         []PIIPattern
+	minScore         float64
+	enricher         enrich.Enricher
+	enrichmentConfig *EnrichmentConfig
+	enrichmentPolicy EnrichmentPolicy
 }
 
 // ScannerOption configures a Scanner via the functional options pattern.
@@ -82,6 +90,9 @@ type scannerConfig struct {
 	disabledEntities  []string
 	customRecognizers []RecognizerConfig
 	minScore          float64
+	enricher          enrich.Enricher
+	enrichmentConfig  *EnrichmentConfig
+	enrichmentPolicy  EnrichmentPolicy
 }
 
 // WithMinScore overrides the default minimum confidence threshold for matches.
@@ -109,6 +120,16 @@ func WithDisabledEntities(entities []string) ScannerOption {
 // WithCustomRecognizers adds per-agent custom recognizer definitions.
 func WithCustomRecognizers(recognizers []RecognizerConfig) ScannerOption {
 	return func(c *scannerConfig) { c.customRecognizers = recognizers }
+}
+
+// WithSemanticEnrichment enables semantic enrichment of PII placeholders (e.g. gender, scope).
+// When set, Redact may produce <PII type="..." id="..." .../> when config.Mode is "enforce".
+func WithSemanticEnrichment(enricher enrich.Enricher, config *EnrichmentConfig, policy EnrichmentPolicy) ScannerOption {
+	return func(c *scannerConfig) {
+		c.enricher = enricher
+		c.enrichmentConfig = config
+		c.enrichmentPolicy = policy
+	}
 }
 
 // NewScanner creates a PII scanner. Without options it uses the embedded EU
@@ -160,7 +181,13 @@ func NewScanner(opts ...ScannerOption) (*Scanner, error) {
 		minScore = cfg.minScore
 	}
 
-	return &Scanner{patterns: compiled, minScore: minScore}, nil
+	s := &Scanner{patterns: compiled, minScore: minScore}
+	if cfg.enricher != nil {
+		s.enricher = cfg.enricher
+		s.enrichmentConfig = cfg.enrichmentConfig
+		s.enrichmentPolicy = cfg.enrichmentPolicy
+	}
+	return s, nil
 }
 
 // MustNewScanner is like NewScanner but panics on error. Useful for zero-config
@@ -256,6 +283,8 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 // Redact replaces PII with type-based placeholders (e.g. "[EMAIL]").
 // Uses Scan() for validated detection, then position-based replacement
 // to handle overlapping patterns correctly.
+//
+//nolint:gocyclo // merge + enrichment branches; refactor would split pipeline into more files
 func (s *Scanner) Redact(ctx context.Context, text string) string {
 	ctx, span := tracer.Start(ctx, "classifier.redact")
 	defer span.End()
@@ -314,6 +343,65 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 		}
 	}
 
+	// Semantic enrichment path: enricher + policy + XML-style placeholders
+	if s.enricher != nil && s.enrichmentConfig != nil && s.enrichmentConfig.Enabled && s.enrichmentConfig.Mode != "off" && s.enrichmentPolicy != nil {
+		canonical := make([]*entity.CanonicalEntity, 0, len(merged))
+		for i, m := range merged {
+			raw := ""
+			if m.start >= 0 && m.end <= len(text) {
+				raw = text[m.start:m.end]
+			}
+			canonical = append(canonical, &entity.CanonicalEntity{
+				Id:          i + 1,
+				Type:        m.ptype,
+				Raw:         raw,
+				Start:       m.start,
+				End:         m.end,
+				Source:      entity.SourceCustom,
+				Confidence:  0.8,
+				Sensitivity: m.sensitivity,
+				Attributes:  nil,
+			})
+		}
+		if len(canonical) > 0 {
+			enrichOpts := &enrich.EnrichOptions{
+				ConfidenceMin:   s.enrichmentConfig.ConfidenceThreshold,
+				EmitUnknownAttr: s.enrichmentConfig.EmitUnknownAttributes,
+				DefaultGender:   s.enrichmentConfig.DefaultPersonGender,
+				DefaultScope:    s.enrichmentConfig.DefaultLocationScope,
+				PreserveTitles:  s.enrichmentConfig.PreserveTitles,
+			}
+			if enrichOpts.ConfidenceMin == 0 {
+				enrichOpts.ConfidenceMin = 0.8
+			}
+			enriched, err := s.enricher.Enrich(ctx, canonical, enrichOpts)
+			if err == nil {
+				allowedMap := make(map[int][]string)
+				for _, e := range enriched {
+					if e == nil {
+						continue
+					}
+					allowed := s.enrichmentPolicy.EmitAttributes(ctx, s.enrichmentConfig.Mode, s.enrichmentConfig.AllowedAttributes, e.Type, e.Attributes)
+					allowedMap[e.Id] = allowed
+					RecordEnrichmentAttempt(ctx, e.Type)
+					for _, attr := range allowed {
+						if v, ok := e.Attributes[attr]; ok && v != "" {
+							RecordEnrichmentAttribute(ctx, attr, v)
+						}
+					}
+				}
+				useEnriched := s.enrichmentConfig.Mode == "enforce"
+				opts := &render.RedactOptions{UseEnriched: useEnriched, Allowed: func(id int) []string { return allowedMap[id] }}
+				out := render.RedactWithPlaceholders(text, enriched, opts)
+				for _, m := range merged {
+					RecordPIIRedaction(ctx, m.ptype, piiDirection(ctx))
+				}
+				return out
+			}
+		}
+	}
+
+	// Legacy path: [TYPE] placeholders
 	result := []byte(text)
 	for i := len(merged) - 1; i >= 0; i-- {
 		m := merged[i]

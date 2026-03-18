@@ -149,9 +149,24 @@ type PoliciesConfig struct {
 	ResourceLimits     *ResourceLimitsConfig     `yaml:"resource_limits,omitempty" json:"resource_limits,omitempty"`
 	RateLimits         *RateLimitsConfig         `yaml:"rate_limits,omitempty" json:"rate_limits,omitempty"`
 	DataClassification *DataClassificationConfig `yaml:"data_classification,omitempty" json:"data_classification,omitempty"`
+	SemanticEnrichment *SemanticEnrichmentConfig `yaml:"semantic_enrichment,omitempty" json:"semantic_enrichment,omitempty"`
 	ModelRouting       *ModelRoutingConfig       `yaml:"model_routing,omitempty" json:"model_routing,omitempty"`
 	TimeRestrictions   *TimeRestrictionsConfig   `yaml:"time_restrictions,omitempty" json:"time_restrictions,omitempty"`
 	SessionLimits      *SessionLimitsConfig      `yaml:"session_limits,omitempty" json:"session_limits,omitempty"`
+}
+
+// SemanticEnrichmentConfig controls PII placeholder semantic attributes (e.g. gender, scope).
+// Mode: off = no enrichment; shadow = compute and log only; enforce = emit attributes when allowed by policy.
+type SemanticEnrichmentConfig struct {
+	Enabled               bool     `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Mode                  string   `yaml:"mode,omitempty" json:"mode,omitempty"` // off | shadow | enforce
+	ConfidenceThreshold   float64  `yaml:"confidence_threshold,omitempty" json:"confidence_threshold,omitempty"`
+	EmitUnknownAttributes bool     `yaml:"emit_unknown_attributes,omitempty" json:"emit_unknown_attributes,omitempty"`
+	DefaultPersonGender   string   `yaml:"default_person_gender,omitempty" json:"default_person_gender,omitempty"`
+	DefaultLocationScope  string   `yaml:"default_location_scope,omitempty" json:"default_location_scope,omitempty"`
+	PreserveTitles        bool     `yaml:"preserve_titles,omitempty" json:"preserve_titles,omitempty"`
+	LocaleHintSource      string   `yaml:"locale_hint_source,omitempty" json:"locale_hint_source,omitempty"`
+	AllowedAttributes     []string `yaml:"allowed_attributes,omitempty" json:"allowed_attributes,omitempty"` // e.g. ["gender", "scope"]
 }
 
 // CostLimitsConfig sets per-request, daily, and monthly cost budgets.

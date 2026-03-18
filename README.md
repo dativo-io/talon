@@ -463,6 +463,8 @@ PII detection uses **Presidio-compatible** recognizer definitions. Defaults are 
 
 Attachment (prompt-injection) patterns are configured the same way; see `patterns/injection.yaml` for the default set.
 
+**Semantic enrichment (optional):** Redacted PII placeholders can include attributes (e.g. person gender, location scope) so downstream systems get structure without raw data. Enable in `policies.semantic_enrichment`; see [PII semantic enrichment](docs/reference/pii-semantic-enrichment.md).
+
 ## Compliance Coverage
 
 

@@ -173,5 +173,5 @@ func executeE2EToolCall(t *testing.T, scanner *classifier.Scanner, engine *polic
 		classifier:   scanner,
 		toolRegistry: registry,
 	}
-	return r.executeToolCallFull(context.Background(), engine, pol, tc, nil, "test-agent", "corr-test", "")
+	return r.executeToolCallFull(context.Background(), engine, pol, tc, nil, "test-agent", "corr-test", "", scanner)
 }
