@@ -170,6 +170,19 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		log.Warn().Err(err).Msg("plan review DB unavailable")
 	}
 
+	var idempotencyStore *agent.IdempotencyStore
+	dbIdem, err := sql.Open("sqlite3", cfg.EvidenceDBPath()+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err == nil {
+		defer dbIdem.Close()
+		idempotencyStore, err = agent.NewIdempotencyStore(dbIdem)
+		if err != nil {
+			log.Warn().Err(err).Msg("idempotency store unavailable")
+			idempotencyStore = nil
+		}
+	} else {
+		log.Warn().Err(err).Msg("idempotency DB unavailable")
+	}
+
 	var memStore *memory.Store
 	memStore, err = memory.NewStore(cfg.MemoryDBPath())
 	if err != nil {
@@ -193,6 +206,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		ActiveRunTracker: runActiveRunTracker,
 		Memory:           memStore,
 		Pricing:          pricingTable,
+		Idempotency:      idempotencyStore,
 	}
 	if cfg.Cache != nil && cfg.Cache.Enabled {
 		cacheStore, err := cache.NewStore(cfg.CacheDBPath(), cfg.SigningKey)

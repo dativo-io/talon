@@ -704,6 +704,48 @@ policies:
 	assert.Equal(t, 60, pol.Memory.Governance.DedupWindowMinutes)
 }
 
+func TestLoadPolicy_ToolGovernance(t *testing.T) {
+	yamlContent := `
+agent:
+  name: test-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 100.0
+tool_governance:
+  send_notification_email:
+    idempotency_key: request_id
+    cache_ttl: 24h
+    on_duplicate: return_cached
+    strict_mode: true
+  charge_card:
+    idempotency_key: session_id
+    cache_ttl: 1h
+    on_duplicate: fail
+`
+	tmpDir := t.TempDir()
+	policyPath := filepath.Join(tmpDir, "policy.yaml")
+	require.NoError(t, os.WriteFile(policyPath, []byte(yamlContent), 0o644))
+
+	ctx := context.Background()
+	pol, err := LoadPolicy(ctx, policyPath, false, tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, pol)
+	require.NotNil(t, pol.ToolGovernance)
+	require.Len(t, pol.ToolGovernance, 2)
+
+	email := pol.ToolGovernance["send_notification_email"]
+	assert.Equal(t, "request_id", email.IdempotencyKey)
+	assert.Equal(t, "24h", email.CacheTTL)
+	assert.Equal(t, "return_cached", email.OnDuplicate)
+	assert.True(t, email.StrictMode)
+
+	card := pol.ToolGovernance["charge_card"]
+	assert.Equal(t, "session_id", card.IdempotencyKey)
+	assert.Equal(t, "1h", card.CacheTTL)
+	assert.Equal(t, "fail", card.OnDuplicate)
+}
+
 func TestComputeHash(t *testing.T) {
 	pol := &Policy{
 		Agent: AgentConfig{Version: "2.0.0"},

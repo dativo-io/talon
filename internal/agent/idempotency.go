@@ -65,7 +65,8 @@ func NewIdempotencyStore(db *sql.DB) (*IdempotencyStore, error) {
 }
 
 // Check looks up a tool call by its idempotency key.
-func (s *IdempotencyStore) Check(ctx context.Context, key IdempotencyKey) (IdempotencyResult, error) {
+// If maxAge > 0 and the stored row is completed, the row is treated as not found when completed_at is older than maxAge.
+func (s *IdempotencyStore) Check(ctx context.Context, key IdempotencyKey, maxAge time.Duration) (IdempotencyResult, error) {
 	ctx, span := tracer.Start(ctx, "idempotency.check",
 		trace.WithAttributes(
 			attribute.String("tool_name", key.ToolName),
@@ -75,16 +76,23 @@ func (s *IdempotencyStore) Check(ctx context.Context, key IdempotencyKey) (Idemp
 
 	var status string
 	var result []byte
+	var completedAt *time.Time
 	err := s.db.QueryRowContext(ctx,
-		`SELECT status, result FROM tool_idempotency WHERE composite_key = ?`,
+		`SELECT status, result, completed_at FROM tool_idempotency WHERE composite_key = ?`,
 		key.CompositeKey(),
-	).Scan(&status, &result)
+	).Scan(&status, &result, &completedAt)
 
 	if err == sql.ErrNoRows {
 		return IdempotencyResult{Found: false}, nil
 	}
 	if err != nil {
 		return IdempotencyResult{}, fmt.Errorf("checking idempotency key: %w", err)
+	}
+
+	if status == "completed" && maxAge > 0 && completedAt != nil {
+		if time.Since(*completedAt) > maxAge {
+			return IdempotencyResult{Found: false}, nil
+		}
 	}
 
 	return IdempotencyResult{

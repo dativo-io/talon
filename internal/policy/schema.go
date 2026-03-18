@@ -278,6 +278,18 @@ const schemaV2 = `{
         }
       }
     },
+    "tool_governance": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "idempotency_key": {"type": "string"},
+          "cache_ttl": {"type": "string"},
+          "on_duplicate": {"type": "string", "enum": ["return_cached", "fail"]},
+          "strict_mode": {"type": "boolean"}
+        }
+      }
+    },
     "audit": {
       "type": "object",
       "properties": {
