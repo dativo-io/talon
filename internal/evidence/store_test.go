@@ -909,6 +909,89 @@ func TestStoreStepAndListSteps(t *testing.T) {
 	assert.NotEmpty(t, steps[1].Signature)
 }
 
+func TestStepEvidence_ValidationErrorAndSessionFields(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	step, err := gen.GenerateStep(ctx, StepParams{
+		CorrelationID:   "corr_val",
+		SessionID:       "sess_abc123",
+		TenantID:        "acme",
+		AgentID:         "agent",
+		StepIndex:       0,
+		Type:            "tool_call",
+		ToolName:        "search",
+		OutputSummary:   "result",
+		DurationMS:      10,
+		Cost:            0,
+		ValidationError: "schema validation failed: query: invalid type. Expected: string, given: integer",
+		Stage:           "generation",
+		CandidateIndex:  1,
+		JudgeScore:      0.85,
+		Selected:        false,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, step.ID)
+
+	steps, err := store.ListStepsByCorrelationID(ctx, "corr_val")
+	require.NoError(t, err)
+	require.Len(t, steps, 1)
+	assert.Equal(t, "sess_abc123", steps[0].SessionID)
+	assert.Equal(t, "generation", steps[0].Stage)
+	assert.Equal(t, 1, steps[0].CandidateIndex)
+	assert.Equal(t, 0.85, steps[0].JudgeScore)
+	assert.False(t, steps[0].Selected)
+	assert.Contains(t, steps[0].ValidationError, "schema validation failed")
+}
+
+func TestEvidence_SessionIDStageCandidateAndListBySessionID(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	sessionID := "sess_ruler_001"
+	for i := 0; i < 3; i++ {
+		_, err := gen.Generate(ctx, GenerateParams{
+			CorrelationID:  "corr_sess_" + fmt.Sprint(i),
+			SessionID:      sessionID,
+			Stage:          "generation",
+			TenantID:       "acme",
+			AgentID:        "agent",
+			InvocationType: "manual",
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+			ModelUsed:      "gpt-4",
+			Cost:           0.001 * float64(i+1),
+			CandidateIndex: i,
+			JudgeScore:     0.5 + float64(i)*0.1,
+			Selected:       i == 1,
+			InputPrompt:    "test",
+			OutputResponse: "response",
+		})
+		require.NoError(t, err)
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	list, err := store.ListBySessionID(ctx, sessionID)
+	require.NoError(t, err)
+	require.Len(t, list, 3)
+	assert.Equal(t, sessionID, list[0].SessionID)
+	assert.Equal(t, "generation", list[0].Stage)
+	var foundSelected bool
+	for _, ev := range list {
+		if ev.Selected {
+			foundSelected = true
+			assert.Equal(t, 1, ev.CandidateIndex)
+			assert.Equal(t, 0.6, ev.JudgeScore)
+		}
+	}
+	assert.True(t, foundSelected)
+
+	empty, err := store.ListBySessionID(ctx, "sess_nonexistent")
+	require.NoError(t, err)
+	assert.Len(t, empty, 0)
+}
+
 func TestListTenantIDs(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

@@ -34,6 +34,10 @@ type Evidence struct {
 	ID                      string            `json:"id"`
 	CorrelationID           string            `json:"correlation_id"`
 	SessionID               string            `json:"session_id,omitempty"`
+	Stage                   string            `json:"stage,omitempty"` // "generation", "judge", or "commit"
+	CandidateIndex          int               `json:"candidate_index,omitempty"`
+	JudgeScore              float64           `json:"judge_score,omitempty"`
+	Selected                bool              `json:"selected,omitempty"`
 	Timestamp               time.Time         `json:"timestamp"`
 	TenantID                string            `json:"tenant_id"`
 	AgentID                 string            `json:"agent_id"`
@@ -64,6 +68,7 @@ type Evidence struct {
 	CacheSimilarity float64          `json:"cache_similarity,omitempty"`
 	CostSaved       float64          `json:"cost_saved,omitempty"`
 	PlanReview      *PlanReviewEvent `json:"plan_review,omitempty"`
+	RetryAttempt    string           `json:"retry_attempt,omitempty"` // X-Talon-Retry-Attempt header from gateway callers
 }
 
 // PlanReviewEvent captures human oversight actions performed on execution plans.
@@ -192,24 +197,35 @@ type Compliance struct {
 // StepEvidence is a per-step audit record within an agent run (e.g. one LLM call or one tool call).
 // Linked to the parent Evidence via CorrelationID. Signed individually for integrity.
 type StepEvidence struct {
-	ID            string    `json:"id"`
-	CorrelationID string    `json:"correlation_id"`
-	SessionID     string    `json:"session_id,omitempty"`
-	TenantID      string    `json:"tenant_id"`
-	AgentID       string    `json:"agent_id"`
-	StepIndex     int       `json:"step_index"`
-	Type          string    `json:"type"` // "llm_call" or "tool_call"
-	ToolName      string    `json:"tool_name,omitempty"`
-	InputHash     string    `json:"input_hash,omitempty"`
-	OutputHash    string    `json:"output_hash,omitempty"`
-	InputSummary  string    `json:"input_summary,omitempty"` // Truncated for audit readability
-	OutputSummary string    `json:"output_summary,omitempty"`
-	DurationMS    int64     `json:"duration_ms"`
-	Cost          float64   `json:"cost"`
-	Status        string    `json:"status,omitempty"` // "pending", "completed", "failed"; empty = completed
-	Error         string    `json:"error,omitempty"`
-	Timestamp     time.Time `json:"timestamp"`
-	Signature     string    `json:"signature"`
+	ID              string    `json:"id"`
+	CorrelationID   string    `json:"correlation_id"`
+	SessionID       string    `json:"session_id,omitempty"`
+	Stage           string    `json:"stage,omitempty"` // "generation", "judge", or "commit"
+	CandidateIndex  int       `json:"candidate_index,omitempty"`
+	JudgeScore      float64   `json:"judge_score,omitempty"`
+	Selected        bool      `json:"selected,omitempty"`
+	TenantID        string    `json:"tenant_id"`
+	AgentID         string    `json:"agent_id"`
+	StepIndex       int       `json:"step_index"`
+	Type            string    `json:"type"` // "llm_call" or "tool_call"
+	ToolName        string    `json:"tool_name,omitempty"`
+	InputHash       string    `json:"input_hash,omitempty"`
+	OutputHash      string    `json:"output_hash,omitempty"`
+	InputSummary    string    `json:"input_summary,omitempty"` // Truncated for audit readability
+	OutputSummary   string    `json:"output_summary,omitempty"`
+	DurationMS      int64     `json:"duration_ms"`
+	Cost            float64   `json:"cost"`
+	Status          string    `json:"status,omitempty"` // "pending", "completed", "failed"; empty = completed
+	Error           string    `json:"error,omitempty"`
+	ValidationError string    `json:"validation_error,omitempty"`
+	Timestamp       time.Time `json:"timestamp"`
+	Signature       string    `json:"signature"`
+}
+
+// addColumnIfNotExists attempts an ALTER TABLE ADD COLUMN and silently ignores
+// the error when the column already exists (SQLite lacks IF NOT EXISTS for columns).
+func addColumnIfNotExists(db *sql.DB, table, column, colType string) {
+	_, _ = db.ExecContext(context.Background(), fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, colType))
 }
 
 // NewStore creates an evidence store with HMAC signing.
@@ -255,6 +271,20 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 		return nil, fmt.Errorf("creating evidence schema: %w", err)
 	}
 
+	addColumnIfNotExists(db, "evidence", "session_id", "TEXT")
+	addColumnIfNotExists(db, "evidence", "stage", "TEXT")
+	addColumnIfNotExists(db, "evidence", "candidate_index", "INTEGER DEFAULT 0")
+	addColumnIfNotExists(db, "evidence", "judge_score", "REAL DEFAULT 0")
+	addColumnIfNotExists(db, "evidence", "selected", "INTEGER DEFAULT 0")
+	addColumnIfNotExists(db, "step_evidence", "session_id", "TEXT")
+	addColumnIfNotExists(db, "step_evidence", "stage", "TEXT")
+	addColumnIfNotExists(db, "step_evidence", "candidate_index", "INTEGER DEFAULT 0")
+	addColumnIfNotExists(db, "step_evidence", "judge_score", "REAL DEFAULT 0")
+	addColumnIfNotExists(db, "step_evidence", "selected", "INTEGER DEFAULT 0")
+
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_session ON evidence(session_id)")
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_step_evidence_session ON step_evidence(session_id)")
+
 	signer, err := NewSigner(signingKey)
 	if err != nil {
 		return nil, fmt.Errorf("creating signer: %w", err)
@@ -295,12 +325,13 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 
 	evidenceJSONWithSig, _ := json.Marshal(ev)
 
-	query := `INSERT INTO evidence (id, correlation_id, timestamp, tenant_id, agent_id, invocation_type, evidence_json, signature)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO evidence (id, correlation_id, timestamp, tenant_id, agent_id, invocation_type, evidence_json, signature, session_id, stage, candidate_index, judge_score, selected)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = s.db.ExecContext(ctx, query,
 		ev.ID, ev.CorrelationID, ev.Timestamp, ev.TenantID, ev.AgentID,
-		ev.InvocationType, string(evidenceJSONWithSig), signature,
+		ev.InvocationType, string(evidenceJSONWithSig), signature, ev.SessionID, ev.Stage,
+		ev.CandidateIndex, ev.JudgeScore, ev.Selected,
 	)
 	if err != nil {
 		return fmt.Errorf("storing evidence: %w", err)
@@ -332,11 +363,12 @@ func (s *Store) StoreStep(ctx context.Context, step *StepEvidence) error {
 	step.Signature = signature
 	stepJSONWithSig, _ := json.Marshal(step)
 
-	query := `INSERT INTO step_evidence (id, correlation_id, tenant_id, agent_id, step_index, step_type, tool_name, step_json, signature, timestamp)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO step_evidence (id, correlation_id, tenant_id, agent_id, step_index, step_type, tool_name, step_json, signature, timestamp, session_id, stage, candidate_index, judge_score, selected)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = s.db.ExecContext(ctx, query,
 		step.ID, step.CorrelationID, step.TenantID, step.AgentID, step.StepIndex, step.Type, step.ToolName,
-		string(stepJSONWithSig), signature, step.Timestamp,
+		string(stepJSONWithSig), signature, step.Timestamp, step.SessionID, step.Stage,
+		step.CandidateIndex, step.JudgeScore, step.Selected,
 	)
 	if err != nil {
 		return fmt.Errorf("storing step evidence: %w", err)
@@ -396,6 +428,36 @@ func (s *Store) ListStepsByCorrelationID(ctx context.Context, correlationID stri
 		steps = append(steps, step)
 	}
 	return steps, rows.Err()
+}
+
+// ListBySessionID returns all evidence records for a given session, ordered by timestamp descending.
+func (s *Store) ListBySessionID(ctx context.Context, sessionID string) ([]*Evidence, error) {
+	ctx, span := tracer.Start(ctx, "evidence.list_by_session",
+		trace.WithAttributes(attribute.String("session_id", sessionID)))
+	defer span.End()
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT evidence_json FROM evidence WHERE session_id = ? ORDER BY timestamp DESC`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying evidence by session: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*Evidence
+	for rows.Next() {
+		var evidenceJSON string
+		if err := rows.Scan(&evidenceJSON); err != nil {
+			return nil, fmt.Errorf("scanning evidence row: %w", err)
+		}
+		var ev Evidence
+		if err := json.Unmarshal([]byte(evidenceJSON), &ev); err != nil {
+			return nil, fmt.Errorf("unmarshaling evidence: %w", err)
+		}
+		results = append(results, &ev)
+	}
+	return results, rows.Err()
 }
 
 // Get retrieves evidence by ID.

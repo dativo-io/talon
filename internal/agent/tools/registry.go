@@ -6,7 +6,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
+
+	"github.com/xeipuuv/gojsonschema"
 )
 
 // Tool is the interface all MCP-compatible tools must implement.
@@ -18,13 +21,36 @@ type Tool interface {
 }
 
 // ArgumentValidator is an optional interface that tools can implement to
-// validate arguments against their schema before execution. When a tool
-// implements this interface, the runner calls ValidateArguments before Execute.
-//
-// Phase 2 will add automatic JSON Schema validation for all tools using
-// the InputSchema() return value. For v1, tools opt in by implementing this.
+// provide custom argument validation beyond JSON Schema. The runner first
+// performs automatic JSON Schema validation using InputSchema(), then calls
+// ValidateArguments for tools that implement this interface.
 type ArgumentValidator interface {
 	ValidateArguments(params json.RawMessage) error
+}
+
+// ValidateAgainstSchema validates params against a JSON Schema definition.
+// Returns nil when schema is empty/null or params are valid.
+func ValidateAgainstSchema(schema json.RawMessage, params json.RawMessage) error {
+	if len(schema) == 0 || string(schema) == "null" || string(schema) == "{}" {
+		return nil
+	}
+	if len(params) == 0 {
+		params = json.RawMessage("{}")
+	}
+	schemaLoader := gojsonschema.NewBytesLoader(schema)
+	paramsLoader := gojsonschema.NewBytesLoader(params)
+	result, err := gojsonschema.Validate(schemaLoader, paramsLoader)
+	if err != nil {
+		return fmt.Errorf("schema validation setup: %w", err)
+	}
+	if result.Valid() {
+		return nil
+	}
+	var msgs []string
+	for _, e := range result.Errors() {
+		msgs = append(msgs, e.String())
+	}
+	return fmt.Errorf("schema validation failed: %v", msgs)
 }
 
 // ToolRegistry manages registered tools for agent execution.

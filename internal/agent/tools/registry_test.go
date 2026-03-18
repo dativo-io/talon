@@ -82,3 +82,62 @@ func TestRegistry_Execute(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"ok":true}`, string(result))
 }
+
+func TestValidateAgainstSchema(t *testing.T) {
+	validSchema := json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`)
+
+	tests := []struct {
+		name    string
+		schema  json.RawMessage
+		params  json.RawMessage
+		wantErr bool
+	}{
+		{
+			name:    "valid args",
+			schema:  validSchema,
+			params:  json.RawMessage(`{"query":"hello"}`),
+			wantErr: false,
+		},
+		{
+			name:    "invalid type",
+			schema:  validSchema,
+			params:  json.RawMessage(`{"query":42}`),
+			wantErr: true,
+		},
+		{
+			name:    "missing required",
+			schema:  validSchema,
+			params:  json.RawMessage(`{}`),
+			wantErr: true,
+		},
+		{
+			name:    "empty schema skips validation",
+			schema:  json.RawMessage(`{}`),
+			params:  json.RawMessage(`{"anything":true}`),
+			wantErr: false,
+		},
+		{
+			name:    "null schema skips validation",
+			schema:  json.RawMessage(`null`),
+			params:  json.RawMessage(`{"x":1}`),
+			wantErr: false,
+		},
+		{
+			name:    "nil params treated as empty object",
+			schema:  json.RawMessage(`{"type":"object"}`),
+			params:  nil,
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateAgainstSchema(tt.schema, tt.params)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "schema validation")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

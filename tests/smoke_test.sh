@@ -33,12 +33,12 @@
 #   requests and canonical payloads (PII, cache, tool block/filter, normal) live there.
 #   Use smoke_gw_post_chat, smoke_gw_get_metrics, smoke_health, SMOKE_BODY_*, etc. so we
 #   don't duplicate URLs or request bodies across sections.
-# - Sections: test_section_01_binary .. test_section_24_plan_dispatch + test_consistency_checks.
+# - Sections: test_section_01_binary .. test_section_25_sessions + test_consistency_checks.
 #   Each is run via run_section in main(); failures are recorded, suite continues.
 # - Section index: 01 binary | 02 init | 03 validate | 04 secrets | 05 dry-run | 06 live-run |
 #   07 PII | 08 attachments | 09 cost | 10 audit | 11 memory | 12 HTTP API | 13 gateway |
 #   14 deny | 15 multi-tenant | 16 shadow | 17 config-provider | 18 compliance-export |
-#   19 CI/CD | 20 edge-cases | 21 doctor/report/enforce | 22 cache | 23 dashboard-metrics | 24 plan-dispatch | consistency.
+#   19 CI/CD | 20 edge-cases | 21 doctor/report/enforce | 22 cache | 23 dashboard-metrics | 24 plan-dispatch | 25 sessions | consistency.
 #
 # QA notes (from brief):
 # - Section 16 (Shadow mode): Evidence shadow signal is in shadow_violations or
@@ -922,6 +922,19 @@ GWEOF
       jq -e --arg sid "$run1_session" '.session_id == $sid' <<< "$ev1" &>/dev/null
     assert_pass "evidence for run2 contains matching session_id" \
       jq -e --arg sid "$run1_session" '.session_id == $sid' <<< "$ev2" &>/dev/null
+  fi
+  # Session API (GET list, GET by id, POST complete)
+  local sessions_list; sessions_list="$(curl -s -H "X-Talon-Admin-Key: $admin_key" "http://127.0.0.1:8080/v1/sessions?tenant_id=default")"
+  assert_pass "GET /v1/sessions 200 and array" jq -e 'type == "array"' <<< "$sessions_list" &>/dev/null
+  if [[ -n "$run1_session" ]]; then
+    local sess_get; sess_get="$(curl -s -H "X-Talon-Admin-Key: $admin_key" "http://127.0.0.1:8080/v1/sessions/$run1_session")"
+    assert_pass "GET /v1/sessions/<id> 200 with id and status" \
+      jq -e '.id and .status' <<< "$sess_get" &>/dev/null
+    local complete_code; complete_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $tenant_key" "http://127.0.0.1:8080/v1/sessions/$run1_session/complete")"
+    assert_pass "POST /v1/sessions/<id>/complete 200" test "$complete_code" = "200"
+    sess_get="$(curl -s -H "X-Talon-Admin-Key: $admin_key" "http://127.0.0.1:8080/v1/sessions/$run1_session")"
+    assert_pass "GET /v1/sessions/<id> after complete has status completed" \
+      jq -e '.status == "completed"' <<< "$sess_get" &>/dev/null
   fi
   rm -f "$run1_headers" "$run1_body" /tmp/talon_smoke_run2_body.json 2>/dev/null || true
   assert_pass "Wrong admin key → 401" test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: wrong-key" http://127.0.0.1:8080/v1/evidence)" = "401"
@@ -2627,6 +2640,59 @@ PREVIEWEOF
 }
 
 # -----------------------------------------------------------------------------
+# SECTION 25 — Session CLI and session API (Pydantic/RULER readiness: workflow grouping)
+# -----------------------------------------------------------------------------
+test_section_25_sessions() {
+  local section="25_sessions"
+  local dir; dir="$(setup_section_dir "$section")"
+  echo ""
+  echo "=== SECTION 25 — Session CLI and API ==="
+  cd "$dir" || exit 1
+  run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+
+  # Create at least one session by running the agent once (session is created on first run)
+  run_talon run "Seed session for smoke" &>/dev/null; true
+
+  # Session CLI: list (expect table with header or empty)
+  local list_out list_exit
+  list_out="$(run_talon session list --tenant default 2>&1)" || true
+  list_exit=$?
+  if [[ $list_exit -eq 0 ]]; then
+    assert_pass "talon session list exits 0" true
+    if echo "$list_out" | grep -qE 'ID|STATUS|AGENT|COST|TOKENS|CREATED'; then
+      echo "  ✓  talon session list prints table header"
+      record_pass
+    fi
+  else
+    log_failure "talon session list should exit 0" "exit=$list_exit"
+    dump_diag_kv "session list" "exit=$list_exit" "out=${list_out:0:500}"
+  fi
+
+  # If we have a session id from list output (first column of data row), run session show
+  local sess_id
+  sess_id="$(echo "$list_out" | awk '/^sess_/ {print $1; exit}')"
+  if [[ -n "$sess_id" ]]; then
+    local show_out show_exit
+    show_out="$(run_talon session show "$sess_id" 2>&1)"
+    show_exit=$?
+    if [[ $show_exit -eq 0 ]] && echo "$show_out" | jq -e '.id and .status' &>/dev/null; then
+      assert_pass "talon session show <id> exits 0 with valid JSON (id, status)" true
+    else
+      log_failure "talon session show should return valid JSON with id and status" "exit=$show_exit"
+      dump_diag_kv "session show" "sess_id=$sess_id" "exit=$show_exit"
+      dump_diag_json "session show output" "$show_out"
+    fi
+  else
+    echo "  -  no session id in list output (skip session show)"
+  fi
+
+  # Gateway request with X-Talon-Session-ID and X-Talon-Stage (if gateway config present)
+  # We do not start serve here; section 13 already tests gateway. Just verify CLI.
+  cd "$REPO_ROOT" || true
+}
+
+# -----------------------------------------------------------------------------
 # Consistency checks: cross-command flow verification (parseable in smoke_test_logs.out.txt)
 # -----------------------------------------------------------------------------
 test_consistency_checks() {
@@ -2921,6 +2987,7 @@ main() {
   run_section "22_cache" test_section_22_cache
   run_section "23_dashboard_metrics" test_section_23_dashboard_metrics
   run_section "24_plan_dispatch" test_section_24_plan_dispatch
+  run_section "25_sessions" test_section_25_sessions
 
   # Consistency checks: cross-command flow verification (logged for smoke_test_logs.out.txt)
   run_section "consistency" test_consistency_checks

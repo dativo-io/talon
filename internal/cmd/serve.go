@@ -252,6 +252,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	opts := []server.Option{
 		server.WithPlanReviewStore(planReviewStore),
 		server.WithMemoryStore(memStore),
+		server.WithSessionStore(sessionStore),
 		server.WithCORSOrigins([]string{"*"}),
 		server.WithActiveRunTracker(activeRunTracker),
 	}
@@ -355,6 +356,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		// Wire the collector as the gateway's metrics recorder via adapter
 		if gw, ok := gatewayHandler.(*gateway.Gateway); ok {
 			gw.SetMetricsRecorder(&metricsRecorderAdapter{collector: metricsCollector})
+			gw.SetSessionStore(sessionStore)
 		}
 
 		opts = append(opts,

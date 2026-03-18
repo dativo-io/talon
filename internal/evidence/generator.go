@@ -44,8 +44,12 @@ func NewGenerator(store *Store) *Generator {
 // Callers populate this struct at the end of the agent pipeline; the
 // Generator hashes prompts/responses, signs the record, and persists it.
 type GenerateParams struct {
-	CorrelationID           string           // Unique trace identifier for this invocation
-	SessionID               string           // Optional lifecycle session identifier
+	CorrelationID           string // Unique trace identifier for this invocation
+	SessionID               string // Optional lifecycle session identifier
+	Stage                   string // "generation", "judge", or "commit"
+	CandidateIndex          int
+	JudgeScore              float64
+	Selected                bool
 	TenantID                string           // Tenant scope
 	AgentID                 string           // Agent that was invoked
 	InvocationType          string           // "manual", "scheduled", or "webhook:<name>"
@@ -84,21 +88,26 @@ type GenerateParams struct {
 
 // StepParams holds inputs for creating a step-level evidence record (one LLM call or one tool call within a run).
 type StepParams struct {
-	CorrelationID string // Links to parent Evidence
-	SessionID     string
-	TenantID      string
-	AgentID       string
-	StepIndex     int
-	Type          string // "llm_call" or "tool_call"
-	ToolName      string // For type "tool_call"
-	InputHash     string // SHA256 or empty
-	OutputHash    string
-	InputSummary  string // Truncated for audit
-	OutputSummary string
-	DurationMS    int64
-	Cost          float64
-	Status        string // "pending", "completed", "failed"; empty defaults to completed
-	Error         string // Error message (for failed steps)
+	CorrelationID   string // Links to parent Evidence
+	SessionID       string
+	Stage           string // "generation", "judge", or "commit"
+	CandidateIndex  int
+	JudgeScore      float64
+	Selected        bool
+	TenantID        string
+	AgentID         string
+	StepIndex       int
+	Type            string // "llm_call" or "tool_call"
+	ToolName        string // For type "tool_call"
+	InputHash       string // SHA256 or empty
+	OutputHash      string
+	InputSummary    string // Truncated for audit
+	OutputSummary   string
+	DurationMS      int64
+	Cost            float64
+	Status          string // "pending", "completed", "failed"; empty defaults to completed
+	Error           string // Error message (for failed steps)
+	ValidationError string // Schema validation error (distinct from execution errors)
 }
 
 // GenerateStep creates and stores a step evidence record.
@@ -107,23 +116,28 @@ func (g *Generator) GenerateStep(ctx context.Context, params StepParams) (*StepE
 		params.SessionID = sessionIDFromContext(ctx)
 	}
 	step := &StepEvidence{
-		ID:            "step_" + uuid.New().String()[:12],
-		CorrelationID: params.CorrelationID,
-		SessionID:     params.SessionID,
-		TenantID:      params.TenantID,
-		AgentID:       params.AgentID,
-		StepIndex:     params.StepIndex,
-		Type:          params.Type,
-		ToolName:      params.ToolName,
-		InputHash:     params.InputHash,
-		OutputHash:    params.OutputHash,
-		InputSummary:  TruncateForSummary(params.InputSummary, 500),
-		OutputSummary: TruncateForSummary(params.OutputSummary, 500),
-		DurationMS:    params.DurationMS,
-		Cost:          params.Cost,
-		Status:        params.Status,
-		Error:         params.Error,
-		Timestamp:     time.Now(),
+		ID:              "step_" + uuid.New().String()[:12],
+		CorrelationID:   params.CorrelationID,
+		SessionID:       params.SessionID,
+		Stage:           params.Stage,
+		CandidateIndex:  params.CandidateIndex,
+		JudgeScore:      params.JudgeScore,
+		Selected:        params.Selected,
+		TenantID:        params.TenantID,
+		AgentID:         params.AgentID,
+		StepIndex:       params.StepIndex,
+		Type:            params.Type,
+		ToolName:        params.ToolName,
+		InputHash:       params.InputHash,
+		OutputHash:      params.OutputHash,
+		InputSummary:    TruncateForSummary(params.InputSummary, 500),
+		OutputSummary:   TruncateForSummary(params.OutputSummary, 500),
+		DurationMS:      params.DurationMS,
+		Cost:            params.Cost,
+		Status:          params.Status,
+		Error:           params.Error,
+		ValidationError: params.ValidationError,
+		Timestamp:       time.Now(),
 	}
 	if err := g.store.StoreStep(ctx, step); err != nil {
 		return nil, err
@@ -174,6 +188,10 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 		ID:                      "req_" + uuid.New().String()[:8],
 		CorrelationID:           params.CorrelationID,
 		SessionID:               params.SessionID,
+		Stage:                   params.Stage,
+		CandidateIndex:          params.CandidateIndex,
+		JudgeScore:              params.JudgeScore,
+		Selected:                params.Selected,
 		Timestamp:               time.Now(),
 		TenantID:                params.TenantID,
 		AgentID:                 params.AgentID,

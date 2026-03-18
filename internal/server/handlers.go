@@ -22,6 +22,7 @@ import (
 	"github.com/dativo-io/talon/internal/drift"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/memory"
+	"github.com/dativo-io/talon/internal/session"
 )
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
@@ -1488,4 +1489,49 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	//nolint:gosec // G705: dashboard HTML is embedded at build time (web.DashboardHTML), not user-controlled
 	_, _ = w.Write([]byte(s.dashboardHTML))
+}
+
+func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
+	if s.sessionStore == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session store not available"})
+		return
+	}
+	id := chi.URLParam(r, "id")
+	sess, err := s.sessionStore.Get(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
+	if s.sessionStore == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session store not available"})
+		return
+	}
+	tenantID := r.URL.Query().Get("tenant_id")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	status := session.Status(r.URL.Query().Get("status"))
+	sessions, err := s.sessionStore.ListByTenant(r.Context(), tenantID, status)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, sessions)
+}
+
+func (s *Server) handleSessionComplete(w http.ResponseWriter, r *http.Request) {
+	if s.sessionStore == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session store not available"})
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if err := s.sessionStore.Complete(r.Context(), id, 0, 0); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "completed", "session_id": id})
 }

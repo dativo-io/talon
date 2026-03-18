@@ -130,6 +130,7 @@ type toolsCallParams struct {
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
+//nolint:gocyclo // MCP tools/call: policy, schema validation, execute, evidence — branching required
 func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jsonrpcResponse {
 	ctx, span := tracer.Start(ctx, "mcp.tools.call")
 	defer span.End()
@@ -178,6 +179,12 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 	tool, ok := h.registry.Get(params.Name)
 	if !ok {
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "tool not found: " + params.Name}}
+	}
+
+	if schema := tool.InputSchema(); len(schema) > 0 && string(schema) != "null" {
+		if valErr := tools.ValidateAgainstSchema(schema, params.Arguments); valErr != nil {
+			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "schema validation failed: " + valErr.Error()}}
+		}
 	}
 
 	start := time.Now()
