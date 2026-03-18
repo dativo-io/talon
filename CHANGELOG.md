@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-03-18
+
+### Added
+
+- **feat(dashboard): Mission Control UX.** Governance and Gateway dashboards unified under a shared Mission Control layout with consistent 3-band information architecture, new widgets (posture, interventions, fleet risk, drift/PII signals), session timeline and compliance report preview panels (#35).
+- **feat(agent): intent governance tooling.** New `talon intent` CLI (classify/classes) backed by `internal/agent/intent.go` infers operation class, risk, and bulk signals from tool names and JSON params to determine plan review requirements (#36).
+- **feat(agent): tool safety gaps T7, T8, T9.** T7: per-tool `max_row_count` and `require_dry_run` with Rego deny and pre-execution row count guard; T8: IdempotencyStore (SQLite) deduplicates tool calls by (agent_id, correlation_id, tool_name, argument_hash) with pending/completed lifecycle; T9: `forbidden_argument_values` in ToolPIIPolicy with Rego deny for specific argument values (e.g. `mode=overwrite`). Session governance Rego (cost, max_candidates, max_judge_calls), session store, evidence session/stage fields, tool registry schema validation (#37).
+- **feat(agent): tool_governance idempotency config.** New `tool_governance` policy section for per-tool idempotency: scope (request_id/session_id), cache_ttl, duplicate handling (return_cached/fail), strict_mode. Runner applies idempotency only to listed tools; keys use correlation_id or session_id; cached results stored after PII redaction. IdempotencyStore supports TTL-based expiration (#38).
+
+### Fixed
+
+- **fix(agent):** Idempotency cache now stores PII-scanned results and handles pending status explicitly so cached results are redacted and non-idempotent tools are not double-executed on retry (#37).
+
+### Changed
+
+- **chore(build):** Go bumped to 1.25.8 for stdlib vulnerability fixes (govulncheck: GO-2026-4603, GO-2026-4602, GO-2026-4601).
+- **feat(init):** Pack validation derived from `pack.ValidPackIDs()`, additional industry packs in wizard, dedicated langchain/generic agent templates (#36).
+- **docs:** Policy cookbook update_records hardening example; talon intent output fields (#36, #37).
+
 ## [1.2.0] - 2026-03-13
 
 ### Added
@@ -352,7 +371,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/dativo-io/talon/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/dativo-io/talon/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dativo-io/talon/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/dativo-io/talon/compare/v0.9.5...v1.0.0
