@@ -162,6 +162,34 @@ With `block_on_pii: true`, requests whose prompt or attachments contain detected
 
 ---
 
+## Enable PII semantic enrichment (gender, scope)
+
+**Goal:** Redact PII with structured placeholders so downstream can use attributes (e.g. person gender, location scope) without seeing raw data. Requires `data_classification.redact_pii: true` and `input_scan: true`.
+
+**Where:** `agent.talon.yaml` under `policies.semantic_enrichment`.
+
+```yaml
+policies:
+  data_classification:
+    input_scan: true
+    output_scan: true
+    redact_pii: true
+
+  semantic_enrichment:
+    enabled: true
+    mode: enforce          # off | shadow | enforce
+    allowed_attributes: ["gender", "scope"]
+    confidence_threshold: 0.80
+```
+
+- **off:** No enrichment; placeholders stay `[PERSON]`, `[LOCATION]` (legacy).
+- **shadow:** Enricher runs and attributes are logged only; placeholders stay legacy. Use to validate before enabling in output.
+- **enforce:** Placeholders become XML-style, e.g. `<PII type="person" id="1" gender="female"/>`, `<PII type="location" id="2" scope="city"/>`.
+
+PERSON and LOCATION are optional recognizers in the default EU patterns; they are enabled by default. To restrict which entity types are detected, use `data_classification.enabled_entities` / `disabled_entities`. See [PII semantic enrichment reference](../reference/pii-semantic-enrichment.md) and the Presidio migration note there.
+
+---
+
 ## Require human approval for high-risk or tool use
 
 **Goal:** Pause execution until a human approves (EU AI Act Art. 14 style).

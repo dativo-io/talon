@@ -42,6 +42,7 @@ var allPolicies = []regoPolicy{
 	{file: "rego/data_classification.rego", query: "data.talon.policy.data_classification.tier"},
 	{file: "rego/routing.rego", query: "data.talon.policy.routing.result"},
 	{file: "rego/session_governance.rego", query: "data.talon.policy.session_governance.deny"},
+	{file: "rego/semantic_enrichment.rego", query: "data.talon.policy.semantic_enrichment.emit_attributes"},
 }
 
 // Engine evaluates governance policies using embedded OPA.
@@ -368,6 +369,53 @@ func (e *Engine) EvaluateDataClassification(ctx context.Context, input map[strin
 	}
 
 	return defaultDataTier, nil
+}
+
+// SemanticEnrichmentInput is the input for semantic enrichment policy (per-entity).
+type SemanticEnrichmentInput struct {
+	Config struct {
+		Mode              string   `json:"mode"`
+		AllowedAttributes []string `json:"allowed_attributes"`
+	} `json:"config"`
+	Entity struct {
+		Type       string            `json:"type"`
+		Attributes map[string]string `json:"attributes"`
+	} `json:"entity"`
+}
+
+// EvaluateSemanticEnrichment returns which attributes may be emitted for the given entity.
+// Used by the placeholder renderer after enrichment. Returns nil on error or when policy not prepared.
+func (e *Engine) EvaluateSemanticEnrichment(ctx context.Context, input *SemanticEnrichmentInput) ([]string, error) {
+	prepared, ok := e.prepared["rego/semantic_enrichment.rego"]
+	if !ok {
+		return nil, nil
+	}
+	in := map[string]interface{}{
+		"config": map[string]interface{}{
+			"mode":               input.Config.Mode,
+			"allowed_attributes": input.Config.AllowedAttributes,
+		},
+		"entity": map[string]interface{}{
+			"type":       input.Entity.Type,
+			"attributes": input.Entity.Attributes,
+		},
+	}
+	results, err := prepared.Eval(ctx, rego.EvalInput(in))
+	if err != nil || len(results) == 0 || len(results[0].Expressions) == 0 {
+		return nil, nil
+	}
+	val := results[0].Expressions[0].Value
+	arr, ok := val.([]interface{})
+	if !ok {
+		return nil, nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, v := range arr {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 // RoutingInput is the input for EU sovereignty routing policy evaluation.

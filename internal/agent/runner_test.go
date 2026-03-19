@@ -1290,7 +1290,7 @@ func TestExecuteToolCallFull_InvalidCacheTTL_ReturnsError(t *testing.T) {
 	r := &Runner{idempotency: store, toolRegistry: reg}
 	tc := llm.ToolCall{Name: "send_email", Arguments: map[string]interface{}{"to": "a@b.com"}}
 
-	out := r.executeToolCallFull(context.Background(), nil, pol, tc, nil, "agent-1", "corr-1", "")
+	out := r.executeToolCallFull(context.Background(), nil, pol, tc, nil, "agent-1", "corr-1", "", nil)
 
 	assert.Contains(t, out.Content, "invalid cache_ttl", "invalid cache_ttl should fail the tool call")
 	var m map[string]string

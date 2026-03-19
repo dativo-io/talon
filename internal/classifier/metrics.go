@@ -11,8 +11,11 @@ import (
 var classifierMeter = otel.Meter("github.com/dativo-io/talon/internal/classifier")
 
 var (
-	piiDetectionsCounter metric.Int64Counter
-	piiRedactionsCounter metric.Int64Counter
+	piiDetectionsCounter      metric.Int64Counter
+	piiRedactionsCounter      metric.Int64Counter
+	enrichmentAttempts        metric.Int64Counter
+	enrichmentAttrEmitted     metric.Int64Counter
+	enrichmentFallbackUnknown metric.Int64Counter
 )
 
 func init() {
@@ -30,6 +33,33 @@ func init() {
 	if err != nil {
 		piiRedactionsCounter, _ = classifierMeter.Int64Counter("talon.pii.redactions.total.fallback")
 	}
+	enrichmentAttempts, _ = classifierMeter.Int64Counter("talon.pii.enrichment.attempts.total",
+		metric.WithDescription("Semantic enrichment attempts by entity type"),
+		metric.WithUnit("{attempt}"))
+	enrichmentAttrEmitted, _ = classifierMeter.Int64Counter("talon.pii.enrichment.attributes.emitted.total",
+		metric.WithDescription("Enrichment attributes emitted (e.g. gender, scope)"),
+		metric.WithUnit("{attribute}"))
+	enrichmentFallbackUnknown, _ = classifierMeter.Int64Counter("talon.pii.enrichment.fallback_unknown.total",
+		metric.WithDescription("Enrichment fallback to unknown"),
+		metric.WithUnit("{fallback}"))
+}
+
+// RecordEnrichmentAttempt records one enrichment attempt for an entity type.
+func RecordEnrichmentAttempt(ctx context.Context, entityType string) {
+	enrichmentAttempts.Add(ctx, 1, metric.WithAttributes(attribute.String("entity_type", entityType)))
+}
+
+// RecordEnrichmentAttribute records one attribute emitted (e.g. gender=female, scope=city).
+func RecordEnrichmentAttribute(ctx context.Context, attrName, attrValue string) {
+	enrichmentAttrEmitted.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("attr", attrName),
+		attribute.String("value", attrValue),
+	))
+}
+
+// RecordEnrichmentFallbackUnknown records fallback to unknown for an attribute.
+func RecordEnrichmentFallbackUnknown(ctx context.Context, entityType string) {
+	enrichmentFallbackUnknown.Add(ctx, 1, metric.WithAttributes(attribute.String("entity_type", entityType)))
 }
 
 // RecordPIIDetection increments the PII detection counter per entity type.

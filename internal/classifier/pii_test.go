@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dativo-io/talon/internal/classifier/enrich"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -264,6 +265,54 @@ func TestPIIRedaction(t *testing.T) {
 			}
 		})
 	}
+}
+
+// allowAllEnrichmentPolicy is a test stub that returns allowed attributes when mode is enforce.
+type allowAllEnrichmentPolicy struct{}
+
+func (allowAllEnrichmentPolicy) EmitAttributes(_ context.Context, mode string, allowed []string, _ string, _ map[string]string) []string {
+	if mode == "enforce" {
+		return allowed
+	}
+	return nil
+}
+
+func TestPIIRedactionWithSemanticEnrichment(t *testing.T) {
+	ctx := context.Background()
+
+	// Use text that yields one PERSON, one LOCATION, one EMAIL without overlapping matches.
+	text := "Mrs Smith lives in Berlin. Email: user@example.com"
+
+	// Scanner without enrichment: legacy [TYPE] placeholders
+	scannerLegacy, err := NewScanner()
+	require.NoError(t, err)
+	legacy := scannerLegacy.Redact(ctx, text)
+	assert.Contains(t, legacy, "[PERSON]")
+	assert.Contains(t, legacy, "[LOCATION]")
+	assert.Contains(t, legacy, "[EMAIL]")
+	assert.NotContains(t, legacy, "<PII ")
+	assert.NotContains(t, legacy, "Mrs Smith")
+	assert.NotContains(t, legacy, "Berlin")
+	assert.NotContains(t, legacy, "user@example.com")
+
+	// Scanner with enrichment enforce: XML-style placeholders with attributes
+	cfg := &EnrichmentConfig{
+		Enabled:             true,
+		Mode:                "enforce",
+		AllowedAttributes:   []string{"gender", "scope"},
+		ConfidenceThreshold: 0.5,
+	}
+	scannerEnriched, err := NewScanner(WithSemanticEnrichment(enrich.NewBuiltInEnricher(), cfg, allowAllEnrichmentPolicy{}))
+	require.NoError(t, err)
+	enriched := scannerEnriched.Redact(ctx, text)
+	assert.Contains(t, enriched, "<PII type=\"person\"")
+	assert.Contains(t, enriched, "gender=\"female\"")
+	assert.Contains(t, enriched, "<PII type=\"location\"")
+	assert.Contains(t, enriched, "scope=\"city\"")
+	assert.Contains(t, enriched, "type=\"email\"") // email uses same XML placeholder format (no extra attributes)
+	assert.NotContains(t, enriched, "Mrs Smith")
+	assert.NotContains(t, enriched, "Berlin")
+	assert.NotContains(t, enriched, "user@example.com")
 }
 
 func TestDetermineTier(t *testing.T) {

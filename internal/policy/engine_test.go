@@ -505,6 +505,43 @@ func TestDataClassificationTier2WithSensitivePII(t *testing.T) {
 	assert.Equal(t, 2, tier, "IBAN should trigger tier 2")
 }
 
+func TestEvaluateSemanticEnrichment(t *testing.T) {
+	ctx := context.Background()
+	pol := newTestPolicy()
+	engine, err := NewEngine(ctx, pol)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name     string
+		mode     string
+		allowed  []string
+		attrs    map[string]string
+		wantLen  int
+		wantCont []string
+	}{
+		{"mode off emits nothing", "off", []string{"gender", "scope"}, map[string]string{"gender": "female", "scope": "city"}, 0, nil},
+		{"mode shadow emits nothing", "shadow", []string{"gender", "scope"}, map[string]string{"gender": "female"}, 0, nil},
+		{"mode enforce emits only allowed present", "enforce", []string{"gender", "scope"}, map[string]string{"gender": "female", "scope": "city"}, 2, []string{"gender", "scope"}},
+		{"mode enforce subset", "enforce", []string{"gender"}, map[string]string{"gender": "female", "scope": "city"}, 1, []string{"gender"}},
+		{"mode enforce empty attrs", "enforce", []string{"gender"}, map[string]string{}, 0, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := &SemanticEnrichmentInput{}
+			input.Config.Mode = tt.mode
+			input.Config.AllowedAttributes = tt.allowed
+			input.Entity.Type = "person"
+			input.Entity.Attributes = tt.attrs
+			out, err := engine.EvaluateSemanticEnrichment(ctx, input)
+			require.NoError(t, err)
+			assert.Len(t, out, tt.wantLen)
+			for _, w := range tt.wantCont {
+				assert.Contains(t, out, w)
+			}
+		})
+	}
+}
+
 func TestEngineDecisionHasPolicyVersion(t *testing.T) {
 	ctx := context.Background()
 	pol := newTestPolicy()

@@ -483,6 +483,17 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		span.RecordError(err)
 		return nil, fmt.Errorf("loading policy: %w", err)
 	}
+	engine, err := policy.NewEngine(ctx, pol)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("creating policy engine: %w", err)
+	}
+	runClassifier := r.classifier
+	if pol.Policies.SemanticEnrichment != nil && pol.Policies.SemanticEnrichment.Enabled {
+		if s, err := policy.NewPIIScannerForPolicyWithEnrichment(ctx, pol, "", engine); err == nil {
+			runClassifier = s
+		}
+	}
 	if r.promptStore != nil && pol.Audit != nil && pol.Audit.IncludePrompts {
 		if _, err := r.promptStore.SaveIfNew(ctx, req.TenantID, req.AgentName, req.Prompt); err != nil {
 			log.Warn().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("prompt_version_store_failed")
@@ -490,7 +501,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	}
 
 	// Step 2: Classify input
-	inputClass := r.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), req.Prompt)
+	inputClass := runClassifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), req.Prompt)
 	inputEntityNames := entityNames(inputClass.Entities)
 	span.SetAttributes(
 		attribute.Int("classification.input_tier", inputClass.Tier),
@@ -498,7 +509,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	)
 
 	// Step 3: Scan attachments
-	processedPrompt, attachmentScan, err := r.processAttachments(ctx, req, pol)
+	processedPrompt, attachmentScan, err := r.processAttachments(ctx, req, pol, runClassifier)
 	if err != nil {
 		return nil, err
 	}
@@ -571,14 +582,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 
 	emitBudgetAlertIfNeeded(ctx, req.TenantID, dailyCost, monthlyCost, pol.Policies.CostLimits)
 
-	// Per-run engine: do not assign to shared Governance (SetPolicyEvaluator); pass this
-	// engine through to executeLLMPipeline so writeMemoryObservation uses it in ValidateWrite.
-	// That keeps concurrent Run() (e.g. webhook/cron in talon serve) from racing on g.opa.
-	engine, err := policy.NewEngine(ctx, pol)
-	if err != nil {
-		span.RecordError(err)
-		return nil, fmt.Errorf("creating policy engine: %w", err)
-	}
+	// Engine already created after policy load (used for enrichment scanner when enabled).
 
 	// Use conservative default when pricing unknown so cost-based deny policies still apply (e2e, no pricing file).
 	estimatedCost := 0.01
@@ -786,7 +790,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				// Re-classify memory content to detect tier upgrades from persisted
 				// classified data — prevents sending tier-1/tier-2 memory content
 				// to a lower-tier model (data sovereignty protection).
-				memClass := r.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), memPrompt)
+				memClass := runClassifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), memPrompt)
 				if memClass.Tier > effectiveTier {
 					effectiveTier = memClass.Tier
 					span.SetAttributes(attribute.Int("classification.tier_upgraded_by_memory", effectiveTier))
@@ -818,7 +822,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 
 	resp, err = r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine, engine,
 		effectiveTier, effectivePIINames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
-		observationOverride, originalDecision, estimatedCost)
+		observationOverride, originalDecision, estimatedCost, runClassifier)
 	if err != nil {
 		return nil, err
 	}
@@ -908,7 +912,7 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 // costEstimate is the pre-run cost estimate from Run() (same value used for policy input and plan-review gate).
 //
 //nolint:gocyclo // orchestration flow is inherently branched; splitting would obscure the pipeline
-func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64) (*RunResponse, error) {
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64, piiScanner *classifier.Scanner) (*RunResponse, error) {
 	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
 	provider, model, degraded, originalModel, routeDecision, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx, routingEngine, req.SovereigntyMode)
 	if err != nil {
@@ -1164,7 +1168,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					}
 
 					toolStart := time.Now()
-					tcResult := r.executeToolCallFull(ctx, policyEval, pol, tc, toolHistory, req.AgentName, correlationID, req.SessionID)
+					tcResult := r.executeToolCallFull(ctx, policyEval, pol, tc, toolHistory, req.AgentName, correlationID, req.SessionID, piiScanner)
 					resultContent = tcResult.Content
 					executed = tcResult.Executed
 					toolName = tcResult.ToolName
@@ -1281,11 +1285,11 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			}
 		}
 		// Step 7.5: Pre-specified tool invocations (legacy path)
-		toolsCalled = r.executeToolInvocations(ctx, span, req, policyEval, pol)
+		toolsCalled = r.executeToolInvocations(ctx, span, req, policyEval, pol, piiScanner)
 	}
 
 	// Step 8: Classify output
-	outputClass := r.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), llmResp.Content)
+	outputClass := piiScanner.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), llmResp.Content)
 	outputEntityNames := entityNames(outputClass.Entities)
 
 	// Step 9: Generate evidence (attach post-request cost to routing decision when pricing table is set)
@@ -1391,7 +1395,9 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 }
 
 // executeToolInvocations runs each requested tool through policy and the registry, and returns the list of tool names actually executed (for evidence).
-func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, req *RunRequest, policyEval memory.PolicyEvaluator, pol *policy.Policy) []string {
+//
+//nolint:gocyclo // policy check, PII scan, registry lookup, execute; splitting would obscure the flow
+func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, req *RunRequest, policyEval memory.PolicyEvaluator, pol *policy.Policy, piiScanner *classifier.Scanner) []string {
 	if len(req.ToolInvocations) == 0 || r.toolRegistry == nil {
 		return nil
 	}
@@ -1414,12 +1420,27 @@ func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, re
 				continue
 			}
 		}
+		// Tool-aware PII scanning on arguments (same as executeToolCallFull)
+		paramsToUse := inv.Params
+		if piiScanner != nil && pol != nil && len(pol.ToolPolicies) > 0 {
+			piiResult := applyToolArgumentPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), piiScanner, inv.Name, inv.Params, pol)
+			if piiResult != nil {
+				if piiResult.Blocked {
+					log.Warn().Str("tool", inv.Name).Str("reason", piiResult.BlockReason).Msg("tool invocation blocked by PII policy")
+					continue
+				}
+				if piiResult.ModifiedArgs != nil {
+					paramsToUse = piiResult.ModifiedArgs
+				}
+			}
+		}
+
 		tool, ok := r.toolRegistry.Get(inv.Name)
 		if !ok {
 			log.Warn().Str("tool", inv.Name).Msg("tool not in registry")
 			continue
 		}
-		_, err := tool.Execute(ctx, inv.Params)
+		_, err := tool.Execute(ctx, paramsToUse)
 		if err != nil {
 			log.Warn().Err(err).Str("tool", inv.Name).Msg("tool execution failed")
 			continue
@@ -1484,7 +1505,7 @@ type ToolCallResult struct {
 // agentID, correlationID, and sessionID are used for idempotency key derivation when tool_governance is set (Gap T8).
 //
 //nolint:gocyclo // tool execution pipeline: policy, idempotency, PII, validation, timeout, execute, result PII
-func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.PolicyEvaluator, pol *policy.Policy, tc llm.ToolCall, toolHistory []map[string]interface{}, agentID, correlationID, sessionID string) ToolCallResult {
+func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.PolicyEvaluator, pol *policy.Policy, tc llm.ToolCall, toolHistory []map[string]interface{}, agentID, correlationID, sessionID string, piiScanner *classifier.Scanner) ToolCallResult {
 	result := ToolCallResult{ToolName: tc.Name}
 	if r.toolRegistry == nil {
 		result.Content = `{"error":"tool registry not available"}`
@@ -1581,8 +1602,8 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 
 	// Step 2: Tool-aware PII scanning on arguments
 
-	if r.classifier != nil && pol != nil && len(pol.ToolPolicies) > 0 {
-		piiResult := applyToolArgumentPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), r.classifier, tc.Name, params, pol)
+	if piiScanner != nil && pol != nil && len(pol.ToolPolicies) > 0 {
+		piiResult := applyToolArgumentPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), piiScanner, tc.Name, params, pol)
 		if piiResult != nil {
 			result.PIIFindings = append(result.PIIFindings, piiResult.Findings...)
 			if piiResult.Blocked {
@@ -1672,8 +1693,8 @@ func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.Poli
 	}
 
 	// Step 4: Tool-aware PII scanning on result
-	if r.classifier != nil && pol != nil && len(pol.ToolPolicies) > 0 {
-		redacted, findings := applyToolResultPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), r.classifier, tc.Name, resultStr, pol)
+	if piiScanner != nil && pol != nil && len(pol.ToolPolicies) > 0 {
+		redacted, findings := applyToolResultPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), piiScanner, tc.Name, resultStr, pol)
 		result.PIIFindings = append(result.PIIFindings, findings...)
 		resultStr = redacted
 	}
@@ -1814,7 +1835,7 @@ func postBudgetAlert(ctx context.Context, webhookURL string, payload map[string]
 }
 
 // processAttachments scans, sandboxes, and appends attachment content to the prompt.
-func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *policy.Policy) (string, *evidence.AttachmentScan, error) {
+func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *policy.Policy, piiScanner *classifier.Scanner) (string, *evidence.AttachmentScan, error) {
 	if len(req.Attachments) == 0 {
 		return req.Prompt, nil, nil
 	}
@@ -1841,8 +1862,8 @@ func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *p
 		} else {
 			text = string(att.Content)
 		}
-		if r.classifier != nil {
-			attachClass := r.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), text)
+		if piiScanner != nil {
+			attachClass := piiScanner.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), text)
 			if attachClass.Tier > maxAttachmentTier {
 				maxAttachmentTier = attachClass.Tier
 			}

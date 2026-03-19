@@ -225,6 +225,8 @@ var entityTypeMap = map[string]string{
 	"DK_CPR":          "national_id",
 	"IE_PPS":          "national_id",
 	"PT_NIF":          "tax_id",
+	"PERSON":          "person",
+	"LOCATION":        "location",
 }
 
 // entityToType maps a Presidio entity name to the internal type string.

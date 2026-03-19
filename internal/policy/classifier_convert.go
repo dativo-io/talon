@@ -1,9 +1,11 @@
 package policy
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/dativo-io/talon/internal/classifier"
+	"github.com/dativo-io/talon/internal/classifier/enrich"
 )
 
 // PIIScannerOptions builds classifier.ScannerOption slice from policy data_classification
@@ -39,6 +41,13 @@ func PIIScannerOptions(cfg *DataClassificationConfig, globalPatternFile string) 
 // Use this whenever a Policy is available so per-agent settings are not ignored.
 // globalPatternFile is optional (e.g. ~/.talon/patterns.yaml); use "" to skip.
 func NewPIIScannerForPolicy(pol *Policy, globalPatternFile string) (*classifier.Scanner, error) {
+	return NewPIIScannerForPolicyWithEnrichment(context.Background(), pol, globalPatternFile, nil)
+}
+
+// NewPIIScannerForPolicyWithEnrichment is like NewPIIScannerForPolicy but when engine
+// is non-nil and policy has semantic_enrichment enabled, the scanner will use
+// enriched placeholders (e.g. <PII type="person" id="1" gender="female"/>).
+func NewPIIScannerForPolicyWithEnrichment(ctx context.Context, pol *Policy, globalPatternFile string, engine *Engine) (*classifier.Scanner, error) {
 	var opts []classifier.ScannerOption
 	if pol != nil && pol.Policies.DataClassification != nil {
 		var err error
@@ -49,6 +58,27 @@ func NewPIIScannerForPolicy(pol *Policy, globalPatternFile string) (*classifier.
 	} else if globalPatternFile != "" {
 		opts = []classifier.ScannerOption{classifier.WithPatternFile(globalPatternFile)}
 	}
+	if pol != nil && pol.Policies.SemanticEnrichment != nil && pol.Policies.SemanticEnrichment.Enabled && engine != nil {
+		cfg := pol.Policies.SemanticEnrichment
+		enrichConfig := &classifier.EnrichmentConfig{
+			Enabled:               cfg.Enabled,
+			Mode:                  cfg.Mode,
+			AllowedAttributes:     cfg.AllowedAttributes,
+			ConfidenceThreshold:   cfg.ConfidenceThreshold,
+			EmitUnknownAttributes: cfg.EmitUnknownAttributes,
+			DefaultPersonGender:   cfg.DefaultPersonGender,
+			DefaultLocationScope:  cfg.DefaultLocationScope,
+			PreserveTitles:        cfg.PreserveTitles,
+		}
+		if len(enrichConfig.AllowedAttributes) == 0 {
+			enrichConfig.AllowedAttributes = []string{"gender", "scope"}
+		}
+		if enrichConfig.Mode == "" {
+			enrichConfig.Mode = "enforce"
+		}
+		opts = append(opts, classifier.WithSemanticEnrichment(enrich.NewBuiltInEnricher(), enrichConfig, &EnrichmentPolicyAdapter{Engine: engine}))
+	}
+	_ = ctx
 	return classifier.NewScanner(opts...)
 }
 
