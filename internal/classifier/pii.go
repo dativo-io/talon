@@ -387,6 +387,9 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 					for _, attr := range allowed {
 						if v, ok := e.Attributes[attr]; ok && v != "" {
 							RecordEnrichmentAttribute(ctx, attr, v)
+							if v == "unknown" {
+								RecordEnrichmentFallbackUnknown(ctx, e.Type)
+							}
 						}
 					}
 				}
