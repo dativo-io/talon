@@ -25,8 +25,12 @@ func RedactWithPlaceholders(text string, entities []*entity.CanonicalEntity, opt
 	if len(entities) == 0 {
 		return text
 	}
-	useEnriched := opts != nil && opts.UseEnriched
-	allowed := opts.Allowed
+	var useEnriched bool
+	var allowed AllowedAttrs
+	if opts != nil {
+		useEnriched = opts.UseEnriched
+		allowed = opts.Allowed
+	}
 
 	// Build replacements from end to start to preserve indices
 	type repl struct {

@@ -57,6 +57,16 @@ func TestRedactWithPlaceholders_EmptyEntities(t *testing.T) {
 	assert.Equal(t, "hello", out)
 }
 
+func TestRedactWithPlaceholders_NilOptsNonEmptyEntities(t *testing.T) {
+	// opts may be nil when entities exist; must use legacy format and must not panic.
+	text := "Hello Mrs Smith."
+	entities := []*entity.CanonicalEntity{
+		{Id: 1, Type: "person", Raw: "Mrs Smith", Start: 6, End: 15},
+	}
+	out := RedactWithPlaceholders(text, entities, nil)
+	assert.Equal(t, "Hello [PERSON].", out)
+}
+
 func TestFormatLegacy(t *testing.T) {
 	assert.Equal(t, "[EMAIL]", formatLegacy("email"))
 	assert.Equal(t, "[PERSON]", formatLegacy("person"))
