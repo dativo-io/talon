@@ -10,7 +10,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/dativo-io/talon/internal/classifier/enrich"
-	"github.com/dativo-io/talon/internal/classifier/entity"
 	"github.com/dativo-io/talon/internal/classifier/render"
 	"github.com/dativo-io/talon/internal/otel"
 )
@@ -345,24 +344,21 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 
 	// Semantic enrichment path: enricher + policy + XML-style placeholders
 	if s.enricher != nil && s.enrichmentConfig != nil && s.enrichmentConfig.Enabled && s.enrichmentConfig.Mode != "off" && s.enrichmentPolicy != nil {
-		canonical := make([]*entity.CanonicalEntity, 0, len(merged))
-		for i, m := range merged {
+		mergedAsPII := make([]PIIEntity, 0, len(merged))
+		for _, m := range merged {
 			raw := ""
 			if m.start >= 0 && m.end <= len(text) {
 				raw = text[m.start:m.end]
 			}
-			canonical = append(canonical, &entity.CanonicalEntity{
-				Id:          i + 1,
+			mergedAsPII = append(mergedAsPII, PIIEntity{
 				Type:        m.ptype,
-				Raw:         raw,
-				Start:       m.start,
-				End:         m.end,
-				Source:      entity.SourceCustom,
+				Value:       raw,
+				Position:    m.start,
 				Confidence:  0.8,
 				Sensitivity: m.sensitivity,
-				Attributes:  nil,
 			})
 		}
+		canonical := PIIEntitiesToCanonical(mergedAsPII)
 		if len(canonical) > 0 {
 			enrichOpts := &enrich.EnrichOptions{
 				ConfidenceMin:   s.enrichmentConfig.ConfidenceThreshold,
