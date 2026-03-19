@@ -1395,6 +1395,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 }
 
 // executeToolInvocations runs each requested tool through policy and the registry, and returns the list of tool names actually executed (for evidence).
+//
+//nolint:gocyclo // policy check, PII scan, registry lookup, execute; splitting would obscure the flow
 func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, req *RunRequest, policyEval memory.PolicyEvaluator, pol *policy.Policy, piiScanner *classifier.Scanner) []string {
 	if len(req.ToolInvocations) == 0 || r.toolRegistry == nil {
 		return nil
@@ -1418,12 +1420,27 @@ func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, re
 				continue
 			}
 		}
+		// Tool-aware PII scanning on arguments (same as executeToolCallFull)
+		paramsToUse := inv.Params
+		if piiScanner != nil && pol != nil && len(pol.ToolPolicies) > 0 {
+			piiResult := applyToolArgumentPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), piiScanner, inv.Name, inv.Params, pol)
+			if piiResult != nil {
+				if piiResult.Blocked {
+					log.Warn().Str("tool", inv.Name).Str("reason", piiResult.BlockReason).Msg("tool invocation blocked by PII policy")
+					continue
+				}
+				if piiResult.ModifiedArgs != nil {
+					paramsToUse = piiResult.ModifiedArgs
+				}
+			}
+		}
+
 		tool, ok := r.toolRegistry.Get(inv.Name)
 		if !ok {
 			log.Warn().Str("tool", inv.Name).Msg("tool not in registry")
 			continue
 		}
-		_, err := tool.Execute(ctx, inv.Params)
+		_, err := tool.Execute(ctx, paramsToUse)
 		if err != nil {
 			log.Warn().Err(err).Str("tool", inv.Name).Msg("tool execution failed")
 			continue
