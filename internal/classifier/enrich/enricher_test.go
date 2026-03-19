@@ -21,7 +21,9 @@ func TestBuiltInEnricher_Person(t *testing.T) {
 		wantSet    bool
 	}{
 		{"Mrs title", "Mrs Smith", GenderFemale, true},
+		{"Mrs. title with period", "Mrs. Smith", GenderFemale, true},
 		{"Mr title", "Mr Jones", GenderMale, true},
+		{"Mr. title with period", "Mr. Jones", GenderMale, true},
 		{"Herr title", "Herr Müller", GenderMale, true},
 		{"Frau title", "Frau Schmidt", GenderFemale, true},
 		{"Mme title", "Mme Dupont", GenderFemale, true},

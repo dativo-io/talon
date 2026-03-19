@@ -148,7 +148,8 @@ func (e *BuiltInEnricher) enrichPerson(raw string, opts *EnrichOptions) (gender 
 	_ = preserveTitles
 	// 1) Explicit title / honorific (FindStringIndex returns [start, end], len >= 2 when not nil)
 	if idx := e.personTitleRe.FindStringIndex(trimmed); len(idx) >= 2 && idx[0] == 0 {
-		honorific := strings.TrimRight(strings.TrimSuffix(strings.ToLower(trimmed[idx[0]:idx[1]]), "."), " ")
+		// Trim space first (regex captures trailing space), then optional period, so "Mrs. " -> "mrs".
+		honorific := strings.TrimSuffix(strings.TrimRight(strings.ToLower(trimmed[idx[0]:idx[1]]), " "), ".")
 		if g, ok := e.personTitles[honorific]; ok {
 			return g, 0.95, "title"
 		}
