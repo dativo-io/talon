@@ -187,7 +187,10 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req *llm.Request) (*llm.R
 	for _, tc := range resp.Choices[0].Message.ToolCalls {
 		args := make(map[string]interface{})
 		if tc.Function.Arguments != "" {
-			_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				args["_raw_arguments"] = tc.Function.Arguments
+				args["_parse_error"] = err.Error()
+			}
 		}
 		out.ToolCalls = append(out.ToolCalls, llm.ToolCall{
 			ID:        tc.ID,

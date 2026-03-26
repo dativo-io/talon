@@ -241,6 +241,33 @@ caller's daily/monthly accumulator (in-memory counter, periodically flushed).
 | 12 | Evidence + cost | 1-2ms | Async SQLite write + HMAC |
 | **Total overhead** | | **<15ms** | **Excluding network RTT** |
 
+## Throughput And Benchmarking
+
+Use this quick benchmark harness to measure your own environment. Throughput depends on message size, PII pattern density, and upstream provider latency.
+
+```bash
+# 1) Start local proof environment
+cd examples/docker-compose
+docker compose up -d
+
+# 2) Warm-up
+bash ../../scripts/demo-recorder.sh
+
+# 3) Measure request latency/throughput (example with hey)
+hey -n 200 -c 20 -m POST \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello jan@example.com"}]}' \
+  http://localhost:8080/v1/proxy/openai/v1/chat/completions
+```
+
+Overhead contributors, in order:
+
+1. PII scanning complexity and input length
+2. Policy evaluation breadth (number of active checks)
+3. Response-path handling (especially redact/block modes)
+4. Evidence write path and storage backend
+5. Upstream provider/network latency (usually dominant)
+
 ## What Talon Does NOT Do
 
 - **Does not modify request bodies in shadow mode.** The upstream provider
@@ -260,6 +287,14 @@ caller's daily/monthly accumulator (in-memory counter, periodically flushed).
   points where you choose.
 - **Does not require an internet connection for policy evaluation.** OPA is
   embedded in the binary. Policies are evaluated locally.
+
+## Threat Boundaries
+
+Talon is a control-plane enforcement layer, not a full security perimeter.
+
+- **In scope:** pre-execution policy checks, request/response governance, signed evidence chain.
+- **Out of scope:** endpoint compromise, stolen deployment credentials, provider-side data handling controls.
+- **Operator controls required:** secure key management, host hardening, least-privilege API keys, retention/access policy for evidence storage.
 
 ## Streaming Behavior
 

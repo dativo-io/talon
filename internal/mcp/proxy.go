@@ -169,7 +169,11 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			for _, e := range result.Entities {
 				proxyInput.DetectedPII = append(proxyInput.DetectedPII, e.Type)
 			}
-			piiDecision, _ := h.proxyEngine.EvaluateProxyPII(ctx, proxyInput)
+			piiDecision, piiErr := h.proxyEngine.EvaluateProxyPII(ctx, proxyInput)
+			if piiErr != nil && h.config.Proxy.Mode == "intercept" {
+				h.recordEvidence(ctx, tenantID, "proxy_pii_eval_error", toolName, nil, piiErr.Error())
+				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII policy evaluation failed (fail-closed)"}}
+			}
 			if piiDecision != nil && !piiDecision.Allowed && h.config.Proxy.Mode == "intercept" {
 				h.recordEvidence(ctx, tenantID, "proxy_pii_redaction", toolName, nil, "PII detected")
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII detected in request"}}

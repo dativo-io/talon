@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="Dativo Talon social preview">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="100%" stop-color="#101a32"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect x="64" y="72" width="1152" height="496" rx="16" fill="#0f172a" stroke="#334155"/>
+  <text x="96" y="126" fill="#93c5fd" font-family="Menlo, Monaco, monospace" font-size="26">Dativo Talon</text>
+  <text x="96" y="164" fill="#e2e8f0" font-family="Menlo, Monaco, monospace" font-size="20">One URL change. Policy enforcement + signed evidence.</text>
+  <text x="96" y="210" fill="#cbd5e1" font-family="Menlo, Monaco, monospace" font-size="18">$ talon audit list</text>
+  <text x="96" y="246" fill="#94a3b8" font-family="Menlo, Monaco, monospace" font-size="16">ID         CALLER       PII            COST(¬)   DECISION</text>
+  <text x="96" y="278" fill="#e2e8f0" font-family="Menlo, Monaco, monospace" font-size="16">evt_a1b2   support-bot  email(1)       0.003     allowed</text>
+  <text x="96" y="306" fill="#fca5a5" font-family="Menlo, Monaco, monospace" font-size="16">evt_d4e5   hr-assistant iban(2)        0.000     blocked:pii</text>
+  <text x="96" y="334" fill="#fde68a" font-family="Menlo, Monaco, monospace" font-size="16">evt_x9y0   eng-tools    none           0.000     blocked:tool</text>
+  <text x="96" y="362" fill="#e2e8f0" font-family="Menlo, Monaco, monospace" font-size="16">evt_g7h8   eng-tools    none           0.012     allowed</text>
+  <text x="96" y="390" fill="#e2e8f0" font-family="Menlo, Monaco, monospace" font-size="16">evt_j0k1   support-bot  email(1),phone 0.004     allowed:redacted</text>
+  <text x="96" y="446" fill="#cbd5e1" font-family="Menlo, Monaco, monospace" font-size="18">Verify evidence integrity:</text>
+  <text x="96" y="478" fill="#86efac" font-family="Menlo, Monaco, monospace" font-size="18">$ talon audit verify evt_a1b2c3  -> signature VALID</text>
+  <text x="96" y="530" fill="#93c5fd" font-family="Menlo, Monaco, monospace" font-size="16">github.com/dativo-io/talon</text>
+</svg>

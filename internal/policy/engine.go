@@ -460,18 +460,24 @@ func (e *Engine) EvaluateRouting(ctx context.Context, input *RoutingInput) (*Dec
 	}
 
 	decision := &Decision{
-		Allowed:       true,
-		Action:        "allow",
 		PolicyVersion: e.policy.VersionTag,
 	}
 	if len(results) == 0 || len(results[0].Expressions) == 0 {
+		decision.Allowed = false
+		decision.Action = "deny"
+		decision.Reasons = []string{"routing policy returned no results (fail-closed)"}
 		return decision, nil
 	}
 
 	resultMap, ok := results[0].Expressions[0].Value.(map[string]interface{})
 	if !ok {
+		decision.Allowed = false
+		decision.Action = "deny"
+		decision.Reasons = []string{"routing policy returned unparseable result (fail-closed)"}
 		return decision, nil
 	}
+	decision.Allowed = true
+	decision.Action = "allow"
 	if allow, _ := resultMap["allow"].(bool); !allow {
 		decision.Allowed = false
 		decision.Action = "deny"

@@ -168,7 +168,7 @@ func (g *Governance) checkMaxEntrySize(entry *Entry, pol *policy.Policy) error {
 }
 
 // evalOPAMemoryWrite runs OPA memory governance when an evaluator is available (eval or g.opa).
-// Returns nil if no evaluator, OPA is unavailable (logs and continues), or OPA allows; otherwise the denial error.
+// Returns nil if no evaluator or OPA allows; returns an error on OPA failure (fail-closed) or denial.
 // When eval is nil, g.opa is read under opaMu to avoid data races with SetPolicyEvaluator.
 func (g *Governance) evalOPAMemoryWrite(ctx context.Context, entry *Entry, eval PolicyEvaluator) error {
 	opa := eval
@@ -183,8 +183,8 @@ func (g *Governance) evalOPAMemoryWrite(ctx context.Context, entry *Entry, eval 
 	contentSize := len(entry.Title) + len(entry.Content)
 	decision, opaErr := opa.EvaluateMemoryWrite(ctx, entry.Category, contentSize)
 	if opaErr != nil {
-		log.Warn().Err(opaErr).Msg("OPA memory governance unavailable, continuing with Go checks")
-		return nil
+		log.Error().Err(opaErr).Msg("OPA memory governance unavailable, denying write (fail-closed)")
+		return fmt.Errorf("OPA memory governance unavailable: %w", opaErr)
 	}
 	if decision.Allowed {
 		return nil

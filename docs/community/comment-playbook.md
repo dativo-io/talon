@@ -1,6 +1,13 @@
 # Community comment playbook (internal)
 
-Copy-paste templates for Reddit/HN replies. Use only when the thread directly matches the problem. Explain why the naive approach fails first; link to Talon only if it solves the stated problem. Include the 60-second demo command when you link.
+Use this as a thinking aid, not a script. Replies should be written by a human for the specific thread.
+
+Principles:
+
+- Lead with the user's problem, not the project name.
+- Explain failure modes in concrete technical terms.
+- Link only to proof pages/commands that directly support your claim.
+- For Hacker News: no generated/template comments. Keep responses personal, direct, and technical.
 
 ---
 
@@ -69,4 +76,5 @@ Copy-paste templates for Reddit/HN replies. Use only when the thread directly ma
 - **Never** lead with the product name. Lead with the problem and why common approaches fail.
 - **Only** link when the thread is asking for exactly what Talon does (tool blocking, EU PII, cost caps, verifiable audit, or open-source proxy).
 - **Always** include the one-command demo when you link (`docker compose up` in the docker-compose example).
-- **Do not** paste the same reply in multiple threads; adapt the opening to the specific question.
+- **Do not** paste the same reply in multiple threads; adapt the opening and supporting evidence.
+- **Do not** use AI-generated or AI-edited community comments on HN.

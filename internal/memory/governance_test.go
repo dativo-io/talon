@@ -266,10 +266,10 @@ func TestSetPolicyEvaluator_ValidateWriteUsesOPA(t *testing.T) {
 		assert.ErrorIs(t, err, ErrMemoryWriteDenied)
 	})
 
-	t.Run("opa_error_continues_with_go_checks", func(t *testing.T) {
+	t.Run("opa_error_fails_closed", func(t *testing.T) {
 		gov.SetPolicyEvaluator(&mockPolicyEvaluator{err: context.DeadlineExceeded})
 		err := gov.ValidateWrite(context.Background(), entry, pol, nil)
-		assert.NoError(t, err, "OPA error should log and continue; Go checks allow this entry")
+		assert.Error(t, err, "OPA error must fail-closed to prevent ungoverned memory writes")
 	})
 }
 

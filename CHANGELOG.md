@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Release Note Quality Bar
+
+For user-facing entries, include:
+
+- why this change matters (problem solved),
+- who should care (operator/developer persona),
+- how to verify quickly (command or path),
+- any upgrade/migration impact,
+- at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
+
 ### Added
 
 - **feat(classifier): PII semantic enrichment.** Optional semantic attributes on PII placeholders: PERSON → gender (from title/honorific), LOCATION → scope (city/region/country). Canonical entity model and adapter from current detector; built-in enricher; Rego policy `semantic_enrichment.rego` (mode off/shadow/enforce, allowed_attributes). Placeholder renderer: legacy `[TYPE]` or XML-style `<PII type="..." id="..." .../>`. Config: `policies.semantic_enrichment` (enabled, mode, confidence_threshold, allowed_attributes). Metrics: `talon.pii.enrichment.attempts.total`, `talon.pii.enrichment.attributes.emitted.total`, `talon.pii.enrichment.fallback_unknown.total`. Smoke section 26 (5+5 runs with enrichment off/enforce). Docs: [PII semantic enrichment reference](docs/reference/pii-semantic-enrichment.md), policy cookbook snippet, Presidio migration note.

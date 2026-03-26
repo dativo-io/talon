@@ -4,8 +4,8 @@
 
 | Version | Supported          |
 |---------|--------------------|
-| 0.9.x   | :white_check_mark: |
-| 0.1.x   | :white_check_mark: |
+| 1.x     | :white_check_mark: |
+| <1.0    | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -26,6 +26,14 @@
 **In scope:** Talon binary, evidence integrity (HMAC), secrets vault (AES-256-GCM), policy engine (OPA), LLM gateway proxy, MCP proxy, API authentication.
 
 **Out of scope:** LLM provider security, upstream API vulnerabilities, issues in third-party dependencies (report upstream).
+
+## Security Boundaries (Threat Model Snapshot)
+
+Talon helps enforce and evidence policy decisions in the request path. It does not replace endpoint hardening, IAM design, or vendor-side controls.
+
+- Prevents/supports: pre-call policy denial, tool allow/deny, evidence integrity verification.
+- Does not prevent: compromised upstream provider, stolen operator keys, or host-level compromise outside Talon.
+- Operator responsibility: secure deployment, rotate keys, protect evidence/signing secrets, and monitor incidents.
 
 ## Security Architecture
 
