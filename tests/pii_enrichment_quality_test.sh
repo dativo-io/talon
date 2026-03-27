@@ -43,8 +43,10 @@
 #     limitation; acceptable for relative A-vs-B comparison on identical prompts).
 #
 # Usage:
-#   ./pii_enrichment_quality_test.sh               # 10 prompts per variant (default)
+#   ./pii_enrichment_quality_test.sh               # 10 prompts, gpt-4o-mini (defaults)
 #   NUM_PROMPTS=5 ./pii_enrichment_quality_test.sh  # 5 prompts per variant
+#   MODEL=gpt-4o ./pii_enrichment_quality_test.sh   # use gpt-4o for all LLM calls
+#   MODEL=gpt-4o NUM_PROMPTS=3 ./pii_enrichment_quality_test.sh  # both
 #
 # Prerequisites (same as smoke_test.sh):
 #   - talon in PATH (or run from repo root after make build)
@@ -66,6 +68,7 @@ set -o pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly NUM_PROMPTS="${NUM_PROMPTS:-10}"
+readonly MODEL="${MODEL:-gpt-4o-mini}"
 
 # Source the shared smoke request layer (canonical paths, bodies, HTTP helpers)
 # shellcheck source=./smoke_lib.sh
@@ -473,20 +476,27 @@ patch_yaml() {
   fi
 }
 
-# --- Tier 2 defaults to Bedrock-only Claude; CI and many dev machines have no Bedrock. ----------
-# Align with agent.talon.yaml.tmpl comment: use OpenAI for tier_2 when Bedrock is unavailable.
-patch_yaml_openai_tier2() {
+# --- Patch all model routing tiers to use $MODEL. ---------------------------
+# Tier 2 defaults to Bedrock-only Claude; CI and many dev machines have no Bedrock.
+# We also unify all tiers so the test uses a single, consistent model throughout.
+patch_yaml_model() {
   local yaml_file="$1"
   [[ -f "$yaml_file" ]] || return 0
   if [[ "$HAS_YQ" -eq 1 ]]; then
     yq -i '
-      .policies.model_routing.tier_2.primary = "gpt-4o-mini" |
-      .policies.model_routing.tier_2.fallback = "gpt-4o-mini" |
+      .policies.model_routing.tier_0.primary = "'"$MODEL"'" |
+      .policies.model_routing.tier_1.primary = "'"$MODEL"'" |
+      .policies.model_routing.tier_1.fallback = "'"$MODEL"'" |
+      .policies.model_routing.tier_2.primary = "'"$MODEL"'" |
+      .policies.model_routing.tier_2.fallback = "'"$MODEL"'" |
       .policies.model_routing.tier_2.bedrock_only = false
     ' "$yaml_file" 2>/dev/null || true
   else
     sed -i.bak \
-      -e 's/primary: claude[^[:space:]]*/primary: gpt-4o-mini/' \
+      -e "s/primary: gpt-[^[:space:]]*/primary: ${MODEL}/" \
+      -e "s/primary: claude[^[:space:]]*/primary: ${MODEL}/" \
+      -e "s/fallback: gpt-[^[:space:]]*/fallback: ${MODEL}/" \
+      -e "s/fallback: claude[^[:space:]]*/fallback: ${MODEL}/" \
       -e 's/bedrock_only: true/bedrock_only: false/' \
       "$yaml_file" 2>/dev/null || true
   fi
@@ -504,7 +514,7 @@ setup_variant() {
     TALON_DATA_DIR="$dir" talon init --scaffold --name "pii-quality-${agent_slug}" &>/dev/null || true
     [[ -n "${OPENAI_API_KEY:-}" ]] && TALON_DATA_DIR="$dir" talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null || true
     patch_yaml "$dir/agent.talon.yaml" "$enrichment_enabled" "$enrichment_mode"
-    patch_yaml_openai_tier2 "$dir/agent.talon.yaml"
+    patch_yaml_model "$dir/agent.talon.yaml"
   )
   echo "$dir"
 }
@@ -523,7 +533,7 @@ generate_prompts() {
     TALON_DATA_DIR="$gen_dir" talon init --scaffold --name "prompt-gen" &>/dev/null || true
     [[ -n "${OPENAI_API_KEY:-}" ]] && TALON_DATA_DIR="$gen_dir" talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null || true
     disable_pii_scan_generator_yaml "$gen_dir/agent.talon.yaml"
-    patch_yaml_openai_tier2 "$gen_dir/agent.talon.yaml"
+    patch_yaml_model "$gen_dir/agent.talon.yaml"
   )
 
   local gen_instruction
@@ -928,6 +938,7 @@ main() {
   {
     echo "=== PII enrichment quality test — run start $(log_timestamp) ==="
     echo "NUM_PROMPTS=$NUM_PROMPTS"
+    echo "MODEL=$MODEL"
     echo "TALON_DATA_DIR=$TALON_DATA_DIR"
     echo "SCRIPT_DIR=$SCRIPT_DIR"
     echo "HAS_YQ=$HAS_YQ python3=$(command -v python3 2>/dev/null || echo missing) jq=$(command -v jq 2>/dev/null || echo missing)"
@@ -947,9 +958,11 @@ main() {
   echo "╔══════════════════════════════════════════════════════════════╗"
   echo "║   PII Semantic Enrichment — Input Redaction Quality Test  ║"
   echo "║   Prompts per variant: ${NUM_PROMPTS}                                   ║"
+  echo "║   Model: ${MODEL}                                        ║"
   echo "╚══════════════════════════════════════════════════════════════╝"
   echo ""
   echo "  Methodology: LLM-as-Judge pairwise comparison (MT-Bench style)"
+  echo "  Model: ${MODEL} (override: MODEL=gpt-4o ./pii_enrichment_quality_test.sh)"
   echo "  Config: redact_input=true, redact_output=false"
   echo "  Criteria: Attribute Reasoning, Utility, Coherence, Helpfulness"
   echo "  Bias mitigation: response presentation order randomised per prompt"
@@ -1011,7 +1024,7 @@ main() {
         echo -e "\npolicies:\n  data_classification: { input_scan: false, output_scan: false, redact_pii: false }" >> "$_yaml"
       fi
     fi
-    patch_yaml_openai_tier2 "$dir_judge/agent.talon.yaml"
+    patch_yaml_model "$dir_judge/agent.talon.yaml"
   )
   log_to_file "  Data dir: $dir_judge"
   echo ""
@@ -1242,6 +1255,89 @@ B_seen=${seen_b}"
   echo "  References: arxiv.org/abs/2506.05979 | openreview.net/pdf?id=wf73W2xatC | arxiv.org/abs/2306.05685"
   echo ""
 
+  # --- Cost Report (from evidence records) ---
+  echo "  Cost Report"
+  echo "  ───────────"
+  local cost_a_total=0 cost_b_total=0 cost_judge_total=0
+  for variant_label in A B; do
+    local vdir cost_json cost_sum=0
+    if [[ "$variant_label" == "A" ]]; then vdir="$dir_a"; else vdir="$dir_b"; fi
+    cost_json="$(env TALON_DATA_DIR="$vdir" talon audit export --format json --from 2020-01-01 --to 2099-12-31 2>/dev/null)" || true
+    if echo "$cost_json" | jq -e '.records' &>/dev/null 2>&1; then
+      cost_sum="$(echo "$cost_json" | jq '[.records[].cost // 0] | add // 0' 2>/dev/null)" || cost_sum=0
+      local rec_count
+      rec_count="$(echo "$cost_json" | jq '.records | length' 2>/dev/null)" || rec_count=0
+      printf "  Variant %s: €%.6f total  (%s evidence records, model: %s)\n" "$variant_label" "$cost_sum" "$rec_count" "$MODEL"
+      if [[ "$variant_label" == "A" ]]; then cost_a_total="$cost_sum"; else cost_b_total="$cost_sum"; fi
+    else
+      printf "  Variant %s: (cost data unavailable)\n" "$variant_label"
+    fi
+  done
+  # Judge costs
+  local judge_cost_json
+  judge_cost_json="$(env TALON_DATA_DIR="$dir_judge" talon audit export --format json --from 2020-01-01 --to 2099-12-31 2>/dev/null)" || true
+  if echo "$judge_cost_json" | jq -e '.records' &>/dev/null 2>&1; then
+    cost_judge_total="$(echo "$judge_cost_json" | jq '[.records[].cost // 0] | add // 0' 2>/dev/null)" || cost_judge_total=0
+    local judge_rec_count
+    judge_rec_count="$(echo "$judge_cost_json" | jq '.records | length' 2>/dev/null)" || judge_rec_count=0
+    printf "  Judge:     €%.6f total  (%s evidence records, model: %s)\n" "$cost_judge_total" "$judge_rec_count" "$MODEL"
+  fi
+  local total_cost
+  total_cost="$(echo "$cost_a_total $cost_b_total $cost_judge_total" | awk '{printf "%.6f", $1+$2+$3}')"
+  printf "  ─────────\n"
+  printf "  Total:     €%s (A: €%s + B: €%s + Judge: €%s)\n" "$total_cost" "$cost_a_total" "$cost_b_total" "$cost_judge_total"
+  echo ""
+
+  # --- Compliance Report (per variant) ---
+  echo "  Compliance Report"
+  echo "  ─────────────────"
+  for variant_label in A B; do
+    local vdir
+    if [[ "$variant_label" == "A" ]]; then vdir="$dir_a"; else vdir="$dir_b"; fi
+    local comp_json
+    comp_json="$(env TALON_DATA_DIR="$vdir" talon compliance report --format json --from 2020-01-01 --to 2099-12-31 2>/dev/null)" || true
+    if [[ -n "$comp_json" ]] && echo "$comp_json" | jq -e '.' &>/dev/null 2>&1; then
+      echo "  Variant ${variant_label}:"
+      local pii_rate encryption_ok data_residency
+      pii_rate="$(echo "$comp_json" | jq -r '.summary.pii_detection_rate // "n/a"' 2>/dev/null)" || pii_rate="n/a"
+      encryption_ok="$(echo "$comp_json" | jq -r '.summary.secrets_encrypted // "n/a"' 2>/dev/null)" || encryption_ok="n/a"
+      data_residency="$(echo "$comp_json" | jq -r '.summary.data_residency // "n/a"' 2>/dev/null)" || data_residency="n/a"
+      echo "    PII detection rate: ${pii_rate}"
+      echo "    Secrets encrypted:  ${encryption_ok}"
+      echo "    Data residency:     ${data_residency}"
+      # Show framework coverage if available
+      local frameworks
+      frameworks="$(echo "$comp_json" | jq -r '.frameworks // [] | map(.name + ": " + (.coverage // "n/a")) | join(", ")' 2>/dev/null)" || frameworks=""
+      [[ -n "$frameworks" ]] && echo "    Frameworks: ${frameworks}"
+    else
+      echo "  Variant ${variant_label}: (compliance report unavailable — run 'talon compliance report' manually)"
+    fi
+  done
+  echo ""
+
+  # Append full reports to consolidated log for auditors
+  {
+    echo ""
+    echo "=== Cost Report (detailed) ==="
+    echo "Model: $MODEL"
+    for variant_label in A B Judge; do
+      local vdir
+      case "$variant_label" in A) vdir="$dir_a";; B) vdir="$dir_b";; Judge) vdir="$dir_judge";; esac
+      echo "--- Variant ${variant_label} evidence ---"
+      env TALON_DATA_DIR="$vdir" talon audit export --format json --from 2020-01-01 --to 2099-12-31 2>/dev/null \
+        | jq -r '.records[] | "\(.id) model=\(.model_used // "?") cost=€\(.cost // 0) tokens_in=\(.tokens.input // 0) tokens_out=\(.tokens.output // 0)"' 2>/dev/null || echo "(no records)"
+      echo ""
+    done
+    echo "=== Compliance Report (Variant A) ==="
+    env TALON_DATA_DIR="$dir_a" talon compliance report --format json --from 2020-01-01 --to 2099-12-31 2>/dev/null \
+      | jq . 2>/dev/null || echo "(unavailable)"
+    echo ""
+    echo "=== Compliance Report (Variant B) ==="
+    env TALON_DATA_DIR="$dir_b" talon compliance report --format json --from 2020-01-01 --to 2099-12-31 2>/dev/null \
+      | jq . 2>/dev/null || echo "(unavailable)"
+    echo ""
+  } >> "$SMOKE_CONSOLIDATED_LOG"
+
   # Per-prompt A vs B for human review (interpretation guide + full prompt + both outputs + judge)
   {
     echo ""
@@ -1313,7 +1409,7 @@ B_seen=${seen_b}"
   echo "  Consolidated log: $SMOKE_CONSOLIDATED_LOG"
   [[ "$final_fail" -gt 0 ]] && echo "  Failure log: $SMOKE_LOG_FILE"
   echo ""
-  echo "[SMOKE] SUMMARY|PASS_COUNT|${final_pass} FAIL_COUNT|${final_fail}" >> "$SMOKE_CONSOLIDATED_LOG"
+  echo "[SMOKE] SUMMARY|PASS_COUNT|${final_pass} FAIL_COUNT|${final_fail} MODEL|${MODEL}" >> "$SMOKE_CONSOLIDATED_LOG"
 
   if [[ "$a_wins" -gt "$b_wins" ]]; then
     exit 1
