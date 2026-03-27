@@ -18,19 +18,12 @@ Talon is a single Go binary in front of OpenAI, Anthropic, and Bedrock. Point yo
 
 
 
-[CI](https://github.com/dativo-io/talon/actions/workflows/ci.yml)
-[CodeQL](https://github.com/dativo-io/talon/actions/workflows/codeql.yml)
-[Release](https://github.com/dativo-io/talon/actions/workflows/release.yml)
-[Latest Release](https://github.com/dativo-io/talon/releases/latest)
-[Go Report Card](https://goreportcard.com/report/github.com/dativo-io/talon)
-[License](LICENSE)
-
-### Trust Signals
-
-- Release cadence: [23 tagged releases](https://github.com/dativo-io/talon/releases) (latest: `v1.3.0`, 2026-03-18)
-- Supply-chain: [CodeQL](https://github.com/dativo-io/talon/actions/workflows/codeql.yml) + [security workflow](https://github.com/dativo-io/talon/actions/workflows/security.yml) + [GoReleaser](.goreleaser.yml)
-- Verifiable evidence: `talon audit verify <evidence-id>`
-- Social preview asset: [`web/social-preview.svg`](web/social-preview.svg) (set in repo settings as Open Graph image)
+[![CI](https://github.com/dativo-io/talon/actions/workflows/ci.yml/badge.svg)](https://github.com/dativo-io/talon/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/dativo-io/talon/actions/workflows/codeql.yml/badge.svg)](https://github.com/dativo-io/talon/actions/workflows/codeql.yml)
+[![Release](https://github.com/dativo-io/talon/actions/workflows/release.yml/badge.svg)](https://github.com/dativo-io/talon/actions/workflows/release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/dativo-io/talon)](https://github.com/dativo-io/talon/releases/latest)
+[![Go Report Card](https://goreportcard.com/badge/github.com/dativo-io/talon)](https://goreportcard.com/report/github.com/dativo-io/talon)
+[![License](https://img.shields.io/github/license/dativo-io/talon)](LICENSE)
 
 ### Install Options (pick one)
 
