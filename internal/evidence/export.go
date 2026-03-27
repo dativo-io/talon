@@ -23,14 +23,15 @@ type ExportRecord struct {
 	DurationMS     int64     `json:"duration_ms"`
 	HasError       bool      `json:"has_error"`
 	// Classification (enriched export)
-	InputTier     int      `json:"input_tier"`
-	OutputTier    int      `json:"output_tier"`
-	PIIDetected   []string `json:"pii_detected,omitempty"`
-	PIIRedacted   bool     `json:"pii_redacted"`
-	PolicyReasons []string `json:"policy_reasons,omitempty"`
-	ToolsCalled   []string `json:"tools_called,omitempty"`
-	InputHash     string   `json:"input_hash,omitempty"`
-	OutputHash    string   `json:"output_hash,omitempty"`
+	InputTier        int      `json:"input_tier"`
+	OutputTier       int      `json:"output_tier"`
+	PIIDetected      []string `json:"pii_detected,omitempty"`
+	PIIRedacted      bool     `json:"pii_redacted"`
+	InputPIIRedacted bool     `json:"input_pii_redacted,omitempty"`
+	PolicyReasons    []string `json:"policy_reasons,omitempty"`
+	ToolsCalled      []string `json:"tools_called,omitempty"`
+	InputHash        string   `json:"input_hash,omitempty"`
+	OutputHash       string   `json:"output_hash,omitempty"`
 	// Shadow mode fields
 	ObservationModeOverride bool     `json:"observation_mode_override"`
 	ShadowViolationTypes    []string `json:"shadow_violation_types,omitempty"`
@@ -83,6 +84,7 @@ func ToExportRecord(e *Evidence) ExportRecord {
 		OutputTier:              e.Classification.OutputTier,
 		PIIDetected:             append([]string(nil), e.Classification.PIIDetected...),
 		PIIRedacted:             e.Classification.PIIRedacted,
+		InputPIIRedacted:        e.Classification.InputPIIRedacted,
 		InputHash:               e.AuditTrail.InputHash,
 		OutputHash:              e.AuditTrail.OutputHash,
 		ObservationModeOverride: e.ObservationModeOverride,

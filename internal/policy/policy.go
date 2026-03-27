@@ -220,7 +220,11 @@ type RateLimitsConfig struct {
 type DataClassificationConfig struct {
 	InputScan  bool `yaml:"input_scan,omitempty" json:"input_scan,omitempty"`
 	OutputScan bool `yaml:"output_scan,omitempty" json:"output_scan,omitempty"`
-	RedactPII  bool `yaml:"redact_pii,omitempty" json:"redact_pii,omitempty"`
+	// RedactPII is a backward-compatible shorthand: when set it enables both input and output redaction.
+	// Use RedactInput / RedactOutput for granular control; explicit values override RedactPII.
+	RedactPII    bool  `yaml:"redact_pii,omitempty" json:"redact_pii,omitempty"`
+	RedactInput  *bool `yaml:"redact_input,omitempty" json:"redact_input,omitempty"`
+	RedactOutput *bool `yaml:"redact_output,omitempty" json:"redact_output,omitempty"`
 	// BlockOnPII when true denies the run when input (prompt or attachments) contains PII.
 	BlockOnPII bool `yaml:"block_on_pii,omitempty" json:"block_on_pii,omitempty"`
 
@@ -233,6 +237,24 @@ type DataClassificationConfig struct {
 
 	// CustomRecognizers defines per-agent PII recognizers in Presidio-compatible format.
 	CustomRecognizers []CustomRecognizerConfig `yaml:"custom_recognizers,omitempty" json:"custom_recognizers,omitempty"`
+}
+
+// ShouldRedactInput returns true when input (prompt) PII should be redacted before the LLM.
+// Falls back to RedactPII when RedactInput is not explicitly set.
+func (dc *DataClassificationConfig) ShouldRedactInput() bool {
+	if dc.RedactInput != nil {
+		return *dc.RedactInput
+	}
+	return dc.RedactPII
+}
+
+// ShouldRedactOutput returns true when output (LLM response) PII should be redacted.
+// Falls back to RedactPII when RedactOutput is not explicitly set.
+func (dc *DataClassificationConfig) ShouldRedactOutput() bool {
+	if dc.RedactOutput != nil {
+		return *dc.RedactOutput
+	}
+	return dc.RedactPII
 }
 
 // CustomRecognizerConfig is the per-agent YAML representation of a custom PII
@@ -357,6 +379,12 @@ type AuditConfig struct {
 	IncludePrompts   bool   `yaml:"include_prompts,omitempty" json:"include_prompts,omitempty"`
 	IncludeResponses bool   `yaml:"include_responses,omitempty" json:"include_responses,omitempty"`
 	ObservationOnly  bool   `yaml:"observation_only,omitempty" json:"observation_only,omitempty"` // If true, never deny; record would-have-denied in evidence
+	// IncludeOriginalPrompts controls whether the prompt version store persists the
+	// original (pre-redaction) prompt text.  Default false: when input PII redaction
+	// is active, the redacted prompt is stored instead — aligning with GDPR Art. 5(1)(c)
+	// data minimization.  Set to true only when forensic reconstruction of original
+	// input is required (e.g. internal audit under legal hold).
+	IncludeOriginalPrompts bool `yaml:"include_original_prompts,omitempty" json:"include_original_prompts,omitempty"`
 }
 
 // PlanReviewConfig configures when execution plans require human review (EU AI Act Art. 14).

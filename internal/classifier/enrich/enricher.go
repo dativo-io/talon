@@ -135,6 +135,18 @@ func (e *BuiltInEnricher) Enrich(ctx context.Context, entities []*entity.Canonic
 			} else if emitUnknown {
 				ent.Attributes["scope"] = defaultScope
 			}
+		case "iban":
+			if cc := extractIBANCountry(ent.Raw); cc != "" {
+				ent.Attributes["country_code"] = cc
+			}
+		case "phone":
+			if cc := extractPhoneCountry(ent.Raw); cc != "" {
+				ent.Attributes["country_code"] = cc
+			}
+		case "email":
+			if dt := classifyEmailDomain(ent.Raw); dt != "" {
+				ent.Attributes["domain_type"] = dt
+			}
 		}
 	}
 
@@ -169,6 +181,106 @@ func (e *BuiltInEnricher) enrichLocation(raw string) (scope string, confidence f
 		return s, 0.9
 	}
 	return ScopeUnknown, 0.3
+}
+
+// extractIBANCountry returns the ISO 3166-1 alpha-2 country code from the first
+// two characters of an IBAN (e.g. "DE89370400440532013000" → "DE").
+func extractIBANCountry(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.ReplaceAll(s, " ", "")
+	if len(s) >= 2 {
+		cc := strings.ToUpper(s[:2])
+		if cc[0] >= 'A' && cc[0] <= 'Z' && cc[1] >= 'A' && cc[1] <= 'Z' {
+			return cc
+		}
+	}
+	return ""
+}
+
+// phoneCountryPrefixes maps E.164 dialing prefixes to ISO country codes (EU-focused).
+var phoneCountryPrefixes = []struct {
+	prefix string
+	cc     string
+}{
+	{"+49", "DE"},
+	{"+490", "DE"},
+	{"+33", "FR"},
+	{"+34", "ES"},
+	{"+39", "IT"},
+	{"+31", "NL"},
+	{"+32", "BE"},
+	{"+43", "AT"},
+	{"+48", "PL"},
+	{"+351", "PT"},
+	{"+353", "IE"},
+	{"+30", "GR"},
+	{"+420", "CZ"},
+	{"+40", "RO"},
+	{"+36", "HU"},
+	{"+46", "SE"},
+	{"+45", "DK"},
+	{"+358", "FI"},
+	{"+47", "NO"},
+	{"+44", "GB"},
+	{"+41", "CH"},
+	{"+352", "LU"},
+	{"+372", "EE"},
+	{"+371", "LV"},
+	{"+370", "LT"},
+	{"+385", "HR"},
+	{"+386", "SI"},
+	{"+421", "SK"},
+	{"+359", "BG"},
+}
+
+// extractPhoneCountry derives the country code from an E.164-style phone number prefix.
+func extractPhoneCountry(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.ReplaceAll(s, " ", "")
+	s = strings.ReplaceAll(s, "-", "")
+	if !strings.HasPrefix(s, "+") {
+		// Try 00-prefixed international format
+		if strings.HasPrefix(s, "00") {
+			s = "+" + s[2:]
+		} else {
+			return ""
+		}
+	}
+	// Match longest prefix first (entries with 4-char prefix before 3-char)
+	for _, p := range phoneCountryPrefixes {
+		if strings.HasPrefix(s, p.prefix) {
+			return p.cc
+		}
+	}
+	return ""
+}
+
+// freeEmailDomains is a set of well-known free/consumer email providers.
+var freeEmailDomains = map[string]bool{
+	"gmail.com": true, "googlemail.com": true,
+	"yahoo.com": true, "yahoo.de": true, "yahoo.fr": true, "yahoo.co.uk": true,
+	"outlook.com": true, "hotmail.com": true, "hotmail.de": true, "hotmail.fr": true,
+	"live.com": true, "msn.com": true,
+	"aol.com": true, "mail.com": true, "gmx.de": true, "gmx.net": true,
+	"web.de": true, "t-online.de": true, "freenet.de": true,
+	"protonmail.com": true, "proton.me": true,
+	"icloud.com": true, "me.com": true, "mac.com": true,
+	"yandex.com": true, "yandex.ru": true,
+	"zoho.com": true, "tutanota.com": true, "tuta.io": true,
+}
+
+// classifyEmailDomain returns "free" for consumer providers, "corporate" for company domains.
+func classifyEmailDomain(raw string) string {
+	s := strings.TrimSpace(raw)
+	at := strings.LastIndex(s, "@")
+	if at < 0 || at >= len(s)-1 {
+		return ""
+	}
+	domain := strings.ToLower(s[at+1:])
+	if freeEmailDomains[domain] {
+		return "free"
+	}
+	return "corporate"
 }
 
 // Known cities, regions, countries for scope classification (EU-focused subset).

@@ -639,6 +639,12 @@ func mergeComplianceOverlay(base, overlay *policy.Policy) {
 			base.Policies.DataClassification.InputScan = base.Policies.DataClassification.InputScan || overlay.Policies.DataClassification.InputScan
 			base.Policies.DataClassification.OutputScan = base.Policies.DataClassification.OutputScan || overlay.Policies.DataClassification.OutputScan
 			base.Policies.DataClassification.RedactPII = base.Policies.DataClassification.RedactPII || overlay.Policies.DataClassification.RedactPII
+			if overlay.Policies.DataClassification.RedactInput != nil && base.Policies.DataClassification.RedactInput == nil {
+				base.Policies.DataClassification.RedactInput = overlay.Policies.DataClassification.RedactInput
+			}
+			if overlay.Policies.DataClassification.RedactOutput != nil && base.Policies.DataClassification.RedactOutput == nil {
+				base.Policies.DataClassification.RedactOutput = overlay.Policies.DataClassification.RedactOutput
+			}
 			base.Policies.DataClassification.BlockOnPII = base.Policies.DataClassification.BlockOnPII || overlay.Policies.DataClassification.BlockOnPII
 		}
 	}

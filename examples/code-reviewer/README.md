@@ -29,3 +29,4 @@ talon validate -f examples/code-reviewer/agent.talon.yaml
 - `model_tier: 0` keeps default routing to cheaper models when no PII is present.
 - Forbidden patterns include `api_key`, `password`, `private_key` to reduce secret leakage in prompts.
 - `include_prompts: true` in audit for compliance; adjust if prompts contain sensitive code.
+- When `redact_input: true` is also set, the prompt version store saves the **redacted** prompt by default (GDPR Art. 5(1)(c) data minimization). Set `include_original_prompts: true` only if you need forensic access to the original pre-redaction text.

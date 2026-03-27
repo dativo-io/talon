@@ -38,14 +38,25 @@ Key top-level sections:
 |---------|---------|
 | `agent` | Name, description, version, model tier |
 | `capabilities` | Allowed tools, data sources, forbidden patterns |
-| `policies` | Cost limits, rate limits, model routing, data classification, time restrictions |
+| `policies` | Cost limits, rate limits, model routing, data classification (`redact_input`, `redact_output`, `block_on_pii`), time restrictions |
 | `memory` | Governed self-improvement (categories, retention, dedup) |
 | `triggers` | Cron schedules and webhook definitions |
 | `secrets` | Allowed/forbidden secret names for this agent |
 | `attachment_handling` | Prompt injection scanning, sandboxing mode |
-| `audit` | Log level, retention, prompt/response inclusion |
+| `audit` | Log level, retention, prompt/response inclusion, data minimization |
 | `compliance` | Frameworks (GDPR, EU AI Act, ISO 27001, NIS2, DORA), data residency, risk level |
 | `metadata` | Department, owner, tags |
+
+### Audit configuration
+
+| Key | Type | Default | Purpose |
+|-----|------|---------|---------|
+| `audit.log_level` | `string` | `"detailed"` | Evidence detail: `minimal`, `detailed`, or `full`. |
+| `audit.retention_days` | `int` | `90` | Days to retain evidence records before automatic purge. |
+| `audit.include_prompts` | `bool` | `false` | Persist prompt text in the prompt version store and step evidence summaries. |
+| `audit.include_responses` | `bool` | `false` | Persist LLM response text in step evidence summaries. |
+| `audit.include_original_prompts` | `bool` | `false` | When `true` **and** input PII redaction is active (`redact_input: true`), also persist the original pre-redaction prompt alongside the redacted version. Default `false` aligns with GDPR Art. 5(1)(c) data minimization. Enable only for forensic/legal-hold scenarios. See [ADR-002](../contributor/adr/ADR-002-prompt-storage-data-minimization.md). |
+| `audit.observation_only` | `bool` | `false` | Shadow mode: log policy denials without enforcing them. |
 
 See [Memory governance](../MEMORY_GOVERNANCE.md) for the full memory reference. Key memory options:
 

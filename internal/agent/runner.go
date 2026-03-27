@@ -496,11 +496,8 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			runClassifier = s
 		}
 	}
-	if r.promptStore != nil && pol.Audit != nil && pol.Audit.IncludePrompts {
-		if _, err := r.promptStore.SaveIfNew(ctx, req.TenantID, req.AgentName, req.Prompt); err != nil {
-			log.Warn().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("prompt_version_store_failed")
-		}
-	}
+	// Prompt version store is populated after input redaction (see below)
+	// so the stored text reflects what the LLM actually received (GDPR Art. 5(1)(c) data minimization).
 
 	// Step 2: Classify input
 	inputClass := runClassifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), req.Prompt)
@@ -824,9 +821,35 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		}
 	}
 
+	var inputPIIRedacted bool
+	if dc := pol.Policies.DataClassification; dc != nil && dc.InputScan && dc.ShouldRedactInput() && effectiveHasPII {
+		finalPrompt = runClassifier.Redact(
+			classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), finalPrompt)
+		inputPIIRedacted = true
+		span.SetAttributes(attribute.Bool("classification.input_pii_redacted", true))
+	}
+
+	// Prompt version store: save AFTER redaction so the stored text reflects what the LLM
+	// received (GDPR Art. 5(1)(c) data minimization).  When include_original_prompts is
+	// explicitly set, also persist the pre-redaction original for forensic use.
+	if r.promptStore != nil && pol.Audit != nil && pol.Audit.IncludePrompts {
+		promptToStore := finalPrompt
+		if !inputPIIRedacted {
+			promptToStore = req.Prompt
+		}
+		if _, err := r.promptStore.SaveIfNew(ctx, req.TenantID, req.AgentName, promptToStore); err != nil {
+			log.Warn().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("prompt_version_store_failed")
+		}
+		if inputPIIRedacted && pol.Audit.IncludeOriginalPrompts {
+			if _, err := r.promptStore.SaveIfNew(ctx, req.TenantID, req.AgentName, req.Prompt); err != nil {
+				log.Warn().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("prompt_version_store_original_failed")
+			}
+		}
+	}
+
 	resp, err = r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine, engine,
 		effectiveTier, effectivePIINames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
-		observationOverride, originalDecision, estimatedCost, runClassifier, sandboxToken)
+		observationOverride, originalDecision, estimatedCost, runClassifier, sandboxToken, inputPIIRedacted)
 	if err != nil {
 		return nil, err
 	}
@@ -936,7 +959,7 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 // costEstimate is the pre-run cost estimate from Run() (same value used for policy input and plan-review gate).
 //
 //nolint:gocyclo // orchestration flow is inherently branched; splitting would obscure the pipeline
-func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64, piiScanner *classifier.Scanner, sandboxToken string) (*RunResponse, error) {
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64, piiScanner *classifier.Scanner, sandboxToken string, inputPIIRedacted bool) (*RunResponse, error) {
 	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
 	provider, model, degraded, originalModel, routeDecision, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx, routingEngine, req.SovereigntyMode)
 	if err != nil {
@@ -1075,7 +1098,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 							})
 							return &RunResponse{PolicyAllow: false, DenyReason: "Cached output contains PII (policy: block_on_pii + output_scan)", SessionID: req.SessionID}, nil
 						}
-						if dc.RedactPII {
+						if dc.ShouldRedactOutput() {
 							cacheResponseText = piiScanner.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), hit.ResponseText)
 							cacheOutputRedacted = true
 						}
@@ -1133,6 +1156,10 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	} else if useAgenticLoop {
 		sandboxSystemMsg = []llm.Message{{Role: "system", Content: toolResultInstruction}}
 	}
+	stepInputSummary := ""
+	if pol.Audit != nil && pol.Audit.IncludePrompts {
+		stepInputSummary = evidence.TruncateForSummary(prompt, 500)
+	}
 
 	if useAgenticLoop {
 		messages = make([]llm.Message, 0, len(sandboxSystemMsg)+1)
@@ -1185,6 +1212,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
 				CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 				StepIndex: stepIndex, Type: "llm_call",
+				InputSummary:  stepInputSummary,
 				OutputSummary: evidence.TruncateForSummary(resp.Content, 500),
 				DurationMS:    iterDuration, Cost: iterCost,
 			})
@@ -1325,6 +1353,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			Temperature: 0.7,
 			MaxTokens:   2000,
 		}
+		singleStart := time.Now()
 		resp, err := provider.Generate(ctx, llmReq)
 		if err != nil {
 			span.RecordError(err)
@@ -1342,12 +1371,20 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			return nil, fmt.Errorf("calling LLM: %w", err)
 		}
 		llmResp = resp
+		singleDuration := time.Since(singleStart).Milliseconds()
 		cost = provider.EstimateCost(model, resp.InputTokens, resp.OutputTokens)
 		totalInputTokens = resp.InputTokens
 		totalOutputTokens = resp.OutputTokens
 		llm.RecordCostMetrics(ctx, cost, req.AgentName, model, degraded)
 		_, _ = r.fireHook(ctx, HookPostLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 			"model": model, "cost_estimate": cost, "input_tokens": resp.InputTokens, "output_tokens": resp.OutputTokens,
+		})
+		_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
+			CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+			StepIndex: 0, Type: "llm_call",
+			InputSummary:  stepInputSummary,
+			OutputSummary: evidence.TruncateForSummary(resp.Content, 500),
+			DurationMS:    singleDuration, Cost: cost,
 		})
 		// Store in semantic cache when allowed (PII-scrubbed response)
 		if cacheAllowStore && r.cacheStore != nil && r.cacheScrubber != nil && r.cacheEmbedder != nil && r.cacheConfig != nil {
@@ -1414,7 +1451,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			})
 			return &RunResponse{PolicyAllow: false, DenyReason: "Output contains PII (policy: block_on_pii + output_scan)", SessionID: req.SessionID}, nil
 		}
-		if dc.RedactPII {
+		if dc.ShouldRedactOutput() {
 			responseContent = piiScanner.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), llmResp.Content)
 			outputPIIRedacted = true
 		}
@@ -1453,10 +1490,11 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		RequestSourceID: req.InvocationType,
 		PolicyDecision:  policyDec,
 		Classification: evidence.Classification{
-			InputTier:   tier,
-			OutputTier:  outputClass.Tier,
-			PIIDetected: append(piiNames, outputEntityNames...),
-			PIIRedacted: outputPIIRedacted,
+			InputTier:        tier,
+			OutputTier:       outputClass.Tier,
+			PIIDetected:      append(piiNames, outputEntityNames...),
+			PIIRedacted:      outputPIIRedacted,
+			InputPIIRedacted: inputPIIRedacted,
 		},
 		AttachmentScan:          attScan,
 		ModelUsed:               model,

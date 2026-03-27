@@ -112,6 +112,34 @@ Evidence records are also exported as OpenTelemetry spans, following the GenAI
 semantic conventions. This allows integration with existing observability stacks
 (Grafana, Datadog, etc.) without custom tooling.
 
+## Prompt Storage and Data Minimization
+
+Evidence records store **hashes** of prompts and responses (`input_hash`,
+`output_hash`) — never verbatim text by default.  When `audit.include_prompts`
+is enabled, prompt text is persisted in a separate **prompt version store**
+(`prompt_versions.db`).
+
+**Data minimization (GDPR Art. 5(1)(c)):** When input PII redaction
+(`redact_input: true`) is active, the prompt version store saves the
+**redacted** prompt — the text the LLM actually received — not the original
+PII-bearing input.  This ensures that enabling prompt logging does not
+inadvertently persist personal data that was intentionally stripped.
+
+**Forensic opt-in:** If forensic reconstruction of original inputs is required
+(e.g. legal hold), set `audit.include_original_prompts: true`.  This persists
+**both** the redacted and original prompts.  Use this flag with care and
+document its use in your data processing records (GDPR Art. 30).
+
+| Storage Layer | Default Content | PII Risk |
+|--------------|----------------|----------|
+| Evidence record (`input_hash`) | SHA-256 hash | None |
+| Step evidence (`input_summary`) | Truncated redacted prompt | Low |
+| Prompt version store | Redacted prompt | Low |
+| Prompt version store (`include_original_prompts`) | Original + redacted | High (opt-in) |
+
+See [ADR-002](../contributor/adr/ADR-002-prompt-storage-data-minimization.md)
+for the full rationale.
+
 ## Compliance Mapping
 
 | Regulation | Article | Talon Feature |

@@ -61,6 +61,33 @@ func (m *MockProvider) HealthCheck(_ context.Context) error { return nil }
 // WithHTTPClient returns the receiver unchanged (tests do not need client injection).
 func (m *MockProvider) WithHTTPClient(_ *http.Client) llm.Provider { return m }
 
+// CapturingMockProvider is like MockProvider but records the last prompt it received.
+type CapturingMockProvider struct {
+	MockProvider
+	mu         sync.Mutex
+	LastPrompt string
+}
+
+// Generate records the last user-role message prompt and delegates to MockProvider.
+func (c *CapturingMockProvider) Generate(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+	c.mu.Lock()
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			c.LastPrompt = req.Messages[i].Content
+			break
+		}
+	}
+	c.mu.Unlock()
+	return c.MockProvider.Generate(ctx, req)
+}
+
+// GetLastPrompt returns the last captured user prompt (thread-safe).
+func (c *CapturingMockProvider) GetLastPrompt() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.LastPrompt
+}
+
 // ToolCallMockProvider implements llm.Provider for testing the agentic loop.
 // It returns a configurable sequence of responses (e.g. tool calls then final answer),
 // tracks call count and received messages for assertions, and Name() returns "openai"

@@ -22,7 +22,7 @@ policies:
   resource_limits:
     timeout: { operation: "60s", tool_execution: "5m", agent_total: "30m" }
   rate_limits: { requests_per_minute: 20, concurrent_executions: 1 }
-  data_classification: { input_scan: true, output_scan: true, redact_pii: true }
+  data_classification: { input_scan: true, output_scan: true, redact_pii: true }  # or use redact_input/redact_output for granular control
   model_routing:
     tier_0: { primary: gpt-4o-mini, location: any }
     tier_1: { primary: gpt-4o, fallback: gpt-4o-mini, location: eu-west-1 }
@@ -33,6 +33,7 @@ audit:
   retention_days: 2555
   include_prompts: false
   include_responses: false
+  # include_original_prompts: false  # When true + redact_input, also stores pre-redaction prompt (forensic opt-in; see ADR-002)
 
 compliance:
   frameworks: [gdpr, eu-ai-act, dora]

@@ -46,6 +46,8 @@ policies:
     input_scan: true
     output_scan: true
     redact_pii: false
+    # redact_input: true   # redact PII from prompt before LLM sees it (defaults to redact_pii)
+    # redact_output: true  # redact PII from LLM response before returning (defaults to redact_pii)
     # Optional: restrict which PII types this agent scans for (Presidio entity names).
     # enabled_entities: ["EMAIL_ADDRESS", "IBAN_CODE", "CREDIT_CARD"]  # whitelist
     # disabled_entities: ["IP_ADDRESS"]                                 # blacklist
@@ -78,6 +80,7 @@ audit:
   retention_days: 2555
   include_prompts: false
   include_responses: false
+  # include_original_prompts: false  # When true + redact_input, also stores pre-redaction prompt (forensic opt-in; see ADR-002)
 
 compliance:
   frameworks:

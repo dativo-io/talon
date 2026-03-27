@@ -36,3 +36,4 @@ audit:
   log_level: "full"
   include_prompts: true
   include_responses: true
+  # include_original_prompts: false  # When true + redact_input, also stores pre-redaction prompt (forensic opt-in; see ADR-002)

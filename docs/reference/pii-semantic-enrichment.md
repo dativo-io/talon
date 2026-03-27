@@ -4,11 +4,13 @@ Semantic enrichment adds structured attributes to PII placeholders so downstream
 
 ## What it is
 
-- **Detection:** Talon detects PII (email, IBAN, PERSON, LOCATION, etc.) and redacts it.
+- **Detection:** Talon detects PII (email, IBAN, PERSON, LOCATION, etc.) and can redact it from both **input** (prompt before LLM) and **output** (LLM response before returning to user) independently.
 - **Placeholder format (legacy):** `[EMAIL]`, `[PERSON]`, `[LOCATION]` — type only.
 - **Placeholder format (enriched):** `<PII type="person" id="1" gender="female"/>`, `<PII type="location" id="2" scope="city"/>` — type, stable id, and policy-allowed attributes.
 
 Enrichment runs **after** detection and **before** replacement. Only entity types that support attributes (currently PERSON and LOCATION) get extra fields; others keep the same placeholder shape (with `type` and `id` when enriched mode is on).
+
+Redaction can be applied independently to input and output via `redact_input` and `redact_output`. When `redact_input` is enabled, the LLM sees redacted placeholders instead of raw PII, which is essential for semantic enrichment to be meaningful — the LLM responds to the placeholder format rather than raw PII.
 
 ## When to use it
 
@@ -25,7 +27,9 @@ policies:
   data_classification:
     input_scan: true
     output_scan: true
-    redact_pii: true
+    redact_pii: true           # shorthand: sets both redact_input and redact_output
+    redact_input: true         # redact PII from prompt before LLM sees it (defaults to redact_pii)
+    redact_output: true        # redact PII from LLM response before returning (defaults to redact_pii)
 
   semantic_enrichment:
     enabled: true
@@ -60,7 +64,22 @@ policies:
 
 ## How to verify
 
-1. **Enable enrichment:** Set `semantic_enrichment.enabled: true` and `mode: enforce` in agent policy; ensure `redact_pii: true` and `input_scan: true`.
+### Input redaction
+
+1. Set `redact_input: true` (or `redact_pii: true`) and `input_scan: true`.
+2. Run a request with PII: `talon run "Contact user@example.com about IBAN DE89370400440532013000"`.
+3. Check the evidence (`talon audit show <id>`): the `input_pii_redacted` field should be `true`.
+4. The LLM receives the redacted prompt — raw PII never leaves the Talon process.
+
+### Output redaction
+
+1. Set `redact_output: true` (or `redact_pii: true`) and `output_scan: true`.
+2. Run a request where the LLM response is likely to contain PII.
+3. The returned response should show placeholders instead of raw PII.
+
+### Semantic enrichment
+
+1. **Enable enrichment:** Set `semantic_enrichment.enabled: true` and `mode: enforce` in agent policy; ensure `redact_input: true` and `input_scan: true`.
 2. **Run a request** with PII that includes person and location (e.g. "Mrs Smith lives in Berlin. Email: user@example.com").
 3. **Check output or evidence:**  
    - Legacy: you should see `[PERSON]`, `[LOCATION]`, `[EMAIL]`.  
