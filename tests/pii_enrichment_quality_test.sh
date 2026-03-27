@@ -560,23 +560,19 @@ GEN_EOF
   echo "  ✓  Generated ${#PROMPTS[@]} prompts (requested ${count})"
   record_pass
   for (( i=0; i<${#PROMPTS[@]}; i++ )); do
-    log_plain_to_file "    [$((i+1))] ${PROMPTS[$i]:0:90}..."
+    echo ""
+    echo "    [$((i+1))] ${PROMPTS[$i]}"
   done
   if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]] && [[ ${#PROMPTS[@]} -gt 0 ]]; then
     {
       echo ""
       echo "=== Phase 0 — generated prompts (full text, ${#PROMPTS[@]} items) ==="
-      echo "Each block below is the exact user prompt sent to Talon for Variant A and Variant B"
-      echo "(same wording for both; redaction/enrichment differs per policy)."
       for (( i=0; i<${#PROMPTS[@]}; i++ )); do
         echo ""
-        echo "--- Prompt $((i+1))/${#PROMPTS[@]} (full) ---"
-        printf '%s\n' "${PROMPTS[$i]}"
-        echo "--- end prompt $((i+1)) ---"
+        echo "    [$((i+1))] ${PROMPTS[$i]}"
       done
       echo ""
     } >> "$SMOKE_CONSOLIDATED_LOG"
-    echo "  (Full prompt texts appended to consolidated log: section \"Phase 0 — generated prompts\".)"
   fi
   echo ""
 }
