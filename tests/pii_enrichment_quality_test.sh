@@ -519,23 +519,9 @@ setup_variant() {
   echo "$dir"
 }
 
-# --- Generate prompt corpus via LLM ----------------------------------------
-generate_prompts() {
-  local count="$1"
-  CURRENT_SECTION="00_generate_prompts"
-
-  log_to_file "${CYAN}Phase 0: Generating ${count} test prompts via LLM...${RESET}"
-
-  local gen_dir
-  gen_dir="$(setup_section_dir "pii_quality_gen")"
-  (
-    cd "$gen_dir" || exit 1
-    TALON_DATA_DIR="$gen_dir" talon init --scaffold --name "prompt-gen" &>/dev/null || true
-    [[ -n "${OPENAI_API_KEY:-}" ]] && TALON_DATA_DIR="$gen_dir" talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null || true
-    disable_pii_scan_generator_yaml "$gen_dir/agent.talon.yaml"
-    patch_yaml_model "$gen_dir/agent.talon.yaml"
-  )
-
+# --- Single-batch prompt generation helpers ----------------------------------
+generate_prompt_batch() {
+  local gen_dir="$1" batch_size="$2"
   local gen_instruction
   read -r -d '' gen_instruction <<'GEN_EOF' || true
 Generate exactly NUM_PLACEHOLDER prompts as a JSON array of strings.
@@ -584,42 +570,99 @@ Requirements for EVERY prompt:
 
 Reply ONLY with a valid JSON array. No markdown fences, no explanation.
 GEN_EOF
+  gen_instruction="${gen_instruction//NUM_PLACEHOLDER/$batch_size}"
 
-  gen_instruction="${gen_instruction//NUM_PLACEHOLDER/$count}"
-
-  local raw_output json_array
+  local raw_output
   raw_output="$(run_talon_in "$gen_dir" run "$gen_instruction" 2>&1)" || true
+  local json_array
   json_array="$(extract_prompt_json_array "$raw_output")" || true
-
   if [[ -z "$json_array" ]] || ! echo "$json_array" | jq -e 'type == "array" and length > 0' &>/dev/null 2>&1; then
-    local jq_diag=""
-    jq_diag="$(echo "$raw_output" | jq . 2>&1 | head -30 || true)"
-    log_warn "Phase 0: could not extract JSON array from first LLM run" "jq . on raw (first 30 lines): ${jq_diag}"
-    echo "  -  First attempt failed to parse; retrying with simpler instruction..."
-    log_parse_failure "Phase 0 first LLM output (parse failed)" "$raw_output"
-    raw_output="$(run_talon_in "$gen_dir" run \
-      "Generate ${count} one-sentence prompts as a JSON array. Each must contain a European person name with Mr/Mrs title AND one of: a valid IBAN (use DE89370400440532013000 or FR7630006000011234567890189), a phone like +49 30 1234567, or an email. The prompt must ask a question requiring gender, country code, or email type to answer. Reply ONLY with a JSON array of strings." \
-      2>&1)" || true
-    json_array="$(extract_prompt_json_array "$raw_output")" || true
+    log_parse_failure "Phase 0 batch (parse failed)" "$raw_output"
+    return 1
   fi
+  printf '%s\n' "$json_array"
+}
 
+generate_prompt_batch_simple() {
+  local gen_dir="$1" batch_size="$2"
+  local raw_output
+  raw_output="$(run_talon_in "$gen_dir" run \
+    "Generate ${batch_size} one-sentence prompts as a JSON array. Each must contain a European person name with Mr/Mrs title AND one of: a valid IBAN (use DE89370400440532013000 or FR7630006000011234567890189), a phone like +49 30 1234567, or an email. The prompt must ask a question requiring gender, country code, or email type to answer. Reply ONLY with a JSON array of strings." \
+    2>&1)" || true
+  local json_array
+  json_array="$(extract_prompt_json_array "$raw_output")" || true
   if [[ -z "$json_array" ]] || ! echo "$json_array" | jq -e 'type == "array" and length > 0' &>/dev/null 2>&1; then
-    echo "  ✗  Prompt generation failed after retry. Cannot proceed."
-    log_parse_failure "Phase 0 retry LLM output (parse failed)" "$raw_output"
-    log_error "Prompt generation failed: no valid JSON array after two LLM attempts" "See PARSE_FAIL blocks above. TALON_DATA_DIR=${TALON_DATA_DIR:-} gen_dir=${gen_dir:-}"
+    log_parse_failure "Phase 0 batch simple retry (parse failed)" "$raw_output"
+    return 1
+  fi
+  printf '%s\n' "$json_array"
+}
+
+# --- Generate prompt corpus via LLM (batched for large counts) --------------
+# The runner's max_tokens is 2000 which fits ~15-20 prompts as JSON.  For
+# larger counts we generate in batches of BATCH_SIZE and merge the results.
+readonly PROMPT_BATCH_SIZE="${PROMPT_BATCH_SIZE:-15}"
+
+generate_prompts() {
+  local count="$1"
+  CURRENT_SECTION="00_generate_prompts"
+
+  log_to_file "${CYAN}Phase 0: Generating ${count} test prompts via LLM...${RESET}"
+
+  local gen_dir
+  gen_dir="$(setup_section_dir "pii_quality_gen")"
+  (
+    cd "$gen_dir" || exit 1
+    TALON_DATA_DIR="$gen_dir" talon init --scaffold --name "prompt-gen" &>/dev/null || true
+    [[ -n "${OPENAI_API_KEY:-}" ]] && TALON_DATA_DIR="$gen_dir" talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null || true
+    disable_pii_scan_generator_yaml "$gen_dir/agent.talon.yaml"
+    patch_yaml_model "$gen_dir/agent.talon.yaml"
+  )
+
+  local remaining="$count" batch_num=0 total_failures=0
+  while [[ "$remaining" -gt 0 ]]; do
+    local batch_size="$remaining"
+    [[ "$batch_size" -gt "$PROMPT_BATCH_SIZE" ]] && batch_size="$PROMPT_BATCH_SIZE"
+    ((batch_num++)) || true
+    local so_far="${#PROMPTS[@]}"
+    echo "  Batch ${batch_num}: requesting ${batch_size} prompts (${so_far}/${count} so far)..."
+
+    local json_array
+    json_array="$(generate_prompt_batch "$gen_dir" "$batch_size")" || true
+
+    if [[ -z "$json_array" ]] || ! echo "$json_array" | jq -e 'type == "array" and length > 0' &>/dev/null 2>&1; then
+      ((total_failures++)) || true
+      echo "  ⚠  Batch ${batch_num} failed; retrying once..."
+      json_array="$(generate_prompt_batch_simple "$gen_dir" "$batch_size")" || true
+      if [[ -z "$json_array" ]] || ! echo "$json_array" | jq -e 'type == "array" and length > 0' &>/dev/null 2>&1; then
+        ((total_failures++)) || true
+        echo "  ✗  Batch ${batch_num} failed after retry. Continuing with remaining batches."
+        log_parse_failure "Phase 0 batch ${batch_num} retry (parse failed)" "${json_array:-empty}"
+        remaining=$((remaining - batch_size))
+        continue
+      fi
+    fi
+
+    local generated_count i
+    generated_count="$(echo "$json_array" | jq 'length')"
+    for (( i=0; i<generated_count; i++ )); do
+      local p
+      p="$(echo "$json_array" | jq -r ".[$i]")"
+      [[ -n "$p" ]] && [[ "$p" != "null" ]] && PROMPTS+=("$p")
+    done
+    echo "  ✓  Batch ${batch_num}: got ${generated_count} prompts (${#PROMPTS[@]}/${count} total)"
+    remaining=$((remaining - batch_size))
+  done
+
+  if [[ "${#PROMPTS[@]}" -eq 0 ]]; then
+    echo "  ✗  Prompt generation failed: no valid prompts after ${batch_num} batches."
+    log_error "Prompt generation failed: zero prompts after all batches" \
+      "Batches attempted: ${batch_num}, failures: ${total_failures}. See PARSE_FAIL blocks above."
     record_fail "prompt generation"
     exit 3
   fi
 
-  local generated_count i
-  generated_count="$(echo "$json_array" | jq 'length')"
-  for (( i=0; i<generated_count; i++ )); do
-    local p
-    p="$(echo "$json_array" | jq -r ".[$i]")"
-    [[ -n "$p" ]] && [[ "$p" != "null" ]] && PROMPTS+=("$p")
-  done
-
-  echo "  ✓  Generated ${#PROMPTS[@]} prompts (requested ${count})"
+  echo "  ✓  Generated ${#PROMPTS[@]} prompts (requested ${count}, ${total_failures} batch failures)"
   record_pass
   for (( i=0; i<${#PROMPTS[@]}; i++ )); do
     echo ""
