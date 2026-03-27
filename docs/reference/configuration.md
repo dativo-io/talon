@@ -38,7 +38,7 @@ Key top-level sections:
 |---------|---------|
 | `agent` | Name, description, version, model tier |
 | `capabilities` | Allowed tools, data sources, forbidden patterns |
-| `policies` | Cost limits, rate limits, model routing, data classification, time restrictions |
+| `policies` | Cost limits, rate limits, model routing, data classification (`redact_input`, `redact_output`, `block_on_pii`), time restrictions |
 | `memory` | Governed self-improvement (categories, retention, dedup) |
 | `triggers` | Cron schedules and webhook definitions |
 | `secrets` | Allowed/forbidden secret names for this agent |

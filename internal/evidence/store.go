@@ -128,6 +128,7 @@ type Classification struct {
 	OutputTier        int      `json:"output_tier"`
 	PIIDetected       []string `json:"pii_detected,omitempty"`
 	PIIRedacted       bool     `json:"pii_redacted"`
+	InputPIIRedacted  bool     `json:"input_pii_redacted,omitempty"`
 	OutputPIIDetected bool     `json:"output_pii_detected,omitempty"`
 	OutputPIITypes    []string `json:"output_pii_types,omitempty"`
 }

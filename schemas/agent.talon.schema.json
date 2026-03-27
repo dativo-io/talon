@@ -153,7 +153,9 @@
           "properties": {
             "input_scan": { "type": "boolean" },
             "output_scan": { "type": "boolean" },
-            "redact_pii": { "type": "boolean" }
+            "redact_pii": { "type": "boolean" },
+            "redact_input": { "type": "boolean" },
+            "redact_output": { "type": "boolean" }
           }
         },
         "model_routing": {

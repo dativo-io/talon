@@ -208,6 +208,8 @@ const schemaV2 = `{
             "input_scan": {"type": "boolean"},
             "output_scan": {"type": "boolean"},
             "redact_pii": {"type": "boolean"},
+            "redact_input": {"type": "boolean"},
+            "redact_output": {"type": "boolean"},
             "block_on_pii": {"type": "boolean"},
             "enabled_entities": {"type": "array", "items": {"type": "string"}},
             "disabled_entities": {"type": "array", "items": {"type": "string"}},

@@ -424,25 +424,31 @@ patch_yaml() {
       .policies.data_classification.input_scan = true |
       .policies.data_classification.output_scan = true |
       .policies.data_classification.redact_pii = true |
+      .policies.data_classification.redact_input = true |
+      .policies.data_classification.redact_output = true |
       .policies.semantic_enrichment.enabled = '"$enrichment_enabled"' |
       .policies.semantic_enrichment.mode = "'"$enrichment_mode"'" |
       .policies.semantic_enrichment.allowed_attributes = ["gender", "scope"]
     ' "$yaml_file" 2>/dev/null || true
   else
-    # Force redact_pii: true (template defaults to false). Overwrite existing values in place.
+    # Force redact_pii + redact_input + redact_output (template defaults to false).
     sed -i.bak \
       -e 's/input_scan: *false/input_scan: true/' \
       -e 's/output_scan: *false/output_scan: true/' \
       -e 's/redact_pii: *false/redact_pii: true/' \
       "$yaml_file" 2>/dev/null || true
+    # Insert redact_input/redact_output after redact_pii if not present
+    if ! grep -q 'redact_input:' "$yaml_file" 2>/dev/null; then
+      sed -i.bak '/redact_pii:/a\    redact_input: true\n    redact_output: true' "$yaml_file" 2>/dev/null || true
+    fi
     # If data_classification section is entirely missing (custom yaml), append it.
     if ! grep -q 'data_classification:' "$yaml_file" 2>/dev/null; then
-      echo -e "\n  data_classification:\n    input_scan: true\n    output_scan: true\n    redact_pii: true" >> "$yaml_file"
+      echo -e "\n  data_classification:\n    input_scan: true\n    output_scan: true\n    redact_pii: true\n    redact_input: true\n    redact_output: true" >> "$yaml_file"
     fi
-    # Semantic enrichment
+    # Semantic enrichment — insert after data_classification so it stays under policies:
     if [[ "$enrichment_enabled" == "true" ]]; then
       if ! grep -q 'semantic_enrichment:' "$yaml_file"; then
-        echo -e "  semantic_enrichment:\n    enabled: true\n    mode: ${enrichment_mode}\n    allowed_attributes: [gender, scope]" >> "$yaml_file"
+        sed -i.bak '/data_classification:/a\  semantic_enrichment:\n    enabled: true\n    mode: '"${enrichment_mode}"'\n    allowed_attributes: [gender, scope]' "$yaml_file" 2>/dev/null || true
       fi
     else
       if grep -q 'semantic_enrichment:' "$yaml_file"; then

@@ -824,9 +824,17 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		}
 	}
 
+	var inputPIIRedacted bool
+	if dc := pol.Policies.DataClassification; dc != nil && dc.InputScan && dc.ShouldRedactInput() && effectiveHasPII {
+		finalPrompt = runClassifier.Redact(
+			classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), finalPrompt)
+		inputPIIRedacted = true
+		span.SetAttributes(attribute.Bool("classification.input_pii_redacted", true))
+	}
+
 	resp, err = r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine, engine,
 		effectiveTier, effectivePIINames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
-		observationOverride, originalDecision, estimatedCost, runClassifier, sandboxToken)
+		observationOverride, originalDecision, estimatedCost, runClassifier, sandboxToken, inputPIIRedacted)
 	if err != nil {
 		return nil, err
 	}
@@ -936,7 +944,7 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 // costEstimate is the pre-run cost estimate from Run() (same value used for policy input and plan-review gate).
 //
 //nolint:gocyclo // orchestration flow is inherently branched; splitting would obscure the pipeline
-func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64, piiScanner *classifier.Scanner, sandboxToken string) (*RunResponse, error) {
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64, piiScanner *classifier.Scanner, sandboxToken string, inputPIIRedacted bool) (*RunResponse, error) {
 	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
 	provider, model, degraded, originalModel, routeDecision, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx, routingEngine, req.SovereigntyMode)
 	if err != nil {
@@ -1075,7 +1083,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 							})
 							return &RunResponse{PolicyAllow: false, DenyReason: "Cached output contains PII (policy: block_on_pii + output_scan)", SessionID: req.SessionID}, nil
 						}
-						if dc.RedactPII {
+						if dc.ShouldRedactOutput() {
 							cacheResponseText = piiScanner.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), hit.ResponseText)
 							cacheOutputRedacted = true
 						}
@@ -1414,7 +1422,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			})
 			return &RunResponse{PolicyAllow: false, DenyReason: "Output contains PII (policy: block_on_pii + output_scan)", SessionID: req.SessionID}, nil
 		}
-		if dc.RedactPII {
+		if dc.ShouldRedactOutput() {
 			responseContent = piiScanner.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), llmResp.Content)
 			outputPIIRedacted = true
 		}
@@ -1453,10 +1461,11 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		RequestSourceID: req.InvocationType,
 		PolicyDecision:  policyDec,
 		Classification: evidence.Classification{
-			InputTier:   tier,
-			OutputTier:  outputClass.Tier,
-			PIIDetected: append(piiNames, outputEntityNames...),
-			PIIRedacted: outputPIIRedacted,
+			InputTier:        tier,
+			OutputTier:       outputClass.Tier,
+			PIIDetected:      append(piiNames, outputEntityNames...),
+			PIIRedacted:      outputPIIRedacted,
+			InputPIIRedacted: inputPIIRedacted,
 		},
 		AttachmentScan:          attScan,
 		ModelUsed:               model,

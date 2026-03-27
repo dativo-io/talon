@@ -126,12 +126,21 @@ policy_overrides:
 
 ## Redact PII in requests
 
-**Goal:** Redact or block PII before it reaches the LLM.
+**Goal:** Redact or block PII before it reaches the LLM (input) and/or in the LLM response (output).
 
-**Where (native):** `agent.talon.yaml` — use classifier and policy PII action (e.g. in data_classification or capabilities).  
+**Where (native):** `agent.talon.yaml` — use `data_classification` with granular `redact_input` / `redact_output` fields. The legacy `redact_pii` still works as a shorthand for both.  
 **Where (gateway):** Gateway `default_policy.default_pii_action` or per-caller `policy_overrides.pii_action`.
 
 ```yaml
+# Native agent — granular input/output control
+policies:
+  data_classification:
+    input_scan: true
+    output_scan: true
+    redact_input: true          # redact PII from prompt before LLM sees it
+    redact_output: true         # redact PII from LLM response before returning
+    # redact_pii: true          # shorthand: sets both redact_input and redact_output
+
 # Gateway
 gateway:
   default_policy:
@@ -141,6 +150,8 @@ gateway:
       policy_overrides:
         pii_action: "block"
 ```
+
+`redact_input` / `redact_output` default to the value of `redact_pii` when not explicitly set. Explicit values override `redact_pii` (e.g. `redact_pii: true` + `redact_input: false` → only output is redacted).
 
 ---
 
@@ -164,7 +175,7 @@ With `block_on_pii: true`, requests whose prompt or attachments contain detected
 
 ## Enable PII semantic enrichment (gender, scope)
 
-**Goal:** Redact PII with structured placeholders so downstream can use attributes (e.g. person gender, location scope) without seeing raw data. Requires `data_classification.redact_pii: true` and `input_scan: true`.
+**Goal:** Redact PII with structured placeholders so downstream can use attributes (e.g. person gender, location scope) without seeing raw data. Requires `data_classification.redact_input: true` (or `redact_pii: true`) and `input_scan: true`.
 
 **Where:** `agent.talon.yaml` under `policies.semantic_enrichment`.
 
@@ -173,7 +184,8 @@ policies:
   data_classification:
     input_scan: true
     output_scan: true
-    redact_pii: true
+    redact_input: true
+    redact_output: true
 
   semantic_enrichment:
     enabled: true
@@ -254,6 +266,8 @@ attachment_handling:
 | Model allow/block | `policies.model_routing` | `gateway.callers[].policy_overrides.allowed_models` / `blocked_models` |
 | Time restrictions | `policies.time_restrictions` | -- |
 | PII action | `policies.data_classification` | `gateway.default_policy.default_pii_action` or `gateway.callers[].policy_overrides.pii_action` |
+| Input PII redaction | `policies.data_classification.redact_input` | -- |
+| Output PII redaction | `policies.data_classification.redact_output` | -- |
 | Block on PII | `policies.data_classification.block_on_pii` | -- |
 | Human oversight | `compliance.human_oversight` | -- |
 | Semantic cache (TTL, enabled) | — | `talon.config.yaml` only (`cache` section, infrastructure) |

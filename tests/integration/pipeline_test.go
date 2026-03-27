@@ -593,3 +593,61 @@ func TestSovereigntyEnforcement(t *testing.T) {
 		assert.Contains(t, warnings[0].Message, "bedrock_only is true")
 	})
 }
+
+// TestInputRedaction_Integration verifies that redact_input causes the runner to send
+// redacted prompts to the LLM while redact_output controls response redaction independently.
+func TestInputRedaction_Integration(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	capProvider := &testutil.CapturingMockProvider{
+		MockProvider: testutil.MockProvider{ProviderName: "openai", Content: "The email hans.mueller@example.de was processed"},
+	}
+	routing := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+	providers := map[string]llm.Provider{"openai": capProvider}
+	runner := SetupRunner(t, dir, providers, routing)
+
+	t.Run("redact_input true redacts prompt before LLM", func(t *testing.T) {
+		policyPath := testutil.WriteInputOutputRedactPolicyFile(t, dir, "input-redact-agent", true, false)
+		resp, err := runner.Run(ctx, &agent.RunRequest{
+			TenantID:       "default",
+			AgentName:      "input-redact-agent",
+			Prompt:         "Contact hans.mueller@example.de about IBAN DE89370400440532013000",
+			InvocationType: "manual",
+			PolicyPath:     policyPath,
+		})
+		require.NoError(t, err)
+		require.True(t, resp.PolicyAllow)
+
+		prompt := capProvider.GetLastPrompt()
+		assert.NotContains(t, prompt, "hans.mueller@example.de",
+			"LLM should NOT see raw email when redact_input is true")
+		assert.NotContains(t, prompt, "DE89370400440532013000",
+			"LLM should NOT see raw IBAN when redact_input is true")
+		assert.Contains(t, resp.Response, "hans.mueller@example.de",
+			"response should contain raw PII when redact_output is false")
+	})
+
+	t.Run("redact_output true redacts response but not prompt", func(t *testing.T) {
+		policyPath := testutil.WriteInputOutputRedactPolicyFile(t, dir, "output-redact-agent", false, true)
+		resp, err := runner.Run(ctx, &agent.RunRequest{
+			TenantID:       "default",
+			AgentName:      "output-redact-agent",
+			Prompt:         "Contact hans.mueller@example.de about IBAN DE89370400440532013000",
+			InvocationType: "manual",
+			PolicyPath:     policyPath,
+		})
+		require.NoError(t, err)
+		require.True(t, resp.PolicyAllow)
+
+		prompt := capProvider.GetLastPrompt()
+		assert.Contains(t, prompt, "hans.mueller@example.de",
+			"LLM should see raw email when redact_input is false")
+		assert.NotContains(t, resp.Response, "hans.mueller@example.de",
+			"response should NOT contain raw email when redact_output is true")
+	})
+}

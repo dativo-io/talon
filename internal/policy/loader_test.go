@@ -765,6 +765,76 @@ func TestComputeHash(t *testing.T) {
 	assert.Equal(t, pol.Hash, pol2.Hash)
 }
 
+func boolPtr(b bool) *bool { return &b }
+
+func TestShouldRedactInput(t *testing.T) {
+	tests := []struct {
+		name string
+		dc   DataClassificationConfig
+		want bool
+	}{
+		{"redact_pii true, no explicit", DataClassificationConfig{RedactPII: true}, true},
+		{"redact_pii false, no explicit", DataClassificationConfig{RedactPII: false}, false},
+		{"explicit true overrides false", DataClassificationConfig{RedactPII: false, RedactInput: boolPtr(true)}, true},
+		{"explicit false overrides true", DataClassificationConfig{RedactPII: true, RedactInput: boolPtr(false)}, false},
+		{"both nil, redact_pii false", DataClassificationConfig{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.dc.ShouldRedactInput())
+		})
+	}
+}
+
+func TestShouldRedactOutput(t *testing.T) {
+	tests := []struct {
+		name string
+		dc   DataClassificationConfig
+		want bool
+	}{
+		{"redact_pii true, no explicit", DataClassificationConfig{RedactPII: true}, true},
+		{"redact_pii false, no explicit", DataClassificationConfig{RedactPII: false}, false},
+		{"explicit true overrides false", DataClassificationConfig{RedactPII: false, RedactOutput: boolPtr(true)}, true},
+		{"explicit false overrides true", DataClassificationConfig{RedactPII: true, RedactOutput: boolPtr(false)}, false},
+		{"both nil, redact_pii false", DataClassificationConfig{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.dc.ShouldRedactOutput())
+		})
+	}
+}
+
+func TestRedactInputOutputYAMLRoundTrip(t *testing.T) {
+	yaml := `
+agent:
+  name: test-agent
+  version: "1.0.0"
+policies:
+  cost_limits:
+    daily: 10
+  data_classification:
+    input_scan: true
+    output_scan: true
+    redact_pii: true
+    redact_input: false
+    redact_output: true
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.talon.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(yaml), 0o644))
+
+	pol, err := LoadPolicy(context.Background(), path, false, dir)
+	require.NoError(t, err)
+
+	dc := pol.Policies.DataClassification
+	require.NotNil(t, dc)
+	require.NotNil(t, dc.RedactInput, "RedactInput pointer should be non-nil after YAML load")
+	require.NotNil(t, dc.RedactOutput, "RedactOutput pointer should be non-nil after YAML load")
+	assert.False(t, dc.ShouldRedactInput(), "explicit redact_input: false should override redact_pii: true")
+	assert.True(t, dc.ShouldRedactOutput(), "explicit redact_output: true should be honoured")
+}
+
 // FuzzLoadPolicy runs policy loading on fuzz YAML input to catch panics and edge cases.
 func FuzzLoadPolicy(f *testing.F) {
 	ctx := context.Background()
