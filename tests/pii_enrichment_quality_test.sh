@@ -224,9 +224,20 @@ run_talon() {
   env TALON_DATA_DIR="$TALON_DATA_DIR" talon "$@"
 }
 
+# Run talon with state under data_dir. For `run`, pass --policy so the agent file is found
+# regardless of shell cwd (talon otherwise resolves DefaultPolicy relative to PWD, not TALON_DATA_DIR).
 run_talon_in() {
   local data_dir="$1"; shift
-  env TALON_DATA_DIR="$data_dir" talon "$@"
+  local policy="$data_dir/agent.talon.yaml"
+  if [[ "${1:-}" == "run" ]]; then
+    shift
+    if [[ ! -f "$policy" ]]; then
+      echo "run_talon_in: expected policy at $policy (missing — did talon init run in this dir?)" >&2
+    fi
+    env TALON_DATA_DIR="$data_dir" talon run --policy "$policy" "$@"
+  else
+    env TALON_DATA_DIR="$data_dir" talon "$@"
+  fi
 }
 
 setup_section_dir() {
