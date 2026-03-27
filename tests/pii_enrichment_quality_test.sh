@@ -379,16 +379,38 @@ patch_yaml() {
   fi
 }
 
+# --- Tier 2 defaults to Bedrock-only Claude; CI and many dev machines have no Bedrock. ----------
+# Align with agent.talon.yaml.tmpl comment: use OpenAI for tier_2 when Bedrock is unavailable.
+patch_yaml_openai_tier2() {
+  local yaml_file="$1"
+  [[ -f "$yaml_file" ]] || return 0
+  if [[ "$HAS_YQ" -eq 1 ]]; then
+    yq -i '
+      .policies.model_routing.tier_2.primary = "gpt-4o-mini" |
+      .policies.model_routing.tier_2.fallback = "gpt-4o-mini" |
+      .policies.model_routing.tier_2.bedrock_only = false
+    ' "$yaml_file" 2>/dev/null || true
+  else
+    sed -i.bak \
+      -e 's/primary: claude[^[:space:]]*/primary: gpt-4o-mini/' \
+      -e 's/bedrock_only: true/bedrock_only: false/' \
+      "$yaml_file" 2>/dev/null || true
+  fi
+}
+
 # --- Setup an isolated Talon environment for a variant ----------------------
 setup_variant() {
   local label="$1" enrichment_enabled="$2" enrichment_mode="$3"
-  local dir
+  local dir agent_slug
   dir="$(setup_section_dir "pii_quality_${label}")"
+  agent_slug="$(echo "${label}" | tr '[:upper:]' '[:lower:]')"
   (
     cd "$dir" || exit 1
-    TALON_DATA_DIR="$dir" talon init --scaffold --name "pii-quality-${label}" &>/dev/null || true
+    # agent.name must match ^[a-z0-9_-]+$ (no uppercase)
+    TALON_DATA_DIR="$dir" talon init --scaffold --name "pii-quality-${agent_slug}" &>/dev/null || true
     [[ -n "${OPENAI_API_KEY:-}" ]] && TALON_DATA_DIR="$dir" talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null || true
     patch_yaml "$dir/agent.talon.yaml" "$enrichment_enabled" "$enrichment_mode"
+    patch_yaml_openai_tier2 "$dir/agent.talon.yaml"
   )
   echo "$dir"
 }
@@ -407,6 +429,7 @@ generate_prompts() {
     TALON_DATA_DIR="$gen_dir" talon init --scaffold --name "prompt-gen" &>/dev/null || true
     [[ -n "${OPENAI_API_KEY:-}" ]] && TALON_DATA_DIR="$gen_dir" talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null || true
     disable_pii_scan_generator_yaml "$gen_dir/agent.talon.yaml"
+    patch_yaml_openai_tier2 "$gen_dir/agent.talon.yaml"
   )
 
   local gen_instruction
@@ -722,6 +745,7 @@ main() {
         echo -e "\npolicies:\n  data_classification: { input_scan: false, output_scan: false, redact_pii: false }" >> "$_yaml"
       fi
     fi
+    patch_yaml_openai_tier2 "$dir_judge/agent.talon.yaml"
   )
   log_to_file "  Data dir: $dir_judge"
   echo ""
