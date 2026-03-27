@@ -502,6 +502,20 @@ patch_yaml_model() {
   fi
 }
 
+# Scale the Talon rate limiter to handle NUM_PROMPTS without self-throttling.
+# The default scaffold sets requests_per_minute=30 which is far too low for
+# 100-prompt runs (Phase 1 sends 2*N requests, Phase 3 sends N more).
+patch_yaml_rate_limit() {
+  local yaml_file="$1"
+  local rpm="${2:-500}"
+  [[ -f "$yaml_file" ]] || return 0
+  if [[ "$HAS_YQ" -eq 1 ]]; then
+    yq -i '.policies.rate_limits.requests_per_minute = '"$rpm"'' "$yaml_file" 2>/dev/null || true
+  else
+    sed -i.bak "s/requests_per_minute: *[0-9]*/requests_per_minute: ${rpm}/" "$yaml_file" 2>/dev/null || true
+  fi
+}
+
 # --- Setup an isolated Talon environment for a variant ----------------------
 setup_variant() {
   local label="$1" enrichment_enabled="$2" enrichment_mode="$3"
@@ -515,6 +529,7 @@ setup_variant() {
     [[ -n "${OPENAI_API_KEY:-}" ]] && TALON_DATA_DIR="$dir" talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null || true
     patch_yaml "$dir/agent.talon.yaml" "$enrichment_enabled" "$enrichment_mode"
     patch_yaml_model "$dir/agent.talon.yaml"
+    patch_yaml_rate_limit "$dir/agent.talon.yaml"
   )
   echo "$dir"
 }
@@ -617,6 +632,7 @@ generate_prompts() {
     [[ -n "${OPENAI_API_KEY:-}" ]] && TALON_DATA_DIR="$gen_dir" talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null || true
     disable_pii_scan_generator_yaml "$gen_dir/agent.talon.yaml"
     patch_yaml_model "$gen_dir/agent.talon.yaml"
+    patch_yaml_rate_limit "$gen_dir/agent.talon.yaml"
   )
 
   local remaining="$count" batch_num=0 total_failures=0
@@ -1068,6 +1084,7 @@ main() {
       fi
     fi
     patch_yaml_model "$dir_judge/agent.talon.yaml"
+    patch_yaml_rate_limit "$dir_judge/agent.talon.yaml"
   )
   log_to_file "  Data dir: $dir_judge"
   echo ""
