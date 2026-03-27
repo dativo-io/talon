@@ -163,6 +163,75 @@ setup_section_dir() {
   echo "$TALON_DATA_DIR/sections/$name"
 }
 
+# Generator must not scan/redact model output, or JSON with emails/IBANs breaks parsing.
+# Without yq this was never applied (only yq branch ran) — fixed here for sed users.
+disable_pii_scan_generator_yaml() {
+  local yaml_file="$1"
+  [[ -f "$yaml_file" ]] || return 1
+  if [[ "$HAS_YQ" -eq 1 ]]; then
+    yq -i '.policies.data_classification.input_scan = false | .policies.data_classification.output_scan = false | .policies.data_classification.redact_pii = false' \
+      "$yaml_file" 2>/dev/null || true
+  else
+    if grep -q 'data_classification:' "$yaml_file" 2>/dev/null; then
+      sed -i.bak 's/input_scan: *true/input_scan: false/; s/output_scan: *true/output_scan: false/; s/redact_pii: *true/redact_pii: false/' \
+        "$yaml_file" 2>/dev/null || true
+    else
+      echo -e "\npolicies:\n  data_classification: { input_scan: false, output_scan: false, redact_pii: false }" >> "$yaml_file"
+    fi
+  fi
+}
+
+# Extract first JSON array of strings from LLM text (markdown fences, multiline).
+# grep -o '\[.*\]' fails on GNU grep when JSON spans lines; use python3 when available.
+extract_prompt_json_array() {
+  local raw="$1"
+  local out=""
+  if command -v python3 &>/dev/null; then
+    out="$(printf '%s' "$raw" | python3 -c '
+import sys, json, re
+text = sys.stdin.read()
+text = re.sub(r"(?s)\A\s*```(?:json)?\s*", "", text)
+text = re.sub(r"(?s)\s*```\s*\Z", "", text)
+dec = json.JSONDecoder()
+for i, c in enumerate(text):
+    if c != "[":
+        continue
+    try:
+        obj, _end = dec.raw_decode(text[i:])
+    except json.JSONDecodeError:
+        continue
+    if isinstance(obj, list) and obj and all(isinstance(x, str) for x in obj):
+        print(json.dumps(obj, ensure_ascii=False))
+        sys.exit(0)
+sys.exit(1)
+')" || true
+    if [[ -n "$out" ]] && echo "$out" | jq -e 'type == "array" and length > 0' &>/dev/null; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  fi
+  # Fallback: collapse newlines (best-effort for single-line JSON from model)
+  local collapsed
+  collapsed="$(printf '%s' "$raw" | tr '\n' ' ')"
+  out="$(echo "$collapsed" | grep -o '\[.*\]' | head -1)" || true
+  if [[ -n "$out" ]] && echo "$out" | jq -e 'type == "array" and length > 0' &>/dev/null; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  return 1
+}
+
+log_parse_failure() {
+  local title="$1" raw="$2"
+  [[ -z "${SMOKE_CONSOLIDATED_LOG:-}" ]] && return 0
+  {
+    echo ""
+    echo "=== $title ==="
+    echo "${raw:0:6000}"
+    echo "=== end ==="
+  } >> "$SMOKE_CONSOLIDATED_LOG"
+}
+
 # --- Prerequisites (same pattern as smoke_test.sh) --------------------------
 check_prereqs() {
   echo "Checking prerequisites..."
@@ -176,6 +245,7 @@ check_prereqs() {
     exit 2
   fi
   command -v yq &>/dev/null && HAS_YQ=1 || echo "  Note: yq not found; falling back to sed for YAML patching."
+  command -v python3 &>/dev/null || echo "  Note: python3 not found; JSON prompt extraction may fail on multiline LLM output (install python3)."
 
   TALON_DATA_DIR="$(mktemp -d)"
   SMOKE_CREATED_DATA_DIR=1
@@ -239,17 +309,7 @@ generate_prompts() {
     cd "$gen_dir" || exit 1
     TALON_DATA_DIR="$gen_dir" talon init --scaffold --name "prompt-gen" &>/dev/null || true
     [[ -n "${OPENAI_API_KEY:-}" ]] && TALON_DATA_DIR="$gen_dir" talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null || true
-    if [[ "$HAS_YQ" -eq 1 ]]; then
-      yq -i '.policies.data_classification.input_scan = false | .policies.data_classification.output_scan = false | .policies.data_classification.redact_pii = false' \
-        "$gen_dir/agent.talon.yaml" 2>/dev/null || true
-    else
-      local _yaml="$gen_dir/agent.talon.yaml"
-      if grep -q 'data_classification:' "$_yaml" 2>/dev/null; then
-        sed -i.bak 's/input_scan: *true/input_scan: false/; s/output_scan: *true/output_scan: false/; s/redact_pii: *true/redact_pii: false/' "$_yaml" 2>/dev/null || true
-      else
-        echo -e "\npolicies:\n  data_classification: { input_scan: false, output_scan: false, redact_pii: false }" >> "$_yaml"
-      fi
-    fi
+    disable_pii_scan_generator_yaml "$gen_dir/agent.talon.yaml"
   )
 
   local gen_instruction
@@ -272,22 +332,22 @@ GEN_EOF
 
   gen_instruction="${gen_instruction//NUM_PLACEHOLDER/$count}"
 
-  local raw_output
-  raw_output="$(run_talon_in "$gen_dir" run "$gen_instruction" 2>/dev/null)" || true
+  local raw_output json_array
+  raw_output="$(run_talon_in "$gen_dir" run "$gen_instruction" 2>&1)" || true
+  json_array="$(extract_prompt_json_array "$raw_output")" || true
 
-  local json_array
-  json_array="$(echo "$raw_output" | grep -o '\[.*\]')" || true
-
-  if ! echo "$json_array" | jq -e 'type == "array" and length > 0' &>/dev/null 2>&1; then
+  if [[ -z "$json_array" ]] || ! echo "$json_array" | jq -e 'type == "array" and length > 0' &>/dev/null 2>&1; then
     echo "  -  First attempt failed to parse; retrying with simpler instruction..."
+    log_parse_failure "Phase 0 first LLM output (parse failed)" "$raw_output"
     raw_output="$(run_talon_in "$gen_dir" run \
       "Generate ${count} one-sentence business email prompts as a JSON array. Each must include a European name with Mr/Mrs/Dr title, a European city, and a fictional email address. Reply ONLY with a JSON array of strings." \
-      2>/dev/null)" || true
-    json_array="$(echo "$raw_output" | grep -o '\[.*\]')" || true
+      2>&1)" || true
+    json_array="$(extract_prompt_json_array "$raw_output")" || true
   fi
 
-  if ! echo "$json_array" | jq -e 'type == "array" and length > 0' &>/dev/null 2>&1; then
+  if [[ -z "$json_array" ]] || ! echo "$json_array" | jq -e 'type == "array" and length > 0' &>/dev/null 2>&1; then
     echo "  ✗  Prompt generation failed after retry. Cannot proceed."
+    log_parse_failure "Phase 0 retry LLM output (parse failed)" "$raw_output"
     record_fail "prompt generation"
     exit 3
   fi
