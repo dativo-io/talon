@@ -18,6 +18,7 @@ audit:
   retention_days: 730    # 2 years for incident investigation
   include_prompts: true
   include_responses: true
+  include_original_prompts: false    # Default false: stores redacted prompt when redact_input is active (GDPR Art. 5(1)(c))
 
 compliance:
   frameworks: [nis2]

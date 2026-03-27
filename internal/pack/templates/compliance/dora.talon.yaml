@@ -28,6 +28,7 @@ audit:
   retention_days: 1825   # 5 years for financial record keeping
   include_prompts: true
   include_responses: true
+  include_original_prompts: false    # Default false: stores redacted prompt when redact_input is active (GDPR Art. 5(1)(c))
 
 compliance:
   frameworks: [dora, gdpr]

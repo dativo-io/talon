@@ -20,7 +20,8 @@ audit:
   log_level: detailed
   retention_days: 365     # Art. 30: Records of processing activities
   include_prompts: true
-  include_responses: false  # Minimize stored personal data (Art. 5)
+  include_responses: false           # Minimize stored personal data (Art. 5)
+  include_original_prompts: false    # When redact_input is active, store only the redacted prompt (Art. 5(1)(c) data minimization)
 
 compliance:
   frameworks: [gdpr]
