@@ -1343,12 +1343,19 @@ B_seen=${seen_b}"
     printf "  Judge:     €%.6f total  (%s evidence records, model: %s)\n" "$cost_judge_total" "$judge_rec_count" "$MODEL"
   fi
   local total_cost
-  total_cost="$(echo "$cost_a_total $cost_b_total $cost_judge_total" | awk '{printf "%.6f", $1+$2+$3}')"
+  total_cost="$(printf '%.6f' "$(echo "$cost_a_total $cost_b_total $cost_judge_total" | awk '{print $1+$2+$3}')")"
+  local ca_fmt cb_fmt cj_fmt
+  ca_fmt="$(printf '%.6f' "$cost_a_total")"
+  cb_fmt="$(printf '%.6f' "$cost_b_total")"
+  cj_fmt="$(printf '%.6f' "$cost_judge_total")"
   printf "  ─────────\n"
-  printf "  Total:     €%s (A: €%s + B: €%s + Judge: €%s)\n" "$total_cost" "$cost_a_total" "$cost_b_total" "$cost_judge_total"
+  printf "  Total:     €%s (A: €%s + B: €%s + Judge: €%s)\n" "$total_cost" "$ca_fmt" "$cb_fmt" "$cj_fmt"
+  echo "  (Costs sum the per-run cost field from talon audit export JSON for each isolated TALON_DATA_DIR; A vs B differ when token usage differs.)"
   echo ""
 
   # --- Compliance Report (per variant) ---
+  # Schema matches internal/compliance/report.go (no .summary.*): evidence_count,
+  # pii_record_count, denied_count, total_cost_eur, mappings (static control matrix).
   echo "  Compliance Report"
   echo "  ─────────────────"
   for variant_label in A B; do
@@ -1356,21 +1363,23 @@ B_seen=${seen_b}"
     if [[ "$variant_label" == "A" ]]; then vdir="$dir_a"; else vdir="$dir_b"; fi
     local comp_json
     comp_json="$(env TALON_DATA_DIR="$vdir" talon compliance report --format json --from 2020-01-01 --to 2099-12-31 2>/dev/null)" || true
-    if [[ -n "$comp_json" ]] && echo "$comp_json" | jq -e '.' &>/dev/null 2>&1; then
+    if [[ -n "$comp_json" ]] && echo "$comp_json" | jq -e '.evidence_count != null' &>/dev/null 2>&1; then
       echo "  Variant ${variant_label}:"
-      local pii_rate encryption_ok data_residency
-      pii_rate="$(echo "$comp_json" | jq -r '.summary.pii_detection_rate // "n/a"' 2>/dev/null)" || pii_rate="n/a"
-      encryption_ok="$(echo "$comp_json" | jq -r '.summary.secrets_encrypted // "n/a"' 2>/dev/null)" || encryption_ok="n/a"
-      data_residency="$(echo "$comp_json" | jq -r '.summary.data_residency // "n/a"' 2>/dev/null)" || data_residency="n/a"
-      echo "    PII detection rate: ${pii_rate}"
-      echo "    Secrets encrypted:  ${encryption_ok}"
-      echo "    Data residency:     ${data_residency}"
-      # Show framework coverage if available
-      local frameworks
-      frameworks="$(echo "$comp_json" | jq -r '.frameworks // [] | map(.name + ": " + (.coverage // "n/a")) | join(", ")' 2>/dev/null)" || frameworks=""
-      [[ -n "$frameworks" ]] && echo "    Frameworks: ${frameworks}"
+      local evc pii_cnt denied comp_cost pii_pct map_fw
+      evc="$(echo "$comp_json" | jq -r '.evidence_count // 0')"
+      pii_cnt="$(echo "$comp_json" | jq -r '.pii_record_count // 0')"
+      denied="$(echo "$comp_json" | jq -r '.denied_count // 0')"
+      comp_cost="$(echo "$comp_json" | jq -r '.total_cost_eur // 0')"
+      pii_pct="$(echo "$comp_json" | jq -r 'if ((.evidence_count // 0) | tonumber) > 0 then (((.pii_record_count // 0) * 10000 / .evidence_count | floor) / 100 | tostring) + "% of runs had PII flagged in evidence" else "n/a (no evidence)" end' 2>/dev/null)" || pii_pct="n/a"
+      map_fw="$(echo "$comp_json" | jq -r '[.mappings[]?.framework] | unique | join(", ")' 2>/dev/null)" || map_fw=""
+      echo "    Evidence records:   ${evc}"
+      echo "    Policy denials:     ${denied}"
+      echo "    PII in evidence:    ${pii_cnt} runs (${pii_pct})"
+      echo "    Total cost (report): €$(printf '%.6f' "$comp_cost") (should match audit export sum)"
+      [[ -n "$map_fw" ]] && echo "    Control mappings:   $(echo "$comp_json" | jq -r '.mappings | length') rows (frameworks: ${map_fw})"
+      echo "    Secrets / residency: not in this JSON — talon compliance report is evidence-derived only; see agent policy and vault docs."
     else
-      echo "  Variant ${variant_label}: (compliance report unavailable — run 'talon compliance report' manually)"
+      echo "  Variant ${variant_label}: (compliance report unavailable — run 'talon compliance report --format json' manually)"
     fi
   done
   echo ""
