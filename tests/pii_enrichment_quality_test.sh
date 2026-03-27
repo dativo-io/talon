@@ -34,7 +34,10 @@
 #   - yq in PATH (optional; falls back to sed for YAML patching)
 #
 # Output: side-by-side comparison table, per-prompt quality scores, per-criterion
-# breakdown, and a summary verdict. Full results logged to consolidated log.
+# breakdown, and a summary verdict. Logs:
+#   - pii_quality_consolidated_*.log — full trace, [ERROR]/[WARN], talon stderr, parse dumps
+#   - pii_quality_failures_*.log       — errors only (duplicate detail for quick grep)
+# Optional: SMOKE_LOG_TAIL_LINES=200 for longer assert tails in consolidated log.
 
 set -o pipefail
 
@@ -84,21 +87,90 @@ record_fail() {
   fi
 }
 
+# Lines of stdout/stderr to capture per assert (increased on failure paths)
+SMOKE_LOG_TAIL_LINES="${SMOKE_LOG_TAIL_LINES:-120}"
+
 write_cmd_log() {
   local description="$1" cmd="$2" code="$3" tmp_out="$4" tmp_err="$5"
   [[ -z "${SMOKE_CONSOLIDATED_LOG:-}" ]] && return 0
+  local n="$SMOKE_LOG_TAIL_LINES"
+  [[ "$code" -ne 0 ]] && n=$((SMOKE_LOG_TAIL_LINES * 2))
   {
     echo "[SMOKE] SECTION|$CURRENT_SECTION"
     echo "[SMOKE] ASSERT_DESC|$description"
     echo "[SMOKE] CMD|$cmd"
     echo "[SMOKE] EXIT|$code"
     echo "[SMOKE] STDOUT_TAIL<<"
-    [[ -f "$tmp_out" ]] && tail -30 "$tmp_out"
+    [[ -f "$tmp_out" ]] && tail -"$n" "$tmp_out"
     echo "[SMOKE] STDOUT_TAIL>>"
     echo "[SMOKE] STDERR_TAIL<<"
-    [[ -f "$tmp_err" ]] && tail -30 "$tmp_err"
+    [[ -f "$tmp_err" ]] && tail -"$n" "$tmp_err"
     echo "[SMOKE] STDERR_TAIL>>"
     echo ""
+  } >> "$SMOKE_CONSOLIDATED_LOG"
+}
+
+log_timestamp() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+
+# Verbose error: consolidated log + dedicated failure log (for grep / sharing).
+log_error() {
+  local summary="$1"
+  local detail="${2:-}"
+  local ts
+  ts="$(log_timestamp)"
+  echo "  ✗  $summary" >&2
+  if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]]; then
+    {
+      echo ""
+      echo "[ERROR] $ts section=${CURRENT_SECTION:-?} $summary"
+      if [[ -n "$detail" ]]; then
+        echo "[ERROR] detail<<"
+        echo "$detail"
+        echo "[ERROR] detail>>"
+      fi
+    } >> "$SMOKE_CONSOLIDATED_LOG"
+  fi
+  if [[ -n "${SMOKE_LOG_FILE:-}" ]]; then
+    {
+      echo "=== ERROR $ts section=${CURRENT_SECTION:-?} ==="
+      echo "$summary"
+      [[ -n "$detail" ]] && echo "--- detail ---" && echo "$detail"
+      echo ""
+    } >> "$SMOKE_LOG_FILE"
+  fi
+}
+
+log_warn() {
+  local summary="$1"
+  local detail="${2:-}"
+  local ts
+  ts="$(log_timestamp)"
+  echo "  ⚠  $summary" >&2
+  if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]]; then
+    {
+      echo ""
+      echo "[WARN] $ts section=${CURRENT_SECTION:-?} $summary"
+      if [[ -n "$detail" ]]; then
+        echo "[WARN] detail<<"
+        echo "$detail"
+        echo "[WARN] detail>>"
+      fi
+      echo ""
+    } >> "$SMOKE_CONSOLIDATED_LOG"
+  fi
+}
+
+log_verbose_block() {
+  local tag="$1"
+  local body="$2"
+  local max="${3:-20000}"
+  [[ -z "${SMOKE_CONSOLIDATED_LOG:-}" ]] || [[ -z "$body" ]] && return 0
+  {
+    echo ""
+    echo "[VERBOSE] $tag<<"
+    echo "${body:0:$max}"
+    [[ "${#body}" -gt "$max" ]] && echo "... (truncated at ${max} chars, total ${#body})"
+    echo "[VERBOSE] $tag>>"
   } >> "$SMOKE_CONSOLIDATED_LOG"
 }
 
@@ -123,14 +195,14 @@ assert_pass() {
       echo "Section: $CURRENT_SECTION"
       echo "Command: $*"
       echo "Exit code: $code"
-      echo "Stdout (last 50 lines):"; tail -50 "$tmp_out"
-      echo "Stderr (last 50 lines):"; tail -50 "$tmp_err"
+      echo "Stdout (last 200 lines):"; tail -200 "$tmp_out"
+      echo "Stderr (last 200 lines):"; tail -200 "$tmp_err"
       echo ""
     } >> "$SMOKE_LOG_FILE"
   fi
   if [[ -s "$tmp_err" ]]; then
     echo "    Last stderr:"
-    tail -5 "$tmp_err" | sed 's/^/    | /'
+    tail -12 "$tmp_err" | sed 's/^/    | /'
   fi
   rm -f "$tmp_out" "$tmp_err"
   return 1
@@ -223,13 +295,27 @@ sys.exit(1)
 
 log_parse_failure() {
   local title="$1" raw="$2"
-  [[ -z "${SMOKE_CONSOLIDATED_LOG:-}" ]] && return 0
-  {
-    echo ""
-    echo "=== $title ==="
-    echo "${raw:0:6000}"
-    echo "=== end ==="
-  } >> "$SMOKE_CONSOLIDATED_LOG"
+  local max="${3:-16000}"
+  local ts
+  ts="$(log_timestamp)"
+  local snippet="${raw:0:$max}"
+  if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]]; then
+    {
+      echo ""
+      echo "=== PARSE_FAIL $ts $title ==="
+      echo "$snippet"
+      [[ "${#raw}" -gt "$max" ]] && echo "... truncated raw output (${#raw} chars) at ${max} chars"
+      echo "=== end parse_fail ==="
+      echo ""
+    } >> "$SMOKE_CONSOLIDATED_LOG"
+  fi
+  if [[ -n "${SMOKE_LOG_FILE:-}" ]]; then
+    {
+      echo "=== PARSE_FAIL $ts $title ==="
+      echo "$snippet"
+      echo ""
+    } >> "$SMOKE_LOG_FILE"
+  fi
 }
 
 # --- Prerequisites (same pattern as smoke_test.sh) --------------------------
@@ -337,6 +423,9 @@ GEN_EOF
   json_array="$(extract_prompt_json_array "$raw_output")" || true
 
   if [[ -z "$json_array" ]] || ! echo "$json_array" | jq -e 'type == "array" and length > 0' &>/dev/null 2>&1; then
+    local jq_diag=""
+    jq_diag="$(echo "$raw_output" | jq . 2>&1 | head -30 || true)"
+    log_warn "Phase 0: could not extract JSON array from first LLM run" "jq . on raw (first 30 lines): ${jq_diag}"
     echo "  -  First attempt failed to parse; retrying with simpler instruction..."
     log_parse_failure "Phase 0 first LLM output (parse failed)" "$raw_output"
     raw_output="$(run_talon_in "$gen_dir" run \
@@ -348,6 +437,7 @@ GEN_EOF
   if [[ -z "$json_array" ]] || ! echo "$json_array" | jq -e 'type == "array" and length > 0' &>/dev/null 2>&1; then
     echo "  ✗  Prompt generation failed after retry. Cannot proceed."
     log_parse_failure "Phase 0 retry LLM output (parse failed)" "$raw_output"
+    log_error "Prompt generation failed: no valid JSON array after two LLM attempts" "See PARSE_FAIL blocks above. TALON_DATA_DIR=${TALON_DATA_DIR:-} gen_dir=${gen_dir:-}"
     record_fail "prompt generation"
     exit 3
   fi
@@ -371,7 +461,25 @@ GEN_EOF
 # --- Run a single prompt through a variant and capture the response ---------
 run_prompt() {
   local data_dir="$1" prompt="$2"
-  run_talon_in "$data_dir" run "$prompt" 2>/dev/null || true
+  local variant="${3:-variant}"
+  local outf errf code=0
+  outf="$(mktemp)" errf="$(mktemp)"
+  run_talon_in "$data_dir" run "$prompt" >"$outf" 2>"$errf" || code=$?
+  local body errtxt
+  body="$(cat "$outf" 2>/dev/null || true)"
+  errtxt="$(cat "$errf" 2>/dev/null || true)"
+  rm -f "$outf" "$errf"
+
+  if [[ "$code" -ne 0 ]] || [[ -z "$body" ]] || [[ "$body" == "null" ]]; then
+    log_error "talon run failed or empty response (variant ${variant}, exit ${code})" \
+      "data_dir=${data_dir}
+prompt_preview=${prompt:0:500}
+--- stderr ---
+${errtxt:0:12000}
+--- stdout (first 8000 chars) ---
+${body:0:8000}"
+  fi
+  printf '%s' "$body"
 }
 
 # --- LLM-as-Judge (MT-Bench pairwise style with position-bias mitigation) ---
@@ -385,6 +493,7 @@ run_prompt() {
 # Position-bias mitigation: response order randomised per prompt.
 judge_response() {
   local judge_dir="$1" original_prompt="$2" response_a="$3" response_b="$4"
+  local prompt_idx="${5:-?}"
 
   local first_resp second_resp swap=0
   if (( RANDOM % 2 )); then
@@ -435,13 +544,35 @@ ${first_resp}
 --- Response 2 ---
 ${second_resp}"
 
-  local judge_out
-  judge_out="$(run_talon_in "$judge_dir" run "$judge_prompt" 2>/dev/null)" || true
+  local j_out j_err j_code=0
+  j_out="$(mktemp)" j_err="$(mktemp)"
+  run_talon_in "$judge_dir" run "$judge_prompt" >"$j_out" 2>"$j_err" || j_code=$?
+  local judge_out j_errtxt
+  judge_out="$(cat "$j_out" 2>/dev/null || true)"
+  j_errtxt="$(cat "$j_err" 2>/dev/null || true)"
+  rm -f "$j_out" "$j_err"
 
-  local json_part
+  if [[ "$j_code" -ne 0 ]]; then
+    log_error "judge talon run non-zero exit (prompt_index=${prompt_idx})" \
+      "exit=${j_code}
+stderr<<
+${j_errtxt:0:12000}
+stdout<<
+${judge_out:0:8000}"
+  fi
+
+  local json_part parse_failed=0
   json_part="$(echo "$judge_out" | grep -o '{.*}' | head -1)" || true
 
   if ! echo "$json_part" | jq -e '.verdict' &>/dev/null 2>&1; then
+    parse_failed=1
+    log_error "judge JSON parse failed (prompt_index=${prompt_idx}, using neutral tie scores)" \
+      "grepped_json_candidate<<
+${json_part:0:4000}
+raw_judge_stdout<<
+${judge_out:0:16000}
+judge_stderr<<
+${j_errtxt:0:8000}"
     json_part='{"r1_utility":5,"r1_context":5,"r1_coherence":5,"r1_helpful":5,"r2_utility":5,"r2_context":5,"r2_coherence":5,"r2_helpful":5,"verdict":"tie","reason":"judge parse error"}'
   fi
 
@@ -469,9 +600,11 @@ ${second_resp}"
     --argjson au "$a_u" --argjson ac "$a_c" --argjson as "$a_s" --argjson ah "$a_h" \
     --argjson bu "$b_u" --argjson bc "$b_c" --argjson bs "$b_s" --argjson bh "$b_h" \
     --arg v "$verdict" --arg r "$reason" --argjson sw "$swap" \
+    --argjson jf "$j_code" --argjson pf "$parse_failed" \
     '{a_utility:$au,a_context:$ac,a_coherence:$as,a_helpful:$ah,
       b_utility:$bu,b_context:$bc,b_coherence:$bs,b_helpful:$bh,
-      verdict:$v,reason:$r,position_swapped:$sw}'
+      verdict:$v,reason:$r,position_swapped:$sw,
+      judge_talon_exit:$jf,judge_parse_failed:$pf}'
 }
 
 # --- Teardown ---------------------------------------------------------------
@@ -506,6 +639,24 @@ main() {
   : > "$SMOKE_COUNTS_FILE"
   : > "$SMOKE_FAILED_TESTS_FILE"
 
+  {
+    echo "=== PII enrichment quality test — run start $(log_timestamp) ==="
+    echo "NUM_PROMPTS=$NUM_PROMPTS"
+    echo "TALON_DATA_DIR=$TALON_DATA_DIR"
+    echo "SCRIPT_DIR=$SCRIPT_DIR"
+    echo "HAS_YQ=$HAS_YQ python3=$(command -v python3 2>/dev/null || echo missing) jq=$(command -v jq 2>/dev/null || echo missing)"
+    echo "OPENAI_API_KEY=${OPENAI_API_KEY:+(set, ${#OPENAI_API_KEY} chars)}"
+    echo "TALON_SECRETS_KEY=${TALON_SECRETS_KEY:+(set, ${#TALON_SECRETS_KEY} chars)}"
+    echo "Failure log: $SMOKE_LOG_FILE"
+    echo "=== end header ==="
+    echo ""
+  } >> "$SMOKE_CONSOLIDATED_LOG"
+  {
+    echo "=== PII enrichment quality test — failure log $(log_timestamp) ==="
+    echo "Consolidated log: $SMOKE_CONSOLIDATED_LOG"
+    echo ""
+  } >> "$SMOKE_LOG_FILE"
+
   echo ""
   echo "╔══════════════════════════════════════════════════════════════╗"
   echo "║   PII Semantic Enrichment — Quality Comparison Test        ║"
@@ -516,7 +667,8 @@ main() {
   echo "  Criteria: Utility Preservation, Context Sensitivity, Semantic Coherence, Helpfulness"
   echo "  Bias mitigation: response presentation order randomised per prompt"
   echo "  Prompt source: LLM-generated (not fixtures)"
-  echo "  Log: $SMOKE_CONSOLIDATED_LOG"
+  echo "  Consolidated log: $SMOKE_CONSOLIDATED_LOG"
+  echo "  Failure log:      $SMOKE_LOG_FILE"
   echo ""
 
   # --- Phase 0: Generate prompts via LLM ---
@@ -525,6 +677,7 @@ main() {
   local actual_count="${#PROMPTS[@]}"
   if [[ "$actual_count" -eq 0 ]]; then
     echo "  ✗  No prompts available. Aborting."
+    log_error "No prompts in PROMPTS array after Phase 0" "Check Phase 0 logs and PARSE_FAIL sections in $SMOKE_CONSOLIDATED_LOG"
     exit 3
   fi
 
@@ -574,24 +727,24 @@ main() {
     log_plain_to_file "  [$((i+1))/$actual_count] ${prompt:0:70}..."
 
     local resp_a
-    resp_a="$(run_prompt "$dir_a" "$prompt")"
+    resp_a="$(run_prompt "$dir_a" "$prompt" "A")"
     responses_a+=("$resp_a")
     if [[ -n "$resp_a" ]] && [[ "$resp_a" != "null" ]]; then
       echo "    A: ✓ ${#resp_a} chars"
       record_pass
     else
-      echo "    A: ✗ empty"
+      echo "    A: ✗ empty (details in failure log if talon emitted stderr)"
       record_fail "response_a_empty_prompt_$((i+1))"
     fi
 
     local resp_b
-    resp_b="$(run_prompt "$dir_b" "$prompt")"
+    resp_b="$(run_prompt "$dir_b" "$prompt" "B")"
     responses_b+=("$resp_b")
     if [[ -n "$resp_b" ]] && [[ "$resp_b" != "null" ]]; then
       echo "    B: ✓ ${#resp_b} chars"
       record_pass
     else
-      echo "    B: ✗ empty"
+      echo "    B: ✗ empty (details in failure log if talon emitted stderr)"
       record_fail "response_b_empty_prompt_$((i+1))"
     fi
   done
@@ -610,7 +763,7 @@ main() {
     log_plain_to_file "  [$((i+1))/$actual_count] Judging: ${PROMPTS[$i]:0:70}..."
 
     local jj
-    jj="$(judge_response "$dir_judge" "${PROMPTS[$i]}" "${responses_a[$i]}" "${responses_b[$i]}")"
+    jj="$(judge_response "$dir_judge" "${PROMPTS[$i]}" "${responses_a[$i]}" "${responses_b[$i]}" "$((i+1))")"
     judge_results+=("$jj")
 
     local v r sw
@@ -722,12 +875,21 @@ main() {
     echo "=== Full Judge Results (JSON per prompt) ==="
     for (( i=0; i<actual_count; i++ )); do
       echo "--- Prompt $((i+1)): ${PROMPTS[$i]:0:80}... ---"
-      echo "Response A (${#responses_a[$i]} chars): ${responses_a[$i]:0:300}..."
-      echo "Response B (${#responses_b[$i]} chars): ${responses_b[$i]:0:300}..."
-      echo "Judge: ${judge_results[$i]}"
+      echo "Response A (${#responses_a[$i]} chars): ${responses_a[$i]:0:2500}..."
+      echo "Response B (${#responses_b[$i]} chars): ${responses_b[$i]:0:2500}..."
+      echo "Judge JSON: ${judge_results[$i]}"
       echo ""
     done
   } >> "$SMOKE_CONSOLIDATED_LOG"
+
+  if [[ -s "$SMOKE_FAILED_TESTS_FILE" ]]; then
+    {
+      echo ""
+      echo "=== record_fail / empty-response ids (SMOKE_FAILED_TESTS_FILE) ==="
+      cat "$SMOKE_FAILED_TESTS_FILE"
+      echo "=== end failed ids ==="
+    } >> "$SMOKE_CONSOLIDATED_LOG"
+  fi
 
   # Aggregate counts from file (matching smoke_test.sh pattern)
   local final_pass final_fail
