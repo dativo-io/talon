@@ -104,16 +104,16 @@ write_cmd_log() {
 
 assert_pass() {
   local description="$1"; shift
-  local tmp_out tmp_err
+  local tmp_out tmp_err code=0
   tmp_out="$(mktemp)" tmp_err="$(mktemp)"
-  if "$@" >"$tmp_out" 2>"$tmp_err"; then
+  "$@" >"$tmp_out" 2>"$tmp_err" || code=$?
+  if [[ "$code" -eq 0 ]]; then
     echo "  ✓  $description"
     write_cmd_log "$description" "$*" 0 "$tmp_out" "$tmp_err"
     record_pass
     rm -f "$tmp_out" "$tmp_err"
     return 0
   fi
-  local code=$?
   echo "  ✗  $description (exit $code) [$*]"
   write_cmd_log "$description" "$*" "$code" "$tmp_out" "$tmp_err"
   record_fail "$description"
@@ -178,6 +178,7 @@ check_prereqs() {
   command -v yq &>/dev/null && HAS_YQ=1 || echo "  Note: yq not found; falling back to sed for YAML patching."
 
   TALON_DATA_DIR="$(mktemp -d)"
+  SMOKE_CREATED_DATA_DIR=1
   export TALON_DATA_DIR
   export TALON_SIGNING_KEY="${TALON_SIGNING_KEY:-$(openssl rand -hex 32 2>/dev/null || echo "pii-quality-signing-key-pad32")}"
   echo "  All prerequisites met."
@@ -241,6 +242,13 @@ generate_prompts() {
     if [[ "$HAS_YQ" -eq 1 ]]; then
       yq -i '.policies.data_classification.input_scan = false | .policies.data_classification.output_scan = false | .policies.data_classification.redact_pii = false' \
         "$gen_dir/agent.talon.yaml" 2>/dev/null || true
+    else
+      local _yaml="$gen_dir/agent.talon.yaml"
+      if grep -q 'data_classification:' "$_yaml" 2>/dev/null; then
+        sed -i.bak 's/input_scan: *true/input_scan: false/; s/output_scan: *true/output_scan: false/; s/redact_pii: *true/redact_pii: false/' "$_yaml" 2>/dev/null || true
+      else
+        echo -e "\npolicies:\n  data_classification: { input_scan: false, output_scan: false, redact_pii: false }" >> "$_yaml"
+      fi
     fi
   )
 
@@ -407,8 +415,11 @@ ${second_resp}"
 }
 
 # --- Teardown ---------------------------------------------------------------
+SMOKE_CREATED_DATA_DIR=0
 teardown() {
-  [[ -n "$TALON_DATA_DIR" ]] && rm -rf "$TALON_DATA_DIR" 2>/dev/null || true
+  if [[ "${SMOKE_CREATED_DATA_DIR:-0}" -eq 1 ]] && [[ -n "$TALON_DATA_DIR" ]] && [[ -d "$TALON_DATA_DIR" ]]; then
+    rm -rf "$TALON_DATA_DIR" 2>/dev/null || true
+  fi
 }
 trap teardown EXIT
 
@@ -418,8 +429,16 @@ trap teardown EXIT
 main() {
   check_prereqs
 
-  SMOKE_LOG_FILE="$TALON_DATA_DIR/pii_quality_failures.log"
-  SMOKE_CONSOLIDATED_LOG="$TALON_DATA_DIR/pii_quality_consolidated.log"
+  SMOKE_LOG_FILE="${SCRIPT_DIR}/pii_quality_failures_$(date +%Y%m%d_%H%M%S).log"
+  if ! touch "$SMOKE_LOG_FILE" 2>/dev/null; then
+    SMOKE_LOG_FILE="$(pwd)/pii_quality_failures_$(date +%Y%m%d_%H%M%S).log"
+    touch "$SMOKE_LOG_FILE" 2>/dev/null || SMOKE_LOG_FILE="/tmp/talon_pii_quality_failures_$$.log"
+  fi
+  SMOKE_CONSOLIDATED_LOG="${SCRIPT_DIR}/pii_quality_consolidated_$(date +%Y%m%d_%H%M%S).log"
+  if ! touch "$SMOKE_CONSOLIDATED_LOG" 2>/dev/null; then
+    SMOKE_CONSOLIDATED_LOG="$(pwd)/pii_quality_consolidated_$(date +%Y%m%d_%H%M%S).log"
+    touch "$SMOKE_CONSOLIDATED_LOG" 2>/dev/null || SMOKE_CONSOLIDATED_LOG="/tmp/talon_pii_quality_consolidated_$$.log"
+  fi
   SMOKE_COUNTS_FILE="$TALON_DATA_DIR/pii_quality_counts.txt"
   SMOKE_FAILED_TESTS_FILE="$TALON_DATA_DIR/pii_quality_failed.txt"
   : > "$SMOKE_LOG_FILE"
@@ -460,6 +479,27 @@ main() {
   local dir_b
   dir_b="$(setup_variant "B" "true" "enforce")"
   log_to_file "  Data dir: $dir_b"
+
+  log_to_file "${CYAN}Setting up Judge directory (PII scanning OFF)...${RESET}"
+  local dir_judge
+  dir_judge="$(setup_section_dir "pii_quality_judge")"
+  (
+    cd "$dir_judge" || exit 1
+    TALON_DATA_DIR="$dir_judge" talon init --scaffold --name "pii-quality-judge" &>/dev/null || true
+    [[ -n "${OPENAI_API_KEY:-}" ]] && TALON_DATA_DIR="$dir_judge" talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null || true
+    if [[ "$HAS_YQ" -eq 1 ]]; then
+      yq -i '.policies.data_classification.input_scan = false | .policies.data_classification.output_scan = false | .policies.data_classification.redact_pii = false' \
+        "$dir_judge/agent.talon.yaml" 2>/dev/null || true
+    else
+      local _yaml="$dir_judge/agent.talon.yaml"
+      if grep -q 'data_classification:' "$_yaml" 2>/dev/null; then
+        sed -i.bak 's/input_scan: *true/input_scan: false/; s/output_scan: *true/output_scan: false/; s/redact_pii: *true/redact_pii: false/' "$_yaml" 2>/dev/null || true
+      else
+        echo -e "\npolicies:\n  data_classification: { input_scan: false, output_scan: false, redact_pii: false }" >> "$_yaml"
+      fi
+    fi
+  )
+  log_to_file "  Data dir: $dir_judge"
   echo ""
 
   # --- Phase 1: Collect responses ---
@@ -510,7 +550,7 @@ main() {
     log_plain_to_file "  [$((i+1))/$actual_count] Judging: ${PROMPTS[$i]:0:70}..."
 
     local jj
-    jj="$(judge_response "$dir_b" "${PROMPTS[$i]}" "${responses_a[$i]}" "${responses_b[$i]}")"
+    jj="$(judge_response "$dir_judge" "${PROMPTS[$i]}" "${responses_a[$i]}" "${responses_b[$i]}")"
     judge_results+=("$jj")
 
     local v r sw
