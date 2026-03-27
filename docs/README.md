@@ -18,6 +18,20 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 - [60-Second Demo](tutorials/quickstart-demo.md) — Docker Compose demo: `docker compose up`, send a curl request, see evidence immediately.
 - [QUICKSTART.md](QUICKSTART.md) — Short entry point for native Talon (requires Go).
 
+## Start Here (jobs-to-be-done)
+
+Choose the shortest path for your situation:
+
+1. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
+   - Start: [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
+   - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
+2. **"I need to govern a third-party AI vendor."**
+   - Start: [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md)
+   - Then: [Architecture: MCP proxy](ARCHITECTURE_MCP_PROXY.md)
+3. **"I want to understand exactly what Talon enforces."**
+   - Start: [What Talon does to your request](explanation/what-talon-does-to-your-request.md)
+   - Then: [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md)
+
 ---
 
 ## Documentation index
@@ -70,6 +84,16 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 | [Agent planning](AGENT_PLANNING.md) | Execution plans and plan review gate. |
 | [Observability](OBSERVABILITY.md) | Logging, tracing, and metrics. |
 
+### Proof Pack (trust and verification)
+
+| Doc | Description |
+|-----|-------------|
+| [What Talon does to your request](explanation/what-talon-does-to-your-request.md) | Pipeline, latency, threat boundaries, and reproducible checks. |
+| [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md) | Control-plane vs scrubber differentiation with proof commands. |
+| [Evidence store](explanation/evidence-store.md) | HMAC integrity model and verification flow. |
+| [Security policy](../SECURITY.md) | Vulnerability reporting process and security scope. |
+| [Docker Compose demo](../examples/docker-compose/README.md) | Fastest no-key proof loop. |
+
 ### Policy reference
 
 | Doc | Description |
@@ -81,7 +105,24 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 
 | Doc | Description |
 |-----|-------------|
-| [Comment playbook (Reddit/HN)](community/comment-playbook.md) | Internal: copy-paste reply templates for common thread types. |
+| [Comment playbook (Reddit/HN)](community/comment-playbook.md) | Internal: human-written response guidance with evidence-first links. |
+
+### Release reliability
+
+- [CHANGELOG.md](../CHANGELOG.md): includes the "why this matters" framing for notable changes.
+- [Release workflow](../.github/workflows/release.yml): GoReleaser + GHCR publish path.
+- [CodeQL workflow](../.github/workflows/codeql.yml) and [security workflow](../.github/workflows/security.yml): continuous supply-chain/security checks.
+
+### EU controls mapping (supporting controls)
+
+Talon supports these control objectives; it is not a compliance certification by itself.
+
+| Framework | Example Talon support |
+|-----------|-----------------------|
+| GDPR Art. 30 | Evidence export and processing records |
+| NIS2 Art. 21 | Policy enforcement, incident evidence, risk visibility |
+| DORA | ICT risk evidence, caller-level cost and control telemetry |
+| EU AI Act (9/13/14) | Risk controls, transparency logs, human-oversight gates |
 
 ### Examples
 

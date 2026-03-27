@@ -12,15 +12,45 @@ evt_j0k1l2  2026-03-15T10:25:30  support-bot   email(1),phone   0.004    gpt-4o-
 
 One URL change. PII scan, tool block, tamper-proof record. No code rewrites.
 
-Talon is a single Go binary in front of OpenAI, Anthropic, and Bedrock. Point your app at `localhost:8080/v1/proxy/openai` instead of `api.openai.com` — same API, same response. Every call is policy-checked, PII-scanned, cost-tracked, and logged. Works with Slack bots, OpenClaw, CoPaw, anything OpenAI-compatible. Built for EU companies (GDPR, NIS2, DORA, EU AI Act); Apache 2.0.
+Talon is a single Go binary in front of OpenAI, Anthropic, and Bedrock. Point your app at `localhost:8080/v1/proxy/openai` instead of `api.openai.com` — same API, same response. Every call is policy-checked, PII-scanned, cost-tracked, and logged. Works with Slack bots, OpenClaw, CoPaw, and other OpenAI-compatible clients. Built for EU teams that need strong governance signals (GDPR, NIS2, DORA, EU AI Act); Apache 2.0.
 
 ---
 
 
 
 [CI](https://github.com/dativo-io/talon/actions/workflows/ci.yml)
+[CodeQL](https://github.com/dativo-io/talon/actions/workflows/codeql.yml)
+[Release](https://github.com/dativo-io/talon/actions/workflows/release.yml)
+[Latest Release](https://github.com/dativo-io/talon/releases/latest)
 [Go Report Card](https://goreportcard.com/report/github.com/dativo-io/talon)
 [License](LICENSE)
+
+### Trust Signals
+
+- Release cadence: [23 tagged releases](https://github.com/dativo-io/talon/releases) (latest: `v1.3.0`, 2026-03-18)
+- Supply-chain: [CodeQL](https://github.com/dativo-io/talon/actions/workflows/codeql.yml) + [security workflow](https://github.com/dativo-io/talon/actions/workflows/security.yml) + [GoReleaser](.goreleaser.yml)
+- Verifiable evidence: `talon audit verify <evidence-id>`
+- Social preview asset: [`web/social-preview.svg`](web/social-preview.svg) (set in repo settings as Open Graph image)
+
+### Install Options (pick one)
+
+- **Go (fastest):** `go install github.com/dativo-io/talon/cmd/talon@latest`
+- **Release binary (checksummed):** [GitHub Releases](https://github.com/dativo-io/talon/releases/latest) + `checksums.txt`
+- **Container image:** `ghcr.io/dativo-io/talon:latest` (also `:vX.Y.Z`, `:X.Y`)
+- **Install script (checksum verification included):** `curl -sSL https://install.gettalon.dev | sh`
+
+Note: GitHub may still show `Packages 0` in the sidebar. Use the release artifacts and GHCR image coordinates above as the source of truth.
+
+Artifact verification quick check:
+
+```bash
+# verify release assets exist
+LATEST=$(gh release view --json tagName -q .tagName)
+gh release view "$LATEST" --json assets -q '.assets[].name'
+
+# verify GHCR image is published
+docker pull ghcr.io/dativo-io/talon:latest
+```
 
 ### 60-Second Demo (no API key needed)
 
@@ -39,6 +69,30 @@ docker compose exec talon /usr/local/bin/talon audit list
 
 The mock provider handles the LLM call. Evidence appears immediately — PII detected, cost logged, HMAC-signed record. [What exactly does Talon do to your request?](docs/explanation/what-talon-does-to-your-request.md)
 
+### Proof In 30 Seconds
+
+```bash
+cd examples/docker-compose
+docker compose up -d
+curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"my email is jan@example.com and iban DE89370400440532013000"}]}'
+docker compose exec talon /usr/local/bin/talon audit list --limit 1
+docker compose exec talon /usr/local/bin/talon audit show <evidence-id>
+```
+
+Expected outcome:
+- request is accepted or policy-blocked based on your config
+- evidence row includes PII types + decision
+- `talon audit verify <evidence-id>` returns valid signature
+
+Visual capture workflow (for release notes/social posts):
+
+```bash
+# generate deterministic sample records for screenshots/GIF capture
+bash scripts/demo-recorder.sh
+```
+
 
 
 ---
@@ -49,6 +103,8 @@ The mock provider handles the LLM call. Evidence appears immediately — PII det
 - **A prompt contained an IBAN and the model replied with it.** Logging after the fact does not stop the leak. Talon scans input (and optionally response) before the call completes; you can block, redact, or restrict to EU-only models when PII is detected. Budget is evaluated before the call, not after — unlike LiteLLM-style post-spend alerts.
 - **You have no proof of what ran.** Spreadsheets and ad-hoc logs are easy to alter. Talon writes an HMAC-signed evidence record per request to SQLite; verify with `talon audit verify`. Export to CSV for your compliance officer.
 - **Third-party AI (Zendesk, Intercom) is a black box.** You are liable even if they say they are compliant. Route them through Talon's MCP proxy: you get the same PII scan, tool filter, and tamper-proof record without the vendor rewriting their stack.
+
+See also: [Why not just a PII proxy?](docs/explanation/why-not-a-pii-proxy.md)
 
 ## Three Ways to Adopt Talon
 
@@ -114,7 +170,7 @@ response = requests.post("http://localhost:8081/v1/chat/completions", json={
 **Result:**
 
 - ✅ Bot keeps working (same UX)
-- ✅ Now GDPR + NIS2 compliant
+- ✅ Stronger GDPR + NIS2 control coverage with auditable records
 - ✅ No rewrite needed
 - ✅ Audit-ready in 1 day
 
@@ -124,7 +180,7 @@ response = requests.post("http://localhost:8081/v1/chat/completions", json={
 
 ### 3. Building New AI Agents? (Native Talon)
 
-**Scenario:** Greenfield project, want to build compliant from Day 1.
+**Scenario:** Greenfield project, want governance controls from Day 1.
 
 **Solution:** Use Talon from the start (2 minutes to first agent).
 
@@ -296,7 +352,7 @@ Talon identifies the caller, enforces per-caller model and cost policy, records 
 
 **MCP-Native** — Talon speaks Model Context Protocol. Connect any MCP-compatible agent or tool. Every MCP tool call passes through the policy engine. Works as transparent proxy for third-party vendors.
 
-**Vendor Integration** — Route third-party AI vendors (Zendesk, Intercom, HubSpot) through Talon's MCP proxy. Gain tamper-proof records, PII redaction, and policy enforcement without vendor rewrites. You stay compliant even with black-box SaaS.
+**Vendor Integration** — Route third-party AI vendors (Zendesk, Intercom, HubSpot) through Talon's MCP proxy. Gain tamper-proof records, PII redaction, and policy enforcement without vendor rewrites. This supports audit readiness even with black-box SaaS.
 
 **LLM API Gateway** — Route raw LLM API traffic (OpenAI, Anthropic, Ollama) through Talon at `/v1/proxy/`*. Desktop apps, Slack bots, and scripts use caller API keys; Talon enforces per-caller model and cost policy and records evidence. Same controls as native agents, zero app code changes beyond base URL.
 
@@ -478,25 +534,29 @@ Attachment (prompt-injection) patterns are configured the same way; see `pattern
 | SOC 2     | ⚡️ Partial | Trust services criteria via evidence + signed record                   |
 
 
-**GDPR Article 30 Exports:** Generate processing records in one command. Proves what data was processed, by which agent, when, and with what legal basis.
+Talon supports these controls but does not, by itself, certify regulatory compliance. Final compliance depends on your full process, legal interpretation, and operating environment.
 
-**NIS2 Article 21 Evidence:** Complete incident logs with timestamps, policy decisions, and signed records. Required for cyber incident reporting.
+**GDPR Article 30 Exports:** Generate processing records in one command. Shows what data was processed, by which agent, and when.
 
-**EU AI Act Articles 9, 13, 14:** Risk management system (OPA policies), transparency logs (evidence store), human oversight (plan review UI).
+**NIS2 Article 21 Evidence:** Signed incident/event logs with timestamps and policy decisions to support risk management and reporting workflows.
+
+**DORA ICT Risk Controls:** Cost governance, evidence retention, and third-party routing controls provide auditable input for operational resilience programs.
+
+**EU AI Act Articles 9, 13, 14:** Risk management policies, transparency logs, and human oversight gates as supporting controls.
 
 ## Real-World Adoption Paths
 
 ### Spanish Telecom (150 employees)
 
 **Before:** Custom Slack bot for eSIM support. Works great, but no verifiable record.
-**After:** Added Talon in 4 hours (5 lines of code). Now GDPR + NIS2 compliant.
+**After:** Added Talon in 4 hours (5 lines of code). Added auditable GDPR + NIS2 support controls.
 **ROI:** €15,000 saved (avoided rewrite) + eliminated fine risk.
 
 ### German Healthcare (400 employees)
 
 **Before:** Zendesk AI Agent (€3,000/month). Black box, no visibility.
 **After:** Routed through Talon MCP proxy in 1 week. Full tamper-proof record.
-**ROI:** €100,000 saved (kept vendor) + GDPR compliance proven.
+**ROI:** €100,000 saved (kept vendor) + stronger GDPR audit evidence.
 
 ### French FinTech (80 employees)
 
@@ -532,7 +592,28 @@ Talon is designed for progressive complexity — start simple, add sophisticatio
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [AI_ASSISTANCE.md](AI_ASSISTANCE.md).
+
+Quick ways to help:
+
+- New contributors: [`good first issue`](https://github.com/dativo-io/talon/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+- Larger tasks: [`help wanted`](https://github.com/dativo-io/talon/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+- Start here issue: [Roadmap + how to contribute](https://github.com/dativo-io/talon/issues/54)
+- Roadmap context: [ROADMAP.md](ROADMAP.md)
+- Share a deployment story: [case study template](docs/ADOPTION_SCENARIOS.md#case-study-template-for-community-contributions)
+- Maintainer response target: first response within 72 hours (best effort)
+
+## Release Notes That Teach
+
+For notable releases, we document:
+
+- problem solved,
+- who should care,
+- how to verify quickly,
+- upgrade impact,
+- one share artifact (screenshot/GIF/snippet) when relevant.
+
+See [CHANGELOG.md](CHANGELOG.md) and [Releases](https://github.com/dativo-io/talon/releases).
 
 ## License
 
@@ -542,15 +623,18 @@ Apache 2.0 — See [LICENSE](LICENSE)
 
 - **Documentation:** [docs/](docs/)
 - **Quick Start:** [QUICKSTART.md](docs/QUICKSTART.md)
+- **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md)
+- **Code of Conduct:** [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- **Security Policy:** [SECURITY.md](SECURITY.md)
 - **Persona Guides:** [PERSONA_GUIDES.md](docs/PERSONA_GUIDES.md) — How Compliance, CTO, SecOps, FinOps, and DevOps use Talon
 - **Memory Governance:** [MEMORY_GOVERNANCE.md](docs/MEMORY_GOVERNANCE.md)
 - **Vendor Integration:** [VENDOR_INTEGRATION_GUIDE.md](docs/VENDOR_INTEGRATION_GUIDE.md)
 - **Adoption Paths:** [ADOPTION_SCENARIOS.md](docs/ADOPTION_SCENARIOS.md)
 - **Website:** [https://talon.dativo.io](https://talon.dativo.io)
-- **Community:** [https://github.com/dativo-io/talon/discussions](https://github.com/dativo-io/talon/discussions)
+- **Issues:** [https://github.com/dativo-io/talon/issues](https://github.com/dativo-io/talon/issues)
 
 ---
 
-**EU AI Act enforcement: August 2026. Are your AI agents compliant?**
+**EU AI Act enforcement: August 2026. Do you have evidence and human-oversight controls for your AI operations?**
 
-**Already using AI vendors? Make them compliant in hours, not months.**
+**Already using AI vendors? Add policy enforcement and signed evidence in hours, not months.**

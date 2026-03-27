@@ -591,6 +591,19 @@ Track these to measure adoption success:
 
 ---
 
+## Case Study Template (for community contributions)
+
+If you deploy Talon in production or pilot, open a PR and add your example using this structure:
+
+1. **Problem:** what governance/audit gap existed?
+2. **Config:** minimal Talon config or policy snippet used.
+3. **Evidence:** screenshot or command output (`talon audit list` / `talon audit verify`).
+4. **Outcome:** what changed (latency, risk reduction, operator workflow).
+
+Keep claims verifiable. Prefer command output and measured values over generic statements.
+
+---
+
 ## Support
 
 - **Documentation:** https://github.com/dativo-io/talon#readme

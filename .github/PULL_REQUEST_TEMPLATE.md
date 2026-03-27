@@ -9,8 +9,8 @@
 
 ## Checklist
 - [ ] `make check` passes (tests + lint + vet)
-- [ ] Code follows `.cursorrules` conventions
-- [ ] Critical rules from `CLAUDE_PROJECT_INSTRUCTIONS.md` followed
+- [ ] Contribution guidelines in `CONTRIBUTING.md` followed
+- [ ] AI usage, if any, follows `AI_ASSISTANCE.md`
 - [ ] Tests added/updated (target: 65% overall coverage, goal 70%)
 - [ ] Coverage ≥65% for changed packages
 - [ ] Docs updated (if user-facing)
@@ -25,3 +25,15 @@
 
 ## Testing
 <!-- How did you test this? -->
+
+## Release Note Draft (for user-facing changes)
+<!-- Keep this concise and concrete -->
+- Problem solved:
+- Who should care:
+- How to verify:
+- Upgrade/migration impact:
+
+## AI Assistance Disclosure
+<!-- If AI tooling was used, summarize where and how you validated outputs -->
+- AI tooling used: none / <tool names>
+- Human verification performed:

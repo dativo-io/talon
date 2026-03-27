@@ -156,7 +156,10 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 	// Policy check
 	var paramsMap map[string]interface{}
 	if len(params.Arguments) > 0 {
-		_ = json.Unmarshal(params.Arguments, &paramsMap)
+		if unmarshalErr := json.Unmarshal(params.Arguments, &paramsMap); unmarshalErr != nil {
+			span.RecordError(unmarshalErr)
+			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeInvalidParams, Message: "malformed tool arguments: " + unmarshalErr.Error()}}
+		}
 	}
 	if paramsMap == nil {
 		paramsMap = make(map[string]interface{})
