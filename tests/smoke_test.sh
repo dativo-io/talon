@@ -3065,8 +3065,10 @@ main() {
 
   # Aggregate counts from file (sections run in subshells so in-memory counts are lost)
   if [[ -n "${SMOKE_COUNTS_FILE:-}" ]] && [[ -f "$SMOKE_COUNTS_FILE" ]]; then
-    PASS_COUNT=$(grep -c "^P$" "$SMOKE_COUNTS_FILE" 2>/dev/null || echo 0)
-    FAIL_COUNT=$(grep -c "^F$" "$SMOKE_COUNTS_FILE" 2>/dev/null || echo 0)
+    PASS_COUNT=$(grep -c "^P$" "$SMOKE_COUNTS_FILE" 2>/dev/null || true)
+    FAIL_COUNT=$(grep -c "^F$" "$SMOKE_COUNTS_FILE" 2>/dev/null || true)
+    PASS_COUNT="${PASS_COUNT:-0}"
+    FAIL_COUNT="${FAIL_COUNT:-0}"
     FAILED_TESTS=()
     while IFS= read -r line; do [[ -n "$line" ]] && FAILED_TESTS+=("$line"); done < "$SMOKE_FAILED_TESTS_FILE" 2>/dev/null || true
   fi

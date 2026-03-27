@@ -4,13 +4,22 @@
 #
 # Compares LLM response quality with vs without semantic enrichment on PII redaction.
 #
+# WHAT THIS MEASURES:
+#   Talon redacts PII from LLM *output* (not input). The LLM sees the full prompt,
+#   then Talon's output scanner replaces PII in the response with placeholders.
+#   - Variant A: basic redaction → placeholders like [PERSON], [LOCATION]
+#   - Variant B: semantic enrichment → richer placeholders that preserve gender/scope
+#     hints (e.g. <PII type="person" gender="female"/>)
+#   The judge evaluates whether enriched output redaction preserves more meaning
+#   and context than basic redaction.
+#
 # Phase 0: Uses the LLM itself to generate N diverse business prompts containing
 #   EU PII (gendered titles, cities, emails, IBANs) — no hardcoded fixtures.
-# Phase 1: Sends each prompt through Talon twice:
-#   Variant A: enrichment OFF  → placeholders like [PERSON], [LOCATION]
-#   Variant B: enrichment ON   → placeholders like <PII type="person" gender="female"/>, <PII type="location" scope="city"/>
+# Phase 1: Sends each prompt through Talon twice (redact_pii: true for both).
+#   Both variants send the SAME unredacted prompt to the LLM. The difference is
+#   in how PII in the LLM response is replaced: basic vs enriched placeholders.
 # Phase 2: LLM-as-Judge (MT-Bench pairwise style) evaluates which variant
-#   produces higher-quality responses.
+#   produces higher-quality *redacted* output.
 #
 # Evaluation methodology:
 #   - Criteria aligned with tau-eval (utility preservation), RedacBench (semantic
@@ -38,6 +47,8 @@
 #   - pii_quality_consolidated_*.log — full trace, [ERROR]/[WARN], talon stderr, parse dumps
 #   - pii_quality_failures_*.log       — errors only (duplicate detail for quick grep)
 # Optional: SMOKE_LOG_TAIL_LINES=200 for longer assert tails in consolidated log.
+# Optional: PII_QUALITY_LOG_RESPONSE_CHARS=N caps each variant response in the consolidated
+#   log (default 0 = full text). Use if logs grow too large.
 
 set -o pipefail
 
@@ -220,6 +231,19 @@ log_plain_to_file() {
   [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]] && echo "$msg" >> "$SMOKE_CONSOLIDATED_LOG"
 }
 
+# Emit response text for consolidated log; respects PII_QUALITY_LOG_RESPONSE_CHARS (0 = unlimited).
+pii_emit_body_for_log() {
+  local body="$1"
+  local max="${PII_QUALITY_LOG_RESPONSE_CHARS:-0}"
+  [[ "$max" =~ ^[0-9]+$ ]] || max=0
+  if [[ "$max" -eq 0 ]] || [[ ${#body} -le "$max" ]]; then
+    printf '%s\n' "$body"
+    return
+  fi
+  printf '%s\n' "${body:0:$max}"
+  printf '(truncated: %s chars shown of %s total; PII_QUALITY_LOG_RESPONSE_CHARS=0 for full)\n' "$max" "${#body}"
+}
+
 run_talon() {
   env TALON_DATA_DIR="$TALON_DATA_DIR" talon "$@"
 }
@@ -304,6 +328,44 @@ sys.exit(1)
   return 1
 }
 
+# First JSON object in text (multiline). grep -o '{.*}' cannot cross newlines.
+extract_first_json_object() {
+  local raw="$1"
+  local out=""
+  if command -v python3 &>/dev/null; then
+    out="$(printf '%s' "$raw" | python3 -c '
+import sys, json
+text = sys.stdin.read()
+dec = json.JSONDecoder()
+for i, c in enumerate(text):
+    if c != "{":
+        continue
+    try:
+        obj, _end = dec.raw_decode(text[i:])
+    except json.JSONDecodeError:
+        continue
+    if isinstance(obj, dict) and (
+        "verdict" in obj or "r1_utility" in obj
+    ):
+        print(json.dumps(obj, ensure_ascii=False))
+        sys.exit(0)
+sys.exit(1)
+')" || true
+    if [[ -n "$out" ]] && echo "$out" | jq -e . &>/dev/null; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+  fi
+  local collapsed
+  collapsed="$(printf '%s' "$raw" | tr '\n' ' ')"
+  out="$(echo "$collapsed" | grep -oE '\{.*\}' | head -1)" || true
+  if [[ -n "$out" ]] && echo "$out" | jq -e . &>/dev/null; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  return 1
+}
+
 log_parse_failure() {
   local title="$1" raw="$2"
   local max="${3:-16000}"
@@ -353,6 +415,8 @@ check_prereqs() {
 }
 
 # --- YAML patching (yq with sed fallback, matching smoke_test.sh) -----------
+# The scaffold template has data_classification with redact_pii: false.
+# The sed fallback must overwrite existing values, not just append when missing.
 patch_yaml() {
   local yaml_file="$1" enrichment_enabled="$2" enrichment_mode="$3"
   if [[ "$HAS_YQ" -eq 1 ]]; then
@@ -365,11 +429,20 @@ patch_yaml() {
       .policies.semantic_enrichment.allowed_attributes = ["gender", "scope"]
     ' "$yaml_file" 2>/dev/null || true
   else
-    grep -q 'data_classification:' "$yaml_file" || \
-      echo -e "\npolicies:\n  data_classification: { input_scan: true, output_scan: true, redact_pii: true }" >> "$yaml_file"
+    # Force redact_pii: true (template defaults to false). Overwrite existing values in place.
+    sed -i.bak \
+      -e 's/input_scan: *false/input_scan: true/' \
+      -e 's/output_scan: *false/output_scan: true/' \
+      -e 's/redact_pii: *false/redact_pii: true/' \
+      "$yaml_file" 2>/dev/null || true
+    # If data_classification section is entirely missing (custom yaml), append it.
+    if ! grep -q 'data_classification:' "$yaml_file" 2>/dev/null; then
+      echo -e "\n  data_classification:\n    input_scan: true\n    output_scan: true\n    redact_pii: true" >> "$yaml_file"
+    fi
+    # Semantic enrichment
     if [[ "$enrichment_enabled" == "true" ]]; then
       if ! grep -q 'semantic_enrichment:' "$yaml_file"; then
-        echo "  semantic_enrichment: { enabled: true, mode: ${enrichment_mode}, allowed_attributes: [gender, scope] }" >> "$yaml_file"
+        echo -e "  semantic_enrichment:\n    enabled: true\n    mode: ${enrichment_mode}\n    allowed_attributes: [gender, scope]" >> "$yaml_file"
       fi
     else
       if grep -q 'semantic_enrichment:' "$yaml_file"; then
@@ -489,6 +562,22 @@ GEN_EOF
   for (( i=0; i<${#PROMPTS[@]}; i++ )); do
     log_plain_to_file "    [$((i+1))] ${PROMPTS[$i]:0:90}..."
   done
+  if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]] && [[ ${#PROMPTS[@]} -gt 0 ]]; then
+    {
+      echo ""
+      echo "=== Phase 0 — generated prompts (full text, ${#PROMPTS[@]} items) ==="
+      echo "Each block below is the exact user prompt sent to Talon for Variant A and Variant B"
+      echo "(same wording for both; redaction/enrichment differs per policy)."
+      for (( i=0; i<${#PROMPTS[@]}; i++ )); do
+        echo ""
+        echo "--- Prompt $((i+1))/${#PROMPTS[@]} (full) ---"
+        printf '%s\n' "${PROMPTS[$i]}"
+        echo "--- end prompt $((i+1)) ---"
+      done
+      echo ""
+    } >> "$SMOKE_CONSOLIDATED_LOG"
+    echo "  (Full prompt texts appended to consolidated log: section \"Phase 0 — generated prompts\".)"
+  fi
   echo ""
 }
 
@@ -596,7 +685,7 @@ ${judge_out:0:8000}"
   fi
 
   local json_part parse_failed=0
-  json_part="$(echo "$judge_out" | grep -o '{.*}' | head -1)" || true
+  json_part="$(extract_first_json_object "$judge_out")" || true
 
   if ! echo "$json_part" | jq -e '.verdict' &>/dev/null 2>&1; then
     parse_failed=1
@@ -727,6 +816,19 @@ main() {
   dir_b="$(setup_variant "B" "true" "enforce")"
   log_to_file "  Data dir: $dir_b"
 
+  # Dump final agent.talon.yaml for both variants (for debugging redaction/enrichment config)
+  if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]]; then
+    {
+      echo ""
+      echo "=== Variant A — agent.talon.yaml (after patching) ==="
+      cat "$dir_a/agent.talon.yaml" 2>/dev/null || echo "(missing)"
+      echo ""
+      echo "=== Variant B — agent.talon.yaml (after patching) ==="
+      cat "$dir_b/agent.talon.yaml" 2>/dev/null || echo "(missing)"
+      echo ""
+    } >> "$SMOKE_CONSOLIDATED_LOG"
+  fi
+
   log_to_file "${CYAN}Setting up Judge directory (PII scanning OFF)...${RESET}"
   local dir_judge
   dir_judge="$(setup_section_dir "pii_quality_judge")"
@@ -783,6 +885,47 @@ main() {
       record_fail "response_b_empty_prompt_$((i+1))"
     fi
   done
+
+  # --- Sanity check: verify PII redaction is working ---
+  # If responses still contain the original PII verbatim, redaction is broken and the
+  # A/B comparison is meaningless (both received identical unredacted prompts).
+  local redaction_ok=0 redaction_warn=0
+  for (( i=0; i<actual_count; i++ )); do
+    local prompt="${PROMPTS[$i]}"
+    # Extract names after gendered titles (Mr./Mrs./Ms./Frau/Herr/Dr.)
+    local name_tokens
+    name_tokens="$(echo "$prompt" | grep -oE '(Mr\.|Mrs\.|Ms\.|Frau|Herr|Dr\.)\s+[A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜÝ][a-zàáâãäåæçèéêëìíîïñòóôõöùúûüý]+' | head -3)" || true
+    if [[ -z "$name_tokens" ]]; then
+      continue
+    fi
+    local leaked=0
+    while IFS= read -r token; do
+      local surname
+      surname="$(echo "$token" | awk '{print $NF}')"
+      [[ -z "$surname" ]] && continue
+      if echo "${responses_a[$i]}" | grep -q "$surname" 2>/dev/null; then
+        ((leaked++)) || true
+      fi
+    done <<< "$name_tokens"
+    if [[ "$leaked" -gt 0 ]]; then
+      ((redaction_warn++)) || true
+    else
+      ((redaction_ok++)) || true
+    fi
+  done
+
+  if [[ "$redaction_warn" -gt 0 ]]; then
+    echo ""
+    echo "  ⚠  PII leak check: $redaction_warn/$actual_count responses still contain original names."
+    echo "     This means output redaction (redact_pii: true) may not be working."
+    echo "     The A/B comparison quality may be driven by temperature randomness, not enrichment."
+    log_warn "PII leak check: $redaction_warn/$actual_count responses contain original names (redaction may be off)" \
+      "If both variants show unredacted PII, the test is comparing noise. Check agent.talon.yaml in the consolidated log."
+  else
+    echo ""
+    echo "  ✓  PII leak check: 0/$actual_count responses leaked original names (redaction is working)."
+  fi
+  echo ""
 
   # --- Phase 2: LLM-as-Judge ---
   CURRENT_SECTION="03_judge"
@@ -904,15 +1047,34 @@ main() {
   echo "  References: arxiv.org/abs/2506.05979 | openreview.net/pdf?id=wf73W2xatC | arxiv.org/abs/2306.05685"
   echo ""
 
-  # Dump full judge JSON to consolidated log for post-mortem
+  # Per-prompt A vs B for human review (interpretation guide + full prompt + both outputs + judge)
   {
     echo ""
-    echo "=== Full Judge Results (JSON per prompt) ==="
+    echo "=== Per-prompt comparison: Variant A (basic redaction) vs Variant B (semantic enrichment) ==="
+    echo ""
+    echo "How to read this file:"
+    echo "  • Variant A — PII redaction only (semantic_enrichment disabled). Placeholders like [PERSON], [EMAIL]."
+    echo "  • Variant B — Same redaction path plus semantic enrichment (e.g. gender/scope on placeholders, policy permitting)."
+    echo "  • \"Response A\" / \"Response B\" below are the model outputs for those two Talon configs (same original prompt)."
+    echo "  • Judge scores a_* vs b_* always mean Variant A vs Variant B (order shown to the judge may be swapped; position_swapped in JSON)."
+    echo "  • Full user prompts are also listed above under \"Phase 0 — generated prompts (full text)\"."
+    echo ""
     for (( i=0; i<actual_count; i++ )); do
-      echo "--- Prompt $((i+1)): ${PROMPTS[$i]:0:80}... ---"
-      echo "Response A (${#responses_a[$i]} chars): ${responses_a[$i]:0:2500}..."
-      echo "Response B (${#responses_b[$i]} chars): ${responses_b[$i]:0:2500}..."
-      echo "Judge JSON: ${judge_results[$i]}"
+      echo "######################################################################"
+      echo "### Prompt $((i+1))/${actual_count}"
+      echo "######################################################################"
+      echo ""
+      echo "--- Original prompt (full, same for both variants) ---"
+      printf '%s\n' "${PROMPTS[$i]}"
+      echo ""
+      echo "--- Variant A output — basic redaction only (${#responses_a[$i]} chars) ---"
+      pii_emit_body_for_log "${responses_a[$i]}"
+      echo ""
+      echo "--- Variant B output — semantic enrichment ON (${#responses_b[$i]} chars) ---"
+      pii_emit_body_for_log "${responses_b[$i]}"
+      echo ""
+      echo "--- LLM judge (scores: a_* = Variant A, b_* = Variant B) ---"
+      echo "${judge_results[$i]}" | jq . 2>/dev/null || echo "${judge_results[$i]}"
       echo ""
     done
   } >> "$SMOKE_CONSOLIDATED_LOG"
@@ -928,8 +1090,11 @@ main() {
 
   # Aggregate counts from file (matching smoke_test.sh pattern)
   local final_pass final_fail
-  final_pass="$(grep -c '^P$' "$SMOKE_COUNTS_FILE" 2>/dev/null || echo 0)"
-  final_fail="$(grep -c '^F$' "$SMOKE_COUNTS_FILE" 2>/dev/null || echo 0)"
+  # grep -c emits 0 but exits 1 when count is zero; "|| echo 0" would yield "0\n0".
+  final_pass="$(grep -c '^P$' "$SMOKE_COUNTS_FILE" 2>/dev/null || true)"
+  final_fail="$(grep -c '^F$' "$SMOKE_COUNTS_FILE" 2>/dev/null || true)"
+  final_pass="${final_pass:-0}"
+  final_fail="${final_fail:-0}"
 
   echo "  Pass: ${final_pass}  Fail: ${final_fail}"
   echo "  Consolidated log: $SMOKE_CONSOLIDATED_LOG"
