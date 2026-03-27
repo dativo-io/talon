@@ -552,9 +552,17 @@ Good examples (mix these categories across prompts):
 - "Should the Munich office follow city-level or federal-level waste regulations?"
   (needs location scope — basic placeholder [LOCATION] loses city vs country)
 
+IMPORTANT RULES for realistic PII values:
+- IBANs MUST be real, valid IBANs that pass MOD-97 checksum (use well-known test IBANs):
+  DE89370400440532013000, FR7630006000011234567890189, GB29NWBK60161331926819,
+  ES9121000418450200051332, IT60X0542811101000000123456, NL91ABNA0417164300,
+  PL61109010140000071219812874, AT611904300234573201, BE68539007547034
+- Phone numbers MUST use E.164 format with spaces: "+49 30 1234567", "+33 1 40 20 30 40"
+- Emails MUST use real domains (gmail.com, yahoo.com for free; company-name.eu for corporate)
+
 Requirements for EVERY prompt:
 - Contains at least one EU person name WITH gendered title (Mr., Mrs., Frau, Herr)
-- Contains at least one of: IBAN, phone with country prefix, email, or EU city/region
+- Contains at least one of: valid IBAN, phone with +country prefix, email, or EU city/region
 - The question MUST REQUIRE knowing the semantic attribute to answer correctly
 - If all attributes are stripped, the AI should struggle or refuse to answer
 - Mix categories: ~40% gender, ~20% IBAN/phone country, ~20% email type, ~20% location scope
@@ -577,7 +585,7 @@ GEN_EOF
     echo "  -  First attempt failed to parse; retrying with simpler instruction..."
     log_parse_failure "Phase 0 first LLM output (parse failed)" "$raw_output"
     raw_output="$(run_talon_in "$gen_dir" run \
-      "Generate ${count} one-sentence prompts as a JSON array. Each must contain a European person name with Mr/Mrs title AND one of: an IBAN starting with a country code, a phone with +country prefix, or an email. The prompt must ask a question requiring knowledge of gender, country, or email type to answer. Reply ONLY with a JSON array of strings." \
+      "Generate ${count} one-sentence prompts as a JSON array. Each must contain a European person name with Mr/Mrs title AND one of: a valid IBAN (use DE89370400440532013000 or FR7630006000011234567890189), a phone like +49 30 1234567, or an email. The prompt must ask a question requiring gender, country code, or email type to answer. Reply ONLY with a JSON array of strings." \
       2>&1)" || true
     json_array="$(extract_prompt_json_array "$raw_output")" || true
   fi

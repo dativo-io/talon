@@ -74,6 +74,56 @@ func TestBug1c_ValidE164PhoneIsDetected(t *testing.T) {
 	assert.True(t, found, "BUG-1c: phone entity must be present for E.164 number")
 }
 
+// BUG-1d: European phone numbers commonly use spaces or dashes between groups
+// (e.g. "+49 30 1234567", "+44 20 7946 0958", "+48-22-123-45-67").
+// The original E.164 regex required contiguous digits, missing these formats.
+func TestBug1d_SpacedPhoneNumberIsDetected(t *testing.T) {
+	scanner := MustNewScanner()
+	ctx := context.Background()
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"DE with spaces", "Contact from +49 30 1234567 called us"},
+		{"UK with spaces", "Reach us at +44 20 7946 0958 for info"},
+		{"FR with spaces", "Customer from +33 1 40 20 30 40 asked"},
+		{"PL with dashes", "Call back +48-22-123-45-67 please"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := scanner.Scan(ctx, tt.input)
+			assert.True(t, result.HasPII, "phone with separators must be detected")
+			found := false
+			for _, e := range result.Entities {
+				if e.Type == "phone" {
+					found = true
+				}
+			}
+			assert.True(t, found, "phone entity must be present")
+		})
+	}
+}
+
+// BUG-1e: The spaced phone pattern must NOT create false positives on
+// standalone "+N" fragments that appear in regular text.
+func TestBug1e_SpacedPhoneNoFalsePositiveOnShortPrefix(t *testing.T) {
+	scanner := MustNewScanner()
+	ctx := context.Background()
+
+	texts := []string{
+		"Revenue grew +15 percent this quarter",
+		"Temperature is +2 degrees above normal",
+	}
+	for _, text := range texts {
+		result := scanner.Scan(ctx, text)
+		for _, e := range result.Entities {
+			assert.NotEqual(t, "phone", e.Type,
+				"BUG-1e: %q must not match phone, got: %+v", text, e)
+		}
+	}
+}
+
 // BUG-2: IBAN regex `\b[A-Z]{2}\d{2}[A-Z0-9]{1,30}\b` matches VAT IDs.
 // DE123456789 (11 chars) is a German VAT ID, not an IBAN.
 // German IBANs are exactly 22 chars. Without length + MOD-97 validation,
