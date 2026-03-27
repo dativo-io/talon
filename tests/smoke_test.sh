@@ -2739,7 +2739,7 @@ test_section_26_pii_enrichment() {
     yq -i '.policies.semantic_enrichment.enabled = true | .policies.semantic_enrichment.mode = "enforce" | .policies.semantic_enrichment.allowed_attributes = ["gender", "scope"]' "$dir/agent.talon.yaml" 2>/dev/null || true
   else
     grep -q 'semantic_enrichment:' "$dir/agent.talon.yaml" || \
-      sed -i.bak '/data_classification:/a\  semantic_enrichment: { enabled: true, mode: enforce, allowed_attributes: [gender, scope] }' "$dir/agent.talon.yaml" 2>/dev/null || true
+      sed -i.bak '/^  model_routing:/i\  semantic_enrichment: { enabled: true, mode: enforce, allowed_attributes: [gender, scope] }' "$dir/agent.talon.yaml" 2>/dev/null || true
   fi
 
   for i in 0 1 2 3 4; do

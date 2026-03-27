@@ -445,10 +445,10 @@ patch_yaml() {
     if ! grep -q 'data_classification:' "$yaml_file" 2>/dev/null; then
       echo -e "\n  data_classification:\n    input_scan: true\n    output_scan: true\n    redact_pii: true\n    redact_input: true\n    redact_output: true" >> "$yaml_file"
     fi
-    # Semantic enrichment — insert after data_classification so it stays under policies:
+    # Semantic enrichment — insert before model_routing (sibling of data_classification under policies:)
     if [[ "$enrichment_enabled" == "true" ]]; then
       if ! grep -q 'semantic_enrichment:' "$yaml_file"; then
-        sed -i.bak '/data_classification:/a\  semantic_enrichment:\n    enabled: true\n    mode: '"${enrichment_mode}"'\n    allowed_attributes: [gender, scope]' "$yaml_file" 2>/dev/null || true
+        sed -i.bak '/^  model_routing:/i\  semantic_enrichment:\n    enabled: true\n    mode: '"${enrichment_mode}"'\n    allowed_attributes: [gender, scope]' "$yaml_file" 2>/dev/null || true
       fi
     else
       if grep -q 'semantic_enrichment:' "$yaml_file"; then
