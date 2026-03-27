@@ -379,6 +379,12 @@ type AuditConfig struct {
 	IncludePrompts   bool   `yaml:"include_prompts,omitempty" json:"include_prompts,omitempty"`
 	IncludeResponses bool   `yaml:"include_responses,omitempty" json:"include_responses,omitempty"`
 	ObservationOnly  bool   `yaml:"observation_only,omitempty" json:"observation_only,omitempty"` // If true, never deny; record would-have-denied in evidence
+	// IncludeOriginalPrompts controls whether the prompt version store persists the
+	// original (pre-redaction) prompt text.  Default false: when input PII redaction
+	// is active, the redacted prompt is stored instead — aligning with GDPR Art. 5(1)(c)
+	// data minimization.  Set to true only when forensic reconstruction of original
+	// input is required (e.g. internal audit under legal hold).
+	IncludeOriginalPrompts bool `yaml:"include_original_prompts,omitempty" json:"include_original_prompts,omitempty"`
 }
 
 // PlanReviewConfig configures when execution plans require human review (EU AI Act Art. 14).

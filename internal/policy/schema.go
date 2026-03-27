@@ -299,7 +299,8 @@ const schemaV2 = `{
         "retention_days": {"type": "integer", "minimum": 1},
         "include_prompts": {"type": "boolean"},
         "include_responses": {"type": "boolean"},
-        "observation_only": {"type": "boolean"}
+        "observation_only": {"type": "boolean"},
+        "include_original_prompts": {"type": "boolean"}
       }
     },
     "compliance": {

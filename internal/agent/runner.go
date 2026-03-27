@@ -496,11 +496,8 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			runClassifier = s
 		}
 	}
-	if r.promptStore != nil && pol.Audit != nil && pol.Audit.IncludePrompts {
-		if _, err := r.promptStore.SaveIfNew(ctx, req.TenantID, req.AgentName, req.Prompt); err != nil {
-			log.Warn().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("prompt_version_store_failed")
-		}
-	}
+	// Prompt version store is populated after input redaction (see below)
+	// so the stored text reflects what the LLM actually received (GDPR Art. 5(1)(c) data minimization).
 
 	// Step 2: Classify input
 	inputClass := runClassifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), req.Prompt)
@@ -832,6 +829,24 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		span.SetAttributes(attribute.Bool("classification.input_pii_redacted", true))
 	}
 
+	// Prompt version store: save AFTER redaction so the stored text reflects what the LLM
+	// received (GDPR Art. 5(1)(c) data minimization).  When include_original_prompts is
+	// explicitly set, also persist the pre-redaction original for forensic use.
+	if r.promptStore != nil && pol.Audit != nil && pol.Audit.IncludePrompts {
+		promptToStore := finalPrompt
+		if !inputPIIRedacted {
+			promptToStore = req.Prompt
+		}
+		if _, err := r.promptStore.SaveIfNew(ctx, req.TenantID, req.AgentName, promptToStore); err != nil {
+			log.Warn().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("prompt_version_store_failed")
+		}
+		if inputPIIRedacted && pol.Audit.IncludeOriginalPrompts {
+			if _, err := r.promptStore.SaveIfNew(ctx, req.TenantID, req.AgentName, req.Prompt); err != nil {
+				log.Warn().Err(err).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("prompt_version_store_original_failed")
+			}
+		}
+	}
+
 	resp, err = r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine, engine,
 		effectiveTier, effectivePIINames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
 		observationOverride, originalDecision, estimatedCost, runClassifier, sandboxToken, inputPIIRedacted)
@@ -1141,6 +1156,10 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	} else if useAgenticLoop {
 		sandboxSystemMsg = []llm.Message{{Role: "system", Content: toolResultInstruction}}
 	}
+	stepInputSummary := ""
+	if pol.Audit != nil && pol.Audit.IncludePrompts {
+		stepInputSummary = evidence.TruncateForSummary(prompt, 500)
+	}
 
 	if useAgenticLoop {
 		messages = make([]llm.Message, 0, len(sandboxSystemMsg)+1)
@@ -1193,6 +1212,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
 				CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 				StepIndex: stepIndex, Type: "llm_call",
+				InputSummary:  stepInputSummary,
 				OutputSummary: evidence.TruncateForSummary(resp.Content, 500),
 				DurationMS:    iterDuration, Cost: iterCost,
 			})
@@ -1333,6 +1353,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			Temperature: 0.7,
 			MaxTokens:   2000,
 		}
+		singleStart := time.Now()
 		resp, err := provider.Generate(ctx, llmReq)
 		if err != nil {
 			span.RecordError(err)
@@ -1350,12 +1371,20 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			return nil, fmt.Errorf("calling LLM: %w", err)
 		}
 		llmResp = resp
+		singleDuration := time.Since(singleStart).Milliseconds()
 		cost = provider.EstimateCost(model, resp.InputTokens, resp.OutputTokens)
 		totalInputTokens = resp.InputTokens
 		totalOutputTokens = resp.OutputTokens
 		llm.RecordCostMetrics(ctx, cost, req.AgentName, model, degraded)
 		_, _ = r.fireHook(ctx, HookPostLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 			"model": model, "cost_estimate": cost, "input_tokens": resp.InputTokens, "output_tokens": resp.OutputTokens,
+		})
+		_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
+			CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+			StepIndex: 0, Type: "llm_call",
+			InputSummary:  stepInputSummary,
+			OutputSummary: evidence.TruncateForSummary(resp.Content, 500),
+			DurationMS:    singleDuration, Cost: cost,
 		})
 		// Store in semantic cache when allowed (PII-scrubbed response)
 		if cacheAllowStore && r.cacheStore != nil && r.cacheScrubber != nil && r.cacheEmbedder != nil && r.cacheConfig != nil {

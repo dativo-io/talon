@@ -416,6 +416,7 @@ check_prereqs() {
   fi
   command -v yq &>/dev/null && HAS_YQ=1 || echo "  Note: yq not found; falling back to sed for YAML patching."
   command -v python3 &>/dev/null || echo "  Note: python3 not found; JSON prompt extraction may fail on multiline LLM output (install python3)."
+  command -v sqlite3 &>/dev/null || echo "  Note: sqlite3 not found; cannot hard-verify actual LLM input from step_evidence."
 
   TALON_DATA_DIR="$(mktemp -d)"
   SMOKE_CREATED_DATA_DIR=1
@@ -437,6 +438,7 @@ patch_yaml() {
       .policies.data_classification.redact_pii = false |
       .policies.data_classification.redact_input = true |
       .policies.data_classification.redact_output = false |
+      .audit.include_prompts = true |
       .policies.semantic_enrichment.enabled = '"$enrichment_enabled"' |
       .policies.semantic_enrichment.mode = "'"$enrichment_mode"'" |
       .policies.semantic_enrichment.allowed_attributes = ["gender", "scope", "country_code", "domain_type"]
@@ -446,6 +448,7 @@ patch_yaml() {
     sed -i.bak \
       -e 's/input_scan: *false/input_scan: true/' \
       -e 's/output_scan: *false/output_scan: true/' \
+      -e 's/include_prompts: *false/include_prompts: true/' \
       "$yaml_file" 2>/dev/null || true
     # Remove commented redact_input/redact_output lines so we can insert active ones
     sed -i.bak '/^[[:space:]]*#.*redact_input:/d; /^[[:space:]]*#.*redact_output:/d' "$yaml_file" 2>/dev/null || true
@@ -732,6 +735,34 @@ ${body:0:8000}"
   printf '%s' "$body"
 }
 
+# Extract evidence id from talon output line: "Evidence stored: req_xxxxxxxx"
+extract_evidence_id() {
+  local output="$1"
+  echo "$output" | sed -n 's/.*Evidence stored:[[:space:]]*\(req_[a-z0-9]\+\).*/\1/p' | head -1
+}
+
+# Read first llm_call input_summary from step_evidence for this evidence id.
+# This is the exact prompt payload captured at LLM call time (post-redaction).
+fetch_llm_input_summary() {
+  local data_dir="$1" evidence_id="$2"
+  local db_path="$data_dir/evidence.db"
+  [[ -n "$evidence_id" ]] || return 0
+  [[ -f "$db_path" ]] || return 0
+  if ! command -v sqlite3 &>/dev/null; then
+    return 0
+  fi
+  sqlite3 "$db_path" "
+SELECT COALESCE(json_extract(se.step_json, '\$.input_summary'), '')
+FROM step_evidence se
+WHERE se.step_type = 'llm_call'
+  AND se.correlation_id = (
+    SELECT correlation_id FROM evidence WHERE id = '$evidence_id' LIMIT 1
+  )
+ORDER BY se.step_index ASC
+LIMIT 1;
+" 2>/dev/null || true
+}
+
 # --- LLM-as-Judge (MT-Bench pairwise style with position-bias mitigation) ---
 #
 # Evaluation criteria (designed for input-redaction A/B testing):
@@ -989,6 +1020,10 @@ main() {
   CURRENT_SECTION="02_collect_responses"
   local -a responses_a=()
   local -a responses_b=()
+  local -a llm_input_a=()
+  local -a llm_input_b=()
+  local -a evidence_id_a=()
+  local -a evidence_id_b=()
 
   echo "=== Phase 1: Collecting responses (${actual_count} prompts x 2 variants) ==="
   echo "  Config: redact_input=true, redact_output=false (raw LLM responses)"
@@ -1000,12 +1035,20 @@ main() {
     local sim_a sim_b
     sim_a="$(simulate_basic_redaction "$prompt")"
     sim_b="$(simulate_enriched_redaction "$prompt")"
-    echo "    A input (basic):    ${sim_a}"
-    echo "    B input (enriched): ${sim_b}"
+    echo "    A input (expected basic):    ${sim_a}"
+    echo "    B input (expected enriched): ${sim_b}"
 
     local resp_a
     resp_a="$(run_prompt "$dir_a" "$prompt" "A")"
     responses_a+=("$resp_a")
+    local ev_a seen_a
+    ev_a="$(extract_evidence_id "$resp_a")"
+    seen_a="$(fetch_llm_input_summary "$dir_a" "$ev_a")"
+    evidence_id_a+=("$ev_a")
+    llm_input_a+=("$seen_a")
+    if [[ -n "$seen_a" ]]; then
+      echo "    A input (actual seen):       ${seen_a}"
+    fi
     if [[ -n "$resp_a" ]] && [[ "$resp_a" != "null" ]]; then
       echo "    A response: ✓ ${#resp_a} chars — ${resp_a:0:120}..."
       record_pass
@@ -1017,6 +1060,14 @@ main() {
     local resp_b
     resp_b="$(run_prompt "$dir_b" "$prompt" "B")"
     responses_b+=("$resp_b")
+    local ev_b seen_b
+    ev_b="$(extract_evidence_id "$resp_b")"
+    seen_b="$(fetch_llm_input_summary "$dir_b" "$ev_b")"
+    evidence_id_b+=("$ev_b")
+    llm_input_b+=("$seen_b")
+    if [[ -n "$seen_b" ]]; then
+      echo "    B input (actual seen):       ${seen_b}"
+    fi
     if [[ -n "$resp_b" ]] && [[ "$resp_b" != "null" ]]; then
       echo "    B response: ✓ ${#resp_b} chars — ${resp_b:0:120}..."
       record_pass
@@ -1027,38 +1078,47 @@ main() {
     echo ""
   done
 
-  # --- Sanity check: verify INPUT redaction is working ---
-  # With redact_output: false, LLM responses are raw. If the LLM response references
-  # placeholder tokens ([PERSON], <PII .../>), input redaction is working. If responses
-  # echo back original names, input redaction failed.
-  local redaction_evidence=0 redaction_no_evidence=0
+  # --- Hard verification: verify actual LLM input from step evidence ---
+  # We inspect step_evidence.input_summary for first llm_call correlated to each run.
+  local verify_ok=0 verify_fail=0 verify_missing=0
   for (( i=0; i<actual_count; i++ )); do
-    local prompt="${PROMPTS[$i]}"
-    local ra="${responses_a[$i]}" rb="${responses_b[$i]}"
-    local a_has_placeholder=0
-    if echo "$ra" | grep -qE '\[PERSON\]|\[LOCATION\]|\[EMAIL\]|\[IBAN\]|\[PHONE\]' 2>/dev/null; then
-      a_has_placeholder=1
+    local seen_a="${llm_input_a[$i]}"
+    local seen_b="${llm_input_b[$i]}"
+    if [[ -z "$seen_a" ]] || [[ -z "$seen_b" ]]; then
+      ((verify_missing++)) || true
+      continue
     fi
-    local b_has_enriched=0
-    if echo "$rb" | grep -qE '<PII |gender="|scope="|country_code="|domain_type="' 2>/dev/null; then
+    local a_has_basic=0 b_has_enriched=0
+    if echo "$seen_a" | grep -qE '\[PERSON\]|\[LOCATION\]|\[EMAIL\]|\[IBAN\]|\[PHONE\]' 2>/dev/null; then
+      a_has_basic=1
+    fi
+    if echo "$seen_b" | grep -qE '<PII |gender="|scope="|country_code="|domain_type="' 2>/dev/null; then
       b_has_enriched=1
     fi
-    if [[ "$a_has_placeholder" -eq 1 ]] || [[ "$b_has_enriched" -eq 1 ]]; then
-      ((redaction_evidence++)) || true
+    if [[ "$a_has_basic" -eq 1 ]] && [[ "$b_has_enriched" -eq 1 ]]; then
+      ((verify_ok++)) || true
     else
-      ((redaction_no_evidence++)) || true
+      ((verify_fail++)) || true
+      log_warn "Input redaction verification failed for prompt $((i+1))" \
+        "A_seen=${seen_a}
+B_seen=${seen_b}"
     fi
   done
 
   echo ""
-  if [[ "$redaction_evidence" -gt 0 ]]; then
-    echo "  ✓  Input redaction check: $redaction_evidence/$actual_count responses reference placeholder tokens."
+  if [[ "$verify_ok" -gt 0 ]]; then
+    echo "  ✓  Input redaction verified via evidence: $verify_ok/$actual_count prompts."
   fi
-  if [[ "$redaction_no_evidence" -gt 0 ]]; then
-    echo "  ⚠  Input redaction check: $redaction_no_evidence/$actual_count responses show no placeholder tokens."
-    echo "     The LLM may have paraphrased away the placeholders, or input redaction is not active."
-    log_warn "Input redaction check: $redaction_no_evidence/$actual_count responses lack placeholder references" \
-      "This is expected if LLM paraphrased, but worth checking agent.talon.yaml"
+  if [[ "$verify_missing" -gt 0 ]]; then
+    echo "  ⚠  Could not verify $verify_missing/$actual_count prompts (missing sqlite3 or step evidence input_summary)."
+    log_warn "Input redaction verification incomplete: missing step evidence input_summary" \
+      "Ensure sqlite3 is installed and audit.include_prompts=true."
+  fi
+  if [[ "$verify_fail" -gt 0 ]]; then
+    echo "  ✗  Input redaction verification FAILED for $verify_fail/$actual_count prompts."
+    record_fail "input_redaction_verification_failed_${verify_fail}_of_${actual_count}"
+  else
+    echo "  ✓  Input redaction verification passed."
   fi
   echo ""
 
@@ -1189,15 +1249,24 @@ main() {
     echo ""
     echo "How to read this file:"
     echo "  • Both variants use redact_input=true, redact_output=false (raw LLM responses)"
-    echo "  • Variant A — basic input redaction: LLM sees [PERSON], [LOCATION] (no gender/scope info)"
-    echo "  • Variant B — enriched input redaction: LLM sees <PII type=\"person\" gender=\"male\"/> etc."
-    echo "  • Prompts require gender/scope reasoning; Variant A should struggle, Variant B should succeed"
+    echo "  • Variant A — basic input redaction: LLM sees [PERSON], [LOCATION], [PHONE], [IBAN], [EMAIL]"
+    echo "  • Variant B — enriched input redaction: LLM sees <PII .../> with semantic attributes"
+    echo "  • Inputs below are pulled from step_evidence.input_summary when available (actual captured LLM input)"
+    echo "  • If step_evidence is unavailable, script falls back to simulated expected redaction"
     echo "  • Judge scores a_* vs b_* always mean A vs B (order shown to judge may be swapped)"
     echo ""
     for (( i=0; i<actual_count; i++ )); do
-      local sim_a_log sim_b_log
+      local sim_a_log sim_b_log seen_a_log seen_b_log
       sim_a_log="$(simulate_basic_redaction "${PROMPTS[$i]}")"
       sim_b_log="$(simulate_enriched_redaction "${PROMPTS[$i]}")"
+      seen_a_log="${llm_input_a[$i]}"
+      seen_b_log="${llm_input_b[$i]}"
+      if [[ -z "$seen_a_log" ]]; then
+        seen_a_log="$sim_a_log"
+      fi
+      if [[ -z "$seen_b_log" ]]; then
+        seen_b_log="$sim_b_log"
+      fi
       echo "######################################################################"
       echo "### Prompt $((i+1))/${actual_count}"
       echo "######################################################################"
@@ -1205,11 +1274,11 @@ main() {
       echo "--- Original prompt ---"
       printf '%s\n' "${PROMPTS[$i]}"
       echo ""
-      echo "--- Variant A input (basic, what LLM sees) ---"
-      printf '%s\n' "$sim_a_log"
+      echo "--- Variant A input (captured from evidence, what LLM sees) ---"
+      printf '%s\n' "$seen_a_log"
       echo ""
-      echo "--- Variant B input (enriched, what LLM sees) ---"
-      printf '%s\n' "$sim_b_log"
+      echo "--- Variant B input (captured from evidence, what LLM sees) ---"
+      printf '%s\n' "$seen_b_log"
       echo ""
       echo "--- Variant A response — raw LLM output (${#responses_a[$i]} chars) ---"
       pii_emit_body_for_log "${responses_a[$i]}"

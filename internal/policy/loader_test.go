@@ -835,6 +835,64 @@ policies:
 	assert.True(t, dc.ShouldRedactOutput(), "explicit redact_output: true should be honoured")
 }
 
+func TestLoadPolicy_IncludeOriginalPrompts(t *testing.T) {
+	yamlContent := `
+agent:
+  name: test-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    per_request: 100
+    daily: 1000
+    monthly: 10000
+  model_routing:
+    tier_0:
+      primary: "gpt-4"
+audit:
+  log_level: detailed
+  include_prompts: true
+  include_original_prompts: true
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test-agent.talon.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(yamlContent), 0o644))
+
+	pol, err := LoadPolicy(context.Background(), path, false, dir)
+	require.NoError(t, err)
+	require.NotNil(t, pol.Audit)
+	assert.True(t, pol.Audit.IncludePrompts, "include_prompts should be true")
+	assert.True(t, pol.Audit.IncludeOriginalPrompts, "include_original_prompts should be true")
+}
+
+func TestLoadPolicy_IncludeOriginalPrompts_DefaultFalse(t *testing.T) {
+	yamlContent := `
+agent:
+  name: test-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    per_request: 100
+    daily: 1000
+    monthly: 10000
+  model_routing:
+    tier_0:
+      primary: "gpt-4"
+audit:
+  log_level: detailed
+  include_prompts: true
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test-agent.talon.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(yamlContent), 0o644))
+
+	pol, err := LoadPolicy(context.Background(), path, false, dir)
+	require.NoError(t, err)
+	require.NotNil(t, pol.Audit)
+	assert.True(t, pol.Audit.IncludePrompts)
+	assert.False(t, pol.Audit.IncludeOriginalPrompts,
+		"include_original_prompts should default to false (data minimization)")
+}
+
 // FuzzLoadPolicy runs policy loading on fuzz YAML input to catch panics and edge cases.
 func FuzzLoadPolicy(f *testing.F) {
 	ctx := context.Background()
