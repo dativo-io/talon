@@ -58,7 +58,11 @@ func NewToolApprovalStore(timeout time.Duration) *ToolApprovalStore {
 // RequestApproval creates a pending approval and blocks until approved, denied, or timed out.
 // Returns the final status. The caller should check the status to decide whether to execute.
 func (s *ToolApprovalStore) RequestApproval(ctx context.Context, correlationID, tenantID, agentID, toolName, toolCallID string, args map[string]any) ToolApprovalStatus {
-	reqID := fmt.Sprintf("tappr_%s_%s", correlationID[len(correlationID)-8:], toolCallID)
+	suffix := correlationID
+	if len(suffix) > 8 {
+		suffix = suffix[len(suffix)-8:]
+	}
+	reqID := fmt.Sprintf("tappr_%s_%s", suffix, toolCallID)
 
 	req := &ToolApprovalRequest{
 		ID:            reqID,
@@ -97,8 +101,12 @@ func (s *ToolApprovalStore) RequestApproval(ctx context.Context, correlationID, 
 	}
 
 	s.mu.Lock()
-	req.Status = status
-	req.ResolvedAt = time.Now()
+	if req.Status == ToolApprovalPending {
+		req.Status = status
+		req.ResolvedAt = time.Now()
+	} else {
+		status = req.Status
+	}
 	s.mu.Unlock()
 
 	log.Info().

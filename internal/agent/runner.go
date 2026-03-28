@@ -1000,7 +1000,7 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 	case strings.HasPrefix(reason, "hook_"):
 		status = string(RunStatusDenied)
 		failureReason = string(FailureHookDeny)
-	case strings.HasPrefix(reason, "policy_"):
+	case strings.HasPrefix(reason, "policy_"), strings.HasPrefix(reason, "tenant_lockdown"):
 		status = string(RunStatusDenied)
 		failureReason = string(FailurePolicyDeny)
 	}
@@ -1249,6 +1249,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				requireApproval[t] = true
 			}
 		}
+	agentLoop:
 		for iteration := 1; ; iteration++ {
 			// Pause/resume check: if an operator paused this run, block until resumed or killed.
 			if r.runRegistry != nil && r.runRegistry.IsPaused(correlationID) {
@@ -1262,7 +1263,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						span.AddEvent("run_resumed")
 					case <-ctx.Done():
 						r.setRunState(correlationID, RunStatusTerminated, FailureOperatorKill)
-						break
+						break agentLoop
 					}
 				}
 			}
