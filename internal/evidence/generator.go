@@ -84,6 +84,8 @@ type GenerateParams struct {
 	CacheSimilarity float64 // Similarity score that produced the hit
 	CostSaved       float64 // Estimated cost saved by not calling the LLM
 	PlanReview      *PlanReviewEvent
+	Status          string // Run lifecycle status: queued, running, completed, failed, terminated, blocked, denied
+	FailureReason   string // Structured classification: cost_exceeded, llm_error, policy_deny, operator_kill, etc.
 }
 
 // StepParams holds inputs for creating a step-level evidence record (one LLM call or one tool call within a run).
@@ -229,6 +231,8 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 		CacheSimilarity: params.CacheSimilarity,
 		CostSaved:       params.CostSaved,
 		PlanReview:      params.PlanReview,
+		Status:          params.Status,
+		FailureReason:   params.FailureReason,
 	}
 
 	if err := g.store.Store(ctx, ev); err != nil {
