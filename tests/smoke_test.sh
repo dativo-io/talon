@@ -1818,7 +1818,7 @@ GW23EOF
   if [[ "$rg_redact_code" == "200" ]]; then
     if [[ "$runtime_mock_ready" -eq 1 ]] && [[ -f "$runtime_mock_openai_capture" ]]; then
       local rg_redact_line
-      rg_redact_line="$(rg "$rg_redact_marker" "$runtime_mock_openai_capture" | tail -1 || true)"
+      rg_redact_line="$(grep "$rg_redact_marker" "$runtime_mock_openai_capture" | tail -1 || true)"
       if [[ -n "$rg_redact_line" ]] && echo "$rg_redact_line" | grep -q '\[EMAIL\]' && echo "$rg_redact_line" | grep -q '\[IBAN\]' && ! echo "$rg_redact_line" | grep -q "@example.com"; then
         runtime_redact_ok=true
         echo "  ✓  runtime governance REDACT: upstream saw redacted payload ([EMAIL]/[IBAN])"
