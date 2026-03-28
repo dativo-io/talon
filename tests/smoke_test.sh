@@ -403,6 +403,19 @@ wait_port_free() {
   return 0
 }
 
+# Pick an available local TCP port from a bounded range.
+# Returns the selected port on stdout.
+pick_free_port() {
+  local start="${1:-19090}" end="${2:-19990}" p
+  for p in $(seq "$start" "$end"); do
+    if ! is_port_in_use "$p"; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # -----------------------------------------------------------------------------
 # SECTION 01 — Binary and Version (docs/QUICKSTART.md, docs/README.md)
 # -----------------------------------------------------------------------------
@@ -1444,9 +1457,171 @@ cache:
 CACHEEOF
     fi
   fi
+  local runtime_mock_openai_capture="$dir/runtime_governance_upstream_openai.ndjson"
+  local runtime_mock_ollama_capture="$dir/runtime_governance_upstream_ollama.ndjson"
+  local runtime_mock_src="$dir/runtime_governance_mock_provider.go"
+  local mock_pid=""
+  local mock_log_file="$dir/runtime_governance_mock_provider.log"
+  local runtime_mock_ready=0
+  local runtime_mock_port
+  runtime_mock_port="$(pick_free_port 19090 19990 || true)"
+  if [[ -z "$runtime_mock_port" ]]; then
+    runtime_mock_port="9090"
+  fi
+  local gateway_cfg_file="$dir/talon.gateway.section23.yaml"
+  cat > "$runtime_mock_src" <<'RGMSRCEOF'
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"io"
+	"net/http"
+	"os"
+)
+
+func appendLine(path string, body []byte) {
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(body, '\n'))
+}
+
+func handleOpenAI(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	appendLine(os.Getenv("RUNTIME_MOCK_OPENAI_CAPTURE"), body)
+	model := "gpt-4o-mini"
+	var req struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &req)
+	if req.Model != "" {
+		model = req.Model
+	}
+	resp := map[string]interface{}{
+		"id":      "chatcmpl-runtime-mock",
+		"object":  "chat.completion",
+		"created": 1710000000,
+		"model":   model,
+		"choices": []map[string]interface{}{
+			{
+				"index": 0,
+				"message": map[string]interface{}{
+					"role":    "assistant",
+					"content": "RUNTIME_MOCK_OK",
+				},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]int{
+			"prompt_tokens":     20,
+			"completion_tokens": 5,
+			"total_tokens":      25,
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func handleOllama(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	appendLine(os.Getenv("RUNTIME_MOCK_OLLAMA_CAPTURE"), body)
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"message":{"content":"RUNTIME_ROUTE_OK"}}`))
+}
+
+func main() {
+	port := flag.String("port", "9090", "listen port")
+	flag.Parse()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.HandleFunc("/v1/chat/completions", handleOpenAI)
+	mux.HandleFunc("/api/chat", handleOllama)
+	_ = http.ListenAndServe(":"+*port, mux)
+}
+RGMSRCEOF
+  if wait_port_free "$runtime_mock_port" 20 1; then
+    env GOTOOLCHAIN=local \
+      RUNTIME_MOCK_OPENAI_CAPTURE="$runtime_mock_openai_capture" \
+      RUNTIME_MOCK_OLLAMA_CAPTURE="$runtime_mock_ollama_capture" \
+      go run "$runtime_mock_src" -port "$runtime_mock_port" >"$mock_log_file" 2>&1 &
+    mock_pid=$!
+    if smoke_wait_health "http://127.0.0.1:${runtime_mock_port}" 30 1; then
+      runtime_mock_ready=1
+    else
+      log_failure "runtime matrix mock provider failed to start on ${runtime_mock_port}" "falling back to real upstream"
+      dump_diag_file "runtime governance mock provider log" "$mock_log_file" 80
+      kill "$mock_pid" 2>/dev/null || true
+      wait "$mock_pid" 2>/dev/null || true
+      mock_pid=""
+    fi
+  else
+    log_failure "runtime matrix mock provider cannot acquire port ${runtime_mock_port}" "falling back to real upstream"
+  fi
+  local gw_openai_base_url="https://api.openai.com"
+  local gw_ollama_base_url="http://127.0.0.1:11434"
+  if [[ "$runtime_mock_ready" -eq 1 ]]; then
+    gw_openai_base_url="http://127.0.0.1:${runtime_mock_port}"
+    gw_ollama_base_url="http://127.0.0.1:${runtime_mock_port}"
+  fi
+  cat > "$gateway_cfg_file" <<GW23EOF
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "enforce"
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "$gw_openai_base_url"
+    ollama:
+      enabled: true
+      base_url: "$gw_ollama_base_url"
+  callers:
+    - name: "metrics-caller"
+      tenant_key: "talon-gw-metrics-001"
+      tenant_id: "default"
+      allowed_providers: ["openai"]
+    - name: "pii-block-caller"
+      tenant_key: "talon-gw-pii-block-001"
+      tenant_id: "default"
+      allowed_providers: ["openai"]
+      policy_overrides:
+        pii_action: "block"
+    - name: "tool-filter-caller"
+      tenant_key: "talon-gw-tool-filter-001"
+      tenant_id: "default"
+      allowed_providers: ["openai"]
+      policy_overrides:
+        forbidden_tools: ["exec_cmd"]
+        tool_policy_action: "filter"
+    - name: "redact-caller"
+      tenant_key: "talon-gw-redact-001"
+      tenant_id: "default"
+      allowed_providers: ["openai"]
+    - name: "route-caller"
+      tenant_key: "talon-gw-route-001"
+      tenant_id: "default"
+      allowed_providers: ["openai","ollama"]
+  default_policy:
+    default_pii_action: "redact"
+    forbidden_tools: ["delete_*"]
+    tool_policy_action: "block"
+    max_daily_cost: 100.00
+    max_monthly_cost: 500.00
+    require_caller_id: true
+GW23EOF
   local GW_PID=""
   local gw_log_file="$dir/dashboard_gateway_serve.log"
-  run_talon serve --port "$dashboard_port" --gateway --gateway-config "$dir/talon.config.yaml" >"$gw_log_file" 2>&1 &
+  run_talon serve --port "$dashboard_port" --gateway --gateway-config "$gateway_cfg_file" >"$gw_log_file" 2>&1 &
   GW_PID=$!
   if ! smoke_wait_health "$dashboard_base_url" 45 1; then
     local gw_pid_state="running"
@@ -1466,6 +1641,10 @@ CACHEEOF
     fi
     kill "$GW_PID" 2>/dev/null || true
     wait "$GW_PID" 2>/dev/null || true
+    if [[ -n "$mock_pid" ]]; then
+      kill "$mock_pid" 2>/dev/null || true
+      wait "$mock_pid" 2>/dev/null || true
+    fi
     cd "$REPO_ROOT" || true
     return 0
   fi
@@ -1547,6 +1726,10 @@ CACHEEOF
     log_failure "gateway routes not registered for dashboard metrics section" "proxy=${dashboard_base_url}${SMOKE_PATH_GW_PROXY} got=404"
     kill "$GW_PID" 2>/dev/null || true
     wait "$GW_PID" 2>/dev/null || true
+    if [[ -n "$mock_pid" ]]; then
+      kill "$mock_pid" 2>/dev/null || true
+      wait "$mock_pid" 2>/dev/null || true
+    fi
     cd "$REPO_ROOT" || true
     return 0
   fi
@@ -1597,6 +1780,234 @@ CACHEEOF
     echo "  -  Tool filter config: got 400 (gateway may reject invalid tool payload or filter path returns 400)"
   else
     log_failure "Tool filter config: expected 200 for tool-filter-caller with read_file+exec_cmd" "got HTTP $tool_filter_code"
+  fi
+
+  # --- 23.2c: Runtime governance decision matrix (ALLOW / BLOCK / REDACT / ROUTE) ---
+  # This matrix must prove per-request runtime decisions, not only static config or post-factum logging.
+  local runtime_allow_ok=false runtime_block_ok=false runtime_redact_ok=false runtime_route_ok=false
+  local matrix_snap_before; matrix_snap_before="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
+  local matrix_before_total matrix_before_denied matrix_before_redactions matrix_before_detections
+  matrix_before_total="$(jq '.summary.total_requests' <<< "$matrix_snap_before")"
+  matrix_before_denied="$(jq '.summary.total_denied' <<< "$matrix_snap_before")"
+  matrix_before_redactions="$(jq '.summary.pii_redactions' <<< "$matrix_snap_before")"
+  matrix_before_detections="$(jq '.summary.pii_detections' <<< "$matrix_snap_before")"
+
+  # ALLOW: benign request is permitted and counted as successful runtime execution.
+  local rg_allow_code; rg_allow_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer $gw_key" "$SMOKE_BODY_RUNTIME_ALLOW")"
+  if [[ "$rg_allow_code" == "200" ]]; then
+    runtime_allow_ok=true
+    echo "  ✓  runtime governance ALLOW: benign gateway request returned 200"
+    record_pass
+  else
+    log_failure "runtime governance ALLOW: expected 200 for benign request" "got HTTP $rg_allow_code"
+  fi
+
+  # BLOCK: violating request denied in gateway runtime path before normal execution.
+  local rg_block_code; rg_block_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-pii-block-001" "$SMOKE_BODY_PII")"
+  if [[ "$rg_block_code" == "400" ]]; then
+    runtime_block_ok=true
+    echo "  ✓  runtime governance BLOCK: PII policy denied request at gateway runtime path"
+    record_pass
+  else
+    log_failure "runtime governance BLOCK: expected 400 for PII block caller" "got HTTP $rg_block_code"
+  fi
+
+  # REDACT: prove redaction happened at runtime (downstream payload transformed, not only detected).
+  local rg_redact_marker="RGM$RANDOM"
+  local rg_redact_code; rg_redact_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-redact-001" "$(smoke_body_runtime_redact "$rg_redact_marker")")"
+  if [[ "$rg_redact_code" == "200" ]]; then
+    if [[ "$runtime_mock_ready" -eq 1 ]] && [[ -f "$runtime_mock_openai_capture" ]]; then
+      local rg_redact_line
+      rg_redact_line="$(rg "$rg_redact_marker" "$runtime_mock_openai_capture" | tail -1 || true)"
+      if [[ -n "$rg_redact_line" ]] && echo "$rg_redact_line" | grep -q '\[EMAIL\]' && echo "$rg_redact_line" | grep -q '\[IBAN\]' && ! echo "$rg_redact_line" | grep -q "@example.com"; then
+        runtime_redact_ok=true
+        echo "  ✓  runtime governance REDACT: upstream saw redacted payload ([EMAIL]/[IBAN])"
+        record_pass
+      else
+        log_failure "runtime governance REDACT: expected transformed payload in upstream capture" "marker=$rg_redact_marker line=${rg_redact_line:0:320}"
+      fi
+    else
+      # Fallback proof when downstream capture is unavailable:
+      # redaction counters must increase on an allowed runtime request.
+      local matrix_snap_redact matrix_after_redact matrix_after_detect
+      matrix_snap_redact="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
+      matrix_after_redact="$(jq '.summary.pii_redactions' <<< "$matrix_snap_redact")"
+      matrix_after_detect="$(jq '.summary.pii_detections' <<< "$matrix_snap_redact")"
+      local matrix_ev_redact
+      matrix_ev_redact="$(curl -s -H "X-Talon-Admin-Key: $admin_key" "${dashboard_base_url}/v1/evidence?limit=40&agent_id=redact-caller")"
+      local matrix_redact_ev_id
+      matrix_redact_ev_id="$(jq -r '.entries[]? | select(.allowed == true) | .id' <<< "$matrix_ev_redact" | head -1)"
+      if [[ -n "$matrix_redact_ev_id" ]] && [[ "$matrix_after_redact" -gt "$matrix_before_redactions" ]] 2>/dev/null && [[ "$matrix_after_detect" -gt "$matrix_before_detections" ]] 2>/dev/null; then
+        runtime_redact_ok=true
+        echo "  ✓  runtime governance REDACT: allowed request increased pii_redactions at runtime"
+        record_pass
+      else
+        log_failure "runtime governance REDACT: expected allowed redact evidence plus pii_redactions increase" \
+          "evidence_id=${matrix_redact_ev_id:-none} redactions ${matrix_before_redactions}->${matrix_after_redact:-null} detections ${matrix_before_detections}->${matrix_after_detect:-null}"
+      fi
+    fi
+  else
+    log_failure "runtime governance REDACT: expected 200 for redact policy path" "got HTTP $rg_redact_code"
+  fi
+
+  # ROUTE: prove policy-driven provider routing decision from runtime evidence.
+  # CLI path is used here because it persists routing_decision (selected provider + rejected candidates) in evidence.
+  local route_policy_file="$dir/runtime_governance_route.talon.yaml"
+  cat > "$route_policy_file" <<'ROUTEEOF'
+agent:
+  name: runtime-route-agent
+  description: Runtime governance routing smoke proof
+  version: 1.0.0
+  model_tier: 1
+policies:
+  cost_limits:
+    per_request: 5.0
+    daily: 100.0
+    monthly: 500.0
+  resource_limits:
+    timeout:
+      operation: "60s"
+      tool_execution: "5m"
+      agent_total: "30m"
+  data_classification:
+    input_scan: true
+    output_scan: true
+    redact_pii: true
+  model_routing:
+    tier_0:
+      primary: gpt-4o-mini
+      location: any
+    tier_1:
+      primary: gpt-4o-mini
+      fallback: gpt-4o-mini
+      location: eu-west-1
+    tier_2:
+      primary: gpt-4o-mini
+      fallback: llama3.1:70b
+      location: eu-west-1
+      bedrock_only: false
+audit:
+  log_level: detailed
+  retention_days: 30
+  include_prompts: false
+  include_responses: false
+compliance:
+  frameworks: [gdpr, eu-ai-act]
+  data_residency: eu
+metadata:
+  department: engineering
+  owner: smoke
+  tags: [runtime, governance, routing]
+ROUTEEOF
+  local route_cfg_file="$dir/runtime_governance_route.config.yaml"
+  local route_ollama_base_url="http://127.0.0.1:11434"
+  if [[ "$runtime_mock_ready" -eq 1 ]]; then
+    route_ollama_base_url="http://127.0.0.1:${runtime_mock_port}"
+  fi
+  cat > "$route_cfg_file" <<ROUTECFGEOF
+llm:
+  routing:
+    data_sovereignty_mode: "eu_strict"
+ollama_base_url: "$route_ollama_base_url"
+ROUTECFGEOF
+  local rg_route_out=""
+  if run_talon run --config "$route_cfg_file" --policy "$route_policy_file" "Runtime governance ROUTE proof prompt with IBAN DE89370400440532013000" >/tmp/runtime_route_out.txt 2>&1; then
+    rg_route_out="$(cat /tmp/runtime_route_out.txt 2>/dev/null || true)"
+  else
+    rg_route_out="$(cat /tmp/runtime_route_out.txt 2>/dev/null || true)"
+  fi
+  local route_ev_id route_export_json
+  route_export_json="$(run_talon audit export --format json --from 2020-01-01 --to 2099-12-31 2>/dev/null)"
+  route_ev_id="$(jq -r '[.records[]? | select(.agent_id == "runtime-route-agent")] | sort_by(.timestamp) | reverse | .[0].id // empty' <<< "$route_export_json" 2>/dev/null)"
+  if [[ -n "$route_ev_id" ]]; then
+    local route_ev
+    route_ev="$(sqlite3 "$TALON_DATA_DIR/evidence.db" "SELECT evidence_json FROM evidence WHERE id='${route_ev_id}' LIMIT 1;" 2>/dev/null || true)"
+    if [[ -z "$route_ev" ]]; then
+      local route_ev_try=0
+      while [[ "$route_ev_try" -lt 10 ]]; do
+        route_ev="$(curl -s -H "X-Talon-Admin-Key: $admin_key" "${dashboard_base_url}/v1/evidence/${route_ev_id}?tenant_id=default")"
+        if echo "$route_ev" | jq -e --arg id "$route_ev_id" '.id == $id' >/dev/null 2>&1; then
+          break
+        fi
+        sleep 1
+        ((route_ev_try++))
+      done
+    fi
+    if echo "$route_ev" | jq -e '
+      .routing_decision != null
+      and .routing_decision.selected_provider == "ollama"
+      and (.routing_decision.rejected_candidates | type == "array")
+      and ([.routing_decision.rejected_candidates[]? | select(.provider_id == "openai")] | length >= 1)
+      and .classification.input_tier == 2
+    ' >/dev/null 2>&1; then
+      runtime_route_ok=true
+      echo "  ✓  runtime governance ROUTE: evidence shows policy-driven routing to ollama with openai rejected"
+      record_pass
+    else
+      log_failure "runtime governance ROUTE: missing policy-driven routing evidence (selected provider + rejected candidates)" "evidence_id=$route_ev_id"
+      dump_diag_json "runtime governance route evidence" "$route_ev"
+      dump_diag_kv "runtime governance route output" "out=${rg_route_out:0:500}"
+    fi
+  else
+    log_failure "runtime governance ROUTE: no evidence id found after route run" "cannot prove routing decision"
+    dump_diag_kv "runtime governance route output" "out=${rg_route_out:0:500}"
+  fi
+  rm -f /tmp/runtime_route_out.txt 2>/dev/null || true
+
+  # Matrix telemetry delta assertions: prove per-request runtime decisions changed counters.
+  local matrix_snap_after; matrix_snap_after="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
+  local matrix_after_total matrix_after_denied matrix_after_redactions matrix_after_detections
+  matrix_after_total="$(jq '.summary.total_requests' <<< "$matrix_snap_after")"
+  matrix_after_denied="$(jq '.summary.total_denied' <<< "$matrix_snap_after")"
+  matrix_after_redactions="$(jq '.summary.pii_redactions' <<< "$matrix_snap_after")"
+  matrix_after_detections="$(jq '.summary.pii_detections' <<< "$matrix_snap_after")"
+  if [[ -n "$matrix_after_total" ]] && [[ "$matrix_after_total" -gt "$matrix_before_total" ]] 2>/dev/null; then
+    echo "  ✓  runtime matrix telemetry: total_requests increased ($matrix_before_total -> $matrix_after_total)"
+    record_pass
+  else
+    log_failure "runtime matrix telemetry: total_requests did not increase" "before=$matrix_before_total after=$matrix_after_total"
+  fi
+  if [[ -n "$matrix_after_denied" ]] && [[ "$matrix_after_denied" -gt "$matrix_before_denied" ]] 2>/dev/null; then
+    echo "  ✓  runtime matrix telemetry: total_denied increased ($matrix_before_denied -> $matrix_after_denied)"
+    record_pass
+  else
+    log_failure "runtime matrix telemetry: total_denied did not increase after block request" "before=$matrix_before_denied after=$matrix_after_denied"
+  fi
+  if [[ -n "$matrix_after_redactions" ]] && [[ "$matrix_after_redactions" -gt "$matrix_before_redactions" ]] 2>/dev/null && [[ -n "$matrix_after_detections" ]] && [[ "$matrix_after_detections" -gt "$matrix_before_detections" ]] 2>/dev/null; then
+    echo "  ✓  runtime matrix telemetry: pii_redactions and pii_detections increased"
+    record_pass
+  else
+    log_failure "runtime matrix telemetry: pii_redactions/pii_detections did not increase as expected" "redactions $matrix_before_redactions->$matrix_after_redactions detections $matrix_before_detections->$matrix_after_detections"
+  fi
+
+  # Explicit parseable matrix results for product/compliance proof.
+  if [[ "$runtime_allow_ok" == "true" ]]; then
+    echo "[SMOKE] MATRIX|runtime_governance_allow|PASS"
+    record_pass
+  else
+    echo "[SMOKE] MATRIX|runtime_governance_allow|FAIL"
+    record_fail "runtime_governance_allow"
+  fi
+  if [[ "$runtime_block_ok" == "true" ]]; then
+    echo "[SMOKE] MATRIX|runtime_governance_block|PASS"
+    record_pass
+  else
+    echo "[SMOKE] MATRIX|runtime_governance_block|FAIL"
+    record_fail "runtime_governance_block"
+  fi
+  if [[ "$runtime_redact_ok" == "true" ]]; then
+    echo "[SMOKE] MATRIX|runtime_governance_redact|PASS"
+    record_pass
+  else
+    echo "[SMOKE] MATRIX|runtime_governance_redact|FAIL"
+    record_fail "runtime_governance_redact"
+  fi
+  if [[ "$runtime_route_ok" == "true" ]]; then
+    echo "[SMOKE] MATRIX|runtime_governance_route|PASS"
+    record_pass
+  else
+    echo "[SMOKE] MATRIX|runtime_governance_route|FAIL"
+    record_fail "runtime_governance_route"
   fi
 
   # --- 23.3: Make 20 gateway requests so metrics accumulate (cross-checks need volume) ---
@@ -1762,7 +2173,7 @@ CACHEEOF
   # error_rate in [0, 1]
   local err_rate; err_rate="$(jq '.summary.error_rate' <<< "$snap_after")"
   if [[ -n "$err_rate" ]] && [[ "$err_rate" != "null" ]]; then
-    if [[ "$(echo "$err_rate >= 0 && $err_rate <= 1" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+    if jq -e '.summary.error_rate >= 0 and .summary.error_rate <= 1' <<< "$snap_after" >/dev/null 2>&1; then
       echo "  ✓  cross-check: error_rate in [0,1] ($err_rate)"
       record_pass
     else
@@ -2000,19 +2411,18 @@ CACHEEOF
   echo "[SMOKE] CONSISTENCY|report_evidence_today|${report_count:-none}"
   echo "[SMOKE] CONSISTENCY|dashboard_total_requests|${dash_total:-none}"
   if [[ -n "$report_count" ]] && [[ -n "$dash_total" ]] && [[ "$dash_total" != "null" ]]; then
-    if [[ "$report_count" -eq "$dash_total" ]]; then
+    local count_diff=$(( report_count - dash_total ))
+    [[ $count_diff -lt 0 ]] && count_diff=$(( -count_diff ))
+    if [[ "$count_diff" -eq 0 ]]; then
       echo "  ✓  CLI report evidence count ($report_count) == dashboard total_requests ($dash_total)"
       record_pass
     else
-      # Dashboard total_requests is event-based and can exceed persisted evidence count.
-      # Allow a bounded one-sided drift (dashboard >= report) while still failing on larger mismatches.
-      local dash_minus_report=$(( dash_total - report_count ))
-      if [[ $dash_minus_report -ge 0 ]] && [[ $dash_minus_report -le 5 ]]; then
-        echo "  ✓  CLI report evidence ($report_count) <= dashboard total_requests ($dash_total) within allowed drift ($dash_minus_report)"
+      # Route proof in this section uses a CLI run (agent path), while dashboard totals
+      # are gateway-local. Allow small bounded drift in either direction.
+      if [[ $count_diff -le 5 ]]; then
+        echo "  ✓  CLI report evidence ($report_count) vs dashboard total_requests ($dash_total) within allowed drift ($count_diff)"
         record_pass
       else
-        local count_diff=$dash_minus_report
-        [[ $count_diff -lt 0 ]] && count_diff=$(( -count_diff ))
         log_failure "evidence count mismatch: report=$report_count dashboard=$dash_total" "diff=$count_diff"
       fi
     fi
@@ -2360,7 +2770,7 @@ CACHEEOF
   # success_rate must still be in [0,1] after live traffic
   local live_sr; live_sr="$(jq '.summary.success_rate' <<< "$snap_after_live")"
   if [[ -n "$live_sr" ]] && [[ "$live_sr" != "null" ]]; then
-    if [[ "$(echo "$live_sr >= 0 && $live_sr <= 1" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
+    if jq -e '.summary.success_rate >= 0 and .summary.success_rate <= 1' <<< "$snap_after_live" >/dev/null 2>&1; then
       echo "  ✓  live-traffic success_rate still in [0,1] ($live_sr)"
       record_pass
     else
@@ -2387,6 +2797,10 @@ CACHEEOF
 
   kill "$GW_PID" 2>/dev/null || true
   wait "$GW_PID" 2>/dev/null || true
+  if [[ -n "$mock_pid" ]]; then
+    kill "$mock_pid" 2>/dev/null || true
+    wait "$mock_pid" 2>/dev/null || true
+  fi
   sleep 2
   cd "$REPO_ROOT" || true
 }

@@ -27,6 +27,20 @@ SMOKE_BODY_TOOL_BLOCK='{"model":"gpt-4o-mini","messages":[{"role":"user","conten
 # Tool filter: request with read_file + exec_cmd (exec_cmd forbidden for tool-filter-caller)
 SMOKE_BODY_TOOL_FILTER='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"read_file","description":"x","parameters":{"type":"object"}}},{"type":"function","function":{"name":"exec_cmd","description":"x","parameters":{"type":"object"}}}]}'
 
+# Runtime governance matrix: benign allow request (gateway path)
+SMOKE_BODY_RUNTIME_ALLOW='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Reply exactly: RUNTIME_GOVERNANCE_ALLOW_OK"}]}'
+
+# Runtime governance matrix: route request that must classify as tier-2 (IBAN).
+# Used in CLI route proof where sovereignty policy should prefer LOCAL/EU-safe provider.
+SMOKE_BODY_RUNTIME_ROUTE_TIER2='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Runtime route check: account IBAN DE89370400440532013000"}]}'
+
+# Runtime governance matrix: redact request body with marker (for upstream payload inspection).
+# Usage: smoke_body_runtime_redact "<marker>"
+smoke_body_runtime_redact() {
+  local marker="${1:-RGM_RED}"
+  echo "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Runtime redact marker ${marker}; contact runtime.${marker}@example.com about IBAN DE89370400440532013000\"}]}"
+}
+
 # Minimal (empty messages) for 401/probe
 SMOKE_BODY_EMPTY='{"model":"gpt-4o-mini","messages":[]}'
 
