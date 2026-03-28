@@ -46,6 +46,9 @@ type Server struct {
 	policyPath           string
 	startTime            time.Time
 	activeRunTracker     *agent.ActiveRunTracker
+	runRegistryRef       *agent.RunRegistry
+	overrideStoreRef     *agent.OverrideStore
+	toolApprovalStoreRef *agent.ToolApprovalStore
 }
 
 // Option configures the Server.
@@ -94,6 +97,21 @@ func WithSessionStore(ss *session.Store) Option {
 // WithActiveRunTracker sets the in-flight run tracker for status/dashboard active_runs.
 func WithActiveRunTracker(tracker *agent.ActiveRunTracker) Option {
 	return func(s *Server) { s.activeRunTracker = tracker }
+}
+
+// WithRunRegistry sets the run registry for lifecycle tracking and control endpoints.
+func WithRunRegistry(rr *agent.RunRegistry) Option {
+	return func(s *Server) { s.runRegistryRef = rr }
+}
+
+// WithOverrideStore sets the override store for runtime policy overrides and tenant lockdown.
+func WithOverrideStore(os *agent.OverrideStore) Option {
+	return func(s *Server) { s.overrideStoreRef = os }
+}
+
+// WithToolApprovalStore sets the tool approval store for pre-tool human-in-the-loop gates.
+func WithToolApprovalStore(tas *agent.ToolApprovalStore) Option {
+	return func(s *Server) { s.toolApprovalStoreRef = tas }
 }
 
 // WithGateway sets the LLM API gateway handler (optional). Mounted at /v1/proxy/* with its own caller auth.
@@ -237,6 +255,29 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/v1/secrets/audit", s.handleSecretsAudit)
 		r.Get("/v1/policies", s.handlePoliciesList)
 		r.Post("/v1/policies/evaluate", s.handlePoliciesEvaluate)
+
+		// Operational control plane: run lifecycle management
+		r.Get("/v1/runs", s.handleRunsList)
+		r.Get("/v1/runs/{id}", s.handleRunGet)
+		r.Post("/v1/runs/{id}/kill", s.handleRunKill)
+		r.Post("/v1/runs/kill-all", s.handleRunKillAll)
+		r.Post("/v1/runs/{id}/pause", s.handleRunPause)
+		r.Post("/v1/runs/{id}/resume", s.handleRunResume)
+
+		// Operational overrides: tenant lockdown, tool disable, policy tightening
+		r.Get("/v1/overrides", s.handleOverridesList)
+		r.Get("/v1/overrides/{tenant_id}", s.handleOverrideGet)
+		r.Post("/v1/overrides/{tenant_id}/lockdown", s.handleTenantLockdown)
+		r.Delete("/v1/overrides/{tenant_id}/lockdown", s.handleTenantUnlock)
+		r.Post("/v1/overrides/{tenant_id}/tools/disable", s.handleToolsDisable)
+		r.Post("/v1/overrides/{tenant_id}/tools/enable", s.handleToolsEnable)
+		r.Post("/v1/overrides/{tenant_id}/policy", s.handlePolicyOverride)
+		r.Delete("/v1/overrides/{tenant_id}", s.handleOverrideClear)
+
+		// Tool approval gates: list pending, get, approve/deny
+		r.Get("/v1/tool-approvals", s.handleToolApprovalsList)
+		r.Get("/v1/tool-approvals/{id}", s.handleToolApprovalGet)
+		r.Post("/v1/tool-approvals/{id}/decide", s.handleToolApprovalDecide)
 
 		r.Get("/v1/dashboard/tenants-summary", s.handleTenantsSummary)
 		r.Get("/v1/dashboard/agent-health", s.handleAgentHealth)

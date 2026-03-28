@@ -23,6 +23,7 @@
 
 ## v1.0.0 (March 2026) — Stable MVP
 
+- [x] Operational control plane — run lifecycle (kill/pause/resume), tenant lockdown, runtime overrides, tool approval gates
 - [ ] MCP Proxy (vendor integration for Zendesk, Intercom, etc.)
 - [ ] Shadow mode dashboard tab (AI usage discovery)
 - [ ] Per-caller/team cost dashboards

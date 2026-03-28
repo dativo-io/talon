@@ -10,6 +10,7 @@ SMOKE_PATH_GW_PROXY="/v1/proxy/openai/v1/chat/completions"
 SMOKE_PATH_METRICS="/api/v1/metrics"
 SMOKE_PATH_METRICS_STREAM="/api/v1/metrics/stream"
 SMOKE_PATH_GATEWAY_DASHBOARD="/gateway/dashboard"
+SMOKE_PATH_EVIDENCE="/v1/evidence"
 
 # --- Canonical request bodies (reused across sections; no duplicate JSON) ---
 # PII: email + IBAN (used for redact path, block path, and metrics volume)
@@ -95,6 +96,18 @@ smoke_gw_get_metrics() {
 smoke_gw_get_dashboard() {
   local base="$1" admin_key="$2"
   curl -s -H "X-Talon-Admin-Key: $admin_key" "${base}${SMOKE_PATH_GATEWAY_DASHBOARD}" 2>/dev/null
+}
+
+# --- Evidence: fetch most recent evidence record (full JSON) via admin API ---
+# Usage: smoke_get_latest_evidence base_url admin_key
+# Outputs: full evidence JSON (stdout); returns 1 if no evidence found.
+smoke_get_latest_evidence() {
+  local base="$1" admin_key="$2"
+  local idx ev_id
+  idx="$(curl -s -H "X-Talon-Admin-Key: $admin_key" "${base}${SMOKE_PATH_EVIDENCE}?limit=1")"
+  ev_id="$(echo "$idx" | jq -r '.entries[0].id // empty')"
+  [[ -z "$ev_id" ]] && return 1
+  curl -s -H "X-Talon-Admin-Key: $admin_key" "${base}${SMOKE_PATH_EVIDENCE}/${ev_id}"
 }
 
 # --- Wait until health returns 200 (for server startup) ---

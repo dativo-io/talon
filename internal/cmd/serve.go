@@ -158,6 +158,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	activeRunTracker := &agent.ActiveRunTracker{}
+	runRegistry := agent.NewRunRegistry()
+	overrideStore := agent.NewOverrideStore()
+	toolApprovalStore := agent.NewToolApprovalStore(5 * time.Minute)
 
 	cbThreshold := 5
 	cbWindow := 60 * time.Second
@@ -223,6 +226,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		PlanReview:        planReviewStore,
 		ToolRegistry:      toolRegistry,
 		ActiveRunTracker:  activeRunTracker,
+		RunRegistry:       runRegistry,
+		Overrides:         overrideStore,
+		ToolApprovals:     toolApprovalStore,
 		CircuitBreaker:    circuitBreaker,
 		ToolFailures:      toolFailureTracker,
 		Memory:            memStore,
@@ -269,6 +275,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		server.WithSessionStore(sessionStore),
 		server.WithCORSOrigins([]string{"*"}),
 		server.WithActiveRunTracker(activeRunTracker),
+		server.WithRunRegistry(runRegistry),
+		server.WithOverrideStore(overrideStore),
+		server.WithToolApprovalStore(toolApprovalStore),
 	}
 	if serveDashboard {
 		opts = append(opts, server.WithDashboard(web.DashboardHTML))

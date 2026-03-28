@@ -38,7 +38,7 @@ Key top-level sections:
 |---------|---------|
 | `agent` | Name, description, version, model tier |
 | `capabilities` | Allowed tools, data sources, forbidden patterns |
-| `policies` | Cost limits, rate limits, model routing, data classification (`redact_input`, `redact_output`, `block_on_pii`), time restrictions |
+| `policies` | Cost limits, rate limits, model routing, data classification (`redact_input`, `redact_output`, `block_on_pii`), time restrictions, resource limits (`require_approval` for tool approval gates) |
 | `memory` | Governed self-improvement (categories, retention, dedup) |
 | `triggers` | Cron schedules and webhook definitions |
 | `secrets` | Allowed/forbidden secret names for this agent |
@@ -168,6 +168,7 @@ See [Gateway dashboard reference](gateway-dashboard.md) for the full API schema 
 - **Gateway:** Enable with `--gateway` and `--gateway-config <path>`. See [How to choose your integration path](../guides/choosing-integration-path.md) and gateway guides.
 - **MCP proxy:** Enable with `--proxy-config <path>`. See [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md).
 - **Auth model:** See [Authentication and key scopes](authentication-and-key-scopes.md) for endpoint-to-key mapping (tenant keys vs admin key).
+- **Operational control:** Run management, overrides, and tool approval gates are exposed via admin API. See [Operational control plane](operational-control-plane.md).
 
 ### Observability
 
