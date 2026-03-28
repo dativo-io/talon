@@ -212,6 +212,11 @@ func TestPlanReviewStore_Stats(t *testing.T) {
 	require.NoError(t, store.Reject(ctx, acmeRejected.ID, "acme", "reviewer", "risk"))
 	require.NoError(t, store.Modify(ctx, acmeModified.ID, "acme", "reviewer", []Annotation{{ID: "a1", Type: "note", Content: "ok"}}))
 
+	// acme: auto-approved
+	acmeAutoApproved := GenerateExecutionPlan("stats_auto", "acme", "agent", "gpt-4", 0, nil, 0.01, "allow", "", "", 30)
+	acmeAutoApproved.Status = PlanAutoApproved
+	require.NoError(t, store.Save(ctx, acmeAutoApproved))
+
 	// globex: approved+dispatched(failed)
 	globexApproved := GenerateExecutionPlan("stats_globex_approved", "globex", "agent", "gpt-4", 0, nil, 0.01, "allow", "", "", 30)
 	require.NoError(t, store.Save(ctx, globexApproved))
@@ -221,7 +226,7 @@ func TestPlanReviewStore_Stats(t *testing.T) {
 	acmeStats, err := store.Stats(ctx, "acme")
 	require.NoError(t, err)
 	assert.Equal(t, 1, acmeStats.Pending)
-	assert.Equal(t, 1, acmeStats.Approved)
+	assert.Equal(t, 2, acmeStats.Approved) // 1 manual + 1 auto
 	assert.Equal(t, 1, acmeStats.Rejected)
 	assert.Equal(t, 1, acmeStats.Modified)
 	assert.Equal(t, 1, acmeStats.Dispatched)
@@ -230,7 +235,7 @@ func TestPlanReviewStore_Stats(t *testing.T) {
 	allStats, err := store.Stats(ctx, "")
 	require.NoError(t, err)
 	assert.Equal(t, 1, allStats.Pending)
-	assert.Equal(t, 2, allStats.Approved)
+	assert.Equal(t, 3, allStats.Approved) // 2 acme (1 manual + 1 auto) + 1 globex
 	assert.Equal(t, 1, allStats.Rejected)
 	assert.Equal(t, 1, allStats.Modified)
 	assert.Equal(t, 2, allStats.Dispatched)

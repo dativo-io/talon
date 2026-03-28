@@ -401,6 +401,9 @@ func (s *PlanReviewStore) Stats(ctx context.Context, tenantID string) (PlanStats
 			stats.Rejected = count
 		case PlanModified:
 			stats.Modified = count
+		case PlanAutoApproved:
+			// Auto-approved plans should be counted as Approved for high-level summaries.
+			stats.Approved += count
 		}
 	}
 	if err := rows.Err(); err != nil {
