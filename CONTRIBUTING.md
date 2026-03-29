@@ -64,6 +64,38 @@ Test layout:
 
 CI runs all three tiers; coverage is computed from unit tests only. Coverage target: ≥65% (CI fails if below; goal 70%). The coverage run excludes `cmd/talon` (main) and `internal/testutil` (test helpers).
 
+## Mission-Control Screenshot Refresh Workflow
+
+When UI changes affect mission-control dashboards or other visual components, screenshots in documentation may need updating. Follow this workflow to refresh them:
+
+1. **Identify which screenshots need updates:**
+   - Check `docs/` directory for images referenced in mission-control documentation
+   - Look for screenshots in `README.md` that show UI components
+   - Review any `.md` files that contain mission-control interface images
+
+2. **Capture new screenshots:**
+   - Start the Talon server with the updated UI: `talon serve --port 8080`
+   - Navigate to the mission-control dashboard in your browser
+   - Use your operating system's screenshot tool or a browser extension
+   - Save images in the appropriate format (PNG recommended) and resolution
+
+3. **Optimize and place screenshots:**
+   - Compress images to reduce file size without losing clarity
+   - Place updated screenshots in the correct documentation directory
+   - Update any references in markdown files if filenames change
+
+4. **Verify the changes:**
+   - Open the updated documentation locally to ensure images display correctly
+   - Check that all links and image paths are valid
+   - Ensure screenshots accurately reflect the current UI state
+
+5. **Include in your PR:**
+   - Add the updated screenshot files to your commit
+   - Mention the screenshot updates in your PR description
+   - Note any UI changes that necessitated the refresh
+
+This workflow helps maintain visual documentation accuracy and provides users with up-to-date references.
+
 ## Release Notes Quality Bar
 
 When your PR changes user-facing behavior, include a release-note friendly summary in your PR description:
