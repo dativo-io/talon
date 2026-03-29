@@ -612,6 +612,56 @@ See [CHANGELOG.md](CHANGELOG.md) and [Releases](https://github.com/dativo-io/tal
 
 Apache 2.0 — See [LICENSE](LICENSE)
 
+## Mission-Control Dashboard Screenshot Refresh Workflow
+
+The mission-control dashboard provides real-time visibility into agent activity, policy enforcement, and compliance metrics. To keep documentation up-to-date with the latest UI changes, follow this workflow to refresh screenshots:
+
+### Prerequisites
+1. Talon server running with gateway enabled (`--gateway` flag)
+2. Dashboard accessible at configured endpoint (default: `/dashboard` or separate `DashboardListen` address)
+3. Sufficient test data to demonstrate key features
+
+### Steps to Refresh Screenshots
+1. **Start Talon in demo mode** with sample data:
+   ```bash
+   talon serve --gateway --gateway-config examples/gateway/talon.config.gateway.yaml
+   ```
+
+2. **Generate representative traffic** using the example scripts:
+   ```bash
+   bash scripts/generate-demo-traffic.sh
+   ```
+
+3. **Access the dashboard** in your browser:
+   - Main dashboard: `http://localhost:8080/dashboard`
+   - Gateway dashboard: `http://localhost:8080/gateway/dashboard`
+
+4. **Capture screenshots** of key pages:
+   - Overview/Summary view
+   - Per-agent activity
+   - Policy violation reports
+   - Cost breakdown
+   - PII detection analytics
+
+5. **Update documentation**:
+   - Replace outdated screenshots in `docs/` directory
+   - Update any references to UI elements in guides
+   - Verify all screenshots reflect current functionality
+
+### Best Practices
+- Use consistent browser window size (1920×1080 recommended)
+- Include the full URL in screenshots for context
+- Capture both light and dark mode if supported
+- Annotate screenshots to highlight new features
+- Store original high-resolution images separately
+
+### Automation
+For regular updates, consider automating screenshot capture:
+```bash
+# Example using puppeteer or similar tools
+node scripts/capture-dashboard-screenshots.js
+```
+
 ## Links
 
 - **Documentation:** [docs/](docs/)
