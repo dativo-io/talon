@@ -308,6 +308,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("loading gateway config: %w", err)
 		}
 		tenantKeys = gatewayCfg.TenantKeyMap()
+		log.Info().Int("tenant_keys", len(tenantKeys)).Int("callers", len(gatewayCfg.Callers)).Msg("gateway_tenant_keys_loaded")
 		// --gateway flag explicitly opts in; override config's enabled field
 		if !gatewayCfg.Enabled {
 			log.Info().Msg("--gateway flag set; enabling gateway (config had enabled: false)")

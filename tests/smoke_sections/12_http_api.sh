@@ -140,6 +140,7 @@ GWEOF
     dump_diag_json "run1 response body" "$(cat "$run1_body" 2>/dev/null || echo '(file missing)')"
     dump_diag_file "run1 response headers" "$run1_headers"
     dump_diag_file "talon.config.yaml (gateway callers)" "$dir/talon.config.yaml"
+    dump_diag_file "serve startup log (last 30 lines)" "$serve_log_12" 30
     dump_diag_env
   fi
   run1_session="$(awk 'BEGIN{IGNORECASE=1} /^X-Talon-Session-ID:/ {gsub("\r","",$2); print $2; exit}' "$run1_headers" 2>/dev/null || true)"

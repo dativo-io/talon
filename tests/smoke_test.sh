@@ -126,8 +126,8 @@ assert_pass() {
     rm -f "$tmp_out" "$tmp_err"
     return 0
   fi
-  local code=$?
-  # Build a human-readable version of the failed command with actual argument values.
+  local code
+  code=$?
   local cmd_detail="$*"
   echo "  ✗  $description (exit $code) [$cmd_detail]"
   write_cmd_log "$description" "$cmd_detail" "$code" "$tmp_out" "$tmp_err"
@@ -171,7 +171,8 @@ assert_fail() {
     rm -f "$tmp_out" "$tmp_err"
     return 1
   fi
-  local code=$?
+  local code
+  code=$?
   echo "  ✓  $description"
   write_cmd_log "$description" "$*" "$code" "$tmp_out" "$tmp_err"
   record_pass

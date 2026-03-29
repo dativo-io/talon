@@ -9,8 +9,13 @@
 # -----------------------------------------------------------------------------
 check_pii_evidence() { # $1=label — asserts latest evidence has PII markers
   local ev_id; ev_id="$(run_talon audit list --limit 1 2>/dev/null | awk '/req_/{print $2; exit}')"
-  [[ -n "$ev_id" ]] && assert_pass "26_pii_enrichment: evidence has pii ($1)" \
-    grep -qE 'pii_detected|pii_redacted' <<< "$(run_talon audit show "$ev_id" 2>/dev/null)"
+  if [[ -z "$ev_id" ]]; then
+    log_failure "26_pii_enrichment: evidence has pii ($1)" "no evidence id found"
+    return 1
+  fi
+  local ev_out; ev_out="$(run_talon audit show "$ev_id" 2>/dev/null)"
+  assert_pass "26_pii_enrichment: evidence has pii ($1)" \
+    bash -c 'echo "$1" | grep -qiE "PII Detected:.*[^(none)]|PII Redacted:.*true"' _ "$ev_out"
 }
 test_section_26_pii_enrichment() {
   local section="26_pii_enrichment"
@@ -36,11 +41,11 @@ test_section_26_pii_enrichment() {
     "Reply OK. Contact user@example.com and Jane in Munich." "Reply OK. Frau Weber and Paris office." )
 
   # Variant A: enrichment off + redact_input on — 5 runs
-  local i run_out
+  local i run_out run_exit
   for i in 0 1 2 3 4; do
-    run_out="$(run_talon run "${prompts_a[$i]}" 2>&1)"; true
-    assert_pass "26_pii_enrichment: run A-$i (enrichment off) exits 0" test $? -eq 0 || true
-    assert_pass "26_pii_enrichment: A-$i output has no raw email" ! grep -qF 'user@example.com' <<< "$run_out"
+    run_out="$(run_talon run "${prompts_a[$i]}" 2>&1)"; run_exit=$?; true
+    assert_pass "26_pii_enrichment: run A-$i (enrichment off) exits 0" test "$run_exit" -eq 0 || true
+    assert_fail "26_pii_enrichment: A-$i output has no raw email" grep -qF 'user@example.com' <<< "$run_out"
   done
   check_pii_evidence "variant A"
 
