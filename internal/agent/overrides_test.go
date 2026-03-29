@@ -171,3 +171,30 @@ func TestOverrideStore_MultiTenantIsolation(t *testing.T) {
 	assert.Nil(t, store.DisabledToolsFor("acme"))
 	assert.ElementsMatch(t, []string{"tool_x"}, store.DisabledToolsFor("globex"))
 }
+
+func TestRunner_EffectiveOverride(t *testing.T) {
+	t.Run("nil overrides returns nil", func(t *testing.T) {
+		r := &Runner{}
+		assert.Nil(t, r.effectiveOverride("acme"))
+	})
+	t.Run("empty tenant returns nil", func(t *testing.T) {
+		r := &Runner{overrides: NewOverrideStore()}
+		assert.Nil(t, r.effectiveOverride(""))
+	})
+	t.Run("returns override when set", func(t *testing.T) {
+		store := NewOverrideStore()
+		maxCost := 0.05
+		maxTools := 3
+		store.SetPolicyOverride("acme", &maxCost, &maxTools)
+		r := &Runner{overrides: store}
+		ov := r.effectiveOverride("acme")
+		require.NotNil(t, ov)
+		assert.InDelta(t, 0.05, *ov.MaxCostPerRun, 1e-9)
+		assert.Equal(t, 3, *ov.MaxToolCalls)
+	})
+	t.Run("returns nil for unknown tenant", func(t *testing.T) {
+		store := NewOverrideStore()
+		r := &Runner{overrides: store}
+		assert.Nil(t, r.effectiveOverride("unknown"))
+	})
+}

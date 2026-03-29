@@ -13,10 +13,11 @@ import (
 type ToolApprovalStatus string
 
 const (
-	ToolApprovalPending  ToolApprovalStatus = "pending"
-	ToolApprovalApproved ToolApprovalStatus = "approved"
-	ToolApprovalDenied   ToolApprovalStatus = "denied"
-	ToolApprovalTimeout  ToolApprovalStatus = "timeout"
+	ToolApprovalPending   ToolApprovalStatus = "pending"
+	ToolApprovalApproved  ToolApprovalStatus = "approved"
+	ToolApprovalDenied    ToolApprovalStatus = "denied"
+	ToolApprovalTimeout   ToolApprovalStatus = "timeout"
+	ToolApprovalCancelled ToolApprovalStatus = "cancelled"
 )
 
 // ToolApprovalRequest represents a pending tool execution awaiting human approval.
@@ -97,7 +98,7 @@ func (s *ToolApprovalStore) RequestApproval(ctx context.Context, correlationID, 
 	case <-timer.C:
 		status = ToolApprovalTimeout
 	case <-ctx.Done():
-		status = ToolApprovalDenied
+		status = ToolApprovalCancelled
 	}
 
 	s.mu.Lock()

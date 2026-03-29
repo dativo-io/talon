@@ -250,6 +250,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 	runner := agent.NewRunner(runnerCfg)
 	startPlanAutoDispatcher(ctx, planReviewStore, runner)
 
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				toolApprovalStore.Cleanup(30 * time.Minute)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	if memStore != nil && pol.Memory != nil && pol.Memory.Enabled {
 		stopRetention := memory.StartRetentionLoop(ctx, memStore, pol, 24*time.Hour)
 		defer stopRetention()

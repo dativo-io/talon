@@ -1332,13 +1332,27 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				break
 			}
 			rl := pol.Policies.ResourceLimits
-			if rl != nil && rl.MaxToolCallsPerRun > 0 && len(toolsCalled) >= rl.MaxToolCallsPerRun {
-				log.Warn().Int("tool_calls", len(toolsCalled)).Int("max", rl.MaxToolCallsPerRun).Msg("agent_loop_stopped_max_tool_calls")
-				r.setRunState(correlationID, RunStatusBlocked, FailureMaxStepsExceeded)
+			maxToolCalls := 0
+			maxCostPerRun := 0.0
+			if rl != nil {
+				maxToolCalls = rl.MaxToolCallsPerRun
+				maxCostPerRun = rl.MaxCostPerRun
+			}
+			if ov := r.effectiveOverride(req.TenantID); ov != nil {
+				if ov.MaxToolCalls != nil && (maxToolCalls == 0 || *ov.MaxToolCalls < maxToolCalls) {
+					maxToolCalls = *ov.MaxToolCalls
+				}
+				if ov.MaxCostPerRun != nil && (maxCostPerRun == 0 || *ov.MaxCostPerRun < maxCostPerRun) {
+					maxCostPerRun = *ov.MaxCostPerRun
+				}
+			}
+			if maxToolCalls > 0 && len(toolsCalled) >= maxToolCalls {
+				log.Warn().Int("tool_calls", len(toolsCalled)).Int("max", maxToolCalls).Msg("agent_loop_stopped_max_tool_calls")
+				r.setRunState(correlationID, RunStatusBlocked, FailureMaxToolCallsExceeded)
 				break
 			}
-			if rl != nil && rl.MaxCostPerRun > 0 && cost >= rl.MaxCostPerRun {
-				log.Warn().Float64("cost", cost).Float64("max", rl.MaxCostPerRun).Msg("agent_loop_stopped_max_cost_per_run")
+			if maxCostPerRun > 0 && cost >= maxCostPerRun {
+				log.Warn().Float64("cost", cost).Float64("max", maxCostPerRun).Msg("agent_loop_stopped_max_cost_per_run")
 				r.setRunState(correlationID, RunStatusBlocked, FailureCostExceeded)
 				break
 			}
@@ -1381,9 +1395,9 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						"tool": tc.Name, "tool_call_id": tc.ID,
 					})
 
-					// Pre-tool approval gate: if this tool requires human approval, pause and wait.
+					// Pre-tool approval gate: if this tool requires human approval, block and wait.
 					if requireApproval[tc.Name] && r.toolApprovals != nil {
-						r.setRunState(correlationID, RunStatusPaused, FailureNone)
+						r.setRunState(correlationID, RunStatusAwaitingApproval, FailureNone)
 						approval := r.toolApprovals.RequestApproval(ctx, correlationID, req.TenantID, req.AgentName, tc.Name, tc.ID, tc.Arguments)
 						r.setRunState(correlationID, RunStatusRunning, FailureNone)
 						if approval != ToolApprovalApproved {
@@ -1813,6 +1827,14 @@ func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, re
 		span.SetAttributes(attribute.StringSlice("tool.called", called))
 	}
 	return called
+}
+
+// effectiveOverride returns the tenant override if available, or nil.
+func (r *Runner) effectiveOverride(tenantID string) *TenantOverride {
+	if r.overrides == nil || tenantID == "" {
+		return nil
+	}
+	return r.overrides.Get(tenantID)
 }
 
 // overrideDisabledSet returns the set of operator-disabled tools for a tenant, or nil if none.

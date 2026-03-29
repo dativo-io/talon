@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -58,6 +59,8 @@ func (s *Server) handleTenantLockdown(w http.ResponseWriter, r *http.Request) {
 		s.activeRunTracker.KillAllForTenant(tenantID)
 	}
 	log.Warn().Str("tenant_id", tenantID).Int("runs_killed", killed).Msg("tenant_lockdown_activated")
+	s.recordControlPlaneAction(r.Context(), tenantID, "tenant_lockdown", "admin_api",
+		fmt.Sprintf("runs_killed=%d", killed))
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"tenant_id":   tenantID,
 		"lockdown":    true,
@@ -76,6 +79,7 @@ func (s *Server) handleTenantUnlock(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenant_id")
 	store.SetLockdown(tenantID, false, "")
 	log.Info().Str("tenant_id", tenantID).Msg("tenant_lockdown_lifted")
+	s.recordControlPlaneAction(r.Context(), tenantID, "tenant_unlock", "admin_api", "lockdown lifted")
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"tenant_id": tenantID,
 		"lockdown":  false,
@@ -107,6 +111,8 @@ func (s *Server) handleToolsDisable(w http.ResponseWriter, r *http.Request) {
 	}
 	store.DisableTools(tenantID, req.Tools, req.Reason)
 	log.Warn().Str("tenant_id", tenantID).Strs("tools", req.Tools).Str("reason", req.Reason).Msg("tools_disabled_by_override")
+	s.recordControlPlaneAction(r.Context(), tenantID, "tools_disable", "admin_api",
+		fmt.Sprintf("tools=%v reason=%s", req.Tools, req.Reason))
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"tenant_id":      tenantID,
 		"disabled_tools": store.DisabledToolsFor(tenantID),
@@ -138,6 +144,8 @@ func (s *Server) handleToolsEnable(w http.ResponseWriter, r *http.Request) {
 	}
 	store.EnableTools(tenantID, req.Tools)
 	log.Info().Str("tenant_id", tenantID).Strs("tools", req.Tools).Msg("tools_enabled_by_override")
+	s.recordControlPlaneAction(r.Context(), tenantID, "tools_enable", "admin_api",
+		fmt.Sprintf("tools=%v", req.Tools))
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"tenant_id":      tenantID,
 		"disabled_tools": store.DisabledToolsFor(tenantID),
@@ -165,6 +173,8 @@ func (s *Server) handlePolicyOverride(w http.ResponseWriter, r *http.Request) {
 	}
 	store.SetPolicyOverride(tenantID, req.MaxCostPerRun, req.MaxToolCalls)
 	log.Info().Str("tenant_id", tenantID).Interface("max_cost_per_run", req.MaxCostPerRun).Interface("max_tool_calls", req.MaxToolCalls).Msg("policy_override_set")
+	s.recordControlPlaneAction(r.Context(), tenantID, "policy_override", "admin_api",
+		fmt.Sprintf("max_cost_per_run=%v max_tool_calls=%v", req.MaxCostPerRun, req.MaxToolCalls))
 	writeJSON(w, http.StatusOK, store.Get(tenantID))
 }
 

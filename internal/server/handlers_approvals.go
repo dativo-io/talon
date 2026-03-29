@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -68,6 +69,8 @@ func (s *Server) handleToolApprovalDecide(w http.ResponseWriter, r *http.Request
 			return
 		}
 		log.Info().Str("approval_id", id).Msg("tool_approval_approved")
+		s.recordControlPlaneAction(r.Context(), "", "tool_approval_approved", "admin_api",
+			fmt.Sprintf("approval_id=%s reason=%s", id, req.Reason))
 		writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "approved"})
 	case "deny":
 		if ok := store.Deny(id, "admin_api", req.Reason); !ok {
@@ -75,6 +78,8 @@ func (s *Server) handleToolApprovalDecide(w http.ResponseWriter, r *http.Request
 			return
 		}
 		log.Info().Str("approval_id", id).Msg("tool_approval_denied")
+		s.recordControlPlaneAction(r.Context(), "", "tool_approval_denied", "admin_api",
+			fmt.Sprintf("approval_id=%s reason=%s", id, req.Reason))
 		writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "denied"})
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "decision must be 'approve' or 'deny'"})

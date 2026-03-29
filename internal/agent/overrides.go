@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"fmt"
 	"sync"
 	"time"
 )
@@ -33,9 +32,6 @@ func NewOverrideStore() *OverrideStore {
 		overrides: make(map[string]*TenantOverride),
 	}
 }
-
-// ErrTenantLocked is returned when a run is attempted on a locked-down tenant.
-var ErrTenantLocked = fmt.Errorf("tenant is locked down")
 
 // Get returns the current override for a tenant, or nil if none.
 func (os *OverrideStore) Get(tenantID string) *TenantOverride {

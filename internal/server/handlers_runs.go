@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 
@@ -71,6 +72,7 @@ func (s *Server) handleRunKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Warn().Str("correlation_id", id).Msg("run_killed_by_admin")
+	s.recordControlPlaneAction(r.Context(), "", "operator_kill", "admin_api", "run="+id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "terminated", "correlation_id": id})
 }
 
@@ -92,6 +94,8 @@ func (s *Server) handleRunKillAll(w http.ResponseWriter, r *http.Request) {
 		s.activeRunTracker.KillAllForTenant(tenantID)
 	}
 	log.Warn().Str("tenant_id", tenantID).Int("killed", killed).Msg("runs_killed_by_admin_for_tenant")
+	s.recordControlPlaneAction(r.Context(), tenantID, "operator_kill_all", "admin_api",
+		fmt.Sprintf("killed=%d", killed))
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":    "terminated",
 		"tenant_id": tenantID,
@@ -114,6 +118,7 @@ func (s *Server) handleRunPause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Info().Str("correlation_id", id).Msg("run_paused_by_admin")
+	s.recordControlPlaneAction(r.Context(), "", "operator_pause", "admin_api", "run="+id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "paused", "correlation_id": id})
 }
 
@@ -132,6 +137,7 @@ func (s *Server) handleRunResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Info().Str("correlation_id", id).Msg("run_resumed_by_admin")
+	s.recordControlPlaneAction(r.Context(), "", "operator_resume", "admin_api", "run="+id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "running", "correlation_id": id})
 }
 

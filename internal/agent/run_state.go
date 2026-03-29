@@ -16,14 +16,15 @@ import (
 type RunStatus string
 
 const (
-	RunStatusQueued     RunStatus = "queued"
-	RunStatusRunning    RunStatus = "running"
-	RunStatusPaused     RunStatus = "paused"
-	RunStatusCompleted  RunStatus = "completed"
-	RunStatusFailed     RunStatus = "failed"
-	RunStatusTerminated RunStatus = "terminated"
-	RunStatusBlocked    RunStatus = "blocked"
-	RunStatusDenied     RunStatus = "denied"
+	RunStatusQueued           RunStatus = "queued"
+	RunStatusRunning          RunStatus = "running"
+	RunStatusPaused           RunStatus = "paused"
+	RunStatusAwaitingApproval RunStatus = "awaiting_approval"
+	RunStatusCompleted        RunStatus = "completed"
+	RunStatusFailed           RunStatus = "failed"
+	RunStatusTerminated       RunStatus = "terminated"
+	RunStatusBlocked          RunStatus = "blocked"
+	RunStatusDenied           RunStatus = "denied"
 )
 
 // IsTerminal returns true for states that represent a finished run.
@@ -39,22 +40,23 @@ func (s RunStatus) IsTerminal() bool {
 type FailureReason string
 
 const (
-	FailureNone             FailureReason = ""
-	FailureCostExceeded     FailureReason = "cost_exceeded"
-	FailureToolTimeout      FailureReason = "tool_timeout"
-	FailureToolFailure      FailureReason = "tool_failure"
-	FailureLLMError         FailureReason = "llm_error"
-	FailureLLMTimeout       FailureReason = "llm_timeout"
-	FailureContainmentDeny  FailureReason = "containment_deny"
-	FailureCircuitBreaker   FailureReason = "circuit_breaker"
-	FailureOperatorKill     FailureReason = "operator_kill"
-	FailureContextTimeout   FailureReason = "context_timeout"
-	FailurePolicyDeny       FailureReason = "policy_deny"
-	FailurePIIBlock         FailureReason = "pii_block"
-	FailureToolEscalation   FailureReason = "tool_escalation"
-	FailureHookDeny         FailureReason = "hook_deny"
-	FailureInternalError    FailureReason = "internal_error"
-	FailureMaxStepsExceeded FailureReason = "max_steps_exceeded"
+	FailureNone                 FailureReason = ""
+	FailureCostExceeded         FailureReason = "cost_exceeded"
+	FailureToolTimeout          FailureReason = "tool_timeout"
+	FailureToolFailure          FailureReason = "tool_failure"
+	FailureLLMError             FailureReason = "llm_error"
+	FailureLLMTimeout           FailureReason = "llm_timeout"
+	FailureContainmentDeny      FailureReason = "containment_deny"
+	FailureCircuitBreaker       FailureReason = "circuit_breaker"
+	FailureOperatorKill         FailureReason = "operator_kill"
+	FailureContextTimeout       FailureReason = "context_timeout"
+	FailurePolicyDeny           FailureReason = "policy_deny"
+	FailurePIIBlock             FailureReason = "pii_block"
+	FailureToolEscalation       FailureReason = "tool_escalation"
+	FailureHookDeny             FailureReason = "hook_deny"
+	FailureInternalError        FailureReason = "internal_error"
+	FailureMaxStepsExceeded     FailureReason = "max_steps_exceeded"
+	FailureMaxToolCallsExceeded FailureReason = "max_tool_calls_exceeded"
 )
 
 // RunState captures the observable state of a single agent run.

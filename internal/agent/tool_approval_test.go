@@ -99,7 +99,7 @@ func TestToolApprovalStore_ContextCancellation(t *testing.T) {
 
 	cancel()
 	wg.Wait()
-	assert.Equal(t, ToolApprovalDenied, status, "context cancel should resolve as denied")
+	assert.Equal(t, ToolApprovalCancelled, status, "context cancel should resolve as cancelled")
 }
 
 func TestToolApprovalStore_ApproveNonPending(t *testing.T) {
