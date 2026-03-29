@@ -10,6 +10,9 @@ import (
 )
 
 // Snapshot is the complete dashboard state returned by GET /api/v1/metrics.
+// It represents a "screenshot" of mission‑control at a single point in time,
+// containing all real‑time counters, timelines, and aggregate metrics needed
+// to render the dashboard UI. Each refresh of the UI fetches a new Snapshot.
 type Snapshot struct {
 	GeneratedAt      time.Time           `json:"generated_at"`
 	EnforcementMode  string              `json:"enforcement_mode"`
@@ -245,6 +248,16 @@ const maxLatencySamples = 10000
 // Real-time metrics (sparklines, PII, tools, latency) are maintained in-memory.
 // Aggregate metrics (model breakdown, budget, cache) are delegated to
 // MetricsQuerier at Snapshot() time for consistency with CLI commands.
+//
+// The collector powers the mission‑control dashboard, which periodically
+// takes "screenshots" (full Snapshot calls) to refresh the UI. The workflow is:
+//   1. Gateway events flow into the collector via Record().
+//   2. In‑memory counters and timelines are updated in real‑time.
+//   3. On each dashboard refresh (typically every 5‑10 seconds), the UI
+//      calls Snapshot() to obtain a consistent, point‑in‑time view.
+//   4. Snapshot() merges in‑memory state with aggregate queries (cost,
+//      cache stats, model breakdown) to produce the complete dashboard state.
+//   5. The UI renders the snapshot; the process repeats on the next refresh.
 type Collector struct {
 	mu                  sync.RWMutex
 	startTime           time.Time
@@ -336,6 +349,11 @@ func NewCollector(enforcementMode string, querier evidence.MetricsQuerier, opts 
 
 // Record sends a gateway event to the collector. Non-blocking: if the
 // channel is full the event is silently dropped.
+//
+// This is the entry point for mission‑control real‑time data. Each recorded
+// event updates in‑memory counters and timelines that will be included in
+// the next dashboard screenshot (Snapshot). Events are processed asynchronously
+// by the collector's background goroutine.
 func (c *Collector) Record(e GatewayEvent) {
 	select {
 	case c.events <- e:
@@ -514,6 +532,18 @@ func (c *Collector) updateShadowViolations(e GatewayEvent) {
 // Snapshot builds the complete dashboard state. In-memory data is read under
 // RLock; aggregate metrics (model breakdown, budget, cache) are queried from
 // the evidence store via MetricsQuerier after releasing the lock.
+//
+// This method implements the "screenshot" portion of the mission‑control
+// refresh workflow. It produces a consistent, point‑in‑time view of all
+// metrics suitable for UI rendering. The dashboard calls Snapshot periodically
+// (e.g., every 5‑10 seconds) to refresh the displayed data.
+//
+// Workflow steps:
+//   1. Acquire read lock to safely copy in‑memory counters and timelines.
+//   2. Build the base snapshot from real‑time data (requests, PII, tools, latency).
+//   3. Release the lock before performing I/O (evidence store queries).
+//   4. Fill aggregate metrics (model breakdown, budget, cache) using the querier.
+//   5. Return the complete Snapshot struct, ready for JSON serialization.
 func (c *Collector) Snapshot(ctx context.Context) Snapshot {
 	c.mu.RLock()
 	snap := c.buildInMemorySnapshot()
