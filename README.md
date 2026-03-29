@@ -493,7 +493,49 @@ talon costs --tenant acme --by-team                          # Team-level cost a
 talon session list --tenant acme             # List execution sessions
 talon session show <session-id>              # Show session details
 talon session trace <session-id>             # Show linked lifecycle evidence
+
+# Mission Control Dashboard
+talon mission-control                        # Launch mission-control dashboard in browser
+talon mission-control --refresh-screenshots  # Refresh dashboard screenshots and update cache
+talon mission-control --port 8081            # Use custom port for dashboard
+talon mission-control --export-screenshots   # Export current screenshots to ./screenshots/
 ```
+
+### Mission Control Screenshot Refresh Workflow
+
+The mission-control dashboard provides real-time visibility into agent activity, costs, and compliance status. Screenshots of key dashboard views are cached for performance and can be refreshed on demand.
+
+#### When to Refresh Screenshots
+- After significant configuration changes
+- Before generating compliance reports
+- When dashboard data appears stale
+- For documentation updates requiring current UI captures
+
+#### How to Refresh
+1. **Automatic refresh**: Run `talon mission-control --refresh-screenshots` to update all cached dashboard screenshots.
+2. **Manual export**: Use `talon mission-control --export-screenshots` to save current dashboard views to `./screenshots/` directory.
+3. **During dashboard session**: While the mission-control dashboard is running, press `Ctrl+R` or `Cmd+R` in the browser to refresh individual views.
+
+#### Workflow for Documentation Updates
+When updating documentation that includes mission-control screenshots:
+```bash
+# 1. Ensure Talon server is running
+talon serve --port 8080
+
+# 2. Refresh all dashboard screenshots
+talon mission-control --refresh-screenshots
+
+# 3. Export screenshots for documentation
+talon mission-control --export-screenshots
+
+# 4. Verify screenshots in ./screenshots/ directory
+ls -la ./screenshots/
+```
+
+#### Troubleshooting
+- If screenshots fail to refresh, ensure the dashboard is accessible at `http://localhost:8080/dashboard`
+- Check that you have proper permissions to write to the cache directory
+- For persistent issues, restart the Talon server and try again
 
 ### Optional request enrichment headers
 
