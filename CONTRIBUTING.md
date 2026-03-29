@@ -64,6 +64,37 @@ Test layout:
 
 CI runs all three tiers; coverage is computed from unit tests only. Coverage target: ≥65% (CI fails if below; goal 70%). The coverage run excludes `cmd/talon` (main) and `internal/testutil` (test helpers).
 
+### Mission Control Screenshot Refresh Workflow
+
+When updating the mission-control dashboard or any UI components, you may need to refresh screenshots for documentation or marketing materials. Follow this workflow:
+
+1. **Start the Talon server** with the dashboard enabled:
+   ```bash
+   talon serve --port 8080
+   ```
+
+2. **Navigate to the mission-control dashboard** in your browser:
+   - Main dashboard: `http://localhost:8080/dashboard?talon_admin_key=YOUR_TALON_ADMIN_KEY`
+   - Gateway dashboard: `http://localhost:8080/gateway/dashboard?talon_admin_key=YOUR_TALON_ADMIN_KEY`
+
+3. **Generate sample data** (if needed) using the demo recorder script:
+   ```bash
+   bash scripts/demo-recorder.sh
+   ```
+
+4. **Take screenshots** using your preferred method:
+   - Browser developer tools (screenshot node or full page)
+   - Command-line tools (e.g., `chromium --headless --screenshot`)
+   - Manual screenshots for interactive elements
+
+5. **Store screenshots** in the appropriate documentation directory:
+   - UI screenshots: `docs/images/ui/`
+   - Dashboard screenshots: `docs/images/dashboard/`
+
+6. **Update references** in documentation to point to the new screenshots.
+
+**Note:** Ensure screenshots are taken with consistent window sizes and themes to maintain visual coherence across documentation.
+
 ## Release Notes Quality Bar
 
 When your PR changes user-facing behavior, include a release-note friendly summary in your PR description:
