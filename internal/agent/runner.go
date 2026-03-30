@@ -1251,22 +1251,21 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		}
 	agentLoop:
 		for iteration := 1; ; iteration++ {
-			// Pause/resume check: if an operator paused this run, block until resumed or killed.
-			if r.runRegistry != nil && r.runRegistry.IsPaused(correlationID) {
+		// Pause/resume check: if an operator paused this run, block until resumed or killed.
+		if r.runRegistry != nil {
+			if paused, resumeCh := r.runRegistry.IsPausedWithCh(correlationID); paused && resumeCh != nil {
 				log.Info().Str("correlation_id", correlationID).Msg("agent_run_paused")
 				span.AddEvent("run_paused")
-				resumeCh := r.runRegistry.PauseCh(correlationID)
-				if resumeCh != nil {
-					select {
-					case <-resumeCh:
-						log.Info().Str("correlation_id", correlationID).Msg("agent_run_resumed")
-						span.AddEvent("run_resumed")
-					case <-ctx.Done():
-						r.setRunState(correlationID, RunStatusTerminated, FailureOperatorKill)
-						break agentLoop
-					}
+				select {
+				case <-resumeCh:
+					log.Info().Str("correlation_id", correlationID).Msg("agent_run_resumed")
+					span.AddEvent("run_resumed")
+				case <-ctx.Done():
+					r.setRunState(correlationID, RunStatusTerminated, FailureOperatorKill)
+					break agentLoop
 				}
 			}
+		}
 			if ctx.Err() != nil {
 				r.setRunState(correlationID, RunStatusTerminated, FailureOperatorKill)
 				break
@@ -1378,7 +1377,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			assistantMsg := llm.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls}
 			messages = append(messages, assistantMsg)
 			for _, tc := range resp.ToolCalls {
-				atLimit := rl != nil && rl.MaxToolCallsPerRun > 0 && len(toolsCalled) >= rl.MaxToolCallsPerRun
+				atLimit := maxToolCalls > 0 && len(toolsCalled) >= maxToolCalls
 				var resultContent string
 				var executed bool
 				var toolName string

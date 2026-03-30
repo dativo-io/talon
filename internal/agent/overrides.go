@@ -120,12 +120,17 @@ func (os *OverrideStore) DisabledToolsFor(tenantID string) []string {
 }
 
 // SetPolicyOverride sets a tighter cost or tool call cap for a tenant.
+// Only non-nil fields are updated; omit a field to leave it unchanged.
 func (os *OverrideStore) SetPolicyOverride(tenantID string, maxCostPerRun *float64, maxToolCalls *int) {
 	os.mu.Lock()
 	defer os.mu.Unlock()
 	ov := os.getOrCreate(tenantID)
-	ov.MaxCostPerRun = maxCostPerRun
-	ov.MaxToolCalls = maxToolCalls
+	if maxCostPerRun != nil {
+		ov.MaxCostPerRun = maxCostPerRun
+	}
+	if maxToolCalls != nil {
+		ov.MaxToolCalls = maxToolCalls
+	}
 }
 
 // ClearOverride removes all overrides for a tenant.
