@@ -158,6 +158,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	activeRunTracker := &agent.ActiveRunTracker{}
+	runRegistry := agent.NewRunRegistry()
+	overrideStore := agent.NewOverrideStore()
+	toolApprovalStore := agent.NewToolApprovalStore(5 * time.Minute)
 
 	cbThreshold := 5
 	cbWindow := 60 * time.Second
@@ -223,6 +226,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		PlanReview:        planReviewStore,
 		ToolRegistry:      toolRegistry,
 		ActiveRunTracker:  activeRunTracker,
+		RunRegistry:       runRegistry,
+		Overrides:         overrideStore,
+		ToolApprovals:     toolApprovalStore,
 		CircuitBreaker:    circuitBreaker,
 		ToolFailures:      toolFailureTracker,
 		Memory:            memStore,
@@ -243,6 +249,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	runner := agent.NewRunner(runnerCfg)
 	startPlanAutoDispatcher(ctx, planReviewStore, runner)
+
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				toolApprovalStore.Cleanup(30 * time.Minute)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	if memStore != nil && pol.Memory != nil && pol.Memory.Enabled {
 		stopRetention := memory.StartRetentionLoop(ctx, memStore, pol, 24*time.Hour)
@@ -269,6 +288,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		server.WithSessionStore(sessionStore),
 		server.WithCORSOrigins([]string{"*"}),
 		server.WithActiveRunTracker(activeRunTracker),
+		server.WithRunRegistry(runRegistry),
+		server.WithOverrideStore(overrideStore),
+		server.WithToolApprovalStore(toolApprovalStore),
 	}
 	if serveDashboard {
 		opts = append(opts, server.WithDashboard(web.DashboardHTML))
@@ -299,6 +321,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("loading gateway config: %w", err)
 		}
 		tenantKeys = gatewayCfg.TenantKeyMap()
+		log.Info().Int("tenant_keys", len(tenantKeys)).Int("callers", len(gatewayCfg.Callers)).Msg("gateway_tenant_keys_loaded")
 		// --gateway flag explicitly opts in; override config's enabled field
 		if !gatewayCfg.Enabled {
 			log.Info().Msg("--gateway flag set; enabling gateway (config had enabled: false)")

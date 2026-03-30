@@ -26,6 +26,7 @@ Notes:
 | Tenant-only write paths (`/v1/agents/run`, `/v1/chat/completions`, `/mcp`, `/mcp/proxy`) | Tenant key (bearer) | Tenant-scoped execution |
 | Tenant-or-admin read paths (`/v1/evidence*`, `/v1/status`, `/v1/costs*`, `/v1/memory*`, `/v1/triggers*`, `/v1/plans/pending`, `/v1/plans/{id}`) | Tenant key (bearer) **or** admin key | Tenant visibility for tenant keys; cross-tenant admin visibility for admin key |
 | Admin-only paths (`/v1/plans/{id}/approve`, `/v1/plans/{id}/reject`, `/v1/plans/{id}/modify`, `/v1/memory/{agent_id}/approve`, `/v1/secrets*`, `/v1/policies*`, `/v1/dashboard/*`, `/v1/copaw/*`) | Admin key | Control-plane actions |
+| Operational control plane (`/v1/runs*`, `/v1/overrides*`, `/v1/tool-approvals*`) | Admin key | Run management, tenant overrides, tool approval gates |
 | Gateway dashboard + metrics (`/gateway/dashboard`, `/api/v1/metrics`, `/api/v1/metrics/stream`) | Admin key | Operational dashboards and telemetry streams |
 
 ---
@@ -72,5 +73,6 @@ curl -i -H "X-Talon-Admin-Key: <admin_key>" http://localhost:8080/v1/secrets
 
 - [Configuration and environment](configuration.md)
 - [Gateway dashboard](gateway-dashboard.md)
+- [Operational control plane](operational-control-plane.md)
 - [How to offer Talon to multiple customers (multi-tenant/MSP)](../guides/multi-tenant-msp.md)
 - [Plan review example](../../examples/plan-review/README.md)

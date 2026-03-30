@@ -6,6 +6,7 @@ package gateway
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -450,14 +451,15 @@ func (c *GatewayConfig) TenantKeyMap() map[string]string {
 	m := make(map[string]string)
 	for i := range c.Callers {
 		caller := c.Callers[i]
-		if caller.TenantKey == "" {
+		key := strings.TrimSpace(caller.TenantKey)
+		if key == "" {
 			continue
 		}
 		tenantID := caller.TenantID
 		if tenantID == "" {
 			tenantID = "default"
 		}
-		m[caller.TenantKey] = tenantID
+		m[key] = tenantID
 	}
 	return m
 }
