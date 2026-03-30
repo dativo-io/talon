@@ -325,7 +325,7 @@ func (rr *RunRegistry) PauseCh(correlationID string) <-chan struct{} {
 // resume channel under a single lock acquisition. This avoids a race
 // where Resume() can close the old channel and replace it between
 // separate IsPaused() and PauseCh() calls.
-func (rr *RunRegistry) IsPausedWithCh(correlationID string) (bool, <-chan struct{}) {
+func (rr *RunRegistry) IsPausedWithCh(correlationID string) (paused bool, ch <-chan struct{}) {
 	rr.mu.RLock()
 	defer rr.mu.RUnlock()
 	rs, ok := rr.runs[correlationID]

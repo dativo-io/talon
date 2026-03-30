@@ -1251,21 +1251,21 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		}
 	agentLoop:
 		for iteration := 1; ; iteration++ {
-		// Pause/resume check: if an operator paused this run, block until resumed or killed.
-		if r.runRegistry != nil {
-			if paused, resumeCh := r.runRegistry.IsPausedWithCh(correlationID); paused && resumeCh != nil {
-				log.Info().Str("correlation_id", correlationID).Msg("agent_run_paused")
-				span.AddEvent("run_paused")
-				select {
-				case <-resumeCh:
-					log.Info().Str("correlation_id", correlationID).Msg("agent_run_resumed")
-					span.AddEvent("run_resumed")
-				case <-ctx.Done():
-					r.setRunState(correlationID, RunStatusTerminated, FailureOperatorKill)
-					break agentLoop
+			// Pause/resume check: if an operator paused this run, block until resumed or killed.
+			if r.runRegistry != nil {
+				if paused, resumeCh := r.runRegistry.IsPausedWithCh(correlationID); paused && resumeCh != nil {
+					log.Info().Str("correlation_id", correlationID).Msg("agent_run_paused")
+					span.AddEvent("run_paused")
+					select {
+					case <-resumeCh:
+						log.Info().Str("correlation_id", correlationID).Msg("agent_run_resumed")
+						span.AddEvent("run_resumed")
+					case <-ctx.Done():
+						r.setRunState(correlationID, RunStatusTerminated, FailureOperatorKill)
+						break agentLoop
+					}
 				}
 			}
-		}
 			if ctx.Err() != nil {
 				r.setRunState(correlationID, RunStatusTerminated, FailureOperatorKill)
 				break
