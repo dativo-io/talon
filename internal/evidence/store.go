@@ -70,7 +70,7 @@ type Evidence struct {
 	CostSaved       float64            `json:"cost_saved,omitempty"`
 	PlanReview      *PlanReviewEvent   `json:"plan_review,omitempty"`
 	RetryAttempt    string             `json:"retry_attempt,omitempty"` // X-Talon-Retry-Attempt header from gateway callers
-	Explanations    []explanation.Item `json:"explanations"`
+	Explanations    []explanation.Item `json:"explanations,omitempty"`
 }
 
 // PlanReviewEvent captures human oversight actions performed on execution plans.

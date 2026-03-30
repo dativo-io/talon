@@ -261,16 +261,16 @@ func (g *Generator) buildExplanations(params GenerateParams) []explanation.Item 
 			policyRef,
 			versionIdentity,
 		)...)
-	}
-	if params.Error != "" {
-		facts = append(facts, explanation.Fact{
-			Code:            explanation.CodeExecutionFailed,
-			Decision:        explanation.DecisionFailure,
-			Stage:           "execution",
-			Trigger:         params.Error,
-			PolicyRef:       policyRef,
-			VersionIdentity: versionIdentity,
-		})
+		if params.Error != "" {
+			facts = append(facts, explanation.Fact{
+				Code:            explanation.CodeExecutionFailed,
+				Decision:        explanation.DecisionFailure,
+				Stage:           "execution",
+				Trigger:         params.Error,
+				PolicyRef:       policyRef,
+				VersionIdentity: versionIdentity,
+			})
+		}
 	}
 	items := explanation.BuildFromFacts(facts)
 	if len(items) == 0 {
