@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
@@ -78,7 +79,13 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 	}
 
 	modified := false
-	for field, val := range argsMap {
+	fields := make([]string, 0, len(argsMap))
+	for field := range argsMap {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	for _, field := range fields {
+		val := argsMap[field]
 		action := tp.Arguments[field]
 		if action == "" {
 			action = tp.ArgumentDefault
@@ -101,8 +108,10 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 
 		for _, f := range findings {
 			if f.PIICount > 0 && action == policy.PIIActionBlock {
-				result.Blocked = true
-				result.BlockReason = fmt.Sprintf("PII detected in field %q (types: %v)", field, f.PIITypes)
+				if !result.Blocked {
+					result.Blocked = true
+					result.BlockReason = fmt.Sprintf("PII detected in field %q (types: %v)", field, f.PIITypes)
+				}
 			}
 		}
 
@@ -170,6 +179,7 @@ func applyPIIAction(ctx context.Context, scanner *classifier.Scanner, field, tex
 	for t := range types {
 		typeList = append(typeList, t)
 	}
+	sort.Strings(typeList)
 
 	finding := ToolPIIFinding{
 		Field:     field,

@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/google/uuid"
 )
 
@@ -79,11 +81,12 @@ type GenerateParams struct {
 	ObservationModeOverride bool             // True when allowed despite policy deny (shadow/observation-only mode)
 	RoutingDecision         *RoutingDecision // Provider selection and rejected candidates (EU routing)
 	// Semantic cache: set on cache hit (Cost=0, CostSaved=estimated equivalent LLM cost).
-	CacheHit        bool    // True when response was served from cache
-	CacheEntryID    string  // Cache entry ID for audit correlation
-	CacheSimilarity float64 // Similarity score that produced the hit
-	CostSaved       float64 // Estimated cost saved by not calling the LLM
-	PlanReview      *PlanReviewEvent
+	CacheHit         bool    // True when response was served from cache
+	CacheEntryID     string  // Cache entry ID for audit correlation
+	CacheSimilarity  float64 // Similarity score that produced the hit
+	CostSaved        float64 // Estimated cost saved by not calling the LLM
+	PlanReview       *PlanReviewEvent
+	ExplanationFacts []explanation.Fact // Structured source-of-truth facts; legacy bridge used when empty.
 }
 
 // StepParams holds inputs for creating a step-level evidence record (one LLM call or one tool call within a run).
@@ -230,12 +233,70 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 		CostSaved:       params.CostSaved,
 		PlanReview:      params.PlanReview,
 	}
+	ev.Explanations = g.buildExplanations(params)
+	if len(ev.Explanations) == 0 {
+		return nil, fmt.Errorf("evidence explanations are required")
+	}
 
 	if err := g.store.Store(ctx, ev); err != nil {
 		return nil, err
 	}
 
 	return ev, nil
+}
+
+func (g *Generator) buildExplanations(params GenerateParams) []explanation.Item {
+	facts := append([]explanation.Fact(nil), params.ExplanationFacts...)
+	policyRef := ""
+	versionIdentity := strings.TrimSpace(params.PolicyDecision.PolicyVersion)
+	if versionIdentity != "" {
+		policyRef = "policy:" + versionIdentity
+	}
+	if len(facts) == 0 {
+		facts = append(facts, explanation.BuildLegacyFacts(
+			params.PolicyDecision.Allowed,
+			params.PolicyDecision.Action,
+			params.PolicyDecision.Reasons,
+			defaultStageForParams(params),
+			policyRef,
+			versionIdentity,
+		)...)
+	}
+	if params.Error != "" {
+		facts = append(facts, explanation.Fact{
+			Code:            explanation.CodeExecutionFailed,
+			Decision:        explanation.DecisionFailure,
+			Stage:           "execution",
+			Trigger:         params.Error,
+			PolicyRef:       policyRef,
+			VersionIdentity: versionIdentity,
+		})
+	}
+	items := explanation.BuildFromFacts(facts)
+	if len(items) == 0 {
+		items = explanation.BuildFromFacts([]explanation.Fact{{
+			Code:            explanation.CodeLegacyReasonUnmigrated,
+			Decision:        explanation.DecisionFailure,
+			Stage:           defaultStageForParams(params),
+			Trigger:         "missing explanation facts",
+			PolicyRef:       policyRef,
+			VersionIdentity: versionIdentity,
+		}})
+	}
+	return items
+}
+
+func defaultStageForParams(params GenerateParams) string {
+	if params.Stage != "" {
+		return params.Stage
+	}
+	if params.PolicyDecision.Action == "allow" || params.PolicyDecision.Action == "deny" {
+		return "policy_evaluation"
+	}
+	if params.Error != "" {
+		return "execution"
+	}
+	return "policy_evaluation"
 }
 
 func hashString(s string) string {

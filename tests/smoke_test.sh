@@ -688,6 +688,8 @@ test_section_10_audit() {
   local show_out; show_out="$(run_talon audit show "$ev_id" 2>/dev/null)"; true
   assert_pass "audit show JSON/output contains policy_decision or Policy" \
     grep -qiE 'policy_decision|Policy' <<< "$show_out"
+  assert_pass "audit show output includes deterministic explanations section" \
+    grep -qiE 'Explanations|Primary explanation|POLICY_' <<< "$show_out"
   assert_pass "talon audit verify <id> exits 0 and contains valid: true or VALID" \
     grep -qi valid <<< "$(run_talon audit verify "$ev_id" 2>/dev/null)" && run_talon audit verify "$ev_id" &>/dev/null
   # Tamper: corrupt evidence_json so HMAC verification fails (Verify reads from JSON blob)
@@ -806,10 +808,14 @@ GWEOF
   local ev_list; ev_list="$(curl -s -H "X-Talon-Admin-Key: $admin_key" 'http://127.0.0.1:8080/v1/evidence?limit=1')"
   assert_pass "GET /v1/evidence?limit=1 at most one entry" \
     test "$(echo "$ev_list" | jq '.entries | length')" -le 1
+  assert_pass "GET /v1/evidence list includes primary explanation fields" \
+    jq -e '.entries | length == 0 or (.[0] | has("primary_explanation_code") and has("primary_explanation_reason"))' <<< "$ev_list" &>/dev/null
   local ev_id; ev_id="$(echo "$ev_list" | jq -r '.entries[0].id // empty')"
   if [[ -n "$ev_id" ]] && [[ "$ev_id" != "null" ]]; then
     assert_pass "GET /v1/evidence/<id> 200 with policy_decision" \
       jq -e '.policy_decision' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" "http://127.0.0.1:8080/v1/evidence/$ev_id")" &>/dev/null
+    assert_pass "GET /v1/evidence/<id> includes explanations array with version_identity" \
+      jq -e '.explanations | type == "array" and length > 0 and .[0].version_identity != null' <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" "http://127.0.0.1:8080/v1/evidence/$ev_id")" &>/dev/null
     assert_pass "GET /v1/evidence/<id>/verify 200 valid: true" \
       grep -q true <<< "$(curl -s -H "X-Talon-Admin-Key: $admin_key" "http://127.0.0.1:8080/v1/evidence/$ev_id/verify")"
   fi
@@ -844,6 +850,8 @@ GWEOF
   local export_body; export_body="$(curl -s -X POST -H "X-Talon-Admin-Key: $admin_key" -H "Content-Type: application/json" -d '{"limit":10,"format":"json"}' http://127.0.0.1:8080/v1/evidence/export)"
   assert_pass "POST /v1/evidence/export JSON returns array of records" \
     jq -e 'type == "array"' <<< "$export_body" &>/dev/null
+  assert_pass "POST /v1/evidence/export JSON includes primary explanation fields when records exist" \
+    jq -e 'length == 0 or (.[0] | has("primary_explanation_code") and has("primary_explanation_reason") and has("primary_version_identity"))' <<< "$export_body" &>/dev/null
   local dash_headers
   dash_headers="$(curl -sI http://127.0.0.1:8080/dashboard 2>/dev/null | head -10)"
   assert_pass "GET /dashboard 200" bash -c 'echo "$1" | grep -qi "200"' _ "$dash_headers"

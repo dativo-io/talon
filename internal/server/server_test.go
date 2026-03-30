@@ -1593,6 +1593,94 @@ func TestEvidenceListQueryParams(t *testing.T) {
 	assert.Equal(t, "agent-b", entries[0].(map[string]interface{})["agent_id"])
 }
 
+func TestEvidenceListIncludesPrimaryExplanationFields(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	gen := evidence.NewGenerator(store)
+	_, err = gen.Generate(context.Background(), evidence.GenerateParams{
+		CorrelationID:  "corr_expl_list",
+		TenantID:       "default",
+		AgentID:        "agent-a",
+		InvocationType: "test",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed:       false,
+			Action:        "deny",
+			Reasons:       []string{"daily budget exceeded"},
+			PolicyVersion: "1.0.0:sha256:abc12345",
+		},
+	})
+	require.NoError(t, err)
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
+	r := srv.Routes()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=1", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	entries, _ := out["entries"].([]interface{})
+	require.Len(t, entries, 1)
+	first := entries[0].(map[string]interface{})
+	_, hasCode := first["primary_explanation_code"]
+	_, hasReason := first["primary_explanation_reason"]
+	assert.True(t, hasCode)
+	assert.True(t, hasReason)
+}
+
+func TestEvidenceTraceIncludesExplanations(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	gen := evidence.NewGenerator(store)
+	ev, err := gen.Generate(context.Background(), evidence.GenerateParams{
+		CorrelationID:  "corr_trace_expl",
+		TenantID:       "default",
+		AgentID:        "agent-trace",
+		InvocationType: "test",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed:       false,
+			Action:        "deny",
+			Reasons:       []string{"routing policy returned no results (fail-closed)"},
+			PolicyVersion: "2.0.0:sha256:abcd1234",
+		},
+	})
+	require.NoError(t, err)
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
+	r := srv.Routes()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/"+ev.ID+"/trace", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	evidenceObj, ok := out["evidence"].(map[string]interface{})
+	require.True(t, ok)
+	explanations, ok := evidenceObj["explanations"].([]interface{})
+	require.True(t, ok)
+	require.NotEmpty(t, explanations)
+	first := explanations[0].(map[string]interface{})
+	assert.NotEmpty(t, first["code"])
+	assert.NotEmpty(t, first["reason"])
+	assert.NotEmpty(t, first["version_identity"])
+}
+
 // TestEvidenceTenantIsolation_NonexistentIDReturns404 ensures that requesting a
 // nonexistent evidence ID returns 404 (not 403) so we don't leak existence.
 func TestEvidenceTenantIsolation_NonexistentIDReturns404(t *testing.T) {

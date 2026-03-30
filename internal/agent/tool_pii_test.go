@@ -106,6 +106,30 @@ func TestApplyToolArgumentPII_BlockMode(t *testing.T) {
 	assert.NotEmpty(t, result.Findings)
 }
 
+func TestApplyToolArgumentPII_BlockReasonDeterministicFieldOrder(t *testing.T) {
+	scanner := newTestScanner(t)
+	ctx := context.Background()
+
+	pol := &policy.Policy{
+		ToolPolicies: map[string]policy.ToolPIIPolicy{
+			"sensitive_tool": {
+				ArgumentDefault: policy.PIIActionBlock,
+			},
+		},
+	}
+
+	args, _ := json.Marshal(map[string]interface{}{
+		"z_field": "email is user@company.eu",
+		"a_field": "iban DE89370400440532013000",
+	})
+
+	result := applyToolArgumentPII(ctx, scanner, "sensitive_tool", args, pol)
+	require.NotNil(t, result)
+	require.True(t, result.Blocked)
+	// Deterministic: sorted field iteration means first blocking reason is from a_field.
+	assert.Contains(t, result.BlockReason, `field "a_field"`)
+}
+
 func TestApplyToolArgumentPII_AllowMode(t *testing.T) {
 	scanner := newTestScanner(t)
 	ctx := context.Background()

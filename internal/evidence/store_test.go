@@ -120,6 +120,51 @@ func TestStoreEvidence_WithoutRoutingDecision(t *testing.T) {
 	assert.Nil(t, retrieved.RoutingDecision, "existing evidence without routing_decision should remain nil")
 }
 
+func TestGenerateAddsMandatoryExplanations(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	ev, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr_explanations",
+		TenantID:       "acme",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "1.2.3:sha256:abc12345"},
+		ModelUsed:      "gpt-4o-mini",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, ev.Explanations)
+	assert.NotEmpty(t, ev.Explanations[0].Code)
+	assert.NotEmpty(t, ev.Explanations[0].Reason)
+	assert.Equal(t, "1.2.3:sha256:abc12345", ev.Explanations[0].VersionIdentity)
+}
+
+func TestIndexIncludesPrimaryExplanationFields(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+	_, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr_idx_expl",
+		TenantID:       "default",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{
+			Allowed:       false,
+			Action:        "deny",
+			Reasons:       []string{"daily budget exceeded"},
+			PolicyVersion: "1.0.0:sha256:deadbeef",
+		},
+	})
+	require.NoError(t, err)
+
+	index, err := store.ListIndex(ctx, "default", "", time.Time{}, time.Time{}, 10, "", "", "")
+	require.NoError(t, err)
+	require.NotEmpty(t, index)
+	assert.NotEmpty(t, index[0].PrimaryExplanationCode)
+	assert.NotEmpty(t, index[0].PrimaryExplanationReason)
+}
+
 func TestGenerate_InputHashDeterministic(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

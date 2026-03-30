@@ -280,6 +280,11 @@ talon audit export --format csv --from ... --to ...  # Export for compliance (in
 
 (Evidence IDs are shown in run output, e.g. `req_xxxxxxxx`.)
 
+Deterministic explanation contract (MVP):
+- Every evidence record includes `explanations[]` with stable fields: `code`, `decision`, `stage`, `reason`, `trigger`, `fix`, `policy_ref`, `version_identity`.
+- List/index surfaces expose `primary_explanation_code` and `primary_explanation_reason`.
+- `version_identity` is dual-factor: declared policy version + canonical policy hash.
+
 ## HTTP API Server
 
 Run the full REST API, MCP server, and embedded dashboard:

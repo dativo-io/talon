@@ -278,6 +278,7 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 		"input_tier", "output_tier", "pii_detected", "pii_redacted", "policy_reasons", "tools_called", "input_hash", "output_hash",
 		"observation_mode_override", "shadow_violation_types",
 		"cache_hit", "cache_entry_id", "cost_saved",
+		"primary_explanation_code", "primary_explanation_reason", "primary_version_identity",
 	}
 	if err := writer.Write(header); err != nil {
 		return err
@@ -309,6 +310,9 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 			strconv.FormatBool(r.CacheHit),
 			r.CacheEntryID,
 			formatCostNumeric(r.CostSaved),
+			r.PrimaryExplanationCode,
+			r.PrimaryExplanationReason,
+			r.PrimaryVersionIdentity,
 		}
 		if err := writer.Write(row); err != nil {
 			return err
@@ -462,7 +466,11 @@ func renderAuditList(w io.Writer, index []evidence.Index) {
 		if entry.CacheHit {
 			cacheMark = " [CACHE]"
 		}
-		fmt.Fprintf(w, "  %s %s | %s | %s/%s | %s | €%s | %dms%s%s\n",
+		explanationMark := ""
+		if entry.PrimaryExplanationCode != "" {
+			explanationMark = " [" + entry.PrimaryExplanationCode + "]"
+		}
+		fmt.Fprintf(w, "  %s %s | %s | %s/%s | %s | €%s | %dms%s%s%s\n",
 			status,
 			entry.ID,
 			entry.Timestamp.Format("2006-01-02 15:04:05"),
@@ -473,6 +481,7 @@ func renderAuditList(w io.Writer, index []evidence.Index) {
 			entry.DurationMS,
 			errorMark,
 			cacheMark,
+			explanationMark,
 		)
 	}
 }
@@ -599,5 +608,24 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 	fmt.Fprintln(w, "Compliance")
 	fmt.Fprintf(w, "Frameworks:    %s\n", strings.Join(ev.Compliance.Frameworks, ", "))
 	fmt.Fprintf(w, "Data Residency: %s\n", ev.Compliance.DataLocation)
+	if len(ev.Explanations) > 0 {
+		fmt.Fprintln(w, "Explanations")
+		for i := range ev.Explanations {
+			ex := ev.Explanations[i]
+			fmt.Fprintf(w, "  [%d] %s | %s | %s\n", i+1, ex.Code, ex.Decision, ex.Reason)
+			if ex.Trigger != "" {
+				fmt.Fprintf(w, "      Trigger: %s\n", ex.Trigger)
+			}
+			if ex.Fix != "" {
+				fmt.Fprintf(w, "      Fix: %s\n", ex.Fix)
+			}
+			if ex.PolicyRef != "" {
+				fmt.Fprintf(w, "      Policy Ref: %s\n", ex.PolicyRef)
+			}
+			if ex.VersionIdentity != "" {
+				fmt.Fprintf(w, "      Version: %s\n", ex.VersionIdentity)
+			}
+		}
+	}
 	fmt.Fprintln(w, sep)
 }

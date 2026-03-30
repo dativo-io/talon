@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/open-policy-agent/opa/rego"
 	"github.com/open-policy-agent/opa/storage/inmem"
@@ -537,6 +538,7 @@ func evaluateDenyReasons(ctx context.Context, prepared map[string]rego.PreparedE
 			}
 		}
 	}
+	sort.Strings(reasons)
 
 	return reasons, nil
 }

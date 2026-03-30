@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -63,6 +64,26 @@ func TestToExportRecord_BackwardCompatible(t *testing.T) {
 	assert.Equal(t, []string{"budget ok"}, rec.PolicyReasons)
 	assert.Equal(t, []string{"web_search"}, rec.ToolsCalled)
 	assert.Equal(t, "abc123", rec.InputHash)
+}
+
+func TestToExportRecord_PrimaryExplanationFields(t *testing.T) {
+	ev := &Evidence{
+		ID:             "test_005",
+		Timestamp:      time.Now(),
+		TenantID:       "t1",
+		AgentID:        "a1",
+		InvocationType: "cli",
+		PolicyDecision: PolicyDecision{Allowed: false, Action: "deny", PolicyVersion: "1.0.0:sha256:abcd1234"},
+		Execution:      Execution{ModelUsed: "gpt-4o"},
+		Explanations: []explanation.Item{
+			{Code: "POLICY_DENIED_COST", Decision: "deny", Stage: "policy_evaluation", Reason: "Request blocked by cost policy limits.", VersionIdentity: "1.0.0:sha256:abcd1234"},
+		},
+	}
+
+	rec := ToExportRecord(ev)
+	assert.Equal(t, "POLICY_DENIED_COST", rec.PrimaryExplanationCode)
+	assert.NotEmpty(t, rec.PrimaryExplanationReason)
+	assert.Equal(t, "1.0.0:sha256:abcd1234", rec.PrimaryVersionIdentity)
 }
 
 func TestExportRecord_JSONRoundTrip(t *testing.T) {

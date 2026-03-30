@@ -84,8 +84,10 @@ func LoadPolicy(ctx context.Context, path string, strict bool, baseDir string) (
 		return nil, fmt.Errorf("parsing YAML: %w", err)
 	}
 
-	pol.ComputeHash(content)
 	applyDefaults(&pol)
+	if err := pol.ComputeCanonicalIdentity(); err != nil {
+		return nil, fmt.Errorf("computing policy identity: %w", err)
+	}
 
 	// Validate routing configuration for sovereignty misconfigurations
 	if pol.Policies.ModelRouting != nil {

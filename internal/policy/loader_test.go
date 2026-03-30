@@ -338,6 +338,33 @@ policies:
 	assert.Len(t, pol.Hash, 64) // SHA-256 is 64 hex chars
 }
 
+func TestPolicyVersioning_CanonicalHashIgnoresWhitespace(t *testing.T) {
+	yamlA := `
+agent:
+  name: test-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 100.0
+`
+	yamlB := "agent:\n  name: test-agent\n  version: 1.0.0\npolicies:\n  cost_limits: { daily: 100.0 }\n"
+
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	pathA := filepath.Join(tmpDir, "a.yaml")
+	pathB := filepath.Join(tmpDir, "b.yaml")
+	require.NoError(t, os.WriteFile(pathA, []byte(yamlA), 0o644))
+	require.NoError(t, os.WriteFile(pathB, []byte(yamlB), 0o644))
+
+	polA, err := LoadPolicy(ctx, pathA, false, tmpDir)
+	require.NoError(t, err)
+	polB, err := LoadPolicy(ctx, pathB, false, tmpDir)
+	require.NoError(t, err)
+
+	assert.Equal(t, polA.Hash, polB.Hash)
+	assert.Equal(t, polA.VersionTag, polB.VersionTag)
+}
+
 func TestLoadPolicy_AgentConfigFields(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
