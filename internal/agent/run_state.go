@@ -309,22 +309,11 @@ func (rr *RunRegistry) IsPaused(correlationID string) bool {
 	return rs.Status == RunStatusPaused
 }
 
-// PauseCh returns a channel that is closed when a paused run is resumed.
-// Returns nil if run not found.
-func (rr *RunRegistry) PauseCh(correlationID string) <-chan struct{} {
-	rr.mu.RLock()
-	defer rr.mu.RUnlock()
-	rs, ok := rr.runs[correlationID]
-	if !ok {
-		return nil
-	}
-	return rs.pauseCh
-}
-
 // IsPausedWithCh atomically checks if a run is paused and returns the
 // resume channel under a single lock acquisition. This avoids a race
-// where Resume() can close the old channel and replace it between
-// separate IsPaused() and PauseCh() calls.
+// where Resume() closes the old channel and replaces it between
+// separate IsPaused() and channel-read calls — the new channel would
+// never be closed, hanging the agent loop until context cancellation.
 func (rr *RunRegistry) IsPausedWithCh(correlationID string) (paused bool, ch <-chan struct{}) {
 	rr.mu.RLock()
 	defer rr.mu.RUnlock()

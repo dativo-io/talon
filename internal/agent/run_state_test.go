@@ -246,7 +246,8 @@ func TestRunRegistry_Resume(t *testing.T) {
 	rr.SetStatus("corr-1", RunStatusRunning, FailureNone)
 	rr.Pause("corr-1")
 
-	pauseCh := rr.PauseCh("corr-1")
+	paused, pauseCh := rr.IsPausedWithCh("corr-1")
+	require.True(t, paused)
 	require.NotNil(t, pauseCh)
 
 	resumed := rr.Resume("corr-1")
@@ -275,9 +276,11 @@ func TestRunRegistry_ResumeNotPaused(t *testing.T) {
 	assert.False(t, rr.Resume("corr-1"), "can't resume a running (not paused) run")
 }
 
-func TestRunRegistry_PauseCh_NotFound(t *testing.T) {
+func TestRunRegistry_IsPausedWithCh_NotFound(t *testing.T) {
 	rr := NewRunRegistry()
-	assert.Nil(t, rr.PauseCh("ghost"))
+	paused, ch := rr.IsPausedWithCh("ghost")
+	assert.False(t, paused)
+	assert.Nil(t, ch)
 }
 
 func TestRunRegistry_IsPaused_NotFound(t *testing.T) {
@@ -307,4 +310,63 @@ func TestRunRegistry_ConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// TestRunRegistry_PauseResumeRace exercises the exact race that existed
+// when IsPaused() and PauseCh() were separate calls: a concurrent Resume()
+// could close the old channel and replace it before PauseCh() ran,
+// returning the new (never-closed) channel and hanging the select.
+//
+// With IsPausedWithCh the status and channel are read under a single lock,
+// so the captured channel is always the one Resume() will close.
+func TestRunRegistry_PauseResumeRace(t *testing.T) {
+	const iterations = 200
+	rr := NewRunRegistry()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rr.Register("race-1", "t", "a", "", cancel)
+	rr.SetStatus("race-1", RunStatusRunning, FailureNone)
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < iterations; i++ {
+		rr.Pause("race-1")
+
+		wg.Add(2)
+
+		// Goroutine 1: simulates the agent loop reading pause state + channel.
+		unblocked := make(chan struct{})
+		go func() {
+			defer wg.Done()
+			paused, ch := rr.IsPausedWithCh("race-1")
+			if !paused || ch == nil {
+				close(unblocked)
+				return
+			}
+			select {
+			case <-ch:
+			case <-ctx.Done():
+				t.Error("agent loop hung — IsPausedWithCh returned stale channel")
+			}
+			close(unblocked)
+		}()
+
+		// Goroutine 2: simulates an operator resuming the run concurrently.
+		go func() {
+			defer wg.Done()
+			rr.Resume("race-1")
+		}()
+
+		select {
+		case <-unblocked:
+		case <-time.After(2 * time.Second):
+			t.Fatal("deadlock: agent goroutine did not unblock after resume")
+		}
+
+		wg.Wait()
+
+		// Reset to running for the next iteration.
+		rr.SetStatus("race-1", RunStatusRunning, FailureNone)
+	}
 }

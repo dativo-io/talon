@@ -113,6 +113,33 @@ func TestOverrideStore_SetPolicyOverride_PartialNil(t *testing.T) {
 	assert.Nil(t, ov.MaxToolCalls)
 }
 
+func TestOverrideStore_SetPolicyOverride_PartialUpdatePreservesOtherField(t *testing.T) {
+	store := NewOverrideStore()
+
+	initialCost := 0.50
+	initialTools := 10
+	store.SetPolicyOverride("acme", &initialCost, &initialTools)
+
+	newCost := 0.10
+	store.SetPolicyOverride("acme", &newCost, nil)
+
+	ov := store.Get("acme")
+	require.NotNil(t, ov)
+	require.NotNil(t, ov.MaxCostPerRun, "cost should be updated")
+	require.NotNil(t, ov.MaxToolCalls, "tools cap must survive a partial cost-only update")
+	assert.InDelta(t, 0.10, *ov.MaxCostPerRun, 1e-9)
+	assert.Equal(t, 10, *ov.MaxToolCalls)
+
+	newTools := 5
+	store.SetPolicyOverride("acme", nil, &newTools)
+
+	ov = store.Get("acme")
+	require.NotNil(t, ov.MaxCostPerRun, "cost cap must survive a partial tools-only update")
+	require.NotNil(t, ov.MaxToolCalls, "tools should be updated")
+	assert.InDelta(t, 0.10, *ov.MaxCostPerRun, 1e-9)
+	assert.Equal(t, 5, *ov.MaxToolCalls)
+}
+
 func TestOverrideStore_ClearOverride(t *testing.T) {
 	store := NewOverrideStore()
 
