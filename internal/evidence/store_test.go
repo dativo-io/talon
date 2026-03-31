@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -118,6 +119,51 @@ func TestStoreEvidence_WithoutRoutingDecision(t *testing.T) {
 	retrieved, err := store.Get(ctx, ev.ID)
 	require.NoError(t, err)
 	assert.Nil(t, retrieved.RoutingDecision, "existing evidence without routing_decision should remain nil")
+}
+
+func TestGenerateAddsMandatoryExplanations(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	ev, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr_explanations",
+		TenantID:       "acme",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "1.2.3:sha256:abc12345"},
+		ModelUsed:      "gpt-4o-mini",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, ev.Explanations)
+	assert.NotEmpty(t, ev.Explanations[0].Code)
+	assert.NotEmpty(t, ev.Explanations[0].Reason)
+	assert.Equal(t, "1.2.3:sha256:abc12345", ev.Explanations[0].VersionIdentity)
+}
+
+func TestIndexIncludesPrimaryExplanationFields(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+	_, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr_idx_expl",
+		TenantID:       "default",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{
+			Allowed:       false,
+			Action:        "deny",
+			Reasons:       []string{"daily budget exceeded"},
+			PolicyVersion: "1.0.0:sha256:deadbeef",
+		},
+	})
+	require.NoError(t, err)
+
+	index, err := store.ListIndex(ctx, "default", "", time.Time{}, time.Time{}, 10, "", "", "")
+	require.NoError(t, err)
+	require.NotEmpty(t, index)
+	assert.NotEmpty(t, index[0].PrimaryExplanationCode)
+	assert.NotEmpty(t, index[0].PrimaryExplanationReason)
 }
 
 func TestGenerate_InputHashDeterministic(t *testing.T) {
@@ -322,6 +368,39 @@ func TestGenerateWithError(t *testing.T) {
 	retrieved, err := store.Get(ctx, ev.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "connection timeout", retrieved.Execution.Error)
+}
+
+func TestGenerate_NoDuplicateExecutionFailureWhenExplanationFactsAlreadySet(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	ev, err := gen.Generate(ctx, GenerateParams{
+		CorrelationID:  "corr_exec_dedup",
+		TenantID:       "acme",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "1.0.0:sha256:abc"},
+		ModelUsed:      "gpt-4",
+		Error:          "provider unavailable",
+		ExplanationFacts: []explanation.Fact{{
+			Code:            explanation.CodeExecutionFailed,
+			Decision:        explanation.DecisionFailure,
+			Stage:           "execution",
+			Trigger:         "provider unavailable",
+			PolicyRef:       "policy:1.0.0:sha256:abc",
+			VersionIdentity: "1.0.0:sha256:abc",
+		}},
+	})
+	require.NoError(t, err)
+
+	nExec := 0
+	for _, ex := range ev.Explanations {
+		if ex.Code == explanation.CodeExecutionFailed {
+			nExec++
+		}
+	}
+	assert.Equal(t, 1, nExec, "params.Error must not add a second execution failure when ExplanationFacts already includes one")
 }
 
 func TestGenerateWithAttachmentScan(t *testing.T) {

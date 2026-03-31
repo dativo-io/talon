@@ -3,6 +3,7 @@ package policy
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -430,6 +431,24 @@ func (p *Policy) ComputeHash(content []byte) {
 	hash := sha256.Sum256(content)
 	p.Hash = hex.EncodeToString(hash[:])
 	p.VersionTag = fmt.Sprintf("%s:sha256:%s", p.Agent.Version, p.Hash[:8])
+}
+
+// ComputeCanonicalIdentity computes policy identity from a canonical serialized
+// policy representation (post-defaults), making identity insensitive to YAML
+// formatting, comment changes, or map insertion order.
+func (p *Policy) ComputeCanonicalIdentity() error {
+	canonicalJSON, err := json.Marshal(p)
+	if err != nil {
+		return fmt.Errorf("marshaling canonical policy: %w", err)
+	}
+	hash := sha256.Sum256(canonicalJSON)
+	p.Hash = hex.EncodeToString(hash[:])
+	declaredVersion := strings.TrimSpace(p.Agent.Version)
+	if declaredVersion == "" {
+		declaredVersion = "0.0.0"
+	}
+	p.VersionTag = fmt.Sprintf("%s:sha256:%s", declaredVersion, p.Hash[:8])
+	return nil
 }
 
 // RoutingWarning describes a potential misconfiguration in model routing.

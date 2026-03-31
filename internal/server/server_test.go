@@ -20,6 +20,7 @@ import (
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
+	talonsession "github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/testutil"
 )
 
@@ -1508,7 +1509,7 @@ func TestEvidenceTenantIsolation_ListOnlyReturnsOwnTenant(t *testing.T) {
 	}
 }
 
-// TestEvidenceListQueryParams ensures GET /v1/evidence accepts tenant_id, agent_id, allowed, model, from, to.
+// TestEvidenceListQueryParams ensures GET /v1/evidence accepts tenant_id, agent_id, allowed, model, invocation_type, from, to.
 func TestEvidenceListQueryParams(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
@@ -1521,15 +1522,17 @@ func TestEvidenceListQueryParams(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	for _, e := range []struct {
-		id       string
-		tenantID string
-		agentID  string
-		allowed  bool
-		model    string
+		id             string
+		tenantID       string
+		agentID        string
+		allowed        bool
+		model          string
+		invocationType string
 	}{
-		{"ev_q1", "default", "agent-a", true, "gpt-4"},
-		{"ev_q2", "default", "agent-a", false, "gpt-4"},
-		{"ev_q3", "default", "agent-b", true, "claude-3"},
+		{"ev_q1", "default", "agent-a", true, "gpt-4", "test"},
+		{"ev_q2", "default", "agent-a", false, "gpt-4", "test"},
+		{"ev_q3", "default", "agent-b", true, "claude-3", "test"},
+		{"ev_q4", "default", "agent-a", true, "gpt-4", "plan_dispatch"},
 	} {
 		err = store.Store(ctx, &evidence.Evidence{
 			ID:             e.id,
@@ -1537,7 +1540,7 @@ func TestEvidenceListQueryParams(t *testing.T) {
 			Timestamp:      now,
 			TenantID:       e.tenantID,
 			AgentID:        e.agentID,
-			InvocationType: "test",
+			InvocationType: e.invocationType,
 			PolicyDecision: evidence.PolicyDecision{Allowed: e.allowed, Action: "allow", PolicyVersion: "v1"},
 			Execution:      evidence.Execution{ModelUsed: e.model, Cost: 0.01},
 			AuditTrail:     evidence.AuditTrail{},
@@ -1548,7 +1551,7 @@ func TestEvidenceListQueryParams(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 
-	// No filter: all 3
+	// No filter: all 4
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10", nil)
 	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
@@ -1557,7 +1560,18 @@ func TestEvidenceListQueryParams(t *testing.T) {
 	var listResp map[string]interface{}
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
 	entries, _ := listResp["entries"].([]interface{})
-	require.Len(t, entries, 3)
+	require.Len(t, entries, 4)
+
+	// invocation_type=plan_dispatch: 1
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10&invocation_type=plan_dispatch", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ = listResp["entries"].([]interface{})
+	require.Len(t, entries, 1)
+	assert.Equal(t, "plan_dispatch", entries[0].(map[string]interface{})["invocation_type"])
 
 	// allowed=false: 1
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10&allowed=false", nil)
@@ -1591,6 +1605,94 @@ func TestEvidenceListQueryParams(t *testing.T) {
 	entries, _ = listResp["entries"].([]interface{})
 	require.Len(t, entries, 1)
 	assert.Equal(t, "agent-b", entries[0].(map[string]interface{})["agent_id"])
+}
+
+func TestEvidenceListIncludesPrimaryExplanationFields(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	gen := evidence.NewGenerator(store)
+	_, err = gen.Generate(context.Background(), evidence.GenerateParams{
+		CorrelationID:  "corr_expl_list",
+		TenantID:       "default",
+		AgentID:        "agent-a",
+		InvocationType: "test",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed:       false,
+			Action:        "deny",
+			Reasons:       []string{"daily budget exceeded"},
+			PolicyVersion: "1.0.0:sha256:abc12345",
+		},
+	})
+	require.NoError(t, err)
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
+	r := srv.Routes()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=1", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	entries, _ := out["entries"].([]interface{})
+	require.Len(t, entries, 1)
+	first := entries[0].(map[string]interface{})
+	_, hasCode := first["primary_explanation_code"]
+	_, hasReason := first["primary_explanation_reason"]
+	assert.True(t, hasCode)
+	assert.True(t, hasReason)
+}
+
+func TestEvidenceTraceIncludesExplanations(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	gen := evidence.NewGenerator(store)
+	ev, err := gen.Generate(context.Background(), evidence.GenerateParams{
+		CorrelationID:  "corr_trace_expl",
+		TenantID:       "default",
+		AgentID:        "agent-trace",
+		InvocationType: "test",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed:       false,
+			Action:        "deny",
+			Reasons:       []string{"routing policy returned no results (fail-closed)"},
+			PolicyVersion: "2.0.0:sha256:abcd1234",
+		},
+	})
+	require.NoError(t, err)
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
+	r := srv.Routes()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence/"+ev.ID+"/trace", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	evidenceObj, ok := out["evidence"].(map[string]interface{})
+	require.True(t, ok)
+	explanations, ok := evidenceObj["explanations"].([]interface{})
+	require.True(t, ok)
+	require.NotEmpty(t, explanations)
+	first := explanations[0].(map[string]interface{})
+	assert.NotEmpty(t, first["code"])
+	assert.NotEmpty(t, first["reason"])
+	assert.NotEmpty(t, first["version_identity"])
 }
 
 // TestEvidenceTenantIsolation_NonexistentIDReturns404 ensures that requesting a
@@ -1843,6 +1945,30 @@ func TestCoPawAlertsWithStore(t *testing.T) {
 		a, _ := alerts[0].(map[string]interface{})
 		assert.Equal(t, true, a["policy_denied"])
 	}
+}
+
+func TestRecordControlPlaneActionIncludesSessionID(t *testing.T) {
+	dir := t.TempDir()
+	evStore, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evStore.Close() })
+
+	ss, err := talonsession.NewStore(dir + "/e.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ss.Close() })
+
+	srv := &Server{
+		evidenceStore: evStore,
+		sessionStore:  ss,
+	}
+
+	srv.recordControlPlaneAction(context.Background(), "default", "tenant_lockdown", "admin_api", "lockdown enabled")
+
+	records, err := evStore.List(context.Background(), "default", "", time.Time{}, time.Time{}, 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, records)
+	assert.Equal(t, "control_plane", records[0].InvocationType)
+	assert.NotEmpty(t, records[0].SessionID, "control-plane evidence must carry a session_id")
 }
 
 func minimalPolicy() *policy.Policy {

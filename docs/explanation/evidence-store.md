@@ -21,6 +21,7 @@ Each record contains these sections:
 |---------|--------|---------|
 | **Identity** | `id`, `session_id`, `correlation_id`, `timestamp`, `tenant_id`, `agent_id` | Who, when, which tenant; `session_id` links requests in the same lifecycle session |
 | **Policy Decision** | `allowed`, `action`, `reasons`, `policy_version` | What the policy engine decided |
+| **Deterministic Explanations** | `explanations[]` (`code`, `decision`, `stage`, `reason`, `trigger`, `fix`, `policy_ref`, `version_identity`) | Human-readable, reproducible rationale attached to every record |
 | **Classification** | `input_tier`, `output_tier`, `pii_detected`, `pii_redacted`, `output_pii_detected` | What PII was found |
 | **Execution** | `model_used`, `cost`, `tokens`, `duration_ms`, `tools_called`, `error` | What the LLM did |
 | **Audit Trail** | `input_hash`, `output_hash` | SHA-256 content hashes for forensics |
@@ -28,6 +29,13 @@ Each record contains these sections:
 | **Signature** | `signature` | HMAC-SHA256 over all other fields |
 
 **Sessions:** When the server or CLI creates a lifecycle session (e.g. for `POST /v1/agents/run` or `talon run`), that session’s ID is stored in `session_id`. Plan-gated runs and their subsequent auto-dispatch share the same session so that all evidence for that flow can be correlated. Export and API responses include `session_id` when present.
+
+### Deterministic Explanations (MVP Contract)
+
+- Every evidence record includes a non-empty `explanations[]` array.
+- Explanations are deterministic and rule-based (no localization/LLM paraphrasing).
+- `version_identity` is dual-factor: user-declared version + canonical content hash.
+- Legacy free-text `policy_decision.reasons` is only a migration bridge; explanations are the source of truth for operator UX.
 
 ## HMAC Signing
 
@@ -72,6 +80,11 @@ req_a1b2c3  2026-03-15T10:23:45  slack-bot     true     0.003    gpt-4o-mini
 req_d4e5f6  2026-03-15T10:24:12  hr-assistant  false    0.000    gpt-4o
 ```
 
+Index/list responses also include stable primary explanation fields:
+
+- `primary_explanation_code`
+- `primary_explanation_reason`
+
 ### Layer 2: Timeline
 
 `talon audit timeline --around <id>` shows what happened before and after a
@@ -80,7 +93,7 @@ specific event, useful for incident investigation.
 ### Layer 3: Full Record
 
 `talon audit show <id>` returns the complete evidence record with all fields,
-PII findings, policy reasons, and HMAC signature status.
+PII findings, deterministic explanations, `version_identity`, policy reasons, and HMAC signature status.
 
 ## Storage
 
@@ -104,7 +117,7 @@ talon audit export --format csv --from 2026-03-01 --to 2026-03-31 > march-audit.
 talon audit export --format json --from 2026-03-01 > march-audit.json
 ```
 
-CSV columns: `id`, `session_id`, `timestamp`, `tenant_id`, `agent_id`, `invocation_type`, `allowed`, `cost`, `model_used`, `duration_ms`, `has_error`, `input_tier`, `output_tier`, `pii_detected`, `pii_redacted`, `policy_reasons`, `tools_called`, `input_hash`, `output_hash`, plus shadow/cache fields when applicable. JSON and NDJSON export include the same fields; `session_id` links evidence to a lifecycle session (e.g. plan-gated run and its dispatch).
+CSV columns: `id`, `session_id`, `timestamp`, `tenant_id`, `agent_id`, `invocation_type`, `allowed`, `cost`, `model_used`, `duration_ms`, `has_error`, `input_tier`, `output_tier`, `pii_detected`, `pii_redacted`, `policy_reasons`, `tools_called`, `input_hash`, `output_hash`, `primary_explanation_code`, `primary_explanation_reason`, `primary_version_identity`, plus shadow/cache fields when applicable. JSON and NDJSON export include the same fields; `session_id` links evidence to a lifecycle session (e.g. plan-gated run and its dispatch).
 
 ## OpenTelemetry Export
 

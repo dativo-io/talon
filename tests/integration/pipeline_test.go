@@ -377,6 +377,135 @@ func TestBlockOnPII_Integration(t *testing.T) {
 	})
 }
 
+func writeDecisionOpsRoutePolicy(t *testing.T, dir, name string) string {
+	t.Helper()
+	policyPath := filepath.Join(dir, name+".talon.yaml")
+	policyYAML := `agent:
+  name: "` + name + `"
+  version: "1.0.0"
+policies:
+  cost_limits:
+    per_request: 100.0
+    daily: 1000.0
+    monthly: 10000.0
+  data_classification:
+    input_scan: true
+    output_scan: true
+    redact_pii: false
+  model_routing:
+    tier_0:
+      primary: "gpt-4o-mini"
+    tier_1:
+      primary: "gpt-4o-mini"
+    tier_2:
+      primary: "anthropic.claude-3-sonnet-20240229-v1:0"
+      location: "eu-central-1"
+      bedrock_only: true
+`
+	require.NoError(t, os.WriteFile(policyPath, []byte(policyYAML), 0o644))
+	return policyPath
+}
+
+func TestDecisionOpsFlow_Reconciliation(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	providers := map[string]llm.Provider{
+		"openai":  &testutil.MockProvider{ProviderName: "openai", Content: "general summary"},
+		"bedrock": &testutil.MockProvider{ProviderName: "bedrock", Content: "eu response"},
+	}
+	routing := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4o-mini"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4o-mini"},
+		Tier2: &policy.TierConfig{Primary: "anthropic.claude-3-sonnet-20240229-v1:0", BedrockOnly: true},
+	}
+	runner := SetupRunner(t, dir, providers, routing)
+
+	blockPolicy := WriteBlockOnPIIPolicy(t, dir, "ops-block-agent", true)
+	redactPolicy := testutil.WriteInputOutputRedactPolicyFile(t, dir, "ops-redact-agent", false, true)
+	allowPolicy := WriteTestPolicy(t, dir, "ops-allow-agent")
+	routePolicy := writeDecisionOpsRoutePolicy(t, dir, "ops-route-agent")
+
+	type outcome struct {
+		allow    bool
+		redacted bool
+		routed   bool
+	}
+	outcomes := make([]outcome, 0, 4)
+
+	blockResp, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "default",
+		AgentName:      "ops-block-agent",
+		Prompt:         "Contact user@example.com about incident updates",
+		InvocationType: "manual",
+		PolicyPath:     blockPolicy,
+	})
+	require.NoError(t, err)
+	require.False(t, blockResp.PolicyAllow)
+	outcomes = append(outcomes, outcome{allow: false, redacted: false, routed: blockResp.ModelUsed != ""})
+
+	redactResp, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "default",
+		AgentName:      "ops-redact-agent",
+		Prompt:         "Draft an email for hans.mueller@example.de",
+		InvocationType: "manual",
+		PolicyPath:     redactPolicy,
+	})
+	require.NoError(t, err)
+	require.True(t, redactResp.PolicyAllow)
+	assert.NotContains(t, redactResp.Response, "hans.mueller@example.de")
+	outcomes = append(outcomes, outcome{allow: true, redacted: true, routed: redactResp.ModelUsed != ""})
+
+	allowResp, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "default",
+		AgentName:      "ops-allow-agent",
+		Prompt:         "Summarize this neutral operational status update",
+		InvocationType: "manual",
+		PolicyPath:     allowPolicy,
+	})
+	require.NoError(t, err)
+	require.True(t, allowResp.PolicyAllow)
+	outcomes = append(outcomes, outcome{allow: true, redacted: false, routed: allowResp.ModelUsed != ""})
+
+	routeResp, err := runner.Run(ctx, &agent.RunRequest{
+		TenantID:       "default",
+		AgentName:      "ops-route-agent",
+		Prompt:         "Process refund for IBAN DE89370400440532013000",
+		InvocationType: "manual",
+		PolicyPath:     routePolicy,
+	})
+	require.NoError(t, err)
+	require.True(t, routeResp.PolicyAllow)
+	assert.Equal(t, "anthropic.claude-3-sonnet-20240229-v1:0", routeResp.ModelUsed)
+	outcomes = append(outcomes, outcome{allow: true, redacted: false, routed: routeResp.ModelUsed != ""})
+
+	total := len(outcomes)
+	allowCount := 0
+	blockCount := 0
+	redactCount := 0
+	routeCount := 0
+	for i := range outcomes {
+		if outcomes[i].allow {
+			allowCount++
+		} else {
+			blockCount++
+		}
+		if outcomes[i].redacted {
+			redactCount++
+		}
+		if outcomes[i].routed {
+			routeCount++
+		}
+	}
+
+	assert.Equal(t, total, allowCount+blockCount, "reconciliation: allow + block must equal total requests")
+	assert.Equal(t, 1, blockCount)
+	assert.Equal(t, 1, redactCount)
+	assert.Equal(t, 3, allowCount)
+	assert.Equal(t, 3, routeCount, "all allowed runs must include model routing outcome")
+	assert.LessOrEqual(t, routeCount, allowCount)
+}
+
 // TestPolicyDrivenRouting tests that .talon.yaml routing config controls provider selection.
 func TestPolicyDrivenRouting(t *testing.T) {
 	ctx := context.Background()

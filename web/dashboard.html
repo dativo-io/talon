@@ -443,8 +443,13 @@
       function syncPolicyOutcomeFromEvidence(entries) {
         var list = Array.isArray(entries) ? entries : [];
         var denied = 0;
+        var byReason = {};
         list.forEach(function(ev) {
-          if (ev && ev.allowed === false) denied += 1;
+          if (ev && ev.allowed === false) {
+            denied += 1;
+            var code = ev.primary_explanation_code || 'POLICY_DENIED';
+            byReason[code] = (byReason[code] || 0) + 1;
+          }
         });
         var allowed = Math.max(0, list.length - denied);
         var po = document.getElementById('policy-outcome-summary');
@@ -452,7 +457,15 @@
         var totalEl = document.getElementById('denials-total');
         if (totalEl) totalEl.textContent = denied;
         var byEl = document.getElementById('denials-by-reason');
-        if (byEl) byEl.textContent = 'Reason breakdown is available in per-record Trace.';
+        if (byEl) {
+          var codes = Object.keys(byReason).sort();
+          if (codes.length === 0) {
+            byEl.textContent = 'No denials in current evidence list.';
+          } else {
+            var top = codes.map(function(code) { return code + ': ' + byReason[code]; }).join(', ');
+            byEl.textContent = top;
+          }
+        }
       }
       function renderEvidence() {
         var q = buildEvidenceQuery();
@@ -527,6 +540,13 @@
                 var ev = trace.evidence || trace;
                 var steps = trace.steps || [];
                 var lines = ['Evidence: ' + (ev.id || id), 'Correlation: ' + (ev.correlation_id || '—'), 'Model: ' + (ev.execution && ev.execution.model_used ? ev.execution.model_used : '—'), 'Cost: ' + (ev.execution && ev.execution.cost != null ? ev.execution.cost : '—'), 'Steps: ' + steps.length];
+                var explanations = Array.isArray(ev.explanations) ? ev.explanations : [];
+                if (explanations.length > 0) {
+                  var primary = explanations[0];
+                  lines.push('Primary explanation: ' + (primary.code || '—') + ' - ' + (primary.reason || '—'));
+                  if (primary.version_identity) lines.push('Version: ' + primary.version_identity);
+                  if (primary.fix) lines.push('Fix: ' + primary.fix);
+                }
                 steps.forEach(function(s, i) { lines.push('  ' + (i+1) + '. ' + (s.step_type || s.type || 'step') + (s.tool_name ? ' ' + s.tool_name : '')); });
                 alert(lines.join('\n'));
               }).catch(function(e) { alert('Trace failed: ' + (e.message || e)); });

@@ -230,6 +230,84 @@ func TestBackfillFromStore_Error(t *testing.T) {
 	assert.Contains(t, err.Error(), "backfill list")
 }
 
+func TestBackfillFromStore_DecisionOpsReconciliation(t *testing.T) {
+	now := time.Now().UTC()
+	records := []evidence.Evidence{
+		{
+			ID:              "ev-allow",
+			Timestamp:       now.Add(-15 * time.Minute),
+			RequestSourceID: "ops-caller",
+			PolicyDecision:  evidence.PolicyDecision{Allowed: true},
+			Execution: evidence.Execution{
+				ModelUsed:  "gpt-4o-mini",
+				DurationMS: 100,
+			},
+		},
+		{
+			ID:              "ev-redact",
+			Timestamp:       now.Add(-10 * time.Minute),
+			RequestSourceID: "ops-caller",
+			PolicyDecision:  evidence.PolicyDecision{Allowed: true},
+			Classification: evidence.Classification{
+				PIIDetected: []string{"EMAIL_ADDRESS"},
+				PIIRedacted: true,
+			},
+			Execution: evidence.Execution{
+				ModelUsed:  "gpt-4o",
+				DurationMS: 120,
+			},
+		},
+		{
+			ID:              "ev-block",
+			Timestamp:       now.Add(-5 * time.Minute),
+			RequestSourceID: "ops-caller",
+			PolicyDecision:  evidence.PolicyDecision{Allowed: false, Action: "deny"},
+			Classification: evidence.Classification{
+				PIIDetected: []string{"IBAN_CODE"},
+			},
+			Execution: evidence.Execution{
+				DurationMS: 40,
+			},
+		},
+	}
+
+	c := NewCollector("enforce", nil)
+	defer c.Close()
+	require.NoError(t, c.BackfillFromStore(context.Background(), &stubEvidenceLister{records: records}))
+
+	snap := c.Snapshot(context.Background())
+	assert.Equal(t, 3, snap.Summary.TotalRequests)
+	assert.Equal(t, 1, snap.Summary.BlockedRequests)
+	assert.Equal(t, 1, snap.Summary.TotalDenied)
+	assert.Equal(t, 2, snap.Summary.TotalSuccessful)
+	assert.Equal(t, 1, snap.Summary.PIIRedactions)
+
+	allowCount := 0
+	blockCount := 0
+	redactCount := 0
+	routedCount := 0
+	for i := range records {
+		ev := evidenceToEvent(&records[i])
+		if ev.Blocked {
+			blockCount++
+		} else {
+			allowCount++
+		}
+		if ev.PIIAction == "redact" {
+			redactCount++
+		}
+		if ev.Model != "" {
+			routedCount++
+		}
+	}
+
+	assert.Equal(t, len(records), allowCount+blockCount, "reconciliation: allow + block must equal total")
+	assert.Equal(t, snap.Summary.TotalRequests, allowCount+blockCount)
+	assert.Equal(t, snap.Summary.BlockedRequests, blockCount)
+	assert.Equal(t, snap.Summary.PIIRedactions, redactCount)
+	assert.Equal(t, 2, routedCount, "two requests reached routing/model selection")
+}
+
 func TestEvidenceToEvent(t *testing.T) {
 	ev := &evidence.Evidence{
 		Timestamp:       time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),

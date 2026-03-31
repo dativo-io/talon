@@ -109,6 +109,7 @@ func TestRenderAuditExportCSV(t *testing.T) {
 	assert.Contains(t, out, "true")
 	assert.Contains(t, out, "0.0100")
 	assert.Contains(t, out, "input_tier,output_tier,pii_detected,pii_redacted")
+	assert.Contains(t, out, "primary_explanation_code,primary_explanation_reason,primary_version_identity")
 	assert.Contains(t, out, "EMAIL_ADDRESS")
 }
 

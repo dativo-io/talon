@@ -5,6 +5,8 @@ package evidence
 import (
 	"strings"
 	"time"
+
+	"github.com/dativo-io/talon/internal/explanation"
 )
 
 // ExportRecord is a single evidence record with all fields needed for compliance export.
@@ -36,10 +38,13 @@ type ExportRecord struct {
 	ObservationModeOverride bool     `json:"observation_mode_override"`
 	ShadowViolationTypes    []string `json:"shadow_violation_types,omitempty"`
 	// Semantic cache (audit export)
-	CacheHit        bool    `json:"cache_hit,omitempty"`
-	CacheEntryID    string  `json:"cache_entry_id,omitempty"`
-	CacheSimilarity float64 `json:"cache_similarity,omitempty"`
-	CostSaved       float64 `json:"cost_saved,omitempty"`
+	CacheHit                 bool    `json:"cache_hit,omitempty"`
+	CacheEntryID             string  `json:"cache_entry_id,omitempty"`
+	CacheSimilarity          float64 `json:"cache_similarity,omitempty"`
+	CostSaved                float64 `json:"cost_saved,omitempty"`
+	PrimaryExplanationCode   string  `json:"primary_explanation_code,omitempty"`
+	PrimaryExplanationReason string  `json:"primary_explanation_reason,omitempty"`
+	PrimaryVersionIdentity   string  `json:"primary_version_identity,omitempty"`
 }
 
 // ExportMetadata wraps JSON export with context about the export run.
@@ -98,6 +103,11 @@ func ToExportRecord(e *Evidence) ExportRecord {
 	}
 	if len(e.Execution.ToolsCalled) > 0 {
 		rec.ToolsCalled = append([]string(nil), e.Execution.ToolsCalled...)
+	}
+	if primary, ok := explanation.Primary(e.Explanations); ok {
+		rec.PrimaryExplanationCode = primary.Code
+		rec.PrimaryExplanationReason = primary.Reason
+		rec.PrimaryVersionIdentity = primary.VersionIdentity
 	}
 	for _, sv := range e.ShadowViolations {
 		rec.ShadowViolationTypes = append(rec.ShadowViolationTypes, sv.Type)

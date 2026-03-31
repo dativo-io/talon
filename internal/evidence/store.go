@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/dativo-io/talon/internal/explanation"
 	talonotel "github.com/dativo-io/talon/internal/otel"
 )
 
@@ -64,12 +65,13 @@ type Evidence struct {
 	Signature               string            `json:"signature"`
 	RoutingDecision         *RoutingDecision  `json:"routing_decision,omitempty"` // Provider selection and rejected candidates (EU routing)
 	// Semantic cache: set when response was served from cache (Cost=0, CostSaved=estimated LLM cost).
-	CacheHit        bool             `json:"cache_hit,omitempty"`
-	CacheEntryID    string           `json:"cache_entry_id,omitempty"`
-	CacheSimilarity float64          `json:"cache_similarity,omitempty"`
-	CostSaved       float64          `json:"cost_saved,omitempty"`
-	PlanReview      *PlanReviewEvent `json:"plan_review,omitempty"`
-	RetryAttempt    string           `json:"retry_attempt,omitempty"` // X-Talon-Retry-Attempt header from gateway callers
+	CacheHit        bool               `json:"cache_hit,omitempty"`
+	CacheEntryID    string             `json:"cache_entry_id,omitempty"`
+	CacheSimilarity float64            `json:"cache_similarity,omitempty"`
+	CostSaved       float64            `json:"cost_saved,omitempty"`
+	PlanReview      *PlanReviewEvent   `json:"plan_review,omitempty"`
+	RetryAttempt    string             `json:"retry_attempt,omitempty"` // X-Talon-Retry-Attempt header from gateway callers
+	Explanations    []explanation.Item `json:"explanations,omitempty"`
 }
 
 // PlanReviewEvent captures human oversight actions performed on execution plans.
@@ -312,6 +314,25 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 			attribute.String("agent_id", ev.AgentID),
 		))
 	defer span.End()
+
+	if len(ev.Explanations) == 0 {
+		policyRef := ""
+		if ev.PolicyDecision.PolicyVersion != "" {
+			policyRef = "policy:" + ev.PolicyDecision.PolicyVersion
+		}
+		facts := explanation.BuildLegacyFacts(
+			ev.PolicyDecision.Allowed,
+			ev.PolicyDecision.Action,
+			ev.PolicyDecision.Reasons,
+			"policy_evaluation",
+			policyRef,
+			ev.PolicyDecision.PolicyVersion,
+		)
+		ev.Explanations = explanation.BuildFromFacts(facts)
+	}
+	if len(ev.Explanations) == 0 {
+		return fmt.Errorf("evidence explanations are required")
+	}
 
 	evidenceJSON, err := json.Marshal(ev)
 	if err != nil {
@@ -1165,19 +1186,21 @@ func (s *Store) VerifyRecord(ev *Evidence) bool {
 
 // Index is a lightweight summary for progressive disclosure Layer 1.
 type Index struct {
-	ID             string      `json:"id"`
-	Timestamp      time.Time   `json:"timestamp"`
-	TenantID       string      `json:"tenant_id"`
-	AgentID        string      `json:"agent_id"`
-	InvocationType string      `json:"invocation_type"`
-	Allowed        bool        `json:"allowed"`
-	Cost           float64     `json:"cost"`
-	ModelUsed      string      `json:"model_used"`
-	DurationMS     int64       `json:"duration_ms"`
-	HasError       bool        `json:"has_error"`
-	CacheHit       bool        `json:"cache_hit,omitempty"`
-	CostSaved      float64     `json:"cost_saved,omitempty"`
-	Compliance     *Compliance `json:"compliance,omitempty"` // Framework alignment (GDPR Art. 30, EU AI Act, etc.)
+	ID                       string      `json:"id"`
+	Timestamp                time.Time   `json:"timestamp"`
+	TenantID                 string      `json:"tenant_id"`
+	AgentID                  string      `json:"agent_id"`
+	InvocationType           string      `json:"invocation_type"`
+	Allowed                  bool        `json:"allowed"`
+	Cost                     float64     `json:"cost"`
+	ModelUsed                string      `json:"model_used"`
+	DurationMS               int64       `json:"duration_ms"`
+	HasError                 bool        `json:"has_error"`
+	CacheHit                 bool        `json:"cache_hit,omitempty"`
+	CostSaved                float64     `json:"cost_saved,omitempty"`
+	Compliance               *Compliance `json:"compliance,omitempty"` // Framework alignment (GDPR Art. 30, EU AI Act, etc.)
+	PrimaryExplanationCode   string      `json:"primary_explanation_code,omitempty"`
+	PrimaryExplanationReason string      `json:"primary_explanation_reason,omitempty"`
 }
 
 // ListIndex returns lightweight evidence summaries (Layer 1).
@@ -1348,6 +1371,10 @@ func toIndex(full *Evidence) Index {
 		HasError:       full.Execution.Error != "",
 		CacheHit:       full.CacheHit,
 		CostSaved:      full.CostSaved,
+	}
+	if primary, ok := explanation.Primary(full.Explanations); ok {
+		idx.PrimaryExplanationCode = primary.Code
+		idx.PrimaryExplanationReason = primary.Reason
 	}
 	if len(full.Compliance.Frameworks) > 0 || full.Compliance.DataLocation != "" {
 		idx.Compliance = &full.Compliance

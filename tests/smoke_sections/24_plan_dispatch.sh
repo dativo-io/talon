@@ -145,6 +145,7 @@ PREVIEWEOF
   local run_json
   local run_code
   local serve_session_id=""
+  local serve_correlation_id=""
   local plan_run_resp_file="$dir/plan_run_resp.json"
   run_code="$(curl -s -o "$plan_run_resp_file" -w '%{http_code}' -X POST "${base_url}/v1/agents/run" \
     -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" \
@@ -174,6 +175,9 @@ PREVIEWEOF
   if [[ -n "$serve_plan_id" ]]; then
     echo "  ✓  API run returned plan_pending: $serve_plan_id"
     record_pass
+    local plan_json
+    plan_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/plans/${serve_plan_id}")"
+    serve_correlation_id="$(echo "$plan_json" | jq -r '.correlation_id // empty' 2>/dev/null || true)"
   else
     log_failure "API run should return plan_pending under human oversight" \
       "http_code=$run_code json_length=${#run_json}"
@@ -218,29 +222,43 @@ PREVIEWEOF
     # Use the admin key to verify evidence read access.
     assert_pass "admin key can read /v1/evidence → 200" \
       test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=10")" = "200"
+    # Filter by invocation_type so the newest plan_dispatch is first; a mixed top-N
+    # list can omit the fresh dispatch or surface an older plan_dispatch first.
     assert_pass "evidence index contains plan_dispatch invocation after approval" \
-      bash -c "curl -s -H 'X-Talon-Admin-Key: ${admin_key}' '${base_url}/v1/evidence?limit=50' | jq -e '.entries[]? | select(.invocation_type == \"plan_dispatch\")' >/dev/null"
+      bash -c "curl -s -H 'X-Talon-Admin-Key: ${admin_key}' '${base_url}/v1/evidence?limit=10&invocation_type=plan_dispatch' | jq -e '(.entries // []) | length > 0' >/dev/null"
     if [[ -n "$serve_session_id" ]]; then
-      local dispatch_evidence_id=""
-      dispatch_evidence_id="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=50" | jq -r '.entries[]? | select(.invocation_type=="plan_dispatch") | .id' | head -1)"
-      if [[ -n "$dispatch_evidence_id" ]]; then
-        local dispatch_ev_json
-        dispatch_ev_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence/${dispatch_evidence_id}")"
-        local dispatch_sid
-        dispatch_sid="$(echo "$dispatch_ev_json" | jq -r '.session_id // empty' 2>/dev/null || true)"
-        if [[ "$dispatch_sid" == "$serve_session_id" ]]; then
-          echo "  ✓  plan_dispatch evidence reuses session_id from plan-gated run"
-          record_pass
-        else
-          log_failure "plan_dispatch evidence reuses session_id from plan-gated run" \
-            "expected=$serve_session_id actual=$dispatch_sid evidence_id=$dispatch_evidence_id"
-          dump_diag_kv "session_id mismatch" \
-            "expected_sid=$serve_session_id" \
-            "actual_sid=$dispatch_sid" \
-            "dispatch_evidence_id=$dispatch_evidence_id"
-          dump_diag_json "dispatch evidence" "$dispatch_ev_json"
-          dump_diag_file "plan_dispatch serve log (tail)" "$dir/plan_dispatch_serve.log" 80
+      local dispatch_evidence_id="" dispatch_ev_json="" dispatch_sid="" dispatch_index_json=""
+      local attempts=10
+      local attempt=0
+      # Evidence indexing can lag briefly after approval/dispatch; poll for the entry
+      # that matches the current serve session_id (and correlation_id when available)
+      # instead of assuming entries[0].
+      while [[ "$attempt" -lt "$attempts" ]]; do
+        dispatch_index_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=20&invocation_type=plan_dispatch")"
+        dispatch_evidence_id="$(echo "$dispatch_index_json" | jq -r --arg sid "$serve_session_id" --arg corr "$serve_correlation_id" '.entries[]? | select((.session_id // "") == $sid and (($corr == "") or ((.correlation_id // $corr) == $corr))) | .id' | head -1)"
+        if [[ -n "$dispatch_evidence_id" ]]; then
+          dispatch_ev_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence/${dispatch_evidence_id}")"
+          dispatch_sid="$(echo "$dispatch_ev_json" | jq -r '.session_id // empty' 2>/dev/null || true)"
+          break
         fi
+        attempt=$((attempt + 1))
+        sleep 1
+      done
+
+      if [[ -n "$dispatch_evidence_id" ]] && [[ "$dispatch_sid" == "$serve_session_id" ]]; then
+        echo "  ✓  plan_dispatch evidence reuses session_id from plan-gated run"
+        record_pass
+      else
+        log_failure "plan_dispatch evidence reuses session_id from plan-gated run" \
+          "expected=$serve_session_id actual=${dispatch_sid:-missing} evidence_id=${dispatch_evidence_id:-missing} attempts=$attempts"
+        dump_diag_kv "session_id mismatch" \
+          "expected_sid=$serve_session_id" \
+          "actual_sid=${dispatch_sid:-missing}" \
+          "dispatch_evidence_id=${dispatch_evidence_id:-missing}" \
+          "attempts=$attempts"
+        dump_diag_json "plan_dispatch evidence index (latest)" "$dispatch_index_json"
+        dump_diag_json "dispatch evidence" "$dispatch_ev_json"
+        dump_diag_file "plan_dispatch serve log (tail)" "$dir/plan_dispatch_serve.log" 80
       fi
     fi
   fi

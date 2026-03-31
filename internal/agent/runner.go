@@ -40,6 +40,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	talonctx "github.com/dativo-io/talon/internal/context"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/llm"
 	"github.com/dativo-io/talon/internal/memory"
 	talonotel "github.com/dativo-io/talon/internal/otel"
@@ -593,6 +594,14 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			AgentReasoning: req.AgentReasoning,
 			AgentVerified:  req.AgentVerified,
 			Compliance:     complianceFromPolicy(pol),
+			ExplanationFacts: []explanation.Fact{{
+				Code:            explanation.CodePolicyDeniedPIIInput,
+				Decision:        explanation.DecisionDeny,
+				Stage:           "policy_evaluation",
+				Trigger:         strings.Join(effectivePIINames, ","),
+				PolicyRef:       explanationPolicyRef(pol.VersionTag),
+				VersionIdentity: pol.VersionTag,
+			}},
 		})
 		return &RunResponse{PolicyAllow: false, DenyReason: "Input contains PII (policy: block_on_pii)", SessionID: req.SessionID}, nil
 	}
@@ -740,13 +749,14 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				Reasons:       decision.Reasons,
 				PolicyVersion: pol.VersionTag,
 			},
-			Classification: evidence.Classification{InputTier: effectiveTier, PIIDetected: effectivePIINames},
-			AttachmentScan: attachmentScan,
-			DurationMS:     duration.Milliseconds(),
-			InputPrompt:    req.Prompt,
-			AgentReasoning: req.AgentReasoning,
-			AgentVerified:  req.AgentVerified,
-			Compliance:     complianceInfo,
+			Classification:   evidence.Classification{InputTier: effectiveTier, PIIDetected: effectivePIINames},
+			AttachmentScan:   attachmentScan,
+			DurationMS:       duration.Milliseconds(),
+			InputPrompt:      req.Prompt,
+			AgentReasoning:   req.AgentReasoning,
+			AgentVerified:    req.AgentVerified,
+			Compliance:       complianceInfo,
+			ExplanationFacts: buildPolicyDecisionFacts(decision, "policy_evaluation"),
 		})
 		resp := &RunResponse{PolicyAllow: true, PIIDetected: effectivePIINames, InputTier: effectiveTier, SessionID: req.SessionID}
 		if attachmentScan != nil {
@@ -941,6 +951,28 @@ func (r *Runner) checkHook(ctx context.Context, point HookPoint, tenantID, agent
 	return nil, nil
 }
 
+func explanationPolicyRef(policyVersion string) string {
+	pv := strings.TrimSpace(policyVersion)
+	if pv == "" {
+		return ""
+	}
+	return "policy:" + pv
+}
+
+func buildPolicyDecisionFacts(decision *policy.Decision, stage string) []explanation.Fact {
+	if decision == nil {
+		return nil
+	}
+	return explanation.BuildLegacyFacts(
+		decision.Allowed,
+		decision.Action,
+		decision.Reasons,
+		stage,
+		explanationPolicyRef(decision.PolicyVersion),
+		decision.PolicyVersion,
+	)
+}
+
 // recordPolicyDenial logs and records evidence for a policy-denied request.
 func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correlationID string, req *RunRequest, pol *policy.Policy, decision *policy.Decision, tier int, piiNames []string, attScan *evidence.AttachmentScan, compliance evidence.Compliance) {
 	span.SetStatus(codes.Error, "policy denied")
@@ -963,14 +995,15 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 			Reasons:       decision.Reasons,
 			PolicyVersion: pol.VersionTag,
 		},
-		Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
-		AttachmentScan: attScan,
-		InputPrompt:    req.Prompt,
-		AgentReasoning: req.AgentReasoning,
-		AgentVerified:  req.AgentVerified,
-		Compliance:     compliance,
-		Status:         string(RunStatusDenied),
-		FailureReason:  string(FailurePolicyDeny),
+		Classification:   evidence.Classification{InputTier: tier, PIIDetected: piiNames},
+		AttachmentScan:   attScan,
+		InputPrompt:      req.Prompt,
+		AgentReasoning:   req.AgentReasoning,
+		AgentVerified:    req.AgentVerified,
+		Compliance:       compliance,
+		ExplanationFacts: buildPolicyDecisionFacts(decision, "policy_evaluation"),
+		Status:           string(RunStatusDenied),
+		FailureReason:    string(FailurePolicyDeny),
 	})
 }
 
@@ -1015,10 +1048,11 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 			Action:  "early_termination",
 			Reasons: []string{reason},
 		},
-		DurationMS:    time.Since(startTime).Milliseconds(),
-		InputPrompt:   req.Prompt,
-		Status:        status,
-		FailureReason: failureReason,
+		DurationMS:       time.Since(startTime).Milliseconds(),
+		InputPrompt:      req.Prompt,
+		ExplanationFacts: explanation.BuildLegacyFacts(false, "early_termination", []string{reason}, "pre_execution", "", ""),
+		Status:           status,
+		FailureReason:    failureReason,
 	})
 }
 
@@ -1164,6 +1198,14 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 								Classification: evidence.Classification{InputTier: tier, PIIDetected: append(piiNames, cacheOutputPIINames...)},
 								CacheHit:       true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity,
 								Compliance: compliance, InputPrompt: req.Prompt, OutputResponse: hit.ResponseText,
+								ExplanationFacts: []explanation.Fact{{
+									Code:            explanation.CodePolicyDeniedPIIOutput,
+									Decision:        explanation.DecisionDeny,
+									Stage:           "output_scan",
+									Trigger:         strings.Join(cacheOutputPIINames, ","),
+									PolicyRef:       explanationPolicyRef(pol.VersionTag),
+									VersionIdentity: pol.VersionTag,
+								}},
 							})
 							return &RunResponse{PolicyAllow: false, DenyReason: "Cached output contains PII (policy: block_on_pii + output_scan)", SessionID: req.SessionID}, nil
 						}
@@ -1190,6 +1232,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
 						CacheHit: true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity, CostSaved: costSaved,
 						Cost: 0, Tokens: evidence.TokenUsage{}, OutputResponse: cacheResponseText,
+						ExplanationFacts: []explanation.Fact{{
+							Code:            explanation.CodePolicyAllowed,
+							Decision:        explanation.DecisionAllow,
+							Stage:           "policy_evaluation",
+							PolicyRef:       explanationPolicyRef(pol.VersionTag),
+							VersionIdentity: pol.VersionTag,
+						}},
 					})
 					resp := &RunResponse{
 						Response:    cacheResponseText,
@@ -1655,6 +1704,14 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				OutputResponse:          llmResp.Content,
 				Compliance:              compliance,
 				ObservationModeOverride: observationOverride,
+				ExplanationFacts: []explanation.Fact{{
+					Code:            explanation.CodePolicyDeniedPIIOutput,
+					Decision:        explanation.DecisionDeny,
+					Stage:           "output_scan",
+					Trigger:         strings.Join(outputEntityNames, ","),
+					PolicyRef:       explanationPolicyRef(pol.VersionTag),
+					VersionIdentity: pol.VersionTag,
+				}},
 			})
 			return &RunResponse{PolicyAllow: false, DenyReason: "Output contains PII (policy: block_on_pii + output_scan)", SessionID: req.SessionID}, nil
 		}
@@ -1723,7 +1780,14 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		Compliance:              compliance,
 		ObservationModeOverride: observationOverride,
 		RoutingDecision:         evRouting,
-		Status:                  string(RunStatusCompleted),
+		ExplanationFacts: []explanation.Fact{{
+			Code:            explanation.CodePolicyAllowed,
+			Decision:        explanation.DecisionAllow,
+			Stage:           "policy_evaluation",
+			PolicyRef:       explanationPolicyRef(pol.VersionTag),
+			VersionIdentity: pol.VersionTag,
+		}},
+		Status: string(RunStatusCompleted),
 	})
 	evidenceID := ""
 	if err != nil {
