@@ -1347,8 +1347,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					ToolsCalled:             toolsCalled, Cost: cost,
 					Tokens:          evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
 					RoutingDecision: evRouting,
-					Status:        string(RunStatusFailed),
-					FailureReason: string(llmFailReason),
+					Status:          string(RunStatusFailed),
+					FailureReason:   string(llmFailReason),
 				})
 				return nil, fmt.Errorf("calling LLM: %w", err)
 			}
@@ -1589,8 +1589,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
 				ObservationModeOverride: observationOverride,
 				RoutingDecision:         evRouting,
-				Status:        string(RunStatusFailed),
-				FailureReason: string(singleFailReason),
+				Status:                  string(RunStatusFailed),
+				FailureReason:           string(singleFailReason),
 			})
 			return nil, fmt.Errorf("calling LLM: %w", err)
 		}
