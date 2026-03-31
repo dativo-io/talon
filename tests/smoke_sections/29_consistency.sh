@@ -1,21 +1,13 @@
 #!/usr/bin/env bash
-# Smoke test section: consistency
+# Smoke test section: 29_consistency
 # Sourced by tests/smoke_test.sh — do not run directly.
 
 # -----------------------------------------------------------------------------
-# Consistency checks: cross-command flow verification (parseable in smoke_test_logs.out.txt)
+# SECTION 29 — Consistency checks: cross-command flow verification
 # -----------------------------------------------------------------------------
-test_consistency_checks() {
-  echo ""
-  echo "=== CONSISTENCY CHECKS (cross-command flows) ==="
-  local dir section_dir
-  section_dir="$TALON_DATA_DIR/sections/06_live_run"
-  if [[ -d "$section_dir" ]]; then
-    dir="$section_dir"
-  else
-    dir="$TALON_DATA_DIR/sections/10_audit"
-  fi
-  [[ -d "$dir" ]] || dir="$TALON_DATA_DIR"
+test_section_29_consistency() {
+  local section="29_consistency"
+  local dir; dir="$(setup_section_dir "$section")"
   local ev_id list_out show_out
   list_out="$(env TALON_DATA_DIR="$TALON_DATA_DIR" talon audit list --limit 1 2>/dev/null)" || true
   ev_id="$(echo "$list_out" | awk '/req_/{print $2; exit}')"
@@ -165,6 +157,60 @@ test_consistency_checks() {
     echo "  ✗  CONSISTENCY: audit export JSON does not have records array schema"
     echo "[SMOKE] CONSISTENCY|audit_export_records_array|FAIL"
     record_fail "CONSISTENCY: audit_export_records_array"
+  fi
+
+  # Ops-side decision reconciliation:
+  # classify per-request outcomes from export and reconcile with SQLite JSON fields.
+  local ops_json
+  ops_json="$(env TALON_DATA_DIR="$TALON_DATA_DIR" talon audit export --format json --tenant default --from 2020-01-01 --to 2099-12-31 2>/dev/null)" || true
+  if echo "$ops_json" | jq -e '.records | type == "array"' &>/dev/null; then
+    local ops_total ops_allowed ops_blocked ops_redacted ops_routed
+    ops_total="$(echo "$ops_json" | jq '[.records[]] | length' 2>/dev/null || echo 0)"
+    ops_allowed="$(echo "$ops_json" | jq '[.records[] | select(.allowed == true)] | length' 2>/dev/null || echo 0)"
+    ops_blocked="$(echo "$ops_json" | jq '[.records[] | select(.allowed == false)] | length' 2>/dev/null || echo 0)"
+    ops_redacted="$(echo "$ops_json" | jq '[.records[] | select(.pii_redacted == true)] | length' 2>/dev/null || echo 0)"
+    ops_routed="$(echo "$ops_json" | jq '[.records[] | select((.model_used // "") != "")] | length' 2>/dev/null || echo 0)"
+
+    if [[ "$ops_total" -eq $((ops_allowed + ops_blocked)) ]] && [[ "$ops_routed" -le "$ops_allowed" ]]; then
+      echo "  ✓  CONSISTENCY: decision reconciliation from export is valid (block/redact/route/allow)"
+      echo "[SMOKE] CONSISTENCY|ops_decision_reconcile_export|PASS|total=$ops_total allowed=$ops_allowed blocked=$ops_blocked redacted=$ops_redacted routed=$ops_routed"
+      record_pass
+    else
+      echo "  ✗  CONSISTENCY: decision reconciliation from export failed"
+      echo "[SMOKE] CONSISTENCY|ops_decision_reconcile_export|FAIL|total=$ops_total allowed=$ops_allowed blocked=$ops_blocked redacted=$ops_redacted routed=$ops_routed"
+      record_fail "CONSISTENCY: ops_decision_reconcile_export"
+    fi
+
+    if [[ -f "$TALON_DATA_DIR/evidence.db" ]]; then
+      local db_ops
+      db_ops="$(sqlite3 "$TALON_DATA_DIR/evidence.db" "
+SELECT
+  COUNT(*),
+  SUM(CASE WHEN json_extract(evidence_json, '$.policy_decision.allowed') IN (1, 1.0, '1', 'true') THEN 1 ELSE 0 END),
+  SUM(CASE WHEN json_extract(evidence_json, '$.policy_decision.allowed') IN (0, 0.0, '0', 'false') THEN 1 ELSE 0 END),
+  SUM(CASE WHEN json_extract(evidence_json, '$.classification.pii_redacted') IN (1, 1.0, '1', 'true') THEN 1 ELSE 0 END),
+  SUM(CASE WHEN COALESCE(json_extract(evidence_json, '$.execution.model_used'), '') <> '' THEN 1 ELSE 0 END)
+FROM evidence
+WHERE tenant_id = 'default';
+" 2>/dev/null)" || db_ops=""
+
+      local db_total db_allowed db_blocked db_redacted db_routed
+      db_total="$(echo "$db_ops" | cut -d'|' -f1)"
+      db_allowed="$(echo "$db_ops" | cut -d'|' -f2)"
+      db_blocked="$(echo "$db_ops" | cut -d'|' -f3)"
+      db_redacted="$(echo "$db_ops" | cut -d'|' -f4)"
+      db_routed="$(echo "$db_ops" | cut -d'|' -f5)"
+
+      if [[ -n "$db_total" ]] && [[ "$ops_total" == "$db_total" ]] && [[ "$ops_allowed" == "$db_allowed" ]] && [[ "$ops_blocked" == "$db_blocked" ]] && [[ "$ops_redacted" == "$db_redacted" ]] && [[ "$ops_routed" == "$db_routed" ]]; then
+        echo "  ✓  CONSISTENCY: export and DB reconcile on decision counts"
+        echo "[SMOKE] CONSISTENCY|ops_decision_reconcile_db|PASS|total=$db_total allowed=$db_allowed blocked=$db_blocked redacted=$db_redacted routed=$db_routed"
+        record_pass
+      else
+        echo "  ✗  CONSISTENCY: export vs DB decision reconciliation mismatch"
+        echo "[SMOKE] CONSISTENCY|ops_decision_reconcile_db|FAIL|export=$ops_total,$ops_allowed,$ops_blocked,$ops_redacted,$ops_routed db=${db_total:-na},${db_allowed:-na},${db_blocked:-na},${db_redacted:-na},${db_routed:-na}"
+        record_fail "CONSISTENCY: ops_decision_reconcile_db"
+      fi
+    fi
   fi
 
   # DB tenant row count should align with audit export --tenant default record count

@@ -1508,7 +1508,7 @@ func TestEvidenceTenantIsolation_ListOnlyReturnsOwnTenant(t *testing.T) {
 	}
 }
 
-// TestEvidenceListQueryParams ensures GET /v1/evidence accepts tenant_id, agent_id, allowed, model, from, to.
+// TestEvidenceListQueryParams ensures GET /v1/evidence accepts tenant_id, agent_id, allowed, model, invocation_type, from, to.
 func TestEvidenceListQueryParams(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
@@ -1521,15 +1521,17 @@ func TestEvidenceListQueryParams(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	for _, e := range []struct {
-		id       string
-		tenantID string
-		agentID  string
-		allowed  bool
-		model    string
+		id             string
+		tenantID       string
+		agentID        string
+		allowed        bool
+		model          string
+		invocationType string
 	}{
-		{"ev_q1", "default", "agent-a", true, "gpt-4"},
-		{"ev_q2", "default", "agent-a", false, "gpt-4"},
-		{"ev_q3", "default", "agent-b", true, "claude-3"},
+		{"ev_q1", "default", "agent-a", true, "gpt-4", "test"},
+		{"ev_q2", "default", "agent-a", false, "gpt-4", "test"},
+		{"ev_q3", "default", "agent-b", true, "claude-3", "test"},
+		{"ev_q4", "default", "agent-a", true, "gpt-4", "plan_dispatch"},
 	} {
 		err = store.Store(ctx, &evidence.Evidence{
 			ID:             e.id,
@@ -1537,7 +1539,7 @@ func TestEvidenceListQueryParams(t *testing.T) {
 			Timestamp:      now,
 			TenantID:       e.tenantID,
 			AgentID:        e.agentID,
-			InvocationType: "test",
+			InvocationType: e.invocationType,
 			PolicyDecision: evidence.PolicyDecision{Allowed: e.allowed, Action: "allow", PolicyVersion: "v1"},
 			Execution:      evidence.Execution{ModelUsed: e.model, Cost: 0.01},
 			AuditTrail:     evidence.AuditTrail{},
@@ -1548,7 +1550,7 @@ func TestEvidenceListQueryParams(t *testing.T) {
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
 	r := srv.Routes()
 
-	// No filter: all 3
+	// No filter: all 4
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10", nil)
 	req.Header.Set("Authorization", "Bearer k")
 	rec := httptest.NewRecorder()
@@ -1557,7 +1559,18 @@ func TestEvidenceListQueryParams(t *testing.T) {
 	var listResp map[string]interface{}
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
 	entries, _ := listResp["entries"].([]interface{})
-	require.Len(t, entries, 3)
+	require.Len(t, entries, 4)
+
+	// invocation_type=plan_dispatch: 1
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10&invocation_type=plan_dispatch", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&listResp))
+	entries, _ = listResp["entries"].([]interface{})
+	require.Len(t, entries, 1)
+	assert.Equal(t, "plan_dispatch", entries[0].(map[string]interface{})["invocation_type"])
 
 	// allowed=false: 1
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10&allowed=false", nil)

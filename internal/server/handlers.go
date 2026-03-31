@@ -378,7 +378,8 @@ func (s *Server) handleEvidenceList(w http.ResponseWriter, r *http.Request) {
 	}
 	allowed := r.URL.Query().Get("allowed") // "true", "false", "1", "0" or empty
 	model := r.URL.Query().Get("model")     // exact match on execution.model_used
-	entries, err := s.evidenceStore.ListIndex(r.Context(), tenantID, agentID, from, to, limit, "", allowed, model)
+	invocationType := strings.TrimSpace(r.URL.Query().Get("invocation_type"))
+	entries, err := s.evidenceStore.ListIndex(r.Context(), tenantID, agentID, from, to, limit, invocationType, allowed, model)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return

@@ -218,11 +218,13 @@ PREVIEWEOF
     # Use the admin key to verify evidence read access.
     assert_pass "admin key can read /v1/evidence → 200" \
       test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=10")" = "200"
+    # Filter by invocation_type so the newest plan_dispatch is first; a mixed top-N
+    # list can omit the fresh dispatch or surface an older plan_dispatch first.
     assert_pass "evidence index contains plan_dispatch invocation after approval" \
-      bash -c "curl -s -H 'X-Talon-Admin-Key: ${admin_key}' '${base_url}/v1/evidence?limit=50' | jq -e '.entries[]? | select(.invocation_type == \"plan_dispatch\")' >/dev/null"
+      bash -c "curl -s -H 'X-Talon-Admin-Key: ${admin_key}' '${base_url}/v1/evidence?limit=10&invocation_type=plan_dispatch' | jq -e '(.entries // []) | length > 0' >/dev/null"
     if [[ -n "$serve_session_id" ]]; then
       local dispatch_evidence_id=""
-      dispatch_evidence_id="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=50" | jq -r '.entries[]? | select(.invocation_type=="plan_dispatch") | .id' | head -1)"
+      dispatch_evidence_id="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=10&invocation_type=plan_dispatch" | jq -r '.entries[0].id // empty')"
       if [[ -n "$dispatch_evidence_id" ]]; then
         local dispatch_ev_json
         dispatch_ev_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence/${dispatch_evidence_id}")"
