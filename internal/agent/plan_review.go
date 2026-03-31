@@ -368,6 +368,17 @@ func (s *PlanReviewStore) MarkDispatched(ctx context.Context, planID, tenantID, 
 	return nil
 }
 
+// UpdateDispatchResult updates the dispatch_error for an already-claimed plan.
+// Used after MarkDispatched("dispatching") to record the final dispatch outcome.
+func (s *PlanReviewStore) UpdateDispatchResult(ctx context.Context, planID, tenantID, dispatchErr string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE execution_plans SET dispatch_error = ?
+		WHERE id = ? AND tenant_id = ? AND dispatched_at IS NOT NULL`,
+		dispatchErr, planID, tenantID,
+	)
+	return err
+}
+
 // Stats returns aggregate plan lifecycle counters, optionally scoped by tenant.
 func (s *PlanReviewStore) Stats(ctx context.Context, tenantID string) (PlanStats, error) {
 	stats := PlanStats{}

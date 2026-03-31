@@ -177,6 +177,9 @@ type Runner struct {
 	planReview        *PlanReviewStore
 	toolRegistry      *tools.ToolRegistry
 	activeRuns        *ActiveRunTracker   // optional; when set, used for rate-limit policy concurrent_executions
+	runRegistry       *RunRegistry        // optional; when set, tracks run lifecycle states for observability and control
+	overrides         *OverrideStore      // optional; when set, runtime overrides (lockdown, tool disable, cost caps) are checked
+	toolApprovals     *ToolApprovalStore  // optional; when set, tools requiring approval pause for human decision
 	circuitBreaker    *CircuitBreaker     // optional; when set, checks/records policy denials per agent
 	toolFailures      *ToolFailureTracker // optional; tracks tool execution failures separately from policy denials
 	hooks             *HookRegistry
@@ -216,6 +219,9 @@ type RunnerConfig struct {
 	PlanReview        *PlanReviewStore
 	ToolRegistry      *tools.ToolRegistry
 	ActiveRunTracker  *ActiveRunTracker     // optional; when set, rate-limit policy receives concurrent_executions
+	RunRegistry       *RunRegistry          // optional; when set, tracks run lifecycle states for observability and control
+	Overrides         *OverrideStore        // optional; when set, runtime overrides (lockdown, tool disable, cost caps) are checked
+	ToolApprovals     *ToolApprovalStore    // optional; when set, tools requiring approval pause for human decision
 	CircuitBreaker    *CircuitBreaker       // optional; when set, suspends agents after repeated policy denials
 	ToolFailures      *ToolFailureTracker   // optional; tracks tool execution failures separately from circuit breaker
 	Hooks             *HookRegistry         // optional; nil = no hooks
@@ -255,6 +261,9 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		planReview:        cfg.PlanReview,
 		toolRegistry:      cfg.ToolRegistry,
 		activeRuns:        cfg.ActiveRunTracker,
+		runRegistry:       cfg.RunRegistry,
+		overrides:         cfg.Overrides,
+		toolApprovals:     cfg.ToolApprovals,
 		circuitBreaker:    cfg.CircuitBreaker,
 		toolFailures:      cfg.ToolFailures,
 		hooks:             cfg.Hooks,
@@ -283,6 +292,21 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		}
 	}
 	return r
+}
+
+// RunRegistryRef returns the runner's RunRegistry (may be nil).
+func (r *Runner) RunRegistryRef() *RunRegistry {
+	return r.runRegistry
+}
+
+// OverrideStoreRef returns the runner's OverrideStore (may be nil).
+func (r *Runner) OverrideStoreRef() *OverrideStore {
+	return r.overrides
+}
+
+// ToolApprovalStoreRef returns the runner's ToolApprovalStore (may be nil).
+func (r *Runner) ToolApprovalStoreRef() *ToolApprovalStore {
+	return r.toolApprovals
 }
 
 // RunRequest is the input for a single agent invocation.
@@ -427,6 +451,17 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		r.activeRuns.Register(req.TenantID, correlationID, killCancel)
 		defer r.activeRuns.Decrement(req.TenantID)
 		defer r.activeRuns.Deregister(correlationID)
+	}
+	if r.runRegistry != nil {
+		r.runRegistry.Register(correlationID, req.TenantID, req.AgentName, sessionID, killCancel)
+		defer r.runRegistry.Deregister(correlationID)
+	}
+
+	// Override store: check tenant lockdown before any work.
+	if r.overrides != nil && r.overrides.IsLocked(req.TenantID) {
+		r.setRunState(correlationID, RunStatusDenied, FailurePolicyDeny)
+		r.recordEarlyTermination(ctx, correlationID, req, "tenant_lockdown: tenant is locked down by operator override", startTime)
+		return &RunResponse{PolicyAllow: false, DenyReason: "tenant is locked down by operator override", SessionID: req.SessionID}, nil
 	}
 
 	log.Info().
@@ -629,6 +664,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	if r.circuitBreaker != nil {
 		if cbErr := r.circuitBreaker.Check(req.TenantID, req.AgentName); cbErr != nil {
 			span.SetAttributes(attribute.String("circuit_breaker.state", "open"))
+			r.setRunState(correlationID, RunStatusBlocked, FailureCircuitBreaker)
 			r.recordEarlyTermination(ctx, correlationID, req, "circuit_breaker_open: "+cbErr.Error(), startTime)
 			return &RunResponse{PolicyAllow: false, DenyReason: cbErr.Error(), SessionID: req.SessionID}, nil
 		}
@@ -686,6 +722,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				Str("would_deny_reason", decision.Action).
 				Msg("observation_only: policy would deny, allowing for audit")
 		} else {
+			r.setRunState(correlationID, RunStatusDenied, FailurePolicyDeny)
 			r.recordPolicyDenial(ctx, span, correlationID, req, pol, decision, effectiveTier, effectivePIINames, attachmentScan, complianceInfo)
 			denyReason := decision.Action
 			if len(decision.Reasons) > 0 {
@@ -857,6 +894,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		}
 	}
 
+	r.setRunState(correlationID, RunStatusRunning, FailureNone)
 	resp, err = r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine, engine,
 		effectiveTier, effectivePIINames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
 		observationOverride, originalDecision, estimatedCost, runClassifier, sandboxToken, inputPIIRedacted)
@@ -964,12 +1002,41 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 		AgentVerified:    req.AgentVerified,
 		Compliance:       compliance,
 		ExplanationFacts: buildPolicyDecisionFacts(decision, "policy_evaluation"),
+		Status:           string(RunStatusDenied),
+		FailureReason:    string(FailurePolicyDeny),
 	})
+}
+
+// setRunState updates the RunRegistry state for a run if the registry is available.
+func (r *Runner) setRunState(correlationID string, status RunStatus, reason FailureReason) {
+	if r.runRegistry != nil {
+		r.runRegistry.SetStatus(correlationID, status, reason)
+	}
+}
+
+// updateRunMetrics updates step/cost/tool counters in the RunRegistry.
+func (r *Runner) updateRunMetrics(correlationID string, steps, toolCalls int, cost float64) {
+	if r.runRegistry != nil {
+		r.runRegistry.UpdateMetrics(correlationID, steps, toolCalls, cost)
+	}
 }
 
 // recordEarlyTermination records evidence for early termination paths (circuit breaker,
 // hook deny, policy load error, etc.) that would otherwise leave no audit trail.
 func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID string, req *RunRequest, reason string, startTime time.Time) {
+	status := string(RunStatusFailed)
+	failureReason := string(FailureInternalError)
+	switch {
+	case strings.HasPrefix(reason, "circuit_breaker"):
+		status = string(RunStatusBlocked)
+		failureReason = string(FailureCircuitBreaker)
+	case strings.HasPrefix(reason, "hook_"):
+		status = string(RunStatusDenied)
+		failureReason = string(FailureHookDeny)
+	case strings.HasPrefix(reason, "policy_"), strings.HasPrefix(reason, "tenant_lockdown"):
+		status = string(RunStatusDenied)
+		failureReason = string(FailurePolicyDeny)
+	}
 	_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
 		CorrelationID:   correlationID,
 		TenantID:        req.TenantID,
@@ -984,6 +1051,8 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 		DurationMS:       time.Since(startTime).Milliseconds(),
 		InputPrompt:      req.Prompt,
 		ExplanationFacts: explanation.BuildLegacyFacts(false, "early_termination", []string{reason}, "pre_execution", "", ""),
+		Status:           status,
+		FailureReason:    failureReason,
 	})
 }
 
@@ -1058,7 +1127,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			maxIterations = 50
 		}
 	}
-	llmTools := r.buildLLMTools(pol)
+	llmTools := r.buildLLMTools(pol, req.TenantID)
 	// Only OpenAI supports tool calls in the API; other providers would ignore or error on tool messages
 	useAgenticLoop := len(llmTools) > 0 && maxIterations >= 2 && provider.Name() == "openai"
 
@@ -1220,7 +1289,36 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		}
 		stepIndex := 0
 		var toolHistory []map[string]interface{} // passed to OPA for future tool-chain risk scoring
+		const maxConsecutiveToolFailures = 3
+		runToolFailures := make(map[string]int) // per-tool consecutive failure count within this run
+		disabledTools := make(map[string]bool)  // tools auto-disabled after maxConsecutiveToolFailures
+		requireApproval := make(map[string]bool)
+		if pol.Policies.ResourceLimits != nil {
+			for _, t := range pol.Policies.ResourceLimits.RequireApproval {
+				requireApproval[t] = true
+			}
+		}
+	agentLoop:
 		for iteration := 1; ; iteration++ {
+			// Pause/resume check: if an operator paused this run, block until resumed or killed.
+			if r.runRegistry != nil {
+				if paused, resumeCh := r.runRegistry.IsPausedWithCh(correlationID); paused && resumeCh != nil {
+					log.Info().Str("correlation_id", correlationID).Msg("agent_run_paused")
+					span.AddEvent("run_paused")
+					select {
+					case <-resumeCh:
+						log.Info().Str("correlation_id", correlationID).Msg("agent_run_resumed")
+						span.AddEvent("run_resumed")
+					case <-ctx.Done():
+						r.setRunState(correlationID, RunStatusTerminated, FailureOperatorKill)
+						break agentLoop
+					}
+				}
+			}
+			if ctx.Err() != nil {
+				r.setRunState(correlationID, RunStatusTerminated, FailureOperatorKill)
+				break
+			}
 			llmReq := &llm.Request{
 				Model:       model,
 				Messages:    messages,
@@ -1232,6 +1330,11 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			resp, err := provider.Generate(ctx, llmReq)
 			if err != nil {
 				span.RecordError(err)
+				llmFailReason := FailureLLMError
+				if ctx.Err() != nil {
+					llmFailReason = FailureLLMTimeout
+				}
+				r.setRunState(correlationID, RunStatusFailed, llmFailReason)
 				duration := time.Since(startTime)
 				_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
 					CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
@@ -1252,6 +1355,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						PolicyRef:       explanationPolicyRef(pol.VersionTag),
 						VersionIdentity: pol.VersionTag,
 					}},
+					Status:        string(RunStatusFailed),
+					FailureReason: string(llmFailReason),
 				})
 				return nil, fmt.Errorf("calling LLM: %w", err)
 			}
@@ -1276,27 +1381,47 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			stepIndex++
 
 			llmResp = resp
+			r.updateRunMetrics(correlationID, iteration, len(toolsCalled), cost)
 			if perRequest > 0 && cost > perRequest {
 				log.Warn().Float64("total_cost", cost).Float64("per_request", perRequest).Msg("agent_loop_stopped_per_request_budget")
+				r.setRunState(correlationID, RunStatusBlocked, FailureCostExceeded)
 				break
 			}
 			rl := pol.Policies.ResourceLimits
-			if rl != nil && rl.MaxToolCallsPerRun > 0 && len(toolsCalled) >= rl.MaxToolCallsPerRun {
-				log.Warn().Int("tool_calls", len(toolsCalled)).Int("max", rl.MaxToolCallsPerRun).Msg("agent_loop_stopped_max_tool_calls")
+			maxToolCalls := 0
+			maxCostPerRun := 0.0
+			if rl != nil {
+				maxToolCalls = rl.MaxToolCallsPerRun
+				maxCostPerRun = rl.MaxCostPerRun
+			}
+			if ov := r.effectiveOverride(req.TenantID); ov != nil {
+				if ov.MaxToolCalls != nil && (maxToolCalls == 0 || *ov.MaxToolCalls < maxToolCalls) {
+					maxToolCalls = *ov.MaxToolCalls
+				}
+				if ov.MaxCostPerRun != nil && (maxCostPerRun == 0 || *ov.MaxCostPerRun < maxCostPerRun) {
+					maxCostPerRun = *ov.MaxCostPerRun
+				}
+			}
+			if maxToolCalls > 0 && len(toolsCalled) >= maxToolCalls {
+				log.Warn().Int("tool_calls", len(toolsCalled)).Int("max", maxToolCalls).Msg("agent_loop_stopped_max_tool_calls")
+				r.setRunState(correlationID, RunStatusBlocked, FailureMaxToolCallsExceeded)
 				break
 			}
-			if rl != nil && rl.MaxCostPerRun > 0 && cost >= rl.MaxCostPerRun {
-				log.Warn().Float64("cost", cost).Float64("max", rl.MaxCostPerRun).Msg("agent_loop_stopped_max_cost_per_run")
+			if maxCostPerRun > 0 && cost >= maxCostPerRun {
+				log.Warn().Float64("cost", cost).Float64("max", maxCostPerRun).Msg("agent_loop_stopped_max_cost_per_run")
+				r.setRunState(correlationID, RunStatusBlocked, FailureCostExceeded)
 				break
 			}
 			if policyEngine, ok := policyEval.(*policy.Engine); ok {
 				dec, lcErr := policyEngine.EvaluateLoopContainment(ctx, iteration, len(toolsCalled), cost)
 				if lcErr != nil {
 					log.Error().Err(lcErr).Msg("loop containment evaluation failed, stopping loop (fail-closed)")
+					r.setRunState(correlationID, RunStatusBlocked, FailureContainmentDeny)
 					break
 				}
 				if dec != nil && !dec.Allowed {
 					log.Warn().Strs("reasons", dec.Reasons).Msg("agent_loop_stopped_loop_containment")
+					r.setRunState(correlationID, RunStatusBlocked, FailureContainmentDeny)
 					break
 				}
 			}
@@ -1309,17 +1434,41 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			assistantMsg := llm.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls}
 			messages = append(messages, assistantMsg)
 			for _, tc := range resp.ToolCalls {
-				atLimit := rl != nil && rl.MaxToolCallsPerRun > 0 && len(toolsCalled) >= rl.MaxToolCallsPerRun
+				atLimit := maxToolCalls > 0 && len(toolsCalled) >= maxToolCalls
 				var resultContent string
 				var executed bool
 				var toolName string
-				if atLimit {
+				switch {
+				case disabledTools[tc.Name]:
+					resultContent = fmt.Sprintf(`{"error":"tool %q auto-disabled after %d consecutive failures"}`, tc.Name, maxConsecutiveToolFailures)
+					toolName = tc.Name
+					log.Warn().Str("tool", tc.Name).Msg("tool_call_skipped_auto_disabled")
+				case atLimit:
 					resultContent = `{"error":"max_tool_calls_per_run limit reached"}`
 					toolName = tc.Name
-				} else {
+				default:
 					_, _ = r.fireHook(ctx, HookPreTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 						"tool": tc.Name, "tool_call_id": tc.ID,
 					})
+
+					// Pre-tool approval gate: if this tool requires human approval, block and wait.
+					if requireApproval[tc.Name] && r.toolApprovals != nil {
+						r.setRunState(correlationID, RunStatusAwaitingApproval, FailureNone)
+						approval := r.toolApprovals.RequestApproval(ctx, correlationID, req.TenantID, req.AgentName, tc.Name, tc.ID, tc.Arguments)
+						r.setRunState(correlationID, RunStatusRunning, FailureNone)
+						if approval != ToolApprovalApproved {
+							log.Warn().Str("tool", tc.Name).Str("status", string(approval)).Msg("tool_approval_not_granted")
+							b, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("tool execution not approved: %s", approval)})
+							resultContent = string(b)
+							toolHistory = append(toolHistory, map[string]interface{}{
+								"name":           tc.Name,
+								"params":         tc.Arguments,
+								"result_summary": "approval denied or timed out",
+							})
+							messages = append(messages, llm.Message{Role: "tool", Content: fmt.Sprintf("[TOOL-RESULT:%s]\n%s\n[/TOOL-RESULT]", tc.Name, resultContent), ToolCallID: tc.ID})
+							continue
+						}
+					}
 
 					// Pre-execution evidence: write a "pending" record so a kill/crash
 					// never creates an unaudited action.
@@ -1347,6 +1496,25 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					// Track tool execution failures separately from policy denials (Gap T4).
 					if tcResult.ExecutionError != "" && r.toolFailures != nil {
 						r.toolFailures.RecordToolFailure(req.TenantID, req.AgentName, toolName, tcResult.ExecutionError)
+					}
+
+					// Per-run tool failure escalation: auto-disable after N consecutive failures.
+					if tcResult.ExecutionError != "" {
+						runToolFailures[toolName]++
+						if runToolFailures[toolName] >= maxConsecutiveToolFailures && !disabledTools[toolName] {
+							disabledTools[toolName] = true
+							var filtered []llm.Tool
+							for _, t := range llmTools {
+								if t.Name != toolName {
+									filtered = append(filtered, t)
+								}
+							}
+							llmTools = filtered
+							log.Warn().Str("tool", toolName).Int("failures", runToolFailures[toolName]).
+								Msg("tool_auto_disabled_consecutive_failures")
+						}
+					} else if executed {
+						runToolFailures[toolName] = 0
 					}
 
 					// Update the pending record to completed or failed; if we never had a pending
@@ -1414,6 +1582,11 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		resp, err := provider.Generate(ctx, llmReq)
 		if err != nil {
 			span.RecordError(err)
+			singleFailReason := FailureLLMError
+			if ctx.Err() != nil {
+				singleFailReason = FailureLLMTimeout
+			}
+			r.setRunState(correlationID, RunStatusFailed, singleFailReason)
 			duration := time.Since(startTime)
 			_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
 				CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
@@ -1423,7 +1596,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(), Error: err.Error(),
 				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
 				ObservationModeOverride: observationOverride,
-				RoutingDecision:         evRouting,
+				RoutingDecision: evRouting,
 				ExplanationFacts: []explanation.Fact{{
 					Code:            explanation.CodeExecutionFailed,
 					Decision:        explanation.DecisionFailure,
@@ -1432,6 +1605,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					PolicyRef:       explanationPolicyRef(pol.VersionTag),
 					VersionIdentity: pol.VersionTag,
 				}},
+				Status:        string(RunStatusFailed),
+				FailureReason: string(singleFailReason),
 			})
 			return nil, fmt.Errorf("calling LLM: %w", err)
 		}
@@ -1441,6 +1616,38 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		totalInputTokens = resp.InputTokens
 		totalOutputTokens = resp.OutputTokens
 		llm.RecordCostMetrics(ctx, cost, req.AgentName, model, degraded)
+
+		// Post-LLM cost check on single-shot path: catch expensive calls that exceed per-request budget.
+		if pol.Policies.CostLimits != nil && pol.Policies.CostLimits.PerRequest > 0 && cost > pol.Policies.CostLimits.PerRequest {
+			log.Warn().
+				Float64("cost", cost).
+				Float64("per_request_limit", pol.Policies.CostLimits.PerRequest).
+				Str("correlation_id", correlationID).
+				Msg("single_shot_cost_exceeded_per_request_limit")
+			r.setRunState(correlationID, RunStatusBlocked, FailureCostExceeded)
+			span.SetAttributes(attribute.Bool("cost.exceeded_per_request", true))
+			duration := time.Since(startTime)
+			_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+				CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+				InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
+				PolicyDecision: policyDec, Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
+				AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
+				ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(),
+				Error:           fmt.Sprintf("single-shot cost %.4f exceeded per-request limit %.4f", cost, pol.Policies.CostLimits.PerRequest),
+				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
+				ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
+				Cost: cost, Tokens: evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
+				Status: string(RunStatusBlocked), FailureReason: string(FailureCostExceeded),
+			})
+			return &RunResponse{
+				PolicyAllow: false,
+				DenyReason:  fmt.Sprintf("per-request cost exceeded (%.4f > %.4f)", cost, pol.Policies.CostLimits.PerRequest),
+				SessionID:   req.SessionID,
+				Cost:        cost,
+				ModelUsed:   model,
+			}, nil
+		}
+
 		_, _ = r.fireHook(ctx, HookPostLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 			"model": model, "cost_estimate": cost, "input_tokens": resp.InputTokens, "output_tokens": resp.OutputTokens,
 		})
@@ -1588,7 +1795,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		AttachmentHashes:        attachmentHashesFromRequest(req),
 		Compliance:              compliance,
 		ObservationModeOverride: observationOverride,
-		RoutingDecision:         evRouting,
+		RoutingDecision: evRouting,
 		ExplanationFacts: []explanation.Fact{{
 			Code:            explanation.CodePolicyAllowed,
 			Decision:        explanation.DecisionAllow,
@@ -1596,6 +1803,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			PolicyRef:       explanationPolicyRef(pol.VersionTag),
 			VersionIdentity: pol.VersionTag,
 		}},
+		Status: string(RunStatusCompleted),
 	})
 	evidenceID := ""
 	if err != nil {
@@ -1610,6 +1818,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		"cost":        cost,
 	})
 
+	r.setRunState(correlationID, RunStatusCompleted, FailureNone)
 	log.Info().
 		Str("correlation_id", correlationID).
 		Str("evidence_id", evidenceID).
@@ -1699,9 +1908,33 @@ func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, re
 	return called
 }
 
-// buildLLMTools returns LLM tool definitions from the registry, filtered by policy allowed_tools.
-// Empty allowed_tools means no tools are passed to the LLM (single-call behavior).
-func (r *Runner) buildLLMTools(pol *policy.Policy) []llm.Tool {
+// effectiveOverride returns the tenant override if available, or nil.
+func (r *Runner) effectiveOverride(tenantID string) *TenantOverride {
+	if r.overrides == nil || tenantID == "" {
+		return nil
+	}
+	return r.overrides.Get(tenantID)
+}
+
+// overrideDisabledSet returns the set of operator-disabled tools for a tenant, or nil if none.
+func (r *Runner) overrideDisabledSet(tenantID ...string) map[string]bool {
+	if r.overrides == nil || len(tenantID) == 0 || tenantID[0] == "" {
+		return nil
+	}
+	disabled := r.overrides.DisabledToolsFor(tenantID[0])
+	if len(disabled) == 0 {
+		return nil
+	}
+	s := make(map[string]bool, len(disabled))
+	for _, d := range disabled {
+		s[d] = true
+	}
+	return s
+}
+
+// buildLLMTools returns LLM tool definitions from the registry, filtered by policy allowed_tools
+// and operator override disabled_tools. Empty allowed_tools means no tools are passed to the LLM.
+func (r *Runner) buildLLMTools(pol *policy.Policy, tenantID ...string) []llm.Tool {
 	if r.toolRegistry == nil || pol.Capabilities == nil {
 		return nil
 	}
@@ -1710,13 +1943,14 @@ func (r *Runner) buildLLMTools(pol *policy.Policy) []llm.Tool {
 	if len(allowed) == 0 || len(list) == 0 {
 		return nil
 	}
-	allowedSet := make(map[string]bool)
+	allowedSet := make(map[string]bool, len(allowed))
 	for _, n := range allowed {
 		allowedSet[n] = true
 	}
+	disabledByOverride := r.overrideDisabledSet(tenantID...)
 	var out []llm.Tool
 	for _, t := range list {
-		if !allowedSet[t.Name()] {
+		if !allowedSet[t.Name()] || disabledByOverride[t.Name()] {
 			continue
 		}
 		schema := t.InputSchema()

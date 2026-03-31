@@ -303,7 +303,7 @@ talon serve --port 8080 --proxy-config examples/vendor-proxy/zendesk-proxy.talon
 talon serve --port 8080 --gateway --gateway-config examples/gateway/talon.config.gateway.yaml
 ```
 
-Endpoints include: `GET /v1/health`, `GET /v1/status`, `POST /v1/agents/run`, `POST /v1/chat/completions` (OpenAI-compatible), `GET /v1/evidence`, `GET /v1/costs`, `GET /v1/plans/pending` (plan review), `POST /mcp` (native MCP), `POST /mcp/proxy` (when proxy is configured), and `**POST /v1/proxy/{provider}/v1/chat/completions**` (LLM API gateway when `--gateway` is set; caller auth via `Authorization: Bearer <tenant-key>`). Tenant-scoped API routes use `Authorization: Bearer <tenant-key>`. Admin-only routes use `X-Talon-Admin-Key: <key>` (or bearer fallback).
+Endpoints include: `GET /v1/health`, `GET /v1/status`, `POST /v1/agents/run`, `POST /v1/chat/completions` (OpenAI-compatible), `GET /v1/evidence`, `GET /v1/costs`, `GET /v1/plans/pending` (plan review), `POST /mcp` (native MCP), `POST /mcp/proxy` (when proxy is configured), `**POST /v1/proxy/{provider}/v1/chat/completions**` (LLM API gateway when `--gateway` is set; caller auth via `Authorization: Bearer <tenant-key>`), and operational control plane endpoints: `GET /v1/runs`, `POST /v1/runs/{id}/kill`, `POST /v1/runs/{id}/pause`, `POST /v1/runs/{id}/resume`, `GET /v1/overrides`, `POST /v1/overrides/{tenant_id}/lockdown`, `GET /v1/tool-approvals`, `POST /v1/tool-approvals/{id}/decide`. Tenant-scoped API routes use `Authorization: Bearer <tenant-key>`. Admin-only routes (including all `/v1/runs`, `/v1/overrides`, and `/v1/tool-approvals` endpoints) use `X-Talon-Admin-Key: <key>` (or bearer fallback).
 
 For browser navigation to dashboards, include the admin key in the URL once:
 
@@ -366,6 +366,8 @@ Talon identifies the caller, enforces per-caller model and cost policy, records 
 
 **Multi-LLM** — OpenAI, Anthropic, AWS Bedrock (EU), Ollama (local). Tier-based routing: public data → cheap models, sensitive data → EU-only models.
 
+**Operational Control Plane** — Real-time visibility and intervention for running agents. List, pause, resume, and kill runs via admin API. Tenant lockdown halts all agent activity instantly. Runtime overrides disable tools or tighten cost caps without redeploying policy files. Pre-tool approval gates pause execution for human sign-off on sensitive operations. Structured failure taxonomy in evidence records (`cost_exceeded`, `operator_kill`, `policy_deny`, etc.) for incident analysis. See [Operational control plane reference](docs/reference/operational-control-plane.md).
+
 **OpenTelemetry-Native** — Traces, metrics, and logs export via OTel. GenAI semantic conventions for LLM observability. Upgrade path to Langfuse + LGTM stack.
 
 ## How It Compares
@@ -385,6 +387,7 @@ Talon identifies the caller, enforces per-caller model and cost policy, records 
 | Prompt injection prev. | Yes (3-layer)                      | No                                    | No       | No        | No      |
 | Agent memory           | Yes (policy-controlled)            | Yes (advanced: KV-cache, graph, LoRA) | No       | No        | Partial |
 | **Memory controls**    | **Yes (PII scan, HMAC, rollback)** | **No**                                | **No**   | **No**    | **No**  |
+| **Operational control** | **Yes (kill/pause/lockdown/approve)** | **No**                             | **No**   | **No**    | **No**  |
 | Multi-tenant           | Yes                                | No                                    | No       | No        | No      |
 | Open source            | Apache 2.0                         | Apache 2.0                            | Yes      | Yes       | Yes     |
 | EU AI Act alignment    | Yes                                | No                                    | No       | No        | No      |
@@ -627,6 +630,7 @@ Apache 2.0 — See [LICENSE](LICENSE)
 - **Persona Guides:** [PERSONA_GUIDES.md](docs/PERSONA_GUIDES.md) — How Compliance, CTO, SecOps, FinOps, and DevOps use Talon
 - **Memory Governance:** [MEMORY_GOVERNANCE.md](docs/MEMORY_GOVERNANCE.md)
 - **Vendor Integration:** [VENDOR_INTEGRATION_GUIDE.md](docs/VENDOR_INTEGRATION_GUIDE.md)
+- **Operational Control Plane:** [docs/reference/operational-control-plane.md](docs/reference/operational-control-plane.md) — Run management, overrides, tool approval API
 - **Adoption Paths:** [ADOPTION_SCENARIOS.md](docs/ADOPTION_SCENARIOS.md)
 - **Website:** [https://talon.dativo.io](https://talon.dativo.io)
 - **Issues:** [https://github.com/dativo-io/talon/issues](https://github.com/dativo-io/talon/issues)

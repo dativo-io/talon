@@ -57,6 +57,19 @@ func dispatchApprovedPlan(ctx context.Context, store *agent.PlanReviewStore, run
 		return
 	}
 
+	log.Info().
+		Str("plan_id", plan.ID).
+		Str("session_id", plan.SessionID).
+		Str("tenant_id", plan.TenantID).
+		Msg("plan_dispatch_starting")
+
+	// Claim the plan before dispatching to prevent duplicate dispatch from
+	// concurrent ticker iterations (MarkDispatched is idempotent with
+	// dispatched_at IS NULL guard).
+	if err := store.MarkDispatched(ctx, plan.ID, plan.TenantID, "dispatching"); err != nil {
+		return
+	}
+
 	runCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
@@ -71,7 +84,7 @@ func dispatchApprovedPlan(ctx context.Context, store *agent.PlanReviewStore, run
 	})
 	if err != nil {
 		msg := fmt.Sprintf("dispatch run failed: %v", err)
-		_ = store.MarkDispatched(ctx, plan.ID, plan.TenantID, msg)
+		_ = store.UpdateDispatchResult(ctx, plan.ID, plan.TenantID, msg)
 		log.Warn().
 			Err(err).
 			Str("plan_id", plan.ID).
@@ -84,7 +97,7 @@ func dispatchApprovedPlan(ctx context.Context, store *agent.PlanReviewStore, run
 		if resp.DenyReason != "" {
 			msg += ": " + resp.DenyReason
 		}
-		_ = store.MarkDispatched(ctx, plan.ID, plan.TenantID, msg)
+		_ = store.UpdateDispatchResult(ctx, plan.ID, plan.TenantID, msg)
 		log.Warn().
 			Str("plan_id", plan.ID).
 			Str("tenant_id", plan.TenantID).
@@ -92,16 +105,10 @@ func dispatchApprovedPlan(ctx context.Context, store *agent.PlanReviewStore, run
 			Msg("approved_plan_dispatch_denied")
 		return
 	}
-	if err := store.MarkDispatched(ctx, plan.ID, plan.TenantID, ""); err != nil {
-		log.Warn().
-			Err(err).
-			Str("plan_id", plan.ID).
-			Str("tenant_id", plan.TenantID).
-			Msg("approved_plan_mark_dispatched_failed")
-		return
-	}
+	_ = store.UpdateDispatchResult(ctx, plan.ID, plan.TenantID, "")
 	log.Info().
 		Str("plan_id", plan.ID).
+		Str("session_id", plan.SessionID).
 		Str("tenant_id", plan.TenantID).
 		Str("evidence_id", resp.EvidenceID).
 		Str("model", resp.ModelUsed).

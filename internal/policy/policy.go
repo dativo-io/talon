@@ -196,6 +196,7 @@ type ResourceLimitsConfig struct {
 	MaxIterations      int            `yaml:"max_iterations,omitempty" json:"max_iterations,omitempty"`                 // agentic loop cap; 0 or 1 = single LLM call
 	MaxToolCallsPerRun int            `yaml:"max_tool_calls_per_run,omitempty" json:"max_tool_calls_per_run,omitempty"` // cap tool invocations per run; 0 = no limit
 	MaxCostPerRun      float64        `yaml:"max_cost_per_run,omitempty" json:"max_cost_per_run,omitempty"`             // cap cost per run (EUR); 0 = no limit
+	RequireApproval    []string       `yaml:"require_approval,omitempty" json:"require_approval,omitempty"`             // tools requiring human approval before execution
 	Timeout            *TimeoutConfig `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 }
 

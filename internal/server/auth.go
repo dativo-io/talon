@@ -193,7 +193,7 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 func bearerToken(r *http.Request) string {
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
+		return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 	}
 	return ""
 }

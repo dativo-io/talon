@@ -68,6 +68,7 @@ Choose the shortest path for your situation:
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
 | [Authentication and key scopes](reference/authentication-and-key-scopes.md) | Which keys authenticate which endpoint families (gateway vs control plane vs dashboard). |
 | [Gateway dashboard](reference/gateway-dashboard.md) | Dashboard endpoints, metrics API schema, snapshot fields, and authentication. |
+| [Operational control plane](reference/operational-control-plane.md) | Run management (list/kill/pause/resume), tenant lockdown, runtime overrides, tool approval gates. |
 
 ### Explanation (understanding-oriented)
 

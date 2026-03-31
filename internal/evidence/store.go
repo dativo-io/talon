@@ -60,7 +60,8 @@ type Evidence struct {
 	AgentVerified           bool              `json:"agent_verified,omitempty"`
 	ObservationModeOverride bool              `json:"observation_mode_override,omitempty"` // True when request was allowed despite policy deny (audit-only shadow mode)
 	ShadowViolations        []ShadowViolation `json:"shadow_violations,omitempty"`         // What enforce mode would have done (populated only in shadow mode)
-	Status                  string            `json:"status,omitempty"`                    // "pending", "completed", "failed"; empty = completed (backward-compatible)
+	Status                  string            `json:"status,omitempty"`                    // "queued", "running", "completed", "failed", "terminated", "blocked", "denied"; empty = completed (backward-compatible)
+	FailureReason           string            `json:"failure_reason,omitempty"`            // Structured failure classification: cost_exceeded, tool_timeout, llm_error, policy_deny, operator_kill, etc.
 	Signature               string            `json:"signature"`
 	RoutingDecision         *RoutingDecision  `json:"routing_decision,omitempty"` // Provider selection and rejected candidates (EU routing)
 	// Semantic cache: set when response was served from cache (Cost=0, CostSaved=estimated LLM cost).
