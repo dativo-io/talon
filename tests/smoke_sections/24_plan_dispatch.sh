@@ -145,6 +145,7 @@ PREVIEWEOF
   local run_json
   local run_code
   local serve_session_id=""
+  local serve_correlation_id=""
   local plan_run_resp_file="$dir/plan_run_resp.json"
   run_code="$(curl -s -o "$plan_run_resp_file" -w '%{http_code}' -X POST "${base_url}/v1/agents/run" \
     -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" \
@@ -174,6 +175,9 @@ PREVIEWEOF
   if [[ -n "$serve_plan_id" ]]; then
     echo "  ✓  API run returned plan_pending: $serve_plan_id"
     record_pass
+    local plan_json
+    plan_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/plans/${serve_plan_id}")"
+    serve_correlation_id="$(echo "$plan_json" | jq -r '.correlation_id // empty' 2>/dev/null || true)"
   else
     log_failure "API run should return plan_pending under human oversight" \
       "http_code=$run_code json_length=${#run_json}"
@@ -227,10 +231,11 @@ PREVIEWEOF
       local attempts=10
       local attempt=0
       # Evidence indexing can lag briefly after approval/dispatch; poll for the entry
-      # that matches the current serve session_id instead of assuming entries[0].
+      # that matches the current serve session_id (and correlation_id when available)
+      # instead of assuming entries[0].
       while [[ "$attempt" -lt "$attempts" ]]; do
         dispatch_index_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=20&invocation_type=plan_dispatch")"
-        dispatch_evidence_id="$(echo "$dispatch_index_json" | jq -r --arg sid "$serve_session_id" '.entries[]? | select((.session_id // "") == $sid) | .id' | head -1)"
+        dispatch_evidence_id="$(echo "$dispatch_index_json" | jq -r --arg sid "$serve_session_id" --arg corr "$serve_correlation_id" '.entries[]? | select((.session_id // "") == $sid and (($corr == "") or ((.correlation_id // $corr) == $corr))) | .id' | head -1)"
         if [[ -n "$dispatch_evidence_id" ]]; then
           dispatch_ev_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence/${dispatch_evidence_id}")"
           dispatch_sid="$(echo "$dispatch_ev_json" | jq -r '.session_id // empty' 2>/dev/null || true)"

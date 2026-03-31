@@ -13,6 +13,10 @@ import (
 
 const planDispatchInterval = 2 * time.Second
 
+var runPlanDispatch = func(ctx context.Context, runner *agent.Runner, req *agent.RunRequest) (*agent.RunResponse, error) {
+	return runner.Run(ctx, req)
+}
+
 func startPlanAutoDispatcher(ctx context.Context, store *agent.PlanReviewStore, runner *agent.Runner) {
 	if store == nil || runner == nil {
 		return
@@ -73,7 +77,7 @@ func dispatchApprovedPlan(ctx context.Context, store *agent.PlanReviewStore, run
 	runCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
-	resp, err := runner.Run(runCtx, &agent.RunRequest{
+	resp, err := runPlanDispatch(runCtx, runner, &agent.RunRequest{
 		TenantID:         plan.TenantID,
 		AgentName:        plan.AgentID,
 		Prompt:           plan.Prompt,

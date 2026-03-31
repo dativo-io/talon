@@ -20,6 +20,7 @@ import (
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
+	talonsession "github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/testutil"
 )
 
@@ -1944,6 +1945,30 @@ func TestCoPawAlertsWithStore(t *testing.T) {
 		a, _ := alerts[0].(map[string]interface{})
 		assert.Equal(t, true, a["policy_denied"])
 	}
+}
+
+func TestRecordControlPlaneActionIncludesSessionID(t *testing.T) {
+	dir := t.TempDir()
+	evStore, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evStore.Close() })
+
+	ss, err := talonsession.NewStore(dir + "/e.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ss.Close() })
+
+	srv := &Server{
+		evidenceStore: evStore,
+		sessionStore:  ss,
+	}
+
+	srv.recordControlPlaneAction(context.Background(), "default", "tenant_lockdown", "admin_api", "lockdown enabled")
+
+	records, err := evStore.List(context.Background(), "default", "", time.Time{}, time.Time{}, 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, records)
+	assert.Equal(t, "control_plane", records[0].InvocationType)
+	assert.NotEmpty(t, records[0].SessionID, "control-plane evidence must carry a session_id")
 }
 
 func minimalPolicy() *policy.Policy {
