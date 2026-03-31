@@ -265,16 +265,18 @@ func (g *Generator) buildExplanations(params GenerateParams) []explanation.Item 
 			policyRef,
 			versionIdentity,
 		)...)
-		if params.Error != "" {
-			facts = append(facts, explanation.Fact{
-				Code:            explanation.CodeExecutionFailed,
-				Decision:        explanation.DecisionFailure,
-				Stage:           "execution",
-				Trigger:         params.Error,
-				PolicyRef:       policyRef,
-				VersionIdentity: versionIdentity,
-			})
-		}
+	}
+	// Execution failures come from params.Error only when callers did not already attach
+	// CodeExecutionFailed in ExplanationFacts (avoids duplicate facts and a split contract).
+	if params.Error != "" && !factsIncludeExecutionFailure(facts) {
+		facts = append(facts, explanation.Fact{
+			Code:            explanation.CodeExecutionFailed,
+			Decision:        explanation.DecisionFailure,
+			Stage:           "execution",
+			Trigger:         params.Error,
+			PolicyRef:       policyRef,
+			VersionIdentity: versionIdentity,
+		})
 	}
 	items := explanation.BuildFromFacts(facts)
 	if len(items) == 0 {
@@ -288,6 +290,15 @@ func (g *Generator) buildExplanations(params GenerateParams) []explanation.Item 
 		}})
 	}
 	return items
+}
+
+func factsIncludeExecutionFailure(facts []explanation.Fact) bool {
+	for i := range facts {
+		if strings.TrimSpace(facts[i].Code) == explanation.CodeExecutionFailed {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultStageForParams(params GenerateParams) string {

@@ -1347,14 +1347,6 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					ToolsCalled:             toolsCalled, Cost: cost,
 					Tokens:          evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
 					RoutingDecision: evRouting,
-					ExplanationFacts: []explanation.Fact{{
-						Code:            explanation.CodeExecutionFailed,
-						Decision:        explanation.DecisionFailure,
-						Stage:           "execution",
-						Trigger:         err.Error(),
-						PolicyRef:       explanationPolicyRef(pol.VersionTag),
-						VersionIdentity: pol.VersionTag,
-					}},
 					Status:        string(RunStatusFailed),
 					FailureReason: string(llmFailReason),
 				})
@@ -1597,14 +1589,6 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
 				ObservationModeOverride: observationOverride,
 				RoutingDecision:         evRouting,
-				ExplanationFacts: []explanation.Fact{{
-					Code:            explanation.CodeExecutionFailed,
-					Decision:        explanation.DecisionFailure,
-					Stage:           "execution",
-					Trigger:         err.Error(),
-					PolicyRef:       explanationPolicyRef(pol.VersionTag),
-					VersionIdentity: pol.VersionTag,
-				}},
 				Status:        string(RunStatusFailed),
 				FailureReason: string(singleFailReason),
 			})
