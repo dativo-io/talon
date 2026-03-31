@@ -17,6 +17,8 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.4.0] - 2026-03-31
+
 ### Added
 
 - **feat(agent): operational control plane.** Run lifecycle state machine (QUEUED → RUNNING → COMPLETED|FAILED|TERMINATED|BLOCKED|DENIED) with structured failure taxonomy (`cost_exceeded`, `llm_error`, `tool_timeout`, `policy_deny`, `operator_kill`, etc.) in evidence records. New admin API surfaces: `GET /v1/runs` (list active), `POST /v1/runs/{id}/kill` (terminate), `POST /v1/runs/kill-all?tenant_id=X` (tenant-wide kill), `POST /v1/runs/{id}/pause` / `resume` (mid-execution pause). Operator overrides: `POST /v1/overrides/{tenant_id}/lockdown` (reject all new runs + kill active), dynamic tool disable (`/v1/overrides/{tenant_id}/tools/disable`), runtime policy tightening (`/v1/overrides/{tenant_id}/policy`). Pre-tool approval gates: tools listed in `resource_limits.require_approval` pause for human decision via `POST /v1/tool-approvals/{id}/decide` (5 min default timeout). Single-shot cost check catches expensive LLM calls that exceed per-request budget. Per-run tool failure escalation auto-disables tools after 3 consecutive failures. All new endpoints are admin-only (`X-Talon-Admin-Key`). See [Operational control plane reference](docs/reference/operational-control-plane.md).
@@ -24,6 +26,22 @@ For user-facing entries, include:
 - **feat(agent): input prompt PII redaction.** New `redact_input` / `redact_output` fields in `data_classification` config give granular control over when PII is redacted from prompt (before LLM) and response (before returning). The legacy `redact_pii` field is preserved as a shorthand that defaults both. Evidence now includes `input_pii_redacted` for audit. Schema, template, init merge, smoke test (section 26), and PII enrichment quality test updated.
 
 - **feat(classifier): PII semantic enrichment.** Optional semantic attributes on PII placeholders: PERSON → gender (from title/honorific), LOCATION → scope (city/region/country). Canonical entity model and adapter from current detector; built-in enricher; Rego policy `semantic_enrichment.rego` (mode off/shadow/enforce, allowed_attributes). Placeholder renderer: legacy `[TYPE]` or XML-style `<PII type="..." id="..." .../>`. Config: `policies.semantic_enrichment` (enabled, mode, confidence_threshold, allowed_attributes). Metrics: `talon.pii.enrichment.attempts.total`, `talon.pii.enrichment.attributes.emitted.total`, `talon.pii.enrichment.fallback_unknown.total`. Smoke section 26 (5+5 runs with enrichment off/enforce). Docs: [PII semantic enrichment reference](docs/reference/pii-semantic-enrichment.md), policy cookbook snippet, Presidio migration note.
+
+- **feat(evidence): deterministic policy explanations.** Policy explanation rendering is now deterministic across evidence generation and surfaces, reducing ordering drift and making repeated runs easier to compare in audits and tests.
+
+- **chore(legal): add LICENSE file.** Repository now includes a root `LICENSE` file for explicit distribution terms.
+
+### Fixed
+
+- **fix(security): governance hardening.** Governance pipeline checks were tightened based on adversarial audit findings to reduce bypass risk under hostile or malformed inputs.
+
+### Changed
+
+- **fix(readme): improve trust signals.** Status and metadata links now render as badge images; the previous "Trust Signals" text block was removed for a more scannable project header.
+
+### Test
+
+- **test(classifier): enrichment quality comparison script.** Added a dedicated semantic enrichment quality comparison script to support repeatable validation of enrichment behavior.
 
 ## [1.3.0] - 2026-03-18
 
@@ -389,7 +407,8 @@ For user-facing entries, include:
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/dativo-io/talon/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/dativo-io/talon/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/dativo-io/talon/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dativo-io/talon/compare/v1.0.0...v1.1.0
