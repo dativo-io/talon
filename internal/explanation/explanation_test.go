@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestBuildFromFacts_IsDeterministicAndSorted(t *testing.T) {
+func TestExplanation_BuildFromFactsDeterministicAndSorted(t *testing.T) {
 	facts := []Fact{
 		{Code: CodePolicyDeniedTool, Decision: DecisionDeny, Stage: "tools", Trigger: "z", PolicyRef: "p1", VersionIdentity: "v1"},
 		{Code: CodePolicyDeniedCost, Decision: DecisionDeny, Stage: "policy_evaluation", Trigger: "a", PolicyRef: "p1", VersionIdentity: "v1"},
@@ -21,7 +21,7 @@ func TestBuildFromFacts_IsDeterministicAndSorted(t *testing.T) {
 	assert.Equal(t, "policy_evaluation", gotA[0].Stage)
 }
 
-func TestBuildLegacyFacts_SortsReasonInput(t *testing.T) {
+func TestExplanation_BuildLegacyFactsSortsReasonInput(t *testing.T) {
 	reasons := []string{
 		"routing policy returned no results (fail-closed)",
 		"Input contains PII (policy: block_on_pii)",
