@@ -1596,7 +1596,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				ModelRoutingRationale: modelRationale, DurationMS: duration.Milliseconds(), Error: err.Error(),
 				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
 				ObservationModeOverride: observationOverride,
-				RoutingDecision: evRouting,
+				RoutingDecision:         evRouting,
 				ExplanationFacts: []explanation.Fact{{
 					Code:            explanation.CodeExecutionFailed,
 					Decision:        explanation.DecisionFailure,
@@ -1795,7 +1795,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		AttachmentHashes:        attachmentHashesFromRequest(req),
 		Compliance:              compliance,
 		ObservationModeOverride: observationOverride,
-		RoutingDecision: evRouting,
+		RoutingDecision:         evRouting,
 		ExplanationFacts: []explanation.Fact{{
 			Code:            explanation.CodePolicyAllowed,
 			Decision:        explanation.DecisionAllow,

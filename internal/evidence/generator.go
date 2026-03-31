@@ -87,8 +87,8 @@ type GenerateParams struct {
 	CostSaved        float64 // Estimated cost saved by not calling the LLM
 	PlanReview       *PlanReviewEvent
 	ExplanationFacts []explanation.Fact // Structured source-of-truth facts; legacy bridge used when empty.
-	Status           string // Run lifecycle status: queued, running, completed, failed, terminated, blocked, denied
-	FailureReason    string // Structured classification: cost_exceeded, llm_error, policy_deny, operator_kill, etc.
+	Status           string             // Run lifecycle status: queued, running, completed, failed, terminated, blocked, denied
+	FailureReason    string             // Structured classification: cost_exceeded, llm_error, policy_deny, operator_kill, etc.
 }
 
 // StepParams holds inputs for creating a step-level evidence record (one LLM call or one tool call within a run).
