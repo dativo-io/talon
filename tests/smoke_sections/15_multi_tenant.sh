@@ -11,6 +11,7 @@ test_section_15_multi_tenant() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
   local tenant_key_a="key-tenant-a"
   local tenant_key_b="key-tenant-b"
   export TALON_TENANT_KEY="$tenant_key_a"

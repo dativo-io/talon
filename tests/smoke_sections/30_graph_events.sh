@@ -39,6 +39,7 @@ test_section_30_graph_events() {
 
   run_talon init --scaffold --name smoke-graph-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
 
   # Policy with resource limits for graph governance testing
   cat > "$dir/.talon.yaml" <<'POLICYEOF'

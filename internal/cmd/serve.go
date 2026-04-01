@@ -282,6 +282,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		log.Warn().Msg("TALON_ADMIN_KEY not set — admin-only endpoints will be unrestricted. Set for production.")
 	}
 
+	evidenceGen := evidence.NewGenerator(evidenceStore)
+
 	opts := []server.Option{
 		server.WithPlanReviewStore(planReviewStore),
 		server.WithMemoryStore(memStore),
@@ -291,6 +293,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		server.WithRunRegistry(runRegistry),
 		server.WithOverrideStore(overrideStore),
 		server.WithToolApprovalStore(toolApprovalStore),
+		server.WithGraphEventsHandler(policyEngine, evidenceGen, evidenceStore),
 	}
 	if serveDashboard {
 		opts = append(opts, server.WithDashboard(web.DashboardHTML))

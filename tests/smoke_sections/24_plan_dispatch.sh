@@ -20,6 +20,7 @@ test_section_24_plan_dispatch() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
 
   # Ensure plan review gate is enabled for this section.
   # The scaffold already has a compliance: block, so we must insert into it

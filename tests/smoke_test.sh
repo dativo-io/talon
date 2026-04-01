@@ -361,6 +361,44 @@ run_talon() {
   env TALON_DATA_DIR="$TALON_DATA_DIR" talon "$@"
 }
 
+# Apply tight budget and resource limits to agent.talon.yaml for smoke testing.
+# Call after 'run_talon init' in every section to prevent runaway costs.
+smoke_tighten_limits() {
+  local dir="${1:-.}"
+  local agent_yaml="$dir/agent.talon.yaml"
+  [[ -f "$agent_yaml" ]] || return 0
+  if command -v yq &>/dev/null; then
+    yq -i '
+      .policies.cost_limits.per_request = 0.50 |
+      .policies.cost_limits.daily = 5.0 |
+      .policies.cost_limits.monthly = 50.0 |
+      .policies.resource_limits.timeout.operation = "30s" |
+      .policies.resource_limits.timeout.tool_execution = "2m" |
+      .policies.resource_limits.timeout.agent_total = "5m" |
+      .policies.rate_limits.requests_per_minute = 30 |
+      .policies.rate_limits.concurrent_executions = 1
+    ' "$agent_yaml" 2>/dev/null || true
+  else
+    sed -i.bak \
+      -e 's/per_request: *[0-9.]\+/per_request: 0.50/' \
+      -e 's/daily: *200\.0/daily: 5.0/' \
+      -e 's/monthly: *3000\.0/monthly: 50.0/' \
+      -e 's/agent_total: *"30m"/agent_total: "5m"/' \
+      -e 's/operation: *"60s"/operation: "30s"/' \
+      -e 's/tool_execution: *"5m"/tool_execution: "2m"/' \
+      "$agent_yaml" 2>/dev/null || true
+  fi
+  local config_yaml="$dir/talon.config.yaml"
+  [[ -f "$config_yaml" ]] || return 0
+  if command -v yq &>/dev/null; then
+    yq -i '.tenants[0].budgets.daily = 5.0 | .tenants[0].budgets.monthly = 50.0 | .tenants[0].rate_limit = 30' "$config_yaml" 2>/dev/null || true
+  else
+    sed -i.bak \
+      -e '/^tenants:/,/^[^ ]/{s/daily: *200\.0/daily: 5.0/;s/monthly: *3000\.0/monthly: 50.0/}' \
+      "$config_yaml" 2>/dev/null || true
+  fi
+}
+
 # Central request layer: canonical payloads and HTTP helpers (no duplicate URLs/bodies)
 # shellcheck source=./smoke_lib.sh
 source "$SCRIPT_DIR/smoke_lib.sh"

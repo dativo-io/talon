@@ -11,6 +11,7 @@ test_section_21_doctor_report_enforce() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
   assert_pass "talon doctor exits 0" run_talon doctor
   local doc_out; doc_out="$(run_talon doctor 2>/dev/null)"; true
   assert_pass "doctor output contains pass or Result" grep -qiE 'pass|Result' <<< "$doc_out"

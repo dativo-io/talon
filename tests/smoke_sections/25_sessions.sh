@@ -13,6 +13,7 @@ test_section_25_sessions() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
 
   # Create at least one session by running the agent once (session is created on first run)
   run_talon run "Seed session for smoke" &>/dev/null; true

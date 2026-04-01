@@ -11,6 +11,7 @@ test_section_11_memory() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
   # Enable memory in policy (scaffold may have memory.enabled; if not, skip or enable)
   if grep -q "enabled: true" "$dir/agent.talon.yaml" 2>/dev/null || grep -q "memory:" "$dir/agent.talon.yaml" 2>/dev/null; then
     assert_pass "talon run remember FALCON exits 0" run_talon run "Remember: the project codename is FALCON."

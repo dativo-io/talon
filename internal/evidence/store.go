@@ -1279,6 +1279,8 @@ func (s *Store) VerifyRecord(ev *Evidence) bool {
 // Index is a lightweight summary for progressive disclosure Layer 1.
 type Index struct {
 	ID                       string      `json:"id"`
+	CorrelationID            string      `json:"correlation_id,omitempty"`
+	SessionID                string      `json:"session_id,omitempty"`
 	Timestamp                time.Time   `json:"timestamp"`
 	TenantID                 string      `json:"tenant_id"`
 	AgentID                  string      `json:"agent_id"`
@@ -1452,6 +1454,8 @@ func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int
 func toIndex(full *Evidence) Index {
 	idx := Index{
 		ID:             full.ID,
+		CorrelationID:  full.CorrelationID,
+		SessionID:      full.SessionID,
 		Timestamp:      full.Timestamp,
 		TenantID:       full.TenantID,
 		AgentID:        full.AgentID,
