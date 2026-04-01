@@ -30,16 +30,22 @@ retry governance, and evidence lineage across multi-step workflows.
 `talon.config.yaml`, requests require `Authorization: Bearer <tenant_key>`.
 The Python SDK sets this automatically when you pass `tenant_key`.
 
+**Session continuity:** Generate a `session_id` once per workflow and send the
+same value on every graph event (`run_start`, `step_*`, `tool_call`, `retry`,
+`run_end`). This keeps graph evidence joinable in session exports and timeline
+views.
+
 ```python
 from talon_sdk import TalonClient
 
 talon = TalonClient("http://localhost:8080", tenant_key="your-key")
 run_id = talon.new_run_id()
-talon.run_start(run_id, "my-agent", framework="langgraph")
-talon.step_start(run_id, "my-agent", 0, "search_node")
+session_id = "sess_langgraph_demo_001"
+talon.run_start(run_id, "my-agent", framework="langgraph", session_id=session_id)
+talon.step_start(run_id, "my-agent", 0, "search_node", session_id=session_id)
 # ... execute node ...
-talon.step_end(run_id, "my-agent", 0, cost=0.001)
-talon.run_end(run_id, "my-agent", total_cost=0.001)
+talon.step_end(run_id, "my-agent", 0, cost=0.001, session_id=session_id)
+talon.run_end(run_id, "my-agent", total_cost=0.001, session_id=session_id)
 ```
 
 Best for: **LangGraph stateful graphs, multi-step agents, compliance-heavy**.

@@ -162,6 +162,10 @@ run_start ──→ step_start ──→ [tool_call] ──→ step_end ──�
                                    └──→ [retry] (on failure)
 ```
 
+Use one `session_id` per graph workflow and send it on every event. This is
+strongly recommended for evidence continuity (`session_id` joins, exports, and
+dashboard timeline correlation).
+
 Each event returns a Decision:
 
 ```json
@@ -190,6 +194,7 @@ from langgraph.graph import StateGraph, END
 from typing import TypedDict
 
 talon = TalonClient("http://localhost:8080", tenant_key="your-key")
+session_id = "sess_notebook_graph_001"
 
 class State(TypedDict):
     query: str
@@ -217,16 +222,16 @@ app = graph.compile()
 
 # Governed execution
 run_id = talon.new_run_id()
-talon.run_start(run_id, "agent", framework="langgraph", node_count=2)
+talon.run_start(run_id, "agent", framework="langgraph", node_count=2, session_id=session_id)
 
-talon.step_start(run_id, "agent", 0, "search", node_type="tool")
+talon.step_start(run_id, "agent", 0, "search", node_type="tool", session_id=session_id)
 result = app.invoke({"query": "EU compliance 2026", "_run_id": run_id})
-talon.step_end(run_id, "agent", 0)
+talon.step_end(run_id, "agent", 0, session_id=session_id)
 
-talon.step_start(run_id, "agent", 1, "answer", node_type="llm")
-talon.step_end(run_id, "agent", 1, cost=0.001)
+talon.step_start(run_id, "agent", 1, "answer", node_type="llm", session_id=session_id)
+talon.step_end(run_id, "agent", 1, cost=0.001, session_id=session_id)
 
-talon.run_end(run_id, "agent", total_cost=0.001)
+talon.run_end(run_id, "agent", total_cost=0.001, session_id=session_id)
 print(result["result"])
 ```
 
@@ -244,9 +249,11 @@ talon = TalonClient(
 
 def governed_pipeline(query: str):
     run_id = talon.new_run_id()
+    session_id = f"sess_pipeline_{int(time.time())}"
 
     dec = talon.run_start(run_id, "pipeline-agent", framework="langgraph",
-                          node_count=3, planned_steps=["fetch", "process", "store"])
+                          node_count=3, planned_steps=["fetch", "process", "store"],
+                          session_id=session_id)
     if not dec["allowed"]:
         return {"error": dec["reasons"]}
 
@@ -254,18 +261,19 @@ def governed_pipeline(query: str):
     start = time.time()
 
     for i, step_name in enumerate(["fetch", "process", "store"]):
-        dec = talon.step_start(run_id, "pipeline-agent", i, step_name)
+        dec = talon.step_start(run_id, "pipeline-agent", i, step_name, session_id=session_id)
         if not dec["allowed"]:
-            talon.run_end(run_id, "pipeline-agent", status="aborted")
+            talon.run_end(run_id, "pipeline-agent", status="aborted", session_id=session_id)
             return {"error": f"Step {step_name} denied"}
 
         # ... execute step logic ...
         step_cost = 0.001
         total_cost += step_cost
-        talon.step_end(run_id, "pipeline-agent", i, cost=step_cost)
+        talon.step_end(run_id, "pipeline-agent", i, cost=step_cost, session_id=session_id)
 
     duration_ms = int((time.time() - start) * 1000)
-    talon.run_end(run_id, "pipeline-agent", total_cost=total_cost, duration_ms=duration_ms)
+    talon.run_end(run_id, "pipeline-agent", total_cost=total_cost, duration_ms=duration_ms,
+                  session_id=session_id)
     return {"status": "completed", "run_id": run_id}
 
 if __name__ == "__main__":
@@ -362,7 +370,7 @@ curl -X POST http://localhost:8080/mcp \
 
 ## Configuration
 
-### `.talon.yaml` policy for graph-governed agents
+### `agent.talon.yaml` policy for graph-governed agents
 
 ```yaml
 agent:

@@ -82,19 +82,20 @@ def cell_langgraph_stateful():
     app = graph.compile()
 
     run_id = talon.new_run_id()
-    dec = talon.run_start(run_id, "qa-agent", framework="langgraph", model="gpt-4o-mini", node_count=2)
+    session_id = f"sess_{run_id}"
+    dec = talon.run_start(run_id, "qa-agent", framework="langgraph", model="gpt-4o-mini", node_count=2, session_id=session_id)
     if not dec["allowed"]:
         print(f"Denied: {dec['reasons']}")
         return
 
     start = time.time()
-    talon.step_start(run_id, "qa-agent", 0, "retrieve", node_type="tool")
+    talon.step_start(run_id, "qa-agent", 0, "retrieve", node_type="tool", session_id=session_id)
     result = app.invoke({"question": "What is NIS2?", "_run_id": run_id})
-    talon.step_end(run_id, "qa-agent", 0)
-    talon.step_start(run_id, "qa-agent", 1, "generate", node_type="llm", model="gpt-4o-mini")
-    talon.step_end(run_id, "qa-agent", 1, cost=0.001)
+    talon.step_end(run_id, "qa-agent", 0, session_id=session_id)
+    talon.step_start(run_id, "qa-agent", 1, "generate", node_type="llm", model="gpt-4o-mini", session_id=session_id)
+    talon.step_end(run_id, "qa-agent", 1, cost=0.001, session_id=session_id)
     duration_ms = int((time.time() - start) * 1000)
-    talon.run_end(run_id, "qa-agent", total_cost=0.001, duration_ms=duration_ms)
+    talon.run_end(run_id, "qa-agent", total_cost=0.001, duration_ms=duration_ms, session_id=session_id)
 
     print(f"Answer: {result['answer']}")
     print(f"Run: {run_id}, duration: {duration_ms}ms")

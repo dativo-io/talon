@@ -83,11 +83,13 @@ class TalonClient:
         node_type: str = "llm",
         model: str = "",
         cost_so_far: float = 0.0,
+        session_id: str = "",
     ) -> dict[str, Any]:
         return self._send_event({
             "type": "step_start",
             "graph_run_id": graph_run_id,
             "agent_id": agent_id,
+            "session_id": session_id,
             "step_index": step_index,
             "node_id": node_id,
             "cost": cost_so_far,
@@ -106,11 +108,13 @@ class TalonClient:
         status: str = "completed",
         cost: float = 0.0,
         duration_ms: int = 0,
+        session_id: str = "",
     ) -> dict[str, Any]:
         return self._send_event({
             "type": "step_end",
             "graph_run_id": graph_run_id,
             "agent_id": agent_id,
+            "session_id": session_id,
             "step_index": step_index,
             "result": {
                 "status": status,
@@ -126,11 +130,13 @@ class TalonClient:
         step_index: int,
         tool_name: str,
         arguments: Optional[dict[str, Any]] = None,
+        session_id: str = "",
     ) -> dict[str, Any]:
         return self._send_event({
             "type": "tool_call",
             "graph_run_id": graph_run_id,
             "agent_id": agent_id,
+            "session_id": session_id,
             "step_index": step_index,
             "tool_meta": {
                 "name": tool_name,
@@ -148,11 +154,13 @@ class TalonClient:
         retry_count: int,
         retryable: bool = True,
         cost_so_far: float = 0.0,
+        session_id: str = "",
     ) -> dict[str, Any]:
         return self._send_event({
             "type": "retry",
             "graph_run_id": graph_run_id,
             "agent_id": agent_id,
+            "session_id": session_id,
             "step_index": step_index,
             "node_id": node_id,
             "cost": cost_so_far,
@@ -170,11 +178,13 @@ class TalonClient:
         status: str = "completed",
         total_cost: float = 0.0,
         duration_ms: int = 0,
+        session_id: str = "",
     ) -> dict[str, Any]:
         return self._send_event({
             "type": "run_end",
             "graph_run_id": graph_run_id,
             "agent_id": agent_id,
+            "session_id": session_id,
             "cost": total_cost,
             "result": {
                 "status": status,

@@ -67,6 +67,7 @@ def run_with_governance_events():
     )
 
     run_id = talon.new_run_id()
+    session_id = f"sess_{run_id}"
 
     # Notify Talon (even for a single-step "run")
     dec = talon.run_start(
@@ -76,18 +77,19 @@ def run_with_governance_events():
         model="gpt-4o-mini",
         node_count=1,
         planned_steps=["llm_call"],
+        session_id=session_id,
     )
     if not dec["allowed"]:
         print(f"Denied: {dec.get('reasons', [])}")
         return None
 
-    talon.step_start(run_id, "summarizer", 0, "llm_call", node_type="llm", model="gpt-4o-mini")
+    talon.step_start(run_id, "summarizer", 0, "llm_call", node_type="llm", model="gpt-4o-mini", session_id=session_id)
 
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     response = llm.invoke("What are DORA requirements for ICT risk management?")
 
-    talon.step_end(run_id, "summarizer", 0, status="completed", cost=0.0005, duration_ms=800)
-    talon.run_end(run_id, "summarizer", status="completed", total_cost=0.0005, duration_ms=800)
+    talon.step_end(run_id, "summarizer", 0, status="completed", cost=0.0005, duration_ms=800, session_id=session_id)
+    talon.run_end(run_id, "summarizer", status="completed", total_cost=0.0005, duration_ms=800, session_id=session_id)
 
     print(f"Response: {response.content}")
     print(f"Graph run: {run_id}")

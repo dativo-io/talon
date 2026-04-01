@@ -77,6 +77,7 @@ def build_graph():
 # --- Governed execution ---
 def run_governed(query: str):
     run_id = talon.new_run_id()
+    session_id = f"sess_{run_id}"
 
     # 1) Notify Talon of run start
     dec = talon.run_start(
@@ -86,6 +87,7 @@ def run_governed(query: str):
         model="gpt-4o-mini",
         node_count=2,
         planned_steps=["search", "answer"],
+        session_id=session_id,
     )
     if not dec["allowed"]:
         print(f"Run denied by Talon: {dec.get('reasons', [])}")
@@ -97,18 +99,18 @@ def run_governed(query: str):
 
     try:
         # 2) Step: search
-        talon.step_start(run_id, "research-agent", 0, "search", node_type="tool")
+        talon.step_start(run_id, "research-agent", 0, "search", node_type="tool", session_id=session_id)
         result = app.invoke({"query": query, "_run_id": run_id})
-        talon.step_end(run_id, "research-agent", 0, status="completed")
+        talon.step_end(run_id, "research-agent", 0, status="completed", session_id=session_id)
 
         # 3) Step: answer
-        talon.step_start(run_id, "research-agent", 1, "answer", node_type="llm", model="gpt-4o-mini")
-        talon.step_end(run_id, "research-agent", 1, status="completed", cost=0.001)
+        talon.step_start(run_id, "research-agent", 1, "answer", node_type="llm", model="gpt-4o-mini", session_id=session_id)
+        talon.step_end(run_id, "research-agent", 1, status="completed", cost=0.001, session_id=session_id)
         total_cost += 0.001
 
         # 4) Run complete
         duration_ms = int((time.time() - start) * 1000)
-        talon.run_end(run_id, "research-agent", status="completed", total_cost=total_cost, duration_ms=duration_ms)
+        talon.run_end(run_id, "research-agent", status="completed", total_cost=total_cost, duration_ms=duration_ms, session_id=session_id)
 
         print(f"Answer: {result.get('answer', 'N/A')}")
         print(f"Graph run: {run_id}, cost: ${total_cost:.4f}, duration: {duration_ms}ms")
@@ -116,7 +118,7 @@ def run_governed(query: str):
 
     except Exception as e:
         duration_ms = int((time.time() - start) * 1000)
-        talon.run_end(run_id, "research-agent", status="failed", total_cost=total_cost, duration_ms=duration_ms)
+        talon.run_end(run_id, "research-agent", status="failed", total_cost=total_cost, duration_ms=duration_ms, session_id=session_id)
         print(f"Run failed: {e}")
         raise
 
