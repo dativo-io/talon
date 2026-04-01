@@ -89,6 +89,8 @@ type GenerateParams struct {
 	ExplanationFacts []explanation.Fact // Structured source-of-truth facts; legacy bridge used when empty.
 	Status           string             // Run lifecycle status: queued, running, completed, failed, terminated, blocked, denied
 	FailureReason    string             // Structured classification: cost_exceeded, llm_error, policy_deny, operator_kill, etc.
+	PlanID           string             // Execution plan ID for lineage (links to execution_plans.id)
+	GraphRunID       string             // Graph runtime run ID for external orchestrators (LangGraph, LangChain, etc.)
 }
 
 // StepParams holds inputs for creating a step-level evidence record (one LLM call or one tool call within a run).
@@ -113,6 +115,8 @@ type StepParams struct {
 	Status          string // "pending", "completed", "failed"; empty defaults to completed
 	Error           string // Error message (for failed steps)
 	ValidationError string // Schema validation error (distinct from execution errors)
+	PlanID          string // Execution plan ID for lineage (links to execution_plans.id)
+	GraphRunID      string // Graph runtime run ID for external orchestrators
 }
 
 // GenerateStep creates and stores a step evidence record.
@@ -143,6 +147,8 @@ func (g *Generator) GenerateStep(ctx context.Context, params StepParams) (*StepE
 		Error:           params.Error,
 		ValidationError: params.ValidationError,
 		Timestamp:       time.Now(),
+		PlanID:          params.PlanID,
+		GraphRunID:      params.GraphRunID,
 	}
 	if err := g.store.StoreStep(ctx, step); err != nil {
 		return nil, err
@@ -236,6 +242,8 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 		PlanReview:      params.PlanReview,
 		Status:          params.Status,
 		FailureReason:   params.FailureReason,
+		PlanID:          params.PlanID,
+		GraphRunID:      params.GraphRunID,
 	}
 	ev.Explanations = g.buildExplanations(params)
 	if len(ev.Explanations) == 0 {

@@ -40,7 +40,8 @@
 #   07 PII | 08 attachments | 09 cost | 10 audit | 11 memory | 12 HTTP API | 13 gateway |
 #   14 deny | 15 multi-tenant | 16 shadow | 17 config-provider | 18 compliance-export |
 #   19 CI/CD | 20 edge-cases | 21 doctor/report/enforce | 22 cache | 23 dashboard-metrics | 24 plan-dispatch | 25 sessions |
-#   26 pii-enrichment | 27 runtime-governance | 28 control-plane | 29 consistency.
+#   26 pii-enrichment | 27 runtime-governance | 28 control-plane | 29 consistency |
+#   30 graph-events.
 #
 # QA notes (from brief):
 # - Section 16 (Shadow mode): Evidence shadow signal is in shadow_violations or
@@ -420,7 +421,7 @@ for _section_file in \
   20_edge_cases.sh 21_doctor_report_enforce.sh 22_cache.sh \
   23_dashboard_metrics.sh 24_plan_dispatch.sh 25_sessions.sh \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
-  29_consistency.sh; do
+  29_consistency.sh 30_graph_events.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -502,6 +503,7 @@ main() {
   run_section "26_pii_enrichment" test_section_26_pii_enrichment
   run_section "27_runtime_governance" test_section_27_runtime_governance
   run_section "28_control_plane" test_section_28_control_plane
+  run_section "30_graph_events" test_section_30_graph_events
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency

@@ -44,6 +44,7 @@ var allPolicies = []regoPolicy{
 	{file: "rego/routing.rego", query: "data.talon.policy.routing.result"},
 	{file: "rego/session_governance.rego", query: "data.talon.policy.session_governance.deny"},
 	{file: "rego/semantic_enrichment.rego", query: "data.talon.policy.semantic_enrichment.emit_attributes"},
+	{file: "rego/graph_governance.rego", query: "data.talon.policy.graph_governance.deny"},
 }
 
 // Engine evaluates governance policies using embedded OPA.
@@ -243,6 +244,44 @@ func (e *Engine) EvaluateLoopContainment(ctx context.Context, currentIteration, 
 		decision.Allowed = false
 		decision.Action = "deny"
 	}
+
+	return decision, nil
+}
+
+// EvaluateGraphGovernance checks whether an external graph runtime event is
+// allowed. Input should contain event_type, step_index, retry_count,
+// cost_so_far, and node_id. Evaluated against graph_governance.rego which
+// enforces max_iterations, max_cost_per_run, and max_retries_per_node.
+func (e *Engine) EvaluateGraphGovernance(ctx context.Context, input map[string]interface{}) (*Decision, error) {
+	ctx, span := tracer.Start(ctx, "policy.evaluate_graph_governance",
+		trace.WithAttributes(
+			attribute.String("event_type", fmt.Sprintf("%v", input["event_type"])),
+		))
+	defer span.End()
+
+	decision := &Decision{
+		Allowed:       true,
+		Action:        "allow",
+		PolicyVersion: e.policy.VersionTag,
+	}
+
+	reasons, err := e.evaluateDenyPolicy(ctx, "rego/graph_governance.rego", input)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	decision.Reasons = append(decision.Reasons, reasons...)
+
+	if len(decision.Reasons) > 0 {
+		decision.Allowed = false
+		decision.Action = "deny"
+	}
+
+	span.SetAttributes(
+		attribute.Bool("policy.allowed", decision.Allowed),
+		attribute.Int("policy.deny_reasons", len(decision.Reasons)),
+	)
 
 	return decision, nil
 }
