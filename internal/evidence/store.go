@@ -405,13 +405,13 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 
 	evidenceJSONWithSig, _ := json.Marshal(ev)
 
-	query := `INSERT INTO evidence (id, correlation_id, timestamp, tenant_id, agent_id, invocation_type, evidence_json, signature, session_id, stage, candidate_index, judge_score, selected)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO evidence (id, correlation_id, timestamp, tenant_id, agent_id, invocation_type, evidence_json, signature, session_id, stage, candidate_index, judge_score, selected, plan_id, graph_run_id)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = s.db.ExecContext(ctx, query,
 		ev.ID, ev.CorrelationID, ev.Timestamp, ev.TenantID, ev.AgentID,
 		ev.InvocationType, string(evidenceJSONWithSig), signature, ev.SessionID, ev.Stage,
-		ev.CandidateIndex, ev.JudgeScore, ev.Selected,
+		ev.CandidateIndex, ev.JudgeScore, ev.Selected, ev.PlanID, ev.GraphRunID,
 	)
 	if err != nil {
 		return fmt.Errorf("storing evidence: %w", err)
@@ -443,12 +443,12 @@ func (s *Store) StoreStep(ctx context.Context, step *StepEvidence) error {
 	step.Signature = signature
 	stepJSONWithSig, _ := json.Marshal(step)
 
-	query := `INSERT INTO step_evidence (id, correlation_id, tenant_id, agent_id, step_index, step_type, tool_name, step_json, signature, timestamp, session_id, stage, candidate_index, judge_score, selected)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO step_evidence (id, correlation_id, tenant_id, agent_id, step_index, step_type, tool_name, step_json, signature, timestamp, session_id, stage, candidate_index, judge_score, selected, plan_id, graph_run_id)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = s.db.ExecContext(ctx, query,
 		step.ID, step.CorrelationID, step.TenantID, step.AgentID, step.StepIndex, step.Type, step.ToolName,
 		string(stepJSONWithSig), signature, step.Timestamp, step.SessionID, step.Stage,
-		step.CandidateIndex, step.JudgeScore, step.Selected,
+		step.CandidateIndex, step.JudgeScore, step.Selected, step.PlanID, step.GraphRunID,
 	)
 	if err != nil {
 		return fmt.Errorf("storing step evidence: %w", err)

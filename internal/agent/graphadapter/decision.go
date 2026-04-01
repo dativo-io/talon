@@ -5,8 +5,10 @@ package graphadapter
 type Action string
 
 const (
-	ActionAllow         Action = "allow"
-	ActionDeny          Action = "deny"
+	ActionAllow Action = "allow"
+	ActionDeny  Action = "deny"
+
+	// Reserved for Phase 2 — not yet emitted by the adapter.
 	ActionAbort         Action = "abort"
 	ActionOverrideModel Action = "override_model"
 	ActionMutateArgs    Action = "mutate_args"

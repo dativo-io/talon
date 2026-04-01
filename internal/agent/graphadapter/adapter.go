@@ -3,6 +3,7 @@ package graphadapter
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -11,11 +12,19 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 )
 
 var tracer = otel.Tracer("github.com/dativo-io/talon/internal/agent/graphadapter")
+
+// runState tracks mid-run denial state for a single graph execution,
+// allowing handleRunEnd to reflect prior denials on the evidence record.
+type runState struct {
+	denied  bool
+	reasons []string
+}
 
 // Adapter processes governance events from external agent runtimes and
 // returns control decisions. It bridges the framework-agnostic event
@@ -24,6 +33,7 @@ type Adapter struct {
 	policyEngine  *policy.Engine
 	evidenceGen   *evidence.Generator
 	evidenceStore *evidence.Store
+	runs          sync.Map // graph_run_id -> *runState
 }
 
 // NewAdapter creates a graph runtime adapter.
@@ -90,7 +100,7 @@ func (a *Adapter) handleRunStart(ctx context.Context, span trace.Span, ev *Event
 		return nil, err
 	}
 
-	a.recordStepEvidence(ctx, ev, "run_start", dec)
+	dec.EvidenceID = a.recordStepEvidence(ctx, ev, "run_start", dec)
 
 	log.Info().
 		Str("graph_run_id", ev.GraphRunID).
@@ -123,7 +133,10 @@ func (a *Adapter) handleStepStart(ctx context.Context, span trace.Span, ev *Even
 		return nil, err
 	}
 
-	a.recordStepEvidence(ctx, ev, "step_start", dec)
+	if !dec.Allowed {
+		a.trackDenial(ev.GraphRunID, dec.Reasons)
+	}
+	dec.EvidenceID = a.recordStepEvidence(ctx, ev, "step_start", dec)
 	return dec, nil
 }
 
@@ -146,8 +159,9 @@ func (a *Adapter) handleStepEnd(ctx context.Context, span trace.Span, ev *Event)
 		durationMS = ev.Result.DurationMS
 	}
 
+	dec := &Decision{Action: ActionAllow, Allowed: true}
 	if a.evidenceGen != nil {
-		_, _ = a.evidenceGen.GenerateStep(ctx, evidence.StepParams{
+		step, _ := a.evidenceGen.GenerateStep(ctx, evidence.StepParams{
 			CorrelationID: ev.GraphRunID,
 			SessionID:     ev.SessionID,
 			TenantID:      ev.TenantID,
@@ -159,10 +173,15 @@ func (a *Adapter) handleStepEnd(ctx context.Context, span trace.Span, ev *Event)
 			Cost:          cost,
 			Status:        a.stepStatus(ev),
 			Error:         a.stepError(ev),
+			GraphRunID:    ev.GraphRunID,
+			PlanID:        a.planID(ev),
 		})
+		if step != nil {
+			dec.EvidenceID = step.ID
+		}
 	}
 
-	return &Decision{Action: ActionAllow, Allowed: true}, nil
+	return dec, nil
 }
 
 func (a *Adapter) handleToolCall(ctx context.Context, span trace.Span, ev *Event) (*Decision, error) {
@@ -178,17 +197,16 @@ func (a *Adapter) handleToolCall(ctx context.Context, span trace.Span, ev *Event
 		}
 		if !toolDec.Allowed {
 			span.SetAttributes(attribute.Bool("tool.denied", true))
-			a.recordStepEvidence(ctx, ev, "tool_denied", &Decision{Action: ActionDeny, Allowed: false, Reasons: toolDec.Reasons})
-			return &Decision{
-				Action:  ActionDeny,
-				Allowed: false,
-				Reasons: toolDec.Reasons,
-			}, nil
+			denyDec := &Decision{Action: ActionDeny, Allowed: false, Reasons: toolDec.Reasons}
+			a.trackDenial(ev.GraphRunID, denyDec.Reasons)
+			denyDec.EvidenceID = a.recordStepEvidence(ctx, ev, "tool_denied", denyDec)
+			return denyDec, nil
 		}
 	}
 
-	a.recordStepEvidence(ctx, ev, "tool_allowed", &Decision{Action: ActionAllow, Allowed: true})
-	return &Decision{Action: ActionAllow, Allowed: true}, nil
+	allowDec := &Decision{Action: ActionAllow, Allowed: true}
+	allowDec.EvidenceID = a.recordStepEvidence(ctx, ev, "tool_allowed", allowDec)
+	return allowDec, nil
 }
 
 func (a *Adapter) handleRetry(ctx context.Context, span trace.Span, ev *Event) (*Decision, error) {
@@ -213,7 +231,10 @@ func (a *Adapter) handleRetry(ctx context.Context, span trace.Span, ev *Event) (
 		return nil, err
 	}
 
-	a.recordStepEvidence(ctx, ev, "retry", dec)
+	if !dec.Allowed {
+		a.trackDenial(ev.GraphRunID, dec.Reasons)
+	}
+	dec.EvidenceID = a.recordStepEvidence(ctx, ev, "retry", dec)
 
 	log.Info().
 		Str("graph_run_id", ev.GraphRunID).
@@ -231,18 +252,54 @@ func (a *Adapter) handleRunEnd(ctx context.Context, span trace.Span, ev *Event) 
 		status = ev.Result.Status
 	}
 
+	rs := a.consumeRunState(ev.GraphRunID)
+	policyDec := evidence.PolicyDecision{Allowed: true, Action: "allow"}
+	var facts []explanation.Fact
+
+	if rs != nil && rs.denied {
+		policyDec = evidence.PolicyDecision{Allowed: false, Action: "deny", Reasons: rs.reasons}
+		status = "denied"
+		for _, reason := range rs.reasons {
+			facts = append(facts, explanation.Fact{
+				Code:     explanation.CodePolicyDenied,
+				Decision: explanation.DecisionDeny,
+				Stage:    "graph_governance",
+				Trigger:  reason,
+			})
+		}
+	} else {
+		facts = []explanation.Fact{{
+			Code:     explanation.CodeGraphRunAllowed,
+			Decision: explanation.DecisionAllow,
+			Stage:    "graph_governance",
+		}}
+	}
+
+	dec := &Decision{Action: ActionAllow, Allowed: policyDec.Allowed}
+	if !policyDec.Allowed {
+		dec.Action = ActionDeny
+		dec.Reasons = rs.reasons
+	}
+
 	if a.evidenceGen != nil {
-		_, _ = a.evidenceGen.Generate(ctx, evidence.GenerateParams{
-			CorrelationID:  ev.GraphRunID,
-			SessionID:      ev.SessionID,
-			TenantID:       ev.TenantID,
-			AgentID:        ev.AgentID,
-			InvocationType: "graph_run",
-			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
-			Cost:           ev.Cost,
-			DurationMS:     a.runDuration(ev),
-			Status:         status,
+		evRec, _ := a.evidenceGen.Generate(ctx, evidence.GenerateParams{
+			CorrelationID:    ev.GraphRunID,
+			SessionID:        ev.SessionID,
+			TenantID:         ev.TenantID,
+			AgentID:          ev.AgentID,
+			InvocationType:   "graph_run",
+			PolicyDecision:   policyDec,
+			Cost:             ev.Cost,
+			DurationMS:       a.runDuration(ev),
+			Status:           status,
+			FailureReason:    a.failureReason(rs),
+			GraphRunID:       ev.GraphRunID,
+			PlanID:           a.planID(ev),
+			ExplanationFacts: facts,
 		})
+		if evRec != nil {
+			dec.EvidenceID = evRec.ID
+		}
 	}
 
 	log.Info().
@@ -252,7 +309,7 @@ func (a *Adapter) handleRunEnd(ctx context.Context, span trace.Span, ev *Event) 
 		Float64("total_cost", ev.Cost).
 		Msg("graph_run_end")
 
-	return &Decision{Action: ActionAllow, Allowed: true}, nil
+	return dec, nil
 }
 
 func (a *Adapter) evaluatePolicy(ctx context.Context, span trace.Span, input map[string]interface{}) (*Decision, error) {
@@ -279,9 +336,9 @@ func (a *Adapter) evaluatePolicy(ctx context.Context, span trace.Span, input map
 	return &Decision{Action: ActionAllow, Allowed: true}, nil
 }
 
-func (a *Adapter) recordStepEvidence(ctx context.Context, ev *Event, eventLabel string, dec *Decision) {
+func (a *Adapter) recordStepEvidence(ctx context.Context, ev *Event, eventLabel string, dec *Decision) string {
 	if a.evidenceGen == nil {
-		return
+		return ""
 	}
 
 	stepType := "graph_event"
@@ -294,7 +351,7 @@ func (a *Adapter) recordStepEvidence(ctx context.Context, ev *Event, eventLabel 
 		status = "denied"
 	}
 
-	_, _ = a.evidenceGen.GenerateStep(ctx, evidence.StepParams{
+	step, _ := a.evidenceGen.GenerateStep(ctx, evidence.StepParams{
 		CorrelationID: ev.GraphRunID,
 		SessionID:     ev.SessionID,
 		TenantID:      ev.TenantID,
@@ -303,7 +360,13 @@ func (a *Adapter) recordStepEvidence(ctx context.Context, ev *Event, eventLabel 
 		Type:          stepType,
 		ToolName:      eventLabel,
 		Status:        status,
+		GraphRunID:    ev.GraphRunID,
+		PlanID:        a.planID(ev),
 	})
+	if step != nil {
+		return step.ID
+	}
+	return ""
 }
 
 func (a *Adapter) stepStatus(ev *Event) string {
@@ -328,4 +391,33 @@ func (a *Adapter) runDuration(ev *Event) int64 {
 		return ev.Result.DurationMS
 	}
 	return 0
+}
+
+func (a *Adapter) failureReason(rs *runState) string {
+	if rs != nil && rs.denied {
+		return "graph_governance_deny"
+	}
+	return ""
+}
+
+func (a *Adapter) planID(ev *Event) string {
+	if ev.RunMeta != nil {
+		return ev.RunMeta.PlanID
+	}
+	return ""
+}
+
+func (a *Adapter) trackDenial(graphRunID string, reasons []string) {
+	val, _ := a.runs.LoadOrStore(graphRunID, &runState{})
+	rs := val.(*runState)
+	rs.denied = true
+	rs.reasons = append(rs.reasons, reasons...)
+}
+
+func (a *Adapter) consumeRunState(graphRunID string) *runState {
+	val, ok := a.runs.LoadAndDelete(graphRunID)
+	if !ok {
+		return nil
+	}
+	return val.(*runState)
 }

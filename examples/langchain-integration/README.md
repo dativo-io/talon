@@ -26,6 +26,10 @@ Best for: **single LLM calls, stateless usage, quick integration**.
 Send lifecycle events to `/v1/graph/events` for step-level control,
 retry governance, and evidence lineage across multi-step workflows.
 
+**Authentication:** When `tenant_keys` are configured in
+`talon.config.yaml`, requests require `Authorization: Bearer <tenant_key>`.
+The Python SDK sets this automatically when you pass `tenant_key`.
+
 ```python
 from talon_sdk import TalonClient
 

@@ -166,27 +166,47 @@ func TestGraphAdapter_FullLifecycle_GoogleSearch(t *testing.T) {
 	})
 	assert.True(t, dec.Allowed)
 
-	// Verify evidence was recorded
+	// Verify evidence was recorded with deep field assertions
 	ctx := context.Background()
 	entries, err := store.List(ctx, tenantID, "", time.Time{}, time.Time{}, 50)
 	require.NoError(t, err)
 	assert.NotEmpty(t, entries, "evidence store should contain records for the graph run")
 
-	hasGraphRun := false
-	for _, e := range entries {
-		if e.CorrelationID == graphRunID {
-			hasGraphRun = true
-			assert.Equal(t, "graph_run", e.InvocationType)
-			assert.Equal(t, tenantID, e.TenantID)
-			assert.Equal(t, agentID, e.AgentID)
+	var runEvidence *evidence.Evidence
+	for i := range entries {
+		if entries[i].CorrelationID == graphRunID && entries[i].InvocationType == "graph_run" {
+			runEvidence = &entries[i]
 			break
 		}
 	}
-	assert.True(t, hasGraphRun, "should find run-level evidence with correlation_id=%s", graphRunID)
+	require.NotNil(t, runEvidence, "should find run-level evidence with correlation_id=%s", graphRunID)
+	assert.Equal(t, tenantID, runEvidence.TenantID)
+	assert.Equal(t, agentID, runEvidence.AgentID)
+	assert.True(t, runEvidence.PolicyDecision.Allowed, "successful run should have PolicyDecision.Allowed=true")
+	assert.Equal(t, "allow", runEvidence.PolicyDecision.Action)
+	assert.Equal(t, 0.005, runEvidence.Execution.Cost, "run evidence Cost should match total_cost")
+	assert.Equal(t, int64(2900), runEvidence.Execution.DurationMS, "run evidence DurationMS should match")
+	assert.Equal(t, "completed", runEvidence.Status)
+	assert.Equal(t, graphRunID, runEvidence.GraphRunID, "run evidence should have GraphRunID")
+	assert.NotEmpty(t, runEvidence.Explanations, "run evidence should have explanation items")
 
 	steps, err := store.ListStepsByCorrelationID(ctx, graphRunID)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(steps), 5, "should have step evidence for lifecycle events")
+
+	// Find the google_search tool_call step and assert fields
+	var toolStep *evidence.StepEvidence
+	for i := range steps {
+		if steps[i].Type == "tool_call" && steps[i].ToolName == "google_search" {
+			toolStep = &steps[i]
+			break
+		}
+	}
+	if toolStep != nil {
+		assert.Equal(t, "tool_call", toolStep.Type)
+		assert.Equal(t, "google_search", toolStep.ToolName)
+		assert.Equal(t, graphRunID, toolStep.GraphRunID, "step should have GraphRunID lineage")
+	}
 }
 
 // TestGraphAdapter_ToolDeny verifies that a forbidden tool is denied over HTTP.
@@ -284,6 +304,64 @@ func TestGraphAdapter_HTTP_Validation(t *testing.T) {
 			assert.Equal(t, tt.wantStatus, rr.Code)
 		})
 	}
+}
+
+// TestGraphAdapter_DeniedRun_EvidenceReflectsDenial verifies that when a step
+// is denied mid-run, the run_end evidence reflects the denial.
+func TestGraphAdapter_DeniedRun_EvidenceReflectsDenial(t *testing.T) {
+	handler, store := setupGraphAdapter(t, 3, 10.0)
+	graphRunID := "gr_integ_denied_run"
+	tenantID := "acme"
+
+	// run_start
+	_ = postGraphEvent(t, handler, graphadapter.Event{
+		Type: graphadapter.EventRunStart, GraphRunID: graphRunID,
+		TenantID: tenantID, AgentID: "loop-agent",
+		RunMeta: &graphadapter.RunMeta{Framework: "langgraph"},
+	})
+
+	// Steps 1-3 allowed
+	for i := 1; i <= 3; i++ {
+		_ = postGraphEvent(t, handler, graphadapter.Event{
+			Type: graphadapter.EventStepStart, GraphRunID: graphRunID,
+			TenantID: tenantID, AgentID: "loop-agent",
+			StepIndex: i, NodeID: "node",
+		})
+	}
+
+	// Step 4 denied (max_iterations=3)
+	dec := postGraphEvent(t, handler, graphadapter.Event{
+		Type: graphadapter.EventStepStart, GraphRunID: graphRunID,
+		TenantID: tenantID, AgentID: "loop-agent",
+		StepIndex: 4, NodeID: "node",
+	})
+	assert.False(t, dec.Allowed, "step 4 should be denied")
+
+	// run_end — should reflect the denial
+	decEnd := postGraphEvent(t, handler, graphadapter.Event{
+		Type: graphadapter.EventRunEnd, GraphRunID: graphRunID,
+		TenantID: tenantID, AgentID: "loop-agent",
+		Cost: 0.01, Result: &graphadapter.ResultMeta{Status: "completed", DurationMS: 5000},
+	})
+	assert.False(t, decEnd.Allowed, "run_end should reflect mid-run denial")
+	assert.Equal(t, graphadapter.ActionDeny, decEnd.Action)
+
+	// Verify evidence
+	ctx := context.Background()
+	entries, err := store.List(ctx, tenantID, "", time.Time{}, time.Time{}, 50)
+	require.NoError(t, err)
+
+	var runEvidence *evidence.Evidence
+	for i := range entries {
+		if entries[i].CorrelationID == graphRunID && entries[i].InvocationType == "graph_run" {
+			runEvidence = &entries[i]
+			break
+		}
+	}
+	require.NotNil(t, runEvidence, "should find run-level evidence")
+	assert.False(t, runEvidence.PolicyDecision.Allowed, "denied run evidence should have PolicyDecision.Allowed=false")
+	assert.Equal(t, "denied", runEvidence.Status, "denied run should have status=denied")
+	assert.Equal(t, "graph_governance_deny", runEvidence.FailureReason)
 }
 
 // TestGraphAdapter_TenantIsolation verifies evidence is scoped by tenant.

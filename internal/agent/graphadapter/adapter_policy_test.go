@@ -359,6 +359,148 @@ func TestAdapterWithPolicy_FullLifecycle_GoogleSearchAgent(t *testing.T) {
 	assert.True(t, dec.Allowed)
 }
 
+func TestAdapterWithPolicy_EvidenceID_PopulatedOnAllEvents(t *testing.T) {
+	eng := newPolicyWithResourceLimits(t, 10, 5.0, 3)
+	gen, store := newEvidenceStack(t)
+	adapter := NewAdapter(eng, gen, store)
+	ctx := context.Background()
+	graphRunID := "gr_evidence_id"
+
+	// run_start
+	dec, err := adapter.HandleEvent(ctx, &Event{
+		Type: EventRunStart, GraphRunID: graphRunID,
+		TenantID: "acme", AgentID: "ev-agent",
+		RunMeta: &RunMeta{Framework: "langgraph", PlanID: "plan_99"},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, dec.EvidenceID, "run_start should populate EvidenceID")
+
+	// step_start
+	dec, err = adapter.HandleEvent(ctx, &Event{
+		Type: EventStepStart, GraphRunID: graphRunID,
+		TenantID: "acme", AgentID: "ev-agent",
+		StepIndex: 1, NodeID: "n1",
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, dec.EvidenceID, "step_start should populate EvidenceID")
+
+	// tool_call (allowed)
+	dec, err = adapter.HandleEvent(ctx, &Event{
+		Type: EventToolCall, GraphRunID: graphRunID,
+		TenantID: "acme", AgentID: "ev-agent",
+		ToolMeta: &ToolMeta{Name: "google_search", Arguments: map[string]interface{}{"q": "test"}},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, dec.EvidenceID, "tool_call should populate EvidenceID")
+
+	// tool_call (denied)
+	dec, err = adapter.HandleEvent(ctx, &Event{
+		Type: EventToolCall, GraphRunID: graphRunID,
+		TenantID: "acme", AgentID: "ev-agent",
+		ToolMeta: &ToolMeta{Name: "delete_database", Arguments: map[string]interface{}{}},
+	})
+	require.NoError(t, err)
+	assert.False(t, dec.Allowed)
+	assert.NotEmpty(t, dec.EvidenceID, "denied tool_call should populate EvidenceID")
+
+	// step_end
+	dec, err = adapter.HandleEvent(ctx, &Event{
+		Type: EventStepEnd, GraphRunID: graphRunID,
+		TenantID: "acme", AgentID: "ev-agent",
+		StepIndex: 1, Result: &ResultMeta{Status: "completed", DurationMS: 100, Cost: 0.001},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, dec.EvidenceID, "step_end should populate EvidenceID")
+
+	// retry
+	dec, err = adapter.HandleEvent(ctx, &Event{
+		Type: EventRetry, GraphRunID: graphRunID,
+		TenantID: "acme", AgentID: "ev-agent",
+		NodeID: "n1", Error: &ErrorMeta{Message: "err", RetryCount: 1},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, dec.EvidenceID, "retry should populate EvidenceID")
+
+	// run_end
+	dec, err = adapter.HandleEvent(ctx, &Event{
+		Type: EventRunEnd, GraphRunID: graphRunID,
+		TenantID: "acme", AgentID: "ev-agent",
+		Cost: 0.005, Result: &ResultMeta{Status: "completed", DurationMS: 2000},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, dec.EvidenceID, "run_end should populate EvidenceID")
+}
+
+func TestAdapterWithPolicy_LineageFields_OnEvidence(t *testing.T) {
+	eng := newPolicyWithResourceLimits(t, 10, 5.0, 3)
+	gen, store := newEvidenceStack(t)
+	adapter := NewAdapter(eng, gen, store)
+	ctx := context.Background()
+	graphRunID := "gr_lineage_test"
+	planID := "plan_lineage_42"
+
+	// run_start with PlanID
+	_, err := adapter.HandleEvent(ctx, &Event{
+		Type: EventRunStart, GraphRunID: graphRunID,
+		TenantID: "acme", AgentID: "lineage-agent",
+		RunMeta: &RunMeta{Framework: "langgraph", PlanID: planID},
+	})
+	require.NoError(t, err)
+
+	// step_start
+	_, err = adapter.HandleEvent(ctx, &Event{
+		Type: EventStepStart, GraphRunID: graphRunID,
+		TenantID: "acme", AgentID: "lineage-agent",
+		StepIndex: 1, NodeID: "n1",
+		RunMeta: &RunMeta{PlanID: planID},
+	})
+	require.NoError(t, err)
+
+	// step_end
+	_, err = adapter.HandleEvent(ctx, &Event{
+		Type: EventStepEnd, GraphRunID: graphRunID,
+		TenantID: "acme", AgentID: "lineage-agent",
+		StepIndex: 1, Result: &ResultMeta{Status: "completed", DurationMS: 500, Cost: 0.001},
+		RunMeta: &RunMeta{PlanID: planID},
+	})
+	require.NoError(t, err)
+
+	// run_end
+	dec, err := adapter.HandleEvent(ctx, &Event{
+		Type: EventRunEnd, GraphRunID: graphRunID,
+		TenantID: "acme", AgentID: "lineage-agent",
+		Cost: 0.001, Result: &ResultMeta{Status: "completed", DurationMS: 1000},
+		RunMeta: &RunMeta{PlanID: planID},
+	})
+	require.NoError(t, err)
+	assert.True(t, dec.Allowed)
+
+	// Verify run-level evidence has lineage fields
+	entries, err := store.List(ctx, "acme", "", time.Time{}, time.Time{}, 50)
+	require.NoError(t, err)
+	require.NotEmpty(t, entries)
+
+	var found bool
+	for _, e := range entries {
+		if e.CorrelationID == graphRunID && e.InvocationType == "graph_run" {
+			found = true
+			assert.Equal(t, graphRunID, e.GraphRunID, "evidence should have GraphRunID")
+			assert.Equal(t, planID, e.PlanID, "evidence should have PlanID")
+			break
+		}
+	}
+	assert.True(t, found, "should find graph_run evidence")
+
+	// Verify step evidence has lineage fields
+	steps, err := store.ListStepsByCorrelationID(ctx, graphRunID)
+	require.NoError(t, err)
+	require.NotEmpty(t, steps)
+	for _, s := range steps {
+		assert.Equal(t, graphRunID, s.GraphRunID, "step evidence should have GraphRunID")
+		assert.Equal(t, planID, s.PlanID, "step evidence should have PlanID")
+	}
+}
+
 func TestAdapterWithPolicy_Lifecycle_DeniedMidRun(t *testing.T) {
 	eng := newPolicyWithResourceLimits(t, 2, 5.0, 3)
 	gen, store := newEvidenceStack(t)

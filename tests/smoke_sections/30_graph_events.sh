@@ -64,9 +64,33 @@ policies:
     max_tool_calls_per_run: 10
 POLICYEOF
 
+  # Gateway config with tenant key so Bearer auth is exercised (matches section 12 pattern).
+  if [[ -f "$dir/talon.config.yaml" ]] && ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
+    cat >> "$dir/talon.config.yaml" <<GWEOF
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "enforce"
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+  callers:
+    - name: "graph-events-caller"
+      tenant_key: "${TALON_TENANT_KEY}"
+      tenant_id: "default"
+      allowed_providers: ["openai"]
+  default_policy:
+    default_pii_action: "warn"
+    require_caller_id: true
+GWEOF
+  fi
+
   local GE_PID=""
   local ge_log="$dir/ge_serve.log"
-  run_talon serve --port "$ge_port" >"$ge_log" 2>&1 &
+  run_talon serve --config "$dir/talon.config.yaml" --port "$ge_port" --gateway --gateway-config "$dir/talon.config.yaml" >"$ge_log" 2>&1 &
   GE_PID=$!
   if ! smoke_wait_health "$ge_base" 45 1; then
     log_failure "graph events server did not start on port ${ge_port}"
@@ -76,7 +100,7 @@ POLICYEOF
     return 0
   fi
 
-  local tenant_hdr="X-Talon-Tenant-Key: ${TALON_TENANT_KEY}"
+  local tenant_hdr="Authorization: Bearer ${TALON_TENANT_KEY}"
   local admin_hdr="X-Talon-Admin-Key: ${TALON_ADMIN_KEY}"
   local graph_url="${ge_base}/v1/graph/events"
   local graph_run_id="gr_smoke_$(date +%s)"

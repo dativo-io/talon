@@ -117,6 +117,29 @@ Each request creates one evidence record with:
 For multi-step agents that need per-step governance, retry control,
 and graph-level evidence lineage.
 
+### Authentication
+
+The `/v1/graph/events` endpoint is protected by tenant key authentication.
+When `tenant_keys` are configured in `talon.config.yaml`, requests must
+include `Authorization: Bearer <tenant_key>`. In dev mode (no tenant keys
+configured), the endpoint is open.
+
+The Python SDK handles this automatically when you pass `tenant_key`:
+
+```python
+talon = TalonClient("http://localhost:8080", tenant_key="your-tenant-key")
+# All requests include: Authorization: Bearer your-tenant-key
+```
+
+For raw HTTP calls (curl, requests):
+
+```bash
+curl -X POST http://localhost:8080/v1/graph/events \
+  -H "Authorization: Bearer your-tenant-key" \
+  -H "Content-Type: application/json" \
+  -d '{"type": "run_start", "graph_run_id": "gr_001", ...}'
+```
+
 ### Setup
 
 ```python
@@ -146,9 +169,16 @@ Each event returns a Decision:
   "action": "allow",
   "allowed": true,
   "reasons": [],
-  "evidence_id": "step_abc123"
+  "evidence_id": "ev_abc123"
 }
 ```
+
+Currently emitted actions: `allow`, `deny`. The following actions are
+reserved for Phase 2 and not yet emitted by the adapter: `abort`,
+`override_model`, `mutate_args`, `require_review`, `retry`.
+
+The `evidence_id` field is populated when the evidence store is configured,
+linking the decision to its audit record.
 
 ### Notebook usage (Jupyter / Colab)
 
