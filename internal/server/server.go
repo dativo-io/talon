@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/dativo-io/talon/internal/agent"
+	"github.com/dativo-io/talon/internal/agent/graphadapter"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/metrics"
@@ -49,6 +50,7 @@ type Server struct {
 	runRegistryRef       *agent.RunRegistry
 	overrideStoreRef     *agent.OverrideStore
 	toolApprovalStoreRef *agent.ToolApprovalStore
+	graphEventsHandler   http.Handler
 }
 
 // Option configures the Server.
@@ -97,6 +99,14 @@ func WithSessionStore(ss *session.Store) Option {
 // WithActiveRunTracker sets the in-flight run tracker for status/dashboard active_runs.
 func WithActiveRunTracker(tracker *agent.ActiveRunTracker) Option {
 	return func(s *Server) { s.activeRunTracker = tracker }
+}
+
+// WithGraphEventsHandler sets the handler for external graph runtime governance events.
+func WithGraphEventsHandler(pe *policy.Engine, eg *evidence.Generator, es *evidence.Store) Option {
+	return func(s *Server) {
+		adapter := graphadapter.NewAdapter(pe, eg, es)
+		s.graphEventsHandler = graphadapter.NewHandler(adapter)
+	}
 }
 
 // WithRunRegistry sets the run registry for lifecycle tracking and control endpoints.
@@ -205,6 +215,9 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/mcp/proxy", s.mcpProxy.ServeHTTP)
 		}
 		r.Post("/v1/sessions/{id}/complete", s.handleSessionComplete)
+		if s.graphEventsHandler != nil {
+			r.Post("/v1/graph/events", s.graphEventsHandler.ServeHTTP)
+		}
 	})
 
 	// Tenant or admin API group (mostly read paths).

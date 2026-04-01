@@ -10,6 +10,7 @@ test_section_04_secrets() {
   local dir; dir="$(setup_section_dir "$section")"
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  smoke_tighten_limits "$dir"
   if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     assert_pass "talon secrets set openai-api-key exits 0" \
       run_talon secrets set openai-api-key "$OPENAI_API_KEY"

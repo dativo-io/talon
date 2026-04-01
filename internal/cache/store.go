@@ -120,7 +120,7 @@ CREATE INDEX IF NOT EXISTS idx_semantic_cache_user ON semantic_cache(tenant_id, 
 
 // NewStore opens or creates the cache SQLite DB and applies the schema.
 func NewStore(dbPath string, signingKey string) (*Store, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("opening cache database: %w", err)
 	}

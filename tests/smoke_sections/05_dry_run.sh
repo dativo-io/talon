@@ -11,6 +11,7 @@ test_section_05_dry_run() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
   assert_pass "talon run --dry-run exits 0" run_talon run --dry-run "What is the capital of France?"
   local out; out="$(run_talon run --dry-run "What is the capital of France?" 2>/dev/null)"; true
   assert_pass "dry-run stdout contains ALLOWED or dry (case-insensitive)" \

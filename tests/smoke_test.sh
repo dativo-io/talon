@@ -40,7 +40,8 @@
 #   07 PII | 08 attachments | 09 cost | 10 audit | 11 memory | 12 HTTP API | 13 gateway |
 #   14 deny | 15 multi-tenant | 16 shadow | 17 config-provider | 18 compliance-export |
 #   19 CI/CD | 20 edge-cases | 21 doctor/report/enforce | 22 cache | 23 dashboard-metrics | 24 plan-dispatch | 25 sessions |
-#   26 pii-enrichment | 27 runtime-governance | 28 control-plane | 29 consistency.
+#   26 pii-enrichment | 27 runtime-governance | 28 control-plane | 29 consistency |
+#   30 graph-events.
 #
 # QA notes (from brief):
 # - Section 16 (Shadow mode): Evidence shadow signal is in shadow_violations or
@@ -360,6 +361,44 @@ run_talon() {
   env TALON_DATA_DIR="$TALON_DATA_DIR" talon "$@"
 }
 
+# Apply tight budget and resource limits to agent.talon.yaml for smoke testing.
+# Call after 'run_talon init' in every section to prevent runaway costs.
+smoke_tighten_limits() {
+  local dir="${1:-.}"
+  local agent_yaml="$dir/agent.talon.yaml"
+  [[ -f "$agent_yaml" ]] || return 0
+  if command -v yq &>/dev/null; then
+    yq -i '
+      .policies.cost_limits.per_request = 0.50 |
+      .policies.cost_limits.daily = 5.0 |
+      .policies.cost_limits.monthly = 50.0 |
+      .policies.resource_limits.timeout.operation = "30s" |
+      .policies.resource_limits.timeout.tool_execution = "2m" |
+      .policies.resource_limits.timeout.agent_total = "5m" |
+      .policies.rate_limits.requests_per_minute = 30 |
+      .policies.rate_limits.concurrent_executions = 1
+    ' "$agent_yaml" 2>/dev/null || true
+  else
+    sed -i.bak \
+      -e 's/per_request: *[0-9.]\+/per_request: 0.50/' \
+      -e 's/daily: *200\.0/daily: 5.0/' \
+      -e 's/monthly: *3000\.0/monthly: 50.0/' \
+      -e 's/agent_total: *"30m"/agent_total: "5m"/' \
+      -e 's/operation: *"60s"/operation: "30s"/' \
+      -e 's/tool_execution: *"5m"/tool_execution: "2m"/' \
+      "$agent_yaml" 2>/dev/null || true
+  fi
+  local config_yaml="$dir/talon.config.yaml"
+  [[ -f "$config_yaml" ]] || return 0
+  if command -v yq &>/dev/null; then
+    yq -i '.tenants[0].budgets.daily = 5.0 | .tenants[0].budgets.monthly = 50.0 | .tenants[0].rate_limit = 30' "$config_yaml" 2>/dev/null || true
+  else
+    sed -i.bak \
+      -e '/^tenants:/,/^[^ ]/{s/daily: *200\.0/daily: 5.0/;s/monthly: *3000\.0/monthly: 50.0/}' \
+      "$config_yaml" 2>/dev/null || true
+  fi
+}
+
 # Central request layer: canonical payloads and HTTP helpers (no duplicate URLs/bodies)
 # shellcheck source=./smoke_lib.sh
 source "$SCRIPT_DIR/smoke_lib.sh"
@@ -420,7 +459,7 @@ for _section_file in \
   20_edge_cases.sh 21_doctor_report_enforce.sh 22_cache.sh \
   23_dashboard_metrics.sh 24_plan_dispatch.sh 25_sessions.sh \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
-  29_consistency.sh; do
+  29_consistency.sh 30_graph_events.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -502,6 +541,7 @@ main() {
   run_section "26_pii_enrichment" test_section_26_pii_enrichment
   run_section "27_runtime_governance" test_section_27_runtime_governance
   run_section "28_control_plane" test_section_28_control_plane
+  run_section "30_graph_events" test_section_30_graph_events
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency

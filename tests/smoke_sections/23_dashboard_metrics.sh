@@ -24,6 +24,7 @@ test_section_23_dashboard_metrics() {
   fi
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
   # Add gateway config with dashboard token
   if [[ -f "$dir/talon.config.yaml" ]]; then
     if ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
