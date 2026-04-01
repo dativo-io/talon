@@ -28,12 +28,12 @@ func newPolicyWithResourceLimits(t *testing.T, maxIter int, maxCost float64, max
 				Monthly:    1000.0,
 			},
 			ResourceLimits: &policy.ResourceLimitsConfig{
-				MaxIterations: maxIter,
-				MaxCostPerRun: maxCost,
+				MaxIterations:     maxIter,
+				MaxCostPerRun:     maxCost,
+				MaxRetriesPerNode: maxRetries,
 			},
 		},
 	}
-	_ = maxRetries
 	pol.ComputeHash([]byte("test"))
 	eng, err := policy.NewEngine(context.Background(), pol)
 	require.NoError(t, err)

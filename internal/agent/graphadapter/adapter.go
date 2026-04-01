@@ -22,6 +22,7 @@ var tracer = otel.Tracer("github.com/dativo-io/talon/internal/agent/graphadapter
 // runState tracks mid-run denial state for a single graph execution,
 // allowing handleRunEnd to reflect prior denials on the evidence record.
 type runState struct {
+	mu      sync.Mutex
 	denied  bool
 	reasons []string
 }
@@ -30,18 +31,16 @@ type runState struct {
 // returns control decisions. It bridges the framework-agnostic event
 // contract to Talon's policy engine and evidence store.
 type Adapter struct {
-	policyEngine  *policy.Engine
-	evidenceGen   *evidence.Generator
-	evidenceStore *evidence.Store
-	runs          sync.Map // graph_run_id -> *runState
+	policyEngine *policy.Engine
+	evidenceGen  *evidence.Generator
+	runs         sync.Map // graph_run_id -> *runState
 }
 
 // NewAdapter creates a graph runtime adapter.
-func NewAdapter(pe *policy.Engine, eg *evidence.Generator, es *evidence.Store) *Adapter {
+func NewAdapter(pe *policy.Engine, eg *evidence.Generator, _ *evidence.Store) *Adapter {
 	return &Adapter{
-		policyEngine:  pe,
-		evidenceGen:   eg,
-		evidenceStore: es,
+		policyEngine: pe,
+		evidenceGen:  eg,
 	}
 }
 
@@ -410,8 +409,10 @@ func (a *Adapter) planID(ev *Event) string {
 func (a *Adapter) trackDenial(graphRunID string, reasons []string) {
 	val, _ := a.runs.LoadOrStore(graphRunID, &runState{})
 	rs := val.(*runState)
+	rs.mu.Lock()
 	rs.denied = true
 	rs.reasons = append(rs.reasons, reasons...)
+	rs.mu.Unlock()
 }
 
 func (a *Adapter) consumeRunState(graphRunID string) *runState {
@@ -419,5 +420,13 @@ func (a *Adapter) consumeRunState(graphRunID string) *runState {
 	if !ok {
 		return nil
 	}
-	return val.(*runState)
+	rs := val.(*runState)
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	snapshot := &runState{
+		denied:  rs.denied,
+		reasons: make([]string, len(rs.reasons)),
+	}
+	copy(snapshot.reasons, rs.reasons)
+	return snapshot
 }
