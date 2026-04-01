@@ -2,6 +2,7 @@ package graphadapter
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,7 +24,7 @@ func TestHandler_POST_RunStart(t *testing.T) {
 		RunMeta:    &RunMeta{Framework: "langgraph"},
 	}
 	body, _ := json.Marshal(ev)
-	req := httptest.NewRequest(http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
@@ -41,7 +42,7 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 	adapter := NewAdapter(nil, nil, nil)
 	handler := NewHandler(adapter)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/graph/events", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/graph/events", nil)
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -53,7 +54,7 @@ func TestHandler_InvalidJSON(t *testing.T) {
 	adapter := NewAdapter(nil, nil, nil)
 	handler := NewHandler(adapter)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/graph/events", bytes.NewReader([]byte("not json")))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/graph/events", bytes.NewReader([]byte("not json")))
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -67,7 +68,7 @@ func TestHandler_MissingGraphRunID(t *testing.T) {
 
 	ev := Event{Type: EventRunStart, TenantID: "acme"}
 	body, _ := json.Marshal(ev)
-	req := httptest.NewRequest(http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -81,7 +82,7 @@ func TestHandler_MissingType(t *testing.T) {
 
 	ev := Event{GraphRunID: "gr_1", TenantID: "acme"}
 	body, _ := json.Marshal(ev)
-	req := httptest.NewRequest(http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -99,7 +100,7 @@ func TestHandler_DefaultTenantID(t *testing.T) {
 		AgentID:    "test-agent",
 	}
 	body, _ := json.Marshal(ev)
-	req := httptest.NewRequest(http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)
@@ -118,7 +119,7 @@ func TestHandler_ToolCallDenied_NoMeta(t *testing.T) {
 		AgentID:    "test-agent",
 	}
 	body, _ := json.Marshal(ev)
-	req := httptest.NewRequest(http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
 
 	handler.ServeHTTP(rr, req)

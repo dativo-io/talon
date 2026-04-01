@@ -64,7 +64,7 @@ func postGraphEvent(t *testing.T, handler http.Handler, ev graphadapter.Event) g
 	body, err := json.Marshal(ev)
 	require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -294,9 +294,9 @@ func TestGraphAdapter_HTTP_Validation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var req *http.Request
 			if tt.body != "" {
-				req = httptest.NewRequest(tt.method, "/v1/graph/events", bytes.NewReader([]byte(tt.body)))
+				req = httptest.NewRequestWithContext(context.Background(), tt.method, "/v1/graph/events", bytes.NewReader([]byte(tt.body)))
 			} else {
-				req = httptest.NewRequest(tt.method, "/v1/graph/events", nil)
+				req = httptest.NewRequestWithContext(context.Background(), tt.method, "/v1/graph/events", nil)
 			}
 			req.Header.Set("Content-Type", "application/json")
 			rr := httptest.NewRecorder()
