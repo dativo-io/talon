@@ -18,9 +18,10 @@ Prerequisites:
 import os
 import time
 
-from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, END
 from typing import TypedDict
+
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, StateGraph
 
 from talon_sdk import TalonClient
 
@@ -28,7 +29,6 @@ from talon_sdk import TalonClient
 talon = TalonClient(
     base_url=os.environ.get("TALON_URL", "http://localhost:8080"),
     tenant_key=os.environ.get("TALON_TENANT_KEY", ""),
-    tenant_id=os.environ.get("TALON_TENANT_ID", "default"),
 )
 
 # --- LangGraph state ---
@@ -39,32 +39,56 @@ class AgentState(TypedDict):
 
 
 # --- LangGraph nodes ---
-def search_node(state: AgentState) -> AgentState:
-    """Simulate a search tool call."""
-    # Check with Talon before tool execution
-    dec = talon.tool_call(
-        graph_run_id=state.get("_run_id", ""),
-        agent_id="research-agent",
-        step_index=1,
-        tool_name="web_search",
-        arguments={"query": state["query"]},
-    )
-    if not dec["allowed"]:
-        raise RuntimeError(f"Talon denied tool call: {dec.get('reasons', [])}")
-
-    # Simulate search
-    return {**state, "search_result": f"Results for: {state['query']}"}
-
-
-def answer_node(state: AgentState) -> AgentState:
-    """Generate answer using LLM."""
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    resp = llm.invoke(f"Answer based on: {state['search_result']}")
-    return {**state, "answer": resp.content}
-
-
 # --- Build graph ---
-def build_graph():
+def build_graph(run_id: str, session_id: str):
+    def search_node(state: AgentState) -> AgentState:
+        """Simulate a search tool call."""
+        step_index = 0
+        talon.step_start(
+            run_id,
+            "research-agent",
+            step_index,
+            "search",
+            node_type="tool",
+            session_id=session_id,
+        )
+        dec = talon.tool_call(
+            graph_run_id=run_id,
+            agent_id="research-agent",
+            step_index=step_index,
+            tool_name="web_search",
+            arguments={"query": state["query"]},
+            session_id=session_id,
+        )
+        if not dec["allowed"]:
+            raise RuntimeError(f"Talon denied tool call: {dec.get('reasons', [])}")
+        talon.step_end(run_id, "research-agent", step_index, status="completed", session_id=session_id)
+        return {**state, "search_result": f"Results for: {state['query']}"}
+
+    def answer_node(state: AgentState) -> AgentState:
+        """Generate answer using LLM."""
+        step_index = 1
+        talon.step_start(
+            run_id,
+            "research-agent",
+            step_index,
+            "answer",
+            node_type="llm",
+            model="gpt-4o-mini",
+            session_id=session_id,
+        )
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        resp = llm.invoke(f"Answer based on: {state['search_result']}")
+        talon.step_end(
+            run_id,
+            "research-agent",
+            step_index,
+            status="completed",
+            cost=0.001,
+            session_id=session_id,
+        )
+        return {**state, "answer": resp.content}
+
     graph = StateGraph(AgentState)
     graph.add_node("search", search_node)
     graph.add_node("answer", answer_node)
@@ -93,22 +117,16 @@ def run_governed(query: str):
         print(f"Run denied by Talon: {dec.get('reasons', [])}")
         return None
 
-    app = build_graph()
+    app = build_graph(run_id, session_id)
     start = time.time()
     total_cost = 0.0
 
     try:
-        # 2) Step: search
-        talon.step_start(run_id, "research-agent", 0, "search", node_type="tool", session_id=session_id)
-        result = app.invoke({"query": query, "_run_id": run_id})
-        talon.step_end(run_id, "research-agent", 0, status="completed", session_id=session_id)
-
-        # 3) Step: answer
-        talon.step_start(run_id, "research-agent", 1, "answer", node_type="llm", model="gpt-4o-mini", session_id=session_id)
-        talon.step_end(run_id, "research-agent", 1, status="completed", cost=0.001, session_id=session_id)
+        # Nodes emit their own step events during graph execution.
+        result = app.invoke({"query": query})
         total_cost += 0.001
 
-        # 4) Run complete
+        # Run complete
         duration_ms = int((time.time() - start) * 1000)
         talon.run_end(run_id, "research-agent", status="completed", total_cost=total_cost, duration_ms=duration_ms, session_id=session_id)
 

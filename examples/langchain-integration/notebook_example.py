@@ -50,12 +50,15 @@ def cell_langchain_stateless():
 def cell_langgraph_stateful():
     """Multi-step graph agent with per-step Talon governance."""
     import time
-    from talon_sdk import TalonClient
-    from langchain_openai import ChatOpenAI
-    from langgraph.graph import StateGraph, END
     from typing import TypedDict
 
+    from langchain_openai import ChatOpenAI
+    from langgraph.graph import END, StateGraph
+    from talon_sdk import TalonClient
+
     talon = TalonClient(TALON_URL, TALON_TENANT_KEY)
+    run_id = talon.new_run_id()
+    session_id = f"sess_{run_id}"
 
     class State(TypedDict):
         question: str
@@ -63,14 +66,20 @@ def cell_langgraph_stateful():
         answer: str
 
     def retrieve(state: State) -> State:
-        dec = talon.tool_call(state["_run_id"], "qa-agent", 0, "retriever", {"query": state["question"]})
+        step_index = 0
+        talon.step_start(run_id, "qa-agent", step_index, "retrieve", node_type="tool", session_id=session_id)
+        dec = talon.tool_call(run_id, "qa-agent", step_index, "retriever", {"query": state["question"]}, session_id=session_id)
         if not dec["allowed"]:
             raise RuntimeError(f"Tool denied: {dec.get('reasons')}")
+        talon.step_end(run_id, "qa-agent", step_index, session_id=session_id)
         return {**state, "context": f"Retrieved context for: {state['question']}"}
 
     def generate(state: State) -> State:
+        step_index = 1
+        talon.step_start(run_id, "qa-agent", step_index, "generate", node_type="llm", model="gpt-4o-mini", session_id=session_id)
         llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
         resp = llm.invoke(f"Answer using context: {state['context']}\nQuestion: {state['question']}")
+        talon.step_end(run_id, "qa-agent", step_index, cost=0.001, session_id=session_id)
         return {**state, "answer": resp.content}
 
     graph = StateGraph(State)
@@ -81,19 +90,13 @@ def cell_langgraph_stateful():
     graph.add_edge("generate", END)
     app = graph.compile()
 
-    run_id = talon.new_run_id()
-    session_id = f"sess_{run_id}"
     dec = talon.run_start(run_id, "qa-agent", framework="langgraph", model="gpt-4o-mini", node_count=2, session_id=session_id)
     if not dec["allowed"]:
         print(f"Denied: {dec['reasons']}")
         return
 
     start = time.time()
-    talon.step_start(run_id, "qa-agent", 0, "retrieve", node_type="tool", session_id=session_id)
-    result = app.invoke({"question": "What is NIS2?", "_run_id": run_id})
-    talon.step_end(run_id, "qa-agent", 0, session_id=session_id)
-    talon.step_start(run_id, "qa-agent", 1, "generate", node_type="llm", model="gpt-4o-mini", session_id=session_id)
-    talon.step_end(run_id, "qa-agent", 1, cost=0.001, session_id=session_id)
+    result = app.invoke({"question": "What is NIS2?"})
     duration_ms = int((time.time() - start) * 1000)
     talon.run_end(run_id, "qa-agent", total_cost=0.001, duration_ms=duration_ms, session_id=session_id)
 

@@ -123,6 +123,8 @@ The `/v1/graph/events` endpoint is protected by tenant key authentication.
 When `tenant_keys` are configured in `talon.config.yaml`, requests must
 include `Authorization: Bearer <tenant_key>`. In dev mode (no tenant keys
 configured), the endpoint is open.
+Do not send `tenant_id` in the event body when auth is enabled; Talon binds
+tenant identity from the bearer key and rejects mismatches.
 
 The Python SDK handles this automatically when you pass `tenant_key`:
 
@@ -195,21 +197,27 @@ from typing import TypedDict
 
 talon = TalonClient("http://localhost:8080", tenant_key="your-key")
 session_id = "sess_notebook_graph_001"
+run_id = talon.new_run_id()
 
 class State(TypedDict):
     query: str
     result: str
 
 def search(state: State) -> State:
-    dec = talon.tool_call(state["_run_id"], "agent", 0, "web_search",
-                          {"query": state["query"]})
+    step_index = 0
+    talon.step_start(run_id, "agent", step_index, "search", node_type="tool", session_id=session_id)
+    dec = talon.tool_call(run_id, "agent", step_index, "web_search", {"query": state["query"]}, session_id=session_id)
     if not dec["allowed"]:
         raise RuntimeError(f"Denied: {dec['reasons']}")
+    talon.step_end(run_id, "agent", step_index, status="completed", session_id=session_id)
     return {**state, "result": f"Found: {state['query']}"}
 
 def answer(state: State) -> State:
+    step_index = 1
+    talon.step_start(run_id, "agent", step_index, "answer", node_type="llm", model="gpt-4o-mini", session_id=session_id)
     llm = ChatOpenAI(model="gpt-4o-mini")
     resp = llm.invoke(f"Answer from: {state['result']}")
+    talon.step_end(run_id, "agent", step_index, cost=0.001, session_id=session_id)
     return {**state, "result": resp.content}
 
 graph = StateGraph(State)
@@ -221,16 +229,8 @@ graph.add_edge("answer", END)
 app = graph.compile()
 
 # Governed execution
-run_id = talon.new_run_id()
 talon.run_start(run_id, "agent", framework="langgraph", node_count=2, session_id=session_id)
-
-talon.step_start(run_id, "agent", 0, "search", node_type="tool", session_id=session_id)
-result = app.invoke({"query": "EU compliance 2026", "_run_id": run_id})
-talon.step_end(run_id, "agent", 0, session_id=session_id)
-
-talon.step_start(run_id, "agent", 1, "answer", node_type="llm", session_id=session_id)
-talon.step_end(run_id, "agent", 1, cost=0.001, session_id=session_id)
-
+result = app.invoke({"query": "EU compliance 2026"})
 talon.run_end(run_id, "agent", total_cost=0.001, session_id=session_id)
 print(result["result"])
 ```
@@ -317,6 +317,7 @@ Step evidence is linked by `correlation_id` = `graph_run_id`:
 - **Step denied**: Decision has `{"allowed": false, "action": "deny", "reasons": [...]}`
 - **Retry limit exceeded**: Decision has `{"allowed": false, "reasons": ["retry_count 4 exceeds max_retries_per_node 3"]}`
 - **Budget exceeded mid-run**: Decision has `{"allowed": false, "reasons": ["cost_so_far 5.0001 exceeds max_cost_per_run 5.0000"]}`
+- **Tool-call limit exceeded**: Decision has `{"allowed": false, "reasons": ["tool_calls_so_far 11 exceeds max_tool_calls_per_run 10"]}`
 - **Tool blocked**: Tool-specific deny from OPA tool_access policy
 
 The external runtime **must** respect deny/abort decisions and stop execution.
@@ -384,6 +385,7 @@ policies:
     monthly: 500.0
   resource_limits:
     max_iterations: 20       # max graph steps
+    max_tool_calls_per_run: 10
     max_cost_per_run: 5.0    # abort if cost exceeds
     max_retries_per_node: 3  # retry governance
   rate_limits:

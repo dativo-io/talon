@@ -70,6 +70,32 @@ test_cost_zero_limit_allows_any if {
 		with data.policy.policies.resource_limits as {"max_cost_per_run": 0}
 }
 
+# --- max_tool_calls_per_run ---
+
+test_tool_calls_within_limit if {
+	count(deny) == 0 with input as {
+		"event_type": "tool_call",
+		"tool_calls_so_far": 2,
+	}
+		with data.policy.policies.resource_limits as {"max_tool_calls_per_run": 3}
+}
+
+test_tool_calls_at_limit_allowed if {
+	count(deny) == 0 with input as {
+		"event_type": "tool_call",
+		"tool_calls_so_far": 3,
+	}
+		with data.policy.policies.resource_limits as {"max_tool_calls_per_run": 3}
+}
+
+test_tool_calls_exceed_limit if {
+	count(deny) > 0 with input as {
+		"event_type": "tool_call",
+		"tool_calls_so_far": 4,
+	}
+		with data.policy.policies.resource_limits as {"max_tool_calls_per_run": 3}
+}
+
 # --- max_retries_per_node (default 3) ---
 
 test_retry_within_default_limit if {

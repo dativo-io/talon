@@ -36,6 +36,16 @@ deny contains msg if {
 
 deny contains msg if {
 	rl := data.policy.policies.resource_limits
+	rl.max_tool_calls_per_run > 0
+	input.tool_calls_so_far > rl.max_tool_calls_per_run
+	msg := sprintf("graph tool_calls_so_far %d exceeds max_tool_calls_per_run %d", [
+		input.tool_calls_so_far,
+		rl.max_tool_calls_per_run,
+	])
+}
+
+deny contains msg if {
+	rl := data.policy.policies.resource_limits
 	max_retries := object.get(rl, "max_retries_per_node", 3)
 	max_retries > 0
 	input.retry_count > max_retries

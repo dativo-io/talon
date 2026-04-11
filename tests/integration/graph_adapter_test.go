@@ -18,10 +18,15 @@ import (
 	"github.com/dativo-io/talon/internal/agent/graphadapter"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/testutil"
 )
 
 func setupGraphAdapter(t *testing.T, maxIter int, maxCost float64) (*graphadapter.Handler, *evidence.Store) {
+	return setupGraphAdapterWithLimits(t, maxIter, maxCost, 0)
+}
+
+func setupGraphAdapterWithLimits(t *testing.T, maxIter int, maxCost float64, maxToolCalls int) (*graphadapter.Handler, *evidence.Store) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -38,8 +43,9 @@ func setupGraphAdapter(t *testing.T, maxIter int, maxCost float64) (*graphadapte
 				Monthly:    1000.0,
 			},
 			ResourceLimits: &policy.ResourceLimitsConfig{
-				MaxIterations: maxIter,
-				MaxCostPerRun: maxCost,
+				MaxIterations:      maxIter,
+				MaxCostPerRun:      maxCost,
+				MaxToolCallsPerRun: maxToolCalls,
 			},
 		},
 	}
@@ -59,12 +65,67 @@ func setupGraphAdapter(t *testing.T, maxIter int, maxCost float64) (*graphadapte
 	return handler, store
 }
 
+func TestGraphAdapter_MaxToolCalls_Enforced(t *testing.T) {
+	handler, _ := setupGraphAdapterWithLimits(t, 10, 5.0, 1)
+
+	allowed := postGraphEvent(t, handler, graphadapter.Event{
+		Type:       graphadapter.EventToolCall,
+		GraphRunID: "gr_integ_tool_limit",
+		TenantID:   "acme",
+		AgentID:    "tool-agent",
+		ToolMeta:   &graphadapter.ToolMeta{Name: "google_search", Arguments: map[string]interface{}{"query": "first"}},
+	})
+	assert.True(t, allowed.Allowed)
+
+	denied := postGraphEvent(t, handler, graphadapter.Event{
+		Type:       graphadapter.EventToolCall,
+		GraphRunID: "gr_integ_tool_limit",
+		TenantID:   "acme",
+		AgentID:    "tool-agent",
+		ToolMeta:   &graphadapter.ToolMeta{Name: "google_search", Arguments: map[string]interface{}{"query": "second"}},
+	})
+	assert.False(t, denied.Allowed)
+	assert.Equal(t, graphadapter.ActionDeny, denied.Action)
+}
+
+func TestGraphAdapter_RunEnd_FinalCostReevaluation(t *testing.T) {
+	handler, _ := setupGraphAdapter(t, 10, 1.0)
+	graphRunID := "gr_integ_run_end_cost"
+
+	dec := postGraphEvent(t, handler, graphadapter.Event{
+		Type:       graphadapter.EventStepStart,
+		GraphRunID: graphRunID,
+		TenantID:   "acme",
+		AgentID:    "cost-agent",
+		StepIndex:  1,
+		NodeID:     "node_a",
+		Cost:       0.2,
+	})
+	assert.True(t, dec.Allowed)
+
+	dec = postGraphEvent(t, handler, graphadapter.Event{
+		Type:       graphadapter.EventRunEnd,
+		GraphRunID: graphRunID,
+		TenantID:   "acme",
+		AgentID:    "cost-agent",
+		Cost:       1.2,
+		Result:     &graphadapter.ResultMeta{Status: "completed", DurationMS: 500},
+	})
+	assert.False(t, dec.Allowed)
+	assert.Equal(t, graphadapter.ActionDeny, dec.Action)
+}
+
 func postGraphEvent(t *testing.T, handler http.Handler, ev graphadapter.Event) graphadapter.Decision {
+	t.Helper()
+	return postGraphEventWithContext(t, context.Background(), handler, ev)
+}
+
+func postGraphEventWithContext(t *testing.T, ctx context.Context, handler http.Handler, ev graphadapter.Event) graphadapter.Decision {
 	t.Helper()
 	body, err := json.Marshal(ev)
 	require.NoError(t, err)
 
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -74,6 +135,27 @@ func postGraphEvent(t *testing.T, handler http.Handler, ev graphadapter.Event) g
 	var dec graphadapter.Decision
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&dec))
 	return dec
+}
+
+func TestGraphAdapter_RejectsTenantPayloadMismatch(t *testing.T) {
+	handler, _ := setupGraphAdapter(t, 10, 5.0)
+	ev := graphadapter.Event{
+		Type:       graphadapter.EventRunStart,
+		GraphRunID: "gr_integ_tenant_mismatch",
+		TenantID:   "tenant-b",
+		AgentID:    "mismatch-agent",
+		RunMeta:    &graphadapter.RunMeta{Framework: "langgraph"},
+	}
+	body, err := json.Marshal(ev)
+	require.NoError(t, err)
+
+	ctx := requestctx.SetTenantID(context.Background(), "tenant-a")
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusForbidden, rr.Code)
 }
 
 // TestGraphAdapter_FullLifecycle_GoogleSearch exercises the complete event

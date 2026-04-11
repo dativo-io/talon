@@ -52,10 +52,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if ev.TenantID == "" {
-		ev.TenantID = requestctx.TenantID(ctx)
-	}
-	if ev.TenantID == "" {
+	ctxTenantID := requestctx.TenantID(ctx)
+	if ctxTenantID != "" {
+		if ev.TenantID != "" && ev.TenantID != ctxTenantID {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "tenant_id mismatch with authenticated tenant"})
+			return
+		}
+		ev.TenantID = ctxTenantID
+	} else if ev.TenantID == "" {
+		// Dev mode fallback when tenant auth middleware is not configured.
 		ev.TenantID = "default"
 	}
 	if ev.Timestamp.IsZero() {

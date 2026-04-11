@@ -26,7 +26,10 @@ type Event struct {
 	Type       EventType `json:"type"`
 	GraphRunID string    `json:"graph_run_id"`
 	SessionID  string    `json:"session_id,omitempty"`
-	TenantID   string    `json:"tenant_id"`
+	// TenantID is optional in client payloads. When tenant auth is enabled,
+	// the server binds tenant identity from request context and validates any
+	// provided tenant_id against it.
+	TenantID string `json:"tenant_id,omitempty"`
 	AgentID    string    `json:"agent_id"`
 	NodeID     string    `json:"node_id,omitempty"`
 	StepIndex  int       `json:"step_index"`

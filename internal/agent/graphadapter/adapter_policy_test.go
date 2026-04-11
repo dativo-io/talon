@@ -15,6 +15,10 @@ import (
 )
 
 func newPolicyWithResourceLimits(t *testing.T, maxIter int, maxCost float64, maxRetries int) *policy.Engine {
+	return newPolicyWithAllResourceLimits(t, maxIter, maxCost, maxRetries, 0)
+}
+
+func newPolicyWithAllResourceLimits(t *testing.T, maxIter int, maxCost float64, maxRetries int, maxToolCalls int) *policy.Engine {
 	t.Helper()
 	pol := &policy.Policy{
 		Agent: policy.AgentConfig{Name: "graph-test", Version: "1.0.0"},
@@ -28,9 +32,10 @@ func newPolicyWithResourceLimits(t *testing.T, maxIter int, maxCost float64, max
 				Monthly:    1000.0,
 			},
 			ResourceLimits: &policy.ResourceLimitsConfig{
-				MaxIterations:     maxIter,
-				MaxCostPerRun:     maxCost,
-				MaxRetriesPerNode: maxRetries,
+				MaxIterations:      maxIter,
+				MaxCostPerRun:      maxCost,
+				MaxRetriesPerNode:  maxRetries,
+				MaxToolCallsPerRun: maxToolCalls,
 			},
 		},
 	}
@@ -235,6 +240,42 @@ func TestAdapterWithPolicy_ToolCall_ForbiddenTool(t *testing.T) {
 	assert.False(t, dec.Allowed, "forbidden tool should be denied")
 }
 
+func TestAdapterWithPolicy_ToolCall_ExceedsMaxToolCallsPerRun(t *testing.T) {
+	eng := newPolicyWithAllResourceLimits(t, 50, 10.0, 3, 1)
+	gen, store := newEvidenceStack(t)
+	adapter := NewAdapter(eng, gen, store)
+	ctx := context.Background()
+
+	allowed, err := adapter.HandleEvent(ctx, &Event{
+		Type:       EventToolCall,
+		GraphRunID: "gr_policy_tool_limit",
+		TenantID:   "acme",
+		AgentID:    "test-agent",
+		Timestamp:  time.Now(),
+		ToolMeta: &ToolMeta{
+			Name:      "google_search",
+			Arguments: map[string]interface{}{"query": "first"},
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, allowed.Allowed)
+
+	denied, err := adapter.HandleEvent(ctx, &Event{
+		Type:       EventToolCall,
+		GraphRunID: "gr_policy_tool_limit",
+		TenantID:   "acme",
+		AgentID:    "test-agent",
+		Timestamp:  time.Now(),
+		ToolMeta: &ToolMeta{
+			Name:      "google_search",
+			Arguments: map[string]interface{}{"query": "second"},
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, denied.Allowed)
+	assert.Contains(t, denied.Reasons[0], "max_tool_calls_per_run")
+}
+
 func TestAdapterWithPolicy_RunEnd_EvidenceRecorded(t *testing.T) {
 	eng := newPolicyWithResourceLimits(t, 50, 10.0, 3)
 	gen, store := newEvidenceStack(t)
@@ -257,6 +298,30 @@ func TestAdapterWithPolicy_RunEnd_EvidenceRecorded(t *testing.T) {
 	dec, err := adapter.HandleEvent(context.Background(), ev)
 	require.NoError(t, err)
 	assert.True(t, dec.Allowed)
+}
+
+func TestAdapterWithPolicy_RunEnd_FinalCostOverLimitDenied(t *testing.T) {
+	eng := newPolicyWithResourceLimits(t, 50, 1.0, 3)
+	gen, store := newEvidenceStack(t)
+	adapter := NewAdapter(eng, gen, store)
+
+	dec, err := adapter.HandleEvent(context.Background(), &Event{
+		Type:       EventRunEnd,
+		GraphRunID: "gr_policy_run_end_cost",
+		TenantID:   "acme",
+		AgentID:    "test-agent",
+		Cost:       1.5,
+		Timestamp:  time.Now(),
+		Result: &ResultMeta{
+			Status:     "completed",
+			DurationMS: 3000,
+			Cost:       1.5,
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, dec.Allowed)
+	assert.Equal(t, ActionDeny, dec.Action)
+	assert.Contains(t, dec.Reasons[0], "max_cost_per_run")
 }
 
 func TestAdapterWithPolicy_FullLifecycle_GoogleSearchAgent(t *testing.T) {

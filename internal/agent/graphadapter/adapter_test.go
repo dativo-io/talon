@@ -194,7 +194,7 @@ func TestTrackDenial_ConcurrentSameRunID(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			adapter.trackDenial(graphRunID, []string{string(rune('a' + (i % 26)))})
+			adapter.trackDenial(graphRunID, []string{string(rune('a' + (i % 26)))}, time.Now())
 		}(i)
 	}
 	wg.Wait()
@@ -202,5 +202,58 @@ func TestTrackDenial_ConcurrentSameRunID(t *testing.T) {
 	rs := adapter.consumeRunState(graphRunID)
 	require.NotNil(t, rs)
 	assert.True(t, rs.denied)
-	assert.Len(t, rs.reasons, goroutines)
+	assert.LessOrEqual(t, len(rs.reasons), maxDenialReasonsPerRun)
+}
+
+func TestHandleEvent_DeniesWhenRunStateCapacityExceeded(t *testing.T) {
+	adapter := NewAdapter(nil, nil, nil)
+	adapter.maxInFlightRuns = 1
+	adapter.runStateTTL = time.Hour
+
+	first, err := adapter.HandleEvent(context.Background(), &Event{
+		Type:       EventRunStart,
+		GraphRunID: "gr_capacity_1",
+		TenantID:   "acme",
+		AgentID:    "agent-1",
+		Timestamp:  time.Now(),
+	})
+	require.NoError(t, err)
+	assert.True(t, first.Allowed)
+
+	second, err := adapter.HandleEvent(context.Background(), &Event{
+		Type:       EventRunStart,
+		GraphRunID: "gr_capacity_2",
+		TenantID:   "acme",
+		AgentID:    "agent-2",
+		Timestamp:  time.Now(),
+	})
+	require.NoError(t, err)
+	assert.False(t, second.Allowed)
+	assert.Contains(t, second.Reasons[0], ErrGraphRunStateLimitExceeded.Error())
+}
+
+func TestEvictExpiredRunStates_AllowsNewRunsAfterTTL(t *testing.T) {
+	adapter := NewAdapter(nil, nil, nil)
+	adapter.maxInFlightRuns = 1
+	adapter.runStateTTL = time.Millisecond
+
+	_, err := adapter.HandleEvent(context.Background(), &Event{
+		Type:       EventRunStart,
+		GraphRunID: "gr_ttl_1",
+		TenantID:   "acme",
+		AgentID:    "agent-1",
+		Timestamp:  time.Now().Add(-time.Second),
+	})
+	require.NoError(t, err)
+
+	// New event triggers lazy eviction and should be accepted.
+	dec, err := adapter.HandleEvent(context.Background(), &Event{
+		Type:       EventRunStart,
+		GraphRunID: "gr_ttl_2",
+		TenantID:   "acme",
+		AgentID:    "agent-2",
+		Timestamp:  time.Now(),
+	})
+	require.NoError(t, err)
+	assert.True(t, dec.Allowed)
 }

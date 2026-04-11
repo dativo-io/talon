@@ -27,12 +27,10 @@ class TalonClient:
         self,
         base_url: str = "http://localhost:8080",
         tenant_key: str = "",
-        tenant_id: str = "default",
         timeout: float = 10.0,
     ):
         self.base_url = base_url.rstrip("/")
         self.tenant_key = tenant_key
-        self.tenant_id = tenant_id
         self.timeout = timeout
         self._session = requests.Session()
         if tenant_key:
@@ -40,7 +38,6 @@ class TalonClient:
         self._session.headers["Content-Type"] = "application/json"
 
     def _send_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        event.setdefault("tenant_id", self.tenant_id)
         event.setdefault("timestamp", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         resp = self._session.post(
             f"{self.base_url}/v1/graph/events",

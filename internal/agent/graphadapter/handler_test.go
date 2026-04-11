@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dativo-io/talon/internal/requestctx"
 )
 
 func TestHandler_POST_RunStart(t *testing.T) {
@@ -106,6 +108,45 @@ func TestHandler_DefaultTenantID(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestHandler_ContextTenantOverridesPayloadTenant(t *testing.T) {
+	adapter := NewAdapter(nil, nil, nil)
+	handler := NewHandler(adapter)
+
+	ev := Event{
+		Type:       EventRunStart,
+		GraphRunID: "gr_http_ctx_1",
+		AgentID:    "test-agent",
+	}
+	body, _ := json.Marshal(ev)
+	ctx := requestctx.SetTenantID(context.Background(), "acme")
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+func TestHandler_RejectsPayloadTenantMismatch(t *testing.T) {
+	adapter := NewAdapter(nil, nil, nil)
+	handler := NewHandler(adapter)
+
+	ev := Event{
+		Type:       EventRunStart,
+		GraphRunID: "gr_http_ctx_2",
+		TenantID:   "tenant-b",
+		AgentID:    "test-agent",
+	}
+	body, _ := json.Marshal(ev)
+	ctx := requestctx.SetTenantID(context.Background(), "tenant-a")
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/graph/events", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code)
 }
 
 func TestHandler_ToolCallDenied_NoMeta(t *testing.T) {

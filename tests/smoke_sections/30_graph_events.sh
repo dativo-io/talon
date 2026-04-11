@@ -118,7 +118,7 @@ GWEOF
   # --- 30a: run_start returns allow ---
   local body_30a resp_30a code_30a
   resp_30a="$(mktemp)"
-  body_30a="{\"type\":\"run_start\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"run_meta\":{\"framework\":\"langgraph\",\"node_count\":3,\"model\":\"gpt-4o\"}}"
+  body_30a="{\"type\":\"run_start\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"run_meta\":{\"framework\":\"langgraph\",\"node_count\":3,\"model\":\"gpt-4o\"}}"
   code_30a="$(post_graph_event "$body_30a" "$resp_30a")"
   if [[ "$code_30a" == "200" ]]; then
     local allowed_30a
@@ -137,7 +137,7 @@ GWEOF
   # --- 30b: step_start within limits returns allow ---
   local body_30b resp_30b code_30b
   resp_30b="$(mktemp)"
-  body_30b="{\"type\":\"step_start\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":1,\"node_id\":\"plan_node\",\"node_meta\":{\"name\":\"plan\",\"type\":\"llm\",\"model\":\"gpt-4o\"}}"
+  body_30b="{\"type\":\"step_start\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":1,\"node_id\":\"plan_node\",\"node_meta\":{\"name\":\"plan\",\"type\":\"llm\",\"model\":\"gpt-4o\"}}"
   code_30b="$(post_graph_event "$body_30b" "$resp_30b")"
   if [[ "$code_30b" == "200" ]]; then
     local allowed_30b
@@ -156,7 +156,7 @@ GWEOF
   # --- 30c: tool_call with google_search returns allow ---
   local body_30c resp_30c code_30c
   resp_30c="$(mktemp)"
-  body_30c="{\"type\":\"tool_call\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"tool_meta\":{\"name\":\"google_search\",\"arguments\":{\"query\":\"EU AI Act compliance for SMBs\"}}}"
+  body_30c="{\"type\":\"tool_call\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"tool_meta\":{\"name\":\"google_search\",\"arguments\":{\"query\":\"EU AI Act compliance for SMBs\"}}}"
   code_30c="$(post_graph_event "$body_30c" "$resp_30c")"
   if [[ "$code_30c" == "200" ]]; then
     local allowed_30c action_30c
@@ -176,7 +176,7 @@ GWEOF
   # --- 30d: tool_call with forbidden tool returns deny ---
   local body_30d resp_30d code_30d
   resp_30d="$(mktemp)"
-  body_30d="{\"type\":\"tool_call\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"tool_meta\":{\"name\":\"delete_database\",\"arguments\":{}}}"
+  body_30d="{\"type\":\"tool_call\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"tool_meta\":{\"name\":\"delete_database\",\"arguments\":{}}}"
   code_30d="$(post_graph_event "$body_30d" "$resp_30d")"
   if [[ "$code_30d" == "200" ]]; then
     local allowed_30d action_30d
@@ -196,7 +196,7 @@ GWEOF
   # --- 30e: step_end returns allow ---
   local body_30e resp_30e code_30e
   resp_30e="$(mktemp)"
-  body_30e="{\"type\":\"step_end\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":1,\"result\":{\"status\":\"completed\",\"duration_ms\":800,\"cost\":0.002}}"
+  body_30e="{\"type\":\"step_end\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":1,\"result\":{\"status\":\"completed\",\"duration_ms\":800,\"cost\":0.002}}"
   code_30e="$(post_graph_event "$body_30e" "$resp_30e")"
   if [[ "$code_30e" == "200" ]]; then
     local allowed_30e
@@ -215,7 +215,7 @@ GWEOF
   # --- 30f: retry within limits returns allow ---
   local body_30f resp_30f code_30f
   resp_30f="$(mktemp)"
-  body_30f="{\"type\":\"retry\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"node_id\":\"search_node\",\"error\":{\"message\":\"rate limit\",\"retryable\":true,\"retry_count\":1}}"
+  body_30f="{\"type\":\"retry\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"node_id\":\"search_node\",\"error\":{\"message\":\"rate limit\",\"retryable\":true,\"retry_count\":1}}"
   code_30f="$(post_graph_event "$body_30f" "$resp_30f")"
   if [[ "$code_30f" == "200" ]]; then
     local allowed_30f
@@ -234,7 +234,7 @@ GWEOF
   # --- 30g: run_end returns allow ---
   local body_30g resp_30g code_30g
   resp_30g="$(mktemp)"
-  body_30g="{\"type\":\"run_end\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"cost\":0.005,\"result\":{\"status\":\"completed\",\"duration_ms\":2900,\"cost\":0.005}}"
+  body_30g="{\"type\":\"run_end\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"cost\":0.005,\"result\":{\"status\":\"completed\",\"duration_ms\":2900,\"cost\":0.005}}"
   code_30g="$(post_graph_event "$body_30g" "$resp_30g")"
   if [[ "$code_30g" == "200" ]]; then
     local allowed_30g
@@ -253,7 +253,7 @@ GWEOF
   # --- 30h: step_start exceeding max_iterations is denied ---
   local body_30h resp_30h code_30h
   resp_30h="$(mktemp)"
-  body_30h="{\"type\":\"step_start\",\"graph_run_id\":\"gr_smoke_deny_iter\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":6,\"node_id\":\"node_overflow\"}"
+  body_30h="{\"type\":\"step_start\",\"graph_run_id\":\"gr_smoke_deny_iter\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":6,\"node_id\":\"node_overflow\"}"
   code_30h="$(post_graph_event "$body_30h" "$resp_30h")"
   if [[ "$code_30h" == "200" ]]; then
     local allowed_30h action_30h
@@ -273,7 +273,7 @@ GWEOF
   # --- 30i: step_start exceeding max_cost_per_run is denied ---
   local body_30i resp_30i code_30i
   resp_30i="$(mktemp)"
-  body_30i="{\"type\":\"step_start\",\"graph_run_id\":\"gr_smoke_deny_cost\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"node_id\":\"expensive_node\",\"cost\":2.50}"
+  body_30i="{\"type\":\"step_start\",\"graph_run_id\":\"gr_smoke_deny_cost\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"node_id\":\"expensive_node\",\"cost\":2.50}"
   code_30i="$(post_graph_event "$body_30i" "$resp_30i")"
   if [[ "$code_30i" == "200" ]]; then
     local allowed_30i action_30i
@@ -293,7 +293,7 @@ GWEOF
   # --- 30j: retry exceeding max_retries_per_node is denied ---
   local body_30j resp_30j code_30j
   resp_30j="$(mktemp)"
-  body_30j="{\"type\":\"retry\",\"graph_run_id\":\"gr_smoke_deny_retry\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"node_id\":\"flaky_node\",\"error\":{\"message\":\"timeout\",\"retryable\":true,\"retry_count\":5}}"
+  body_30j="{\"type\":\"retry\",\"graph_run_id\":\"gr_smoke_deny_retry\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"node_id\":\"flaky_node\",\"error\":{\"message\":\"timeout\",\"retryable\":true,\"retry_count\":5}}"
   code_30j="$(post_graph_event "$body_30j" "$resp_30j")"
   if [[ "$code_30j" == "200" ]]; then
     local allowed_30j action_30j
@@ -325,7 +325,7 @@ GWEOF
   local code_30l
   code_30l="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$graph_url" \
     -H "$tenant_hdr" -H "Content-Type: application/json" \
-    -d '{"type":"run_start","tenant_id":"default"}' 2>/dev/null)"
+    -d '{"type":"run_start"}' 2>/dev/null)"
   if [[ "$code_30l" == "400" ]]; then
     echo "  ✓  graph_events_missing_graph_run_id (HTTP 400)"
     record_pass
@@ -349,15 +349,15 @@ GWEOF
   local all_ok=true
 
   local events=(
-    "{\"type\":\"run_start\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"run_meta\":{\"framework\":\"langgraph\",\"node_count\":3,\"model\":\"gpt-4o\"}}"
-    "{\"type\":\"step_start\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":1,\"node_id\":\"plan_node\",\"node_meta\":{\"name\":\"plan\",\"type\":\"llm\",\"model\":\"gpt-4o\"}}"
-    "{\"type\":\"step_end\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":1,\"result\":{\"status\":\"completed\",\"duration_ms\":800,\"cost\":0.002}}"
-    "{\"type\":\"step_start\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"node_id\":\"search_node\",\"cost\":0.002,\"node_meta\":{\"name\":\"search\",\"type\":\"tool\"}}"
-    "{\"type\":\"tool_call\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"tool_meta\":{\"name\":\"google_search\",\"arguments\":{\"query\":\"Talon EU compliance\"}}}"
-    "{\"type\":\"step_end\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"tool_meta\":{\"name\":\"google_search\"},\"result\":{\"status\":\"completed\",\"duration_ms\":1200,\"cost\":0.0}}"
-    "{\"type\":\"step_start\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":3,\"node_id\":\"synthesize_node\",\"cost\":0.002,\"node_meta\":{\"name\":\"synthesize\",\"type\":\"llm\",\"model\":\"gpt-4o\"}}"
-    "{\"type\":\"step_end\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":3,\"result\":{\"status\":\"completed\",\"duration_ms\":900,\"cost\":0.003}}"
-    "{\"type\":\"run_end\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"default\",\"agent_id\":\"smoke-graph-agent\",\"cost\":0.005,\"result\":{\"status\":\"completed\",\"duration_ms\":2900,\"cost\":0.005}}"
+    "{\"type\":\"run_start\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"run_meta\":{\"framework\":\"langgraph\",\"node_count\":3,\"model\":\"gpt-4o\"}}"
+    "{\"type\":\"step_start\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":1,\"node_id\":\"plan_node\",\"node_meta\":{\"name\":\"plan\",\"type\":\"llm\",\"model\":\"gpt-4o\"}}"
+    "{\"type\":\"step_end\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":1,\"result\":{\"status\":\"completed\",\"duration_ms\":800,\"cost\":0.002}}"
+    "{\"type\":\"step_start\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"node_id\":\"search_node\",\"cost\":0.002,\"node_meta\":{\"name\":\"search\",\"type\":\"tool\"}}"
+    "{\"type\":\"tool_call\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"tool_meta\":{\"name\":\"google_search\",\"arguments\":{\"query\":\"Talon EU compliance\"}}}"
+    "{\"type\":\"step_end\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"tool_meta\":{\"name\":\"google_search\"},\"result\":{\"status\":\"completed\",\"duration_ms\":1200,\"cost\":0.0}}"
+    "{\"type\":\"step_start\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":3,\"node_id\":\"synthesize_node\",\"cost\":0.002,\"node_meta\":{\"name\":\"synthesize\",\"type\":\"llm\",\"model\":\"gpt-4o\"}}"
+    "{\"type\":\"step_end\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":3,\"result\":{\"status\":\"completed\",\"duration_ms\":900,\"cost\":0.003}}"
+    "{\"type\":\"run_end\",\"graph_run_id\":\"${lifecycle_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"cost\":0.005,\"result\":{\"status\":\"completed\",\"duration_ms\":2900,\"cost\":0.005}}"
   )
 
   local step_num=0

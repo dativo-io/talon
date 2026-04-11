@@ -250,8 +250,9 @@ func (e *Engine) EvaluateLoopContainment(ctx context.Context, currentIteration, 
 
 // EvaluateGraphGovernance checks whether an external graph runtime event is
 // allowed. Input should contain event_type, step_index, retry_count,
-// cost_so_far, and node_id. Evaluated against graph_governance.rego which
-// enforces max_iterations, max_cost_per_run, and max_retries_per_node.
+// cost_so_far, tool_calls_so_far, and node_id. Evaluated against
+// graph_governance.rego which enforces max_iterations,
+// max_tool_calls_per_run, max_cost_per_run, and max_retries_per_node.
 func (e *Engine) EvaluateGraphGovernance(ctx context.Context, input map[string]interface{}) (*Decision, error) {
 	ctx, span := tracer.Start(ctx, "policy.evaluate_graph_governance",
 		trace.WithAttributes(

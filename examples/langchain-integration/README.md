@@ -29,11 +29,15 @@ retry governance, and evidence lineage across multi-step workflows.
 **Authentication:** When `tenant_keys` are configured in
 `talon.config.yaml`, requests require `Authorization: Bearer <tenant_key>`.
 The Python SDK sets this automatically when you pass `tenant_key`.
+Do not include `tenant_id` in event payloads when auth is enabled; Talon
+derives tenant identity from the bearer key.
 
 **Session continuity:** Generate a `session_id` once per workflow and send the
 same value on every graph event (`run_start`, `step_*`, `tool_call`, `retry`,
 `run_end`). This keeps graph evidence joinable in session exports and timeline
 views.
+For LangGraph, emit `step_start`/`step_end` from node callbacks so event
+boundaries match actual node execution.
 
 ```python
 from talon_sdk import TalonClient
