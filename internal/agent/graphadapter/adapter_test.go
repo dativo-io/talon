@@ -2,6 +2,7 @@ package graphadapter
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -181,4 +182,25 @@ func TestHandleEvent_TimestampDefault(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ev.Timestamp.IsZero())
 	assert.True(t, ev.Timestamp.After(before) || ev.Timestamp.Equal(before))
+}
+
+func TestTrackDenial_ConcurrentSameRunID(t *testing.T) {
+	adapter := NewAdapter(nil, nil, nil)
+	const goroutines = 64
+	graphRunID := "gr_concurrent_denial"
+
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			adapter.trackDenial(graphRunID, []string{string(rune('a' + (i % 26)))})
+		}(i)
+	}
+	wg.Wait()
+
+	rs := adapter.consumeRunState(graphRunID)
+	require.NotNil(t, rs)
+	assert.True(t, rs.denied)
+	assert.Len(t, rs.reasons, goroutines)
 }
