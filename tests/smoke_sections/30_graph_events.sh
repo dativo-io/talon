@@ -19,6 +19,10 @@
 #   30l — missing graph_run_id returns 400
 #   30m — GET method returns 405
 #   30n — full lifecycle: 3-node google_search agent run
+#   30o — tenant payload mismatch returns 403
+#   30p — max_tool_calls_per_run exceeded is denied
+#   30q — run_end final cost overrun is denied
+#   30r — prior mid-run deny causes run_end deny
 # Each sub-test asserts HTTP status and decision fields from the JSON response.
 # Uses google_search as the only tool for the happy-path lifecycle.
 # -----------------------------------------------------------------------------
@@ -63,7 +67,8 @@ policies:
   resource_limits:
     max_iterations: 5
     max_cost_per_run: 2.0
-    max_tool_calls_per_run: 10
+    max_tool_calls_per_run: 1
+    max_retries_per_node: 3
 POLICYEOF
 
   # Gateway config with tenant key so Bearer auth is exercised (matches section 12 pattern).
@@ -231,12 +236,18 @@ GWEOF
   fi
   rm -f "$resp_30f"
 
-  # --- 30g: run_end returns allow ---
+  # --- 30g: run_end returns allow on a clean run ---
+  local clean_run_id="gr_smoke_run_end_allow_$(date +%s)"
+  local resp_30g_start body_30g_start code_30g_start
+  resp_30g_start="$(mktemp)"
+  body_30g_start="{\"type\":\"run_start\",\"graph_run_id\":\"${clean_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"run_meta\":{\"framework\":\"langgraph\",\"node_count\":1,\"model\":\"gpt-4o\"}}"
+  code_30g_start="$(post_graph_event "$body_30g_start" "$resp_30g_start")"
+
   local body_30g resp_30g code_30g
   resp_30g="$(mktemp)"
-  body_30g="{\"type\":\"run_end\",\"graph_run_id\":\"${graph_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"cost\":0.005,\"result\":{\"status\":\"completed\",\"duration_ms\":2900,\"cost\":0.005}}"
+  body_30g="{\"type\":\"run_end\",\"graph_run_id\":\"${clean_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"cost\":0.005,\"result\":{\"status\":\"completed\",\"duration_ms\":2900,\"cost\":0.005}}"
   code_30g="$(post_graph_event "$body_30g" "$resp_30g")"
-  if [[ "$code_30g" == "200" ]]; then
+  if [[ "$code_30g_start" == "200" ]] && [[ "$code_30g" == "200" ]]; then
     local allowed_30g
     allowed_30g="$(jq -r '.allowed' "$resp_30g" 2>/dev/null)"
     if [[ "$allowed_30g" == "true" ]]; then
@@ -246,9 +257,9 @@ GWEOF
       log_failure "graph_events_run_end expected allowed=true, got $allowed_30g"
     fi
   else
-    log_failure "graph_events_run_end expected HTTP 200, got $code_30g"
+    log_failure "graph_events_run_end expected HTTP 200 chain, got run_start=$code_30g_start run_end=$code_30g"
   fi
-  rm -f "$resp_30g"
+  rm -f "$resp_30g_start" "$resp_30g"
 
   # --- 30h: step_start exceeding max_iterations is denied ---
   local body_30h resp_30h code_30h
@@ -385,6 +396,102 @@ GWEOF
     record_pass
   fi
 
+  # --- 30o: tenant payload mismatch returns 403 ---
+  local code_30o
+  code_30o="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$graph_url" \
+    -H "$tenant_hdr" -H "Content-Type: application/json" \
+    -d "{\"type\":\"run_start\",\"graph_run_id\":\"gr_smoke_tenant_mismatch\",\"session_id\":\"${graph_session_id}\",\"tenant_id\":\"tenant-b\",\"agent_id\":\"smoke-graph-agent\"}" 2>/dev/null)"
+  if [[ "$code_30o" == "403" ]]; then
+    echo "  ✓  graph_events_tenant_payload_mismatch (HTTP 403)"
+    record_pass
+  else
+    log_failure "graph_events_tenant_payload_mismatch expected HTTP 403, got $code_30o"
+  fi
+
+  # --- 30p: max_tool_calls_per_run exceeded is denied ---
+  local toolcap_id="gr_smoke_tool_cap_$(date +%s)"
+  local resp_30p_start resp_30p_first resp_30p_second
+  local code_30p_start code_30p_first code_30p_second
+  resp_30p_start="$(mktemp)"
+  resp_30p_first="$(mktemp)"
+  resp_30p_second="$(mktemp)"
+
+  code_30p_start="$(post_graph_event "{\"type\":\"run_start\",\"graph_run_id\":\"${toolcap_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"run_meta\":{\"framework\":\"langgraph\"}}" "$resp_30p_start")"
+  code_30p_first="$(post_graph_event "{\"type\":\"tool_call\",\"graph_run_id\":\"${toolcap_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":1,\"tool_meta\":{\"name\":\"google_search\",\"arguments\":{\"query\":\"first\"}}}" "$resp_30p_first")"
+  code_30p_second="$(post_graph_event "{\"type\":\"tool_call\",\"graph_run_id\":\"${toolcap_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":2,\"tool_meta\":{\"name\":\"google_search\",\"arguments\":{\"query\":\"second\"}}}" "$resp_30p_second")"
+
+  if [[ "$code_30p_start" == "200" ]] && [[ "$code_30p_first" == "200" ]] && [[ "$code_30p_second" == "200" ]]; then
+    local allowed_30p_first allowed_30p_second action_30p_second
+    allowed_30p_first="$(jq -r '.allowed' "$resp_30p_first" 2>/dev/null)"
+    allowed_30p_second="$(jq -r '.allowed' "$resp_30p_second" 2>/dev/null)"
+    action_30p_second="$(jq -r '.action' "$resp_30p_second" 2>/dev/null)"
+    if [[ "$allowed_30p_first" == "true" ]] && [[ "$allowed_30p_second" == "false" ]] && [[ "$action_30p_second" == "deny" ]]; then
+      echo "  ✓  graph_events_max_tool_calls_deny (second tool call denied)"
+      record_pass
+    else
+      log_failure "graph_events_max_tool_calls_deny expected first=true then second=false/deny, got first=$allowed_30p_first second=$allowed_30p_second action=$action_30p_second"
+    fi
+  else
+    log_failure "graph_events_max_tool_calls_deny expected HTTP 200 chain, got start=$code_30p_start first=$code_30p_first second=$code_30p_second"
+  fi
+  rm -f "$resp_30p_start" "$resp_30p_first" "$resp_30p_second"
+
+  # --- 30q: run_end final cost overrun is denied ---
+  local runend_cost_id="gr_smoke_run_end_cost_$(date +%s)"
+  local resp_30q_start resp_30q_step resp_30q_end
+  local code_30q_start code_30q_step code_30q_end
+  resp_30q_start="$(mktemp)"
+  resp_30q_step="$(mktemp)"
+  resp_30q_end="$(mktemp)"
+
+  code_30q_start="$(post_graph_event "{\"type\":\"run_start\",\"graph_run_id\":\"${runend_cost_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"run_meta\":{\"framework\":\"langgraph\"}}" "$resp_30q_start")"
+  code_30q_step="$(post_graph_event "{\"type\":\"step_start\",\"graph_run_id\":\"${runend_cost_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":1,\"node_id\":\"node_a\",\"cost\":0.2}" "$resp_30q_step")"
+  code_30q_end="$(post_graph_event "{\"type\":\"run_end\",\"graph_run_id\":\"${runend_cost_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"cost\":2.5,\"result\":{\"status\":\"completed\",\"duration_ms\":900}}" "$resp_30q_end")"
+
+  if [[ "$code_30q_start" == "200" ]] && [[ "$code_30q_step" == "200" ]] && [[ "$code_30q_end" == "200" ]]; then
+    local allowed_30q_end action_30q_end
+    allowed_30q_end="$(jq -r '.allowed' "$resp_30q_end" 2>/dev/null)"
+    action_30q_end="$(jq -r '.action' "$resp_30q_end" 2>/dev/null)"
+    if [[ "$allowed_30q_end" == "false" ]] && [[ "$action_30q_end" == "deny" ]]; then
+      echo "  ✓  graph_events_run_end_final_cost_deny (HTTP 200, allowed=false, action=deny)"
+      record_pass
+    else
+      log_failure "graph_events_run_end_final_cost_deny expected allowed=false action=deny, got allowed=$allowed_30q_end action=$action_30q_end"
+    fi
+  else
+    log_failure "graph_events_run_end_final_cost_deny expected HTTP 200 chain, got start=$code_30q_start step=$code_30q_step end=$code_30q_end"
+  fi
+  rm -f "$resp_30q_start" "$resp_30q_step" "$resp_30q_end"
+
+  # --- 30r: prior mid-run deny causes run_end deny ---
+  local denied_run_id="gr_smoke_midrun_denied_$(date +%s)"
+  local resp_30r_start resp_30r_deny_step resp_30r_end
+  local code_30r_start code_30r_deny_step code_30r_end
+  resp_30r_start="$(mktemp)"
+  resp_30r_deny_step="$(mktemp)"
+  resp_30r_end="$(mktemp)"
+
+  code_30r_start="$(post_graph_event "{\"type\":\"run_start\",\"graph_run_id\":\"${denied_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"run_meta\":{\"framework\":\"langgraph\"}}" "$resp_30r_start")"
+  # Force a deny by exceeding max_iterations=5.
+  code_30r_deny_step="$(post_graph_event "{\"type\":\"step_start\",\"graph_run_id\":\"${denied_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"step_index\":6,\"node_id\":\"deny_node\"}" "$resp_30r_deny_step")"
+  code_30r_end="$(post_graph_event "{\"type\":\"run_end\",\"graph_run_id\":\"${denied_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"cost\":0.1,\"result\":{\"status\":\"completed\",\"duration_ms\":300}}" "$resp_30r_end")"
+
+  if [[ "$code_30r_start" == "200" ]] && [[ "$code_30r_deny_step" == "200" ]] && [[ "$code_30r_end" == "200" ]]; then
+    local allowed_30r_step allowed_30r_end action_30r_end
+    allowed_30r_step="$(jq -r '.allowed' "$resp_30r_deny_step" 2>/dev/null)"
+    allowed_30r_end="$(jq -r '.allowed' "$resp_30r_end" 2>/dev/null)"
+    action_30r_end="$(jq -r '.action' "$resp_30r_end" 2>/dev/null)"
+    if [[ "$allowed_30r_step" == "false" ]] && [[ "$allowed_30r_end" == "false" ]] && [[ "$action_30r_end" == "deny" ]]; then
+      echo "  ✓  graph_events_midrun_deny_propagates_to_run_end (HTTP 200, run_end denied)"
+      record_pass
+    else
+      log_failure "graph_events_midrun_deny_propagates_to_run_end expected step=false and run_end=false/deny, got step=$allowed_30r_step run_end=$allowed_30r_end action=$action_30r_end"
+    fi
+  else
+    log_failure "graph_events_midrun_deny_propagates_to_run_end expected HTTP 200 chain, got run_start=$code_30r_start step=$code_30r_deny_step run_end=$code_30r_end"
+  fi
+  rm -f "$resp_30r_start" "$resp_30r_deny_step" "$resp_30r_end"
+
   # Verify evidence via admin API
   sleep 1
   local ev_body ev_code
@@ -393,12 +500,15 @@ GWEOF
     "${ge_base}/v1/evidence?limit=20" 2>/dev/null)"
   if [[ "$ev_code" == "200" ]]; then
     local has_graph_run
+    local denied_run_recorded denied_run_policy_denied
     has_graph_run="$(jq -r "[.entries[]? | select(.correlation_id == \"${lifecycle_id}\")] | length" "$ev_body" 2>/dev/null)"
-    if [[ "$has_graph_run" =~ ^[1-9] ]]; then
-      echo "  ✓  graph_events_evidence_recorded (found evidence for lifecycle run)"
+    denied_run_recorded="$(jq -r "[.entries[]? | select(.correlation_id == \"${denied_run_id}\")] | length" "$ev_body" 2>/dev/null)"
+    denied_run_policy_denied="$(jq -r "[.entries[]? | select(.correlation_id == \"${denied_run_id}\" and .policy_decision.allowed == false)] | length" "$ev_body" 2>/dev/null)"
+    if [[ "$has_graph_run" =~ ^[1-9] ]] && [[ "$denied_run_recorded" =~ ^[1-9] ]] && [[ "$denied_run_policy_denied" =~ ^[1-9] ]]; then
+      echo "  ✓  graph_events_evidence_recorded (found lifecycle + denied-run evidence with policy_decision.allowed=false)"
       record_pass
     else
-      log_failure "graph_events_evidence_recorded no evidence found for graph_run_id=${lifecycle_id}"
+      log_failure "graph_events_evidence_recorded missing expected evidence entries (lifecycle=${has_graph_run} denied_total=${denied_run_recorded} denied_policy=${denied_run_policy_denied})"
     fi
   else
     log_failure "graph_events_evidence_recorded evidence API returned HTTP $ev_code"
