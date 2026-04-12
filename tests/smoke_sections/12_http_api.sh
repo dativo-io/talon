@@ -11,6 +11,7 @@ test_section_12_http_api() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
   # Add minimal gateway block so serve loads tenant keys and "tenant key can read /v1/evidence" can pass.
   # Use unquoted heredoc so $TALON_TENANT_KEY is expanded into the caller list.
   if [[ -f "$dir/talon.config.yaml" ]] && ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
@@ -35,6 +36,11 @@ gateway:
 GWEOF
   fi
   run_talon run "Seed" &>/dev/null; true
+  if ! wait_port_free 8080 90 5; then
+    log_failure "http_api section could not acquire port 8080" "port remained busy"
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
   TALON_SERVE_PID=""
   local serve_log_12="$dir/serve_section12.log"
   run_talon serve --config "$dir/talon.config.yaml" --port 8080 --gateway --gateway-config "$dir/talon.config.yaml" >"$serve_log_12" 2>&1 &

@@ -10,6 +10,7 @@ test_section_20_edge_cases() {
   local dir; dir="$(setup_section_dir "$section")"
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  smoke_tighten_limits "$dir"
   local run_no_args_err; run_no_args_err="$(run_talon run 2>&1)"; local c=$?
   if [[ $c -eq 0 ]]; then
     log_failure "talon run with no args should exit non-zero" "$run_no_args_err"

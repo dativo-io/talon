@@ -11,6 +11,7 @@ test_section_14_deny() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
   assert_pass "dry-run with policy exits 0" run_talon run --dry-run "test"
   # Restrict per_request to 0 so policy denies any run with non-zero estimated cost
   if command -v yq &>/dev/null; then

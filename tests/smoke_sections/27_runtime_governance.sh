@@ -30,6 +30,7 @@ test_section_27_runtime_governance() {
 
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
 
   # Gateway config with 4 purpose-built callers — one per governance dimension.
   if [[ -f "$dir/talon.config.yaml" ]] && ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then

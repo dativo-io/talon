@@ -72,6 +72,8 @@ type Evidence struct {
 	PlanReview      *PlanReviewEvent   `json:"plan_review,omitempty"`
 	RetryAttempt    string             `json:"retry_attempt,omitempty"` // X-Talon-Retry-Attempt header from gateway callers
 	Explanations    []explanation.Item `json:"explanations,omitempty"`
+	PlanID          string             `json:"plan_id,omitempty"`      // Execution plan ID for audit lineage
+	GraphRunID      string             `json:"graph_run_id,omitempty"` // External graph runtime run ID
 }
 
 // PlanReviewEvent captures human oversight actions performed on execution plans.
@@ -224,6 +226,30 @@ type StepEvidence struct {
 	ValidationError string    `json:"validation_error,omitempty"`
 	Timestamp       time.Time `json:"timestamp"`
 	Signature       string    `json:"signature"`
+	PlanID          string    `json:"plan_id,omitempty"`      // Execution plan ID for audit lineage
+	GraphRunID      string    `json:"graph_run_id,omitempty"` // External graph runtime run ID
+}
+
+// GraphSummary is a run-level summary record for external graph executions.
+// Linked to step evidence via GraphRunID and to plan review via PlanID.
+type GraphSummary struct {
+	ID                  string    `json:"id"`
+	GraphRunID          string    `json:"graph_run_id"`
+	PlanID              string    `json:"plan_id,omitempty"`
+	SessionID           string    `json:"session_id,omitempty"`
+	TenantID            string    `json:"tenant_id"`
+	AgentID             string    `json:"agent_id"`
+	Framework           string    `json:"framework"`
+	NodeCount           int       `json:"node_count"`
+	StepCount           int       `json:"step_count"`
+	RetryCount          int       `json:"retry_count"`
+	BranchPath          []string  `json:"branch_path,omitempty"`
+	PolicyInterventions int       `json:"policy_interventions"`
+	TotalCost           float64   `json:"total_cost"`
+	TotalDurationMS     int64     `json:"total_duration_ms"`
+	FinalOutcome        string    `json:"final_outcome"` // "completed", "failed", "aborted", "denied"
+	Timestamp           time.Time `json:"timestamp"`
+	Signature           string    `json:"signature"`
 }
 
 // addColumnIfNotExists attempts an ALTER TABLE ADD COLUMN and silently ignores
@@ -286,8 +312,39 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 	addColumnIfNotExists(db, "step_evidence", "judge_score", "REAL DEFAULT 0")
 	addColumnIfNotExists(db, "step_evidence", "selected", "INTEGER DEFAULT 0")
 
+	addColumnIfNotExists(db, "evidence", "plan_id", "TEXT")
+	addColumnIfNotExists(db, "evidence", "graph_run_id", "TEXT")
+	addColumnIfNotExists(db, "step_evidence", "plan_id", "TEXT")
+	addColumnIfNotExists(db, "step_evidence", "graph_run_id", "TEXT")
+
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_session ON evidence(session_id)")
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_step_evidence_session ON step_evidence(session_id)")
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_graph_run ON evidence(graph_run_id)")
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_step_evidence_graph_run ON step_evidence(graph_run_id)")
+
+	_, _ = db.ExecContext(context.Background(), `
+		CREATE TABLE IF NOT EXISTS graph_summaries (
+			id TEXT PRIMARY KEY,
+			graph_run_id TEXT NOT NULL,
+			plan_id TEXT,
+			session_id TEXT,
+			tenant_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			framework TEXT,
+			node_count INTEGER DEFAULT 0,
+			step_count INTEGER DEFAULT 0,
+			retry_count INTEGER DEFAULT 0,
+			policy_interventions INTEGER DEFAULT 0,
+			total_cost REAL DEFAULT 0,
+			total_duration_ms INTEGER DEFAULT 0,
+			final_outcome TEXT,
+			summary_json TEXT NOT NULL,
+			signature TEXT NOT NULL,
+			timestamp TIMESTAMP NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_graph_summaries_run ON graph_summaries(graph_run_id);
+		CREATE INDEX IF NOT EXISTS idx_graph_summaries_tenant ON graph_summaries(tenant_id);
+	`)
 
 	signer, err := NewSigner(signingKey)
 	if err != nil {
@@ -348,13 +405,13 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 
 	evidenceJSONWithSig, _ := json.Marshal(ev)
 
-	query := `INSERT INTO evidence (id, correlation_id, timestamp, tenant_id, agent_id, invocation_type, evidence_json, signature, session_id, stage, candidate_index, judge_score, selected)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO evidence (id, correlation_id, timestamp, tenant_id, agent_id, invocation_type, evidence_json, signature, session_id, stage, candidate_index, judge_score, selected, plan_id, graph_run_id)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = s.db.ExecContext(ctx, query,
 		ev.ID, ev.CorrelationID, ev.Timestamp, ev.TenantID, ev.AgentID,
 		ev.InvocationType, string(evidenceJSONWithSig), signature, ev.SessionID, ev.Stage,
-		ev.CandidateIndex, ev.JudgeScore, ev.Selected,
+		ev.CandidateIndex, ev.JudgeScore, ev.Selected, ev.PlanID, ev.GraphRunID,
 	)
 	if err != nil {
 		return fmt.Errorf("storing evidence: %w", err)
@@ -386,17 +443,52 @@ func (s *Store) StoreStep(ctx context.Context, step *StepEvidence) error {
 	step.Signature = signature
 	stepJSONWithSig, _ := json.Marshal(step)
 
-	query := `INSERT INTO step_evidence (id, correlation_id, tenant_id, agent_id, step_index, step_type, tool_name, step_json, signature, timestamp, session_id, stage, candidate_index, judge_score, selected)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO step_evidence (id, correlation_id, tenant_id, agent_id, step_index, step_type, tool_name, step_json, signature, timestamp, session_id, stage, candidate_index, judge_score, selected, plan_id, graph_run_id)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err = s.db.ExecContext(ctx, query,
 		step.ID, step.CorrelationID, step.TenantID, step.AgentID, step.StepIndex, step.Type, step.ToolName,
 		string(stepJSONWithSig), signature, step.Timestamp, step.SessionID, step.Stage,
-		step.CandidateIndex, step.JudgeScore, step.Selected,
+		step.CandidateIndex, step.JudgeScore, step.Selected, step.PlanID, step.GraphRunID,
 	)
 	if err != nil {
 		return fmt.Errorf("storing step evidence: %w", err)
 	}
 	RecordEvidenceStored(ctx, "step")
+	return nil
+}
+
+// StoreGraphSummary saves a graph-level summary record with HMAC signature.
+func (s *Store) StoreGraphSummary(ctx context.Context, gs *GraphSummary) error {
+	ctx, span := tracer.Start(ctx, "evidence.store_graph_summary",
+		trace.WithAttributes(
+			attribute.String("graph_run_id", gs.GraphRunID),
+			attribute.String("tenant_id", gs.TenantID),
+		))
+	defer span.End()
+
+	gs.Signature = ""
+	summaryJSON, err := json.Marshal(gs)
+	if err != nil {
+		return fmt.Errorf("marshaling graph summary: %w", err)
+	}
+	signature, signErr := s.signer.Sign(summaryJSON)
+	if signErr != nil {
+		return fmt.Errorf("signing graph summary: %w", signErr)
+	}
+	gs.Signature = signature
+	signedJSON, _ := json.Marshal(gs)
+
+	query := `INSERT INTO graph_summaries (id, graph_run_id, plan_id, session_id, tenant_id, agent_id, framework, node_count, step_count, retry_count, policy_interventions, total_cost, total_duration_ms, final_outcome, summary_json, signature, timestamp)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err = s.db.ExecContext(ctx, query,
+		gs.ID, gs.GraphRunID, gs.PlanID, gs.SessionID, gs.TenantID, gs.AgentID, gs.Framework,
+		gs.NodeCount, gs.StepCount, gs.RetryCount, gs.PolicyInterventions,
+		gs.TotalCost, gs.TotalDurationMS, gs.FinalOutcome, string(signedJSON), signature, gs.Timestamp,
+	)
+	if err != nil {
+		return fmt.Errorf("storing graph summary: %w", err)
+	}
+	RecordEvidenceStored(ctx, "graph_summary")
 	return nil
 }
 
@@ -1187,6 +1279,8 @@ func (s *Store) VerifyRecord(ev *Evidence) bool {
 // Index is a lightweight summary for progressive disclosure Layer 1.
 type Index struct {
 	ID                       string      `json:"id"`
+	CorrelationID            string      `json:"correlation_id,omitempty"`
+	SessionID                string      `json:"session_id,omitempty"`
 	Timestamp                time.Time   `json:"timestamp"`
 	TenantID                 string      `json:"tenant_id"`
 	AgentID                  string      `json:"agent_id"`
@@ -1360,6 +1454,8 @@ func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int
 func toIndex(full *Evidence) Index {
 	idx := Index{
 		ID:             full.ID,
+		CorrelationID:  full.CorrelationID,
+		SessionID:      full.SessionID,
 		Timestamp:      full.Timestamp,
 		TenantID:       full.TenantID,
 		AgentID:        full.AgentID,

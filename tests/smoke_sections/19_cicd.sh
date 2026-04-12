@@ -11,6 +11,7 @@ test_section_19_cicd() {
   cd "$dir" || exit 1
   assert_pass "talon init --scaffold --name ci-agent exits 0 non-interactive" \
     run_talon init --scaffold --name ci-agent
+  smoke_tighten_limits "$dir"
   assert_pass "talon validate exits 0" run_talon validate
   assert_pass "talon run --dry-run exits 0" run_talon run --dry-run "Analyse this commit diff for security issues."
   export NO_COLOR=1

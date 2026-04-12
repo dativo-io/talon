@@ -11,6 +11,7 @@ test_section_07_pii() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
   # Ensure input_scan and pii_action in policy (edit or use pack); then run with email
   run_talon run "Reply OK. User email: jan.kowalski@example.com" &>/dev/null; true
   local ev_id; ev_id="$(run_talon audit list --limit 1 2>/dev/null | awk '/req_/{print $2; exit}')"

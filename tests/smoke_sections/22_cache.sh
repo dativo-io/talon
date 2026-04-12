@@ -11,6 +11,7 @@ test_section_22_cache() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
   # Enable cache in infra config (append cache block so it is used; last key wins in YAML)
   if ! grep -q "cache:" "$dir/talon.config.yaml" 2>/dev/null; then
     cat >> "$dir/talon.config.yaml" <<'CACHEEOF'
@@ -27,9 +28,11 @@ CACHEEOF
   fi
   # First run: miss, response stored in cache
   assert_pass "talon run (cache miss) exits 0" run_talon run "Reply with exactly: SMOKE_CACHE_OK"
+  sleep 1
   local run1; run1="$(run_talon run 'Reply with exactly: SMOKE_CACHE_OK' 2>/dev/null)"; true
   assert_pass "first run stdout contains SMOKE_CACHE_OK" grep -q "SMOKE_CACHE_OK" <<< "$run1"
   # Second run with same prompt: should hit cache (no LLM call)
+  sleep 1
   local run2; run2="$(run_talon run 'Reply with exactly: SMOKE_CACHE_OK' 2>/dev/null)"; true
   assert_pass "second run (cache hit) exits 0 and returns cached content" grep -q "SMOKE_CACHE_OK" <<< "$run2"
   # Cache CLI

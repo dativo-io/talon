@@ -10,6 +10,7 @@ test_section_03_validate() {
   local dir; dir="$(setup_section_dir "$section")"
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent --owner qa@dativo.io &>/dev/null; true
+  smoke_tighten_limits "$dir"
   assert_pass "talon validate exits 0" run_talon validate
   local val_out; val_out="$(run_talon validate 2>/dev/null)"; true
   assert_pass "talon validate stdout contains valid (case-insensitive)" grep -qi valid <<< "$val_out"
@@ -26,6 +27,7 @@ test_section_03_validate() {
   fi
   # Restore: re-init with --force to get valid file again (docs/reference/configuration.md)
   run_talon init --scaffold --name smoke-agent --owner qa@dativo.io --force &>/dev/null; true
+  smoke_tighten_limits "$dir"
   assert_pass "talon validate --file agent.talon.yaml exits 0" run_talon validate --file "$dir/agent.talon.yaml"
   local nf_err; nf_err="$(run_talon validate --file /nonexistent.yaml 2>&1)"
   local nf_code=$?

@@ -10,6 +10,7 @@ test_section_17_config_provider() {
   local dir; dir="$(setup_section_dir "$section")"
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  smoke_tighten_limits "$dir"
   assert_pass "talon config show exits 0" run_talon config show
   local cfg_out; cfg_out="$(run_talon config show 2>/dev/null)"; true
   assert_pass "config show prints data_dir or Data directory" grep -qiE 'data_dir|Data directory' <<< "$cfg_out"

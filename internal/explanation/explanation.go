@@ -20,6 +20,12 @@ const (
 	CodePolicyFiltered         = "POLICY_FILTERED"
 	CodeExecutionFailed        = "EXECUTION_FAILED"
 	CodeLegacyReasonUnmigrated = "LEGACY_REASON_UNMIGRATED"
+
+	CodeGraphRunAllowed         = "GRAPH_RUN_ALLOWED"
+	CodeGraphIterationLimitDeny = "GRAPH_ITERATION_LIMIT_DENY"
+	CodeGraphCostLimitDeny      = "GRAPH_COST_LIMIT_DENY"
+	CodeGraphRetryLimitDeny     = "GRAPH_RETRY_LIMIT_DENY"
+	CodeGraphToolDeny           = "GRAPH_TOOL_DENY"
 )
 
 const (
@@ -173,37 +179,32 @@ func normalizeFacts(facts []Fact) []Fact {
 	return out
 }
 
+var reasonByCode = map[string]string{
+	CodePolicyAllowed:           "Request allowed by policy.",
+	CodePolicyDenied:            "Request blocked by policy.",
+	CodePolicyDeniedPIIInput:    "Request blocked because input PII was detected.",
+	CodePolicyDeniedPIIOutput:   "Request blocked because output PII was detected.",
+	CodePolicyDeniedCost:        "Request blocked by cost policy limits.",
+	CodePolicyDeniedRouting:     "Request blocked by model routing policy.",
+	CodePolicyDeniedTool:        "Request blocked by tool access policy.",
+	CodePolicyDeniedHook:        "Request blocked by a governance hook.",
+	CodePolicyDeniedCircuit:     "Request blocked because the circuit breaker is open.",
+	CodePolicyDeniedEarlyTerm:   "Request terminated early by governance controls.",
+	CodePolicyModified:          "Request was modified by policy before execution.",
+	CodePolicyFiltered:          "Request output was filtered by policy.",
+	CodeExecutionFailed:         "Request failed during execution.",
+	CodeGraphRunAllowed:         "Graph run completed within governance limits.",
+	CodeGraphIterationLimitDeny: "Graph step denied: iteration limit exceeded.",
+	CodeGraphCostLimitDeny:      "Graph step denied: cost limit exceeded.",
+	CodeGraphRetryLimitDeny:     "Graph retry denied: retry limit exceeded for node.",
+	CodeGraphToolDeny:           "Graph tool call denied: tool not in allowlist.",
+}
+
 func renderReason(f Fact) string {
-	switch f.Code {
-	case CodePolicyAllowed:
-		return "Request allowed by policy."
-	case CodePolicyDeniedPIIInput:
-		return "Request blocked because input PII was detected."
-	case CodePolicyDeniedPIIOutput:
-		return "Request blocked because output PII was detected."
-	case CodePolicyDeniedCost:
-		return "Request blocked by cost policy limits."
-	case CodePolicyDeniedRouting:
-		return "Request blocked by model routing policy."
-	case CodePolicyDeniedTool:
-		return "Request blocked by tool access policy."
-	case CodePolicyDeniedHook:
-		return "Request blocked by a governance hook."
-	case CodePolicyDeniedCircuit:
-		return "Request blocked because the circuit breaker is open."
-	case CodePolicyDeniedEarlyTerm:
-		return "Request terminated early by governance controls."
-	case CodePolicyModified:
-		return "Request was modified by policy before execution."
-	case CodePolicyFiltered:
-		return "Request output was filtered by policy."
-	case CodeExecutionFailed:
-		return "Request failed during execution."
-	case CodePolicyDenied:
-		return "Request blocked by policy."
-	default:
-		return "Request processed with legacy policy explanation mapping."
+	if r, ok := reasonByCode[f.Code]; ok {
+		return r
 	}
+	return "Request processed with legacy policy explanation mapping."
 }
 
 func normalizeStage(stage string) string {
@@ -216,7 +217,7 @@ func normalizeStage(stage string) string {
 
 func decisionFromCode(code string) string {
 	switch code {
-	case CodePolicyAllowed:
+	case CodePolicyAllowed, CodeGraphRunAllowed:
 		return DecisionAllow
 	case CodePolicyModified:
 		return DecisionModify
@@ -280,6 +281,12 @@ func codeFromReason(reason string, decision string) string {
 		return CodePolicyDeniedCircuit
 	case strings.Contains(r, "early_termination"):
 		return CodePolicyDeniedEarlyTerm
+	case strings.Contains(r, "max_iterations"):
+		return CodeGraphIterationLimitDeny
+	case strings.Contains(r, "max_cost_per_run"):
+		return CodeGraphCostLimitDeny
+	case strings.Contains(r, "max_retries_per_node"):
+		return CodeGraphRetryLimitDeny
 	default:
 		if decision == DecisionAllow {
 			return CodePolicyAllowed
@@ -304,6 +311,14 @@ func defaultFix(code string) string {
 		return "Wait for cooldown or resolve repeated denials before retrying."
 	case CodeExecutionFailed:
 		return "Inspect execution error details and retry when the dependency is healthy."
+	case CodeGraphIterationLimitDeny:
+		return "Increase max_iterations in resource_limits or reduce graph steps."
+	case CodeGraphCostLimitDeny:
+		return "Increase max_cost_per_run in resource_limits or optimize step costs."
+	case CodeGraphRetryLimitDeny:
+		return "Increase max_retries_per_node or fix the underlying node failure."
+	case CodeGraphToolDeny:
+		return "Add the tool to capabilities.allowed_tools in policy."
 	default:
 		return ""
 	}

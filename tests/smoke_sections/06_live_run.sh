@@ -11,6 +11,7 @@ test_section_06_live_run() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
   # Ensure policy allows gpt-4o-mini and has per_request/daily limits (scaffold default may suffice)
   assert_pass "talon run PONG prompt exits 0" run_talon run "Reply with the single word: PONG"
   local run_out; run_out="$(run_talon run 'Reply with the single word: PONG' 2>/dev/null)"; true

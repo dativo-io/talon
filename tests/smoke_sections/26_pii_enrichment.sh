@@ -25,6 +25,7 @@ test_section_26_pii_enrichment() {
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
+  smoke_tighten_limits "$dir"
 
   # Enable input+output scanning with granular redact_input/redact_output
   if command -v yq &>/dev/null; then
