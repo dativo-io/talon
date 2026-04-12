@@ -29,13 +29,13 @@ type Event struct {
 	// TenantID is optional in client payloads. When tenant auth is enabled,
 	// the server binds tenant identity from request context and validates any
 	// provided tenant_id against it.
-	TenantID string `json:"tenant_id,omitempty"`
-	AgentID    string    `json:"agent_id"`
-	NodeID     string    `json:"node_id,omitempty"`
-	StepIndex  int       `json:"step_index"`
-	Attempt    int       `json:"attempt,omitempty"`
-	StateHash  string    `json:"state_hash,omitempty"`
-	Timestamp  time.Time `json:"timestamp"`
+	TenantID  string    `json:"tenant_id,omitempty"`
+	AgentID   string    `json:"agent_id"`
+	NodeID    string    `json:"node_id,omitempty"`
+	StepIndex int       `json:"step_index"`
+	Attempt   int       `json:"attempt,omitempty"`
+	StateHash string    `json:"state_hash,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 
 	RunMeta  *RunMeta    `json:"run_meta,omitempty"`
 	NodeMeta *NodeMeta   `json:"node_meta,omitempty"`
