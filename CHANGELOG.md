@@ -17,6 +17,26 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.4.5] - 2026-04-12
+
+### Added
+
+- **feat(graphadapter): graph runtime governance control plane.** Added graph-aware governance execution with event-aware policy checks, lineage-aware evidence hooks, and integration points for LangChain/LangGraph stateful flows. Operators and framework integrators get first-class graph execution visibility while preserving existing run governance semantics. Verify quickly with `tests/smoke_sections/30_graph_events.sh` and `go test ./tests/integration -run Graph`.
+
+- **feat(policy): graph governance Rego policies and tests.** Added dedicated graph governance policy modules and policy tests to enforce graph-specific constraints and deny handling at runtime, including deterministic explanation rendering for governance outcomes.
+
+- **docs(integration): LangChain/LangGraph integration guide and examples.** Added end-to-end integration docs and runnable examples under `examples/langchain-integration/` to demonstrate stateless and stateful adapter usage patterns with Talon governance.
+
+### Fixed
+
+- **fix(graphadapter): tenant binding and denial propagation hardening.** Tightened tenant binding checks, stabilized run-end denial handling, and improved explanation/evidence consistency under denied branches and error paths.
+
+- **fix(graphadapter): concurrency and lint hardening.** Addressed run-state race conditions, aligned request construction with context-aware patterns, and added regression tests for concurrent denial tracking and retry guardrails.
+
+### Test
+
+- **test(graphadapter): full graph governance test pyramid.** Added broad unit, handler, policy, integration, and smoke coverage for graph event execution and governance decisions, reducing regression risk for graph-enabled agent pipelines.
+
 ## [1.4.0] - 2026-03-31
 
 ### Added
@@ -407,7 +427,8 @@ For user-facing entries, include:
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.4.5...HEAD
+[1.4.5]: https://github.com/dativo-io/talon/compare/v1.4.0...v1.4.5
 [1.4.0]: https://github.com/dativo-io/talon/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/dativo-io/talon/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/dativo-io/talon/compare/v1.1.0...v1.2.0
