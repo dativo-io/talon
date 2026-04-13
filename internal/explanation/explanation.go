@@ -205,9 +205,6 @@ func normalizeTrigger(trigger string) string {
 		seen[p] = struct{}{}
 		tokens = append(tokens, p)
 	}
-	if len(tokens) <= 1 {
-		return t
-	}
 	sort.Strings(tokens)
 	return strings.Join(tokens, ",")
 }
