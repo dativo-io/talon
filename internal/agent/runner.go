@@ -952,11 +952,7 @@ func (r *Runner) checkHook(ctx context.Context, point HookPoint, tenantID, agent
 }
 
 func explanationPolicyRef(policyVersion string) string {
-	pv := strings.TrimSpace(policyVersion)
-	if pv == "" {
-		return ""
-	}
-	return "policy:" + pv
+	return explanation.PolicyRef(policyVersion)
 }
 
 func buildPolicyDecisionFacts(decision *policy.Decision, stage string) []explanation.Fact {

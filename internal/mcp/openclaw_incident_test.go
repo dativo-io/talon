@@ -201,6 +201,8 @@ func TestProxy_PIIInArgumentsBlocked(t *testing.T) {
 		piiRecorded := false
 		for _, ev := range records {
 			if ev.InvocationType == "proxy_pii_redaction" {
+				assert.NotEmpty(t, ev.Explanations, "proxy evidence should include deterministic explanations")
+				assert.NotEmpty(t, ev.Explanations[0].Code)
 				piiRecorded = true
 			}
 		}

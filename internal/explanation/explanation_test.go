@@ -33,3 +33,20 @@ func TestExplanation_BuildLegacyFactsSortsReasonInput(t *testing.T) {
 	assert.Equal(t, CodePolicyDeniedPIIInput, items[0].Code)
 	assert.Equal(t, CodePolicyDeniedRouting, items[1].Code)
 }
+
+func TestExplanation_NormalizesTriggerTokenLists(t *testing.T) {
+	items := BuildFromFacts([]Fact{{
+		Code:     CodePolicyDeniedPIIInput,
+		Decision: DecisionDeny,
+		Stage:    "policy_evaluation",
+		Trigger:  "EMAIL,IBAN,EMAIL",
+	}})
+	requireLen := 1
+	assert.Len(t, items, requireLen)
+	assert.Equal(t, "EMAIL,IBAN", items[0].Trigger)
+}
+
+func TestExplanation_PolicyRef(t *testing.T) {
+	assert.Equal(t, "", PolicyRef(""))
+	assert.Equal(t, "policy:1.0.0:sha256:abc", PolicyRef("1.0.0:sha256:abc"))
+}

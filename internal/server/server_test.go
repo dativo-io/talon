@@ -1692,6 +1692,7 @@ func TestEvidenceTraceIncludesExplanations(t *testing.T) {
 	first := explanations[0].(map[string]interface{})
 	assert.NotEmpty(t, first["code"])
 	assert.NotEmpty(t, first["reason"])
+	assert.NotEmpty(t, first["stage"])
 	assert.NotEmpty(t, first["version_identity"])
 }
 

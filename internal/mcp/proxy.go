@@ -16,6 +16,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
@@ -442,7 +443,62 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 			Error:       reason,
 		},
 	}
+	ev.Explanations = explanation.BuildFromFacts(proxyExplanationFacts(eventType, reason, toolName, allowed))
 	_ = h.evidenceStore.Store(ctx, ev)
+}
+
+func proxyExplanationFacts(eventType, reason, toolName string, allowed bool) []explanation.Fact {
+	trigger := strings.TrimSpace(reason)
+	if trigger == "" {
+		trigger = strings.TrimSpace(toolName)
+	}
+	switch eventType {
+	case "proxy_tool_blocked":
+		return []explanation.Fact{{
+			Code:     explanation.CodePolicyDeniedTool,
+			Decision: explanation.DecisionDeny,
+			Stage:    "tool_execution",
+			Trigger:  trigger,
+		}}
+	case "proxy_pii_eval_error":
+		return []explanation.Fact{{
+			Code:     explanation.CodeExecutionFailed,
+			Decision: explanation.DecisionFailure,
+			Stage:    "policy_evaluation",
+			Trigger:  trigger,
+		}}
+	case "proxy_pii_redaction":
+		if !allowed {
+			return []explanation.Fact{{
+				Code:     explanation.CodePolicyDeniedPIIInput,
+				Decision: explanation.DecisionDeny,
+				Stage:    "policy_evaluation",
+				Trigger:  trigger,
+			}}
+		}
+		return []explanation.Fact{{
+			Code:     explanation.CodePolicyModified,
+			Decision: explanation.DecisionModify,
+			Stage:    "policy_evaluation",
+			Trigger:  "pii_redacted",
+			Fix:      "No action required. Sensitive values were redacted before forwarding.",
+		}}
+	default:
+		if reason == "output_pii_redacted" {
+			return []explanation.Fact{{
+				Code:     explanation.CodePolicyFiltered,
+				Decision: explanation.DecisionFilter,
+				Stage:    "output_validation",
+				Trigger:  reason,
+			}}
+		}
+		return []explanation.Fact{{
+			Code:     explanation.CodePolicyAllowed,
+			Decision: explanation.DecisionAllow,
+			Stage:    "tool_execution",
+			Trigger:  trigger,
+		}}
+	}
 }
 
 func paramsToMap(raw json.RawMessage) map[string]interface{} {

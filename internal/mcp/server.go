@@ -14,6 +14,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
@@ -176,6 +177,36 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 			msg = decision.Reasons[0]
 		}
 		span.SetAttributes(attribute.String("policy.deny", msg))
+		denyEv := &evidence.Evidence{
+			ID:              "req_" + uuid.New().String()[:8],
+			CorrelationID:   "mcp_" + uuid.New().String()[:8],
+			Timestamp:       time.Now(),
+			TenantID:        tenantID,
+			AgentID:         agentID,
+			InvocationType:  "mcp",
+			RequestSourceID: "mcp",
+			PolicyDecision: evidence.PolicyDecision{
+				Allowed:       false,
+				Action:        decision.Action,
+				Reasons:       decision.Reasons,
+				PolicyVersion: decision.PolicyVersion,
+			},
+			Execution: evidence.Execution{
+				ToolsCalled: []string{params.Name},
+				Error:       msg,
+			},
+			Explanations: explanation.BuildFromFacts(explanation.BuildLegacyFacts(
+				false,
+				decision.Action,
+				decision.Reasons,
+				"policy_evaluation",
+				explanation.PolicyRef(decision.PolicyVersion),
+				decision.PolicyVersion,
+			)),
+		}
+		if storeErr := h.evidenceStore.Store(ctx, denyEv); storeErr != nil {
+			span.RecordError(storeErr)
+		}
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: msg}}
 	}
 
@@ -214,8 +245,24 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 			DurationMS:  duration,
 		},
 	}
+	ev.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
+		Code:            explanation.CodePolicyAllowed,
+		Decision:        explanation.DecisionAllow,
+		Stage:           "tool_execution",
+		Trigger:         params.Name,
+		PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
+		VersionIdentity: decision.PolicyVersion,
+	}})
 	if execErr != nil {
 		ev.Execution.Error = execErr.Error()
+		ev.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
+			Code:            explanation.CodeExecutionFailed,
+			Decision:        explanation.DecisionFailure,
+			Stage:           "tool_execution",
+			Trigger:         execErr.Error(),
+			PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
+			VersionIdentity: decision.PolicyVersion,
+		}})
 	}
 	if storeErr := h.evidenceStore.Store(ctx, ev); storeErr != nil {
 		span.RecordError(storeErr)

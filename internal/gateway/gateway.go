@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/llm"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/session"
@@ -771,6 +773,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		RetryAttempt:            retryAttemptFromContext(ctx),
 		Stage:                   stageFromContext(ctx),
 		CandidateIndex:          candidateIndexFromContext(ctx),
+		ExplanationFacts:        buildGatewayExplanationFacts(allowed, reasons, outputPIIDetected, outputPIITypes, stageFromContext(ctx)),
 	}
 	if toolResult != nil {
 		params.ToolsRequested = toolResult.Requested
@@ -784,6 +787,34 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	params.TTFTMS = ttftMS
 	params.TPOTMS = tpotMS
 	return RecordGatewayEvidence(ctx, g.evidenceStore, params)
+}
+
+func buildGatewayExplanationFacts(allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, stage string) []explanation.Fact {
+	s := strings.TrimSpace(stage)
+	if s == "" {
+		s = "policy_evaluation"
+	}
+	facts := explanation.BuildLegacyFacts(allowed, decisionAction(allowed), reasons, s, "", "")
+	if outputPIIDetected {
+		trigger := "output_pii_detected"
+		if len(outputPIITypes) > 0 {
+			trigger = strings.Join(outputPIITypes, ",")
+		}
+		facts = append(facts, explanation.Fact{
+			Code:     explanation.CodePolicyDeniedPIIOutput,
+			Decision: explanation.DecisionDeny,
+			Stage:    "output_validation",
+			Trigger:  trigger,
+		})
+	}
+	return facts
+}
+
+func decisionAction(allowed bool) string {
+	if allowed {
+		return "allow"
+	}
+	return "deny"
 }
 
 func agentReasoningFromContext(ctx context.Context) string {

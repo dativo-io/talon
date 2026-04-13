@@ -82,6 +82,9 @@ func TestRecordGatewayEvidence_ToolGovernanceRoundTrip(t *testing.T) {
 	assert.Equal(t, []string{"search_web", "delete_all_messages"}, ev.ToolGovernance.ToolsRequested)
 	assert.Equal(t, []string{"delete_all_messages"}, ev.ToolGovernance.ToolsFiltered)
 	assert.Equal(t, []string{"search_web"}, ev.ToolGovernance.ToolsForwarded)
+	require.NotEmpty(t, ev.Explanations, "gateway evidence must include deterministic explanations")
+	assert.NotEmpty(t, ev.Explanations[0].Code)
+	assert.NotEmpty(t, ev.Explanations[0].Stage)
 }
 
 func TestEvidenceSanitization(t *testing.T) {

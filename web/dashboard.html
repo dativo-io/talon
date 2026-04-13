@@ -478,7 +478,10 @@
           (d.entries || []).forEach(function(ev) {
             var tr = document.createElement('tr');
             var time = ev.timestamp ? new Date(ev.timestamp).toLocaleString() : '—';
-            var status = ev.allowed ? '<span class="status-ok">allowed</span>' : '<span class="status-deny">denied</span>';
+            var primaryCode = ev.primary_explanation_code || '';
+            var statusText = ev.allowed ? 'allowed' : 'denied';
+            if (primaryCode) statusText += ' (' + primaryCode + ')';
+            var status = ev.allowed ? '<span class="status-ok">' + escapeHtml(statusText) + '</span>' : '<span class="status-deny">' + escapeHtml(statusText) + '</span>';
             var cost = ev.cost != null ? ev.cost.toFixed(4) : '—';
             var id = ev.id || '';
             var idEsc = escapeHtml(id || '—');
@@ -544,6 +547,9 @@
                 if (explanations.length > 0) {
                   var primary = explanations[0];
                   lines.push('Primary explanation: ' + (primary.code || '—') + ' - ' + (primary.reason || '—'));
+                  if (primary.stage) lines.push('Stage: ' + primary.stage);
+                  if (primary.trigger) lines.push('Trigger: ' + primary.trigger);
+                  if (primary.policy_ref) lines.push('Policy ref: ' + primary.policy_ref);
                   if (primary.version_identity) lines.push('Version: ' + primary.version_identity);
                   if (primary.fix) lines.push('Fix: ' + primary.fix);
                 }
