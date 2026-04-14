@@ -119,15 +119,11 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 	}
 	facts := append([]explanation.Fact(nil), params.ExplanationFacts...)
 	if len(facts) == 0 {
-		stage := params.Stage
-		if stage == "" {
-			stage = explanation.StagePolicyEvaluation
-		}
 		facts = explanation.BuildLegacyFacts(
 			params.PolicyAllowed,
 			ev.PolicyDecision.Action,
 			params.PolicyReasons,
-			stage,
+			explanation.StagePolicyEvaluation,
 			explanation.PolicyRef(params.PolicyVersion),
 			params.PolicyVersion,
 		)

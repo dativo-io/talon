@@ -789,12 +789,8 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	return RecordGatewayEvidence(ctx, g.evidenceStore, params)
 }
 
-func buildGatewayExplanationFacts(allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, stage string) []explanation.Fact {
-	s := strings.TrimSpace(stage)
-	if s == "" {
-		s = explanation.StagePolicyEvaluation
-	}
-	facts := explanation.BuildLegacyFacts(allowed, decisionAction(allowed), reasons, s, "", "")
+func buildGatewayExplanationFacts(allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, _ string) []explanation.Fact {
+	facts := explanation.BuildLegacyFacts(allowed, decisionAction(allowed), reasons, explanation.StagePolicyEvaluation, "", "")
 	if outputPIIDetected {
 		trigger := "output_pii_detected"
 		if len(outputPIITypes) > 0 {
