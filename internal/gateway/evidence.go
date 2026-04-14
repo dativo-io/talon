@@ -121,7 +121,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 	if len(facts) == 0 {
 		stage := params.Stage
 		if stage == "" {
-			stage = "policy_evaluation"
+			stage = explanation.StagePolicyEvaluation
 		}
 		facts = explanation.BuildLegacyFacts(
 			params.PolicyAllowed,
@@ -135,7 +135,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			facts = append(facts, explanation.Fact{
 				Code:            explanation.CodePolicyDeniedPIIOutput,
 				Decision:        explanation.DecisionDeny,
-				Stage:           "output_validation",
+				Stage:           explanation.StageOutputValidation,
 				Trigger:         "output_pii_detected",
 				PolicyRef:       explanation.PolicyRef(params.PolicyVersion),
 				VersionIdentity: params.PolicyVersion,

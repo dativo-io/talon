@@ -30,12 +30,11 @@ const (
 )
 
 const (
-	DecisionAllow    = "allow"
-	DecisionDeny     = "deny"
-	DecisionModify   = "modify"
-	DecisionFilter   = "filter"
-	DecisionFailure  = "failure"
-	defaultStageName = "policy_evaluation"
+	DecisionAllow   = "allow"
+	DecisionDeny    = "deny"
+	DecisionModify  = "modify"
+	DecisionFilter  = "filter"
+	DecisionFailure = "failure"
 )
 
 // Fact is the source-of-truth structured explanation fact.
@@ -247,11 +246,7 @@ func renderReason(f Fact) string {
 }
 
 func normalizeStage(stage string) string {
-	s := strings.TrimSpace(stage)
-	if s == "" {
-		return defaultStageName
-	}
-	return s
+	return CanonicalStage(stage)
 }
 
 func decisionFromCode(code string) string {

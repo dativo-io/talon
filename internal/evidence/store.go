@@ -381,7 +381,7 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 			ev.PolicyDecision.Allowed,
 			ev.PolicyDecision.Action,
 			ev.PolicyDecision.Reasons,
-			"policy_evaluation",
+			explanation.StagePolicyEvaluation,
 			policyRef,
 			ev.PolicyDecision.PolicyVersion,
 		)

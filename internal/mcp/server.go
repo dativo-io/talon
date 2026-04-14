@@ -199,7 +199,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 				false,
 				decision.Action,
 				decision.Reasons,
-				"policy_evaluation",
+				explanation.StagePolicyEvaluation,
 				explanation.PolicyRef(decision.PolicyVersion),
 				decision.PolicyVersion,
 			)),
@@ -248,7 +248,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 	ev.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
 		Code:            explanation.CodePolicyAllowed,
 		Decision:        explanation.DecisionAllow,
-		Stage:           "tool_execution",
+		Stage:           explanation.StageToolExecution,
 		Trigger:         params.Name,
 		PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
 		VersionIdentity: decision.PolicyVersion,
@@ -258,8 +258,8 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 		ev.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
 			Code:            explanation.CodeExecutionFailed,
 			Decision:        explanation.DecisionFailure,
-			Stage:           "tool_execution",
-			Trigger:         execErr.Error(),
+			Stage:           explanation.StageToolExecution,
+			Trigger:         "tool_execution_failed",
 			PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
 			VersionIdentity: decision.PolicyVersion,
 		}})

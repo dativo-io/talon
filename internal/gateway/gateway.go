@@ -792,7 +792,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 func buildGatewayExplanationFacts(allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, stage string) []explanation.Fact {
 	s := strings.TrimSpace(stage)
 	if s == "" {
-		s = "policy_evaluation"
+		s = explanation.StagePolicyEvaluation
 	}
 	facts := explanation.BuildLegacyFacts(allowed, decisionAction(allowed), reasons, s, "", "")
 	if outputPIIDetected {
@@ -803,7 +803,7 @@ func buildGatewayExplanationFacts(allowed bool, reasons []string, outputPIIDetec
 		facts = append(facts, explanation.Fact{
 			Code:     explanation.CodePolicyDeniedPIIOutput,
 			Decision: explanation.DecisionDeny,
-			Stage:    "output_validation",
+			Stage:    explanation.StageOutputValidation,
 			Trigger:  trigger,
 		})
 	}

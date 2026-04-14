@@ -50,3 +50,43 @@ func TestExplanation_PolicyRef(t *testing.T) {
 	assert.Equal(t, "", PolicyRef(""))
 	assert.Equal(t, "policy:1.0.0:sha256:abc", PolicyRef("1.0.0:sha256:abc"))
 }
+
+func TestExplanation_NormalizesTriggerTokenListsWithWhitespace(t *testing.T) {
+	items := BuildFromFacts([]Fact{{
+		Code:     CodePolicyDeniedPIIInput,
+		Decision: DecisionDeny,
+		Stage:    StagePolicyEvaluation,
+		Trigger:  "EMAIL, PHONE, EMAIL",
+	}})
+	assert.Len(t, items, 1)
+	assert.Equal(t, "EMAIL,PHONE", items[0].Trigger)
+}
+
+func TestExplanation_PreservesSentenceLikeTriggerWithComma(t *testing.T) {
+	trigger := "contains comma, but is sentence"
+	items := BuildFromFacts([]Fact{{
+		Code:     CodePolicyDenied,
+		Decision: DecisionDeny,
+		Stage:    StagePolicyEvaluation,
+		Trigger:  trigger,
+	}})
+	assert.Len(t, items, 1)
+	assert.Equal(t, trigger, items[0].Trigger)
+}
+
+func TestExplanation_StageCanonicalizationAndWhitelist(t *testing.T) {
+	items := BuildFromFacts([]Fact{{
+		Code:     CodePolicyDeniedPIIOutput,
+		Decision: DecisionDeny,
+		Stage:    "output_scan",
+		Trigger:  "EMAIL",
+	}})
+	assert.Len(t, items, 1)
+	assert.Equal(t, StageOutputValidation, items[0].Stage)
+	assert.True(t, IsKnownStage(items[0].Stage))
+	assert.True(t, IsKnownStage(StagePolicyEvaluation))
+	assert.True(t, IsKnownStage(StageToolExecution))
+	assert.True(t, IsKnownStage(StagePreExecution))
+	assert.True(t, IsKnownStage(StageExecution))
+	assert.False(t, IsKnownStage("unknown_stage"))
+}

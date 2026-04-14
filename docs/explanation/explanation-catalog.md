@@ -19,6 +19,18 @@ Every explanation item has:
 - `policy_ref` (optional): canonical policy reference (`policy:<version_identity>`)
 - `version_identity` (optional): immutable policy version identity
 
+## Canonical Stage Taxonomy
+
+Canonical stage values for explanation items:
+- `policy_evaluation`
+- `tool_execution`
+- `output_validation`
+- `pre_execution`
+- `execution`
+
+Compatibility alias:
+- legacy `output_scan` is normalized to `output_validation` during explanation rendering.
+
 ## Policy and Execution Explanations
 
 | Code | Decision | Typical stage | Trigger format | Meaning | Operator fix |
@@ -35,7 +47,7 @@ Every explanation item has:
 | `POLICY_DENIED_EARLY_TERMINATION` | `deny` | `pre_execution` | early termination reason | Run terminated by governance pre-check. | Inspect failure reason and rerun after correction. |
 | `POLICY_MODIFIED` | `modify` | `policy_evaluation` | modification token | Request was modified by policy before execution. | Usually no action; review modifications if unexpected. |
 | `POLICY_FILTERED` | `filter` | `output_validation` | filtering reason (for example `output_pii_redacted`) | Request output was filtered/redacted by policy. | None if expected; otherwise adjust filtering policy. |
-| `EXECUTION_FAILED` | `failure` | `execution` / `tool_execution` | error string | Request failed during execution. | Inspect dependency/tool/provider error and retry. |
+| `EXECUTION_FAILED` | `failure` | `execution` / `tool_execution` | stable failure token (or sanitized error context) | Request failed during execution. | Inspect dependency/tool/provider error and retry. |
 | `LEGACY_REASON_UNMIGRATED` | `deny` (default) | `policy_evaluation` | legacy reason text | Legacy free-text reason not yet mapped to specific code. | Add explicit mapping and structured fact for this path. |
 
 ## Graph Governance Explanations
