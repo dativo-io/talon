@@ -45,3 +45,10 @@ For full configuration and options see [Configuration and environment](reference
 ## Documentation index
 
 All user-facing docs are listed by type (Tutorial, How-to, Reference, Explanation) in the **[documentation index](README.md)**. The project follows the [Diátaxis](https://diataxis.fr/) framework so you can find learning-oriented, task-oriented, or reference material quickly.
+
+## Request Path Verification
+
+Run the following command:
+
+```bash
+talon audit list --limit 1
