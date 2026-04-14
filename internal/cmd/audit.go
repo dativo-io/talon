@@ -613,6 +613,9 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		for i := range ev.Explanations {
 			ex := ev.Explanations[i]
 			fmt.Fprintf(w, "  [%d] %s | %s | %s\n", i+1, ex.Code, ex.Decision, ex.Reason)
+			if ex.Stage != "" {
+				fmt.Fprintf(w, "      Stage: %s\n", ex.Stage)
+			}
 			if ex.Trigger != "" {
 				fmt.Fprintf(w, "      Trigger: %s\n", ex.Trigger)
 			}

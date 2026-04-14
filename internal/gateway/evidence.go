@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/explanation"
 )
 
 // RecordGatewayEvidenceParams holds all inputs for a gateway evidence record.
@@ -41,14 +42,15 @@ type RecordGatewayEvidenceParams struct {
 	ToolsFiltered           []string
 	ToolsForwarded          []string
 	// Semantic cache (set when response was served from cache)
-	CacheHit        bool
-	CacheEntryID    string
-	CacheSimilarity float64
-	CostSaved       float64
-	AgentReasoning  string
-	RetryAttempt    string // X-Talon-Retry-Attempt header value; empty when not a retry
-	Stage           string // "generation", "judge", or "commit"
-	CandidateIndex  int
+	CacheHit         bool
+	CacheEntryID     string
+	CacheSimilarity  float64
+	CostSaved        float64
+	AgentReasoning   string
+	RetryAttempt     string // X-Talon-Retry-Attempt header value; empty when not a retry
+	Stage            string // "generation", "judge", or "commit"
+	CandidateIndex   int
+	ExplanationFacts []explanation.Fact
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -115,5 +117,27 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 	if !params.PolicyAllowed {
 		ev.PolicyDecision.Action = "deny"
 	}
+	facts := append([]explanation.Fact(nil), params.ExplanationFacts...)
+	if len(facts) == 0 {
+		facts = explanation.BuildLegacyFacts(
+			params.PolicyAllowed,
+			ev.PolicyDecision.Action,
+			params.PolicyReasons,
+			explanation.StagePolicyEvaluation,
+			explanation.PolicyRef(params.PolicyVersion),
+			params.PolicyVersion,
+		)
+		if params.OutputPIIDetected {
+			facts = append(facts, explanation.Fact{
+				Code:            explanation.CodePolicyDeniedPIIOutput,
+				Decision:        explanation.DecisionDeny,
+				Stage:           explanation.StageOutputValidation,
+				Trigger:         "output_pii_detected",
+				PolicyRef:       explanation.PolicyRef(params.PolicyVersion),
+				VersionIdentity: params.PolicyVersion,
+			})
+		}
+	}
+	ev.Explanations = explanation.BuildFromFacts(facts)
 	return store.Store(ctx, ev)
 }

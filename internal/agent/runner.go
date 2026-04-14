@@ -597,7 +597,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			ExplanationFacts: []explanation.Fact{{
 				Code:            explanation.CodePolicyDeniedPIIInput,
 				Decision:        explanation.DecisionDeny,
-				Stage:           "policy_evaluation",
+				Stage:           explanation.StagePolicyEvaluation,
 				Trigger:         strings.Join(effectivePIINames, ","),
 				PolicyRef:       explanationPolicyRef(pol.VersionTag),
 				VersionIdentity: pol.VersionTag,
@@ -756,7 +756,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			AgentReasoning:   req.AgentReasoning,
 			AgentVerified:    req.AgentVerified,
 			Compliance:       complianceInfo,
-			ExplanationFacts: buildPolicyDecisionFacts(decision, "policy_evaluation"),
+			ExplanationFacts: buildPolicyDecisionFacts(decision, explanation.StagePolicyEvaluation),
 		})
 		resp := &RunResponse{PolicyAllow: true, PIIDetected: effectivePIINames, InputTier: effectiveTier, SessionID: req.SessionID}
 		if attachmentScan != nil {
@@ -952,11 +952,7 @@ func (r *Runner) checkHook(ctx context.Context, point HookPoint, tenantID, agent
 }
 
 func explanationPolicyRef(policyVersion string) string {
-	pv := strings.TrimSpace(policyVersion)
-	if pv == "" {
-		return ""
-	}
-	return "policy:" + pv
+	return explanation.PolicyRef(policyVersion)
 }
 
 func buildPolicyDecisionFacts(decision *policy.Decision, stage string) []explanation.Fact {
@@ -1001,7 +997,7 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 		AgentReasoning:   req.AgentReasoning,
 		AgentVerified:    req.AgentVerified,
 		Compliance:       compliance,
-		ExplanationFacts: buildPolicyDecisionFacts(decision, "policy_evaluation"),
+		ExplanationFacts: buildPolicyDecisionFacts(decision, explanation.StagePolicyEvaluation),
 		Status:           string(RunStatusDenied),
 		FailureReason:    string(FailurePolicyDeny),
 	})
@@ -1050,7 +1046,7 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 		},
 		DurationMS:       time.Since(startTime).Milliseconds(),
 		InputPrompt:      req.Prompt,
-		ExplanationFacts: explanation.BuildLegacyFacts(false, "early_termination", []string{reason}, "pre_execution", "", ""),
+		ExplanationFacts: explanation.BuildLegacyFacts(false, "early_termination", []string{reason}, explanation.StagePreExecution, "", ""),
 		Status:           status,
 		FailureReason:    failureReason,
 	})
@@ -1201,7 +1197,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 								ExplanationFacts: []explanation.Fact{{
 									Code:            explanation.CodePolicyDeniedPIIOutput,
 									Decision:        explanation.DecisionDeny,
-									Stage:           "output_scan",
+									Stage:           explanation.StageOutputValidation,
 									Trigger:         strings.Join(cacheOutputPIINames, ","),
 									PolicyRef:       explanationPolicyRef(pol.VersionTag),
 									VersionIdentity: pol.VersionTag,
@@ -1235,7 +1231,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						ExplanationFacts: []explanation.Fact{{
 							Code:            explanation.CodePolicyAllowed,
 							Decision:        explanation.DecisionAllow,
-							Stage:           "policy_evaluation",
+							Stage:           explanation.StagePolicyEvaluation,
 							PolicyRef:       explanationPolicyRef(pol.VersionTag),
 							VersionIdentity: pol.VersionTag,
 						}},
@@ -1707,7 +1703,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				ExplanationFacts: []explanation.Fact{{
 					Code:            explanation.CodePolicyDeniedPIIOutput,
 					Decision:        explanation.DecisionDeny,
-					Stage:           "output_scan",
+					Stage:           explanation.StageOutputValidation,
 					Trigger:         strings.Join(outputEntityNames, ","),
 					PolicyRef:       explanationPolicyRef(pol.VersionTag),
 					VersionIdentity: pol.VersionTag,
@@ -1783,7 +1779,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		ExplanationFacts: []explanation.Fact{{
 			Code:            explanation.CodePolicyAllowed,
 			Decision:        explanation.DecisionAllow,
-			Stage:           "policy_evaluation",
+			Stage:           explanation.StagePolicyEvaluation,
 			PolicyRef:       explanationPolicyRef(pol.VersionTag),
 			VersionIdentity: pol.VersionTag,
 		}},

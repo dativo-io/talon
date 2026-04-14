@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +40,8 @@ type runState struct {
 	toolCalls int
 	maxStep   int
 	lastSeen  time.Time
+	sessionID string
+	modelUsed string
 }
 
 // Adapter processes governance events from external agent runtimes and
@@ -120,6 +123,9 @@ func (a *Adapter) HandleEvent(ctx context.Context, ev *Event) (*Decision, error)
 }
 
 func (a *Adapter) handleRunStart(ctx context.Context, span trace.Span, ev *Event) (*Decision, error) {
+	if val, ok := a.runs.Load(ev.GraphRunID); ok {
+		a.observeRunContext(val.(*runState), ev)
+	}
 	input := map[string]interface{}{
 		"event_type":   string(ev.Type),
 		"tenant_id":    ev.TenantID,
@@ -151,6 +157,9 @@ func (a *Adapter) handleRunStart(ctx context.Context, span trace.Span, ev *Event
 
 func (a *Adapter) handleStepStart(ctx context.Context, span trace.Span, ev *Event) (*Decision, error) {
 	toolCalls := a.toolCallsForRun(ev.GraphRunID)
+	if val, ok := a.runs.Load(ev.GraphRunID); ok {
+		a.observeRunContext(val.(*runState), ev)
+	}
 	input := map[string]interface{}{
 		"event_type":        string(ev.Type),
 		"tenant_id":         ev.TenantID,
@@ -180,6 +189,9 @@ func (a *Adapter) handleStepStart(ctx context.Context, span trace.Span, ev *Even
 }
 
 func (a *Adapter) handleStepEnd(ctx context.Context, span trace.Span, ev *Event) (*Decision, error) {
+	if val, ok := a.runs.Load(ev.GraphRunID); ok {
+		a.observeRunContext(val.(*runState), ev)
+	}
 	stepType := "llm_call"
 	if ev.NodeMeta != nil && ev.NodeMeta.Type == "tool" {
 		stepType = "tool_call"
@@ -232,6 +244,7 @@ func (a *Adapter) handleToolCall(ctx context.Context, span trace.Span, ev *Event
 	if err != nil {
 		return a.capacityDecision(ctx, ev, err), nil
 	}
+	a.observeRunContext(rs, ev)
 	toolCalls := a.incrementToolCalls(rs, ev.Timestamp)
 
 	policyInput := map[string]interface{}{
@@ -319,7 +332,12 @@ func (a *Adapter) handleRunEnd(ctx context.Context, span trace.Span, ev *Event) 
 		status = ev.Result.Status
 	}
 
+	if val, ok := a.runs.Load(ev.GraphRunID); ok {
+		a.observeRunContext(val.(*runState), ev)
+	}
 	rs := a.consumeRunState(ev.GraphRunID)
+	sessionID := a.resolveSessionID(ev, rs)
+	modelUsed := a.resolveModelUsed(ev, rs)
 	finalReasons, err := a.evaluateRunEndPolicy(ctx, span, ev, rs)
 	if err != nil {
 		return nil, err
@@ -355,11 +373,12 @@ func (a *Adapter) handleRunEnd(ctx context.Context, span trace.Span, ev *Event) 
 	if a.evidenceGen != nil {
 		evRec, _ := a.evidenceGen.Generate(ctx, evidence.GenerateParams{
 			CorrelationID:    ev.GraphRunID,
-			SessionID:        ev.SessionID,
+			SessionID:        sessionID,
 			TenantID:         ev.TenantID,
 			AgentID:          ev.AgentID,
 			InvocationType:   "graph_run",
 			PolicyDecision:   policyDec,
+			ModelUsed:        modelUsed,
 			Cost:             ev.Cost,
 			DurationMS:       a.runDuration(ev),
 			Status:           status,
@@ -510,6 +529,8 @@ func (a *Adapter) consumeRunState(graphRunID string) *runState {
 		toolCalls: rs.toolCalls,
 		maxStep:   rs.maxStep,
 		lastSeen:  rs.lastSeen,
+		sessionID: rs.sessionID,
+		modelUsed: rs.modelUsed,
 	}
 	copy(snapshot.reasons, rs.reasons)
 	return snapshot
@@ -582,6 +603,68 @@ func (a *Adapter) touchRunState(rs *runState, now time.Time) {
 	rs.mu.Lock()
 	rs.lastSeen = now
 	rs.mu.Unlock()
+}
+
+func (a *Adapter) observeRunContext(rs *runState, ev *Event) {
+	if rs == nil || ev == nil {
+		return
+	}
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if s := strings.TrimSpace(ev.SessionID); s != "" {
+		rs.sessionID = s
+	}
+	if m := strings.TrimSpace(eventModel(ev)); m != "" {
+		rs.modelUsed = m
+	}
+}
+
+func (a *Adapter) resolveSessionID(ev *Event, rs *runState) string {
+	if ev != nil {
+		if s := strings.TrimSpace(ev.SessionID); s != "" {
+			return s
+		}
+	}
+	if rs != nil {
+		if s := strings.TrimSpace(rs.sessionID); s != "" {
+			return s
+		}
+	}
+	if ev != nil {
+		return ev.GraphRunID
+	}
+	return ""
+}
+
+func (a *Adapter) resolveModelUsed(ev *Event, rs *runState) string {
+	if ev != nil {
+		if m := strings.TrimSpace(eventModel(ev)); m != "" {
+			return m
+		}
+	}
+	if rs != nil {
+		if m := strings.TrimSpace(rs.modelUsed); m != "" {
+			return m
+		}
+	}
+	return "unknown_graph_model"
+}
+
+func eventModel(ev *Event) string {
+	if ev == nil {
+		return ""
+	}
+	if ev.NodeMeta != nil {
+		if m := strings.TrimSpace(ev.NodeMeta.Model); m != "" {
+			return m
+		}
+	}
+	if ev.RunMeta != nil {
+		if m := strings.TrimSpace(ev.RunMeta.Model); m != "" {
+			return m
+		}
+	}
+	return ""
 }
 
 func (a *Adapter) markStep(rs *runState, stepIndex int, now time.Time) {

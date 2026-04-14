@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/explanation"
 )
 
 func TestAuditCmd_HasSubcommands(t *testing.T) {
@@ -240,6 +241,34 @@ func TestRenderAuditShow_InvalidSignature(t *testing.T) {
 	out := buf.String()
 	assert.Contains(t, out, "✗ INVALID")
 	assert.Contains(t, out, "tampered")
+}
+
+func TestRenderAuditShow_ExplanationStage(t *testing.T) {
+	var buf bytes.Buffer
+	ev := &evidence.Evidence{
+		ID:             "req_stage",
+		Timestamp:      time.Now(),
+		TenantID:       "default",
+		AgentID:        "bot",
+		InvocationType: "manual",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: false,
+			Action:  "deny",
+		},
+		Execution:  evidence.Execution{},
+		AuditTrail: evidence.AuditTrail{},
+		Compliance: evidence.Compliance{},
+		Explanations: []explanation.Item{{
+			Code:     explanation.CodePolicyDeniedTool,
+			Decision: explanation.DecisionDeny,
+			Stage:    "tool_execution",
+			Reason:   "Request blocked by tool access policy.",
+		}},
+	}
+
+	renderAuditShow(&buf, ev, true)
+	out := buf.String()
+	assert.Contains(t, out, "Stage: tool_execution")
 }
 
 func TestRenderVerifyResult_WithSummary(t *testing.T) {

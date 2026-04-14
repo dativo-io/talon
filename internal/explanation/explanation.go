@@ -1,6 +1,7 @@
 package explanation
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -29,12 +30,11 @@ const (
 )
 
 const (
-	DecisionAllow    = "allow"
-	DecisionDeny     = "deny"
-	DecisionModify   = "modify"
-	DecisionFilter   = "filter"
-	DecisionFailure  = "failure"
-	defaultStageName = "policy_evaluation"
+	DecisionAllow   = "allow"
+	DecisionDeny    = "deny"
+	DecisionModify  = "modify"
+	DecisionFilter  = "filter"
+	DecisionFailure = "failure"
 )
 
 // Fact is the source-of-truth structured explanation fact.
@@ -160,7 +160,7 @@ func normalizeFacts(facts []Fact) []Fact {
 		f.Code = strings.TrimSpace(f.Code)
 		f.Decision = strings.TrimSpace(f.Decision)
 		f.Stage = normalizeStage(f.Stage)
-		f.Trigger = strings.TrimSpace(f.Trigger)
+		f.Trigger = normalizeTrigger(f.Trigger)
 		f.Fix = strings.TrimSpace(f.Fix)
 		f.PolicyRef = strings.TrimSpace(f.PolicyRef)
 		f.VersionIdentity = strings.TrimSpace(f.VersionIdentity)
@@ -177,6 +177,44 @@ func normalizeFacts(facts []Fact) []Fact {
 		out = append(out, f)
 	}
 	return out
+}
+
+var triggerTokenPattern = regexp.MustCompile(`^[a-zA-Z0-9_.:-]+$`)
+
+func normalizeTrigger(trigger string) string {
+	t := strings.TrimSpace(trigger)
+	if t == "" || !strings.Contains(t, ",") {
+		return t
+	}
+	parts := strings.Split(t, ",")
+	tokens := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for i := range parts {
+		p := strings.TrimSpace(parts[i])
+		if p == "" {
+			continue
+		}
+		// Preserve free-form sentences; normalize only token lists.
+		if !triggerTokenPattern.MatchString(p) {
+			return t
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		tokens = append(tokens, p)
+	}
+	sort.Strings(tokens)
+	return strings.Join(tokens, ",")
+}
+
+// PolicyRef returns the canonical policy reference token used in explanations.
+func PolicyRef(versionIdentity string) string {
+	v := strings.TrimSpace(versionIdentity)
+	if v == "" {
+		return ""
+	}
+	return "policy:" + v
 }
 
 var reasonByCode = map[string]string{
@@ -208,11 +246,7 @@ func renderReason(f Fact) string {
 }
 
 func normalizeStage(stage string) string {
-	s := strings.TrimSpace(stage)
-	if s == "" {
-		return defaultStageName
-	}
-	return s
+	return CanonicalStage(stage)
 }
 
 func decisionFromCode(code string) string {
@@ -264,35 +298,46 @@ func decisionFromAction(allowed bool, action string) string {
 
 func codeFromReason(reason string, decision string) string {
 	r := strings.ToLower(strings.TrimSpace(reason))
-	switch {
-	case strings.Contains(r, "input contains pii"), strings.Contains(r, "block_on_pii"):
-		return CodePolicyDeniedPIIInput
-	case strings.Contains(r, "output contains pii"), strings.Contains(r, "block_on_output_pii"):
-		return CodePolicyDeniedPIIOutput
-	case strings.Contains(r, "cost"), strings.Contains(r, "budget"):
-		return CodePolicyDeniedCost
-	case strings.Contains(r, "routing"):
-		return CodePolicyDeniedRouting
-	case strings.Contains(r, "tool"), strings.Contains(r, "forbidden"):
-		return CodePolicyDeniedTool
-	case strings.Contains(r, "hook"):
-		return CodePolicyDeniedHook
-	case strings.Contains(r, "circuit_breaker"), strings.Contains(r, "circuit breaker"):
-		return CodePolicyDeniedCircuit
-	case strings.Contains(r, "early_termination"):
-		return CodePolicyDeniedEarlyTerm
-	case strings.Contains(r, "max_iterations"):
-		return CodeGraphIterationLimitDeny
-	case strings.Contains(r, "max_cost_per_run"):
-		return CodeGraphCostLimitDeny
-	case strings.Contains(r, "max_retries_per_node"):
-		return CodeGraphRetryLimitDeny
-	default:
-		if decision == DecisionAllow {
-			return CodePolicyAllowed
+	for i := range reasonRules {
+		rule := reasonRules[i]
+		if containsAny(r, rule.markers...) {
+			return rule.code
 		}
-		return CodeLegacyReasonUnmigrated
 	}
+	if decision == DecisionAllow {
+		return CodePolicyAllowed
+	}
+	return CodeLegacyReasonUnmigrated
+}
+
+type reasonRule struct {
+	markers []string
+	code    string
+}
+
+var reasonRules = []reasonRule{
+	{markers: []string{"input contains pii", "block_on_pii", "pii block", "input pii"}, code: CodePolicyDeniedPIIInput},
+	{markers: []string{"output contains pii", "block_on_output_pii"}, code: CodePolicyDeniedPIIOutput},
+	{markers: []string{"cost", "budget"}, code: CodePolicyDeniedCost},
+	{markers: []string{"routing", "provider not allowed"}, code: CodePolicyDeniedRouting},
+	{markers: []string{"tool", "forbidden"}, code: CodePolicyDeniedTool},
+	{markers: []string{"hook"}, code: CodePolicyDeniedHook},
+	{markers: []string{"circuit_breaker", "circuit breaker"}, code: CodePolicyDeniedCircuit},
+	{markers: []string{"early_termination"}, code: CodePolicyDeniedEarlyTerm},
+	{markers: []string{"output_pii_redacted", "output pii"}, code: CodePolicyFiltered},
+	{markers: []string{"policy evaluation error", "retrieval error", "eval error"}, code: CodeExecutionFailed},
+	{markers: []string{"max_iterations"}, code: CodeGraphIterationLimitDeny},
+	{markers: []string{"max_cost_per_run"}, code: CodeGraphCostLimitDeny},
+	{markers: []string{"max_retries_per_node"}, code: CodeGraphRetryLimitDeny},
+}
+
+func containsAny(input string, markers ...string) bool {
+	for i := range markers {
+		if strings.Contains(input, markers[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultFix(code string) string {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
@@ -175,10 +176,10 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII policy evaluation failed (fail-closed)"}}
 			}
 			if piiDecision != nil && !piiDecision.Allowed && h.config.Proxy.Mode == "intercept" {
-				h.recordEvidence(ctx, tenantID, "proxy_pii_redaction", toolName, nil, "PII detected")
+				h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "pii_detected_in_request")
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII detected in request"}}
 			}
-			h.recordEvidence(ctx, tenantID, "proxy_pii_redaction", toolName, nil, "")
+			h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "")
 		}
 	}
 
@@ -419,7 +420,7 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 	if h.evidenceStore == nil {
 		return
 	}
-	allowed := eventType == "proxy_tool_call" || (eventType == "proxy_pii_redaction" && reason == "")
+	allowed := eventType == "proxy_tool_call" || (eventType == "proxy_pii_request_detected" && reason == "")
 	action := "allow"
 	if !allowed {
 		action = "deny"
@@ -442,7 +443,62 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 			Error:       reason,
 		},
 	}
+	ev.Explanations = explanation.BuildFromFacts(proxyExplanationFacts(eventType, reason, toolName, allowed))
 	_ = h.evidenceStore.Store(ctx, ev)
+}
+
+func proxyExplanationFacts(eventType, reason, toolName string, allowed bool) []explanation.Fact {
+	trigger := strings.TrimSpace(reason)
+	if trigger == "" {
+		trigger = strings.TrimSpace(toolName)
+	}
+	switch eventType {
+	case "proxy_tool_blocked":
+		return []explanation.Fact{{
+			Code:     explanation.CodePolicyDeniedTool,
+			Decision: explanation.DecisionDeny,
+			Stage:    explanation.StageToolExecution,
+			Trigger:  trigger,
+		}}
+	case "proxy_pii_eval_error":
+		return []explanation.Fact{{
+			Code:     explanation.CodeExecutionFailed,
+			Decision: explanation.DecisionFailure,
+			Stage:    explanation.StagePolicyEvaluation,
+			Trigger:  trigger,
+		}}
+	case "proxy_pii_request_detected":
+		if !allowed {
+			return []explanation.Fact{{
+				Code:     explanation.CodePolicyDeniedPIIInput,
+				Decision: explanation.DecisionDeny,
+				Stage:    explanation.StagePolicyEvaluation,
+				Trigger:  trigger,
+			}}
+		}
+		return []explanation.Fact{{
+			Code:     explanation.CodePolicyAllowed,
+			Decision: explanation.DecisionAllow,
+			Stage:    explanation.StagePolicyEvaluation,
+			Trigger:  "pii_detected_in_request",
+			Fix:      "Review request arguments for sensitive values; forwarding was allowed in current policy mode.",
+		}}
+	default:
+		if reason == "output_pii_redacted" {
+			return []explanation.Fact{{
+				Code:     explanation.CodePolicyFiltered,
+				Decision: explanation.DecisionFilter,
+				Stage:    explanation.StageOutputValidation,
+				Trigger:  reason,
+			}}
+		}
+		return []explanation.Fact{{
+			Code:     explanation.CodePolicyAllowed,
+			Decision: explanation.DecisionAllow,
+			Stage:    explanation.StageToolExecution,
+			Trigger:  trigger,
+		}}
+	}
 }
 
 func paramsToMap(raw json.RawMessage) map[string]interface{} {

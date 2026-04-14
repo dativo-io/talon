@@ -280,7 +280,7 @@ func (g *Generator) buildExplanations(params GenerateParams) []explanation.Item 
 		facts = append(facts, explanation.Fact{
 			Code:            explanation.CodeExecutionFailed,
 			Decision:        explanation.DecisionFailure,
-			Stage:           "execution",
+			Stage:           explanation.StageExecution,
 			Trigger:         params.Error,
 			PolicyRef:       policyRef,
 			VersionIdentity: versionIdentity,
@@ -314,12 +314,12 @@ func defaultStageForParams(params GenerateParams) string {
 		return params.Stage
 	}
 	if params.PolicyDecision.Action == "allow" || params.PolicyDecision.Action == "deny" {
-		return "policy_evaluation"
+		return explanation.StagePolicyEvaluation
 	}
 	if params.Error != "" {
-		return "execution"
+		return explanation.StageExecution
 	}
-	return "policy_evaluation"
+	return explanation.StagePolicyEvaluation
 }
 
 func hashString(s string) string {

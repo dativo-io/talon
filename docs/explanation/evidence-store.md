@@ -2,6 +2,8 @@
 
 How Talon creates, signs, stores, and exports tamper-proof audit records.
 
+For a complete list of explanation codes and remediation guidance, see [explanation-catalog.md](./explanation-catalog.md).
+
 ## Overview
 
 Every interaction that passes through Talon generates an **evidence record** --
