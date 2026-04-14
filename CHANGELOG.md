@@ -17,6 +17,24 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.4.6] - 2026-04-14
+
+### Added
+
+- **feat(explanation): deterministic explanation normalization.** Added canonical normalization for deterministic policy explanation tokens so equivalent outcomes converge to stable, reusable phrasing across runs and audit surfaces. This helps operators compare evidence reliably and reduces explanation drift in dashboards and tests. Verify quickly with `go test ./internal/explanation/...`.
+
+### Fixed
+
+- **fix(explanation): stage taxonomy and token collapse consistency.** Aligned explanation stage taxonomy (including MCP PII semantics) and fixed edge cases where fully-collapsed tokens were not returned as a single deduplicated canonical token. This improves consistency between policy decisions and rendered explanations.
+
+- **fix(gateway): canonical explanation stage propagation.** Gateway explanation output now uses the canonical explanation stage instead of pipeline-stage values, preventing mismatched stage labels in downstream evidence and UI surfaces.
+
+- **fix(graphadapter): preserve graph evidence identity fields.** Graph adapter run evidence now retains session and model fields on graph execution paths, improving traceability for stateful graph runs and downstream audit analysis.
+
+### Docs
+
+- **docs(quickstart): add verification snippet.** Quickstart now includes an explicit verification snippet so operators can validate a governed setup immediately after onboarding with less ambiguity.
+
 ## [1.4.5] - 2026-04-12
 
 ### Added
@@ -427,7 +445,8 @@ For user-facing entries, include:
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.4.5...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.4.6...HEAD
+[1.4.6]: https://github.com/dativo-io/talon/compare/v1.4.5...v1.4.6
 [1.4.5]: https://github.com/dativo-io/talon/compare/v1.4.0...v1.4.5
 [1.4.0]: https://github.com/dativo-io/talon/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/dativo-io/talon/compare/v1.2.0...v1.3.0
