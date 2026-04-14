@@ -503,12 +503,14 @@ func TestAdapterWithPolicy_LineageFields_OnEvidence(t *testing.T) {
 	ctx := context.Background()
 	graphRunID := "gr_lineage_test"
 	planID := "plan_lineage_42"
+	sessionID := "sess_lineage_42"
+	modelUsed := "gpt-4o-mini"
 
 	// run_start with PlanID
 	_, err := adapter.HandleEvent(ctx, &Event{
 		Type: EventRunStart, GraphRunID: graphRunID,
-		TenantID: "acme", AgentID: "lineage-agent",
-		RunMeta: &RunMeta{Framework: "langgraph", PlanID: planID},
+		TenantID: "acme", AgentID: "lineage-agent", SessionID: sessionID,
+		RunMeta: &RunMeta{Framework: "langgraph", PlanID: planID, Model: modelUsed},
 	})
 	require.NoError(t, err)
 
@@ -551,6 +553,8 @@ func TestAdapterWithPolicy_LineageFields_OnEvidence(t *testing.T) {
 			found = true
 			assert.Equal(t, graphRunID, e.GraphRunID, "evidence should have GraphRunID")
 			assert.Equal(t, planID, e.PlanID, "evidence should have PlanID")
+			assert.Equal(t, sessionID, e.SessionID, "evidence should retain run session ID")
+			assert.Equal(t, modelUsed, e.Execution.ModelUsed, "evidence should retain run model context")
 			break
 		}
 	}
