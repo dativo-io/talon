@@ -38,6 +38,30 @@ talon serve --port 8080
 # With MCP proxy:   talon serve --proxy-config path/to/proxy.yaml
 ```
 
+## Verify It Works (2-minute governance loop)
+
+After running your first agent, prove the governance loop is working:
+
+```bash
+# 1. List the most recent governance evidence (audit trail)
+talon audit list --limit 1
+
+# Expected output:
+# ┌──────┬──────────────────────────────────┬─────────┬──────────┐
+# │ ID   │ Timestamp                       │ Agent   │ Decision │
+# ├──────┼──────────────────────────────────┼─────────┼──────────┤
+# │ evt_1│ 2026-04-14T22:08:00Z             │ default │ approved │
+# └──────┴──────────────────────────────────┴─────────┴──────────┘
+
+# 2. Verify a specific evidence entry
+talon audit verify <evidence-id>
+
+# Expected output:
+# ✅ Evidence verified: policy=allow, reason=query matches allowlist rule #1
+```
+
+This confirms Talon is logging decisions and you can inspect the full audit trail at any time.
+
 For full configuration and options see [Configuration and environment](reference/configuration.md).
 
 ---
