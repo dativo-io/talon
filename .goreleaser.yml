@@ -95,3 +95,7 @@ release:
     name: talon
   draft: false
   prerelease: auto
+  # Re-run safe: if assets already exist on this tag's release, delete and retry upload.
+  replace_existing_artifacts: true
+  # Keep release notes aligned with the latest run output.
+  mode: replace
