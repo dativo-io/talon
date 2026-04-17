@@ -250,6 +250,43 @@ func TestQuickstartRoutingEnabled(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestQuickstartRoutingWithoutTenantKeysOmitsRelocatedPath(t *testing.T) {
+	// Quickstart without any configured tenant keys must not mount the
+	// relocated /v1/agents/chat/completions route. The host-root facade is
+	// still served, but tenant agent chat is absent (404) so quickstart stays
+	// a strict facade-only surface and does not become a dev-mode-open
+	// backdoor to tenant APIs.
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+
+	quickstartCalled := false
+	qsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		quickstartCalled = true
+		writeJSON(w, http.StatusCreated, map[string]string{"ok": "quickstart"})
+	})
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", map[string]string{},
+		WithProxyQuickstart(qsHandler),
+		WithQuickstartEnabled(true),
+	)
+	r := srv.Routes()
+
+	// Host-root facade still serves chat.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusCreated, rec.Code)
+	assert.True(t, quickstartCalled)
+
+	// Relocated tenant agent chat path is NOT mounted.
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/agents/chat/completions", strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 func TestQuickstartRoutingDisabledKeepsTenantChatPath(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)

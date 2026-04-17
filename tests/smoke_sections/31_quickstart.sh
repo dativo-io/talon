@@ -85,15 +85,16 @@ PY
     -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}')"
   assert_pass "quickstart no-key request returns 401" test "$code_no_key" = "401"
 
-  # Quickstart must NOT inject a synthetic tenant key. The relocated agent chat
-  # route exists but stays behind normal tenant-auth middleware, so an
-  # unauthenticated request produces 401 (not 404 from chi, not 400 from the
-  # handler). This asserts both: the route is mounted AND quickstart does not
-  # silently unlock tenant APIs.
+  # Quickstart must NOT inject a synthetic tenant key, and when no tenant keys
+  # are configured the relocated agent chat route is not mounted at all. This
+  # keeps quickstart a strict host-root facade: without an operator-provided
+  # tenant auth setup, there is no dev-mode-open backdoor to tenant agent chat.
+  # A 404 here proves both: the synthetic tenant key is gone AND the relocated
+  # route is gated on real tenant-key configuration.
   local code_relocated
   code_relocated="$(curl -s -o /tmp/talon_qs_agent.json -w '%{http_code}' -X POST "${quick_base}/v1/agents/chat/completions" \
-    -H "Content-Type: application/json" -d '{')"
-  assert_pass "agent chat relocated path is mounted but requires real tenant auth" test "$code_relocated" = "401"
+    -H "Content-Type: application/json" -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}')"
+  assert_pass "agent chat relocated path is gated on real tenant-key configuration" test "$code_relocated" = "404"
 
   local code_emb
   code_emb="$(curl -s -o /tmp/talon_qs_emb.json -w '%{http_code}' -X POST "${quick_base}/v1/embeddings" \
