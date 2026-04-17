@@ -217,6 +217,63 @@ func TestRouteAuthBehavior_GatewayMetricsRequireAdminKey(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestQuickstartRoutingEnabled(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+
+	quickstartCalled := false
+	qsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		quickstartCalled = true
+		writeJSON(w, http.StatusCreated, map[string]string{"ok": "quickstart"})
+	})
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", map[string]string{"tenant-secret": "default"},
+		WithProxyQuickstart(qsHandler),
+		WithQuickstartEnabled(true),
+	)
+	r := srv.Routes()
+
+	// Host-root chat route must be served by quickstart facade without tenant auth.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusCreated, rec.Code)
+	assert.True(t, quickstartCalled)
+
+	// Agent chat is relocated under /v1/agents/chat/completions in quickstart mode.
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/agents/chat/completions", strings.NewReader(`{`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer tenant-secret")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestQuickstartRoutingDisabledKeepsTenantChatPath(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+
+	srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", map[string]string{"tenant-secret": "default"})
+	r := srv.Routes()
+
+	// Without auth, tenant middleware still protects /v1/chat/completions.
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	// With tenant auth, request reaches existing handler path.
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer tenant-secret")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 func TestStatusEndpoint(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)

@@ -183,6 +183,17 @@ The HTML dashboard connects to this endpoint automatically for live updates. If 
 
 ## Snapshot fields reference
 
+### Quickstart evidence attributes (optional)
+
+When traffic comes from `--proxy-quickstart`, evidence records may include:
+
+- `upstream_auth_mode`
+- `upstream_key_source`
+- `upstream_key_fingerprint`
+- `gateway_annotations`
+
+These are additive attributes and do not change existing dashboard snapshot keys.
+
 ### `summary` (top-level KPIs)
 
 | Field | Type | Description |

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **feat(serve): OpenAI-compatible quickstart proxy mode.** Added `talon serve --proxy-quickstart` for dev/local host-root compatibility (`POST /v1/chat/completions`, `POST /v1/responses`) without gateway YAML, while keeping policy, PII redaction, and evidence active.
+- **feat(gateway): upstream auth mode support for quickstart.** Added provider `upstream_auth_mode` (`secret` default, `client_bearer` quickstart path) with client bearer forwarding, `OPENAI_API_KEY` fallback, and explicit 401 when no upstream key is available.
+- **feat(evidence): quickstart upstream auth metadata.** Evidence records now include additive fields `upstream_auth_mode`, `upstream_key_source`, `upstream_key_fingerprint`, and `gateway_annotations` (backward compatible with existing records).
+
+### Changed
+
+- **change(server): dev-mode route relocation under quickstart.** When `--proxy-quickstart` is enabled, host-root OpenAI-compatible paths are handled by the quickstart facade and tenant agent chat remains available at `POST /v1/agents/chat/completions`.
+
 ### Release Note Quality Bar
 
 For user-facing entries, include:

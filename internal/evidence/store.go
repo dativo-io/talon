@@ -52,6 +52,10 @@ type Evidence struct {
 	Execution               Execution         `json:"execution"`
 	ModelRoutingRationale   string            `json:"model_routing_rationale,omitempty"` // Why this model was chosen: "primary", "degraded to fallback", etc.
 	SecretsAccessed         []string          `json:"secrets_accessed,omitempty"`
+	UpstreamAuthMode        string            `json:"upstream_auth_mode,omitempty"`       // gateway upstream auth mode: secret | client_bearer
+	UpstreamKeySource       string            `json:"upstream_key_source,omitempty"`      // gateway key source: client | env
+	UpstreamKeyFingerprint  string            `json:"upstream_key_fingerprint,omitempty"` // SHA-256 fingerprint prefix; never the key
+	GatewayAnnotations      []string          `json:"gateway_annotations,omitempty"`      // constrained gateway runtime annotations
 	MemoryWrites            []MemoryWrite     `json:"memory_writes,omitempty"`
 	MemoryReads             []MemoryRead      `json:"memory_reads,omitempty"`
 	AuditTrail              AuditTrail        `json:"audit_trail"`

@@ -142,6 +142,17 @@ When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml
 | `gateway.rate_limits` | Global and per-caller request rate limits |
 | `gateway.timeouts` | Connect, request, and stream idle timeouts |
 
+Provider auth mode:
+
+- `gateway.providers.<provider>.upstream_auth_mode`:
+  - `secret` (default): read provider credential from Talon vault (`secret_name` required).
+  - `client_bearer`: forward caller bearer upstream (quickstart profile only).
+
+Quickstart note:
+
+- `talon serve --proxy-quickstart` builds gateway config in memory (no YAML required).
+- Use [proxy quickstart reference](proxy-quickstart.md) for quickstart flags/env and compatibility limits.
+
 ### Gateway dashboard
 
 When the gateway is enabled, Talon serves a real-time metrics dashboard. Access is controlled by `TALON_ADMIN_KEY` (`X-Talon-Admin-Key` header).

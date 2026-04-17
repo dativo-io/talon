@@ -92,6 +92,10 @@ func TestExportRecord_JSONRoundTrip(t *testing.T) {
 		InvocationType: "gateway", Allowed: true, Cost: 0.02, ModelUsed: "gpt-4o",
 		ObservationModeOverride: true,
 		ShadowViolationTypes:    []string{"pii_block"},
+		UpstreamAuthMode:        "client_bearer",
+		UpstreamKeySource:       "client",
+		UpstreamKeyFingerprint:  "abc123def456",
+		GatewayAnnotations:      []string{"quickstart_mode"},
 	}
 
 	data, err := json.Marshal(rec)
@@ -102,6 +106,13 @@ func TestExportRecord_JSONRoundTrip(t *testing.T) {
 	assert.Equal(t, rec.ID, decoded.ID)
 	assert.True(t, decoded.ObservationModeOverride)
 	assert.Equal(t, []string{"pii_block"}, decoded.ShadowViolationTypes)
+	assert.Equal(t, "client_bearer", decoded.UpstreamAuthMode)
+	assert.Equal(t, "quickstart_mode", decoded.GatewayAnnotations[0])
+}
+
+func TestExportRecord_GatewayAnnotationsCSV(t *testing.T) {
+	rec := ExportRecord{GatewayAnnotations: []string{"quickstart_mode", "quickstart_shadow_mode"}}
+	assert.Equal(t, "quickstart_mode,quickstart_shadow_mode", rec.GatewayAnnotationsCSV())
 }
 
 func TestExportEnvelope_JSONRoundTrip(t *testing.T) {

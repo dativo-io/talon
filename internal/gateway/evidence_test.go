@@ -21,19 +21,23 @@ func TestRecordGatewayEvidence(t *testing.T) {
 
 	ctx := context.Background()
 	err = RecordGatewayEvidence(ctx, store, RecordGatewayEvidenceParams{
-		CorrelationID:   "corr-1",
-		TenantID:        "default",
-		CallerName:      "test-caller",
-		Team:            "eng",
-		Provider:        "openai",
-		Model:           "gpt-4o",
-		PolicyAllowed:   true,
-		InputTier:       1,
-		Cost:            0.01,
-		InputTokens:     100,
-		OutputTokens:    50,
-		DurationMS:      200,
-		SecretsAccessed: []string{"openai-api-key"},
+		CorrelationID:          "corr-1",
+		TenantID:               "default",
+		CallerName:             "test-caller",
+		Team:                   "eng",
+		Provider:               "openai",
+		Model:                  "gpt-4o",
+		PolicyAllowed:          true,
+		InputTier:              1,
+		Cost:                   0.01,
+		InputTokens:            100,
+		OutputTokens:           50,
+		DurationMS:             200,
+		SecretsAccessed:        []string{"openai-api-key"},
+		UpstreamAuthMode:       "client_bearer",
+		UpstreamKeySource:      "client",
+		UpstreamKeyFingerprint: "abc123def456",
+		GatewayAnnotations:     []string{"quickstart_mode", "unsupported_annotation"},
 	})
 	require.NoError(t, err)
 
@@ -42,6 +46,14 @@ func TestRecordGatewayEvidence(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, byAgent["test-caller"])
 	require.Equal(t, 0.01, byAgent["test-caller"])
+
+	records, err := store.List(ctx, "default", "test-caller", time.Time{}, time.Time{}, 1)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, "client_bearer", records[0].UpstreamAuthMode)
+	assert.Equal(t, "client", records[0].UpstreamKeySource)
+	assert.Equal(t, "abc123def456", records[0].UpstreamKeyFingerprint)
+	assert.Equal(t, []string{"quickstart_mode"}, records[0].GatewayAnnotations, "unsupported annotations must be dropped")
 }
 
 // TestRecordGatewayEvidence_ToolGovernanceRoundTrip ensures tool governance is persisted

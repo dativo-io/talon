@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
@@ -42,15 +43,19 @@ type RecordGatewayEvidenceParams struct {
 	ToolsFiltered           []string
 	ToolsForwarded          []string
 	// Semantic cache (set when response was served from cache)
-	CacheHit         bool
-	CacheEntryID     string
-	CacheSimilarity  float64
-	CostSaved        float64
-	AgentReasoning   string
-	RetryAttempt     string // X-Talon-Retry-Attempt header value; empty when not a retry
-	Stage            string // "generation", "judge", or "commit"
-	CandidateIndex   int
-	ExplanationFacts []explanation.Fact
+	CacheHit               bool
+	CacheEntryID           string
+	CacheSimilarity        float64
+	CostSaved              float64
+	UpstreamAuthMode       string
+	UpstreamKeySource      string
+	UpstreamKeyFingerprint string
+	GatewayAnnotations     []string
+	AgentReasoning         string
+	RetryAttempt           string // X-Talon-Retry-Attempt header value; empty when not a retry
+	Stage                  string // "generation", "judge", or "commit"
+	CandidateIndex         int
+	ExplanationFacts       []explanation.Fact
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -112,6 +117,10 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		CacheEntryID:            params.CacheEntryID,
 		CacheSimilarity:         params.CacheSimilarity,
 		CostSaved:               params.CostSaved,
+		UpstreamAuthMode:        params.UpstreamAuthMode,
+		UpstreamKeySource:       params.UpstreamKeySource,
+		UpstreamKeyFingerprint:  params.UpstreamKeyFingerprint,
+		GatewayAnnotations:      sanitizeGatewayAnnotations(params.GatewayAnnotations),
 		RetryAttempt:            params.RetryAttempt,
 	}
 	if !params.PolicyAllowed {
@@ -140,4 +149,25 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 	}
 	ev.Explanations = explanation.BuildFromFacts(facts)
 	return store.Store(ctx, ev)
+}
+
+func sanitizeGatewayAnnotations(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	allowed := map[string]struct{}{
+		"quickstart_mode":                     {},
+		"quickstart_model_allowlist_disabled": {},
+		"quickstart_unsafe_listen":            {},
+		"quickstart_shadow_mode":              {},
+	}
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if _, ok := allowed[v]; ok {
+			out = append(out, v)
+			continue
+		}
+		log.Warn().Str("annotation", v).Msg("dropping_unsupported_gateway_annotation")
+	}
+	return out
 }

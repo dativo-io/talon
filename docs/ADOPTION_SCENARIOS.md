@@ -13,6 +13,8 @@ Companies adopt Talon in three ways:
 
 **Existing app (Slack bot, desktop app, script) that already calls OpenAI/Anthropic/Ollama?** Route traffic through Talon's **LLM API Gateway** (proxy mode) with no code change beyond base URL and a caller API key. See [Slack bot integration](guides/slack-bot-integration.md), [Desktop app governance](guides/desktop-app-governance.md), and [OpenClaw integration](guides/openclaw-integration.md).
 
+For local developer loops, use `talon serve --proxy-quickstart` to get host-root OpenAI-compatible endpoints first, then graduate to full gateway config.
+
 This guide shows realistic timelines, effort, and ROI for each path.
 
 ---

@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,11 +39,14 @@ import (
 )
 
 var (
-	servePort          int
-	serveProxyConfig   string
-	serveDashboard     bool
-	serveGateway       bool
-	serveGatewayConfig string
+	servePort            int
+	serveHost            string
+	serveProxyConfig     string
+	serveDashboard       bool
+	serveGateway         bool
+	serveGatewayConfig   string
+	serveProxyQuickstart bool
+	serveUnsafeListen    bool
 )
 
 var serveCmd = &cobra.Command{
@@ -52,10 +57,13 @@ var serveCmd = &cobra.Command{
 
 func init() {
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "HTTP server port")
+	serveCmd.Flags().StringVar(&serveHost, "host", "", "HTTP server host (empty means default bind behavior)")
 	serveCmd.Flags().StringVar(&serveProxyConfig, "proxy-config", "", "Path to MCP proxy config YAML (optional)")
 	serveCmd.Flags().BoolVar(&serveDashboard, "dashboard", true, "Serve embedded dashboard at / and /dashboard")
 	serveCmd.Flags().BoolVar(&serveGateway, "gateway", false, "Enable LLM API gateway at /v1/proxy/*")
 	serveCmd.Flags().StringVar(&serveGatewayConfig, "gateway-config", "talon.config.yaml", "Path to config file with gateway block (used when --gateway is set)")
+	serveCmd.Flags().BoolVar(&serveProxyQuickstart, "proxy-quickstart", false, "Enable local/dev OpenAI-compatible quickstart proxy at host-root /v1/*")
+	serveCmd.Flags().BoolVar(&serveUnsafeListen, "unsafe-listen", false, "Allow --proxy-quickstart to bind non-loopback addresses")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -63,6 +71,10 @@ func init() {
 func runServe(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if err := validateServeModeFlags(serveProxyQuickstart, serveGateway, serveGatewayConfig); err != nil {
+		return err
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -317,6 +329,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	var gatewayHandler http.Handler
+	var gatewayCfgForMode *gateway.GatewayConfig
 	tenantKeys := map[string]string{}
 	if serveGateway {
 		gatewayCfg, err := gateway.LoadGatewayConfig(serveGatewayConfig)
@@ -344,18 +357,43 @@ func runServe(cmd *cobra.Command, args []string) error {
 					cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.SimilarityThreshold, cfg.Cache.MaxEntriesPerTenant)
 			}
 			gatewayHandler = gw
+			gatewayCfgForMode = gatewayCfg
 			opts = append(opts, server.WithGateway(gatewayHandler))
 		}
+	} else if serveProxyQuickstart {
+		quickstartCfg, err := gateway.QuickstartConfig(gateway.QuickstartOptions{})
+		if err != nil {
+			return fmt.Errorf("building quickstart gateway config: %w", err)
+		}
+		gatewayPolicy, err := policy.NewGatewayEngine(ctx)
+		if err != nil {
+			return fmt.Errorf("gateway policy engine: %w", err)
+		}
+		gw, err := gateway.NewGateway(quickstartCfg, cls, evidenceStore, secretsStore, gatewayPolicy, nil)
+		if err != nil {
+			return fmt.Errorf("initializing quickstart gateway: %w", err)
+		}
+		if serveCacheStore != nil && serveCachePolicy != nil && cfg.Cache != nil {
+			gw.SetCache(serveCacheStore, serveCacheEmbedder, serveCacheScrubber, serveCachePolicy,
+				cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.SimilarityThreshold, cfg.Cache.MaxEntriesPerTenant)
+		}
+		gatewayHandler = gw
+		gatewayCfgForMode = quickstartCfg
+		opts = append(opts,
+			server.WithGateway(gatewayHandler),
+			server.WithQuickstartEnabled(true),
+			server.WithProxyQuickstart(server.NewQuickstartFacade(gw, quickstartCfg.ListenPrefix, &quickstartCfg.Callers[0])),
+		)
+		// Keep tenant endpoints available under quickstart mode via a dedicated local key.
+		tenantKeys["quickstart"] = "quickstart"
 	}
 
 	// Gateway dashboard metrics collector
 	var metricsCollector *metrics.Collector
 	if gatewayHandler != nil {
 		enforcementMode := "enforce"
-		if serveGateway {
-			if gwCfg, err := gateway.LoadGatewayConfig(serveGatewayConfig); err == nil {
-				enforcementMode = string(gwCfg.Mode)
-			}
+		if gatewayCfgForMode != nil {
+			enforcementMode = string(gatewayCfgForMode.Mode)
 		}
 
 		collectorOpts := []metrics.CollectorOption{
@@ -418,7 +456,25 @@ func runServe(cmd *cobra.Command, args []string) error {
 		opts...,
 	)
 
-	addr := fmt.Sprintf(":%d", servePort)
+	addr, err := resolveServeAddress(serveHost, servePort, serveProxyQuickstart, serveUnsafeListen)
+	if err != nil {
+		return err
+	}
+	if serveProxyQuickstart {
+		if serveUnsafeListen {
+			log.Warn().Msg("proxy quickstart exposed on non-loopback address; local/dev use only")
+			_ = os.Setenv("TALON_QUICKSTART_UNSAFE_LISTEN", "1")
+		} else {
+			_ = os.Unsetenv("TALON_QUICKSTART_UNSAFE_LISTEN")
+		}
+		log.Info().
+			Str("openai_base_url", "http://"+addr).
+			Str("agent_chat_path", "/v1/agents/chat/completions").
+			Str("mode", string(gatewayCfgForMode.Mode)).
+			Str("pii_default", "redact").
+			Str("auth_precedence", "client bearer > OPENAI_API_KEY > 401").
+			Msg("proxy_quickstart_enabled")
+	}
 	httpServer := &http.Server{
 		Addr:         addr,
 		Handler:      srv.Routes(),
@@ -559,4 +615,44 @@ func mapBoolFields(m map[string]interface{}, e *metrics.GatewayEvent) {
 	if v, ok := m["cache_hit"].(bool); ok {
 		e.CacheHit = v
 	}
+}
+
+func resolveServeAddress(host string, port int, quickstartEnabled, unsafeListen bool) (string, error) {
+	cleanHost := strings.TrimSpace(host)
+	if !quickstartEnabled {
+		if cleanHost == "" {
+			return fmt.Sprintf(":%d", port), nil
+		}
+		return net.JoinHostPort(cleanHost, fmt.Sprintf("%d", port)), nil
+	}
+
+	if cleanHost == "" {
+		return net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)), nil
+	}
+	normalizedHost := strings.Trim(cleanHost, "[]")
+	if isLoopbackHost(normalizedHost) {
+		return net.JoinHostPort(normalizedHost, fmt.Sprintf("%d", port)), nil
+	}
+	if !unsafeListen {
+		return "", fmt.Errorf("quickstart cannot bind to %s:%d: use --unsafe-listen to override", normalizedHost, port)
+	}
+	return net.JoinHostPort(normalizedHost, fmt.Sprintf("%d", port)), nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func validateServeModeFlags(proxyQuickstart, gatewayEnabled bool, gatewayConfig string) error {
+	if !proxyQuickstart {
+		return nil
+	}
+	if gatewayEnabled || gatewayConfig != "talon.config.yaml" {
+		return fmt.Errorf("--proxy-quickstart cannot be combined with --gateway or --gateway-config")
+	}
+	return nil
 }

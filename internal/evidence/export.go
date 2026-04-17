@@ -38,13 +38,17 @@ type ExportRecord struct {
 	ObservationModeOverride bool     `json:"observation_mode_override"`
 	ShadowViolationTypes    []string `json:"shadow_violation_types,omitempty"`
 	// Semantic cache (audit export)
-	CacheHit                 bool    `json:"cache_hit,omitempty"`
-	CacheEntryID             string  `json:"cache_entry_id,omitempty"`
-	CacheSimilarity          float64 `json:"cache_similarity,omitempty"`
-	CostSaved                float64 `json:"cost_saved,omitempty"`
-	PrimaryExplanationCode   string  `json:"primary_explanation_code,omitempty"`
-	PrimaryExplanationReason string  `json:"primary_explanation_reason,omitempty"`
-	PrimaryVersionIdentity   string  `json:"primary_version_identity,omitempty"`
+	CacheHit                 bool     `json:"cache_hit,omitempty"`
+	CacheEntryID             string   `json:"cache_entry_id,omitempty"`
+	CacheSimilarity          float64  `json:"cache_similarity,omitempty"`
+	CostSaved                float64  `json:"cost_saved,omitempty"`
+	UpstreamAuthMode         string   `json:"upstream_auth_mode,omitempty"`
+	UpstreamKeySource        string   `json:"upstream_key_source,omitempty"`
+	UpstreamKeyFingerprint   string   `json:"upstream_key_fingerprint,omitempty"`
+	GatewayAnnotations       []string `json:"gateway_annotations,omitempty"`
+	PrimaryExplanationCode   string   `json:"primary_explanation_code,omitempty"`
+	PrimaryExplanationReason string   `json:"primary_explanation_reason,omitempty"`
+	PrimaryVersionIdentity   string   `json:"primary_version_identity,omitempty"`
 }
 
 // ExportMetadata wraps JSON export with context about the export run.
@@ -97,6 +101,10 @@ func ToExportRecord(e *Evidence) ExportRecord {
 		CacheEntryID:            e.CacheEntryID,
 		CacheSimilarity:         e.CacheSimilarity,
 		CostSaved:               e.CostSaved,
+		UpstreamAuthMode:        e.UpstreamAuthMode,
+		UpstreamKeySource:       e.UpstreamKeySource,
+		UpstreamKeyFingerprint:  e.UpstreamKeyFingerprint,
+		GatewayAnnotations:      append([]string(nil), e.GatewayAnnotations...),
 	}
 	if len(e.PolicyDecision.Reasons) > 0 {
 		rec.PolicyReasons = append([]string(nil), e.PolicyDecision.Reasons...)
@@ -133,4 +141,9 @@ func (r *ExportRecord) ToolsCalledCSV() string {
 // ShadowViolationTypesCSV returns comma-separated shadow violation types for CSV export.
 func (r *ExportRecord) ShadowViolationTypesCSV() string {
 	return strings.Join(r.ShadowViolationTypes, ",")
+}
+
+// GatewayAnnotationsCSV returns comma-separated gateway annotations for CSV export.
+func (r *ExportRecord) GatewayAnnotationsCSV() string {
+	return strings.Join(r.GatewayAnnotations, ",")
 }

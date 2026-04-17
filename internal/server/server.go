@@ -51,6 +51,8 @@ type Server struct {
 	overrideStoreRef     *agent.OverrideStore
 	toolApprovalStoreRef *agent.ToolApprovalStore
 	graphEventsHandler   http.Handler
+	proxyQuickstart      http.Handler
+	quickstartEnabled    bool
 }
 
 // Option configures the Server.
@@ -129,6 +131,16 @@ func WithGateway(h http.Handler) Option {
 	return func(s *Server) { s.gateway = h }
 }
 
+// WithProxyQuickstart sets the OpenAI-compatible host-root quickstart proxy facade.
+func WithProxyQuickstart(h http.Handler) Option {
+	return func(s *Server) { s.proxyQuickstart = h }
+}
+
+// WithQuickstartEnabled toggles quickstart route behavior.
+func WithQuickstartEnabled(enabled bool) Option {
+	return func(s *Server) { s.quickstartEnabled = enabled }
+}
+
 // WithGatewayDashboard sets the embedded gateway dashboard HTML.
 func WithGatewayDashboard(html string) Option {
 	return func(s *Server) { s.gatewayDashboardHTML = html }
@@ -199,6 +211,11 @@ func (s *Server) Routes() http.Handler {
 			r.Handle("/*", s.gateway)
 		})
 	}
+	// OpenAI-compatible quickstart facade (must be above tenant middleware routes).
+	if s.quickstartEnabled && s.proxyQuickstart != nil {
+		r.Post("/v1/chat/completions", s.proxyQuickstart.ServeHTTP)
+		r.Post("/v1/responses", s.proxyQuickstart.ServeHTTP)
+	}
 
 	// Tenant-only API group
 	r.Group(func(r chi.Router) {
@@ -207,7 +224,11 @@ func (s *Server) Routes() http.Handler {
 
 		// Long-running: no request timeout so handler 30min deadline applies (middleware.Timeout would override).
 		r.Post("/v1/agents/run", s.handleAgentRun)
-		r.Post("/v1/chat/completions", s.handleChatCompletions)
+		if s.quickstartEnabled {
+			r.Post("/v1/agents/chat/completions", s.handleChatCompletions)
+		} else {
+			r.Post("/v1/chat/completions", s.handleChatCompletions)
+		}
 		if s.mcpServer != nil {
 			r.Post("/mcp", s.mcpServer.ServeHTTP)
 		}

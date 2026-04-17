@@ -9,6 +9,9 @@ This page points you to the right doc for what you want to do.
 **1.** I have an existing app that calls OpenAI or Anthropic.  
 → [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
 
+**1a.** I want the fastest OpenAI-compatible local drop-in (no gateway YAML).  
+→ [OpenAI proxy quickstart](tutorials/proxy-quickstart.md)
+
 **2.** I'm building something new and want controls from day one.  
 → [Your first agent with Talon](tutorials/first-governed-agent.md)
 

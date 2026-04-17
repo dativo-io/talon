@@ -46,8 +46,13 @@ type GatewayConfig struct {
 
 // ProviderConfig holds per-provider gateway settings.
 type ProviderConfig struct {
-	Enabled          bool     `yaml:"enabled" json:"enabled"`
-	SecretName       string   `yaml:"secret_name,omitempty" json:"secret_name,omitempty"`
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	SecretName string `yaml:"secret_name,omitempty" json:"secret_name,omitempty"`
+	// UpstreamAuthMode controls how Talon authenticates to the upstream provider.
+	// "secret" (default) reads provider credentials from Talon's secret store.
+	// "client_bearer" forwards the caller bearer token upstream and is intended
+	// for proxy quickstart mode only.
+	UpstreamAuthMode string   `yaml:"upstream_auth_mode,omitempty" json:"upstream_auth_mode,omitempty"` // secret | client_bearer
 	BaseURL          string   `yaml:"base_url" json:"base_url"`
 	AllowedModels    []string `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
 	BlockedModels    []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
@@ -179,6 +184,7 @@ const (
 	DefaultAttachmentInjAction     = "warn"
 	DefaultAttachmentMaxFileSizeMB = 10
 	DefaultToolPolicyAction        = "filter" // "filter" removes disallowed tools; "block" rejects the request
+	DefaultUpstreamAuthMode        = "secret"
 )
 
 // LoadGatewayConfig loads gateway configuration from a YAML file (typically talon.config.yaml).
@@ -291,12 +297,21 @@ func (c *GatewayConfig) Validate() error {
 		if !p.Enabled {
 			continue
 		}
+		if p.UpstreamAuthMode == "" {
+			p.UpstreamAuthMode = DefaultUpstreamAuthMode
+		}
+		switch p.UpstreamAuthMode {
+		case "secret", "client_bearer":
+		default:
+			return fmt.Errorf("gateway provider %q: upstream_auth_mode must be secret or client_bearer", name)
+		}
 		if p.BaseURL == "" && (name == "openai" || name == "anthropic" || name == "ollama") {
 			return fmt.Errorf("gateway provider %q: base_url is required", name)
 		}
-		if name != "ollama" && p.SecretName == "" {
+		if name != "ollama" && p.UpstreamAuthMode == "secret" && p.SecretName == "" {
 			return fmt.Errorf("gateway provider %q: secret_name is required", name)
 		}
+		c.Providers[name] = p
 	}
 	if p := c.ServerDefaults.AttachmentPolicy; p != nil {
 		switch p.Action {
@@ -322,7 +337,7 @@ func (c *GatewayConfig) Validate() error {
 			if len(caller.SourceIPRanges) == 0 {
 				return fmt.Errorf("gateway caller %q: source_ip_ranges required when identify_by is source_ip", caller.Name)
 			}
-		} else if caller.TenantKey == "" {
+		} else if caller.TenantKey == "" && c.ServerDefaults.CallerIDRequired() {
 			return fmt.Errorf("gateway caller %q: tenant_key or identify_by=source_ip with source_ip_ranges is required", caller.Name)
 		}
 	}

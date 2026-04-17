@@ -1,0 +1,38 @@
+{
+  "id": "ev_pre_quickstart_1",
+  "correlation_id": "corr_pre_quickstart_1",
+  "timestamp": "2026-01-01T00:00:00Z",
+  "tenant_id": "default",
+  "agent_id": "agent-pre",
+  "invocation_type": "gateway",
+  "policy_decision": {
+    "allowed": true,
+    "action": "allow",
+    "policy_version": "v1"
+  },
+  "classification": {
+    "input_tier": 0,
+    "output_tier": 0,
+    "pii_redacted": false
+  },
+  "execution": {
+    "model_used": "gpt-4o-mini",
+    "cost": 0.01,
+    "tokens": {
+      "input": 10,
+      "output": 5
+    },
+    "duration_ms": 100
+  },
+  "audit_trail": {
+    "input_hash": "in-hash",
+    "output_hash": "out-hash"
+  },
+  "compliance": {
+    "frameworks": [
+      "gdpr"
+    ],
+    "data_location": "eu"
+  },
+  "signature": "sig"
+}
