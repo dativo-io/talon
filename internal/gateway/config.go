@@ -42,6 +42,12 @@ type GatewayConfig struct {
 	// dashboard (e.g. "127.0.0.1:9091"). When empty, routes are served on the
 	// main API server. Binding to localhost prevents accidental exposure.
 	DashboardListen string `yaml:"dashboard_listen,omitempty" json:"dashboard_listen,omitempty"`
+	// QuickstartUnsafeListen marks that the serving process bound the
+	// OpenAI-compatible quickstart facade to a non-loopback address with
+	// --unsafe-listen. Set by QuickstartConfig only; never populated from YAML.
+	// The gateway uses this at evidence time to annotate requests with
+	// quickstart_unsafe_listen without relying on process-wide environment state.
+	QuickstartUnsafeListen bool `yaml:"-" json:"-"`
 }
 
 // ProviderConfig holds per-provider gateway settings.

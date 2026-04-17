@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - **change(server): dev-mode route relocation under quickstart.** When `--proxy-quickstart` is enabled, host-root OpenAI-compatible paths are handled by the quickstart facade and tenant agent chat remains available at `POST /v1/agents/chat/completions`.
+- **change(serve): quickstart no longer registers a synthetic tenant key.** Quickstart mode is strictly a host-root OpenAI-compatibility facade; it will not silently unlock tenant APIs. Relocated tenant endpoints require a real tenant key configured by the operator and otherwise return `401 Unauthorized`.
+- **change(serve): `--gateway-config` exclusivity check uses explicit flag set.** `--proxy-quickstart` is rejected alongside `--gateway` or any explicitly passed `--gateway-config`, detected via `cobra.Flags().Changed` rather than the default string value.
+- **change(gateway): quickstart `unsafe-listen` signal threaded via config.** The `quickstart_unsafe_listen` evidence annotation is driven by `GatewayConfig.QuickstartUnsafeListen`, populated from `--unsafe-listen` through `QuickstartOptions`, instead of a process environment variable.
 
 ### Release Note Quality Bar
 

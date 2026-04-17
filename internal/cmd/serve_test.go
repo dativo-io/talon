@@ -65,10 +65,19 @@ func TestMapToGatewayEvent_DefaultTimestampWhenMissing(t *testing.T) {
 }
 
 func TestValidateServeModeFlags(t *testing.T) {
-	assert.NoError(t, validateServeModeFlags(false, false, "talon.config.yaml"))
-	assert.NoError(t, validateServeModeFlags(true, false, "talon.config.yaml"))
-	assert.Error(t, validateServeModeFlags(true, true, "talon.config.yaml"))
-	assert.Error(t, validateServeModeFlags(true, false, "custom.yaml"))
+	// Not in quickstart mode: any combination is fine.
+	assert.NoError(t, validateServeModeFlags(false, false, false))
+	assert.NoError(t, validateServeModeFlags(false, true, true))
+
+	// Quickstart alone (no other flags) is allowed, even though --gateway-config
+	// has a default value, because the user did not explicitly set it.
+	assert.NoError(t, validateServeModeFlags(true, false, false))
+
+	// Quickstart + --gateway is rejected.
+	assert.Error(t, validateServeModeFlags(true, true, false))
+
+	// Quickstart + explicit --gateway-config is rejected regardless of value.
+	assert.Error(t, validateServeModeFlags(true, false, true))
 }
 
 func TestResolveServeAddress_QuickstartAndLoopbackRules(t *testing.T) {

@@ -65,6 +65,65 @@ func TestQuickstartConfig_EnvOverrides(t *testing.T) {
 	}
 }
 
+func TestQuickstartConfig_UnsafeListenOption(t *testing.T) {
+	cfg, err := QuickstartConfig(QuickstartOptions{UnsafeListen: true})
+	if err != nil {
+		t.Fatalf("QuickstartConfig() error = %v", err)
+	}
+	if !cfg.QuickstartUnsafeListen {
+		t.Fatal("expected QuickstartUnsafeListen=true to be propagated from options")
+	}
+
+	cfgOff, err := QuickstartConfig(QuickstartOptions{})
+	if err != nil {
+		t.Fatalf("QuickstartConfig() error = %v", err)
+	}
+	if cfgOff.QuickstartUnsafeListen {
+		t.Fatal("expected QuickstartUnsafeListen=false by default")
+	}
+
+	// The field must be ignored by YAML marshaling so it cannot be persisted or
+	// loaded via talon.config.yaml — this is a quickstart-only runtime signal.
+	if err := cfgOff.Validate(); err != nil {
+		t.Fatalf("validate default quickstart config: %v", err)
+	}
+}
+
+func TestGatewayAnnotations_UnsafeListenFromConfigNotEnv(t *testing.T) {
+	// Ensure the annotation comes from GatewayConfig.QuickstartUnsafeListen and
+	// not from any process environment variable, so quickstart does not need
+	// env mutation to surface the degraded bind.
+	t.Setenv("TALON_QUICKSTART_UNSAFE_LISTEN", "1")
+	cfg, err := QuickstartConfig(QuickstartOptions{})
+	if err != nil {
+		t.Fatalf("QuickstartConfig() error = %v", err)
+	}
+	gw := &Gateway{config: cfg}
+	ann := gatewayAnnotationsForEvidence(gw, &cfg.Callers[0])
+	for _, a := range ann {
+		if a == "quickstart_unsafe_listen" {
+			t.Fatalf("annotation should not be set from env var, got %v", ann)
+		}
+	}
+
+	cfg2, err := QuickstartConfig(QuickstartOptions{UnsafeListen: true})
+	if err != nil {
+		t.Fatalf("QuickstartConfig(UnsafeListen) error = %v", err)
+	}
+	gw2 := &Gateway{config: cfg2}
+	ann2 := gatewayAnnotationsForEvidence(gw2, &cfg2.Callers[0])
+	found := false
+	for _, a := range ann2 {
+		if a == "quickstart_unsafe_listen" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected quickstart_unsafe_listen annotation when config field is set, got %v", ann2)
+	}
+}
+
 func TestGatewayConfigValidate_UpstreamAuthMode(t *testing.T) {
 	cfg := &GatewayConfig{
 		ListenPrefix: "/v1/proxy",

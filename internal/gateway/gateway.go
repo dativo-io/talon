@@ -947,9 +947,9 @@ func gatewayAnnotationsForEvidence(g *Gateway, caller *CallerConfig) []string {
 		if openai, ok := g.config.Provider("openai"); ok && len(openai.AllowedModels) == 0 {
 			out = append(out, "quickstart_model_allowlist_disabled")
 		}
-	}
-	if parseQuickstartBoolEnv("TALON_QUICKSTART_UNSAFE_LISTEN") {
-		out = append(out, "quickstart_unsafe_listen")
+		if g.config.QuickstartUnsafeListen {
+			out = append(out, "quickstart_unsafe_listen")
+		}
 	}
 	return out
 }

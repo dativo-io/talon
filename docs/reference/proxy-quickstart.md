@@ -47,7 +47,11 @@ Quickstart uses upstream BYOK as a scoped exception:
 
 - Enforcement mode: `enforce`.
 - PII default action: `redact`.
-- Evidence includes `upstream_auth_mode`, `upstream_key_source`, `upstream_key_fingerprint`, and optional `gateway_annotations`.
+- Evidence includes `upstream_auth_mode`, `upstream_key_source`, `upstream_key_fingerprint`, and optional `gateway_annotations` (e.g. `quickstart_mode`, `quickstart_shadow_mode`, `quickstart_model_allowlist_disabled`, `quickstart_unsafe_listen`).
+
+## Tenant auth boundary
+
+Quickstart is strictly a host-root OpenAI-compatibility facade backed by a synthetic in-process caller. It does **not** register a synthetic tenant key and does **not** unlock Talon's tenant-auth surface. Tenant endpoints such as the relocated `POST /v1/agents/chat/completions` still require a real tenant key configured by the operator; without it, those routes return `401 Unauthorized` as expected from Talon's normal auth middleware.
 
 ## Bind safety
 

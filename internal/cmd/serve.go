@@ -72,7 +72,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := validateServeModeFlags(serveProxyQuickstart, serveGateway, serveGatewayConfig); err != nil {
+	gatewayConfigExplicit := cmd.Flags().Changed("gateway-config")
+	if err := validateServeModeFlags(serveProxyQuickstart, serveGateway, gatewayConfigExplicit); err != nil {
 		return err
 	}
 
@@ -361,7 +362,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 			opts = append(opts, server.WithGateway(gatewayHandler))
 		}
 	} else if serveProxyQuickstart {
-		quickstartCfg, err := gateway.QuickstartConfig(gateway.QuickstartOptions{})
+		quickstartCfg, err := gateway.QuickstartConfig(gateway.QuickstartOptions{
+			UnsafeListen: serveUnsafeListen,
+		})
 		if err != nil {
 			return fmt.Errorf("building quickstart gateway config: %w", err)
 		}
@@ -384,8 +387,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 			server.WithQuickstartEnabled(true),
 			server.WithProxyQuickstart(server.NewQuickstartFacade(gw, quickstartCfg.ListenPrefix, &quickstartCfg.Callers[0])),
 		)
-		// Keep tenant endpoints available under quickstart mode via a dedicated local key.
-		tenantKeys["quickstart"] = "quickstart"
+		// Intentionally do NOT register a synthetic tenant key here. Quickstart is
+		// a host-root OpenAI-compatibility facade backed by a synthetic in-process
+		// caller; it must not silently unlock the tenant-auth surface. Tenant
+		// endpoints (e.g. relocated /v1/agents/chat/completions) still require a
+		// real tenant key from configuration if the operator wants to use them.
 	}
 
 	// Gateway dashboard metrics collector
@@ -463,9 +469,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if serveProxyQuickstart {
 		if serveUnsafeListen {
 			log.Warn().Msg("proxy quickstart exposed on non-loopback address; local/dev use only")
-			_ = os.Setenv("TALON_QUICKSTART_UNSAFE_LISTEN", "1")
-		} else {
-			_ = os.Unsetenv("TALON_QUICKSTART_UNSAFE_LISTEN")
 		}
 		log.Info().
 			Str("openai_base_url", "http://"+addr).
@@ -647,11 +650,15 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func validateServeModeFlags(proxyQuickstart, gatewayEnabled bool, gatewayConfig string) error {
+// validateServeModeFlags enforces mutual exclusivity between the quickstart
+// facade and the full gateway. gatewayConfigExplicit should be true only when
+// the user passed --gateway-config explicitly (detected via cobra's
+// Flags().Changed), so the check does not depend on the default string value.
+func validateServeModeFlags(proxyQuickstart, gatewayEnabled, gatewayConfigExplicit bool) error {
 	if !proxyQuickstart {
 		return nil
 	}
-	if gatewayEnabled || gatewayConfig != "talon.config.yaml" {
+	if gatewayEnabled || gatewayConfigExplicit {
 		return fmt.Errorf("--proxy-quickstart cannot be combined with --gateway or --gateway-config")
 	}
 	return nil

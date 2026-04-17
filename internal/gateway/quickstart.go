@@ -15,6 +15,11 @@ const (
 // QuickstartOptions configures the in-memory proxy quickstart profile.
 type QuickstartOptions struct {
 	OpenAIBaseURL string
+	// UnsafeListen signals that serve was invoked with --unsafe-listen and is
+	// binding a non-loopback address. It is surfaced on evidence records via
+	// gateway_annotations so operators can see the degradation without needing
+	// process-wide environment flags.
+	UnsafeListen bool
 }
 
 // QuickstartConfig builds a minimal in-memory gateway config for local
@@ -80,6 +85,7 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 			RequestTimeout:    DefaultRequestTimeout,
 			StreamIdleTimeout: DefaultStreamIdleTimeout,
 		},
+		QuickstartUnsafeListen: opts.UnsafeListen,
 	}
 	_ = annotations // annotations are recorded per-request by gateway evidence path.
 
