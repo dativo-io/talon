@@ -29,7 +29,7 @@ func TestQuickstartFacade_PathMappingAnd404(t *testing.T) {
 
 	facade, _ := newFacadeForTest(t, upstream.URL)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer sk-facade")
 	rec := httptest.NewRecorder()
@@ -41,7 +41,7 @@ func TestQuickstartFacade_PathMappingAnd404(t *testing.T) {
 		t.Fatalf("upstream path=%q", gotPath)
 	}
 
-	reqNotFound := httptest.NewRequest(http.MethodPost, "/v1/embeddings", nil)
+	reqNotFound := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/embeddings", nil)
 	recNotFound := httptest.NewRecorder()
 	facade.ServeHTTP(recNotFound, reqNotFound)
 	if recNotFound.Code != http.StatusNotFound {
@@ -66,7 +66,7 @@ func TestQuickstartFacade_ResponsesStoreInjection(t *testing.T) {
 	defer upstream.Close()
 
 	facade, _ := newFacadeForTest(t, upstream.URL)
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-4o-mini","input":"hello","store":false}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-4o-mini","input":"hello","store":false}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer sk-facade")
 	rec := httptest.NewRecorder()
@@ -89,7 +89,7 @@ func TestQuickstartFacade_InjectsSyntheticCaller(t *testing.T) {
 
 	facade, evStore := newFacadeForTest(t, upstream.URL)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer sk-facade")
 	rec := httptest.NewRecorder()
