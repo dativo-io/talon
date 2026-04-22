@@ -301,7 +301,22 @@ talon serve --port 8080 --proxy-config examples/vendor-proxy/zendesk-proxy.talon
 
 # With LLM API gateway (proxy mode: route OpenAI/Anthropic/Ollama traffic through Talon)
 talon serve --port 8080 --gateway --gateway-config examples/gateway/talon.config.gateway.yaml
+
+# Dev/local OpenAI-compatible quickstart (no gateway YAML)
+talon serve --proxy-quickstart --port 8080
+# Then point your SDK to OPENAI_BASE_URL=http://127.0.0.1:8080/v1
 ```
+
+### Quickstart for existing OpenAI apps
+
+`--proxy-quickstart` is a dev-mode compatibility surface for existing OpenAI SDK apps:
+
+- Supported host-root endpoints: `POST /v1/chat/completions`, `POST /v1/responses`.
+- Upstream auth precedence: client bearer token, then `OPENAI_API_KEY`, then `401`.
+- Governance remains active (policy, PII scan/redaction, evidence) with `enforce` default.
+
+Use loopback by default; non-loopback binds require `--unsafe-listen`.
+For production gateway behavior, keep using `--gateway` + `talon.config.yaml`.
 
 Endpoints include: `GET /v1/health`, `GET /v1/status`, `POST /v1/agents/run`, `POST /v1/chat/completions` (OpenAI-compatible), `GET /v1/evidence`, `GET /v1/costs`, `GET /v1/plans/pending` (plan review), `POST /mcp` (native MCP), `POST /mcp/proxy` (when proxy is configured), `**POST /v1/proxy/{provider}/v1/chat/completions**` (LLM API gateway when `--gateway` is set; caller auth via `Authorization: Bearer <tenant-key>`), and operational control plane endpoints: `GET /v1/runs`, `POST /v1/runs/{id}/kill`, `POST /v1/runs/{id}/pause`, `POST /v1/runs/{id}/resume`, `GET /v1/overrides`, `POST /v1/overrides/{tenant_id}/lockdown`, `GET /v1/tool-approvals`, `POST /v1/tool-approvals/{id}/decide`. Tenant-scoped API routes use `Authorization: Bearer <tenant-key>`. Admin-only routes (including all `/v1/runs`, `/v1/overrides`, and `/v1/tool-approvals` endpoints) use `X-Talon-Admin-Key: <key>` (or bearer fallback).
 

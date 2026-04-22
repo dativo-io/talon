@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **feat(serve): OpenAI-compatible quickstart proxy mode.** Added `talon serve --proxy-quickstart` for dev/local host-root compatibility (`POST /v1/chat/completions`, `POST /v1/responses`) without gateway YAML, while keeping policy, PII redaction, and evidence active.
+- **feat(gateway): upstream auth mode support for quickstart.** Added provider `upstream_auth_mode` (`secret` default, `client_bearer` quickstart path) with client bearer forwarding, `OPENAI_API_KEY` fallback, and explicit 401 when no upstream key is available.
+- **feat(evidence): quickstart upstream auth metadata.** Evidence records now include additive fields `upstream_auth_mode`, `upstream_key_source`, `upstream_key_fingerprint`, and `gateway_annotations` (backward compatible with existing records).
+
+### Changed
+
+- **change(server): dev-mode route relocation under quickstart.** When `--proxy-quickstart` is enabled, host-root OpenAI-compatible paths are handled by the quickstart facade. Tenant agent chat is available at `POST /v1/agents/chat/completions` only when the operator has configured real tenant keys; in default quickstart (no tenant keys), that route is not mounted and returns `404 Not Found` to preserve a strict facade-only boundary.
+- **change(serve): quickstart no longer registers a synthetic tenant key.** Quickstart mode is strictly a host-root OpenAI-compatibility facade; it will not silently unlock tenant APIs. When tenant keys are configured, the relocated tenant endpoint sits behind standard tenant-auth middleware and returns `401 Unauthorized` without a valid key.
+- **change(serve): `--gateway-config` exclusivity check uses explicit flag set.** `--proxy-quickstart` is rejected alongside `--gateway` or any explicitly passed `--gateway-config`, detected via `cobra.Flags().Changed` rather than the default string value.
+- **change(gateway): quickstart `unsafe-listen` signal threaded via config.** The `quickstart_unsafe_listen` evidence annotation is driven by `GatewayConfig.QuickstartUnsafeListen`, populated from `--unsafe-listen` through `QuickstartOptions`, instead of a process environment variable.
+
 ### Release Note Quality Bar
 
 For user-facing entries, include:

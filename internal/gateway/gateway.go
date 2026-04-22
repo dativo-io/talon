@@ -2,10 +2,13 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,6 +54,9 @@ const (
 	gatewayRetryAttemptKey   gatewayContextKey = "retry_attempt"
 	gatewayStageKey          gatewayContextKey = "stage"
 	gatewayCandidateIndexKey gatewayContextKey = "candidate_index"
+	gatewayUpstreamAuthMode  gatewayContextKey = "upstream_auth_mode"
+	gatewayUpstreamKeySource gatewayContextKey = "upstream_key_source"
+	gatewayUpstreamKeyFP     gatewayContextKey = "upstream_key_fingerprint"
 )
 
 // hasCallerTag returns true when the caller has the given tag (e.g. "copaw" for CoPaw).
@@ -230,18 +236,24 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 2: Identify
-	caller, err := g.config.ResolveCaller(r)
-	if err != nil {
-		if err == ErrCallerIDRequired || err == ErrCallerNotFound {
+	var caller *CallerConfig
+	qc := QuickstartCallerFromContext(ctx)
+	if qc != nil {
+		caller = qc
+	} else {
+		caller, err = g.config.ResolveCaller(r)
+		if err != nil {
+			if err == ErrCallerIDRequired || err == ErrCallerNotFound {
+				RecordGatewayError(ctx, "auth")
+				RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
+				WriteProviderError(w, route.Provider, http.StatusUnauthorized, "Invalid or missing tenant key")
+				return
+			}
 			RecordGatewayError(ctx, "auth")
 			RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
-			WriteProviderError(w, route.Provider, http.StatusUnauthorized, "Invalid or missing tenant key")
+			WriteProviderError(w, route.Provider, http.StatusInternalServerError, err.Error())
 			return
 		}
-		RecordGatewayError(ctx, "auth")
-		RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
-		WriteProviderError(w, route.Provider, http.StatusInternalServerError, err.Error())
-		return
 	}
 	if span := trace.SpanFromContext(ctx); span.IsRecording() && hasCallerTag(caller, "copaw") {
 		span.SetAttributes(
@@ -558,6 +570,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 9: Forward — get provider key and proxy
+	originalAuthorization := r.Header.Get("Authorization")
 	headers := make(map[string]string)
 	for k, v := range r.Header {
 		switch k {
@@ -586,21 +599,50 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			headers["anthropic-version"] = "2023-06-01"
 		}
 	}
-	if prov.SecretName != "" {
-		secret, err := g.secretsStore.Get(ctx, prov.SecretName, caller.TenantID, caller.Name)
-		if err != nil {
-			durationMS := time.Since(start).Milliseconds()
-			log.Warn().Err(err).Str("secret", prov.SecretName).Msg("gateway_secret_get_failed")
-			WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Service configuration error")
-			_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, false, []string{"secret retrieval error"}, false, nil, attSummary, toolResult, shadowViolations, false, "", 0, 0, 0, 0)
-			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0)
+	upstreamAuthMode := strings.TrimSpace(prov.UpstreamAuthMode)
+	if upstreamAuthMode == "" {
+		upstreamAuthMode = DefaultUpstreamAuthMode
+	}
+	switch upstreamAuthMode {
+	case "client_bearer":
+		clientKey := ""
+		if strings.HasPrefix(originalAuthorization, "Bearer ") {
+			clientKey = strings.TrimSpace(strings.TrimPrefix(originalAuthorization, "Bearer "))
+		}
+		source := "client"
+		if clientKey == "" {
+			clientKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+			source = "env"
+		}
+		if clientKey == "" {
+			RecordGatewayError(ctx, "missing_upstream_key")
+			RecordGatewayRequest(ctx, caller.Name, extracted.Model, route.Provider, "error")
+			WriteProviderError(w, route.Provider, http.StatusUnauthorized,
+				"no upstream credential: set OPENAI_API_KEY or send Authorization: Bearer ...")
 			return
 		}
-		if route.Provider == "anthropic" {
-			headers["x-api-key"] = string(secret.Value)
-		} else {
-			headers["Authorization"] = "Bearer " + string(secret.Value)
+		headers["Authorization"] = "Bearer " + clientKey
+		ctx = context.WithValue(ctx, gatewayUpstreamAuthMode, upstreamAuthMode)
+		ctx = context.WithValue(ctx, gatewayUpstreamKeySource, source)
+		ctx = context.WithValue(ctx, gatewayUpstreamKeyFP, fingerprintKey(clientKey))
+	default:
+		if prov.SecretName != "" {
+			secret, err := g.secretsStore.Get(ctx, prov.SecretName, caller.TenantID, caller.Name)
+			if err != nil {
+				durationMS := time.Since(start).Milliseconds()
+				log.Warn().Err(err).Str("secret", prov.SecretName).Msg("gateway_secret_get_failed")
+				WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Service configuration error")
+				_ = g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, 0, false, []string{"secret retrieval error"}, false, nil, attSummary, toolResult, shadowViolations, false, "", 0, 0, 0, 0)
+				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0)
+				return
+			}
+			if route.Provider == "anthropic" {
+				headers["x-api-key"] = string(secret.Value)
+			} else {
+				headers["Authorization"] = "Bearer " + string(secret.Value)
+			}
 		}
+		ctx = context.WithValue(ctx, gatewayUpstreamAuthMode, upstreamAuthMode)
 	}
 
 	// Resolve response PII action
@@ -784,6 +826,10 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	params.CacheEntryID = cacheEntryID
 	params.CacheSimilarity = cacheSimilarity
 	params.CostSaved = costSaved
+	params.UpstreamAuthMode = upstreamAuthModeFromContext(ctx)
+	params.UpstreamKeySource = upstreamKeySourceFromContext(ctx)
+	params.UpstreamKeyFingerprint = upstreamKeyFingerprintFromContext(ctx)
+	params.GatewayAnnotations = gatewayAnnotationsForEvidence(g, caller)
 	params.TTFTMS = ttftMS
 	params.TPOTMS = tpotMS
 	return RecordGatewayEvidence(ctx, g.evidenceStore, params)
@@ -851,6 +897,61 @@ func candidateIndexFromContext(ctx context.Context) int {
 		return i
 	}
 	return 0
+}
+
+func upstreamAuthModeFromContext(ctx context.Context) string {
+	v := ctx.Value(gatewayUpstreamAuthMode)
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func upstreamKeySourceFromContext(ctx context.Context) string {
+	v := ctx.Value(gatewayUpstreamKeySource)
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func upstreamKeyFingerprintFromContext(ctx context.Context) string {
+	v := ctx.Value(gatewayUpstreamKeyFP)
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func fingerprintKey(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
+	hexSum := hex.EncodeToString(sum[:])
+	if len(hexSum) < 12 {
+		return hexSum
+	}
+	return hexSum[:12]
+}
+
+func gatewayAnnotationsForEvidence(g *Gateway, caller *CallerConfig) []string {
+	if caller == nil || !hasCallerTag(caller, "quickstart") {
+		return nil
+	}
+	out := []string{"quickstart_mode"}
+	if g != nil && g.config != nil && g.config.Mode == ModeShadow {
+		out = append(out, "quickstart_shadow_mode")
+	}
+	if g != nil && g.config != nil {
+		if openai, ok := g.config.Provider("openai"); ok && len(openai.AllowedModels) == 0 {
+			out = append(out, "quickstart_model_allowlist_disabled")
+		}
+		if g.config.QuickstartUnsafeListen {
+			out = append(out, "quickstart_unsafe_listen")
+		}
+	}
+	return out
 }
 
 // trackSessionUsage updates session cost/token counters when a session store is configured.

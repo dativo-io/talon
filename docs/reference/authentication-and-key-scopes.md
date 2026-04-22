@@ -37,6 +37,19 @@ Notes:
 - Use **`TALON_ADMIN_KEY`** for admin/reviewer/operator actions and all dashboard/metrics endpoints.
 - Prefer `X-Talon-Admin-Key` for admin calls; bearer fallback is accepted.
 
+### BYOK in quickstart mode (dev-only)
+
+`talon serve --proxy-quickstart` adds a scoped exception for upstream authentication:
+
+- Host-root requests (`/v1/chat/completions`, `/v1/responses`) forward the caller bearer token to the upstream provider.
+- If the caller bearer is missing, Talon falls back to `OPENAI_API_KEY`.
+- This does not replace tenant-key/admin-key authentication for Talon control-plane and tenant APIs.
+
+Evidence distinction:
+
+- `upstream_key_fingerprint` identifies forwarded upstream key material safely.
+- `secrets_accessed` remains reserved for Talon vault reads.
+
 ---
 
 ## Common confusion

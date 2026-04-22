@@ -278,6 +278,7 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 		"input_tier", "output_tier", "pii_detected", "pii_redacted", "policy_reasons", "tools_called", "input_hash", "output_hash",
 		"observation_mode_override", "shadow_violation_types",
 		"cache_hit", "cache_entry_id", "cost_saved",
+		"upstream_auth_mode", "upstream_key_source", "upstream_key_fingerprint", "gateway_annotations",
 		"primary_explanation_code", "primary_explanation_reason", "primary_version_identity",
 	}
 	if err := writer.Write(header); err != nil {
@@ -310,6 +311,10 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 			strconv.FormatBool(r.CacheHit),
 			r.CacheEntryID,
 			formatCostNumeric(r.CostSaved),
+			r.UpstreamAuthMode,
+			r.UpstreamKeySource,
+			r.UpstreamKeyFingerprint,
+			r.GatewayAnnotationsCSV(),
 			r.PrimaryExplanationCode,
 			r.PrimaryExplanationReason,
 			r.PrimaryVersionIdentity,
@@ -585,6 +590,15 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		fmt.Fprintf(w, "  Requested:  %s\n", req)
 		fmt.Fprintf(w, "  Filtered:   %s\n", filt)
 		fmt.Fprintf(w, "  Forwarded:  %s\n", fwd)
+	}
+	if ev.UpstreamAuthMode != "" || ev.UpstreamKeySource != "" || ev.UpstreamKeyFingerprint != "" {
+		fmt.Fprintln(w, "Upstream Auth")
+		fmt.Fprintf(w, "  Mode:        %s\n", ev.UpstreamAuthMode)
+		fmt.Fprintf(w, "  Key Source:  %s\n", ev.UpstreamKeySource)
+		fmt.Fprintf(w, "  Key FP:      %s\n", ev.UpstreamKeyFingerprint)
+	}
+	if len(ev.GatewayAnnotations) > 0 {
+		fmt.Fprintf(w, "Gateway Annotations: %s\n", strings.Join(ev.GatewayAnnotations, ", "))
 	}
 	if ev.CacheHit {
 		fmt.Fprintln(w, "Cache")

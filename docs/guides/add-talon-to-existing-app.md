@@ -10,6 +10,14 @@ Get Talon intercepting your real traffic in a few minutes. You have an app (Pyth
 
 ## Steps
 
+### 0. Fastest path (dev/local quickstart)
+
+If you want the quickest OpenAI-compatible local wiring first, start with:
+
+- [Tutorial: OpenAI proxy quickstart](../tutorials/proxy-quickstart.md)
+
+Then return here to move from quickstart into full gateway config for production.
+
 ### 1. Create a project directory and gateway config
 
 ```bash

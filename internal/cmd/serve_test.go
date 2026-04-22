@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -61,4 +62,42 @@ func TestMapToGatewayEvent_DefaultTimestampWhenMissing(t *testing.T) {
 
 	assert.False(t, got.Timestamp.IsZero(), "timestamp should be populated when absent")
 	assert.Equal(t, "test", got.CallerID)
+}
+
+func TestValidateServeModeFlags(t *testing.T) {
+	// Not in quickstart mode: any combination is fine.
+	assert.NoError(t, validateServeModeFlags(false, false, false))
+	assert.NoError(t, validateServeModeFlags(false, true, true))
+
+	// Quickstart alone (no other flags) is allowed, even though --gateway-config
+	// has a default value, because the user did not explicitly set it.
+	assert.NoError(t, validateServeModeFlags(true, false, false))
+
+	// Quickstart + --gateway is rejected.
+	assert.Error(t, validateServeModeFlags(true, true, false))
+
+	// Quickstart + explicit --gateway-config is rejected regardless of value.
+	assert.Error(t, validateServeModeFlags(true, false, true))
+}
+
+func TestResolveServeAddress_QuickstartAndLoopbackRules(t *testing.T) {
+	addr, err := resolveServeAddress("", 8080, true, false)
+	assert.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:8080", addr)
+
+	addr, err = resolveServeAddress("localhost", 8081, true, false)
+	assert.NoError(t, err)
+	assert.Equal(t, "localhost:8081", addr)
+
+	_, err = resolveServeAddress("0.0.0.0", 8082, true, false)
+	assert.Error(t, err)
+	assert.True(t, strings.Contains(err.Error(), "--unsafe-listen"))
+
+	addr, err = resolveServeAddress("0.0.0.0", 8083, true, true)
+	assert.NoError(t, err)
+	assert.Equal(t, "0.0.0.0:8083", addr)
+
+	addr, err = resolveServeAddress("", 9090, false, false)
+	assert.NoError(t, err)
+	assert.Equal(t, ":9090", addr)
 }
