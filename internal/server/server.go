@@ -53,6 +53,10 @@ type Server struct {
 	graphEventsHandler   http.Handler
 	proxyQuickstart      http.Handler
 	quickstartEnabled    bool
+	eventsStreamMaxConn  int
+	eventsReplayBacklog  int
+	eventsRecentMaxLimit int
+	eventsPollInterval   time.Duration
 }
 
 // Option configures the Server.
@@ -151,6 +155,24 @@ func WithMetricsCollector(c *metrics.Collector) Option {
 	return func(s *Server) { s.metricsCollector = c }
 }
 
+// WithEventStreamLimits configures SSE stream limits and polling behavior.
+func WithEventStreamLimits(maxConn, replayBacklog, recentMaxLimit int, pollInterval time.Duration) Option {
+	return func(s *Server) {
+		if maxConn > 0 {
+			s.eventsStreamMaxConn = maxConn
+		}
+		if replayBacklog > 0 {
+			s.eventsReplayBacklog = replayBacklog
+		}
+		if recentMaxLimit > 0 {
+			s.eventsRecentMaxLimit = recentMaxLimit
+		}
+		if pollInterval > 0 {
+			s.eventsPollInterval = pollInterval
+		}
+	}
+}
+
 // NewServer builds a Server with the required dependencies and optional Option(s).
 func NewServer(
 	runner *agent.Runner,
@@ -165,18 +187,22 @@ func NewServer(
 	opts ...Option,
 ) *Server {
 	s := &Server{
-		router:         chi.NewRouter(),
-		runner:         runner,
-		evidenceStore:  evidenceStore,
-		webhookHandler: webhookHandler,
-		policyEngine:   policyEngine,
-		policy:         policy,
-		policyPath:     policyPath,
-		secretsStore:   secretsStore,
-		adminKey:       adminKey,
-		tenantKeys:     tenantKeys,
-		corsOrigins:    []string{"*"},
-		startTime:      time.Now(),
+		router:               chi.NewRouter(),
+		runner:               runner,
+		evidenceStore:        evidenceStore,
+		webhookHandler:       webhookHandler,
+		policyEngine:         policyEngine,
+		policy:               policy,
+		policyPath:           policyPath,
+		secretsStore:         secretsStore,
+		adminKey:             adminKey,
+		tenantKeys:           tenantKeys,
+		corsOrigins:          []string{"*"},
+		startTime:            time.Now(),
+		eventsStreamMaxConn:  256,
+		eventsReplayBacklog:  1000,
+		eventsRecentMaxLimit: 500,
+		eventsPollInterval:   1 * time.Second,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -260,6 +286,8 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/v1/evidence/{id}/trace", s.handleEvidenceTrace)
 		r.Get("/v1/evidence/{id}/verify", s.handleEvidenceVerify)
 		r.Post("/v1/evidence/export", s.handleEvidenceExport)
+		r.Get("/api/v1/events/recent", s.handleEventsRecent)
+		r.Get("/api/v1/events/stream", s.handleEventsStream)
 
 		r.Get("/v1/status", s.handleStatus)
 		r.Get("/v1/costs", s.handleCosts)

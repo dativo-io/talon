@@ -343,7 +343,11 @@
           var healthEl = document.getElementById('health-card-value');
           if (healthEl) {
             var h = d.health || d.status || 'unknown';
-            healthEl.textContent = 'Health: ' + String(h);
+            if (d.evidence_ok === false) {
+              healthEl.textContent = 'Health: degraded (evidence write failure)';
+            } else {
+              healthEl.textContent = 'Health: ' + String(h);
+            }
           }
           var interventionsEl = document.getElementById('quad-interventions');
           if (interventionsEl) {
@@ -398,6 +402,79 @@
           if (tbody) tbody.innerHTML = '<tr><td colspan="4" class="refresh">—</td></tr>';
           var piiSummary = document.getElementById('pii-signal-summary');
           if (piiSummary) piiSummary.textContent = 'PII/injection: unavailable';
+        });
+      }
+
+      var recentEvents = [];
+      var recentEventCursor = '';
+      var recentEventsStream = null;
+
+      function upsertRecentEvent(ev) {
+        if (!ev || !ev.event_id) return;
+        var idx = -1;
+        for (var i = 0; i < recentEvents.length; i++) {
+          if (recentEvents[i].event_id === ev.event_id) { idx = i; break; }
+        }
+        if (idx >= 0) recentEvents.splice(idx, 1);
+        recentEvents.push(ev);
+        recentEvents.sort(function(a, b) {
+          var ta = new Date(a.timestamp || 0).getTime();
+          var tb = new Date(b.timestamp || 0).getTime();
+          if (tb === ta) return String(b.evidence_id || '').localeCompare(String(a.evidence_id || ''));
+          return tb - ta;
+        });
+        recentEvents = recentEvents.slice(0, 50);
+        if (recentEvents.length > 0) recentEventCursor = String(recentEvents[0].event_id || recentEventCursor);
+      }
+
+      function renderRecentEventsList() {
+        var timeline = document.getElementById('session-timeline-list');
+        if (!timeline) return;
+        var latest = recentEvents.slice(0, 8);
+        timeline.innerHTML = '';
+        if (latest.length === 0) {
+          timeline.innerHTML = '<li>No recent sessions recorded.</li>';
+          return;
+        }
+        latest.forEach(function(ev) {
+          var when = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '--';
+          var outcome = ev.decision || (ev.allowed ? 'allow' : 'deny');
+          var actor = ev.caller || ev.agent_id || 'agent';
+          timeline.innerHTML += '<li>' + escapeHtml(when) + ' · ' + escapeHtml(actor) + ' · ' + escapeHtml(outcome) + ' · evidence ' + escapeHtml(ev.evidence_id || '—') + '</li>';
+        });
+      }
+
+      function renderRecentEvents() {
+        get('/api/v1/events/recent?limit=50').then(function(d) {
+          recentEvents = [];
+          (d.events || []).forEach(function(ev) { upsertRecentEvent(ev); });
+          if (d.cursor) recentEventCursor = String(d.cursor);
+          renderRecentEventsList();
+        }).catch(function() {
+          renderRecentEventsList();
+        });
+      }
+
+      function startRecentEventsStream() {
+        if (recentEventsStream) {
+          recentEventsStream.close();
+          recentEventsStream = null;
+        }
+        var streamURL = base + '/api/v1/events/stream';
+        var qs = [];
+        if (recentEventCursor) qs.push('since_id=' + encodeURIComponent(recentEventCursor));
+        if (window.TALON_ADMIN_KEY) qs.push('talon_admin_key=' + encodeURIComponent(window.TALON_ADMIN_KEY));
+        if (qs.length > 0) streamURL += '?' + qs.join('&');
+        recentEventsStream = new EventSource(streamURL);
+        recentEventsStream.onmessage = function(evt) {
+          try {
+            var ev = JSON.parse(evt.data);
+            upsertRecentEvent(ev);
+            renderRecentEventsList();
+          } catch (_) {}
+        };
+        recentEventsStream.addEventListener('gap', function() {
+          renderRecentEvents();
         });
       }
 
@@ -494,20 +571,6 @@
             tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(ev.agent_id || '—') + '</td><td>' + status + '</td><td>' + escapeHtml(cost) + '</td><td' + complianceTip + '>' + idEsc + '</td><td>' + traceBtn + '</td><td>' + verifyBtn + '</td>';
             tbody.appendChild(tr);
           });
-          var timeline = document.getElementById('session-timeline-list');
-          if (timeline) {
-            var latest = (d.entries || []).slice(0, 5);
-            timeline.innerHTML = '';
-            if (latest.length === 0) {
-              timeline.innerHTML = '<li>No recent sessions recorded.</li>';
-            } else {
-              latest.forEach(function(ev) {
-                var when = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '--';
-                var outcome = ev.allowed ? 'allow' : 'deny';
-                timeline.innerHTML += '<li>' + escapeHtml(when) + ' · ' + escapeHtml(ev.agent_id || 'agent') + ' · ' + escapeHtml(outcome) + ' · evidence ' + escapeHtml(ev.id || '—') + '</li>';
-              });
-            }
-          }
           var complianceSummary = document.getElementById('compliance-preview-summary');
           if (complianceSummary) {
             var compliant = 0;
@@ -878,12 +941,14 @@
       function refresh() {
         renderCards();
         renderEvidence();
+        renderRecentEvents();
         renderTenants();
         if (document.getElementById('panel-plans').classList.contains('active')) { renderPlans(); renderReviewHistory(); }
         if (document.getElementById('panel-memory').classList.contains('active')) renderMemory();
         if (document.getElementById('panel-finops').classList.contains('active')) renderFinops();
       }
       refresh();
+      startRecentEventsStream();
       setInterval(refresh, 30000);
     })();
   </script>

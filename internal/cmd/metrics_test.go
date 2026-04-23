@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/evidence"
 	metricsapi "github.com/dativo-io/talon/internal/metrics"
 )
 
@@ -126,4 +127,29 @@ func TestFetchMetricsSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, snap.CallerStats, 1)
 	assert.Equal(t, "agent-a", snap.CallerStats[0].Caller)
+}
+
+func TestAggregateStandaloneSnapshot_UsesSharedProjection(t *testing.T) {
+	now := time.Now().UTC()
+	records := []evidence.Evidence{
+		{
+			ID:              "ev-1",
+			CorrelationID:   "corr-1",
+			Timestamp:       now,
+			TenantID:        "default",
+			AgentID:         "agent-a",
+			RequestSourceID: "caller-a",
+			InvocationType:  "gateway",
+			PolicyDecision:  evidence.PolicyDecision{Allowed: true, Action: "allow"},
+			Execution: evidence.Execution{
+				ModelUsed:  "gpt-4o-mini",
+				Cost:       0.05,
+				DurationMS: 100,
+			},
+		},
+	}
+	snap := aggregateStandaloneSnapshot(records, now)
+	require.Len(t, snap.CallerStats, 1)
+	assert.Equal(t, "caller-a", snap.CallerStats[0].Caller)
+	assert.Equal(t, 1, snap.Summary.TotalRequests)
 }

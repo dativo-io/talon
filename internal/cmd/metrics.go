@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -56,7 +55,7 @@ var metricsCmd = &cobra.Command{
 }
 
 func fetchMetricsSnapshot(ctx context.Context, baseURL string) (metricsapi.Snapshot, error) {
-	trimmed := strings.TrimRight(baseURL, "/")
+	trimmed := trimRightSlash(baseURL)
 	if trimmed == "" {
 		trimmed = "http://localhost:8080"
 	}
@@ -85,20 +84,6 @@ func fetchMetricsSnapshot(ctx context.Context, baseURL string) (metricsapi.Snaps
 	return snap, nil
 }
 
-type standaloneCallerAccum struct {
-	requests       int
-	successful     int
-	failed         int
-	timedOut       int
-	denied         int
-	piiDetected    int
-	blocked        int
-	costEUR        float64
-	totalLatencyMS int64
-	successCostEUR float64
-	violations     map[string]int
-}
-
 func buildSnapshotFromEvidence(ctx context.Context) (metricsapi.Snapshot, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -116,154 +101,11 @@ func buildSnapshotFromEvidence(ctx context.Context) (metricsapi.Snapshot, error)
 	if err != nil {
 		return metricsapi.Snapshot{}, fmt.Errorf("querying evidence for standalone metrics mode: %w", err)
 	}
-	return aggregateStandaloneSnapshot(records, now), nil
+	return metricsapi.SnapshotFromEvidenceRecords(records, now), nil
 }
 
 func aggregateStandaloneSnapshot(records []evidence.Evidence, now time.Time) metricsapi.Snapshot {
-	callers := map[string]*standaloneCallerAccum{}
-	for i := range records {
-		aggregateStandaloneRecord(callers, records[i])
-	}
-	outCallers, summary := buildStandaloneCallerStats(callers, now)
-	return metricsapi.Snapshot{
-		GeneratedAt: now,
-		Uptime:      "standalone",
-		Summary:     summary,
-		CallerStats: outCallers,
-	}
-}
-
-func aggregateStandaloneRecord(callers map[string]*standaloneCallerAccum, rec evidence.Evidence) {
-	caller := standaloneCallerName(rec)
-	acc := callers[caller]
-	if acc == nil {
-		acc = &standaloneCallerAccum{violations: map[string]int{}}
-		callers[caller] = acc
-	}
-
-	acc.requests++
-	acc.costEUR += rec.Execution.Cost
-	acc.totalLatencyMS += rec.Execution.DurationMS
-	acc.piiDetected += len(rec.Classification.PIIDetected)
-
-	isDenied := !rec.PolicyDecision.Allowed
-	if isDenied {
-		acc.denied++
-		acc.blocked++
-	}
-
-	switch {
-	case standaloneTimedOut(rec.Execution.Error):
-		acc.timedOut++
-		acc.failed++
-	case isDenied:
-	case rec.Execution.Error != "":
-		acc.failed++
-	default:
-		acc.successful++
-		acc.successCostEUR += rec.Execution.Cost
-	}
-	if standaloneHasViolation(rec, isDenied) {
-		acc.violations[rec.Timestamp.UTC().Format("2006-01-02")]++
-	}
-}
-
-func buildStandaloneCallerStats(callers map[string]*standaloneCallerAccum, now time.Time) ([]metricsapi.CallerStat, metricsapi.Summary) {
-	outCallers := make([]metricsapi.CallerStat, 0, len(callers))
-	totalRequests := 0
-	totalSuccessful := 0
-	totalFailed := 0
-	totalTimedOut := 0
-	totalDenied := 0
-	totalBlocked := 0
-	totalPII := 0
-	totalCost := 0.0
-	totalLat := int64(0)
-
-	for caller, acc := range callers {
-		cs := metricsapi.CallerStat{
-			Caller:      caller,
-			Requests:    acc.requests,
-			PIIDetected: acc.piiDetected,
-			Blocked:     acc.blocked,
-			CostEUR:     acc.costEUR,
-			Successful:  acc.successful,
-			Failed:      acc.failed,
-			TimedOut:    acc.timedOut,
-			Denied:      acc.denied,
-		}
-		if acc.requests > 0 {
-			cs.AvgLatencyMS = acc.totalLatencyMS / int64(acc.requests)
-			cs.SuccessRate = float64(acc.successful) / float64(acc.requests)
-		}
-		if acc.successful > 0 {
-			cs.CostPerSuccess = acc.successCostEUR / float64(acc.successful)
-		}
-		cs.ViolationTrend = buildViolationTrend(acc.violations, now)
-		outCallers = append(outCallers, cs)
-
-		totalRequests += acc.requests
-		totalSuccessful += acc.successful
-		totalFailed += acc.failed
-		totalTimedOut += acc.timedOut
-		totalDenied += acc.denied
-		totalBlocked += acc.blocked
-		totalPII += acc.piiDetected
-		totalCost += acc.costEUR
-		totalLat += acc.totalLatencyMS
-	}
-	sort.Slice(outCallers, func(i, j int) bool { return outCallers[i].Requests > outCallers[j].Requests })
-
-	summary := metricsapi.Summary{
-		TotalRequests:   totalRequests,
-		BlockedRequests: totalBlocked,
-		PIIDetections:   totalPII,
-		TotalCostEUR:    totalCost,
-		TotalSuccessful: totalSuccessful,
-		TotalFailed:     totalFailed,
-		TotalTimedOut:   totalTimedOut,
-		TotalDenied:     totalDenied,
-	}
-	if totalRequests > 0 {
-		summary.AvgLatencyMS = totalLat / int64(totalRequests)
-		summary.SuccessRate = float64(totalSuccessful) / float64(totalRequests)
-		summary.ErrorRate = float64(totalFailed) / float64(totalRequests)
-	}
-	return outCallers, summary
-}
-
-func standaloneCallerName(rec evidence.Evidence) string {
-	switch {
-	case rec.AgentID != "":
-		return rec.AgentID
-	case rec.RequestSourceID != "":
-		return rec.RequestSourceID
-	default:
-		return "unknown"
-	}
-}
-
-func standaloneTimedOut(execErr string) bool {
-	errLower := strings.ToLower(execErr)
-	return strings.Contains(errLower, "timeout") || strings.Contains(errLower, "deadline exceeded")
-}
-
-func standaloneHasViolation(rec evidence.Evidence, isDenied bool) bool {
-	if isDenied || len(rec.Classification.PIIDetected) > 0 {
-		return true
-	}
-	return rec.ToolGovernance != nil && len(rec.ToolGovernance.ToolsFiltered) > 0
-}
-
-func buildViolationTrend(byDay map[string]int, now time.Time) []metricsapi.DayCount {
-	today := now.UTC().Truncate(24 * time.Hour)
-	trend := make([]metricsapi.DayCount, 7)
-	for i := 6; i >= 0; i-- {
-		day := today.AddDate(0, 0, -i)
-		key := day.Format("2006-01-02")
-		trend[6-i] = metricsapi.DayCount{Date: key, Count: byDay[key]}
-	}
-	return trend
+	return metricsapi.SnapshotFromEvidenceRecords(records, now)
 }
 
 func filterCallers(in []metricsapi.CallerStat, caller string) []metricsapi.CallerStat {
@@ -367,6 +209,13 @@ func sparkline(values []int) string {
 		result[i] = blocks[idx]
 	}
 	return string(result)
+}
+
+func trimRightSlash(url string) string {
+	for url != "" && url[len(url)-1] == '/' {
+		url = url[:len(url)-1]
+	}
+	return url
 }
 
 func init() {

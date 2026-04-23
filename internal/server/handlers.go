@@ -21,6 +21,7 @@ import (
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/drift"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/health"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/session"
 )
@@ -612,6 +613,21 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"status": "ok", "evidence_count_today": 0, "cost_today": 0.0, "monthly": 0.0, "active_runs": 0,
 		"pending_memory_reviews": 0, "blocked_count": 0, "error_rate": 0.0, "enforcement_mode": "", "tenant_id": tenantID,
 	}
+	evHealth := health.GetEvidenceWriteStatus()
+	resp["evidence_ok"] = evHealth.OK
+	if !evHealth.LastGoodWrite.IsZero() {
+		resp["last_good_write"] = evHealth.LastGoodWrite.UTC().Format(time.RFC3339)
+	}
+	if !evHealth.LastErrorAt.IsZero() {
+		resp["evidence_error_at"] = evHealth.LastErrorAt.UTC().Format(time.RFC3339)
+	}
+	if evHealth.LastError != "" {
+		resp["evidence_error"] = evHealth.LastError
+		resp["status"] = "degraded"
+	}
+	resp["events_stream_active"] = health.ActiveEventStreams()
+	resp["events_stream_gaps"] = health.EventStreamGaps()
+	resp["events_replay_misses"] = health.EventReplayMisses()
 	if s.evidenceStore != nil {
 		if n, err := s.evidenceStore.CountInRange(r.Context(), tenantID, "", dayStart, dayEnd); err == nil {
 			resp["evidence_count_today"] = n

@@ -51,6 +51,9 @@ After running your first agent, prove the governance loop is working:
 # 1. List the most recent governance evidence (audit trail)
 talon audit list --limit 1
 
+# 1a. Tail the live operational projection (same feed as dashboard recent activity)
+talon events tail --url http://localhost:8080
+
 # Expected output:
 # ┌──────┬──────────────────────────────────┬─────────┬──────────┐
 # │ ID   │ Timestamp                       │ Agent   │ Decision │
@@ -66,6 +69,11 @@ talon audit verify <evidence-id>
 ```
 
 This confirms Talon is logging decisions and you can inspect the full audit trail at any time.
+
+If evidence persistence degrades, `GET /v1/status` exposes:
+- `evidence_ok=false`
+- `last_good_write`
+- `evidence_error` and `evidence_error_at`
 
 For full configuration and options see [Configuration and environment](reference/configuration.md).
 

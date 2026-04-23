@@ -12,6 +12,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/health"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 	"github.com/go-chi/chi/v5"
@@ -302,6 +303,37 @@ func TestBlockedPath_PolicyDeny_EmitsDashboardEvent(t *testing.T) {
 	assert.Equal(t, 1, spy.count(), "policy deny should emit a dashboard event")
 	ev := spy.lastEvent()
 	assert.True(t, ev["blocked"].(bool))
+}
+
+func TestBlockedPath_EvidenceStoreFailure_DoesNotEmitMetrics(t *testing.T) {
+	health.ResetEvidenceWriteStatusForTest()
+	cfg := &GatewayConfig{
+		Enabled:      true,
+		ListenPrefix: "/v1/proxy",
+		Mode:         ModeEnforce,
+		Providers: map[string]ProviderConfig{
+			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
+		},
+		Callers: []CallerConfig{
+			{
+				Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default",
+				AllowedProviders: []string{"anthropic"},
+			},
+		},
+		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
+		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+	}
+	gw, spy, evStore := setupGatewayWithSpy(t, cfg, nil)
+	require.NoError(t, evStore.Close())
+
+	w := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
+		`{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}`)
+	require.Equal(t, http.StatusForbidden, w.Code)
+	assert.Equal(t, 0, spy.count(), "metrics must not emit when evidence store fails")
+
+	status := health.GetEvidenceWriteStatus()
+	assert.False(t, status.OK)
+	assert.NotEmpty(t, status.LastError)
 }
 
 // TestBlockedPath_AllBlockedPathsConsistent verifies that every blocked path type
