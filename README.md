@@ -14,6 +14,16 @@ One URL change. PII scan, tool block, tamper-proof record. No code rewrites.
 
 Talon is a single Go binary in front of OpenAI, Anthropic, and Bedrock. Point your app at `localhost:8080/v1/proxy/openai` instead of `api.openai.com` — same API, same response. Every call is policy-checked, PII-scanned, cost-tracked, and logged. Works with Slack bots, OpenClaw, CoPaw, and other OpenAI-compatible clients. Built for EU teams that need strong governance signals (GDPR, NIS2, DORA, EU AI Act); Apache 2.0.
 
+### Zero-config drop-in (dev)
+
+```bash
+talon serve --proxy-quickstart --port 8080
+export OPENAI_BASE_URL=http://127.0.0.1:8080/v1
+export OPENAI_API_KEY=sk-...
+```
+
+Use your normal OpenAI SDK and keep the same request shape. See [Tutorial: OpenAI proxy quickstart](docs/tutorials/proxy-quickstart.md).
+
 ---
 
 
@@ -314,6 +324,7 @@ talon serve --proxy-quickstart --port 8080
 - Supported host-root endpoints: `POST /v1/chat/completions`, `POST /v1/responses`.
 - Upstream auth precedence: client bearer token, then `OPENAI_API_KEY`, then `401`.
 - Governance remains active (policy, PII scan/redaction, evidence) with `enforce` default.
+- Default quickstart model allowlist is `gpt-4o-mini`, `gpt-4o`; set `TALON_QUICKSTART_ALLOW_ALL_MODELS=1` for local-only broad model testing.
 
 Use loopback by default; non-loopback binds require `--unsafe-listen`.
 For production gateway behavior, keep using `--gateway` + `talon.config.yaml`.

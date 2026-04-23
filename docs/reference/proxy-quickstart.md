@@ -32,7 +32,7 @@ Unsupported paths return `404` with a partial-compatibility message.
 |---|---|
 | `OPENAI_API_KEY` | Upstream fallback when caller bearer is absent. |
 | `TALON_QUICKSTART_OPENAI_BASE_URL` | Upstream OpenAI-compatible base URL. |
-| `TALON_QUICKSTART_MODE` | `shadow` to opt into shadow mode (default `enforce`). |
+| `TALON_QUICKSTART_MODE` | Set to `shadow` to opt into shadow mode; any other value uses default `enforce`. |
 | `TALON_QUICKSTART_ALLOW_ALL_MODELS` | `1/true` clears quickstart model allowlist. |
 
 ## Auth model
@@ -47,7 +47,13 @@ Quickstart uses upstream BYOK as a scoped exception:
 
 - Enforcement mode: `enforce`.
 - PII default action: `redact`.
+- Default model allowlist: `gpt-4o-mini`, `gpt-4o` (use `TALON_QUICKSTART_ALLOW_ALL_MODELS=1` to disable for local-only experiments).
 - Evidence includes `upstream_auth_mode`, `upstream_key_source`, `upstream_key_fingerprint`, and optional `gateway_annotations` (e.g. `quickstart_mode`, `quickstart_shadow_mode`, `quickstart_model_allowlist_disabled`, `quickstart_unsafe_listen`).
+
+## Common errors
+
+- `401` with `no upstream credential: set OPENAI_API_KEY or send Authorization: Bearer ...` means Talon received neither a client bearer key nor a usable `OPENAI_API_KEY`.
+- `404` with `partial OpenAI compatibility in quickstart mode; see docs` means the requested `/v1/*` path is outside quickstart scope.
 
 ## Tenant auth boundary
 

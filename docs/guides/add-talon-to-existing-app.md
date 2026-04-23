@@ -8,15 +8,28 @@ Get Talon intercepting your real traffic in a few minutes. You have an app (Pyth
 - Your real OpenAI API key.
 - An existing app or script that calls OpenAI (any language or curl).
 
-## Steps
+## Choose your track
 
-### 0. Fastest path (dev/local quickstart)
+### Track A: dev-mode quickstart (2 minutes)
 
-If you want the quickest OpenAI-compatible local wiring first, start with:
+Use this when you want a local OpenAI-compatible drop-in with no gateway YAML:
 
-- [Tutorial: OpenAI proxy quickstart](../tutorials/proxy-quickstart.md)
+```bash
+talon serve --proxy-quickstart --port 8080
+export OPENAI_BASE_URL=http://127.0.0.1:8080/v1
+export OPENAI_API_KEY=sk-your-key
+```
 
-Then return here to move from quickstart into full gateway config for production.
+Run one request from your existing app, then verify with:
+
+```bash
+talon audit list --tenant quickstart --limit 5
+```
+
+For full walk-through and troubleshooting, use [Tutorial: OpenAI proxy quickstart](../tutorials/proxy-quickstart.md).
+When you are ready for production caller separation and vaulted upstream keys, continue with Track B.
+
+### Track B: production gateway with YAML
 
 ### 1. Create a project directory and gateway config
 

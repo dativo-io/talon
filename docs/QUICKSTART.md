@@ -37,6 +37,8 @@ talon run "Your query here"   # Uses agent name from policy when --agent omitted
 # Server (API + dashboard + optional gateway/proxy)
 export TALON_ADMIN_KEY="replace-with-strong-admin-key"
 talon serve --port 8080
+# OpenAI-compatible local drop-in (dev): OPENAI_BASE_URL=http://127.0.0.1:8080/v1
+talon serve --proxy-quickstart --port 8080
 # With LLM gateway: talon serve --gateway --gateway-config examples/gateway/talon.config.gateway.yaml
 # With MCP proxy:   talon serve --proxy-config path/to/proxy.yaml
 ```
