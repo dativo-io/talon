@@ -20,6 +20,8 @@ export OPENAI_BASE_URL=http://127.0.0.1:8080/v1
 export OPENAI_API_KEY=sk-your-key
 ```
 
+If your SDK already appends `/v1`, set `OPENAI_BASE_URL=http://127.0.0.1:8080` instead.
+
 Your app keeps using the OpenAI SDK. Talon is now in the request path.
 
 ## 3) Test with curl
@@ -51,6 +53,7 @@ Look for:
 - `tenant_id=quickstart`
 - `agent_id=quickstart-local`
 - `upstream_auth_mode=client_bearer`
+- `upstream_key_source=openai_api_key_env` when no bearer was sent and env fallback was used
 
 ## Behavior notes
 
@@ -58,5 +61,12 @@ Look for:
 - PII default action is `redact`.
 - Key source precedence: client bearer > `OPENAI_API_KEY` > 401.
 - Partial OpenAI compatibility: only chat completions and responses create endpoints are supported at host root.
+
+## Troubleshooting
+
+- `401` with `no upstream credential: set OPENAI_API_KEY or send Authorization: Bearer ...` means Talon did not receive any usable upstream key. Send a bearer token from the client or set `OPENAI_API_KEY` in the Talon process.
+- Model denied in policy means quickstart's default allowlist blocked it. Default models are `gpt-4o-mini` and `gpt-4o`. For local-only testing, set `TALON_QUICKSTART_ALLOW_ALL_MODELS=1`.
+- `404` for `/v1/embeddings` or `GET /v1/responses/{id}` is expected in v1 quickstart scope. See [Reference: proxy quickstart](../reference/proxy-quickstart.md#scope).
+- Startup bind error on non-loopback host requires `--unsafe-listen` in quickstart mode. This is recorded in evidence via the `quickstart_unsafe_listen` annotation and is intended for local/dev exceptions.
 
 For production gateway rollout, use `--gateway` and [gateway guides](../guides/add-talon-to-existing-app.md).
