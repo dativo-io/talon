@@ -87,6 +87,7 @@ func buildEventsStreamRequest(ctx context.Context) (*http.Request, error) {
 }
 
 func openEventsStream(req *http.Request) (*http.Response, error) {
+	//nolint:gosec // G704: CLI intentionally connects to operator-provided Talon URL (--url).
 	resp, err := (&http.Client{Timeout: 0}).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("connect events stream: %w", err)
