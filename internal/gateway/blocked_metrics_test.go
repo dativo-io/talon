@@ -336,6 +336,52 @@ func TestBlockedPath_EvidenceStoreFailure_DoesNotEmitMetrics(t *testing.T) {
 	assert.NotEmpty(t, status.LastError)
 }
 
+func TestBlockedPath_RateLimitWritesEvidenceBeforeMetrics(t *testing.T) {
+	cfg := &GatewayConfig{
+		Enabled:      true,
+		ListenPrefix: "/v1/proxy",
+		Mode:         ModeEnforce,
+		Providers: map[string]ProviderConfig{
+			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
+		},
+		Callers: []CallerConfig{
+			{
+				Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default",
+				AllowedProviders: []string{"anthropic"},
+			},
+		},
+		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
+		RateLimits: RateLimitsConfig{
+			GlobalRequestsPerMin:    100,
+			PerCallerRequestsPerMin: 1,
+		},
+		Timeouts: TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+	}
+	gw, spy, evStore := setupGatewayWithSpy(t, cfg, nil)
+
+	first := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
+		`{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}`)
+	require.Equal(t, http.StatusForbidden, first.Code)
+
+	second := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
+		`{"model":"gpt-4o","messages":[{"role":"user","content":"Hello again"}]}`)
+	require.Equal(t, http.StatusTooManyRequests, second.Code)
+
+	list, err := evStore.List(context.Background(), "default", "test-caller", time.Time{}, time.Time{}, 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, list)
+
+	var foundRateLimitEvidence bool
+	for i := range list {
+		if len(list[i].PolicyDecision.Reasons) > 0 && list[i].PolicyDecision.Reasons[0] == "rate limit exceeded" {
+			foundRateLimitEvidence = true
+			break
+		}
+	}
+	assert.True(t, foundRateLimitEvidence, "rate-limit block must persist evidence")
+	assert.Equal(t, 2, spy.count(), "both blocked requests should emit dashboard metrics after evidence write")
+}
+
 // TestBlockedPath_AllBlockedPathsConsistent verifies that every blocked path type
 // produces a dashboard event with blocked=true, preventing dashboard drift after restart.
 func TestBlockedPath_AllBlockedPathsConsistent(t *testing.T) {

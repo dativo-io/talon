@@ -272,7 +272,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_rate_limit_exceeded")
 		} else {
 			log.Warn().Str("caller", caller.Name).Msg("gateway_rate_limited")
-			g.emitMetrics(ctx, caller, route.Provider, "", nil, nil, nil, nil, 0, time.Since(start).Milliseconds(), false, true, "", false, 0, 0, 0)
+			durationMS := time.Since(start).Milliseconds()
+			if err := g.recordEvidence(ctx, correlationID, caller, route.Provider, "", start, nil, &classifier.Classification{}, nil, 0, durationMS, 0, false, []string{"rate limit exceeded"}, false, nil, nil, nil, nil, false, "", 0, 0, 0, 0); err != nil {
+				g.handleEvidenceWriteFailure(ctx, err)
+				return
+			}
+			g.emitMetrics(ctx, caller, route.Provider, "", nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0)
 			WriteProviderError(w, route.Provider, http.StatusTooManyRequests, "Rate limit exceeded")
 			return
 		}
@@ -788,6 +793,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, _ int, allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, ttftMS int64, tpotMS float64) error {
+	if classification == nil {
+		classification = &classifier.Classification{}
+	}
 	inputTokens, outputTokens := 0, 0
 	if usage != nil {
 		inputTokens, outputTokens = usage.Input, usage.Output

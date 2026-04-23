@@ -95,11 +95,11 @@ func TestEventsStreamRespectsLastEventID(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer k-default")
 	req.Header.Set("Last-Event-ID", since)
 	rec := httptest.NewRecorder()
-	ctx, cancel := context.WithTimeout(req.Context(), 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(req.Context(), 200*time.Millisecond)
 	defer cancel()
 	req = req.WithContext(ctx)
 
-	srv.handleEventsStream(rec, req)
+	srv.Routes().ServeHTTP(rec, req)
 	body := rec.Body.String()
 	assert.Contains(t, body, "id: ")
 	assert.Contains(t, body, "\"evidence_id\":\"ev-2\"")
@@ -121,15 +121,38 @@ func TestEventsStreamGapSignalAndTelemetry(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer k-default")
 	req.Header.Set("Last-Event-ID", eventsIDForTest(now.Add(-4*time.Second), "ev-1"))
 	rec := httptest.NewRecorder()
-	ctx, cancel := context.WithTimeout(req.Context(), 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(req.Context(), 200*time.Millisecond)
 	defer cancel()
 	req = req.WithContext(ctx)
 
-	srv.handleEventsStream(rec, req)
+	srv.Routes().ServeHTTP(rec, req)
 	body := rec.Body.String()
 	assert.Contains(t, body, "event: gap")
 	assert.GreaterOrEqual(t, health.EventReplayMisses(), int64(1))
 	assert.GreaterOrEqual(t, health.EventStreamGaps(), int64(1))
+}
+
+func TestEventsStreamTenantIsolation(t *testing.T) {
+	srv, store := newEventsTestServer(t, map[string]string{"k-acme": "acme", "k-other": "other"})
+	now := time.Now().UTC()
+	insertEvidence(t, store, "ev-acme-1", "acme", "agent-a", now.Add(-2*time.Second), true, 0.01)
+	insertEvidence(t, store, "ev-acme-2", "acme", "agent-a", now.Add(-1*time.Second), true, 0.02)
+	insertEvidence(t, store, "ev-other-1", "other", "agent-b", now, true, 0.03)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/events/stream", nil)
+	req.Header.Set("Authorization", "Bearer k-acme")
+	rec := httptest.NewRecorder()
+	ctx, cancel := context.WithTimeout(req.Context(), 200*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	srv.Routes().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	assert.Contains(t, body, "\"tenant_id\":\"acme\"")
+	assert.Contains(t, body, "\"evidence_id\":\"ev-acme-1\"")
+	assert.Contains(t, body, "\"evidence_id\":\"ev-acme-2\"")
+	assert.NotContains(t, body, "\"tenant_id\":\"other\"")
+	assert.NotContains(t, body, "\"evidence_id\":\"ev-other-1\"")
 }
 
 func TestEventsStreamHonorsConnectionLimit(t *testing.T) {
