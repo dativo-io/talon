@@ -273,12 +273,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			log.Warn().Str("caller", caller.Name).Msg("gateway_rate_limited")
 			durationMS := time.Since(start).Milliseconds()
+			WriteProviderError(w, route.Provider, http.StatusTooManyRequests, "Rate limit exceeded")
 			if err := g.recordEvidence(ctx, correlationID, caller, route.Provider, "", start, nil, &classifier.Classification{}, nil, 0, durationMS, 0, false, []string{"rate limit exceeded"}, false, nil, nil, nil, nil, false, "", 0, 0, 0, 0); err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
 			}
 			g.emitMetrics(ctx, caller, route.Provider, "", nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0)
-			WriteProviderError(w, route.Provider, http.StatusTooManyRequests, "Rate limit exceeded")
 			return
 		}
 	}

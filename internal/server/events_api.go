@@ -90,9 +90,16 @@ func (s *Server) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			next, _, err := s.listEventsForStream(r, tenantID, cursor)
+			next, gapDetected, err := s.listEventsForStream(r, tenantID, cursor)
 			if err != nil {
 				continue
+			}
+			if gapDetected {
+				health.IncEventStreamGap()
+				if _, writeErr := fmt.Fprintf(w, "event: gap\ndata: {\"reason\":\"replay_window_miss\"}\n\n"); writeErr != nil {
+					return
+				}
+				flush()
 			}
 			for i := range next {
 				payload, _ := json.Marshal(next[i])
