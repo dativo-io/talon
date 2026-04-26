@@ -18,6 +18,24 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 - [60-Second Demo](tutorials/quickstart-demo.md) — Docker Compose demo: `docker compose up`, send a curl request, see evidence immediately.
 - [QUICKSTART.md](QUICKSTART.md) — Short entry point for native Talon (requires Go).
 
+
+
+## New contributer? Start here.
+
+Choose your path based on what you want to do:
+
+1. **Want to fix a small bug or improve documents?**
+   - Start: [Good first issues](https://github.com/dativo-io/talon/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+   - Then:  [CONTRIBUTING.md](../CONTRIBUTING.md)
+   
+2. **Want to add a feature or integration?**
+   - Start: [Help wanted issues](https://github.com/dativo-io/talon/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
+   - Then: [Architecture: MCP proxy](ARCHITECTURE_MCP_PROXY.md) for context
+   
+3. **Want to understand the codebase before adding any changes?**
+   - Start: [What Talon does to your request](explanation/what-talon-does-to-your-request.md)
+   - Then: [ROADMAP.md](../ROADMAP.md) to see what's planned
+  
 ## Start Here (jobs-to-be-done)
 
 Choose the shortest path for your situation:
