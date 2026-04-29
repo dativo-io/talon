@@ -286,6 +286,7 @@ talon audit list --limit 10                    # List recent evidence
 talon audit show <evidence-id>                 # Full record (classification, PII, HMAC status)
 talon audit verify <evidence-id>               # Verify signature + compact summary
 talon audit export --format csv --from ... --to ...  # Export for compliance (includes pii_detected, tiers)
+talon events tail --url http://localhost:8080  # Live operational stream (same projection as dashboard)
 ```
 
 (Evidence IDs are shown in run output, e.g. `req_xxxxxxxx`.)
@@ -329,7 +330,19 @@ talon serve --proxy-quickstart --port 8080
 Use loopback by default; non-loopback binds require `--unsafe-listen`.
 For production gateway behavior, keep using `--gateway` + `talon.config.yaml`.
 
-Endpoints include: `GET /v1/health`, `GET /v1/status`, `POST /v1/agents/run`, `POST /v1/chat/completions` (OpenAI-compatible), `GET /v1/evidence`, `GET /v1/costs`, `GET /v1/plans/pending` (plan review), `POST /mcp` (native MCP), `POST /mcp/proxy` (when proxy is configured), `**POST /v1/proxy/{provider}/v1/chat/completions**` (LLM API gateway when `--gateway` is set; caller auth via `Authorization: Bearer <tenant-key>`), and operational control plane endpoints: `GET /v1/runs`, `POST /v1/runs/{id}/kill`, `POST /v1/runs/{id}/pause`, `POST /v1/runs/{id}/resume`, `GET /v1/overrides`, `POST /v1/overrides/{tenant_id}/lockdown`, `GET /v1/tool-approvals`, `POST /v1/tool-approvals/{id}/decide`. Tenant-scoped API routes use `Authorization: Bearer <tenant-key>`. Admin-only routes (including all `/v1/runs`, `/v1/overrides`, and `/v1/tool-approvals` endpoints) use `X-Talon-Admin-Key: <key>` (or bearer fallback).
+Endpoints include: `GET /v1/health`, `GET /v1/status`, `POST /v1/agents/run`, `POST /v1/chat/completions` (OpenAI-compatible), `GET /v1/evidence`, `GET /v1/costs`, `GET /v1/plans/pending` (plan review), `GET /api/v1/events/recent`, `GET /api/v1/events/stream` (SSE with `Last-Event-ID` replay), `POST /mcp` (native MCP), `POST /mcp/proxy` (when proxy is configured), `**POST /v1/proxy/{provider}/v1/chat/completions**` (LLM API gateway when `--gateway` is set; caller auth via `Authorization: Bearer <tenant-key>`), and operational control plane endpoints: `GET /v1/runs`, `POST /v1/runs/{id}/kill`, `POST /v1/runs/{id}/pause`, `POST /v1/runs/{id}/resume`, `GET /v1/overrides`, `POST /v1/overrides/{tenant_id}/lockdown`, `GET /v1/tool-approvals`, `POST /v1/tool-approvals/{id}/decide`. Tenant-scoped API routes use `Authorization: Bearer <tenant-key>`. Admin-only routes (including all `/v1/runs`, `/v1/overrides`, and `/v1/tool-approvals` endpoints) use `X-Talon-Admin-Key: <key>` (or bearer fallback).
+
+`GET /v1/status` now includes evidence write health signals:
+- `evidence_ok` (`false` means degraded mode)
+- `last_good_write` timestamp
+- `evidence_error` + `evidence_error_at` when the evidence store fails
+- `events_stream_active`, `events_stream_gaps`, `events_replay_misses` for SSE operational visibility
+
+SSE contract (operational defaults):
+- Stream frames use standard SSE `id:` + `data:` lines.
+- Reconnect cursors use `Last-Event-ID` (or `since_id` on query).
+- Replay window is bounded by server backlog (default 1000 events per tenant query).
+- If the cursor is outside replay window, stream emits `event: gap` with `replay_window_miss` and clients should refresh from `/api/v1/events/recent`.
 
 For browser navigation to dashboards, include the admin key in the URL once:
 
@@ -492,6 +505,7 @@ talon audit list --tenant acme --limit 50    # Filter by tenant with limit
 talon audit show <evidence-id>               # Full record (Layer 3: classification, PII, HMAC)
 talon audit verify <evidence-id>             # Verify HMAC-SHA256 + compact summary
 talon audit export --format csv|json|ndjson|html [--from YYYY-MM-DD] [--to YYYY-MM-DD]  # HTML is self-contained
+talon events tail --url http://localhost:8080 [--tenant acme] [--since <event_id>]       # Live operational events
 talon compliance report --framework gdpr --format html --output gdpr-report.html          # Article-level mapping report
 
 # Secrets vault

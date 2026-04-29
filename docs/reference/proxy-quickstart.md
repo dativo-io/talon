@@ -50,6 +50,15 @@ Quickstart uses upstream BYOK as a scoped exception:
 - Default model allowlist: `gpt-4o-mini`, `gpt-4o` (use `TALON_QUICKSTART_ALLOW_ALL_MODELS=1` to disable for local-only experiments).
 - Evidence includes `upstream_auth_mode`, `upstream_key_source`, `upstream_key_fingerprint`, and optional `gateway_annotations` (e.g. `quickstart_mode`, `quickstart_shadow_mode`, `quickstart_model_allowlist_disabled`, `quickstart_unsafe_listen`).
 
+## Live operational feed
+
+Quickstart traffic is projected into the same operational feed used by the dashboard and CLI:
+
+- `GET /api/v1/events/recent?limit=50`
+- `GET /api/v1/events/stream` (SSE, supports `Last-Event-ID`)
+
+Each event includes an `evidence_id` pointer to the signed evidence record.
+
 ## Common errors
 
 - `401` with `no upstream credential: set OPENAI_API_KEY or send Authorization: Bearer ...` means Talon received neither a client bearer key nor a usable `OPENAI_API_KEY`.

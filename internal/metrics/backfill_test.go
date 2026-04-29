@@ -287,7 +287,7 @@ func TestBackfillFromStore_DecisionOpsReconciliation(t *testing.T) {
 	redactCount := 0
 	routedCount := 0
 	for i := range records {
-		ev := evidenceToEvent(&records[i])
+		ev := GatewayEventFromEvidence(&records[i])
 		if ev.Blocked {
 			blockCount++
 		} else {
@@ -337,7 +337,7 @@ func TestEvidenceToEvent(t *testing.T) {
 		},
 	}
 
-	event := evidenceToEvent(ev)
+	event := GatewayEventFromEvidence(ev)
 
 	assert.Equal(t, "test-caller", event.CallerID)
 	assert.Equal(t, "gpt-4o", event.Model)

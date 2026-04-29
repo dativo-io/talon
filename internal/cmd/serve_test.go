@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -33,7 +34,7 @@ func TestMapToGatewayEvent_MapsAllFields(t *testing.T) {
 		"cache_hit":          true,
 	}
 
-	got := mapToGatewayEvent(event)
+	got := metrics.GatewayEventFromMap(event)
 
 	assert.Equal(t, now, got.Timestamp)
 	assert.Equal(t, "openclaw-main", got.CallerID)
@@ -58,7 +59,7 @@ func TestMapToGatewayEvent_MapsAllFields(t *testing.T) {
 }
 
 func TestMapToGatewayEvent_DefaultTimestampWhenMissing(t *testing.T) {
-	got := mapToGatewayEvent(map[string]interface{}{"caller_id": "test"})
+	got := metrics.GatewayEventFromMap(map[string]interface{}{"caller_id": "test"})
 
 	assert.False(t, got.Timestamp.IsZero(), "timestamp should be populated when absent")
 	assert.Equal(t, "test", got.CallerID)
