@@ -32,6 +32,21 @@ Choose the shortest path for your situation:
    - Start: [What Talon does to your request](explanation/what-talon-does-to-your-request.md)
    - Then: [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md)
 
+## First contribution pointers
+
+If you want to make a small first contribution, pick the path that matches the
+kind of change you want to make:
+
+1. **Fix docs or clarify an example.**
+   - Start: [Contributing to Talon](../CONTRIBUTING.md)
+   - Then: browse [`good first issue`](https://github.com/dativo-io/talon/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+2. **Add or improve a provider/integration.**
+   - Start: [Contributor docs](contributor/README.md)
+   - Then: [Adding a provider](contributor/adding-a-provider.md)
+3. **Share a deployment story or proof loop.**
+   - Start: [Docker Compose demo](../examples/docker-compose/README.md)
+   - Then: [Case study template](ADOPTION_SCENARIOS.md#case-study-template-for-community-contributions)
+
 ---
 
 ## Documentation index
