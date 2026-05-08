@@ -47,7 +47,11 @@ Thanks for helping improve Talon.
 
 - Keep behavior changes accompanied by tests.
 - Prefer clear, verifiable claims in docs (commands, source links, or test references).
-- For compliance wording, use "supports controls" language; do not claim guaranteed compliance.
+- For compliance wording, use "supports controls" language; do not claim guaranteed compliance:
+  - Do: "Talon helps teams collect audit evidence for GDPR review."
+  - Do: "This policy supports SOC 2 change-management controls."
+  - Do not: "Talon makes your app GDPR compliant."
+  - Do not: "Enabling this setting guarantees SOC 2 compliance."
 
 ## Testing
 
