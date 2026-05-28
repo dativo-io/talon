@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **change(serve): `--gateway-config` exclusivity check uses explicit flag set.** `--proxy-quickstart` is rejected alongside `--gateway` or any explicitly passed `--gateway-config`, detected via `cobra.Flags().Changed` rather than the default string value.
 - **change(gateway): quickstart `unsafe-listen` signal threaded via config.** The `quickstart_unsafe_listen` evidence annotation is driven by `GatewayConfig.QuickstartUnsafeListen`, populated from `--unsafe-listen` through `QuickstartOptions`, instead of a process environment variable.
 
+### Fixed
+
+- **fix(session): auto-migrate legacy `sessions` schema on startup.** Session store initialization now adds missing `max_cost` and `reasoning` columns when older SQLite tables are detected, preventing run/session creation failures on upgraded installs. Verify with `go test ./internal/session -run MigratesLegacySessionsTable`.
+- **fix(agent): preserve audit trail on evidence write failures.** Runner paths that previously ignored evidence/step write errors now log structured failures (`correlation_id`, `tenant_id`, `agent_id`) so silent audit-loss conditions are observable during denied, dry-run, cached, and tool-step flows.
+- **fix(memory): redact low-risk PII before memory governance checks.** Memory observations now sanitize `person`/`location` entities before validation, allowing safe useful memories while sensitive PII still fails closed under governance policy.
+- **fix(events): expand stream reliability telemetry.** Event stream handling now increments disconnect and backlog-drop counters (in addition to gap/replay signals) and exposes them in status output for faster operator diagnosis.
+
 ### Release Note Quality Bar
 
 For user-facing entries, include:
