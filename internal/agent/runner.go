@@ -3105,11 +3105,28 @@ func sanitizeMemoryObservationText(ctx context.Context, scanner *classifier.Scan
 		return text
 	}
 
-	sort.Slice(replacements, func(i, j int) bool { return replacements[i].start > replacements[j].start })
+	sort.Slice(replacements, func(i, j int) bool { return replacements[i].start < replacements[j].start })
+	var merged []replacement
+	for _, r := range replacements {
+		if len(merged) == 0 {
+			merged = append(merged, r)
+			continue
+		}
+		last := &merged[len(merged)-1]
+		if r.start < last.end {
+			if r.end > last.end {
+				last.end = r.end
+			}
+		} else {
+			merged = append(merged, r)
+		}
+	}
+
+	// Replace back-to-front so byte offsets stay valid.
 	out := []byte(text)
-	for i := range replacements {
-		placeholder := "[" + strings.ToUpper(replacements[i].kind) + "]"
-		out = append(out[:replacements[i].start], append([]byte(placeholder), out[replacements[i].end:]...)...)
+	for i := len(merged) - 1; i >= 0; i-- {
+		placeholder := "[" + strings.ToUpper(merged[i].kind) + "]"
+		out = append(out[:merged[i].start], append([]byte(placeholder), out[merged[i].end:]...)...)
 	}
 	return string(out)
 }
