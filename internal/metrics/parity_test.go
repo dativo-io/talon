@@ -265,3 +265,41 @@ func TestDashboardCountMayLeadPersistedEvidence(t *testing.T) {
 	require.GreaterOrEqual(t, drift, 0)
 	require.LessOrEqual(t, drift, 5)
 }
+
+func TestParity_EvidenceWriteMatchesMappedEventProjection(t *testing.T) {
+	dir := t.TempDir()
+	store, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), "test-hmac-key-that-is-at-least-32-bytes-long")
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	ev := evidence.Evidence{
+		ID:              "ev-proj-1",
+		CorrelationID:   "corr-proj-1",
+		Timestamp:       now,
+		TenantID:        "default",
+		AgentID:         "agent-proj",
+		RequestSourceID: "caller-proj",
+		InvocationType:  "gateway",
+		PolicyDecision:  evidence.PolicyDecision{Allowed: true},
+		Classification:  evidence.Classification{PIIDetected: []string{"email"}},
+		Execution:       evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 0.07, DurationMS: 210},
+	}
+	require.NoError(t, store.Store(ctx, &ev))
+
+	records, err := store.List(ctx, "default", "", time.Time{}, now.Add(time.Minute), 10)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+
+	fromEvidence := GatewayEventFromEvidence(&records[0])
+	fromMap, ok := MapToGatewayEvent(&records[0])
+	require.True(t, ok)
+
+	assert.Equal(t, fromEvidence.CallerID, fromMap.CallerID)
+	assert.Equal(t, fromEvidence.Model, fromMap.Model)
+	assert.Equal(t, fromEvidence.Blocked, fromMap.Blocked)
+	assert.Equal(t, fromEvidence.CostEUR, fromMap.CostEUR)
+	assert.Equal(t, fromEvidence.LatencyMS, fromMap.LatencyMS)
+	assert.Equal(t, fromEvidence.PIIDetected, fromMap.PIIDetected)
+}

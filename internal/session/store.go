@@ -90,6 +90,48 @@ func (s *Store) init(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating sessions table: %w", err)
 	}
+	if err := s.ensureSessionColumns(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureSessionColumns(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(sessions)`)
+	if err != nil {
+		return fmt.Errorf("reading sessions schema: %w", err)
+	}
+	defer rows.Close()
+
+	cols := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if scanErr := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); scanErr != nil {
+			return fmt.Errorf("scanning sessions schema: %w", scanErr)
+		}
+		cols[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating sessions schema: %w", err)
+	}
+
+	if !cols["max_cost"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN max_cost REAL NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("adding sessions.max_cost column: %w", err)
+		}
+	}
+	if !cols["reasoning"] {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN reasoning TEXT`); err != nil {
+			return fmt.Errorf("adding sessions.reasoning column: %w", err)
+		}
+	}
 	return nil
 }
 

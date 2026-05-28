@@ -576,7 +576,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			Str("agent_id", req.AgentName).
 			Strs("pii_detected", effectivePIINames).
 			Msg("block_on_pii: input contains PII, run denied")
-		_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+		if _, err := r.evidence.Generate(ctx, evidence.GenerateParams{
 			CorrelationID:   correlationID,
 			TenantID:        req.TenantID,
 			AgentID:         req.AgentName,
@@ -602,7 +602,13 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				PolicyRef:       explanationPolicyRef(pol.VersionTag),
 				VersionIdentity: pol.VersionTag,
 			}},
-		})
+		}); err != nil {
+			log.Error().Err(err).
+				Str("correlation_id", correlationID).
+				Str("tenant_id", req.TenantID).
+				Str("agent_id", req.AgentName).
+				Msg("evidence_write_failed_block_on_pii")
+		}
 		return &RunResponse{PolicyAllow: false, DenyReason: "Input contains PII (policy: block_on_pii)", SessionID: req.SessionID}, nil
 	}
 
@@ -737,7 +743,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	if req.DryRun {
 		// Record evidence for dry-run so audit trail includes policy-check attempts (no LLM call).
 		duration := time.Since(startTime)
-		_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+		if _, err := r.evidence.Generate(ctx, evidence.GenerateParams{
 			CorrelationID:   correlationID,
 			TenantID:        req.TenantID,
 			AgentID:         req.AgentName,
@@ -757,7 +763,13 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			AgentVerified:    req.AgentVerified,
 			Compliance:       complianceInfo,
 			ExplanationFacts: buildPolicyDecisionFacts(decision, explanation.StagePolicyEvaluation),
-		})
+		}); err != nil {
+			log.Error().Err(err).
+				Str("correlation_id", correlationID).
+				Str("tenant_id", req.TenantID).
+				Str("agent_id", req.AgentName).
+				Msg("evidence_write_failed_dry_run")
+		}
 		resp := &RunResponse{PolicyAllow: true, PIIDetected: effectivePIINames, InputTier: effectiveTier, SessionID: req.SessionID}
 		if attachmentScan != nil {
 			resp.AttachmentInjectionsDetected = attachmentScan.InjectionsDetected
@@ -979,7 +991,7 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 		Str("deny_reason", decision.Action).
 		Msg("policy_denied")
 
-	_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+	if _, err := r.evidence.Generate(ctx, evidence.GenerateParams{
 		CorrelationID:   correlationID,
 		TenantID:        req.TenantID,
 		AgentID:         req.AgentName,
@@ -1000,7 +1012,13 @@ func (r *Runner) recordPolicyDenial(ctx context.Context, span trace.Span, correl
 		ExplanationFacts: buildPolicyDecisionFacts(decision, explanation.StagePolicyEvaluation),
 		Status:           string(RunStatusDenied),
 		FailureReason:    string(FailurePolicyDeny),
-	})
+	}); err != nil {
+		log.Error().Err(err).
+			Str("correlation_id", correlationID).
+			Str("tenant_id", req.TenantID).
+			Str("agent_id", req.AgentName).
+			Msg("evidence_write_failed_policy_denial")
+	}
 }
 
 // setRunState updates the RunRegistry state for a run if the registry is available.
@@ -1033,7 +1051,7 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 		status = string(RunStatusDenied)
 		failureReason = string(FailurePolicyDeny)
 	}
-	_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+	if _, err := r.evidence.Generate(ctx, evidence.GenerateParams{
 		CorrelationID:   correlationID,
 		TenantID:        req.TenantID,
 		AgentID:         req.AgentName,
@@ -1049,7 +1067,13 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 		ExplanationFacts: explanation.BuildLegacyFacts(false, "early_termination", []string{reason}, explanation.StagePreExecution, "", ""),
 		Status:           status,
 		FailureReason:    failureReason,
-	})
+	}); err != nil {
+		log.Error().Err(err).
+			Str("correlation_id", correlationID).
+			Str("tenant_id", req.TenantID).
+			Str("agent_id", req.AgentName).
+			Msg("evidence_write_failed_early_termination")
+	}
 }
 
 // executeLLMPipeline runs steps 5-9: route provider, call LLM, classify output, generate evidence.
@@ -1183,7 +1207,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 								Str("correlation_id", correlationID).
 								Strs("pii_detected", cacheOutputPIINames).
 								Msg("block_on_output_pii: cached response contains PII, run denied")
-							_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+							if _, err := r.evidence.Generate(ctx, evidence.GenerateParams{
 								CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 								InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
 								PolicyDecision: evidence.PolicyDecision{
@@ -1202,7 +1226,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 									PolicyRef:       explanationPolicyRef(pol.VersionTag),
 									VersionIdentity: pol.VersionTag,
 								}},
-							})
+							}); err != nil {
+								log.Error().Err(err).
+									Str("correlation_id", correlationID).
+									Str("tenant_id", req.TenantID).
+									Str("agent_id", req.AgentName).
+									Msg("evidence_write_failed_cache_output_pii_block")
+							}
 							return &RunResponse{PolicyAllow: false, DenyReason: "Cached output contains PII (policy: block_on_pii + output_scan)", SessionID: req.SessionID}, nil
 						}
 						if dc.ShouldRedactOutput() {
@@ -1212,7 +1242,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					}
 
 					duration := time.Since(startTime)
-					cacheEv, _ := r.evidence.Generate(ctx, evidence.GenerateParams{
+					cacheEv, err := r.evidence.Generate(ctx, evidence.GenerateParams{
 						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 						InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
 						PolicyDecision: policyDec,
@@ -1236,6 +1266,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 							VersionIdentity: pol.VersionTag,
 						}},
 					})
+					if err != nil {
+						log.Error().Err(err).
+							Str("correlation_id", correlationID).
+							Str("tenant_id", req.TenantID).
+							Str("agent_id", req.AgentName).
+							Msg("evidence_write_failed_cache_hit")
+					}
 					resp := &RunResponse{
 						Response:    cacheResponseText,
 						Cost:        0,
@@ -1332,7 +1369,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				}
 				r.setRunState(correlationID, RunStatusFailed, llmFailReason)
 				duration := time.Since(startTime)
-				_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+				if _, evErr := r.evidence.Generate(ctx, evidence.GenerateParams{
 					CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 					InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
 					PolicyDecision: policyDec, Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
@@ -1345,7 +1382,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					RoutingDecision: evRouting,
 					Status:          string(RunStatusFailed),
 					FailureReason:   string(llmFailReason),
-				})
+				}); evErr != nil {
+					log.Error().Err(evErr).
+						Str("correlation_id", correlationID).
+						Str("tenant_id", req.TenantID).
+						Str("agent_id", req.AgentName).
+						Msg("evidence_write_failed_agentic_llm_error")
+				}
 				return nil, fmt.Errorf("calling LLM: %w", err)
 			}
 			iterDuration := time.Since(iterStart).Milliseconds()
@@ -1359,13 +1402,19 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			})
 
 			// Step-level evidence: one record per LLM call in the loop
-			_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
+			if _, stepErr := r.evidence.GenerateStep(ctx, evidence.StepParams{
 				CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 				StepIndex: stepIndex, Type: "llm_call",
 				InputSummary:  stepInputSummary,
 				OutputSummary: evidence.TruncateForSummary(resp.Content, 500),
 				DurationMS:    iterDuration, Cost: iterCost,
-			})
+			}); stepErr != nil {
+				log.Error().Err(stepErr).
+					Str("correlation_id", correlationID).
+					Str("tenant_id", req.TenantID).
+					Str("agent_id", req.AgentName).
+					Msg("evidence_step_write_failed_agentic_llm")
+			}
 			stepIndex++
 
 			llmResp = resp
@@ -1511,10 +1560,22 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					if pendingStep != nil {
 						pendingStep.ToolName = toolName
 						if executed {
-							_ = r.evidence.CompleteStep(ctx, pendingStep,
-								evidence.TruncateForSummary(resultContent, 500), toolDuration, 0)
+							if stepErr := r.evidence.CompleteStep(ctx, pendingStep,
+								evidence.TruncateForSummary(resultContent, 500), toolDuration, 0); stepErr != nil {
+								log.Error().Err(stepErr).
+									Str("correlation_id", correlationID).
+									Str("tenant_id", req.TenantID).
+									Str("agent_id", req.AgentName).
+									Msg("evidence_pending_step_complete_failed")
+							}
 						} else {
-							_ = r.evidence.FailStep(ctx, pendingStep, resultContent, toolDuration)
+							if stepErr := r.evidence.FailStep(ctx, pendingStep, resultContent, toolDuration); stepErr != nil {
+								log.Error().Err(stepErr).
+									Str("correlation_id", correlationID).
+									Str("tenant_id", req.TenantID).
+									Str("agent_id", req.AgentName).
+									Msg("evidence_pending_step_fail_failed")
+							}
 						}
 					} else {
 						// Fallback: pending step write failed; ensure one record for this tool call.
@@ -1524,12 +1585,18 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 							stepStatus = "failed"
 							stepError = resultContent
 						}
-						_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
+						if _, stepErr := r.evidence.GenerateStep(ctx, evidence.StepParams{
 							CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 							StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
 							OutputSummary: evidence.TruncateForSummary(resultContent, 500),
 							DurationMS:    toolDuration, Cost: 0, Status: stepStatus, Error: stepError,
-						})
+						}); stepErr != nil {
+							log.Error().Err(stepErr).
+								Str("correlation_id", correlationID).
+								Str("tenant_id", req.TenantID).
+								Str("agent_id", req.AgentName).
+								Msg("evidence_step_write_failed_tool_fallback")
+						}
 					}
 					stepIndex++
 					_, _ = r.fireHook(ctx, HookPostTool, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
@@ -1543,12 +1610,18 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					"result_summary": evidence.TruncateForSummary(resultContent, 200),
 				})
 				if atLimit {
-					_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
+					if _, stepErr := r.evidence.GenerateStep(ctx, evidence.StepParams{
 						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 						StepIndex: stepIndex, Type: "tool_call", ToolName: toolName,
 						OutputSummary: "max_tool_calls_per_run limit reached",
 						DurationMS:    0, Cost: 0,
-					})
+					}); stepErr != nil {
+						log.Error().Err(stepErr).
+							Str("correlation_id", correlationID).
+							Str("tenant_id", req.TenantID).
+							Str("agent_id", req.AgentName).
+							Msg("evidence_step_write_failed_tool_limit")
+					}
 					stepIndex++
 				}
 				sandboxedResult := fmt.Sprintf("[TOOL-RESULT:%s]\n%s\n[/TOOL-RESULT]", tc.Name, resultContent)
@@ -1576,7 +1649,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			}
 			r.setRunState(correlationID, RunStatusFailed, singleFailReason)
 			duration := time.Since(startTime)
-			_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+			if _, evErr := r.evidence.Generate(ctx, evidence.GenerateParams{
 				CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 				InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
 				PolicyDecision: policyDec, Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
@@ -1587,7 +1660,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				RoutingDecision:         evRouting,
 				Status:                  string(RunStatusFailed),
 				FailureReason:           string(singleFailReason),
-			})
+			}); evErr != nil {
+				log.Error().Err(evErr).
+					Str("correlation_id", correlationID).
+					Str("tenant_id", req.TenantID).
+					Str("agent_id", req.AgentName).
+					Msg("evidence_write_failed_single_llm_error")
+			}
 			return nil, fmt.Errorf("calling LLM: %w", err)
 		}
 		llmResp = resp
@@ -1607,7 +1686,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			r.setRunState(correlationID, RunStatusBlocked, FailureCostExceeded)
 			span.SetAttributes(attribute.Bool("cost.exceeded_per_request", true))
 			duration := time.Since(startTime)
-			_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+			if _, evErr := r.evidence.Generate(ctx, evidence.GenerateParams{
 				CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 				InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
 				PolicyDecision: policyDec, Classification: evidence.Classification{InputTier: tier, PIIDetected: piiNames},
@@ -1618,7 +1697,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
 				Cost: cost, Tokens: evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
 				Status: string(RunStatusBlocked), FailureReason: string(FailureCostExceeded),
-			})
+			}); evErr != nil {
+				log.Error().Err(evErr).
+					Str("correlation_id", correlationID).
+					Str("tenant_id", req.TenantID).
+					Str("agent_id", req.AgentName).
+					Msg("evidence_write_failed_single_cost_exceeded")
+			}
 			return &RunResponse{
 				PolicyAllow: false,
 				DenyReason:  fmt.Sprintf("per-request cost exceeded (%.4f > %.4f)", cost, pol.Policies.CostLimits.PerRequest),
@@ -1631,13 +1716,19 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		_, _ = r.fireHook(ctx, HookPostLLM, req.TenantID, req.AgentName, correlationID, map[string]interface{}{
 			"model": model, "cost_estimate": cost, "input_tokens": resp.InputTokens, "output_tokens": resp.OutputTokens,
 		})
-		_, _ = r.evidence.GenerateStep(ctx, evidence.StepParams{
+		if _, stepErr := r.evidence.GenerateStep(ctx, evidence.StepParams{
 			CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
 			StepIndex: 0, Type: "llm_call",
 			InputSummary:  stepInputSummary,
 			OutputSummary: evidence.TruncateForSummary(resp.Content, 500),
 			DurationMS:    singleDuration, Cost: cost,
-		})
+		}); stepErr != nil {
+			log.Error().Err(stepErr).
+				Str("correlation_id", correlationID).
+				Str("tenant_id", req.TenantID).
+				Str("agent_id", req.AgentName).
+				Msg("evidence_step_write_failed_single_llm")
+		}
 		// Store in semantic cache when allowed (PII-scrubbed response)
 		if cacheAllowStore && r.cacheStore != nil && r.cacheScrubber != nil && r.cacheEmbedder != nil && r.cacheConfig != nil {
 			scrubbed := r.cacheScrubber.Scrub(ctx, resp.Content)
@@ -1676,7 +1767,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				Str("agent_id", req.AgentName).
 				Strs("pii_detected", outputEntityNames).
 				Msg("block_on_output_pii: output contains PII, run denied")
-			_, _ = r.evidence.Generate(ctx, evidence.GenerateParams{
+			if _, evErr := r.evidence.Generate(ctx, evidence.GenerateParams{
 				CorrelationID:   correlationID,
 				TenantID:        req.TenantID,
 				AgentID:         req.AgentName,
@@ -1708,7 +1799,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					PolicyRef:       explanationPolicyRef(pol.VersionTag),
 					VersionIdentity: pol.VersionTag,
 				}},
-			})
+			}); evErr != nil {
+				log.Error().Err(evErr).
+					Str("correlation_id", correlationID).
+					Str("tenant_id", req.TenantID).
+					Str("agent_id", req.AgentName).
+					Msg("evidence_write_failed_output_pii_block")
+			}
 			return &RunResponse{PolicyAllow: false, DenyReason: "Output contains PII (policy: block_on_pii + output_scan)", SessionID: req.SessionID}, nil
 		}
 		if dc.ShouldRedactOutput() {
@@ -2682,6 +2779,11 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 		SourceEvidenceID: ev.ID,
 		InputHash:        ev.AuditTrail.InputHash,
 	}
+	// Governance rejects memory entries containing any PII. Sanitize only low-risk
+	// entities (person/location) so general observations can be stored while
+	// sensitive PII (email/iban/phone/etc.) still fails closed in governance.
+	observation.Title = sanitizeMemoryObservationText(ctx, r.classifier, observation.Title)
+	observation.Content = sanitizeMemoryObservationText(ctx, r.classifier, observation.Content)
 
 	if err := r.governance.ValidateWrite(ctx, &observation, pol, policyEval); err != nil {
 		log.Warn().Err(err).
@@ -2969,6 +3071,55 @@ func sourceTypeFromInvocation(invocationType string) string {
 		return memory.SourceWebhook
 	default:
 		return memory.SourceAgentRun
+	}
+}
+
+func sanitizeMemoryObservationText(ctx context.Context, scanner *classifier.Scanner, text string) string {
+	if scanner == nil || text == "" {
+		return text
+	}
+	class := scanner.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), text)
+	if !class.HasPII {
+		return text
+	}
+
+	type replacement struct {
+		start int
+		end   int
+		kind  string
+	}
+	var replacements []replacement
+	for i := range class.Entities {
+		e := class.Entities[i]
+		if !isLowRiskMemoryEntityType(e.Type) {
+			continue
+		}
+		start := e.Position
+		end := e.Position + len(e.Value)
+		if start < 0 || end <= start || end > len(text) {
+			continue
+		}
+		replacements = append(replacements, replacement{start: start, end: end, kind: e.Type})
+	}
+	if len(replacements) == 0 {
+		return text
+	}
+
+	sort.Slice(replacements, func(i, j int) bool { return replacements[i].start > replacements[j].start })
+	out := []byte(text)
+	for i := range replacements {
+		placeholder := "[" + strings.ToUpper(replacements[i].kind) + "]"
+		out = append(out[:replacements[i].start], append([]byte(placeholder), out[replacements[i].end:]...)...)
+	}
+	return string(out)
+}
+
+func isLowRiskMemoryEntityType(entityType string) bool {
+	switch strings.ToLower(entityType) {
+	case "person", "location":
+		return true
+	default:
+		return false
 	}
 }
 

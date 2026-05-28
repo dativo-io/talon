@@ -628,6 +628,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp["events_stream_active"] = health.ActiveEventStreams()
 	resp["events_stream_gaps"] = health.EventStreamGaps()
 	resp["events_replay_misses"] = health.EventReplayMisses()
+	resp["events_stream_disconnects"] = health.EventStreamDisconnects()
+	resp["events_backlog_drops"] = health.EventBacklogDrops()
 	if s.evidenceStore != nil {
 		if n, err := s.evidenceStore.CountInRange(r.Context(), tenantID, "", dayStart, dayEnd); err == nil {
 			resp["evidence_count_today"] = n

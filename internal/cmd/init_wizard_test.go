@@ -102,6 +102,28 @@ func TestBuildConfigs_AllFeatures_BothFilesValid(t *testing.T) {
 	assert.Contains(t, agentCfg.Compliance.Frameworks, "dora")
 }
 
+func TestBuildConfigs_PIIFeature_RedactsInputNotOutputByDefault(t *testing.T) {
+	state := WizardState{
+		AgentName:       "pii-agent",
+		WorkloadType:    "agent",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+		EnabledFeatures: []string{"pii"},
+	}
+	agentCfg, _, err := BuildConfigs(state)
+	require.NoError(t, err)
+	require.NotNil(t, agentCfg.Policies.DataClassification)
+	dc := agentCfg.Policies.DataClassification
+
+	assert.True(t, dc.InputScan)
+	assert.True(t, dc.OutputScan)
+	assert.False(t, dc.RedactPII, "wizard should use granular input/output redaction defaults")
+	require.NotNil(t, dc.RedactInput)
+	require.NotNil(t, dc.RedactOutput)
+	assert.True(t, *dc.RedactInput, "input redaction should be enabled by default")
+	assert.False(t, *dc.RedactOutput, "output redaction should be disabled by default")
+}
+
 func TestBuildConfigs_NoFeatures_BothFilesValid(t *testing.T) {
 	state := WizardState{
 		AgentName:       "minimal-agent",

@@ -34,7 +34,8 @@ func TestMapToGatewayEvent_MapsAllFields(t *testing.T) {
 		"cache_hit":          true,
 	}
 
-	got := metrics.GatewayEventFromMap(event)
+	got, ok := metrics.MapToGatewayEvent(event)
+	assert.True(t, ok)
 
 	assert.Equal(t, now, got.Timestamp)
 	assert.Equal(t, "openclaw-main", got.CallerID)
@@ -59,7 +60,8 @@ func TestMapToGatewayEvent_MapsAllFields(t *testing.T) {
 }
 
 func TestMapToGatewayEvent_DefaultTimestampWhenMissing(t *testing.T) {
-	got := metrics.GatewayEventFromMap(map[string]interface{}{"caller_id": "test"})
+	got, ok := metrics.MapToGatewayEvent(map[string]interface{}{"caller_id": "test"})
+	assert.True(t, ok)
 
 	assert.False(t, got.Timestamp.IsZero(), "timestamp should be populated when absent")
 	assert.Equal(t, "test", got.CallerID)

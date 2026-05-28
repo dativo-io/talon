@@ -28,7 +28,10 @@ func (c *Collector) BackfillFromStore(ctx context.Context, store EvidenceLister)
 	defer c.mu.Unlock()
 
 	for i := range records {
-		ev := GatewayEventFromEvidence(&records[i])
+		ev, ok := MapToGatewayEvent(&records[i])
+		if !ok {
+			continue
+		}
 		c.processEvent(ev)
 	}
 

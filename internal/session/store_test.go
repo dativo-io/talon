@@ -2,9 +2,11 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/require"
 )
 
@@ -109,4 +111,41 @@ func TestIncrementStageCountAndGetStageCounts(t *testing.T) {
 	require.Equal(t, 0, empty.Generation)
 	require.Equal(t, 0, empty.Judge)
 	require.Equal(t, 0, empty.Commit)
+}
+
+func TestNewStore_MigratesLegacySessionsTable(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "evidence.db")
+
+	rawDB, err := sql.Open("sqlite3", db)
+	require.NoError(t, err)
+	_, err = rawDB.ExecContext(context.Background(), `
+	CREATE TABLE sessions (
+		id TEXT PRIMARY KEY,
+		tenant_id TEXT NOT NULL,
+		agent_id TEXT NOT NULL,
+		status TEXT NOT NULL,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		completed_at DATETIME,
+		total_cost REAL NOT NULL DEFAULT 0,
+		total_tokens INTEGER NOT NULL DEFAULT 0
+	);
+	`)
+	require.NoError(t, err)
+	require.NoError(t, rawDB.Close())
+
+	s, err := NewStore(db)
+	require.NoError(t, err)
+	defer s.Close()
+
+	ctx := context.Background()
+	ss, err := s.Create(ctx, "acme", "agent-a", "legacy table migration", 12.5)
+	require.NoError(t, err)
+	require.Equal(t, 12.5, ss.MaxCost)
+	require.Equal(t, "legacy table migration", ss.Reasoning)
+
+	got, err := s.Get(ctx, ss.ID)
+	require.NoError(t, err)
+	require.Equal(t, 12.5, got.MaxCost)
+	require.Equal(t, "legacy table migration", got.Reasoning)
 }

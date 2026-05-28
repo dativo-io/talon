@@ -525,12 +525,10 @@ type metricsRecorderAdapter struct {
 }
 
 func (a *metricsRecorderAdapter) RecordGatewayEvent(event interface{}) {
-	m, ok := event.(map[string]interface{})
+	e, ok := metrics.MapToGatewayEvent(event)
 	if !ok {
 		return
 	}
-
-	e := metrics.GatewayEventFromMap(m)
 	a.collector.Record(e)
 }
 

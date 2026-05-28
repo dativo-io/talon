@@ -130,6 +130,7 @@ func TestEventsStreamGapSignalAndTelemetry(t *testing.T) {
 	assert.Contains(t, body, "event: gap")
 	assert.GreaterOrEqual(t, health.EventReplayMisses(), int64(1))
 	assert.GreaterOrEqual(t, health.EventStreamGaps(), int64(1))
+	assert.GreaterOrEqual(t, health.EventBacklogDrops(), int64(1))
 }
 
 func TestEventsStreamTenantIsolation(t *testing.T) {
@@ -153,6 +154,7 @@ func TestEventsStreamTenantIsolation(t *testing.T) {
 	assert.Contains(t, body, "\"evidence_id\":\"ev-acme-2\"")
 	assert.NotContains(t, body, "\"tenant_id\":\"other\"")
 	assert.NotContains(t, body, "\"evidence_id\":\"ev-other-1\"")
+	assert.GreaterOrEqual(t, health.EventStreamDisconnects(), int64(1))
 }
 
 func TestEventsStreamHonorsConnectionLimit(t *testing.T) {
@@ -197,7 +199,9 @@ func TestStatusIncludesEvidenceDegradedFields(t *testing.T) {
 	_, hasStreamActive := out["events_stream_active"]
 	_, hasStreamGaps := out["events_stream_gaps"]
 	_, hasReplayMisses := out["events_replay_misses"]
-	assert.True(t, hasStreamActive && hasStreamGaps && hasReplayMisses)
+	_, hasDisconnects := out["events_stream_disconnects"]
+	_, hasBacklogDrops := out["events_backlog_drops"]
+	assert.True(t, hasStreamActive && hasStreamGaps && hasReplayMisses && hasDisconnects && hasBacklogDrops)
 }
 
 func newEventsTestServer(t *testing.T, tenantKeys map[string]string) (*Server, *evidence.Store) {

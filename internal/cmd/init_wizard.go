@@ -809,7 +809,11 @@ func applyFeatureToAgent(pol *policy.Policy, featureID string) error {
 		}
 		pol.Policies.DataClassification.InputScan = true
 		pol.Policies.DataClassification.OutputScan = true
-		pol.Policies.DataClassification.RedactPII = true
+		pol.Policies.DataClassification.RedactPII = false
+		redactInput := true
+		redactOutput := false
+		pol.Policies.DataClassification.RedactInput = &redactInput
+		pol.Policies.DataClassification.RedactOutput = &redactOutput
 	case "audit":
 		if pol.Audit == nil {
 			pol.Audit = &policy.AuditConfig{}

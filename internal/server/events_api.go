@@ -88,6 +88,7 @@ func (s *Server) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			health.IncEventStreamDisconnect()
 			return
 		case <-ticker.C:
 			next, gapDetected, err := s.listEventsForStream(r, tenantID, cursor)
@@ -104,6 +105,7 @@ func (s *Server) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 			for i := range next {
 				payload, _ := json.Marshal(next[i])
 				if _, writeErr := fmt.Fprintf(w, "id: %s\ndata: %s\n\n", next[i].EventID, payload); writeErr != nil {
+					health.IncEventStreamDisconnect()
 					return
 				}
 				cursor = next[i].EventID
@@ -161,6 +163,7 @@ func (s *Server) listEventsForStream(r *http.Request, tenantID, sinceID string) 
 	gap := sinceID != "" && !foundCursor && len(desc) == s.eventsReplayBacklog
 	if gap {
 		health.IncEventReplayMiss()
+		health.IncEventBacklogDrop()
 	}
 
 	asc := make([]events.OperationalEvent, 0, len(desc))

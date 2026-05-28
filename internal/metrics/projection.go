@@ -7,19 +7,59 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 )
 
+// MapToGatewayEvent converts supported event payloads into a GatewayEvent.
+func MapToGatewayEvent(input interface{}) (GatewayEvent, bool) {
+	return mapToGatewayEvent(input)
+}
+
 // GatewayEventFromMap converts the legacy gateway event map into a typed event.
 func GatewayEventFromMap(m map[string]interface{}) GatewayEvent {
-	e := GatewayEvent{}
-	mapTimestampField(m, &e)
-	mapStringFields(m, &e)
-	mapSliceFields(m, &e)
-	mapNumericFields(m, &e)
-	mapBoolFields(m, &e)
+	e, ok := mapToGatewayEvent(m)
+	if !ok {
+		return GatewayEvent{}
+	}
 	return e
 }
 
 // GatewayEventFromEvidence creates the unified event projection from evidence.
 func GatewayEventFromEvidence(e *evidence.Evidence) GatewayEvent {
+	ev, ok := mapToGatewayEvent(e)
+	if !ok {
+		return GatewayEvent{}
+	}
+	return ev
+}
+
+func mapToGatewayEvent(input interface{}) (GatewayEvent, bool) {
+	switch v := input.(type) {
+	case GatewayEvent:
+		return v, true
+	case *GatewayEvent:
+		if v == nil {
+			return GatewayEvent{}, false
+		}
+		return *v, true
+	case map[string]interface{}:
+		ev := GatewayEvent{}
+		mapTimestampField(v, &ev)
+		mapStringFields(v, &ev)
+		mapSliceFields(v, &ev)
+		mapNumericFields(v, &ev)
+		mapBoolFields(v, &ev)
+		return ev, true
+	case evidence.Evidence:
+		return gatewayEventFromEvidence(&v), true
+	case *evidence.Evidence:
+		if v == nil {
+			return GatewayEvent{}, false
+		}
+		return gatewayEventFromEvidence(v), true
+	default:
+		return GatewayEvent{}, false
+	}
+}
+
+func gatewayEventFromEvidence(e *evidence.Evidence) GatewayEvent {
 	ev := GatewayEvent{
 		Timestamp:        e.Timestamp,
 		CallerID:         firstNonEmpty(e.RequestSourceID, e.AgentID),
