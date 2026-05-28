@@ -247,7 +247,7 @@ func setAdminSessionCookie(w http.ResponseWriter, r *http.Request, key string) {
 		Value:    key,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   adminSessionCookieMaxAge,
 	})
