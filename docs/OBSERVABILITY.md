@@ -168,8 +168,15 @@ The dashboard snapshot includes:
 | `budget_status` | object | Budget utilization (daily/monthly used, limit, percentage). |
 | `cache_stats` | object | Semantic cache performance (hits, hit rate, cost saved). |
 | `plan_stats` | object | Plan lifecycle counters (pending/approved/rejected/modified/dispatched/failures). |
+| `dropped_events` | int | Collector events dropped due to in-process backpressure. |
 
 See [Gateway dashboard reference](reference/gateway-dashboard.md) for full configuration, authentication, and API details.
+
+Operational-event projection note:
+
+- Runtime projection follows `Evidence -> OperationalEvent -> Metrics/UI/CLI`.
+- Live gateway dashboard metrics are emitted only after successful evidence persistence.
+- If collector buffers overflow, drops are surfaced via `dropped_events`, OTel metric `talon.metrics.events_dropped.total`, and `/v1/status` as `metrics_events_dropped`.
 
 ---
 

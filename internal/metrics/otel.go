@@ -18,6 +18,7 @@ var (
 	mTaskDeniedTotal   metric.Int64Counter
 	mCostPerSuccess    metric.Float64Histogram
 	mViolationsDaily   metric.Int64Counter
+	mEventsDropped     metric.Int64Counter
 
 	collectorMetricsOnce       sync.Once
 	collectorMetricsRegistered bool
@@ -64,6 +65,13 @@ func initCollectorMetrics() {
 	mViolationsDaily, err = collectorMeter.Int64Counter("talon.violations.daily",
 		metric.WithDescription("Daily policy or tool violations"),
 		metric.WithUnit("{violation}"))
+	if err != nil {
+		return
+	}
+
+	mEventsDropped, err = collectorMeter.Int64Counter("talon.metrics.events_dropped.total",
+		metric.WithDescription("Dropped collector events due to backpressure"),
+		metric.WithUnit("{event}"))
 	if err != nil {
 		return
 	}
@@ -117,4 +125,12 @@ func recordViolationDaily(dayKey, callerID string) {
 		attribute.String("date", dayKey),
 		attribute.String("caller_id", callerID),
 	))
+}
+
+func recordCollectorEventDrop() {
+	ensureCollectorMetrics()
+	if !collectorMetricsRegistered {
+		return
+	}
+	mEventsDropped.Add(context.Background(), 1)
 }

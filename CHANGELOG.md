@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **change(serve): quickstart no longer registers a synthetic tenant key.** Quickstart mode is strictly a host-root OpenAI-compatibility facade; it will not silently unlock tenant APIs. When tenant keys are configured, the relocated tenant endpoint sits behind standard tenant-auth middleware and returns `401 Unauthorized` without a valid key.
 - **change(serve): `--gateway-config` exclusivity check uses explicit flag set.** `--proxy-quickstart` is rejected alongside `--gateway` or any explicitly passed `--gateway-config`, detected via `cobra.Flags().Changed` rather than the default string value.
 - **change(gateway): quickstart `unsafe-listen` signal threaded via config.** The `quickstart_unsafe_listen` evidence annotation is driven by `GatewayConfig.QuickstartUnsafeListen`, populated from `--unsafe-listen` through `QuickstartOptions`, instead of a process environment variable.
+- **change(events/metrics): evidence-first projection parity hardening.** Operational event reason fields now prefer deterministic explanation payloads, evidence/event ordering is stabilized on `timestamp DESC, id DESC`, and metrics conversion is unified through evidence-driven projection paths for stronger CLI/API/dashboard parity.
 
 ### Fixed
 
@@ -26,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **fix(agent): preserve audit trail on evidence write failures.** Runner paths that previously ignored evidence/step write errors now log structured failures (`correlation_id`, `tenant_id`, `agent_id`) so silent audit-loss conditions are observable during denied, dry-run, cached, and tool-step flows.
 - **fix(memory): redact low-risk PII before memory governance checks.** Memory observations now sanitize `person`/`location` entities before validation, allowing safe useful memories while sensitive PII still fails closed under governance policy.
 - **fix(events): expand stream reliability telemetry.** Event stream handling now increments disconnect and backlog-drop counters (in addition to gap/replay signals) and exposes them in status output for faster operator diagnosis.
+- **fix(gateway/metrics): no metrics emission without persisted evidence.** Gateway collector events are now emitted only after successful evidence persistence, preventing runtime telemetry drift when evidence writes fail.
+- **fix(metrics): surface collector backpressure drops.** Collector channel overflow drops now increment `dropped_events`, emit OTel counter `talon.metrics.events_dropped.total`, and appear in `/v1/status` as `metrics_events_dropped`.
 
 ### Release Note Quality Bar
 

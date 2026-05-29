@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/explanation"
 )
 
 // OperationalEvent is the stable, minimal runtime projection used by UI/API/CLI.
@@ -65,6 +66,9 @@ func FromEvidence(ev *evidence.Evidence) OperationalEvent {
 		out.ToolsFiltered = append([]string(nil), ev.ToolGovernance.ToolsFiltered...)
 	}
 	out.Decision, out.ReasonCode, out.ReasonText, out.SuggestedFix = decisionFields(ev)
+	if decision, code, text, fix, ok := decisionFromExplanation(ev); ok {
+		out.Decision, out.ReasonCode, out.ReasonText, out.SuggestedFix = decision, code, text, fix
+	}
 	out.PrimaryCode, out.PrimaryReason = primaryExplanation(ev)
 	if out.ReasonCode == "" {
 		out.ReasonCode = out.PrimaryCode
@@ -72,17 +76,25 @@ func FromEvidence(ev *evidence.Evidence) OperationalEvent {
 	if out.ReasonText == "" {
 		out.ReasonText = out.PrimaryReason
 	}
+	out.ReasonText = sanitizeReasonText(out.ReasonText)
+	out.PIIDetected = sanitizeSignals(out.PIIDetected)
+	out.ToolsFiltered = sanitizeSignals(out.ToolsFiltered)
 	return out
 }
 
 // SortDesc sorts events newest-first with deterministic tie-break.
 func SortDesc(events []OperationalEvent) {
 	sort.Slice(events, func(i, j int) bool {
-		if events[i].Timestamp.Equal(events[j].Timestamp) {
-			return events[i].EvidenceID > events[j].EvidenceID
-		}
-		return events[i].Timestamp.After(events[j].Timestamp)
+		return LessDesc(events[i], events[j])
 	})
+}
+
+// LessDesc returns true if a should sort before b.
+func LessDesc(a, b OperationalEvent) bool {
+	if a.Timestamp.Equal(b.Timestamp) {
+		return a.EvidenceID > b.EvidenceID
+	}
+	return a.Timestamp.After(b.Timestamp)
 }
 
 func firstNonEmpty(values ...string) string {
@@ -95,10 +107,50 @@ func firstNonEmpty(values ...string) string {
 }
 
 func primaryExplanation(ev *evidence.Evidence) (code string, reason string) {
-	if len(ev.Explanations) == 0 {
+	item, ok := explanation.Primary(ev.Explanations)
+	if !ok {
 		return "", ""
 	}
-	return ev.Explanations[0].Code, ev.Explanations[0].Reason
+	return item.Code, item.Reason
+}
+
+func decisionFromExplanation(ev *evidence.Evidence) (decision, reasonCode, reasonText, suggestedFix string, ok bool) {
+	item, ok := explanation.Primary(ev.Explanations)
+	if !ok {
+		return "", "", "", "", false
+	}
+	reasonCode = item.Code
+	reasonText = item.Reason
+	suggestedFix = item.Fix
+
+	hasFilteredTools := ev.ToolGovernance != nil && len(ev.ToolGovernance.ToolsFiltered) > 0
+	hasRedaction := ev.Classification.PIIRedacted || ev.Classification.OutputPIIDetected
+
+	switch item.Decision {
+	case explanation.DecisionFailure:
+		decision = "error"
+	case explanation.DecisionDeny:
+		decision = "blocked"
+	case explanation.DecisionFilter:
+		decision = projectedAllowDecision(hasFilteredTools, true)
+	case explanation.DecisionModify:
+		decision = projectedAllowDecision(hasFilteredTools, hasRedaction)
+	default:
+		decision = projectedAllowDecision(hasFilteredTools, hasRedaction)
+	}
+
+	return decision, reasonCode, reasonText, suggestedFix, true
+}
+
+func projectedAllowDecision(hasFilteredTools bool, hasRedaction bool) string {
+	switch {
+	case hasFilteredTools:
+		return "filtered_tool"
+	case hasRedaction:
+		return "redacted"
+	default:
+		return "allowed"
+	}
 }
 
 func decisionFields(ev *evidence.Evidence) (decision, reasonCode, reasonText, suggestedFix string) {
@@ -153,4 +205,35 @@ func fixFromCode(code string) string {
 	default:
 		return ""
 	}
+}
+
+func sanitizeReasonText(in string) string {
+	s := strings.Join(strings.Fields(strings.TrimSpace(in)), " ")
+	if len(s) > 220 {
+		return s[:220]
+	}
+	return s
+}
+
+func sanitizeSignals(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, raw := range in {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

@@ -633,7 +633,7 @@ func (s *Store) List(ctx context.Context, tenantID, agentID string, from, to tim
 		args = append(args, to)
 	}
 
-	query += ` ORDER BY timestamp DESC`
+	query += ` ORDER BY timestamp DESC, id DESC`
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)
@@ -1349,7 +1349,7 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, from, t
 		query += ` AND timestamp <= ?`
 		args = append(args, to)
 	}
-	query += ` ORDER BY timestamp DESC`
+	query += ` ORDER BY timestamp DESC, id DESC`
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)

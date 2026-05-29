@@ -60,7 +60,7 @@ type RecordGatewayEvidenceParams struct {
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
 // Never logs or stores real provider API keys.
-func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params RecordGatewayEvidenceParams) error {
+func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params RecordGatewayEvidenceParams) (*evidence.Evidence, error) {
 	var toolGov *evidence.ToolGovernance
 	if len(params.ToolsRequested) > 0 || len(params.ToolsFiltered) > 0 || len(params.ToolsForwarded) > 0 {
 		toolGov = &evidence.ToolGovernance{
@@ -148,7 +148,10 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		}
 	}
 	ev.Explanations = explanation.BuildFromFacts(facts)
-	return store.Store(ctx, ev)
+	if err := store.Store(ctx, ev); err != nil {
+		return nil, err
+	}
+	return ev, nil
 }
 
 func sanitizeGatewayAnnotations(in []string) []string {

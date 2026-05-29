@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dativo-io/talon/internal/events"
 	"github.com/dativo-io/talon/internal/evidence"
 )
 
@@ -54,30 +55,47 @@ func mapToGatewayEvent(input interface{}) (GatewayEvent, bool) {
 			return GatewayEvent{}, false
 		}
 		return gatewayEventFromEvidence(v), true
+	case events.OperationalEvent:
+		return GatewayEventFromOperationalEvent(v), true
+	case *events.OperationalEvent:
+		if v == nil {
+			return GatewayEvent{}, false
+		}
+		return GatewayEventFromOperationalEvent(*v), true
 	default:
 		return GatewayEvent{}, false
 	}
 }
 
-func gatewayEventFromEvidence(e *evidence.Evidence) GatewayEvent {
-	ev := GatewayEvent{
-		Timestamp:        e.Timestamp,
-		CallerID:         firstNonEmpty(e.RequestSourceID, e.AgentID),
-		Model:            e.Execution.ModelUsed,
-		Blocked:          !e.PolicyDecision.Allowed,
-		CostEUR:          e.Execution.Cost,
-		TokensInput:      e.Execution.Tokens.Input,
-		TokensOutput:     e.Execution.Tokens.Output,
-		LatencyMS:        e.Execution.DurationMS,
-		TTFTMS:           e.Execution.TTFTMS,
-		TPOTMS:           e.Execution.TPOTMS,
-		HasError:         e.Execution.Error != "",
-		TimedOut:         isTimedOutError(e.Execution.Error),
-		WouldHaveBlocked: e.ObservationModeOverride,
-		CacheHit:         e.CacheHit,
-		CostSaved:        e.CostSaved,
-		AgentID:          e.AgentID,
+// GatewayEventFromOperationalEvent converts the canonical operational projection into
+// dashboard metrics event shape.
+func GatewayEventFromOperationalEvent(ev events.OperationalEvent) GatewayEvent {
+	return GatewayEvent{
+		Timestamp:     ev.Timestamp,
+		CallerID:      firstNonEmpty(ev.Caller, ev.AgentID),
+		Model:         ev.Model,
+		Blocked:       ev.Decision == "blocked",
+		CostEUR:       ev.CostEUR,
+		LatencyMS:     ev.DurationMS,
+		HasError:      ev.HasError || ev.Decision == "error",
+		TimedOut:      isTimedOutError(ev.ReasonText),
+		PIIDetected:   append([]string(nil), ev.PIIDetected...),
+		ToolsFiltered: append([]string(nil), ev.ToolsFiltered...),
+		CacheHit:      ev.CacheHit,
+		CostSaved:     ev.CostSaved,
+		AgentID:       ev.AgentID,
 	}
+}
+
+func gatewayEventFromEvidence(e *evidence.Evidence) GatewayEvent {
+	ev := GatewayEventFromOperationalEvent(events.FromEvidence(e))
+	ev.CallerID = firstNonEmpty(e.RequestSourceID, ev.CallerID)
+	ev.TokensInput = e.Execution.Tokens.Input
+	ev.TokensOutput = e.Execution.Tokens.Output
+	ev.TTFTMS = e.Execution.TTFTMS
+	ev.TPOTMS = e.Execution.TPOTMS
+	ev.WouldHaveBlocked = e.ObservationModeOverride
+	ev.TimedOut = isTimedOutError(e.Execution.Error)
 
 	if len(e.Classification.PIIDetected) > 0 {
 		ev.PIIDetected = append([]string(nil), e.Classification.PIIDetected...)

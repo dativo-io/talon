@@ -20,7 +20,7 @@ func TestRecordGatewayEvidence(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	ctx := context.Background()
-	err = RecordGatewayEvidence(ctx, store, RecordGatewayEvidenceParams{
+	_, err = RecordGatewayEvidence(ctx, store, RecordGatewayEvidenceParams{
 		CorrelationID:          "corr-1",
 		TenantID:               "default",
 		CallerName:             "test-caller",
@@ -65,7 +65,7 @@ func TestRecordGatewayEvidence_ToolGovernanceRoundTrip(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	ctx := context.Background()
-	err = RecordGatewayEvidence(ctx, store, RecordGatewayEvidenceParams{
+	_, err = RecordGatewayEvidence(ctx, store, RecordGatewayEvidenceParams{
 		CorrelationID:  "corr-tools",
 		TenantID:       "default",
 		CallerName:     "openclaw-main",

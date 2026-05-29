@@ -308,6 +308,17 @@ The dashboard metrics and CLI commands (`talon costs`, `talon audit list`, `talo
 
 The in-memory collector adds real-time aggregation (5-minute buckets, latency percentiles) on top of the querier, so the dashboard may reflect very recent events slightly sooner than CLI queries that read directly from SQLite.
 
+Evidence-first runtime note:
+
+- Live gateway collector events are emitted from persisted evidence projection (not request-context-only maps).
+- If evidence storage fails for a request, Talon does not emit a corresponding gateway collector event.
+- Backpressure drops are exposed as `dropped_events` in `/api/v1/metrics` and `metrics_events_dropped` in `/v1/status`.
+
+Open product decisions tracked for SSOT completion:
+
+- Whether `/api/v1/metrics` should remain gateway-only or expand to all Talon activity.
+- Whether the operational event feed should include only completed invocations or lifecycle sub-events.
+
 ---
 
 ## Security

@@ -15,6 +15,14 @@ compliance story.
 Request → Pipeline → Evidence Record → HMAC Sign → SQLite Write → Export
 ```
 
+Operational projection contract:
+
+```
+Evidence → OperationalEvent → Metrics / UI / CLI
+```
+
+The event projection is derived from persisted evidence and deterministic explanations first, with legacy policy-reason fallback only when explanation payloads are unavailable.
+
 ## Evidence Record Structure
 
 Each record contains these sections:

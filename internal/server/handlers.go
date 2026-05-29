@@ -653,6 +653,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		snap := s.metricsCollector.Snapshot(r.Context())
 		resp["error_rate"] = snap.Summary.ErrorRate
 		resp["enforcement_mode"] = snap.EnforcementMode
+		resp["metrics_events_dropped"] = s.metricsCollector.DroppedEvents()
 	}
 	if s.activeRunTracker != nil {
 		resp["active_runs"] = s.activeRunTracker.Count(tenantID)

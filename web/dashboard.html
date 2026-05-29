@@ -223,11 +223,16 @@
     </div>
     <aside class="split-right">
       <div class="card">
-        <div class="label">Session timeline (lifecycle)</div>
-        <div class="refresh">Intent -> Guard -> Action -> Outcome -> Evidence</div>
-        <ul class="mission-feed-list" id="session-timeline-list">
-          <li>Waiting for recent evidence...</li>
-        </ul>
+        <div class="label">Session timeline (lifecycle) - recent operational events</div>
+        <div class="refresh">Live feed from /api/v1/events/stream (decision, reason, cost, model, actor, evidence)</div>
+        <table>
+          <thead>
+            <tr><th>Time</th><th>Tenant</th><th>Actor</th><th>Decision</th><th>Reason</th><th>Cost</th><th>Model</th><th>Evidence</th><th>Correlation</th></tr>
+          </thead>
+          <tbody id="session-timeline-list">
+            <tr><td colspan="9" class="refresh">Waiting for recent evidence...</td></tr>
+          </tbody>
+        </table>
       </div>
       <div class="card" style="margin-top:0.75rem;">
         <div class="label">Compliance report preview</div>
@@ -433,14 +438,30 @@
         var latest = recentEvents.slice(0, 8);
         timeline.innerHTML = '';
         if (latest.length === 0) {
-          timeline.innerHTML = '<li>No recent sessions recorded.</li>';
+          timeline.innerHTML = '<tr><td colspan="9" class="refresh">No recent sessions recorded.</td></tr>';
           return;
         }
         latest.forEach(function(ev) {
           var when = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '--';
           var outcome = ev.decision || (ev.allowed ? 'allow' : 'deny');
           var actor = ev.caller || ev.agent_id || 'agent';
-          timeline.innerHTML += '<li>' + escapeHtml(when) + ' · ' + escapeHtml(actor) + ' · ' + escapeHtml(outcome) + ' · evidence ' + escapeHtml(ev.evidence_id || '—') + '</li>';
+          var tenant = ev.tenant_id || '—';
+          var reason = ev.reason_text || ev.reason_code || '—';
+          var model = ev.model || '—';
+          var cost = (ev.cost_eur != null && !isNaN(Number(ev.cost_eur))) ? Number(ev.cost_eur).toFixed(4) : '0.0000';
+          var evidenceId = ev.evidence_id || '—';
+          var corr = ev.correlation_id || '—';
+          timeline.innerHTML += '<tr>' +
+            '<td>' + escapeHtml(when) + '</td>' +
+            '<td>' + escapeHtml(tenant) + '</td>' +
+            '<td>' + escapeHtml(actor) + '</td>' +
+            '<td>' + escapeHtml(outcome) + '</td>' +
+            '<td>' + escapeHtml(reason) + '</td>' +
+            '<td>' + escapeHtml(cost) + '</td>' +
+            '<td>' + escapeHtml(model) + '</td>' +
+            '<td>' + escapeHtml(evidenceId) + '</td>' +
+            '<td>' + escapeHtml(corr) + '</td>' +
+            '</tr>';
         });
       }
 
