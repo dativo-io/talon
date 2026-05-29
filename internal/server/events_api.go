@@ -97,10 +97,10 @@ func (s *Server) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 			}
 			if gapDetected {
 				health.IncEventStreamGap()
-			if _, writeErr := fmt.Fprintf(w, "event: gap\ndata: {\"reason\":\"replay_window_miss\"}\n\n"); writeErr != nil {
-				health.IncEventStreamDisconnect()
-				return
-			}
+				if _, writeErr := fmt.Fprintf(w, "event: gap\ndata: {\"reason\":\"replay_window_miss\"}\n\n"); writeErr != nil {
+					health.IncEventStreamDisconnect()
+					return
+				}
 				flush()
 			}
 			for i := range next {
