@@ -318,6 +318,20 @@ func TestPlanStatsCallback(t *testing.T) {
 	assert.Equal(t, 1, snap.Summary.PlanDispatchErr)
 }
 
+func TestCollectorDroppedEventsBackpressure(t *testing.T) {
+	c := newTestCollector("enforce", nil)
+	// Stop consumer loop to force channel saturation deterministically.
+	c.Close()
+
+	for i := 0; i < 1200; i++ {
+		c.Record(GatewayEvent{Timestamp: time.Now()})
+	}
+
+	assert.Greater(t, c.DroppedEvents(), uint64(0))
+	snap := c.Snapshot(context.Background())
+	assert.Equal(t, c.DroppedEvents(), snap.DroppedEvents)
+}
+
 func TestPIITimelineAndCostTimeline(t *testing.T) {
 	c := newTestCollector("enforce", nil)
 	defer c.Close()

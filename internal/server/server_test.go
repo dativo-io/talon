@@ -374,6 +374,36 @@ func TestStatusEndpoint_ActiveRunsFromTracker(t *testing.T) {
 	assert.Equal(t, float64(0), out["active_runs"], "default tenant has no runs")
 }
 
+func TestStatusEndpoint_IncludesMetricsDroppedEvents(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	collector := metrics.NewCollector("enforce", store)
+	collector.Close() // stop consumer to force backpressure drops
+	for i := 0; i < 1200; i++ {
+		collector.Record(metrics.GatewayEvent{Timestamp: time.Now().UTC(), CallerID: "app"})
+	}
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"}, WithMetricsCollector(collector))
+	r := srv.Routes()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Contains(t, out, "metrics_events_dropped")
+	assert.Greater(t, out["metrics_events_dropped"].(float64), float64(0))
+}
+
 func TestCostsAndBudgetEndpoints(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)

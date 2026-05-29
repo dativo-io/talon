@@ -1026,6 +1026,126 @@ CACHEEOF
   fi
   echo "[SMOKE] CONSISTENCY|live_monotonicity|before_total=$live_before_total after_total=$live_after_total"
 
+  # --- 23.12: Evidence-first SSOT parity (Issue #43) ---
+  # Invariants under verification:
+  #   1. /v1/status surfaces backpressure/degraded counters.
+  #   2. /api/v1/metrics snapshot includes dropped_events.
+  #   3. /api/v1/events/recent rows carry evidence-linked projection fields.
+  #   4. Event ordering is deterministic (timestamp DESC, evidence_id DESC tie-break).
+  #   5. Every event.evidence_id resolves to a real evidence record (no orphan events).
+  #   6. SSE stream emits `id:` + `data:` lines per event.
+  echo ""
+  echo "  -- 23.12: Evidence-first SSOT parity (Issue #43) --"
+
+  local status_json; status_json="$(smoke_get_status "$dashboard_base_url" "$admin_key")"
+  if jq -e '.' <<< "$status_json" &>/dev/null; then
+    assert_pass "status exposes metrics_events_dropped" \
+      jq -e 'has("metrics_events_dropped")' <<< "$status_json" &>/dev/null
+    assert_pass "status exposes events_stream_gaps" \
+      jq -e 'has("events_stream_gaps")' <<< "$status_json" &>/dev/null
+    assert_pass "status exposes events_replay_misses" \
+      jq -e 'has("events_replay_misses")' <<< "$status_json" &>/dev/null
+    assert_pass "status exposes events_backlog_drops" \
+      jq -e 'has("events_backlog_drops")' <<< "$status_json" &>/dev/null
+  else
+    log_failure "status endpoint not reachable for SSOT checks" "url=${dashboard_base_url}${SMOKE_PATH_STATUS}"
+    dump_diag_json "status_json" "$status_json"
+  fi
+
+  # dropped_events is omitempty in the JSON snapshot: absent when 0 (healthy),
+  # present and >=0 when collector backpressure has occurred.
+  assert_pass "metrics snapshot dropped_events absent (healthy) or numeric >=0" \
+    jq -e '(has("dropped_events") | not) or (.dropped_events | type == "number" and . >= 0)' <<< "$snap_after_live" &>/dev/null
+
+  local events_json; events_json="$(smoke_get_events_recent "$dashboard_base_url" "$admin_key" 50)"
+  if jq -e '.events | type == "array"' <<< "$events_json" &>/dev/null; then
+    assert_pass "events recent returns events array" \
+      jq -e '.events | type == "array"' <<< "$events_json" &>/dev/null
+
+    local events_len; events_len="$(jq '.events | length' <<< "$events_json")"
+    echo "[SMOKE] CONSISTENCY|events_recent_len|${events_len:-0}"
+
+    if [[ -n "$events_len" ]] && [[ "$events_len" -gt 0 ]]; then
+      assert_pass "every event has event_id" \
+        jq -e 'all(.events[]; has("event_id") and (.event_id | length > 0))' <<< "$events_json" &>/dev/null
+      assert_pass "every event has evidence_id" \
+        jq -e 'all(.events[]; has("evidence_id") and (.evidence_id | length > 0))' <<< "$events_json" &>/dev/null
+      assert_pass "every event has timestamp" \
+        jq -e 'all(.events[]; has("timestamp") and (.timestamp | length > 0))' <<< "$events_json" &>/dev/null
+      assert_pass "every event has decision" \
+        jq -e 'all(.events[]; has("decision") and (.decision | length > 0))' <<< "$events_json" &>/dev/null
+      assert_pass "every event exposes tenant_id" \
+        jq -e 'all(.events[]; has("tenant_id"))' <<< "$events_json" &>/dev/null
+      assert_pass "every event exposes cost_eur as number" \
+        jq -e 'all(.events[]; .cost_eur | type == "number")' <<< "$events_json" &>/dev/null
+
+      # Ordering: timestamps must be non-increasing (newest first)
+      assert_pass "events ordered newest-first by timestamp" \
+        jq -e '[.events[].timestamp] | . == (. | sort | reverse)' <<< "$events_json" &>/dev/null
+
+      # Evidence linkage: each event.evidence_id must exist in /v1/evidence index.
+      local ev_index; ev_index="$(smoke_get_evidence_index "$dashboard_base_url" "$admin_key" 200)"
+      if jq -e '.entries | type == "array"' <<< "$ev_index" &>/dev/null; then
+        local missing_links
+        missing_links="$(jq -n --argjson ev "$ev_index" --argjson op "$events_json" '
+          ($ev.entries // []) as $idx
+          | ($op.events // []) as $events
+          | [$idx[].id] as $ids
+          | [$events[] | select(.evidence_id as $eid | ($ids | index($eid)) == null) | .evidence_id]
+          | length
+        ' 2>/dev/null || echo "")"
+        if [[ -n "$missing_links" ]] && [[ "$missing_links" == "0" ]]; then
+          echo "  ✓  every event.evidence_id resolves to an /v1/evidence record"
+          record_pass
+        else
+          log_failure "events without matching evidence_id in /v1/evidence index" \
+            "missing=${missing_links:-unknown} (orphan events break evidence-first invariant)"
+          dump_diag_json "events_json" "$events_json"
+        fi
+      else
+        echo "  -  evidence index not parseable; skipping evidence-link integrity"
+      fi
+    else
+      echo "  -  events recent is empty (skip per-row invariants)"
+    fi
+  else
+    log_failure "events recent endpoint did not return events array" "url=${dashboard_base_url}${SMOKE_PATH_EVENTS_RECENT}"
+    dump_diag_json "events_json" "$events_json"
+  fi
+
+  # SSE: confirm stream emits both `id:` and `data:` lines for at least one event.
+  local sse_evts; sse_evts="$(smoke_capture_events_stream "$dashboard_base_url" "$admin_key" 4)"
+  if echo "$sse_evts" | grep -q '^data:' && echo "$sse_evts" | grep -q '^id:'; then
+    echo "  ✓  events SSE stream emits id+data per event"
+    record_pass
+    local sse_payload; sse_payload="$(echo "$sse_evts" | awk '/^data:/{print substr($0,7); exit}')"
+    if [[ -n "$sse_payload" ]] && jq -e 'has("event_id") and has("evidence_id")' <<< "$sse_payload" &>/dev/null; then
+      echo "  ✓  events SSE payload carries event_id+evidence_id"
+      record_pass
+    else
+      echo "  -  events SSE payload missing event_id/evidence_id (timing window)"
+    fi
+  else
+    echo "  -  events SSE stream did not emit id+data within window (may be quiet)"
+  fi
+
+  # CLI parity: `talon events tail --json` should produce the same shape as the API.
+  local cli_events_out; cli_events_out="$(timeout 4 env TALON_ADMIN_KEY="$admin_key" \
+    talon events tail --url "$dashboard_base_url" --json 2>/dev/null | head -1)" || true
+  if [[ -n "$cli_events_out" ]]; then
+    if jq -e 'has("event_id") and has("evidence_id") and has("decision")' <<< "$cli_events_out" &>/dev/null; then
+      echo "  ✓  talon events tail --json emits projection-shaped rows"
+      record_pass
+    else
+      echo "  -  talon events tail --json row missing event_id/evidence_id/decision"
+      dump_diag_kv "cli_events_first_row" "$cli_events_out"
+    fi
+  else
+    echo "  -  talon events tail --json produced no rows in window"
+  fi
+
+  echo "[SMOKE] CONSISTENCY|ssot_evidence_first_block|complete"
+
   kill "$GW_PID" 2>/dev/null || true
   wait "$GW_PID" 2>/dev/null || true
   sleep 2

@@ -13,6 +13,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/health"
+	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 	"github.com/go-chi/chi/v5"
@@ -31,6 +32,23 @@ func (s *metricsRecorderSpy) RecordGatewayEvent(event interface{}) {
 	defer s.mu.Unlock()
 	if m, ok := event.(map[string]interface{}); ok {
 		s.events = append(s.events, m)
+		return
+	}
+	ev, ok := metrics.MapToGatewayEvent(event)
+	if ok {
+		s.events = append(s.events, map[string]interface{}{
+			"caller_id":      ev.CallerID,
+			"model":          ev.Model,
+			"blocked":        ev.Blocked,
+			"cost_eur":       ev.CostEUR,
+			"latency_ms":     ev.LatencyMS,
+			"has_error":      ev.HasError,
+			"timed_out":      ev.TimedOut,
+			"cache_hit":      ev.CacheHit,
+			"cost_saved":     ev.CostSaved,
+			"tools_filtered": ev.ToolsFiltered,
+			"pii_detected":   ev.PIIDetected,
+		})
 	}
 }
 
@@ -445,4 +463,44 @@ func TestBlockedPath_AllBlockedPathsConsistent(t *testing.T) {
 			assert.Equal(t, "test-caller", ev["caller_id"], "blocked path %q should include caller_id", tt.name)
 		})
 	}
+}
+
+func TestGatewayMetrics_RuntimeEventMatchesEvidenceProjection(t *testing.T) {
+	cfg := &GatewayConfig{
+		Enabled:      true,
+		ListenPrefix: "/v1/proxy",
+		Mode:         ModeEnforce,
+		Providers: map[string]ProviderConfig{
+			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
+		},
+		Callers: []CallerConfig{
+			{
+				Name:             "test-caller",
+				TenantKey:        "talon-gw-test-001",
+				TenantID:         "default",
+				AllowedProviders: []string{"anthropic"},
+			},
+		},
+		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
+		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+	}
+	gw, spy, evStore := setupGatewayWithSpy(t, cfg, nil)
+
+	w := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
+		`{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}`)
+	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Equal(t, 1, spy.count())
+
+	list, err := evStore.List(context.Background(), "default", "test-caller", time.Time{}, time.Time{}, 1)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+
+	projected := metrics.GatewayEventFromEvidence(&list[0])
+	observed := spy.lastEvent()
+	require.NotNil(t, observed)
+	assert.Equal(t, projected.Blocked, observed["blocked"])
+	assert.Equal(t, projected.HasError, observed["has_error"])
+	assert.Equal(t, projected.CallerID, observed["caller_id"])
+	assert.Equal(t, projected.Model, observed["model"])
+	assert.Equal(t, projected.CostEUR, observed["cost_eur"])
 }

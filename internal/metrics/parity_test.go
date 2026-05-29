@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/events"
 	"github.com/dativo-io/talon/internal/evidence"
 )
 
@@ -302,4 +303,38 @@ func TestParity_EvidenceWriteMatchesMappedEventProjection(t *testing.T) {
 	assert.Equal(t, fromEvidence.CostEUR, fromMap.CostEUR)
 	assert.Equal(t, fromEvidence.LatencyMS, fromMap.LatencyMS)
 	assert.Equal(t, fromEvidence.PIIDetected, fromMap.PIIDetected)
+}
+
+func TestParity_OperationalEventConversionMatchesEvidenceConversion(t *testing.T) {
+	now := time.Now().UTC()
+	ev := evidence.Evidence{
+		ID:              "ev-op-1",
+		CorrelationID:   "corr-op-1",
+		Timestamp:       now,
+		TenantID:        "default",
+		AgentID:         "agent-op",
+		RequestSourceID: "caller-op",
+		InvocationType:  "gateway",
+		PolicyDecision:  evidence.PolicyDecision{Allowed: false, Reasons: []string{"budget denied"}},
+		Classification:  evidence.Classification{PIIDetected: []string{"email"}},
+		Execution: evidence.Execution{
+			ModelUsed:  "gpt-4o-mini",
+			Cost:       0.05,
+			DurationMS: 250,
+			Tokens:     evidence.TokenUsage{Input: 123, Output: 45},
+		},
+	}
+
+	fromEvidence := GatewayEventFromEvidence(&ev)
+	fromOpEvent := GatewayEventFromOperationalEvent(events.FromEvidence(&ev))
+
+	assert.Equal(t, fromEvidence.Timestamp, fromOpEvent.Timestamp)
+	assert.Equal(t, fromEvidence.CallerID, fromOpEvent.CallerID)
+	assert.Equal(t, fromEvidence.Model, fromOpEvent.Model)
+	assert.Equal(t, fromEvidence.Blocked, fromOpEvent.Blocked)
+	assert.Equal(t, fromEvidence.CostEUR, fromOpEvent.CostEUR)
+	assert.Equal(t, fromEvidence.LatencyMS, fromOpEvent.LatencyMS)
+	assert.Equal(t, fromEvidence.HasError, fromOpEvent.HasError)
+	assert.Equal(t, fromEvidence.AgentID, fromOpEvent.AgentID)
+	assert.Equal(t, fromEvidence.PIIDetected, fromOpEvent.PIIDetected)
 }

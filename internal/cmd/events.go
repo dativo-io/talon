@@ -172,9 +172,9 @@ func printOperationalEvent(outWriter interface{ Write([]byte) (int, error) }, ev
 		return
 	}
 	line := fmt.Sprintf(
-		"%s | tenant=%s | caller=%s | decision=%s | cost=%.4f | model=%s | evidence=%s\n",
+		"%s | tenant=%s | caller=%s | decision=%s | reason_code=%s | reason_text=%s | cost=%.4f | model=%s | evidence=%s | correlation=%s\n",
 		ev.Timestamp.Format(time.RFC3339), valueOrDash(ev.TenantID), valueOrDash(ev.Caller), valueOrDash(ev.Decision),
-		ev.CostEUR, valueOrDash(ev.Model), valueOrDash(ev.EvidenceID),
+		valueOrDash(ev.ReasonCode), valueOrDash(ev.ReasonText), ev.CostEUR, valueOrDash(ev.Model), valueOrDash(ev.EvidenceID), valueOrDash(ev.CorrelationID),
 	)
 	_, _ = outWriter.Write([]byte(line))
 }

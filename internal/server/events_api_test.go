@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/events"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/health"
 	"github.com/dativo-io/talon/internal/policy"
@@ -49,6 +50,39 @@ func TestEventsRecentParityWithEvidenceList(t *testing.T) {
 
 	require.Len(t, recent.Events, len(evList.Entries))
 	assert.Equal(t, evList.Entries[0].ID, recent.Events[0]["evidence_id"])
+}
+
+func TestEventsRecentParityWithEvidenceList_TieBreakByEvidenceID(t *testing.T) {
+	srv, store := newEventsTestServer(t, map[string]string{"k-default": "default"})
+	now := time.Now().UTC()
+	insertEvidence(t, store, "ev-a", "default", "agent-a", now, true, 0.12)
+	insertEvidence(t, store, "ev-z", "default", "agent-a", now, false, 0.0)
+
+	r := srv.Routes()
+	evidenceReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=10", nil)
+	evidenceReq.Header.Set("Authorization", "Bearer k-default")
+	evidenceRec := httptest.NewRecorder()
+	r.ServeHTTP(evidenceRec, evidenceReq)
+	require.Equal(t, http.StatusOK, evidenceRec.Code)
+
+	eventsReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/events/recent?limit=10", nil)
+	eventsReq.Header.Set("Authorization", "Bearer k-default")
+	eventsRec := httptest.NewRecorder()
+	r.ServeHTTP(eventsRec, eventsReq)
+	require.Equal(t, http.StatusOK, eventsRec.Code)
+
+	var evList struct {
+		Entries []evidence.Index `json:"entries"`
+	}
+	require.NoError(t, json.NewDecoder(evidenceRec.Body).Decode(&evList))
+	var recent struct {
+		Events []map[string]interface{} `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(eventsRec.Body).Decode(&recent))
+	require.GreaterOrEqual(t, len(evList.Entries), 2)
+	require.GreaterOrEqual(t, len(recent.Events), 2)
+	assert.Equal(t, evList.Entries[0].ID, recent.Events[0]["evidence_id"])
+	assert.Equal(t, "ev-z", evList.Entries[0].ID)
 }
 
 func TestEventsRecentTenantIsolation(t *testing.T) {
@@ -104,6 +138,64 @@ func TestEventsStreamRespectsLastEventID(t *testing.T) {
 	assert.Contains(t, body, "id: ")
 	assert.Contains(t, body, "\"evidence_id\":\"ev-2\"")
 	assert.NotContains(t, body, "\"evidence_id\":\"ev-1\"")
+}
+
+func TestEventsParity_BoundedWindowAcrossCLIAndAPI(t *testing.T) {
+	srv, store := newEventsTestServer(t, map[string]string{"k-default": "default"})
+	now := time.Now().UTC()
+	insertEvidence(t, store, "ev-p1", "default", "agent-a", now.Add(-2*time.Second), true, 0.01)
+	insertEvidence(t, store, "ev-p2", "default", "agent-a", now.Add(-1*time.Second), false, 0.00)
+
+	cliSource, err := store.List(context.Background(), "default", "", time.Time{}, time.Now().UTC(), 20)
+	require.NoError(t, err)
+	cliEvents := make([]map[string]interface{}, 0, len(cliSource))
+	for i := range cliSource {
+		ev := events.FromEvidence(&cliSource[i])
+		cliEvents = append(cliEvents, map[string]interface{}{
+			"event_id":       ev.EventID,
+			"evidence_id":    ev.EvidenceID,
+			"tenant_id":      ev.TenantID,
+			"agent_id":       ev.AgentID,
+			"correlation_id": ev.CorrelationID,
+			"allowed":        ev.Allowed,
+			"decision":       ev.Decision,
+			"cost_eur":       ev.CostEUR,
+			"model":          ev.Model,
+		})
+	}
+
+	r := srv.Routes()
+	evidenceReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/evidence?limit=20", nil)
+	evidenceReq.Header.Set("Authorization", "Bearer k-default")
+	evidenceRec := httptest.NewRecorder()
+	r.ServeHTTP(evidenceRec, evidenceReq)
+	require.Equal(t, http.StatusOK, evidenceRec.Code)
+	var evList struct {
+		Entries []evidence.Index `json:"entries"`
+	}
+	require.NoError(t, json.NewDecoder(evidenceRec.Body).Decode(&evList))
+
+	eventsReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/events/recent?limit=20", nil)
+	eventsReq.Header.Set("Authorization", "Bearer k-default")
+	eventsRec := httptest.NewRecorder()
+	r.ServeHTTP(eventsRec, eventsReq)
+	require.Equal(t, http.StatusOK, eventsRec.Code)
+	var recent struct {
+		Events []map[string]interface{} `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(eventsRec.Body).Decode(&recent))
+
+	require.Equal(t, len(evList.Entries), len(recent.Events))
+	require.Equal(t, len(cliEvents), len(recent.Events))
+	for i := range recent.Events {
+		assert.Equal(t, evList.Entries[i].ID, recent.Events[i]["evidence_id"])
+		assert.Equal(t, cliEvents[i]["evidence_id"], recent.Events[i]["evidence_id"])
+		assert.Equal(t, cliEvents[i]["decision"], recent.Events[i]["decision"])
+		assert.Equal(t, cliEvents[i]["tenant_id"], recent.Events[i]["tenant_id"])
+		assert.Equal(t, cliEvents[i]["agent_id"], recent.Events[i]["agent_id"])
+		assert.Equal(t, cliEvents[i]["correlation_id"], recent.Events[i]["correlation_id"])
+		assert.InDelta(t, cliEvents[i]["cost_eur"].(float64), recent.Events[i]["cost_eur"].(float64), 0.0001)
+	}
 }
 
 func TestEventsStreamGapSignalAndTelemetry(t *testing.T) {

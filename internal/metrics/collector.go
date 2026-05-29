@@ -4,9 +4,11 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/rs/zerolog/log"
 )
 
 // Snapshot is the complete dashboard state returned by GET /api/v1/metrics.
@@ -14,6 +16,7 @@ type Snapshot struct {
 	GeneratedAt      time.Time           `json:"generated_at"`
 	EnforcementMode  string              `json:"enforcement_mode"`
 	Uptime           string              `json:"uptime"`
+	DroppedEvents    uint64              `json:"dropped_events,omitempty"`
 	Summary          Summary             `json:"summary"`
 	RequestsTimeline []TimePoint         `json:"requests_timeline"`
 	PIITimeline      []TimePoint         `json:"pii_timeline"`
@@ -285,6 +288,7 @@ type Collector struct {
 	budgetMonthly  float64
 	tenantID       string
 	planStatsFn    func(context.Context, string) (PlanStats, error)
+	droppedEvents  uint64
 }
 
 // CollectorOption configures a Collector.
@@ -340,7 +344,17 @@ func (c *Collector) Record(e GatewayEvent) {
 	select {
 	case c.events <- e:
 	default:
+		dropped := atomic.AddUint64(&c.droppedEvents, 1)
+		recordCollectorEventDrop()
+		if dropped == 1 || dropped%100 == 0 {
+			log.Warn().Uint64("dropped_events", dropped).Msg("metrics_collector_event_dropped")
+		}
 	}
+}
+
+// DroppedEvents returns number of collector events dropped due to backpressure.
+func (c *Collector) DroppedEvents() uint64 {
+	return atomic.LoadUint64(&c.droppedEvents)
 }
 
 // Close stops the background consumer goroutine.
@@ -601,6 +615,7 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 		GeneratedAt:     now,
 		EnforcementMode: c.enforcementMode,
 		Uptime:          uptime,
+		DroppedEvents:   c.DroppedEvents(),
 		Summary: Summary{
 			TotalRequests:   c.totalRequests,
 			BlockedRequests: c.blockedRequests,
