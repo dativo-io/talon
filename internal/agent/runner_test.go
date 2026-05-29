@@ -547,6 +547,56 @@ func TestSafePolicyPathUnder(t *testing.T) {
 	}
 }
 
+func TestWriteMemoryObservation_RedactsPIIBeforeGovernance(t *testing.T) {
+	ctx := context.Background()
+	memStore, err := memory.NewStore(filepath.Join(t.TempDir(), "memory.db"))
+	require.NoError(t, err)
+	defer memStore.Close()
+
+	cls := classifier.MustNewScanner()
+	gov := memory.NewGovernance(memStore, cls)
+	r := &Runner{
+		memory:     memStore,
+		governance: gov,
+		classifier: cls,
+	}
+
+	pol := &policy.Policy{
+		Memory: &policy.MemoryConfig{
+			Enabled:           true,
+			Mode:              "active",
+			AllowedCategories: []string{memory.CategoryDomainKnowledge},
+		},
+		Policies: policy.PoliciesConfig{},
+	}
+	req := &RunRequest{
+		TenantID:       "default",
+		AgentName:      "agent-1",
+		InvocationType: "manual",
+	}
+	resp := &RunResponse{
+		Response:   "Our headquarters is Berlin.",
+		ModelUsed:  "gpt-4o-mini",
+		Cost:       0.001,
+		DurationMS: 100,
+	}
+	ev := &evidence.Evidence{
+		ID: "req_test",
+		AuditTrail: evidence.AuditTrail{
+			InputHash: "hash_test",
+		},
+	}
+
+	r.writeMemoryObservation(ctx, req, pol, nil, resp, ev)
+
+	entries, err := memStore.List(ctx, "default", "agent-1", "", 10)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "memory write should be persisted after redaction")
+	assert.NotContains(t, entries[0].Title, "Berlin")
+	assert.NotContains(t, entries[0].Content, "Berlin")
+	assert.Contains(t, entries[0].Content, "[LOCATION]")
+}
+
 // TestRun_acceptsAbsolutePolicyPathOutsidePolicyDir ensures that when PolicyPath is an
 // absolute path (e.g. from --policy or serve config / Docker volume), the runner accepts it
 // even though it is outside policyDir. This fixes serve chat completions and talon run --policy
