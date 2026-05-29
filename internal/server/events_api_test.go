@@ -15,6 +15,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/events"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/health"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/testutil"
@@ -107,6 +108,118 @@ func TestEventsRecentTenantIsolation(t *testing.T) {
 	for _, ev := range recent.Events {
 		assert.Equal(t, "acme", ev.TenantID)
 	}
+}
+
+func TestEventsRecentIncludesReasonsAndPreservesTenantIsolation(t *testing.T) {
+	srv, store := newEventsTestServer(t, map[string]string{"k-acme": "acme", "k-other": "other"})
+	now := time.Now().UTC()
+
+	denied := evidence.Evidence{
+		ID:              "ev-reasons-denied",
+		CorrelationID:   "corr-ev-reasons-denied",
+		Timestamp:       now,
+		TenantID:        "acme",
+		AgentID:         "agent-a",
+		InvocationType:  "gateway",
+		RequestSourceID: "agent-a",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: false,
+			Action:  "deny",
+			Reasons: []string{"PII detected", "budget exceeded"},
+		},
+		Explanations: []explanation.Item{
+			{Reason: "Request blocked because input PII was detected."},
+		},
+		Execution: evidence.Execution{
+			ModelUsed:  "gpt-4o-mini",
+			Cost:       0.00,
+			DurationMS: 100,
+			Error:      "upstream timeout",
+		},
+	}
+	require.NoError(t, store.Store(context.Background(), &denied))
+
+	allowed := evidence.Evidence{
+		ID:              "ev-reasons-allowed",
+		CorrelationID:   "corr-ev-reasons-allowed",
+		Timestamp:       now.Add(1 * time.Millisecond),
+		TenantID:        "other",
+		AgentID:         "agent-b",
+		InvocationType:  "gateway",
+		RequestSourceID: "agent-b",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: true,
+			Action:  "allow",
+		},
+		Execution: evidence.Execution{
+			ModelUsed:  "gpt-4o-mini",
+			Cost:       0.01,
+			DurationMS: 100,
+		},
+	}
+	require.NoError(t, store.Store(context.Background(), &allowed))
+	r := srv.Routes()
+
+	tenantReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/events/recent?limit=10", nil)
+	tenantReq.Header.Set("Authorization", "Bearer k-acme")
+	tenantRec := httptest.NewRecorder()
+	r.ServeHTTP(tenantRec, tenantReq)
+	require.Equal(t, http.StatusOK, tenantRec.Code)
+
+	var tenantRecent struct {
+		Events []struct {
+			EvidenceID string   `json:"evidence_id"`
+			TenantID   string   `json:"tenant_id"`
+			Reasons    []string `json:"reasons"`
+		} `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(tenantRec.Body).Decode(&tenantRecent))
+	require.Len(t, tenantRecent.Events, 1)
+	assert.Equal(t, "ev-reasons-denied", tenantRecent.Events[0].EvidenceID)
+	assert.Equal(t, "acme", tenantRecent.Events[0].TenantID)
+	assert.Equal(t, []string{
+		"PII detected",
+		"budget exceeded",
+		"Request blocked because input PII was detected.",
+		"upstream timeout",
+	}, tenantRecent.Events[0].Reasons)
+
+	adminReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/events/recent?tenant_id=*&limit=10", nil)
+	adminReq.Header.Set("X-Talon-Admin-Key", "admin-secret")
+	adminRec := httptest.NewRecorder()
+	r.ServeHTTP(adminRec, adminReq)
+	require.Equal(t, http.StatusOK, adminRec.Code)
+
+	var adminRecent struct {
+		Events []map[string]interface{} `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(adminRec.Body).Decode(&adminRecent))
+	require.Len(t, adminRecent.Events, 2)
+
+	var foundDenied bool
+	var foundAllowed bool
+	for _, ev := range adminRecent.Events {
+		switch ev["evidence_id"] {
+		case "ev-reasons-denied":
+			foundDenied = true
+			reasons, ok := ev["reasons"].([]interface{})
+			require.True(t, ok)
+			require.NotEmpty(t, reasons)
+		case "ev-reasons-allowed":
+			foundAllowed = true
+			if reasonsRaw, hasReasons := ev["reasons"]; hasReasons {
+				reasons, ok := reasonsRaw.([]interface{})
+				require.True(t, ok)
+				for _, reason := range reasons {
+					reasonText, ok := reason.(string)
+					require.True(t, ok)
+					assert.NotEmpty(t, reasonText)
+				}
+			}
+		}
+	}
+	assert.True(t, foundDenied)
+	assert.True(t, foundAllowed)
 }
 
 func TestEventsStreamRespectsLastEventID(t *testing.T) {

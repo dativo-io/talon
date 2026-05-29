@@ -24,6 +24,7 @@ type OperationalEvent struct {
 	Allowed        bool      `json:"allowed"`
 	ReasonCode     string    `json:"reason_code,omitempty"`
 	ReasonText     string    `json:"reason_text,omitempty"`
+	Reasons        []string  `json:"reasons,omitempty"`
 	SuggestedFix   string    `json:"suggested_fix,omitempty"`
 	CostEUR        float64   `json:"cost_eur"`
 	Model          string    `json:"model,omitempty"`
@@ -79,6 +80,7 @@ func FromEvidence(ev *evidence.Evidence) OperationalEvent {
 	out.ReasonText = sanitizeReasonText(out.ReasonText)
 	out.PIIDetected = sanitizeSignals(out.PIIDetected)
 	out.ToolsFiltered = sanitizeSignals(out.ToolsFiltered)
+	out.Reasons = buildReasons(ev)
 	return out
 }
 
@@ -232,6 +234,45 @@ func sanitizeSignals(in []string) []string {
 		seen[v] = struct{}{}
 		out = append(out, v)
 	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func buildReasons(ev *evidence.Evidence) []string {
+	if ev == nil {
+		return nil
+	}
+
+	const maxReasons = 10
+	out := make([]string, 0, maxReasons)
+	seen := make(map[string]struct{}, maxReasons)
+
+	appendReason := func(raw string) {
+		if len(out) >= maxReasons {
+			return
+		}
+		reason := sanitizeReasonText(raw)
+		if reason == "" {
+			return
+		}
+		key := strings.ToLower(reason)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, reason)
+	}
+
+	for _, reason := range ev.PolicyDecision.Reasons {
+		appendReason(reason)
+	}
+	for i := range ev.Explanations {
+		appendReason(ev.Explanations[i].Reason)
+	}
+	appendReason(ev.Execution.Error)
+
 	if len(out) == 0 {
 		return nil
 	}

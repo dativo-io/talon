@@ -1079,6 +1079,20 @@ CACHEEOF
       assert_pass "every event exposes cost_eur as number" \
         jq -e 'all(.events[]; .cost_eur | type == "number")' <<< "$events_json" &>/dev/null
 
+      # v1.5.0 contract: reasons[] (when present) must be an array of non-empty strings.
+      assert_pass "events reasons[] is well-formed when present" \
+        jq -e 'all(.events[]; (has("reasons") | not) or ((.reasons | type == "array") and all(.reasons[]; (type == "string") and (length > 0))))' <<< "$events_json" &>/dev/null
+
+      # v1.5.0 contract: section 23 fired denied traffic (PII block, tool block) so at least
+      # one event should expose a non-empty reasons[]. Soft-warn if the window is too tight.
+      local events_with_reasons; events_with_reasons="$(jq '[.events[] | select(has("reasons") and (.reasons | length > 0))] | length' <<< "$events_json")"
+      if [[ -n "$events_with_reasons" ]] && [[ "$events_with_reasons" -ge 1 ]]; then
+        echo "  ✓  events recent surfaces reasons[] for at least one event ($events_with_reasons)"
+        record_pass
+      else
+        echo "  -  no events with reasons[] yet (timing window or all-allowed traffic)"
+      fi
+
       # Ordering: timestamps must be non-increasing (newest first)
       assert_pass "events ordered newest-first by timestamp" \
         jq -e '[.events[].timestamp] | . == (. | sort | reverse)' <<< "$events_json" &>/dev/null
@@ -1122,6 +1136,15 @@ CACHEEOF
     if [[ -n "$sse_payload" ]] && jq -e 'has("event_id") and has("evidence_id")' <<< "$sse_payload" &>/dev/null; then
       echo "  ✓  events SSE payload carries event_id+evidence_id"
       record_pass
+      # v1.5.0 contract: when reasons[] is present in the SSE payload it must be a clean string array.
+      if jq -e 'has("reasons")' <<< "$sse_payload" &>/dev/null; then
+        if jq -e '(.reasons | type == "array") and all(.reasons[]; (type == "string") and (length > 0))' <<< "$sse_payload" &>/dev/null; then
+          echo "  ✓  events SSE payload reasons[] is well-formed"
+          record_pass
+        else
+          log_failure "events SSE payload reasons[] malformed" "expected array of non-empty strings"
+        fi
+      fi
     else
       echo "  -  events SSE payload missing event_id/evidence_id (timing window)"
     fi

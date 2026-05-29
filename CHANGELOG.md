@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **feat(serve): OpenAI-compatible quickstart proxy mode.** Added `talon serve --proxy-quickstart` for dev/local host-root compatibility (`POST /v1/chat/completions`, `POST /v1/responses`) without gateway YAML, while keeping policy, PII redaction, and evidence active.
 - **feat(gateway): upstream auth mode support for quickstart.** Added provider `upstream_auth_mode` (`secret` default, `client_bearer` quickstart path) with client bearer forwarding, `OPENAI_API_KEY` fallback, and explicit 401 when no upstream key is available.
 - **feat(evidence): quickstart upstream auth metadata.** Evidence records now include additive fields `upstream_auth_mode`, `upstream_key_source`, `upstream_key_fingerprint`, and `gateway_annotations` (backward compatible with existing records).
+- **feat(events): sanitized `reasons[]` on operational events.** `/api/v1/events/recent` and `/api/v1/events/stream` now include deterministic, deduped, length-bounded `reasons[]` derived from policy decision reasons, explanation reasons, and execution errors. This improves operator context without exposing raw payloads. Verify quickly with `curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" "http://localhost:8080/api/v1/events/recent?limit=1" | jq '.events[0].reasons'`.
 
 ### Changed
 
@@ -20,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **change(serve): `--gateway-config` exclusivity check uses explicit flag set.** `--proxy-quickstart` is rejected alongside `--gateway` or any explicitly passed `--gateway-config`, detected via `cobra.Flags().Changed` rather than the default string value.
 - **change(gateway): quickstart `unsafe-listen` signal threaded via config.** The `quickstart_unsafe_listen` evidence annotation is driven by `GatewayConfig.QuickstartUnsafeListen`, populated from `--unsafe-listen` through `QuickstartOptions`, instead of a process environment variable.
 - **change(events/metrics): evidence-first projection parity hardening.** Operational event reason fields now prefer deterministic explanation payloads, evidence/event ordering is stabilized on `timestamp DESC, id DESC`, and metrics conversion is unified through evidence-driven projection paths for stronger CLI/API/dashboard parity.
+- **change(observability/events): SSOT scope contract locked.** `/api/v1/metrics` is documented as all-activity (gateway and agent-run evidence-backed runtime), and `/api/v1/events/*` is documented as one event per persisted evidence row, including terminal outcomes plus evidence-backed lifecycle subset records (`plan_review`, graph runtime). Endpoint shapes remain backward-compatible.
 
 ### Fixed
 
