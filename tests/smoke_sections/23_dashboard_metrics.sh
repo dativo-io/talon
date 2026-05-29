@@ -1052,8 +1052,10 @@ CACHEEOF
     dump_diag_json "status_json" "$status_json"
   fi
 
-  assert_pass "metrics snapshot exposes dropped_events" \
-    jq -e 'has("dropped_events")' <<< "$snap_after_live" &>/dev/null
+  # dropped_events is omitempty in the JSON snapshot: absent when 0 (healthy),
+  # present and >=0 when collector backpressure has occurred.
+  assert_pass "metrics snapshot dropped_events absent (healthy) or numeric >=0" \
+    jq -e '(has("dropped_events") | not) or (.dropped_events | type == "number" and . >= 0)' <<< "$snap_after_live" &>/dev/null
 
   local events_json; events_json="$(smoke_get_events_recent "$dashboard_base_url" "$admin_key" 50)"
   if jq -e '.events | type == "array"' <<< "$events_json" &>/dev/null; then
