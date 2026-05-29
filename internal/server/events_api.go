@@ -21,6 +21,9 @@ type recentEventsResponse struct {
 	Cursor string                    `json:"cursor,omitempty"`
 }
 
+// handleEventsRecent returns the latest operational events for caller-visible tenants.
+// It emits one event per persisted evidence row: terminal outcomes and lifecycle
+// subset records that are evidence-backed (for example plan review and graph runtime rows).
 func (s *Server) handleEventsRecent(w http.ResponseWriter, r *http.Request) {
 	tenantID := s.resolveEventsTenant(r)
 	limit := parsePositiveInt(r.URL.Query().Get("limit"), defaultRecentEventsLimit, s.eventsRecentMaxLimit)
@@ -39,6 +42,9 @@ func (s *Server) handleEventsRecent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleEventsStream streams operational events as SSE.
+// Like handleEventsRecent, it emits only evidence-backed rows and therefore includes
+// terminal outcomes plus the lifecycle subset represented in persisted evidence.
 func (s *Server) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 	flusher, _ := w.(http.Flusher)
 	if health.ActiveEventStreams() >= int64(s.eventsStreamMaxConn) {

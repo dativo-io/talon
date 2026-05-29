@@ -176,12 +176,17 @@ See [Gateway dashboard reference](reference/gateway-dashboard.md) for full confi
 
 Projection: `Evidence → OperationalEvent → Metrics / UI / CLI`. Metrics emit only after evidence persists. Collector overflow is exposed as `dropped_events` in the snapshot, `metrics_events_dropped` in `/v1/status`, and OTel counter `talon.metrics.events_dropped.total`.
 
-| Surface | Endpoint / source | Parity expectation |
-|---------|-------------------|--------------------|
-| Evidence list | `/v1/evidence` | authoritative ordering: `timestamp DESC, id DESC` |
-| Events API | `/api/v1/events/recent`, `/api/v1/events/stream` | same ordering and evidence-linked fields |
-| Dashboard | `/dashboard` recent-events table | reflects events API without manual refresh |
-| Status | `/v1/status` | exposes `metrics_events_dropped`, `events_stream_gaps`, `events_replay_misses`, `events_backlog_drops` |
+Scope lock (v1.5.0):
+
+- `/api/v1/metrics` is all-activity and includes all evidence-backed Talon runtime activity (gateway and agent-run paths).
+- `/api/v1/events/recent` and `/api/v1/events/stream` emit one event per persisted evidence row, including terminal outcomes plus the lifecycle subset that already has evidence records (`plan_review`, graph runtime events).
+
+| Surface | Endpoint / source | Scope | Parity expectation |
+|---------|-------------------|-------|--------------------|
+| Evidence list | `/v1/evidence` | all evidence rows visible to caller scope | authoritative ordering: `timestamp DESC, id DESC` |
+| Events API | `/api/v1/events/recent`, `/api/v1/events/stream` | terminal outcomes + evidence-backed lifecycle subset | same ordering and evidence-linked fields |
+| Dashboard | `/dashboard` recent-events table | mirrors Events API visibility | reflects events API without manual refresh |
+| Status | `/v1/status` | process health and stream/backpressure counters | exposes `metrics_events_dropped`, `events_stream_gaps`, `events_replay_misses`, `events_backlog_drops` |
 
 ---
 

@@ -1,6 +1,7 @@
 package events
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -101,4 +102,118 @@ func TestSortDesc_StableTieBreakOnEvidenceID(t *testing.T) {
 	assert.Equal(t, "ev-z", items[1].EvidenceID)
 	assert.Equal(t, "ev-a", items[2].EvidenceID)
 	assert.True(t, LessDesc(items[1], items[2]))
+}
+
+func TestFromEvidence_ReasonsParity(t *testing.T) {
+	longReason := strings.Repeat("x", 300)
+	tests := []struct {
+		name string
+		ev   *evidence.Evidence
+		want []string
+	}{
+		{
+			name: "policy_and_explanation_are_combined_and_deduped",
+			ev: &evidence.Evidence{
+				ID:        "ev-r1",
+				Timestamp: time.Now().UTC(),
+				TenantID:  "acme",
+				PolicyDecision: evidence.PolicyDecision{
+					Allowed: false,
+					Action:  "deny",
+					Reasons: []string{"PII detected", "budget exceeded", "pii detected"},
+				},
+				Execution: evidence.Execution{
+					Error: "upstream timeout",
+				},
+				Explanations: []explanation.Item{
+					{Reason: "Request blocked because input PII was detected."},
+					{Reason: "BUDGET exceeded"},
+				},
+			},
+			want: []string{
+				"PII detected",
+				"budget exceeded",
+				"Request blocked because input PII was detected.",
+				"upstream timeout",
+			},
+		},
+		{
+			name: "multiline_whitespace_is_collapsed",
+			ev: &evidence.Evidence{
+				ID:        "ev-r2",
+				Timestamp: time.Now().UTC(),
+				TenantID:  "acme",
+				PolicyDecision: evidence.PolicyDecision{
+					Reasons: []string{"line1\nline2\tline3"},
+				},
+			},
+			want: []string{"line1 line2 line3"},
+		},
+		{
+			name: "case_insensitive_dedupe_keeps_first",
+			ev: &evidence.Evidence{
+				ID:        "ev-r3",
+				Timestamp: time.Now().UTC(),
+				TenantID:  "acme",
+				PolicyDecision: evidence.PolicyDecision{
+					Reasons: []string{"PII detected", "pii detected", "Pii Detected"},
+				},
+			},
+			want: []string{"PII detected"},
+		},
+		{
+			name: "reasons_are_capped_to_ten",
+			ev: &evidence.Evidence{
+				ID:        "ev-r4",
+				Timestamp: time.Now().UTC(),
+				TenantID:  "acme",
+				PolicyDecision: evidence.PolicyDecision{
+					Reasons: []string{
+						"r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
+					},
+				},
+			},
+			want: []string{"r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"},
+		},
+		{
+			name: "long_reason_is_truncated",
+			ev: &evidence.Evidence{
+				ID:        "ev-r5",
+				Timestamp: time.Now().UTC(),
+				TenantID:  "acme",
+				PolicyDecision: evidence.PolicyDecision{
+					Reasons: []string{longReason},
+				},
+			},
+			want: []string{strings.Repeat("x", 220)},
+		},
+		{
+			name: "empty_sources_return_nil",
+			ev: &evidence.Evidence{
+				ID:        "ev-r6",
+				Timestamp: time.Now().UTC(),
+				TenantID:  "acme",
+			},
+			want: nil,
+		},
+		{
+			name: "execution_error_is_included",
+			ev: &evidence.Evidence{
+				ID:        "ev-r7",
+				Timestamp: time.Now().UTC(),
+				TenantID:  "acme",
+				Execution: evidence.Execution{
+					Error: "context deadline exceeded",
+				},
+			},
+			want: []string{"context deadline exceeded"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := FromEvidence(tt.ev)
+			assert.Equal(t, tt.want, out.Reasons)
+		})
+	}
 }
