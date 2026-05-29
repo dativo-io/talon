@@ -825,15 +825,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	for _, e := range classification.Entities {
 		piiDetected = append(piiDetected, e.Type)
 	}
-	execErr := executionError
-	if execErr == "" {
-		for _, reason := range reasons {
-			if strings.Contains(strings.ToLower(reason), "error") {
-				execErr = reason
-				break
-			}
-		}
-	}
+	execErr := resolveExecutionError(executionError, reasons)
 
 	var attScan *evidence.AttachmentScan
 	if attSummary != nil && attSummary.FilesScanned > 0 {
@@ -910,6 +902,21 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 func (g *Gateway) handleEvidenceWriteFailure(ctx context.Context, err error) {
 	RecordGatewayError(ctx, "evidence_store")
 	log.Error().Err(err).Msg("gateway_evidence_store_failed")
+}
+
+// resolveExecutionError returns the explicit execution error when set, otherwise
+// the first policy reason that looks like an error (legacy behavior preserved
+// so blocked/error invariants still surface in evidence).
+func resolveExecutionError(explicit string, reasons []string) string {
+	if explicit != "" {
+		return explicit
+	}
+	for _, reason := range reasons {
+		if strings.Contains(strings.ToLower(reason), "error") {
+			return reason
+		}
+	}
+	return ""
 }
 
 func buildGatewayExplanationFacts(allowed bool, reasons []string, outputPIIDetected bool, outputPIITypes []string, _ string) []explanation.Fact {

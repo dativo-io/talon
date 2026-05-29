@@ -11,6 +11,9 @@ SMOKE_PATH_METRICS="/api/v1/metrics"
 SMOKE_PATH_METRICS_STREAM="/api/v1/metrics/stream"
 SMOKE_PATH_GATEWAY_DASHBOARD="/gateway/dashboard"
 SMOKE_PATH_EVIDENCE="/v1/evidence"
+SMOKE_PATH_EVENTS_RECENT="/api/v1/events/recent"
+SMOKE_PATH_EVENTS_STREAM="/api/v1/events/stream"
+SMOKE_PATH_STATUS="/v1/status"
 
 # --- Canonical request bodies (reused across sections; no duplicate JSON) ---
 # PII: email + IBAN (used for redact path, block path, and metrics volume)
@@ -108,6 +111,41 @@ smoke_get_latest_evidence() {
   ev_id="$(echo "$idx" | jq -r '.entries[0].id // empty')"
   [[ -z "$ev_id" ]] && return 1
   curl -s -H "X-Talon-Admin-Key: $admin_key" "${base}${SMOKE_PATH_EVIDENCE}/${ev_id}"
+}
+
+# --- Events API: GET recent operational events JSON ---
+# Usage: smoke_get_events_recent base_url admin_key [limit]
+# Outputs: JSON body (stdout) shaped { "events": [...], "cursor": "..." }
+smoke_get_events_recent() {
+  local base="$1" admin_key="$2" limit="${3:-50}"
+  curl -s -H "X-Talon-Admin-Key: $admin_key" "${base}${SMOKE_PATH_EVENTS_RECENT}?limit=${limit}" 2>/dev/null
+}
+
+# --- Events API: capture a short SSE window from the events stream ---
+# Usage: smoke_capture_events_stream base_url admin_key [seconds] [last_event_id]
+# Outputs: raw SSE body (stdout)
+smoke_capture_events_stream() {
+  local base="$1" admin_key="$2" seconds="${3:-3}" since="${4:-}"
+  local hdr=()
+  [[ -n "$since" ]] && hdr=(-H "Last-Event-ID: $since")
+  timeout "$seconds" curl -s -H "X-Talon-Admin-Key: $admin_key" "${hdr[@]}" \
+    "${base}${SMOKE_PATH_EVENTS_STREAM}" 2>/dev/null || true
+}
+
+# --- Status: GET /v1/status JSON ---
+# Usage: smoke_get_status base_url admin_key
+# Outputs: JSON body (stdout)
+smoke_get_status() {
+  local base="$1" admin_key="$2"
+  curl -s -H "X-Talon-Admin-Key: $admin_key" "${base}${SMOKE_PATH_STATUS}" 2>/dev/null
+}
+
+# --- Evidence index (admin): list recent evidence records ---
+# Usage: smoke_get_evidence_index base_url admin_key [limit]
+# Outputs: JSON body (stdout) shaped { "entries": [...] }
+smoke_get_evidence_index() {
+  local base="$1" admin_key="$2" limit="${3:-50}"
+  curl -s -H "X-Talon-Admin-Key: $admin_key" "${base}${SMOKE_PATH_EVIDENCE}?limit=${limit}" 2>/dev/null
 }
 
 # --- Wait until health returns 200 (for server startup) ---

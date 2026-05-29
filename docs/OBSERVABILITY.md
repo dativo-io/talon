@@ -172,11 +172,16 @@ The dashboard snapshot includes:
 
 See [Gateway dashboard reference](reference/gateway-dashboard.md) for full configuration, authentication, and API details.
 
-Operational-event projection note:
+### Operational-event projection
 
-- Runtime projection follows `Evidence -> OperationalEvent -> Metrics/UI/CLI`.
-- Live gateway dashboard metrics are emitted only after successful evidence persistence.
-- If collector buffers overflow, drops are surfaced via `dropped_events`, OTel metric `talon.metrics.events_dropped.total`, and `/v1/status` as `metrics_events_dropped`.
+Projection: `Evidence → OperationalEvent → Metrics / UI / CLI`. Metrics emit only after evidence persists. Collector overflow is exposed as `dropped_events` in the snapshot, `metrics_events_dropped` in `/v1/status`, and OTel counter `talon.metrics.events_dropped.total`.
+
+| Surface | Endpoint / source | Parity expectation |
+|---------|-------------------|--------------------|
+| Evidence list | `/v1/evidence` | authoritative ordering: `timestamp DESC, id DESC` |
+| Events API | `/api/v1/events/recent`, `/api/v1/events/stream` | same ordering and evidence-linked fields |
+| Dashboard | `/dashboard` recent-events table | reflects events API without manual refresh |
+| Status | `/v1/status` | exposes `metrics_events_dropped`, `events_stream_gaps`, `events_replay_misses`, `events_backlog_drops` |
 
 ---
 

@@ -15,13 +15,13 @@ compliance story.
 Request → Pipeline → Evidence Record → HMAC Sign → SQLite Write → Export
 ```
 
-Operational projection contract:
+Operational projection: `Evidence → OperationalEvent → Metrics / UI / CLI`. Explanations come from `explanations[]` first; legacy `policy_decision.reasons` is a fallback only.
 
-```
-Evidence → OperationalEvent → Metrics / UI / CLI
-```
+Invariants:
 
-The event projection is derived from persisted evidence and deterministic explanations first, with legacy policy-reason fallback only when explanation payloads are unavailable.
+- Ordering: `timestamp DESC, id DESC` across `/v1/evidence` and `/api/v1/events/recent`.
+- Event rows expose `evidence_id`, `correlation_id`, `decision`, `reason_code`, `reason_text`, `suggested_fix`.
+- No evidence write → no event → no live metric.
 
 ## Evidence Record Structure
 
