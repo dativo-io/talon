@@ -49,10 +49,13 @@ func TestEmbeddedDashboardsContainUnifiedMissionControlMarkers(t *testing.T) {
 	assert.Contains(t, web.DashboardHTML, "Talon Mission Control")
 	assert.Contains(t, web.DashboardHTML, "Session timeline (lifecycle)")
 	assert.Contains(t, web.DashboardHTML, "Compliance report preview")
+	assert.Contains(t, web.DashboardHTML, "runtime-warning-banner")
+	assert.Contains(t, web.DashboardHTML, "renderEventSignalChips")
 
 	assert.Contains(t, web.GatewayDashboardHTML, "Talon <span>Mission Control</span>")
 	assert.Contains(t, web.GatewayDashboardHTML, "Session Timeline (Lifecycle)")
 	assert.Contains(t, web.GatewayDashboardHTML, "Compliance Report Preview")
+	assert.Contains(t, web.GatewayDashboardHTML, "reliability-badge")
 }
 
 func TestHandleMetricsJSON(t *testing.T) {

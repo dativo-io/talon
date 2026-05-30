@@ -93,6 +93,7 @@
   <nav class="header-nav"><a href="/dashboard">← Governance dashboard</a></nav>
   <div class="header-meta">
     <span id="mode-badge" class="badge">--</span>
+    <span id="reliability-badge" class="badge">--</span>
     <span>Uptime: <strong id="uptime">--</strong></span>
     <span id="last-updated">--</span>
   </div>
@@ -372,6 +373,20 @@
     document.getElementById('last-updated').textContent = 'Updated: ' + new Date(d.generated_at).toLocaleTimeString();
 
     var s = d.summary || {};
+    var reliabilityBadge = document.getElementById('reliability-badge');
+    if (reliabilityBadge) {
+      var reliabilityIssues = [];
+      if ((d.dropped_events || 0) > 0) reliabilityIssues.push('drops');
+      if ((s.total_timed_out || 0) > 0) reliabilityIssues.push('timeouts');
+      if ((s.error_rate || 0) > 0.1) reliabilityIssues.push('errors');
+      if (reliabilityIssues.length > 0) {
+        reliabilityBadge.textContent = 'degraded: ' + reliabilityIssues.join(',');
+        reliabilityBadge.className = 'badge badge-risk';
+      } else {
+        reliabilityBadge.textContent = 'reliability: healthy';
+        reliabilityBadge.className = 'badge badge-ok';
+      }
+    }
     document.getElementById('kpi-requests').textContent = fmt(s.total_requests);
     document.getElementById('kpi-blocked').textContent = fmt(s.blocked_requests);
     document.getElementById('kpi-pii').textContent = fmt(s.pii_detections);

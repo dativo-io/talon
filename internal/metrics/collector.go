@@ -174,6 +174,7 @@ type PlanStats struct {
 
 // GatewayEvent is the input from the gateway for real-time dashboard aggregation.
 type GatewayEvent struct {
+	EvidenceID       string
 	Timestamp        time.Time
 	CallerID         string
 	Model            string
@@ -289,6 +290,16 @@ type Collector struct {
 	tenantID       string
 	planStatsFn    func(context.Context, string) (PlanStats, error)
 	droppedEvents  uint64
+	reconcileStats ReconcileStats
+}
+
+// ReconcileStats tracks collector reconciliation health and outcomes.
+type ReconcileStats struct {
+	Runs            uint64    `json:"runs"`
+	RecoveredEvents uint64    `json:"recovered_events"`
+	LastRunAt       time.Time `json:"last_run_at,omitempty"`
+	LastError       string    `json:"last_error,omitempty"`
+	LastLagMS       int64     `json:"last_lag_ms,omitempty"`
 }
 
 // CollectorOption configures a Collector.
@@ -535,6 +546,76 @@ func (c *Collector) Snapshot(ctx context.Context) Snapshot {
 
 	c.fillAggregateMetrics(ctx, &snap)
 	return snap
+}
+
+// ReconcileStatus returns the latest reconciliation counters and health fields.
+func (c *Collector) ReconcileStatus() ReconcileStats {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.reconcileStats
+}
+
+func (c *Collector) resetInMemoryAggregates() {
+	c.buckets = make(map[string]*bucket)
+	c.callerStats = make(map[string]*callerAccum)
+	c.piiCounts = make(map[string]int)
+	c.toolFiltered = make(map[string]int)
+	c.shadowViolations = make(map[string]*shadowViolationAccum)
+	c.byRiskLevel = make(map[string]*riskLevelAccum)
+	c.anomalousAgents = make(map[string]bool)
+	c.piiRedactions = 0
+	c.toolRequested = 0
+	c.bulkOperations = 0
+	c.irreversibleBlocked = 0
+	c.totalRequests = 0
+	c.blockedRequests = 0
+	c.totalErrors = 0
+	c.totalSuccessful = 0
+	c.totalFailed = 0
+	c.totalTimedOut = 0
+	c.totalDenied = 0
+	c.totalCostEUR = 0
+	c.totalLatencyMS = 0
+	c.totalTTFTMS = 0
+	c.ttftCount = 0
+	c.totalTPOTMS = 0
+	c.tpotCount = 0
+	c.latencyRing = [maxLatencySamples]int64{}
+	c.latencyRingPos = 0
+	c.latencyRingLen = 0
+}
+
+func (c *Collector) rebuildFromEvidence(records []evidence.Evidence) {
+	c.resetInMemoryAggregates()
+	for i := range records {
+		ev := GatewayEventFromEvidence(&records[i])
+		c.processEvent(ev)
+	}
+}
+
+func (c *Collector) markReconcileSuccess(recovered int, lag time.Duration) {
+	c.reconcileStats.Runs++
+	if recovered > 0 {
+		c.reconcileStats.RecoveredEvents += uint64(recovered)
+	}
+	c.reconcileStats.LastRunAt = time.Now().UTC()
+	c.reconcileStats.LastError = ""
+	if lag > 0 {
+		c.reconcileStats.LastLagMS = lag.Milliseconds()
+	} else {
+		c.reconcileStats.LastLagMS = 0
+	}
+	recordCollectorReconcileRun(recovered, lag, false)
+}
+
+func (c *Collector) markReconcileFailure(err error) {
+	c.reconcileStats.Runs++
+	c.reconcileStats.LastRunAt = time.Now().UTC()
+	c.reconcileStats.LastLagMS = 0
+	if err != nil {
+		c.reconcileStats.LastError = err.Error()
+	}
+	recordCollectorReconcileRun(0, 0, true)
 }
 
 func (c *Collector) buildInMemorySnapshot() Snapshot {

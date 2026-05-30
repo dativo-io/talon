@@ -315,10 +315,10 @@ Invariants:
 - Metrics emission requires a successful evidence write. No evidence → no event → no metric.
 - Backpressure drops surface as `dropped_events` in `/api/v1/metrics` and `metrics_events_dropped` in `/v1/status`.
 
-Open (tracked for SSOT completion):
+Scope (locked in v1.5.0):
 
-- `/api/v1/metrics` scope: gateway-only vs all Talon activity.
-- Event feed scope: terminal invocations only vs lifecycle sub-events.
+- `/api/v1/metrics` is the runtime SSOT snapshot for all evidence-backed Talon activity visible to the collector, not gateway-only request counters.
+- Event feeds (`/api/v1/events/recent`, `/api/v1/events/stream`) emit terminal outcomes plus evidence-backed lifecycle events. No lifecycle row is emitted without a persisted evidence record.
 
 ## Validation
 
@@ -326,7 +326,7 @@ Open (tracked for SSOT completion):
 |-------|---------|----------------|
 | Gates | `make test && make lint && make check` | exit 0 |
 | Status fields | `curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/v1/status` | includes `metrics_events_dropped`, `events_stream_gaps`, `events_replay_misses`, `events_backlog_drops` |
-| Recent events | `curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" "http://localhost:8080/api/v1/events/recent?limit=10"` | each row has `event_id`, `evidence_id`, `decision`, `reason_code`, `cost_eur`, `correlation_id` |
+| Recent events | `curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" "http://localhost:8080/api/v1/events/recent?limit=10"` | each row has `event_id`, `evidence_id`, `decision`, `reason_code`, optional `reasons[]`, `cost_eur`, `correlation_id` |
 | SSE resume | `curl -N -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" -H "Last-Event-ID: <id>" http://localhost:8080/api/v1/events/stream` | stream resumes after `<id>`; emits `event: gap` on cursor miss |
 | Dashboard parity | open `http://localhost:8080/dashboard?talon_admin_key=$TALON_ADMIN_KEY` | "Session timeline" rows match `/api/v1/events/recent` |
 

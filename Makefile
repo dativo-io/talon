@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-all lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -49,6 +49,9 @@ test-smoke: build ## Run black-box smoke test (prereqs: TALON_SECRETS_KEY, OPENA
 
 test-all: test test-e2e ## Run unit, integration, and e2e tests (does not include test-smoke)
 
+test-ssot-gate: ## Run consolidated SSOT parity/resilience gate tests
+	@$(GO_ENV) go test -count=1 ./internal/server -run SSOTGate
+
 lint: ## Run linter
 	@golangci-lint run ./...
 
@@ -65,7 +68,7 @@ mod-tidy: ## Tidy go modules
 clean: ## Clean build artifacts
 	@rm -rf bin/ coverage.out coverage.html dist/
 
-check: lint vet test ## Run all checks (CI equivalent)
+check: lint vet test test-ssot-gate ## Run all checks (CI equivalent)
 
 docker-build: ## Build Docker image
 	@docker build -t $(BINARY_NAME):$(VERSION) .

@@ -176,12 +176,13 @@ See [Gateway dashboard reference](reference/gateway-dashboard.md) for full confi
 
 Projection: `Evidence → OperationalEvent → Metrics / UI / CLI`. Metrics emit only after evidence persists. Collector overflow is exposed as `dropped_events` in the snapshot, `metrics_events_dropped` in `/v1/status`, and OTel counter `talon.metrics.events_dropped.total`.
 
-| Surface | Endpoint / source | Parity expectation |
-|---------|-------------------|--------------------|
-| Evidence list | `/v1/evidence` | authoritative ordering: `timestamp DESC, id DESC` |
-| Events API | `/api/v1/events/recent`, `/api/v1/events/stream` | same ordering and evidence-linked fields |
-| Dashboard | `/dashboard` recent-events table | reflects events API without manual refresh |
-| Status | `/v1/status` | exposes `metrics_events_dropped`, `events_stream_gaps`, `events_replay_misses`, `events_backlog_drops` |
+| Surface | Endpoint / source | Scope | Parity expectation |
+|---------|-------------------|-------|--------------------|
+| Evidence list | `/v1/evidence` | all evidence rows in tenant window | authoritative ordering: `timestamp DESC, id DESC` |
+| Events API | `/api/v1/events/recent`, `/api/v1/events/stream` | `terminal_plus_lifecycle_subset` (evidence-backed only) | same ordering and evidence-linked fields |
+| Dashboard | `/dashboard` recent-events table | mirrors events API rows, with compact signal chips | reflects events API without manual refresh |
+| Metrics snapshot | `/api/v1/metrics` | `all_activity` collector projection | consistent summary/breakdown invariants and reconciliation health |
+| Status | `/v1/status` | reliability contract fields | exposes `metrics_events_dropped`, `events_stream_gaps`, `events_replay_misses`, `events_backlog_drops`, reconcile status |
 
 ---
 

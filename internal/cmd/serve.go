@@ -436,6 +436,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err := metricsCollector.BackfillFromStore(ctx, evidenceStore); err != nil {
 			log.Warn().Err(err).Msg("dashboard backfill failed")
 		}
+		reconcileCfg := metrics.DefaultReconcileLoopConfig()
+		if raw := strings.TrimSpace(os.Getenv("TALON_METRICS_RECONCILE_INTERVAL")); raw != "" {
+			if d, err := time.ParseDuration(raw); err == nil {
+				reconcileCfg.Interval = d
+			}
+		}
+		if raw := strings.TrimSpace(os.Getenv("TALON_METRICS_RECONCILE_WINDOW")); raw != "" {
+			if d, err := time.ParseDuration(raw); err == nil {
+				reconcileCfg.Window = d
+			}
+		}
+		stopReconcile := metricsCollector.StartReconcileLoop(ctx, evidenceStore, reconcileCfg)
+		defer stopReconcile()
 
 		// Wire the collector as the gateway's metrics recorder via adapter
 		if gw, ok := gatewayHandler.(*gateway.Gateway); ok {

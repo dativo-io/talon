@@ -71,6 +71,7 @@ func mapToGatewayEvent(input interface{}) (GatewayEvent, bool) {
 // dashboard metrics event shape.
 func GatewayEventFromOperationalEvent(ev events.OperationalEvent) GatewayEvent {
 	return GatewayEvent{
+		EvidenceID:    ev.EvidenceID,
 		Timestamp:     ev.Timestamp,
 		CallerID:      firstNonEmpty(ev.Caller, ev.AgentID),
 		Model:         ev.Model,
@@ -94,6 +95,7 @@ func gatewayEventFromEvidence(e *evidence.Evidence) GatewayEvent {
 	ev.TokensOutput = e.Execution.Tokens.Output
 	ev.TTFTMS = e.Execution.TTFTMS
 	ev.TPOTMS = e.Execution.TPOTMS
+	ev.EvidenceID = e.ID
 	ev.WouldHaveBlocked = e.ObservationModeOverride
 	ev.TimedOut = isTimedOutError(e.Execution.Error)
 
@@ -169,6 +171,9 @@ func mapStringFields(m map[string]interface{}, e *GatewayEvent) {
 	}
 	if v, ok := m["enforcement_mode"].(string); ok {
 		e.EnforcementMode = v
+	}
+	if v, ok := m["evidence_id"].(string); ok {
+		e.EvidenceID = v
 	}
 }
 

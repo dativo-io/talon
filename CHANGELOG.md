@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **feat(serve): OpenAI-compatible quickstart proxy mode.** Added `talon serve --proxy-quickstart` for dev/local host-root compatibility (`POST /v1/chat/completions`, `POST /v1/responses`) without gateway YAML, while keeping policy, PII redaction, and evidence active.
 - **feat(gateway): upstream auth mode support for quickstart.** Added provider `upstream_auth_mode` (`secret` default, `client_bearer` quickstart path) with client bearer forwarding, `OPENAI_API_KEY` fallback, and explicit 401 when no upstream key is available.
 - **feat(evidence): quickstart upstream auth metadata.** Evidence records now include additive fields `upstream_auth_mode`, `upstream_key_source`, `upstream_key_fingerprint`, and `gateway_annotations` (backward compatible with existing records).
+- **feat(metrics): periodic reconciliation loop and status telemetry.** Added bounded/idempotent collector reconciliation (`ReconcileFromStore` + loop), OTel reconcile metrics, and `/v1/status` fields for reconcile runs/recovered events/errors.
+- **feat(server): consolidated SSOT gate suite.** Added `internal/server/ssot_gate_test.go` plus `make test-ssot-gate` and wired it into `make check` as an explicit release gate.
 
 ### Changed
 
@@ -20,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **change(serve): `--gateway-config` exclusivity check uses explicit flag set.** `--proxy-quickstart` is rejected alongside `--gateway` or any explicitly passed `--gateway-config`, detected via `cobra.Flags().Changed` rather than the default string value.
 - **change(gateway): quickstart `unsafe-listen` signal threaded via config.** The `quickstart_unsafe_listen` evidence annotation is driven by `GatewayConfig.QuickstartUnsafeListen`, populated from `--unsafe-listen` through `QuickstartOptions`, instead of a process environment variable.
 - **change(events/metrics): evidence-first projection parity hardening.** Operational event reason fields now prefer deterministic explanation payloads, evidence/event ordering is stabilized on `timestamp DESC, id DESC`, and metrics conversion is unified through evidence-driven projection paths for stronger CLI/API/dashboard parity.
+- **change(dashboard/cli): reliability signals surfaced in routine flows.** Dashboard and gateway pages now expose degraded/reliability warning chips, and `talon metrics` / `talon events tail` print preflight warnings when `/v1/status` reports degradation.
 
 ### Fixed
 

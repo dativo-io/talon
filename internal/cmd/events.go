@@ -45,6 +45,9 @@ var eventsTailCmd = &cobra.Command{
 }
 
 func tailEventsHTTP(ctx context.Context, outWriter interface{ Write([]byte) (int, error) }) error {
+	if !eventsJSON {
+		warnIfDegraded(ctx, outWriter, eventsURL)
+	}
 	req, err := buildEventsStreamRequest(ctx)
 	if err != nil {
 		return err
