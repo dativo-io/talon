@@ -72,6 +72,9 @@ func (c *Collector) ReconcileFromStore(ctx context.Context, store EvidenceLister
 	c.mu.Lock()
 	before := c.totalRequests
 	c.rebuildFromEvidence(records)
+	// Drain queued events: gateway persists evidence before calling Record,
+	// so any buffered events are already included in the rebuild above.
+	c.drainEvents()
 	after := c.totalRequests
 	recovered := after - before
 	if recovered < 0 {

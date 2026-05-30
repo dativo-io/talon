@@ -386,6 +386,18 @@ func (c *Collector) consumeLoop() {
 	}
 }
 
+// drainEvents discards all buffered events from the channel.
+// Must be called while holding c.mu.
+func (c *Collector) drainEvents() {
+	for {
+		select {
+		case <-c.events:
+		default:
+			return
+		}
+	}
+}
+
 func (c *Collector) processEvent(e GatewayEvent) {
 	c.totalRequests++
 	if e.Blocked {
