@@ -30,7 +30,7 @@ build: ## Build the binary to ./bin/talon (run from repo root: ./bin/talon)
 install: ## Install to $GOPATH/bin (or go env GOPATH/bin)
 	@$(GO_ENV) go install $(LDFLAGS) ./cmd/talon/
 
-test: ## Run tests (unit + integration). Coverage excludes cmd/talon and internal/testutil. Uses -count=1 so cache is disabled.
+test: test-ssot-gate ## Run tests (SSOT gate + unit + integration). Coverage excludes cmd/talon and internal/testutil. Uses -count=1 so cache is disabled.
 	@$(GO_ENV) go test -count=1 -race -coverprofile=coverage.out $$(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v 'cmd/talon')
 	@$(GO_ENV) go test -count=1 -race -tags=integration ./tests/integration/...
 
@@ -68,7 +68,7 @@ mod-tidy: ## Tidy go modules
 clean: ## Clean build artifacts
 	@rm -rf bin/ coverage.out coverage.html dist/
 
-check: lint vet test test-ssot-gate ## Run all checks (CI equivalent)
+check: lint vet test ## Run all checks (CI equivalent)
 
 docker-build: ## Build Docker image
 	@docker build -t $(BINARY_NAME):$(VERSION) .
