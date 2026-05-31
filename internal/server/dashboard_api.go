@@ -16,6 +16,8 @@ func (s *Server) handleGatewayDashboard(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleMetricsJSON returns the current metrics snapshot as JSON.
+// The snapshot is all-activity and includes evidence-backed gateway and agent-run paths.
+// "Gateway dashboard" naming is historical and does not restrict scope.
 func (s *Server) handleMetricsJSON(w http.ResponseWriter, r *http.Request) {
 	snap := s.metricsCollector.Snapshot(r.Context())
 	w.Header().Set("Content-Type", "application/json")
@@ -24,6 +26,8 @@ func (s *Server) handleMetricsJSON(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMetricsStream sends metrics snapshots as Server-Sent Events.
+// The stream mirrors the same all-activity snapshot as handleMetricsJSON.
+// "Gateway dashboard" naming is historical and does not restrict scope.
 // If the response writer does not implement http.Flusher (e.g. behind a buffering proxy),
 // events are still sent but may be delayed until the buffer fills or the connection closes.
 func (s *Server) handleMetricsStream(w http.ResponseWriter, r *http.Request) {

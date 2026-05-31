@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **feat(evidence): quickstart upstream auth metadata.** Evidence records now include additive fields `upstream_auth_mode`, `upstream_key_source`, `upstream_key_fingerprint`, and `gateway_annotations` (backward compatible with existing records).
 - **feat(metrics): periodic reconciliation loop and status telemetry.** Added bounded/idempotent collector reconciliation (`ReconcileFromStore` + loop), OTel reconcile metrics, and `/v1/status` fields for reconcile runs/recovered events/errors.
 - **feat(server): consolidated SSOT gate suite.** Added `internal/server/ssot_gate_test.go` plus `make test-ssot-gate` and wired it into `make check` as an explicit release gate.
+- **feat(events): sanitized `reasons[]` on operational events.** `/api/v1/events/recent` and `/api/v1/events/stream` now include deterministic, deduped, length-bounded `reasons[]` derived from policy decision reasons, explanation reasons, and execution errors. This improves operator context without exposing raw payloads. Verify quickly with `curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" "http://localhost:8080/api/v1/events/recent?limit=1" | jq '.events[0].reasons'`.
 
 ### Changed
 
@@ -23,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **change(gateway): quickstart `unsafe-listen` signal threaded via config.** The `quickstart_unsafe_listen` evidence annotation is driven by `GatewayConfig.QuickstartUnsafeListen`, populated from `--unsafe-listen` through `QuickstartOptions`, instead of a process environment variable.
 - **change(events/metrics): evidence-first projection parity hardening.** Operational event reason fields now prefer deterministic explanation payloads, evidence/event ordering is stabilized on `timestamp DESC, id DESC`, and metrics conversion is unified through evidence-driven projection paths for stronger CLI/API/dashboard parity.
 - **change(dashboard/cli): reliability signals surfaced in routine flows.** Dashboard and gateway pages now expose degraded/reliability warning chips, and `talon metrics` / `talon events tail` print preflight warnings when `/v1/status` reports degradation.
+- **change(observability/events): SSOT scope contract locked.** `/api/v1/metrics` is documented as all-activity (gateway and agent-run evidence-backed runtime), and `/api/v1/events/*` is documented as one event per persisted evidence row, including terminal outcomes plus evidence-backed lifecycle subset records (`plan_review`, graph runtime). Endpoint shapes remain backward-compatible.
 
 ### Fixed
 
