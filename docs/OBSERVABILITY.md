@@ -131,7 +131,9 @@ Registered by `internal/memory`. Emitted on memory operations.
 
 ## Gateway dashboard metrics
 
-In addition to OTel metrics, Talon provides a **real-time gateway dashboard** with an in-memory metrics collector. The dashboard aggregates evidence records into a live snapshot available at:
+In addition to OTel metrics, Talon provides a **real-time runtime dashboard** with an in-memory metrics collector. The collector is fed from successful `evidence.Store.Store()` commits (all invocation types), then periodically reconciled from evidence as an authoritative repair path.
+
+The dashboard snapshot is available at:
 
 - **HTML dashboard:** `GET /gateway/dashboard` — single-page HTML with auto-refreshing charts.
 - **JSON API:** `GET /api/v1/metrics` — full snapshot for programmatic access.
@@ -174,7 +176,7 @@ See [Gateway dashboard reference](reference/gateway-dashboard.md) for full confi
 
 ### Operational-event projection
 
-Projection: `Evidence → OperationalEvent → Metrics / UI / CLI`. Metrics emit only after evidence persists. Collector overflow is exposed as `dropped_events` in the snapshot, `metrics_events_dropped` in `/v1/status`, and OTel counter `talon.metrics.events_dropped.total`.
+Projection: `Evidence → OperationalEvent → Metrics / UI / CLI`. Metrics emit only after evidence persists, and live increments are driven by store post-commit observer notifications. Collector overflow is exposed as `dropped_events` in the snapshot, `metrics_events_dropped` in `/v1/status`, and OTel counter `talon.metrics.events_dropped.total`. Periodic reconciliation from evidence is bounded and idempotent, used to repair drift rather than define an alternate source of truth.
 
 | Surface | Endpoint / source | Scope | Parity expectation |
 |---------|-------------------|-------|--------------------|

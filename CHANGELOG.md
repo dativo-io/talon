@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **change(events/metrics): evidence-first projection parity hardening.** Operational event reason fields now prefer deterministic explanation payloads, evidence/event ordering is stabilized on `timestamp DESC, id DESC`, and metrics conversion is unified through evidence-driven projection paths for stronger CLI/API/dashboard parity.
 - **change(dashboard/cli): reliability signals surfaced in routine flows.** Dashboard and gateway pages now expose degraded/reliability warning chips, and `talon metrics` / `talon events tail` print preflight warnings when `/v1/status` reports degradation.
 - **change(observability/events): SSOT scope contract locked.** `/api/v1/metrics` is documented as all-activity (gateway and agent-run evidence-backed runtime), and `/api/v1/events/*` is documented as one event per persisted evidence row, including terminal outcomes plus evidence-backed lifecycle subset records (`plan_review`, graph runtime). Endpoint shapes remain backward-compatible.
+- **change(metrics/evidence): pragmatic SSOT live-feed unification.** Dashboard live metrics are now fed from `evidence.Store.Store()` post-commit observer notifications (all invocation types), while periodic reconciliation remains bounded/idempotent repair. Degraded evidence-write signaling is centralized in the evidence store path, and production serve wiring no longer double-emits via direct gateway metrics recorder attachment.
 
 ### Fixed
 

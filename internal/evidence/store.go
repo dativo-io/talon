@@ -12,13 +12,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	_ "github.com/mattn/go-sqlite3"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/dativo-io/talon/internal/explanation"
+	"github.com/dativo-io/talon/internal/health"
 	talonotel "github.com/dativo-io/talon/internal/otel"
 )
 
@@ -26,9 +29,15 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/evidence")
 
 // Store persists HMAC-signed evidence records in SQLite.
 type Store struct {
-	db     *sql.DB
-	signer *Signer
+	db *sql.DB
+	// observer receives post-commit notifications for successfully stored evidence.
+	observerMu sync.RWMutex
+	observer   StoreObserver
+	signer     *Signer
 }
+
+// StoreObserver receives post-commit notifications for stored evidence rows.
+type StoreObserver func(ctx context.Context, ev *Evidence)
 
 // Evidence is the full audit record for a single agent invocation.
 type Evidence struct {
@@ -366,6 +375,31 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// SetStoreObserver updates the optional post-commit observer for Store().
+func (s *Store) SetStoreObserver(fn StoreObserver) {
+	s.observerMu.Lock()
+	defer s.observerMu.Unlock()
+	s.observer = fn
+}
+
+func (s *Store) notifyStored(ctx context.Context, ev *Evidence) {
+	s.observerMu.RLock()
+	observer := s.observer
+	s.observerMu.RUnlock()
+	if observer == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().
+				Str("evidence_id", ev.ID).
+				Interface("panic", r).
+				Msg("evidence_store_observer_panicked")
+		}
+	}()
+	observer(ctx, ev)
+}
+
 // Store saves evidence with an HMAC signature.
 func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 	ctx, span := tracer.Start(ctx, "evidence.store",
@@ -418,10 +452,13 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 		ev.CandidateIndex, ev.JudgeScore, ev.Selected, ev.PlanID, ev.GraphRunID,
 	)
 	if err != nil {
+		health.MarkEvidenceWriteFailure(time.Now().UTC(), err)
 		return fmt.Errorf("storing evidence: %w", err)
 	}
 
+	health.MarkEvidenceWriteSuccess(time.Now().UTC())
 	RecordEvidenceStored(ctx, ev.InvocationType)
+	s.notifyStored(ctx, ev)
 	return nil
 }
 

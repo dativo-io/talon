@@ -11,7 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/events"
+	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/health"
+	"github.com/dativo-io/talon/internal/metrics"
 )
 
 // SSOT gate: ordering and core-field parity across evidence and events API.
@@ -83,4 +86,79 @@ func TestSSOTGate_DegradedStatusContract(t *testing.T) {
 	assert.Equal(t, false, out["evidence_ok"])
 	_, hasReason := out["evidence_error"]
 	assert.True(t, hasReason)
+}
+
+// SSOT gate: non-gateway evidence updates both events API and metrics totals live.
+func TestSSOTGate_NonGatewayEvidenceFeedsEventsAndMetrics(t *testing.T) {
+	srv, store := newEventsTestServer(t, map[string]string{"k-default": "default"})
+	collector := metrics.NewCollector("enforce", nil)
+	defer collector.Close()
+	store.SetStoreObserver(func(_ context.Context, ev *evidence.Evidence) {
+		collector.Record(metrics.GatewayEventFromEvidence(ev))
+	})
+
+	now := time.Now().UTC()
+	agentEv := evidence.Evidence{
+		ID:              "ev-agent-1",
+		CorrelationID:   "corr-agent-1",
+		Timestamp:       now.Add(-1 * time.Second),
+		TenantID:        "default",
+		AgentID:         "agent-a",
+		InvocationType:  "agent",
+		RequestSourceID: "agent-a",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: false,
+			Action:  "deny",
+			Reasons: []string{"policy denied"},
+		},
+		Execution: evidence.Execution{
+			ModelUsed:  "gpt-4o-mini",
+			Cost:       0.0,
+			DurationMS: 80,
+		},
+	}
+	require.NoError(t, store.Store(context.Background(), &agentEv))
+
+	gatewayEv := evidence.Evidence{
+		ID:              "ev-gateway-1",
+		CorrelationID:   "corr-gateway-1",
+		Timestamp:       now,
+		TenantID:        "default",
+		AgentID:         "agent-a",
+		InvocationType:  "gateway",
+		RequestSourceID: "agent-a",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: true,
+			Action:  "allow",
+		},
+		Execution: evidence.Execution{
+			ModelUsed:  "gpt-4o-mini",
+			Cost:       0.02,
+			DurationMS: 120,
+		},
+	}
+	require.NoError(t, store.Store(context.Background(), &gatewayEv))
+
+	time.Sleep(50 * time.Millisecond)
+	snap := collector.Snapshot(context.Background())
+	assert.Equal(t, 2, snap.Summary.TotalRequests)
+	assert.Equal(t, 1, snap.Summary.BlockedRequests)
+	assert.InDelta(t, 0.02, snap.Summary.TotalCostEUR, 0.0001)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/events/recent?limit=10", nil)
+	req.Header.Set("Authorization", "Bearer k-default")
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out struct {
+		Events []events.OperationalEvent `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	require.Len(t, out.Events, 2)
+	assert.Equal(t, "ev-gateway-1", out.Events[0].EvidenceID)
+	assert.Equal(t, "gateway", out.Events[0].InvocationType)
+	assert.Equal(t, "ev-agent-1", out.Events[1].EvidenceID)
+	assert.Equal(t, "agent", out.Events[1].InvocationType)
+	assert.Equal(t, "blocked", out.Events[1].Decision)
 }

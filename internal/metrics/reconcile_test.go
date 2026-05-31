@@ -80,3 +80,28 @@ func TestReconcileFromStore_IsIdempotentAcrossRepeatedRuns(t *testing.T) {
 	assert.InDelta(t, first.Summary.TotalCostEUR, second.Summary.TotalCostEUR, 0.00001)
 	assert.Equal(t, first.Summary.BlockedRequests, second.Summary.BlockedRequests)
 }
+
+func TestReconcileFromStore_DoesNotDoubleCountObservedEvidence(t *testing.T) {
+	now := time.Now().UTC()
+	store := &stubEvidenceLister{
+		records: []evidence.Evidence{
+			makeEvidence("ev-obs-1", now.Add(-1*time.Minute)),
+		},
+	}
+	c := NewCollector("enforce", nil)
+	defer c.Close()
+
+	// Simulate live store observer path before periodic reconciliation.
+	c.Record(GatewayEventFromEvidence(&store.records[0]))
+	waitForProcessing(c)
+	before := c.Snapshot(context.Background())
+	require.Equal(t, 1, before.Summary.TotalRequests)
+
+	recovered, err := c.ReconcileFromStore(context.Background(), store, 10*time.Minute, 1000)
+	require.NoError(t, err)
+	assert.Equal(t, 0, recovered)
+
+	after := c.Snapshot(context.Background())
+	assert.Equal(t, 1, after.Summary.TotalRequests)
+	assert.InDelta(t, before.Summary.TotalCostEUR, after.Summary.TotalCostEUR, 0.00001)
+}

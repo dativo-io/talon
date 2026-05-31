@@ -24,7 +24,6 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
-	"github.com/dativo-io/talon/internal/health"
 	"github.com/dativo-io/talon/internal/llm"
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/secrets"
@@ -894,10 +893,8 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	params.TPOTMS = tpotMS
 	ev, err := RecordGatewayEvidence(ctx, g.evidenceStore, params)
 	if err != nil {
-		health.MarkEvidenceWriteFailure(time.Now().UTC(), err)
 		return nil, err
 	}
-	health.MarkEvidenceWriteSuccess(time.Now().UTC())
 	return ev, nil
 }
 
