@@ -276,6 +276,58 @@ func TestAdapterWithPolicy_ToolCall_ExceedsMaxToolCallsPerRun(t *testing.T) {
 	assert.Contains(t, denied.Reasons[0], "max_tool_calls_per_run")
 }
 
+func TestAdapterWithPolicy_ForbiddenToolDoesNotConsumeToolCallBudget(t *testing.T) {
+	eng := newPolicyWithAllResourceLimits(t, 50, 10.0, 3, 1)
+	gen, store := newEvidenceStack(t)
+	adapter := NewAdapter(eng, gen, store)
+	ctx := context.Background()
+	graphRunID := "gr_policy_forbidden_tool_budget"
+
+	allowed, err := adapter.HandleEvent(ctx, &Event{
+		Type:       EventToolCall,
+		GraphRunID: graphRunID,
+		TenantID:   "acme",
+		AgentID:    "test-agent",
+		Timestamp:  time.Now(),
+		ToolMeta: &ToolMeta{
+			Name:      "google_search",
+			Arguments: map[string]interface{}{"query": "first"},
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, allowed.Allowed)
+
+	deniedForbidden, err := adapter.HandleEvent(ctx, &Event{
+		Type:       EventToolCall,
+		GraphRunID: graphRunID,
+		TenantID:   "acme",
+		AgentID:    "test-agent",
+		Timestamp:  time.Now(),
+		ToolMeta: &ToolMeta{
+			Name:      "delete_database",
+			Arguments: map[string]interface{}{},
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, deniedForbidden.Allowed)
+
+	retryAllowed, err := adapter.HandleEvent(ctx, &Event{
+		Type:       EventRetry,
+		GraphRunID: graphRunID,
+		TenantID:   "acme",
+		AgentID:    "test-agent",
+		NodeID:     "search_node",
+		Timestamp:  time.Now(),
+		Error: &ErrorMeta{
+			Message:    "temporary issue",
+			Retryable:  true,
+			RetryCount: 1,
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, retryAllowed.Allowed)
+}
+
 func TestAdapterWithPolicy_RunEnd_EvidenceRecorded(t *testing.T) {
 	eng := newPolicyWithResourceLimits(t, 50, 10.0, 3)
 	gen, store := newEvidenceStack(t)

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/stretchr/testify/assert"
@@ -208,7 +209,7 @@ func TestGateway_PIIRedactedBeforeForwarding(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"1","choices":[{"message":{"content":"Processed"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
 	})
 
-	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
+	gw, _, evStore := setupOpenClawGateway(t, "redact", handler)
 
 	requestBody := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Send report to hans.mueller@example.de with IBAN DE89370400440532013000, phone +34612345678, and VAT ESB12345678"}]}`
 	w := makeGatewayRequest(gw, requestBody)
@@ -223,6 +224,13 @@ func TestGateway_PIIRedactedBeforeForwarding(t *testing.T) {
 
 	assert.Contains(t, forwarded, "Send report to",
 		"non-PII content must be preserved in forwarded request")
+
+	records, err := evStore.List(context.Background(), "test-tenant", "openclaw-main",
+		time.Now().Add(-time.Minute), time.Now().Add(time.Minute), 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, records)
+	assert.True(t, records[0].Classification.PIIRedacted,
+		"evidence should mark input redaction when pii_action=redact")
 }
 
 func TestGateway_PIIBlockModePreventsForwarding(t *testing.T) {

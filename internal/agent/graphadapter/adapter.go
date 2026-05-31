@@ -245,7 +245,7 @@ func (a *Adapter) handleToolCall(ctx context.Context, span trace.Span, ev *Event
 		return a.capacityDecision(ctx, ev, err), nil
 	}
 	a.observeRunContext(rs, ev)
-	toolCalls := a.incrementToolCalls(rs, ev.Timestamp)
+	toolCalls := a.toolCallsForRun(ev.GraphRunID) + 1
 
 	policyInput := map[string]interface{}{
 		"event_type":        string(ev.Type),
@@ -282,6 +282,7 @@ func (a *Adapter) handleToolCall(ctx context.Context, span trace.Span, ev *Event
 		}
 	}
 
+	a.incrementToolCalls(rs, ev.Timestamp)
 	allowDec := &Decision{Action: ActionAllow, Allowed: true}
 	allowDec.EvidenceID = a.recordStepEvidence(ctx, ev, "tool_allowed", allowDec)
 	return allowDec, nil
