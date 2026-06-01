@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Release Note Quality Bar
+
+For user-facing entries, include:
+
+- why this change matters (problem solved),
+- who should care (operator/developer persona),
+- how to verify quickly (command or path),
+- any upgrade/migration impact,
+- at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
+
+## [1.5.0] - 2026-06-01
+
 ### Added
 
 - **feat(serve): OpenAI-compatible quickstart proxy mode.** Added `talon serve --proxy-quickstart` for dev/local host-root compatibility (`POST /v1/chat/completions`, `POST /v1/responses`) without gateway YAML, while keeping policy, PII redaction, and evidence active.
@@ -35,16 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **fix(events): expand stream reliability telemetry.** Event stream handling now increments disconnect and backlog-drop counters (in addition to gap/replay signals) and exposes them in status output for faster operator diagnosis.
 - **fix(gateway/metrics): no metrics emission without persisted evidence.** Gateway collector events are now emitted only after successful evidence persistence, preventing runtime telemetry drift when evidence writes fail.
 - **fix(metrics): surface collector backpressure drops.** Collector channel overflow drops now increment `dropped_events`, emit OTel counter `talon.metrics.events_dropped.total`, and appear in `/v1/status` as `metrics_events_dropped`.
-
-### Release Note Quality Bar
-
-For user-facing entries, include:
-
-- why this change matters (problem solved),
-- who should care (operator/developer persona),
-- how to verify quickly (command or path),
-- any upgrade/migration impact,
-- at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
 ## [1.4.6] - 2026-04-14
 
@@ -474,7 +476,8 @@ For user-facing entries, include:
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.4.6...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/dativo-io/talon/compare/v1.4.6...v1.5.0
 [1.4.6]: https://github.com/dativo-io/talon/compare/v1.4.5...v1.4.6
 [1.4.5]: https://github.com/dativo-io/talon/compare/v1.4.0...v1.4.5
 [1.4.0]: https://github.com/dativo-io/talon/compare/v1.3.0...v1.4.0
