@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dativo-io/talon/internal/evidence"
 )
 
 // mockQuerier implements evidence.MetricsQuerier for testing.
@@ -330,6 +332,46 @@ func TestCollectorDroppedEventsBackpressure(t *testing.T) {
 	assert.Greater(t, c.DroppedEvents(), uint64(0))
 	snap := c.Snapshot(context.Background())
 	assert.Equal(t, c.DroppedEvents(), snap.DroppedEvents)
+}
+
+func TestCollectorDroppedEvents_ReconcileRestoresParity(t *testing.T) {
+	now := time.Now().UTC()
+	store := &stubEvidenceLister{
+		records: []evidence.Evidence{
+			{
+				ID:              "ev-r1",
+				Timestamp:       now.Add(-2 * time.Minute),
+				RequestSourceID: "caller-a",
+				AgentID:         "agent-a",
+				PolicyDecision:  evidence.PolicyDecision{Allowed: true},
+				Execution:       evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 0.01, DurationMS: 50},
+			},
+			{
+				ID:              "ev-r2",
+				Timestamp:       now.Add(-1 * time.Minute),
+				RequestSourceID: "caller-a",
+				AgentID:         "agent-a",
+				PolicyDecision:  evidence.PolicyDecision{Allowed: true},
+				Execution:       evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 0.02, DurationMS: 70},
+			},
+		},
+	}
+	c := newTestCollector("enforce", nil)
+	defer c.Close()
+
+	// Initial drift: only one event is in collector.
+	c.Record(GatewayEventFromEvidence(&store.records[0]))
+	waitForProcessing(c)
+	assert.Equal(t, 1, c.Snapshot(context.Background()).Summary.TotalRequests)
+
+	recovered, err := c.ReconcileFromStore(context.Background(), store, 10*time.Minute, 1000)
+	require.NoError(t, err)
+	assert.Equal(t, 1, recovered)
+
+	snap := c.Snapshot(context.Background())
+	assert.Equal(t, 2, snap.Summary.TotalRequests)
+	assert.InDelta(t, 0.03, snap.Summary.TotalCostEUR, 0.0001)
+	assertSnapshotCrossChecks(t, snap)
 }
 
 func TestPIITimelineAndCostTimeline(t *testing.T) {

@@ -34,6 +34,9 @@ var metricsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if !metricsJSON {
+			warnIfDegraded(ctx, cmd.OutOrStdout(), metricsURL)
+		}
 
 		callers := snap.CallerStats
 		sort.Slice(callers, func(i, j int) bool { return callers[i].Requests > callers[j].Requests })

@@ -409,6 +409,52 @@ func TestStatusIncludesEvidenceDegradedFields(t *testing.T) {
 	assert.True(t, hasStreamActive && hasStreamGaps && hasReplayMisses && hasDisconnects && hasBacklogDrops)
 }
 
+func TestEventsRecentIncludesSignalSummaryFields(t *testing.T) {
+	srv, store := newEventsTestServer(t, map[string]string{"k-default": "default"})
+	ev := evidence.Evidence{
+		ID:              "ev-signals",
+		CorrelationID:   "corr-signals",
+		Timestamp:       time.Now().UTC(),
+		TenantID:        "default",
+		AgentID:         "agent-signal",
+		InvocationType:  "gateway",
+		RequestSourceID: "agent-signal",
+		PolicyDecision:  evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		Classification:  evidence.Classification{PIIDetected: []string{"email"}},
+		ToolGovernance: &evidence.ToolGovernance{
+			ToolsRequested: []string{"read_file", "exec_cmd"},
+			ToolsFiltered:  []string{"exec_cmd"},
+		},
+		CacheHit:  true,
+		CostSaved: 0.02,
+		Execution: evidence.Execution{
+			ModelUsed:  "gpt-4o-mini",
+			Cost:       0.01,
+			DurationMS: 100,
+		},
+	}
+	require.NoError(t, store.Store(context.Background(), &ev))
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/api/v1/events/recent?limit=10", nil)
+	req.Header.Set("Authorization", "Bearer k-default")
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out struct {
+		Events []events.OperationalEvent `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	require.NotEmpty(t, out.Events)
+
+	got := out.Events[0]
+	assert.Equal(t, "ev-signals", got.EvidenceID)
+	assert.Equal(t, []string{"email"}, got.PIIDetected)
+	assert.Equal(t, []string{"exec_cmd"}, got.ToolsFiltered)
+	assert.True(t, got.CacheHit)
+	assert.InDelta(t, 0.02, got.CostSaved, 0.0001)
+}
+
 func newEventsTestServer(t *testing.T, tenantKeys map[string]string) (*Server, *evidence.Store) {
 	t.Helper()
 	pol := minimalPolicy()

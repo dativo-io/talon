@@ -75,6 +75,11 @@
     .mission-feed-list { list-style: none; margin: 0.5rem 0 0; padding: 0; }
     .mission-feed-list li { border-bottom: 1px solid var(--border); padding: 0.45rem 0; font-size: 0.82rem; }
     .mission-feed-list li:last-child { border-bottom: none; }
+    .runtime-warning { margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid rgba(248,113,113,0.4); color: var(--risk); background: rgba(248,113,113,0.1); font-size: 0.8rem; display: none; }
+    .signal-chip { display: inline-block; margin: 0.15rem 0.2rem 0 0; padding: 0.1rem 0.35rem; border-radius: 999px; border: 1px solid var(--border); font-size: 0.65rem; color: var(--text-dim); }
+    .signal-chip.warn { color: var(--warn); border-color: rgba(250,204,21,0.45); }
+    .signal-chip.risk { color: var(--risk); border-color: rgba(248,113,113,0.45); }
+    .signal-chip.ok { color: var(--ok); border-color: rgba(74,222,128,0.45); }
     @media (max-width: 980px) {
       .split-grid { grid-template-columns: 1fr; }
     }
@@ -87,6 +92,7 @@
       <span class="dashboard-badge" id="header-badge" title="Enforcement mode and tenant scope"></span>
       <nav class="dashboard-nav"><a id="gateway-nav-link" href="/gateway/dashboard">Gateway telemetry &rarr;</a></nav>
     </header>
+    <div class="runtime-warning" id="runtime-warning-banner"></div>
     <div class="cards">
     <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Visible requests</div><div class="value" id="card-requests">—</div></div>
     <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Visible cost</div><div class="value" id="card-daily">— &euro;</div></div>
@@ -299,6 +305,21 @@
 
       function renderCards() {
         get('/v1/status').then(function(d) {
+          var warnings = [];
+          if (d.evidence_ok === false) warnings.push('evidence writes are degraded');
+          if (Number(d.events_backlog_drops || 0) > 0 || Number(d.metrics_events_dropped || 0) > 0) warnings.push('collector dropped events');
+          if (Number(d.events_stream_gaps || 0) > 0 || Number(d.events_replay_misses || 0) > 0) warnings.push('event stream gaps/replay misses');
+          if (d.metrics_reconcile_error) warnings.push('metrics reconciliation errors');
+          var warningBanner = document.getElementById('runtime-warning-banner');
+          if (warningBanner) {
+            if (warnings.length > 0) {
+              warningBanner.style.display = 'block';
+              warningBanner.textContent = 'Reliability warning: ' + warnings.join(' · ');
+            } else {
+              warningBanner.style.display = 'none';
+              warningBanner.textContent = '';
+            }
+          }
           var el = document.getElementById('card-requests');
           if (el) el.textContent = d.evidence_count_today != null ? d.evidence_count_today : '—';
           el = document.getElementById('card-daily');
@@ -432,6 +453,22 @@
         if (recentEvents.length > 0) recentEventCursor = String(recentEvents[0].event_id || recentEventCursor);
       }
 
+      function renderEventSignalChips(ev) {
+        if (!ev) return '';
+        var chips = [];
+        var pii = Array.isArray(ev.pii_detected) ? ev.pii_detected.length : 0;
+        var tools = Array.isArray(ev.tools_filtered) ? ev.tools_filtered.length : 0;
+        if (pii > 0) chips.push('<span class="signal-chip risk">PII: ' + pii + '</span>');
+        if (tools > 0) chips.push('<span class="signal-chip warn">Tools filtered: ' + tools + '</span>');
+        if (ev.cache_hit === true) chips.push('<span class="signal-chip ok">Cache hit</span>');
+        if (ev.cost_saved != null && !isNaN(Number(ev.cost_saved)) && Number(ev.cost_saved) > 0) {
+          chips.push('<span class="signal-chip ok">Saved €' + Number(ev.cost_saved).toFixed(4) + '</span>');
+        }
+        if (chips.length > 3) chips = chips.slice(0, 3);
+        if (chips.length === 0) return '';
+        return '<div>' + chips.join('') + '</div>';
+      }
+
       function renderRecentEventsList() {
         var timeline = document.getElementById('session-timeline-list');
         if (!timeline) return;
@@ -447,6 +484,7 @@
           var actor = ev.caller || ev.agent_id || 'agent';
           var tenant = ev.tenant_id || '—';
           var reason = ev.reason_text || ev.reason_code || '—';
+          var reasonCell = escapeHtml(reason) + renderEventSignalChips(ev);
           var model = ev.model || '—';
           var cost = (ev.cost_eur != null && !isNaN(Number(ev.cost_eur))) ? Number(ev.cost_eur).toFixed(4) : '0.0000';
           var evidenceId = ev.evidence_id || '—';
@@ -456,7 +494,7 @@
             '<td>' + escapeHtml(tenant) + '</td>' +
             '<td>' + escapeHtml(actor) + '</td>' +
             '<td>' + escapeHtml(outcome) + '</td>' +
-            '<td>' + escapeHtml(reason) + '</td>' +
+            '<td>' + reasonCell + '</td>' +
             '<td>' + escapeHtml(cost) + '</td>' +
             '<td>' + escapeHtml(model) + '</td>' +
             '<td>' + escapeHtml(evidenceId) + '</td>' +

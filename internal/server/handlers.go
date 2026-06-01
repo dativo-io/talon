@@ -613,6 +613,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"status": "ok", "evidence_count_today": 0, "cost_today": 0.0, "monthly": 0.0, "active_runs": 0,
 		"pending_memory_reviews": 0, "blocked_count": 0, "error_rate": 0.0, "enforcement_mode": "", "tenant_id": tenantID,
 	}
+	applyEvidenceHealthStatus(resp)
+	applyEventStreamStatus(resp)
+	s.applyEvidenceStoreStatus(r.Context(), resp, tenantID, dayStart, dayEnd, monthStart, monthEnd)
+	s.applyMemoryStoreStatus(r.Context(), resp, tenantID)
+	s.applyMetricsCollectorStatus(r.Context(), resp)
+	if s.activeRunTracker != nil {
+		resp["active_runs"] = s.activeRunTracker.Count(tenantID)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func applyEvidenceHealthStatus(resp map[string]interface{}) {
 	evHealth := health.GetEvidenceWriteStatus()
 	resp["evidence_ok"] = evHealth.OK
 	if !evHealth.LastGoodWrite.IsZero() {
@@ -625,40 +637,70 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		resp["evidence_error"] = evHealth.LastError
 		resp["status"] = "degraded"
 	}
+}
+
+func applyEventStreamStatus(resp map[string]interface{}) {
 	resp["events_stream_active"] = health.ActiveEventStreams()
 	resp["events_stream_gaps"] = health.EventStreamGaps()
 	resp["events_replay_misses"] = health.EventReplayMisses()
 	resp["events_stream_disconnects"] = health.EventStreamDisconnects()
 	resp["events_backlog_drops"] = health.EventBacklogDrops()
-	if s.evidenceStore != nil {
-		if n, err := s.evidenceStore.CountInRange(r.Context(), tenantID, "", dayStart, dayEnd); err == nil {
-			resp["evidence_count_today"] = n
-		}
-		if cost, err := s.evidenceStore.CostTotal(r.Context(), tenantID, "", dayStart, dayEnd); err == nil {
-			resp["cost_today"] = cost
-		}
-		if cost, err := s.evidenceStore.CostTotal(r.Context(), tenantID, "", monthStart, monthEnd); err == nil {
-			resp["monthly"] = cost
-		}
-		if blocked, err := s.evidenceStore.CountDeniedInRange(r.Context(), tenantID, "", dayStart, dayEnd); err == nil {
-			resp["blocked_count"] = blocked
-		}
+}
+
+func (s *Server) applyEvidenceStoreStatus(
+	ctx context.Context,
+	resp map[string]interface{},
+	tenantID string,
+	dayStart time.Time,
+	dayEnd time.Time,
+	monthStart time.Time,
+	monthEnd time.Time,
+) {
+	if s.evidenceStore == nil {
+		return
 	}
-	if s.memoryStore != nil {
-		if n, err := s.memoryStore.CountPendingReviewForTenant(r.Context(), tenantID); err == nil {
-			resp["pending_memory_reviews"] = n
-		}
+	if n, err := s.evidenceStore.CountInRange(ctx, tenantID, "", dayStart, dayEnd); err == nil {
+		resp["evidence_count_today"] = n
 	}
-	if s.metricsCollector != nil {
-		snap := s.metricsCollector.Snapshot(r.Context())
-		resp["error_rate"] = snap.Summary.ErrorRate
-		resp["enforcement_mode"] = snap.EnforcementMode
-		resp["metrics_events_dropped"] = s.metricsCollector.DroppedEvents()
+	if cost, err := s.evidenceStore.CostTotal(ctx, tenantID, "", dayStart, dayEnd); err == nil {
+		resp["cost_today"] = cost
 	}
-	if s.activeRunTracker != nil {
-		resp["active_runs"] = s.activeRunTracker.Count(tenantID)
+	if cost, err := s.evidenceStore.CostTotal(ctx, tenantID, "", monthStart, monthEnd); err == nil {
+		resp["monthly"] = cost
 	}
-	writeJSON(w, http.StatusOK, resp)
+	if blocked, err := s.evidenceStore.CountDeniedInRange(ctx, tenantID, "", dayStart, dayEnd); err == nil {
+		resp["blocked_count"] = blocked
+	}
+}
+
+func (s *Server) applyMemoryStoreStatus(ctx context.Context, resp map[string]interface{}, tenantID string) {
+	if s.memoryStore == nil {
+		return
+	}
+	if n, err := s.memoryStore.CountPendingReviewForTenant(ctx, tenantID); err == nil {
+		resp["pending_memory_reviews"] = n
+	}
+}
+
+func (s *Server) applyMetricsCollectorStatus(ctx context.Context, resp map[string]interface{}) {
+	if s.metricsCollector == nil {
+		return
+	}
+	snap := s.metricsCollector.Snapshot(ctx)
+	resp["error_rate"] = snap.Summary.ErrorRate
+	resp["enforcement_mode"] = snap.EnforcementMode
+	resp["metrics_events_dropped"] = s.metricsCollector.DroppedEvents()
+	reconcile := s.metricsCollector.ReconcileStatus()
+	resp["metrics_reconcile_runs"] = reconcile.Runs
+	resp["metrics_recovered_events"] = reconcile.RecoveredEvents
+	resp["metrics_reconcile_lag_ms"] = reconcile.LastLagMS
+	if !reconcile.LastRunAt.IsZero() {
+		resp["metrics_reconcile_last_run"] = reconcile.LastRunAt.UTC().Format(time.RFC3339)
+	}
+	if reconcile.LastError != "" {
+		resp["metrics_reconcile_error"] = reconcile.LastError
+		resp["status"] = "degraded"
+	}
 }
 
 func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {

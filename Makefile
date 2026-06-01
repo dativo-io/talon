@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-all lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -30,7 +30,7 @@ build: ## Build the binary to ./bin/talon (run from repo root: ./bin/talon)
 install: ## Install to $GOPATH/bin (or go env GOPATH/bin)
 	@$(GO_ENV) go install $(LDFLAGS) ./cmd/talon/
 
-test: ## Run tests (unit + integration). Coverage excludes cmd/talon and internal/testutil. Uses -count=1 so cache is disabled.
+test: test-ssot-gate ## Run tests (SSOT gate + unit + integration). Coverage excludes cmd/talon and internal/testutil. Uses -count=1 so cache is disabled.
 	@$(GO_ENV) go test -count=1 -race -coverprofile=coverage.out $$(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v 'cmd/talon')
 	@$(GO_ENV) go test -count=1 -race -tags=integration ./tests/integration/...
 
@@ -48,6 +48,9 @@ test-smoke: build ## Run black-box smoke test (prereqs: TALON_SECRETS_KEY, OPENA
 	@PATH="$(CURDIR)/bin:$$PATH" bash ./tests/smoke_test.sh
 
 test-all: test test-e2e ## Run unit, integration, and e2e tests (does not include test-smoke)
+
+test-ssot-gate: ## Run consolidated SSOT parity/resilience gate tests
+	@$(GO_ENV) go test -count=1 ./internal/server -run SSOTGate
 
 lint: ## Run linter
 	@golangci-lint run ./...

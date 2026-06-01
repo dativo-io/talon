@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -12,13 +13,17 @@ import (
 var collectorMeter = otel.Meter("github.com/dativo-io/talon/internal/metrics")
 
 var (
-	mTaskSuccessTotal  metric.Int64Counter
-	mTaskFailedTotal   metric.Int64Counter
-	mTaskTimedOutTotal metric.Int64Counter
-	mTaskDeniedTotal   metric.Int64Counter
-	mCostPerSuccess    metric.Float64Histogram
-	mViolationsDaily   metric.Int64Counter
-	mEventsDropped     metric.Int64Counter
+	mTaskSuccessTotal   metric.Int64Counter
+	mTaskFailedTotal    metric.Int64Counter
+	mTaskTimedOutTotal  metric.Int64Counter
+	mTaskDeniedTotal    metric.Int64Counter
+	mCostPerSuccess     metric.Float64Histogram
+	mViolationsDaily    metric.Int64Counter
+	mEventsDropped      metric.Int64Counter
+	mReconcileRuns      metric.Int64Counter
+	mReconcileRecovered metric.Int64Counter
+	mReconcileErrors    metric.Int64Counter
+	mReconcileLagMS     metric.Int64Histogram
 
 	collectorMetricsOnce       sync.Once
 	collectorMetricsRegistered bool
@@ -72,6 +77,34 @@ func initCollectorMetrics() {
 	mEventsDropped, err = collectorMeter.Int64Counter("talon.metrics.events_dropped.total",
 		metric.WithDescription("Dropped collector events due to backpressure"),
 		metric.WithUnit("{event}"))
+	if err != nil {
+		return
+	}
+
+	mReconcileRuns, err = collectorMeter.Int64Counter("talon.metrics.reconcile_runs.total",
+		metric.WithDescription("Periodic collector reconciliation runs"),
+		metric.WithUnit("{run}"))
+	if err != nil {
+		return
+	}
+
+	mReconcileRecovered, err = collectorMeter.Int64Counter("talon.metrics.reconcile_recovered_events.total",
+		metric.WithDescription("Events recovered by reconciliation"),
+		metric.WithUnit("{event}"))
+	if err != nil {
+		return
+	}
+
+	mReconcileErrors, err = collectorMeter.Int64Counter("talon.metrics.reconcile_errors.total",
+		metric.WithDescription("Reconciliation failures"),
+		metric.WithUnit("{error}"))
+	if err != nil {
+		return
+	}
+
+	mReconcileLagMS, err = collectorMeter.Int64Histogram("talon.metrics.reconcile_lag_ms",
+		metric.WithDescription("Replay lag from latest evidence to reconciliation time"),
+		metric.WithUnit("ms"))
 	if err != nil {
 		return
 	}
@@ -133,4 +166,21 @@ func recordCollectorEventDrop() {
 		return
 	}
 	mEventsDropped.Add(context.Background(), 1)
+}
+
+func recordCollectorReconcileRun(recovered int, lag time.Duration, hadError bool) {
+	ensureCollectorMetrics()
+	if !collectorMetricsRegistered {
+		return
+	}
+	mReconcileRuns.Add(context.Background(), 1)
+	if recovered > 0 {
+		mReconcileRecovered.Add(context.Background(), int64(recovered))
+	}
+	if lag > 0 {
+		mReconcileLagMS.Record(context.Background(), lag.Milliseconds())
+	}
+	if hadError {
+		mReconcileErrors.Add(context.Background(), 1)
+	}
 }

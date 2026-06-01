@@ -200,6 +200,7 @@ CACHEEOF
   assert_pass "dashboard HTML contains Mission Control marker" grep -q "Talon <span>Mission Control</span>" <<< "$dash_html"
   assert_pass "dashboard HTML contains Session Timeline marker" grep -q "Session Timeline (Lifecycle)" <<< "$dash_html"
   assert_pass "dashboard HTML contains Compliance Report Preview marker" grep -q "Compliance Report Preview" <<< "$dash_html"
+  assert_pass "dashboard HTML contains reliability badge marker" grep -q "reliability-badge" <<< "$dash_html"
   assert_pass "dashboard HTML contains <script>" grep -qi "<script" <<< "$dash_html"
   assert_pass "dashboard HTML contains Success Rate KPI" grep -qi "Success Rate" <<< "$dash_html"
   assert_pass "dashboard HTML contains Timeouts KPI" grep -qi "Timeouts" <<< "$dash_html"
@@ -1047,6 +1048,10 @@ CACHEEOF
       jq -e 'has("events_replay_misses")' <<< "$status_json" &>/dev/null
     assert_pass "status exposes events_backlog_drops" \
       jq -e 'has("events_backlog_drops")' <<< "$status_json" &>/dev/null
+    assert_pass "status exposes metrics_reconcile_runs" \
+      jq -e 'has("metrics_reconcile_runs")' <<< "$status_json" &>/dev/null
+    assert_pass "status exposes metrics_recovered_events" \
+      jq -e 'has("metrics_recovered_events")' <<< "$status_json" &>/dev/null
   else
     log_failure "status endpoint not reachable for SSOT checks" "url=${dashboard_base_url}${SMOKE_PATH_STATUS}"
     dump_diag_json "status_json" "$status_json"

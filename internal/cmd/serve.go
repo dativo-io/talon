@@ -432,14 +432,28 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 		metricsCollector = metrics.NewCollector(enforcementMode, evidenceStore, collectorOpts...)
 		defer metricsCollector.Close()
+		evidenceStore.SetStoreObserver(func(ctx context.Context, ev *evidence.Evidence) {
+			metricsCollector.Record(metrics.GatewayEventFromEvidence(ev))
+		})
 
 		if err := metricsCollector.BackfillFromStore(ctx, evidenceStore); err != nil {
 			log.Warn().Err(err).Msg("dashboard backfill failed")
 		}
+		reconcileCfg := metrics.DefaultReconcileLoopConfig()
+		if raw := strings.TrimSpace(os.Getenv("TALON_METRICS_RECONCILE_INTERVAL")); raw != "" {
+			if d, err := time.ParseDuration(raw); err == nil {
+				reconcileCfg.Interval = d
+			}
+		}
+		if raw := strings.TrimSpace(os.Getenv("TALON_METRICS_RECONCILE_WINDOW")); raw != "" {
+			if d, err := time.ParseDuration(raw); err == nil {
+				reconcileCfg.Window = d
+			}
+		}
+		stopReconcile := metricsCollector.StartReconcileLoop(ctx, evidenceStore, reconcileCfg)
+		defer stopReconcile()
 
-		// Wire the collector as the gateway's metrics recorder via adapter
 		if gw, ok := gatewayHandler.(*gateway.Gateway); ok {
-			gw.SetMetricsRecorder(&metricsRecorderAdapter{collector: metricsCollector})
 			gw.SetSessionStore(sessionStore)
 		}
 
@@ -517,19 +531,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	log.Info().Msg("server_stopped")
 	return nil
-}
-
-// metricsRecorderAdapter bridges gateway.MetricsRecorder to metrics.Collector.
-type metricsRecorderAdapter struct {
-	collector *metrics.Collector
-}
-
-func (a *metricsRecorderAdapter) RecordGatewayEvent(event interface{}) {
-	e, ok := metrics.MapToGatewayEvent(event)
-	if !ok {
-		return
-	}
-	a.collector.Record(e)
 }
 
 func resolveServeAddress(host string, port int, quickstartEnabled, unsafeListen bool) (string, error) {

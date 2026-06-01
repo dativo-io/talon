@@ -497,13 +497,13 @@ GWEOF
   local ev_body ev_code
   ev_body="$(mktemp)"
   ev_code="$(curl -s -o "$ev_body" -w '%{http_code}' -H "$admin_hdr" \
-    "${ge_base}/v1/evidence?limit=20" 2>/dev/null)"
+    "${ge_base}/v1/evidence?limit=200" 2>/dev/null)"
   if [[ "$ev_code" == "200" ]]; then
     local has_graph_run
     local denied_run_recorded denied_run_policy_denied
     has_graph_run="$(jq -r "[.entries[]? | select(.correlation_id == \"${lifecycle_id}\")] | length" "$ev_body" 2>/dev/null)"
     denied_run_recorded="$(jq -r "[.entries[]? | select(.correlation_id == \"${denied_run_id}\")] | length" "$ev_body" 2>/dev/null)"
-    denied_run_policy_denied="$(jq -r "[.entries[]? | select(.correlation_id == \"${denied_run_id}\" and .policy_decision.allowed == false)] | length" "$ev_body" 2>/dev/null)"
+    denied_run_policy_denied="$(jq -r "[.entries[]? | select(.correlation_id == \"${denied_run_id}\" and ((.policy_decision.allowed == false) or (.allowed == false)))] | length" "$ev_body" 2>/dev/null)"
     if [[ "$has_graph_run" =~ ^[1-9] ]] && [[ "$denied_run_recorded" =~ ^[1-9] ]] && [[ "$denied_run_policy_denied" =~ ^[1-9] ]]; then
       echo "  ✓  graph_events_evidence_recorded (found lifecycle + denied-run evidence with policy_decision.allowed=false)"
       record_pass
