@@ -221,7 +221,7 @@ func (s *Store) verifyRawRecords(rawRecords []json.RawMessage) FileVerifyReport 
 	return report
 }
 
-func parseEvidenceRecord(raw json.RawMessage) (*Evidence, string, string) {
+func parseEvidenceRecord(raw json.RawMessage) (ev *Evidence, status string, detail string) {
 	var shape map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &shape); err != nil {
 		return nil, VerifyStatusMalformed, "malformed evidence record JSON"
@@ -231,11 +231,11 @@ func parseEvidenceRecord(raw json.RawMessage) (*Evidence, string, string) {
 		return nil, VerifyStatusUnsupported, "record does not match signed evidence schema"
 	}
 
-	var ev Evidence
-	if err := json.Unmarshal(raw, &ev); err != nil {
+	var record Evidence
+	if err := json.Unmarshal(raw, &record); err != nil {
 		return nil, VerifyStatusMalformed, "could not parse evidence record"
 	}
-	return &ev, VerifyStatusValid, ""
+	return &record, VerifyStatusValid, ""
 }
 
 func looksLikeEvidence(shape map[string]json.RawMessage) bool {

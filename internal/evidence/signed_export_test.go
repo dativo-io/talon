@@ -183,7 +183,8 @@ func TestVerifyExport_SignedNDJSONMixed(t *testing.T) {
 	validLine, err := json.Marshal(ev)
 	require.NoError(t, err)
 
-	payload := append(validLine, []byte("\n{bad json}\n")...)
+	validLine = append(validLine, []byte("\n{bad json}\n")...)
+	payload := validLine
 	report, verifyErr := store.VerifyExport(payload)
 	require.NoError(t, verifyErr)
 	assert.Equal(t, 2, report.Total)

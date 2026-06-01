@@ -508,7 +508,7 @@ func TestGatewayMetrics_RuntimeEventMatchesEvidenceProjection(t *testing.T) {
 
 type budgetDenyPolicy struct{}
 
-func (p *budgetDenyPolicy) EvaluateGateway(_ context.Context, _ map[string]interface{}) (bool, []string, error) {
+func (p *budgetDenyPolicy) EvaluateGateway(_ context.Context, _ map[string]interface{}) (allowed bool, reasons []string, err error) {
 	return false, []string{"budget exceeded: daily limit"}, nil
 }
 
