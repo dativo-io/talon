@@ -90,7 +90,7 @@
 <section class="mission-band band-1">
 <div class="header">
   <h1>Talon <span>Mission Control</span></h1>
-  <nav class="header-nav"><a href="/dashboard">← Governance dashboard</a></nav>
+  <nav class="header-nav"><a id="gw-evidence-link-header" href="/dashboard#evidence-gateway">← Governance dashboard</a></nav>
   <div class="header-meta">
     <span id="mode-badge" class="badge">--</span>
     <span id="reliability-badge" class="badge">--</span>
@@ -272,7 +272,7 @@
     <div class="card" style="margin-top:12px;">
       <div class="kpi-label">Plan Review Workflow</div>
       <div class="kpi-sub">Review approvals are available in Governance dashboard.</div>
-      <div class="kpi-sub"><a href="/dashboard" style="color: var(--brand-light); text-decoration:none;">Open approvals and evidence review →</a></div>
+      <div class="kpi-sub"><a id="gw-evidence-link-panel" href="/dashboard#evidence-gateway" style="color: var(--brand-light); text-decoration:none;">Open approvals and evidence review →</a></div>
     </div>
   </aside>
 </div>
@@ -298,6 +298,15 @@
   } else if (!window.TALON_ADMIN_KEY && tokenFromStorage) {
     window.TALON_ADMIN_KEY = tokenFromStorage;
   }
+  function setGovernanceLinksToken(token) {
+    if (!token) return;
+    var href = '/dashboard?talon_admin_key=' + encodeURIComponent(token) + '#evidence-gateway';
+    var header = document.getElementById('gw-evidence-link-header');
+    var panel = document.getElementById('gw-evidence-link-panel');
+    if (header) header.href = href;
+    if (panel) panel.href = href;
+  }
+  setGovernanceLinksToken(window.TALON_ADMIN_KEY || '');
 
   var eventSource = null;
   var pollTimer = null;

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -503,4 +504,40 @@ func TestGatewayMetrics_RuntimeEventMatchesEvidenceProjection(t *testing.T) {
 	assert.Equal(t, projected.CallerID, observed["caller_id"])
 	assert.Equal(t, projected.Model, observed["model"])
 	assert.Equal(t, projected.CostEUR, observed["cost_eur"])
+}
+
+type budgetDenyPolicy struct{}
+
+func (p *budgetDenyPolicy) EvaluateGateway(_ context.Context, _ map[string]interface{}) (allowed bool, reasons []string, err error) {
+	return false, []string{"budget exceeded: daily limit"}, nil
+}
+
+func TestBudgetDeniedRequest_RecordsSignedEvidence(t *testing.T) {
+	cfg := &GatewayConfig{
+		Enabled:      true,
+		ListenPrefix: "/v1/proxy",
+		Mode:         ModeEnforce,
+		Providers: map[string]ProviderConfig{
+			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
+		},
+		Callers: []CallerConfig{
+			{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
+		},
+		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
+		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+	}
+
+	gw, _, evStore := setupGatewayWithSpy(t, cfg, &budgetDenyPolicy{})
+	w := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
+		`{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}`)
+	require.Equal(t, http.StatusForbidden, w.Code)
+
+	list, err := evStore.List(context.Background(), "default", "test-caller", time.Time{}, time.Time{}, 5)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	ev := list[0]
+	assert.False(t, ev.PolicyDecision.Allowed)
+	require.NotEmpty(t, ev.Signature)
+	assert.True(t, evStore.VerifyRecord(&ev), "budget-denied evidence must remain signature-verifiable")
+	assert.Contains(t, strings.Join(ev.PolicyDecision.Reasons, ","), "budget")
 }

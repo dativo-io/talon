@@ -17,6 +17,15 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+### Added
+
+- **feat(evidence): signed export and offline file verification.** Added `talon audit export --format signed-json|signed-ndjson` and `talon audit verify --file <path>` so operators and compliance teams can verify evidence integrity outside the running instance. This matters for GDPR/NIS2 handoffs where auditors request portable, tamper-evident artifacts. Verify quickly with `talon audit export --format signed-json --output signed.json && talon audit verify --file signed.json`.
+- **feat(dashboard): persistent evidence integrity UX.** Evidence rows now expose explicit integrity states (`Verified`, `Invalid`, `Not checked`, `Unable to verify`), with a persistent detail/signature block that shows signed fields and trust/spend context in one view. This makes integrity obvious to CTO/DPO users without requiring CLI-first workflows.
+
+### Docs
+
+- **docs(evidence): add 5-minute tamper-proof demo and signed export runbook updates.** Added `docs/tutorials/evidence-integrity-demo.md`, updated the 60-second demo and compliance export runbook to distinguish reduced reporting exports from signed integrity exports, and documented `/v1/evidence/{id}/verify` response shape in the evidence store reference.
+
 ## [1.5.0] - 2026-06-01
 
 ### Added

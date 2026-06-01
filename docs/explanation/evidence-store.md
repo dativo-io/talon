@@ -71,6 +71,14 @@ $ talon audit verify req_tampered
 ✗ Evidence req_tampered: signature INVALID
 ```
 
+You can also verify signed export files offline:
+
+```bash
+talon audit verify --file march-signed-evidence.json
+```
+
+The file verifier reports total/valid/invalid/malformed/unsupported counts and exits non-zero if any record is invalid or unverifiable.
+
 **What this proves:** The signing key never leaves the server. If the signature
 is valid, the record has not been modified since Talon created it. This provides
 ISO 27001 A.8.15 compliance (tamper-proof logging) without requiring external
@@ -125,9 +133,45 @@ talon audit export --format csv --from 2026-03-01 --to 2026-03-31 > march-audit.
 
 # JSON for programmatic access
 talon audit export --format json --from 2026-03-01 > march-audit.json
+
+# Signed JSON for offline integrity verification
+talon audit export --format signed-json --from 2026-03-01 > march-signed-audit.json
+
+# Signed NDJSON for line-oriented pipelines
+talon audit export --format signed-ndjson --from 2026-03-01 > march-signed-audit.ndjson
 ```
 
 CSV columns: `id`, `session_id`, `timestamp`, `tenant_id`, `agent_id`, `invocation_type`, `allowed`, `cost`, `model_used`, `duration_ms`, `has_error`, `input_tier`, `output_tier`, `pii_detected`, `pii_redacted`, `policy_reasons`, `tools_called`, `input_hash`, `output_hash`, `primary_explanation_code`, `primary_explanation_reason`, `primary_version_identity`, plus shadow/cache fields when applicable. JSON and NDJSON export include the same fields; `session_id` links evidence to a lifecycle session (e.g. plan-gated run and its dispatch).
+
+Signed exports include full `Evidence` records with per-record `signature` fields, so integrity can be verified later with `talon audit verify --file`.
+
+Practical split:
+
+- Use reduced `csv/json/ndjson` export for reporting and spreadsheet workflows.
+- Use `signed-json/signed-ndjson` when you need cryptographic integrity verification.
+
+## Evidence Verify API
+
+The dashboard and API expose record-level verification:
+
+```http
+GET /v1/evidence/{id}/verify
+```
+
+Response:
+
+```json
+{
+  "id": "req_a1b2c3d4",
+  "valid": true
+}
+```
+
+Tenant scoping applies: callers can only verify evidence in their own tenant scope.
+
+Buyer-facing wording:
+
+> Talon evidence can be independently verified. If a record is changed after creation, verification fails.
 
 ## OpenTelemetry Export
 

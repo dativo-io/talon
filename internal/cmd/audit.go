@@ -29,6 +29,7 @@ var (
 	auditCaller         string
 	auditViolationsOnly bool
 	auditOutputFile     string
+	auditVerifyFile     string
 )
 
 var auditCmd = &cobra.Command{
@@ -52,13 +53,13 @@ var auditShowCmd = &cobra.Command{
 var auditVerifyCmd = &cobra.Command{
 	Use:   "verify [evidence-id]",
 	Short: "Verify HMAC signature of an evidence record",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  auditVerify,
 }
 
 var auditExportCmd = &cobra.Command{
 	Use:   "export",
-	Short: "Export evidence records as CSV, JSON, NDJSON, or HTML for compliance",
+	Short: "Export evidence records as CSV, JSON, NDJSON, signed JSON, signed NDJSON, or HTML",
 	RunE:  auditExport,
 }
 
@@ -67,7 +68,8 @@ func init() {
 	auditListCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
 	auditListCmd.Flags().IntVar(&auditLimit, "limit", 20, "Maximum records to show")
 
-	auditExportCmd.Flags().StringVar(&auditExportFmt, "format", "csv", "Output format: csv, json, ndjson, or html")
+	auditVerifyCmd.Flags().StringVar(&auditVerifyFile, "file", "", "Verify all records from a signed export file")
+	auditExportCmd.Flags().StringVar(&auditExportFmt, "format", "csv", "Output format: csv, json, ndjson, signed-json, signed-ndjson, or html")
 	auditExportCmd.Flags().StringVar(&auditFrom, "from", "", "Start date (YYYY-MM-DD)")
 	auditExportCmd.Flags().StringVar(&auditTo, "to", "", "End date (YYYY-MM-DD)")
 	auditExportCmd.Flags().StringVar(&auditTenant, "tenant", "", "Filter by tenant ID")
@@ -158,13 +160,37 @@ func auditVerify(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
 
-	evidenceID := args[0]
-
 	store, err := openEvidenceStore()
 	if err != nil {
 		return fmt.Errorf("initializing evidence store: %w", err)
 	}
 	defer store.Close()
+
+	if auditVerifyFile != "" {
+		if len(args) > 0 {
+			return fmt.Errorf("use either evidence ID or --file, not both")
+		}
+		data, err := os.ReadFile(auditVerifyFile)
+		if err != nil {
+			return fmt.Errorf("reading verify file: %w", err)
+		}
+		report, verifyErr := store.VerifyExport(data)
+		renderVerifyFileReport(os.Stdout, auditVerifyFile, report)
+		if report.HasFailures() {
+			if verifyErr != nil {
+				return fmt.Errorf("file verification failed: %w", verifyErr)
+			}
+			return fmt.Errorf("file verification failed")
+		}
+		if verifyErr != nil {
+			return fmt.Errorf("verifying file: %w", verifyErr)
+		}
+		return nil
+	}
+	if len(args) == 0 {
+		return fmt.Errorf("evidence id is required when --file is not provided")
+	}
+	evidenceID := args[0]
 
 	ev, err := store.Get(ctx, evidenceID)
 	if err != nil {
@@ -198,7 +224,8 @@ func auditExport(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("querying evidence: %w", err)
 	}
-	records := filterExportRecords(list, auditViolationsOnly)
+	filteredEvidence := filterEvidenceForExport(list, auditViolationsOnly)
+	records := toExportRecords(filteredEvidence)
 
 	out, cleanup, err := resolveExportOutput(cmd, auditOutputFile)
 	if err != nil {
@@ -215,10 +242,14 @@ func auditExport(cmd *cobra.Command, _ []string) error {
 		return renderAuditExportJSONWrapped(out, records)
 	case "ndjson":
 		return renderAuditExportNDJSON(out, records)
+	case "signed-json":
+		return renderAuditExportSignedJSON(out, filteredEvidence)
+	case "signed-ndjson":
+		return renderAuditExportSignedNDJSON(out, filteredEvidence)
 	case "html":
 		return renderAuditExportHTML(out, records)
 	default:
-		return fmt.Errorf("unsupported --format %q; use csv, json, ndjson, or html", auditExportFmt)
+		return fmt.Errorf("unsupported --format %q; use csv, json, ndjson, signed-json, signed-ndjson, or html", auditExportFmt)
 	}
 }
 
@@ -248,14 +279,25 @@ func resolveAgentFilter(agent, caller string) string {
 	return caller
 }
 
-func filterExportRecords(list []evidence.Evidence, violationsOnly bool) []evidence.ExportRecord {
-	records := make([]evidence.ExportRecord, 0, len(list))
+func filterEvidenceForExport(list []evidence.Evidence, violationsOnly bool) []evidence.Evidence {
+	if !violationsOnly {
+		return append([]evidence.Evidence(nil), list...)
+	}
+	filtered := make([]evidence.Evidence, 0, len(list))
 	for i := range list {
-		rec := evidence.ToExportRecord(&list[i])
-		if violationsOnly && !rec.ObservationModeOverride && rec.Allowed {
+		ev := list[i]
+		if !ev.ObservationModeOverride && ev.PolicyDecision.Allowed {
 			continue
 		}
-		records = append(records, rec)
+		filtered = append(filtered, ev)
+	}
+	return filtered
+}
+
+func toExportRecords(list []evidence.Evidence) []evidence.ExportRecord {
+	records := make([]evidence.ExportRecord, 0, len(list))
+	for i := range list {
+		records = append(records, evidence.ToExportRecord(&list[i]))
 	}
 	return records
 }
@@ -346,6 +388,39 @@ func renderAuditExportJSONWrapped(w io.Writer, records []evidence.ExportRecord) 
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(envelope)
+}
+
+func renderAuditExportSignedJSON(w io.Writer, records []evidence.Evidence) error {
+	envelope := evidence.SignedExportEnvelope{
+		ExportMetadata: evidence.ExportMetadata{
+			GeneratedAt:  time.Now().UTC(),
+			TalonVersion: resolvedVersion(),
+			Filter: evidence.ExportFilter{
+				From:   auditFrom,
+				To:     auditTo,
+				Tenant: auditTenant,
+				Agent:  auditAgent,
+				Caller: auditCaller,
+			},
+			TotalRecords: len(records),
+			Algorithm:    evidence.SignedExportAlgorithm,
+			Signed:       true,
+		},
+		Records: records,
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(envelope)
+}
+
+func renderAuditExportSignedNDJSON(w io.Writer, records []evidence.Evidence) error {
+	enc := json.NewEncoder(w)
+	for i := range records {
+		if err := enc.Encode(&records[i]); err != nil {
+			return fmt.Errorf("encoding record %s: %w", records[i].ID, err)
+		}
+	}
+	return nil
 }
 
 func renderAuditExportNDJSON(w io.Writer, records []evidence.ExportRecord) error {
@@ -525,6 +600,35 @@ func renderVerifyResult(w io.Writer, evidenceID string, valid bool, ev *evidence
 			piiStr,
 			ev.Classification.PIIRedacted,
 		)
+	}
+}
+
+func renderVerifyFileReport(w io.Writer, path string, report evidence.FileVerifyReport) {
+	fmt.Fprintf(w, "File: %s\n", path)
+	fmt.Fprintf(w, "Total records: %d\n", report.Total)
+	fmt.Fprintf(w, "Valid records: %d\n", report.Valid)
+	fmt.Fprintf(w, "Invalid records: %d\n", report.Invalid)
+	fmt.Fprintf(w, "Missing signature: %d\n", report.MissingSignature)
+	fmt.Fprintf(w, "Could not parse: %d\n", report.Unparseable)
+	fmt.Fprintf(w, "Unsupported: %d\n", report.Unsupported)
+	if report.Hint != "" {
+		fmt.Fprintf(w, "Hint: %s\n", report.Hint)
+	}
+	if len(report.Records) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Record results:")
+	for i := range report.Records {
+		rec := report.Records[i]
+		id := rec.ID
+		if id == "" {
+			id = "(unknown)"
+		}
+		detail := rec.Detail
+		if detail == "" {
+			detail = "-"
+		}
+		fmt.Fprintf(w, "  - %s: %s (%s)\n", id, rec.Status, detail)
 	}
 }
 

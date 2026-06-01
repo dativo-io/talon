@@ -57,6 +57,8 @@ type ExportMetadata struct {
 	TalonVersion string       `json:"talon_version"`
 	Filter       ExportFilter `json:"filter"`
 	TotalRecords int          `json:"total_records"`
+	Algorithm    string       `json:"algorithm,omitempty"`
+	Signed       bool         `json:"signed,omitempty"`
 }
 
 // ExportFilter describes the filter criteria used during export.
