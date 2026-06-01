@@ -17,6 +17,8 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.5.5] - 2026-06-01
+
 ### Added
 
 - **feat(evidence): signed export and offline file verification.** Added `talon audit export --format signed-json|signed-ndjson` and `talon audit verify --file <path>` so operators and compliance teams can verify evidence integrity outside the running instance. This matters for GDPR/NIS2 handoffs where auditors request portable, tamper-evident artifacts. Verify quickly with `talon audit export --format signed-json --output signed.json && talon audit verify --file signed.json`.
@@ -485,7 +487,8 @@ For user-facing entries, include:
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.5.5...HEAD
+[1.5.5]: https://github.com/dativo-io/talon/compare/v1.5.0...v1.5.5
 [1.5.0]: https://github.com/dativo-io/talon/compare/v1.4.6...v1.5.0
 [1.4.6]: https://github.com/dativo-io/talon/compare/v1.4.5...v1.4.6
 [1.4.5]: https://github.com/dativo-io/talon/compare/v1.4.0...v1.4.5
