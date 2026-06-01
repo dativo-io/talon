@@ -67,7 +67,7 @@ func (s *Store) VerifyExport(data []byte) (FileVerifyReport, error) {
 	switch trimmed[0] {
 	case '{':
 		report, err := s.verifySignedJSON(trimmed)
-		if report.Total == 0 && bytes.Contains(trimmed, []byte("\n")) {
+		if report.Total == 0 && report.HasFailures() && bytes.Contains(trimmed, []byte("\n")) {
 			ndReport, ndErr := s.verifyNDJSON(trimmed)
 			if ndReport.Total > 0 || ndErr == nil {
 				return ndReport, ndErr

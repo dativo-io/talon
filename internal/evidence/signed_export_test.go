@@ -142,6 +142,29 @@ func TestVerifyExport_UnsupportedReducedEnvelope(t *testing.T) {
 	assert.True(t, report.HasFailures())
 }
 
+func TestVerifyExport_EmptySignedJSON(t *testing.T) {
+	store := newTestStore(t)
+
+	envelope := SignedExportEnvelope{
+		ExportMetadata: ExportMetadata{
+			GeneratedAt:  time.Now().UTC(),
+			TalonVersion: "test",
+			TotalRecords: 0,
+			Algorithm:    SignedExportAlgorithm,
+			Signed:       true,
+		},
+		Records: []Evidence{},
+	}
+	payload, err := json.MarshalIndent(envelope, "", "  ")
+	require.NoError(t, err)
+
+	report, verifyErr := store.VerifyExport(payload)
+	require.NoError(t, verifyErr)
+	assert.Equal(t, 0, report.Total)
+	assert.Equal(t, 0, report.Valid)
+	assert.False(t, report.HasFailures(), "empty signed export should not report failures")
+}
+
 func TestVerifyExport_SignedNDJSONMixed(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
