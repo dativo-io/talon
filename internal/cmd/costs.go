@@ -221,7 +221,6 @@ var costsCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cost by agent (monthly): %w", err)
 		}
-		renderCostReportAllAgents(out, tenantID, byAgentDaily, byAgentMonthly)
 		dailyTotal, _ := store.CostTotal(ctx, tenantID, "", dayStart, dayEnd)
 		monthlyTotal, _ := store.CostTotal(ctx, tenantID, "", monthStart, monthEnd)
 		weekTotal, _ := store.CostTotal(ctx, tenantID, "", weekStart, dayEnd)
@@ -240,6 +239,7 @@ var costsCmd = &cobra.Command{
 				CacheMonth:     cache30d,
 			})
 		}
+		renderCostReportAllAgents(out, tenantID, byAgentDaily, byAgentMonthly)
 		fmt.Fprintf(out, "  7d total: €%s\n", formatCost(weekTotal))
 		printBudgetUtilization(out, dailyBudget, monthlyBudget)
 		printCacheSavings(out, cache7d, cache30d)
