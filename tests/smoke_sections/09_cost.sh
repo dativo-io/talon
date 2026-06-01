@@ -48,7 +48,12 @@ test_section_09_cost() {
   assert_pass "talon costs --tenant default exits 0" run_talon costs --tenant default
   assert_pass "talon costs --json exits 0" run_talon costs --tenant default --json
   local cost_json_out; cost_json_out="$(run_talon costs --tenant default --json 2>/dev/null || true)"
-  assert_pass "talon costs --json outputs JSON object" jq -e 'type=="object"' <<< "$cost_json_out" &>/dev/null
+  if [[ -n "$cost_json_out" ]] && jq -e 'type=="object"' <<< "$cost_json_out" &>/dev/null; then
+    echo "  ✓  talon costs --json outputs JSON object"
+    record_pass
+  else
+    log_failure "talon costs --json outputs JSON object" "output=$(echo "$cost_json_out" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c1-200)"
+  fi
   assert_pass "talon costs --by-provider exits 0" run_talon costs --tenant default --by-provider
   assert_pass "talon costs export --format csv exits 0" run_talon costs export --tenant default --format csv --limit 20
   assert_pass "talon costs export --format json exits 0" run_talon costs export --tenant default --format json --limit 20

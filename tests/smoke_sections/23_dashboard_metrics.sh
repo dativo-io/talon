@@ -616,7 +616,8 @@ CACHEEOF
   # CLI costs --by-provider: compare provider names with dashboard provider_breakdown
   local cli_byprovider; cli_byprovider="$(run_talon costs --by-provider --tenant default 2>/dev/null)"; true
   assert_pass "talon costs --by-provider exits 0" run_talon costs --by-provider --tenant default
-  local cli_providers; cli_providers="$(echo "$cli_byprovider" | grep '€' | grep -v '^Total' | awk '{print $1}' | sort)"
+  local cli_providers
+  cli_providers="$(echo "$cli_byprovider" | awk '/€/ {print $1}' | grep -E '^[a-zA-Z0-9._-]+$' | grep -v -E '^(Total|Provider|Tenant|7d)$' | sort)"
   local dash_providers; dash_providers="$(jq -r '.provider_breakdown[].provider // empty' <<< "$snap_after" 2>/dev/null | sort)"
   echo "[SMOKE] CONSISTENCY|cli_providers|$(echo "$cli_providers" | tr '\n' ',')"
   echo "[SMOKE] CONSISTENCY|dash_providers|$(echo "$dash_providers" | tr '\n' ',')"
