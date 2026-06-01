@@ -26,21 +26,6 @@ test_section_10_audit() {
     grep -qiE 'policy_decision|Policy' <<< "$show_out"
   assert_pass "talon audit verify <id> exits 0 and contains valid: true or VALID" \
     grep -qi valid <<< "$(run_talon audit verify "$ev_id" 2>/dev/null)" && run_talon audit verify "$ev_id" &>/dev/null
-  # Tamper: corrupt evidence_json so HMAC verification fails (Verify reads from JSON blob)
-  local db_path="$TALON_DATA_DIR/evidence.db"
-  if [[ -f "$db_path" ]] && command -v sqlite3 &>/dev/null; then
-    sqlite3 "$db_path" "UPDATE evidence SET evidence_json = REPLACE(evidence_json, '\"default\"', '\"tampered\"') WHERE id = '$ev_id';" 2>/dev/null || true
-    local verify_out; verify_out="$(run_talon audit verify "$ev_id" 2>&1)"
-    local verify_code=$?
-    if [[ $verify_code -eq 0 ]] && grep -q VALID <<< "$verify_out"; then
-      log_failure "talon audit verify tampered record should exit non-zero or output invalid" "$verify_out"
-    else
-      echo "  ✓  talon audit verify tampered record exits non-zero or outputs invalid"
-      record_pass
-    fi
-  else
-    echo "  -  (skip tamper test: evidence.db or sqlite3 not found)"
-  fi
   assert_pass "talon audit export --format csv exits 0" run_talon audit export --format csv --from 2020-01-01 --to 2099-12-31
   local csv_out; csv_out="$(run_talon audit export --format csv --from 2020-01-01 --to 2099-12-31 2>/dev/null)"; true
   assert_pass "CSV has header with id, timestamp, tenant_id, pii_detected" \
@@ -87,6 +72,22 @@ PY
     record_pass
   else
     log_failure "talon audit verify --file tampered export should fail with integrity diagnostics" "$verify_file_out"
+  fi
+  # Tamper store record only after signed-export verification checks above.
+  # This keeps the signed export "happy path" deterministic in smoke runs.
+  local db_path="$TALON_DATA_DIR/evidence.db"
+  if [[ -f "$db_path" ]] && command -v sqlite3 &>/dev/null; then
+    sqlite3 "$db_path" "UPDATE evidence SET evidence_json = REPLACE(evidence_json, '\"default\"', '\"tampered\"') WHERE id = '$ev_id';" 2>/dev/null || true
+    local verify_out; verify_out="$(run_talon audit verify "$ev_id" 2>&1)"
+    local verify_code=$?
+    if [[ $verify_code -eq 0 ]] && grep -q VALID <<< "$verify_out"; then
+      log_failure "talon audit verify tampered record should exit non-zero or output invalid" "$verify_out"
+    else
+      echo "  ✓  talon audit verify tampered record exits non-zero or outputs invalid"
+      record_pass
+    fi
+  else
+    echo "  -  (skip tamper test: evidence.db or sqlite3 not found)"
   fi
   assert_pass "talon audit export --from --to exits 0" \
     run_talon audit export --format json --from 2020-01-01 --to 2099-12-31
