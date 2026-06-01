@@ -6,7 +6,7 @@
 [![CodeQL](https://github.com/dativo-io/talon/actions/workflows/codeql.yml/badge.svg)](https://github.com/dativo-io/talon/actions/workflows/codeql.yml)
 [![Latest Release](https://img.shields.io/github/v/release/dativo-io/talon)](https://github.com/dativo-io/talon/releases/latest)
 [![Go Report Card](https://goreportcard.com/badge/github.com/dativo-io/talon)](https://goreportcard.com/report/github.com/dativo-io/talon)
-[![License](https://img.shields.io/github/license/dativo-io/talon)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 [Docs](docs/README.md) ·
 [Quickstart](docs/tutorials/proxy-quickstart.md) ·
