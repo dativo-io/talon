@@ -1,6 +1,6 @@
 module github.com/dativo-io/talon
 
-go 1.25.8
+go 1.25.10
 
 require (
 	// HTTP Router (Prompt 6)
