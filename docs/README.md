@@ -41,6 +41,7 @@ Choose the shortest path for your situation:
 | Doc | Description |
 |-----|-------------|
 | [60-Second Demo (no API key)](tutorials/quickstart-demo.md) | Docker Compose demo with mock provider — see governance in action in 60 seconds. |
+| [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | End-to-end tamper-proof demo: verify in dashboard, export signed evidence, tamper one field, verify failure with CLI. |
 | [Your first governed agent](tutorials/first-governed-agent.md) | Install → init → run → see evidence. Native Talon (requires Go + API key). |
 
 ### How-to guides (goal-oriented)
@@ -92,6 +93,7 @@ Choose the shortest path for your situation:
 | [What Talon does to your request](explanation/what-talon-does-to-your-request.md) | Pipeline, latency, threat boundaries, and reproducible checks. |
 | [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md) | Control-plane vs scrubber differentiation with proof commands. |
 | [Evidence store](explanation/evidence-store.md) | HMAC integrity model and verification flow. |
+| [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Fast proof moment for auditors/operators, including offline signed-export verification. |
 | [Security policy](../SECURITY.md) | Vulnerability reporting process and security scope. |
 | [Docker Compose demo](../examples/docker-compose/README.md) | Fastest no-key proof loop. |
 

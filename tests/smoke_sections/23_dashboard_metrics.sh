@@ -200,6 +200,7 @@ CACHEEOF
   assert_pass "dashboard HTML contains Mission Control marker" grep -q "Talon <span>Mission Control</span>" <<< "$dash_html"
   assert_pass "dashboard HTML contains Session Timeline marker" grep -q "Session Timeline (Lifecycle)" <<< "$dash_html"
   assert_pass "dashboard HTML contains Compliance Report Preview marker" grep -q "Compliance Report Preview" <<< "$dash_html"
+  assert_pass "dashboard HTML links governance evidence review with gateway hash" grep -q "/dashboard#evidence-gateway" <<< "$dash_html"
   assert_pass "dashboard HTML contains reliability badge marker" grep -q "reliability-badge" <<< "$dash_html"
   assert_pass "dashboard HTML contains <script>" grep -qi "<script" <<< "$dash_html"
   assert_pass "dashboard HTML contains Success Rate KPI" grep -qi "Success Rate" <<< "$dash_html"

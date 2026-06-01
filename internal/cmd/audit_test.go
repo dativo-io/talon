@@ -2,8 +2,11 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,12 +28,14 @@ func TestAuditCmd_HasSubcommands(t *testing.T) {
 	}
 }
 
-func TestAuditVerifyCmd_RequiresOneArg(t *testing.T) {
+func TestAuditVerifyCmd_AcceptsZeroOrOneArg(t *testing.T) {
 	assert.NotNil(t, auditVerifyCmd.Args)
 	err := auditVerifyCmd.Args(auditVerifyCmd, []string{})
-	assert.Error(t, err)
+	assert.NoError(t, err)
 	err = auditVerifyCmd.Args(auditVerifyCmd, []string{"ev_123"})
 	assert.NoError(t, err)
+	err = auditVerifyCmd.Args(auditVerifyCmd, []string{"ev_1", "ev_2"})
+	assert.Error(t, err)
 }
 
 func TestAuditListCmd_Flags(t *testing.T) {
@@ -337,4 +342,103 @@ func TestAuditShowCmd_ZeroArgs_EmptyStore_PrintsNoRecords(t *testing.T) {
 	w.Close()
 	<-done
 	assert.Contains(t, string(out), "No evidence records found.")
+}
+
+func TestAuditExportSignedJSON_IncludesSignatures(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SIGNING_KEY", "test-signing-key-1234567890123456")
+
+	store, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), "test-signing-key-1234567890123456")
+	require.NoError(t, err)
+	defer store.Close()
+	gen := evidence.NewGenerator(store)
+	_, err = gen.Generate(context.Background(), evidence.GenerateParams{
+		CorrelationID:  "corr_signed_export",
+		TenantID:       "default",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		InputPrompt:    "hello",
+		OutputResponse: "world",
+	})
+	require.NoError(t, err)
+
+	outPath := filepath.Join(dir, "signed.json")
+	rootCmd.SetArgs([]string{"audit", "export", "--format", "signed-json", "--output", outPath})
+	require.NoError(t, rootCmd.Execute())
+
+	data, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "\"signed\": true")
+	assert.Contains(t, string(data), "\"algorithm\": \"HMAC-SHA256\"")
+
+	var envelope evidence.SignedExportEnvelope
+	require.NoError(t, json.Unmarshal(data, &envelope))
+	require.Len(t, envelope.Records, 1)
+	assert.NotEmpty(t, envelope.Records[0].Signature)
+}
+
+func TestAuditVerifyFile_SucceedsForValidSignedExport(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SIGNING_KEY", "test-signing-key-1234567890123456")
+
+	store, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), "test-signing-key-1234567890123456")
+	require.NoError(t, err)
+	defer store.Close()
+	gen := evidence.NewGenerator(store)
+	_, err = gen.Generate(context.Background(), evidence.GenerateParams{
+		CorrelationID:  "corr_verify_file_ok",
+		TenantID:       "default",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		InputPrompt:    "hello",
+		OutputResponse: "world",
+	})
+	require.NoError(t, err)
+
+	outPath := filepath.Join(dir, "signed.json")
+	rootCmd.SetArgs([]string{"audit", "export", "--format", "signed-json", "--output", outPath})
+	require.NoError(t, rootCmd.Execute())
+
+	rootCmd.SetArgs([]string{"audit", "verify", "--file", outPath})
+	err = rootCmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestAuditVerifyFile_FailsForTamperedSignedExport(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SIGNING_KEY", "test-signing-key-1234567890123456")
+
+	store, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), "test-signing-key-1234567890123456")
+	require.NoError(t, err)
+	defer store.Close()
+	gen := evidence.NewGenerator(store)
+	_, err = gen.Generate(context.Background(), evidence.GenerateParams{
+		CorrelationID:  "corr_verify_file_bad",
+		TenantID:       "default",
+		AgentID:        "agent",
+		InvocationType: "manual",
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		InputPrompt:    "hello",
+		OutputResponse: "world",
+	})
+	require.NoError(t, err)
+
+	outPath := filepath.Join(dir, "signed.json")
+	rootCmd.SetArgs([]string{"audit", "export", "--format", "signed-json", "--output", outPath})
+	require.NoError(t, rootCmd.Execute())
+
+	data, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	tampered := strings.Replace(string(data), "\"tenant_id\": \"default\"", "\"tenant_id\": \"tampered\"", 1)
+	require.NoError(t, os.WriteFile(outPath, []byte(tampered), 0o644))
+
+	rootCmd.SetArgs([]string{"audit", "verify", "--file", outPath})
+	err = rootCmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "file verification failed")
 }

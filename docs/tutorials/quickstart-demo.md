@@ -84,6 +84,12 @@ The HMAC-SHA256 signature proves no field has been modified since creation.
 Visit [http://localhost:8080/dashboard](http://localhost:8080/dashboard) to see
 evidence records, costs, and PII findings in the browser.
 
+Use the Evidence tab to:
+
+- check the per-row integrity state (`Not checked`, `Verified`, `Invalid`, `Unable to verify`),
+- open the persistent signature block from **Detail**,
+- verify that governance decision and spend attribution are visible beside signature status.
+
 ## What you just proved
 
 The demo showed three things a PII-only proxy cannot:

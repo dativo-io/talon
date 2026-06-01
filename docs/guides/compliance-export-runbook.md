@@ -6,7 +6,12 @@ Use this runbook to export Talon evidence for auditors or regulators (e.g. GDPR 
 
 ## 1. Export evidence
 
-**CLI:** Export a date range or limit. Formats: `csv` or `json`.
+Choose the export type based on your goal:
+
+- **Reporting export (reduced fields):** `--format csv|json|ndjson` for spreadsheet/report tooling.
+- **Integrity export (full signed records):** `--format signed-json|signed-ndjson` for offline verification.
+
+**CLI:** Export a date range or limit.
 
 ```bash
 # CSV for a date range (e.g. last month)
@@ -14,6 +19,9 @@ talon audit export --format csv --from 2026-02-01 --to 2026-02-28
 
 # JSON with a limit
 talon audit export --format json --limit 1000
+
+# Full signed JSON for offline integrity verification
+talon audit export --format signed-json --from 2026-02-01 --to 2026-02-28 --output feb-signed-evidence.json
 ```
 
 **API:** Authenticate with `Authorization: Bearer <tenant-key>` (or admin key for operator workflows) and call:
@@ -25,26 +33,37 @@ Content-Type: application/json
 {"tenant_id": "default", "format": "json", "limit": 1000}
 ```
 
-Exports include evidence ID, session_id (lifecycle session linking), timestamp, tenant_id, agent_id, policy decision, cost, and (when configured) PII flags and data tier. For the full column list see [Evidence store — Export](../explanation/evidence-store.md#export) or the CSV header row.
+Reduced exports include evidence ID, session_id (lifecycle session linking), timestamp, tenant_id, agent_id, policy decision, cost, and (when configured) PII flags and data tier. For the full reduced column list see [Evidence store — Export](../explanation/evidence-store.md#export) or the CSV header row.
+
+Signed exports include full evidence records with per-record `signature`, policy decision, hashes, model, token usage, and cost fields, suitable for offline verification.
 
 **Scope:** Use `tenant_id` (in API body or CLI context) so the export is scoped to the tenant you are responsible for. For GDPR Art. 30 you typically export processing records for a defined period and scope.
 
 ---
 
-## 2. Verify integrity (optional but recommended)
+## 2. Verify integrity (recommended)
 
-Evidence records are signed with HMAC-SHA256. To prove integrity, verify a sample or the full set:
+Evidence records are signed with HMAC-SHA256. To prove integrity:
 
 ```bash
-# Verify a single record
+# Verify a single record from the store
 talon audit verify <evidence-id>
 
-# List IDs from your export, then verify each (or a sample)
-talon audit list --limit 100
-talon audit verify req_xxxxxxxx
+# Verify a signed export file (offline workflow)
+talon audit verify --file feb-signed-evidence.json
 ```
 
-Document the verification (e.g. "Verified N evidence IDs; signature VALID"). If you need to verify in bulk, script `talon audit verify` over the IDs from your export.
+`talon audit verify --file` prints:
+
+- total records
+- valid records
+- invalid records
+- records that could not be parsed
+- unsupported records
+
+Exit code is non-zero when any record is invalid, malformed, missing signature, or unsupported.
+
+For ad-hoc checks from the live store, `talon audit verify <evidence-id>` remains available.
 
 ---
 
@@ -52,8 +71,9 @@ Document the verification (e.g. "Verified N evidence IDs; signature VALID"). If 
 
 Suggested package for auditors:
 
-- **Export file(s):** CSV or JSON from step 1, named with tenant and date range (e.g. `talon-evidence-default-2026-02.csv`).
-- **Verification log:** Short note or log listing evidence IDs verified and result (e.g. "signature VALID").
+- **Reporting file(s):** CSV/JSON reduced export from step 1, named with tenant and date range (e.g. `talon-evidence-default-2026-02.csv`).
+- **Integrity file:** signed JSON export (e.g. `talon-evidence-default-2026-02-signed.json`).
+- **Verification log:** Output of `talon audit verify --file ...` showing validity counts.
 - **Scope description:** One-line summary (e.g. "Talon evidence for tenant default, 2026-02-01 to 2026-02-28, GDPR Art. 30 processing records").
 
 Store the package in a secure location and hand off according to your audit process.
@@ -72,7 +92,7 @@ For incident response, use the same export and verification steps. Use timeline 
 
 ## You're done
 
-You now know how to export evidence, verify signatures, and package records for auditors. Talon evidence is HMAC-signed and can be handed off with a verification log.
+You now know how to export evidence for reporting and integrity, verify signatures offline, and package records for auditors. Talon evidence is HMAC-signed and independently verifiable.
 
 **Next steps:**
 

@@ -54,6 +54,14 @@
     .evidence-filters { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 0.75rem; }
     .evidence-filters label { display: flex; align-items: center; gap: 0.25rem; font-size: 0.875rem; color: var(--text-dim); }
     .evidence-filters input, .evidence-filters select { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); padding: 0.25rem 0.5rem; border-radius: 4px; }
+    .integrity-state { font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+    .integrity-state.pending { color: #cbd5e1; }
+    .integrity-state.error { color: #fca5a5; }
+    .detail-card { margin-top: 0.75rem; border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; background: #0b1222; }
+    .detail-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 0.5rem 1rem; }
+    .detail-label { color: var(--text-dim); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.02em; }
+    .detail-value { font-size: 0.9rem; }
+    .detail-empty { color: var(--text-dim); font-size: 0.9rem; }
     .compliance-overlay { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 0.5rem; }
     .governance-widget { margin-bottom: 1rem; padding: 0.75rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
     .denials-summary { font-size: 0.875rem; color: var(--text); margin: 0; }
@@ -158,6 +166,8 @@
 
   <div id="panel-evidence" class="panel active">
     <p class="compliance-overlay">Evidence supports: GDPR Art. 30, EU AI Act documentation (when present in metadata).</p>
+    <p class="refresh">Evidence-grade, not just logs. Talon signs every evidence record at creation time; if a signed field changes later, verification fails.</p>
+    <p class="refresh" id="evidence-scope-note">Verified evidence proves both governance decisions and cost attribution.</p>
     <div class="evidence-filters">
       <label>Tenant <input type="text" id="filter-tenant" placeholder="optional" /></label>
       <label>Agent <input type="text" id="filter-agent" placeholder="optional" /></label>
@@ -166,12 +176,25 @@
       <label>From <input type="datetime-local" id="filter-from" /></label>
       <label>To <input type="datetime-local" id="filter-to" /></label>
       <button type="button" id="evidence-apply-filters" class="btn">Apply</button>
+      <button type="button" id="evidence-verify-visible" class="btn">Verify visible records</button>
     </div>
     <p><button type="button" id="evidence-export-btn" class="btn">Export (CSV)</button> <button type="button" id="audit-pack-btn" class="btn">Audit pack (JSON)</button></p>
     <table>
-      <thead><tr><th>Time</th><th>Agent</th><th>Status</th><th>Cost (€)</th><th>ID</th><th>Trace</th><th>Verify</th></tr></thead>
+      <thead><tr><th>Time</th><th>Agent</th><th>Status</th><th>Integrity</th><th>Cost (€)</th><th>ID</th><th>Detail</th><th>Verify</th></tr></thead>
       <tbody id="evidence-tbody"></tbody>
     </table>
+    <div id="evidence-detail" class="detail-card">
+      <h3 style="margin:0 0 0.5rem;">Evidence detail</h3>
+      <p id="evidence-detail-empty" class="detail-empty">Select a record with <strong>Detail</strong> to inspect signed fields, trust state, and spend attribution.</p>
+      <div id="evidence-detail-content" style="display:none;">
+        <h4 style="margin:0.5rem 0;">Signature block</h4>
+        <div id="evidence-signature-grid" class="detail-grid"></div>
+        <h4 style="margin:0.75rem 0 0.5rem;">Trust &amp; spend</h4>
+        <div id="evidence-spend-grid" class="detail-grid"></div>
+        <h4 style="margin:0.75rem 0 0.5rem;">Step trace</h4>
+        <div id="evidence-steps" class="detail-value"></div>
+      </div>
+    </div>
   </div>
   <div id="panel-plans" class="panel">
     <h3 style="margin-top:0">Pending</h3>
@@ -274,6 +297,8 @@
       setGatewayLinksToken(window.TALON_ADMIN_KEY || '');
       var base = window.TALON_BASE_URL || '';
       var key = window.TALON_ADMIN_KEY || '';
+      var evidenceIntegrityState = {};
+      var evidenceInvocationTypeFilter = window.location.hash === '#evidence-gateway' ? 'gateway' : '';
       function headers() {
         var h = { 'Content-Type': 'application/json' };
         var k = window.TALON_ADMIN_KEY || '';
@@ -295,6 +320,103 @@
           .replace(/>/g, '&gt;')
           .replace(/"/g, '&quot;')
           .replace(/'/g, '&#39;');
+      }
+      function integrityStateLabel(state) {
+        if (state === 'verified') return '✓ Verified';
+        if (state === 'invalid') return '✗ Invalid';
+        if (state === 'unable') return '⚠ Unable to verify';
+        return '— Not checked';
+      }
+      function integrityStateClass(state) {
+        if (state === 'verified') return 'status-ok';
+        if (state === 'invalid') return 'status-deny';
+        if (state === 'unable') return 'integrity-state error';
+        return 'integrity-state pending';
+      }
+      function renderIntegrityCellState(cell, state) {
+        if (!cell) return;
+        var text = integrityStateLabel(state);
+        if (state === 'verified' || state === 'invalid') {
+          cell.innerHTML = '<span class="' + integrityStateClass(state) + '">' + escapeHtml(text) + '</span>';
+          return;
+        }
+        cell.innerHTML = '<span class="' + integrityStateClass(state) + '">' + escapeHtml(text) + '</span>';
+      }
+      function writeDetailGrid(targetID, rows) {
+        var target = document.getElementById(targetID);
+        if (!target) return;
+        target.innerHTML = '';
+        rows.forEach(function(row) {
+          var block = document.createElement('div');
+          block.innerHTML = '<div class="detail-label">' + escapeHtml(row.label) + '</div><div class="detail-value">' + escapeHtml(row.value) + '</div>';
+          target.appendChild(block);
+        });
+      }
+      function setEvidenceDetailVisible(visible) {
+        var empty = document.getElementById('evidence-detail-empty');
+        var content = document.getElementById('evidence-detail-content');
+        if (empty) empty.style.display = visible ? 'none' : 'block';
+        if (content) content.style.display = visible ? 'block' : 'none';
+      }
+      function renderEvidenceDetail(ev, trace, verifyResult) {
+        if (!ev) {
+          setEvidenceDetailVisible(false);
+          return;
+        }
+        var decision = (ev.policy_decision && ev.policy_decision.allowed) ? 'Allowed' : 'Denied';
+        var provider = (ev.routing_decision && ev.routing_decision.selected_provider) ? ev.routing_decision.selected_provider : '—';
+        var signatureRows = [
+          { label: 'Evidence ID', value: ev.id || '—' },
+          { label: 'Tenant ID', value: ev.tenant_id || '—' },
+          { label: 'Agent / caller ID', value: ev.agent_id || '—' },
+          { label: 'Timestamp', value: ev.timestamp ? new Date(ev.timestamp).toISOString() : '—' },
+          { label: 'Algorithm', value: 'HMAC-SHA256' },
+          { label: 'Input hash', value: (ev.audit_trail && ev.audit_trail.input_hash) ? ev.audit_trail.input_hash : '—' },
+          { label: 'Output hash', value: (ev.audit_trail && ev.audit_trail.output_hash) ? ev.audit_trail.output_hash : '—' },
+          { label: 'Policy decision', value: decision + (ev.policy_decision && ev.policy_decision.action ? ' (' + ev.policy_decision.action + ')' : '') },
+          { label: 'Verification result', value: verifyResult && verifyResult.valid ? '✓ Verified' : '✗ Invalid' }
+        ];
+        var spendRows = [
+          { label: 'Execution cost', value: ev.execution && ev.execution.cost != null ? String(ev.execution.cost) : '—' },
+          { label: 'Tokens (in/out)', value: ev.execution && ev.execution.tokens ? String(ev.execution.tokens.input || 0) + ' / ' + String(ev.execution.tokens.output || 0) : '—' },
+          { label: 'Model', value: ev.execution && ev.execution.model_used ? ev.execution.model_used : '—' },
+          { label: 'Provider', value: provider },
+          { label: 'Tenant', value: ev.tenant_id || '—' },
+          { label: 'Caller source', value: ev.request_source_id || ev.agent_id || '—' }
+        ];
+        writeDetailGrid('evidence-signature-grid', signatureRows);
+        writeDetailGrid('evidence-spend-grid', spendRows);
+        var stepsEl = document.getElementById('evidence-steps');
+        if (stepsEl) {
+          var steps = trace && trace.steps ? trace.steps : [];
+          if (!steps.length) {
+            stepsEl.textContent = 'No step evidence recorded for this invocation.';
+          } else {
+            stepsEl.innerHTML = steps.map(function(step, idx) {
+              var label = (step.step_type || step.type || 'step') + (step.tool_name ? ' ' + step.tool_name : '');
+              return '<div>' + (idx + 1) + '. ' + escapeHtml(label) + '</div>';
+            }).join('');
+          }
+        }
+        setEvidenceDetailVisible(true);
+      }
+      function verifyEvidenceByID(id) {
+        return get('/v1/evidence/' + encodeURIComponent(id) + '/verify').then(function(res) {
+          evidenceIntegrityState[id] = res.valid ? 'verified' : 'invalid';
+          return res;
+        }).catch(function(err) {
+          evidenceIntegrityState[id] = 'unable';
+          throw err;
+        });
+      }
+      function updateEvidenceScopeLabel() {
+        var note = document.getElementById('evidence-scope-note');
+        if (!note) return;
+        if (evidenceInvocationTypeFilter === 'gateway') {
+          note.textContent = 'Showing gateway evidence only. Verified evidence proves both governance decisions and cost attribution.';
+          return;
+        }
+        note.textContent = 'Verified evidence proves both governance decisions and cost attribution.';
       }
       function post(url, body) {
         return fetch(base + url, { method: 'POST', headers: headers(), body: JSON.stringify(body || {}) }).then(function(r) {
@@ -558,6 +680,9 @@
           var toDate = new Date(toEl.value);
           if (!isNaN(toDate.getTime())) params.push('to=' + encodeURIComponent(toDate.toISOString()));
         }
+        if (evidenceInvocationTypeFilter) {
+          params.push('invocation_type=' + encodeURIComponent(evidenceInvocationTypeFilter));
+        }
         return params.join('&');
       }
       function syncCardsFromEvidence(entries) {
@@ -608,9 +733,15 @@
         get('/v1/evidence?' + q).then(function(d) {
           var tbody = document.getElementById('evidence-tbody');
           if (!tbody) return;
+          updateEvidenceScopeLabel();
           syncCardsFromEvidence(d.entries || []);
           syncPolicyOutcomeFromEvidence(d.entries || []);
           tbody.innerHTML = '';
+          if (!(d.entries || []).length) {
+            tbody.innerHTML = '<tr><td colspan="8" class="refresh">No evidence yet. Run a request (CLI or proxy) to generate signed records, then verify integrity inline from this table.</td></tr>';
+            setEvidenceDetailVisible(false);
+            return;
+          }
           (d.entries || []).forEach(function(ev) {
             var tr = document.createElement('tr');
             var time = ev.timestamp ? new Date(ev.timestamp).toLocaleString() : '—';
@@ -621,14 +752,16 @@
             var cost = ev.cost != null ? ev.cost.toFixed(4) : '—';
             var id = ev.id || '';
             var idEsc = escapeHtml(id || '—');
+            if (!evidenceIntegrityState[id]) evidenceIntegrityState[id] = 'not_checked';
             var verifyBtn = '<button type="button" class="btn evidence-verify" data-id="' + String(id).replace(/"/g, '&quot;') + '">Verify</button>';
-            var traceBtn = '<button type="button" class="btn evidence-trace" data-id="' + String(id).replace(/"/g, '&quot;') + '">Trace</button>';
+            var traceBtn = '<button type="button" class="btn evidence-trace" data-id="' + String(id).replace(/"/g, '&quot;') + '">Detail</button>';
             var complianceTip = '';
             if (ev.compliance && ev.compliance.frameworks && ev.compliance.frameworks.length) {
               complianceTip = ' title="Frameworks: ' + escapeHtml(ev.compliance.frameworks.join(', ')) + (ev.compliance.data_location ? '; Location: ' + ev.compliance.data_location : '') + '"';
             }
-            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(ev.agent_id || '—') + '</td><td>' + status + '</td><td>' + escapeHtml(cost) + '</td><td' + complianceTip + '>' + idEsc + '</td><td>' + traceBtn + '</td><td>' + verifyBtn + '</td>';
+            tr.innerHTML = '<td>' + escapeHtml(time) + '</td><td>' + escapeHtml(ev.agent_id || '—') + '</td><td>' + status + '</td><td class="evidence-integrity-state" data-id="' + String(id).replace(/"/g, '&quot;') + '"></td><td>' + escapeHtml(cost) + '</td><td' + complianceTip + '>' + idEsc + '</td><td>' + traceBtn + '</td><td>' + verifyBtn + '</td>';
             tbody.appendChild(tr);
+            renderIntegrityCellState(tr.querySelector('.evidence-integrity-state'), evidenceIntegrityState[id]);
           });
           var complianceSummary = document.getElementById('compliance-preview-summary');
           if (complianceSummary) {
@@ -643,17 +776,12 @@
             btn.addEventListener('click', function() {
               var id = btn.getAttribute('data-id');
               if (!id || id === '—') return;
-              get('/v1/evidence/' + encodeURIComponent(id) + '/verify').then(function(res) {
-                var msg = res.valid ? 'Signature valid' : 'Signature invalid';
-                var span = document.createElement('span');
-                span.className = res.valid ? 'status-ok' : 'status-deny';
-                span.textContent = msg;
-                btn.parentNode.replaceChild(span, btn);
-              }).catch(function(e) {
-                var span = document.createElement('span');
-                span.className = 'error';
-                span.textContent = e.message || 'Error';
-                btn.parentNode.replaceChild(span, btn);
+              var row = btn.closest('tr');
+              var stateCell = row ? row.querySelector('.evidence-integrity-state') : null;
+              verifyEvidenceByID(id).then(function() {
+                renderIntegrityCellState(stateCell, evidenceIntegrityState[id]);
+              }).catch(function() {
+                renderIntegrityCellState(stateCell, evidenceIntegrityState[id]);
               });
             });
           });
@@ -661,28 +789,30 @@
             btn.addEventListener('click', function() {
               var id = btn.getAttribute('data-id');
               if (!id || id === '—') return;
-              get('/v1/evidence/' + encodeURIComponent(id) + '/trace').then(function(trace) {
-                var ev = trace.evidence || trace;
-                var steps = trace.steps || [];
-                var lines = ['Evidence: ' + (ev.id || id), 'Correlation: ' + (ev.correlation_id || '—'), 'Model: ' + (ev.execution && ev.execution.model_used ? ev.execution.model_used : '—'), 'Cost: ' + (ev.execution && ev.execution.cost != null ? ev.execution.cost : '—'), 'Steps: ' + steps.length];
-                var explanations = Array.isArray(ev.explanations) ? ev.explanations : [];
-                if (explanations.length > 0) {
-                  var primary = explanations[0];
-                  lines.push('Primary explanation: ' + (primary.code || '—') + ' - ' + (primary.reason || '—'));
-                  if (primary.stage) lines.push('Stage: ' + primary.stage);
-                  if (primary.trigger) lines.push('Trigger: ' + primary.trigger);
-                  if (primary.policy_ref) lines.push('Policy ref: ' + primary.policy_ref);
-                  if (primary.version_identity) lines.push('Version: ' + primary.version_identity);
-                  if (primary.fix) lines.push('Fix: ' + primary.fix);
-                }
-                steps.forEach(function(s, i) { lines.push('  ' + (i+1) + '. ' + (s.step_type || s.type || 'step') + (s.tool_name ? ' ' + s.tool_name : '')); });
-                alert(lines.join('\n'));
-              }).catch(function(e) { alert('Trace failed: ' + (e.message || e)); });
+              Promise.all([
+                get('/v1/evidence/' + encodeURIComponent(id)),
+                get('/v1/evidence/' + encodeURIComponent(id) + '/verify'),
+                get('/v1/evidence/' + encodeURIComponent(id) + '/trace')
+              ]).then(function(results) {
+                var detail = results[0];
+                var verifyRes = results[1];
+                var trace = results[2];
+                evidenceIntegrityState[id] = verifyRes.valid ? 'verified' : 'invalid';
+                var row = btn.closest('tr');
+                var stateCell = row ? row.querySelector('.evidence-integrity-state') : null;
+                renderIntegrityCellState(stateCell, evidenceIntegrityState[id]);
+                renderEvidenceDetail(detail, trace, verifyRes);
+              }).catch(function(e) {
+                renderEvidenceDetail(null, null, null);
+                var stepsEl = document.getElementById('evidence-steps');
+                if (stepsEl) stepsEl.textContent = 'Unable to load detail: ' + (e.message || e);
+                setEvidenceDetailVisible(true);
+              });
             });
           });
         }).catch(function(e) {
           var tbody = document.getElementById('evidence-tbody');
-          if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="error">' + escapeHtml(e.message) + '</td></tr>';
+          if (tbody) tbody.innerHTML = '<tr><td colspan="8" class="error">' + escapeHtml(e.message) + '</td></tr>';
         });
       }
 
@@ -911,6 +1041,22 @@
       });
       var applyFiltersBtn = document.getElementById('evidence-apply-filters');
       if (applyFiltersBtn) applyFiltersBtn.addEventListener('click', renderEvidence);
+      var verifyVisibleBtn = document.getElementById('evidence-verify-visible');
+      if (verifyVisibleBtn) verifyVisibleBtn.addEventListener('click', function() {
+        var rows = Array.prototype.slice.call(document.querySelectorAll('#evidence-tbody tr'));
+        var checks = rows.map(function(row) {
+          var verifyBtn = row.querySelector('.evidence-verify');
+          var id = verifyBtn ? verifyBtn.getAttribute('data-id') : '';
+          var stateCell = row.querySelector('.evidence-integrity-state');
+          if (!id) return Promise.resolve();
+          return verifyEvidenceByID(id).catch(function() {
+            return null;
+          }).then(function() {
+            renderIntegrityCellState(stateCell, evidenceIntegrityState[id] || 'unable');
+          });
+        });
+        Promise.all(checks).then(function() {});
+      });
       var stakeholderView = document.getElementById('stakeholder-view');
       if (stakeholderView) stakeholderView.addEventListener('click', function(e) {
         e.preventDefault();
@@ -1006,6 +1152,8 @@
         if (document.getElementById('panel-memory').classList.contains('active')) renderMemory();
         if (document.getElementById('panel-finops').classList.contains('active')) renderFinops();
       }
+      setEvidenceDetailVisible(false);
+      updateEvidenceScopeLabel();
       refresh();
       startRecentEventsStream();
       setInterval(refresh, 30000);
