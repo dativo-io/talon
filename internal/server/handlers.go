@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/drift"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/health"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/session"
@@ -625,7 +627,7 @@ func (s *Server) handleCostsExport(w http.ResponseWriter, r *http.Request) {
 	}
 	limit := req.Limit
 	if limit <= 0 {
-		limit = 1000
+		limit = 10000
 	}
 	var from, to time.Time
 	if req.From != "" {
@@ -830,23 +832,70 @@ func (s *Server) handleCostsBudget(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
+	callerID := r.URL.Query().Get("caller")
+	if callerID == "" {
+		callerID = r.URL.Query().Get("agent_id")
+	}
 	now := time.Now().UTC()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	dayEnd := dayStart.Add(24 * time.Hour)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	monthEnd := monthStart.AddDate(0, 1, 0)
-	dailyUsed, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, "", dayStart, dayEnd)
-	monthlyUsed, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, "", monthStart, monthEnd)
+	dailyUsed, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, callerID, dayStart, dayEnd)
+	monthlyUsed, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, callerID, monthStart, monthEnd)
 	out := map[string]interface{}{
 		"tenant_id":    tenantID,
 		"daily_used":   dailyUsed,
 		"monthly_used": monthlyUsed,
 	}
+	if callerID != "" {
+		if dailyLimit, monthlyLimit, ok := lookupGatewayCallerCaps(tenantID, callerID); ok {
+			if dailyLimit > 0 {
+				out["daily_limit"] = dailyLimit
+			}
+			if monthlyLimit > 0 {
+				out["monthly_limit"] = monthlyLimit
+			}
+			out["budget_source"] = "gateway_caller_cap"
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
+	}
 	if s.policy != nil && s.policy.Policies.CostLimits != nil {
 		out["daily_limit"] = s.policy.Policies.CostLimits.Daily
 		out["monthly_limit"] = s.policy.Policies.CostLimits.Monthly
+		out["budget_source"] = "policy_cost_limits"
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func lookupGatewayCallerCaps(tenantID, callerID string) (dailyLimit float64, monthlyLimit float64, ok bool) {
+	path := strings.TrimSpace(os.Getenv("TALON_GATEWAY_CONFIG"))
+	if path == "" {
+		path = "talon.config.yaml"
+	}
+	cfg, err := gateway.LoadGatewayConfig(path)
+	if err != nil {
+		return 0, 0, false
+	}
+	for i := range cfg.Callers {
+		caller := cfg.Callers[i]
+		if caller.Name != callerID || caller.TenantID != tenantID {
+			continue
+		}
+		daily := cfg.ServerDefaults.MaxDailyCost
+		monthly := cfg.ServerDefaults.MaxMonthlyCost
+		if caller.PolicyOverrides != nil {
+			if caller.PolicyOverrides.MaxDailyCost > 0 {
+				daily = caller.PolicyOverrides.MaxDailyCost
+			}
+			if caller.PolicyOverrides.MaxMonthlyCost > 0 {
+				monthly = caller.PolicyOverrides.MaxMonthlyCost
+			}
+		}
+		return daily, monthly, daily > 0 || monthly > 0
+	}
+	return 0, 0, false
 }
 
 // handleCostsReport returns aggregate spend for a time range (for trends/summary). Query params: from, to (RFC3339), tenant_id, agent_id.

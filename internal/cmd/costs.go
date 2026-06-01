@@ -336,22 +336,24 @@ func getCacheUsage(
 		return nil, nil
 	}
 	total7d, _ := store.CountInRange(ctx, tenantID, "", weekStart, dayEnd)
+	sevenDays = &cacheUsage{
+		Hits:      hits7d,
+		SavedEUR:  saved7d,
+		HitRate:   percentage(int(hits7d), total7d),
+		TotalSeen: total7d,
+	}
 	hits30d, saved30d, err := store.CacheSavings(ctx, tenantID, monthStart, monthEnd)
 	if err != nil {
-		return nil, nil
+		return sevenDays, nil
 	}
 	total30d, _ := store.CountInRange(ctx, tenantID, "", monthStart, monthEnd)
-	return &cacheUsage{
-			Hits:      hits7d,
-			SavedEUR:  saved7d,
-			HitRate:   percentage(int(hits7d), total7d),
-			TotalSeen: total7d,
-		}, &cacheUsage{
-			Hits:      hits30d,
-			SavedEUR:  saved30d,
-			HitRate:   percentage(int(hits30d), total30d),
-			TotalSeen: total30d,
-		}
+	month = &cacheUsage{
+		Hits:      hits30d,
+		SavedEUR:  saved30d,
+		HitRate:   percentage(int(hits30d), total30d),
+		TotalSeen: total30d,
+	}
+	return sevenDays, month
 }
 
 func percentage(hits, total int) float64 {
