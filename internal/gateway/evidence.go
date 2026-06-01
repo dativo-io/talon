@@ -31,6 +31,7 @@ type RecordGatewayEvidenceParams struct {
 	OutputPIIDetected       bool
 	OutputPIITypes          []string
 	Cost                    float64
+	EstimatedCost           float64
 	InputTokens             int
 	OutputTokens            int
 	DurationMS              int64
@@ -97,13 +98,14 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			OutputPIITypes:    params.OutputPIITypes,
 		},
 		Execution: evidence.Execution{
-			ModelUsed:  params.Model,
-			Cost:       params.Cost,
-			Tokens:     evidence.TokenUsage{Input: params.InputTokens, Output: params.OutputTokens},
-			DurationMS: params.DurationMS,
-			TTFTMS:     params.TTFTMS,
-			TPOTMS:     params.TPOTMS,
-			Error:      params.Error,
+			ModelUsed:     params.Model,
+			Cost:          params.Cost,
+			EstimatedCost: params.EstimatedCost,
+			Tokens:        evidence.TokenUsage{Input: params.InputTokens, Output: params.OutputTokens},
+			DurationMS:    params.DurationMS,
+			TTFTMS:        params.TTFTMS,
+			TPOTMS:        params.TPOTMS,
+			Error:         params.Error,
 		},
 		SecretsAccessed:         params.SecretsAccessed,
 		AttachmentScan:          params.AttachmentScan,
@@ -122,6 +124,10 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		UpstreamKeyFingerprint:  params.UpstreamKeyFingerprint,
 		GatewayAnnotations:      sanitizeGatewayAnnotations(params.GatewayAnnotations),
 		RetryAttempt:            params.RetryAttempt,
+		RoutingDecision: &evidence.RoutingDecision{
+			SelectedProvider: params.Provider,
+			SelectedModel:    params.Model,
+		},
 	}
 	if !params.PolicyAllowed {
 		ev.PolicyDecision.Action = "deny"

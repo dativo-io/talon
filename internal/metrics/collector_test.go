@@ -13,12 +13,13 @@ import (
 
 // mockQuerier implements evidence.MetricsQuerier for testing.
 type mockQuerier struct {
-	costTotal    float64
-	costByAgent  map[string]float64
-	costByModel  map[string]float64
-	countInRange int
-	cacheHits    int64
-	cacheSaved   float64
+	costTotal      float64
+	costByAgent    map[string]float64
+	costByModel    map[string]float64
+	costByProvider map[string]float64
+	countInRange   int
+	cacheHits      int64
+	cacheSaved     float64
 }
 
 func (m *mockQuerier) CostTotal(_ context.Context, _, _ string, _, _ time.Time) (float64, error) {
@@ -31,6 +32,10 @@ func (m *mockQuerier) CostByAgent(_ context.Context, _ string, _, _ time.Time) (
 
 func (m *mockQuerier) CostByModel(_ context.Context, _, _ string, _, _ time.Time) (map[string]float64, error) {
 	return m.costByModel, nil
+}
+
+func (m *mockQuerier) CostByProvider(_ context.Context, _, _ string, _, _ time.Time) (map[string]float64, error) {
+	return m.costByProvider, nil
 }
 
 func (m *mockQuerier) CountInRange(_ context.Context, _, _ string, _, _ time.Time) (int, error) {
@@ -251,6 +256,19 @@ func TestMetricsQuerierModelBreakdown(t *testing.T) {
 	require.Len(t, snap.ModelBreakdown, 2)
 	assert.Equal(t, "gpt-4o", snap.ModelBreakdown[0].Model)
 	assert.InDelta(t, 1.5, snap.ModelBreakdown[0].CostEUR, 0.001)
+}
+
+func TestMetricsQuerierProviderBreakdown(t *testing.T) {
+	q := &mockQuerier{
+		costByProvider: map[string]float64{"openai": 1.5, "anthropic": 0.8},
+	}
+	c := newTestCollector("enforce", q)
+	defer c.Close()
+
+	snap := c.Snapshot(context.Background())
+	require.Len(t, snap.ProviderBreakdown, 2)
+	assert.Equal(t, "openai", snap.ProviderBreakdown[0].Provider)
+	assert.InDelta(t, 1.5, snap.ProviderBreakdown[0].CostEUR, 0.001)
 }
 
 func TestMetricsQuerierBudget(t *testing.T) {

@@ -41,14 +41,15 @@ gateway:
         pii_action: "redact"
         allowed_models: ["gpt-4o", "gpt-4o-mini"]
 
-    - name: "support-bot"
-      tenant_key: "talon-gw-support-xyz789"
+    - name: "support-slack-bot"
+      tenant_key: "talon-gw-support-xyz"
       tenant_id: "default"
       team: "support"
       allowed_providers: ["openai"]
       policy_overrides:
         max_daily_cost: 10.00
-        pii_action: "block"
+        max_monthly_cost: 200.00
+        pii_action: "warn"
         allowed_models: ["gpt-4o-mini"]
 
   default_policy:

@@ -70,5 +70,6 @@ func TestGatewayEngine_EvaluateGateway_DenyDailyCost(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, allowed)
 	require.NotEmpty(t, reasons)
+	require.Contains(t, reasons[0], "budget_exceeded")
 	require.Contains(t, reasons[0], "daily")
 }

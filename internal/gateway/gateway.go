@@ -274,7 +274,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Warn().Str("caller", caller.Name).Msg("gateway_rate_limited")
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, route.Provider, http.StatusTooManyRequests, "Rate limit exceeded")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, "", start, nil, &classifier.Classification{}, nil, 0, durationMS, "", false, []string{"rate limit exceeded"}, false, false, nil, nil, nil, nil, false, "", 0, 0, 0, 0)
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, "", start, nil, &classifier.Classification{}, nil, 0, durationMS, "", false, []string{"rate limit exceeded"}, false, false, nil, nil, nil, nil, false, "", 0, 0, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
@@ -329,7 +329,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"Request blocked: attachment violates policy")
 			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
 				g.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text), nil, 0, 0, "", false,
-				[]string{"attachment policy block"}, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0)
+				[]string{"attachment policy block"}, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
@@ -363,7 +363,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !allowed {
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, route.Provider, http.StatusForbidden, "Caller not allowed for this provider")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, "", false, []string{"provider not allowed"}, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0)
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, "", false, []string{"provider not allowed"}, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
@@ -391,7 +391,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request contains PII that is not allowed")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, "", false, []string{"PII block"}, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0)
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, "", false, []string{"PII block"}, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
@@ -417,7 +417,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 80)
 		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 95)
 	}
-	policyInput := buildGatewayPolicyInput(caller, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost)
+	policyInput := buildGatewayPolicyInput(caller, g.config.ServerDefaults, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost)
 	if g.sessionStore != nil && sessionID != "" {
 		if sess, err := g.sessionStore.Get(ctx, sessionID); err == nil {
 			policyInput["session_cost_total"] = sess.TotalCost
@@ -442,7 +442,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				durationMS := time.Since(start).Milliseconds()
 				WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Policy evaluation failed")
-				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, "", false, []string{"policy evaluation error"}, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0)
+				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, "", false, []string{"policy evaluation error"}, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0, 0)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
@@ -464,7 +464,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				durationMS := time.Since(start).Milliseconds()
 				WriteProviderError(w, route.Provider, http.StatusForbidden, reasons[0])
-				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, "", false, reasons, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0)
+				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, "", false, reasons, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
@@ -499,7 +499,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				WriteProviderError(w, route.Provider, http.StatusForbidden,
 					fmt.Sprintf("Request contains forbidden tools: %v", tr.Removed))
 				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
-					classification, nil, 0, 0, "", false, []string{"tool governance block"}, false, false, nil, attSummary, toolResult, nil, false, "", 0, 0, 0, 0)
+					classification, nil, 0, 0, "", false, []string{"tool governance block"}, false, false, nil, attSummary, toolResult, nil, false, "", 0, 0, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
@@ -517,7 +517,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					WriteProviderError(w, route.Provider, http.StatusInternalServerError,
 						"Failed to filter forbidden tools from request")
 					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
-						classification, nil, 0, 0, "", false, []string{"tool filter error"}, false, false, nil, attSummary, toolResult, nil, false, "", 0, 0, 0, 0)
+						classification, nil, 0, 0, "", false, []string{"tool filter error"}, false, false, nil, attSummary, toolResult, nil, false, "", 0, 0, 0, 0, estimatedCost)
 					if err != nil {
 						g.handleEvidenceWriteFailure(ctx, err)
 						return
@@ -597,7 +597,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					_ = g.cacheStore.IncrementHitCount(ctx, hit.ID)
 					costSaved := g.costEstimate(extracted.Model, 300, 300)
 					durationMS := time.Since(start).Milliseconds()
-					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, "", true, nil, false, false, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved, 0, 0)
+					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, "", true, nil, false, false, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved, 0, 0, estimatedCost)
 					if err != nil {
 						g.handleEvidenceWriteFailure(ctx, err)
 						return
@@ -673,7 +673,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				durationMS := time.Since(start).Milliseconds()
 				log.Warn().Err(err).Str("secret", prov.SecretName).Msg("gateway_secret_get_failed")
 				WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Service configuration error")
-				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, "", false, []string{"secret retrieval error"}, false, false, nil, attSummary, toolResult, shadowViolations, false, "", 0, 0, 0, 0)
+				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, "", false, []string{"secret retrieval error"}, false, false, nil, attSummary, toolResult, shadowViolations, false, "", 0, 0, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
@@ -795,7 +795,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardErr != nil {
 		forwardErrStr = forwardErr.Error()
 	}
-	persisted, recordErr := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, forwardErrStr, true, nil, inputPIIRedacted, outputPIIDetected, outputPIITypes, attSummary, toolResult, shadowViolations, false, "", 0, 0, ttftMS, tpotMS)
+	persisted, recordErr := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, forwardErrStr, true, nil, inputPIIRedacted, outputPIIDetected, outputPIITypes, attSummary, toolResult, shadowViolations, false, "", 0, 0, ttftMS, tpotMS, estimatedCost)
 	if recordErr != nil {
 		g.handleEvidenceWriteFailure(ctx, recordErr)
 		return
@@ -810,7 +810,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, executionError string, allowed bool, reasons []string, inputPIIRedacted bool, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, ttftMS int64, tpotMS float64) (*evidence.Evidence, error) {
+func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, executionError string, allowed bool, reasons []string, inputPIIRedacted bool, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, ttftMS int64, tpotMS float64, estimatedCost float64) (*evidence.Evidence, error) {
 	if classification == nil {
 		classification = &classifier.Classification{}
 	}
@@ -864,6 +864,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		OutputPIIDetected:       outputPIIDetected,
 		OutputPIITypes:          outputPIITypes,
 		Cost:                    cost,
+		EstimatedCost:           estimatedCost,
 		InputTokens:             inputTokens,
 		OutputTokens:            outputTokens,
 		DurationMS:              durationMS,
@@ -1062,7 +1063,7 @@ func (g *Gateway) trackSessionUsage(ctx context.Context, sessionID, tenantID, ca
 	}
 }
 
-func buildGatewayPolicyInput(caller *CallerConfig, provider, model string, dataTier int, estimatedCost, dailyCost, monthlyCost float64) map[string]interface{} {
+func buildGatewayPolicyInput(caller *CallerConfig, defaults ServerDefaults, provider, model string, dataTier int, estimatedCost, dailyCost, monthlyCost float64) map[string]interface{} {
 	input := map[string]interface{}{
 		"provider":       provider,
 		"model":          model,
@@ -1073,11 +1074,21 @@ func buildGatewayPolicyInput(caller *CallerConfig, provider, model string, dataT
 		"caller_name":    caller.Name,
 		"tenant_id":      caller.TenantID,
 	}
+	if defaults.MaxDailyCost > 0 {
+		input["caller_max_daily_cost"] = defaults.MaxDailyCost
+	}
+	if defaults.MaxMonthlyCost > 0 {
+		input["caller_max_monthly_cost"] = defaults.MaxMonthlyCost
+	}
 	if caller.PolicyOverrides != nil {
 		input["caller_allowed_models"] = caller.PolicyOverrides.AllowedModels
 		input["caller_blocked_models"] = caller.PolicyOverrides.BlockedModels
-		input["caller_max_daily_cost"] = caller.PolicyOverrides.MaxDailyCost
-		input["caller_max_monthly_cost"] = caller.PolicyOverrides.MaxMonthlyCost
+		if caller.PolicyOverrides.MaxDailyCost > 0 {
+			input["caller_max_daily_cost"] = caller.PolicyOverrides.MaxDailyCost
+		}
+		if caller.PolicyOverrides.MaxMonthlyCost > 0 {
+			input["caller_max_monthly_cost"] = caller.PolicyOverrides.MaxMonthlyCost
+		}
 		if caller.PolicyOverrides.MaxDataTier != nil {
 			input["caller_max_data_tier"] = *caller.PolicyOverrides.MaxDataTier
 		}

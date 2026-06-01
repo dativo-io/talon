@@ -111,6 +111,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	providers := buildProviders(cfg)
 	pricingTable := loadPricingTable(cfg, policyBaseDir)
 	injectPricingInProviders(providers, pricingTable)
+	gatewayEstimator := gatewayCostEstimator(providers)
 	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, policyBaseDir)
 	router := llm.NewRouter(routing, providers, costLimits)
 
@@ -349,7 +350,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("gateway policy engine: %w", err)
 			}
-			gw, err := gateway.NewGateway(gatewayCfg, cls, evidenceStore, secretsStore, gatewayPolicy, nil)
+			gw, err := gateway.NewGateway(gatewayCfg, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
 			if err != nil {
 				return fmt.Errorf("initializing gateway: %w", err)
 			}
@@ -372,7 +373,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("gateway policy engine: %w", err)
 		}
-		gw, err := gateway.NewGateway(quickstartCfg, cls, evidenceStore, secretsStore, gatewayPolicy, nil)
+		gw, err := gateway.NewGateway(quickstartCfg, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
 		if err != nil {
 			return fmt.Errorf("initializing quickstart gateway: %w", err)
 		}
@@ -561,6 +562,27 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func gatewayCostEstimator(providers map[string]llm.Provider) gateway.CostEstimator {
+	return func(model string, inputTokens, outputTokens int) float64 {
+		// Use the highest known estimate across configured providers so pre-call budget checks
+		// stay conservative even when only model is known at this stage.
+		maxEstimate := 0.0
+		for _, provider := range providers {
+			if provider == nil {
+				continue
+			}
+			if estimate := provider.EstimateCost(model, inputTokens, outputTokens); estimate > maxEstimate {
+				maxEstimate = estimate
+			}
+		}
+		if maxEstimate > 0 {
+			return maxEstimate
+		}
+		// Fallback when pricing is unavailable/unknown.
+		return 0.01
+	}
 }
 
 // validateServeModeFlags enforces mutual exclusivity between the quickstart

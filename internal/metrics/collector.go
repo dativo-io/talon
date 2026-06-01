@@ -13,22 +13,23 @@ import (
 
 // Snapshot is the complete dashboard state returned by GET /api/v1/metrics.
 type Snapshot struct {
-	GeneratedAt      time.Time           `json:"generated_at"`
-	EnforcementMode  string              `json:"enforcement_mode"`
-	Uptime           string              `json:"uptime"`
-	DroppedEvents    uint64              `json:"dropped_events,omitempty"`
-	Summary          Summary             `json:"summary"`
-	RequestsTimeline []TimePoint         `json:"requests_timeline"`
-	PIITimeline      []TimePoint         `json:"pii_timeline"`
-	CostTimeline     []CostTimePoint     `json:"cost_timeline"`
-	CallerStats      []CallerStat        `json:"caller_stats"`
-	PIIBreakdown     []PIITypeStat       `json:"pii_breakdown"`
-	ToolGovernance   ToolGovernanceStats `json:"tool_governance"`
-	ShadowSummary    *ShadowSummary      `json:"shadow_summary,omitempty"`
-	ModelBreakdown   []ModelStat         `json:"model_breakdown"`
-	BudgetStatus     *BudgetStatus       `json:"budget_status,omitempty"`
-	CacheStats       *CacheStats         `json:"cache_stats,omitempty"`
-	PlanStats        *PlanStats          `json:"plan_stats,omitempty"`
+	GeneratedAt       time.Time           `json:"generated_at"`
+	EnforcementMode   string              `json:"enforcement_mode"`
+	Uptime            string              `json:"uptime"`
+	DroppedEvents     uint64              `json:"dropped_events,omitempty"`
+	Summary           Summary             `json:"summary"`
+	RequestsTimeline  []TimePoint         `json:"requests_timeline"`
+	PIITimeline       []TimePoint         `json:"pii_timeline"`
+	CostTimeline      []CostTimePoint     `json:"cost_timeline"`
+	CallerStats       []CallerStat        `json:"caller_stats"`
+	PIIBreakdown      []PIITypeStat       `json:"pii_breakdown"`
+	ToolGovernance    ToolGovernanceStats `json:"tool_governance"`
+	ShadowSummary     *ShadowSummary      `json:"shadow_summary,omitempty"`
+	ModelBreakdown    []ModelStat         `json:"model_breakdown"`
+	ProviderBreakdown []ProviderStat      `json:"provider_breakdown"`
+	BudgetStatus      *BudgetStatus       `json:"budget_status,omitempty"`
+	CacheStats        *CacheStats         `json:"cache_stats,omitempty"`
+	PlanStats         *PlanStats          `json:"plan_stats,omitempty"`
 }
 
 // Summary holds top-level KPIs.
@@ -141,6 +142,13 @@ type ViolationTypeStat struct {
 // ModelStat is cost and request count per LLM model.
 type ModelStat struct {
 	Model    string  `json:"model"`
+	Requests int     `json:"requests"`
+	CostEUR  float64 `json:"cost_eur"`
+}
+
+// ProviderStat is cost and request count per provider.
+type ProviderStat struct {
+	Provider string  `json:"provider"`
 	Requests int     `json:"requests"`
 	CostEUR  float64 `json:"cost_eur"`
 }
@@ -851,6 +859,7 @@ func (c *Collector) fillAggregateMetrics(ctx context.Context, snap *Snapshot) {
 	last24h := now.Add(-24 * time.Hour)
 
 	c.fillModelBreakdown(ctx, snap, dayStart, dayEnd)
+	c.fillProviderBreakdown(ctx, snap, dayStart, dayEnd)
 	c.fillBudgetStatus(ctx, snap, dayStart, dayEnd, monthStart, monthEnd)
 	c.fillCacheStats(ctx, snap, last24h, now)
 }
@@ -883,6 +892,19 @@ func (c *Collector) fillModelBreakdown(ctx context.Context, snap *Snapshot, dayS
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].CostEUR > models[j].CostEUR })
 	snap.ModelBreakdown = models
+}
+
+func (c *Collector) fillProviderBreakdown(ctx context.Context, snap *Snapshot, dayStart, dayEnd time.Time) {
+	byProvider, err := c.metricsQuerier.CostByProvider(ctx, c.tenantID, "", dayStart, dayEnd)
+	if err != nil || len(byProvider) == 0 {
+		return
+	}
+	providers := make([]ProviderStat, 0, len(byProvider))
+	for provider, cost := range byProvider {
+		providers = append(providers, ProviderStat{Provider: provider, CostEUR: cost})
+	}
+	sort.Slice(providers, func(i, j int) bool { return providers[i].CostEUR > providers[j].CostEUR })
+	snap.ProviderBreakdown = providers
 }
 
 func (c *Collector) fillBudgetStatus(ctx context.Context, snap *Snapshot, dayStart, dayEnd, monthStart, monthEnd time.Time) {

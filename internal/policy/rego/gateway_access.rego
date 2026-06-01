@@ -40,7 +40,7 @@ deny contains msg if {
 	input.caller_max_daily_cost != null
 	input.caller_max_daily_cost > 0
 	input.daily_cost + input.estimated_cost > input.caller_max_daily_cost
-	msg := sprintf("Request would exceed caller daily cost limit (%.2f)", [input.caller_max_daily_cost])
+	msg := sprintf("budget_exceeded: request would exceed caller daily cost limit (%.2f)", [input.caller_max_daily_cost])
 }
 
 # Per-caller monthly cost limit.
@@ -48,7 +48,7 @@ deny contains msg if {
 	input.caller_max_monthly_cost != null
 	input.caller_max_monthly_cost > 0
 	input.monthly_cost + input.estimated_cost > input.caller_max_monthly_cost
-	msg := sprintf("Request would exceed caller monthly cost limit (%.2f)", [input.caller_max_monthly_cost])
+	msg := sprintf("budget_exceeded: request would exceed caller monthly cost limit (%.2f)", [input.caller_max_monthly_cost])
 }
 
 # Per-caller data tier restriction: request tier must not exceed caller's max.
