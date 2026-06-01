@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog/log"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
