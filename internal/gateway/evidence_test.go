@@ -54,6 +54,9 @@ func TestRecordGatewayEvidence(t *testing.T) {
 	assert.Equal(t, "client", records[0].UpstreamKeySource)
 	assert.Equal(t, "abc123def456", records[0].UpstreamKeyFingerprint)
 	assert.Equal(t, []string{"quickstart_mode"}, records[0].GatewayAnnotations, "unsupported annotations must be dropped")
+	require.NotNil(t, records[0].RoutingDecision)
+	assert.Equal(t, "openai", records[0].RoutingDecision.SelectedProvider)
+	assert.Equal(t, "gpt-4o", records[0].RoutingDecision.SelectedModel)
 }
 
 // TestRecordGatewayEvidence_ToolGovernanceRoundTrip ensures tool governance is persisted

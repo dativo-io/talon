@@ -125,6 +125,7 @@
   <div class="kpi">
     <div class="kpi-label">Total Cost</div>
     <div class="kpi-value" id="kpi-cost">--</div>
+    <div class="kpi-sub">Runtime telemetry (last 24h)</div>
   </div>
   <div class="kpi">
     <div class="kpi-label">Avg Latency</div>
@@ -206,6 +207,7 @@
   <!-- Budget Status -->
   <div class="panel" id="panel-budget" style="display:none">
     <div class="panel-title">Budget Utilization</div>
+    <div class="kpi-sub">Evidence-backed calendar totals (today/month)</div>
     <div id="budget-content"></div>
   </div>
 
@@ -213,7 +215,7 @@
   <div class="panel grid-full">
     <div class="panel-title">Caller Breakdown</div>
     <table>
-      <thead><tr><th>Caller</th><th>Requests</th><th>Success</th><th>Failed</th><th>Timeout</th><th>Denied</th><th>Rate</th><th>Cost (EUR)</th><th>EUR/Success</th><th>Avg Latency</th><th>Trend(7d)</th></tr></thead>
+      <thead><tr><th>Caller</th><th>Requests</th><th>Success</th><th>Failed</th><th>Timeout</th><th>Denied</th><th>Rate</th><th>Cost (EUR)</th><th>EUR/Success</th><th>Avg Latency</th><th>Trend(7d)</th><th>Evidence</th></tr></thead>
       <tbody id="caller-table"></tbody>
     </table>
   </div>
@@ -228,8 +230,16 @@
   <div class="panel" id="panel-models">
     <div class="panel-title">Model Breakdown (today)</div>
     <table>
-      <thead><tr><th>Model</th><th>Cost (EUR)</th></tr></thead>
+      <thead><tr><th>Model</th><th>Cost (EUR)</th><th>Evidence</th></tr></thead>
       <tbody id="model-table"></tbody>
+    </table>
+  </div>
+
+  <div class="panel" id="panel-providers">
+    <div class="panel-title">Provider Breakdown (today)</div>
+    <table>
+      <thead><tr><th>Provider</th><th>Cost (EUR)</th><th>Evidence</th></tr></thead>
+      <tbody id="provider-table"></tbody>
     </table>
   </div>
 
@@ -457,6 +467,7 @@
     renderToolGovernance(d.tool_governance);
     renderShadow(d.shadow_summary);
     renderModels(d.model_breakdown || []);
+    renderProviders(d.provider_breakdown || []);
     renderBudget(d.budget_status);
     renderCache(d.cache_stats);
   }
@@ -479,9 +490,18 @@
     svg.innerHTML = '<polygon class="area" points="' + area + '" fill="' + fill + '"/><polyline points="' + line + '" stroke="' + stroke + '" fill="none" stroke-width="2"/>';
   }
 
+  function evidenceDashboardURL() {
+    var token = window.TALON_ADMIN_KEY || '';
+    if (!token) return '/dashboard#evidence-gateway';
+    return '/dashboard?talon_admin_key=' + encodeURIComponent(token) + '#evidence-gateway';
+  }
+
   function renderCallerTable(callers) {
     var tb = document.getElementById('caller-table');
-    if (callers.length === 0) { tb.innerHTML = '<tr><td colspan="11" style="color:var(--text-dim)">No caller data</td></tr>'; return; }
+    if (callers.length === 0) {
+      tb.innerHTML = '<tr><td colspan="12" style="color:var(--text-dim)">No caller data yet. Configure gateway callers with max_daily_cost/max_monthly_cost and send a proxied request to generate signed cost evidence.</td></tr>';
+      return;
+    }
     var totalCostPerSuccess = callers.reduce(function(acc, c) { return acc + (c.cost_per_success || 0); }, 0);
     var avgCostPerSuccess = callers.length > 0 ? totalCostPerSuccess / callers.length : 0;
     tb.innerHTML = callers.map(function(c) {
@@ -489,7 +509,8 @@
       var rateClass = rate >= 0.9 ? 'rate-good' : (rate >= 0.7 ? 'rate-warn' : 'rate-bad');
       var cps = c.cost_per_success || 0;
       var cpsClass = (avgCostPerSuccess > 0 && cps > (2 * avgCostPerSuccess)) ? 'cost-hot' : '';
-      return '<tr><td>' + esc(c.caller) + '</td><td>' + fmt(c.requests) + '</td><td>' + fmt(c.successful) + '</td><td>' + fmt(c.failed) + '</td><td>' + fmt(c.timed_out) + '</td><td>' + fmt(c.denied) + '</td><td class="' + rateClass + '">' + (rate * 100).toFixed(1) + '%</td><td>€' + (c.cost_eur || 0).toFixed(4) + '</td><td class="' + cpsClass + '">€' + cps.toFixed(4) + '</td><td>' + c.avg_latency_ms + 'ms</td><td>' + renderCallerTrend(c.violation_trend) + '</td></tr>';
+      var evidenceLink = '<a href="' + evidenceDashboardURL() + '" style="color:var(--brand-light);text-decoration:none;">Open</a>';
+      return '<tr><td>' + esc(c.caller) + '</td><td>' + fmt(c.requests) + '</td><td>' + fmt(c.successful) + '</td><td>' + fmt(c.failed) + '</td><td>' + fmt(c.timed_out) + '</td><td>' + fmt(c.denied) + '</td><td class="' + rateClass + '">' + (rate * 100).toFixed(1) + '%</td><td>€' + (c.cost_eur || 0).toFixed(4) + '</td><td class="' + cpsClass + '">€' + cps.toFixed(4) + '</td><td>' + c.avg_latency_ms + 'ms</td><td>' + renderCallerTrend(c.violation_trend) + '</td><td>' + evidenceLink + '</td></tr>';
     }).join('');
   }
 
@@ -627,9 +648,20 @@
 
   function renderModels(models) {
     var tb = document.getElementById('model-table');
-    if (models.length === 0) { tb.innerHTML = '<tr><td colspan="2" style="color:var(--text-dim)">No model data</td></tr>'; return; }
+    if (models.length === 0) { tb.innerHTML = '<tr><td colspan="3" style="color:var(--text-dim)">No model data</td></tr>'; return; }
     tb.innerHTML = models.map(function(m) {
-      return '<tr><td>' + esc(m.model) + '</td><td>€' + (m.cost_eur || 0).toFixed(4) + '</td></tr>';
+      return '<tr><td>' + esc(m.model) + '</td><td>€' + (m.cost_eur || 0).toFixed(4) + '</td><td><a href="' + evidenceDashboardURL() + '" style="color:var(--brand-light);text-decoration:none;">Open</a></td></tr>';
+    }).join('');
+  }
+
+  function renderProviders(providers) {
+    var tb = document.getElementById('provider-table');
+    if (providers.length === 0) {
+      tb.innerHTML = '<tr><td colspan="3" style="color:var(--text-dim)">No provider data</td></tr>';
+      return;
+    }
+    tb.innerHTML = providers.map(function(p) {
+      return '<tr><td>' + esc(p.provider) + '</td><td>€' + (p.cost_eur || 0).toFixed(4) + '</td><td><a href="' + evidenceDashboardURL() + '" style="color:var(--brand-light);text-decoration:none;">Open</a></td></tr>';
     }).join('');
   }
 
@@ -646,7 +678,7 @@
       var color2 = bs.monthly_percent > 90 ? 'var(--red)' : bs.monthly_percent > 70 ? 'var(--yellow)' : 'var(--green)';
       html += '<div><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Monthly</span><span>€' + bs.monthly_used.toFixed(2) + ' / €' + bs.monthly_limit.toFixed(2) + ' (' + bs.monthly_percent.toFixed(1) + '%)</span></div><div class="bar-container"><div class="bar-fill" style="width:' + Math.min(bs.monthly_percent, 100) + '%;background:' + color2 + '"></div></div></div>';
     }
-    document.getElementById('budget-content').innerHTML = html || '<span style="color:var(--text-dim)">No budget limits configured</span>';
+    document.getElementById('budget-content').innerHTML = html || '<span style="color:var(--text-dim)">No budget limits configured. Set caller max_daily_cost/max_monthly_cost in gateway config to enforce hard caps before provider calls.</span>';
   }
 
   function renderCache(cs) {

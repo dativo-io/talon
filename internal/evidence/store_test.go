@@ -903,6 +903,85 @@ func TestCostByAgent(t *testing.T) {
 	assert.InDelta(t, 0.5, byAgent["support-bot"], 0.0001)
 }
 
+func TestCostByProvider(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+
+	records := []*Evidence{
+		{
+			ID:             "ev-provider-1",
+			CorrelationID:  "corr-provider-1",
+			Timestamp:      now,
+			TenantID:       "tenant1",
+			AgentID:        "caller-a",
+			InvocationType: "gateway",
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+			Classification: Classification{},
+			Execution: Execution{
+				ModelUsed: "gpt-4o-mini",
+				Cost:      1.25,
+				Tokens:    TokenUsage{Input: 100, Output: 100},
+			},
+			RoutingDecision: &RoutingDecision{SelectedProvider: "openai", SelectedModel: "gpt-4o-mini"},
+			AuditTrail:      AuditTrail{},
+			Compliance:      Compliance{},
+		},
+		{
+			ID:             "ev-provider-2",
+			CorrelationID:  "corr-provider-2",
+			Timestamp:      now,
+			TenantID:       "tenant1",
+			AgentID:        "caller-a",
+			InvocationType: "gateway",
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+			Classification: Classification{},
+			Execution: Execution{
+				ModelUsed: "claude-sonnet-4",
+				Cost:      2.5,
+				Tokens:    TokenUsage{Input: 200, Output: 150},
+			},
+			RoutingDecision: &RoutingDecision{SelectedProvider: "anthropic", SelectedModel: "claude-sonnet-4"},
+			AuditTrail:      AuditTrail{},
+			Compliance:      Compliance{},
+		},
+		{
+			ID:             "ev-provider-3",
+			CorrelationID:  "corr-provider-3",
+			Timestamp:      now,
+			TenantID:       "tenant1",
+			AgentID:        "caller-a",
+			InvocationType: "gateway",
+			PolicyDecision: PolicyDecision{Allowed: false, Action: "deny"},
+			Classification: Classification{},
+			Execution: Execution{
+				ModelUsed: "gpt-4o-mini",
+				Cost:      0,
+				Tokens:    TokenUsage{},
+			},
+			RoutingDecision: &RoutingDecision{SelectedProvider: "openai", SelectedModel: "gpt-4o-mini"},
+			AuditTrail:      AuditTrail{},
+			Compliance:      Compliance{},
+		},
+	}
+	for _, ev := range records {
+		require.NoError(t, store.Store(ctx, ev))
+	}
+
+	byProvider, err := store.CostByProvider(ctx, "tenant1", "", dayStart, dayEnd)
+	require.NoError(t, err)
+	assert.Len(t, byProvider, 2)
+	assert.InDelta(t, 1.25, byProvider["openai"], 0.0001)
+	assert.InDelta(t, 2.5, byProvider["anthropic"], 0.0001)
+
+	byProviderAgent, err := store.CostByProvider(ctx, "tenant1", "caller-a", dayStart, dayEnd)
+	require.NoError(t, err)
+	assert.InDelta(t, 1.25, byProviderAgent["openai"], 0.0001)
+	assert.InDelta(t, 2.5, byProviderAgent["anthropic"], 0.0001)
+}
+
 func TestGenerateWithDegradation(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

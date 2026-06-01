@@ -8,7 +8,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/drift"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/health"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/session"
@@ -525,6 +528,7 @@ func (s *Server) handleEvidenceVerify(w http.ResponseWriter, r *http.Request) {
 type evidenceExportRequest struct {
 	TenantID string `json:"tenant_id"`
 	AgentID  string `json:"agent_id"`
+	Caller   string `json:"caller,omitempty"`
 	From     string `json:"from"`
 	To       string `json:"to"`
 	Limit    int    `json:"limit"`
@@ -563,7 +567,12 @@ func (s *Server) handleEvidenceExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "format must be csv or json")
 		return
 	}
-	list, err := s.evidenceStore.List(r.Context(), tenantID, req.AgentID, from, to, limit)
+	agentID, err := resolveAgentOrCaller(req.AgentID, req.Caller)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	list, err := s.evidenceStore.List(r.Context(), tenantID, agentID, from, to, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -576,7 +585,7 @@ func (s *Server) handleEvidenceExport(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		cw := csv.NewWriter(w)
-		_ = cw.Write([]string{"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "cost", "model_used", "duration_ms", "has_error", "input_tier", "output_tier", "pii_detected", "pii_redacted", "policy_reasons", "tools_called", "input_hash", "output_hash", "upstream_auth_mode", "upstream_key_source", "upstream_key_fingerprint", "gateway_annotations", "primary_explanation_code", "primary_explanation_reason", "primary_version_identity"})
+		_ = cw.Write([]string{"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "policy_action", "cost", "model_used", "provider", "input_tokens", "output_tokens", "duration_ms", "has_error", "input_tier", "output_tier", "pii_detected", "pii_redacted", "policy_reasons", "tools_called", "input_hash", "output_hash", "upstream_auth_mode", "upstream_key_source", "upstream_key_fingerprint", "gateway_annotations", "primary_explanation_code", "primary_explanation_reason", "primary_version_identity"})
 		for i := range records {
 			rec := &records[i]
 			pii := rec.PIIDetectedCSV()
@@ -584,7 +593,8 @@ func (s *Server) handleEvidenceExport(w http.ResponseWriter, r *http.Request) {
 			tools := rec.ToolsCalledCSV()
 			_ = cw.Write([]string{
 				rec.ID, rec.Timestamp.Format(time.RFC3339), rec.TenantID, rec.AgentID, rec.InvocationType,
-				strconv.FormatBool(rec.Allowed), strconv.FormatFloat(rec.Cost, 'f', -1, 64), rec.ModelUsed,
+				strconv.FormatBool(rec.Allowed), rec.PolicyAction, strconv.FormatFloat(rec.Cost, 'f', -1, 64), rec.ModelUsed, rec.Provider,
+				strconv.Itoa(rec.InputTokens), strconv.Itoa(rec.OutputTokens),
 				strconv.FormatInt(rec.DurationMS, 10), strconv.FormatBool(rec.HasError),
 				strconv.Itoa(rec.InputTier), strconv.Itoa(rec.OutputTier), pii, strconv.FormatBool(rec.PIIRedacted),
 				reasons, tools, rec.InputHash, rec.OutputHash, rec.UpstreamAuthMode, rec.UpstreamKeySource, rec.UpstreamKeyFingerprint, rec.GatewayAnnotationsCSV(), rec.PrimaryExplanationCode, rec.PrimaryExplanationReason, rec.PrimaryVersionIdentity,
@@ -594,6 +604,95 @@ func (s *Server) handleEvidenceExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, records)
+}
+
+//nolint:gocyclo // mirrors handleEvidenceExport flow with explicit per-step validation and response branching
+func (s *Server) handleCostsExport(w http.ResponseWriter, r *http.Request) {
+	var req evidenceExportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error())
+		return
+	}
+	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = req.TenantID
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	agentID, err := resolveAgentOrCaller(req.AgentID, req.Caller)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 10000
+	}
+	var from, to time.Time
+	if req.From != "" {
+		from, _ = time.Parse(time.RFC3339, req.From)
+	}
+	if req.To != "" {
+		to, _ = time.Parse(time.RFC3339, req.To)
+	}
+	format := req.Format
+	if format == "" {
+		format = "json"
+	}
+	if format != "csv" && format != "json" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "format must be csv or json")
+		return
+	}
+	list, err := s.evidenceStore.List(r.Context(), tenantID, agentID, from, to, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	records := make([]evidence.ExportRecord, len(list))
+	for i := range list {
+		records[i] = evidence.ToExportRecord(&list[i])
+	}
+	if format == "csv" {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		cw := csv.NewWriter(w)
+		_ = cw.Write([]string{
+			"evidence_id", "tenant_id", "agent_id", "timestamp", "model", "provider",
+			"cost_eur", "input_tokens", "output_tokens", "policy_decision", "policy_reason",
+		})
+		for i := range records {
+			rec := &records[i]
+			policyDecision := rec.PolicyAction
+			if policyDecision == "" {
+				if rec.Allowed {
+					policyDecision = "allow"
+				} else {
+					policyDecision = "deny"
+				}
+			}
+			_ = cw.Write([]string{
+				rec.ID, rec.TenantID, rec.AgentID, rec.Timestamp.Format(time.RFC3339), rec.ModelUsed, rec.Provider,
+				strconv.FormatFloat(rec.Cost, 'f', -1, 64), strconv.Itoa(rec.InputTokens), strconv.Itoa(rec.OutputTokens),
+				policyDecision, rec.PolicyReasonsCSV(),
+			})
+		}
+		cw.Flush()
+		return
+	}
+	writeJSON(w, http.StatusOK, records)
+}
+
+func resolveAgentOrCaller(agentID, caller string) (string, error) {
+	agent := strings.TrimSpace(agentID)
+	caller = strings.TrimSpace(caller)
+	if caller == "" {
+		return agent, nil
+	}
+	if agent != "" && agent != caller {
+		return "", fmt.Errorf("agent_id and caller must match when both are provided")
+	}
+	return caller, nil
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -733,23 +832,70 @@ func (s *Server) handleCostsBudget(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
+	callerID := r.URL.Query().Get("caller")
+	if callerID == "" {
+		callerID = r.URL.Query().Get("agent_id")
+	}
 	now := time.Now().UTC()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	dayEnd := dayStart.Add(24 * time.Hour)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	monthEnd := monthStart.AddDate(0, 1, 0)
-	dailyUsed, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, "", dayStart, dayEnd)
-	monthlyUsed, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, "", monthStart, monthEnd)
+	dailyUsed, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, callerID, dayStart, dayEnd)
+	monthlyUsed, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, callerID, monthStart, monthEnd)
 	out := map[string]interface{}{
 		"tenant_id":    tenantID,
 		"daily_used":   dailyUsed,
 		"monthly_used": monthlyUsed,
 	}
+	if callerID != "" {
+		if dailyLimit, monthlyLimit, ok := lookupGatewayCallerCaps(tenantID, callerID); ok {
+			if dailyLimit > 0 {
+				out["daily_limit"] = dailyLimit
+			}
+			if monthlyLimit > 0 {
+				out["monthly_limit"] = monthlyLimit
+			}
+			out["budget_source"] = "gateway_caller_cap"
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
+	}
 	if s.policy != nil && s.policy.Policies.CostLimits != nil {
 		out["daily_limit"] = s.policy.Policies.CostLimits.Daily
 		out["monthly_limit"] = s.policy.Policies.CostLimits.Monthly
+		out["budget_source"] = "policy_cost_limits"
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func lookupGatewayCallerCaps(tenantID, callerID string) (dailyLimit float64, monthlyLimit float64, ok bool) {
+	path := strings.TrimSpace(os.Getenv("TALON_GATEWAY_CONFIG"))
+	if path == "" {
+		path = "talon.config.yaml"
+	}
+	cfg, err := gateway.LoadGatewayConfig(path)
+	if err != nil {
+		return 0, 0, false
+	}
+	for i := range cfg.Callers {
+		caller := cfg.Callers[i]
+		if caller.Name != callerID || caller.TenantID != tenantID {
+			continue
+		}
+		daily := cfg.ServerDefaults.MaxDailyCost
+		monthly := cfg.ServerDefaults.MaxMonthlyCost
+		if caller.PolicyOverrides != nil {
+			if caller.PolicyOverrides.MaxDailyCost > 0 {
+				daily = caller.PolicyOverrides.MaxDailyCost
+			}
+			if caller.PolicyOverrides.MaxMonthlyCost > 0 {
+				monthly = caller.PolicyOverrides.MaxMonthlyCost
+			}
+		}
+		return daily, monthly, daily > 0 || monthly > 0
+	}
+	return 0, 0, false
 }
 
 // handleCostsReport returns aggregate spend for a time range (for trends/summary). Query params: from, to (RFC3339), tenant_id, agent_id.

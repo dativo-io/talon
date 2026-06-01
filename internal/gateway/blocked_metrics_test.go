@@ -509,16 +509,23 @@ func TestGatewayMetrics_RuntimeEventMatchesEvidenceProjection(t *testing.T) {
 type budgetDenyPolicy struct{}
 
 func (p *budgetDenyPolicy) EvaluateGateway(_ context.Context, _ map[string]interface{}) (allowed bool, reasons []string, err error) {
-	return false, []string{"budget exceeded: daily limit"}, nil
+	return false, []string{"budget_exceeded: daily limit"}, nil
 }
 
 func TestBudgetDeniedRequest_RecordsSignedEvidence(t *testing.T) {
+	var upstreamCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
 		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
-			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
+			"openai": {Enabled: true, BaseURL: upstream.URL},
 		},
 		Callers: []CallerConfig{
 			{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
@@ -537,7 +544,10 @@ func TestBudgetDeniedRequest_RecordsSignedEvidence(t *testing.T) {
 	require.Len(t, list, 1)
 	ev := list[0]
 	assert.False(t, ev.PolicyDecision.Allowed)
+	assert.Equal(t, 0.0, ev.Execution.Cost)
+	assert.Greater(t, ev.Execution.EstimatedCost, 0.0)
 	require.NotEmpty(t, ev.Signature)
 	assert.True(t, evStore.VerifyRecord(&ev), "budget-denied evidence must remain signature-verifiable")
-	assert.Contains(t, strings.Join(ev.PolicyDecision.Reasons, ","), "budget")
+	assert.Contains(t, strings.Join(ev.PolicyDecision.Reasons, ","), "budget_exceeded")
+	assert.Equal(t, 0, upstreamCalls, "budget-denied request must not call upstream provider")
 }

@@ -54,7 +54,7 @@ Choose the shortest path for your situation:
 | [Docker primer: OpenClaw + Talon (cloud-ready)](guides/openclaw-talon-primer/docker-openclaw-talon-primer.md) | Predefined Docker setup to run Talon gateway for OpenClaw; deploy in the cloud. |
 | [How to add compliance to your Slack bot](guides/slack-bot-integration.md) | Route your Slack bot's LLM calls through Talon. |
 | [How to govern ChatGPT/Claude Desktop (enterprise)](guides/desktop-app-governance.md) | Route desktop app traffic via DNS/TLS and gateway. |
-| [How to cap daily spend per team or application](guides/cost-governance-by-caller.md) | Gateway callers and policy overrides for cost limits. |
+| [Cap AI spend for a Slack/support bot in 10 minutes](guides/cost-governance-by-caller.md) | Fast path to caller-level daily/monthly hard caps, budget-deny proof, and evidence-backed cost attribution. |
 | [How to export evidence for auditors](guides/compliance-export-runbook.md) | Export, verify, and hand off audit evidence. |
 | [How to run governed LLM calls in CI/CD](guides/cicd-pipeline-governance.md) | Use Talon from GitHub Actions or GitLab CI. |
 | [How to run a first-line support agent with Talon](guides/internal-support-agent.md) | Ticket summarization with PII and cost controls. |

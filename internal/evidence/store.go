@@ -175,6 +175,7 @@ type Execution struct {
 	Degraded      bool       `json:"degraded,omitempty"`
 	ToolsCalled   []string   `json:"tools_called,omitempty"`
 	Cost          float64    `json:"cost"`
+	EstimatedCost float64    `json:"estimated_cost,omitempty"`
 	Tokens        TokenUsage `json:"tokens"`
 	MemoryTokens  int        `json:"memory_tokens,omitempty"` // tokens injected from memory context
 	DurationMS    int64      `json:"duration_ms"`
@@ -1204,6 +1205,8 @@ func (s *Store) CostByAgent(ctx context.Context, tenantID string, from, to time.
 
 // CostByModel returns cost per model for the tenant in the half-open time range [from, to).
 // If agentID is non-empty, results are limited to that agent. Uses json_extract on execution.model_used and execution.cost.
+//
+//nolint:dupl // intentionally mirrored with CostByProvider for explicit query readability
 func (s *Store) CostByModel(ctx context.Context, tenantID, agentID string, from, to time.Time) (map[string]float64, error) {
 	ctx, span := tracer.Start(ctx, "evidence.cost_by_model",
 		trace.WithAttributes(
@@ -1253,6 +1256,61 @@ func (s *Store) CostByModel(ctx context.Context, tenantID, agentID string, from,
 	}
 	span.SetAttributes(attribute.Int("model_count", len(byModel)))
 	return byModel, nil
+}
+
+// CostByProvider returns cost per selected provider for the tenant in [from, to).
+// If agentID is non-empty, results are limited to that agent.
+//
+//nolint:dupl // intentionally mirrored with CostByModel for explicit query readability
+func (s *Store) CostByProvider(ctx context.Context, tenantID, agentID string, from, to time.Time) (map[string]float64, error) {
+	ctx, span := tracer.Start(ctx, "evidence.cost_by_provider",
+		trace.WithAttributes(
+			attribute.String("tenant_id", tenantID),
+			attribute.String("agent_id", agentID),
+		))
+	defer span.End()
+
+	query := `SELECT COALESCE(NULLIF(json_extract(evidence_json, '$.routing_decision.selected_provider'), ''), 'unknown'),
+	         SUM(COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur')))
+	         FROM evidence WHERE tenant_id = ?`
+	args := []interface{}{tenantID}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
+	}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from)
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to)
+	}
+	query += ` GROUP BY 1`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying evidence for cost by provider: %w", err)
+	}
+	defer rows.Close()
+
+	byProvider := make(map[string]float64)
+	for rows.Next() {
+		var provider string
+		var total float64
+		if err := rows.Scan(&provider, &total); err != nil {
+			continue
+		}
+		if provider == "" {
+			provider = "unknown"
+		}
+		byProvider[provider] = total
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating cost by provider: %w", err)
+	}
+	span.SetAttributes(attribute.Int("provider_count", len(byProvider)))
+	return byProvider, nil
 }
 
 // CostByTeam returns cost per team (gateway caller team) for the tenant in [from, to).

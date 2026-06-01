@@ -2,10 +2,15 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -153,4 +158,88 @@ metadata: { owner: "", tags: [] }
 	require.Contains(t, out, "Daily budget:")
 	require.Contains(t, out, "Monthly budget:")
 	require.Contains(t, out, "0.0%") // no spend yet
+}
+
+func TestRenderCostsExportCSV_IncludesProviderAndDeniedReason(t *testing.T) {
+	var buf bytes.Buffer
+	records := []evidence.ExportRecord{
+		{
+			ID:           "gw_1",
+			TenantID:     "default",
+			AgentID:      "support-slack-bot",
+			Timestamp:    time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+			ModelUsed:    "gpt-4o-mini",
+			Provider:     "openai",
+			Cost:         0,
+			InputTokens:  0,
+			OutputTokens: 0,
+			Allowed:      false,
+			PolicyAction: "deny",
+			PolicyReasons: []string{
+				"budget_exceeded: daily limit",
+			},
+		},
+	}
+
+	err := renderCostsExportCSV(&buf, records)
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Contains(t, out, "evidence_id,tenant_id,agent_id")
+	assert.Contains(t, out, "openai")
+	assert.Contains(t, out, "budget_exceeded")
+	assert.Contains(t, out, ",0.000000,")
+}
+
+func TestCostsExportCmd_JSONIncludesProviderAndDeniedRow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	store, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	ev := &evidence.Evidence{
+		ID:             "gw_export_1",
+		CorrelationID:  "corr-export-1",
+		Timestamp:      time.Now().UTC(),
+		TenantID:       "default",
+		AgentID:        "support-slack-bot",
+		InvocationType: "gateway",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: false,
+			Action:  "deny",
+			Reasons: []string{"budget_exceeded: daily limit"},
+		},
+		Classification: evidence.Classification{},
+		Execution: evidence.Execution{
+			ModelUsed:     "gpt-4o-mini",
+			Cost:          0,
+			EstimatedCost: 0.02,
+			Tokens:        evidence.TokenUsage{},
+		},
+		RoutingDecision: &evidence.RoutingDecision{
+			SelectedProvider: "openai",
+			SelectedModel:    "gpt-4o-mini",
+		},
+		AuditTrail: evidence.AuditTrail{},
+		Compliance: evidence.Compliance{},
+	}
+	require.NoError(t, store.Store(ctx, ev))
+
+	var buf bytes.Buffer
+	costsCmd.SetOut(&buf)
+	costsCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"costs", "export", "--tenant", "default", "--caller", "support-slack-bot", "--format", "json"})
+	require.NoError(t, rootCmd.Execute())
+
+	var rows []map[string]interface{}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
+	require.Len(t, rows, 1)
+	assert.Equal(t, "gw_export_1", rows[0]["id"])
+	assert.Equal(t, "openai", rows[0]["provider"])
+	assert.Equal(t, "deny", rows[0]["policy_action"])
+	assert.EqualValues(t, 0, rows[0]["cost"])
 }

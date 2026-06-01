@@ -1,82 +1,136 @@
-# How to cap daily spend per team or application
+# Cap AI spend for a Slack/support bot in 10 minutes
 
-Use the LLM API gateway to cap daily (and optionally monthly) spend per caller (team or application). Each caller is identified by tenant key or source IP and can have its own limits. You can then monitor usage via the costs API or CLI.
+Talon gives EMEA SMB operators a simple promise:
+
+> You can cap AI spend before it runs away, and prove every allow/deny decision with signed evidence.
+
+This guide shows the fastest path to that outcome for a support bot caller.
 
 ---
 
-## 1. Define callers with cost overrides
+## What this guide covers
 
-In your gateway config (e.g. `talon.config.yaml` with a `gateway` block), define one or more callers and set `policy_overrides.max_daily_cost` and optionally `max_monthly_cost`.
+- Hard daily/monthly spend caps for one caller (`support-slack-bot`)
+- Deny **before** any upstream provider call when the next request would exceed cap
+- Signed evidence for both allowed and denied decisions
+- Dashboard + CLI visibility for today/month, by caller/model/provider
 
-Example (excerpt from [examples/gateway/talon.config.gateway.yaml](../../examples/gateway/talon.config.gateway.yaml)):
+---
+
+## 1. Add a caller with hard EUR caps
+
+Use a gateway config like this (from [examples/gateway/talon.config.gateway.yaml](../../examples/gateway/talon.config.gateway.yaml)):
 
 ```yaml
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  providers:
-    openai:
-      enabled: true
-      base_url: "https://api.openai.com"
-    ollama:
-      enabled: true
-      base_url: "http://localhost:11434"
+  mode: "enforce"
 
   callers:
-    - name: "slack-bot"
-      tenant_key: "talon-gw-slack-abc"
+    - name: "support-slack-bot"
+      tenant_key: "talon-gw-support-xyz"
       tenant_id: "default"
       policy_overrides:
-        max_daily_cost: 15.00
-        max_monthly_cost: 300.00
-
-    - name: "desktop-engineering"
-      tenant_key: "talon-gw-eng-xyz"
-      tenant_id: "default"
-      policy_overrides:
-        max_daily_cost: 25.00
-
-    - name: "ci-openai"
-      tenant_key: "talon-gw-ci-123"
-      tenant_id: "default"
-      policy_overrides:
-        max_daily_cost: 5.00
+        max_daily_cost: 10.00
+        max_monthly_cost: 200.00
+        pii_action: "warn"
+        allowed_models: ["gpt-4o-mini"]
 ```
 
-When a caller exceeds their daily or monthly limit, the gateway returns a policy denial and records evidence. Costs are still attributed to the caller for visibility.
+For a demo, temporarily lower `max_daily_cost` (for example `0.01`) so you can trigger a denial quickly.
 
 ---
 
-## 2. Start the gateway
+## 2. Start Talon gateway
 
 ```bash
-talon serve --gateway --gateway-config=path/to/your/talon.config.yaml
+talon serve --gateway --gateway-config=path/to/talon.config.yaml
 ```
 
-Ensure the real provider API keys are in the vault (e.g. `talon secrets set openai-api-key "sk-..."`). Callers only use their own gateway tenant keys; they never see the provider key.
+Ensure provider keys are in vault (for example `talon secrets set openai-api-key "sk-..."`).
 
 ---
 
-## 3. Monitor costs
+## 3. Run the 6-step demo flow
 
-**Via API (per tenant):**
+1. Configure very low `max_daily_cost` for `support-slack-bot`
+2. Send one request that is allowed
+3. Send a second request that would exceed budget
+4. Verify Talon denies **before** provider call
+5. Verify signed evidence exists for the denial
+6. Verify dashboard budget utilization reflects the event
 
-- `GET /v1/costs` with `Authorization: Bearer <tenant-key>` returns `daily` and `monthly` totals for the authenticated tenant. Gateway traffic is recorded under that tenant, so the totals include all callers in the tenant.
-- `GET /v1/costs/budget` returns usage and optional limits (when set in policy).
-
-**Via CLI:**
+Example calls:
 
 ```bash
-talon audit list --limit 50
+# Allowed request (first call)
+curl -sS "http://localhost:8080/v1/proxy/openai/v1/chat/completions" \
+  -H "Authorization: Bearer talon-gw-support-xyz" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Summarize ticket #123"}]}'
+
+# Denied request (second call, over cap)
+curl -sS "http://localhost:8080/v1/proxy/openai/v1/chat/completions" \
+  -H "Authorization: Bearer talon-gw-support-xyz" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Summarize ticket #124"}]}'
 ```
 
-Evidence records include cost per request. For per-caller breakdown you would filter or aggregate by the caller name stored in evidence (e.g. `agent_id` or request metadata, depending on how gateway evidence is tagged).
+Expected deny characteristics:
+
+- HTTP 403
+- Machine-readable error code/reason contains `budget_exceeded`
+- No upstream provider execution for denied call
+- Signed evidence row recorded with denial reason and estimated pre-call cost
+
+---
+
+## 4. Verify with CLI and dashboard
+
+CLI:
+
+```bash
+talon costs --tenant default
+talon costs --caller support-slack-bot --json
+talon costs --by-provider --tenant default
+```
+
+Export cost rows (joinable to signed evidence by `evidence_id`):
+
+```bash
+talon costs export --tenant default --caller support-slack-bot --format csv
+talon audit export --tenant default --caller support-slack-bot --format signed-json
+```
+
+HTTP/API equivalents:
+
+- `GET /v1/costs`
+- `GET /v1/costs/budget`
+- `POST /v1/costs/export`
+
+Dashboard:
+
+- `/gateway/dashboard` for real-time caller/model/provider operational view
+- `/dashboard` for evidence-backed governance view and drill-down
+
+---
+
+## Cost visibility vs caps vs evidence attribution
+
+- **Cost visibility**: today/month totals and breakdowns by tenant/caller/model/provider
+- **Hard budget caps**: deny requests that would exceed daily/monthly cap before provider call
+- **Evidence-backed attribution**: every allow/deny is signed and traceable by evidence ID, including budget-denied rows with zero provider cost and denial reason
+
+This is the launch narrative connection to evidence integrity:
+
+> Verified evidence proves both governance decisions and cost attribution.
 
 ---
 
 ## Native agents (no gateway)
 
-For agents run via `talon run` or `POST /v1/chat/completions`, cost limits are set in `.talon.yaml`:
+If you run `talon run` directly, use `.talon.yaml`:
 
 ```yaml
 policies:
@@ -86,19 +140,13 @@ policies:
     monthly: 400.00
 ```
 
-See [Policy cookbook](policy-cookbook.md) for more snippets.
-
 ---
 
-## You're done
-
-You now have per-caller cost caps (daily and optionally monthly) in your gateway config. Talon is denying or allowing requests based on those limits before the LLM call is made.
-
-**Next steps:**
+## Next steps
 
 | I want to… | Doc |
 |------------|-----|
-| Export evidence or verify records | [How to export evidence for auditors](compliance-export-runbook.md) |
-| Add more callers or restrict models | [Configuration and environment](../reference/configuration.md) |
-| Route another app through the gateway | [Add Talon to your existing app](add-talon-to-existing-app.md) |
-| Copy more policy snippets | [Policy cookbook](policy-cookbook.md) |
+| Verify signed exports and tamper checks | [How to export evidence for auditors](compliance-export-runbook.md) |
+| Understand dashboard metrics schema | [Gateway dashboard](../reference/gateway-dashboard.md) |
+| Add more callers/models | [Configuration and environment](../reference/configuration.md) |
+| Apply additional governance snippets | [Policy cookbook](policy-cookbook.md) |

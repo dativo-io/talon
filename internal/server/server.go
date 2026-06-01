@@ -293,6 +293,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/v1/costs", s.handleCosts)
 		r.Get("/v1/costs/budget", s.handleCostsBudget)
 		r.Get("/v1/costs/report", s.handleCostsReport)
+		r.Post("/v1/costs/export", s.handleCostsExport)
 
 		r.Get("/v1/memory", s.handleMemoryList)
 		r.Get("/v1/memory/as-of", s.handleMemoryAsOf)

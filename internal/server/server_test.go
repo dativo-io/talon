@@ -1411,6 +1411,74 @@ func TestEvidenceExport(t *testing.T) {
 	assert.Equal(t, "text/csv; charset=utf-8", rec.Header().Get("Content-Type"))
 }
 
+func TestCostsExport_IncludesDeniedRowsAndProvider(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ev := &evidence.Evidence{
+		ID:             "gw_cost_export_1",
+		CorrelationID:  "corr_cost_export_1",
+		Timestamp:      time.Now().UTC(),
+		TenantID:       "default",
+		AgentID:        "support-slack-bot",
+		InvocationType: "gateway",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: false,
+			Action:  "deny",
+			Reasons: []string{"budget_exceeded: daily limit"},
+		},
+		Classification: evidence.Classification{},
+		Execution: evidence.Execution{
+			ModelUsed:     "gpt-4o-mini",
+			Cost:          0,
+			EstimatedCost: 0.02,
+			Tokens:        evidence.TokenUsage{},
+		},
+		RoutingDecision: &evidence.RoutingDecision{
+			SelectedProvider: "openai",
+			SelectedModel:    "gpt-4o-mini",
+		},
+		AuditTrail: evidence.AuditTrail{},
+		Compliance: evidence.Compliance{},
+	}
+	require.NoError(t, store.Store(context.Background(), ev))
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"})
+	r := srv.Routes()
+
+	// JSON path
+	body := `{"tenant_id":"default","caller":"support-slack-bot","format":"json","limit":10}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/costs/export", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer k")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var rows []map[string]interface{}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&rows))
+	require.Len(t, rows, 1)
+	assert.Equal(t, "gw_cost_export_1", rows[0]["id"])
+	assert.Equal(t, "openai", rows[0]["provider"])
+	assert.Equal(t, "deny", rows[0]["policy_action"])
+
+	// CSV path
+	body = `{"tenant_id":"default","caller":"support-slack-bot","format":"csv","limit":10}`
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/costs/export", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer k")
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "text/csv; charset=utf-8", rec.Header().Get("Content-Type"))
+	assert.Contains(t, rec.Body.String(), "evidence_id,tenant_id,agent_id")
+	assert.Contains(t, rec.Body.String(), "budget_exceeded")
+}
+
 func TestEvidenceGetAndVerifySuccess(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)

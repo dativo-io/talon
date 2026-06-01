@@ -436,6 +436,8 @@ CACHEEOF
     jq -e '.tool_governance | type == "object"' <<< "$snap_after" &>/dev/null
   assert_pass "snapshot has model_breakdown array" \
     jq -e '.model_breakdown | type == "array"' <<< "$snap_after" &>/dev/null
+  assert_pass "snapshot has provider_breakdown array" \
+    jq -e '.provider_breakdown | type == "array"' <<< "$snap_after" &>/dev/null
 
   # --- 23.5b: Budget status fields (omitempty — present when budget limits configured) ---
   local has_budget; has_budget="$(jq 'has("budget_status") and (.budget_status != null)' <<< "$snap_after")"
@@ -609,6 +611,26 @@ CACHEEOF
     fi
   else
     echo "  -  model parity: could not extract models from CLI or dashboard"
+  fi
+
+  # CLI costs --by-provider: compare provider names with dashboard provider_breakdown
+  local cli_byprovider; cli_byprovider="$(run_talon costs --by-provider --tenant default 2>/dev/null)"; true
+  assert_pass "talon costs --by-provider exits 0" run_talon costs --by-provider --tenant default
+  local cli_providers
+  cli_providers="$(echo "$cli_byprovider" | awk '/€/ {print $1}' | grep -E '^[a-zA-Z0-9._-]+$' | grep -v -E '^(Total|Provider|Tenant|7d)$' | sort)"
+  local dash_providers; dash_providers="$(jq -r '.provider_breakdown[].provider // empty' <<< "$snap_after" 2>/dev/null | sort)"
+  echo "[SMOKE] CONSISTENCY|cli_providers|$(echo "$cli_providers" | tr '\n' ',')"
+  echo "[SMOKE] CONSISTENCY|dash_providers|$(echo "$dash_providers" | tr '\n' ',')"
+  if [[ -n "$dash_providers" ]]; then
+    if [[ "$cli_providers" == "$dash_providers" ]]; then
+      echo "  ✓  CLI costs --by-provider providers match dashboard provider_breakdown"
+      record_pass
+    else
+      log_failure "CLI --by-provider provider set should match dashboard provider_breakdown" \
+        "cli=[$cli_providers] dash=[$dash_providers]"
+    fi
+  else
+    echo "  -  provider_breakdown is empty (may need more traffic)"
   fi
 
   # --- 23.7b: CLI report ↔ dashboard evidence count + PII parity ---

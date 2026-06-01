@@ -116,6 +116,9 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/me
   "model_breakdown": [
     {"model": "gpt-4o-mini", "requests": 900, "cost_eur": 2.1}
   ],
+  "provider_breakdown": [
+    {"provider": "openai", "requests": 900, "cost_eur": 2.1}
+  ],
   "tool_governance": {
     "total_requested": 150,
     "total_filtered": 12,
@@ -245,6 +248,10 @@ Detection counts per PII type (e.g. `email`, `iban`, `phone`, `ssn`, `passport`)
 
 Per-model request counts and cost. One entry per distinct model seen.
 
+### `provider_breakdown`
+
+Per-provider request counts and cost. One entry per selected provider in evidence routing decisions.
+
 ### `tool_governance`
 
 | Field | Type | Description |
@@ -303,8 +310,16 @@ Plan lifecycle counters (same values surfaced in `summary.*_plans` fields).
 The dashboard metrics and CLI commands (`talon costs`, `talon audit list`, `talon report`) share the same underlying `MetricsQuerier` interface against the evidence store. This ensures:
 
 - `talon costs --tenant default` reports the same daily/monthly totals as `budget_status` in the dashboard.
+- `talon costs --by-provider` aligns with `provider_breakdown` in `/api/v1/metrics`.
 - `talon report` counts match `summary.total_requests` and `summary.pii_detections`.
 - Evidence records shown by `talon audit list` are the same records that feed the dashboard timelines.
+
+Cost export surfaces:
+
+- CLI: `talon costs export --format csv|json --tenant <id> [--agent <id>|--caller <id>]`
+- API: `POST /v1/costs/export` with `{tenant_id, agent_id|caller, from, to, format}`
+
+Both export surfaces include evidence ID, tenant/agent, timestamp, model/provider, cost, token counts, and policy decision/reason so rows can be joined to signed evidence exports by evidence ID.
 
 The in-memory collector adds real-time aggregation (5-minute buckets, latency percentiles) on top of the querier, so the dashboard may reflect very recent events slightly sooner than CLI queries that read directly from SQLite.
 

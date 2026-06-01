@@ -103,8 +103,8 @@
     <div class="runtime-warning" id="runtime-warning-banner"></div>
     <div class="cards">
     <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Visible requests</div><div class="value" id="card-requests">—</div></div>
-    <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Visible cost</div><div class="value" id="card-daily">— &euro;</div></div>
-    <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Monthly cost</div><div class="value" id="card-monthly">— &euro;</div></div>
+    <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Visible cost (evidence-backed)</div><div class="value" id="card-daily">— &euro;</div></div>
+    <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Monthly cost (evidence-backed)</div><div class="value" id="card-monthly">— &euro;</div></div>
     <div class="card card-link" data-tab="plans" data-filter=""><div class="label">Pending plans</div><div class="value" id="card-plans">—</div></div>
     <div class="card card-link" data-tab="memory" data-filter=""><div class="label">Pending memory</div><div class="value" id="card-memory-pending">—</div></div>
     <div class="card card-link" data-tab="evidence" data-filter="blocked"><div class="label">Blocked</div><div class="value" id="card-blocked">—</div></div>
@@ -167,7 +167,7 @@
   <div id="panel-evidence" class="panel active">
     <p class="compliance-overlay">Evidence supports: GDPR Art. 30, EU AI Act documentation (when present in metadata).</p>
     <p class="refresh">Evidence-grade, not just logs. Talon signs every evidence record at creation time; if a signed field changes later, verification fails.</p>
-    <p class="refresh" id="evidence-scope-note">Verified evidence proves both governance decisions and cost attribution.</p>
+    <p class="refresh" id="evidence-scope-note">Verified evidence proves both governance decisions and cost attribution. Today/month totals on this page are evidence-backed (not runtime-only telemetry).</p>
     <div class="evidence-filters">
       <label>Tenant <input type="text" id="filter-tenant" placeholder="optional" /></label>
       <label>Agent <input type="text" id="filter-agent" placeholder="optional" /></label>
@@ -738,7 +738,7 @@
           syncPolicyOutcomeFromEvidence(d.entries || []);
           tbody.innerHTML = '';
           if (!(d.entries || []).length) {
-            tbody.innerHTML = '<tr><td colspan="8" class="refresh">No evidence yet. Run a request (CLI or proxy) to generate signed records, then verify integrity inline from this table.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="refresh">No evidence yet. Configure a gateway caller budget (max_daily_cost/max_monthly_cost), run a proxied request, then verify signed records and cost attribution from this table.</td></tr>';
             setEvidenceDetailVisible(false);
             return;
           }

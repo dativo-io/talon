@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -43,6 +44,23 @@ func TestWriteProviderError(t *testing.T) {
 		}
 		if w.Header().Get("Content-Type") != "application/json" {
 			t.Error("content-type not json")
+		}
+	})
+	t.Run("openai budget_exceeded code", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		WriteProviderError(w, "openai", http.StatusForbidden, "budget_exceeded: request would exceed caller daily cost limit (10.00)")
+		if w.Code != 403 {
+			t.Errorf("status = %d", w.Code)
+		}
+		var body openAIErrorBody
+		if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body.Error.Code != "budget_exceeded" {
+			t.Fatalf("code = %q", body.Error.Code)
+		}
+		if strings.Contains(strings.ToLower(body.Error.Message), "budget_exceeded:") {
+			t.Fatalf("message still contains machine prefix: %q", body.Error.Message)
 		}
 	})
 	t.Run("anthropic", func(t *testing.T) {

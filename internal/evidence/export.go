@@ -22,6 +22,10 @@ type ExportRecord struct {
 	Allowed        bool      `json:"allowed"`
 	Cost           float64   `json:"cost"`
 	ModelUsed      string    `json:"model_used"`
+	Provider       string    `json:"provider,omitempty"`
+	InputTokens    int       `json:"input_tokens,omitempty"`
+	OutputTokens   int       `json:"output_tokens,omitempty"`
+	PolicyAction   string    `json:"policy_action,omitempty"`
 	DurationMS     int64     `json:"duration_ms"`
 	HasError       bool      `json:"has_error"`
 	// Classification (enriched export)
@@ -89,6 +93,9 @@ func ToExportRecord(e *Evidence) ExportRecord {
 		Allowed:                 e.PolicyDecision.Allowed,
 		Cost:                    e.Execution.Cost,
 		ModelUsed:               e.Execution.ModelUsed,
+		InputTokens:             e.Execution.Tokens.Input,
+		OutputTokens:            e.Execution.Tokens.Output,
+		PolicyAction:            e.PolicyDecision.Action,
 		DurationMS:              e.Execution.DurationMS,
 		HasError:                e.Execution.Error != "",
 		InputTier:               e.Classification.InputTier,
@@ -110,6 +117,9 @@ func ToExportRecord(e *Evidence) ExportRecord {
 	}
 	if len(e.PolicyDecision.Reasons) > 0 {
 		rec.PolicyReasons = append([]string(nil), e.PolicyDecision.Reasons...)
+	}
+	if e.RoutingDecision != nil {
+		rec.Provider = e.RoutingDecision.SelectedProvider
 	}
 	if len(e.Execution.ToolsCalled) > 0 {
 		rec.ToolsCalled = append([]string(nil), e.Execution.ToolsCalled...)
