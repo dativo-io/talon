@@ -1,47 +1,46 @@
 # Talon Limitations
 
-This document states the main guarantees Talon does not make today.
-
-Talon is a governance layer for LLM and MCP request paths. It adds policy enforcement, evidence records, and routing controls, but it does not replace the rest of a production security, runtime, or compliance stack.
+Talon is a governance layer for LLM and MCP request paths. It can enforce policy, record evidence, and steer routing on the Talon path. It is not a complete security, runtime, or compliance platform.
 
 ## Not a sandbox
 
-Talon is not a VM, container boundary, kernel sandbox, or host-isolation product.
+Talon is not a VM boundary, container runtime, kernel sandbox, or host-isolation layer.
 
 - It governs requests that pass through Talon.
-- It does not prevent host escape, kernel compromise, or lateral movement on the machine where Talon runs.
-- Use your own workload-isolation layer if you need stronger execution isolation.
+- It does not prevent host escape, kernel compromise, or lateral movement on the machine where it runs.
+- If you need execution isolation, add your own workload sandboxing and host hardening.
 
 ## Not a full trust mesh
 
-Talon is not a general trust mesh, service identity plane, or agent-to-agent coordination system.
+Talon is not a general service-identity plane, trust mesh, or agent-to-agent coordination system.
 
-- It governs model and tool traffic at the Talon boundary.
-- It does not establish end-to-end trust across every downstream service, worker, agent, or human approval step in a larger system.
+- It applies controls at the Talon boundary.
+- It does not create end-to-end trust across downstream services, workers, agents, or human approval steps.
 
-## Tool governance stops at request filtering
+## Tool governance is request filtering today
 
-Talon's tool governance currently filters request payloads before forwarding them upstream.
+Today Talon governs tools by filtering request payloads before they go upstream.
 
-- Talon checks requested tool names against allow and forbid policy and removes disallowed tools from the governed request path.
+- It checks requested tool names against allow and forbid policy.
+- It removes disallowed tools from the governed request path.
 - It does not intercept tool execution inside another runtime.
 - It does not supervise arbitrary code after a request leaves Talon.
-- It does not guarantee that another system will not invoke the same tool through a separate path.
+- It does not stop the same tool from being invoked through a separate path outside Talon.
 
-## Evidence signatures prove record integrity, not decision correctness
+## HMAC signatures prove integrity, not correctness
 
 Talon signs evidence records with HMAC-SHA256.
 
 - A valid signature shows the signed record was not modified after Talon wrote it, assuming the signing key remains protected.
-- A signature does not prove Talon's decision was correct, complete, lawful, or appropriate for every environment.
-- A signature does not prove upstream or downstream systems behaved correctly outside the signed record.
+- It does not prove Talon's decision was correct, complete, lawful, or suitable for every environment.
+- It does not prove upstream or downstream systems behaved correctly outside the signed record.
 
-## Compliance remains the operator's responsibility
+## Compliance remains the operator's determination
 
-Talon can support GDPR, NIS2, DORA, EU AI Act, and similar programs with policy enforcement, evidence, and routing controls.
+Talon can provide supporting controls and evidence for GDPR, NIS2, DORA, the EU AI Act, and similar programs.
 
 - It does not grant certification, legal sign-off, or guaranteed compliance by itself.
-- Whether a deployment satisfies regulatory, contractual, or internal-policy obligations remains the operator's responsibility.
+- Whether a deployment satisfies regulatory, contractual, or internal obligations remains the operator's responsibility.
 
 ## Trust depends on operator-managed keys and deployment hygiene
 
@@ -53,4 +52,4 @@ Talon's trust properties depend on operator-managed secrets and deployment contr
 
 ## Scope reminder
 
-Treat Talon as a governance layer on the request path, not a complete security or compliance platform.
+Treat Talon as a governance layer on the request path, not as a complete security or compliance stack.
