@@ -9,6 +9,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 [Docs](docs/README.md) ·
+[Limitations](LIMITATIONS.md) ·
 [Quickstart](docs/tutorials/proxy-quickstart.md) ·
 [Docker demo](examples/docker-compose/README.md) ·
 [Dashboard](docs/reference/gateway-dashboard.md) ·
