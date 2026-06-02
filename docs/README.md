@@ -67,6 +67,7 @@ Choose the shortest path for your situation:
 | Doc | Description |
 |-----|-------------|
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
+| [Evidence integrity specification](reference/evidence-integrity-spec.md) | Normative signed-record spec: fields, canonical serialization, HMAC-SHA256 signing, and the independent verification procedure. |
 | [Authentication and key scopes](reference/authentication-and-key-scopes.md) | Which keys authenticate which endpoint families (gateway vs control plane vs dashboard). |
 | [Gateway dashboard](reference/gateway-dashboard.md) | Dashboard endpoints, metrics API schema, snapshot fields, and authentication. |
 | [Operational control plane](reference/operational-control-plane.md) | Run management (list/kill/pause/resume), tenant lockdown, runtime overrides, tool approval gates. |
@@ -93,6 +94,7 @@ Choose the shortest path for your situation:
 | [What Talon does to your request](explanation/what-talon-does-to-your-request.md) | Pipeline, latency, threat boundaries, and reproducible checks. |
 | [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md) | Control-plane vs scrubber differentiation with proof commands. |
 | [Evidence store](explanation/evidence-store.md) | HMAC integrity model and verification flow. |
+| [Evidence integrity specification](reference/evidence-integrity-spec.md) | Byte-exact spec so a third party can independently verify a record. |
 | [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Fast proof moment for auditors/operators, including offline signed-export verification. |
 | [Security policy](../SECURITY.md) | Vulnerability reporting process and security scope. |
 | [Docker Compose demo](../examples/docker-compose/README.md) | Fastest no-key proof loop. |
