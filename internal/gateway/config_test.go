@@ -78,6 +78,37 @@ func TestParseTimeouts_Invalid(t *testing.T) {
 	}
 }
 
+func TestMetricsTenantScope(t *testing.T) {
+	t.Run("single_tenant", func(t *testing.T) {
+		cfg := &GatewayConfig{
+			Callers: []CallerConfig{
+				{Name: "a", TenantID: "demo"},
+				{Name: "b", TenantID: "demo"},
+			},
+		}
+		if got := cfg.MetricsTenantScope(); got != "demo" {
+			t.Fatalf("MetricsTenantScope() = %q, want demo", got)
+		}
+	})
+	t.Run("multi_tenant", func(t *testing.T) {
+		cfg := &GatewayConfig{
+			Callers: []CallerConfig{
+				{Name: "a", TenantID: "demo"},
+				{Name: "b", TenantID: "prod"},
+			},
+		}
+		if got := cfg.MetricsTenantScope(); got != "" {
+			t.Fatalf("MetricsTenantScope() = %q, want empty for multi-tenant", got)
+		}
+	})
+	t.Run("default_tenant", func(t *testing.T) {
+		cfg := &GatewayConfig{Callers: []CallerConfig{{Name: "anon"}}}
+		if got := cfg.MetricsTenantScope(); got != "default" {
+			t.Fatalf("MetricsTenantScope() = %q, want default", got)
+		}
+	})
+}
+
 func TestCallerByName(t *testing.T) {
 	cfg := &GatewayConfig{
 		Callers: []CallerConfig{

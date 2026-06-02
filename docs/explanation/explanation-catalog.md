@@ -40,7 +40,7 @@ Compatibility alias:
 | `POLICY_DENIED_PII_INPUT` | `deny` | `policy_evaluation` | comma-separated PII entity list (sorted) | Request blocked because input PII was detected. | Remove or mask sensitive input data. |
 | `POLICY_DENIED_PII_OUTPUT` | `deny` | `output_validation` | output PII token/list | Request blocked because output PII was detected. | Tighten prompt/tool outputs or enable redaction path. |
 | `POLICY_DENIED_COST` | `deny` | `policy_evaluation` | cost/budget reason | Request blocked by cost policy limits. | Reduce token usage or increase cost limits. |
-| `POLICY_DENIED_ROUTING` | `deny` | `policy_evaluation` | routing/provider reason | Request blocked by model routing policy. | Select an allowed model/provider for the data tier. |
+| `POLICY_DENIED_ROUTING` | `deny` | `policy_evaluation` | routing/provider reason; gateway: `Model <name> not in caller allowlist`, `Model <name> is blocked for this caller`, `Data tier N exceeds caller restriction` | Request blocked by model routing policy. | Select an allowed model/provider for the data tier. |
 | `POLICY_DENIED_TOOL` | `deny` | `tool_execution` | tool name or policy reason | Request blocked by tool access policy. | Use allowed tool or extend allowlist. |
 | `POLICY_DENIED_HOOK` | `deny` | `pre_execution` / hook stage | hook deny reason | Request blocked by governance hook. | Review hook policy and approval gates. |
 | `POLICY_DENIED_CIRCUIT_BREAKER` | `deny` | `pre_execution` | circuit breaker reason | Request blocked because circuit breaker is open. | Resolve repeated failures/denials and retry after cooldown. |
