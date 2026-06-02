@@ -1,6 +1,6 @@
 # Dativo Talon — Vendor Integration Guide
 
-**Making Third-Party AI Vendors Compliant**
+**Governing Third-Party AI Vendors**
 
 ---
 
@@ -707,4 +707,4 @@ curl -X POST https://talon.your-company.local/tools/call \
 - **Community Slack:** https://dativo-community.slack.com
 - **Enterprise Support:** enterprise@dativo.com
 
-**Remember:** The goal isn't to replace your vendors — it's to make them compliant. Talon adds the governance layer vendors can't provide.
+**Remember:** The goal isn't to replace your vendors — it's to govern them and generate your own evidence. Talon adds the governance and audit layer vendors can't provide; the compliance determination stays with you as the data controller.
