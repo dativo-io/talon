@@ -713,8 +713,12 @@ func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, t
 		))
 	defer span.End()
 
-	query := `SELECT COALESCE(SUM(COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur'))), 0) FROM evidence WHERE tenant_id = ?`
-	args := []interface{}{tenantID}
+	query := `SELECT COALESCE(SUM(COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur'))), 0) FROM evidence WHERE 1=1`
+	args := []interface{}{}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
 	if agentID != "" {
 		query += ` AND agent_id = ?`
 		args = append(args, agentID)
@@ -740,8 +744,12 @@ func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, t
 // CacheSavings returns the count of cache hits and total cost saved from evidence in the half-open time range [from, to).
 // Used by talon costs and talon report to surface semantic cache savings.
 func (s *Store) CacheSavings(ctx context.Context, tenantID string, from, to time.Time) (hits int64, costSaved float64, err error) {
-	query := `SELECT COUNT(*), COALESCE(SUM(CAST(json_extract(evidence_json, '$.cost_saved') AS REAL)), 0) FROM evidence WHERE tenant_id = ? AND json_extract(evidence_json, '$.cache_hit') = 1`
-	args := []interface{}{tenantID}
+	query := `SELECT COUNT(*), COALESCE(SUM(CAST(json_extract(evidence_json, '$.cost_saved') AS REAL)), 0) FROM evidence WHERE json_extract(evidence_json, '$.cache_hit') = 1`
+	args := []interface{}{}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
 		args = append(args, from)
@@ -1217,8 +1225,12 @@ func (s *Store) CostByModel(ctx context.Context, tenantID, agentID string, from,
 
 	query := `SELECT COALESCE(json_extract(evidence_json, '$.execution.model_used'), 'unknown'),
 	         SUM(COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur')))
-	         FROM evidence WHERE tenant_id = ?`
-	args := []interface{}{tenantID}
+	         FROM evidence WHERE 1=1`
+	args := []interface{}{}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
 	if agentID != "" {
 		query += ` AND agent_id = ?`
 		args = append(args, agentID)
@@ -1272,8 +1284,12 @@ func (s *Store) CostByProvider(ctx context.Context, tenantID, agentID string, fr
 
 	query := `SELECT COALESCE(NULLIF(json_extract(evidence_json, '$.routing_decision.selected_provider'), ''), 'unknown'),
 	         SUM(COALESCE(json_extract(evidence_json, '$.execution.cost'), json_extract(evidence_json, '$.execution.cost_eur')))
-	         FROM evidence WHERE tenant_id = ?`
-	args := []interface{}{tenantID}
+	         FROM evidence WHERE 1=1`
+	args := []interface{}{}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
 	if agentID != "" {
 		query += ` AND agent_id = ?`
 		args = append(args, agentID)

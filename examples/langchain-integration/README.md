@@ -21,6 +21,10 @@ response = llm.invoke("What is GDPR Article 30?")
 
 Best for: **single LLM calls, stateless usage, quick integration**.
 
+For a full LangGraph walkthrough (safe vs dangerous tools, `filter` vs `block`, model
+allowlist denials, and dashboard metrics), open
+[`langgraph_talon_tool_governance.ipynb`](langgraph_talon_tool_governance.ipynb).
+
 ## 2. Graph Events API (full governance)
 
 Send lifecycle events to `/v1/graph/events` for step-level control,
@@ -61,6 +65,7 @@ Best for: **LangGraph stateful graphs, multi-step agents, compliance-heavy**.
 | `talon_sdk.py` | Lightweight Python client for graph governance events |
 | `langchain_stateless.py` | Single LLM call via gateway proxy + optional events |
 | `langgraph_stateful.py` | Multi-step LangGraph agent with per-step governance |
+| `langgraph_talon_tool_governance.ipynb` | Colab notebook: LangGraph `ChatOpenAI` through Talon gateway (tool filter/block, model allowlist, audit + metrics) |
 | `notebook_example.py` | Colab/Jupyter-ready cells for both patterns |
 
 ## Other Supported Patterns

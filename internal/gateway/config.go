@@ -6,6 +6,7 @@ package gateway
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -465,6 +466,34 @@ func (c *GatewayConfig) CallerByName(name string) *CallerConfig {
 		}
 	}
 	return nil
+}
+
+// UniqueTenantIDs returns distinct tenant_id values from configured callers.
+func (c *GatewayConfig) UniqueTenantIDs() []string {
+	seen := make(map[string]struct{})
+	for i := range c.Callers {
+		id := strings.TrimSpace(c.Callers[i].TenantID)
+		if id == "" {
+			id = "default"
+		}
+		seen[id] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// MetricsTenantScope returns the tenant_id filter for dashboard SQL aggregates.
+// Single-tenant gateways scope to that tenant; multi-tenant gateways use "" (all tenants).
+func (c *GatewayConfig) MetricsTenantScope() string {
+	ids := c.UniqueTenantIDs()
+	if len(ids) == 1 {
+		return ids[0]
+	}
+	return ""
 }
 
 // TenantKeyMap returns a map of tenant_key -> tenant_id from configured callers.

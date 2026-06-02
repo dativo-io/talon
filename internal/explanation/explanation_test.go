@@ -21,6 +21,16 @@ func TestExplanation_BuildFromFactsDeterministicAndSorted(t *testing.T) {
 	assert.Equal(t, "policy_evaluation", gotA[0].Stage)
 }
 
+func TestExplanation_BuildLegacyFacts_GatewayModelAllowlist(t *testing.T) {
+	facts := BuildLegacyFacts(false, "deny", []string{"Model gpt-4o not in caller allowlist"}, StagePolicyEvaluation, "", "")
+	items := BuildFromFacts(facts)
+
+	assert.Len(t, items, 1)
+	assert.Equal(t, CodePolicyDeniedRouting, items[0].Code)
+	assert.Equal(t, "Model gpt-4o not in caller allowlist", items[0].Trigger)
+	assert.NotEmpty(t, items[0].Fix)
+}
+
 func TestExplanation_BuildLegacyFactsSortsReasonInput(t *testing.T) {
 	reasons := []string{
 		"routing policy returned no results (fail-closed)",

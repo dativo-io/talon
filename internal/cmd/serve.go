@@ -403,11 +403,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 			enforcementMode = string(gatewayCfgForMode.Mode)
 		}
 
+		metricsTenantID := "default"
+		if gatewayCfgForMode != nil {
+			metricsTenantID = gatewayCfgForMode.MetricsTenantScope()
+		}
 		collectorOpts := []metrics.CollectorOption{
 			metrics.WithActiveRunsFn(func() int {
-				return activeRunTracker.Count("default")
+				return activeRunTracker.Count(metricsTenantID)
 			}),
-			metrics.WithTenantID("default"),
+			metrics.WithTenantID(metricsTenantID),
 		}
 		if planReviewStore != nil {
 			collectorOpts = append(collectorOpts, metrics.WithPlanStatsFn(func(ctx context.Context, tenantID string) (metrics.PlanStats, error) {
@@ -426,9 +430,21 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}))
 		}
 
+		budgetDaily, budgetMonthly := 0.0, 0.0
 		if pol.Policies.CostLimits != nil {
-			collectorOpts = append(collectorOpts,
-				metrics.WithBudgetLimits(pol.Policies.CostLimits.Daily, pol.Policies.CostLimits.Monthly))
+			budgetDaily = pol.Policies.CostLimits.Daily
+			budgetMonthly = pol.Policies.CostLimits.Monthly
+		}
+		if gatewayCfgForMode != nil {
+			if budgetDaily <= 0 && gatewayCfgForMode.ServerDefaults.MaxDailyCost > 0 {
+				budgetDaily = gatewayCfgForMode.ServerDefaults.MaxDailyCost
+			}
+			if budgetMonthly <= 0 && gatewayCfgForMode.ServerDefaults.MaxMonthlyCost > 0 {
+				budgetMonthly = gatewayCfgForMode.ServerDefaults.MaxMonthlyCost
+			}
+		}
+		if budgetDaily > 0 || budgetMonthly > 0 {
+			collectorOpts = append(collectorOpts, metrics.WithBudgetLimits(budgetDaily, budgetMonthly))
 		}
 
 		metricsCollector = metrics.NewCollector(enforcementMode, evidenceStore, collectorOpts...)

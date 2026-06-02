@@ -866,6 +866,40 @@ func TestCostTotal(t *testing.T) {
 	assert.InDelta(t, 0.03, totalB, 0.0001)
 }
 
+func TestCostTotal_AllTenants(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	gen := NewGenerator(store)
+
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+
+	for _, tc := range []struct {
+		tenant string
+		cost   float64
+	}{
+		{"acme", 0.01},
+		{"other", 0.02},
+	} {
+		_, err := gen.Generate(ctx, GenerateParams{
+			CorrelationID:  "corr_" + tc.tenant,
+			TenantID:       tc.tenant,
+			AgentID:        "agent",
+			InvocationType: "manual",
+			PolicyDecision: PolicyDecision{Allowed: true, Action: "allow"},
+			Cost:           tc.cost,
+			InputPrompt:    "test",
+			OutputResponse: "response",
+		})
+		require.NoError(t, err)
+	}
+
+	totalAll, err := store.CostTotal(ctx, "", "", dayStart, dayEnd)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.03, totalAll, 0.0001)
+}
+
 func TestCostByAgent(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
