@@ -1,14 +1,14 @@
 # Talon Limitations
 
-Talon is a governance layer for LLM and MCP request paths. It can enforce policy, record evidence, and steer routing on the Talon path. It is not a complete security, runtime, or compliance platform.
+Talon governs LLM and MCP traffic that passes through its request path. It can enforce policy, route requests, and record evidence there. It is not a complete security, runtime, or compliance platform.
 
 ## Not a sandbox
 
 Talon is not a VM boundary, container runtime, kernel sandbox, or host-isolation layer.
 
 - It governs requests that pass through Talon.
-- It does not prevent host escape, kernel compromise, or lateral movement on the machine where it runs.
-- If you need execution isolation, add your own workload sandboxing and host hardening.
+- It does not prevent host escape, kernel compromise, or lateral movement on the host where it runs.
+- If you need execution isolation, add separate sandboxing and host hardening.
 
 ## Not a full trust mesh
 
@@ -25,14 +25,14 @@ Today Talon governs tools by filtering request payloads before they go upstream.
 - It removes disallowed tools from the governed request path.
 - It does not intercept tool execution inside another runtime.
 - It does not supervise arbitrary code after a request leaves Talon.
-- It does not stop the same tool from being invoked through a separate path outside Talon.
+- It does not stop the same tool from being invoked on a separate path outside Talon.
 
 ## HMAC signatures prove integrity, not correctness
 
 Talon signs evidence records with HMAC-SHA256.
 
 - A valid signature shows the signed record was not modified after Talon wrote it, assuming the signing key remains protected.
-- It does not prove Talon's decision was correct, complete, lawful, or suitable for every environment.
+- It does not prove Talon's decision was correct, complete, lawful, or right for every environment.
 - It does not prove upstream or downstream systems behaved correctly outside the signed record.
 
 ## Compliance remains the operator's determination
