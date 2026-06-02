@@ -409,7 +409,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 		collectorOpts := []metrics.CollectorOption{
 			metrics.WithActiveRunsFn(func() int {
-				return activeRunTracker.Count("default")
+				return activeRunTracker.Count(metricsTenantID)
 			}),
 			metrics.WithTenantID(metricsTenantID),
 		}
