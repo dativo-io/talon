@@ -1,6 +1,6 @@
 # Governed Semantic Cache
 
-This package implements Talon's semantic cache for LLM completions: cost and latency optimization by serving similar prompts from cache instead of calling the LLM. The cache is **GDPR Article 17 compliant**, PII-safe, tenant-isolated, and auditable.
+This package implements Talon's semantic cache for LLM completions: cost and latency optimization by serving similar prompts from cache instead of calling the LLM. The cache **supports GDPR Article 17 controls** (erasure), is PII-safe, tenant-isolated, and auditable.
 
 ## Cache vs memory (clarification)
 

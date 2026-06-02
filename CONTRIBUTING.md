@@ -47,7 +47,14 @@ Thanks for helping improve Talon.
 
 - Keep behavior changes accompanied by tests.
 - Prefer clear, verifiable claims in docs (commands, source links, or test references).
-- For compliance wording, use "supports controls" language; do not claim guaranteed compliance.
+
+### Compliance-claim discipline (required)
+
+EU buyers distrust overclaiming, so every compliance reference must be under-claimed:
+
+- **Always** phrase as "supporting controls / evidence for `<regulation/article>`" and pair a feature with the article it supports (e.g. "output PII scan → supporting control for GDPR Art. 32").
+- **Never** claim a compliance *outcome*: avoid "GDPR compliant", "makes you compliant", "ensures/guarantees compliance", or "X to compliant". The operator remains responsible for the legal determination.
+- See [LIMITATIONS.md](LIMITATIONS.md) for the compliance boundary and [`internal/compliance/mapping.go`](internal/compliance/mapping.go) for the built-in article mappings.
 
 ## Testing
 
