@@ -127,7 +127,7 @@ sequenceDiagram
     Talon-->>Client: GovernedResponse
 ```
 
-Pipeline overhead is typically under 15ms excluding upstream latency. Full byte-level breakdown: [What Talon does to your request](docs/explanation/what-talon-does-to-your-request.md).
+Pipeline overhead is typically under 15ms excluding upstream latency. Reproduce on your machine: `make benchmarks`. Full byte-level breakdown: [What Talon does to your request](docs/explanation/what-talon-does-to-your-request.md) · [Benchmarks](docs/reference/benchmarks.md).
 
 ---
 
