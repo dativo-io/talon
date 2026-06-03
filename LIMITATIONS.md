@@ -51,4 +51,5 @@ A valid signature proves that this evidence record was signed with the deploymen
 
 - [SECURITY.md](SECURITY.md) — security boundaries and threat-model snapshot
 - [Evidence store](docs/explanation/evidence-store.md) — how records are created, signed, and verified
-- A formal threat model, an evidence integrity specification, and reproducible benchmarks are forthcoming.
+- [Evidence integrity specification](docs/reference/evidence-integrity-spec.md) — byte-exact fields, serialization, signing, and independent verification
+- A formal threat model and reproducible benchmarks are forthcoming.

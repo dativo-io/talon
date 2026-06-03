@@ -80,9 +80,13 @@ talon audit verify --file march-signed-evidence.json
 The file verifier reports total/valid/invalid/malformed/unsupported counts and exits non-zero if any record is invalid or unverifiable.
 
 **What this proves:** The signing key never leaves the server. If the signature
-is valid, the record has not been modified since Talon created it. This provides
-ISO 27001 A.8.15 compliance (tamper-proof logging) without requiring external
-infrastructure like a blockchain or append-only storage.
+is valid, the record has not been modified since Talon created it. This is a
+supporting control for ISO 27001 A.8.15 (tamper-evident logging) without requiring
+external infrastructure like a blockchain or append-only storage.
+
+For the byte-exact field list, canonical serialization, and signing/verification
+procedure — written so a third party can verify a record independently — see the
+[Evidence integrity specification](../reference/evidence-integrity-spec.md).
 
 ## Progressive Disclosure
 
