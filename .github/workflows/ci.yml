@@ -63,6 +63,10 @@ jobs:
             exit 1
           fi
 
+      - name: Conformance count (evidence + policy paths)
+        run: |
+          make conformance | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: OPA/Rego policy tests
         run: |
           if ! command -v opa &> /dev/null; then
