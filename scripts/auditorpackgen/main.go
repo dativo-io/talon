@@ -70,8 +70,8 @@ func main() {
 	}
 
 	var records []evidence.Evidence
-	for _, p := range scenarios {
-		ev, err := gen.Generate(ctx, p)
+	for i := range scenarios {
+		ev, err := gen.Generate(ctx, scenarios[i])
 		if err != nil {
 			fatal("generate: %v", err)
 		}
@@ -117,22 +117,22 @@ func main() {
 	}
 
 	manifest := map[string]interface{}{
-		"generated_at":            time.Now().UTC().Format(time.RFC3339),
-		"source":                  "scripts/auditorpackgen (offline; no docker-compose)",
-		"record_count_estimate":   len(records),
+		"generated_at":          time.Now().UTC().Format(time.RFC3339),
+		"source":                "scripts/auditorpackgen (offline; no docker-compose)",
+		"record_count_estimate": len(records),
 		"files": map[string]string{
-			"evidence_signed":          "evidence.signed.json",
-			"compliance_report_html":   "compliance-report.html",
-			"compliance_report_json":   "compliance-report.json",
+			"evidence_signed":        "evidence.signed.json",
+			"compliance_report_html": "compliance-report.html",
+			"compliance_report_json": "compliance-report.json",
 		},
 		"verify_commands": []string{
 			"TALON_SIGNING_KEY=" + testSigningKey + " talon audit verify --file examples/auditor-pack/evidence.signed.json",
 		},
-		"claim_note": "Supporting controls and evidence for auditor review — not a completed legal filing. See LIMITATIONS.md.",
+		"claim_note":               "Supporting controls and evidence for auditor review — not a completed legal filing. See LIMITATIONS.md.",
 		"offline_signing_key_note": "Offline pack uses a fixed demo key; docker-compose regeneration uses the stack vault key.",
 	}
 	mb, _ := json.MarshalIndent(manifest, "", "  ")
-	if err := os.WriteFile(filepath.Join(*outDir, "manifest.json"), mb, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(*outDir, "manifest.json"), mb, 0o600); err != nil {
 		fatal("manifest: %v", err)
 	}
 
