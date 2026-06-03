@@ -10,12 +10,15 @@
 
 [Docs](docs/README.md) ·
 [Limitations](LIMITATIONS.md) ·
+[Roadmap & focus](ROADMAP.md) ·
 [Quickstart](docs/tutorials/proxy-quickstart.md) ·
 [Docker demo](examples/docker-compose/README.md) ·
 [Dashboard](docs/reference/gateway-dashboard.md) ·
 [Releases](https://github.com/dativo-io/talon/releases/latest)
 
 Talon is a single Go binary that sits in front of OpenAI, Anthropic, AWS Bedrock, Azure OpenAI, and any OpenAI-compatible client. Change one URL and every request is policy-checked, PII-scanned, cost-tracked, and written to a tamper-evident, HMAC-signed evidence record — same SDK, same response shape, governed path. Built for EU teams that need real governance signals for GDPR, NIS2, DORA, and the EU AI Act. Apache 2.0.
+
+**Positioning:** Portkey helps you operate AI. AGT helps you build governed agents. **Talon helps you prove your AI traffic was governed — inside Europe, with signed evidence.** See [Roadmap & focus](ROADMAP.md) for what we deliberately do *not* build.
 
 ```
 $ talon audit list
@@ -230,21 +233,41 @@ Fair, factual positioning. Talon's differentiation is evidence-grade compliance 
 
 ---
 
-## Install options
+## Install
 
-- **Go (fastest):** `go install github.com/dativo-io/talon/cmd/talon@latest`
-- **Release binary:** [GitHub Releases](https://github.com/dativo-io/talon/releases/latest) (verify against `checksums.txt`)
-- **Docker / GHCR:** `docker pull ghcr.io/dativo-io/talon:latest` (also `:vX.Y.Z`, `:X.Y`)
-- **Install script (checksum verification included):** `curl -sSL https://install.gettalon.dev | sh`
+Talon requires **CGO** (SQLite). Go **1.22+** recommended (CI uses 1.25.x).
 
-Talon requires Go 1.22+ and CGO (for SQLite). On macOS, if `go install` fails with `unsupported tapi file type '!tapi-tbd'`, build with system Clang: `CC=/usr/bin/clang go install github.com/dativo-io/talon/cmd/talon@latest`, or clone and run `make install`.
+| Method | Platforms | Artifact / command |
+|--------|-----------|------------------|
+| **From source (recommended on macOS)** | linux, darwin (amd64, arm64) | `git clone … && make install` → `$(go env GOPATH)/bin/talon` |
+| **`go install`** | linux, darwin (amd64, arm64) | `go install github.com/dativo-io/talon/cmd/talon@latest` |
+| **Release tarball** | **linux/amd64 only** | `talon_<version>_linux_amd64.tar.gz` + `checksums.txt` on [Releases](https://github.com/dativo-io/talon/releases/latest) |
+| **Install script** | linux/amd64 prebuilt; **darwin/arm64 falls back to `go install`** | `curl -sSL https://install.gettalon.dev \| sh` |
+| **Docker / GHCR** | linux/amd64 images | `docker pull ghcr.io/dativo-io/talon:latest` (also `:vX.Y.Z`, `:X.Y`) |
 
-Verify release artifacts:
+On macOS, if `go install` fails with `unsupported tapi file type '!tapi-tbd'`, use system Clang:
 
 ```bash
-LATEST=$(gh release view --json tagName -q .tagName)
-gh release view "$LATEST" --json assets -q '.assets[].name'
-docker pull ghcr.io/dativo-io/talon:latest
+CC=/usr/bin/clang CGO_ENABLED=1 go install github.com/dativo-io/talon/cmd/talon@latest
+```
+
+Or clone the repo and run `make install` (Makefile sets `CC=/usr/bin/clang` on Darwin).
+
+### First run (`talon init` → `talon run`)
+
+```bash
+export TALON_SECRETS_KEY="$(openssl rand -hex 32)"   # vault encryption key
+talon init --scaffold --name my-agent                # agent.talon.yaml + talon.config.yaml
+talon run --dry-run "hello"                          # no LLM API key required
+```
+
+For a governed live call, set a provider key: `talon secrets set openai-api-key --value "$OPENAI_API_KEY"` (see [Your first governed agent](docs/tutorials/first-governed-agent.md)).
+
+Verify release assets (linux/amd64):
+
+```bash
+gh release view --repo dativo-io/talon --json tagName,assets -q '.assets[].name'
+# e.g. checksums.txt, talon_1.5.5_linux_amd64.tar.gz
 ```
 
 ---
@@ -299,6 +322,7 @@ llm:
 - [Provider registry](docs/reference/provider-registry.md)
 - [Evidence store](docs/explanation/evidence-store.md)
 - [Conformance suite & count](docs/reference/conformance.md)
+- [Roadmap & focus](ROADMAP.md)
 - [Gateway dashboard](docs/reference/gateway-dashboard.md)
 - [OpenClaw integration](docs/guides/openclaw-integration.md)
 - [Slack bot integration](docs/guides/slack-bot-integration.md)

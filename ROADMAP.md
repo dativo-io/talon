@@ -1,57 +1,87 @@
-# Roadmap
+# Roadmap & focus
 
-## v0.9.0 (February 2026) — Community & Launch Readiness
+> **Portkey helps you operate AI. AGT helps you build governed agents. Talon helps you prove your AI traffic was governed — inside Europe, with signed evidence.**
 
-- [x] Policy engine (embedded OPA/Rego)
-- [x] PII detection (25+ EU patterns across 27 member states)
-- [x] Evidence store (HMAC-SHA256 signed, SQLite)
-- [x] Secrets vault (AES-256-GCM, per-agent ACL)
-- [x] Multi-LLM support (OpenAI, Anthropic, Bedrock, Ollama)
-- [x] MCP server (native JSON-RPC 2.0)
-- [x] HTTP API + embedded dashboard
-- [x] Agent memory (governed, PII-scanned, Constitutional AI)
-- [x] LLM API Gateway (transparent proxy at `/v1/proxy/*`)
-- [x] Attachment scanning (prompt injection prevention)
-- [x] Cron scheduler + webhook triggers
-- [x] Mock provider + docker-compose demo (no API key)
-- [x] Flow 0 verification (60-second demo)
-- [x] JSON Schema for `talon.config.yaml` and `agent.talon.yaml`
-- [x] Quickstart tutorials (Diataxis)
-- [x] Starter OPA/Rego policy library
-- [x] Community governance files (CODE_OF_CONDUCT, MAINTAINERS, CODEOWNERS)
-- [x] Production deploy templates (systemd, docker-compose)
+Talon is a single Go binary that sits on the **network path** in front of LLM and MCP traffic. Change one URL and every call is policy-checked, PII-scanned, and written to an HMAC-signed evidence record you can export for auditor review. We are not trying to be a general AI platform, a model catalog, or an in-process agent SDK.
 
-## v1.0.0 (March 2026) — Stable MVP
+This page is the public "no" list and where we are headed. For operational boundaries (signatures, tool filter vs execution, keys), see [LIMITATIONS.md](LIMITATIONS.md).
 
-- [x] Operational control plane — run lifecycle (kill/pause/resume), tenant lockdown, runtime overrides, tool approval gates
-- [ ] MCP Proxy (vendor integration for Zendesk, Intercom, etc.)
-- [ ] Shadow mode dashboard tab (AI usage discovery)
-- [ ] Per-caller/team cost dashboards
-- [x] `talon init` interactive wizard (default in TTY); `--scaffold`, `--pack`, `--list-providers` / `--list-packs` / `--list-features`
-- [ ] Additional industry packs (beyond openclaw, fintech-eu, etc.)
+---
 
-## v1.1.0 (May 2026) — Enterprise
+## What we are optimizing for (2.0 wedge)
 
-- [ ] PostgreSQL backend (high-availability evidence store)
-- [ ] LGTM observability stack integration (Grafana, Loki, Tempo, Mimir)
-- [ ] Infisical integration (secret rotation, SAML)
-- [ ] RBAC (role-based access control for the API)
-- [ ] SSO/SAML authentication
+**Make the auditor happy without leaving the EU** — the near-term bet:
 
-## Future
+- Signed, regulator-mapped evidence exports (GDPR Art. 30, EU AI Act traceability, NIS2/DORA supporting controls).
+- EU-sovereign routing and egress posture in the gateway path (`eu_strict` / `eu_preferred`).
+- Self-hosted, air-gappable deployment — one binary, no managed control plane required.
+- Drop-in proxy: zero per-agent instrumentation for existing OpenAI-compatible clients.
 
-- [ ] A2A protocol (agent-to-agent communication)
-- [ ] Kubernetes operator
-- [ ] Vector-search agent memory
-- [ ] Advanced PII detection (Presidio integration)
-- [ ] S3 WORM evidence storage
-- [ ] gVisor/Firecracker agent isolation
+Success looks like a design-partner auditor accepting a Talon-generated evidence pack with minimal manual rework — not winning a "most models" bake-off.
 
-## How to Influence the Roadmap
+---
 
-- Open a [feature request](https://github.com/dativo-io/talon/issues/new?template=feature_request.yml) with your use case
-- Vote on existing issues with a thumbs-up reaction
-- Join the discussion in [GitHub Discussions](https://github.com/dativo-io/talon/discussions)
+## Anti-goals (what we are **not** building for 2.0)
 
-Roadmap items are prioritized by: (1) community demand, (2) compliance
-deadlines (EU AI Act August 2026), (3) engineering feasibility.
+These are deliberate. If you need them as primary value, another product may fit better (see [buyer fit](#who-should-choose-talon) below).
+
+| We are **not** building | Why |
+|-------------------------|-----|
+| **Multi-language SDKs** | The gateway is language-agnostic by design; per-language SDKs copy high-maintenance surfaces and dilute the message. |
+| **Full trust mesh / A2A protocol** | Interfaces only for now; lightweight per-agent identity is enough for "which agent did this?" in our ICP. |
+| **Kubernetes operator / CRDs / gVisor** | Single-binary, process-level isolation is the MVP promise — not a cluster operator or kernel sandbox. |
+| **Managed cloud / SaaS tier** | Self-host first; managed offering is a later commercial decision, not a 2.0 feature. |
+| **Provider-count race** | We support EU-relevant providers well; we do not chase 1,600-model catalogs. |
+| **Leading with generic "AI governance"** | The category is crowded; we lead with **prove + EU + signed evidence**. |
+
+We still ship commodity gateway features (routing, budgets, dashboards) **only as much as the wedge requires** — not as the headline.
+
+---
+
+## Phased direction
+
+### Now — credibility & EU compliance moat
+
+- Trust surface: [LIMITATIONS.md](LIMITATIONS.md), [threat model](docs/reference/threat-model.md), [evidence integrity spec](docs/reference/evidence-integrity-spec.md), [conformance count](docs/reference/conformance.md), [benchmarks](docs/reference/benchmarks.md).
+- Compliance report depth (RoPA / Annex IV rendering on top of `talon compliance report`).
+- Data-flow / egress governance and in-region self-host hardening.
+
+### Next — parity & narrowing AGT
+
+- Reliability layer (retry/fallback, failover) on the gateway path.
+- Runtime tool-call governance via MCP proxy (deny at execution, not only filter in the request body).
+- Per-agent identity / attestation for evidence attribution.
+
+### Later — expansion
+
+- Red-team CLI and attachment-sandbox maturation.
+- Cross-session / workflow governance.
+- Named adopters, case studies, and additional EU-language docs.
+
+---
+
+## Who should choose Talon
+
+| Your primary need | Better fit |
+|-------------------|------------|
+| Best general-purpose AI gateway: routing, caching, model breadth, polished observability | Portkey |
+| Building a new agent system with deep in-process tool/action governance | Microsoft AGT |
+| EU-sovereign LLM egress, PII controls, signed evidence, auditor exports on **existing** traffic | **Talon** |
+| Deep tool governance **and** EU egress evidence | AGT + Talon together |
+| Pass a DPO / security review for current AI usage with verifiable records | **Talon** (when evidence maturity matches your bar) |
+
+---
+
+## Shipped foundation
+
+Core MVP capabilities (policy engine, PII scanning, evidence store, gateway proxy, MCP server, `talon init`, Docker demo) are in production use today. See [CHANGELOG.md](CHANGELOG.md) and [GitHub Releases](https://github.com/dativo-io/talon/releases) for version history.
+
+---
+
+## How to influence the roadmap
+
+- Open a [feature request](https://github.com/dativo-io/talon/issues/new?template=feature_request.yml) with your use case.
+- Vote on existing issues with a 👍 reaction.
+- Join [GitHub Discussions](https://github.com/dativo-io/talon/discussions).
+
+Priorities: (1) EU evidence / compliance depth, (2) community demand on the wedge, (3) engineering feasibility for a small team.
