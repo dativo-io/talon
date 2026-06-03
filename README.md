@@ -138,6 +138,7 @@ Pipeline overhead is typically under 15ms excluding upstream latency. Full byte-
 - HMAC-SHA256 signed evidence record per request; verify with `talon audit verify`.
 - Export to CSV, JSON, or signed JSON/NDJSON for auditors and offline verification.
 - Supporting controls mapped to GDPR Article 30, NIS2, DORA, and EU AI Act traceability.
+- Conformance: **317 passing tests** across the evidence + policy paths — reproduce with `make conformance`. See [Conformance suite & count](docs/reference/conformance.md).
 
 See [Evidence store](docs/explanation/evidence-store.md).
 
@@ -297,6 +298,7 @@ llm:
 - [Policy cookbook](docs/guides/policy-cookbook.md)
 - [Provider registry](docs/reference/provider-registry.md)
 - [Evidence store](docs/explanation/evidence-store.md)
+- [Conformance suite & count](docs/reference/conformance.md)
 - [Gateway dashboard](docs/reference/gateway-dashboard.md)
 - [OpenClaw integration](docs/guides/openclaw-integration.md)
 - [Slack bot integration](docs/guides/slack-bot-integration.md)

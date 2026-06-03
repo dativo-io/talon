@@ -69,6 +69,7 @@ Choose the shortest path for your situation:
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
 | [Evidence integrity specification](reference/evidence-integrity-spec.md) | Normative signed-record spec: fields, canonical serialization, HMAC-SHA256 signing, and the independent verification procedure. |
 | [Threat model](reference/threat-model.md) | STRIDE-style attack surface, trust boundaries, threats/mitigations, and key-management assumptions for the gateway path. |
+| [Conformance suite & count](reference/conformance.md) | What counts as a conformance test for the evidence + policy paths, and how to reproduce the published count with `make conformance`. |
 | [Authentication and key scopes](reference/authentication-and-key-scopes.md) | Which keys authenticate which endpoint families (gateway vs control plane vs dashboard). |
 | [Gateway dashboard](reference/gateway-dashboard.md) | Dashboard endpoints, metrics API schema, snapshot fields, and authentication. |
 | [Operational control plane](reference/operational-control-plane.md) | Run management (list/kill/pause/resume), tenant lockdown, runtime overrides, tool approval gates. |
@@ -96,6 +97,7 @@ Choose the shortest path for your situation:
 | [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md) | Control-plane vs scrubber differentiation with proof commands. |
 | [Evidence store](explanation/evidence-store.md) | HMAC integrity model and verification flow. |
 | [Evidence integrity specification](reference/evidence-integrity-spec.md) | Byte-exact spec so a third party can independently verify a record. |
+| [Conformance suite & count](reference/conformance.md) | Reproducible passing-test count for the evidence + policy paths (`make conformance`). |
 | [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Fast proof moment for auditors/operators, including offline signed-export verification. |
 | [Threat model](reference/threat-model.md) | Attack surface, trust boundaries, and what the HMAC signature does and does not prove. |
 | [Security policy](../SECURITY.md) | Vulnerability reporting process and security scope. |
