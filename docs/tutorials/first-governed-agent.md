@@ -2,25 +2,23 @@
 
 In this tutorial we will get from zero to a policy-enforced AI agent in one path: install Talon, initialize a project, configure an LLM key, run a query, and see evidence recorded. By the end you will have run a governed agent and seen the audit trail.
 
-**Prerequisites:** Go 1.22+ (or a pre-built binary) and an LLM API key (OpenAI or Anthropic) or a local Ollama instance.
+**Prerequisites:** Go 1.22+ with CGO (or a **linux/amd64** release tarball), and an LLM API key (OpenAI or Anthropic) or a local Ollama instance for live runs. Dry-run works without an API key.
 
 ---
 
 ## 1. Install Talon
 
-First, build or install the Talon binary.
+See the [README install matrix](../../README.md#install) for all methods. **macOS and arm64 Linux:** use from-source or `go install` (prebuilt GitHub tarballs are **linux/amd64 only**).
 
 ```bash
-# From source
+# Recommended on macOS / arm64
 git clone https://github.com/dativo-io/talon.git && cd talon
-make build    # → bin/talon
-# or: make install   # → $GOPATH/bin/talon
+make install   # → $(go env GOPATH)/bin/talon
 
-# Or install a released version
-go install github.com/dativo-io/talon/cmd/talon@latest
+# Or: go install github.com/dativo-io/talon/cmd/talon@latest
 ```
 
-**macOS:** If `go install` or `go build` fails with `unsupported tapi file type '!tapi-tbd'` (Homebrew LLVM vs Apple SDK), use system Clang: `CC=/usr/bin/clang go install github.com/dativo-io/talon/cmd/talon@latest`, or clone the repo and run `make build` / `make install`.
+**macOS:** If linking fails with `unsupported tapi file type '!tapi-tbd'`, use `make install` or `CC=/usr/bin/clang CGO_ENABLED=1 go install github.com/dativo-io/talon/cmd/talon@latest`.
 
 Check that it works:
 

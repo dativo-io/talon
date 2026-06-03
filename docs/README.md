@@ -82,6 +82,7 @@ Choose the shortest path for your situation:
 | [What Talon does to your request](explanation/what-talon-does-to-your-request.md) | Full request lifecycle: every check, every byte transformation, latency budget. |
 | [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md) | Five failure scenarios: what a PII-only proxy misses, what Talon does, and how to verify. |
 | [Evidence store](explanation/evidence-store.md) | Evidence record structure, session_id, HMAC signing (TALON_SIGNING_KEY), progressive disclosure, storage, and export (CSV/JSON columns). |
+| [Roadmap & focus](../ROADMAP.md) | Public anti-goals, wedge narrative, phased direction, and buyer fit (what we are not building for 2.0). |
 | [Adoption scenarios](ADOPTION_SCENARIOS.md) | Greenfield, brownfield custom, brownfield vendor; timelines and ROI. |
 | [Persona guides](PERSONA_GUIDES.md) | Who uses Talon (DevOps, Compliance, CTO, SecOps, FinOps) and what they do. |
 | [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md) | Why vendor compliance matters; MCP proxy and patterns. |
@@ -100,6 +101,7 @@ Choose the shortest path for your situation:
 | [Evidence integrity specification](reference/evidence-integrity-spec.md) | Byte-exact spec so a third party can independently verify a record. |
 | [Conformance suite & count](reference/conformance.md) | Reproducible passing-test count for the evidence + policy paths (`make conformance`). |
 | [Reproducible benchmarks](reference/benchmarks.md) | `make benchmarks` — gateway overhead, PII scan, evidence write on your hardware. |
+| [Roadmap & focus](../ROADMAP.md) | Anti-goals and focus — answers "are you trying to be Portkey + AGT?" |
 | [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Fast proof moment for auditors/operators, including offline signed-export verification. |
 | [Threat model](reference/threat-model.md) | Attack surface, trust boundaries, and what the HMAC signature does and does not prove. |
 | [Security policy](../SECURITY.md) | Vulnerability reporting process and security scope. |
