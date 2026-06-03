@@ -35,6 +35,8 @@ Talon helps enforce and evidence policy decisions in the request path. It does n
 - Does not prevent: compromised upstream provider, stolen operator keys, or host-level compromise outside Talon.
 - Operator responsibility: secure deployment, rotate keys, protect evidence/signing secrets, and monitor incidents.
 
+For the full STRIDE-style threat model — data-flow diagram, trust boundaries, threats and mitigations, and key-management assumptions — see [docs/reference/threat-model.md](docs/reference/threat-model.md).
+
 ## Security Architecture
 
 - **Secrets:** AES-256-GCM encrypted at rest, per-agent/tenant ACL, every access logged
