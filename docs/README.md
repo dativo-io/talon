@@ -18,17 +18,38 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 - [60-Second Demo](tutorials/quickstart-demo.md) — Docker Compose demo: `docker compose up`, send a curl request, see evidence immediately.
 - [QUICKSTART.md](QUICKSTART.md) — Short entry point for native Talon (requires Go).
 
+## New here?
+
+Pick the path that matches your goal. For what Talon is **not** building, read [Roadmap & focus](../ROADMAP.md) early.
+
+### Evaluator (no API key, ~15 minutes)
+
+1. [60-second demo](tutorials/quickstart-demo.md) — Docker Compose, mock provider, evidence in SQLite.
+2. [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) — verify, export, tamper, fail verification.
+3. [Sample auditor pack](../examples/auditor-pack/README.md) — browse a signed export + compliance report; regenerate with `make auditor-pack`.
+
+### Builder (native binary, cold start)
+
+1. [Install matrix](../README.md#install) — `make install` or `go install` on macOS/arm64; linux/amd64 release tarball or install script.
+2. Set `TALON_SECRETS_KEY`, then `talon init --scaffold --name my-agent`, then `talon run --dry-run "hello"`.
+3. [Your first governed agent](tutorials/first-governed-agent.md) — live LLM run and audit trail.
+
+Smoke-check the builder path: `make verify-newcomer` (from repo root).
+
 ## Start Here (jobs-to-be-done)
 
 Choose the shortest path for your situation:
 
-1. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
+1. **"I need to show an auditor or DPO what we can hand off."**
+   - Start: [Sample auditor pack](../examples/auditor-pack/README.md)
+   - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
+2. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
    - Start: [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
    - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
-2. **"I need to govern a third-party AI vendor."**
+3. **"I need to govern a third-party AI vendor."**
    - Start: [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md)
    - Then: [Architecture: MCP proxy](ARCHITECTURE_MCP_PROXY.md)
-3. **"I want to understand exactly what Talon enforces."**
+4. **"I want to understand exactly what Talon enforces."**
    - Start: [What Talon does to your request](explanation/what-talon-does-to-your-request.md)
    - Then: [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md)
 
@@ -102,6 +123,7 @@ Choose the shortest path for your situation:
 | [Conformance suite & count](reference/conformance.md) | Reproducible passing-test count for the evidence + policy paths (`make conformance`). |
 | [Reproducible benchmarks](reference/benchmarks.md) | `make benchmarks` — gateway overhead, PII scan, evidence write on your hardware. |
 | [Roadmap & focus](../ROADMAP.md) | Anti-goals and focus — answers "are you trying to be Portkey + AGT?" |
+| [Sample auditor pack](../examples/auditor-pack/README.md) | Generated signed export + compliance report for handoff review. |
 | [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Fast proof moment for auditors/operators, including offline signed-export verification. |
 | [Threat model](reference/threat-model.md) | Attack surface, trust boundaries, and what the HMAC signature does and does not prove. |
 | [Security policy](../SECURITY.md) | Vulnerability reporting process and security scope. |
