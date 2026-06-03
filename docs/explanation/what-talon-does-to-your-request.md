@@ -243,7 +243,13 @@ caller's daily/monthly accumulator (in-memory counter, periodically flushed).
 
 ## Throughput And Benchmarking
 
-Use this quick benchmark harness to measure your own environment. Throughput depends on message size, PII pattern density, and upstream provider latency.
+**Micro-benchmarks (reproducible from a clean checkout):** run `make benchmarks` or see
+[Reproducible benchmarks](../reference/benchmarks.md) for gateway pipeline overhead,
+PII scan latency, and evidence write throughput on your hardware.
+
+**End-to-end load (optional):** use this harness when you need concurrent requests
+through a running gateway. Throughput depends on message size, PII pattern density,
+and upstream provider latency.
 
 ```bash
 # 1) Start local proof environment

@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate conformance lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate conformance benchmarks lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 # Conformance suite: the evidence + policy paths whose passing test/subtest
 # count is published as Talon's honest conformance number. See
@@ -62,6 +62,9 @@ conformance: ## Run the evidence + policy conformance suite and print the passin
 	count=$$(printf '%s\n' "$$out" | grep -c -- '--- PASS:'); \
 	if [ $$rc -ne 0 ]; then printf '%s\n' "$$out" | tail -20; echo "conformance: FAILED ($$count passing before failure)"; exit 1; fi; \
 	echo "Conformance: $$count passing tests across evidence + policy paths ($(CONFORMANCE_PKGS))"
+
+benchmarks: ## Run reproducible micro-benchmarks (gateway overhead, PII scan, evidence write)
+	@bash scripts/run-benchmarks.sh
 
 lint: ## Run linter
 	@golangci-lint run ./...
