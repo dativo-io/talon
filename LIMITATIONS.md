@@ -23,7 +23,7 @@ This table is the source of truth for capability claims. If a demo or doc descri
 
 ## Evidence boundary
 
-A valid signature proves that this evidence record was signed with the deployment's configured key and has not been modified since signing. It does not prove that the policy, model response, tool result, or operator decision was correct.
+A valid signature proves that this evidence record was signed with the deployment's configured key and — assuming that key remains protected — has not been modified since signing. It does not prove that the policy, model response, tool result, or operator decision was correct.
 
 - Verify a record with `talon audit verify <id>` or `talon audit verify --file <export>` — see [evidence store](docs/explanation/evidence-store.md).
 - The signature covers the canonical JSON of the stored fields ([`VerifyRecord`](internal/evidence/store.go)). It is not instance attestation, and it does not vouch for upstream provider behavior.
@@ -31,6 +31,7 @@ A valid signature proves that this evidence record was signed with the deploymen
 ## Tool-governance boundary
 
 - Today, forbidden tools are stripped from request bodies before forwarding ([`internal/gateway/tool_filter.go`](internal/gateway/tool_filter.go)); the README "pre-execution filter" wording reflects this.
+- Talon does not prevent the same tool from being invoked on a separate path that does not pass through Talon.
 - Not yet: runtime execution interception or per-execution MCP tool-call governance with a signed deny.
 - "Tool governance: Yes" in the README comparison means request-body filtering today, not runtime execution control.
 
