@@ -91,7 +91,7 @@ gh api "/repos/dativo-io/talon/actions/workflows/release.yml/runs?per_page=1" -q
 docker pull ghcr.io/dativo-io/talon:latest
 ```
 
-Check that release notes link at least one share artifact (screenshot, GIF, or migration snippet).
+Check that release notes link at least one share artifact (screenshot, GIF, or migration snippet). To refresh Mission Control screenshots, see [docs/contributor/mission-control-screenshots.md](docs/contributor/mission-control-screenshots.md).
 
 ## Weekly Repo Quality Scorecard (maintainers)
 

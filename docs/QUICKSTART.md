@@ -1,6 +1,6 @@
 # Talon Quick Start
 
-This page points you to the right doc for what you want to do.
+This page points you to the right doc for what you want to do. For the full documentation map, see [docs/README.md](README.md).
 
 ---
 
@@ -13,10 +13,27 @@ This page points you to the right doc for what you want to do.
 → [OpenAI proxy quickstart](tutorials/proxy-quickstart.md)
 
 **2.** I'm building something new and want controls from day one.  
-→ [Your first agent with Talon](tutorials/first-governed-agent.md)
+→ [Your first governed agent](tutorials/first-governed-agent.md)
 
-**3.** I want to understand how it works before touching anything.  
+**3.** I want to understand how it works before touching anything (no API key).  
 → [60-second demo (no API key)](tutorials/quickstart-demo.md)
+
+**4.** I need to review what an auditor handoff looks like.  
+→ [Sample auditor pack](../examples/auditor-pack/README.md)
+
+---
+
+## Install (native binary)
+
+See the [README install matrix](../README.md#install). Summary:
+
+| Platform | Recommended |
+|----------|-------------|
+| **macOS / arm64 Linux** | `git clone … && make install` or `go install github.com/dativo-io/talon/cmd/talon@latest` |
+| **linux/amd64 server** | Release tarball or `curl -sSL https://install.gettalon.dev \| sh` |
+| **No install** | [Docker Compose demo](../examples/docker-compose/README.md) |
+
+On macOS, if linking fails with `unsupported tapi file type`, use `make install` (sets system Clang) or `CC=/usr/bin/clang CGO_ENABLED=1 go install …`.
 
 ---
 
@@ -24,61 +41,41 @@ This page points you to the right doc for what you want to do.
 
 ```bash
 # Install (from repo)
-make build    # → bin/talon
+make install    # → $(go env GOPATH)/bin/talon
 
-# New project (in a terminal: interactive wizard; in scripts/CI: use --scaffold or --pack)
-mkdir my-agents && cd my-agents && talon init
-# Non-interactive: talon init --scaffold   or   talon init --pack openclaw
+# Secrets key (required for vault)
+export TALON_SECRETS_KEY="$(openssl rand -hex 32)"
 
-# Set key and run
+# New project
+mkdir my-agents && cd my-agents
+talon init --scaffold --name my-agent
+
+# Policy check without LLM spend
+talon run --dry-run "Your query here"
+
+# Live run (needs provider key)
 export OPENAI_API_KEY=sk-proj-...
-talon run "Your query here"   # Uses agent name from policy when --agent omitted
+talon run "Your query here"
 
 # Server (API + dashboard + optional gateway/proxy)
 export TALON_ADMIN_KEY="replace-with-strong-admin-key"
 talon serve --port 8080
-# OpenAI-compatible local drop-in (dev): OPENAI_BASE_URL=http://127.0.0.1:8080/v1
-talon serve --proxy-quickstart --port 8080
-# With LLM gateway: talon serve --gateway --gateway-config examples/gateway/talon.config.gateway.yaml
-# With MCP proxy:   talon serve --proxy-config path/to/proxy.yaml
 ```
 
-## Verify It Works (2-minute governance loop)
-
-After running your first agent, prove the governance loop is working:
-
-```bash
-# 1. List the most recent governance evidence (audit trail)
-talon audit list --limit 1
-
-# 1a. Tail the live operational projection (same feed as dashboard recent activity)
-talon events tail --url http://localhost:8080
-
-# Expected output:
-# ┌──────┬──────────────────────────────────┬─────────┬──────────┐
-# │ ID   │ Timestamp                       │ Agent   │ Decision │
-# ├──────┼──────────────────────────────────┼─────────┼──────────┤
-# │ evt_1│ 2026-04-14T22:08:00Z             │ default │ approved │
-# └──────┴──────────────────────────────────┴─────────┴──────────┘
-
-# 2. Verify a specific evidence entry
-talon audit verify <evidence-id>
-
-# Expected output:
-# ✅ Evidence verified: policy=allow, reason=query matches allowlist rule #1
-```
-
-This confirms Talon is logging decisions and you can inspect the full audit trail at any time.
-
-If evidence persistence degrades, `GET /v1/status` exposes:
-- `evidence_ok=false`
-- `last_good_write`
-- `evidence_error` and `evidence_error_at`
-
-For full configuration and options see [Configuration and environment](reference/configuration.md).
+Verify the cold-start path from repo root: `make verify-newcomer`.
 
 ---
 
-## Documentation index
+## Trust artifacts (Proof Pack)
 
-All user-facing docs are listed by type (Tutorial, How-to, Reference, Explanation) in the **[documentation index](README.md)**. The project follows the [Diátaxis](https://diataxis.fr/) framework so you can find learning-oriented, task-oriented, or reference material quickly.
+- [LIMITATIONS.md](../LIMITATIONS.md)
+- [Threat model](reference/threat-model.md)
+- [Evidence integrity spec](reference/evidence-integrity-spec.md)
+- [Sample auditor pack](../examples/auditor-pack/README.md)
+
+---
+
+## More
+
+- [Documentation index](README.md)
+- [Roadmap & focus](../ROADMAP.md)

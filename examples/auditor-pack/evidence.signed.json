@@ -1,0 +1,159 @@
+{
+  "export_metadata": {
+    "generated_at": "2026-06-03T13:21:11.139729Z",
+    "talon_version": "auditorpackgen",
+    "filter": {},
+    "total_records": 3,
+    "algorithm": "HMAC-SHA256",
+    "signed": true
+  },
+  "records": [
+    {
+      "id": "req_a928db90",
+      "correlation_id": "corr_demo_eu_summary",
+      "timestamp": "2026-06-03T15:21:11.137877+02:00",
+      "tenant_id": "default",
+      "agent_id": "gateway",
+      "invocation_type": "gateway",
+      "policy_decision": {
+        "allowed": true,
+        "action": "allow",
+        "reasons": [
+          "within budget"
+        ],
+        "policy_version": ""
+      },
+      "classification": {
+        "input_tier": 0,
+        "output_tier": 0,
+        "pii_redacted": false
+      },
+      "execution": {
+        "model_used": "",
+        "cost": 0.003,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "duration_ms": 0
+      },
+      "audit_trail": {
+        "input_hash": "sha256:21b3788008cff76e874a64a267f53f846e876bc831d93f33b3529971536aa12e",
+        "output_hash": "sha256:75e422c843b5e225270f6cdecab7cdf80d487b332067a404ca068b796f9c0bcb"
+      },
+      "compliance": {
+        "frameworks": null,
+        "data_location": ""
+      },
+      "signature": "hmac-sha256:043254d4275d8968df420839b07435fd082a41da21a0b3a409924a868537e586",
+      "explanations": [
+        {
+          "code": "POLICY_DENIED_COST",
+          "decision": "allow",
+          "stage": "policy_evaluation",
+          "reason": "Request blocked by cost policy limits.",
+          "trigger": "within budget",
+          "fix": "Reduce expected token usage or increase cost limits in policy."
+        }
+      ]
+    },
+    {
+      "id": "req_b0a4da50",
+      "correlation_id": "corr_demo_pii_email",
+      "timestamp": "2026-06-03T15:21:11.138907+02:00",
+      "tenant_id": "default",
+      "agent_id": "gateway",
+      "invocation_type": "gateway",
+      "policy_decision": {
+        "allowed": true,
+        "action": "allow",
+        "policy_version": ""
+      },
+      "classification": {
+        "input_tier": 1,
+        "output_tier": 0,
+        "pii_detected": [
+          "email"
+        ],
+        "pii_redacted": false
+      },
+      "execution": {
+        "model_used": "",
+        "cost": 0.002,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "duration_ms": 0
+      },
+      "audit_trail": {
+        "input_hash": "sha256:f0932e1c1ab84f677795b118a9350badc5890282c03c64b473149eb49573cda3",
+        "output_hash": "sha256:e3cf2a8b2aefa8bf452c15fe7854839f45c81c796f5431dbe7121ce884069aa7"
+      },
+      "compliance": {
+        "frameworks": null,
+        "data_location": ""
+      },
+      "signature": "hmac-sha256:345748e1593726870f78e87c86890404255c7084a4acb665828a3061b0f67387",
+      "explanations": [
+        {
+          "code": "POLICY_ALLOWED",
+          "decision": "allow",
+          "stage": "policy_evaluation",
+          "reason": "Request allowed by policy."
+        }
+      ]
+    },
+    {
+      "id": "req_5f880438",
+      "correlation_id": "corr_demo_pii_iban",
+      "timestamp": "2026-06-03T15:21:11.13933+02:00",
+      "tenant_id": "default",
+      "agent_id": "gateway",
+      "invocation_type": "gateway",
+      "policy_decision": {
+        "allowed": false,
+        "action": "deny",
+        "reasons": [
+          "pii policy"
+        ],
+        "policy_version": ""
+      },
+      "classification": {
+        "input_tier": 2,
+        "output_tier": 0,
+        "pii_detected": [
+          "iban"
+        ],
+        "pii_redacted": false
+      },
+      "execution": {
+        "model_used": "",
+        "cost": 0,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "duration_ms": 0
+      },
+      "audit_trail": {
+        "input_hash": "sha256:13ca9c1bc7adcbdecd82ad54428b4acdab3c5849510617f6ee10357e1d5311a5",
+        "output_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "compliance": {
+        "frameworks": null,
+        "data_location": ""
+      },
+      "signature": "hmac-sha256:f1b69cb81e0f97d88bd355c1f4a29fbbb0f2cc77d5d25f904a027f67a45bb614",
+      "explanations": [
+        {
+          "code": "LEGACY_REASON_UNMIGRATED",
+          "decision": "deny",
+          "stage": "policy_evaluation",
+          "reason": "Request processed with legacy policy explanation mapping.",
+          "trigger": "pii policy"
+        }
+      ]
+    }
+  ]
+}

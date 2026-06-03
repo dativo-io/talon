@@ -1,0 +1,76 @@
+{
+  "generated_at": "2026-06-03T13:21:11.139991Z",
+  "framework": "",
+  "tenant_id": "default",
+  "evidence_count": 3,
+  "denied_count": 1,
+  "pii_record_count": 2,
+  "total_cost_eur": 0.005,
+  "mappings": [
+    {
+      "framework": "gdpr",
+      "article": "Art. 30",
+      "control": "Processing records via signed evidence export",
+      "source": "internal/evidence/store.go"
+    },
+    {
+      "framework": "gdpr",
+      "article": "Art. 32",
+      "control": "PII detection and model/data-tier routing",
+      "source": "internal/classifier/pii.go"
+    },
+    {
+      "framework": "gdpr",
+      "article": "Art. 44-50",
+      "control": "EU data residency routing controls",
+      "source": "internal/policy/rego/routing.rego"
+    },
+    {
+      "framework": "eu-ai-act",
+      "article": "Art. 11",
+      "control": "Technical documentation through execution plans and evidence",
+      "source": "internal/agent/plan.go"
+    },
+    {
+      "framework": "eu-ai-act",
+      "article": "Art. 13",
+      "control": "Transparency via execution/model/cost traceability",
+      "source": "internal/evidence/store.go"
+    },
+    {
+      "framework": "eu-ai-act",
+      "article": "Art. 14",
+      "control": "Human oversight via plan review gate",
+      "source": "internal/agent/plan_review.go"
+    },
+    {
+      "framework": "nis2",
+      "article": "Art. 21",
+      "control": "Risk controls, policy enforcement, and monitoring",
+      "source": "internal/policy/engine.go"
+    },
+    {
+      "framework": "dora",
+      "article": "Art. 11",
+      "control": "ICT incident traceability with signed audit trail",
+      "source": "internal/evidence/store.go"
+    },
+    {
+      "framework": "iso-27001",
+      "article": "A.8.15",
+      "control": "Cryptographic integrity of logs (HMAC)",
+      "source": "internal/evidence/signature.go"
+    },
+    {
+      "framework": "iso-27001",
+      "article": "A.8.16",
+      "control": "Monitoring and governance metrics",
+      "source": "internal/gateway/metrics.go"
+    }
+  ],
+  "sample_evidence_ids": [
+    "req_5f880438",
+    "req_a928db90",
+    "req_b0a4da50"
+  ]
+}

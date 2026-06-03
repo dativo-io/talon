@@ -56,3 +56,4 @@ A valid signature proves that this evidence record was signed with the deploymen
 - [Evidence integrity specification](docs/reference/evidence-integrity-spec.md) — byte-exact fields, serialization, signing, and independent verification
 - [Threat model](docs/reference/threat-model.md) — attack surface, trust boundaries, and key-management assumptions
 - [Reproducible benchmarks](docs/reference/benchmarks.md) — run `make benchmarks` on your hardware; retry/fallback overhead not included until Epic #113 lands.
+- [Sample auditor pack](examples/auditor-pack/README.md) — example signed export and compliance report (`make auditor-pack`)

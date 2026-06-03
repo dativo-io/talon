@@ -312,6 +312,20 @@ llm:
 
 ---
 
+## Proof Pack (trust & verification)
+
+Artifacts a skeptical reviewer can grep in one session:
+
+- [Limitations](LIMITATIONS.md) — what Talon does and does not prove
+- [Threat model](docs/reference/threat-model.md) — attack surface and trust boundaries
+- [Evidence integrity specification](docs/reference/evidence-integrity-spec.md) — byte-exact signing and verification
+- [Conformance suite](docs/reference/conformance.md) — `make conformance` (evidence + policy paths)
+- [Benchmarks](docs/reference/benchmarks.md) — `make benchmarks` on your hardware
+- [Sample auditor pack](examples/auditor-pack/README.md) — signed export + compliance report (`make auditor-pack`)
+- [Roadmap & focus](ROADMAP.md) — public anti-goals and EMEA SMB direction
+
+---
+
 ## Docs
 
 - [Documentation index](docs/README.md)

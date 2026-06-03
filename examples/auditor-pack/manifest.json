@@ -1,0 +1,15 @@
+{
+  "claim_note": "Supporting controls and evidence for auditor review — not a completed legal filing. See LIMITATIONS.md.",
+  "files": {
+    "compliance_report_html": "compliance-report.html",
+    "compliance_report_json": "compliance-report.json",
+    "evidence_signed": "evidence.signed.json"
+  },
+  "generated_at": "2026-06-03T13:21:11Z",
+  "offline_signing_key_note": "Offline pack uses a fixed demo key; docker-compose regeneration uses the stack vault key.",
+  "record_count_estimate": 3,
+  "source": "scripts/auditorpackgen (offline; no docker-compose)",
+  "verify_commands": [
+    "TALON_SIGNING_KEY=01234567890123456789012345678901 talon audit verify --file examples/auditor-pack/evidence.signed.json"
+  ]
+}
