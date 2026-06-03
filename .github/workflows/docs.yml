@@ -23,4 +23,7 @@ jobs:
           config-file: '.github/mlc_config.json'
           use-quiet-mode: 'yes'
           folder-path: 'docs/,examples/'
-          file-path: 'README.md,CONTRIBUTING.md,CHANGELOG.md'
+          file-path: 'README.md,CONTRIBUTING.md,CHANGELOG.md,LIMITATIONS.md'
+
+      - name: Compliance-claim discipline
+        run: bash scripts/check-claim-discipline.sh

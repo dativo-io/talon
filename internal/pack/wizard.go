@@ -94,7 +94,7 @@ var builtinPacks = []PackDescriptor{
 		// Flowise pack deferred to post-v0.2 (requires conversation-level interception).
 		ID:          "flowise",
 		DisplayName: "Flowise",
-		Description: "Conversation audit — GDPR-compliant chat history governance",
+		Description: "Conversation audit — chat history governance with supporting controls for GDPR",
 		Order:       30,
 		Hidden:      true,
 	},

@@ -18,17 +18,38 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 - [60-Second Demo](tutorials/quickstart-demo.md) — Docker Compose demo: `docker compose up`, send a curl request, see evidence immediately.
 - [QUICKSTART.md](QUICKSTART.md) — Short entry point for native Talon (requires Go).
 
+## New here?
+
+Pick the path that matches your goal. For what Talon is **not** building, read [Roadmap & focus](../ROADMAP.md) early.
+
+### Evaluator (no API key, ~15 minutes)
+
+1. [60-second demo](tutorials/quickstart-demo.md) — Docker Compose, mock provider, evidence in SQLite.
+2. [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) — verify, export, tamper, fail verification.
+3. [Sample auditor pack](../examples/auditor-pack/README.md) — browse a signed export + compliance report; regenerate with `make auditor-pack`.
+
+### Builder (native binary, cold start)
+
+1. [Install matrix](../README.md#install) — `make install` or `go install` on macOS/arm64; linux/amd64 release tarball or install script.
+2. Set `TALON_SECRETS_KEY`, then `talon init --scaffold --name my-agent`, then `talon run --dry-run "hello"`.
+3. [Your first governed agent](tutorials/first-governed-agent.md) — live LLM run and audit trail.
+
+Smoke-check the builder path: `make verify-newcomer` (from repo root).
+
 ## Start Here (jobs-to-be-done)
 
 Choose the shortest path for your situation:
 
-1. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
+1. **"I need to show an auditor or DPO what we can hand off."**
+   - Start: [Sample auditor pack](../examples/auditor-pack/README.md)
+   - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
+2. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
    - Start: [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
    - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
-2. **"I need to govern a third-party AI vendor."**
+3. **"I need to govern a third-party AI vendor."**
    - Start: [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md)
    - Then: [Architecture: MCP proxy](ARCHITECTURE_MCP_PROXY.md)
-3. **"I want to understand exactly what Talon enforces."**
+4. **"I want to understand exactly what Talon enforces."**
    - Start: [What Talon does to your request](explanation/what-talon-does-to-your-request.md)
    - Then: [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md)
 
@@ -67,6 +88,10 @@ Choose the shortest path for your situation:
 | Doc | Description |
 |-----|-------------|
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
+| [Evidence integrity specification](reference/evidence-integrity-spec.md) | Normative signed-record spec: fields, canonical serialization, HMAC-SHA256 signing, and the independent verification procedure. |
+| [Threat model](reference/threat-model.md) | STRIDE-style attack surface, trust boundaries, threats/mitigations, and key-management assumptions for the gateway path. |
+| [Conformance suite & count](reference/conformance.md) | What counts as a conformance test for the evidence + policy paths, and how to reproduce the published count with `make conformance`. |
+| [Reproducible benchmarks](reference/benchmarks.md) | Gateway pipeline overhead, PII scan latency, and evidence write throughput (`make benchmarks`). |
 | [Authentication and key scopes](reference/authentication-and-key-scopes.md) | Which keys authenticate which endpoint families (gateway vs control plane vs dashboard). |
 | [Gateway dashboard](reference/gateway-dashboard.md) | Dashboard endpoints, metrics API schema, snapshot fields, and authentication. |
 | [Operational control plane](reference/operational-control-plane.md) | Run management (list/kill/pause/resume), tenant lockdown, runtime overrides, tool approval gates. |
@@ -78,6 +103,7 @@ Choose the shortest path for your situation:
 | [What Talon does to your request](explanation/what-talon-does-to-your-request.md) | Full request lifecycle: every check, every byte transformation, latency budget. |
 | [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md) | Five failure scenarios: what a PII-only proxy misses, what Talon does, and how to verify. |
 | [Evidence store](explanation/evidence-store.md) | Evidence record structure, session_id, HMAC signing (TALON_SIGNING_KEY), progressive disclosure, storage, and export (CSV/JSON columns). |
+| [Roadmap & focus](../ROADMAP.md) | Public anti-goals, wedge narrative, phased direction, and buyer fit (what we are not building for 2.0). |
 | [Adoption scenarios](ADOPTION_SCENARIOS.md) | Greenfield, brownfield custom, brownfield vendor; timelines and ROI. |
 | [Persona guides](PERSONA_GUIDES.md) | Who uses Talon (DevOps, Compliance, CTO, SecOps, FinOps) and what they do. |
 | [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md) | Why vendor compliance matters; MCP proxy and patterns. |
@@ -93,7 +119,13 @@ Choose the shortest path for your situation:
 | [What Talon does to your request](explanation/what-talon-does-to-your-request.md) | Pipeline, latency, threat boundaries, and reproducible checks. |
 | [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md) | Control-plane vs scrubber differentiation with proof commands. |
 | [Evidence store](explanation/evidence-store.md) | HMAC integrity model and verification flow. |
+| [Evidence integrity specification](reference/evidence-integrity-spec.md) | Byte-exact spec so a third party can independently verify a record. |
+| [Conformance suite & count](reference/conformance.md) | Reproducible passing-test count for the evidence + policy paths (`make conformance`). |
+| [Reproducible benchmarks](reference/benchmarks.md) | `make benchmarks` — gateway overhead, PII scan, evidence write on your hardware. |
+| [Roadmap & focus](../ROADMAP.md) | Anti-goals and focus — answers "are you trying to be Portkey + AGT?" |
+| [Sample auditor pack](../examples/auditor-pack/README.md) | Generated signed export + compliance report for handoff review. |
 | [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Fast proof moment for auditors/operators, including offline signed-export verification. |
+| [Threat model](reference/threat-model.md) | Attack surface, trust boundaries, and what the HMAC signature does and does not prove. |
 | [Security policy](../SECURITY.md) | Vulnerability reporting process and security scope. |
 | [Docker Compose demo](../examples/docker-compose/README.md) | Fastest no-key proof loop. |
 

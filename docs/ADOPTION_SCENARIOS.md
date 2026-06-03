@@ -1,6 +1,6 @@
 # Dativo Talon — Adoption Scenarios
 
-**Three Paths to Compliant AI Automation**
+**Three Paths to Governed AI Automation**
 
 ---
 
@@ -102,7 +102,7 @@ compliance:
 ### Profile
 - **Company:** Spanish eSIM provider, 150 employees
 - **Use Case:** Custom Slack bot for Tier 1 support (built 6 months ago)
-- **Current State:** Python bot calling OpenAI, works great but not compliant
+- **Current State:** Python bot calling OpenAI, works great but ungoverned (no audit trail, no PII controls)
 - **Compliance:** GDPR + NIS2 audit in 3 months
 
 ### Current Architecture (Before Talon)
@@ -123,7 +123,7 @@ Dev Lead: "I can't tell you. We didn't log that."
 Compliance Officer: "We have 3 months until NIS2 audit. Fix this or shut it down."
 ```
 
-### Timeline: 1 Day to Compliant
+### Timeline: 1 Day to Governed
 
 #### Morning (2 hours): Add Talon Governance
 
@@ -217,9 +217,9 @@ talon audit export \
 
 **Result:**
 - ✅ Slack bot still works (same UX for support team)
-- ✅ Now GDPR + NIS2 compliant (audit trail + PII redaction)
+- ✅ Now has supporting controls and evidence for GDPR + NIS2 (audit trail + PII redaction)
 - ✅ No rewrite needed (5 lines of code changed)
-- ✅ Can prove compliance to auditors
+- ✅ Can show auditors evidence of the governance controls in place
 
 **Total Effort:** 4 hours (0.5 person-days)
 
@@ -262,7 +262,7 @@ IT Lead: "No, that's in their logs. We don't have access."
 Compliance Officer: "We're the data controller. We're liable. This is unacceptable."
 ```
 
-### Timeline: 1 Week to Compliant
+### Timeline: 1 Week to Governed
 
 #### Week 1, Day 1-2: Shadow Mode Validation (4 hours)
 

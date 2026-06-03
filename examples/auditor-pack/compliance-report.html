@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Talon Compliance Report</title>
+<style>
+body { font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif; margin: 24px; color: #111; }
+h1, h2 { margin: 0 0 10px; }
+.meta { margin: 0 0 20px; color: #444; }
+table { border-collapse: collapse; width: 100%; margin: 12px 0 24px; }
+th, td { border: 1px solid #d9d9d9; padding: 8px; text-align: left; font-size: 14px; vertical-align: top; }
+th { background: #f4f4f4; }
+.cards { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; margin: 16px 0; }
+.card { border: 1px solid #d9d9d9; padding: 10px; border-radius: 8px; }
+.label { color: #555; font-size: 12px; }
+.value { font-size: 20px; font-weight: 700; }
+code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; }
+</style></head><body>
+<h1>Talon Compliance Report</h1>
+<p class="meta">Generated: 2026-06-03 13:21:11.139991 &#43;0000 UTC | Framework: <b>all</b> | Tenant: <b>default</b> | Agent: <b>all</b></p>
+<div class="cards">
+  <div class="card"><div class="label">Evidence Records</div><div class="value">3</div></div>
+  <div class="card"><div class="label">Policy Denials</div><div class="value">1</div></div>
+  <div class="card"><div class="label">PII Records</div><div class="value">2</div></div>
+  <div class="card"><div class="label">Total Cost (EUR)</div><div class="value">0.0050</div></div>
+</div>
+<h2>Control Mappings</h2>
+<table><thead><tr><th>Framework</th><th>Article</th><th>Control</th><th>Source</th></tr></thead><tbody>
+<tr><td>gdpr</td><td>Art. 30</td><td>Processing records via signed evidence export</td><td><code>internal/evidence/store.go</code></td></tr><tr><td>gdpr</td><td>Art. 32</td><td>PII detection and model/data-tier routing</td><td><code>internal/classifier/pii.go</code></td></tr><tr><td>gdpr</td><td>Art. 44-50</td><td>EU data residency routing controls</td><td><code>internal/policy/rego/routing.rego</code></td></tr><tr><td>eu-ai-act</td><td>Art. 11</td><td>Technical documentation through execution plans and evidence</td><td><code>internal/agent/plan.go</code></td></tr><tr><td>eu-ai-act</td><td>Art. 13</td><td>Transparency via execution/model/cost traceability</td><td><code>internal/evidence/store.go</code></td></tr><tr><td>eu-ai-act</td><td>Art. 14</td><td>Human oversight via plan review gate</td><td><code>internal/agent/plan_review.go</code></td></tr><tr><td>nis2</td><td>Art. 21</td><td>Risk controls, policy enforcement, and monitoring</td><td><code>internal/policy/engine.go</code></td></tr><tr><td>dora</td><td>Art. 11</td><td>ICT incident traceability with signed audit trail</td><td><code>internal/evidence/store.go</code></td></tr><tr><td>iso-27001</td><td>A.8.15</td><td>Cryptographic integrity of logs (HMAC)</td><td><code>internal/evidence/signature.go</code></td></tr><tr><td>iso-27001</td><td>A.8.16</td><td>Monitoring and governance metrics</td><td><code>internal/gateway/metrics.go</code></td></tr>
+</tbody></table>
+<h2>Sample Evidence IDs</h2>
+<table><thead><tr><th>ID</th></tr></thead><tbody>
+<tr><td><code>req_5f880438</code></td></tr><tr><td><code>req_a928db90</code></td></tr><tr><td><code>req_b0a4da50</code></td></tr>
+</tbody></table>
+</body></html>

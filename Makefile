@@ -16,7 +16,12 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate conformance benchmarks auditor-pack verify-newcomer lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+
+# Conformance suite: the evidence + policy paths whose passing test/subtest
+# count is published as Talon's honest conformance number. See
+# docs/reference/conformance.md.
+CONFORMANCE_PKGS := ./internal/policy/... ./internal/evidence/...
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -51,6 +56,21 @@ test-all: test test-e2e ## Run unit, integration, and e2e tests (does not includ
 
 test-ssot-gate: ## Run consolidated SSOT parity/resilience gate tests
 	@$(GO_ENV) go test -count=1 ./internal/server -run SSOTGate
+
+conformance: ## Run the evidence + policy conformance suite and print the passing count
+	@out=$$($(GO_ENV) go test -count=1 -run . -v $(CONFORMANCE_PKGS) 2>&1); rc=$$?; \
+	count=$$(printf '%s\n' "$$out" | grep -c -- '--- PASS:'); \
+	if [ $$rc -ne 0 ]; then printf '%s\n' "$$out" | tail -20; echo "conformance: FAILED ($$count passing before failure)"; exit 1; fi; \
+	echo "Conformance: $$count passing tests across evidence + policy paths ($(CONFORMANCE_PKGS))"
+
+benchmarks: ## Run reproducible micro-benchmarks (gateway overhead, PII scan, evidence write)
+	@bash scripts/run-benchmarks.sh
+
+auditor-pack: ## Generate sample auditor pack from docker-compose demo (examples/auditor-pack/)
+	@bash scripts/generate-auditor-pack.sh
+
+verify-newcomer: ## Smoke-test cold-start path (talon init + dry-run)
+	@bash scripts/verify-newcomer-path.sh
 
 lint: ## Run linter
 	@golangci-lint run ./...
