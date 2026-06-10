@@ -597,7 +597,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					_ = g.cacheStore.IncrementHitCount(ctx, hit.ID)
 					costSaved := g.costEstimate(extracted.Model, 300, 300)
 					durationMS := time.Since(start).Milliseconds()
-					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", true, nil, false, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved, false, 0, 0, estimatedCost)
+					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", true, nil, inputPIIRedacted, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved, false, 0, 0, estimatedCost)
 					if err != nil {
 						g.handleEvidenceWriteFailure(ctx, err)
 						return
