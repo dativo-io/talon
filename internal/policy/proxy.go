@@ -49,6 +49,10 @@ type ProxyConfig struct {
 type UpstreamConfig struct {
 	Vendor string `yaml:"vendor,omitempty" json:"vendor,omitempty"`
 	URL    string `yaml:"url" json:"url"`
+	// Region is the jurisdiction of the upstream endpoint ("EU", "US", ...)
+	// used for policy input and data-flow evidence. When empty, Talon
+	// records "unknown" — it never guesses a region.
+	Region string `yaml:"region,omitempty" json:"region,omitempty"`
 }
 
 // ToolMapping maps a Talon-facing tool name to the vendor's upstream name.

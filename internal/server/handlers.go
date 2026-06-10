@@ -585,7 +585,7 @@ func (s *Server) handleEvidenceExport(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		cw := csv.NewWriter(w)
-		_ = cw.Write([]string{"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "policy_action", "cost", "model_used", "provider", "input_tokens", "output_tokens", "duration_ms", "has_error", "input_tier", "output_tier", "pii_detected", "pii_redacted", "policy_reasons", "tools_called", "input_hash", "output_hash", "upstream_auth_mode", "upstream_key_source", "upstream_key_fingerprint", "gateway_annotations", "primary_explanation_code", "primary_explanation_reason", "primary_version_identity"})
+		_ = cw.Write([]string{"id", "timestamp", "tenant_id", "agent_id", "invocation_type", "allowed", "policy_action", "cost", "model_used", "provider", "input_tokens", "output_tokens", "duration_ms", "has_error", "input_tier", "output_tier", "pii_detected", "pii_redacted", "policy_reasons", "tools_called", "input_hash", "output_hash", "upstream_auth_mode", "upstream_key_source", "upstream_key_fingerprint", "gateway_annotations", "primary_explanation_code", "primary_explanation_reason", "primary_version_identity", "flow_destinations", "flow_regions", "flow_entity_types"})
 		for i := range records {
 			rec := &records[i]
 			pii := rec.PIIDetectedCSV()
@@ -598,6 +598,7 @@ func (s *Server) handleEvidenceExport(w http.ResponseWriter, r *http.Request) {
 				strconv.FormatInt(rec.DurationMS, 10), strconv.FormatBool(rec.HasError),
 				strconv.Itoa(rec.InputTier), strconv.Itoa(rec.OutputTier), pii, strconv.FormatBool(rec.PIIRedacted),
 				reasons, tools, rec.InputHash, rec.OutputHash, rec.UpstreamAuthMode, rec.UpstreamKeySource, rec.UpstreamKeyFingerprint, rec.GatewayAnnotationsCSV(), rec.PrimaryExplanationCode, rec.PrimaryExplanationReason, rec.PrimaryVersionIdentity,
+				rec.FlowDestinationsCSV(), rec.FlowRegionsCSV(), rec.FlowEntityTypesCSV(),
 			})
 		}
 		cw.Flush()

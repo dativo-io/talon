@@ -1,6 +1,6 @@
 # Evidence Integrity Specification
 
-**Status:** stable · **Version:** 1.0 · **Scope:** the signed evidence record produced by Talon.
+**Status:** stable · **Version:** 1.1 · **Scope:** the signed evidence record produced by Talon.
 
 This is the normative specification for how a Talon evidence record is serialized,
 signed, and verified. It is written so that a third party can independently verify a
@@ -88,6 +88,7 @@ Top-level fields, **in serialization order** (this order is significant — see
 | 43 | `explanations` | array(object) | optional |
 | 44 | `plan_id` | string | optional |
 | 45 | `graph_run_id` | string | optional |
+| 46 | `data_flow` | object | optional |
 
 Nested objects (`policy_decision`, `classification`, `execution`, `audit_trail`,
 `compliance`, and the optional objects) follow the same encoding rules recursively; their
@@ -103,6 +104,13 @@ nested fields are:
   `duration_ms` (number), plus optional fields.
 - `audit_trail`: SHA-256 `input_hash` / `output_hash` content digests.
 - `compliance`: `frameworks` (array) and `data_location`.
+- `data_flow` (optional): `detector` (string, optional) and `items` (array of
+  objects linking classified data sources to destinations). Each item carries
+  `source`, `source_detail` (optional), `tier`, `entity_types` (sorted array,
+  optional), `entity_count` (optional), `value_digests` (sorted array of
+  per-request salted SHA-256 prefixes, optional — never raw values),
+  `disposition`, and a `destination` object (`kind`, `name`, `model`,
+  `endpoint`, `region`; the last three optional).
 
 ## 3. Canonical serialization
 
@@ -208,7 +216,17 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 [§4](#4-signing-procedure), verifies it with an independently constructed signer and with
 `Store.VerifyRecord`, and confirms that mutating a field invalidates the signature.
 
-## 8. Limitations
+## 8. Changelog
+
+- **1.1** — added optional top-level field `data_flow` (#46), appended after
+  `graph_run_id`. Records signed under spec 1.0 verify unchanged (the field is
+  omitted when absent, so their canonical bytes are identical). Note the
+  established caveat for every additive field: a verifier built against spec
+  1.0 drops the unknown `data_flow` member on parse and therefore cannot
+  verify records that carry it — use a 1.1 verifier for new records.
+- **1.0** — initial version.
+
+## 9. Limitations
 
 - HMAC is **symmetric**: anyone holding the signing key can produce valid signatures. The
   signature attests integrity under the operator's key custody, not third-party

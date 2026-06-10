@@ -34,6 +34,7 @@ type AttachmentScanResult struct {
 	TextExtracted   bool     `json:"text_extracted"`
 	PIIFound        bool     `json:"pii_found"`
 	PIITypes        []string `json:"pii_types,omitempty"`
+	Tier            int      `json:"tier,omitempty"` // classification tier of the file text (0-2)
 	InjectionsFound int      `json:"injections_found"`
 	ActionTaken     string   `json:"action_taken"`
 }
@@ -180,6 +181,7 @@ func scanSingleFileBlock(
 		cls := piiScanner.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), text)
 		if cls != nil && cls.HasPII {
 			result.PIIFound = true
+			result.Tier = cls.Tier
 			types := map[string]bool{}
 			for _, e := range cls.Entities {
 				types[e.Type] = true

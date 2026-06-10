@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 
@@ -133,7 +136,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 	// intercept = block; shadow = audit then block; passthrough = log only then forward.
 	for _, f := range h.config.Proxy.ForbiddenTools {
 		if f == toolName || (strings.HasSuffix(f, "*") && strings.HasPrefix(toolName, strings.TrimSuffix(f, "*"))) {
-			h.recordEvidence(ctx, tenantID, "proxy_tool_blocked", toolName, nil, "forbidden_tools")
+			h.recordEvidence(ctx, tenantID, "proxy_tool_blocked", toolName, nil, "forbidden_tools", nil)
 			span.SetAttributes(attribute.String("proxy.blocked", "forbidden"))
 			switch h.config.Proxy.Mode {
 			case "intercept", "shadow":
@@ -149,7 +152,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 	proxyInput := &policy.ProxyInput{
 		ToolName:       toolName,
 		Vendor:         h.config.Proxy.Upstream.Vendor,
-		UpstreamRegion: "eu",
+		UpstreamRegion: h.upstreamRegion(),
 		Arguments:      paramsToMap(params.Arguments),
 	}
 	decision, err := h.proxyEngine.EvaluateProxyToolAccess(ctx, proxyInput)
@@ -158,28 +161,33 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error()}}
 	}
 	if !decision.Allowed && h.config.Proxy.Mode == "intercept" {
-		h.recordEvidence(ctx, tenantID, "proxy_tool_blocked", toolName, nil, strings.Join(decision.Reasons, "; "))
+		h.recordEvidence(ctx, tenantID, "proxy_tool_blocked", toolName, nil, strings.Join(decision.Reasons, "; "), nil)
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: strings.Join(decision.Reasons, "; ")}}
 	}
 
 	// PII scan on arguments
+	var flow proxyFlowState
 	if h.classifier != nil {
 		argStr := string(params.Arguments)
 		result := h.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
 		if result != nil && len(result.Entities) > 0 {
+			flow.requestEntities = classifier.MergeEntitySpans(argStr, result.Entities)
+			flow.requestTier = result.Tier
 			for _, e := range result.Entities {
 				proxyInput.DetectedPII = append(proxyInput.DetectedPII, e.Type)
 			}
 			piiDecision, piiErr := h.proxyEngine.EvaluateProxyPII(ctx, proxyInput)
 			if piiErr != nil && h.config.Proxy.Mode == "intercept" {
-				h.recordEvidence(ctx, tenantID, "proxy_pii_eval_error", toolName, nil, piiErr.Error())
+				flow.requestBlocked = true
+				h.recordEvidence(ctx, tenantID, "proxy_pii_eval_error", toolName, nil, piiErr.Error(), &flow)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII policy evaluation failed (fail-closed)"}}
 			}
 			if piiDecision != nil && !piiDecision.Allowed && h.config.Proxy.Mode == "intercept" {
-				h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "pii_detected_in_request")
+				flow.requestBlocked = true
+				h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "pii_detected_in_request", &flow)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII detected in request"}}
 			}
-			h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "")
+			h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "", &flow)
 		}
 	}
 
@@ -216,18 +224,22 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			span.SetAttributes(
 				attribute.Bool("proxy.output_pii_detected", true),
 				attribute.StringSlice("proxy.output_pii_types", piiTypes),
+				attribute.String("proxy.upstream_region", h.upstreamRegion()),
 			)
+			flow.responseEntities = classifier.MergeEntitySpans(resultStr, cls.Entities)
+			flow.responseTier = cls.Tier
+			flow.responseRedacted = true
 			redacted := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
 			var redactedResult interface{}
 			if err := json.Unmarshal([]byte(redacted), &redactedResult); err == nil {
 				out.Result = redactedResult
 			}
-			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_pii_redacted")
+			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_pii_redacted", &flow)
 		} else {
-			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "")
+			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "", &flow)
 		}
 	} else {
-		h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "")
+		h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "", &flow)
 	}
 
 	return &out
@@ -416,7 +428,37 @@ func (h *ProxyHandler) doUpstreamRequest(ctx context.Context, body []byte) (*htt
 	return h.httpClient.Do(req)
 }
 
-func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, toolName string, result []byte, reason string) {
+// proxyFlowState carries in-memory classification results across the proxy
+// pipeline so evidence records get classification and data-flow sections.
+// Entity values stay in memory only — evidence carries digests.
+type proxyFlowState struct {
+	requestEntities  []classifier.PIIEntity // merged (non-overlapping) spans from tool arguments
+	requestTier      int
+	requestBlocked   bool                   // arguments were not forwarded upstream
+	responseEntities []classifier.PIIEntity // merged spans from the tool result
+	responseTier     int
+	responseRedacted bool
+}
+
+// upstreamRegion returns the configured jurisdiction of the upstream vendor
+// endpoint, or "unknown" when not configured. Never a guess.
+func (h *ProxyHandler) upstreamRegion() string {
+	if r := strings.TrimSpace(h.config.Proxy.Upstream.Region); r != "" {
+		return r
+	}
+	return evidence.FlowRegionUnknown
+}
+
+// upstreamEndpointHost returns the host of the upstream URL (no path/query).
+func (h *ProxyHandler) upstreamEndpointHost() string {
+	u, err := url.Parse(h.config.Proxy.Upstream.URL)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, toolName string, result []byte, reason string, flow *proxyFlowState) {
 	if h.evidenceStore == nil {
 		return
 	}
@@ -429,9 +471,10 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 	if reason != "" {
 		reasons = []string{reason}
 	}
+	correlationID := "mcp_proxy_" + uuid.New().String()[:8]
 	ev := &evidence.Evidence{
 		ID:              "proxy_" + uuid.New().String()[:8],
-		CorrelationID:   "mcp_proxy_" + uuid.New().String()[:8],
+		CorrelationID:   correlationID,
 		Timestamp:       time.Now(),
 		TenantID:        tenantID,
 		AgentID:         "mcp-proxy",
@@ -443,8 +486,90 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 			Error:       reason,
 		},
 	}
+	if flow != nil {
+		ev.Classification = evidence.Classification{
+			InputTier:         flow.requestTier,
+			OutputTier:        flow.responseTier,
+			PIIDetected:       entityTypeSet(flow.requestEntities),
+			OutputPIIDetected: len(flow.responseEntities) > 0,
+			OutputPIITypes:    entityTypeSet(flow.responseEntities),
+			PIIRedacted:       flow.responseRedacted,
+		}
+		ev.DataFlow = h.buildProxyDataFlow(tenantID, correlationID, toolName, flow)
+		if ev.DataFlow != nil {
+			log.Info().
+				Str("correlation_id", correlationID).
+				Str("tenant_id", tenantID).
+				Str("agent_id", "mcp-proxy").
+				Str("flow_destination", evidence.FlowDestMCPTool+":"+h.config.Proxy.Upstream.Vendor).
+				Str("flow_region", h.upstreamRegion()).
+				Int("flow_items", len(ev.DataFlow.Items)).
+				Msg("data_flow_recorded")
+		}
+	}
 	ev.Explanations = explanation.BuildFromFacts(proxyExplanationFacts(eventType, reason, toolName, allowed))
 	_ = h.evidenceStore.Store(ctx, ev)
+}
+
+// buildProxyDataFlow links classified tool arguments to the upstream vendor
+// and classified tool results to the client. Digests only, never raw values.
+func (h *ProxyHandler) buildProxyDataFlow(tenantID, correlationID, toolName string, flow *proxyFlowState) *evidence.DataFlow {
+	var items []evidence.DataFlowItem
+	if len(flow.requestEntities) > 0 {
+		disposition := evidence.FlowDispositionForwarded
+		if flow.requestBlocked {
+			disposition = evidence.FlowDispositionBlocked
+		}
+		items = append(items, evidence.NewDataFlowItem(
+			tenantID, correlationID,
+			evidence.FlowSourceToolArgs, toolName,
+			flow.requestTier, flow.requestEntities,
+			disposition, evidence.FlowDestination{
+				Kind:     evidence.FlowDestMCPTool,
+				Name:     h.config.Proxy.Upstream.Vendor,
+				Endpoint: h.upstreamEndpointHost(),
+				Region:   h.upstreamRegion(),
+			}))
+	}
+	if len(flow.responseEntities) > 0 {
+		disposition := evidence.FlowDispositionSurfaced
+		if flow.responseRedacted {
+			disposition = evidence.FlowDispositionRedacted
+		}
+		items = append(items, evidence.NewDataFlowItem(
+			tenantID, correlationID,
+			evidence.FlowSourceToolResult, toolName,
+			flow.responseTier, flow.responseEntities,
+			disposition, evidence.FlowDestination{
+				Kind: evidence.FlowDestClient,
+				Name: tenantID,
+			}))
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	detector := ""
+	if h.classifier != nil {
+		detector = h.classifier.Detector()
+	}
+	return &evidence.DataFlow{Detector: detector, Items: items}
+}
+
+// entityTypeSet returns the deduped, sorted entity types of merged spans.
+func entityTypeSet(entities []classifier.PIIEntity) []string {
+	if len(entities) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(entities))
+	for _, e := range entities {
+		set[e.Type] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for t := range set {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func proxyExplanationFacts(eventType, reason, toolName string, allowed bool) []explanation.Fact {

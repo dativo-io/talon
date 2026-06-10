@@ -87,6 +87,10 @@ type Evidence struct {
 	Explanations    []explanation.Item `json:"explanations,omitempty"`
 	PlanID          string             `json:"plan_id,omitempty"`      // Execution plan ID for audit lineage
 	GraphRunID      string             `json:"graph_run_id,omitempty"` // External graph runtime run ID
+	// DataFlow links classified input data to its destination (digests only,
+	// never raw values). Appended last so pre-existing record signatures
+	// remain valid (see docs/reference/evidence-integrity-spec.md §2).
+	DataFlow *DataFlow `json:"data_flow,omitempty"`
 }
 
 // PlanReviewEvent captures human oversight actions performed on execution plans.

@@ -50,6 +50,28 @@ func TestEvidenceIntegritySpecRoundTrip(t *testing.T) {
 			Frameworks:   []string{"gdpr", "eu-ai-act"},
 			DataLocation: "eu-central-1",
 		},
+		// data_flow (spec §2 field 46, optional): exercised so the canonical
+		// serialization of the appended field is covered by the round trip.
+		DataFlow: &DataFlow{
+			Detector: "talon-regex",
+			Items: []DataFlowItem{
+				{
+					Source:       FlowSourcePrompt,
+					Tier:         2,
+					EntityTypes:  []string{"email", "iban"},
+					EntityCount:  2,
+					ValueDigests: []string{"0123456789abcdef", "fedcba9876543210"},
+					Disposition:  FlowDispositionForwarded,
+					Destination: FlowDestination{
+						Kind:     FlowDestLLMProvider,
+						Name:     "openai",
+						Model:    "gpt-4o-mini",
+						Endpoint: "api.openai.com",
+						Region:   "US",
+					},
+				},
+			},
+		},
 		// Signature is intentionally empty; it is set by the signing procedure.
 	}
 
@@ -98,4 +120,39 @@ func TestEvidenceIntegritySpecRoundTrip(t *testing.T) {
 	assert.False(t, store.VerifyRecord(ev), "mutating a signed field must invalidate the signature")
 	ev.Execution.ModelUsed = originalModel
 	assert.True(t, store.VerifyRecord(ev), "restoring the field must re-validate the signature")
+
+	// data_flow is covered by the signature too.
+	originalDest := ev.DataFlow.Items[0].Destination.Name
+	ev.DataFlow.Items[0].Destination.Name = "tampered-provider"
+	assert.False(t, store.VerifyRecord(ev), "mutating data_flow must invalidate the signature")
+	ev.DataFlow.Items[0].Destination.Name = originalDest
+	assert.True(t, store.VerifyRecord(ev), "restoring data_flow must re-validate the signature")
+}
+
+// TestEvidenceIntegrityWithoutDataFlow proves records without the optional
+// data_flow field (all pre-1.1 records) keep verifying: the omitempty field
+// contributes no bytes to the canonical form when absent.
+func TestEvidenceIntegrityWithoutDataFlow(t *testing.T) {
+	ev := &Evidence{
+		ID:             "evt_no_dataflow",
+		CorrelationID:  "corr_456",
+		Timestamp:      time.Date(2026, 6, 2, 21, 15, 2, 0, time.UTC),
+		TenantID:       "acme",
+		AgentID:        "support-bot",
+		InvocationType: "gateway",
+		PolicyDecision: PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "v1"},
+	}
+	canonical, err := json.Marshal(ev)
+	require.NoError(t, err)
+	assert.NotContains(t, string(canonical), "data_flow",
+		"absent data_flow must not appear in canonical bytes")
+
+	signer, err := NewSigner(testSigningKey)
+	require.NoError(t, err)
+	sig, err := signer.Sign(canonical)
+	require.NoError(t, err)
+	ev.Signature = sig
+
+	store := newTestStore(t)
+	assert.True(t, store.VerifyRecord(ev), "record without data_flow must verify")
 }

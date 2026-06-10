@@ -57,6 +57,8 @@ type RecordGatewayEvidenceParams struct {
 	Stage                  string // "generation", "judge", or "commit"
 	CandidateIndex         int
 	ExplanationFacts       []explanation.Fact
+	// DataFlow links classified data to its destination (digests only).
+	DataFlow *evidence.DataFlow
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -128,6 +130,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			SelectedProvider: params.Provider,
 			SelectedModel:    params.Model,
 		},
+		DataFlow: params.DataFlow,
 	}
 	if !params.PolicyAllowed {
 		ev.PolicyDecision.Action = "deny"

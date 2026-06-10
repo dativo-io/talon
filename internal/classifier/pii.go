@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"sort"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -53,6 +52,12 @@ const (
 )
 
 // PIIEntity represents a detected PII instance.
+//
+// Position is a BYTE offset into the analyzed text (Go regexp
+// FindAllStringIndex semantics), and the matched span is
+// [Position, Position+len(Value)). Adapters for engines that report
+// character/rune offsets (e.g. Microsoft Presidio) must convert to byte
+// offsets when producing PIIEntity values.
 type PIIEntity struct {
 	Type        string  `json:"type"`
 	Value       string  `json:"value"`
@@ -293,70 +298,15 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 		return text
 	}
 
-	type match struct {
-		start       int
-		end         int
-		ptype       string
-		sensitivity int
-	}
-
-	matches := make([]match, len(classification.Entities))
-	for i, e := range classification.Entities {
-		matches[i] = match{
-			start:       e.Position,
-			end:         e.Position + len(e.Value),
-			ptype:       e.Type,
-			sensitivity: e.Sensitivity,
-		}
-	}
-
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].start != matches[j].start {
-			return matches[i].start < matches[j].start
-		}
-		lenI := matches[i].end - matches[i].start
-		lenJ := matches[j].end - matches[j].start
-		if lenI != lenJ {
-			return lenI > lenJ
-		}
-		return matches[i].sensitivity > matches[j].sensitivity
-	})
-
-	var merged []match
-	for _, m := range matches {
-		if len(merged) == 0 {
-			merged = append(merged, m)
-			continue
-		}
-		last := &merged[len(merged)-1]
-		if m.start < last.end {
-			if m.sensitivity > last.sensitivity {
-				last.ptype = m.ptype
-				last.sensitivity = m.sensitivity
-			}
-			if m.end > last.end {
-				last.end = m.end
-			}
-		} else {
-			merged = append(merged, m)
-		}
-	}
+	merged := MergeEntitySpans(text, classification.Entities)
 
 	// Semantic enrichment path: enricher + policy + XML-style placeholders
 	if s.enricher != nil && s.enrichmentConfig != nil && s.enrichmentConfig.Enabled && s.enrichmentConfig.Mode != "off" && s.enrichmentPolicy != nil {
 		mergedAsPII := make([]PIIEntity, 0, len(merged))
 		for _, m := range merged {
-			raw := ""
-			if m.start >= 0 && m.end <= len(text) {
-				raw = text[m.start:m.end]
-			}
-			mergedAsPII = append(mergedAsPII, PIIEntity{
-				Type:        m.ptype,
-				Value:       raw,
-				Position:    m.start,
-				Confidence:  0.8,
-				Sensitivity: m.sensitivity,
-			})
+			e := m
+			e.Confidence = 0.8
+			mergedAsPII = append(mergedAsPII, e)
 		}
 		canonical := PIIEntitiesToCanonical(mergedAsPII)
 		if len(canonical) > 0 {
@@ -393,7 +343,7 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 				opts := &render.RedactOptions{UseEnriched: useEnriched, Allowed: func(id int) []string { return allowedMap[id] }}
 				out := render.RedactWithPlaceholders(text, enriched, opts)
 				for _, m := range merged {
-					RecordPIIRedaction(ctx, m.ptype, piiDirection(ctx))
+					RecordPIIRedaction(ctx, m.Type, piiDirection(ctx))
 				}
 				return out
 			}
@@ -404,9 +354,9 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 	result := []byte(text)
 	for i := len(merged) - 1; i >= 0; i-- {
 		m := merged[i]
-		placeholder := "[" + strings.ToUpper(m.ptype) + "]"
-		result = append(result[:m.start], append([]byte(placeholder), result[m.end:]...)...)
-		RecordPIIRedaction(ctx, m.ptype, piiDirection(ctx))
+		placeholder := "[" + strings.ToUpper(m.Type) + "]"
+		result = append(result[:m.Position], append([]byte(placeholder), result[m.Position+len(m.Value):]...)...)
+		RecordPIIRedaction(ctx, m.Type, piiDirection(ctx))
 	}
 
 	return string(result)

@@ -322,6 +322,7 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 		"cache_hit", "cache_entry_id", "cost_saved",
 		"upstream_auth_mode", "upstream_key_source", "upstream_key_fingerprint", "gateway_annotations",
 		"primary_explanation_code", "primary_explanation_reason", "primary_version_identity",
+		"flow_destinations", "flow_regions", "flow_entity_types",
 	}
 	if err := writer.Write(header); err != nil {
 		return err
@@ -364,6 +365,9 @@ func renderAuditExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 			r.PrimaryExplanationCode,
 			r.PrimaryExplanationReason,
 			r.PrimaryVersionIdentity,
+			r.FlowDestinationsCSV(),
+			r.FlowRegionsCSV(),
+			r.FlowEntityTypesCSV(),
 		}
 		if err := writer.Write(row); err != nil {
 			return err

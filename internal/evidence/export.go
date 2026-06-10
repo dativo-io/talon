@@ -53,6 +53,11 @@ type ExportRecord struct {
 	PrimaryExplanationCode   string   `json:"primary_explanation_code,omitempty"`
 	PrimaryExplanationReason string   `json:"primary_explanation_reason,omitempty"`
 	PrimaryVersionIdentity   string   `json:"primary_version_identity,omitempty"`
+	// Data-flow summary (trailing, backward-compatible): deduped+sorted
+	// destinations ("kind:name"), regions, and classified entity types.
+	FlowDestinations []string `json:"flow_destinations,omitempty"`
+	FlowRegions      []string `json:"flow_regions,omitempty"`
+	FlowEntityTypes  []string `json:"flow_entity_types,omitempty"`
 }
 
 // ExportMetadata wraps JSON export with context about the export run.
@@ -132,6 +137,24 @@ func ToExportRecord(e *Evidence) ExportRecord {
 	for _, sv := range e.ShadowViolations {
 		rec.ShadowViolationTypes = append(rec.ShadowViolationTypes, sv.Type)
 	}
+	if e.DataFlow != nil {
+		destSet := make(map[string]struct{})
+		regionSet := make(map[string]struct{})
+		typeSet := make(map[string]struct{})
+		for i := range e.DataFlow.Items {
+			item := &e.DataFlow.Items[i]
+			destSet[item.Destination.Kind+":"+item.Destination.Name] = struct{}{}
+			if item.Destination.Region != "" {
+				regionSet[item.Destination.Region] = struct{}{}
+			}
+			for _, t := range item.EntityTypes {
+				typeSet[t] = struct{}{}
+			}
+		}
+		rec.FlowDestinations = sortedSetKeys(destSet)
+		rec.FlowRegions = sortedSetKeys(regionSet)
+		rec.FlowEntityTypes = sortedSetKeys(typeSet)
+	}
 	return rec
 }
 
@@ -158,4 +181,19 @@ func (r *ExportRecord) ShadowViolationTypesCSV() string {
 // GatewayAnnotationsCSV returns comma-separated gateway annotations for CSV export.
 func (r *ExportRecord) GatewayAnnotationsCSV() string {
 	return strings.Join(r.GatewayAnnotations, ",")
+}
+
+// FlowDestinationsCSV returns comma-separated data-flow destinations for CSV export.
+func (r *ExportRecord) FlowDestinationsCSV() string {
+	return strings.Join(r.FlowDestinations, ",")
+}
+
+// FlowRegionsCSV returns comma-separated data-flow regions for CSV export.
+func (r *ExportRecord) FlowRegionsCSV() string {
+	return strings.Join(r.FlowRegions, ",")
+}
+
+// FlowEntityTypesCSV returns comma-separated data-flow entity types for CSV export.
+func (r *ExportRecord) FlowEntityTypesCSV() string {
+	return strings.Join(r.FlowEntityTypes, ",")
 }

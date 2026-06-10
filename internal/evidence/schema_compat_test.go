@@ -29,4 +29,7 @@ func TestEvidenceSchemaBackwardCompatible(t *testing.T) {
 	if len(ev.GatewayAnnotations) != 0 {
 		t.Fatalf("expected no gateway_annotations for legacy record, got %v", ev.GatewayAnnotations)
 	}
+	if ev.DataFlow != nil {
+		t.Fatalf("expected nil data_flow for legacy record, got %+v", ev.DataFlow)
+	}
 }
