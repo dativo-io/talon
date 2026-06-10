@@ -70,17 +70,80 @@ policies:
     # Or use allowed_models in agent/policy if your schema supports it
 ```
 
+Note: the optional `location` field on tier entries is declarative
+documentation only — it is not enforced by the router. Region enforcement
+comes from provider registry metadata + `llm.routing.data_sovereignty_mode`
+(see [Keep PII inside the EU](#keep-pii-inside-the-eu-gateway-egress-rules)).
+
 For **gateway** callers, set per-caller allowed models in the gateway config:
 
 ```yaml
 gateway:
   callers:
     - name: "my-app"
-      api_key: "..."
+      tenant_key: "..."
       tenant_id: "default"
       policy_overrides:
         allowed_models: ["gpt-4o", "gpt-4o-mini"]
 ```
+
+---
+
+## Keep PII inside the EU (gateway egress rules)
+
+**Goal:** Block tier_2 (PII-bearing) gateway requests from leaving Talon for
+non-EU destinations, with a signed evidence record for every decision. This
+supports data-transfer controls (e.g. GDPR Chapter V transfer policies);
+Talon enforces the rule and produces the evidence — it does not make the
+compliance determination for you.
+
+**Where:** `talon.config.yaml` under `gateway.default_policy.egress` (or
+per-caller under `callers[].policy_overrides.egress`, which replaces the
+default wholesale).
+
+```yaml
+gateway:
+  providers:
+    openai:
+      base_url: "https://api.openai.com"
+      secret_name: "openai-api-key"
+      region: "US"          # required for region-based rules on custom endpoints
+    mistral-eu:
+      base_url: "https://api.mistral.ai"
+      secret_name: "mistral-api-key"
+      region: "EU"
+    ollama:
+      base_url: "http://localhost:11434"
+      region: "LOCAL"
+  default_policy:
+    egress:
+      default_action: allow
+      rules:
+        - tier: public                      # or 0
+          allowed_providers: ["*"]          # public data: any destination
+        - tier: internal                    # or 1
+          allowed_providers: ["openai", "mistral-eu"]
+        - tier: confidential                # or 2
+          allowed_regions: ["EU", "LOCAL"]  # PII never leaves EU/local
+```
+
+What happens:
+
+- A tier_2 request to a US-region provider is denied with HTTP 403 and machine
+  code `egress_tier_destination_disallowed` — **before** any bytes reach the
+  upstream and before provider secrets are retrieved.
+- Every evaluated request (allowed or denied) gets an `egress_decision`
+  section in its signed evidence record; denials map to the
+  `POLICY_DENIED_EGRESS` explanation code.
+- A provider with an unknown region never matches `allowed_regions`
+  (fail-closed) — set `region` explicitly for custom `base_url` providers.
+- Use `default_action: deny` for a strict allowlist; in `shadow` mode
+  violations are recorded but requests are forwarded.
+- Running agents with `llm.routing.data_sovereignty_mode: eu_strict`? That
+  control covers provider *selection* for agent runs; egress rules cover
+  caller-chosen destinations at the gateway. Mirror them — see
+  [Configuration reference](../reference/configuration.md#egress-rules-destination--data-classification)
+  for the equivalent egress policy.
 
 ---
 
@@ -210,7 +273,7 @@ PERSON and LOCATION are optional recognizers in the default EU patterns; they ar
 
 ```yaml
 compliance:
-  human_oversight: "on_demand"   # none | on_demand | always
+  human_oversight: "on-demand"   # none | on-demand | always
 ```
 
 See [Agent planning](../AGENT_PLANNING.md) for plan review details.
@@ -221,24 +284,22 @@ See [Agent planning](../AGENT_PLANNING.md) for plan review details.
 
 **Goal:** Require human review for destructive, bulk, or install operations without maintaining long `forbidden_tools` lists. Talon classifies tools by intent (delete, purge, bulk, execute, install); you declare which classes always need review.
 
-**Where:** `agent.talon.yaml` under `policies.plan_review`.
+**Where:** `agent.talon.yaml` under `compliance.plan_review` (and `policies.rate_limits` for the circuit breaker).
 
 ```yaml
-policies:
+compliance:
+  human_oversight: "on-demand"
   plan_review:
-    volume_threshold: 50              # Any operation affecting 50+ records requires review
-    require_review_for_classes:       # These classes always require review
-      - "delete"
-      - "purge"
-      - "bulk"
-      - "execute"
-      - "install"
-    circuit_breaker:
-      consecutive_denial_threshold: 5
-      action: "require_human_review"
+    require_for_tools: true     # Review whenever tools are used
+    volume_threshold: 50        # Destructive verb + 50+ records requires review
+
+policies:
+  rate_limits:
+    circuit_breaker_threshold: 5   # Trip after 5 consecutive failures
+    circuit_breaker_window: "5m"
 ```
 
-Unlike `forbidden_tools` lists, this works even with broad allowlists. Use `talon intent classify <tool-name>` to see the class and risk level for any tool. **Helps with:** EU AI Act Art. 14 (human oversight), ISO 27001 A.8.25.
+High-risk operation classes are enforced by built-in conservative defaults: `purge`, `execute`, and `install` operations always require review, and `delete` requires review when bulk signals are detected — even without any `plan_review` config. Unlike `forbidden_tools` lists, this works even with broad allowlists. Use `talon intent classify <tool-name>` to see the class and risk level for any tool. **Helps with:** EU AI Act Art. 14 (human oversight), ISO 27001 A.8.25.
 
 ---
 
@@ -253,7 +314,7 @@ attachment_handling:
   mode: "strict"
   scanning:
     detect_instructions: true
-    action_on_detection: "block_and_flag"   # block_and_flag | warn | log
+    action_on_detection: "block_and_flag"   # block_and_flag | warn | log_only
 ```
 
 ---

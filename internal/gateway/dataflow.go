@@ -196,10 +196,10 @@ func setToSortedCSV(set map[string]struct{}) string {
 // "unknown". Talon never guesses a region.
 func (g *Gateway) providerRegion(provider string) string {
 	if prov, ok := g.config.Provider(provider); ok && prov.Region != "" {
-		return prov.Region
+		return normalizeEgressRegion(prov.Region)
 	}
 	if j := llm.JurisdictionForProvider(provider); j != "" {
-		return j
+		return normalizeEgressRegion(j)
 	}
 	return evidence.FlowRegionUnknown
 }

@@ -388,15 +388,8 @@ smoke_tighten_limits() {
       -e 's/tool_execution: *"5m"/tool_execution: "2m"/' \
       "$agent_yaml" 2>/dev/null || true
   fi
-  local config_yaml="$dir/talon.config.yaml"
-  [[ -f "$config_yaml" ]] || return 0
-  if command -v yq &>/dev/null; then
-    yq -i '.tenants[0].budgets.daily = 5.0 | .tenants[0].budgets.monthly = 50.0 | .tenants[0].rate_limit = 30' "$config_yaml" 2>/dev/null || true
-  else
-    sed -i.bak \
-      -e '/^tenants:/,/^[^ ]/{s/daily: *200\.0/daily: 5.0/;s/monthly: *3000\.0/monthly: 50.0/}' \
-      "$config_yaml" 2>/dev/null || true
-  fi
+  # Note: budgets/rate limits live in agent.talon.yaml (edited above);
+  # talon.config.yaml has no runtime-consumed tenants block.
 }
 
 # Central request layer: canonical payloads and HTTP helpers (no duplicate URLs/bodies)
@@ -459,7 +452,7 @@ for _section_file in \
   20_edge_cases.sh 21_doctor_report_enforce.sh 22_cache.sh \
   23_dashboard_metrics.sh 24_plan_dispatch.sh 25_sessions.sh \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
-  29_consistency.sh 30_graph_events.sh 31_quickstart.sh; do
+  29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -543,6 +536,7 @@ main() {
   run_section "28_control_plane" test_section_28_control_plane
   run_section "30_graph_events" test_section_30_graph_events
   run_section "31_quickstart" test_section_31_quickstart
+  run_section "32_egress" test_section_32_egress
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency

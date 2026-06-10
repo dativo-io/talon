@@ -12,6 +12,7 @@ const (
 	CodePolicyDeniedPIIInput   = "POLICY_DENIED_PII_INPUT"
 	CodePolicyDeniedPIIOutput  = "POLICY_DENIED_PII_OUTPUT"
 	CodePolicyDeniedCost       = "POLICY_DENIED_COST"
+	CodePolicyDeniedEgress     = "POLICY_DENIED_EGRESS"
 	CodePolicyDeniedRouting    = "POLICY_DENIED_ROUTING"
 	CodePolicyDeniedTool       = "POLICY_DENIED_TOOL"
 	CodePolicyDeniedHook       = "POLICY_DENIED_HOOK"
@@ -223,6 +224,7 @@ var reasonByCode = map[string]string{
 	CodePolicyDeniedPIIInput:    "Request blocked because input PII was detected.",
 	CodePolicyDeniedPIIOutput:   "Request blocked because output PII was detected.",
 	CodePolicyDeniedCost:        "Request blocked by cost policy limits.",
+	CodePolicyDeniedEgress:      "Request blocked because the destination is not allowed for this data classification.",
 	CodePolicyDeniedRouting:     "Request blocked by model routing policy.",
 	CodePolicyDeniedTool:        "Request blocked by tool access policy.",
 	CodePolicyDeniedHook:        "Request blocked by a governance hook.",
@@ -319,6 +321,7 @@ var reasonRules = []reasonRule{
 	{markers: []string{"input contains pii", "block_on_pii", "pii block", "input pii"}, code: CodePolicyDeniedPIIInput},
 	{markers: []string{"output contains pii", "block_on_output_pii"}, code: CodePolicyDeniedPIIOutput},
 	{markers: []string{"cost", "budget"}, code: CodePolicyDeniedCost},
+	{markers: []string{"egress"}, code: CodePolicyDeniedEgress},
 	{markers: []string{
 		"routing",
 		"provider not allowed",
@@ -352,6 +355,8 @@ func defaultFix(code string) string {
 		return "Remove or mask sensitive data before retrying the request."
 	case CodePolicyDeniedCost:
 		return "Reduce expected token usage or increase cost limits in policy."
+	case CodePolicyDeniedEgress:
+		return "Route the request to a destination allowed for this data tier, or update the gateway egress rules."
 	case CodePolicyDeniedRouting:
 		return "Select a model/provider allowed by routing policy and data tier."
 	case CodePolicyDeniedTool:

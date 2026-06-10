@@ -359,6 +359,11 @@ type ModelRoutingConfig struct {
 }
 
 // TierConfig defines the model routing for a single data tier.
+//
+// Location is declarative documentation of the intended region; it is NOT
+// enforced by the router. Region/jurisdiction enforcement comes from the
+// provider registry metadata combined with llm.routing.data_sovereignty_mode
+// (routing.rego) and, at the gateway, egress rules.
 type TierConfig struct {
 	Primary     string `yaml:"primary" json:"primary"`
 	Fallback    string `yaml:"fallback,omitempty" json:"fallback,omitempty"`
@@ -391,14 +396,15 @@ type AuditConfig struct {
 }
 
 // PlanReviewConfig configures when execution plans require human review (EU AI Act Art. 14).
-// VolumeThreshold is defined in internal/agent/plan_review.go PlanReviewConfig
-// (the agent package owns plan review logic and runtime config).
+// The agent package owns plan review runtime logic (internal/agent/plan_review.go);
+// this struct is the YAML-facing shape and must stay in sync with it.
 type PlanReviewConfig struct {
 	RequireForTools bool            `yaml:"require_for_tools" json:"require_for_tools"`
 	RequireForTier  string          `yaml:"require_for_tier" json:"require_for_tier"`
 	CostThreshold   float64         `yaml:"cost_threshold" json:"cost_threshold"`
 	TimeoutMinutes  int             `yaml:"timeout_minutes" json:"timeout_minutes"`
 	NotifyWebhook   string          `yaml:"notify_webhook" json:"notify_webhook"`
+	VolumeThreshold int             `yaml:"volume_threshold,omitempty" json:"volume_threshold,omitempty"`
 	Mode            string          `yaml:"mode,omitempty" json:"mode,omitempty"`
 	ApprovalChain   []ApprovalLevel `yaml:"approval_chain,omitempty" json:"approval_chain,omitempty"`
 }

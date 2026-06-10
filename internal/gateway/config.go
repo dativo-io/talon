@@ -92,11 +92,13 @@ type CallerPolicyOverrides struct {
 	ResponsePIIAction string                  `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from pii_action
 	AllowedModels     []string                `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
 	BlockedModels     []string                `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
-	MaxDataTier       *int                    `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"` // 0, 1, or 2
+	MaxDataTier       *TierLevel              `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"` // 0/public, 1/internal, or 2/confidential
 	AttachmentPolicy  *AttachmentPolicyConfig `yaml:"attachment_policy,omitempty" json:"attachment_policy,omitempty"`
 	AllowedTools      []string                `yaml:"allowed_tools,omitempty" json:"allowed_tools,omitempty"`
 	ForbiddenTools    []string                `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
 	ToolPolicyAction  string                  `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"` // filter | block
+	// Egress replaces the server default egress policy for this caller when set.
+	Egress *EgressPolicyConfig `yaml:"egress,omitempty" json:"egress,omitempty"`
 }
 
 // AttachmentPolicyConfig controls scanning of base64-encoded file attachments
@@ -125,6 +127,9 @@ type ServerDefaults struct {
 	AttachmentPolicy        *AttachmentPolicyConfig `yaml:"attachment_policy,omitempty" json:"attachment_policy,omitempty"`
 	ForbiddenTools          []string                `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
 	ToolPolicyAction        string                  `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"` // filter (default) | block
+	// Egress restricts which destinations (providers/regions) each data tier
+	// may egress to. When nil, egress is not evaluated.
+	Egress *EgressPolicyConfig `yaml:"egress,omitempty" json:"egress,omitempty"`
 }
 
 // CallerIDRequired returns whether anonymous requests must be rejected. Default is true when unset.
@@ -271,7 +276,24 @@ func (c *GatewayConfig) ApplyDefaults() error {
 		c.Timeouts.StreamIdleTimeout = DefaultStreamIdleTimeout
 	}
 	c.ServerDefaults.AttachmentPolicy = applyAttachmentPolicyDefaults(c.ServerDefaults.AttachmentPolicy)
+	c.ServerDefaults.Egress.applyDefaults()
+	normalizeProviderRegions(c.Providers)
+	for i := range c.Callers {
+		if ov := c.Callers[i].PolicyOverrides; ov != nil {
+			ov.Egress.applyDefaults()
+		}
+	}
 	return nil
+}
+
+func normalizeProviderRegions(providers map[string]ProviderConfig) {
+	for name := range providers {
+		p := providers[name]
+		if p.Region != "" {
+			p.Region = normalizeEgressRegion(p.Region)
+			providers[name] = p
+		}
+	}
 }
 
 // applyAttachmentPolicyDefaults fills in missing values for an AttachmentPolicyConfig.
@@ -306,6 +328,7 @@ func (c *GatewayConfig) Validate() error {
 	for name := range c.Providers {
 		p := c.Providers[name]
 		if !p.Enabled {
+			c.Providers[name] = p
 			continue
 		}
 		if p.UpstreamAuthMode == "" {
@@ -336,10 +359,18 @@ func (c *GatewayConfig) Validate() error {
 			return fmt.Errorf("gateway default_policy.attachment_policy.injection_action must be block, strip, or warn")
 		}
 	}
+	if err := validateEgressPolicy("default_policy", c.ServerDefaults.Egress); err != nil {
+		return err
+	}
 	for i := range c.Callers {
 		caller := &c.Callers[i]
 		if caller.Name == "" {
 			return fmt.Errorf("gateway caller at index %d: name is required", i)
+		}
+		if caller.PolicyOverrides != nil {
+			if err := validateEgressPolicy("caller "+caller.Name, caller.PolicyOverrides.Egress); err != nil {
+				return err
+			}
 		}
 		if caller.TenantID == "" {
 			caller.TenantID = "default"

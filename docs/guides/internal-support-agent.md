@@ -26,7 +26,7 @@ policies:
 # (exact key depends on your policy schema; often default_pii_action or capabilities)
 ```
 
-Optional: enable plan review for high-risk suggestions (`compliance.human_oversight: "on_demand"`). See [Policy cookbook](policy-cookbook.md) and [Agent planning](../AGENT_PLANNING.md).
+Optional: enable plan review for high-risk suggestions (`compliance.human_oversight: "on-demand"`). See [Policy cookbook](policy-cookbook.md) and [Agent planning](../AGENT_PLANNING.md).
 
 ### 2. Trigger
 

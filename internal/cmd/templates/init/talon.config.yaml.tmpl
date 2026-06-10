@@ -9,17 +9,9 @@
 llm:
   pricing_file: "pricing/models.yaml"
 
-# Legacy: single provider (openai, anthropic, bedrock, ollama)
-llm_provider: openai
-
-# Logging
+# Logging (also configurable via --log-level / --log-format flags)
 log_level: info
 log_format: console
-
-# Evidence storage
-evidence:
-  type: sqlite
-  path: ~/.talon/evidence.db
 
 # Governed semantic cache (optional, off by default — set enabled: true to reduce LLM cost for similar prompts)
 cache:
@@ -28,15 +20,9 @@ cache:
   similarity_threshold: 0.92
   max_entries_per_tenant: 10000
 
+# Storage: evidence, secrets vault, and state live under data_dir
+# (default ~/.talon; evidence DB is {data_dir}/evidence.db).
+# data_dir: ~/.talon
+
 # Secrets encryption key (generate with: openssl rand -hex 32)
 # Set via environment: export TALON_SECRETS_KEY=<key>
-secrets_key_env: TALON_SECRETS_KEY
-
-# Multi-tenant configuration (optional)
-tenants:
-  - id: default
-    display_name: Default Tenant
-    budgets:
-      daily: 200.0
-      monthly: 3000.0
-    rate_limit: 30

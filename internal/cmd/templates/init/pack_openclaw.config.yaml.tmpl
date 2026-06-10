@@ -17,13 +17,8 @@
 llm:
   pricing_file: "pricing/models.yaml"
 
-llm_provider: openai
 log_level: info
 log_format: console
-
-evidence:
-  type: sqlite
-  path: ~/.talon/evidence.db
 
 # Governed semantic cache (optional, off by default)
 cache:
@@ -32,15 +27,7 @@ cache:
   similarity_threshold: 0.92
   max_entries_per_tenant: 10000
 
-secrets_key_env: TALON_SECRETS_KEY
-
-tenants:
-  - id: default
-    display_name: Default Tenant
-    budgets:
-      daily: 50.0
-      monthly: 1000.0
-    rate_limit: 60
+# Secrets encryption key: export TALON_SECRETS_KEY=<key> (openssl rand -hex 32)
 
 gateway:
   enabled: true

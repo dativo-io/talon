@@ -127,18 +127,13 @@ pii_handling:
       method: "redact_full"  # Complete removal
 
 compliance:
-  frameworks: ["gdpr", "nis2", "iso27001"]
-  data_residency: "eu-west-1"
+  frameworks: ["gdpr", "nis2", "iso-27001"]
+  data_residency: "eu-only"   # requires upstream in an EU region (eu-*)
   audit_retention: 365
-  
-  human_oversight:
-    required_for:
-      - "ticket_type:refund"
-      - "priority:urgent AND value:>500"
-      - "contains:account_closure"
-    approvers:
-      - "compliance@your-company.com"
-      - "team-lead@your-company.com"
+
+  # High-risk operations (refunds, account deletion, exports) require human
+  # approval; see proxy compliance policy for the built-in detection rules.
+  human_oversight: "always"
 
 evidence:
   capture_requests: true

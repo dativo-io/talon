@@ -1,6 +1,6 @@
 # Evidence Integrity Specification
 
-**Status:** stable · **Version:** 1.1 · **Scope:** the signed evidence record produced by Talon.
+**Status:** stable · **Version:** 1.2 · **Scope:** the signed evidence record produced by Talon.
 
 This is the normative specification for how a Talon evidence record is serialized,
 signed, and verified. It is written so that a third party can independently verify a
@@ -89,6 +89,7 @@ Top-level fields, **in serialization order** (this order is significant — see
 | 44 | `plan_id` | string | optional |
 | 45 | `graph_run_id` | string | optional |
 | 46 | `data_flow` | object | optional |
+| 47 | `egress_decision` | object | optional |
 
 Nested objects (`policy_decision`, `classification`, `execution`, `audit_trail`,
 `compliance`, and the optional objects) follow the same encoding rules recursively; their
@@ -111,6 +112,14 @@ nested fields are:
   per-request salted SHA-256 prefixes, optional — never raw values),
   `disposition`, and a `destination` object (`kind`, `name`, `model`,
   `endpoint`, `region`; the last three optional).
+- `egress_decision` (optional): outcome of the gateway egress policy
+  (data tier × destination). Fields: `tier` (number), `provider` (string),
+  `region` (string, optional), `decision` (`"allow"` or `"deny"`),
+  `matched_rule` (string, optional — e.g. `tier_2:allowed_regions` or
+  `default_action`), and `reason` (string, optional — machine code such as
+  `egress_tier_destination_disallowed`). Present only when an egress policy
+  is configured for the caller; recorded for allowed and denied requests so
+  the control's execution can be evidenced.
 
 ## 3. Canonical serialization
 
@@ -218,6 +227,13 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 
 ## 8. Changelog
 
+- **1.2** — added optional top-level field `egress_decision` (#47), appended
+  after `data_flow`. Records signed under spec 1.0/1.1 verify unchanged (the
+  field is omitted when absent, so their canonical bytes are identical). The
+  established additive-field caveat applies: a verifier built against an
+  earlier spec drops the unknown `egress_decision` member on parse and
+  therefore cannot verify records that carry it — use a 1.2 verifier for new
+  records.
 - **1.1** — added optional top-level field `data_flow` (#46), appended after
   `graph_run_id`. Records signed under spec 1.0 verify unchanged (the field is
   omitted when absent, so their canonical bytes are identical). Note the

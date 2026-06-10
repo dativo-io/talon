@@ -63,7 +63,7 @@ docker compose exec talon /usr/local/bin/talon audit show req_a1b2c3d4
 
 This shows the full evidence record:
 - **Policy Decision:** Allowed (shadow mode)
-- **Classification:** PII detected (email, IBAN), input tier 3
+- **Classification:** PII detected (email, IBAN), input tier 2
 - **Execution:** Model used, cost, token counts, duration
 - **Integrity:** Input/output hashes, HMAC signature status
 
@@ -157,7 +157,7 @@ When your curl request hits Talon, a 10-step pipeline runs:
 3. **Rate limit** — Token bucket check
 4. **Extract** — Parse model name and message text from JSON
 5. **PII scan** — Regex recognizers find email + IBAN
-6. **Classify** — Data tier set to 3 (confidential, due to IBAN)
+6. **Classify** — Data tier set to 2 (confidential, due to IBAN)
 7. **Policy** — OPA evaluates: allowed in shadow mode
 8. **Tool policy** — No tools in this request
 9. **Forward** — Request sent to mock provider

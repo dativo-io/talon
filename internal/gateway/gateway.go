@@ -102,6 +102,7 @@ type Gateway struct {
 type gatewayCacheConfig struct {
 	Enabled             bool
 	DefaultTTL          int
+	TTLByTier           map[string]int
 	SimilarityThreshold float64
 	MaxEntriesPerTenant int
 }
@@ -129,7 +130,7 @@ func (g *Gateway) SetSessionStore(ss *session.Store) {
 }
 
 // SetCache wires the optional semantic cache into the gateway. Call after NewGateway when cache is enabled.
-func (g *Gateway) SetCache(store *cache.Store, embedder *cache.BM25, scrubber *cache.PIIScrubber, policy *cache.Evaluator, enabled bool, defaultTTL int, similarityThreshold float64, maxEntriesPerTenant int) {
+func (g *Gateway) SetCache(store *cache.Store, embedder *cache.BM25, scrubber *cache.PIIScrubber, policy *cache.Evaluator, enabled bool, defaultTTL int, ttlByTier map[string]int, similarityThreshold float64, maxEntriesPerTenant int) {
 	if store == nil || embedder == nil || policy == nil || !enabled {
 		return
 	}
@@ -140,6 +141,7 @@ func (g *Gateway) SetCache(store *cache.Store, embedder *cache.BM25, scrubber *c
 	g.cacheConfig = &gatewayCacheConfig{
 		Enabled:             enabled,
 		DefaultTTL:          defaultTTL,
+		TTLByTier:           ttlByTier,
 		SimilarityThreshold: similarityThreshold,
 		MaxEntriesPerTenant: maxEntriesPerTenant,
 	}
@@ -417,7 +419,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 80)
 		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 95)
 	}
-	policyInput := buildGatewayPolicyInput(caller, g.config.ServerDefaults, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost)
+	destinationRegion := g.providerRegion(route.Provider)
+	policyInput := buildGatewayPolicyInput(caller, g.config.ServerDefaults, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost, destinationRegion)
 	if g.sessionStore != nil && sessionID != "" {
 		if sess, err := g.sessionStore.Get(ctx, sessionID); err == nil {
 			policyInput["session_cost_total"] = sess.TotalCost
@@ -454,8 +457,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !allowed && policyErr == nil {
 			if isShadow {
 				detail := "policy denied"
-				if len(reasons) > 0 {
-					detail = reasons[0]
+				if reason := preferredDenyReason(reasons); reason != "" {
+					detail = reason
 				}
 				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 					Type: "policy_deny", Detail: detail, Action: "block",
@@ -463,7 +466,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("reasons", reasons).Msg("shadow_policy_deny")
 			} else {
 				durationMS := time.Since(start).Milliseconds()
-				WriteProviderError(w, route.Provider, http.StatusForbidden, reasons[0])
+				egressReason := firstEgressReason(reasons)
+				if egressReason != "" {
+					log.Warn().
+						Str("correlation_id", correlationID).
+						Str("tenant_id", caller.TenantID).
+						Str("agent_id", caller.Name).
+						Int("data_tier", tier).
+						Str("destination", route.Provider).
+						Str("region", destinationRegion).
+						Str("reason", egressReason).
+						Msg("gateway_egress_denied")
+				}
+				WriteProviderError(w, route.Provider, http.StatusForbidden, preferredDenyReason(reasons))
 				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
@@ -557,13 +572,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 8b: Semantic cache lookup (skip for tool calls and when disabled)
 	var cacheAllowLookup, cacheAllowStore bool
 	if g.cacheStore != nil && g.cacheConfig != nil && g.cacheConfig.Enabled && g.cachePolicy != nil && g.cacheEmbedder != nil && len(extracted.ToolNames) == 0 {
-		dataTierStr := "public"
-		switch tier {
-		case 1:
-			dataTierStr = "internal"
-		case 2:
-			dataTierStr = "confidential"
-		}
+		dataTierStr := cache.TierLabel(tier)
 		piiSev := "none"
 		if classification.HasPII {
 			if tier == 2 {
@@ -734,14 +743,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						// Use canonical tenant ID from config-derived map so cache key is not tainted by request path (CodeQL go/weak-sensitive-data-hashing).
 						scopeTenantID := g.canonicalTenantIDForCache(caller.TenantID)
 						keyHash := cache.DeriveEntryKey(scopeTenantID, extracted.Model, extracted.Text)
-						ttl := time.Duration(g.cacheConfig.DefaultTTL) * time.Second
-						if ttl <= 0 {
-							ttl = time.Hour
-						}
+						tierLabel := cache.TierLabel(tier)
+						ttl := cache.TTLForTier(tierLabel, g.cacheConfig.TTLByTier, g.cacheConfig.DefaultTTL)
 						now := time.Now().UTC()
 						entry := &cache.Entry{
 							TenantID: caller.TenantID, CacheKey: keyHash, EmbeddingData: emb, ResponseText: content,
-							Model: extracted.Model, DataTier: "public", PIIScrubbed: true,
+							Model: extracted.Model, DataTier: tierLabel, PIIScrubbed: true,
 							CreatedAt: now, ExpiresAt: now.Add(ttl),
 						}
 						if insertErr := g.cacheStore.Insert(ctx, entry); insertErr == nil {
@@ -806,6 +813,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+//nolint:gocyclo // evidence assembly branches on optional subsystems (cache, egress, attachments, tools)
 func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, inputText string, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, executionError string, allowed bool, reasons []string, inputPIIRedacted bool, responsePII *ResponsePIIScanResult, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, cacheStored bool, ttftMS int64, tpotMS float64, estimatedCost float64) (*evidence.Evidence, error) {
 	if classification == nil {
 		classification = &classifier.Classification{}
@@ -829,6 +837,23 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		outputPIITypes = responsePII.PIITypes
 	}
 	execErr := resolveExecutionError(executionError, reasons)
+
+	egressDecision := g.buildEgressDecisionEvidence(caller, provider, classification.Tier, allowed, reasons)
+	if egressDecision != nil {
+		RecordEgressDecision(ctx, caller.TenantID, egressDecision.Tier, egressDecision.Provider, egressDecision.Region, egressDecision.Decision)
+		if span := trace.SpanFromContext(ctx); span.IsRecording() {
+			span.SetAttributes(
+				attribute.String("tenant_id", caller.TenantID),
+				attribute.String("talon.egress.caller", caller.Name),
+				attribute.String("talon.egress.correlation_id", correlationID),
+				attribute.Int("talon.egress.data_tier", egressDecision.Tier),
+				attribute.String("talon.egress.destination_provider", egressDecision.Provider),
+				attribute.String("talon.egress.destination_region", egressDecision.Region),
+				attribute.String("talon.egress.decision", egressDecision.Decision),
+				attribute.String("talon.egress.reason", egressDecision.Reason),
+			)
+		}
+	}
 
 	dataFlow := g.buildDataFlow(dataFlowInputs{
 		CorrelationID:    correlationID,
@@ -897,6 +922,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		CandidateIndex:          candidateIndexFromContext(ctx),
 		ExplanationFacts:        buildGatewayExplanationFacts(allowed, reasons, outputPIIDetected, outputPIITypes, stageFromContext(ctx)),
 		DataFlow:                dataFlow,
+		EgressDecision:          egressDecision,
 	}
 	if toolResult != nil {
 		params.ToolsRequested = toolResult.Requested
@@ -1084,16 +1110,21 @@ func (g *Gateway) trackSessionUsage(ctx context.Context, sessionID, tenantID, ca
 	}
 }
 
-func buildGatewayPolicyInput(caller *CallerConfig, defaults ServerDefaults, provider, model string, dataTier int, estimatedCost, dailyCost, monthlyCost float64) map[string]interface{} {
+func buildGatewayPolicyInput(caller *CallerConfig, defaults ServerDefaults, provider, model string, dataTier int, estimatedCost, dailyCost, monthlyCost float64, destinationRegion string) map[string]interface{} {
 	input := map[string]interface{}{
-		"provider":       provider,
-		"model":          model,
-		"data_tier":      dataTier,
-		"estimated_cost": estimatedCost,
-		"daily_cost":     dailyCost,
-		"monthly_cost":   monthlyCost,
-		"caller_name":    caller.Name,
-		"tenant_id":      caller.TenantID,
+		"provider":           provider,
+		"model":              model,
+		"data_tier":          dataTier,
+		"estimated_cost":     estimatedCost,
+		"daily_cost":         dailyCost,
+		"monthly_cost":       monthlyCost,
+		"caller_name":        caller.Name,
+		"tenant_id":          caller.TenantID,
+		"destination_region": destinationRegion,
+	}
+	if egress := ResolveEgressPolicy(&defaults, caller.PolicyOverrides); egress != nil {
+		input["egress_rules"] = egressRulesForPolicyInput(egress)
+		input["egress_default_action"] = egress.DefaultAction
 	}
 	if defaults.MaxDailyCost > 0 {
 		input["caller_max_daily_cost"] = defaults.MaxDailyCost
@@ -1111,7 +1142,7 @@ func buildGatewayPolicyInput(caller *CallerConfig, defaults ServerDefaults, prov
 			input["caller_max_monthly_cost"] = caller.PolicyOverrides.MaxMonthlyCost
 		}
 		if caller.PolicyOverrides.MaxDataTier != nil {
-			input["caller_max_data_tier"] = *caller.PolicyOverrides.MaxDataTier
+			input["caller_max_data_tier"] = int(*caller.PolicyOverrides.MaxDataTier)
 		}
 	}
 	return input

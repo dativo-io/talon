@@ -19,6 +19,7 @@ var (
 	cacheHitsCounter        metric.Int64Counter
 	cacheMissesCounter      metric.Int64Counter
 	shadowViolationsCounter metric.Int64Counter
+	egressDecisionsCounter  metric.Int64Counter
 	budgetUtilizationGauge  metric.Float64Gauge
 	budgetAlertsCounter     metric.Int64Counter
 
@@ -74,6 +75,13 @@ func initGatewayMetrics() {
 	shadowViolationsCounter, err = gatewayMeter.Int64Counter("talon.shadow.violations.total",
 		metric.WithDescription("Shadow mode violations (would-have-blocked)"),
 		metric.WithUnit("{violation}"))
+	if err != nil {
+		return
+	}
+
+	egressDecisionsCounter, err = gatewayMeter.Int64Counter("talon.gateway.egress.decisions",
+		metric.WithDescription("Gateway egress policy decisions by data tier, destination, and outcome"),
+		metric.WithUnit("{decision}"))
 	if err != nil {
 		return
 	}
@@ -173,6 +181,21 @@ func RecordShadowViolation(ctx context.Context, violationType string) {
 	}
 	shadowViolationsCounter.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("violation_type", violationType),
+	))
+}
+
+// RecordEgressDecision increments the egress decision counter.
+func RecordEgressDecision(ctx context.Context, tenantID string, tier int, provider, region, decision string) {
+	ensureGatewayMetrics()
+	if !gwMetricsRegistered {
+		return
+	}
+	egressDecisionsCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("tenant_id", tenantID),
+		attribute.Int("tier", tier),
+		attribute.String("gen_ai.system", provider),
+		attribute.String("region", region),
+		attribute.String("decision", decision),
 	))
 }
 

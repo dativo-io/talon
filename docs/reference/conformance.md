@@ -41,7 +41,7 @@ raise the number automatically without touching this document.
 | File | Covers |
 |------|--------|
 | `engine_test.go` | Policy engine evaluate/decision logic |
-| `gateway_engine_test.go` | Gateway-mode policy evaluation |
+| `gateway_engine_test.go` | Gateway-mode policy evaluation (model allowlists, cost, data-tier egress) |
 | `golden_test.go` | Golden policy decisions against `testdata/` fixtures |
 | `loader_test.go` | `.talon.yaml` policy loading and validation |
 | `routing_policy_test.go` | Tier-based model routing decisions |

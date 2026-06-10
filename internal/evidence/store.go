@@ -91,6 +91,24 @@ type Evidence struct {
 	// never raw values). Appended last so pre-existing record signatures
 	// remain valid (see docs/reference/evidence-integrity-spec.md §2).
 	DataFlow *DataFlow `json:"data_flow,omitempty"`
+	// EgressDecision records the gateway egress allow/deny outcome for the
+	// request's data tier and destination. Appended after data_flow so
+	// pre-existing record signatures remain valid
+	// (see docs/reference/evidence-integrity-spec.md §2).
+	EgressDecision *EgressDecision `json:"egress_decision,omitempty"`
+}
+
+// EgressDecision records the outcome of matching a gateway request against
+// the configured egress policy (data tier x destination provider/region).
+// Present only when an egress policy is configured for the caller; produced
+// for both allowed and denied requests so auditors can prove the control ran.
+type EgressDecision struct {
+	Tier        int    `json:"tier"`
+	Provider    string `json:"provider"`
+	Region      string `json:"region,omitempty"`
+	Decision    string `json:"decision"`               // "allow" | "deny"
+	MatchedRule string `json:"matched_rule,omitempty"` // e.g. "tier_2:allowed_regions" or "default_action"
+	Reason      string `json:"reason,omitempty"`       // machine code, e.g. egress_tier_destination_disallowed
 }
 
 // PlanReviewEvent captures human oversight actions performed on execution plans.

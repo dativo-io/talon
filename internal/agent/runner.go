@@ -202,6 +202,7 @@ type Runner struct {
 type cacheConfig struct {
 	Enabled             bool
 	DefaultTTL          int
+	TTLByTier           map[string]int
 	SimilarityThreshold float64
 	MaxEntriesPerTenant int
 }
@@ -242,6 +243,7 @@ type RunnerConfig struct {
 type RunnerCacheConfig struct {
 	Enabled             bool
 	DefaultTTL          int
+	TTLByTier           map[string]int
 	SimilarityThreshold float64
 	MaxEntriesPerTenant int
 }
@@ -287,6 +289,7 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		r.cacheConfig = &cacheConfig{
 			Enabled:             cfg.CacheConfig.Enabled,
 			DefaultTTL:          cfg.CacheConfig.DefaultTTL,
+			TTLByTier:           cfg.CacheConfig.TTLByTier,
 			SimilarityThreshold: cfg.CacheConfig.SimilarityThreshold,
 			MaxEntriesPerTenant: cfg.CacheConfig.MaxEntriesPerTenant,
 		}
@@ -1153,13 +1156,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 
 	var cacheAllowLookup, cacheAllowStore bool
 	if !useAgenticLoop && r.cacheStore != nil && r.cacheConfig != nil && r.cacheConfig.Enabled && r.cachePolicy != nil && r.cacheEmbedder != nil {
-		dataTierStr := "public"
-		switch tier {
-		case 1:
-			dataTierStr = "internal"
-		case 2:
-			dataTierStr = "confidential"
-		}
+		dataTierStr := cache.TierLabel(tier)
 		piiSev := "none"
 		if len(piiNames) > 0 {
 			if tier == 2 {
@@ -1735,14 +1732,12 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			emb, err := r.cacheEmbedder.Embed(prompt)
 			if err == nil {
 				cacheKey := cache.DeriveEntryKey(req.TenantID, model, prompt)
-				ttl := time.Duration(r.cacheConfig.DefaultTTL) * time.Second
-				if ttl <= 0 {
-					ttl = time.Hour
-				}
+				tierLabel := cache.TierLabel(tier)
+				ttl := cache.TTLForTier(tierLabel, r.cacheConfig.TTLByTier, r.cacheConfig.DefaultTTL)
 				now := time.Now().UTC()
 				entry := &cache.Entry{
 					TenantID: req.TenantID, CacheKey: cacheKey, EmbeddingData: emb, ResponseText: scrubbed,
-					Model: model, DataTier: "public", PIIScrubbed: scrubbed != resp.Content,
+					Model: model, DataTier: tierLabel, PIIScrubbed: scrubbed != resp.Content,
 					CreatedAt: now, ExpiresAt: now.Add(ttl),
 				}
 				_ = r.cacheStore.Insert(ctx, entry)
@@ -3208,5 +3203,7 @@ func planReviewConfigFromPolicy(cfg *policy.PlanReviewConfig) *PlanReviewConfig 
 		CostThreshold:   cfg.CostThreshold,
 		TimeoutMinutes:  cfg.TimeoutMinutes,
 		NotifyWebhook:   cfg.NotifyWebhook,
+		VolumeThreshold: cfg.VolumeThreshold,
+		Mode:            cfg.Mode,
 	}
 }

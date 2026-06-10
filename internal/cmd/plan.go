@@ -382,6 +382,7 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 				runnerCfg.CacheConfig = &agent.RunnerCacheConfig{
 					Enabled:             cfg.Cache.Enabled,
 					DefaultTTL:          cfg.Cache.DefaultTTL,
+					TTLByTier:           cfg.Cache.TTLByTier,
 					SimilarityThreshold: cfg.Cache.SimilarityThreshold,
 					MaxEntriesPerTenant: cfg.Cache.MaxEntriesPerTenant,
 				}
