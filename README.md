@@ -14,6 +14,7 @@
 [Quickstart](docs/tutorials/proxy-quickstart.md) ·
 [Docker demo](examples/docker-compose/README.md) ·
 [Dashboard](docs/reference/gateway-dashboard.md) ·
+[Limitations](LIMITATIONS.md) ·
 [Releases](https://github.com/dativo-io/talon/releases/latest)
 
 Talon is a single Go binary that sits in front of OpenAI, Anthropic, AWS Bedrock, Azure OpenAI, and any OpenAI-compatible client. Change one URL and every request is policy-checked, PII-scanned, cost-tracked, and written to a tamper-evident, HMAC-signed evidence record — same SDK, same response shape, governed path. Built for EU teams that need real governance signals for GDPR, NIS2, DORA, and the EU AI Act. Apache 2.0.
@@ -331,6 +332,7 @@ Artifacts a skeptical reviewer can grep in one session:
 - [Documentation index](docs/README.md)
 - [60-second demo](docs/tutorials/quickstart-demo.md)
 - [Your first governed agent](docs/tutorials/first-governed-agent.md)
+- [Talon Security Boundaries & Limitations](LIMITATIONS.md)
 - [What Talon does to your request](docs/explanation/what-talon-does-to-your-request.md)
 - [Policy cookbook](docs/guides/policy-cookbook.md)
 - [Provider registry](docs/reference/provider-registry.md)
