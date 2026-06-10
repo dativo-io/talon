@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Release Note Quality Bar
+
+For user-facing entries, include:
+
+- why this change matters (problem solved),
+- who should care (operator/developer persona),
+- how to verify quickly (command or path),
+- any upgrade/migration impact,
+- at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
+
+## [1.6.0] - 2026-06-10
+
 ### Added
 
 - **feat(gateway): egress allow/deny by destination and data classification (#130).** Operators can now declare which destinations (providers and/or regions) each data tier may egress to via `gateway.default_policy.egress` (per-caller override under `callers[].policy_overrides.egress`). Denials happen in the policy step — before secrets retrieval and before any bytes reach the upstream — return HTTP 403 with machine codes `egress_tier_destination_disallowed` / `egress_destination_disallowed`, and map to the new `POLICY_DENIED_EGRESS` explanation code. This supports data-transfer controls (e.g. GDPR Chapter V transfer policies) for CTO/DPO personas; Talon enforces and evidences the rule, it does not make the compliance determination. Verify quickly: add a tier_2 rule with `allowed_regions: ["EU", "LOCAL"]`, send a payload containing an IBAN to a US-region provider, and expect a 403 plus an `egress_decision` evidence section. Unconfigured deployments are unchanged (egress is not evaluated); in `shadow` mode violations are recorded but forwarded.
@@ -32,16 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **fix(pack): EU AI Act overlay `require_for_tier: "2"` was a no-op.** The parser accepts `tier_0`/`tier_1`/`tier_2`; the overlay now uses `tier_2` so tier-based plan review actually triggers.
 - **fix(schema): `talon.config.schema.json` caller field renamed `source_cidrs` → `source_ip_ranges`** to match what the gateway actually parses, and the gateway `mode` schema default corrected from `shadow` to `enforce` (the runtime default when `mode` is omitted).
 - **docs: consistency fixes across config docs.** Quickstart demo claimed data tier 3 (tiers are 0–2; confidential = 2); policy cookbook caller example used nonexistent `api_key` (now `tenant_key`); `human_oversight` examples used invalid `on_demand` (canonical: `on-demand`); the tool-class governance recipe documented a nonexistent `policies.plan_review` path with unimplemented fields (now shows `compliance.plan_review` + built-in class defaults); `add-talon-to-existing-app` copy-paste config was missing the required `base_url` for the enabled openai provider.
-
-### Release Note Quality Bar
-
-For user-facing entries, include:
-
-- why this change matters (problem solved),
-- who should care (operator/developer persona),
-- how to verify quickly (command or path),
-- any upgrade/migration impact,
-- at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
 ## [1.5.5] - 2026-06-01
 
@@ -513,7 +515,8 @@ For user-facing entries, include:
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.5.5...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/dativo-io/talon/compare/v1.5.5...v1.6.0
 [1.5.5]: https://github.com/dativo-io/talon/compare/v1.5.0...v1.5.5
 [1.5.0]: https://github.com/dativo-io/talon/compare/v1.4.6...v1.5.0
 [1.4.6]: https://github.com/dativo-io/talon/compare/v1.4.5...v1.4.6
