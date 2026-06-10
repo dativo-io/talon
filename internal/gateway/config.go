@@ -277,12 +277,23 @@ func (c *GatewayConfig) ApplyDefaults() error {
 	}
 	c.ServerDefaults.AttachmentPolicy = applyAttachmentPolicyDefaults(c.ServerDefaults.AttachmentPolicy)
 	c.ServerDefaults.Egress.applyDefaults()
+	normalizeProviderRegions(c.Providers)
 	for i := range c.Callers {
 		if ov := c.Callers[i].PolicyOverrides; ov != nil {
 			ov.Egress.applyDefaults()
 		}
 	}
 	return nil
+}
+
+func normalizeProviderRegions(providers map[string]ProviderConfig) {
+	for name := range providers {
+		p := providers[name]
+		if p.Region != "" {
+			p.Region = normalizeEgressRegion(p.Region)
+			providers[name] = p
+		}
+	}
 }
 
 // applyAttachmentPolicyDefaults fills in missing values for an AttachmentPolicyConfig.
@@ -317,6 +328,7 @@ func (c *GatewayConfig) Validate() error {
 	for name := range c.Providers {
 		p := c.Providers[name]
 		if !p.Enabled {
+			c.Providers[name] = p
 			continue
 		}
 		if p.UpstreamAuthMode == "" {

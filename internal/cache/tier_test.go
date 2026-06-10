@@ -15,8 +15,8 @@ func TestTierLabel(t *testing.T) {
 		{0, "public"},
 		{1, "internal"},
 		{2, "confidential"},
-		{-1, "public"},
-		{99, "public"},
+		{-1, "confidential"},
+		{99, "confidential"},
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, TierLabel(tt.tier), "tier %d", tt.tier)

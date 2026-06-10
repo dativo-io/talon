@@ -3,9 +3,11 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -262,4 +264,30 @@ func TestGateway_Egress_CallerOverrideDefaultDeny(t *testing.T) {
 	assert.Equal(t, EgressActionDeny, ev.EgressDecision.Decision)
 	assert.Equal(t, "default_action", ev.EgressDecision.MatchedRule)
 	assert.Equal(t, EgressReasonDestination, ev.EgressDecision.Reason)
+}
+
+func TestGateway_Egress_CombinedDenyReasonsPreferEgressCode(t *testing.T) {
+	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "US")
+	// gateway_access runs before gateway_egress; both deny for tier-2 IBAN → US + model not in allowlist.
+	gw.config.Callers[0].PolicyOverrides.AllowedModels = []string{"gpt-4o"}
+
+	w := makeEgressRequest(gw, egressTier2Body)
+
+	require.Equal(t, http.StatusForbidden, w.Code)
+	var body openAIErrorBody
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+	assert.Equal(t, EgressReasonTierDestination, body.Error.Code,
+		"HTTP error body must prefer the egress machine code when egress is among deny reasons")
+	assert.NotContains(t, strings.ToLower(body.Error.Message), "allowlist")
+
+	assert.Equal(t, int64(0), upstreamCalls.Load(), "upstream must not be called")
+
+	ev := latestEgressEvidence(t, evStore)
+	require.False(t, ev.PolicyDecision.Allowed)
+	require.GreaterOrEqual(t, len(ev.PolicyDecision.Reasons), 2)
+	joined := strings.Join(ev.PolicyDecision.Reasons, " ")
+	assert.Contains(t, joined, "allowlist")
+	assert.Contains(t, joined, EgressReasonTierDestination)
+	require.NotNil(t, ev.EgressDecision)
+	assert.Equal(t, EgressReasonTierDestination, ev.EgressDecision.Reason)
 }

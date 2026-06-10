@@ -58,6 +58,40 @@ func (p *EgressPolicyConfig) applyDefaults() {
 	if p.DefaultAction == "" {
 		p.DefaultAction = EgressActionAllow
 	}
+	normalizeEgressPolicy(p)
+}
+
+// normalizeEgressPolicy canonicalizes provider and region tokens so config
+// matching is case-insensitive for operators. Providers are lowercased ("*"
+// preserved); regions are uppercased ("unknown" preserved).
+func normalizeEgressPolicy(p *EgressPolicyConfig) {
+	if p == nil {
+		return
+	}
+	for i := range p.Rules {
+		rule := &p.Rules[i]
+		for j, prov := range rule.AllowedProviders {
+			rule.AllowedProviders[j] = normalizeEgressProvider(prov)
+		}
+		for j, region := range rule.AllowedRegions {
+			rule.AllowedRegions[j] = normalizeEgressRegion(region)
+		}
+	}
+}
+
+func normalizeEgressProvider(name string) string {
+	if name == "*" {
+		return name
+	}
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func normalizeEgressRegion(region string) string {
+	region = strings.TrimSpace(region)
+	if region == "" || strings.EqualFold(region, evidence.FlowRegionUnknown) {
+		return evidence.FlowRegionUnknown
+	}
+	return strings.ToUpper(region)
 }
 
 // validateEgressPolicy checks an egress policy block. scope identifies the
@@ -224,6 +258,19 @@ func firstEgressReason(reasons []string) string {
 		if strings.HasPrefix(reason, EgressReasonTierDestination) || strings.HasPrefix(reason, EgressReasonDestination) {
 			return reason
 		}
+	}
+	return ""
+}
+
+// preferredDenyReason selects the reason surfaced in provider-native HTTP error
+// bodies. When multiple controls deny, egress machine codes take precedence so
+// clients and integrators see a stable egress-specific code.
+func preferredDenyReason(reasons []string) string {
+	if egressReason := firstEgressReason(reasons); egressReason != "" {
+		return egressReason
+	}
+	if len(reasons) > 0 {
+		return reasons[0]
 	}
 	return ""
 }

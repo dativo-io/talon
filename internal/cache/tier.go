@@ -3,15 +3,16 @@ package cache
 import "time"
 
 // TierLabel converts a numeric classifier tier (0-2) to the string label used
-// by the cache policy vocabulary and the ttl_by_tier config keys.
+// by the cache policy vocabulary and the ttl_by_tier config keys. Unknown or
+// out-of-range tiers map to "confidential" (fail-closed).
 func TierLabel(tier int) string {
 	switch tier {
+	case 0:
+		return "public"
 	case 1:
 		return "internal"
-	case 2:
-		return "confidential"
 	default:
-		return "public"
+		return "confidential"
 	}
 }
 

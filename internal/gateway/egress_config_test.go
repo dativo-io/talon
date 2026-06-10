@@ -11,6 +11,39 @@ import (
 
 func intPtr(v int) *TierLevel { t := TierLevel(v); return &t }
 
+func TestPreferredDenyReason(t *testing.T) {
+	allowlist := "Model gpt-4o-mini not in caller allowlist"
+	egress := EgressReasonTierDestination + ": tier 2 data may not egress to provider openai (region US)"
+
+	assert.Equal(t, egress, preferredDenyReason([]string{allowlist, egress}))
+	assert.Equal(t, egress, preferredDenyReason([]string{egress, allowlist}))
+	assert.Equal(t, allowlist, preferredDenyReason([]string{allowlist}))
+	assert.Empty(t, preferredDenyReason(nil))
+}
+
+func TestNormalizeEgressPolicy_CaseFoldsTokens(t *testing.T) {
+	t2 := TierConfidential
+	p := &EgressPolicyConfig{
+		Rules: []EgressRule{{
+			Tier:             &t2,
+			AllowedProviders: []string{"OpenAI"},
+			AllowedRegions:   []string{"eu", "local"},
+		}},
+	}
+	p.applyDefaults()
+
+	assert.Equal(t, []string{"openai"}, p.Rules[0].AllowedProviders)
+	assert.Equal(t, []string{"EU", "LOCAL"}, p.Rules[0].AllowedRegions)
+
+	gotProvider := EvaluateEgress(p, 2, "openai", "US")
+	assert.True(t, gotProvider.Allowed)
+	assert.Equal(t, "tier_2:allowed_providers", gotProvider.MatchedRule)
+
+	gotRegion := EvaluateEgress(p, 2, "custom", "EU")
+	assert.True(t, gotRegion.Allowed)
+	assert.Equal(t, "tier_2:allowed_regions", gotRegion.MatchedRule)
+}
+
 func TestResolveEgressPolicy(t *testing.T) {
 	serverPolicy := &EgressPolicyConfig{
 		DefaultAction: EgressActionDeny,
@@ -329,6 +362,40 @@ gateway:
 	_, err := LoadGatewayConfig(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "public, internal, confidential")
+}
+
+func TestLoadGatewayConfig_EgressNormalizesCase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gateway.yaml")
+	content := `
+gateway:
+  enabled: true
+  mode: enforce
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+      region: "us"
+  default_policy:
+    egress:
+      rules:
+        - tier: 2
+          allowed_providers: ["OpenAI"]
+          allowed_regions: ["eu"]
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	cfg, err := LoadGatewayConfig(path)
+	require.NoError(t, err)
+
+	prov, ok := cfg.Provider("openai")
+	require.True(t, ok)
+	assert.Equal(t, "US", prov.Region)
+
+	rules := cfg.ServerDefaults.Egress.Rules
+	require.Len(t, rules, 1)
+	assert.Equal(t, []string{"openai"}, rules[0].AllowedProviders)
+	assert.Equal(t, []string{"EU"}, rules[0].AllowedRegions)
 }
 
 func TestLoadGatewayConfig_EgressInvalid(t *testing.T) {

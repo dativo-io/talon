@@ -457,8 +457,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !allowed && policyErr == nil {
 			if isShadow {
 				detail := "policy denied"
-				if len(reasons) > 0 {
-					detail = reasons[0]
+				if reason := preferredDenyReason(reasons); reason != "" {
+					detail = reason
 				}
 				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 					Type: "policy_deny", Detail: detail, Action: "block",
@@ -478,11 +478,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						Str("reason", egressReason).
 						Msg("gateway_egress_denied")
 				}
-				clientReason := reasons[0]
-				if egressReason != "" {
-					clientReason = egressReason
-				}
-				WriteProviderError(w, route.Provider, http.StatusForbidden, clientReason)
+				WriteProviderError(w, route.Provider, http.StatusForbidden, preferredDenyReason(reasons))
 				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)

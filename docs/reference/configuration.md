@@ -225,13 +225,18 @@ Behavior:
 - A request is allowed when **any** rule for its tier matches the destination,
   either by provider name (`allowed_providers`, `"*"` = any) or by the
   provider's resolved region (`allowed_regions`).
+- `allowed_providers` values are normalized to lowercase and `allowed_regions`
+  to uppercase at load time (except `"*"` and `"unknown"`). Provider
+  `region` fields follow the same uppercase convention.
 - A destination with an **unknown region never matches** `allowed_regions`
   (fail-closed): set `gateway.providers.<name>.region` explicitly for custom
   `base_url` endpoints. Known providers fall back to registry metadata.
 - `default_action: deny` turns the policy into an allowlist: tiers without a
   rule are denied.
 - Per-caller override: `callers[].policy_overrides.egress` **replaces** the
-  server default wholesale for that caller (most-specific wins).
+  server default wholesale for that caller (most-specific wins). A future
+  `merge` mode may allow layering caller rules on top of server defaults;
+  until then, copy server rules into the override when you need both.
 - When no `egress` block is configured at either level, egress is not
   evaluated and behavior is unchanged.
 - Denials return HTTP 403 with machine code
