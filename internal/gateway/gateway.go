@@ -274,7 +274,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Warn().Str("caller", caller.Name).Msg("gateway_rate_limited")
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, route.Provider, http.StatusTooManyRequests, "Rate limit exceeded")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, "", start, nil, &classifier.Classification{}, nil, 0, durationMS, "", false, []string{"rate limit exceeded"}, false, false, nil, nil, nil, nil, false, "", 0, 0, 0, 0, 0)
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, "", start, "", &classifier.Classification{}, nil, 0, durationMS, "", false, []string{"rate limit exceeded"}, false, nil, nil, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
@@ -327,9 +327,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, route.Provider, http.StatusBadRequest,
 				"Request blocked: attachment violates policy")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text,
 				g.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text), nil, 0, 0, "", false,
-				[]string{"attachment policy block"}, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0, 0)
+				[]string{"attachment policy block"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
@@ -363,7 +363,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !allowed {
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, route.Provider, http.StatusForbidden, "Caller not allowed for this provider")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, "", false, []string{"provider not allowed"}, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0, 0)
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"provider not allowed"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
@@ -391,7 +391,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request contains PII that is not allowed")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, "", false, []string{"PII block"}, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0, 0)
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, []string{"PII block"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
@@ -442,7 +442,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				durationMS := time.Since(start).Milliseconds()
 				WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Policy evaluation failed")
-				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, "", false, []string{"policy evaluation error"}, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0, 0)
+				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"policy evaluation error"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
@@ -464,7 +464,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				durationMS := time.Since(start).Milliseconds()
 				WriteProviderError(w, route.Provider, http.StatusForbidden, reasons[0])
-				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, 0, "", false, reasons, false, false, nil, attSummary, nil, nil, false, "", 0, 0, 0, 0, estimatedCost)
+				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
@@ -498,8 +498,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					Msg("gateway_tool_blocked")
 				WriteProviderError(w, route.Provider, http.StatusForbidden,
 					fmt.Sprintf("Request contains forbidden tools: %v", tr.Removed))
-				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
-					classification, nil, 0, 0, "", false, []string{"tool governance block"}, false, false, nil, attSummary, toolResult, nil, false, "", 0, 0, 0, 0, estimatedCost)
+				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text,
+					classification, nil, 0, 0, "", false, []string{"tool governance block"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
@@ -516,8 +516,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						Msg("gateway_tool_filter_failed")
 					WriteProviderError(w, route.Provider, http.StatusInternalServerError,
 						"Failed to filter forbidden tools from request")
-					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body,
-						classification, nil, 0, 0, "", false, []string{"tool filter error"}, false, false, nil, attSummary, toolResult, nil, false, "", 0, 0, 0, 0, estimatedCost)
+					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text,
+						classification, nil, 0, 0, "", false, []string{"tool filter error"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 					if err != nil {
 						g.handleEvidenceWriteFailure(ctx, err)
 						return
@@ -597,7 +597,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					_ = g.cacheStore.IncrementHitCount(ctx, hit.ID)
 					costSaved := g.costEstimate(extracted.Model, 300, 300)
 					durationMS := time.Since(start).Milliseconds()
-					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, "", true, nil, false, false, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved, 0, 0, estimatedCost)
+					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", true, nil, inputPIIRedacted, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved, false, 0, 0, estimatedCost)
 					if err != nil {
 						g.handleEvidenceWriteFailure(ctx, err)
 						return
@@ -673,7 +673,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				durationMS := time.Since(start).Milliseconds()
 				log.Warn().Err(err).Str("secret", prov.SecretName).Msg("gateway_secret_get_failed")
 				WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Service configuration error")
-				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, nil, 0, durationMS, "", false, []string{"secret retrieval error"}, false, false, nil, attSummary, toolResult, shadowViolations, false, "", 0, 0, 0, 0, estimatedCost)
+				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"secret retrieval error"}, false, nil, attSummary, toolResult, shadowViolations, false, "", 0, 0, false, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
@@ -698,6 +698,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var responsePII *ResponsePIIScanResult
 	needsResponseScan := responsePIIAction != "allow" && responsePIIAction != ""
 	var forwardErr error
+	cacheStored := false
 
 	var streamingMetrics StreamingMetrics
 	fwdParams := ForwardParams{
@@ -743,7 +744,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							Model: extracted.Model, DataTier: "public", PIIScrubbed: true,
 							CreatedAt: now, ExpiresAt: now.Add(ttl),
 						}
-						_ = g.cacheStore.Insert(ctx, entry)
+						if insertErr := g.cacheStore.Insert(ctx, entry); insertErr == nil {
+							cacheStored = true
+						}
 					}
 				}
 			}
@@ -784,18 +787,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 10: Evidence
-	var outputPIIDetected bool
-	var outputPIITypes []string
-	if responsePII != nil {
-		outputPIIDetected = responsePII.PIIDetected
-		outputPIITypes = responsePII.PIITypes
-	}
-
 	var forwardErrStr string
 	if forwardErr != nil {
 		forwardErrStr = forwardErr.Error()
 	}
-	persisted, recordErr := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, body, classification, &tokenUsage, cost, durationMS, forwardErrStr, true, nil, inputPIIRedacted, outputPIIDetected, outputPIITypes, attSummary, toolResult, shadowViolations, false, "", 0, 0, ttftMS, tpotMS, estimatedCost)
+	persisted, recordErr := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, &tokenUsage, cost, durationMS, forwardErrStr, true, nil, inputPIIRedacted, responsePII, attSummary, toolResult, shadowViolations, false, "", 0, 0, cacheStored, ttftMS, tpotMS, estimatedCost)
 	if recordErr != nil {
 		g.handleEvidenceWriteFailure(ctx, recordErr)
 		return
@@ -810,7 +806,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, _ []byte, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, executionError string, allowed bool, reasons []string, inputPIIRedacted bool, outputPIIDetected bool, outputPIITypes []string, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, ttftMS int64, tpotMS float64, estimatedCost float64) (*evidence.Evidence, error) {
+func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, inputText string, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, executionError string, allowed bool, reasons []string, inputPIIRedacted bool, responsePII *ResponsePIIScanResult, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, cacheStored bool, ttftMS int64, tpotMS float64, estimatedCost float64) (*evidence.Evidence, error) {
 	if classification == nil {
 		classification = &classifier.Classification{}
 	}
@@ -826,7 +822,31 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	for _, e := range classification.Entities {
 		piiDetected = append(piiDetected, e.Type)
 	}
+	var outputPIIDetected bool
+	var outputPIITypes []string
+	if responsePII != nil {
+		outputPIIDetected = responsePII.PIIDetected
+		outputPIITypes = responsePII.PIITypes
+	}
 	execErr := resolveExecutionError(executionError, reasons)
+
+	dataFlow := g.buildDataFlow(dataFlowInputs{
+		CorrelationID:    correlationID,
+		TenantID:         caller.TenantID,
+		CallerName:       caller.Name,
+		Provider:         provider,
+		Model:            model,
+		Allowed:          allowed,
+		InputPIIRedacted: inputPIIRedacted,
+		InputText:        inputText,
+		Classification:   classification,
+		AttSummary:       attSummary,
+		ResponsePII:      responsePII,
+		CacheHit:         cacheHit,
+		CacheEntryID:     cacheEntryID,
+		CacheStored:      cacheStored,
+	})
+	g.emitDataFlowTelemetry(ctx, correlationID, caller, dataFlow)
 
 	var attScan *evidence.AttachmentScan
 	if attSummary != nil && attSummary.FilesScanned > 0 {
@@ -876,6 +896,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		Stage:                   stageFromContext(ctx),
 		CandidateIndex:          candidateIndexFromContext(ctx),
 		ExplanationFacts:        buildGatewayExplanationFacts(allowed, reasons, outputPIIDetected, outputPIITypes, stageFromContext(ctx)),
+		DataFlow:                dataFlow,
 	}
 	if toolResult != nil {
 		params.ToolsRequested = toolResult.Requested

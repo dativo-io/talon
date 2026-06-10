@@ -13,10 +13,18 @@ import (
 )
 
 // ResponsePIIScanResult captures what the response PII scanner found.
+// Entities and Tier stay in memory only (used to build data-flow evidence
+// digests); they are never serialized or persisted with raw values.
 type ResponsePIIScanResult struct {
 	PIIDetected bool
 	PIITypes    []string
 	Redacted    bool
+	Blocked     bool
+	// Entities are the merged (non-overlapping) entity spans from the
+	// response content scan. In-memory only.
+	Entities []classifier.PIIEntity
+	// Tier is the response content classification tier (0-2).
+	Tier int
 }
 
 // responseCapture wraps an http.ResponseWriter to capture the response body
@@ -87,6 +95,8 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 	}
 
 	result.PIIDetected = true
+	result.Entities = classifier.MergeEntitySpans(contentText, cls.Entities)
+	result.Tier = cls.Tier
 	types := make(map[string]bool)
 	for _, e := range cls.Entities {
 		types[e.Type] = true
@@ -113,6 +123,7 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 		}
 		blocked, _ := json.Marshal(safeErr)
 		result.Redacted = true
+		result.Blocked = true
 		log.Warn().
 			Strs("pii_types", result.PIITypes).
 			Msg("response_pii_blocked")
@@ -414,7 +425,12 @@ func handleStreamingPIIScan(
 	for t := range types {
 		piiTypes = append(piiTypes, t)
 	}
-	result := &ResponsePIIScanResult{PIIDetected: true, PIITypes: piiTypes}
+	result := &ResponsePIIScanResult{
+		PIIDetected: true,
+		PIITypes:    piiTypes,
+		Entities:    classifier.MergeEntitySpans(contentText, cls.Entities),
+		Tier:        cls.Tier,
+	}
 
 	switch action {
 	case "warn":
@@ -439,6 +455,7 @@ func handleStreamingPIIScan(
 	case "block":
 		forwardBlockedResponse(w)
 		result.Redacted = true
+		result.Blocked = true
 		log.Warn().
 			Strs("pii_types", piiTypes).
 			Msg("response_pii_blocked_stream")

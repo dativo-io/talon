@@ -59,8 +59,12 @@ type ProviderConfig struct {
 	// "secret" (default) reads provider credentials from Talon's secret store.
 	// "client_bearer" forwards the caller bearer token upstream and is intended
 	// for proxy quickstart mode only.
-	UpstreamAuthMode string   `yaml:"upstream_auth_mode,omitempty" json:"upstream_auth_mode,omitempty"` // secret | client_bearer
-	BaseURL          string   `yaml:"base_url" json:"base_url"`
+	UpstreamAuthMode string `yaml:"upstream_auth_mode,omitempty" json:"upstream_auth_mode,omitempty"` // secret | client_bearer
+	BaseURL          string `yaml:"base_url" json:"base_url"`
+	// Region is the jurisdiction of the upstream endpoint ("EU", "US",
+	// "LOCAL", ...) recorded in data-flow evidence. When empty, Talon falls
+	// back to registered provider metadata, then "unknown" — never a guess.
+	Region           string   `yaml:"region,omitempty" json:"region,omitempty"`
 	AllowedModels    []string `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
 	BlockedModels    []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
 	ForbiddenTools   []string `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`

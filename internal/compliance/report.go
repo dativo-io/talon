@@ -24,6 +24,20 @@ type Report struct {
 	TotalCostEUR      float64          `json:"total_cost_eur"`
 	Mappings          []ControlMapping `json:"mappings"`
 	SampleEvidenceIDs []string         `json:"sample_evidence_ids"`
+	// DataDestinations aggregates data-flow evidence per destination —
+	// supports evidence for GDPR Art. 30 records of processing (recipients)
+	// and EU AI Act Art. 13 transparency. Empty for evidence recorded before
+	// data-flow tracking was introduced.
+	DataDestinations []DestinationSummary `json:"data_destinations,omitempty"`
+}
+
+// DestinationSummary aggregates classified-data flows to one destination.
+type DestinationSummary struct {
+	Kind        string   `json:"kind"`             // llm_provider | mcp_tool | client | cache
+	Name        string   `json:"name"`             // e.g. "openai"
+	Region      string   `json:"region,omitempty"` // "EU" | "US" | "LOCAL" | "unknown"
+	RecordCount int      `json:"record_count"`     // evidence records with flows to this destination
+	EntityTypes []string `json:"entity_types,omitempty"`
 }
 
 func BuildReport(framework, tenantID, agentID, from, to string, list []evidence.Evidence) Report {
@@ -41,6 +55,7 @@ func BuildReport(framework, tenantID, agentID, from, to string, list []evidence.
 			r.Mappings = append(r.Mappings, m)
 		}
 	}
+	agg := newDestinationAggregator()
 	for i := range list {
 		ev := &list[i]
 		if framework != "" && !containsFramework(ev.Compliance.Frameworks, framework) {
@@ -57,9 +72,85 @@ func BuildReport(framework, tenantID, agentID, from, to string, list []evidence.
 		if len(r.SampleEvidenceIDs) < 20 {
 			r.SampleEvidenceIDs = append(r.SampleEvidenceIDs, ev.ID)
 		}
+		agg.addRecord(ev.DataFlow)
 	}
+	r.DataDestinations = agg.summaries()
 	sort.Strings(r.SampleEvidenceIDs)
 	return r
+}
+
+// destinationAggregator collapses data-flow items across evidence records
+// into one summary per (kind, name, region) destination.
+type destinationAggregator struct {
+	byKey map[string]*destinationAgg
+}
+
+type destinationAgg struct {
+	kind, name, region string
+	recordCount        int
+	entityTypes        map[string]struct{}
+}
+
+func newDestinationAggregator() *destinationAggregator {
+	return &destinationAggregator{byKey: make(map[string]*destinationAgg)}
+}
+
+// addRecord folds one evidence record's data flow into the aggregate.
+// Each destination counts at most once per record.
+func (a *destinationAggregator) addRecord(df *evidence.DataFlow) {
+	if df == nil {
+		return
+	}
+	seenInRecord := make(map[string]struct{})
+	for i := range df.Items {
+		item := &df.Items[i]
+		d := item.Destination
+		key := d.Kind + "\x1f" + d.Name + "\x1f" + d.Region
+		agg, ok := a.byKey[key]
+		if !ok {
+			agg = &destinationAgg{kind: d.Kind, name: d.Name, region: d.Region, entityTypes: map[string]struct{}{}}
+			a.byKey[key] = agg
+		}
+		if _, dup := seenInRecord[key]; !dup {
+			seenInRecord[key] = struct{}{}
+			agg.recordCount++
+		}
+		for _, t := range item.EntityTypes {
+			agg.entityTypes[t] = struct{}{}
+		}
+	}
+}
+
+// summaries returns deterministic, sorted destination summaries.
+func (a *destinationAggregator) summaries() []DestinationSummary {
+	out := make([]DestinationSummary, 0, len(a.byKey))
+	for _, agg := range a.byKey {
+		types := make([]string, 0, len(agg.entityTypes))
+		for t := range agg.entityTypes {
+			types = append(types, t)
+		}
+		sort.Strings(types)
+		out = append(out, DestinationSummary{
+			Kind:        agg.kind,
+			Name:        agg.name,
+			Region:      agg.region,
+			RecordCount: agg.recordCount,
+			EntityTypes: types,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Region < out[j].Region
+	})
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func RenderJSON(report Report) ([]byte, error) {
@@ -94,7 +185,12 @@ code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; }
 <table><thead><tr><th>Framework</th><th>Article</th><th>Control</th><th>Source</th></tr></thead><tbody>
 {{range .Mappings}}<tr><td>{{.Framework}}</td><td>{{.Article}}</td><td>{{.Control}}</td><td><code>{{.Source}}</code></td></tr>{{end}}
 </tbody></table>
-<h2>Sample Evidence IDs</h2>
+{{if .DataDestinations}}<h2>Data Destinations</h2>
+<p class="meta">Where classified data was sent (from signed data-flow evidence) — supports evidence for GDPR Art. 30 records of processing and EU AI Act Art. 13 transparency.</p>
+<table><thead><tr><th>Kind</th><th>Destination</th><th>Region</th><th>Records</th><th>Entity Types</th></tr></thead><tbody>
+{{range .DataDestinations}}<tr><td>{{.Kind}}</td><td><code>{{.Name}}</code></td><td>{{.Region}}</td><td>{{.RecordCount}}</td><td>{{range $i, $t := .EntityTypes}}{{if $i}}, {{end}}<code>{{$t}}</code>{{end}}</td></tr>{{end}}
+</tbody></table>
+{{end}}<h2>Sample Evidence IDs</h2>
 <table><thead><tr><th>ID</th></tr></thead><tbody>
 {{range .SampleEvidenceIDs}}<tr><td><code>{{.}}</code></td></tr>{{end}}
 </tbody></table>
