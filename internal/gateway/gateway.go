@@ -466,7 +466,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("reasons", reasons).Msg("shadow_policy_deny")
 			} else {
 				durationMS := time.Since(start).Milliseconds()
-				if egressReason := firstEgressReason(reasons); egressReason != "" {
+				egressReason := firstEgressReason(reasons)
+				if egressReason != "" {
 					log.Warn().
 						Str("correlation_id", correlationID).
 						Str("tenant_id", caller.TenantID).
@@ -477,7 +478,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						Str("reason", egressReason).
 						Msg("gateway_egress_denied")
 				}
-				WriteProviderError(w, route.Provider, http.StatusForbidden, reasons[0])
+				clientReason := reasons[0]
+				if egressReason != "" {
+					clientReason = egressReason
+				}
+				WriteProviderError(w, route.Provider, http.StatusForbidden, clientReason)
 				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
