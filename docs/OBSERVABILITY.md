@@ -64,8 +64,22 @@ Registered by `internal/gateway`. Emitted for every request through the LLM API 
 | `talon.cache.hits` | Int64Counter | `{hit}` | `tenant_id` | Semantic cache hits (request served from cache). |
 | `talon.cache.misses` | Int64Counter | `{miss}` | `tenant_id` | Semantic cache misses (forwarded to LLM). |
 | `talon.shadow.violations.total` | Int64Counter | `{violation}` | `violation_type` | Shadow mode violations (would-have-blocked in enforce mode). |
+| `talon.gateway.egress.decisions` | Int64Counter | `{decision}` | `tenant_id`, `tier`, `gen_ai.system`, `region`, `decision` | Egress policy decisions (destination × data tier), `decision` is `allow` or `deny`. |
 | `talon.budget.utilization` | Float64Gauge | `%` | `tenant_id`, `period` | Current budget utilization as a percentage. |
 | `talon.budget.alerts.total` | Int64Counter | `{alert}` | `tenant_id`, `threshold` | Budget threshold breach alerts. |
+
+When an egress policy is configured, the gateway request span also carries
+`talon.egress.*` attributes: `caller`, `correlation_id`, `data_tier`,
+`destination_provider`, `destination_region`, `decision`, and `reason`
+(machine code, empty on allow).
+
+### Routing spans
+
+The `llm.route` / `llm.graceful_route` spans (agent runs) carry
+`talon.data.tier` and, when compliance-aware routing is active,
+`talon.routing.sovereignty_mode`, `talon.provider.jurisdiction`,
+`talon.provider.region`, `talon.routing.rejected_count`, and
+`talon.routing.selection_reason`.
 
 ### Policy engine
 

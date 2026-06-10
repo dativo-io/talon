@@ -72,6 +72,16 @@ func TestEvidenceIntegritySpecRoundTrip(t *testing.T) {
 				},
 			},
 		},
+		// egress_decision (spec §2 field 47, optional): exercised so the
+		// canonical serialization of the appended field is covered too.
+		EgressDecision: &EgressDecision{
+			Tier:        2,
+			Provider:    "openai",
+			Region:      "US",
+			Decision:    "deny",
+			MatchedRule: "tier_2",
+			Reason:      "egress_tier_destination_disallowed",
+		},
 		// Signature is intentionally empty; it is set by the signing procedure.
 	}
 
@@ -127,11 +137,19 @@ func TestEvidenceIntegritySpecRoundTrip(t *testing.T) {
 	assert.False(t, store.VerifyRecord(ev), "mutating data_flow must invalidate the signature")
 	ev.DataFlow.Items[0].Destination.Name = originalDest
 	assert.True(t, store.VerifyRecord(ev), "restoring data_flow must re-validate the signature")
+
+	// egress_decision is covered by the signature too.
+	originalDecision := ev.EgressDecision.Decision
+	ev.EgressDecision.Decision = "allow"
+	assert.False(t, store.VerifyRecord(ev), "mutating egress_decision must invalidate the signature")
+	ev.EgressDecision.Decision = originalDecision
+	assert.True(t, store.VerifyRecord(ev), "restoring egress_decision must re-validate the signature")
 }
 
 // TestEvidenceIntegrityWithoutDataFlow proves records without the optional
-// data_flow field (all pre-1.1 records) keep verifying: the omitempty field
-// contributes no bytes to the canonical form when absent.
+// data_flow / egress_decision fields (all pre-1.1 / pre-1.2 records) keep
+// verifying: the omitempty fields contribute no bytes to the canonical form
+// when absent.
 func TestEvidenceIntegrityWithoutDataFlow(t *testing.T) {
 	ev := &Evidence{
 		ID:             "evt_no_dataflow",
@@ -146,6 +164,8 @@ func TestEvidenceIntegrityWithoutDataFlow(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(canonical), "data_flow",
 		"absent data_flow must not appear in canonical bytes")
+	assert.NotContains(t, string(canonical), "egress_decision",
+		"absent egress_decision must not appear in canonical bytes")
 
 	signer, err := NewSigner(testSigningKey)
 	require.NoError(t, err)

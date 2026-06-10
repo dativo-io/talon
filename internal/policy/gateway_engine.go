@@ -12,6 +12,7 @@ import (
 
 var gatewayAccessPolicy = []regoPolicy{
 	{file: "rego/gateway_access.rego", query: "data.talon.policy.gateway_access.deny"},
+	{file: "rego/gateway_egress.rego", query: "data.talon.policy.gateway_egress.deny"},
 }
 
 // GatewayEngine evaluates gateway-specific access policy (model allowlist, cost, data tier).
@@ -41,15 +42,20 @@ func (e *GatewayEngine) EvaluateGateway(ctx context.Context, input map[string]in
 		trace.WithAttributes(
 			attribute.String("input.model", stringOr(input["model"])),
 			attribute.String("input.caller_name", stringOr(input["caller_name"])),
+			attribute.String("input.provider", stringOr(input["provider"])),
+			attribute.String("input.destination_region", stringOr(input["destination_region"])),
 		))
 	defer span.End()
 
-	reasons, err = evaluateDenyReasons(ctx, e.prepared, "rego/gateway_access.rego", input)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		RecordPolicyEvaluation(ctx, "error", stringOr(input["tenant_id"]), stringOr(input["caller_name"]), time.Since(start))
-		return false, nil, err
+	for _, rp := range gatewayAccessPolicy {
+		fileReasons, evalErr := evaluateDenyReasons(ctx, e.prepared, rp.file, input)
+		if evalErr != nil {
+			span.RecordError(evalErr)
+			span.SetStatus(codes.Error, evalErr.Error())
+			RecordPolicyEvaluation(ctx, "error", stringOr(input["tenant_id"]), stringOr(input["caller_name"]), time.Since(start))
+			return false, nil, evalErr
+		}
+		reasons = append(reasons, fileReasons...)
 	}
 	allowed = len(reasons) == 0
 	decision := "allow"

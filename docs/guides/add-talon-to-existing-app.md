@@ -47,6 +47,7 @@ gateway:
     openai:
       enabled: true
       secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
   callers:
     - name: "my-app"
       tenant_key: "talon-gw-myapp-001"

@@ -257,6 +257,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		runnerCfg.CacheConfig = &agent.RunnerCacheConfig{
 			Enabled:             cfg.Cache.Enabled,
 			DefaultTTL:          cfg.Cache.DefaultTTL,
+			TTLByTier:           cfg.Cache.TTLByTier,
 			SimilarityThreshold: cfg.Cache.SimilarityThreshold,
 			MaxEntriesPerTenant: cfg.Cache.MaxEntriesPerTenant,
 		}
@@ -356,7 +357,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}
 			if serveCacheStore != nil && serveCachePolicy != nil && cfg.Cache != nil {
 				gw.SetCache(serveCacheStore, serveCacheEmbedder, serveCacheScrubber, serveCachePolicy,
-					cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.SimilarityThreshold, cfg.Cache.MaxEntriesPerTenant)
+					cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.TTLByTier, cfg.Cache.SimilarityThreshold, cfg.Cache.MaxEntriesPerTenant)
 			}
 			gatewayHandler = gw
 			gatewayCfgForMode = gatewayCfg
@@ -379,7 +380,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 		if serveCacheStore != nil && serveCachePolicy != nil && cfg.Cache != nil {
 			gw.SetCache(serveCacheStore, serveCacheEmbedder, serveCacheScrubber, serveCachePolicy,
-				cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.SimilarityThreshold, cfg.Cache.MaxEntriesPerTenant)
+				cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.TTLByTier, cfg.Cache.SimilarityThreshold, cfg.Cache.MaxEntriesPerTenant)
 		}
 		gatewayHandler = gw
 		gatewayCfgForMode = quickstartCfg

@@ -20,7 +20,7 @@ compliance:
   human_oversight: on-demand    # Art. 14: Human oversight
   plan_review:
     require_for_tools: true     # Art. 14: review when tools are used
-    require_for_tier: "2"       # review for sensitive data
+    require_for_tier: "tier_2"  # review for sensitive data
     cost_threshold: 10.0       # review above cost threshold (EUR)
     timeout_minutes: 60
     notify_webhook: ""

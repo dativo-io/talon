@@ -84,6 +84,19 @@ func LoadPolicy(ctx context.Context, path string, strict bool, baseDir string) (
 		return nil, fmt.Errorf("parsing YAML: %w", err)
 	}
 
+	// Detect unknown/misspelled keys: a strict re-decode that fails means the
+	// file contains keys the loader silently ignores. Warn (don't fail) so
+	// existing configs keep working while typos become visible.
+	if unknownErr := detectUnknownFields(content); unknownErr != nil {
+		log.Warn().
+			Str("policy_path", safePath).
+			Str("detail", unknownErr.Error()).
+			Msg("policy contains unknown keys that Talon ignores — check for typos or misplaced sections")
+		span.AddEvent("policy_unknown_fields", trace.WithAttributes(
+			attribute.String("detail", unknownErr.Error()),
+		))
+	}
+
 	applyDefaults(&pol)
 	if err := pol.ComputeCanonicalIdentity(); err != nil {
 		return nil, fmt.Errorf("computing policy identity: %w", err)
@@ -113,6 +126,20 @@ func LoadPolicy(ctx context.Context, path string, strict bool, baseDir string) (
 	)
 
 	return &pol, nil
+}
+
+// detectUnknownFields re-decodes the YAML with strict field matching and
+// returns the decode error when the document contains keys that do not exist
+// on the Policy struct (typos, wrong nesting). Returns nil when all keys are
+// known.
+func detectUnknownFields(content []byte) error {
+	dec := yaml.NewDecoder(strings.NewReader(string(content)))
+	dec.KnownFields(true)
+	var probe Policy
+	if err := dec.Decode(&probe); err != nil {
+		return err
+	}
+	return nil
 }
 
 // applyDefaults fills in sensible defaults for optional fields.

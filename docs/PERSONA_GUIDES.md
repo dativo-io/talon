@@ -171,7 +171,7 @@ talon secrets set openai-api-key "..."       # Per-tenant key when using vault
 
 - **`policies.data_classification`** — `input_scan`, `output_scan`, `redact_pii`; drives PII detection and tiering.
 - **`policies.cost_limits`** — Budget denial when exceeded.
-- **`attachment_handling`** — Injection detection and action (`block_and_flag`, `warn`, `log`).
+- **`attachment_handling`** — Injection detection and action (`block_and_flag`, `warn`, `log_only`).
 - **`secrets.allowed` / `secrets.forbidden`** — Which secrets the agent may use.
 
 ---

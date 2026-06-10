@@ -686,6 +686,31 @@ func TestProxyCompliance_EmptyRegionFailClosed(t *testing.T) {
 	}
 }
 
+// TestProxyCompliance_EUTokenAlias verifies that data_residency "eu" (the
+// token `talon init` writes) is enforced identically to "eu-only".
+func TestProxyCompliance_EUTokenAlias(t *testing.T) {
+	ctx := context.Background()
+	cfg := newTestProxyConfig()
+	cfg.Compliance.DataResidency = "eu"
+
+	engine, err := NewProxyEngine(ctx, cfg)
+	require.NoError(t, err)
+
+	denied, err := engine.EvaluateProxyCompliance(ctx, &ProxyInput{
+		ToolName:       "zendesk_ticket_search",
+		UpstreamRegion: "us-east-1",
+	})
+	require.NoError(t, err)
+	assert.False(t, denied.Allowed, "data_residency 'eu' must deny non-EU upstream like 'eu-only'")
+
+	allowed, err := engine.EvaluateProxyCompliance(ctx, &ProxyInput{
+		ToolName:       "zendesk_ticket_search",
+		UpstreamRegion: "eu-west-1",
+	})
+	require.NoError(t, err)
+	assert.True(t, allowed.Allowed, "data_residency 'eu' must allow EU upstream: %v", allowed.Reasons)
+}
+
 func TestProxyCompliance_NoResidencyRestriction(t *testing.T) {
 	ctx := context.Background()
 	cfg := newTestProxyConfig()

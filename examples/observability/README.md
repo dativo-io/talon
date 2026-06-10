@@ -73,6 +73,7 @@ Once traffic flows through Talon with OTel enabled, the following metric familie
 | `talon_cache_hits` | counter | Semantic cache hits. |
 | `talon_cache_misses` | counter | Semantic cache misses. |
 | `talon_shadow_violations_total` | counter | Shadow mode violations. |
+| `talon_gateway_egress_decisions` | counter | Egress policy decisions (destination × data tier, allow/deny). |
 | `talon_budget_utilization` | gauge | Budget utilization (%). |
 | `talon_budget_alerts_total` | counter | Budget threshold breaches. |
 

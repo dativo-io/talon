@@ -15,7 +15,7 @@ var embedRego embed.FS
 // PolicyInput is the input to the cache eligibility Rego policy.
 type PolicyInput struct {
 	TenantID     string `json:"tenant_id"`
-	DataTier     string `json:"data_tier"`    // public | internal | confidential | restricted
+	DataTier     string `json:"data_tier"`    // public | internal | confidential | restricted ("restricted" is reserved; the 0-2 classifier only produces the first three — see TierLabel)
 	PIIDetected  bool   `json:"pii_detected"` // from classifier pre-scan
 	PIISeverity  string `json:"pii_severity"` // none | low | high
 	Model        string `json:"model"`

@@ -118,13 +118,20 @@ the tier.
 
 The policy engine (embedded OPA/Rego, no sidecar) evaluates the request against
 the caller's policy. Inputs include: model name, data tier, estimated cost,
-daily cost accumulator, allowed models list.
+daily cost accumulator, allowed models list, destination provider and region,
+and the resolved egress rules.
 
 Checks performed:
 - Is the requested model in the caller's allowlist?
 - Does the estimated cost exceed per-request/daily/monthly limits?
 - Does the data tier exceed the model's allowed tier?
 - Is the caller authorized for this provider?
+- May this data tier egress to this destination (provider/region), per the
+  configured egress rules? Denials carry the
+  `egress_tier_destination_disallowed` or `egress_destination_disallowed`
+  machine code, and the outcome is recorded in the `egress_decision` evidence
+  section. Because this runs before Step 10, no request bytes leave Talon on
+  an egress denial.
 
 - **Bytes read:** Extracted metadata (model, tier, cost estimate)
 - **Bytes modified:** None

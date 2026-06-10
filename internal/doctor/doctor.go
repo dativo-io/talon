@@ -238,6 +238,24 @@ func checkCache(cfg *config.Config) CheckResult {
 			Fix:     "Set cache.max_entries_per_tenant (e.g. 10000) in talon.config.yaml",
 		}
 	}
+	for tier, ttl := range cfg.Cache.TTLByTier {
+		switch tier {
+		case "public", "internal", "confidential":
+		default:
+			return CheckResult{
+				Name: "cache", Category: "config", Status: "fail",
+				Message: fmt.Sprintf("cache.ttl_by_tier key %q is not a known tier", tier),
+				Fix:     "Use public, internal, or confidential as ttl_by_tier keys in talon.config.yaml",
+			}
+		}
+		if ttl <= 0 {
+			return CheckResult{
+				Name: "cache", Category: "config", Status: "fail",
+				Message: fmt.Sprintf("cache.ttl_by_tier.%s must be positive (seconds)", tier),
+				Fix:     "Set a positive TTL in seconds (e.g. 900) in talon.config.yaml",
+			}
+		}
+	}
 	cacheDir := filepath.Dir(cfg.CacheDBPath())
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return CheckResult{

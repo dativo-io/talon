@@ -111,6 +111,7 @@ func loadPlanReviewConfig(ctx context.Context) *agent.PlanReviewConfig {
 		CostThreshold:   pol.Compliance.PlanReview.CostThreshold,
 		TimeoutMinutes:  pol.Compliance.PlanReview.TimeoutMinutes,
 		NotifyWebhook:   pol.Compliance.PlanReview.NotifyWebhook,
+		VolumeThreshold: pol.Compliance.PlanReview.VolumeThreshold,
 		Mode:            pol.Compliance.PlanReview.Mode,
 	}
 }

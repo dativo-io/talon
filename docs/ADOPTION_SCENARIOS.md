@@ -340,7 +340,7 @@ pii_handling:
 
 compliance:
   frameworks: ["gdpr", "nis2", "german_bdsg"]
-  data_residency: "eu-central-1"  # Germany only
+  data_residency: "eu-only"  # requires upstream in an EU region (e.g. eu-central-1, Germany)
   audit_retention: 2555  # 7 years (German medical records law)
 ```
 

@@ -53,8 +53,8 @@ Writes pass through these checks in order:
 memory:
   enabled: true
   mode: active                  # active | shadow | disabled
-  max_entries: 1000             # cap per agent; oldest evicted when exceeded
-  max_entry_size_kb: 16         # reject entries larger than this
+  max_entries: 1000             # cap per agent; oldest evicted when exceeded (default 100 when omitted)
+  max_entry_size_kb: 16         # reject entries larger than this (default 10 when omitted)
   max_prompt_tokens: 2000       # cap memory tokens injected into LLM prompts
   retention_days: 90            # auto-purge entries older than this
   review_mode: auto             # auto | human-review | read-only

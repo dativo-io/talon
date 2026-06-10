@@ -26,9 +26,16 @@ _upstream_region := input.upstream_region if {
 	input.upstream_region != ""
 }
 
+# Residency tokens that require EU-only upstreams. "eu-only" is the proxy
+# vocabulary; "eu" is what `talon init` writes for EU data sovereignty —
+# both enforce the same requirement.
+requires_eu_residency if {
+	data.proxy.compliance.data_residency in {"eu", "eu-only"}
+}
+
 # Data residency violation: upstream in non-EU region when policy requires EU-only.
 data_residency_violation if {
-	data.proxy.compliance.data_residency == "eu-only"
+	requires_eu_residency
 	not is_eu_region(_upstream_region)
 }
 

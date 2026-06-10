@@ -31,6 +31,35 @@ func TestExplanation_BuildLegacyFacts_GatewayModelAllowlist(t *testing.T) {
 	assert.NotEmpty(t, items[0].Fix)
 }
 
+func TestExplanation_BuildLegacyFacts_GatewayEgress(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+	}{
+		{
+			name:   "tier_destination_disallowed",
+			reason: "egress_tier_destination_disallowed: tier 2 data may not egress to provider openai (region US)",
+		},
+		{
+			name:   "destination_disallowed_default_deny",
+			reason: "egress_destination_disallowed: no egress rule permits provider openai for tier 1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			facts := BuildLegacyFacts(false, "deny", []string{tt.reason}, StagePolicyEvaluation, "", "")
+			items := BuildFromFacts(facts)
+
+			assert.Len(t, items, 1)
+			assert.Equal(t, CodePolicyDeniedEgress, items[0].Code)
+			assert.Equal(t, DecisionDeny, items[0].Decision)
+			assert.Equal(t, tt.reason, items[0].Trigger)
+			assert.Equal(t, "Request blocked because the destination is not allowed for this data classification.", items[0].Reason)
+			assert.NotEmpty(t, items[0].Fix)
+		})
+	}
+}
+
 func TestExplanation_BuildLegacyFactsSortsReasonInput(t *testing.T) {
 	reasons := []string{
 		"routing policy returned no results (fail-closed)",

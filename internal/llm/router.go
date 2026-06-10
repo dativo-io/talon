@@ -77,9 +77,13 @@ func NewRouter(routing *policy.ModelRoutingConfig, providers map[string]Provider
 func (r *Router) Route(ctx context.Context, tier int, opts *RouteOptions) (Provider, string, *RouteDecision, error) {
 	_, span := tracer.Start(ctx, "llm.route",
 		trace.WithAttributes(
-			attribute.Int("data.tier", tier),
+			otel.TalonDataTier.Int(tier),
 		))
 	defer span.End()
+
+	if opts != nil && opts.SovereigntyMode != "" {
+		span.SetAttributes(otel.TalonRoutingSovereigntyMode.String(opts.SovereigntyMode))
+	}
 
 	tierConfig, err := r.getTierConfig(tier)
 	if err != nil {
@@ -179,6 +183,10 @@ func (r *Router) routeWithCompliance(ctx context.Context, span trace.Span, tier 
 			span.SetAttributes(
 				attribute.String("gen_ai.request.model", c.model),
 				attribute.String("llm.provider", c.providerName),
+				otel.TalonProviderJurisdiction.String(meta.Jurisdiction),
+				otel.TalonProviderRegion.String(region),
+				otel.TalonRoutingRejectedCount.Int(len(rejected)),
+				otel.TalonRoutingSelectionReason.String("first candidate allowed by routing policy"),
 			)
 			return prov, c.model, &RouteDecision{
 				SelectedProvider: c.providerName,
@@ -191,6 +199,7 @@ func (r *Router) routeWithCompliance(ctx context.Context, span trace.Span, tier 
 		}
 	}
 	err := fmt.Errorf("no provider allowed by routing policy for tier %d (sovereignty %s): %d candidate(s) rejected", tier, opts.SovereigntyMode, len(rejected))
+	span.SetAttributes(otel.TalonRoutingRejectedCount.Int(len(rejected)))
 	span.RecordError(err)
 	return nil, "", nil, err
 }
@@ -236,7 +245,7 @@ func (r *Router) buildCandidates(tierConfig *policy.TierConfig) []routeCandidate
 // routeDecision is non-nil when opts enabled compliance-aware routing.
 func (r *Router) GracefulRoute(ctx context.Context, tier int, costCtx *CostContext, opts *RouteOptions) (provider Provider, model string, degraded bool, originalModel string, routeDecision *RouteDecision, err error) {
 	ctx, span := tracer.Start(ctx, "llm.graceful_route",
-		trace.WithAttributes(attribute.Int("data.tier", tier)))
+		trace.WithAttributes(otel.TalonDataTier.Int(tier)))
 	defer span.End()
 
 	provider, model, routeDecision, err = r.Route(ctx, tier, opts)

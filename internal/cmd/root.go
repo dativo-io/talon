@@ -113,15 +113,19 @@ It enforces policies on AI agent execution with:
 }
 
 func setupLogging() {
+	// Flags are bound to viper, so these resolve flag > talon.config.yaml > default.
+	logLevelResolved := viper.GetString("log_level")
+	logFormatResolved := viper.GetString("log_format")
+
 	// Parse log level
-	level, err := zerolog.ParseLevel(logLevel)
+	level, err := zerolog.ParseLevel(logLevelResolved)
 	if err != nil {
 		level = zerolog.InfoLevel
 	}
 	zerolog.SetGlobalLevel(level)
 
 	// All structured logs go to stderr so stdout stays clean for piping (e.g. talon costs | jq).
-	if logFormat == "json" {
+	if logFormatResolved == "json" {
 		log.Logger = zerolog.New(os.Stderr).With().Timestamp().Logger()
 	} else {
 		log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).

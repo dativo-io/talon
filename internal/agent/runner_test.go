@@ -781,6 +781,8 @@ func TestPlanReviewConfigFromPolicy(t *testing.T) {
 		CostThreshold:   1.5,
 		TimeoutMinutes:  10,
 		NotifyWebhook:   "https://example.com/hook",
+		VolumeThreshold: 50,
+		Mode:            "sequential",
 	}
 	got := planReviewConfigFromPolicy(cfg)
 	require.NotNil(t, got)
@@ -789,6 +791,8 @@ func TestPlanReviewConfigFromPolicy(t *testing.T) {
 	assert.Equal(t, 1.5, got.CostThreshold)
 	assert.Equal(t, 10, got.TimeoutMinutes)
 	assert.Equal(t, "https://example.com/hook", got.NotifyWebhook)
+	assert.Equal(t, 50, got.VolumeThreshold)
+	assert.Equal(t, "sequential", got.Mode)
 }
 
 func TestNewRunner(t *testing.T) {

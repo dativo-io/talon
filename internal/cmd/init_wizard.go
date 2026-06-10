@@ -9,7 +9,7 @@
 //	WorkloadType="agent"               → agent.model_tier=1, capabilities.allowed_tools=[sql_query,file_read,web_search]
 //	WorkloadType="proxy"               → agent.model_tier=0, capabilities.allowed_tools=[]
 //	PackID                             → applyPackToAgent (openclaw → gateway proxy: model_tier=0, no tools, tags; langchain → tags)
-//	DataSovereignty="eu_strict"        → compliance.data_residency=eu, policies.model_routing.*.location=EU region
+//	DataSovereignty="eu_strict"        → compliance.data_residency=eu, policies.model_routing.*.location=EU region (declarative; enforcement is via llm.routing.data_sovereignty_mode + routing.rego)
 //	DataSovereignty="eu_preferred"     → compliance.data_residency=eu
 //	DataSovereignty="global"           → compliance.data_residency=any
 //	EnabledFeatures contains "pii"     → policies.data_classification.{input_scan,output_scan,redact_pii}=true
@@ -27,7 +27,7 @@
 //	ProviderID                         → llm primary provider
 //	DataSovereignty                    → llm.routing.data_sovereignty_mode
 //	DataSovereignty="eu_strict"        → (OPA handles blocking; no blocked_providers in config)
-//	AgentName                          → tenants[0].id (default tenant)
+//	AgentName                          → gateway caller tenant_id (default tenant)
 //	(always)                           → llm.pricing_file: "pricing/models.yaml"
 package cmd
 
@@ -157,14 +157,8 @@ type InfraYAML struct {
 			DataSovereigntyMode string `yaml:"data_sovereignty_mode"`
 		} `yaml:"routing"`
 	} `yaml:"llm"`
-	Evidence *struct {
-		Type string `yaml:"type"`
-		Path string `yaml:"path"`
-	} `yaml:"evidence"`
-	Cache         *CacheBlock   `yaml:"cache,omitempty"`
-	SecretsKeyEnv string        `yaml:"secrets_key_env"`
-	Tenants       []TenantBlock `yaml:"tenants"`
-	Gateway       *GatewayBlock `yaml:"gateway,omitempty"`
+	Cache   *CacheBlock   `yaml:"cache,omitempty"`
+	Gateway *GatewayBlock `yaml:"gateway,omitempty"`
 }
 
 // ProviderBlock is one entry in llm.providers.
@@ -172,17 +166,6 @@ type ProviderBlock struct {
 	Type    string                 `yaml:"type"`
 	Config  map[string]interface{} `yaml:"config"`
 	Enabled bool                   `yaml:"enabled"`
-}
-
-// TenantBlock is one entry in tenants.
-type TenantBlock struct {
-	ID          string `yaml:"id"`
-	DisplayName string `yaml:"display_name"`
-	Budgets     struct {
-		Daily   float64 `yaml:"daily"`
-		Monthly float64 `yaml:"monthly"`
-	} `yaml:"budgets"`
-	RateLimit int `yaml:"rate_limit"`
 }
 
 // RunWizard runs the interactive wizard. Returns (state, confirmed, error).
@@ -883,10 +866,6 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 		Config:  configMap,
 		Enabled: true,
 	}
-	cfg.Evidence = &struct {
-		Type string `yaml:"type"`
-		Path string `yaml:"path"`
-	}{Type: "sqlite", Path: "~/.talon/evidence.db"}
 	// Cache block: always emit so the option is documented; enabled from wizard answer.
 	cfg.Cache = &CacheBlock{
 		Enabled:             state.CacheEnabled,
@@ -894,18 +873,10 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 		SimilarityThreshold: 0.92,
 		MaxEntriesPerTenant: 10000,
 	}
-	cfg.SecretsKeyEnv = "TALON_SECRETS_KEY"
 	tenantID := state.AgentName
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	cfg.Tenants = []TenantBlock{{
-		ID:          tenantID,
-		DisplayName: "Default Tenant",
-		RateLimit:   30,
-	}}
-	cfg.Tenants[0].Budgets.Daily = 200.0
-	cfg.Tenants[0].Budgets.Monthly = 3000.0
 
 	// When user selected a pack that uses the gateway, enable it so "talon serve --gateway" works.
 	if packRequiresGateway(state.PackID) {
