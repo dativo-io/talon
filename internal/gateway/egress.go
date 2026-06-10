@@ -111,7 +111,7 @@ func ResolveEgressPolicy(defaults *ServerDefaults, overrides *CallerPolicyOverri
 // egress policy. It mirrors the Rego rules in rego/gateway_egress.rego and is
 // used to build the egress_decision evidence section.
 type EgressEvaluation struct {
-	Evaluated   bool   // false when no egress policy is configured
+	Evaluated   bool // false when no egress policy is configured
 	Allowed     bool
 	MatchedRule string // e.g. "tier_2:allowed_regions", "tier_1:allowed_providers", "default_action"
 	Reason      string // machine code when denied (egress_* constants)
@@ -160,7 +160,7 @@ func EvaluateEgress(p *EgressPolicyConfig, tier int, provider, region string) Eg
 
 // egressRuleAllows reports whether a rule permits the destination and which
 // clause matched ("allowed_providers" or "allowed_regions").
-func egressRuleAllows(rule *EgressRule, provider, region string) (bool, string) {
+func egressRuleAllows(rule *EgressRule, provider, region string) (allowed bool, matchedBy string) {
 	for _, p := range rule.AllowedProviders {
 		if p == "*" || p == provider {
 			return true, "allowed_providers"

@@ -74,6 +74,8 @@ func NewRouter(routing *policy.ModelRoutingConfig, providers map[string]Provider
 // When opts is non-nil and has PolicyEngine and SovereigntyMode set, compliance-aware
 // routing is used: candidates are evaluated with OPA routing.rego and rejected candidates
 // are returned in the RouteDecision for evidence.
+//
+//nolint:gocyclo // tier routing with optional compliance-aware candidate evaluation
 func (r *Router) Route(ctx context.Context, tier int, opts *RouteOptions) (Provider, string, *RouteDecision, error) {
 	_, span := tracer.Start(ctx, "llm.route",
 		trace.WithAttributes(
