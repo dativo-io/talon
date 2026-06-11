@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>EU AI Act Annex IV — Technical Documentation Pack</title>
+<style>
+body { font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif; margin: 32px auto; max-width: 900px; color: #111; line-height: 1.45; }
+h1 { margin: 0 0 4px; font-size: 26px; }
+h2 { margin: 28px 0 8px; font-size: 18px; border-bottom: 1px solid #d9d9d9; padding-bottom: 4px; }
+.subtitle { color: #444; margin: 0 0 16px; }
+.meta { color: #555; font-size: 13px; margin: 0 0 24px; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0 18px; }
+th, td { border: 1px solid #d9d9d9; padding: 7px 9px; text-align: left; font-size: 13px; vertical-align: top; }
+th { background: #f4f4f4; }
+code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; font-size: 12px; }
+.missing { border: 2px dashed #c0392b; background: #fdf3f2; padding: 10px 14px; border-radius: 6px; color: #7b241c; font-size: 14px; }
+.warnings { border: 1px solid #e6c200; background: #fdf9e7; padding: 10px 14px; border-radius: 6px; font-size: 13px; margin: 0 0 20px; }
+.warnings ul { margin: 6px 0 0 18px; padding: 0; }
+.linkage { background: #f4f7f4; border: 1px solid #cfe0cf; padding: 12px 16px; border-radius: 6px; font-size: 13px; margin: 28px 0 0; }
+.claim { color: #555; font-size: 12px; border-top: 1px solid #d9d9d9; margin-top: 32px; padding-top: 12px; }
+@media print { body { margin: 12mm; } .warnings { display: none; } }
+</style></head><body>
+<h1>EU AI Act Annex IV — Technical Documentation Pack</h1>
+<p class="subtitle">Deployment-governance records produced by Dativo Talon from signed runtime evidence and declared facts</p>
+<p class="meta">Generated: 2026-06-11 09:51:51 UTC | Framework: <b>eu-ai-act</b> | Scope: <b>Annex IV</b> | Tenant: <b>default</b></p>
+
+<h2>1. General description of the AI system (Annex IV s.1)</h2>
+<p>Declared description of the system and the models/providers actually observed in signed runtime evidence for the selected scope.</p>
+<table><thead><tr><th>Item</th><th>Value</th></tr></thead><tbody>
+<tr><td>System description (declared)</td><td>Gateway-governed LLM assistant for support ticket triage (demo)</td></tr><tr><td>Intended purpose (declared)</td><td>Summarize and route inbound support tickets</td></tr>
+</tbody></table>
+<h2>3. Monitoring, functioning and control (Annex IV s.3, Art. 14 human oversight)</h2>
+<p>Every governed request produces an HMAC-signed evidence record (policy decision, classification, model, cost, duration) exported via OpenTelemetry. Operators monitor via the dashboard and metrics endpoints; plan-review gates require human approval before agent tool execution where configured. Declared oversight arrangements: Support lead reviews flagged tickets; plan-review gate for tool use</p>
+<table><thead><tr><th>Runtime control indicator</th><th>Count</th></tr></thead><tbody>
+<tr><td>Signed evidence records in scope</td><td>3</td></tr><tr><td>Policy denials enforced</td><td>1</td></tr><tr><td>Records with PII detected</td><td>2</td></tr><tr><td>Plan-review (human oversight) events</td><td>0</td></tr><tr><td>Cost-degradation fallbacks</td><td>0</td></tr>
+</tbody></table>
+<h2>5. Risk management system (Annex IV s.5, Art. 9)</h2>
+<p>Risk-management controls Talon applies at deployment time (EU AI Act Art. 9 support). Enforcement outcomes for the selected scope are quantified in section 3. Denial reasons recorded in evidence:</p>
+<table><thead><tr><th>Control / denial reason</th><th>Description / count</th></tr></thead><tbody>
+<tr><td>Policy-as-code enforcement</td><td>Every request evaluated against .talon.yaml policy via embedded OPA before execution</td></tr><tr><td>PII detection and redaction</td><td>EU identifier patterns scanned on input and output; redact/block per policy</td></tr><tr><td>Prompt-injection prevention</td><td>Attachment content sandboxed in isolation delimiters; instruction patterns scanned</td></tr><tr><td>Cost controls</td><td>Per-request, daily, and monthly budgets enforced per tenant</td></tr><tr><td>Data-residency routing</td><td>Tier-based routing and egress rules restricting destinations by region</td></tr><tr><td>Memory governance</td><td>Agent learnings constrained by category allowlists, PII scanning, and audit records</td></tr><tr><td>pii policy</td><td>1</td></tr>
+</tbody></table>
+<h2>6. Changes through the lifecycle (Annex IV s.6)</h2>
+<p>Policy files carry a canonical version hash recorded in every evidence record (policy_version), making policy changes traceable across the system lifecycle. Governed agent memory writes are individually audited.</p>
+<table><thead><tr><th>Lifecycle indicator</th><th>Count</th></tr></thead><tbody>
+<tr><td>Audited memory writes in scope</td><td>0</td></tr><tr><td>Shadow-mode records (controls evaluated, not enforced)</td><td>0</td></tr>
+</tbody></table>
+<h2>9. Post-market monitoring (Annex IV s.9, Art. 72)</h2>
+<p>Talon&#39;s evidence store provides continuous post-deployment records: every governed request is signed at write time and retained per the configured retention policy, supporting the post-market monitoring plan (Art. 72). Scope covered: 3 records from 2026-06-11 to 2026-06-11.</p>
+
+<h2>Items to complete outside Talon</h2>
+<p>Talon governs deployment and produces runtime records; it is not the model provider. The following Annex IV items must be completed by your organisation and/or the model provider, and attached to this pack.</p>
+<table><thead><tr><th>Annex IV item</th><th>Owner</th></tr></thead><tbody>
+<tr><td>2. Development process of the underlying model(s)</td><td>Model provider documentation</td></tr><tr><td>4. Appropriateness of performance metrics</td><td>Deployer &#43; model provider</td></tr><tr><td>7. Harmonised standards applied</td><td>Deployer</td></tr><tr><td>8. EU declaration of conformity</td><td>Deployer</td></tr>
+</tbody></table>
+<div class="linkage"><b>Evidence linkage.</b> Built from 3 signed evidence record(s).
+Sample IDs: <code>req_37809d97</code>, <code>req_8b6659ff</code>, <code>req_c66c44bc</code>.
+Verify offline: <code>talon audit verify --file evidence.signed.json</code>.
+Signed export: <code>evidence.signed.json</code>.</div>
+<p class="claim">This document contains supporting records and control descriptions for EU AI Act Annex IV technical documentation, generated from HMAC-signed runtime evidence and operator-declared facts. It is not a completed legal filing, a certification, or a compliance determination. Review with your DPO or counsel. See LIMITATIONS.md.</p>
+</body></html>

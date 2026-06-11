@@ -58,6 +58,30 @@ Key top-level sections:
 | `audit.include_original_prompts` | `bool` | `false` | When `true` **and** input PII redaction is active (`redact_input: true`), also persist the original pre-redaction prompt alongside the redacted version. Default `false` aligns with GDPR Art. 5(1)(c) data minimization. Enable only for forensic/legal-hold scenarios. See [ADR-002](../contributor/adr/ADR-002-prompt-storage-data-minimization.md). |
 | `audit.observation_only` | `bool` | `false` | Shadow mode: log policy denials without enforcing them. |
 
+### Compliance declarations (auditor exports)
+
+The optional `compliance.declarations` block holds per-agent **declared facts** used to populate auditor exports (`talon compliance ropa`, `talon compliance annex-iv`). These are business statements that cannot be derived from runtime evidence — why data is processed, how long it is retained, what the system is for. Runtime facts (PII observed, destinations, decisions) always come from the signed evidence store. Missing declarations render as flagged placeholders in exports, never failures.
+
+```yaml
+compliance:
+  frameworks: [gdpr, eu-ai-act]
+  data_residency: eu
+  declarations:
+    processing:                      # GDPR Art. 30(1) processing-record facts
+      purposes: ["customer support triage"]
+      data_subject_categories: ["customers"]
+      personal_data_categories: ["contact details"]
+      retention_period: "90 days"
+      safeguards: "access restricted to support team"
+      legal_basis: "contract"
+    system:                          # EU AI Act Annex IV facts
+      system_description: "LLM assistant for support ticket triage"
+      intended_purpose: "Summarize and route inbound support tickets"
+      oversight_description: "Support lead reviews flagged tickets daily"
+```
+
+Fill these in together with your DPO. The exports are supporting records for GDPR Art. 30 and EU AI Act Annex IV review — not a completed legal filing. The org-level controller identity lives in `talon.config.yaml` (see [Compliance block](#compliance-block-controller-identity)).
+
 See [Memory governance](../MEMORY_GOVERNANCE.md) for the full memory reference. Key memory options:
 
 | Key | Purpose |
@@ -153,6 +177,22 @@ cache:
 ```
 
 Confidential-tier and high-severity-PII requests are not cached (OPA cache policy). See the [Policy cookbook](../guides/policy-cookbook.md#enable-governed-semantic-cache-infrastructure).
+
+---
+
+### Compliance block (controller identity)
+
+Optional. Org-level declared facts for auditor exports, owned by the platform team together with the DPO. The controller identity populates GDPR Art. 30(1)(a) in the RoPA export; per-agent processing declarations live in `agent.talon.yaml` (see above).
+
+```yaml
+compliance:
+  controller:
+    name: "Example GmbH"
+    contact: "privacy@example.eu"
+    dpo_contact: "dpo@example.eu"
+    address: "Examplestr. 1, 10115 Berlin, Germany"
+    # representative: "Example EU Rep B.V."   # where applicable (GDPR Art. 27)
+```
 
 ---
 

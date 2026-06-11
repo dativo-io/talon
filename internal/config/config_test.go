@@ -200,3 +200,58 @@ func TestLoad_WithLLMBlock(t *testing.T) {
 	assert.Contains(t, cfg.LLM.Providers, "openai")
 	assert.Equal(t, "openai", cfg.LLM.Providers["openai"].Type)
 }
+
+func TestLoad_WithoutComplianceBlock(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Compliance, "Compliance should be nil when compliance block is absent")
+	assert.Empty(t, cfg.ControllerDeclarations().Name, "accessor returns zero value when absent")
+}
+
+func TestLoad_WithComplianceBlock(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+
+	viper.Set("compliance", map[string]interface{}{
+		"controller": map[string]interface{}{
+			"name":        "Example GmbH",
+			"contact":     "privacy@example.eu",
+			"dpo_contact": "dpo@example.eu",
+			"address":     "Examplestr. 1, 10115 Berlin",
+		},
+	})
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Compliance)
+	require.NotNil(t, cfg.Compliance.Controller)
+	decl := cfg.ControllerDeclarations()
+	assert.Equal(t, "Example GmbH", decl.Name)
+	assert.Equal(t, "privacy@example.eu", decl.Contact)
+	assert.Equal(t, "dpo@example.eu", decl.DPOContact)
+	assert.Equal(t, "Examplestr. 1, 10115 Berlin", decl.Address)
+}
+
+func TestLoad_WithPartialComplianceBlock(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+
+	viper.Set("compliance", map[string]interface{}{
+		"controller": map[string]interface{}{
+			"name": "Example GmbH",
+		},
+	})
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	decl := cfg.ControllerDeclarations()
+	assert.Equal(t, "Example GmbH", decl.Name)
+	assert.Empty(t, decl.Contact)
+	assert.Empty(t, decl.DPOContact)
+}

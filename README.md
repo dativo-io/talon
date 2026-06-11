@@ -322,7 +322,7 @@ Artifacts a skeptical reviewer can grep in one session:
 - [Evidence integrity specification](docs/reference/evidence-integrity-spec.md) — byte-exact signing and verification
 - [Conformance suite](docs/reference/conformance.md) — `make conformance` (evidence + policy paths)
 - [Benchmarks](docs/reference/benchmarks.md) — `make benchmarks` on your hardware
-- [Sample auditor pack](examples/auditor-pack/README.md) — signed export + compliance report (`make auditor-pack`)
+- [Sample auditor pack](examples/auditor-pack/README.md) — signed export + compliance report + GDPR Art. 30 RoPA + EU AI Act Annex IV pack (`make auditor-pack`)
 - [Roadmap & focus](ROADMAP.md) — public anti-goals and EMEA SMB direction
 
 ---

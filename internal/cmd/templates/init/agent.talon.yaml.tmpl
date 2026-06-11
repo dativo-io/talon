@@ -87,6 +87,19 @@ compliance:
     - gdpr
     - eu-ai-act
   data_residency: eu
+  # Declared facts for auditor exports (talon compliance ropa / annex-iv).
+  # Fill these in with your DPO; missing fields render as flagged placeholders.
+  # declarations:
+  #   processing:
+  #     purposes: ["customer support triage"]
+  #     data_subject_categories: ["customers"]
+  #     personal_data_categories: ["contact details"]
+  #     retention_period: "90 days"
+  #     legal_basis: "contract"
+  #   system:
+  #     system_description: "LLM assistant for support ticket triage"
+  #     intended_purpose: "Summarize and route inbound support tickets"
+  #     oversight_description: "Support lead reviews flagged tickets daily"
 
 # Agent memory is off by default. Uncomment and set enabled: true to allow governed learning (see MEMORY_GOVERNANCE.md).
 # memory:

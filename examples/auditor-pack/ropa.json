@@ -1,0 +1,168 @@
+{
+  "title": "Record of Processing Activities",
+  "subtitle": "AI traffic governed by Dativo Talon — generated from signed runtime evidence and declared facts",
+  "generated_at": "2026-06-11T09:51:51.327255Z",
+  "framework": "gdpr",
+  "article": "Art. 30",
+  "tenant_id": "default",
+  "sections": [
+    {
+      "heading": "1. Controller (Art. 30(1)(a))",
+      "table": {
+        "headers": [
+          "Field",
+          "Value"
+        ],
+        "rows": [
+          [
+            "Controller",
+            "Demo GmbH (synthetic)"
+          ],
+          [
+            "Contact",
+            "privacy@demo.example"
+          ],
+          [
+            "Data Protection Officer",
+            "dpo@demo.example"
+          ],
+          [
+            "Address",
+            "Beispielstr. 1, 10115 Berlin, Germany"
+          ]
+        ]
+      }
+    },
+    {
+      "heading": "2. Processing activities observed",
+      "body": "Each row is one governed caller (tenant, agent) observed in the signed evidence store for the selected scope.",
+      "table": {
+        "headers": [
+          "Tenant",
+          "Agent",
+          "Evidence records",
+          "First seen",
+          "Last seen"
+        ],
+        "rows": [
+          [
+            "default",
+            "gateway",
+            "3",
+            "2026-06-11",
+            "2026-06-11"
+          ]
+        ]
+      }
+    },
+    {
+      "heading": "3. Purposes of processing (Art. 30(1)(b))",
+      "body": "customer support triage; internal knowledge assistance — declared lawful basis (Art. 6): contract (Art. 6(1)(b))"
+    },
+    {
+      "heading": "4. Categories of data subjects and personal data (Art. 30(1)(c))",
+      "body": "Declared categories come from agent configuration; observed identifiers come from PII detection recorded in signed evidence.",
+      "table": {
+        "headers": [
+          "Category",
+          "Values"
+        ],
+        "rows": [
+          [
+            "Data subjects (declared)",
+            "customers, employees"
+          ],
+          [
+            "Personal data (declared)",
+            "contact details, payment identifiers"
+          ],
+          [
+            "Personal data identifiers observed in evidence",
+            "email, iban"
+          ]
+        ]
+      }
+    },
+    {
+      "heading": "5. Categories of recipients (Art. 30(1)(d))",
+      "body": "No classified data flows were recorded in the selected scope. Destinations appear here once data-flow evidence is captured for governed requests."
+    },
+    {
+      "heading": "6. Transfers to third countries (Art. 30(1)(e))",
+      "body": "No transfers to destinations outside EU/LOCAL regions were observed in the data-flow evidence for the selected scope."
+    },
+    {
+      "heading": "7. Envisaged erasure time limits (Art. 30(1)(f))",
+      "body": "90 days (demo declaration)"
+    },
+    {
+      "heading": "8. Technical and organisational security measures (Art. 30(1)(g), Art. 32)",
+      "body": "Technical controls applied by Talon to the processing described above. Organisational measures beyond Talon (access policies, training, vendor DPAs) should be documented separately; see the declared safeguards field.",
+      "table": {
+        "headers": [
+          "Control",
+          "Description",
+          "Source"
+        ],
+        "rows": [
+          [
+            "Evidence integrity",
+            "HMAC-SHA256 signed evidence records; offline verification via talon audit verify",
+            "internal/evidence"
+          ],
+          [
+            "Secrets protection",
+            "AES-256-GCM encrypted vault with per-agent ACLs; every access audited",
+            "internal/secrets"
+          ],
+          [
+            "PII detection",
+            "EU identifier patterns scanned on input and output; redaction/block per policy",
+            "internal/classifier"
+          ],
+          [
+            "Data residency controls",
+            "Tier-based routing and egress rules restricting destinations by region",
+            "internal/llm, internal/gateway"
+          ],
+          [
+            "Tenant isolation",
+            "Per-tenant state, budgets, rate limits, and evidence scoping",
+            "internal/tenant"
+          ],
+          [
+            "Mapped control: GDPR Art. 30",
+            "Processing records via signed evidence export",
+            "internal/evidence/store.go"
+          ],
+          [
+            "Mapped control: GDPR Art. 32",
+            "PII detection and model/data-tier routing",
+            "internal/classifier/pii.go"
+          ],
+          [
+            "Mapped control: GDPR Art. 44-50",
+            "EU data residency routing controls",
+            "internal/policy/rego/routing.rego"
+          ],
+          [
+            "Organisational safeguards (declared)",
+            "support-team-only access; vendor DPAs on file (demo declaration)",
+            "agent.talon.yaml"
+          ]
+        ]
+      }
+    }
+  ],
+  "evidence_linkage": {
+    "evidence_count": 3,
+    "sample_evidence_ids": [
+      "req_37809d97",
+      "req_8b6659ff",
+      "req_c66c44bc"
+    ],
+    "verify_command": "talon audit verify --file evidence.signed.json",
+    "signed_export_ref": "evidence.signed.json"
+  },
+  "claim_note": "This document contains supporting records and control descriptions for GDPR Art. 30, generated from HMAC-signed runtime evidence and operator-declared facts. It is not a completed legal filing, a certification, or a compliance determination. Review with your DPO or counsel. See LIMITATIONS.md."
+}

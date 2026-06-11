@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/dativo-io/talon/internal/compliance"
 )
 
 // Policy represents a complete .talon.yaml configuration (v2.0 schema).
@@ -422,6 +424,11 @@ type ComplianceConfig struct {
 	AIActRiskLevel string            `yaml:"ai_act_risk_level,omitempty" json:"ai_act_risk_level,omitempty"`
 	HumanOversight string            `yaml:"human_oversight,omitempty" json:"human_oversight,omitempty"`
 	PlanReview     *PlanReviewConfig `yaml:"plan_review,omitempty" json:"plan_review,omitempty"`
+	// Declarations are per-agent declared facts (processing purposes,
+	// retention, system description) used to populate auditor exports
+	// (GDPR Art. 30 RoPA, EU AI Act Annex IV). Declared facts only —
+	// runtime facts come from the signed evidence store.
+	Declarations *compliance.AgentDeclarations `yaml:"declarations,omitempty" json:"declarations,omitempty"`
 }
 
 // MetadataConfig holds optional organizational metadata.

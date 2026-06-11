@@ -28,6 +28,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
 
+	"github.com/dativo-io/talon/internal/compliance"
 	"github.com/dativo-io/talon/internal/cryptoutil"
 )
 
@@ -72,6 +73,14 @@ type LLMConfig struct {
 	PricingFile string                       `mapstructure:"pricing_file"` // path to pricing/models.yaml; default "pricing/models.yaml"
 }
 
+// ComplianceConfig is the optional compliance block from talon.config.yaml.
+// It declares org-level facts (controller identity) used to populate auditor
+// exports such as the GDPR Art. 30 RoPA. Declared facts only — runtime facts
+// come from the signed evidence store.
+type ComplianceConfig struct {
+	Controller *compliance.ControllerDeclarations `mapstructure:"controller"`
+}
+
 // CacheConfig is the optional cache block from talon.config.yaml (governed semantic cache).
 // When nil or Enabled false, no cache lookup or storage occurs.
 type CacheConfig struct {
@@ -86,14 +95,15 @@ type CacheConfig struct {
 // For tenant-level secrets (LLM API keys, webhook tokens), use the
 // secrets vault (internal/secrets.SecretStore).
 type Config struct {
-	DataDir         string       // Base directory for all state (~/.talon)
-	SecretsKey      string       // AES-256 encryption key for the vault (exactly 32 bytes)
-	SigningKey      string       // HMAC-SHA256 key for evidence signing (≥32 bytes)
-	DefaultPolicy   string       // Filename of the agent policy file (agent.talon.yaml by default)
-	MaxAttachmentMB int          // Maximum attachment size in MB
-	OllamaBaseURL   string       // Ollama API endpoint (operator infrastructure)
-	LLM             *LLMConfig   // Optional: llm block from config file (providers, routing)
-	Cache           *CacheConfig // Optional: governed semantic cache (off by default)
+	DataDir         string            // Base directory for all state (~/.talon)
+	SecretsKey      string            // AES-256 encryption key for the vault (exactly 32 bytes)
+	SigningKey      string            // HMAC-SHA256 key for evidence signing (≥32 bytes)
+	DefaultPolicy   string            // Filename of the agent policy file (agent.talon.yaml by default)
+	MaxAttachmentMB int               // Maximum attachment size in MB
+	OllamaBaseURL   string            // Ollama API endpoint (operator infrastructure)
+	LLM             *LLMConfig        // Optional: llm block from config file (providers, routing)
+	Cache           *CacheConfig      // Optional: governed semantic cache (off by default)
+	Compliance      *ComplianceConfig // Optional: declared controller identity for auditor exports
 
 	usingDefaultSecretsKey bool
 	usingDefaultSigningKey bool
@@ -180,6 +190,7 @@ func Load() (*Config, error) {
 		OllamaBaseURL:   viper.GetString(KeyOllamaBaseURL),
 		LLM:             loadLLMConfig(),
 		Cache:           loadCacheConfig(),
+		Compliance:      loadComplianceConfig(),
 	}
 
 	if cfg.SecretsKey == "" {
@@ -222,6 +233,28 @@ const (
 	DefaultCacheSimilarity          = 0.92
 	DefaultCacheMaxEntriesPerTenant = 10000
 )
+
+// loadComplianceConfig reads the optional compliance block from Viper.
+// Returns nil when absent.
+func loadComplianceConfig() *ComplianceConfig {
+	if !viper.IsSet("compliance") {
+		return nil
+	}
+	var cc ComplianceConfig
+	if err := viper.UnmarshalKey("compliance", &cc); err != nil {
+		return nil
+	}
+	return &cc
+}
+
+// ControllerDeclarations returns the declared controller identity, or the
+// zero value when the compliance block is absent.
+func (c *Config) ControllerDeclarations() compliance.ControllerDeclarations {
+	if c.Compliance == nil || c.Compliance.Controller == nil {
+		return compliance.ControllerDeclarations{}
+	}
+	return *c.Compliance.Controller
+}
 
 // loadCacheConfig reads the optional cache block from Viper. Returns nil when absent.
 // When present, Enabled defaults to false so cache is off unless explicitly enabled.

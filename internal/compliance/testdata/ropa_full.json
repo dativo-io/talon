@@ -1,0 +1,231 @@
+{
+  "title": "Record of Processing Activities",
+  "subtitle": "AI traffic governed by Dativo Talon — generated from signed runtime evidence and declared facts",
+  "generated_at": "2026-06-11T10:00:00Z",
+  "framework": "gdpr",
+  "article": "Art. 30",
+  "tenant_id": "acme",
+  "sections": [
+    {
+      "heading": "1. Controller (Art. 30(1)(a))",
+      "table": {
+        "headers": [
+          "Field",
+          "Value"
+        ],
+        "rows": [
+          [
+            "Controller",
+            "Example GmbH"
+          ],
+          [
+            "Contact",
+            "privacy@example.eu"
+          ],
+          [
+            "Data Protection Officer",
+            "dpo@example.eu"
+          ],
+          [
+            "Address",
+            "Examplestr. 1, 10115 Berlin"
+          ]
+        ]
+      }
+    },
+    {
+      "heading": "2. Processing activities observed",
+      "body": "Each row is one governed caller (tenant, agent) observed in the signed evidence store for the selected scope.",
+      "table": {
+        "headers": [
+          "Tenant",
+          "Agent",
+          "Evidence records",
+          "First seen",
+          "Last seen"
+        ],
+        "rows": [
+          [
+            "acme",
+            "sales-analyst",
+            "1",
+            "2026-05-20",
+            "2026-05-20"
+          ],
+          [
+            "acme",
+            "support-agent",
+            "2",
+            "2026-03-01",
+            "2026-05-20"
+          ]
+        ]
+      }
+    },
+    {
+      "heading": "3. Purposes of processing (Art. 30(1)(b))",
+      "body": "customer support triage — declared lawful basis (Art. 6): contract"
+    },
+    {
+      "heading": "4. Categories of data subjects and personal data (Art. 30(1)(c))",
+      "body": "Declared categories come from agent configuration; observed identifiers come from PII detection recorded in signed evidence.",
+      "table": {
+        "headers": [
+          "Category",
+          "Values"
+        ],
+        "rows": [
+          [
+            "Data subjects (declared)",
+            "customers"
+          ],
+          [
+            "Personal data (declared)",
+            "contact details"
+          ],
+          [
+            "Personal data identifiers observed in evidence",
+            "email, iban"
+          ]
+        ]
+      }
+    },
+    {
+      "heading": "5. Categories of recipients (Art. 30(1)(d))",
+      "body": "Destinations that received classified data, aggregated from signed data-flow evidence.",
+      "table": {
+        "headers": [
+          "Recipient",
+          "Kind",
+          "Region",
+          "Evidence records",
+          "Identifier types"
+        ],
+        "rows": [
+          [
+            "mistral-eu",
+            "llm_provider",
+            "EU",
+            "1",
+            "email"
+          ],
+          [
+            "openai",
+            "llm_provider",
+            "US",
+            "1",
+            "iban"
+          ],
+          [
+            "unregistered",
+            "llm_provider",
+            "unknown",
+            "1",
+            ""
+          ]
+        ]
+      }
+    },
+    {
+      "heading": "6. Transfers to third countries (Art. 30(1)(e))",
+      "body": "Destinations outside EU/LOCAL regions observed in data-flow evidence. Document the transfer mechanism (e.g. SCCs, adequacy decision) for each with your DPO. 1 destination(s) have an unresolved region (\"unknown\") — set gateway.providers.\u003cname\u003e.region and regenerate.",
+      "table": {
+        "headers": [
+          "Destination",
+          "Kind",
+          "Region",
+          "Evidence records"
+        ],
+        "rows": [
+          [
+            "openai",
+            "llm_provider",
+            "US",
+            "1"
+          ],
+          [
+            "unregistered",
+            "llm_provider",
+            "unknown",
+            "1"
+          ]
+        ]
+      }
+    },
+    {
+      "heading": "7. Envisaged erasure time limits (Art. 30(1)(f))",
+      "body": "90 days"
+    },
+    {
+      "heading": "8. Technical and organisational security measures (Art. 30(1)(g), Art. 32)",
+      "body": "Technical controls applied by Talon to the processing described above. Organisational measures beyond Talon (access policies, training, vendor DPAs) should be documented separately; see the declared safeguards field.",
+      "table": {
+        "headers": [
+          "Control",
+          "Description",
+          "Source"
+        ],
+        "rows": [
+          [
+            "Evidence integrity",
+            "HMAC-SHA256 signed evidence records; offline verification via talon audit verify",
+            "internal/evidence"
+          ],
+          [
+            "Secrets protection",
+            "AES-256-GCM encrypted vault with per-agent ACLs; every access audited",
+            "internal/secrets"
+          ],
+          [
+            "PII detection",
+            "EU identifier patterns scanned on input and output; redaction/block per policy",
+            "internal/classifier"
+          ],
+          [
+            "Data residency controls",
+            "Tier-based routing and egress rules restricting destinations by region",
+            "internal/llm, internal/gateway"
+          ],
+          [
+            "Tenant isolation",
+            "Per-tenant state, budgets, rate limits, and evidence scoping",
+            "internal/tenant"
+          ],
+          [
+            "Mapped control: GDPR Art. 30",
+            "Processing records via signed evidence export",
+            "internal/evidence/store.go"
+          ],
+          [
+            "Mapped control: GDPR Art. 32",
+            "PII detection and model/data-tier routing",
+            "internal/classifier/pii.go"
+          ],
+          [
+            "Mapped control: GDPR Art. 44-50",
+            "EU data residency routing controls",
+            "internal/policy/rego/routing.rego"
+          ],
+          [
+            "Organisational safeguards (declared)",
+            "access restricted to support team",
+            "agent.talon.yaml"
+          ]
+        ]
+      }
+    }
+  ],
+  "evidence_linkage": {
+    "evidence_count": 3,
+    "from": "2026-01-01",
+    "to": "2026-06-11",
+    "sample_evidence_ids": [
+      "req_aaa",
+      "req_bbb",
+      "req_ccc"
+    ],
+    "verify_command": "talon audit verify --file evidence.signed.json",
+    "signed_export_ref": "evidence.signed.json"
+  },
+  "claim_note": "This document contains supporting records and control descriptions for GDPR Art. 30, generated from HMAC-signed runtime evidence and operator-declared facts. It is not a completed legal filing, a certification, or a compliance determination. Review with your DPO or counsel. See LIMITATIONS.md."
+}

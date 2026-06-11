@@ -1,6 +1,6 @@
 {
   "export_metadata": {
-    "generated_at": "2026-06-03T13:21:11.139729Z",
+    "generated_at": "2026-06-11T09:51:51.326581Z",
     "talon_version": "auditorpackgen",
     "filter": {},
     "total_records": 3,
@@ -9,9 +9,9 @@
   },
   "records": [
     {
-      "id": "req_a928db90",
+      "id": "req_c66c44bc",
       "correlation_id": "corr_demo_eu_summary",
-      "timestamp": "2026-06-03T15:21:11.137877+02:00",
+      "timestamp": "2026-06-11T11:51:51.324791+02:00",
       "tenant_id": "default",
       "agent_id": "gateway",
       "invocation_type": "gateway",
@@ -45,7 +45,7 @@
         "frameworks": null,
         "data_location": ""
       },
-      "signature": "hmac-sha256:043254d4275d8968df420839b07435fd082a41da21a0b3a409924a868537e586",
+      "signature": "hmac-sha256:06cde95ebfeb221fefebb473fba1e2bb738f809d4c1eba607c63e48811c1d97d",
       "explanations": [
         {
           "code": "POLICY_DENIED_COST",
@@ -58,9 +58,9 @@
       ]
     },
     {
-      "id": "req_b0a4da50",
+      "id": "req_8b6659ff",
       "correlation_id": "corr_demo_pii_email",
-      "timestamp": "2026-06-03T15:21:11.138907+02:00",
+      "timestamp": "2026-06-11T11:51:51.325687+02:00",
       "tenant_id": "default",
       "agent_id": "gateway",
       "invocation_type": "gateway",
@@ -94,7 +94,7 @@
         "frameworks": null,
         "data_location": ""
       },
-      "signature": "hmac-sha256:345748e1593726870f78e87c86890404255c7084a4acb665828a3061b0f67387",
+      "signature": "hmac-sha256:749ec5549737ded3d524fb9d1668e83eaf4f17be5bf53e041fe59ae6f223c6fe",
       "explanations": [
         {
           "code": "POLICY_ALLOWED",
@@ -105,9 +105,9 @@
       ]
     },
     {
-      "id": "req_5f880438",
+      "id": "req_37809d97",
       "correlation_id": "corr_demo_pii_iban",
-      "timestamp": "2026-06-03T15:21:11.13933+02:00",
+      "timestamp": "2026-06-11T11:51:51.326146+02:00",
       "tenant_id": "default",
       "agent_id": "gateway",
       "invocation_type": "gateway",
@@ -144,7 +144,7 @@
         "frameworks": null,
         "data_location": ""
       },
-      "signature": "hmac-sha256:f1b69cb81e0f97d88bd355c1f4a29fbbb0f2cc77d5d25f904a027f67a45bb614",
+      "signature": "hmac-sha256:d86937f6c99cfa7ed9bc82ea9e50f67c01d591bc2d033b878684a01a33387a1a",
       "explanations": [
         {
           "code": "LEGACY_REASON_UNMIGRATED",

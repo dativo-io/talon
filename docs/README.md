@@ -26,7 +26,7 @@ Pick the path that matches your goal. For what Talon is **not** building, read [
 
 1. [60-second demo](tutorials/quickstart-demo.md) — Docker Compose, mock provider, evidence in SQLite.
 2. [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) — verify, export, tamper, fail verification.
-3. [Sample auditor pack](../examples/auditor-pack/README.md) — browse a signed export + compliance report; regenerate with `make auditor-pack`.
+3. [Sample auditor pack](../examples/auditor-pack/README.md) — browse a signed export, compliance report, GDPR Art. 30 RoPA, and EU AI Act Annex IV pack; regenerate with `make auditor-pack`.
 
 ### Builder (native binary, cold start)
 
@@ -123,7 +123,7 @@ Choose the shortest path for your situation:
 | [Conformance suite & count](reference/conformance.md) | Reproducible passing-test count for the evidence + policy paths (`make conformance`). |
 | [Reproducible benchmarks](reference/benchmarks.md) | `make benchmarks` — gateway overhead, PII scan, evidence write on your hardware. |
 | [Roadmap & focus](../ROADMAP.md) | Anti-goals and focus — answers "are you trying to be Portkey + AGT?" |
-| [Sample auditor pack](../examples/auditor-pack/README.md) | Generated signed export + compliance report for handoff review. |
+| [Sample auditor pack](../examples/auditor-pack/README.md) | Generated signed export + compliance report + RoPA + Annex IV pack for handoff review. |
 | [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Fast proof moment for auditors/operators, including offline signed-export verification. |
 | [Threat model](reference/threat-model.md) | Attack surface, trust boundaries, and what the HMAC signature does and does not prove. |
 | [Security policy](../SECURITY.md) | Vulnerability reporting process and security scope. |

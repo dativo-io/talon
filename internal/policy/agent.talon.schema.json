@@ -332,6 +332,33 @@
         "data_residency": {"type": "string"},
         "ai_act_risk_level": {"type": "string", "enum": ["minimal", "limited", "high"]},
         "human_oversight": {"type": "string", "enum": ["none", "on-demand", "always"]},
+        "declarations": {
+          "type": "object",
+          "description": "Per-agent declared facts used to populate auditor exports (GDPR Art. 30 RoPA, EU AI Act Annex IV). Declared facts only — runtime facts come from the signed evidence store. Missing declarations produce flagged placeholders in exports, never failures.",
+          "properties": {
+            "processing": {
+              "type": "object",
+              "description": "GDPR Art. 30(1) processing-record declarations.",
+              "properties": {
+                "purposes": {"type": "array", "items": {"type": "string"}, "description": "Purposes of processing (Art. 30(1)(b))."},
+                "data_subject_categories": {"type": "array", "items": {"type": "string"}, "description": "Categories of data subjects (Art. 30(1)(c)), e.g. customers, employees."},
+                "personal_data_categories": {"type": "array", "items": {"type": "string"}, "description": "Declared personal-data categories; merged with PII entity types observed in evidence."},
+                "retention_period": {"type": "string", "description": "Envisaged erasure time limit (Art. 30(1)(f)), e.g. \"90 days\"."},
+                "safeguards": {"type": "string", "description": "Organisational measures beyond Talon's technical controls (Art. 30(1)(g))."},
+                "legal_basis": {"type": "string", "description": "Lawful basis relied upon (Art. 6), e.g. contract, legitimate interest."}
+              }
+            },
+            "system": {
+              "type": "object",
+              "description": "EU AI Act Annex IV technical-documentation declarations.",
+              "properties": {
+                "system_description": {"type": "string", "description": "General description of the AI system and its role (Annex IV s.1)."},
+                "intended_purpose": {"type": "string", "description": "What the system is intended to be used for."},
+                "oversight_description": {"type": "string", "description": "Human-oversight arrangements beyond Talon's plan-review/approval gates (Art. 14)."}
+              }
+            }
+          }
+        },
         "plan_review": {
           "type": "object",
           "properties": {
