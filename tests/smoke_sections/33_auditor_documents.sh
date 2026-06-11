@@ -82,8 +82,8 @@ EOF
       --from 2020-01-01 --output "$dir/ropa.html"
   assert_pass "ropa.html contains document title" \
     grep -q "Record of Processing Activities" "$dir/ropa.html"
-  assert_pass "ropa.html has no DECLARATION MISSING placeholders" \
-    ! grep -q "DECLARATION MISSING" "$dir/ropa.html"
+  assert_fail "ropa.html has no DECLARATION MISSING placeholders" \
+    grep -q "DECLARATION MISSING" "$dir/ropa.html"
   assert_pass "ropa.html lists declared controller" \
     grep -q "Smoke Test GmbH" "$dir/ropa.html"
 
