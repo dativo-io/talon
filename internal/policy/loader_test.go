@@ -418,6 +418,78 @@ policies:
 	assert.Equal(t, 0, pol.Agent.ModelTier)
 }
 
+func TestLoadPolicy_ComplianceDeclarations(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	policyPath := filepath.Join(tmpDir, "agent.talon.yaml")
+	yamlContent := `
+agent:
+  name: support-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 10.0
+compliance:
+  frameworks: [gdpr, eu-ai-act]
+  data_residency: eu
+  declarations:
+    processing:
+      purposes: ["customer support triage"]
+      data_subject_categories: ["customers"]
+      personal_data_categories: ["contact details"]
+      retention_period: "90 days"
+      safeguards: "access restricted to support team"
+      legal_basis: "contract"
+    system:
+      system_description: "LLM assistant for support ticket triage"
+      intended_purpose: "Summarize and route inbound support tickets"
+      oversight_description: "Support lead reviews flagged tickets daily"
+`
+	require.NoError(t, os.WriteFile(policyPath, []byte(yamlContent), 0o644))
+
+	pol, err := LoadPolicy(ctx, policyPath, false, tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, pol.Compliance)
+	require.NotNil(t, pol.Compliance.Declarations)
+
+	proc := pol.Compliance.Declarations.Processing
+	require.NotNil(t, proc)
+	assert.Equal(t, []string{"customer support triage"}, proc.Purposes)
+	assert.Equal(t, []string{"customers"}, proc.DataSubjectCategories)
+	assert.Equal(t, []string{"contact details"}, proc.PersonalDataCategories)
+	assert.Equal(t, "90 days", proc.RetentionPeriod)
+	assert.Equal(t, "access restricted to support team", proc.Safeguards)
+	assert.Equal(t, "contract", proc.LegalBasis)
+
+	sys := pol.Compliance.Declarations.System
+	require.NotNil(t, sys)
+	assert.Equal(t, "LLM assistant for support ticket triage", sys.SystemDescription)
+	assert.Equal(t, "Summarize and route inbound support tickets", sys.IntendedPurpose)
+	assert.Equal(t, "Support lead reviews flagged tickets daily", sys.OversightDescription)
+}
+
+func TestLoadPolicy_WithoutDeclarations(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	policyPath := filepath.Join(tmpDir, "agent.talon.yaml")
+	yamlContent := `
+agent:
+  name: no-decl-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 10.0
+compliance:
+  frameworks: [gdpr]
+`
+	require.NoError(t, os.WriteFile(policyPath, []byte(yamlContent), 0o644))
+
+	pol, err := LoadPolicy(ctx, policyPath, false, tmpDir)
+	require.NoError(t, err)
+	require.NotNil(t, pol.Compliance)
+	assert.Nil(t, pol.Compliance.Declarations, "declarations should be nil when absent")
+}
+
 func TestLoadPolicy_BlockOnPII(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()

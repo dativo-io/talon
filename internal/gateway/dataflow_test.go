@@ -213,7 +213,7 @@ func TestGatewayBuildDataFlow_CacheStoreAfterForward(t *testing.T) {
 	assert.Equal(t, 1, kinds[evidence.FlowDestCache], "stored response adds a cache destination item")
 }
 
-func TestGatewayDataFlow_AbsentWhenNoClassifiedData(t *testing.T) {
+func TestGatewayDataFlow_RecordedWhenNoClassifiedData(t *testing.T) {
 	gw, _, evStore := setupOpenClawGateway(t, "redact",
 		chatCompletionUpstream("All good."))
 
@@ -223,5 +223,13 @@ func TestGatewayDataFlow_AbsentWhenNoClassifiedData(t *testing.T) {
 	records, err := evStore.List(context.Background(), "test-tenant", "", time.Time{}, time.Time{}, 10)
 	require.NoError(t, err)
 	require.Len(t, records, 1)
-	assert.Nil(t, records[0].DataFlow, "records without classified data must omit data_flow")
+	df := records[0].DataFlow
+	require.NotNil(t, df, "every governed request must record its prompt egress flow")
+	require.Len(t, df.Items, 1, "only the prompt -> provider item; no classified response items")
+	item := df.Items[0]
+	assert.Equal(t, evidence.FlowSourcePrompt, item.Source)
+	assert.Equal(t, evidence.FlowDispositionForwarded, item.Disposition)
+	assert.Equal(t, evidence.FlowDestLLMProvider, item.Destination.Kind)
+	assert.Empty(t, item.EntityTypes, "no PII detected, no entity types")
+	assert.Equal(t, 0, item.Tier)
 }

@@ -201,7 +201,7 @@ func TestRenderAuditShow_PIIDetected(t *testing.T) {
 		Timestamp: time.Date(2026, 2, 21, 11, 28, 45, 0, time.FixedZone("CET", 3600)),
 		TenantID:  "default", AgentID: "slack-support-bot", InvocationType: "manual",
 		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "abc123"},
-		Classification: evidence.Classification{InputTier: 2, OutputTier: 0, PIIDetected: []string{"EMAIL_ADDRESS", "PHONE_NUMBER"}, PIIRedacted: true},
+		Classification: evidence.Classification{InputTier: 2, OutputTier: 0, PIIDetected: []string{"EMAIL_ADDRESS", "PHONE_NUMBER"}, PIIRedacted: true, InputPIIRedacted: true},
 		Execution:      evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 0.0001, DurationMS: 909, Tokens: evidence.TokenUsage{Input: 45, Output: 32}, ToolsCalled: []string{}},
 		AuditTrail:     evidence.AuditTrail{InputHash: "sha256:a3f9", OutputHash: "sha256:b2c1"},
 		Compliance:     evidence.Compliance{Frameworks: []string{"gdpr", "iso27001"}, DataLocation: "eu-only"},
@@ -212,7 +212,7 @@ func TestRenderAuditShow_PIIDetected(t *testing.T) {
 	assert.Contains(t, out, "✓ VALID")
 	assert.Contains(t, out, "EMAIL_ADDRESS")
 	assert.Contains(t, out, "PHONE_NUMBER")
-	assert.Contains(t, out, "PII Redacted:  true")
+	assert.Contains(t, out, "PII Redacted:  input=true output=true")
 }
 
 func TestRenderAuditShow_PINone(t *testing.T) {
@@ -229,6 +229,62 @@ func TestRenderAuditShow_PINone(t *testing.T) {
 	renderAuditShow(&buf, ev, true)
 	out := buf.String()
 	assert.Contains(t, out, "PII Detected:  (none)")
+}
+
+func TestRenderAuditShow_DataFlow(t *testing.T) {
+	var buf bytes.Buffer
+	ev := &evidence.Evidence{
+		ID:        "req_flow",
+		Timestamp: time.Now(),
+		TenantID:  "default", AgentID: "bot", InvocationType: "manual",
+		Classification: evidence.Classification{},
+		Execution:      evidence.Execution{ModelUsed: "gpt-4o-mini"},
+		AuditTrail:     evidence.AuditTrail{},
+		Compliance:     evidence.Compliance{},
+		DataFlow: &evidence.DataFlow{
+			Detector: "talon-classifier",
+			Items: []evidence.DataFlowItem{
+				{
+					Source:      evidence.FlowSourcePrompt,
+					Disposition: evidence.FlowDispositionRedacted,
+					Tier:        2,
+					EntityTypes: []string{"email"},
+					Destination: evidence.FlowDestination{
+						Kind: evidence.FlowDestLLMProvider, Name: "openai",
+						Model: "gpt-4o-mini", Region: "US",
+					},
+				},
+				{
+					Source:      evidence.FlowSourcePrompt,
+					Disposition: evidence.FlowDispositionForwarded,
+					Destination: evidence.FlowDestination{
+						Kind: evidence.FlowDestLLMProvider, Name: "mistral", Region: "EU",
+					},
+				},
+			},
+		},
+	}
+	renderAuditShow(&buf, ev, true)
+	out := buf.String()
+	assert.Contains(t, out, "Data Flow")
+	assert.Contains(t, out, "Detector:    talon-classifier")
+	assert.Contains(t, out, "prompt -> llm_provider:openai model=gpt-4o-mini region=US | redacted | tier 2 | email")
+	assert.Contains(t, out, "prompt -> llm_provider:mistral region=EU | forwarded | tier 0 | no classified data")
+}
+
+func TestRenderAuditShow_NoDataFlow_SectionOmitted(t *testing.T) {
+	var buf bytes.Buffer
+	ev := &evidence.Evidence{
+		ID:        "req_noflow",
+		Timestamp: time.Now(),
+		TenantID:  "default", AgentID: "bot", InvocationType: "manual",
+		Classification: evidence.Classification{},
+		Execution:      evidence.Execution{},
+		AuditTrail:     evidence.AuditTrail{},
+		Compliance:     evidence.Compliance{},
+	}
+	renderAuditShow(&buf, ev, true)
+	assert.NotContains(t, buf.String(), "Data Flow")
 }
 
 func TestRenderAuditShow_InvalidSignature(t *testing.T) {

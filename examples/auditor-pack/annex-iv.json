@@ -1,0 +1,169 @@
+{
+  "title": "EU AI Act Annex IV — Technical Documentation Pack",
+  "subtitle": "Deployment-governance records produced by Dativo Talon from signed runtime evidence and declared facts",
+  "generated_at": "2026-06-11T14:21:54.501392Z",
+  "framework": "eu-ai-act",
+  "article": "Annex IV",
+  "tenant_id": "default",
+  "sections": [
+    {
+      "heading": "1. General description of the AI system (Annex IV s.1)",
+      "body": "Declared description of the system and the models/providers actually observed in signed runtime evidence for the selected scope.",
+      "table": {
+        "headers": [
+          "Item",
+          "Value"
+        ],
+        "rows": [
+          [
+            "System description (declared)",
+            "Gateway-governed LLM assistant for customer support ticket triage and internal AI assistance"
+          ],
+          [
+            "Intended purpose (declared)",
+            "Summarize and route inbound support tickets; assist employees with internal knowledge queries"
+          ],
+          [
+            "LLM providers observed in evidence",
+            "openai"
+          ]
+        ]
+      }
+    },
+    {
+      "heading": "3. Monitoring, functioning and control (Annex IV s.3, Art. 14 human oversight)",
+      "body": "Every governed request produces an HMAC-signed evidence record (policy decision, classification, model, cost, duration) exported via OpenTelemetry. Operators monitor via the dashboard and metrics endpoints; plan-review gates require human approval before agent tool execution where configured. Declared oversight arrangements: Support lead reviews flagged tickets; role-based access controls; plan-review gate for tool use where configured",
+      "table": {
+        "headers": [
+          "Runtime control indicator",
+          "Count"
+        ],
+        "rows": [
+          [
+            "Signed evidence records in scope",
+            "3"
+          ],
+          [
+            "Policy denials enforced",
+            "1"
+          ],
+          [
+            "Records with PII detected",
+            "2"
+          ],
+          [
+            "Plan-review (human oversight) events",
+            "0"
+          ],
+          [
+            "Cost-degradation fallbacks",
+            "0"
+          ]
+        ]
+      }
+    },
+    {
+      "heading": "5. Risk management system (Annex IV s.5, Art. 9)",
+      "body": "Risk-management controls Talon applies at deployment time (EU AI Act Art. 9 support). Enforcement outcomes for the selected scope are quantified in section 3. Denial reasons recorded in evidence:",
+      "table": {
+        "headers": [
+          "Control / denial reason",
+          "Description / count"
+        ],
+        "rows": [
+          [
+            "Policy-as-code enforcement",
+            "Every request evaluated against .talon.yaml policy via embedded OPA before execution"
+          ],
+          [
+            "PII detection and redaction",
+            "EU identifier patterns scanned on input and output; redact/block per policy"
+          ],
+          [
+            "Prompt-injection prevention",
+            "Attachment content sandboxed in isolation delimiters; instruction patterns scanned"
+          ],
+          [
+            "Cost controls",
+            "Per-request, daily, and monthly budgets enforced per tenant"
+          ],
+          [
+            "Data-residency routing",
+            "Tier-based routing and egress rules restricting destinations by region"
+          ],
+          [
+            "Memory governance",
+            "Agent learnings constrained by category allowlists, PII scanning, and audit records"
+          ],
+          [
+            "pii policy",
+            "1"
+          ]
+        ]
+      }
+    },
+    {
+      "heading": "6. Changes through the lifecycle (Annex IV s.6)",
+      "body": "Policy files carry a canonical version hash recorded in every evidence record (policy_version), making policy changes traceable across the system lifecycle. Governed agent memory writes are individually audited.",
+      "table": {
+        "headers": [
+          "Lifecycle indicator",
+          "Count"
+        ],
+        "rows": [
+          [
+            "Audited memory writes in scope",
+            "0"
+          ],
+          [
+            "Shadow-mode records (controls evaluated, not enforced)",
+            "0"
+          ]
+        ]
+      }
+    },
+    {
+      "heading": "9. Post-market monitoring (Annex IV s.9, Art. 72)",
+      "body": "Talon's evidence store provides continuous post-deployment records: every governed request is signed at write time and retained per the configured retention policy, supporting the post-market monitoring plan (Art. 72). Scope covered: 3 records from 2026-06-11 to 2026-06-11."
+    },
+    {
+      "heading": "Items to complete outside Talon",
+      "body": "Talon governs deployment and produces runtime records; it is not the model provider. The following Annex IV items must be completed by your organisation and/or the model provider, and attached to this pack.",
+      "table": {
+        "headers": [
+          "Annex IV item",
+          "Owner"
+        ],
+        "rows": [
+          [
+            "2. Development process of the underlying model(s)",
+            "Model provider documentation"
+          ],
+          [
+            "4. Appropriateness of performance metrics",
+            "Deployer + model provider"
+          ],
+          [
+            "7. Harmonised standards applied",
+            "Deployer"
+          ],
+          [
+            "8. EU declaration of conformity",
+            "Deployer"
+          ]
+        ]
+      }
+    }
+  ],
+  "evidence_linkage": {
+    "evidence_count": 3,
+    "sample_evidence_ids": [
+      "req_5ae7cb3b",
+      "req_631b773b",
+      "req_998dafe4"
+    ],
+    "verify_command": "talon audit verify --file evidence.signed.json",
+    "signed_export_ref": "evidence.signed.json"
+  },
+  "claim_note": "This document contains supporting records and control descriptions for EU AI Act Annex IV technical documentation, generated from HMAC-signed runtime evidence and operator-declared facts. It is not a completed legal filing, a certification, or a compliance determination. Review with your DPO or counsel. See LIMITATIONS.md."
+}

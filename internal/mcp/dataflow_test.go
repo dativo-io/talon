@@ -187,5 +187,11 @@ func TestProxyDataFlow_AbsentWhenNoPII(t *testing.T) {
 	require.Nil(t, resp.Error)
 
 	ev := proxyEvidenceByType(t, store, "proxy_tool_call")
-	assert.Nil(t, ev.DataFlow, "records without classified data must omit data_flow")
+	require.NotNil(t, ev.DataFlow, "every proxied call must record its tool_args egress flow")
+	require.Len(t, ev.DataFlow.Items, 1, "only the tool_args -> vendor item; no classified response items")
+	item := ev.DataFlow.Items[0]
+	assert.Equal(t, evidence.FlowSourceToolArgs, item.Source)
+	assert.Equal(t, evidence.FlowDispositionForwarded, item.Disposition)
+	assert.Equal(t, evidence.FlowDestMCPTool, item.Destination.Kind)
+	assert.Empty(t, item.EntityTypes, "no PII detected, no entity types")
 }

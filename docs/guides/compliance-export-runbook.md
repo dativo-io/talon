@@ -84,6 +84,48 @@ Store the package in a secure location and hand off according to your audit proc
 
 Article 30 requires records of processing activities. Talon evidence provides a technical record of AI/LLM processing: what was processed, when, policy decision, cost, and (when enabled) PII and data classification. Export the relevant date range and tenant; combine with your organisational Art. 30 documentation as needed.
 
+### Generate a formatted RoPA
+
+`talon compliance ropa` renders a Record of Processing Activities shaped after GDPR Art. 30(1), merging **declared facts** with **runtime facts** from the signed evidence store:
+
+| Source | Fields |
+|--------|--------|
+| Declared — `talon.config.yaml` `compliance.controller` | Controller name, contact, DPO, address (Art. 30(1)(a)) |
+| Declared — `agent.talon.yaml` `compliance.declarations.processing` | Purposes, data-subject categories, retention, legal basis, safeguards (Art. 30(1)(b)(c)(f)(g)) |
+| Evidence-derived (signed) | Processing activities observed, personal-data identifiers detected, recipients and regions, third-country transfers (Art. 30(1)(c)(d)(e)), technical measures |
+
+```bash
+# Prerequisite: fill in declarations with your DPO
+#   talon.config.yaml -> compliance.controller
+#   agent.talon.yaml  -> compliance.declarations  (see configuration reference)
+
+# HTML (print-to-PDF-ready) for a date range
+talon compliance ropa --format html --from 2026-01-01 --to 2026-06-30 --output ropa.html
+
+# JSON for machine checks; scope by tenant/agent as needed
+talon compliance ropa --format json --tenant default --agent support-agent
+```
+
+Missing declarations never fail the command: they are listed as warnings on stderr and rendered as flagged "DECLARATION MISSING" sections, so the document itself tells you what to complete before auditor handoff. That is a product strength — Talon does not fake completeness. See [How to clear DECLARATION MISSING blocks in RoPA exports](ropa-declarations.md) for the field-by-field checklist, [Configuration reference — Compliance declarations](../reference/configuration.md#compliance-declarations-auditor-exports) for the declaration schema, and `examples/auditor-pack/` for a generated sample with declarations filled in.
+
+The output is supporting records for GDPR Art. 30 review — generated from HMAC-signed evidence plus your declared facts — not a completed legal filing. Review with your DPO.
+
+## If you need EU AI Act Annex IV technical documentation
+
+`talon compliance annex-iv` renders a technical-documentation pack shaped after EU AI Act Annex IV, combining declared system facts with runtime records:
+
+| Source | Fields |
+|--------|--------|
+| Declared — `agent.talon.yaml` `compliance.declarations.system` | System description, intended purpose, human-oversight arrangements (Annex IV s.1, Art. 14) |
+| Evidence-derived (signed) | Models/providers observed, policy denials and reasons, plan-review (human oversight) events, routing/egress decisions, audited memory writes (s.3, s.5, s.6, s.9) |
+
+```bash
+talon compliance annex-iv --format html --output annex-iv.html
+talon compliance annex-iv --format json --tenant default --agent support-agent
+```
+
+The pack explicitly lists the Annex IV items Talon **cannot** produce (model development process, performance metrics, declaration of conformity) with their owners — Talon is the deployment-governance layer, not the model provider. As with the RoPA, missing declarations are flagged in the output rather than failing the command, and the result is supporting documentation for Annex IV review, not a conformity assessment.
+
 ## If you need NIS2 / incident evidence
 
 For incident response, use the same export and verification steps. Use timeline or evidence ID to correlate with the incident window. The signed evidence supports non-repudiation and integrity for regulators.

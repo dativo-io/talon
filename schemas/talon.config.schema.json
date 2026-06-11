@@ -108,6 +108,23 @@
       "default": "console",
       "description": "Log format. The --log-format flag takes precedence over this value."
     },
+    "compliance": {
+      "type": "object",
+      "description": "Org-level declared facts used to populate auditor exports (GDPR Art. 30 RoPA, EU AI Act Annex IV). Owned by the platform team together with the DPO. Declared facts only — runtime facts come from the signed evidence store.",
+      "properties": {
+        "controller": {
+          "type": "object",
+          "description": "Data-controller identity for GDPR Art. 30(1)(a).",
+          "properties": {
+            "name": { "type": "string", "description": "Legal name of the controller organization." },
+            "contact": { "type": "string", "description": "General contact point (email or address)." },
+            "dpo_contact": { "type": "string", "description": "Data Protection Officer contact, where designated." },
+            "address": { "type": "string", "description": "Registered address of the controller." },
+            "representative": { "type": "string", "description": "EU representative, where applicable (GDPR Art. 27)." }
+          }
+        }
+      }
+    },
     "cache": {
       "type": "object",
       "description": "Governed semantic cache (optional, off by default). Validated by `talon doctor`.",

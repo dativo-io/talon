@@ -12,6 +12,12 @@ It is **supporting controls and evidence** for review, not a completed legal fil
 | [evidence.signed.json](evidence.signed.json) | Full HMAC-signed evidence records (offline verification) |
 | [compliance-report.html](compliance-report.html) | Framework-mapped control summary (HTML) |
 | [compliance-report.json](compliance-report.json) | Same report as JSON |
+| [ropa.html](ropa.html) | GDPR Art. 30 Record of Processing Activities (HTML, print-to-PDF-ready) |
+| [ropa.json](ropa.json) | Same RoPA as JSON (machine-checkable) |
+| [annex-iv.html](annex-iv.html) | EU AI Act Annex IV technical-documentation pack (HTML, print-to-PDF-ready) |
+| [annex-iv.json](annex-iv.json) | Same Annex IV pack as JSON (machine-checkable) |
+
+The RoPA and Annex IV pack merge **declared facts** (controller, purposes, retention, system description — see [How to clear DECLARATION MISSING blocks in RoPA exports](../../docs/guides/ropa-declarations.md) for the Example GmbH fields used in this sample) with **runtime facts** from the signed evidence (recipients, observed identifiers, third-country transfers, policy denials, oversight events). Generate your own with `talon compliance ropa` / `talon compliance annex-iv` — see the [export runbook](../../docs/guides/compliance-export-runbook.md#generate-a-formatted-ropa). The Annex IV pack also lists the items Talon cannot produce (model development process, performance metrics, declaration of conformity) with their owners.
 
 ## Verify offline
 
@@ -41,5 +47,6 @@ Commit updated artifacts when the evidence schema or compliance mapping changes.
 ## Related docs
 
 - [How to export evidence for auditors](../../docs/guides/compliance-export-runbook.md)
+- [How to clear DECLARATION MISSING blocks in RoPA exports](../../docs/guides/ropa-declarations.md)
 - [Evidence integrity specification](../../docs/reference/evidence-integrity-spec.md)
 - [Conformance suite & count](../../docs/reference/conformance.md)

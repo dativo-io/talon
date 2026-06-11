@@ -1,7 +1,9 @@
-// Data-flow tracking: records which classified data was sent to which
-// destination (LLM provider, MCP tool, client output, cache) within one
-// governed request. Digests only — never raw values. Supports evidence for
-// GDPR Art. 30 (records of processing, incl. recipients) and EU AI Act Art. 13.
+// Data-flow tracking: records which data was sent to which destination
+// (LLM provider, MCP tool, client output, cache) within one governed request.
+// Every governed request records at least its primary egress flow; classified
+// data additionally carries entity types and value digests — never raw values.
+// Supports evidence for GDPR Art. 30 (records of processing, incl. recipients)
+// and EU AI Act Art. 13.
 package evidence
 
 import (

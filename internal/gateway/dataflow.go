@@ -36,9 +36,11 @@ type dataFlowInputs struct {
 }
 
 // buildDataFlow builds the data_flow evidence section for a gateway request.
-// Returns nil when no classified data was detected (tier 0, no PII anywhere),
-// keeping records small. It consumes only the engine-neutral
-// classifier.Classification, so any Analyzer implementation plugs in unchanged.
+// Every request records at least the prompt -> destination flow: data
+// movement is evidence even when no PII was detected (GDPR Art. 30 recipients
+// and transfers must cover all governed traffic, not only classified data).
+// It consumes only the engine-neutral classifier.Classification, so any
+// Analyzer implementation plugs in unchanged.
 func (g *Gateway) buildDataFlow(in dataFlowInputs) *evidence.DataFlow {
 	providerDest := evidence.FlowDestination{
 		Kind:     evidence.FlowDestLLMProvider,
@@ -67,15 +69,20 @@ func (g *Gateway) buildDataFlow(in dataFlowInputs) *evidence.DataFlow {
 
 	var items []evidence.DataFlowItem
 
-	// Prompt -> provider (or cache).
-	if in.Classification != nil && in.Classification.HasPII {
-		merged := classifier.MergeEntitySpans(in.InputText, in.Classification.Entities)
-		items = append(items, evidence.NewDataFlowItem(
-			in.TenantID, in.CorrelationID,
-			evidence.FlowSourcePrompt, "",
-			in.Classification.Tier, merged,
-			requestDisposition, requestDest))
+	// Prompt -> provider (or cache). Always recorded, classified or not.
+	promptTier := 0
+	var promptEntities []classifier.PIIEntity
+	if in.Classification != nil {
+		promptTier = in.Classification.Tier
+		if in.Classification.HasPII {
+			promptEntities = classifier.MergeEntitySpans(in.InputText, in.Classification.Entities)
+		}
 	}
+	items = append(items, evidence.NewDataFlowItem(
+		in.TenantID, in.CorrelationID,
+		evidence.FlowSourcePrompt, "",
+		promptTier, promptEntities,
+		requestDisposition, requestDest))
 
 	// PII-bearing attachments -> provider (or cache). Attachment scans retain
 	// entity types only (no values/positions), so no digests here.
@@ -98,9 +105,6 @@ func (g *Gateway) buildDataFlow(in dataFlowInputs) *evidence.DataFlow {
 	// Response -> client (and cache, when stored after a forward).
 	items = append(items, responseFlowItems(in)...)
 
-	if len(items) == 0 {
-		return nil
-	}
 	return &evidence.DataFlow{
 		Detector: g.classifier.Detector(),
 		Items:    items,

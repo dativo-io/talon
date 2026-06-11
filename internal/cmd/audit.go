@@ -674,7 +674,8 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		piiStr = "(none)"
 	}
 	fmt.Fprintf(w, "PII Detected:  %s\n", piiStr)
-	fmt.Fprintf(w, "PII Redacted:  %t\n", ev.Classification.PIIRedacted)
+	fmt.Fprintf(w, "PII Redacted:  input=%t output=%t\n",
+		ev.Classification.InputPIIRedacted, ev.Classification.PIIRedacted)
 	fmt.Fprintln(w, "Execution")
 	fmt.Fprintf(w, "Model:         %s\n", ev.Execution.ModelUsed)
 	fmt.Fprintf(w, "Cost:          €%s\n", formatCost(ev.Execution.Cost))
@@ -726,6 +727,28 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		fmt.Fprintln(w, "Memory Reads (injected into prompt)")
 		for _, r := range ev.MemoryReads {
 			fmt.Fprintf(w, "  Entry: %s  TrustScore: %d\n", r.EntryID, r.TrustScore)
+		}
+	}
+	if ev.DataFlow != nil && len(ev.DataFlow.Items) > 0 {
+		fmt.Fprintln(w, "Data Flow")
+		if ev.DataFlow.Detector != "" {
+			fmt.Fprintf(w, "  Detector:    %s\n", ev.DataFlow.Detector)
+		}
+		for i := range ev.DataFlow.Items {
+			item := &ev.DataFlow.Items[i]
+			dest := item.Destination.Kind + ":" + item.Destination.Name
+			if item.Destination.Model != "" {
+				dest += " model=" + item.Destination.Model
+			}
+			if item.Destination.Region != "" {
+				dest += " region=" + item.Destination.Region
+			}
+			types := strings.Join(item.EntityTypes, ", ")
+			if types == "" {
+				types = "no classified data"
+			}
+			fmt.Fprintf(w, "  %s -> %s | %s | tier %d | %s\n",
+				item.Source, dest, item.Disposition, item.Tier, types)
 		}
 	}
 	fmt.Fprintln(w, "Audit Trail")

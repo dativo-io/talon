@@ -314,7 +314,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		opts = append(opts, server.WithDashboard(web.DashboardHTML))
 	}
 
-	mcpHandler := mcp.NewHandler(toolRegistry, policyEngine, evidenceStore)
+	mcpHandler := mcp.NewHandler(toolRegistry, policyEngine, evidenceStore, cls)
 	opts = append(opts, server.WithMCPServer(mcpHandler))
 
 	var proxyHandler http.Handler

@@ -1215,6 +1215,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 								Classification: evidence.Classification{InputTier: tier, PIIDetected: append(piiNames, cacheOutputPIINames...)},
 								CacheHit:       true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity,
 								Compliance: compliance, InputPrompt: req.Prompt, OutputResponse: hit.ResponseText,
+								DataFlow: buildRunDataFlow(runFlowInputs{
+									TenantID: req.TenantID, InvocationType: req.InvocationType,
+									CacheHit: true, CacheEntryID: hit.ID,
+									InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
+									OutputTier: cacheOutputClass.Tier, OutputPIITypes: cacheOutputPIINames, OutputBlocked: true,
+									Detector: piiScanner.Detector(),
+								}),
 								ExplanationFacts: []explanation.Fact{{
 									Code:            explanation.CodePolicyDeniedPIIOutput,
 									Decision:        explanation.DecisionDeny,
@@ -1255,6 +1262,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
 						CacheHit: true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity, CostSaved: costSaved,
 						Cost: 0, Tokens: evidence.TokenUsage{}, OutputResponse: cacheResponseText,
+						DataFlow: buildRunDataFlow(runFlowInputs{
+							TenantID: req.TenantID, InvocationType: req.InvocationType,
+							CacheHit: true, CacheEntryID: hit.ID,
+							InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
+							OutputTier: cacheOutputClass.Tier, OutputPIITypes: cacheOutputPIINames, OutputRedacted: cacheOutputRedacted,
+							Detector: piiScanner.Detector(),
+						}),
 						ExplanationFacts: []explanation.Fact{{
 							Code:            explanation.CodePolicyAllowed,
 							Decision:        explanation.DecisionAllow,
@@ -1377,8 +1391,14 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					ToolsCalled:             toolsCalled, Cost: cost,
 					Tokens:          evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
 					RoutingDecision: evRouting,
-					Status:          string(RunStatusFailed),
-					FailureReason:   string(llmFailReason),
+					DataFlow: buildRunDataFlow(runFlowInputs{
+						TenantID: req.TenantID, InvocationType: req.InvocationType,
+						Provider: provider.Name(), Model: model,
+						InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
+						Detector: piiScanner.Detector(),
+					}),
+					Status:        string(RunStatusFailed),
+					FailureReason: string(llmFailReason),
 				}); evErr != nil {
 					log.Error().Err(evErr).
 						Str("correlation_id", correlationID).
@@ -1655,8 +1675,14 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
 				ObservationModeOverride: observationOverride,
 				RoutingDecision:         evRouting,
-				Status:                  string(RunStatusFailed),
-				FailureReason:           string(singleFailReason),
+				DataFlow: buildRunDataFlow(runFlowInputs{
+					TenantID: req.TenantID, InvocationType: req.InvocationType,
+					Provider: provider.Name(), Model: model,
+					InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
+					Detector: piiScanner.Detector(),
+				}),
+				Status:        string(RunStatusFailed),
+				FailureReason: string(singleFailReason),
 			}); evErr != nil {
 				log.Error().Err(evErr).
 					Str("correlation_id", correlationID).
@@ -1693,6 +1719,12 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
 				ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
 				Cost: cost, Tokens: evidence.TokenUsage{Input: totalInputTokens, Output: totalOutputTokens},
+				DataFlow: buildRunDataFlow(runFlowInputs{
+					TenantID: req.TenantID, InvocationType: req.InvocationType,
+					Provider: provider.Name(), Model: model,
+					InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
+					Detector: piiScanner.Detector(),
+				}),
 				Status: string(RunStatusBlocked), FailureReason: string(FailureCostExceeded),
 			}); evErr != nil {
 				log.Error().Err(evErr).
@@ -1786,6 +1818,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				OutputResponse:          llmResp.Content,
 				Compliance:              compliance,
 				ObservationModeOverride: observationOverride,
+				DataFlow: buildRunDataFlow(runFlowInputs{
+					TenantID: req.TenantID, InvocationType: req.InvocationType,
+					Provider: provider.Name(), Model: model,
+					InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
+					OutputTier: outputClass.Tier, OutputPIITypes: outputEntityNames, OutputBlocked: true,
+					Detector: piiScanner.Detector(),
+				}),
 				ExplanationFacts: []explanation.Fact{{
 					Code:            explanation.CodePolicyDeniedPIIOutput,
 					Decision:        explanation.DecisionDeny,
@@ -1868,6 +1907,13 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		Compliance:              compliance,
 		ObservationModeOverride: observationOverride,
 		RoutingDecision:         evRouting,
+		DataFlow: buildRunDataFlow(runFlowInputs{
+			TenantID: req.TenantID, InvocationType: req.InvocationType,
+			Provider: provider.Name(), Model: model,
+			InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
+			OutputTier: outputClass.Tier, OutputPIITypes: outputEntityNames, OutputRedacted: outputPIIRedacted,
+			Detector: piiScanner.Detector(),
+		}),
 		ExplanationFacts: []explanation.Fact{{
 			Code:            explanation.CodePolicyAllowed,
 			Decision:        explanation.DecisionAllow,

@@ -511,26 +511,26 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 	_ = h.evidenceStore.Store(ctx, ev)
 }
 
-// buildProxyDataFlow links classified tool arguments to the upstream vendor
-// and classified tool results to the client. Digests only, never raw values.
+// buildProxyDataFlow links tool arguments to the upstream vendor and
+// classified tool results to the client. Every proxied call records at least
+// the tool_args -> vendor flow, classified or not: data movement is evidence.
+// Digests only, never raw values.
 func (h *ProxyHandler) buildProxyDataFlow(tenantID, correlationID, toolName string, flow *proxyFlowState) *evidence.DataFlow {
 	var items []evidence.DataFlowItem
-	if len(flow.requestEntities) > 0 {
-		disposition := evidence.FlowDispositionForwarded
-		if flow.requestBlocked {
-			disposition = evidence.FlowDispositionBlocked
-		}
-		items = append(items, evidence.NewDataFlowItem(
-			tenantID, correlationID,
-			evidence.FlowSourceToolArgs, toolName,
-			flow.requestTier, flow.requestEntities,
-			disposition, evidence.FlowDestination{
-				Kind:     evidence.FlowDestMCPTool,
-				Name:     h.config.Proxy.Upstream.Vendor,
-				Endpoint: h.upstreamEndpointHost(),
-				Region:   h.upstreamRegion(),
-			}))
+	disposition := evidence.FlowDispositionForwarded
+	if flow.requestBlocked {
+		disposition = evidence.FlowDispositionBlocked
 	}
+	items = append(items, evidence.NewDataFlowItem(
+		tenantID, correlationID,
+		evidence.FlowSourceToolArgs, toolName,
+		flow.requestTier, flow.requestEntities,
+		disposition, evidence.FlowDestination{
+			Kind:     evidence.FlowDestMCPTool,
+			Name:     h.config.Proxy.Upstream.Vendor,
+			Endpoint: h.upstreamEndpointHost(),
+			Region:   h.upstreamRegion(),
+		}))
 	if len(flow.responseEntities) > 0 {
 		disposition := evidence.FlowDispositionSurfaced
 		if flow.responseRedacted {
@@ -544,9 +544,6 @@ func (h *ProxyHandler) buildProxyDataFlow(tenantID, correlationID, toolName stri
 				Kind: evidence.FlowDestClient,
 				Name: tenantID,
 			}))
-	}
-	if len(items) == 0 {
-		return nil
 	}
 	detector := ""
 	if h.classifier != nil {

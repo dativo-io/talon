@@ -83,6 +83,18 @@ echo "==> Generating compliance report (JSON)..."
 docker compose exec -T talon /usr/local/bin/talon compliance report \
   --format json >"${OUTPUT_DIR}/compliance-report.json"
 
+echo "==> Generating GDPR Art. 30 RoPA (HTML + JSON)..."
+docker compose exec -T talon /usr/local/bin/talon compliance ropa \
+  --format html >"${OUTPUT_DIR}/ropa.html"
+docker compose exec -T talon /usr/local/bin/talon compliance ropa \
+  --format json >"${OUTPUT_DIR}/ropa.json"
+
+echo "==> Generating EU AI Act Annex IV pack (HTML + JSON)..."
+docker compose exec -T talon /usr/local/bin/talon compliance annex-iv \
+  --format html >"${OUTPUT_DIR}/annex-iv.html"
+docker compose exec -T talon /usr/local/bin/talon compliance annex-iv \
+  --format json >"${OUTPUT_DIR}/annex-iv.json"
+
 # Basic secret-leak guard (demo uses synthetic PII only).
 if grep -qiE 'sk-[a-zA-Z0-9]{20,}|Bearer[[:space:]]+[a-zA-Z0-9._-]{20,}' \
   "${OUTPUT_DIR}/evidence.signed.json" "${OUTPUT_DIR}/compliance-report.html" 2>/dev/null; then
@@ -110,11 +122,17 @@ cat >"${OUTPUT_DIR}/manifest.json" <<EOF
   "files": {
     "evidence_signed": "evidence.signed.json",
     "compliance_report_html": "compliance-report.html",
-    "compliance_report_json": "compliance-report.json"
+    "compliance_report_json": "compliance-report.json",
+    "ropa_html": "ropa.html",
+    "ropa_json": "ropa.json",
+    "annex_iv_html": "annex-iv.html",
+    "annex_iv_json": "annex-iv.json"
   },
   "verify_commands": [
     "talon audit verify --file examples/auditor-pack/evidence.signed.json",
-    "open examples/auditor-pack/compliance-report.html"
+    "open examples/auditor-pack/compliance-report.html",
+    "open examples/auditor-pack/ropa.html",
+    "open examples/auditor-pack/annex-iv.html"
   ],
   "claim_note": "Supporting controls and evidence for auditor review — not a completed legal filing. See LIMITATIONS.md."
 }

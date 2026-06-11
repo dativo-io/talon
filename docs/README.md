@@ -26,7 +26,7 @@ Pick the path that matches your goal. For what Talon is **not** building, read [
 
 1. [60-second demo](tutorials/quickstart-demo.md) — Docker Compose, mock provider, evidence in SQLite.
 2. [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) — verify, export, tamper, fail verification.
-3. [Sample auditor pack](../examples/auditor-pack/README.md) — browse a signed export + compliance report; regenerate with `make auditor-pack`.
+3. [Sample auditor pack](../examples/auditor-pack/README.md) — browse a signed export, compliance report, GDPR Art. 30 RoPA, and EU AI Act Annex IV pack; regenerate with `make auditor-pack`.
 
 ### Builder (native binary, cold start)
 
@@ -43,6 +43,7 @@ Choose the shortest path for your situation:
 1. **"I need to show an auditor or DPO what we can hand off."**
    - Start: [Sample auditor pack](../examples/auditor-pack/README.md)
    - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
+   - Declarations: [How to clear DECLARATION MISSING blocks in RoPA exports](guides/ropa-declarations.md)
 2. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
    - Start: [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
    - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
@@ -77,6 +78,7 @@ Choose the shortest path for your situation:
 | [How to govern ChatGPT/Claude Desktop (enterprise)](guides/desktop-app-governance.md) | Route desktop app traffic via DNS/TLS and gateway. |
 | [Cap AI spend for a Slack/support bot in 10 minutes](guides/cost-governance-by-caller.md) | Fast path to caller-level daily/monthly hard caps, budget-deny proof, and evidence-backed cost attribution. |
 | [How to export evidence for auditors](guides/compliance-export-runbook.md) | Export, verify, and hand off audit evidence. |
+| [How to clear DECLARATION MISSING blocks in RoPA exports](guides/ropa-declarations.md) | Fill `talon.config.yaml` and `agent.talon.yaml` declarations; regenerate RoPA/Annex IV without placeholders. |
 | [How to run governed LLM calls in CI/CD](guides/cicd-pipeline-governance.md) | Use Talon from GitHub Actions or GitLab CI. |
 | [How to run a first-line support agent with Talon](guides/internal-support-agent.md) | Ticket summarization with PII and cost controls. |
 | [How to verify memory is used](guides/memory-verification.md) | CLI steps to confirm memory is written and injected into prompts. |
@@ -90,6 +92,7 @@ Choose the shortest path for your situation:
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
 | [Evidence integrity specification](reference/evidence-integrity-spec.md) | Normative signed-record spec: fields, canonical serialization, HMAC-SHA256 signing, and the independent verification procedure. |
 | [Threat model](reference/threat-model.md) | STRIDE-style attack surface, trust boundaries, threats/mitigations, and key-management assumptions for the gateway path. |
+| [Governance control matrix](reference/governance-control-matrix.md) | Which controls run on each entry path (runner, gateway, MCP server/proxy, graph adapter), by-design limitations, and the parity contract that prevents posture drift. |
 | [Conformance suite & count](reference/conformance.md) | What counts as a conformance test for the evidence + policy paths, and how to reproduce the published count with `make conformance`. |
 | [Reproducible benchmarks](reference/benchmarks.md) | Gateway pipeline overhead, PII scan latency, and evidence write throughput (`make benchmarks`). |
 | [Authentication and key scopes](reference/authentication-and-key-scopes.md) | Which keys authenticate which endpoint families (gateway vs control plane vs dashboard). |
@@ -123,7 +126,7 @@ Choose the shortest path for your situation:
 | [Conformance suite & count](reference/conformance.md) | Reproducible passing-test count for the evidence + policy paths (`make conformance`). |
 | [Reproducible benchmarks](reference/benchmarks.md) | `make benchmarks` — gateway overhead, PII scan, evidence write on your hardware. |
 | [Roadmap & focus](../ROADMAP.md) | Anti-goals and focus — answers "are you trying to be Portkey + AGT?" |
-| [Sample auditor pack](../examples/auditor-pack/README.md) | Generated signed export + compliance report for handoff review. |
+| [Sample auditor pack](../examples/auditor-pack/README.md) | Generated signed export + compliance report + RoPA + Annex IV pack for handoff review. |
 | [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Fast proof moment for auditors/operators, including offline signed-export verification. |
 | [Threat model](reference/threat-model.md) | Attack surface, trust boundaries, and what the HMAC signature does and does not prove. |
 | [Security policy](../SECURITY.md) | Vulnerability reporting process and security scope. |

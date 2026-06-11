@@ -452,6 +452,8 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 		return fmt.Errorf("evidence explanations are required")
 	}
 
+	warnGovernanceDrift(ctx, ev)
+
 	evidenceJSON, err := json.Marshal(ev)
 	if err != nil {
 		return fmt.Errorf("marshaling evidence: %w", err)

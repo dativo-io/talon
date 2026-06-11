@@ -20,6 +20,15 @@ cache:
   similarity_threshold: 0.92
   max_entries_per_tenant: 10000
 
+# Compliance: org-level declared facts for auditor exports
+# (talon compliance ropa / annex-iv). Fill in with your DPO.
+# compliance:
+#   controller:
+#     name: "Example GmbH"
+#     contact: "privacy@example.eu"
+#     dpo_contact: "dpo@example.eu"
+#     address: "Examplestr. 1, 10115 Berlin, Germany"
+
 # Storage: evidence, secrets vault, and state live under data_dir
 # (default ~/.talon; evidence DB is {data_dir}/evidence.db).
 # data_dir: ~/.talon

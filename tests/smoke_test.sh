@@ -452,7 +452,8 @@ for _section_file in \
   20_edge_cases.sh 21_doctor_report_enforce.sh 22_cache.sh \
   23_dashboard_metrics.sh 24_plan_dispatch.sh 25_sessions.sh \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
-  29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh; do
+  29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh \
+  33_auditor_documents.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -537,6 +538,7 @@ main() {
   run_section "30_graph_events" test_section_30_graph_events
   run_section "31_quickstart" test_section_31_quickstart
   run_section "32_egress" test_section_32_egress
+  run_section "33_auditor_documents" test_section_33_auditor_documents
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency

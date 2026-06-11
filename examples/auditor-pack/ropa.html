@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Record of Processing Activities</title>
+<style>
+body { font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif; margin: 32px auto; max-width: 900px; color: #111; line-height: 1.45; }
+h1 { margin: 0 0 4px; font-size: 26px; }
+h2 { margin: 28px 0 8px; font-size: 18px; border-bottom: 1px solid #d9d9d9; padding-bottom: 4px; }
+.subtitle { color: #444; margin: 0 0 16px; }
+.meta { color: #555; font-size: 13px; margin: 0 0 24px; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0 18px; }
+th, td { border: 1px solid #d9d9d9; padding: 7px 9px; text-align: left; font-size: 13px; vertical-align: top; }
+th { background: #f4f4f4; }
+code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; font-size: 12px; }
+.missing { border: 2px dashed #c0392b; background: #fdf3f2; padding: 10px 14px; border-radius: 6px; color: #7b241c; font-size: 14px; }
+.warnings { border: 1px solid #e6c200; background: #fdf9e7; padding: 10px 14px; border-radius: 6px; font-size: 13px; margin: 0 0 20px; }
+.warnings ul { margin: 6px 0 0 18px; padding: 0; }
+.linkage { background: #f4f7f4; border: 1px solid #cfe0cf; padding: 12px 16px; border-radius: 6px; font-size: 13px; margin: 28px 0 0; }
+.claim { color: #555; font-size: 12px; border-top: 1px solid #d9d9d9; margin-top: 32px; padding-top: 12px; }
+@media print { body { margin: 12mm; } .warnings { display: none; } }
+</style></head><body>
+<h1>Record of Processing Activities</h1>
+<p class="subtitle">AI traffic governed by Dativo Talon — generated from signed runtime evidence and declared facts</p>
+<p class="meta">Generated: 2026-06-11 14:21:54 UTC | Framework: <b>gdpr</b> | Scope: <b>Art. 30</b> | Tenant: <b>default</b></p>
+
+<h2>1. Controller (Art. 30(1)(a))</h2>
+
+<table><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>
+<tr><td>Controller</td><td>Example GmbH</td></tr><tr><td>Contact</td><td>privacy@example.eu</td></tr><tr><td>Data Protection Officer</td><td>dpo@example.eu</td></tr><tr><td>Address</td><td>Examplestr. 1, 10115 Berlin, Germany</td></tr>
+</tbody></table>
+<h2>2. Processing activities observed</h2>
+<p>Each row is one governed caller (tenant, agent) observed in the signed evidence store for the selected scope.</p>
+<table><thead><tr><th>Tenant</th><th>Agent</th><th>Evidence records</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>
+<tr><td>default</td><td>gateway</td><td>3</td><td>2026-06-11</td><td>2026-06-11</td></tr>
+</tbody></table>
+<h2>3. Purposes of processing (Art. 30(1)(b))</h2>
+<p>customer support ticket triage; internal AI assistance — declared lawful basis (Art. 6): contract (Art. 6(1)(b))</p>
+
+<h2>4. Categories of data subjects and personal data (Art. 30(1)(c))</h2>
+<p>Declared categories come from agent configuration; observed identifiers come from PII detection recorded in signed evidence.</p>
+<table><thead><tr><th>Category</th><th>Values</th></tr></thead><tbody>
+<tr><td>Data subjects (declared)</td><td>customers, employees</td></tr><tr><td>Personal data (declared)</td><td>contact details, payment identifiers, support ticket content</td></tr><tr><td>Personal data identifiers observed in evidence</td><td>email, iban</td></tr>
+</tbody></table>
+<h2>5. Categories of recipients (Art. 30(1)(d))</h2>
+<p>Destinations that received request or response data, aggregated from signed data-flow evidence. Identifier types marked &#34;redacted before egress&#34; were detected in the data but redacted in every flow to that destination — the recipient received placeholders, not raw values.</p>
+<table><thead><tr><th>Recipient</th><th>Kind</th><th>Region</th><th>Evidence records</th><th>Identifier types</th></tr></thead><tbody>
+<tr><td>openai</td><td>llm_provider</td><td>US</td><td>2</td><td>email (redacted before egress)</td></tr>
+</tbody></table>
+<h2>6. Transfers to third countries (Art. 30(1)(e))</h2>
+<p>Destinations outside EU/LOCAL regions observed in data-flow evidence. Document the transfer mechanism (e.g. SCCs, adequacy decision) for each with your DPO.</p>
+<table><thead><tr><th>Destination</th><th>Kind</th><th>Region</th><th>Evidence records</th></tr></thead><tbody>
+<tr><td>openai</td><td>llm_provider</td><td>US</td><td>2</td></tr>
+</tbody></table>
+<h2>7. Envisaged erasure time limits (Art. 30(1)(f))</h2>
+<p>90 days after ticket closure</p>
+
+<h2>8. Technical and organisational security measures (Art. 30(1)(g), Art. 32)</h2>
+<p>Technical controls applied by Talon to the processing described above. Organisational measures beyond Talon (access policies, training, vendor DPAs) should be documented separately; see the declared safeguards field.</p>
+<table><thead><tr><th>Control</th><th>Description</th><th>Source</th></tr></thead><tbody>
+<tr><td>Evidence integrity</td><td>HMAC-SHA256 signed evidence records; offline verification via talon audit verify</td><td>internal/evidence</td></tr><tr><td>Secrets protection</td><td>AES-256-GCM encrypted vault with per-agent ACLs; every access audited</td><td>internal/secrets</td></tr><tr><td>PII detection</td><td>EU identifier patterns scanned on input and output; redaction/block per policy</td><td>internal/classifier</td></tr><tr><td>Data residency controls</td><td>Tier-based routing and egress rules restricting destinations by region</td><td>internal/llm, internal/gateway</td></tr><tr><td>Tenant isolation</td><td>Per-tenant state, budgets, rate limits, and evidence scoping</td><td>internal/tenant</td></tr><tr><td>Mapped control: GDPR Art. 30</td><td>Processing records via signed evidence export</td><td>internal/evidence/store.go</td></tr><tr><td>Mapped control: GDPR Art. 32</td><td>PII detection and model/data-tier routing</td><td>internal/classifier/pii.go</td></tr><tr><td>Mapped control: GDPR Art. 44-50</td><td>EU data residency routing controls</td><td>internal/policy/rego/routing.rego</td></tr><tr><td>Organisational safeguards (declared)</td><td>Role-based access; vendor DPAs on file; signed evidence retained for audit review</td><td>agent.talon.yaml</td></tr>
+</tbody></table>
+<div class="linkage"><b>Evidence linkage.</b> Built from 3 signed evidence record(s).
+Sample IDs: <code>req_5ae7cb3b</code>, <code>req_631b773b</code>, <code>req_998dafe4</code>.
+Verify offline: <code>talon audit verify --file evidence.signed.json</code>.
+Signed export: <code>evidence.signed.json</code>.</div>
+<p class="claim">This document contains supporting records and control descriptions for GDPR Art. 30, generated from HMAC-signed runtime evidence and operator-declared facts. It is not a completed legal filing, a certification, or a compliance determination. Review with your DPO or counsel. See LIMITATIONS.md.</p>
+</body></html>
