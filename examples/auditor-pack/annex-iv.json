@@ -1,7 +1,7 @@
 {
   "title": "EU AI Act Annex IV — Technical Documentation Pack",
   "subtitle": "Deployment-governance records produced by Dativo Talon from signed runtime evidence and declared facts",
-  "generated_at": "2026-06-11T09:51:51.327691Z",
+  "generated_at": "2026-06-11T11:28:21.70044Z",
   "framework": "eu-ai-act",
   "article": "Annex IV",
   "tenant_id": "default",
@@ -17,18 +17,18 @@
         "rows": [
           [
             "System description (declared)",
-            "Gateway-governed LLM assistant for support ticket triage (demo)"
+            "Gateway-governed LLM assistant for customer support ticket triage and internal AI assistance"
           ],
           [
             "Intended purpose (declared)",
-            "Summarize and route inbound support tickets"
+            "Summarize and route inbound support tickets; assist employees with internal knowledge queries"
           ]
         ]
       }
     },
     {
       "heading": "3. Monitoring, functioning and control (Annex IV s.3, Art. 14 human oversight)",
-      "body": "Every governed request produces an HMAC-signed evidence record (policy decision, classification, model, cost, duration) exported via OpenTelemetry. Operators monitor via the dashboard and metrics endpoints; plan-review gates require human approval before agent tool execution where configured. Declared oversight arrangements: Support lead reviews flagged tickets; plan-review gate for tool use",
+      "body": "Every governed request produces an HMAC-signed evidence record (policy decision, classification, model, cost, duration) exported via OpenTelemetry. Operators monitor via the dashboard and metrics endpoints; plan-review gates require human approval before agent tool execution where configured. Declared oversight arrangements: Support lead reviews flagged tickets; role-based access controls; plan-review gate for tool use where configured",
       "table": {
         "headers": [
           "Runtime control indicator",
@@ -154,9 +154,9 @@
   "evidence_linkage": {
     "evidence_count": 3,
     "sample_evidence_ids": [
-      "req_37809d97",
-      "req_8b6659ff",
-      "req_c66c44bc"
+      "req_175eb968",
+      "req_81e3f011",
+      "req_ef3fcb91"
     ],
     "verify_command": "talon audit verify --file evidence.signed.json",
     "signed_export_ref": "evidence.signed.json"

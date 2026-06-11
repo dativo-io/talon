@@ -106,7 +106,7 @@ talon compliance ropa --format html --from 2026-01-01 --to 2026-06-30 --output r
 talon compliance ropa --format json --tenant default --agent support-agent
 ```
 
-Missing declarations never fail the command: they are listed as warnings on stderr and rendered as flagged "DECLARATION MISSING" sections, so the document itself tells you what to complete before auditor handoff. See [Configuration reference — Compliance declarations](../reference/configuration.md#compliance-declarations-auditor-exports) for the declaration schema, and `examples/auditor-pack/` for a generated sample.
+Missing declarations never fail the command: they are listed as warnings on stderr and rendered as flagged "DECLARATION MISSING" sections, so the document itself tells you what to complete before auditor handoff. That is a product strength — Talon does not fake completeness. See [How to clear DECLARATION MISSING blocks in RoPA exports](ropa-declarations.md) for the field-by-field checklist, [Configuration reference — Compliance declarations](../reference/configuration.md#compliance-declarations-auditor-exports) for the declaration schema, and `examples/auditor-pack/` for a generated sample with declarations filled in.
 
 The output is supporting records for GDPR Art. 30 review — generated from HMAC-signed evidence plus your declared facts — not a completed legal filing. Review with your DPO.
 

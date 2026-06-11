@@ -43,6 +43,7 @@ Choose the shortest path for your situation:
 1. **"I need to show an auditor or DPO what we can hand off."**
    - Start: [Sample auditor pack](../examples/auditor-pack/README.md)
    - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
+   - Declarations: [How to clear DECLARATION MISSING blocks in RoPA exports](guides/ropa-declarations.md)
 2. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
    - Start: [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
    - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
@@ -77,6 +78,7 @@ Choose the shortest path for your situation:
 | [How to govern ChatGPT/Claude Desktop (enterprise)](guides/desktop-app-governance.md) | Route desktop app traffic via DNS/TLS and gateway. |
 | [Cap AI spend for a Slack/support bot in 10 minutes](guides/cost-governance-by-caller.md) | Fast path to caller-level daily/monthly hard caps, budget-deny proof, and evidence-backed cost attribution. |
 | [How to export evidence for auditors](guides/compliance-export-runbook.md) | Export, verify, and hand off audit evidence. |
+| [How to clear DECLARATION MISSING blocks in RoPA exports](guides/ropa-declarations.md) | Fill `talon.config.yaml` and `agent.talon.yaml` declarations; regenerate RoPA/Annex IV without placeholders. |
 | [How to run governed LLM calls in CI/CD](guides/cicd-pipeline-governance.md) | Use Talon from GitHub Actions or GitLab CI. |
 | [How to run a first-line support agent with Talon](guides/internal-support-agent.md) | Ticket summarization with PII and cost controls. |
 | [How to verify memory is used](guides/memory-verification.md) | CLI steps to confirm memory is written and injected into prompts. |

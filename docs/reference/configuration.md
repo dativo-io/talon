@@ -80,7 +80,7 @@ compliance:
       oversight_description: "Support lead reviews flagged tickets daily"
 ```
 
-Fill these in together with your DPO. The exports are supporting records for GDPR Art. 30 and EU AI Act Annex IV review — not a completed legal filing. The org-level controller identity lives in `talon.config.yaml` (see [Compliance block](#compliance-block-controller-identity)).
+Fill these in together with your DPO. The exports are supporting records for GDPR Art. 30 and EU AI Act Annex IV review — not a completed legal filing. The org-level controller identity lives in `talon.config.yaml` (see [Compliance block](#compliance-block-controller-identity)). Step-by-step help for clearing flagged sections: [How to clear DECLARATION MISSING blocks in RoPA exports](../guides/ropa-declarations.md).
 
 See [Memory governance](../MEMORY_GOVERNANCE.md) for the full memory reference. Key memory options:
 

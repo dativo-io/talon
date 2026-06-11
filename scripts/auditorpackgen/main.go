@@ -156,7 +156,7 @@ func main() {
 		},
 		"claim_note":               "Supporting controls and evidence for auditor review — not a completed legal filing. See LIMITATIONS.md.",
 		"offline_signing_key_note": "Offline pack uses a fixed demo key; docker-compose regeneration uses the stack vault key.",
-		"declared_facts_note":      "RoPA controller/purposes/retention are synthetic demo declarations (Demo GmbH); production exports read them from talon.config.yaml and agent.talon.yaml.",
+		"declared_facts_note":      "RoPA/Annex IV declarations use Example GmbH fields (see docs/guides/ropa-declarations.md); production exports read them from talon.config.yaml and agent.talon.yaml.",
 	}
 	mb, _ := json.MarshalIndent(manifest, "", "  ")
 	if err := os.WriteFile(filepath.Join(*outDir, "manifest.json"), mb, 0o600); err != nil {
@@ -190,23 +190,30 @@ func writeDocument(outDir, base string, doc compliance.Document) {
 func demoDeclarations() compliance.Declarations {
 	return compliance.Declarations{
 		Controller: compliance.ControllerDeclarations{
-			Name:       "Demo GmbH (synthetic)",
-			Contact:    "privacy@demo.example",
-			DPOContact: "dpo@demo.example",
-			Address:    "Beispielstr. 1, 10115 Berlin, Germany",
+			Name:       "Example GmbH",
+			Contact:    "privacy@example.eu",
+			DPOContact: "dpo@example.eu",
+			Address:    "Examplestr. 1, 10115 Berlin, Germany",
 		},
 		Processing: compliance.ProcessingDeclarations{
-			Purposes:               []string{"customer support triage", "internal knowledge assistance"},
-			DataSubjectCategories:  []string{"customers", "employees"},
-			PersonalDataCategories: []string{"contact details", "payment identifiers"},
-			RetentionPeriod:        "90 days (demo declaration)",
-			Safeguards:             "support-team-only access; vendor DPAs on file (demo declaration)",
-			LegalBasis:             "contract (Art. 6(1)(b))",
+			Purposes: []string{
+				"customer support ticket triage",
+				"internal AI assistance",
+			},
+			DataSubjectCategories: []string{"customers", "employees"},
+			PersonalDataCategories: []string{
+				"contact details",
+				"payment identifiers",
+				"support ticket content",
+			},
+			RetentionPeriod: "90 days after ticket closure",
+			Safeguards:      "Role-based access; vendor DPAs on file; signed evidence retained for audit review",
+			LegalBasis:      "contract (Art. 6(1)(b))",
 		},
 		System: compliance.SystemDeclarations{
-			SystemDescription:    "Gateway-governed LLM assistant for support ticket triage (demo)",
-			IntendedPurpose:      "Summarize and route inbound support tickets",
-			OversightDescription: "Support lead reviews flagged tickets; plan-review gate for tool use",
+			SystemDescription:    "Gateway-governed LLM assistant for customer support ticket triage and internal AI assistance",
+			IntendedPurpose:      "Summarize and route inbound support tickets; assist employees with internal knowledge queries",
+			OversightDescription: "Support lead reviews flagged tickets; role-based access controls; plan-review gate for tool use where configured",
 		},
 	}
 }
