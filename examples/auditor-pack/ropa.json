@@ -1,7 +1,7 @@
 {
   "title": "Record of Processing Activities",
   "subtitle": "AI traffic governed by Dativo Talon — generated from signed runtime evidence and declared facts",
-  "generated_at": "2026-06-11T11:28:21.699604Z",
+  "generated_at": "2026-06-11T12:06:35.422103Z",
   "framework": "gdpr",
   "article": "Art. 30",
   "tenant_id": "default",
@@ -89,7 +89,7 @@
     },
     {
       "heading": "6. Transfers to third countries (Art. 30(1)(e))",
-      "body": "No transfers to destinations outside EU/LOCAL regions were observed in the data-flow evidence for the selected scope."
+      "body": "No data-flow evidence was recorded in the selected scope, so third-country transfers cannot be assessed yet. Transfers appear here once data-flow evidence is captured for governed requests."
     },
     {
       "heading": "7. Envisaged erasure time limits (Art. 30(1)(f))",
@@ -157,9 +157,9 @@
   "evidence_linkage": {
     "evidence_count": 3,
     "sample_evidence_ids": [
-      "req_175eb968",
-      "req_81e3f011",
-      "req_ef3fcb91"
+      "req_04d2b6c1",
+      "req_cae45a9f",
+      "req_f4a80b0a"
     ],
     "verify_command": "talon audit verify --file evidence.signed.json",
     "signed_export_ref": "evidence.signed.json"

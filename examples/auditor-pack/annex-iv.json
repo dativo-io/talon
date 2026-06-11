@@ -1,7 +1,7 @@
 {
   "title": "EU AI Act Annex IV — Technical Documentation Pack",
   "subtitle": "Deployment-governance records produced by Dativo Talon from signed runtime evidence and declared facts",
-  "generated_at": "2026-06-11T11:28:21.70044Z",
+  "generated_at": "2026-06-11T12:06:35.422496Z",
   "framework": "eu-ai-act",
   "article": "Annex IV",
   "tenant_id": "default",
@@ -154,9 +154,9 @@
   "evidence_linkage": {
     "evidence_count": 3,
     "sample_evidence_ids": [
-      "req_175eb968",
-      "req_81e3f011",
-      "req_ef3fcb91"
+      "req_04d2b6c1",
+      "req_cae45a9f",
+      "req_f4a80b0a"
     ],
     "verify_command": "talon audit verify --file evidence.signed.json",
     "signed_export_ref": "evidence.signed.json"

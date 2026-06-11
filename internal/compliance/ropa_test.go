@@ -141,7 +141,8 @@ func TestGenerateRoPA_NoThirdCountryTransfers(t *testing.T) {
 
 	transfers := sectionByHeading(t, doc, "6. Transfers to third countries (Art. 30(1)(e))")
 	assert.Nil(t, transfers.Table)
-	assert.Contains(t, transfers.Body, "No transfers")
+	assert.Contains(t, transfers.Body, "no third-country transfers were observed")
+	assert.Contains(t, transfers.Body, "Data flows were recorded", "EU-only must read as an assessed finding")
 }
 
 func TestGenerateRoPA_ObservedPIIMergedIntoCategories(t *testing.T) {
@@ -169,6 +170,9 @@ func TestGenerateRoPA_EmptyEvidence(t *testing.T) {
 	assert.Contains(t, activities.Body, "No evidence records")
 	recipients := sectionByHeading(t, doc, "5. Categories of recipients (Art. 30(1)(d))")
 	assert.Contains(t, recipients.Body, "No classified data flows")
+	transfers := sectionByHeading(t, doc, "6. Transfers to third countries (Art. 30(1)(e))")
+	assert.Contains(t, transfers.Body, "cannot be assessed yet",
+		"absence of data-flow evidence must not read as a no-transfers finding")
 }
 
 func TestGenerateRoPA_MultiTenantGrouping(t *testing.T) {

@@ -264,6 +264,16 @@ var euRegions = map[string]struct{}{"EU": {}, "LOCAL": {}}
 
 func transfersSection(destinations []DestinationSummary) DocSection {
 	heading := "6. Transfers to third countries (Art. 30(1)(e))"
+	// Absence of data-flow evidence is not a "no transfers" finding: say so
+	// explicitly instead of implying transfers were assessed.
+	if len(destinations) == 0 {
+		return DocSection{
+			Heading: heading,
+			Body: "No data-flow evidence was recorded in the selected scope, so third-country transfers " +
+				"cannot be assessed yet. Transfers appear here once data-flow evidence is captured for " +
+				"governed requests.",
+		}
+	}
 	var rows [][]string
 	unknown := 0
 	for _, d := range destinations {
@@ -279,7 +289,8 @@ func transfersSection(destinations []DestinationSummary) DocSection {
 	if len(rows) == 0 {
 		return DocSection{
 			Heading: heading,
-			Body:    "No transfers to destinations outside EU/LOCAL regions were observed in the data-flow evidence for the selected scope.",
+			Body: "Data flows were recorded in the selected scope and all destinations were within " +
+				"EU/LOCAL regions; no third-country transfers were observed.",
 		}
 	}
 	body := "Destinations outside EU/LOCAL regions observed in data-flow evidence. Document the transfer mechanism (e.g. SCCs, adequacy decision) for each with your DPO."
