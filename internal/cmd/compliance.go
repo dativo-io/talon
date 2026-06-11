@@ -197,12 +197,12 @@ func loadDeclarations(ctx context.Context, cmd *cobra.Command) compliance.Declar
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: could not load talon.config.yaml:", err)
-		return decl
+	} else {
+		decl.Controller = cfg.ControllerDeclarations()
 	}
-	decl.Controller = cfg.ControllerDeclarations()
 
 	policyPath := compliancePolicyFile
-	if policyPath == "" {
+	if policyPath == "" && cfg != nil {
 		policyPath = cfg.DefaultPolicy
 	}
 	if _, statErr := os.Stat(policyPath); statErr != nil {
