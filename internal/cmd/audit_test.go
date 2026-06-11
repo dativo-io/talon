@@ -201,7 +201,7 @@ func TestRenderAuditShow_PIIDetected(t *testing.T) {
 		Timestamp: time.Date(2026, 2, 21, 11, 28, 45, 0, time.FixedZone("CET", 3600)),
 		TenantID:  "default", AgentID: "slack-support-bot", InvocationType: "manual",
 		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "abc123"},
-		Classification: evidence.Classification{InputTier: 2, OutputTier: 0, PIIDetected: []string{"EMAIL_ADDRESS", "PHONE_NUMBER"}, PIIRedacted: true},
+		Classification: evidence.Classification{InputTier: 2, OutputTier: 0, PIIDetected: []string{"EMAIL_ADDRESS", "PHONE_NUMBER"}, PIIRedacted: true, InputPIIRedacted: true},
 		Execution:      evidence.Execution{ModelUsed: "gpt-4o-mini", Cost: 0.0001, DurationMS: 909, Tokens: evidence.TokenUsage{Input: 45, Output: 32}, ToolsCalled: []string{}},
 		AuditTrail:     evidence.AuditTrail{InputHash: "sha256:a3f9", OutputHash: "sha256:b2c1"},
 		Compliance:     evidence.Compliance{Frameworks: []string{"gdpr", "iso27001"}, DataLocation: "eu-only"},
@@ -212,7 +212,7 @@ func TestRenderAuditShow_PIIDetected(t *testing.T) {
 	assert.Contains(t, out, "✓ VALID")
 	assert.Contains(t, out, "EMAIL_ADDRESS")
 	assert.Contains(t, out, "PHONE_NUMBER")
-	assert.Contains(t, out, "PII Redacted:  true")
+	assert.Contains(t, out, "PII Redacted:  input=true output=true")
 }
 
 func TestRenderAuditShow_PINone(t *testing.T) {

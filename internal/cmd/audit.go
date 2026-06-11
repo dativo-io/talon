@@ -674,7 +674,8 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		piiStr = "(none)"
 	}
 	fmt.Fprintf(w, "PII Detected:  %s\n", piiStr)
-	fmt.Fprintf(w, "PII Redacted:  %t\n", ev.Classification.PIIRedacted)
+	fmt.Fprintf(w, "PII Redacted:  input=%t output=%t\n",
+		ev.Classification.InputPIIRedacted, ev.Classification.PIIRedacted)
 	fmt.Fprintln(w, "Execution")
 	fmt.Fprintf(w, "Model:         %s\n", ev.Execution.ModelUsed)
 	fmt.Fprintf(w, "Cost:          €%s\n", formatCost(ev.Execution.Cost))
