@@ -1,6 +1,9 @@
 package compliance
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Declared compliance metadata: business facts that auditor exports (RoPA,
 // Annex IV) require but that cannot be derived from runtime evidence — who
@@ -80,6 +83,19 @@ type Declarations struct {
 	Controller ControllerDeclarations `json:"controller"`
 	Processing ProcessingDeclarations `json:"processing"`
 	System     SystemDeclarations     `json:"system"`
+	// DataResidency is the declared residency intent from agent.talon.yaml
+	// `compliance.data_residency` (e.g. "eu"). Used to cross-check the
+	// declaration against transfers observed in data-flow evidence.
+	DataResidency string `json:"data_residency,omitempty"`
+}
+
+// DeclaresEUResidency reports whether the operator declared EU data residency.
+func (d Declarations) DeclaresEUResidency() bool {
+	switch strings.ToLower(strings.TrimSpace(d.DataResidency)) {
+	case "eu", "eu-only":
+		return true
+	}
+	return false
 }
 
 // MergeAgentDeclarations folds a per-agent declarations block (may be nil)

@@ -165,6 +165,93 @@ func TestGenerateRoPA_BlockedFlowsNotListedAsRecipients(t *testing.T) {
 	assert.Nil(t, transfers.Table, "a blocked egress is not a transfer")
 }
 
+func TestGenerateRoPA_RedactedTypesAnnotated(t *testing.T) {
+	doc, err := GenerateRoPA(context.Background(), fullDeclarations(), ropaEvidence(), ropaOpts())
+	require.NoError(t, err)
+
+	recipients := sectionByHeading(t, doc, "5. Categories of recipients (Art. 30(1)(d))")
+	require.NotNil(t, recipients.Table)
+	rowsByName := map[string][]string{}
+	for _, row := range recipients.Table.Rows {
+		rowsByName[row[0]] = row
+	}
+	require.Contains(t, rowsByName, "openai")
+	assert.Equal(t, "iban (redacted before egress)", rowsByName["openai"][4],
+		"iban was redacted in every flow to openai — raw values never reached it")
+	require.Contains(t, rowsByName, "mistral-eu")
+	assert.Equal(t, "email", rowsByName["mistral-eu"][4],
+		"email was forwarded raw to mistral-eu — no annotation")
+}
+
+func TestGenerateRoPA_TypeForwardedOnceIsNotAnnotated(t *testing.T) {
+	// Same type both redacted and forwarded to the same destination: the
+	// recipient received raw values at least once, so no annotation.
+	list := []evidence.Evidence{
+		{
+			ID: "req_red", TenantID: "acme", AgentID: "support-agent",
+			Timestamp: time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+			DataFlow: &evidence.DataFlow{Items: []evidence.DataFlowItem{{
+				Source: "prompt", Tier: 2, EntityTypes: []string{"email"},
+				Disposition: evidence.FlowDispositionRedacted,
+				Destination: evidence.FlowDestination{Kind: "llm_provider", Name: "openai", Region: "US"},
+			}}},
+		},
+		{
+			ID: "req_fwd", TenantID: "acme", AgentID: "support-agent",
+			Timestamp: time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC),
+			DataFlow: &evidence.DataFlow{Items: []evidence.DataFlowItem{{
+				Source: "prompt", Tier: 2, EntityTypes: []string{"email"},
+				Disposition: evidence.FlowDispositionForwarded,
+				Destination: evidence.FlowDestination{Kind: "llm_provider", Name: "openai", Region: "US"},
+			}}},
+		},
+	}
+	doc, err := GenerateRoPA(context.Background(), fullDeclarations(), list, ropaOpts())
+	require.NoError(t, err)
+
+	recipients := sectionByHeading(t, doc, "5. Categories of recipients (Art. 30(1)(d))")
+	require.NotNil(t, recipients.Table)
+	require.Len(t, recipients.Table.Rows, 1)
+	assert.Equal(t, "email", recipients.Table.Rows[0][4],
+		"forwarded raw at least once: annotating as redacted would overstate")
+}
+
+func TestGenerateRoPA_ResidencyConsistencyWarning(t *testing.T) {
+	decl := fullDeclarations()
+	decl.DataResidency = "eu"
+
+	// ropaEvidence includes flows to openai (US) and unregistered (unknown).
+	doc, err := GenerateRoPA(context.Background(), decl, ropaEvidence(), ropaOpts())
+	require.NoError(t, err)
+	require.Len(t, doc.Warnings, 1)
+	assert.Contains(t, doc.Warnings[0], "consistency:")
+	assert.Contains(t, doc.Warnings[0], `data_residency is declared "eu"`)
+	assert.Contains(t, doc.Warnings[0], "2 destination(s) outside EU/LOCAL")
+	assert.Contains(t, doc.Warnings[0], "eu_strict")
+}
+
+func TestGenerateRoPA_ResidencyConsistency_NoWarningCases(t *testing.T) {
+	euOnly := []evidence.Evidence{{
+		ID: "req_eu", TenantID: "acme", AgentID: "support-agent",
+		Timestamp: time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+		DataFlow: &evidence.DataFlow{Items: []evidence.DataFlowItem{{
+			Source: "prompt", Tier: 0, Disposition: evidence.FlowDispositionForwarded,
+			Destination: evidence.FlowDestination{Kind: "llm_provider", Name: "mistral-eu", Region: "EU"},
+		}}},
+	}}
+
+	declEU := fullDeclarations()
+	declEU.DataResidency = "eu"
+	doc, err := GenerateRoPA(context.Background(), declEU, euOnly, ropaOpts())
+	require.NoError(t, err)
+	assert.Empty(t, doc.Warnings, "all flows within EU: declaration and evidence agree")
+
+	// No residency declared: nothing to cross-check, even with US flows.
+	doc, err = GenerateRoPA(context.Background(), fullDeclarations(), ropaEvidence(), ropaOpts())
+	require.NoError(t, err)
+	assert.Empty(t, doc.Warnings)
+}
+
 func TestGenerateRoPA_ObservedPIIMergedIntoCategories(t *testing.T) {
 	doc, err := GenerateRoPA(context.Background(), fullDeclarations(), ropaEvidence(), ropaOpts())
 	require.NoError(t, err)

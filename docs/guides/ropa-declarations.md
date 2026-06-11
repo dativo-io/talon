@@ -120,6 +120,21 @@ Useful flags:
 
 A complete configuration produces **no** stderr warnings and **no** `missing: true` sections in JSON output.
 
+### Residency-consistency warning
+
+One warning is independent of declarations: when `compliance.data_residency` is
+`eu` but the data-flow evidence shows destinations **outside EU/LOCAL regions**
+(Section 6 lists them), the export adds a `consistency:` warning. Your
+declaration and your observed traffic disagree, and an auditor reading the
+document would see the same thing. Two ways to resolve it:
+
+- **Enforce the declaration** — set `llm.routing.data_sovereignty_mode: eu_strict`
+  in `talon.config.yaml` so non-EU providers are denied at routing time
+  (requires an EU or local provider to be configured).
+- **Document the transfer** — keep the non-EU provider and record the transfer
+  mechanism (SCCs, adequacy decision) with your DPO; Section 6 stays as the
+  factual record.
+
 ---
 
 ## 5. Checklist vs. your export

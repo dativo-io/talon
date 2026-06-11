@@ -10,7 +10,7 @@
     "ropa_html": "ropa.html",
     "ropa_json": "ropa.json"
   },
-  "generated_at": "2026-06-11T12:19:31Z",
+  "generated_at": "2026-06-11T14:21:54Z",
   "offline_signing_key_note": "Offline pack uses a fixed demo key; docker-compose regeneration uses the stack vault key.",
   "record_count_estimate": 3,
   "source": "scripts/auditorpackgen (offline; no docker-compose)",

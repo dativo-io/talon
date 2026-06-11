@@ -325,6 +325,15 @@ gateway:
   preference order only makes sense when Talon picks the provider, not when
   it admits a caller-chosen one.)
 
+**Relationship to `compliance.data_residency` (agent policy):** that field is
+a *declaration*, not an enforcement knob — it is stamped into evidence and
+used by auditor exports. If you declare `data_residency: eu` but run with
+`data_sovereignty_mode: eu_preferred` or `global`, non-EU providers remain
+reachable and `talon compliance ropa` adds a `consistency:` warning when
+non-EU destinations appear in the data-flow evidence. To make enforcement
+match the declaration, set `data_sovereignty_mode: eu_strict` (and configure
+an EU or local provider).
+
 ### Gateway dashboard
 
 When the gateway is enabled, Talon serves a real-time metrics dashboard. Access is controlled by `TALON_ADMIN_KEY` (`X-Talon-Admin-Key` header).

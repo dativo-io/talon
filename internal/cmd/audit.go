@@ -728,6 +728,28 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 			fmt.Fprintf(w, "  Entry: %s  TrustScore: %d\n", r.EntryID, r.TrustScore)
 		}
 	}
+	if ev.DataFlow != nil && len(ev.DataFlow.Items) > 0 {
+		fmt.Fprintln(w, "Data Flow")
+		if ev.DataFlow.Detector != "" {
+			fmt.Fprintf(w, "  Detector:    %s\n", ev.DataFlow.Detector)
+		}
+		for i := range ev.DataFlow.Items {
+			item := &ev.DataFlow.Items[i]
+			dest := item.Destination.Kind + ":" + item.Destination.Name
+			if item.Destination.Model != "" {
+				dest += " model=" + item.Destination.Model
+			}
+			if item.Destination.Region != "" {
+				dest += " region=" + item.Destination.Region
+			}
+			types := strings.Join(item.EntityTypes, ", ")
+			if types == "" {
+				types = "no classified data"
+			}
+			fmt.Fprintf(w, "  %s -> %s | %s | tier %d | %s\n",
+				item.Source, dest, item.Disposition, item.Tier, types)
+		}
+	}
 	fmt.Fprintln(w, "Audit Trail")
 	fmt.Fprintf(w, "Input Hash:    %s\n", ev.AuditTrail.InputHash)
 	fmt.Fprintf(w, "Output Hash:   %s\n", ev.AuditTrail.OutputHash)

@@ -231,6 +231,62 @@ func TestRenderAuditShow_PINone(t *testing.T) {
 	assert.Contains(t, out, "PII Detected:  (none)")
 }
 
+func TestRenderAuditShow_DataFlow(t *testing.T) {
+	var buf bytes.Buffer
+	ev := &evidence.Evidence{
+		ID:        "req_flow",
+		Timestamp: time.Now(),
+		TenantID:  "default", AgentID: "bot", InvocationType: "manual",
+		Classification: evidence.Classification{},
+		Execution:      evidence.Execution{ModelUsed: "gpt-4o-mini"},
+		AuditTrail:     evidence.AuditTrail{},
+		Compliance:     evidence.Compliance{},
+		DataFlow: &evidence.DataFlow{
+			Detector: "talon-classifier",
+			Items: []evidence.DataFlowItem{
+				{
+					Source:      evidence.FlowSourcePrompt,
+					Disposition: evidence.FlowDispositionRedacted,
+					Tier:        2,
+					EntityTypes: []string{"email"},
+					Destination: evidence.FlowDestination{
+						Kind: evidence.FlowDestLLMProvider, Name: "openai",
+						Model: "gpt-4o-mini", Region: "US",
+					},
+				},
+				{
+					Source:      evidence.FlowSourcePrompt,
+					Disposition: evidence.FlowDispositionForwarded,
+					Destination: evidence.FlowDestination{
+						Kind: evidence.FlowDestLLMProvider, Name: "mistral", Region: "EU",
+					},
+				},
+			},
+		},
+	}
+	renderAuditShow(&buf, ev, true)
+	out := buf.String()
+	assert.Contains(t, out, "Data Flow")
+	assert.Contains(t, out, "Detector:    talon-classifier")
+	assert.Contains(t, out, "prompt -> llm_provider:openai model=gpt-4o-mini region=US | redacted | tier 2 | email")
+	assert.Contains(t, out, "prompt -> llm_provider:mistral region=EU | forwarded | tier 0 | no classified data")
+}
+
+func TestRenderAuditShow_NoDataFlow_SectionOmitted(t *testing.T) {
+	var buf bytes.Buffer
+	ev := &evidence.Evidence{
+		ID:        "req_noflow",
+		Timestamp: time.Now(),
+		TenantID:  "default", AgentID: "bot", InvocationType: "manual",
+		Classification: evidence.Classification{},
+		Execution:      evidence.Execution{},
+		AuditTrail:     evidence.AuditTrail{},
+		Compliance:     evidence.Compliance{},
+	}
+	renderAuditShow(&buf, ev, true)
+	assert.NotContains(t, buf.String(), "Data Flow")
+}
+
 func TestRenderAuditShow_InvalidSignature(t *testing.T) {
 	var buf bytes.Buffer
 	ev := &evidence.Evidence{

@@ -38,6 +38,10 @@ type DestinationSummary struct {
 	Region      string   `json:"region,omitempty"` // "EU" | "US" | "LOCAL" | "unknown"
 	RecordCount int      `json:"record_count"`     // evidence records with flows to this destination
 	EntityTypes []string `json:"entity_types,omitempty"`
+	// RedactedEntityTypes are the entity types that were redacted before
+	// every flow to this destination: the type was detected, but the raw
+	// values never reached the recipient. Always a subset of EntityTypes.
+	RedactedEntityTypes []string `json:"redacted_entity_types,omitempty"`
 }
 
 func BuildReport(framework, tenantID, agentID, from, to string, list []evidence.Evidence) Report {
@@ -89,6 +93,10 @@ type destinationAgg struct {
 	kind, name, region string
 	recordCount        int
 	entityTypes        map[string]struct{}
+	// unredactedTypes: entity types that reached this destination unredacted
+	// in at least one flow. Types in entityTypes but not here were always
+	// redacted before egress.
+	unredactedTypes map[string]struct{}
 }
 
 func newDestinationAggregator() *destinationAggregator {
@@ -113,7 +121,11 @@ func (a *destinationAggregator) addRecord(df *evidence.DataFlow) {
 		key := d.Kind + "\x1f" + d.Name + "\x1f" + d.Region
 		agg, ok := a.byKey[key]
 		if !ok {
-			agg = &destinationAgg{kind: d.Kind, name: d.Name, region: d.Region, entityTypes: map[string]struct{}{}}
+			agg = &destinationAgg{
+				kind: d.Kind, name: d.Name, region: d.Region,
+				entityTypes:     map[string]struct{}{},
+				unredactedTypes: map[string]struct{}{},
+			}
 			a.byKey[key] = agg
 		}
 		if _, dup := seenInRecord[key]; !dup {
@@ -122,6 +134,9 @@ func (a *destinationAggregator) addRecord(df *evidence.DataFlow) {
 		}
 		for _, t := range item.EntityTypes {
 			agg.entityTypes[t] = struct{}{}
+			if item.Disposition != evidence.FlowDispositionRedacted {
+				agg.unredactedTypes[t] = struct{}{}
+			}
 		}
 	}
 }
@@ -131,16 +146,22 @@ func (a *destinationAggregator) summaries() []DestinationSummary {
 	out := make([]DestinationSummary, 0, len(a.byKey))
 	for _, agg := range a.byKey {
 		types := make([]string, 0, len(agg.entityTypes))
+		var redacted []string
 		for t := range agg.entityTypes {
 			types = append(types, t)
+			if _, raw := agg.unredactedTypes[t]; !raw {
+				redacted = append(redacted, t)
+			}
 		}
 		sort.Strings(types)
+		sort.Strings(redacted)
 		out = append(out, DestinationSummary{
-			Kind:        agg.kind,
-			Name:        agg.name,
-			Region:      agg.region,
-			RecordCount: agg.recordCount,
-			EntityTypes: types,
+			Kind:                agg.kind,
+			Name:                agg.name,
+			Region:              agg.region,
+			RecordCount:         agg.recordCount,
+			EntityTypes:         types,
+			RedactedEntityTypes: redacted,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

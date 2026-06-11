@@ -67,8 +67,10 @@ EOF
     jq -e '.sections | length == 8' "$dir/ropa.json"
   assert_pass "ropa.json claim note disclaims legal filing" \
     jq -e '.claim_note | test("not a completed legal filing")' "$dir/ropa.json"
+  # Declaration warnings must be absent; a residency-consistency warning may
+  # legitimately appear when earlier smoke sections recorded non-EU flows.
   assert_pass "ropa.json has no declaration warnings" \
-    jq -e '(.warnings // []) | length == 0' "$dir/ropa.json"
+    jq -e '[(.warnings // [])[] | select(startswith("declaration missing"))] | length == 0' "$dir/ropa.json"
   assert_pass "ropa.json controller section is declared" \
     jq -e '[.sections[] | select(.heading | test("Controller"))][0].missing != true' "$dir/ropa.json"
   assert_pass "ropa.json purposes section is declared" \

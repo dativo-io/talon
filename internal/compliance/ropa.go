@@ -91,6 +91,9 @@ func GenerateRoPA(ctx context.Context, decl Declarations, list []evidence.Eviden
 	sort.Strings(sampleIDs)
 	destinations := agg.summaries()
 	warnings := decl.ValidateForRoPA()
+	if w := residencyConsistencyWarning(decl, destinations); w != "" {
+		warnings = append(warnings, w)
+	}
 	span.SetAttributes(attribute.Int("declaration_warnings", len(warnings)))
 
 	generatedAt := opts.Now
@@ -250,17 +253,66 @@ func recipientsSection(destinations []DestinationSummary) DocSection {
 	}
 	rows := make([][]string, 0, len(destinations))
 	for _, d := range destinations {
-		rows = append(rows, []string{d.Name, d.Kind, d.Region, strconv.Itoa(d.RecordCount), strings.Join(d.EntityTypes, ", ")})
+		rows = append(rows, []string{d.Name, d.Kind, d.Region, strconv.Itoa(d.RecordCount), annotatedEntityTypes(d)})
 	}
 	return DocSection{
 		Heading: heading,
-		Body:    "Destinations that received request or response data, aggregated from signed data-flow evidence.",
-		Table:   &DocTable{Headers: []string{"Recipient", "Kind", "Region", "Evidence records", "Identifier types"}, Rows: rows},
+		Body: "Destinations that received request or response data, aggregated from signed data-flow evidence. " +
+			"Identifier types marked \"redacted before egress\" were detected in the data but redacted in every " +
+			"flow to that destination — the recipient received placeholders, not raw values.",
+		Table: &DocTable{Headers: []string{"Recipient", "Kind", "Region", "Evidence records", "Identifier types"}, Rows: rows},
 	}
+}
+
+// annotatedEntityTypes renders a destination's identifier types, marking the
+// ones that were redacted in every flow to it. A type detected raw in even
+// one flow stays unannotated — the recipient did receive it at least once.
+func annotatedEntityTypes(d DestinationSummary) string {
+	redacted := make(map[string]struct{}, len(d.RedactedEntityTypes))
+	for _, t := range d.RedactedEntityTypes {
+		redacted[t] = struct{}{}
+	}
+	parts := make([]string, 0, len(d.EntityTypes))
+	for _, t := range d.EntityTypes {
+		if _, ok := redacted[t]; ok {
+			parts = append(parts, t+" (redacted before egress)")
+			continue
+		}
+		parts = append(parts, t)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // euRegions are destination regions not considered third-country transfers.
 var euRegions = map[string]struct{}{"EU": {}, "LOCAL": {}}
+
+// residencyConsistencyWarning cross-checks the declared data-residency intent
+// against observed data flows. Returns a warning when the operator declared
+// EU residency but evidence shows destinations outside EU/LOCAL — either
+// enforcement should be tightened to match the declaration, or the transfer
+// must be documented. Empty string when consistent.
+func residencyConsistencyWarning(decl Declarations, destinations []DestinationSummary) string {
+	if !decl.DeclaresEUResidency() {
+		return ""
+	}
+	nonEU := 0
+	for _, d := range destinations {
+		if d.Region == "" {
+			continue // e.g. client destinations: no region semantics
+		}
+		if _, eu := euRegions[strings.ToUpper(d.Region)]; !eu {
+			nonEU++
+		}
+	}
+	if nonEU == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"consistency: compliance.data_residency is declared %q but %d destination(s) outside EU/LOCAL appear in data-flow evidence (Section 6) — "+
+			"set llm.routing.data_sovereignty_mode: eu_strict (talon.config.yaml) to enforce EU routing, "+
+			"or document the transfer mechanism (SCCs, adequacy decision) with your DPO",
+		decl.DataResidency, nonEU)
+}
 
 func transfersSection(destinations []DestinationSummary) DocSection {
 	heading := "6. Transfers to third countries (Art. 30(1)(e))"

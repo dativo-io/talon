@@ -216,6 +216,7 @@ func loadDeclarations(ctx context.Context, cmd *cobra.Command) compliance.Declar
 	}
 	if pol.Compliance != nil {
 		decl = decl.MergeAgentDeclarations(pol.Compliance.Declarations)
+		decl.DataResidency = pol.Compliance.DataResidency
 	}
 	return decl
 }
