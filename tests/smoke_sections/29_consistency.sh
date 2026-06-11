@@ -258,6 +258,41 @@ WHERE tenant_id = 'default';
     echo "[SMOKE] CONSISTENCY|evidence_id_exists_in_db|SKIP|no_db"
   fi
 
+  # Governance parity: every record claiming a model call must carry data_flow.
+  # Exemptions mirror evidence.ValidateGovernedRecord: graph adapter's
+  # unknown_graph_model placeholder and control-plane mode_change markers.
+  if [[ -f "$TALON_DATA_DIR/evidence.db" ]]; then
+    local parity_violations parity_model_calls
+    parity_violations="$(sqlite3 "$TALON_DATA_DIR/evidence.db" "
+SELECT COUNT(*) FROM evidence
+WHERE COALESCE(json_extract(evidence_json, '$.execution.model_used'), '') <> ''
+  AND json_extract(evidence_json, '$.execution.model_used') <> 'unknown_graph_model'
+  AND json_extract(evidence_json, '$.execution.model_used') NOT LIKE 'mode_change:%'
+  AND json_extract(evidence_json, '$.data_flow') IS NULL;
+" 2>/dev/null)" || parity_violations=""
+    parity_model_calls="$(sqlite3 "$TALON_DATA_DIR/evidence.db" "
+SELECT COUNT(*) FROM evidence
+WHERE COALESCE(json_extract(evidence_json, '$.execution.model_used'), '') <> ''
+  AND json_extract(evidence_json, '$.execution.model_used') <> 'unknown_graph_model'
+  AND json_extract(evidence_json, '$.execution.model_used') NOT LIKE 'mode_change:%';
+" 2>/dev/null)" || parity_model_calls=""
+    if [[ "$parity_violations" == "0" ]] && [[ -n "$parity_model_calls" ]] && [[ "$parity_model_calls" -gt 0 ]]; then
+      echo "  ✓  CONSISTENCY: governance parity — all $parity_model_calls model-call records carry data_flow"
+      echo "[SMOKE] CONSISTENCY|model_call_data_flow_parity|PASS|model_calls=$parity_model_calls violations=0"
+      record_pass
+    elif [[ "$parity_violations" == "0" ]]; then
+      echo "  -  CONSISTENCY: no model-call records to check for data_flow parity (skip)"
+      echo "[SMOKE] CONSISTENCY|model_call_data_flow_parity|SKIP|no_model_calls"
+    else
+      echo "  ✗  CONSISTENCY: governance parity violated — ${parity_violations:-?} model-call record(s) lack data_flow"
+      echo "[SMOKE] CONSISTENCY|model_call_data_flow_parity|FAIL|violations=${parity_violations:-unknown} model_calls=${parity_model_calls:-unknown}"
+      record_fail "CONSISTENCY: model_call_data_flow_parity"
+    fi
+  else
+    echo "  -  CONSISTENCY: evidence.db not found (skip model_call_data_flow_parity)"
+    echo "[SMOKE] CONSISTENCY|model_call_data_flow_parity|SKIP|no_db"
+  fi
+
   list_out="$(env TALON_DATA_DIR="$TALON_DATA_DIR" talon secrets list 2>/dev/null)" || true
   if echo "$list_out" | grep -q "openai-api-key" && ! echo "$list_out" | grep -qE 'sk-[a-zA-Z0-9]{20,}'; then
     echo "  ✓  CONSISTENCY: secrets list shows openai-api-key and does not leak literal key"

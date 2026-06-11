@@ -27,6 +27,10 @@ const (
 	defaultMaxInFlightRuns    = 10000
 	maxDenialReasonsPerRun    = 32
 	maxStateEvictionsPerSweep = 256
+
+	// unknownGraphModel is the placeholder recorded when the external
+	// runtime never reported which model it used.
+	unknownGraphModel = "unknown_graph_model"
 )
 
 var ErrGraphRunStateLimitExceeded = errors.New("graph run state limit exceeded")
@@ -42,6 +46,7 @@ type runState struct {
 	lastSeen  time.Time
 	sessionID string
 	modelUsed string
+	framework string
 }
 
 // Adapter processes governance events from external agent runtimes and
@@ -339,6 +344,7 @@ func (a *Adapter) handleRunEnd(ctx context.Context, span trace.Span, ev *Event) 
 	rs := a.consumeRunState(ev.GraphRunID)
 	sessionID := a.resolveSessionID(ev, rs)
 	modelUsed := a.resolveModelUsed(ev, rs)
+	dataFlow := buildGraphRunDataFlow(modelUsed, a.resolveFramework(ev, rs), ev.Cost)
 	finalReasons, err := a.evaluateRunEndPolicy(ctx, span, ev, rs)
 	if err != nil {
 		return nil, err
@@ -387,6 +393,7 @@ func (a *Adapter) handleRunEnd(ctx context.Context, span trace.Span, ev *Event) 
 			GraphRunID:       ev.GraphRunID,
 			PlanID:           a.planID(ev),
 			ExplanationFacts: facts,
+			DataFlow:         dataFlow,
 		})
 		if evRec != nil {
 			dec.EvidenceID = evRec.ID
@@ -532,6 +539,7 @@ func (a *Adapter) consumeRunState(graphRunID string) *runState {
 		lastSeen:  rs.lastSeen,
 		sessionID: rs.sessionID,
 		modelUsed: rs.modelUsed,
+		framework: rs.framework,
 	}
 	copy(snapshot.reasons, rs.reasons)
 	return snapshot
@@ -618,6 +626,11 @@ func (a *Adapter) observeRunContext(rs *runState, ev *Event) {
 	if m := strings.TrimSpace(eventModel(ev)); m != "" {
 		rs.modelUsed = m
 	}
+	if ev.RunMeta != nil {
+		if f := strings.TrimSpace(ev.RunMeta.Framework); f != "" {
+			rs.framework = f
+		}
+	}
 }
 
 func (a *Adapter) resolveSessionID(ev *Event, rs *runState) string {
@@ -648,7 +661,21 @@ func (a *Adapter) resolveModelUsed(ev *Event, rs *runState) string {
 			return m
 		}
 	}
-	return "unknown_graph_model"
+	return unknownGraphModel
+}
+
+// resolveFramework returns the external runtime's framework name, observed
+// from run_start metadata or the run_end event itself.
+func (a *Adapter) resolveFramework(ev *Event, rs *runState) string {
+	if ev != nil && ev.RunMeta != nil {
+		if f := strings.TrimSpace(ev.RunMeta.Framework); f != "" {
+			return f
+		}
+	}
+	if rs != nil {
+		return strings.TrimSpace(rs.framework)
+	}
+	return ""
 }
 
 func eventModel(ev *Event) string {

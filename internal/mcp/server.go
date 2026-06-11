@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/dativo-io/talon/internal/agent/tools"
+	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/otel"
@@ -59,14 +60,18 @@ type Handler struct {
 	registry      *tools.ToolRegistry
 	policyEngine  *policy.Engine
 	evidenceStore *evidence.Store
+	classifier    *classifier.Scanner
 }
 
-// NewHandler creates an MCP handler with the given registry, policy engine, and evidence store.
-func NewHandler(registry *tools.ToolRegistry, policyEngine *policy.Engine, evidenceStore *evidence.Store) *Handler {
+// NewHandler creates an MCP handler with the given registry, policy engine,
+// evidence store, and PII classifier (used for tool argument/result
+// classification and data-flow evidence).
+func NewHandler(registry *tools.ToolRegistry, policyEngine *policy.Engine, evidenceStore *evidence.Store, cls *classifier.Scanner) *Handler {
 	return &Handler{
 		registry:      registry,
 		policyEngine:  policyEngine,
 		evidenceStore: evidenceStore,
+		classifier:    cls,
 	}
 }
 
@@ -171,15 +176,30 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 		span.SetStatus(codes.Error, err.Error())
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error()}}
 	}
+
+	// Classify tool arguments: every governed tool call records what data
+	// reached the tool, classified or not (same posture as gateway/proxy).
+	var argEntities []classifier.PIIEntity
+	argTier := 0
+	if h.classifier != nil && len(params.Arguments) > 0 {
+		argStr := string(params.Arguments)
+		cls := h.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
+		argTier = cls.Tier
+		if cls.HasPII {
+			argEntities = classifier.MergeEntitySpans(argStr, cls.Entities)
+		}
+	}
+
 	if !decision.Allowed {
 		msg := "policy denied"
 		if len(decision.Reasons) > 0 {
 			msg = decision.Reasons[0]
 		}
 		span.SetAttributes(attribute.String("policy.deny", msg))
+		denyCorrelationID := "mcp_" + uuid.New().String()[:8]
 		denyEv := &evidence.Evidence{
 			ID:              "req_" + uuid.New().String()[:8],
-			CorrelationID:   "mcp_" + uuid.New().String()[:8],
+			CorrelationID:   denyCorrelationID,
 			Timestamp:       time.Now(),
 			TenantID:        tenantID,
 			AgentID:         agentID,
@@ -195,6 +215,12 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 				ToolsCalled: []string{params.Name},
 				Error:       msg,
 			},
+			Classification: evidence.Classification{
+				InputTier:   argTier,
+				PIIDetected: entityTypeSet(argEntities),
+			},
+			DataFlow: h.buildServerDataFlow(tenantID, denyCorrelationID, params.Name,
+				argTier, argEntities, evidence.FlowDispositionBlocked, 0, nil),
 			Explanations: explanation.BuildFromFacts(explanation.BuildLegacyFacts(
 				false,
 				decision.Action,
@@ -225,6 +251,20 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 	result, execErr := tool.Execute(ctx, params.Arguments)
 	duration := time.Since(start).Milliseconds()
 
+	// Classify the tool result before it is surfaced to the client.
+	var resultEntities []classifier.PIIEntity
+	resultTier := 0
+	if h.classifier != nil && execErr == nil && result != nil {
+		if resultJSON, marshalErr := json.Marshal(result); marshalErr == nil {
+			resultStr := string(resultJSON)
+			cls := h.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
+			resultTier = cls.Tier
+			if cls.HasPII {
+				resultEntities = classifier.MergeEntitySpans(resultStr, cls.Entities)
+			}
+		}
+	}
+
 	// Record evidence
 	correlationID := "mcp_" + uuid.New().String()[:8]
 	ev := &evidence.Evidence{
@@ -244,6 +284,15 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 			ToolsCalled: []string{params.Name},
 			DurationMS:  duration,
 		},
+		Classification: evidence.Classification{
+			InputTier:         argTier,
+			OutputTier:        resultTier,
+			PIIDetected:       entityTypeSet(argEntities),
+			OutputPIIDetected: len(resultEntities) > 0,
+			OutputPIITypes:    entityTypeSet(resultEntities),
+		},
+		DataFlow: h.buildServerDataFlow(tenantID, correlationID, params.Name,
+			argTier, argEntities, evidence.FlowDispositionForwarded, resultTier, resultEntities),
 	}
 	ev.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
 		Code:            explanation.CodePolicyAllowed,
@@ -275,6 +324,42 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 	}
 
 	return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: map[string]interface{}{"content": result}}
+}
+
+// buildServerDataFlow links tool arguments to the embedded tool and classified
+// tool results back to the MCP client. Every tools/call records at least the
+// tool_args -> tool flow, classified or not — same posture as the gateway,
+// agent runner, and MCP proxy. Embedded tools execute in-process, so the
+// destination region is LOCAL (a fact, not a guess). Digests only, never raw values.
+func (h *Handler) buildServerDataFlow(
+	tenantID, correlationID, toolName string,
+	argTier int, argEntities []classifier.PIIEntity, argDisposition string,
+	resultTier int, resultEntities []classifier.PIIEntity,
+) *evidence.DataFlow {
+	items := []evidence.DataFlowItem{evidence.NewDataFlowItem(
+		tenantID, correlationID,
+		evidence.FlowSourceToolArgs, toolName,
+		argTier, argEntities,
+		argDisposition, evidence.FlowDestination{
+			Kind:   evidence.FlowDestMCPTool,
+			Name:   toolName,
+			Region: "LOCAL",
+		})}
+	if len(resultEntities) > 0 {
+		items = append(items, evidence.NewDataFlowItem(
+			tenantID, correlationID,
+			evidence.FlowSourceToolResult, toolName,
+			resultTier, resultEntities,
+			evidence.FlowDispositionSurfaced, evidence.FlowDestination{
+				Kind: evidence.FlowDestClient,
+				Name: tenantID,
+			}))
+	}
+	detector := ""
+	if h.classifier != nil {
+		detector = h.classifier.Detector()
+	}
+	return &evidence.DataFlow{Detector: detector, Items: items}
 }
 
 func writeRPCError(w http.ResponseWriter, id interface{}, code int, message string) {
