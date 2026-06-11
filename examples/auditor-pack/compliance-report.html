@@ -14,7 +14,7 @@ th { background: #f4f4f4; }
 code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; }
 </style></head><body>
 <h1>Talon Compliance Report</h1>
-<p class="meta">Generated: 2026-06-11 12:06:35.421664 &#43;0000 UTC | Framework: <b>all</b> | Tenant: <b>default</b> | Agent: <b>all</b></p>
+<p class="meta">Generated: 2026-06-11 12:19:31.164833 &#43;0000 UTC | Framework: <b>all</b> | Tenant: <b>default</b> | Agent: <b>all</b></p>
 <div class="cards">
   <div class="card"><div class="label">Evidence Records</div><div class="value">3</div></div>
   <div class="card"><div class="label">Policy Denials</div><div class="value">1</div></div>
@@ -25,8 +25,13 @@ code { background: #f5f5f5; padding: 1px 4px; border-radius: 4px; }
 <table><thead><tr><th>Framework</th><th>Article</th><th>Control</th><th>Source</th></tr></thead><tbody>
 <tr><td>gdpr</td><td>Art. 30</td><td>Processing records via signed evidence export</td><td><code>internal/evidence/store.go</code></td></tr><tr><td>gdpr</td><td>Art. 32</td><td>PII detection and model/data-tier routing</td><td><code>internal/classifier/pii.go</code></td></tr><tr><td>gdpr</td><td>Art. 44-50</td><td>EU data residency routing controls</td><td><code>internal/policy/rego/routing.rego</code></td></tr><tr><td>eu-ai-act</td><td>Art. 11</td><td>Technical documentation through execution plans and evidence</td><td><code>internal/agent/plan.go</code></td></tr><tr><td>eu-ai-act</td><td>Art. 13</td><td>Transparency via execution/model/cost traceability</td><td><code>internal/evidence/store.go</code></td></tr><tr><td>eu-ai-act</td><td>Art. 14</td><td>Human oversight via plan review gate</td><td><code>internal/agent/plan_review.go</code></td></tr><tr><td>nis2</td><td>Art. 21</td><td>Risk controls, policy enforcement, and monitoring</td><td><code>internal/policy/engine.go</code></td></tr><tr><td>dora</td><td>Art. 11</td><td>ICT incident traceability with signed audit trail</td><td><code>internal/evidence/store.go</code></td></tr><tr><td>iso-27001</td><td>A.8.15</td><td>Cryptographic integrity of logs (HMAC)</td><td><code>internal/evidence/signature.go</code></td></tr><tr><td>iso-27001</td><td>A.8.16</td><td>Monitoring and governance metrics</td><td><code>internal/gateway/metrics.go</code></td></tr>
 </tbody></table>
+<h2>Data Destinations</h2>
+<p class="meta">Where classified data was sent (from signed data-flow evidence) — supports evidence for GDPR Art. 30 records of processing and EU AI Act Art. 13 transparency.</p>
+<table><thead><tr><th>Kind</th><th>Destination</th><th>Region</th><th>Records</th><th>Entity Types</th></tr></thead><tbody>
+<tr><td>llm_provider</td><td><code>openai</code></td><td>US</td><td>2</td><td><code>email</code></td></tr>
+</tbody></table>
 <h2>Sample Evidence IDs</h2>
 <table><thead><tr><th>ID</th></tr></thead><tbody>
-<tr><td><code>req_04d2b6c1</code></td></tr><tr><td><code>req_cae45a9f</code></td></tr><tr><td><code>req_f4a80b0a</code></td></tr>
+<tr><td><code>req_3b697b76</code></td></tr><tr><td><code>req_463b7877</code></td></tr><tr><td><code>req_7eb8a189</code></td></tr>
 </tbody></table>
 </body></html>

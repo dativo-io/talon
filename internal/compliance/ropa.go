@@ -244,8 +244,8 @@ func recipientsSection(destinations []DestinationSummary) DocSection {
 	if len(destinations) == 0 {
 		return DocSection{
 			Heading: heading,
-			Body: "No classified data flows were recorded in the selected scope. Destinations appear here once " +
-				"data-flow evidence is captured for governed requests.",
+			Body: "No data flows were recorded in the selected scope. Destinations appear here once " +
+				"governed traffic passes through Talon and data-flow evidence is captured.",
 		}
 	}
 	rows := make([][]string, 0, len(destinations))
@@ -254,7 +254,7 @@ func recipientsSection(destinations []DestinationSummary) DocSection {
 	}
 	return DocSection{
 		Heading: heading,
-		Body:    "Destinations that received classified data, aggregated from signed data-flow evidence.",
+		Body:    "Destinations that received request or response data, aggregated from signed data-flow evidence.",
 		Table:   &DocTable{Headers: []string{"Recipient", "Kind", "Region", "Evidence records", "Identifier types"}, Rows: rows},
 	}
 }

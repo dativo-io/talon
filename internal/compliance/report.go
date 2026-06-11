@@ -96,7 +96,9 @@ func newDestinationAggregator() *destinationAggregator {
 }
 
 // addRecord folds one evidence record's data flow into the aggregate.
-// Each destination counts at most once per record.
+// Each destination counts at most once per record. Blocked items are skipped:
+// the data never reached the destination, so listing it as a recipient
+// (GDPR Art. 30(1)(d)) or transfer (Art. 30(1)(e)) would overstate.
 func (a *destinationAggregator) addRecord(df *evidence.DataFlow) {
 	if df == nil {
 		return
@@ -104,6 +106,9 @@ func (a *destinationAggregator) addRecord(df *evidence.DataFlow) {
 	seenInRecord := make(map[string]struct{})
 	for i := range df.Items {
 		item := &df.Items[i]
+		if item.Disposition == evidence.FlowDispositionBlocked {
+			continue
+		}
 		d := item.Destination
 		key := d.Kind + "\x1f" + d.Name + "\x1f" + d.Region
 		agg, ok := a.byKey[key]

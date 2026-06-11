@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-11T12:06:35.421664Z",
+  "generated_at": "2026-06-11T12:19:31.164833Z",
   "framework": "",
   "tenant_id": "default",
   "evidence_count": 3,
@@ -69,8 +69,19 @@
     }
   ],
   "sample_evidence_ids": [
-    "req_04d2b6c1",
-    "req_cae45a9f",
-    "req_f4a80b0a"
+    "req_3b697b76",
+    "req_463b7877",
+    "req_7eb8a189"
+  ],
+  "data_destinations": [
+    {
+      "kind": "llm_provider",
+      "name": "openai",
+      "region": "US",
+      "record_count": 2,
+      "entity_types": [
+        "email"
+      ]
+    }
   ]
 }

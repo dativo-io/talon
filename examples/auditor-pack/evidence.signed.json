@@ -1,6 +1,6 @@
 {
   "export_metadata": {
-    "generated_at": "2026-06-11T12:06:35.418277Z",
+    "generated_at": "2026-06-11T12:19:31.164568Z",
     "talon_version": "auditorpackgen",
     "filter": {},
     "total_records": 3,
@@ -9,9 +9,9 @@
   },
   "records": [
     {
-      "id": "req_f4a80b0a",
+      "id": "req_3b697b76",
       "correlation_id": "corr_demo_eu_summary",
-      "timestamp": "2026-06-11T14:06:35.415753+02:00",
+      "timestamp": "2026-06-11T14:19:31.162358+02:00",
       "tenant_id": "default",
       "agent_id": "gateway",
       "invocation_type": "gateway",
@@ -45,7 +45,7 @@
         "frameworks": null,
         "data_location": ""
       },
-      "signature": "hmac-sha256:b42ff2ed0fc0355b6041f3253bbb2e402c176ef93d63480d5832d13d9f8314e1",
+      "signature": "hmac-sha256:d93d7f2835eb8d1631d7dca32696ea853486eb382f1674513ffcad2f1aef226e",
       "explanations": [
         {
           "code": "POLICY_DENIED_COST",
@@ -55,12 +55,28 @@
           "trigger": "within budget",
           "fix": "Reduce expected token usage or increase cost limits in policy."
         }
-      ]
+      ],
+      "data_flow": {
+        "detector": "talon-regex",
+        "items": [
+          {
+            "source": "prompt",
+            "tier": 0,
+            "disposition": "forwarded",
+            "destination": {
+              "kind": "llm_provider",
+              "name": "openai",
+              "model": "gpt-4o-mini",
+              "region": "US"
+            }
+          }
+        ]
+      }
     },
     {
-      "id": "req_04d2b6c1",
+      "id": "req_7eb8a189",
       "correlation_id": "corr_demo_pii_email",
-      "timestamp": "2026-06-11T14:06:35.417014+02:00",
+      "timestamp": "2026-06-11T14:19:31.163352+02:00",
       "tenant_id": "default",
       "agent_id": "gateway",
       "invocation_type": "gateway",
@@ -94,7 +110,7 @@
         "frameworks": null,
         "data_location": ""
       },
-      "signature": "hmac-sha256:04e4497d3a175bff671f117878cf1baa61b7b39aa3d966c3c39db2262ce9a78b",
+      "signature": "hmac-sha256:2ce4e2396ea436e64b8b2557458b2a098ad868bff85b00ced74c3c28c98098e2",
       "explanations": [
         {
           "code": "POLICY_ALLOWED",
@@ -102,12 +118,32 @@
           "stage": "policy_evaluation",
           "reason": "Request allowed by policy."
         }
-      ]
+      ],
+      "data_flow": {
+        "detector": "talon-regex",
+        "items": [
+          {
+            "source": "prompt",
+            "tier": 1,
+            "entity_types": [
+              "email"
+            ],
+            "entity_count": 1,
+            "disposition": "redacted",
+            "destination": {
+              "kind": "llm_provider",
+              "name": "openai",
+              "model": "gpt-4o-mini",
+              "region": "US"
+            }
+          }
+        ]
+      }
     },
     {
-      "id": "req_cae45a9f",
+      "id": "req_463b7877",
       "correlation_id": "corr_demo_pii_iban",
-      "timestamp": "2026-06-11T14:06:35.417652+02:00",
+      "timestamp": "2026-06-11T14:19:31.163826+02:00",
       "tenant_id": "default",
       "agent_id": "gateway",
       "invocation_type": "gateway",
@@ -144,7 +180,7 @@
         "frameworks": null,
         "data_location": ""
       },
-      "signature": "hmac-sha256:44a5b0902cb499ccfb17ebccff57baefb2e880319cd332e26915aeef9acc955b",
+      "signature": "hmac-sha256:e32d7d30b0f169b123c96afbab80d3d126fd6a5d0e304adb2ebf333ab14b2264",
       "explanations": [
         {
           "code": "LEGACY_REASON_UNMIGRATED",
@@ -153,7 +189,27 @@
           "reason": "Request processed with legacy policy explanation mapping.",
           "trigger": "pii policy"
         }
-      ]
+      ],
+      "data_flow": {
+        "detector": "talon-regex",
+        "items": [
+          {
+            "source": "prompt",
+            "tier": 2,
+            "entity_types": [
+              "iban"
+            ],
+            "entity_count": 1,
+            "disposition": "blocked",
+            "destination": {
+              "kind": "llm_provider",
+              "name": "openai",
+              "model": "gpt-4o-mini",
+              "region": "US"
+            }
+          }
+        ]
+      }
     }
   ]
 }

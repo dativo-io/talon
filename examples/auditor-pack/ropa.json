@@ -1,7 +1,7 @@
 {
   "title": "Record of Processing Activities",
   "subtitle": "AI traffic governed by Dativo Talon — generated from signed runtime evidence and declared facts",
-  "generated_at": "2026-06-11T12:06:35.422103Z",
+  "generated_at": "2026-06-11T12:19:31.165237Z",
   "framework": "gdpr",
   "article": "Art. 30",
   "tenant_id": "default",
@@ -85,11 +85,45 @@
     },
     {
       "heading": "5. Categories of recipients (Art. 30(1)(d))",
-      "body": "No classified data flows were recorded in the selected scope. Destinations appear here once data-flow evidence is captured for governed requests."
+      "body": "Destinations that received request or response data, aggregated from signed data-flow evidence.",
+      "table": {
+        "headers": [
+          "Recipient",
+          "Kind",
+          "Region",
+          "Evidence records",
+          "Identifier types"
+        ],
+        "rows": [
+          [
+            "openai",
+            "llm_provider",
+            "US",
+            "2",
+            "email"
+          ]
+        ]
+      }
     },
     {
       "heading": "6. Transfers to third countries (Art. 30(1)(e))",
-      "body": "No data-flow evidence was recorded in the selected scope, so third-country transfers cannot be assessed yet. Transfers appear here once data-flow evidence is captured for governed requests."
+      "body": "Destinations outside EU/LOCAL regions observed in data-flow evidence. Document the transfer mechanism (e.g. SCCs, adequacy decision) for each with your DPO.",
+      "table": {
+        "headers": [
+          "Destination",
+          "Kind",
+          "Region",
+          "Evidence records"
+        ],
+        "rows": [
+          [
+            "openai",
+            "llm_provider",
+            "US",
+            "2"
+          ]
+        ]
+      }
     },
     {
       "heading": "7. Envisaged erasure time limits (Art. 30(1)(f))",
@@ -157,9 +191,9 @@
   "evidence_linkage": {
     "evidence_count": 3,
     "sample_evidence_ids": [
-      "req_04d2b6c1",
-      "req_cae45a9f",
-      "req_f4a80b0a"
+      "req_3b697b76",
+      "req_463b7877",
+      "req_7eb8a189"
     ],
     "verify_command": "talon audit verify --file evidence.signed.json",
     "signed_export_ref": "evidence.signed.json"

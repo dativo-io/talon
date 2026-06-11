@@ -80,6 +80,7 @@ type GenerateParams struct {
 	AgentVerified           bool             // Optional per-agent signature verification result
 	ObservationModeOverride bool             // True when allowed despite policy deny (shadow/observation-only mode)
 	RoutingDecision         *RoutingDecision // Provider selection and rejected candidates (EU routing)
+	DataFlow                *DataFlow        // Data movement to destinations (digests only); nil when nothing egressed
 	// Semantic cache: set on cache hit (Cost=0, CostSaved=estimated equivalent LLM cost).
 	CacheHit         bool    // True when response was served from cache
 	CacheEntryID     string  // Cache entry ID for audit correlation
@@ -228,6 +229,7 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 		MemoryWrites:    params.MemoryWrites,
 		MemoryReads:     params.MemoryReads,
 		RoutingDecision: params.RoutingDecision,
+		DataFlow:        params.DataFlow,
 		AuditTrail: AuditTrail{
 			InputHash:  inputHashFromParams(params),
 			OutputHash: hashString(params.OutputResponse),

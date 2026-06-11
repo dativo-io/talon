@@ -40,6 +40,15 @@ func main() {
 	gen := evidence.NewGenerator(store)
 	ctx := context.Background()
 
+	// Demo upstream destination: every governed request records its egress
+	// flow, classified or not — this is what populates RoPA Sections 5 and 6.
+	openaiDest := evidence.FlowDestination{
+		Kind:   evidence.FlowDestLLMProvider,
+		Name:   "openai",
+		Model:  "gpt-4o-mini",
+		Region: "US",
+	}
+
 	scenarios := []evidence.GenerateParams{
 		{
 			CorrelationID: "corr_demo_eu_summary", TenantID: "default", AgentID: "gateway",
@@ -48,6 +57,10 @@ func main() {
 			InputPrompt:    "What are the key trends in European AI regulation?",
 			OutputResponse: "Summary of EU AI Act and GDPR interplay for deployers.",
 			Cost:           0.003,
+			DataFlow: &evidence.DataFlow{Detector: "talon-regex", Items: []evidence.DataFlowItem{
+				evidence.NewDataFlowItemFromTypes(evidence.FlowSourcePrompt, "", 0, nil,
+					evidence.FlowDispositionForwarded, openaiDest),
+			}},
 		},
 		{
 			CorrelationID: "corr_demo_pii_email", TenantID: "default", AgentID: "gateway",
@@ -57,6 +70,10 @@ func main() {
 			InputPrompt:    "My email is jan@example.com, help me reset my password",
 			OutputResponse: "Password reset steps (synthetic demo).",
 			Cost:           0.002,
+			DataFlow: &evidence.DataFlow{Detector: "talon-regex", Items: []evidence.DataFlowItem{
+				evidence.NewDataFlowItemFromTypes(evidence.FlowSourcePrompt, "", 1, []string{"email"},
+					evidence.FlowDispositionRedacted, openaiDest),
+			}},
 		},
 		{
 			CorrelationID: "corr_demo_pii_iban", TenantID: "default", AgentID: "gateway",
@@ -66,6 +83,10 @@ func main() {
 			InputPrompt:    "Process payment to IBAN DE89370400440532013000",
 			OutputResponse: "",
 			Cost:           0,
+			DataFlow: &evidence.DataFlow{Detector: "talon-regex", Items: []evidence.DataFlowItem{
+				evidence.NewDataFlowItemFromTypes(evidence.FlowSourcePrompt, "", 2, []string{"iban"},
+					evidence.FlowDispositionBlocked, openaiDest),
+			}},
 		},
 	}
 

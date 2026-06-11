@@ -145,6 +145,26 @@ func TestGenerateRoPA_NoThirdCountryTransfers(t *testing.T) {
 	assert.Contains(t, transfers.Body, "Data flows were recorded", "EU-only must read as an assessed finding")
 }
 
+func TestGenerateRoPA_BlockedFlowsNotListedAsRecipients(t *testing.T) {
+	blocked := []evidence.Evidence{{
+		ID: "req_blk", TenantID: "acme", AgentID: "support-agent",
+		Timestamp:      time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+		Classification: evidence.Classification{PIIDetected: []string{"iban"}},
+		DataFlow: &evidence.DataFlow{Items: []evidence.DataFlowItem{{
+			Source: "prompt", Tier: 2, EntityTypes: []string{"iban"},
+			Disposition: evidence.FlowDispositionBlocked,
+			Destination: evidence.FlowDestination{Kind: "llm_provider", Name: "openai", Region: "US"},
+		}}},
+	}}
+	doc, err := GenerateRoPA(context.Background(), fullDeclarations(), blocked, ropaOpts())
+	require.NoError(t, err)
+
+	recipients := sectionByHeading(t, doc, "5. Categories of recipients (Art. 30(1)(d))")
+	assert.Nil(t, recipients.Table, "blocked data never reached the destination")
+	transfers := sectionByHeading(t, doc, "6. Transfers to third countries (Art. 30(1)(e))")
+	assert.Nil(t, transfers.Table, "a blocked egress is not a transfer")
+}
+
 func TestGenerateRoPA_ObservedPIIMergedIntoCategories(t *testing.T) {
 	doc, err := GenerateRoPA(context.Background(), fullDeclarations(), ropaEvidence(), ropaOpts())
 	require.NoError(t, err)
@@ -169,7 +189,7 @@ func TestGenerateRoPA_EmptyEvidence(t *testing.T) {
 	activities := sectionByHeading(t, doc, "2. Processing activities observed")
 	assert.Contains(t, activities.Body, "No evidence records")
 	recipients := sectionByHeading(t, doc, "5. Categories of recipients (Art. 30(1)(d))")
-	assert.Contains(t, recipients.Body, "No classified data flows")
+	assert.Contains(t, recipients.Body, "No data flows were recorded")
 	transfers := sectionByHeading(t, doc, "6. Transfers to third countries (Art. 30(1)(e))")
 	assert.Contains(t, transfers.Body, "cannot be assessed yet",
 		"absence of data-flow evidence must not read as a no-transfers finding")
