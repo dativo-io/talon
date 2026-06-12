@@ -19,6 +19,25 @@ func TestDashboardHTML_ContainsEvidenceIntegritySurface(t *testing.T) {
 	assert.True(t, strings.Contains(html, "Evidence-grade, not just logs"))
 }
 
+func TestDashboardHTML_ContainsComplianceMode(t *testing.T) {
+	html := web.DashboardHTML
+	assert.NotEmpty(t, html)
+	// Compliance tab and panel surfaces.
+	assert.True(t, strings.Contains(html, `data-tab="compliance"`))
+	assert.True(t, strings.Contains(html, "panel-compliance"))
+	assert.True(t, strings.Contains(html, "compliance-framework-cards"))
+	assert.True(t, strings.Contains(html, "compliance-controls-tbody"))
+	assert.True(t, strings.Contains(html, "compliance-warnings"))
+	assert.True(t, strings.Contains(html, "compliance-evidence-tbody"))
+	// One-click export hooks against the compliance HTTP API.
+	assert.True(t, strings.Contains(html, "/v1/compliance/coverage"))
+	assert.True(t, strings.Contains(html, "/v1/compliance/ropa"))
+	assert.True(t, strings.Contains(html, "/v1/compliance/annex-iv"))
+	assert.True(t, strings.Contains(html, "/v1/compliance/report"))
+	// Claims discipline: supporting evidence, never a determination.
+	assert.True(t, strings.Contains(html, "Not a certification or compliance determination"))
+}
+
 func TestGatewayDashboardHTML_ContainsEvidenceReviewLink(t *testing.T) {
 	html := web.GatewayDashboardHTML
 	assert.NotEmpty(t, html)
