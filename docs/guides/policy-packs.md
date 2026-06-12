@@ -6,8 +6,9 @@ tightens Talon's policy defaults for one regulatory regime and annotates the
 generated configuration with the articles those settings *support*.
 
 > **Claims discipline.** Packs provide supporting controls and evidence for the
-> annotated articles. They do not, by themselves, make you compliant — review
-> the generated policy with your DPO or counsel. See `LIMITATIONS.md`.
+> annotated articles. They are not a certification or a compliance
+> determination — review the generated policy with your DPO or counsel.
+> See `LIMITATIONS.md`.
 
 ## Selecting packs
 
