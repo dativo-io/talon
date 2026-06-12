@@ -614,7 +614,7 @@ func applyComplianceOverlays(agentPath string) error {
 	if err != nil {
 		return fmt.Errorf("marshaling merged policy: %w", err)
 	}
-	header := strings.TrimPrefix(complianceAnnotationBlock(names), "#\n")
+	header := strings.TrimPrefix(complianceAnnotationBlock(names, base.Compliance.Frameworks), "#\n")
 	out = append([]byte(header+"\n"), out...)
 	//nolint:gosec // G306: agent policy is not secret
 	if err := os.WriteFile(agentPath, out, 0o644); err != nil {
