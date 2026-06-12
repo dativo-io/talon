@@ -110,7 +110,7 @@
     <div class="card card-link" data-tab="evidence" data-filter=""><div class="label">Monthly cost (evidence-backed)</div><div class="value" id="card-monthly">— &euro;</div></div>
     <div class="card card-link" data-tab="plans" data-filter=""><div class="label">Pending plans</div><div class="value" id="card-plans">—</div></div>
     <div class="card card-link" data-tab="memory" data-filter=""><div class="label">Pending memory</div><div class="value" id="card-memory-pending">—</div></div>
-    <div class="card card-link" data-tab="evidence" data-filter="blocked"><div class="label">Blocked</div><div class="value" id="card-blocked">—</div></div>
+    <div class="card card-link" data-tab="evidence" data-filter="blocked"><div class="label">Blocked (all evidence)</div><div class="value" id="card-blocked">—</div></div>
     <div class="card" id="card-budget"><div class="label">Budget</div><div class="value" id="card-budget-value">—</div><div class="value budget-warn" id="card-budget-warn" style="display:none; font-size:0.75rem; color:#f87171;">Approaching limit</div></div>
     </div>
   </section>
@@ -428,7 +428,7 @@
         if (empty) empty.style.display = visible ? 'none' : 'block';
         if (content) content.style.display = visible ? 'block' : 'none';
       }
-      function renderEvidenceDetail(ev, trace, verifyResult) {
+      function renderEvidenceDetail(ev, trace, integrityState) {
         if (!ev) {
           setEvidenceDetailVisible(false);
           return;
@@ -444,7 +444,7 @@
           { label: 'Input hash', value: (ev.audit_trail && ev.audit_trail.input_hash) ? ev.audit_trail.input_hash : '—' },
           { label: 'Output hash', value: (ev.audit_trail && ev.audit_trail.output_hash) ? ev.audit_trail.output_hash : '—' },
           { label: 'Policy decision', value: decision + (ev.policy_decision && ev.policy_decision.action ? ' (' + ev.policy_decision.action + ')' : '') },
-          { label: 'Verification result', value: verifyResult && verifyResult.valid ? '✓ Verified' : '✗ Invalid' }
+          { label: 'Verification result', value: integrityState === 'verified' ? '✓ Verified' : (integrityState === 'invalid' ? '✗ Invalid' : '— Not checked (use the Verify button)') }
         ];
         var spendRows = [
           { label: 'Execution cost', value: ev.execution && ev.execution.cost != null ? String(ev.execution.cost) : '—' },
@@ -520,8 +520,9 @@
           if (el) el.textContent = (d.monthly != null ? d.monthly.toFixed(2) : '—') + ' €';
           el = document.getElementById('card-memory-pending');
           if (el) el.textContent = d.pending_memory_reviews != null ? d.pending_memory_reviews : '—';
-          el = document.getElementById('card-blocked');
-          if (el) el.textContent = d.blocked_count != null ? d.blocked_count : '—';
+          // card-blocked is populated from /v1/dashboard/denials-by-reason below
+          // (store-wide denied total) so it matches the "All evidence" denial
+          // summary and stays stable when the evidence table is filtered.
           get('/v1/costs/budget').then(function(b) {
             var v = document.getElementById('card-budget-value');
             var w = document.getElementById('card-budget-warn');
@@ -590,9 +591,13 @@
           var reasons = Object.keys(byReason).sort();
           var detail = reasons.length ? ' — ' + reasons.map(function(rs) { return rs + ': ' + byReason[rs]; }).join(', ') : '';
           el.textContent = 'All evidence: ' + total + ' denied' + detail;
+          var card = document.getElementById('card-blocked');
+          if (card) card.textContent = total;
         }).catch(function() {
           var el = document.getElementById('denials-store-summary');
           if (el) el.textContent = 'All evidence: —';
+          var card = document.getElementById('card-blocked');
+          if (card) card.textContent = '—';
         });
         get('/v1/dashboard/governance-alerts?limit=10').then(function(d) {
           var tbody = document.getElementById('governance-alerts-tbody');
@@ -771,18 +776,17 @@
       function syncCardsFromEvidence(entries) {
         var list = Array.isArray(entries) ? entries : [];
         var total = list.length;
-        var blocked = 0;
         var visibleCost = 0;
         list.forEach(function(ev) {
-          if (ev && ev.allowed === false) blocked += 1;
           if (ev && ev.cost != null && !isNaN(Number(ev.cost))) visibleCost += Number(ev.cost);
         });
         var el = document.getElementById('card-requests');
         if (el) el.textContent = total;
         el = document.getElementById('card-daily');
         if (el) el.textContent = visibleCost.toFixed(2) + ' €';
-        el = document.getElementById('card-blocked');
-        if (el) el.textContent = blocked;
+        // card-blocked intentionally NOT synced from the visible list: it shows
+        // the store-wide denied total (denials-by-reason), so it stays stable
+        // when the user drills into the evidence table by clicking the card.
       }
       function syncPolicyOutcomeFromEvidence(entries) {
         var list = Array.isArray(entries) ? entries : [];
@@ -872,19 +876,14 @@
             btn.addEventListener('click', function() {
               var id = btn.getAttribute('data-id');
               if (!id || id === '—') return;
+              // Detail is read-only: it must not trigger signature verification.
+              // Integrity is only checked via the explicit Verify buttons; the
+              // detail pane reflects whatever state is already known.
               Promise.all([
                 get('/v1/evidence/' + encodeURIComponent(id)),
-                get('/v1/evidence/' + encodeURIComponent(id) + '/verify'),
                 get('/v1/evidence/' + encodeURIComponent(id) + '/trace')
               ]).then(function(results) {
-                var detail = results[0];
-                var verifyRes = results[1];
-                var trace = results[2];
-                evidenceIntegrityState[id] = verifyRes.valid ? 'verified' : 'invalid';
-                var row = btn.closest('tr');
-                var stateCell = row ? row.querySelector('.evidence-integrity-state') : null;
-                renderIntegrityCellState(stateCell, evidenceIntegrityState[id]);
-                renderEvidenceDetail(detail, trace, verifyRes);
+                renderEvidenceDetail(results[0], results[1], evidenceIntegrityState[id]);
               }).catch(function(e) {
                 renderEvidenceDetail(null, null, null);
                 var stepsEl = document.getElementById('evidence-steps');
@@ -1431,6 +1430,22 @@
       }
       setEvidenceDetailVisible(false);
       updateEvidenceScopeLabel();
+      // Gateway telemetry routes (/gateway/dashboard, /api/v1/metrics) are only
+      // mounted when the server runs with --gateway. Hide the links instead of
+      // sending the user to a 404. Only a 404 hides them — auth errors keep the
+      // links so a key fix restores access without a reload.
+      fetch(base + '/api/v1/metrics', { headers: headers() }).then(function(r) {
+        if (r.status !== 404) return;
+        var nav = document.getElementById('gateway-nav-link');
+        if (nav) nav.style.display = 'none';
+        var finops = document.getElementById('finops-gateway-link');
+        if (finops) {
+          var hint = document.createElement('span');
+          hint.className = 'compliance-overlay';
+          hint.textContent = 'Gateway telemetry not enabled — start with: talon serve --gateway';
+          finops.replaceWith(hint);
+        }
+      }).catch(function() {});
       // One-time coverage fetch to replace static framework pills with
       // evidence-derived counts (kept static when the admin key is absent).
       get('/v1/compliance/coverage').then(function(d) { renderCompliancePills(d.frameworks); }).catch(function() {});
