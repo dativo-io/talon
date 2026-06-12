@@ -1055,8 +1055,22 @@
         var params = ['limit=15'];
         var t = document.getElementById('compliance-tenant');
         var a = document.getElementById('compliance-agent');
-        if (t && t.value && t.value.trim()) params.push('tenant_id=' + encodeURIComponent(t.value.trim()));
+        var f = document.getElementById('compliance-from');
+        var toEl = document.getElementById('compliance-to');
+        if (t && t.value && t.value.trim()) {
+          params.push('tenant_id=' + encodeURIComponent(t.value.trim()));
+        } else {
+          params.push('tenant_id=*');
+        }
         if (a && a.value && a.value.trim()) params.push('agent_id=' + encodeURIComponent(a.value.trim()));
+        if (f && f.value) {
+          var fromDate = new Date(f.value);
+          if (!isNaN(fromDate.getTime())) params.push('from=' + encodeURIComponent(fromDate.toISOString()));
+        }
+        if (toEl && toEl.value) {
+          var toDate = new Date(toEl.value);
+          if (!isNaN(toDate.getTime())) params.push('to=' + encodeURIComponent(toDate.toISOString()));
+        }
         get('/v1/evidence?' + params.join('&')).then(function(d) {
           var tbody = document.getElementById('compliance-evidence-tbody');
           if (!tbody) return;

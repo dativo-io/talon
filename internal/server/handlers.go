@@ -365,6 +365,9 @@ func (s *Server) handleEvidenceList(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = r.URL.Query().Get("tenant_id")
 	}
+	if tenantID == "*" {
+		tenantID = ""
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
