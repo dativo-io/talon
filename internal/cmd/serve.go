@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/classifier"
+	"github.com/dativo-io/talon/internal/compliance"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
@@ -309,6 +311,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 		server.WithOverrideStore(overrideStore),
 		server.WithToolApprovalStore(toolApprovalStore),
 		server.WithGraphEventsHandler(policyEngine, evidenceGen, evidenceStore),
+		// Declared compliance facts for /v1/compliance/* auditor exports.
+		// Loaded per request (like the compliance CLI) so config edits are
+		// picked up without a restart; load warnings surface as document
+		// warnings, not log noise.
+		server.WithComplianceDeclarations(func(ctx context.Context) compliance.Declarations {
+			return loadComplianceDeclarations(ctx, policyPath, io.Discard)
+		}),
 	}
 	if serveDashboard {
 		opts = append(opts, server.WithDashboard(web.DashboardHTML))
