@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/agent/graphadapter"
+	"github.com/dativo-io/talon/internal/compliance"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/metrics"
@@ -57,7 +59,13 @@ type Server struct {
 	eventsReplayBacklog  int
 	eventsRecentMaxLimit int
 	eventsPollInterval   time.Duration
+	declarationsLoader   DeclarationsLoader
 }
+
+// DeclarationsLoader returns the declared compliance facts (controller
+// identity, processing/system declarations) used by the auditor-document
+// endpoints. Loaded per request so config edits are picked up without restart.
+type DeclarationsLoader func(ctx context.Context) compliance.Declarations
 
 // Option configures the Server.
 type Option func(*Server)
@@ -153,6 +161,12 @@ func WithGatewayDashboard(html string) Option {
 // WithMetricsCollector sets the metrics collector for the gateway dashboard API.
 func WithMetricsCollector(c *metrics.Collector) Option {
 	return func(s *Server) { s.metricsCollector = c }
+}
+
+// WithComplianceDeclarations sets the loader for declared compliance facts
+// used by the /v1/compliance/* auditor-document endpoints.
+func WithComplianceDeclarations(loader DeclarationsLoader) Option {
+	return func(s *Server) { s.declarationsLoader = loader }
 }
 
 // WithEventStreamLimits configures SSE stream limits and polling behavior.
@@ -360,6 +374,13 @@ func (s *Server) Routes() http.Handler {
 		// CoPaw dashboard: stats and alerts for CoPaw gateway callers.
 		r.Get("/v1/copaw/stats", s.handleCoPawStats)
 		r.Get("/v1/copaw/alerts", s.handleCoPawAlerts)
+
+		// Compliance: framework coverage and one-click auditor exports
+		// (RoPA, Annex IV, framework report) around internal/compliance.
+		r.Get("/v1/compliance/coverage", s.handleComplianceCoverage)
+		r.Get("/v1/compliance/ropa", s.handleComplianceRoPA)
+		r.Get("/v1/compliance/annex-iv", s.handleComplianceAnnexIV)
+		r.Get("/v1/compliance/report", s.handleComplianceReport)
 	})
 
 	// Dashboard (no auth for same-origin MVP; optional to protect later).

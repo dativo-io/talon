@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -188,20 +189,27 @@ func runAuditorDocument(cmd *cobra.Command, generate auditorDocumentGenerator) e
 	return os.WriteFile(complianceOutput, out, 0o600)
 }
 
-// loadDeclarations gathers declared facts: controller identity from operator
-// config, processing/system declarations from the agent policy file. Both are
-// optional — missing declarations surface as document warnings, not errors.
+// loadDeclarations gathers declared facts for the compliance CLI commands.
 func loadDeclarations(ctx context.Context, cmd *cobra.Command) compliance.Declarations {
+	return loadComplianceDeclarations(ctx, compliancePolicyFile, cmd.ErrOrStderr())
+}
+
+// loadComplianceDeclarations gathers declared facts: controller identity from
+// operator config, processing/system declarations from the agent policy file.
+// Both are optional — missing declarations surface as document warnings, not
+// errors. Shared by the compliance CLI and the `talon serve` compliance API.
+// Load warnings are written to warn (use io.Discard to suppress).
+func loadComplianceDeclarations(ctx context.Context, policyFile string, warn io.Writer) compliance.Declarations {
 	var decl compliance.Declarations
 
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: could not load talon.config.yaml:", err)
+		fmt.Fprintln(warn, "WARNING: could not load talon.config.yaml:", err)
 	} else {
 		decl.Controller = cfg.ControllerDeclarations()
 	}
 
-	policyPath := compliancePolicyFile
+	policyPath := policyFile
 	if policyPath == "" && cfg != nil {
 		policyPath = cfg.DefaultPolicy
 	}
@@ -211,7 +219,7 @@ func loadDeclarations(ctx context.Context, cmd *cobra.Command) compliance.Declar
 	}
 	pol, err := policy.LoadPolicy(ctx, policyPath, false, filepath.Dir(policyPath))
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: could not load agent policy %s: %v\n", policyPath, err)
+		fmt.Fprintf(warn, "WARNING: could not load agent policy %s: %v\n", policyPath, err)
 		return decl
 	}
 	if pol.Compliance != nil {
