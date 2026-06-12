@@ -131,6 +131,129 @@ func TestInitPack_Generic_UsesDedicatedTemplate(t *testing.T) {
 	assert.Contains(t, str, "human_oversight: on-demand")
 }
 
+func TestInitPack_ComplianceMerge_WritesAnnotationHeader(t *testing.T) {
+	dir := t.TempDir()
+	prevWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(prevWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	t.Cleanup(func() { initCompliance = "" })
+	rootCmd.SetArgs([]string{"init", "--pack", "generic", "--compliance", "gdpr,nis2", "--skip-verify"})
+	require.NoError(t, rootCmd.Execute())
+
+	content, err := os.ReadFile(filepath.Join(dir, "agent.talon.yaml"))
+	require.NoError(t, err)
+	str := string(content)
+	assert.Contains(t, str, "# Compliance packs applied: gdpr, nis2")
+	assert.Contains(t, str, "supports: gdpr Art. 30")
+	assert.Contains(t, str, "supports: nis2 Art. 21")
+	assert.Contains(t, str, "do not, by themselves, make you compliant")
+	assert.NotContains(t, str, "supports: dora", "unselected packs must not be annotated")
+}
+
+func TestInitPack_InvalidCompliance_Errors(t *testing.T) {
+	dir := t.TempDir()
+	prevWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(prevWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	t.Cleanup(func() { initCompliance = "" })
+	rootCmd.SetArgs([]string{"init", "--pack", "generic", "--compliance", "hipaa", "--skip-verify"})
+	err = rootCmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported compliance pack")
+}
+
+func TestInitScaffold_ComplianceOverlay_Applied(t *testing.T) {
+	dir := t.TempDir()
+	prevWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(prevWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	t.Cleanup(func() { initCompliance = ""; initScaffold = false })
+	rootCmd.SetArgs([]string{"init", "--scaffold", "--compliance", "dora", "--skip-verify"})
+	require.NoError(t, rootCmd.Execute())
+
+	content, err := os.ReadFile(filepath.Join(dir, "agent.talon.yaml"))
+	require.NoError(t, err)
+	str := string(content)
+	assert.Contains(t, str, "# Compliance packs applied: dora")
+	assert.Contains(t, str, "supports: dora Art. 11")
+
+	var agent struct {
+		Compliance struct {
+			Frameworks []string `yaml:"frameworks"`
+		} `yaml:"compliance"`
+		Audit struct {
+			RetentionDays int `yaml:"retention_days"`
+		} `yaml:"audit"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &agent))
+	assert.Contains(t, agent.Compliance.Frameworks, "dora")
+	assert.GreaterOrEqual(t, agent.Audit.RetentionDays, 1825, "dora overlay sets 5y retention (stricter wins)")
+}
+
+func TestInitScripted_ComplianceOverlay_AppliedAndAnnotated(t *testing.T) {
+	dir := t.TempDir()
+	prevWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(prevWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	t.Cleanup(func() {
+		initCompliance = ""
+		initProvider = ""
+		initName = "my-agent"
+		initDataSovereignty = ""
+		initFeatures = ""
+	})
+	rootCmd.SetArgs([]string{
+		"init", "--provider", "openai", "--name", "scripted-agent",
+		"--data-sovereignty", "global", "--features", "pii,audit",
+		"--compliance", "eu-ai-act", "--skip-verify",
+	})
+	require.NoError(t, rootCmd.Execute())
+
+	content, err := os.ReadFile(filepath.Join(dir, "agent.talon.yaml"))
+	require.NoError(t, err)
+	str := string(content)
+	assert.Contains(t, str, "# Compliance packs applied: eu-ai-act")
+	assert.Contains(t, str, "supports: eu-ai-act Art. 14")
+
+	var agent struct {
+		Compliance struct {
+			Frameworks     []string `yaml:"frameworks"`
+			HumanOversight string   `yaml:"human_oversight"`
+		} `yaml:"compliance"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &agent))
+	assert.Contains(t, agent.Compliance.Frameworks, "eu-ai-act")
+	assert.Equal(t, "on-demand", agent.Compliance.HumanOversight)
+}
+
+func TestInitListCompliance_ShowsPacksAndDisclaimer(t *testing.T) {
+	var buf strings.Builder
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		initListCompliance = false
+	})
+
+	rootCmd.SetArgs([]string{"init", "--list-compliance"})
+	require.NoError(t, rootCmd.Execute())
+	out := buf.String()
+	for _, name := range []string{"gdpr", "nis2", "dora", "eu-ai-act"} {
+		assert.Contains(t, out, name)
+	}
+	assert.Contains(t, out, "supporting controls")
+	assert.Contains(t, out, "do not, by themselves, make you compliant")
+}
+
 func TestInitListPacks_ShowsCrewAI(t *testing.T) {
 	var buf strings.Builder
 	rootCmd.SetOut(&buf)

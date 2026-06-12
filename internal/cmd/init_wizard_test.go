@@ -433,6 +433,124 @@ func TestRunWizard_AzureAndEUStrict_NoWarning(t *testing.T) {
 	assert.NotContains(t, outStr, "requests to this provider will be blocked", "EU provider with eu_strict should not show block warning")
 }
 
+func TestRunWizard_CompliancePacks_AcceptsNumbersAndIDs(t *testing.T) {
+	// name, desc, owner, workload=1, pack=1, provider=1, residency=3,
+	// features default (empty), compliance packs "1,nis2", cache default, confirm
+	input := "packs-agent\n\n\n1\n1\n1\n3\n\n1,nis2\n\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    io.Discard,
+		ErrOut: io.Discard,
+	}
+	state, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	assert.Equal(t, []string{"gdpr", "nis2"}, state.CompliancePacks)
+}
+
+func TestRunWizard_CompliancePacks_DefaultNone(t *testing.T) {
+	input := "no-packs\n\n\n1\n1\n1\n3\n\n\n\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    io.Discard,
+		ErrOut: io.Discard,
+	}
+	state, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	assert.Empty(t, state.CompliancePacks, "compliance packs are opt-in")
+}
+
+func TestRunWizard_CompliancePacks_All(t *testing.T) {
+	input := "all-packs\n\n\n1\n1\n1\n3\n\nall\n\n\n"
+	wio := WizardIO{
+		In:     strings.NewReader(input),
+		Out:    io.Discard,
+		ErrOut: io.Discard,
+	}
+	state, confirmed, err := RunWizard(wio)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+	assert.Equal(t, []string{"gdpr", "nis2", "dora", "eu-ai-act"}, state.CompliancePacks)
+}
+
+func TestBuildConfigs_CompliancePacks_MergedAndValid(t *testing.T) {
+	state := WizardState{
+		AgentName:       "compliance-agent",
+		WorkloadType:    "agent",
+		PackID:          "generic",
+		ProviderID:      "openai",
+		DataSovereignty: "global",
+		EnabledFeatures: []string{"pii", "audit"},
+		CompliancePacks: []string{"gdpr", "eu-ai-act"},
+	}
+	agentCfg, _, err := BuildConfigs(state)
+	require.NoError(t, err)
+	// BuildConfigs validates the merged schema; assert the overlays took effect.
+	assert.Contains(t, agentCfg.Compliance.Frameworks, "gdpr")
+	assert.Contains(t, agentCfg.Compliance.Frameworks, "eu-ai-act")
+	assert.Equal(t, "eu", agentCfg.Compliance.DataResidency, "gdpr overlay forces EU residency")
+	assert.Equal(t, "on-demand", agentCfg.Compliance.HumanOversight, "eu-ai-act overlay sets human oversight")
+	require.NotNil(t, agentCfg.Policies.ModelRouting.Tier1)
+	assert.Equal(t, "eu", agentCfg.Policies.ModelRouting.Tier1.Location, "gdpr overlay routes tier 1 to EU")
+}
+
+func TestMarshalWithHeader_CompliancePacks_Annotated(t *testing.T) {
+	state := WizardState{
+		AgentName:       "annotated",
+		ProviderID:      "openai",
+		PackID:          "generic",
+		EnabledFeatures: []string{"pii"},
+		CompliancePacks: []string{"gdpr"},
+	}
+	agentCfg, infraCfg, err := BuildConfigs(state)
+	require.NoError(t, err)
+	opts := WriteOptions{
+		AgentPath:       "agent.talon.yaml",
+		InfraPath:       "talon.config.yaml",
+		ProviderID:      state.ProviderID,
+		Sovereignty:     state.DataSovereignty,
+		PackID:          state.PackID,
+		Features:        state.EnabledFeatures,
+		CompliancePacks: state.CompliancePacks,
+	}
+	agentYAML, _, err := marshalWithHeader(agentCfg, infraCfg, opts)
+	require.NoError(t, err)
+	str := string(agentYAML)
+	assert.Contains(t, str, "# Compliance packs applied: gdpr")
+	assert.Contains(t, str, "supports: gdpr Art. 30 — internal/evidence/store.go")
+	assert.Contains(t, str, "do not, by themselves, make you compliant")
+	assert.NotContains(t, str, "supports: nis2", "only selected packs are annotated")
+}
+
+func TestNormalizeComplianceSelection(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    []string
+		wantErr bool
+	}{
+		{"single", "gdpr", []string{"gdpr"}, false},
+		{"multi", "gdpr,nis2", []string{"gdpr", "nis2"}, false},
+		{"all", "all", []string{"gdpr", "nis2", "dora", "eu-ai-act"}, false},
+		{"dedupe", "gdpr,gdpr,nis2", []string{"gdpr", "nis2"}, false},
+		{"case_and_space", " GDPR , Nis2 ", []string{"gdpr", "nis2"}, false},
+		{"invalid", "hipaa", nil, true},
+		{"empty", "", nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeComplianceSelection(tt.in)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestDefaultsForWorkload_Proxy_ThreeFeatures(t *testing.T) {
 	feats := feature.DefaultsForWorkload("proxy")
 	require.Len(t, feats, 3)
