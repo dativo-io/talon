@@ -22,9 +22,10 @@ Talon uses **two configuration files** with distinct ownership and purpose. Unde
 
 ### How the files are created (`talon init`)
 
-- **In a terminal (TTY):** `talon init` runs an interactive wizard: you choose workload type, framework pack (e.g. OpenClaw), LLM provider, data residency (EU strict / preferred / global), and compliance features. The wizard writes both `agent.talon.yaml` and `talon.config.yaml` and prints vault-first next steps.
+- **In a terminal (TTY):** `talon init` runs an interactive wizard: you choose workload type, framework pack (e.g. OpenClaw), LLM provider, data residency (EU strict / preferred / global), compliance features, and optional EU compliance policy packs (GDPR, NIS2, DORA, EU AI Act). The wizard writes both `agent.talon.yaml` and `talon.config.yaml` and prints vault-first next steps.
 - **Non-interactive:** Use `talon init --scaffold` for default templates, or `talon init --pack <id>` for a starter pack (e.g. `openclaw`, `fintech-eu`). For scripts you can also use `talon init --provider openai --name my-agent` (and optional `--data-sovereignty`, `--features`).
-- **List options:** `talon init --list-providers`, `talon init --list-packs`, `talon init --list-features`.
+- **Compliance policy packs:** `--compliance gdpr,nis2` (or `all`) merges curated EU policy packs into the generated `agent.talon.yaml` on every init path (wizard, `--pack`, `--scaffold`, scripted). Each applied pack annotates the output with the articles it supports, linked to `internal/compliance/mapping.go`. See the [Policy packs guide](../guides/policy-packs.md).
+- **List options:** `talon init --list-providers`, `talon init --list-packs`, `talon init --list-features`, `talon init --list-compliance`.
 
 ---
 

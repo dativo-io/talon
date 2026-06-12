@@ -79,7 +79,8 @@ type WizardState struct {
 	RegionID         string
 	DataSovereignty  string // "eu_strict" | "eu_preferred" | "global"
 	EnabledFeatures  []string
-	CacheEnabled     bool // semantic cache for cost savings (off by default)
+	CompliancePacks  []string // compliance overlay names (gdpr, nis2, dora, eu-ai-act)
+	CacheEnabled     bool     // semantic cache for cost savings (off by default)
 }
 
 // GatewayBlock is the gateway section written to talon.config.yaml when PackID is openclaw.
@@ -220,9 +221,9 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 	}
 
 	// Q2 (pack selection) is skipped for proxy, so total differs by workload.
-	totalSteps := 5 // agent/hybrid: Q1, Q2(pack), Q3(provider), Q4(residency), Q5(features)
+	totalSteps := 6 // agent/hybrid: Q1, Q2(pack), Q3(provider), Q4(residency), Q5(features), Q6(compliance packs)
 	if state.WorkloadType == "proxy" {
-		totalSteps = 4 // proxy: Q1, Q3(provider), Q4(residency), Q5(features)
+		totalSteps = 5 // proxy: Q1, Q3(provider), Q4(residency), Q5(features), Q6(compliance packs)
 	}
 
 	// Q2: Framework pack (skipped for proxy)
@@ -409,7 +410,55 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 		}
 	}
 
-	// Q6: Enable semantic cache (optional)
+	// Q6: EU compliance policy packs (optional multi-select, default none)
+	currentStep++
+	fmt.Fprintf(out, "Step %d of %d\n", currentStep, totalSteps)
+	overlayNames := pack.ComplianceOverlayNames()
+	fmt.Fprintln(out, "? Apply EU compliance policy packs? (optional)")
+	fmt.Fprintln(out, "Each pack tightens policy defaults and annotates the articles it supports.")
+	fmt.Fprintln(out, "Press Enter to skip, or enter numbers (e.g. 1,2) or IDs (e.g. gdpr,nis2) separated by commas. Enter \"all\" for every pack.")
+	for i, name := range overlayNames {
+		fmt.Fprintf(out, "  %d. [ ] %s\n", i+1, complianceOverlayLabel(name))
+	}
+	fmt.Fprint(out, "  Enter selection or press Enter to skip: ")
+	var packLine string
+	if scan.Scan() {
+		packLine = strings.TrimSpace(scan.Text())
+	}
+	if packLine != "" {
+		seen := make(map[string]bool)
+		for _, p := range strings.Split(packLine, ",") {
+			trimmed := strings.TrimSpace(strings.ToLower(p))
+			if trimmed == "" {
+				continue
+			}
+			if trimmed == "all" {
+				for _, name := range overlayNames {
+					if !seen[name] {
+						seen[name] = true
+						state.CompliancePacks = append(state.CompliancePacks, name)
+					}
+				}
+				continue
+			}
+			if n, err := strconv.Atoi(trimmed); err == nil && n >= 1 && n <= len(overlayNames) {
+				name := overlayNames[n-1]
+				if !seen[name] {
+					seen[name] = true
+					state.CompliancePacks = append(state.CompliancePacks, name)
+				}
+				continue
+			}
+			for _, name := range overlayNames {
+				if trimmed == name && !seen[name] {
+					seen[name] = true
+					state.CompliancePacks = append(state.CompliancePacks, name)
+				}
+			}
+		}
+	}
+
+	// Q7: Enable semantic cache (optional)
 	cachePrompt := readLine(scan, out, "Enable semantic cache for cost savings? (y/N)", "n")
 	state.CacheEnabled = strings.ToLower(strings.TrimSpace(cachePrompt)) != "n" && strings.ToLower(strings.TrimSpace(cachePrompt)) != "no"
 
@@ -426,6 +475,11 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "  Data residency:    %s\n", dataResidencyLabel(state.DataSovereignty))
 	fmt.Fprintf(out, "  Features:          %s\n", strings.Join(state.EnabledFeatures, ", "))
+	compliancePacksLabel := "none"
+	if len(state.CompliancePacks) > 0 {
+		compliancePacksLabel = strings.Join(state.CompliancePacks, ", ")
+	}
+	fmt.Fprintf(out, "  Compliance packs:  %s\n", compliancePacksLabel)
 	fmt.Fprintf(out, "  Semantic cache:    %s\n", map[bool]string{true: "enabled", false: "disabled"}[state.CacheEnabled])
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "  Files to create:")
@@ -540,6 +594,11 @@ func BuildConfigs(state WizardState) (*policy.Policy, *InfraYAML, error) {
 		}
 	}
 	applyPackToAgent(agentCfg, state)
+	if len(state.CompliancePacks) > 0 {
+		if err := applyComplianceOverlaysToPolicy(agentCfg, state.CompliancePacks); err != nil {
+			return nil, nil, fmt.Errorf("applying compliance packs: %w", err)
+		}
+	}
 	infraCfg := buildInfraConfig(state)
 	agentYAML, err := yaml.Marshal(agentCfg)
 	if err != nil {
@@ -1046,15 +1105,16 @@ func VaultSecretName(providerID string) string {
 
 // WriteOptions configures WriteConfigs.
 type WriteOptions struct {
-	AgentPath   string
-	InfraPath   string
-	Force       bool
-	Version     string
-	ProviderID  string
-	RegionID    string
-	Sovereignty string
-	PackID      string
-	Features    []string
+	AgentPath       string
+	InfraPath       string
+	Force           bool
+	Version         string
+	ProviderID      string
+	RegionID        string
+	Sovereignty     string
+	PackID          string
+	Features        []string
+	CompliancePacks []string
 }
 
 // marshalWithHeader prepends a YAML comment block to the document.
@@ -1076,7 +1136,9 @@ func marshalWithHeader(agentCfg *policy.Policy, infraCfg *InfraYAML, opts WriteO
 	if opts.RegionID != "" {
 		agentHeader += " (" + opts.RegionID + ")"
 	}
-	agentHeader += fmt.Sprintf(" | Sovereignty: %s\n# Pack: %s | Features: %s\n# Agent policy (AI governance / compliance team). Edit and run `talon validate` to verify.\n\n", opts.Sovereignty, opts.PackID, strings.Join(opts.Features, ","))
+	agentHeader += fmt.Sprintf(" | Sovereignty: %s\n# Pack: %s | Features: %s\n# Agent policy (AI governance / compliance team). Edit and run `talon validate` to verify.\n", opts.Sovereignty, opts.PackID, strings.Join(opts.Features, ","))
+	agentHeader += complianceAnnotationBlock(opts.CompliancePacks, agentCfg.Compliance.Frameworks)
+	agentHeader += "\n"
 	infraHeader := fmt.Sprintf("# Generated by: talon init (wizard)\n# Talon version: %s\n# Generated at: %s\n# Infrastructure config (DevOps / platform team).\n\n", version, ts)
 	return append([]byte(agentHeader), agentYAML...), append([]byte(infraHeader), infraYAML...), nil
 }

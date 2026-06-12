@@ -46,15 +46,13 @@ var (
 	initListProviders   bool
 	initListPacks       bool
 	initListFeatures    bool
+	initListCompliance  bool
 	initCompliance      string
 )
 
 // supportedPacks are the allowed values for --pack.
 // Keep this derived from pack.ValidPackIDs() so --pack and --list-packs stay in sync.
 var supportedPacks = pack.ValidPackIDs()
-
-// validComplianceValues are the allowed values for --compliance.
-var validComplianceValues = []string{"gdpr", "nis2", "dora", "eu-ai-act", "all"}
 
 var initCmd = &cobra.Command{
 	Use:   "init",
@@ -78,13 +76,14 @@ func init() {
 	initCmd.Flags().BoolVar(&initListProviders, "list-providers", false, "list available LLM providers and exit")
 	initCmd.Flags().BoolVar(&initListPacks, "list-packs", false, "list available packs and exit")
 	initCmd.Flags().BoolVar(&initListFeatures, "list-features", false, "list compliance features and exit")
+	initCmd.Flags().BoolVar(&initListCompliance, "list-compliance", false, "list compliance policy packs and the articles they support, then exit")
 	initCmd.Flags().StringVar(&initAgentOutput, "agent-output", "", "path for agent.talon.yaml (default: agent.talon.yaml)")
 	initCmd.Flags().StringVar(&initInfraOutput, "infra-output", "", "path for talon.config.yaml (default: talon.config.yaml)")
 	initCmd.Flags().StringVar(&initProvider, "provider", "", "primary LLM provider (scripted mode; use with --name)")
 	initCmd.Flags().StringVar(&initRegion, "region", "", "provider region when provider requires one (e.g. westeurope for azure-openai)")
 	initCmd.Flags().StringVar(&initDataSovereignty, "data-sovereignty", "", "data residency: eu-strict, eu-preferred, or global")
 	initCmd.Flags().StringVar(&initFeatures, "features", "", "comma-separated feature IDs (e.g. pii,audit,cost)")
-	initCmd.Flags().StringVar(&initCompliance, "compliance", "", "compliance overlay: gdpr, nis2, dora, eu-ai-act, all")
+	initCmd.Flags().StringVar(&initCompliance, "compliance", "", "comma-separated compliance packs: gdpr, nis2, dora, eu-ai-act, all (works with --pack, --scaffold, and scripted init)")
 }
 
 //nolint:gocyclo // init dispatch has many branches (wizard, scaffold, pack, scripted, list)
@@ -104,6 +103,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	if initListFeatures {
 		return runListFeatures(out)
+	}
+	if initListCompliance {
+		return runListCompliance(out)
 	}
 
 	// 2. Pack path (no wizard) — backward compatible
@@ -163,13 +165,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		opts := WriteOptions{
-			AgentPath:   agentPath,
-			InfraPath:   infraPath,
-			ProviderID:  state.ProviderID,
-			RegionID:    state.RegionID,
-			Sovereignty: state.DataSovereignty,
-			PackID:      state.PackID,
-			Features:    state.EnabledFeatures,
+			AgentPath:       agentPath,
+			InfraPath:       infraPath,
+			ProviderID:      state.ProviderID,
+			RegionID:        state.RegionID,
+			Sovereignty:     state.DataSovereignty,
+			PackID:          state.PackID,
+			Features:        state.EnabledFeatures,
+			CompliancePacks: state.CompliancePacks,
 		}
 		agentYAML, infraYAML, err := marshalWithHeader(agentCfg, infraCfg, opts)
 		if err != nil {
@@ -187,14 +190,15 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("building configs: %w", err)
 	}
 	opts := WriteOptions{
-		AgentPath:   agentPath,
-		InfraPath:   infraPath,
-		Force:       initForce,
-		ProviderID:  state.ProviderID,
-		RegionID:    state.RegionID,
-		Sovereignty: state.DataSovereignty,
-		PackID:      state.PackID,
-		Features:    state.EnabledFeatures,
+		AgentPath:       agentPath,
+		InfraPath:       infraPath,
+		Force:           initForce,
+		ProviderID:      state.ProviderID,
+		RegionID:        state.RegionID,
+		Sovereignty:     state.DataSovereignty,
+		PackID:          state.PackID,
+		Features:        state.EnabledFeatures,
+		CompliancePacks: state.CompliancePacks,
 	}
 	if err := WriteConfigs(agentCfg, infraCfg, opts); err != nil {
 		return err
@@ -262,6 +266,20 @@ func runListFeatures(out io.Writer) error {
 	return nil
 }
 
+// runListCompliance lists the curated compliance policy packs with the articles
+// each one supports, derived from compliance.DefaultMappings().
+func runListCompliance(out io.Writer) error {
+	fmt.Fprintln(out, "Available compliance policy packs (use with --compliance, e.g. --compliance gdpr,nis2):")
+	fmt.Fprintln(out)
+	for _, name := range pack.ComplianceOverlayNames() {
+		fmt.Fprintf(out, "  %-10s %s\n", name, complianceOverlayLabel(name))
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Packs provide supporting controls and evidence for the listed articles;")
+	fmt.Fprintln(out, "they do not, by themselves, make you compliant. See docs/guides/policy-packs.md.")
+	return nil
+}
+
 //nolint:gocyclo // runPackInit dispatches pack validation, init, and post-message by pack type
 func runPackInit(out, errOut io.Writer) error {
 	ok := false
@@ -280,15 +298,8 @@ func runPackInit(out, errOut io.Writer) error {
 		return fmt.Errorf("unsupported --pack %q; use one of: %s, or run: talon init --list-packs", initPack, strings.Join(supportedPacks, ", "))
 	}
 	if initCompliance != "" {
-		valid := false
-		for _, c := range validComplianceValues {
-			if strings.EqualFold(c, initCompliance) {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			return fmt.Errorf("unsupported --compliance %q; use one of: %s", initCompliance, strings.Join(validComplianceValues, ", "))
+		if _, err := normalizeComplianceSelection(initCompliance); err != nil {
+			return fmt.Errorf("--compliance: %w", err)
 		}
 	}
 	if err := initializeProject(); err != nil {
@@ -320,6 +331,11 @@ func runPackInit(out, errOut io.Writer) error {
 }
 
 func runScaffoldInit(out, errOut io.Writer) error {
+	if initCompliance != "" {
+		if _, err := normalizeComplianceSelection(initCompliance); err != nil {
+			return fmt.Errorf("--compliance: %w", err)
+		}
+	}
 	if err := initializeProject(); err != nil {
 		return fmt.Errorf("initializing project: %w", err)
 	}
@@ -374,6 +390,13 @@ func runScriptedInit(cmd *cobra.Command, out, errOut io.Writer) error {
 			}
 		}
 	}
+	if initCompliance != "" {
+		names, err := normalizeComplianceSelection(initCompliance)
+		if err != nil {
+			return fmt.Errorf("--compliance: %w", err)
+		}
+		state.CompliancePacks = names
+	}
 	// Validate provider
 	providers := llm.ListForWizard(false)
 	found := false
@@ -402,13 +425,14 @@ func runScriptedInit(cmd *cobra.Command, out, errOut io.Writer) error {
 			return err
 		}
 		opts := WriteOptions{
-			AgentPath:   agentPath,
-			InfraPath:   infraPath,
-			ProviderID:  state.ProviderID,
-			RegionID:    state.RegionID,
-			Sovereignty: state.DataSovereignty,
-			PackID:      state.PackID,
-			Features:    state.EnabledFeatures,
+			AgentPath:       agentPath,
+			InfraPath:       infraPath,
+			ProviderID:      state.ProviderID,
+			RegionID:        state.RegionID,
+			Sovereignty:     state.DataSovereignty,
+			PackID:          state.PackID,
+			Features:        state.EnabledFeatures,
+			CompliancePacks: state.CompliancePacks,
 		}
 		agentYAML, infraYAML, err := marshalWithHeader(agentCfg, infraCfg, opts)
 		if err != nil {
@@ -426,14 +450,15 @@ func runScriptedInit(cmd *cobra.Command, out, errOut io.Writer) error {
 		return fmt.Errorf("building configs: %w", err)
 	}
 	opts := WriteOptions{
-		AgentPath:   agentPath,
-		InfraPath:   infraPath,
-		Force:       initForce,
-		ProviderID:  state.ProviderID,
-		RegionID:    state.RegionID,
-		Sovereignty: state.DataSovereignty,
-		PackID:      state.PackID,
-		Features:    state.EnabledFeatures,
+		AgentPath:       agentPath,
+		InfraPath:       infraPath,
+		Force:           initForce,
+		ProviderID:      state.ProviderID,
+		RegionID:        state.RegionID,
+		Sovereignty:     state.DataSovereignty,
+		PackID:          state.PackID,
+		Features:        state.EnabledFeatures,
+		CompliancePacks: state.CompliancePacks,
 	}
 	if err := WriteConfigs(agentCfg, infraCfg, opts); err != nil {
 		return err
@@ -565,7 +590,8 @@ func initializeProject() error {
 	return nil
 }
 
-// applyComplianceOverlays reads agent.talon.yaml, merges the selected compliance overlay(s), and writes back.
+// applyComplianceOverlays reads agent.talon.yaml, merges the selected compliance
+// overlay(s), and writes back with a header annotating the supported articles.
 func applyComplianceOverlays(agentPath string) error {
 	content, err := os.ReadFile(agentPath)
 	if err != nil {
@@ -576,27 +602,20 @@ func applyComplianceOverlays(agentPath string) error {
 		return fmt.Errorf("parsing agent policy: %w", err)
 	}
 
-	lower := strings.ToLower(initCompliance)
-	names := []string{lower}
-	if lower == "all" {
-		names = pack.ComplianceOverlayNames()
+	names, err := normalizeComplianceSelection(initCompliance)
+	if err != nil {
+		return err
 	}
-	for _, name := range names {
-		overlayContent, err := pack.ReadComplianceOverlay(name)
-		if err != nil {
-			return fmt.Errorf("reading compliance overlay %q: %w", name, err)
-		}
-		var overlay policy.Policy
-		if err := yaml.Unmarshal(overlayContent, &overlay); err != nil {
-			return fmt.Errorf("parsing overlay %q: %w", name, err)
-		}
-		mergeComplianceOverlay(&base, &overlay)
+	if err := applyComplianceOverlaysToPolicy(&base, names); err != nil {
+		return err
 	}
 
 	out, err := yaml.Marshal(&base)
 	if err != nil {
 		return fmt.Errorf("marshaling merged policy: %w", err)
 	}
+	header := strings.TrimPrefix(complianceAnnotationBlock(names, base.Compliance.Frameworks), "#\n")
+	out = append([]byte(header+"\n"), out...)
 	//nolint:gosec // G306: agent policy is not secret
 	if err := os.WriteFile(agentPath, out, 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", agentPath, err)

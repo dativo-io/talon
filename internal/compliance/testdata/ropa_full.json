@@ -192,6 +192,11 @@
             "internal/tenant"
           ],
           [
+            "Mapped control: GDPR Art. 5(1)(c)",
+            "Data minimization via PII redaction before prompt storage",
+            "internal/classifier/pii.go"
+          ],
+          [
             "Mapped control: GDPR Art. 30",
             "Processing records via signed evidence export",
             "internal/evidence/store.go"
