@@ -30,8 +30,8 @@ Open the **Evidence** tab first — that is the primary proof-bar surface for ep
 ## Suggested captures
 
 1. Evidence list with mixed allow/deny and PII flags visible.
-2. Single record detail with **Verified** integrity state.
-3. Compliance report preview panel (if enabled in your build).
+2. Single record detail with **Verified** integrity state — click **Verify** on the row first, then **Detail** (Detail alone is read-only and leaves the record "Not checked").
+3. Compliance tab with framework coverage cards and the export buttons.
 4. Gateway overview with at least one blocked or PII-detected row (optional).
 
 ## Where to store assets

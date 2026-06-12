@@ -42,6 +42,7 @@ Choose the shortest path for your situation:
 
 1. **"I need to show an auditor or DPO what we can hand off."**
    - Start: [Sample auditor pack](../examples/auditor-pack/README.md)
+   - Learn the flow: [Turnkey compliance reports](tutorials/turnkey-compliance-reports.md) — init with EU policy packs to a downloaded RoPA in ~15 minutes
    - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
    - Declarations: [How to clear DECLARATION MISSING blocks in RoPA exports](guides/ropa-declarations.md)
 2. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
@@ -65,6 +66,7 @@ Choose the shortest path for your situation:
 | [60-Second Demo (no API key)](tutorials/quickstart-demo.md) | Docker Compose demo with mock provider — see governance in action in 60 seconds. |
 | [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | End-to-end tamper-proof demo: verify in dashboard, export signed evidence, tamper one field, verify failure with CLI. |
 | [Your first governed agent](tutorials/first-governed-agent.md) | Install → init → run → see evidence. Native Talon (requires Go + API key). |
+| [Turnkey compliance reports](tutorials/turnkey-compliance-reports.md) | Init with EU policy packs → dashboard Compliance tab → signed RoPA / Annex IV exports, each leaving control-plane evidence. No API key needed. |
 
 ### How-to guides (goal-oriented)
 

@@ -6,13 +6,15 @@ The gateway dashboard provides real-time visibility into LLM API gateway traffic
 
 ## Enabling the dashboard
 
-The dashboard is available when Talon runs in gateway mode. No extra flags are needed:
+The dashboard is available when Talon runs in gateway mode:
 
 ```bash
 talon serve --gateway --gateway-config talon.config.yaml
 ```
 
 The dashboard is served on the same port as the API (default `:8080`).
+
+Without `--gateway` (or `--proxy-quickstart`), the gateway routes are **not mounted**: `GET /gateway/dashboard`, `GET /api/v1/metrics`, and `GET /api/v1/metrics/stream` all return `404 page not found` as plain text (a common symptom is `jq` failing with `Cannot index number` on the "404" body). The unified governance dashboard (`/dashboard`) detects this at load time and hides its gateway telemetry links, showing a hint to restart with `--gateway` instead. `--gateway` works even when `talon.config.yaml` has no `gateway:` block — defaults apply.
 
 ### Configuration
 
@@ -380,5 +382,14 @@ When using the main governance dashboard (`/dashboard`), Talon also exposes:
 
 - `GET /v1/dashboard/agent-health` - per-agent risk-oriented health summary
 - `GET /v1/dashboard/drift-signals` - drift z-scores (cost anomaly, denial-rate spike, PII-rate change)
+- `GET /v1/dashboard/denials-by-reason` - store-wide denied total with a per-reason breakdown (`pii_block`, `policy_deny`, `attachment_block`, `tool_filtered`)
 
 These endpoints are used by the embedded UI and can also be queried directly for custom dashboards.
+
+### Unified dashboard semantics
+
+A few `/dashboard` behaviors worth knowing when reading the page:
+
+- The **Blocked (all evidence)** card shows the store-wide denied total from `/v1/dashboard/denials-by-reason` — the same number as the "All evidence: N denied" line. It does not change when the evidence table is filtered; clicking the card applies the Denied filter to drill into those records.
+- **Visible requests** and **Visible cost** are computed from the currently visible evidence rows, so they *do* change with filters.
+- The **Detail** button is read-only: it shows the signed fields, trust/spend attribution, and step trace without verifying the record. Signature verification only happens via the explicit **Verify** / **Verify visible records** buttons, which update the Integrity column.
