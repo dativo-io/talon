@@ -84,13 +84,18 @@ func applyComplianceOverlaysToPolicy(base *policy.Policy, names []string) error 
 // agent policies when compliance packs are applied. Every line is derived from
 // compliance.DefaultMappings(), so each annotated article links to a real,
 // shipping control (claims discipline: supporting evidence, never "compliant").
-func complianceAnnotationBlock(packs []string) string {
+// mergedFrameworks should contain the compliance.frameworks list from the merged
+// policy, which may include cross-pack dependencies (e.g. DORA pulling in GDPR).
+func complianceAnnotationBlock(packs []string, mergedFrameworks []string) string {
 	if len(packs) == 0 {
 		return ""
 	}
 	frameworks := make(map[string]bool)
 	for _, p := range packs {
 		frameworks[p] = true
+	}
+	for _, f := range mergedFrameworks {
+		frameworks[f] = true
 	}
 	var b strings.Builder
 	b.WriteString("#\n")
