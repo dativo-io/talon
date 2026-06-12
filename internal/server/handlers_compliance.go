@@ -281,5 +281,6 @@ func writeComplianceAttachment(w http.ResponseWriter, format, filename string, o
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename+"."+ext))
 	w.WriteHeader(http.StatusOK)
+	//nolint:gosec // G705: document produced by compliance.RenderDocumentHTML/RenderHTML, which html-escapes all dynamic values (covered by golden tests); JSON variant is json.Marshal output
 	_, _ = w.Write(out)
 }
