@@ -38,6 +38,25 @@ func TestDashboardHTML_ContainsComplianceMode(t *testing.T) {
 	assert.True(t, strings.Contains(html, "Not a certification or compliance determination"))
 }
 
+func TestDashboardHTML_ContainsUnifiedFinOpsSurface(t *testing.T) {
+	html := web.DashboardHTML
+	assert.NotEmpty(t, html)
+	// Budget utilization and cache stats mapped from the /api/v1/metrics snapshot.
+	assert.True(t, strings.Contains(html, "finops-budget-daily"))
+	assert.True(t, strings.Contains(html, "finops-budget-monthly"))
+	assert.True(t, strings.Contains(html, "finops-cache-hits"))
+	assert.True(t, strings.Contains(html, "finops-cache-saved"))
+	// Caller / model / provider spend breakdowns.
+	assert.True(t, strings.Contains(html, "finops-callers-tbody"))
+	assert.True(t, strings.Contains(html, "finops-models-tbody"))
+	assert.True(t, strings.Contains(html, "finops-providers-tbody"))
+	// Store-wide denial breakdown wired to the dedicated endpoint.
+	assert.True(t, strings.Contains(html, "denials-store-summary"))
+	assert.True(t, strings.Contains(html, "/v1/dashboard/denials-by-reason"))
+	// Gateway dashboard stays available as a deep link.
+	assert.True(t, strings.Contains(html, "/gateway/dashboard"))
+}
+
 func TestGatewayDashboardHTML_ContainsEvidenceReviewLink(t *testing.T) {
 	html := web.GatewayDashboardHTML
 	assert.NotEmpty(t, html)

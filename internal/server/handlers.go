@@ -365,10 +365,11 @@ func (s *Server) handleEvidenceList(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = r.URL.Query().Get("tenant_id")
 	}
+	// "*" and an explicitly empty tenant_id param both mean "all tenants";
+	// an absent param falls back to the default tenant.
 	if tenantID == "*" {
 		tenantID = ""
-	}
-	if tenantID == "" {
+	} else if tenantID == "" && !r.URL.Query().Has("tenant_id") {
 		tenantID = "default"
 	}
 	agentID := r.URL.Query().Get("agent_id")
@@ -1200,9 +1201,6 @@ func (s *Server) handleDenialsByReason(w http.ResponseWriter, r *http.Request) {
 	tenantID := TenantIDFromContext(r.Context())
 	if tenantID == "" {
 		tenantID = r.URL.Query().Get("tenant_id")
-	}
-	if tenantID == "" {
-		tenantID = "default"
 	}
 	var from, to time.Time
 	if f := r.URL.Query().Get("from"); f != "" {

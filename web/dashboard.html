@@ -143,6 +143,7 @@
     <p class="denials-summary" id="policy-outcome-summary">—</p>
     <h3 style="margin:0.75rem 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Denials in current view</h3>
     <p class="denials-summary"><span id="denials-total">—</span> denied. <span id="denials-by-reason"></span> <a href="#" id="denials-drill-down">View in Evidence &rarr;</a></p>
+    <p class="denials-summary" id="denials-store-summary">All evidence: —</p>
     <h3 style="margin:0.75rem 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Security &amp; PII</h3>
     <p class="denials-summary">PII detections and injection attempts (see Risky tool / attachment table below and FinOps for counts). <a href="#" id="governance-evidence-link">View evidence</a></p>
     <h3 style="margin:0.75rem 0 0.5rem; font-size:0.875rem; color:#94a3b8;">Risky tool / attachment injection</h3>
@@ -276,6 +277,30 @@
       <div class="card"><div class="label">Pending plans</div><div class="value" id="finops-plans-pending">—</div></div>
       <div class="card"><div class="label">Dispatched plans</div><div class="value" id="finops-plans-dispatched">—</div></div>
       <div class="card"><div class="label">Dispatch failures</div><div class="value" id="finops-plans-failures">—</div></div>
+    </div>
+    <h3>Budget &amp; cache</h3>
+    <div class="cards">
+      <div class="card"><div class="label">Daily budget</div><div class="value" id="finops-budget-daily">—</div></div>
+      <div class="card"><div class="label">Monthly budget</div><div class="value" id="finops-budget-monthly">—</div></div>
+      <div class="card"><div class="label">Cache hits</div><div class="value" id="finops-cache-hits">—</div></div>
+      <div class="card"><div class="label">Cache hit rate</div><div class="value" id="finops-cache-hitrate">—</div></div>
+      <div class="card"><div class="label">Cache savings (€)</div><div class="value" id="finops-cache-saved">—</div></div>
+    </div>
+    <h3>Spend by caller</h3>
+    <table>
+      <thead><tr><th>Caller</th><th>Requests</th><th>Cost (€)</th><th>Blocked</th><th>Avg latency</th><th>Success rate</th></tr></thead>
+      <tbody id="finops-callers-tbody"></tbody>
+    </table>
+    <h3>Spend by model / provider</h3>
+    <div class="split-grid">
+      <table>
+        <thead><tr><th>Model</th><th>Requests</th><th>Cost (€)</th></tr></thead>
+        <tbody id="finops-models-tbody"></tbody>
+      </table>
+      <table>
+        <thead><tr><th>Provider</th><th>Requests</th><th>Cost (€)</th></tr></thead>
+        <tbody id="finops-providers-tbody"></tbody>
+      </table>
     </div>
     <p class="refresh"><span id="metrics-source-indicator" class="compliance-overlay">Polling</span> <a id="finops-gateway-link" href="/gateway/dashboard">Open full Gateway telemetry &rarr;</a></p>
   </div>
@@ -556,6 +581,19 @@
         }).catch(function() {});
         // Policy outcome and denial counters are synced from the currently visible
         // evidence list in renderEvidence() so they stay consistent with this table.
+        // The store-wide denial breakdown comes from the dedicated endpoint.
+        get('/v1/dashboard/denials-by-reason').then(function(d) {
+          var el = document.getElementById('denials-store-summary');
+          if (!el) return;
+          var total = d.total != null ? d.total : 0;
+          var byReason = d.by_reason || {};
+          var reasons = Object.keys(byReason).sort();
+          var detail = reasons.length ? ' — ' + reasons.map(function(rs) { return rs + ': ' + byReason[rs]; }).join(', ') : '';
+          el.textContent = 'All evidence: ' + total + ' denied' + detail;
+        }).catch(function() {
+          var el = document.getElementById('denials-store-summary');
+          if (el) el.textContent = 'All evidence: —';
+        });
         get('/v1/dashboard/governance-alerts?limit=10').then(function(d) {
           var tbody = document.getElementById('governance-alerts-tbody');
           if (!tbody) return;
@@ -980,6 +1018,43 @@
           set('finops-plans-pending', s.pending_plans != null ? s.pending_plans : '—');
           set('finops-plans-dispatched', s.dispatched_plans != null ? s.dispatched_plans : '—');
           set('finops-plans-failures', s.plan_dispatch_errors != null ? s.plan_dispatch_errors : '—');
+          // Budget utilization and cache stats from the same snapshot (no extra endpoint).
+          var b = d.budget_status;
+          set('finops-budget-daily', (b && b.daily_limit > 0) ? b.daily_used.toFixed(2) + ' / ' + b.daily_limit + ' € (' + b.daily_percent.toFixed(0) + '%)' : '—');
+          set('finops-budget-monthly', (b && b.monthly_limit > 0) ? b.monthly_used.toFixed(2) + ' / ' + b.monthly_limit + ' € (' + b.monthly_percent.toFixed(0) + '%)' : '—');
+          var c = d.cache_stats;
+          set('finops-cache-hits', c && c.hits != null ? c.hits : '—');
+          set('finops-cache-hitrate', c && c.hit_rate != null ? (c.hit_rate * 100).toFixed(1) + '%' : '—');
+          set('finops-cache-saved', c && c.cost_saved != null ? c.cost_saved.toFixed(4) : '—');
+          // Caller / model / provider breakdowns — pure data mapping from the snapshot.
+          var callersBody = document.getElementById('finops-callers-tbody');
+          if (callersBody) {
+            callersBody.innerHTML = '';
+            (d.caller_stats || []).forEach(function(cs) {
+              var tr = document.createElement('tr');
+              tr.innerHTML = '<td>' + escapeHtml(cs.caller || '—') + '</td><td>' + (cs.requests != null ? cs.requests : '—') +
+                '</td><td>' + (cs.cost_eur != null ? cs.cost_eur.toFixed(4) : '—') +
+                '</td><td>' + (cs.blocked != null ? cs.blocked : '—') +
+                '</td><td>' + (cs.avg_latency_ms != null ? cs.avg_latency_ms + 'ms' : '—') +
+                '</td><td>' + (cs.success_rate != null ? (cs.success_rate * 100).toFixed(0) + '%' : '—') + '</td>';
+              callersBody.appendChild(tr);
+            });
+            if (!(d.caller_stats || []).length) callersBody.innerHTML = '<tr><td colspan="6" class="refresh">No gateway callers yet</td></tr>';
+          }
+          var fillBreakdown = function(tbodyId, rows, nameKey) {
+            var tbody = document.getElementById(tbodyId);
+            if (!tbody) return;
+            tbody.innerHTML = '';
+            (rows || []).forEach(function(row) {
+              var tr = document.createElement('tr');
+              tr.innerHTML = '<td>' + escapeHtml(row[nameKey] || '—') + '</td><td>' + (row.requests != null ? row.requests : '—') +
+                '</td><td>' + (row.cost_eur != null ? row.cost_eur.toFixed(4) : '—') + '</td>';
+              tbody.appendChild(tr);
+            });
+            if (!(rows || []).length) tbody.innerHTML = '<tr><td colspan="3" class="refresh">No data yet</td></tr>';
+          };
+          fillBreakdown('finops-models-tbody', d.model_breakdown, 'model');
+          fillBreakdown('finops-providers-tbody', d.provider_breakdown, 'provider');
         }).catch(function() {
           var set = function(id, text) { var el = document.getElementById(id); if (el) el.textContent = text; };
           set('finops-requests', '—');
@@ -990,6 +1065,11 @@
           set('finops-plans-pending', '—');
           set('finops-plans-dispatched', '—');
           set('finops-plans-failures', '—');
+          set('finops-budget-daily', '—');
+          set('finops-budget-monthly', '—');
+          set('finops-cache-hits', '—');
+          set('finops-cache-hitrate', '—');
+          set('finops-cache-saved', '—');
         });
       }
 
@@ -1056,21 +1136,11 @@
         var t = document.getElementById('compliance-tenant');
         var a = document.getElementById('compliance-agent');
         var f = document.getElementById('compliance-from');
-        var toEl = document.getElementById('compliance-to');
-        if (t && t.value && t.value.trim()) {
-          params.push('tenant_id=' + encodeURIComponent(t.value.trim()));
-        } else {
-          params.push('tenant_id=*');
-        }
+        var to = document.getElementById('compliance-to');
+        params.push('tenant_id=' + encodeURIComponent(t && t.value && t.value.trim() ? t.value.trim() : ''));
         if (a && a.value && a.value.trim()) params.push('agent_id=' + encodeURIComponent(a.value.trim()));
-        if (f && f.value) {
-          var fromDate = new Date(f.value);
-          if (!isNaN(fromDate.getTime())) params.push('from=' + encodeURIComponent(fromDate.toISOString()));
-        }
-        if (toEl && toEl.value) {
-          var toDate = new Date(toEl.value);
-          if (!isNaN(toDate.getTime())) params.push('to=' + encodeURIComponent(toDate.toISOString()));
-        }
+        if (f && f.value) params.push('from=' + encodeURIComponent(f.value + 'T00:00:00Z'));
+        if (to && to.value) params.push('to=' + encodeURIComponent(to.value + 'T23:59:59Z'));
         get('/v1/evidence?' + params.join('&')).then(function(d) {
           var tbody = document.getElementById('compliance-evidence-tbody');
           if (!tbody) return;
