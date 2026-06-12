@@ -444,7 +444,7 @@
           { label: 'Input hash', value: (ev.audit_trail && ev.audit_trail.input_hash) ? ev.audit_trail.input_hash : '—' },
           { label: 'Output hash', value: (ev.audit_trail && ev.audit_trail.output_hash) ? ev.audit_trail.output_hash : '—' },
           { label: 'Policy decision', value: decision + (ev.policy_decision && ev.policy_decision.action ? ' (' + ev.policy_decision.action + ')' : '') },
-          { label: 'Verification result', value: integrityState === 'verified' ? '✓ Verified' : (integrityState === 'invalid' ? '✗ Invalid' : '— Not checked (use the Verify button)') }
+          { label: 'Verification result', value: integrityState === 'verified' ? '✓ Verified' : (integrityState === 'invalid' ? '✗ Invalid' : (integrityState === 'unable' ? '⚠ Unable to verify' : '— Not checked (use the Verify button)')) }
         ];
         var spendRows = [
           { label: 'Execution cost', value: ev.execution && ev.execution.cost != null ? String(ev.execution.cost) : '—' },
