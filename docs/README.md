@@ -43,6 +43,7 @@ Choose the shortest path for your situation:
 1. **"I need to show an auditor or DPO what we can hand off."**
    - Start: [Sample auditor pack](../examples/auditor-pack/README.md)
    - Learn the flow: [Turnkey compliance reports](tutorials/turnkey-compliance-reports.md) — init with EU policy packs to a downloaded RoPA in ~15 minutes
+   - Verify everything: [How to verify turnkey compliance reports](guides/verify-turnkey-compliance-reports.md) — full checklist before a demo or release
    - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
    - Declarations: [How to clear DECLARATION MISSING blocks in RoPA exports](guides/ropa-declarations.md)
 2. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
@@ -80,6 +81,7 @@ Choose the shortest path for your situation:
 | [How to govern ChatGPT/Claude Desktop (enterprise)](guides/desktop-app-governance.md) | Route desktop app traffic via DNS/TLS and gateway. |
 | [Cap AI spend for a Slack/support bot in 10 minutes](guides/cost-governance-by-caller.md) | Fast path to caller-level daily/monthly hard caps, budget-deny proof, and evidence-backed cost attribution. |
 | [How to export evidence for auditors](guides/compliance-export-runbook.md) | Export, verify, and hand off audit evidence. |
+| [How to verify turnkey compliance reports](guides/verify-turnkey-compliance-reports.md) | End-to-end checklist: policy packs, compliance API, dashboard Compliance tab, FinOps, auth matrix, smoke section 34. |
 | [How to clear DECLARATION MISSING blocks in RoPA exports](guides/ropa-declarations.md) | Fill `talon.config.yaml` and `agent.talon.yaml` declarations; regenerate RoPA/Annex IV without placeholders. |
 | [How to run governed LLM calls in CI/CD](guides/cicd-pipeline-governance.md) | Use Talon from GitHub Actions or GitLab CI. |
 | [How to run a first-line support agent with Talon](guides/internal-support-agent.md) | Ticket summarization with PII and cost controls. |
