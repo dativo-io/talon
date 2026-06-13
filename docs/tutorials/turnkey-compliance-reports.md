@@ -8,6 +8,8 @@ Everything Talon produces here is **supporting documentation**: evidence and dec
 
 **Time:** about 15 minutes.
 
+**Verify the full surface?** After this walkthrough, use the [end-to-end verification checklist](../guides/verify-turnkey-compliance-reports.md) (auth matrix, negative cases, FinOps cross-checks, smoke section 34).
+
 ---
 
 ## 1. See what the compliance packs offer
@@ -135,4 +137,5 @@ You initialized a policy with article-annotated compliance packs, declared the c
 | Understand each policy pack in detail | [EU compliance policy packs](../guides/policy-packs.md) |
 | Fill in all RoPA / Annex IV declarations | [How to clear DECLARATION MISSING blocks](../guides/ropa-declarations.md) |
 | Explore the metrics API behind the FinOps tab | [Gateway dashboard reference](../reference/gateway-dashboard.md) |
+| Verify the full epic end-to-end (checklist, auth matrix, regression) | [How to verify turnkey compliance reports](../guides/verify-turnkey-compliance-reports.md) |
 | Understand what an evidence record contains | [Evidence store](../explanation/evidence-store.md) |
