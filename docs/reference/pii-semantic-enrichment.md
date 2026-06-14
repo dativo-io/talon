@@ -32,6 +32,8 @@ Optional fields include explanation and detector/provider metadata (for auditabi
 | `score` | `Confidence` |
 | metadata/explanation | `Attributes` |
 
+For the full contract boundary and normalization rules, see the [Presidio compatibility matrix](./presidio-compatibility-matrix.md).
+
 ## Offset semantics
 
 Byte offsets are canonical for enforcement and redaction.

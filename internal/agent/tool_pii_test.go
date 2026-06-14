@@ -18,6 +18,22 @@ func newTestScanner(t *testing.T) *classifier.Scanner {
 	return s
 }
 
+func newResidualTestScanner(t *testing.T) *classifier.Scanner {
+	t.Helper()
+	score := 0.95
+	s, err := classifier.NewScanner(classifier.WithCustomRecognizers([]classifier.RecognizerConfig{
+		{
+			Name:            "Placeholder Email Residual",
+			SupportedEntity: "EMAIL_ADDRESS",
+			Patterns: []classifier.PatternConfig{
+				{Name: "email-placeholder", Regex: `\[EMAIL\]`, Score: &score},
+			},
+		},
+	}))
+	require.NoError(t, err)
+	return s
+}
+
 func TestApplyToolArgumentPII_AuditMode(t *testing.T) {
 	scanner := newTestScanner(t)
 	ctx := context.Background()
@@ -260,6 +276,62 @@ func TestApplyToolResultPII_RedactMode(t *testing.T) {
 	resultContent := `{"tickets":[{"customer":"jan.kowalski@gmail.com","subject":"Refund"}]}`
 	redacted, findings := applyToolResultPII(ctx, scanner, "zendesk_ticket_search", resultContent, pol)
 	assert.NotContains(t, redacted, "jan.kowalski@gmail.com", "email in result should be redacted")
+	assert.NotEmpty(t, findings)
+}
+
+func TestNoPIIEgressAfterRedaction_AgentToolResult(t *testing.T) {
+	scanner := newTestScanner(t)
+	ctx := context.Background()
+
+	pol := &policy.Policy{
+		ToolPolicies: map[string]policy.ToolPIIPolicy{
+			"crm_tool": {Result: policy.PIIActionRedact},
+		},
+	}
+
+	rawEmail := "jan.kowalski@gmail.com"
+	resultContent := `{"email":"` + rawEmail + `"}`
+	returned, _ := applyToolResultPII(ctx, scanner, "crm_tool", resultContent, pol)
+	assert.NotContains(t, returned, rawEmail, "raw PII must not egress from tool result path")
+}
+
+func TestAgentToolArgumentsResidualPIIApprovalCannotBypass(t *testing.T) {
+	scanner := newResidualTestScanner(t)
+	ctx := context.Background()
+
+	pol := &policy.Policy{
+		ToolPolicies: map[string]policy.ToolPIIPolicy{
+			"_default": {ArgumentDefault: policy.PIIActionRedact},
+		},
+	}
+
+	args, _ := json.Marshal(map[string]interface{}{
+		"query":    "user@company.eu",
+		"approval": "approved",
+	})
+	result := applyToolArgumentPII(ctx, scanner, "search_tool", args, pol)
+	require.NotNil(t, result)
+	assert.True(t, result.Blocked)
+	assert.Contains(t, result.BlockReason, "recognized PII remains after redaction")
+	assert.Contains(t, result.BlockReason, "use approval workflow")
+}
+
+func TestAgentToolResultResidualPIIApprovalCannotBypass(t *testing.T) {
+	scanner := newResidualTestScanner(t)
+	ctx := context.Background()
+
+	pol := &policy.Policy{
+		ToolPolicies: map[string]policy.ToolPIIPolicy{
+			"crm_tool": {Result: policy.PIIActionRedact},
+		},
+	}
+
+	rawEmail := "jan.kowalski@gmail.com"
+	resultContent := `{"email":"` + rawEmail + `","approval":"approved"}`
+	returned, findings := applyToolResultPII(ctx, scanner, "crm_tool", resultContent, pol)
+	assert.Contains(t, returned, "recognized PII remains after redaction")
+	assert.Contains(t, returned, "use approval workflow")
+	assert.NotContains(t, returned, rawEmail)
 	assert.NotEmpty(t, findings)
 }
 

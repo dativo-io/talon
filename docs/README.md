@@ -95,6 +95,7 @@ Choose the shortest path for your situation:
 |-----|-------------|
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
 | [Evidence integrity specification](reference/evidence-integrity-spec.md) | Normative signed-record spec: fields, canonical serialization, HMAC-SHA256 signing, and the independent verification procedure. |
+| [Presidio compatibility matrix](reference/presidio-compatibility-matrix.md) | Scanner boundary contract: Presidio-shaped result ingress, canonical mapping, and byte-offset normalization rules. |
 | [Threat model](reference/threat-model.md) | STRIDE-style attack surface, trust boundaries, threats/mitigations, and key-management assumptions for the gateway path. |
 | [Governance control matrix](reference/governance-control-matrix.md) | Which controls run on each entry path (runner, gateway, MCP server/proxy, graph adapter), by-design limitations, and the parity contract that prevents posture drift. |
 | [Conformance suite & count](reference/conformance.md) | What counts as a conformance test for the evidence + policy paths, and how to reproduce the published count with `make conformance`. |
