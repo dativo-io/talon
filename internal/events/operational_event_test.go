@@ -64,6 +64,26 @@ func TestFromEvidence_FallsBackWithoutExplanation(t *testing.T) {
 	assert.Equal(t, "IBAN detected in input", out.ReasonText)
 }
 
+func TestFromEvidence_ResidualPIIReasonGetsRemediationFix(t *testing.T) {
+	ev := &evidence.Evidence{
+		ID:        "ev-residual",
+		Timestamp: time.Now().UTC(),
+		TenantID:  "acme",
+		AgentID:   "agent-a",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: false,
+			Action:  "deny",
+			Reasons: []string{"request residual pii after redaction"},
+		},
+	}
+
+	out := FromEvidence(ev)
+	assert.Equal(t, "blocked", out.Decision)
+	assert.Equal(t, "PII_RESIDUAL_BLOCKED", out.ReasonCode)
+	assert.Contains(t, out.SuggestedFix, "approval workflow")
+	assert.Contains(t, out.SuggestedFix, "re-scan")
+}
+
 func TestFromEvidence_SanitizesSignalsAndReasonText(t *testing.T) {
 	ev := &evidence.Evidence{
 		ID:        "ev-3",

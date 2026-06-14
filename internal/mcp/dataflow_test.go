@@ -125,7 +125,7 @@ func TestProxyDataFlow_ToolArgsToVendorAndResultToClient(t *testing.T) {
 	require.NotNil(t, result, "tool_result flow item missing")
 
 	assert.Equal(t, "crm_lookup", args.SourceDetail)
-	assert.Equal(t, evidence.FlowDispositionForwarded, args.Disposition)
+	assert.Equal(t, evidence.FlowDispositionRedacted, args.Disposition)
 	assert.Equal(t, evidence.FlowDestMCPTool, args.Destination.Kind)
 	assert.Equal(t, "testvendor", args.Destination.Name)
 	assert.Equal(t, "EU", args.Destination.Region)

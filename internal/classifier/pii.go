@@ -9,6 +9,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/dativo-io/talon/internal/classifier/enrich"
+	"github.com/dativo-io/talon/internal/classifier/entity"
+	"github.com/dativo-io/talon/internal/classifier/presidio"
 	"github.com/dativo-io/talon/internal/classifier/render"
 	"github.com/dativo-io/talon/internal/otel"
 )
@@ -62,6 +64,7 @@ type PIIEntity struct {
 	Type        string  `json:"type"`
 	Value       string  `json:"value"`
 	Position    int     `json:"position"`
+	FieldPath   string  `json:"field_path,omitempty"`
 	Confidence  float64 `json:"confidence"`
 	Sensitivity int     `json:"sensitivity"` // 1-3 from recognizer; 0 means unset (treated as 1 for tiering)
 }
@@ -149,6 +152,9 @@ func NewScanner(opts ...ScannerOption) (*Scanner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading default recognizers: %w", err)
 	}
+	if err := ValidateRecognizerLayer("built-in", defaults, false); err != nil {
+		return nil, fmt.Errorf("validating built-in recognizers: %w", err)
+	}
 
 	// Layer 2: global pattern file (optional)
 	var globalRecs []*RecognizerConfig
@@ -158,6 +164,9 @@ func NewScanner(opts ...ScannerOption) (*Scanner, error) {
 			return nil, fmt.Errorf("loading global pattern file: %w", err)
 		}
 		if rf != nil {
+			if err := ValidateRecognizerLayer("global", rf.Recognizers, true); err != nil {
+				return nil, fmt.Errorf("validating global recognizers: %w", err)
+			}
 			globalRecs = toPtrSlice(rf.Recognizers)
 		}
 	}
@@ -165,6 +174,9 @@ func NewScanner(opts ...ScannerOption) (*Scanner, error) {
 	// Layer 3: per-agent custom recognizers
 	var agentRecs []*RecognizerConfig
 	if len(cfg.customRecognizers) > 0 {
+		if err := ValidateRecognizerLayer("per-agent", cfg.customRecognizers, true); err != nil {
+			return nil, fmt.Errorf("validating per-agent recognizers: %w", err)
+		}
 		agentRecs = toPtrSlice(cfg.customRecognizers)
 	}
 
@@ -207,6 +219,8 @@ func MustNewScanner(opts ...ScannerOption) *Scanner {
 // Scan analyzes text for PII and returns a classification result.
 // Each match goes through hard validation gates (IBAN checksum/length, Luhn)
 // and then Presidio-style score-based context filtering before being accepted.
+//
+//nolint:gocyclo // validation + scoring pipeline is intentionally linear and explicit
 func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 	_, span := tracer.Start(ctx, "classifier.scan")
 	defer span.End()
@@ -216,8 +230,10 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 		Entities: []PIIEntity{},
 		Tier:     0,
 	}
+	presidioResults := make([]presidio.RecognizerResult, 0)
 
-	for _, pattern := range s.patterns {
+	for i := range s.patterns {
+		pattern := &s.patterns[i]
 		matches := pattern.Pattern.FindAllStringIndex(text, -1)
 		for _, match := range matches {
 			value := text[match[0]:match[1]]
@@ -260,16 +276,36 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 				continue
 			}
 
-			entity := PIIEntity{
-				Type:        pattern.Type,
-				Value:       value,
-				Position:    match[0],
-				Confidence:  confidence,
-				Sensitivity: pattern.Sensitivity,
+			entityType := pattern.EntityType
+			if entityType == "" {
+				entityType = pattern.Type
 			}
-			result.Entities = append(result.Entities, entity)
-			result.HasPII = true
+			presidioResults = append(presidioResults, presidio.RecognizerResult{
+				EntityType:          entityType,
+				Start:               match[0],
+				End:                 match[1],
+				Score:               confidence,
+				OffsetEncoding:      presidio.OffsetEncodingByte,
+				ExpectedSubstring:   value,
+				ExpectedSensitivity: pattern.Sensitivity,
+				RecognitionMetadata: map[string]interface{}{
+					"pattern_name": pattern.Name,
+					"sensitivity":  pattern.Sensitivity,
+				},
+				OptionalSourceString: entity.SourceCustom,
+			})
 			RecordPIIDetection(ctx, pattern.Type, piiDirection(ctx), "detected")
+		}
+	}
+
+	if len(presidioResults) > 0 {
+		canonical, err := presidio.NormalizeResults(text, presidioResults)
+		if err != nil {
+			span.RecordError(err)
+			span.SetAttributes(attribute.Bool("pii.normalization_failed", true))
+		} else {
+			result.Entities = CanonicalToPIIEntities(canonical)
+			result.HasPII = len(result.Entities) > 0
 		}
 	}
 
@@ -508,6 +544,12 @@ func validateIBANLength(iban string) bool {
 // Presidio's LemmaContextAwareEnhancer with a fixed context_similarity_factor.
 func enhanceScoreWithContext(text string, position int, baseScore float64, contextWords []string) float64 {
 	if len(contextWords) == 0 {
+		if baseScore > 1 {
+			return 1
+		}
+		if baseScore < 0 {
+			return 0
+		}
 		return baseScore
 	}
 	start := position - ContextWindowChars
@@ -522,8 +564,21 @@ func enhanceScoreWithContext(text string, position int, baseScore float64, conte
 
 	for _, cw := range contextWords {
 		if strings.Contains(window, strings.ToLower(cw)) {
-			return baseScore + ContextSimilarityFactor
+			score := baseScore + ContextSimilarityFactor
+			if score > 1 {
+				return 1
+			}
+			if score < 0 {
+				return 0
+			}
+			return score
 		}
+	}
+	if baseScore > 1 {
+		return 1
+	}
+	if baseScore < 0 {
+		return 0
 	}
 	return baseScore
 }

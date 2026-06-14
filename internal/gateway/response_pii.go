@@ -108,6 +108,22 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 	switch action {
 	case "redact":
 		modified := redactResponseContentFields(ctx, body, scanner)
+		redactedText := extractResponseContentText(modified)
+		if err := scanner.VerifyEgress(ctx, redactedText); err != nil {
+			safeErr := map[string]interface{}{
+				"error": map[string]interface{}{
+					"message": residualPIIBlockMessage("Response blocked: recognized PII remains after redaction", classifier.ResidualTypes(err)),
+					"type":    "pii_policy_violation",
+				},
+			}
+			blocked, _ := json.Marshal(safeErr)
+			result.Redacted = true
+			result.Blocked = true
+			log.Warn().
+				Strs("pii_types", classifier.ResidualTypes(err)).
+				Msg("response_pii_residual_blocked")
+			return blocked, result
+		}
 		result.Redacted = true
 		log.Info().
 			Strs("pii_types", result.PIITypes).
@@ -137,6 +153,14 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 	}
 
 	return body, result
+}
+
+func residualPIIBlockMessage(prefix string, types []string) string {
+	remediation := " Remediation required: use approval workflow to adjust policy or content, re-run redaction, then re-scan."
+	if len(types) == 0 {
+		return prefix + "." + remediation
+	}
+	return prefix + " (types: " + strings.Join(types, ", ") + ")." + remediation
 }
 
 // extractResponseContentText extracts only the LLM-generated text from a
@@ -384,6 +408,8 @@ func isStreamingRequest(body []byte) bool {
 //   - redact + PII + completedJSON: redact content, re-wrap in SSE, forward redacted.
 //   - redact + PII + delta-only: build synthetic response from accumulated deltas, redact, forward.
 //   - block + PII: return JSON error, discard original stream.
+//
+//nolint:gocyclo // streaming policy branches are explicit to preserve fail-closed semantics
 func handleStreamingPIIScan(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -442,9 +468,28 @@ func handleStreamingPIIScan(
 	case "redact":
 		if completedJSON != nil {
 			redacted := redactResponseContentFields(ctx, completedJSON, scanner)
+			if err := scanner.VerifyEgress(ctx, extractResponseContentText(redacted)); err != nil {
+				forwardBlockedResponse(w)
+				result.Redacted = true
+				result.Blocked = true
+				log.Warn().
+					Strs("pii_types", classifier.ResidualTypes(err)).
+					Msg("response_pii_residual_blocked_stream")
+				break
+			}
 			forwardRedactedAsSSE(w, capture, completedJSON, redacted)
 		} else {
-			synthetic := buildSyntheticChatResponse(scanner.Redact(ctx, contentText))
+			redactedContent := scanner.Redact(ctx, contentText)
+			if err := scanner.VerifyEgress(ctx, redactedContent); err != nil {
+				forwardBlockedResponse(w)
+				result.Redacted = true
+				result.Blocked = true
+				log.Warn().
+					Strs("pii_types", classifier.ResidualTypes(err)).
+					Msg("response_pii_residual_blocked_stream")
+				break
+			}
+			synthetic := buildSyntheticChatResponse(redactedContent)
 			forwardRedactedAsSSE(w, capture, synthetic, synthetic)
 		}
 		result.Redacted = true

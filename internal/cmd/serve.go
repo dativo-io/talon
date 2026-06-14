@@ -22,7 +22,6 @@ import (
 	"github.com/dativo-io/talon/internal/agent/tools"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/cache"
-	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/compliance"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
@@ -106,7 +105,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("policy engine: %w", err)
 	}
 
-	cls := classifier.MustNewScanner()
+	cls, err := policy.NewPIIScannerForPolicyWithEnrichment(ctx, pol, "", policyEngine)
+	if err != nil {
+		return fmt.Errorf("initializing policy-aware PII scanner: %w", err)
+	}
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
 

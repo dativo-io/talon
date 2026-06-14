@@ -224,6 +224,7 @@
               "items": {
                 "type": "object",
                 "required": ["name", "supported_entity"],
+                "additionalProperties": false,
                 "properties": {
                   "name": {"type": "string"},
                   "supported_entity": {"type": "string"},
@@ -233,6 +234,7 @@
                     "items": {
                       "type": "object",
                       "required": ["name", "regex"],
+                      "additionalProperties": false,
                       "properties": {
                         "name": {"type": "string"},
                         "regex": {"type": "string"},

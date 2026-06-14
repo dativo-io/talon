@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
@@ -70,6 +71,18 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 		}
 		if action == policy.PIIActionRedact {
 			redacted := scanner.Redact(ctx, argStr)
+			if verifyErr := scanner.VerifyEgress(ctx, redacted); verifyErr != nil {
+				result.Blocked = true
+				result.BlockReason = residualPIIMessage("tool arguments blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr))
+				result.Findings = append(result.Findings, ToolPIIFinding{
+					Field:     "_raw",
+					Action:    string(policy.PIIActionBlock),
+					PIITypes:  classifier.ResidualTypes(verifyErr),
+					PIICount:  len(classifier.ResidualTypes(verifyErr)),
+					Direction: "argument",
+				})
+				return result
+			}
 			if redacted != argStr {
 				redactedJSON, _ := json.Marshal(redacted)
 				result.ModifiedArgs = redactedJSON
@@ -117,6 +130,20 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 
 		if action == policy.PIIActionRedact {
 			redacted := scanner.Redact(ctx, valStr)
+			if verifyErr := scanner.VerifyEgress(ctx, redacted); verifyErr != nil {
+				if !result.Blocked {
+					result.Blocked = true
+					result.BlockReason = residualPIIMessage("tool arguments blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr))
+				}
+				result.Findings = append(result.Findings, ToolPIIFinding{
+					Field:     field,
+					Action:    string(policy.PIIActionBlock),
+					PIITypes:  classifier.ResidualTypes(verifyErr),
+					PIICount:  len(classifier.ResidualTypes(verifyErr)),
+					Direction: "argument",
+				})
+				continue
+			}
 			if redacted != valStr {
 				redactedJSON, _ := json.Marshal(redacted)
 				argsMap[field] = redactedJSON
@@ -159,6 +186,17 @@ func applyToolResultPII(ctx context.Context, scanner *classifier.Scanner, toolNa
 
 	if action == policy.PIIActionRedact {
 		redacted := scanner.Redact(ctx, resultContent)
+		if verifyErr := scanner.VerifyEgress(ctx, redacted); verifyErr != nil {
+			types := classifier.ResidualTypes(verifyErr)
+			findings = append(findings, ToolPIIFinding{
+				Field:     "_result",
+				Action:    string(policy.PIIActionBlock),
+				PIITypes:  types,
+				PIICount:  len(types),
+				Direction: "result",
+			})
+			return fmt.Sprintf(`{"error":"%s"}`, residualPIIMessage("tool result blocked: recognized PII remains after redaction", types)), findings
+		}
 		return redacted, findings
 	}
 
@@ -197,6 +235,14 @@ func applyPIIAction(ctx context.Context, scanner *classifier.Scanner, field, tex
 		Msg("tool_pii_finding")
 
 	return []ToolPIIFinding{finding}
+}
+
+func residualPIIMessage(prefix string, types []string) string {
+	remediation := " Remediation required: use approval workflow to adjust policy or content, re-run redaction, then re-scan."
+	if len(types) == 0 {
+		return prefix + "." + remediation
+	}
+	return prefix + " (types: " + strings.Join(types, ", ") + ")." + remediation
 }
 
 // resolveToolPolicy returns the ToolPIIPolicy for a tool, checking tool_policies[toolName],

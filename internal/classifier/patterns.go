@@ -10,6 +10,7 @@ import (
 // PIIPattern represents a compiled, ready-to-use PII detection pattern.
 type PIIPattern struct {
 	Name          string
+	EntityType    string
 	Type          string
 	Pattern       *regexp.Regexp
 	Countries     []string

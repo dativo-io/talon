@@ -187,6 +187,24 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 				h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "pii_detected_in_request", &flow)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII detected in request"}}
 			}
+			redactedArgs := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
+			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedArgs); verifyErr != nil {
+				flow.requestBlocked = true
+				h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "request_residual_pii_after_redaction", &flow)
+				return &jsonrpcResponse{
+					JSONRPC: jsonrpcVersion,
+					ID:      req.ID,
+					Error: &rpcError{
+						Code:    codeServerError,
+						Message: residualBlockMessage("Request blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr)),
+					},
+				}
+			}
+			if redactedArgs != argStr && json.Valid([]byte(redactedArgs)) {
+				params.Arguments = json.RawMessage(redactedArgs)
+				proxyInput.Arguments = paramsToMap(params.Arguments)
+				flow.requestRedacted = true
+			}
 			h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "", &flow)
 		}
 	}
@@ -230,6 +248,18 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			flow.responseTier = cls.Tier
 			flow.responseRedacted = true
 			redacted := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
+			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redacted); verifyErr != nil {
+				flow.responseBlocked = true
+				h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_pii_blocked_residual", &flow)
+				return &jsonrpcResponse{
+					JSONRPC: jsonrpcVersion,
+					ID:      req.ID,
+					Error: &rpcError{
+						Code:    codeServerError,
+						Message: residualBlockMessage("Tool result blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr)),
+					},
+				}
+			}
 			var redactedResult interface{}
 			if err := json.Unmarshal([]byte(redacted), &redactedResult); err == nil {
 				out.Result = redactedResult
@@ -243,6 +273,14 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 	}
 
 	return &out
+}
+
+func residualBlockMessage(prefix string, types []string) string {
+	remediation := " Remediation required: use approval workflow to adjust policy or content, re-run redaction, then re-scan."
+	if len(types) == 0 {
+		return prefix + "." + remediation
+	}
+	return prefix + " (types: " + strings.Join(types, ", ") + ")." + remediation
 }
 
 // toolsListExtract holds the result of parsing an upstream tools/list result
@@ -434,10 +472,12 @@ func (h *ProxyHandler) doUpstreamRequest(ctx context.Context, body []byte) (*htt
 type proxyFlowState struct {
 	requestEntities  []classifier.PIIEntity // merged (non-overlapping) spans from tool arguments
 	requestTier      int
-	requestBlocked   bool                   // arguments were not forwarded upstream
+	requestBlocked   bool // arguments were not forwarded upstream
+	requestRedacted  bool
 	responseEntities []classifier.PIIEntity // merged spans from the tool result
 	responseTier     int
 	responseRedacted bool
+	responseBlocked  bool
 }
 
 // upstreamRegion returns the configured jurisdiction of the upstream vendor
@@ -518,8 +558,11 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 func (h *ProxyHandler) buildProxyDataFlow(tenantID, correlationID, toolName string, flow *proxyFlowState) *evidence.DataFlow {
 	var items []evidence.DataFlowItem
 	disposition := evidence.FlowDispositionForwarded
-	if flow.requestBlocked {
+	switch {
+	case flow.requestBlocked:
 		disposition = evidence.FlowDispositionBlocked
+	case flow.requestRedacted:
+		disposition = evidence.FlowDispositionRedacted
 	}
 	items = append(items, evidence.NewDataFlowItem(
 		tenantID, correlationID,
@@ -533,7 +576,10 @@ func (h *ProxyHandler) buildProxyDataFlow(tenantID, correlationID, toolName stri
 		}))
 	if len(flow.responseEntities) > 0 {
 		disposition := evidence.FlowDispositionSurfaced
-		if flow.responseRedacted {
+		switch {
+		case flow.responseBlocked:
+			disposition = evidence.FlowDispositionBlocked
+		case flow.responseRedacted:
 			disposition = evidence.FlowDispositionRedacted
 		}
 		items = append(items, evidence.NewDataFlowItem(

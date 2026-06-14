@@ -48,6 +48,23 @@ Key top-level sections:
 | `compliance` | Frameworks (GDPR, EU AI Act, ISO 27001, NIS2, DORA), data residency, risk level |
 | `metadata` | Department, owner, tags |
 
+### PII recognizer layers and validation
+
+Recognizer loading follows a fixed precedence: **built-in < global < per-agent**.
+
+- **Built-in** recognizers ship in Talon default patterns.
+- **Global** recognizers come from a process-level pattern file (when configured).
+- **Per-agent** recognizers come from `policies.data_classification.custom_recognizers` in `agent.talon.yaml`.
+
+Validation is fail-fast in `talon validate` and at startup:
+
+- Duplicate recognizer names within one layer fail validation.
+- Cross-layer overrides are allowed and deterministic (later layer wins).
+- Invalid regex patterns fail validation.
+- Pattern scores must be in `[0,1]`.
+- Unsupported fields in recognizer YAML/custom recognizer objects fail validation.
+- Unknown `supported_entity` values fail for built-in recognizers. Custom entity names are allowed for global/per-agent layers.
+
 ### Audit configuration
 
 | Key | Type | Default | Purpose |

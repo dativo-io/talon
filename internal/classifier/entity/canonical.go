@@ -19,6 +19,9 @@ type CanonicalEntity struct {
 	Raw         string            `json:"raw"`
 	Start       int               `json:"start"`
 	End         int               `json:"end"`
+	RuneStart   *int              `json:"rune_start,omitempty"`
+	RuneEnd     *int              `json:"rune_end,omitempty"`
+	FieldPath   string            `json:"field_path,omitempty"`
 	Source      string            `json:"source"`
 	Confidence  float64           `json:"confidence"`
 	Sensitivity int               `json:"sensitivity"` // 1-3 from recognizer; used for overlap resolution

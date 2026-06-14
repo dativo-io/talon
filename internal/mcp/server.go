@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -187,6 +188,20 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 		argTier = cls.Tier
 		if cls.HasPII {
 			argEntities = classifier.MergeEntitySpans(argStr, cls.Entities)
+			redactedArgs := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
+			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedArgs); verifyErr != nil {
+				return &jsonrpcResponse{
+					JSONRPC: jsonrpcVersion,
+					ID:      req.ID,
+					Error: &rpcError{
+						Code:    codeServerError,
+						Message: mcpResidualBlockMessage("Tool arguments blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr)),
+					},
+				}
+			}
+			if json.Valid([]byte(redactedArgs)) {
+				params.Arguments = json.RawMessage(redactedArgs)
+			}
 		}
 	}
 
@@ -261,6 +276,18 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 			resultTier = cls.Tier
 			if cls.HasPII {
 				resultEntities = classifier.MergeEntitySpans(resultStr, cls.Entities)
+				redacted := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
+				if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redacted); verifyErr != nil {
+					return &jsonrpcResponse{
+						JSONRPC: jsonrpcVersion,
+						ID:      req.ID,
+						Error: &rpcError{
+							Code:    codeServerError,
+							Message: mcpResidualBlockMessage("Tool result blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr)),
+						},
+					}
+				}
+				result = json.RawMessage(redacted)
 			}
 		}
 	}
@@ -324,6 +351,14 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 	}
 
 	return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: map[string]interface{}{"content": result}}
+}
+
+func mcpResidualBlockMessage(prefix string, types []string) string {
+	remediation := " Remediation required: use approval workflow to adjust policy or content, re-run redaction, then re-scan."
+	if len(types) == 0 {
+		return prefix + "." + remediation
+	}
+	return prefix + " (types: " + strings.Join(types, ", ") + ")." + remediation
 }
 
 // buildServerDataFlow links tool arguments to the embedded tool and classified

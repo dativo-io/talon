@@ -183,6 +183,8 @@ func codeFromReasons(reasons []string) (code string, text string) {
 	}
 	upper := strings.ToUpper(raw)
 	switch {
+	case strings.Contains(upper, "RESIDUAL") && strings.Contains(upper, "PII"):
+		return "PII_RESIDUAL_BLOCKED", raw
 	case strings.Contains(upper, "IBAN"):
 		return "PII_IBAN", raw
 	case strings.Contains(upper, "PII"):
@@ -198,6 +200,8 @@ func codeFromReasons(reasons []string) (code string, text string) {
 
 func fixFromCode(code string) string {
 	switch code {
+	case "PII_RESIDUAL_BLOCKED":
+		return "Use the approval workflow to remediate: adjust policy or content, re-redact, then re-scan."
 	case "PII_IBAN", "PII_DETECTED":
 		return "Mask or remove sensitive data before sending the request."
 	case "POLICY_MODEL_DENIED":

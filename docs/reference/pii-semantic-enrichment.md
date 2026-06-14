@@ -12,6 +12,39 @@ Enrichment runs **after** detection and **before** replacement. Only entity type
 
 Redaction can be applied independently to input and output via `redact_input` and `redact_output`. When `redact_input` is enabled, the LLM sees redacted placeholders instead of raw PII, which is essential for semantic enrichment to be meaningful — the LLM responds to the placeholder format rather than raw PII.
 
+## Scanner contract and canonical mapping
+
+Talon accepts external scanner output in a Presidio-compatible **result shape**. Compatibility is at the boundary contract level, while internal processing remains canonical (`CanonicalEntity` / `PIIEntity`).
+
+Required fields in the external result:
+
+- `entity_type`
+- `start`
+- `end`
+- `score`
+
+Optional fields include explanation and detector/provider metadata (for auditability/debug context).
+
+| External result field | Canonical Talon field |
+|---|---|
+| `entity_type` | `Type` |
+| `start` / `end` | byte `Start` / `End` |
+| `score` | `Confidence` |
+| metadata/explanation | `Attributes` |
+
+## Offset semantics
+
+Byte offsets are canonical for enforcement and redaction.
+
+- Rune/character offsets are accepted only at the external boundary and converted to byte offsets before canonicalization.
+- Optional rune offsets may be kept for debug/readability, but enforcement always uses byte spans.
+- Normalization rejects invalid spans, including:
+  - `start < 0`
+  - `end > len(text)`
+  - `start > end`
+  - Rune spans that split combining sequences
+  - Ranges that do not map back to the expected substring
+
 ## When to use it
 
 - **Off (default):** No attributes; placeholders are `[TYPE]` only. Use when you don’t need attributes or want minimal change.
