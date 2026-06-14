@@ -200,7 +200,12 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 					},
 				}
 			}
-			if redactedArgs != argStr && json.Valid([]byte(redactedArgs)) {
+			if redactedArgs != argStr {
+				if !json.Valid([]byte(redactedArgs)) {
+					flow.requestBlocked = true
+					h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "request_redaction_invalid_json", &flow)
+					return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII redaction produced invalid JSON (fail-closed)"}}
+				}
 				params.Arguments = json.RawMessage(redactedArgs)
 				proxyInput.Arguments = paramsToMap(params.Arguments)
 				flow.requestRedacted = true
@@ -261,9 +266,12 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 				}
 			}
 			var redactedResult interface{}
-			if err := json.Unmarshal([]byte(redacted), &redactedResult); err == nil {
-				out.Result = redactedResult
+			if err := json.Unmarshal([]byte(redacted), &redactedResult); err != nil {
+				flow.responseBlocked = true
+				h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_redaction_invalid_json", &flow)
+				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII redaction of tool result produced invalid JSON (fail-closed)"}}
 			}
+			out.Result = redactedResult
 			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_pii_redacted", &flow)
 		} else {
 			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "", &flow)

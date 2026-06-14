@@ -303,6 +303,18 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 		if err != nil {
 			span.RecordError(err)
 			span.SetAttributes(attribute.Bool("pii.normalization_failed", true))
+			fallbackEntities := make([]PIIEntity, 0, len(presidioResults))
+			for _, r := range presidioResults {
+				fallbackEntities = append(fallbackEntities, PIIEntity{
+					Type:        r.EntityType,
+					Value:       r.ExpectedSubstring,
+					Position:    r.Start,
+					Confidence:  r.Score,
+					Sensitivity: r.ExpectedSensitivity,
+				})
+			}
+			result.Entities = fallbackEntities
+			result.HasPII = true
 		} else {
 			result.Entities = CanonicalToPIIEntities(canonical)
 			result.HasPII = len(result.Entities) > 0

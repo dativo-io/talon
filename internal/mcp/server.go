@@ -199,9 +199,14 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 					},
 				}
 			}
-			if json.Valid([]byte(redactedArgs)) {
-				params.Arguments = json.RawMessage(redactedArgs)
+			if !json.Valid([]byte(redactedArgs)) {
+				return &jsonrpcResponse{
+					JSONRPC: jsonrpcVersion,
+					ID:      req.ID,
+					Error:   &rpcError{Code: codeServerError, Message: "PII redaction produced invalid JSON (fail-closed)"},
+				}
 			}
+			params.Arguments = json.RawMessage(redactedArgs)
 		}
 	}
 
