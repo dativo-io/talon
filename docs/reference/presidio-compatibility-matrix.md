@@ -81,3 +81,34 @@ platform baseline artifact:
 - Skip benchmark gate only when no baseline exists for your platform:
   `SKIP_BENCHMARK_REGRESSION=1 make proof-gates`
 
+## CI enforcement
+
+Baseline artifacts under `testdata/benchmarks/` are enforced in GitHub Actions
+([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)):
+
+| Trigger | Job / step | Command |
+|---------|------------|---------|
+| Every PR and push | `test` → validate baselines | `jq` schema check on `pii_scan_baseline.*.json` |
+| Every PR and push | `test` → benchmark regression | `make benchmark-regression` (uses `linux.amd64` on `ubuntu-latest`) |
+| Push to `main`, nightly (03:00 UTC) | `proof-gates` | `make proof-gates` (matrix, egress, fuzz, benchmark) |
+
+The `darwin.arm64` baseline is for **local macOS development only**; CI does not
+run a macOS runner.
+
+### CI maintenance
+
+If `make benchmark-regression` fails on `ubuntu-latest` after an intentional PII
+scanner change, regenerate the Linux baseline on a Linux host (or in CI) and commit:
+
+```bash
+make benchmark-baseline-update
+git add testdata/benchmarks/pii_scan_baseline.linux.amd64.json
+```
+
+Update the baseline only when the median shift is expected (>10% slower than the
+checked-in value). Do not loosen the threshold to silence failures.
+
+For informational multi-benchmark tables (gateway + evidence + PII), see
+[Reproducible benchmarks](./benchmarks.md) (`make benchmarks`). That output is
+not a CI gate; regression enforcement uses `BenchmarkPIIScan` only.
+

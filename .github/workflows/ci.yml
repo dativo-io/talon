@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '0 3 * * *'
 
 permissions:
   contents: read
@@ -48,6 +50,17 @@ jobs:
       - name: Run unit tests
         run: go test -race -coverprofile=coverage-${{ matrix.go-version }}.out $(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v internal/llm/testutil | grep -v 'cmd/talon')
 
+      - name: Validate PII benchmark baseline artifacts
+        run: |
+          set -euo pipefail
+          for f in testdata/benchmarks/pii_scan_baseline.*.json; do
+            jq -e '.benchmark and .baseline_ns_per_op and .threshold_percent' "$f" >/dev/null
+            echo "ok: $f"
+          done
+
+      - name: PII scan benchmark regression (linux/amd64)
+        run: make benchmark-regression
+
       - name: Run integration tests
         run: go test -race -tags=integration ./tests/integration/...
 
@@ -89,6 +102,29 @@ jobs:
         with:
           file: ./coverage-1.25.11.out
           fail_ci_if_error: false
+
+  proof-gates:
+    name: Epic #112 proof gates
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.11'
+          cache: true
+
+      - name: Install SQLite
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run proof gates
+        run: make proof-gates
 
   lint:
     name: Lint

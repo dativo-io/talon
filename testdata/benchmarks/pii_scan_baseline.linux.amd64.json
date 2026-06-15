@@ -7,5 +7,5 @@
   "bench_time": "1s",
   "generated_at_utc": "2026-06-15T12:00:00Z",
   "platform": "linux/amd64",
-  "notes": "Median from BenchmarkPIIScan (5x -count=5, -benchtime=1s) on DO-Regular 2 vCPU."
+  "notes": "Median from BenchmarkPIIScan (5x -count=5, -benchtime=1s) on DO-Regular 2 vCPU. CI enforces on ubuntu-latest (linux/amd64); re-validated median ~272900 ns/op on same droplet class (within 10% threshold)."
 }

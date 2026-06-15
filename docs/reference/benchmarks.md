@@ -61,6 +61,7 @@ Requirements: Go 1.22+ (project pins 1.25.x in CI), CGO enabled (SQLite), repo r
 
 ## Related proof-bar docs
 
+- [Presidio compatibility matrix](./presidio-compatibility-matrix.md) — CI-enforced `BenchmarkPIIScan` regression gate (`make benchmark-regression`)
 - [Conformance suite & count](conformance.md) — reproducible test count for evidence + policy paths
 - [Evidence integrity specification](evidence-integrity-spec.md) — signed record format
 - [Threat model](threat-model.md) — trust boundaries the benchmarks do not replace
