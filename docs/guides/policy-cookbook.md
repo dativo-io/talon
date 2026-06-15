@@ -307,7 +307,7 @@ compliance:
   human_oversight: "on-demand"   # none | on-demand | always
 ```
 
-See [Agent planning](../AGENT_PLANNING.md) for plan review details.
+See [Agent planning](../AGENT_PLANNING.md) for the execution model and [How to test and operate Plan Review](plan-review-operators.md) for operator E2E steps.
 
 ---
 

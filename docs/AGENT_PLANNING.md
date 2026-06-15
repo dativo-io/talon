@@ -77,6 +77,8 @@ Before the first LLM call (and before the agentic loop starts), Talon can **gate
 - In `talon serve`, an internal dispatcher watches for newly approved plans and executes them once with the plan’s session_id (bypassing the review gate for that replay only).
 - Outside `talon serve`, execute approved plans manually with `talon plan execute <plan-id> --tenant <id>`.
 
+Step-by-step operator E2E (CLI, serve auto-dispatch, dashboard, test matrix): [How to test and operate Plan Review](guides/plan-review-operators.md).
+
 Plans can be approved, rejected, or modified (with annotations). This satisfies **EU AI Act Art. 14** (human oversight).
 
 ## Step-level evidence

@@ -23,24 +23,11 @@ export OPENAI_API_KEY=sk-your-key
 bash examples/plan-review/run.sh
 ```
 
-## API Endpoints
+## Operator guide
 
-```bash
-# List pending plans
-curl http://localhost:8080/v1/plans/pending
+Full end-to-end steps (CLI approve/execute, serve auto-dispatch, dashboard, test matrix, troubleshooting):
 
-# Approve a plan
-curl -X POST http://localhost:8080/v1/plans/<plan-id>/approve \
-  -H "X-Talon-Admin-Key: your-admin-key"
-
-# Non-serve mode: execute an approved plan manually
-talon plan execute <plan-id> --tenant default
-
-# Reject a plan
-curl -X POST http://localhost:8080/v1/plans/<plan-id>/reject \
-  -H "X-Talon-Admin-Key: your-admin-key" \
-  -d '{"reason": "Too broad — narrow the search scope"}'
-```
+**[How to test and operate Plan Review](../../docs/guides/plan-review-operators.md)**
 
 ## EU AI Act Context
 
