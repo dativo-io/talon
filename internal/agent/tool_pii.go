@@ -84,8 +84,17 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 				return result
 			}
 			if redacted != argStr {
-				redactedJSON, _ := json.Marshal(redacted)
-				result.ModifiedArgs = redactedJSON
+				if !json.Valid([]byte(redacted)) {
+					result.Blocked = true
+					result.BlockReason = "PII redaction produced invalid JSON (fail-closed)"
+					result.Findings = append(result.Findings, ToolPIIFinding{
+						Field:     "_raw",
+						Action:    string(policy.PIIActionBlock),
+						Direction: "argument",
+					})
+					return result
+				}
+				result.ModifiedArgs = json.RawMessage(redacted)
 			}
 		}
 		return result
@@ -196,6 +205,14 @@ func applyToolResultPII(ctx context.Context, scanner *classifier.Scanner, toolNa
 				Direction: "result",
 			})
 			return fmt.Sprintf(`{"error":"%s"}`, residualPIIMessage("tool result blocked: recognized PII remains after redaction", types)), findings
+		}
+		if redacted != resultContent && !json.Valid([]byte(redacted)) {
+			findings = append(findings, ToolPIIFinding{
+				Field:     "_result",
+				Action:    string(policy.PIIActionBlock),
+				Direction: "result",
+			})
+			return `{"error":"PII redaction of tool result produced invalid JSON (fail-closed)"}`, findings
 		}
 		return redacted, findings
 	}

@@ -333,16 +333,16 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 			span.RecordError(err)
 			span.SetAttributes(attribute.Bool("pii.normalization_failed", true))
 			fallbackEntities := make([]PIIEntity, 0, len(presidioResults))
-			for i := range presidioResults {
-				r := &presidioResults[i]
-				fallbackEntities = append(fallbackEntities, PIIEntity{
-					Type:        r.EntityType,
-					Value:       r.ExpectedSubstring,
-					Position:    r.Start,
-					Confidence:  r.Score,
-					Sensitivity: r.ExpectedSensitivity,
-				})
-			}
+		for i := range presidioResults {
+			r := &presidioResults[i]
+			fallbackEntities = append(fallbackEntities, PIIEntity{
+				Type:        presidio.PresidioEntityToType(r.EntityType),
+				Value:       r.ExpectedSubstring,
+				Position:    r.Start,
+				Confidence:  r.Score,
+				Sensitivity: r.ExpectedSensitivity,
+			})
+		}
 			result.Entities = fallbackEntities
 			result.HasPII = true
 		} else {
