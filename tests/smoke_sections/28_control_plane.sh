@@ -5,7 +5,8 @@
 # -----------------------------------------------------------------------------
 # Section 28: Operational Control Plane admin API
 # Proves: runs list, kill, pause/resume, overrides lockdown, tool disable,
-# tool approval list/get/decide endpoint behavior, remediation decision fail-closed.
+# tool approval list/get/decide endpoint behavior, remediation decision fail-closed,
+# and end-to-end tool approval with remediation (28p) when a safe registered tool exists.
 # Black-box: uses only curl against the admin API. No internal Go wiring tested here.
 # -----------------------------------------------------------------------------
 test_section_28_control_plane() {
@@ -282,6 +283,225 @@ test_section_28_control_plane() {
   else
     log_failure "control_plane_tools_disable_validation expected HTTP 400, got $empty_disable_code"
   fi
+
+  # --- 28p: end-to-end tool approval with remediation (safe registered tool) ---
+  echo ""
+  echo "  -- 28p: end_to_end_tool_approval_with_remediation --"
+
+  local mcp_list_resp safe_tool="" mcp_tool_name
+  mcp_list_resp="$(curl -s -X POST -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' \
+    "${cp_base}/mcp" 2>/dev/null || true)"
+  for mcp_tool_name in smoke_safe_ls ls read_file file_read; do
+    if jq -e --arg t "$mcp_tool_name" '.result.tools[]? | select(.name == $t)' <<< "$mcp_list_resp" &>/dev/null; then
+      safe_tool="$mcp_tool_name"
+      break
+    fi
+  done
+  if [[ -z "$safe_tool" ]]; then
+    log_failure "control_plane_e2e_no_safe_tool_registered" \
+      "expected one of smoke_safe_ls, ls, read_file, file_read in MCP tools/list"
+    dump_diag_json "mcp tools/list response" "$mcp_list_resp"
+    dump_diag_file "section 28 serve log (tools/list)" "$cp_log" 80
+    kill "$CP_PID" 2>/dev/null || true
+    wait "$CP_PID" 2>/dev/null || true
+    sleep 2
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
+  echo "  ✓  discovered safe registered tool for E2E: $safe_tool"
+  record_pass
+
+  if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+    log_failure "control_plane_e2e_requires_openai_key" \
+      "OPENAI_API_KEY must be set for agentic tool-call approval flow"
+    dump_diag_env
+    kill "$CP_PID" 2>/dev/null || true
+    wait "$CP_PID" 2>/dev/null || true
+    sleep 2
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
+
+  kill "$CP_PID" 2>/dev/null || true
+  wait "$CP_PID" 2>/dev/null || true
+  sleep 2
+
+  local agent_yaml="$dir/agent.talon.yaml"
+  if command -v yq >/dev/null 2>&1; then
+    yq -i \
+      --arg tool "$safe_tool" \
+      '.capabilities.allowed_tools = [$tool] |
+       .policies.resource_limits.max_iterations = 3 |
+       .policies.resource_limits.require_approval = [$tool] |
+       .policies.rate_limits.requests_per_minute = 300' \
+      "$agent_yaml" 2>/dev/null || true
+  else
+    cat > "$agent_yaml" <<POLICYEOF
+agent:
+  name: smoke-agent
+  version: "1.0"
+capabilities:
+  allowed_tools:
+    - ${safe_tool}
+policies:
+  cost_limits:
+    per_request: 0.50
+    daily: 5.0
+    monthly: 50.0
+  resource_limits:
+    max_iterations: 3
+    require_approval:
+      - ${safe_tool}
+    timeout:
+      operation: "30s"
+      tool_execution: "2m"
+      agent_total: "5m"
+  rate_limits:
+    requests_per_minute: 300
+    concurrent_executions: 1
+POLICYEOF
+  fi
+  dump_diag_file "agent.talon.yaml for E2E tool approval" "$agent_yaml"
+
+  run_talon serve --port "$cp_port" >"$cp_log" 2>&1 &
+  CP_PID=$!
+  if ! smoke_wait_health "$cp_base" 45 1; then
+    log_failure "control_plane_e2e_serve_restart_failed"
+    dump_diag_file "section 28 E2E serve log" "$cp_log" 120
+    kill "$CP_PID" 2>/dev/null || true
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
+
+  local run_body="$dir/ta_e2e_run_body.json"
+  local run_code_file="$dir/ta_e2e_run_http_code"
+  local run_stderr="$dir/ta_e2e_run_stderr.log"
+  local run_curl_pid="" approval_id="" run_code=""
+  local e2e_prompt
+  e2e_prompt="You MUST call the ${safe_tool} tool exactly once. Include email jan.kowalski@example.com in the tool arguments or payload. After the tool returns, reply with exactly: SMOKE_TOOL_OK"
+
+  curl -s -o "$run_body" -w '%{http_code}' \
+    -X POST "${cp_base}/v1/agents/run" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -nc --arg p "$e2e_prompt" --arg tool "$safe_tool" \
+      '{tenant_id:"default",agent_name:"smoke-agent",prompt:$p}')" \
+    >"$run_code_file" 2>"$run_stderr" &
+  run_curl_pid=$!
+
+  local attempt=0 attempts=45
+  while [[ $attempt -lt $attempts ]]; do
+    local ta_poll
+    ta_poll="$(curl -s -H "$admin_hdr" "${cp_base}/v1/tool-approvals" 2>/dev/null || true)"
+    approval_id="$(jq -r --arg t "$safe_tool" '.pending[]? | select(.tool_name == $t) | .id' <<< "$ta_poll" | head -1)"
+    if [[ -n "$approval_id" ]]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+
+  if [[ -z "$approval_id" ]]; then
+    log_failure "control_plane_e2e_pending_approval_not_found" "tool=$safe_tool attempts=$attempts"
+    dump_diag_file "E2E agents/run stderr" "$run_stderr"
+    dump_diag_file "E2E agents/run body (partial)" "$run_body" 40
+    dump_diag_file "section 28 E2E serve log" "$cp_log" 80
+    kill "$run_curl_pid" 2>/dev/null || true
+    wait "$run_curl_pid" 2>/dev/null || true
+    kill "$CP_PID" 2>/dev/null || true
+    wait "$CP_PID" 2>/dev/null || true
+    sleep 2
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
+  echo "  ✓  found pending tool approval: $approval_id (tool=$safe_tool)"
+  record_pass
+
+  local ta_get_resp
+  ta_get_resp="$(curl -s -H "$admin_hdr" "${cp_base}/v1/tool-approvals/${approval_id}" 2>/dev/null || true)"
+  if jq -e --arg t "$safe_tool" '.tool_name == $t and .status == "pending"' <<< "$ta_get_resp" &>/dev/null; then
+    echo "  ✓  GET tool approval confirms pending request for $safe_tool"
+    record_pass
+  else
+    log_failure "control_plane_e2e_approval_get_mismatch" "approval_id=$approval_id"
+    dump_diag_json "tool approval GET response" "$ta_get_resp"
+  fi
+
+  local decide_body decide_code
+  decide_body="$(mktemp)"
+  decide_code="$(curl -s -o "$decide_body" -w '%{http_code}' -X POST \
+    -H "$admin_hdr" -H "Content-Type: application/json" \
+    -d '{"decision":"approve","reason":"smoke remediation","remediation":{"mode":"re_redact_rescan"}}' \
+    "${cp_base}/v1/tool-approvals/${approval_id}/decide" 2>/dev/null)"
+  if [[ "$decide_code" == "200" ]]; then
+    local decide_status remed_mode remed_status
+    decide_status="$(jq -r '.status // empty' "$decide_body" 2>/dev/null)"
+    remed_mode="$(jq -r '.remediation_mode // empty' "$decide_body" 2>/dev/null)"
+    remed_status="$(jq -r '.remediation_status // empty' "$decide_body" 2>/dev/null)"
+    if [[ "$decide_status" == "approved" && "$remed_mode" == "re_redact_rescan" && "$remed_status" == "applied" ]]; then
+      echo "  ✓  tool approval remediated and approved: $approval_id"
+      record_pass
+    else
+      log_failure "control_plane_e2e_remediation_decide_fields" \
+        "status=$decide_status mode=$remed_mode remed_status=$remed_status"
+      dump_diag_json "decide response" "$(cat "$decide_body" 2>/dev/null || true)"
+    fi
+  else
+    log_failure "control_plane_e2e_remediation_decide_http" "expected HTTP 200, got $decide_code"
+    dump_diag_json "decide response" "$(cat "$decide_body" 2>/dev/null || true)"
+  fi
+  rm -f "$decide_body"
+
+  wait "$run_curl_pid" 2>/dev/null || true
+  run_curl_pid=""
+  run_code="$(cat "$run_code_file" 2>/dev/null || echo "")"
+  if [[ "$run_code" == "200" ]]; then
+    echo "  ✓  POST /v1/agents/run completed after approval (HTTP 200)"
+    record_pass
+  else
+    log_failure "control_plane_e2e_agents_run_http" "expected HTTP 200, got $run_code"
+    dump_diag_file "E2E agents/run stderr" "$run_stderr"
+    dump_diag_json "E2E agents/run body" "$(cat "$run_body" 2>/dev/null || true)"
+    dump_diag_file "section 28 E2E serve log" "$cp_log" 80
+  fi
+
+  if jq -e --arg t "$safe_tool" '(.tools_called // []) | index($t) != null' < "$run_body" 2>/dev/null; then
+    echo "  ✓  agents/run tools_called includes $safe_tool"
+    record_pass
+  else
+    log_failure "control_plane_e2e_tools_called_missing" "tool=$safe_tool"
+    dump_diag_json "E2E agents/run body" "$(cat "$run_body" 2>/dev/null || true)"
+  fi
+
+  local ta_after
+  ta_after="$(curl -s -H "$admin_hdr" "${cp_base}/v1/tool-approvals" 2>/dev/null || true)"
+  if jq -e --arg id "$approval_id" '[.pending[]?.id] | index($id) | not' <<< "$ta_after" &>/dev/null; then
+    echo "  ✓  approved tool approval removed from pending list"
+    record_pass
+  else
+    log_failure "control_plane_e2e_approval_still_pending" "approval_id=$approval_id"
+    dump_diag_json "tool approvals after decide" "$ta_after"
+  fi
+
+  local events_json remediation_found=0 ev_attempt=0 ev_attempts=10
+  while [[ $ev_attempt -lt $ev_attempts ]]; do
+    events_json="$(curl -s -H "$admin_hdr" "${cp_base}/api/v1/events/recent?limit=30" 2>/dev/null || true)"
+    if jq -e '[.events[]? | select(.reason_code == "PII_REMEDIATED_APPROVED")] | length > 0' <<< "$events_json" &>/dev/null; then
+      remediation_found=1
+      break
+    fi
+    ev_attempt=$((ev_attempt + 1))
+    sleep 1
+  done
+  if [[ "$remediation_found" -eq 1 ]]; then
+    echo "  ✓  recent events include PII_REMEDIATED_APPROVED"
+    record_pass
+  else
+    log_failure "control_plane_e2e_remediation_event_missing"
+    dump_diag_json "recent events" "$events_json"
+  fi
+
+  rm -f "$run_body" "$run_code_file" "$run_stderr" 2>/dev/null || true
 
   echo "[SMOKE] SECTION|28_control_plane"
   kill "$CP_PID" 2>/dev/null || true
