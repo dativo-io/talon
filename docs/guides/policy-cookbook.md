@@ -216,6 +216,37 @@ gateway:
 
 `redact_input` / `redact_output` default to the value of `redact_pii` when not explicitly set. Explicit values override `redact_pii` (e.g. `redact_pii: true` + `redact_input: false` → only output is redacted).
 
+Egress protection is fail-closed: after redaction, Talon re-scans content before it leaves the process (gateway requests/responses, MCP tool args/results, agent tool output). If residual PII is still detected, Talon blocks egress and emits a remediation-required error. Human approval can approve remediation actions, but does not directly bypass residual PII blocks.
+
+---
+
+## Add custom recognizers safely
+
+**Goal:** Extend detection for domain-specific identifiers while keeping deterministic validation and precedence.
+
+**Where:** `agent.talon.yaml` under `policies.data_classification.custom_recognizers`.
+
+```yaml
+policies:
+  data_classification:
+    custom_recognizers:
+      - name: "Ticket ID"
+        supported_entity: "TICKET_ID"
+        sensitivity: 2
+        patterns:
+          - name: "ticket-id"
+            regex: "\\bTKT-\\d{5}\\b"
+            score: 0.9
+```
+
+Validation and precedence rules:
+
+- Layer precedence is **built-in < global < per-agent**; later layer override is allowed.
+- Duplicate recognizer names in the same layer fail.
+- Unsupported fields fail schema validation.
+- Invalid regex or score outside `[0,1]` fails validation.
+- Unknown built-in entity types fail. Custom entity types are allowed for global/per-agent recognizers.
+
 ---
 
 ## Block runs when input contains PII
@@ -276,7 +307,7 @@ compliance:
   human_oversight: "on-demand"   # none | on-demand | always
 ```
 
-See [Agent planning](../AGENT_PLANNING.md) for plan review details.
+See [Agent planning](../AGENT_PLANNING.md) for the execution model and [How to test and operate Plan Review](plan-review-operators.md) for operator E2E steps.
 
 ---
 

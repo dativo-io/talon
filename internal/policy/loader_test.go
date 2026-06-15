@@ -290,6 +290,27 @@ memory:
 			strict:  false,
 			wantErr: true,
 		},
+		{
+			name: "custom recognizer unsupported field fails schema validation",
+			yaml: `
+agent:
+  name: test-agent
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 100.0
+  data_classification:
+    custom_recognizers:
+      - name: "Ticket ID"
+        supported_entity: "TICKET_ID"
+        unknown_flag: true
+        patterns:
+          - name: "ticket"
+            regex: '\bTKT-\d{5}\b'
+`,
+			strict:  false,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

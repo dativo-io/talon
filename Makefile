@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate conformance benchmarks auditor-pack verify-newcomer lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 # Conformance suite: the evidence + policy paths whose passing test/subtest
 # count is published as Talon's honest conformance number. See
@@ -65,6 +65,25 @@ conformance: ## Run the evidence + policy conformance suite and print the passin
 
 benchmarks: ## Run reproducible micro-benchmarks (gateway overhead, PII scan, evidence write)
 	@bash scripts/run-benchmarks.sh
+
+benchmark-regression: ## Enforce BenchmarkPIIScan <=10% vs platform baseline artifact
+	@bash scripts/check-pii-benchmark-regression.sh
+
+benchmark-baseline-update: ## Regenerate BenchmarkPIIScan baseline for this GOOS/GOARCH
+	@bash scripts/update-pii-benchmark-baseline.sh
+
+proof-gates: ## Run Epic #112 proof gates (matrix/parity/egress/fuzz/benchmark)
+	@$(GO_ENV) go test -count=1 ./internal/classifier/... -run 'TestRecognizerMatrix_AllBuiltInsHavePositiveAndNegativeCoverage|TestBuiltInScannerNormalizationParity|TestPresidioOffsetUnicodeMatrixRoundTrip'
+	@$(GO_ENV) go test -count=1 ./internal/gateway/... -run 'PII|Egress|Residual|NoPIIEgress'
+	@$(GO_ENV) go test -count=1 ./internal/mcp/... -run 'PII|Egress|Residual|NoPIIEgress'
+	@$(GO_ENV) go test -count=1 ./internal/agent/... -run 'PII|Tool|Residual|NoPIIEgress|Remediation'
+	@$(GO_ENV) go test -run '^$$' -fuzz=FuzzPIIRedactVerify -fuzztime=3s ./internal/classifier
+	@$(GO_ENV) go test -run '^$$' -fuzz=FuzzNormalizeResultsOffsets -fuzztime=3s ./internal/classifier/presidio
+	@if [ "${SKIP_BENCHMARK_REGRESSION:-}" = "1" ]; then \
+		echo "Skipping benchmark regression (SKIP_BENCHMARK_REGRESSION=1)"; \
+	else \
+		bash scripts/check-pii-benchmark-regression.sh; \
+	fi
 
 auditor-pack: ## Generate sample auditor pack from docker-compose demo (examples/auditor-pack/)
 	@bash scripts/generate-auditor-pack.sh

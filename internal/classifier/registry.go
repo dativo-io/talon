@@ -1,9 +1,11 @@
 package classifier
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,6 +32,10 @@ type RecognizerConfig struct {
 	ValidateIBAN  bool     `yaml:"validate_iban,omitempty" json:"validate_iban,omitempty"`
 	ValidateBSN   bool     `yaml:"validate_bsn,omitempty" json:"validate_bsn,omitempty"`
 	ValidatePESEL bool     `yaml:"validate_pesel,omitempty" json:"validate_pesel,omitempty"`
+	ValidateDNI   bool     `yaml:"validate_dni,omitempty" json:"validate_dni,omitempty"`
+	ValidateNIE   bool     `yaml:"validate_nie,omitempty" json:"validate_nie,omitempty"`
+	ValidateNIF   bool     `yaml:"validate_nif,omitempty" json:"validate_nif,omitempty"`
+	ValidateIPv4  bool     `yaml:"validate_ipv4,omitempty" json:"validate_ipv4,omitempty"`
 	// Injection-specific extension (used by attachment scanner only)
 	Severity int `yaml:"severity,omitempty" json:"severity,omitempty"`
 }
@@ -60,7 +66,9 @@ func (r *RecognizerConfig) isEnabled() bool {
 // ParseRecognizerFile parses recognizer YAML bytes into a RecognizerFile.
 func ParseRecognizerFile(data []byte) (*RecognizerFile, error) {
 	var rf RecognizerFile
-	if err := yaml.Unmarshal(data, &rf); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&rf); err != nil {
 		return nil, fmt.Errorf("parsing recognizer YAML: %w", err)
 	}
 	return &rf, nil
@@ -133,6 +141,9 @@ func CompilePIIPatterns(recognizers []RecognizerConfig) ([]PIIPattern, error) {
 		}
 
 		for _, p := range rec.Patterns {
+			if p.Score != nil && (*p.Score < 0 || *p.Score > 1) {
+				return nil, fmt.Errorf("pattern %q in recognizer %q has score outside [0,1]", p.Name, rec.Name)
+			}
 			compiled, err := regexp.Compile(p.Regex)
 			if err != nil {
 				return nil, fmt.Errorf("compiling pattern %q in recognizer %q: %w", p.Name, rec.Name, err)
@@ -143,6 +154,7 @@ func CompilePIIPatterns(recognizers []RecognizerConfig) ([]PIIPattern, error) {
 			}
 			patterns = append(patterns, PIIPattern{
 				Name:          rec.Name,
+				EntityType:    rec.SupportedEntity,
 				Type:          entityToType(rec.SupportedEntity),
 				Pattern:       compiled,
 				Countries:     rec.Countries,
@@ -153,11 +165,63 @@ func CompilePIIPatterns(recognizers []RecognizerConfig) ([]PIIPattern, error) {
 				ValidateIBAN:  rec.ValidateIBAN,
 				ValidateBSN:   rec.ValidateBSN,
 				ValidatePESEL: rec.ValidatePESEL,
+				ValidateDNI:   rec.ValidateDNI,
+				ValidateNIE:   rec.ValidateNIE,
+				ValidateNIF:   rec.ValidateNIF,
+				ValidateIPv4:  rec.ValidateIPv4,
 			})
 		}
 	}
 
 	return patterns, nil
+}
+
+// ValidateRecognizerLayer validates recognizers loaded from a specific layer.
+// Duplicate recognizer names within the same layer fail. Cross-layer overrides
+// are handled later by MergeRecognizers and are allowed.
+//
+//nolint:gocyclo // all fail-fast checks are centralized to keep validation semantics consistent
+func ValidateRecognizerLayer(layerName string, recognizers []RecognizerConfig, allowUnknownEntities bool) error {
+	seenNames := make(map[string]struct{}, len(recognizers))
+	for i := range recognizers {
+		r := recognizers[i]
+		name := strings.TrimSpace(r.Name)
+		if name == "" {
+			return fmt.Errorf("%s recognizer[%d]: name is required", layerName, i)
+		}
+		if _, exists := seenNames[name]; exists {
+			return fmt.Errorf("%s recognizer %q is duplicated in the same layer", layerName, name)
+		}
+		seenNames[name] = struct{}{}
+
+		if strings.TrimSpace(r.SupportedEntity) == "" {
+			return fmt.Errorf("%s recognizer %q: supported_entity is required", layerName, name)
+		}
+		if !allowUnknownEntities {
+			if _, ok := entityTypeMap[r.SupportedEntity]; !ok {
+				return fmt.Errorf("%s recognizer %q: unknown supported_entity %q", layerName, name, r.SupportedEntity)
+			}
+		}
+		if r.Sensitivity != 0 && (r.Sensitivity < 1 || r.Sensitivity > 3) {
+			return fmt.Errorf("%s recognizer %q: sensitivity must be in [1,3]", layerName, name)
+		}
+		for pIdx := range r.Patterns {
+			p := r.Patterns[pIdx]
+			if strings.TrimSpace(p.Name) == "" {
+				return fmt.Errorf("%s recognizer %q pattern[%d]: name is required", layerName, name, pIdx)
+			}
+			if strings.TrimSpace(p.Regex) == "" {
+				return fmt.Errorf("%s recognizer %q pattern %q: regex is required", layerName, name, p.Name)
+			}
+			if p.Score != nil && (*p.Score < 0 || *p.Score > 1) {
+				return fmt.Errorf("%s recognizer %q pattern %q: score must be in [0,1]", layerName, name, p.Name)
+			}
+			if _, err := regexp.Compile(p.Regex); err != nil {
+				return fmt.Errorf("%s recognizer %q pattern %q: invalid regex: %w", layerName, name, p.Name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // FilterByEntities applies enabled/disabled entity filters to a recognizer list.
@@ -225,6 +289,9 @@ var entityTypeMap = map[string]string{
 	"DK_CPR":          "national_id",
 	"IE_PPS":          "national_id",
 	"PT_NIF":          "tax_id",
+	"IMSI":            "imsi",
+	"ICCID":           "iccid",
+	"EID":             "eid",
 	"PERSON":          "person",
 	"LOCATION":        "location",
 }

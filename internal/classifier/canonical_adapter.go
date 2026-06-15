@@ -4,14 +4,6 @@ import (
 	"github.com/dativo-io/talon/internal/classifier/entity"
 )
 
-// TODO(Presidio): Replaceable with Presidio — (1) Detection: swap the regex-based
-// Scanner.Scan (pii.go + patterns/pii_eu.yaml + registry) for a Presidio analyzer
-// call; (2) Adapter: add PresidioAnalyzerResultToCanonical(presidioResult) that
-// maps Presidio spans to []*entity.CanonicalEntity (Id, Type, Raw, Start, End,
-// Source=SourcePresidio, Confidence). The enricher, Rego policy, and placeholder
-// renderer consume only canonical entities and require no changes.
-//
-
 // PIIEntitiesToCanonical converts a slice of PIIEntity from the scanner to
 // detector-agnostic canonical entities for the enrichment pipeline. Ids are
 // assigned sequentially (1-based). Source is set to entity.SourceCustom.
@@ -28,10 +20,33 @@ func PIIEntitiesToCanonical(entities []PIIEntity) []*entity.CanonicalEntity {
 			Raw:         e.Value,
 			Start:       e.Position,
 			End:         e.Position + len(e.Value),
+			FieldPath:   e.FieldPath,
 			Source:      entity.SourceCustom,
 			Confidence:  e.Confidence,
 			Sensitivity: e.Sensitivity,
 			Attributes:  nil,
+		})
+	}
+	return out
+}
+
+// CanonicalToPIIEntities converts canonical entities back to scanner entities.
+func CanonicalToPIIEntities(canonical []*entity.CanonicalEntity) []PIIEntity {
+	if len(canonical) == 0 {
+		return nil
+	}
+	out := make([]PIIEntity, 0, len(canonical))
+	for _, c := range canonical {
+		if c == nil {
+			continue
+		}
+		out = append(out, PIIEntity{
+			Type:        c.Type,
+			Value:       c.Raw,
+			Position:    c.Start,
+			FieldPath:   c.FieldPath,
+			Confidence:  c.Confidence,
+			Sensitivity: c.Sensitivity,
 		})
 	}
 	return out

@@ -9,6 +9,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/dativo-io/talon/internal/classifier/enrich"
+	"github.com/dativo-io/talon/internal/classifier/entity"
+	"github.com/dativo-io/talon/internal/classifier/presidio"
 	"github.com/dativo-io/talon/internal/classifier/render"
 	"github.com/dativo-io/talon/internal/otel"
 )
@@ -62,6 +64,7 @@ type PIIEntity struct {
 	Type        string  `json:"type"`
 	Value       string  `json:"value"`
 	Position    int     `json:"position"`
+	FieldPath   string  `json:"field_path,omitempty"`
 	Confidence  float64 `json:"confidence"`
 	Sensitivity int     `json:"sensitivity"` // 1-3 from recognizer; 0 means unset (treated as 1 for tiering)
 }
@@ -149,6 +152,9 @@ func NewScanner(opts ...ScannerOption) (*Scanner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading default recognizers: %w", err)
 	}
+	if err := ValidateRecognizerLayer("built-in", defaults, false); err != nil {
+		return nil, fmt.Errorf("validating built-in recognizers: %w", err)
+	}
 
 	// Layer 2: global pattern file (optional)
 	var globalRecs []*RecognizerConfig
@@ -158,6 +164,9 @@ func NewScanner(opts ...ScannerOption) (*Scanner, error) {
 			return nil, fmt.Errorf("loading global pattern file: %w", err)
 		}
 		if rf != nil {
+			if err := ValidateRecognizerLayer("global", rf.Recognizers, true); err != nil {
+				return nil, fmt.Errorf("validating global recognizers: %w", err)
+			}
 			globalRecs = toPtrSlice(rf.Recognizers)
 		}
 	}
@@ -165,6 +174,9 @@ func NewScanner(opts ...ScannerOption) (*Scanner, error) {
 	// Layer 3: per-agent custom recognizers
 	var agentRecs []*RecognizerConfig
 	if len(cfg.customRecognizers) > 0 {
+		if err := ValidateRecognizerLayer("per-agent", cfg.customRecognizers, true); err != nil {
+			return nil, fmt.Errorf("validating per-agent recognizers: %w", err)
+		}
 		agentRecs = toPtrSlice(cfg.customRecognizers)
 	}
 
@@ -207,6 +219,8 @@ func MustNewScanner(opts ...ScannerOption) *Scanner {
 // Scan analyzes text for PII and returns a classification result.
 // Each match goes through hard validation gates (IBAN checksum/length, Luhn)
 // and then Presidio-style score-based context filtering before being accepted.
+//
+//nolint:gocyclo // validation + scoring pipeline is intentionally linear and explicit
 func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 	_, span := tracer.Start(ctx, "classifier.scan")
 	defer span.End()
@@ -216,8 +230,10 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 		Entities: []PIIEntity{},
 		Tier:     0,
 	}
+	presidioResults := make([]presidio.RecognizerResult, 0)
 
-	for _, pattern := range s.patterns {
+	for i := range s.patterns {
+		pattern := &s.patterns[i]
 		matches := pattern.Pattern.FindAllStringIndex(text, -1)
 		for _, match := range matches {
 			value := text[match[0]:match[1]]
@@ -254,22 +270,73 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 				}
 			}
 
+			// Hard validation gate: Spanish DNI checksum letter
+			if pattern.ValidateDNI {
+				if !validateDNI(value) {
+					continue
+				}
+			}
+
+			// Hard validation gate: Spanish NIE checksum letter
+			if pattern.ValidateNIE {
+				if !validateNIE(value) {
+					continue
+				}
+			}
+
+			// Hard validation gate: Portuguese NIF check digit
+			if pattern.ValidateNIF {
+				if !validateNIF(value) {
+					continue
+				}
+			}
+
+			// Hard validation gate: IPv4 octets must be in range 0-255.
+			// IPv6 patterns bypass this gate.
+			if pattern.ValidateIPv4 {
+				if !validateIPv4(value) {
+					continue
+				}
+			}
+
 			// Presidio-style confidence: base score + context word boost
 			confidence := enhanceScoreWithContext(text, match[0], pattern.Score, pattern.ContextWords)
 			if confidence < s.minScore {
 				continue
 			}
 
-			entity := PIIEntity{
-				Type:        pattern.Type,
-				Value:       value,
-				Position:    match[0],
-				Confidence:  confidence,
-				Sensitivity: pattern.Sensitivity,
+			entityType := pattern.EntityType
+			if entityType == "" {
+				entityType = pattern.Type
 			}
-			result.Entities = append(result.Entities, entity)
-			result.HasPII = true
+			presidioResults = append(presidioResults, presidio.RecognizerResult{
+				EntityType:          entityType,
+				Start:               match[0],
+				End:                 match[1],
+				Score:               confidence,
+				OffsetEncoding:      presidio.OffsetEncodingByte,
+				ExpectedSubstring:   value,
+				ExpectedSensitivity: pattern.Sensitivity,
+				RecognitionMetadata: map[string]interface{}{
+					"pattern_name": pattern.Name,
+					"sensitivity":  pattern.Sensitivity,
+				},
+				OptionalSourceString: entity.SourceCustom,
+			})
 			RecordPIIDetection(ctx, pattern.Type, piiDirection(ctx), "detected")
+		}
+	}
+
+	if len(presidioResults) > 0 {
+		canonical, err := presidio.NormalizeResults(text, presidioResults)
+		if err != nil {
+			span.RecordError(err)
+			span.SetAttributes(attribute.Bool("pii.normalization_failed", true))
+			result.Entities = presidioFallbackPIIEntities(presidioResults)
+			result.HasPII = true
+		} else {
+			result.Entities = CanonicalToPIIEntities(canonical)
+			result.HasPII = len(result.Entities) > 0
 		}
 	}
 
@@ -490,6 +557,119 @@ func validatePESEL(digits string) bool {
 	return int(digits[10]-'0') == control
 }
 
+var dniLetters = []byte("TRWAGMYFPDXBNJZSQVHLCKE")
+
+// validateDNI checks Spanish DNI format (8 digits + checksum letter).
+func validateDNI(value string) bool {
+	if len(value) != 9 {
+		return false
+	}
+	num := 0
+	for i := 0; i < 8; i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+		num = num*10 + int(value[i]-'0')
+	}
+	letter := value[8]
+	if letter >= 'a' && letter <= 'z' {
+		letter -= 'a' - 'A'
+	}
+	return letter == dniLetters[num%23]
+}
+
+// validateNIE checks Spanish NIE format (X/Y/Z + 7 digits + checksum letter).
+func validateNIE(value string) bool {
+	if len(value) != 9 {
+		return false
+	}
+	first := value[0]
+	switch first {
+	case 'X', 'x':
+		first = '0'
+	case 'Y', 'y':
+		first = '1'
+	case 'Z', 'z':
+		first = '2'
+	default:
+		return false
+	}
+
+	num := int(first - '0')
+	for i := 1; i < 8; i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+		num = num*10 + int(value[i]-'0')
+	}
+	letter := value[8]
+	if letter >= 'a' && letter <= 'z' {
+		letter -= 'a' - 'A'
+	}
+	return letter == dniLetters[num%23]
+}
+
+// validateNIF checks Portuguese NIF (9 digits, weighted checksum).
+func validateNIF(value string) bool {
+	digits := stripNonDigits(value)
+	if len(digits) != 9 {
+		return false
+	}
+
+	first := digits[0]
+	if first != '1' && first != '2' && first != '3' && first != '5' && first != '6' && first != '8' && first != '9' {
+		return false
+	}
+
+	sum := 0
+	for i := 0; i < 8; i++ {
+		d := digits[i]
+		if d < '0' || d > '9' {
+			return false
+		}
+		weight := 9 - i
+		sum += int(d-'0') * weight
+	}
+	check := 11 - (sum % 11)
+	if check >= 10 {
+		check = 0
+	}
+	last := digits[8]
+	if last < '0' || last > '9' {
+		return false
+	}
+	return int(last-'0') == check
+}
+
+// validateIPv4 checks that dotted-quad octets are in range [0,255].
+// IPv6 strings bypass this gate.
+func validateIPv4(value string) bool {
+	if strings.Contains(value, ":") {
+		return true
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || len(p) > 3 {
+			return false
+		}
+		n := 0
+		for i := 0; i < len(p); i++ {
+			ch := p[i]
+			if ch < '0' || ch > '9' {
+				return false
+			}
+			n = n*10 + int(ch-'0')
+		}
+		if n > 255 {
+			return false
+		}
+	}
+	return true
+}
+
 // validateIBANLength checks that the IBAN has the correct length for its country code.
 func validateIBANLength(iban string) bool {
 	if len(iban) < 2 {
@@ -508,6 +688,12 @@ func validateIBANLength(iban string) bool {
 // Presidio's LemmaContextAwareEnhancer with a fixed context_similarity_factor.
 func enhanceScoreWithContext(text string, position int, baseScore float64, contextWords []string) float64 {
 	if len(contextWords) == 0 {
+		if baseScore > 1 {
+			return 1
+		}
+		if baseScore < 0 {
+			return 0
+		}
 		return baseScore
 	}
 	start := position - ContextWindowChars
@@ -522,8 +708,21 @@ func enhanceScoreWithContext(text string, position int, baseScore float64, conte
 
 	for _, cw := range contextWords {
 		if strings.Contains(window, strings.ToLower(cw)) {
-			return baseScore + ContextSimilarityFactor
+			score := baseScore + ContextSimilarityFactor
+			if score > 1 {
+				return 1
+			}
+			if score < 0 {
+				return 0
+			}
+			return score
 		}
+	}
+	if baseScore > 1 {
+		return 1
+	}
+	if baseScore < 0 {
+		return 0
 	}
 	return baseScore
 }
@@ -538,4 +737,19 @@ func stripNonDigits(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func presidioFallbackPIIEntities(results []presidio.RecognizerResult) []PIIEntity {
+	out := make([]PIIEntity, 0, len(results))
+	for i := range results {
+		r := &results[i]
+		out = append(out, PIIEntity{
+			Type:        presidio.EntityToCanonicalType(r.EntityType),
+			Value:       r.ExpectedSubstring,
+			Position:    r.Start,
+			Confidence:  r.Score,
+			Sensitivity: r.ExpectedSensitivity,
+		})
+	}
+	return out
 }

@@ -125,7 +125,7 @@ func TestProxyDataFlow_ToolArgsToVendorAndResultToClient(t *testing.T) {
 	require.NotNil(t, result, "tool_result flow item missing")
 
 	assert.Equal(t, "crm_lookup", args.SourceDetail)
-	assert.Equal(t, evidence.FlowDispositionForwarded, args.Disposition)
+	assert.Equal(t, evidence.FlowDispositionRedacted, args.Disposition)
 	assert.Equal(t, evidence.FlowDestMCPTool, args.Destination.Kind)
 	assert.Equal(t, "testvendor", args.Destination.Name)
 	assert.Equal(t, "EU", args.Destination.Region)
@@ -133,10 +133,14 @@ func TestProxyDataFlow_ToolArgsToVendorAndResultToClient(t *testing.T) {
 	assert.Equal(t, u.Host, args.Destination.Endpoint)
 	assert.Contains(t, args.EntityTypes, "email")
 	assert.NotEmpty(t, args.ValueDigests)
+	require.NotEmpty(t, args.EntityAttributions)
+	assert.Equal(t, "arguments", args.EntityAttributions[0].FieldPath)
 
 	assert.Equal(t, evidence.FlowDispositionRedacted, result.Disposition)
 	assert.Equal(t, evidence.FlowDestClient, result.Destination.Kind)
 	assert.Contains(t, result.EntityTypes, "email")
+	require.NotEmpty(t, result.EntityAttributions)
+	assert.Equal(t, "result", result.EntityAttributions[0].FieldPath)
 
 	// Same logical value in args and result -> same digest within the record.
 	digest := evidence.FlowDigest(ev.TenantID, ev.CorrelationID, "email", proxyFlowEmail)

@@ -40,7 +40,16 @@ This document serves as an explicit boundaries guide so that operators and secur
 - Talon is **not** an OS-level or kernel sandbox. 
 - External tools and providers remain completely separate trust boundaries and must be secured accordingly.
 
-## 5. Deployment and Key-Management Assumptions
+## 5. Scanner Compatibility Boundary
+
+**Talon supports a Presidio-compatible result shape at the ingestion boundary.**
+- Talon normalizes external scanner results to canonical internal entities and enforces byte-offset semantics for redaction and policy checks.
+- This is a contract compatibility seam, **not** a claim of full Presidio behavioral parity across recognizer internals.
+- Production external scanner runtime adapters (HTTP/gRPC, local model runtimes, sidecar lifecycle) are tracked separately and are not implied by boundary-shape support alone.
+- Runtime remediation is intentionally minimal in MVP scope: Talon supports approval-flow re-redact/re-scan remediation for tool-approval decisions, but does not implement the full remediation workflow stack yet (tracked in follow-up epics).
+- Residual PII enforcement remains fail-closed: remediation failures do not bypass policy blocks.
+
+## 6. Deployment and Key-Management Assumptions
 
 **Evidence signing depends on operator-controlled key handling.**
 - The cryptographic guarantees of Talon's evidence records rely on the operator securing the signing keys.

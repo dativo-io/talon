@@ -200,3 +200,38 @@ func TestToolApprovalStore_DefaultTimeout(t *testing.T) {
 	store := NewToolApprovalStore(0)
 	assert.NotNil(t, store, "zero timeout should use default")
 }
+
+func TestToolApprovalStore_ApproveWithRemediationArgs(t *testing.T) {
+	store := NewToolApprovalStore(5 * time.Second)
+	ctx := context.Background()
+
+	var status ToolApprovalStatus
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		status = store.RequestApproval(ctx, "req_remed123", "acme", "bot", "send_email", "call_8",
+			map[string]any{"to": "john@example.com"})
+	}()
+
+	require.Eventually(t, func() bool {
+		return len(store.ListPending()) > 0
+	}, 2*time.Second, 10*time.Millisecond)
+
+	reqID := store.ListPending()[0].ID
+	ok := store.ApproveWithRemediation(
+		reqID,
+		"admin_api",
+		"remediated",
+		"re_redact_rescan",
+		"applied",
+		map[string]any{"to": "[EMAIL]"},
+	)
+	require.True(t, ok)
+	wg.Wait()
+
+	assert.Equal(t, ToolApprovalApproved, status)
+	args, found := store.RemediatedArguments("req_remed123", "call_8")
+	require.True(t, found)
+	assert.Equal(t, "[EMAIL]", args["to"])
+}

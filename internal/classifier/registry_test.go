@@ -50,6 +50,21 @@ func TestParseRecognizerFileInvalidYAML(t *testing.T) {
 	assert.Contains(t, err.Error(), "parsing recognizer YAML")
 }
 
+func TestParseRecognizerFile_UnsupportedFieldFails(t *testing.T) {
+	yaml := `
+recognizers:
+  - name: "Email"
+    supported_entity: "EMAIL_ADDRESS"
+    unsupported_field: true
+    patterns:
+      - name: "email"
+        regex: '\b[a-z]+@[a-z]+\.[a-z]+\b'
+`
+	_, err := ParseRecognizerFile([]byte(yaml))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "field unsupported_field not found")
+}
+
 func TestLoadRecognizerFileMissing(t *testing.T) {
 	rf, err := LoadRecognizerFile("/nonexistent/file.yaml")
 	require.NoError(t, err, "missing file should not return error")
@@ -252,6 +267,74 @@ func TestCompilePIIPatternsInvalidRegex(t *testing.T) {
 	_, err := CompilePIIPatterns(recognizers)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "compiling pattern")
+}
+
+func TestCompilePIIPatternsValidatorFlags(t *testing.T) {
+	score := 0.8
+	recognizers := []RecognizerConfig{
+		{
+			Name:            "Spanish IDs",
+			SupportedEntity: "ES_DNI",
+			Patterns: []PatternConfig{
+				{Name: "dni", Regex: `\b\d{8}[A-Z]\b`, Score: &score},
+			},
+			ValidateDNI: true,
+			ValidateNIE: true,
+			ValidateNIF: true,
+		},
+		{
+			Name:            "IPv4",
+			SupportedEntity: "IP_ADDRESS",
+			Patterns: []PatternConfig{
+				{Name: "ip", Regex: `\b(?:\d{1,3}\.){3}\d{1,3}\b`, Score: &score},
+			},
+			ValidateIPv4: true,
+		},
+	}
+
+	compiled, err := CompilePIIPatterns(recognizers)
+	require.NoError(t, err)
+	require.Len(t, compiled, 2)
+	assert.True(t, compiled[0].ValidateDNI)
+	assert.True(t, compiled[0].ValidateNIE)
+	assert.True(t, compiled[0].ValidateNIF)
+	assert.True(t, compiled[1].ValidateIPv4)
+}
+
+func TestValidateRecognizerLayer(t *testing.T) {
+	score := 0.9
+	t.Run("duplicate name within layer fails", func(t *testing.T) {
+		err := ValidateRecognizerLayer("custom", []RecognizerConfig{
+			{Name: "Same", SupportedEntity: "EMAIL_ADDRESS", Patterns: []PatternConfig{{Name: "a", Regex: `a`, Score: &score}}},
+			{Name: "Same", SupportedEntity: "EMAIL_ADDRESS", Patterns: []PatternConfig{{Name: "b", Regex: `b`, Score: &score}}},
+		}, true)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicated")
+	})
+
+	t.Run("unknown entity fails when not custom layer", func(t *testing.T) {
+		err := ValidateRecognizerLayer("built-in", []RecognizerConfig{
+			{Name: "X", SupportedEntity: "UNKNOWN_ENTITY", Patterns: []PatternConfig{{Name: "x", Regex: `x`, Score: &score}}},
+		}, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown supported_entity")
+	})
+
+	t.Run("unknown entity allowed for custom layer", func(t *testing.T) {
+		err := ValidateRecognizerLayer("custom", []RecognizerConfig{
+			{Name: "X", SupportedEntity: "EMPLOYEE_ID", Patterns: []PatternConfig{{Name: "x", Regex: `EMP-\d+`, Score: &score}}},
+		}, true)
+		require.NoError(t, err)
+	})
+
+	t.Run("score outside range fails", func(t *testing.T) {
+		high := 1.2
+		err := ValidateRecognizerLayer("custom", []RecognizerConfig{
+			{Name: "X", SupportedEntity: "EMAIL_ADDRESS", Patterns: []PatternConfig{{Name: "x", Regex: `x`, Score: &high}}},
+		}, true)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "score must be in [0,1]")
+	})
 }
 
 func TestEntityToType(t *testing.T) {

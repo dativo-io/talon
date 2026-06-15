@@ -43,6 +43,8 @@ func (s *Scanner) Detector() string { return DetectorTalonRegex }
 // higher-sensitivity type wins, the span is extended to cover both, and the
 // value is re-sliced from text. Use before counting entities or computing
 // value digests so overlapping recognizers do not inflate results.
+//
+//nolint:gocyclo // overlap merge rules are kept together for deterministic behavior
 func MergeEntitySpans(text string, entities []PIIEntity) []PIIEntity {
 	if len(entities) == 0 {
 		return nil
@@ -52,6 +54,7 @@ func MergeEntitySpans(text string, entities []PIIEntity) []PIIEntity {
 		start       int
 		end         int
 		ptype       string
+		fieldPath   string
 		sensitivity int
 		confidence  float64
 	}
@@ -62,6 +65,7 @@ func MergeEntitySpans(text string, entities []PIIEntity) []PIIEntity {
 			start:       e.Position,
 			end:         e.Position + len(e.Value),
 			ptype:       e.Type,
+			fieldPath:   e.FieldPath,
 			sensitivity: e.Sensitivity,
 			confidence:  e.Confidence,
 		}
@@ -97,6 +101,9 @@ func MergeEntitySpans(text string, entities []PIIEntity) []PIIEntity {
 			if m.confidence > last.confidence {
 				last.confidence = m.confidence
 			}
+			if last.fieldPath == "" && m.fieldPath != "" {
+				last.fieldPath = m.fieldPath
+			}
 		} else {
 			merged = append(merged, m)
 		}
@@ -112,6 +119,7 @@ func MergeEntitySpans(text string, entities []PIIEntity) []PIIEntity {
 			Type:        m.ptype,
 			Value:       value,
 			Position:    m.start,
+			FieldPath:   m.fieldPath,
 			Confidence:  m.confidence,
 			Sensitivity: m.sensitivity,
 		})

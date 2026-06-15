@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/dativo-io/talon/internal/classifier/enrich"
+	"github.com/dativo-io/talon/internal/classifier/presidio"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -191,8 +192,10 @@ func TestPIIDetection(t *testing.T) {
 		{name: "PL NIP no dash", text: "NIP 1234563218", wantPII: true, wantTier: 2, wantTypes: []string{"tax_id"}},
 		{name: "ES DNI valid", text: "DNI 12345678Z", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
 		{name: "ES DNI invalid no letter", text: "DNI 1234567", wantPII: false, wantTier: 0}, // 7 digits, no letter
+		{name: "ES DNI invalid checksum", text: "DNI 12345678A", wantPII: false, wantTier: 0},
 		{name: "ES NIE valid", text: "NIE X1234567L", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
 		{name: "ES NIE invalid prefix", text: "NIE A1234567L", wantPII: false, wantTier: 0},
+		{name: "ES NIE invalid checksum", text: "NIE X1234567A", wantPII: false, wantTier: 0},
 		{name: "BE Rijksregister valid", text: "Rijksregisternummer 12.34.56-789.12", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
 		{name: "AT SVN valid", text: "Sozialversicherungsnummer 1234010190", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
 		{name: "IMSI EU", text: "IMSI 232011234567890", wantPII: true, wantTier: 2, wantTypes: []string{"imsi"}},
@@ -202,6 +205,11 @@ func TestPIIDetection(t *testing.T) {
 		{name: "DK CPR valid", text: "CPR 010190-1234", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
 		{name: "IE PPS valid", text: "PPS 1234567T", wantPII: true, wantTier: 2, wantTypes: []string{"national_id"}},
 		{name: "PT NIF valid", text: "NIF 123456789", wantPII: true, wantTier: 2, wantTypes: []string{"tax_id"}},
+		{name: "PT NIF invalid checksum", text: "NIF 123456780", wantPII: false, wantTier: 0},
+		{name: "LOCATION with context", text: "Our office city is Berlin", wantPII: true, wantTier: 1, wantTypes: []string{"location"}},
+		{name: "LOCATION without context", text: "The Paris agreement entered force in 2016", wantPII: false, wantTier: 0},
+		{name: "PERSON with context", text: "Customer Mrs Smith lives in Berlin", wantPII: true, wantTier: 1, wantTypes: []string{"person", "location"}},
+		{name: "PERSON without context", text: "Mrs Board approved the budget", wantPII: false, wantTier: 0},
 	}
 
 	for _, tt := range tests {
@@ -569,6 +577,31 @@ func FuzzPIIScan(f *testing.F) {
 		}
 		_ = scanner.Scan(ctx, string(data))
 	})
+}
+
+func TestPresidioFallbackPIIEntitiesUsesCanonicalTypes(t *testing.T) {
+	entities := presidioFallbackPIIEntities([]presidio.RecognizerResult{
+		{
+			EntityType:          "EMAIL_ADDRESS",
+			Start:               0,
+			End:                 16,
+			Score:               0.9,
+			ExpectedSubstring:   "user@example.com",
+			ExpectedSensitivity: 2,
+		},
+		{
+			EntityType:          "CUSTOM_TICKET",
+			Start:               20,
+			End:                 28,
+			Score:               0.8,
+			ExpectedSubstring:   "TKT-1234",
+			ExpectedSensitivity: 1,
+		},
+	})
+
+	require.Len(t, entities, 2)
+	assert.Equal(t, "email", entities[0].Type)
+	assert.Equal(t, "custom_ticket", entities[1].Type)
 }
 
 func BenchmarkPIIScan(b *testing.B) {

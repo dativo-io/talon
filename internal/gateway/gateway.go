@@ -559,6 +559,37 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			inputPIIRedacted = true
 		}
 	}
+	// Fail closed if redacted request text still contains recognized PII.
+	if !isShadow && inputPIIRedacted && g.classifier != nil {
+		redactedExtracted, extractErr := ExtractForProvider(route.Provider, forwardBody)
+		if extractErr != nil {
+			durationMS := time.Since(start).Milliseconds()
+			WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request blocked: unable to verify redacted payload")
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request redaction verification failed"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
+			if err != nil {
+				g.handleEvidenceWriteFailure(ctx, err)
+				return
+			}
+			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
+			return
+		}
+		if verifyErr := g.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedExtracted.Text); verifyErr != nil {
+			durationMS := time.Since(start).Milliseconds()
+			types := strings.Join(classifier.ResidualTypes(verifyErr), ", ")
+			msg := "Request blocked: recognized PII remains after redaction"
+			if types != "" {
+				msg += " (types: " + types + ")"
+			}
+			WriteProviderError(w, route.Provider, http.StatusBadRequest, msg)
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request residual pii after redaction"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
+			if err != nil {
+				g.handleEvidenceWriteFailure(ctx, err)
+				return
+			}
+			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
+			return
+		}
+	}
 
 	// Step 7b: Ensure Responses API requests use store:true so multi-turn works through a proxy.
 	// Without this, OpenAI doesn't persist response items and follow-up messages that reference

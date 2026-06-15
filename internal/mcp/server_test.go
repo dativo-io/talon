@@ -282,8 +282,11 @@ func TestHandler_ToolsCall_DataFlowPIIInArgs(t *testing.T) {
 
 	ev := latestServerEvidence(t, store)
 	assert.Contains(t, ev.Classification.PIIDetected, "email")
+	assert.True(t, ev.Classification.InputPIIRedacted, "input redaction should be reflected in evidence")
 	require.NotNil(t, ev.DataFlow)
 	require.Len(t, ev.DataFlow.Items, 1)
+	assert.Equal(t, evidence.FlowDispositionRedacted, ev.DataFlow.Items[0].Disposition,
+		"redacted tool arguments should be marked as redacted, not forwarded")
 	assert.Contains(t, ev.DataFlow.Items[0].EntityTypes, "email")
 	assert.NotEmpty(t, ev.DataFlow.Items[0].ValueDigests, "digests, never raw values")
 }
@@ -299,9 +302,11 @@ func TestHandler_ToolsCall_DataFlowPIIInResult(t *testing.T) {
 	require.Len(t, ev.DataFlow.Items, 2, "tool_args -> tool plus tool_result -> client")
 	result := ev.DataFlow.Items[1]
 	assert.Equal(t, evidence.FlowSourceToolResult, result.Source)
-	assert.Equal(t, evidence.FlowDispositionSurfaced, result.Disposition)
+	assert.Equal(t, evidence.FlowDispositionRedacted, result.Disposition,
+		"redacted tool results should be marked as redacted, not surfaced")
 	assert.Equal(t, evidence.FlowDestClient, result.Destination.Kind)
 	assert.Contains(t, result.EntityTypes, "email")
+	assert.True(t, ev.Classification.PIIRedacted, "response redaction should be reflected in evidence")
 }
 
 func TestHandler_ToolsCall_DataFlowBlockedOnDeny(t *testing.T) {

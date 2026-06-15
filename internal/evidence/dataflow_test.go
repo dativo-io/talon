@@ -80,10 +80,10 @@ func TestFlowDigest(t *testing.T) {
 
 func TestNewDataFlowItem(t *testing.T) {
 	entities := []classifier.PIIEntity{
-		{Type: "iban", Value: "DE89370400440532013000", Sensitivity: 3},
-		{Type: "email", Value: "b@example.com", Sensitivity: 1},
-		{Type: "email", Value: "a@example.com", Sensitivity: 1},
-		{Type: "email", Value: "a@example.com", Sensitivity: 1}, // duplicate value
+		{Type: "iban", Value: "DE89370400440532013000", Position: 10, Sensitivity: 3},
+		{Type: "email", Value: "b@example.com", Position: 40, Sensitivity: 1},
+		{Type: "email", Value: "a@example.com", Position: 60, Sensitivity: 1},
+		{Type: "email", Value: "a@example.com", Position: 60, Sensitivity: 1}, // duplicate value
 	}
 	dest := FlowDestination{Kind: FlowDestLLMProvider, Name: "openai", Model: "gpt-4o-mini", Region: "US"}
 	item := NewDataFlowItem("acme", "corr_1", FlowSourcePrompt, "", 2, entities, FlowDispositionForwarded, dest)
@@ -94,12 +94,30 @@ func TestNewDataFlowItem(t *testing.T) {
 	assert.Equal(t, 4, item.EntityCount)
 	assert.Len(t, item.ValueDigests, 3, "duplicate values must collapse to one digest")
 	assert.True(t, sortedStrings(item.ValueDigests), "digests must be sorted for deterministic canonical JSON")
+	require.NotEmpty(t, item.EntityAttributions)
+	for _, attr := range item.EntityAttributions {
+		assert.NotEmpty(t, attr.Type)
+		assert.Equal(t, "messages[].content", attr.FieldPath, "default field path should be inferred for prompt source")
+		require.NotNil(t, attr.Start)
+		require.NotNil(t, attr.End)
+		assert.GreaterOrEqual(t, *attr.End, *attr.Start)
+	}
 	assert.Equal(t, dest, item.Destination)
 
 	for _, d := range item.ValueDigests {
 		assert.NotContains(t, d, "example.com")
 		assert.NotContains(t, d, "DE89")
 	}
+}
+
+func TestNewDataFlowItem_UsesProvidedFieldPath(t *testing.T) {
+	entities := []classifier.PIIEntity{
+		{Type: "email", Value: "john@example.com", Position: 3, FieldPath: "choices[0].message.content"},
+	}
+	item := NewDataFlowItem("acme", "corr_1", FlowSourceResponse, "", 1, entities, FlowDispositionRedacted,
+		FlowDestination{Kind: FlowDestClient, Name: "caller"})
+	require.Len(t, item.EntityAttributions, 1)
+	assert.Equal(t, "choices[0].message.content", item.EntityAttributions[0].FieldPath)
 }
 
 func TestNewDataFlowItemFromTypes(t *testing.T) {

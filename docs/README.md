@@ -88,6 +88,8 @@ Choose the shortest path for your situation:
 | [How to verify memory is used](guides/memory-verification.md) | CLI steps to confirm memory is written and injected into prompts. |
 | [How to offer Talon to multiple customers (multi-tenant/MSP)](guides/multi-tenant-msp.md) | Tenant isolation, API keys, and gateway callers. |
 | [Incident response playbook](guides/incident-response-playbook.md) | Common operational scenarios when running AI agents. |
+| [How to test and operate Plan Review](guides/plan-review-operators.md) | End-to-end human oversight gate: configure, trigger, approve, dispatch, verify evidence. |
+| [Plan Review E2E test case](guides/plan-review-e2e-testcase.md) | Feature inventory (F1–F30) and phased testcase TC-PR-001–012 with pass criteria. |
 
 ### Reference (technical description)
 
@@ -95,6 +97,7 @@ Choose the shortest path for your situation:
 |-----|-------------|
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
 | [Evidence integrity specification](reference/evidence-integrity-spec.md) | Normative signed-record spec: fields, canonical serialization, HMAC-SHA256 signing, and the independent verification procedure. |
+| [Presidio compatibility matrix](reference/presidio-compatibility-matrix.md) | Scanner boundary contract: Presidio-shaped result ingress, canonical mapping, and byte-offset normalization rules. |
 | [Threat model](reference/threat-model.md) | STRIDE-style attack surface, trust boundaries, threats/mitigations, and key-management assumptions for the gateway path. |
 | [Governance control matrix](reference/governance-control-matrix.md) | Which controls run on each entry path (runner, gateway, MCP server/proxy, graph adapter), by-design limitations, and the parity contract that prevents posture drift. |
 | [Conformance suite & count](reference/conformance.md) | What counts as a conformance test for the evidence + policy paths, and how to reproduce the published count with `make conformance`. |

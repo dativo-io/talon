@@ -48,6 +48,23 @@ Key top-level sections:
 | `compliance` | Frameworks (GDPR, EU AI Act, ISO 27001, NIS2, DORA), data residency, risk level |
 | `metadata` | Department, owner, tags |
 
+### PII recognizer layers and validation
+
+Recognizer loading follows a fixed precedence: **built-in < global < per-agent**.
+
+- **Built-in** recognizers ship in Talon default patterns.
+- **Global** recognizers come from a process-level pattern file (when configured).
+- **Per-agent** recognizers come from `policies.data_classification.custom_recognizers` in `agent.talon.yaml`.
+
+Validation is fail-fast in `talon validate` and at startup:
+
+- Duplicate recognizer names within one layer fail validation.
+- Cross-layer overrides are allowed and deterministic (later layer wins).
+- Invalid regex patterns fail validation.
+- Pattern scores must be in `[0,1]`.
+- Unsupported fields in recognizer YAML/custom recognizer objects fail validation.
+- Unknown `supported_entity` values fail for built-in recognizers. Custom entity names are allowed for global/per-agent layers.
+
 ### Audit configuration
 
 | Key | Type | Default | Purpose |
@@ -362,6 +379,25 @@ See [Gateway dashboard reference](gateway-dashboard.md) for the full API schema 
 - **MCP proxy:** Enable with `--proxy-config <path>`. See [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md).
 - **Auth model:** See [Authentication and key scopes](authentication-and-key-scopes.md) for endpoint-to-key mapping (tenant keys vs admin key).
 - **Operational control:** Run management, overrides, and tool approval gates are exposed via admin API. See [Operational control plane](operational-control-plane.md).
+
+#### Tool approval remediation hook
+
+The admin approval endpoint supports a minimal remediation mode that performs
+re-redact/re-scan before approval is finalized:
+
+```json
+POST /v1/tool-approvals/{id}/decide
+{
+  "decision": "approve",
+  "reason": "apply remediation",
+  "remediation": { "mode": "re_redact_rescan" }
+}
+```
+
+Behavior:
+
+- If remediation passes verification, approval is recorded with remediation metadata.
+- If remediation fails, the request remains pending (no bypass) and returns `422`.
 
 ### Observability
 
