@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Release Note Quality Bar
+
+For user-facing entries, include:
+
+- why this change matters (problem solved),
+- who should care (operator/developer persona),
+- how to verify quickly (command or path),
+- any upgrade/migration impact,
+- at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
+
+## [1.6.5] - 2026-06-15
+
 ### Changed
 
 - **feat(compliance): RoPA now distinguishes redacted from raw PII at each recipient, and cross-checks declared residency against observed transfers.** Two accuracy gaps surfaced during field testing. (1) Section 5 (Recipients) listed identifier types per destination (e.g. `email` → openai) without saying whether the raw values actually reached the recipient — misleading when `redact_pii` was on and the provider only ever received placeholders. Types that were redacted in *every* flow to a destination are now annotated `(redacted before egress)`; a type forwarded raw even once stays unannotated (no overstatement in either direction). The JSON export gains a `redacted_entity_types` field per destination. (2) Declaring `compliance.data_residency: eu` while running `llm.routing.data_sovereignty_mode: eu_preferred`/`global` let non-EU transfers happen silently relative to the declaration; the RoPA now adds a `consistency:` warning when EU residency is declared but non-EU/LOCAL destinations appear in the data-flow evidence, pointing at the two honest resolutions — enforce `eu_strict`, or document the transfer mechanism (SCCs/adequacy) with your DPO. Verify quickly: declare `data_residency: eu`, run traffic through a US provider, regenerate `talon compliance ropa` and see the warning; docs: [RoPA declarations guide](docs/guides/ropa-declarations.md#residency-consistency-warning), [configuration reference](docs/reference/configuration.md#gateway-egress-rules-destination--classification-allowdeny).
@@ -16,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **feat(scanner): Epic #112 PII trust-path hardening (#182).** Talon now normalizes built-in and external scanner output through a Presidio-compatible boundary contract (byte-offset canonicalization, `classifier.Facade` seam) and enforces **fail-closed residual PII verification** (`VerifyEgress` / RedactGuard) on gateway, MCP proxy/server, and agent tool args/results — including blocks when redaction produces invalid JSON. Evidence spec **1.3** adds optional compact `entity_attributions` on data-flow items (field path + spans, no raw values). Tool-approval remediation (`re_redact_rescan`) re-scans before approval without bypassing residual blocks. Verify quickly: `make proof-gates`. Docs: [Presidio compatibility matrix](docs/reference/presidio-compatibility-matrix.md), [LIMITATIONS.md](LIMITATIONS.md#5-scanner-compatibility-boundary). Closes #112 and child issues #134–#137; external runtime adapters remain #181.
+- **feat(ci): PII benchmark regression gate on every PR; `make proof-gates` on `main` push and nightly.** Committed `testdata/benchmarks/pii_scan_baseline.<goos>.<goarch>.json` artifacts are validated and enforced in CI (`make benchmark-regression` on `ubuntu-latest`); full Epic #112 proof gates (matrix, egress, fuzz, benchmark) run on `main` and on a 03:00 UTC schedule.
+- **docs(plan-review): operator guide and phased E2E test case.** Step-by-step Plan Review operations (`plan-review-operators.md`, `plan-review-e2e-testcase.md`) for CLI, serve auto-dispatch, dashboard, and TC-PR-001–012 pass criteria.
 - **feat(server): compliance HTTP API — `/v1/compliance/{coverage,ropa,annex-iv,report}` (#109).** The `talon compliance` generators are now exposed over admin-authenticated HTTP, so a DPO or an automation can pull framework coverage and auditor documents from a running server without CLI access to the host. All four endpoints accept `tenant`, `agent`, `from`/`to` (`YYYY-MM-DD`), and `format=html|json`; `report` additionally takes `framework=gdpr|eu-ai-act|nis2|dora|iso-27001`. Declarations are re-read from `talon.config.yaml` / the default agent policy on every request, so declaration edits apply without a restart. Every export records a signed control-plane evidence record (`compliance_export_ropa` / `_annex_iv` / `_report`) carrying the export format and scope — the act of generating an auditor document is itself auditable. Verify quickly: `curl -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" localhost:8080/v1/compliance/coverage | jq '.frameworks[].framework'`. Docs: [export runbook](docs/guides/compliance-export-runbook.md#if-you-prefer-the-dashboard-no-cli-needed), [auth and key scopes](docs/reference/authentication-and-key-scopes.md). Tenant keys and anonymous callers are rejected (admin-only); output remains supporting documentation, not a compliance determination.
 - **feat(dashboard): compliance mode in `/dashboard` (#129).** The unified governance dashboard gains a **Compliance** tab so framework posture is reviewable where the evidence already lives: per-framework coverage cards (each control mapping with its article, Talon control, source, and supporting-evidence count), declaration warnings listing what is still missing for a complete RoPA / Annex IV pack, recent signed evidence in scope, and one-click exports (RoPA HTML/JSON, Annex IV HTML/JSON, framework-filtered report) that honor the active tenant/agent/date filters. Verify quickly: open `http://localhost:8080/dashboard?talon_admin_key=$TALON_ADMIN_KEY`, select **Compliance**, click **RoPA (HTML)**. Docs: [tutorial — turnkey compliance reports](docs/tutorials/turnkey-compliance-reports.md). Closes the gap where compliance posture required the CLI while everything else in the epic was dashboard-first.
 - **feat(dashboard): unified FinOps view on `/dashboard` (#109).** The FinOps & Runtime tab now answers "which tenants / apps / agents are spending money" without leaving the governance dashboard: budget utilization and semantic-cache cards (hits, hit rate, cost saved), and spend breakdowns by caller, model, and provider — all mapped from the existing `/api/v1/metrics` snapshot (no second metrics pipeline). The Evidence tab's governance quadrant gains a store-wide denial summary from the new `GET /v1/dashboard/denials-by-reason` endpoint (`pii_block`, `policy_deny`, `attachment_block`, `tool_filtered`). `/gateway/dashboard` remains available as a deep link for full gateway telemetry. Verify quickly: run gateway traffic, open the FinOps tab, and cross-check `curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" localhost:8080/api/v1/metrics | jq .budget_status`. Docs: [gateway dashboard reference](docs/reference/gateway-dashboard.md#related-governance-dashboard-endpoints).
@@ -27,16 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **fix(dashboard): gateway link 404, unstable Blocked card, Detail implicitly verifying.** Three UX bugs from manual testing of the unified dashboard. (1) The "Gateway telemetry" links rendered even when the server ran without `--gateway`, navigating to a plain-text 404; the dashboard now probes `/api/v1/metrics` on load and, on a 404, hides the links and shows a restart hint instead (auth errors keep the links so a key fix restores access). (2) The Blocked card was recounted from the visible evidence rows, so clicking it — which applies the Denied filter — refilled the table and made the number jump (e.g. 22 → 50); it is now fed by the store-wide denied total from `/v1/dashboard/denials-by-reason`, relabeled **Blocked (all evidence)**, and stays stable while drilling down. (3) The Detail button fetched `/verify` alongside the record, flipping the Integrity column exactly like Verify; Detail is now read-only and the detail pane shows the already-known verification state or "Not checked (use the Verify button)". Verify quickly: start `talon serve` without `--gateway` and confirm the dashboard shows the hint instead of a dead link. Docs: [gateway dashboard reference](docs/reference/gateway-dashboard.md#unified-dashboard-semantics).
-
-### Release Note Quality Bar
-
-For user-facing entries, include:
-
-- why this change matters (problem solved),
-- who should care (operator/developer persona),
-- how to verify quickly (command or path),
-- any upgrade/migration impact,
-- at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
+- **fix(classifier,agent): canonical types on normalization fallback and JSON validity after agent-tool redaction.** When Presidio normalization fails, fallback entities now use canonical type strings (`email`, not `EMAIL_ADDRESS`). Agent tool args/results match MCP fail-closed posture: block when redaction breaks valid JSON while `VerifyEgress` still passes.
 
 ## [1.6.0] - 2026-06-10
 
@@ -536,7 +542,8 @@ For user-facing entries, include:
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.6.5...HEAD
+[1.6.5]: https://github.com/dativo-io/talon/compare/v1.6.0...v1.6.5
 [1.6.0]: https://github.com/dativo-io/talon/compare/v1.5.5...v1.6.0
 [1.5.5]: https://github.com/dativo-io/talon/compare/v1.5.0...v1.5.5
 [1.5.0]: https://github.com/dativo-io/talon/compare/v1.4.6...v1.5.0
