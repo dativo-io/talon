@@ -21,6 +21,10 @@ type PIIPattern struct {
 	ValidateIBAN  bool     // Talon extension: ISO 13616 MOD-97 + country length gate
 	ValidateBSN   bool     // Talon extension: Dutch BSN 11-test
 	ValidatePESEL bool     // Talon extension: Polish PESEL check digit
+	ValidateDNI   bool     // Talon extension: Spanish DNI checksum letter
+	ValidateNIE   bool     // Talon extension: Spanish NIE checksum letter
+	ValidateNIF   bool     // Talon extension: Portuguese NIF check digit
+	ValidateIPv4  bool     // Talon extension: IPv4 octet 0-255 gate
 }
 
 // IBANLengths maps EU+UK country codes to their exact IBAN character length (ISO 13616).

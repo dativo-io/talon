@@ -1,0 +1,79 @@
+{
+  "id": "evt_attr",
+  "correlation_id": "corr_attr",
+  "timestamp": "2026-06-15T09:00:00Z",
+  "tenant_id": "acme",
+  "agent_id": "support-bot",
+  "invocation_type": "gateway",
+  "policy_decision": {
+    "allowed": true,
+    "action": "allow",
+    "policy_version": "v1"
+  },
+  "classification": {
+    "input_tier": 2,
+    "output_tier": 0,
+    "pii_detected": [
+      "email",
+      "iban"
+    ],
+    "pii_redacted": true
+  },
+  "execution": {
+    "model_used": "gpt-4o-mini",
+    "cost": 0.001,
+    "tokens": {
+      "input": 10,
+      "output": 8
+    },
+    "duration_ms": 123
+  },
+  "audit_trail": {
+    "input_hash": "sha256:in",
+    "output_hash": "sha256:out"
+  },
+  "compliance": {
+    "frameworks": [
+      "gdpr"
+    ],
+    "data_location": "eu"
+  },
+  "signature": "",
+  "data_flow": {
+    "detector": "talon-regex",
+    "items": [
+      {
+        "source": "response",
+        "tier": 2,
+        "entity_types": [
+          "email",
+          "iban"
+        ],
+        "entity_count": 2,
+        "value_digests": [
+          "a188ec70bd283405",
+          "eedf8c258da56fd6"
+        ],
+        "entity_attributions": [
+          {
+            "type": "email",
+            "field_path": "choices[0].message.content",
+            "start": 14,
+            "end": 30
+          },
+          {
+            "type": "iban",
+            "field_path": "choices[0].message.content",
+            "start": 42,
+            "end": 64
+          }
+        ],
+        "disposition": "redacted",
+        "destination": {
+          "kind": "client",
+          "name": "openclaw"
+        }
+      }
+    ]
+  }
+}

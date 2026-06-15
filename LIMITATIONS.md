@@ -46,6 +46,8 @@ This document serves as an explicit boundaries guide so that operators and secur
 - Talon normalizes external scanner results to canonical internal entities and enforces byte-offset semantics for redaction and policy checks.
 - This is a contract compatibility seam, **not** a claim of full Presidio behavioral parity across recognizer internals.
 - Production external scanner runtime adapters (HTTP/gRPC, local model runtimes, sidecar lifecycle) are tracked separately and are not implied by boundary-shape support alone.
+- Runtime remediation is intentionally minimal in MVP scope: Talon supports approval-flow re-redact/re-scan remediation for tool-approval decisions, but does not implement the full remediation workflow stack yet (tracked in follow-up epics).
+- Residual PII enforcement remains fail-closed: remediation failures do not bypass policy blocks.
 
 ## 6. Deployment and Key-Management Assumptions
 

@@ -96,6 +96,7 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 
 	result.PIIDetected = true
 	result.Entities = classifier.MergeEntitySpans(contentText, cls.Entities)
+	result.Entities = applyDefaultFieldPath(result.Entities, "response.content")
 	result.Tier = cls.Tier
 	types := make(map[string]bool)
 	for _, e := range cls.Entities {
@@ -161,6 +162,21 @@ func residualPIIBlockMessage(prefix string, types []string) string {
 		return prefix + "." + remediation
 	}
 	return prefix + " (types: " + strings.Join(types, ", ") + ")." + remediation
+}
+
+func applyDefaultFieldPath(entities []classifier.PIIEntity, fieldPath string) []classifier.PIIEntity {
+	if len(entities) == 0 {
+		return entities
+	}
+	out := make([]classifier.PIIEntity, 0, len(entities))
+	for _, e := range entities {
+		cpy := e
+		if cpy.FieldPath == "" {
+			cpy.FieldPath = fieldPath
+		}
+		out = append(out, cpy)
+	}
+	return out
 }
 
 // extractResponseContentText extracts only the LLM-generated text from a

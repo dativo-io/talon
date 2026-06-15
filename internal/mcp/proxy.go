@@ -172,6 +172,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		result := h.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
 		if result != nil && len(result.Entities) > 0 {
 			flow.requestEntities = classifier.MergeEntitySpans(argStr, result.Entities)
+			flow.requestEntities = applyFlowFieldPath(flow.requestEntities, "arguments")
 			flow.requestTier = result.Tier
 			for _, e := range result.Entities {
 				proxyInput.DetectedPII = append(proxyInput.DetectedPII, e.Type)
@@ -250,6 +251,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 				attribute.String("proxy.upstream_region", h.upstreamRegion()),
 			)
 			flow.responseEntities = classifier.MergeEntitySpans(resultStr, cls.Entities)
+			flow.responseEntities = applyFlowFieldPath(flow.responseEntities, "result")
 			flow.responseTier = cls.Tier
 			flow.responseRedacted = true
 			redacted := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
@@ -289,6 +291,21 @@ func residualBlockMessage(prefix string, types []string) string {
 		return prefix + "." + remediation
 	}
 	return prefix + " (types: " + strings.Join(types, ", ") + ")." + remediation
+}
+
+func applyFlowFieldPath(entities []classifier.PIIEntity, fieldPath string) []classifier.PIIEntity {
+	if len(entities) == 0 {
+		return entities
+	}
+	out := make([]classifier.PIIEntity, 0, len(entities))
+	for _, e := range entities {
+		cpy := e
+		if cpy.FieldPath == "" {
+			cpy.FieldPath = fieldPath
+		}
+		out = append(out, cpy)
+	}
+	return out
 }
 
 // toolsListExtract holds the result of parsing an upstream tools/list result

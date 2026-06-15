@@ -8,7 +8,7 @@ recognizers:
     enabled: true
     patterns:
       - name: "standard email"
-        regex: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        regex: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}\b'
         score: 0.85
     supported_languages:
       - language: "en"
@@ -122,13 +122,14 @@ recognizers:
         regex: '\b(?:\d{1,3}\.){3}\d{1,3}\b'
         score: 0.6
       - name: "IPv6"
-        regex: '(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b'
+        regex: '\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b'
         score: 0.6
     supported_languages:
       - language: "en"
         context: ["ip", "address", "server", "host"]
     sensitivity: 1
     countries: ["Global"]
+    validate_ipv4: true
 
   - name: "Passport Number"
     supported_entity: "PASSPORT"
@@ -169,7 +170,7 @@ recognizers:
     patterns:
       - name: "Steuer-ID 11 digits"
         regex: '\b\d{11}\b'
-        score: 0.4
+        score: 0.25
     supported_languages:
       - language: "de"
         context: ["steuer-id", "steueridentifikationsnummer", "tax id"]
@@ -196,7 +197,7 @@ recognizers:
     patterns:
       - name: "Carte identite 12 digits"
         regex: '\b\d{12}\b'
-        score: 0.4
+        score: 0.25
     supported_languages:
       - language: "fr"
         context: ["carte d'identité", "carte d identite", "identité"]
@@ -259,6 +260,7 @@ recognizers:
         context: ["dni", "documento nacional", "identidad"]
     sensitivity: 3
     countries: ["ES"]
+    validate_dni: true
 
   - name: "Spanish NIE"
     supported_entity: "ES_NIE"
@@ -272,6 +274,7 @@ recognizers:
         context: ["nie", "número de identidad de extranjero"]
     sensitivity: 3
     countries: ["ES"]
+    validate_nie: true
 
   # --- Belgium ---
   - name: "Belgian Rijksregisternummer"
@@ -280,7 +283,7 @@ recognizers:
     patterns:
       - name: "Rijksregister with optional dots/dash"
         regex: '\b\d{2}\.?\d{2}\.?\d{2}-?\d{3}\.?\d{2}\b'
-        score: 0.4
+        score: 0.25
     supported_languages:
       - language: "nl"
         context: ["rijksregisternummer", "nationaal nummer"]
@@ -296,7 +299,7 @@ recognizers:
     patterns:
       - name: "SVN 4+6 digits (NNNN DDMMYY)"
         regex: '\b\d{4}(0[1-9]|[12]\d|3[01])(0[1-9]|1[0-2])\d{2}\b'
-        score: 0.6
+        score: 0.25
     supported_languages:
       - language: "de"
         context: ["sozialversicherungsnummer", "svnr", "sv-nummer"]
@@ -310,7 +313,7 @@ recognizers:
     patterns:
       - name: "IMSI 15 digits (EU MCC 2xx)"
         regex: '\b2\d{14}\b'
-        score: 0.85
+        score: 0.4
     supported_languages:
       - language: "en"
         context: ["imsi", "subscriber identity", "mobile subscriber"]
@@ -336,7 +339,7 @@ recognizers:
     patterns:
       - name: "EID 32 digits"
         regex: '\b\d{32}\b'
-        score: 0.9
+        score: 0.4
     supported_languages:
       - language: "en"
         context: ["eid", "euicc", "esim identifier"]
@@ -350,7 +353,7 @@ recognizers:
     patterns:
       - name: "Personnummer 6+4 or 8+4"
         regex: '\b\d{6}-?\d{4}\b|\b\d{8}-?\d{4}\b'
-        score: 0.4
+        score: 0.25
     supported_languages:
       - language: "sv"
         context: ["personnummer", "personnr", "id number"]
@@ -364,7 +367,7 @@ recognizers:
     patterns:
       - name: "CPR 6+4 digits"
         regex: '\b\d{6}-?\d{4}\b'
-        score: 0.4
+        score: 0.25
     supported_languages:
       - language: "da"
         context: ["cpr", "cpr-nummer", "personnummer"]
@@ -392,12 +395,13 @@ recognizers:
     patterns:
       - name: "NIF 9 digits"
         regex: '\b\d{9}\b'
-        score: 0.4
+        score: 0.25
     supported_languages:
       - language: "pt"
         context: ["nif", "número de identificação fiscal", "tax id"]
     sensitivity: 2
     countries: ["PT"]
+    validate_nif: true
 
   # --- Named entities (for semantic enrichment: gender, scope) ---
   - name: "Person (title + name)"
@@ -406,15 +410,15 @@ recognizers:
     patterns:
       - name: "title and name"
         regex: '\b(Mr|Mrs|Ms|Miss|Mister|Herr|Frau|Madame|Madam|Monsieur|Mme|Signor|Sra|Srta)\.?\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\-]*(?:\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\-]*)?\b'
-        score: 0.75
+        score: 0.4
       - name: "capitalized full name"
-        regex: '\b[A-Za-zÀ-ÿ][a-zà-ÿ\-]+\s+[A-Za-zÀ-ÿ][a-zà-ÿ\-]+\b'
+        regex: '\b[A-ZÀ-Ý][a-zà-ÿ\-]+\s+[A-ZÀ-Ý][a-zà-ÿ\-]+\b'
         score: 0.4
     supported_languages:
       - language: "en"
-        context: ["person", "name", "attendee"]
+        context: ["person", "name", "attendee", "lives", "passport"]
       - language: "de"
-        context: ["person", "name", "teilnehmer"]
+        context: ["person", "name", "teilnehmer", "lebt"]
     sensitivity: 1
     countries: ["EU"]
 
@@ -424,9 +428,9 @@ recognizers:
     patterns:
       - name: "EU cities and countries"
         regex: '\b(Berlin|Munich|Hamburg|Frankfurt|Paris|Lyon|Madrid|Barcelona|Rome|Milan|Amsterdam|Brussels|Vienna|Warsaw|Lisbon|Dublin|Athens|Prague|Bucharest|Budapest|Stockholm|Copenhagen|Helsinki|London|Manchester|Edinburgh|Zurich|Geneva|Germany|France|Spain|Italy|Bavaria|Catalonia|Scotland)\b'
-        score: 0.85
+        score: 0.4
     supported_languages:
       - language: "en"
-        context: ["city", "country", "region", "office"]
+        context: ["city", "country", "region", "office", "located", "headquartered", "headquarters", "lives", "address"]
     sensitivity: 1
     countries: ["EU"]

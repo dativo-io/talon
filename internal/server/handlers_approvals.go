@@ -1,14 +1,18 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
 
 	"github.com/dativo-io/talon/internal/agent"
+	"github.com/dativo-io/talon/internal/classifier"
+	"github.com/dativo-io/talon/internal/policy"
 )
 
 // handleToolApprovalsList returns all pending tool approval requests.
@@ -44,8 +48,13 @@ func (s *Server) handleToolApprovalGet(w http.ResponseWriter, r *http.Request) {
 }
 
 type approvalDecisionRequest struct {
-	Decision string `json:"decision"` // "approve" or "deny"
-	Reason   string `json:"reason,omitempty"`
+	Decision    string                     `json:"decision"` // "approve" or "deny"
+	Reason      string                     `json:"reason,omitempty"`
+	Remediation *approvalRemediationConfig `json:"remediation,omitempty"`
+}
+
+type approvalRemediationConfig struct {
+	Mode string `json:"mode,omitempty"` // "re_redact_rescan"
 }
 
 // handleToolApprovalDecide approves or denies a pending tool execution.
@@ -64,14 +73,39 @@ func (s *Server) handleToolApprovalDecide(w http.ResponseWriter, r *http.Request
 	}
 	switch req.Decision {
 	case "approve":
-		if ok := store.Approve(id, "admin_api", req.Reason); !ok {
+		remediationMode := ""
+		remediationStatus := ""
+		var remediatedArgs map[string]any
+		if req.Remediation != nil && strings.TrimSpace(req.Remediation.Mode) != "" {
+			pending := store.Get(id)
+			if pending == nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval request not found or not pending"})
+				return
+			}
+			remediationMode = strings.TrimSpace(req.Remediation.Mode)
+			remediated, err := s.remediateApprovalArguments(r.Context(), pending, remediationMode)
+			if err != nil {
+				s.recordControlPlaneAction(r.Context(), "", "tool_approval_remediation_failed", "admin_api",
+					fmt.Sprintf("approval_id=%s remediation_mode=%s error=%s", id, remediationMode, err.Error()))
+				writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+				return
+			}
+			remediationStatus = "applied"
+			remediatedArgs = remediated
+		}
+		if ok := store.ApproveWithRemediation(id, "admin_api", req.Reason, remediationMode, remediationStatus, remediatedArgs); !ok {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval request not found or not pending"})
 			return
 		}
 		log.Info().Str("approval_id", id).Msg("tool_approval_approved")
 		s.recordControlPlaneAction(r.Context(), "", "tool_approval_approved", "admin_api",
-			fmt.Sprintf("approval_id=%s reason=%s", id, req.Reason))
-		writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "approved"})
+			fmt.Sprintf("approval_id=%s reason=%s remediation_mode=%s remediation_status=%s", id, req.Reason, remediationMode, remediationStatus))
+		resp := map[string]string{"id": id, "status": "approved"}
+		if remediationMode != "" {
+			resp["remediation_mode"] = remediationMode
+			resp["remediation_status"] = remediationStatus
+		}
+		writeJSON(w, http.StatusOK, resp)
 	case "deny":
 		if ok := store.Deny(id, "admin_api", req.Reason); !ok {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "approval request not found or not pending"})
@@ -84,6 +118,55 @@ func (s *Server) handleToolApprovalDecide(w http.ResponseWriter, r *http.Request
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "decision must be 'approve' or 'deny'"})
 	}
+}
+
+func (s *Server) remediateApprovalArguments(ctx context.Context, req *agent.ToolApprovalRequest, mode string) (map[string]any, error) {
+	if mode != "re_redact_rescan" {
+		return nil, fmt.Errorf("unsupported remediation mode %q", mode)
+	}
+	scanner, err := s.toolApprovalRemediationScanner(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("initializing remediation scanner: %w", err)
+	}
+	rawArgs, err := json.Marshal(req.Arguments)
+	if err != nil {
+		return nil, fmt.Errorf("encoding approval arguments: %w", err)
+	}
+	redacted := scanner.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), string(rawArgs))
+	if verifyErr := scanner.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redacted); verifyErr != nil {
+		types := classifier.ResidualTypes(verifyErr)
+		if len(types) == 0 {
+			return nil, fmt.Errorf("remediation failed: recognized PII remains after re-redact/re-scan")
+		}
+		return nil, fmt.Errorf("remediation failed: recognized PII remains after re-redact/re-scan (types: %s)", strings.Join(types, ", "))
+	}
+	if !json.Valid([]byte(redacted)) {
+		return nil, fmt.Errorf("remediation failed: redacted arguments are not valid JSON")
+	}
+	var remediated map[string]any
+	if err := json.Unmarshal([]byte(redacted), &remediated); err != nil {
+		return nil, fmt.Errorf("decoding remediated arguments: %w", err)
+	}
+	return remediated, nil
+}
+
+func (s *Server) toolApprovalRemediationScanner(ctx context.Context) (*classifier.Scanner, error) {
+	if s.policy == nil {
+		return nil, fmt.Errorf("policy is required for remediation")
+	}
+	engine := s.policyEngine
+	if engine == nil {
+		var err error
+		engine, err = policy.NewEngine(ctx, s.policy)
+		if err != nil {
+			return nil, err
+		}
+	}
+	scanner, err := policy.NewPIIScannerForPolicyWithEnrichment(ctx, s.policy, "", engine)
+	if err != nil {
+		return nil, err
+	}
+	return scanner, nil
 }
 
 // toolApprovalStore returns the ToolApprovalStore from the runner.

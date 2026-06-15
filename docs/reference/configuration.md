@@ -380,6 +380,25 @@ See [Gateway dashboard reference](gateway-dashboard.md) for the full API schema 
 - **Auth model:** See [Authentication and key scopes](authentication-and-key-scopes.md) for endpoint-to-key mapping (tenant keys vs admin key).
 - **Operational control:** Run management, overrides, and tool approval gates are exposed via admin API. See [Operational control plane](operational-control-plane.md).
 
+#### Tool approval remediation hook
+
+The admin approval endpoint supports a minimal remediation mode that performs
+re-redact/re-scan before approval is finalized:
+
+```json
+POST /v1/tool-approvals/{id}/decide
+{
+  "decision": "approve",
+  "reason": "apply remediation",
+  "remediation": { "mode": "re_redact_rescan" }
+}
+```
+
+Behavior:
+
+- If remediation passes verification, approval is recorded with remediation metadata.
+- If remediation fails, the request remains pending (no bypass) and returns `422`.
+
 ### Observability
 
 | Variable | Purpose | Default |

@@ -156,6 +156,9 @@ func projectedAllowDecision(hasFilteredTools bool, hasRedaction bool) string {
 }
 
 func decisionFields(ev *evidence.Evidence) (decision, reasonCode, reasonText, suggestedFix string) {
+	if d, code, text, fix, ok := controlPlaneDecisionFields(ev); ok {
+		return d, code, text, fix
+	}
 	if ev.Execution.Error != "" {
 		return "error", "EXECUTION_ERROR", "Execution failed", ""
 	}
@@ -171,6 +174,39 @@ func decisionFields(ev *evidence.Evidence) (decision, reasonCode, reasonText, su
 		return "filtered_tool", "TOOL_FILTERED", "Request tools were filtered by policy", ""
 	}
 	return "allowed", "ALLOWED", "Request allowed", ""
+}
+
+func controlPlaneDecisionFields(ev *evidence.Evidence) (decision, reasonCode, reasonText, suggestedFix string, ok bool) {
+	if ev == nil || ev.InvocationType != "control_plane" {
+		return "", "", "", "", false
+	}
+	action := strings.TrimSpace(ev.PolicyDecision.Action)
+	if action == "" {
+		return "", "", "", "", false
+	}
+	detail := ""
+	if len(ev.PolicyDecision.Reasons) > 0 {
+		detail = strings.TrimSpace(ev.PolicyDecision.Reasons[0])
+	}
+	detailLower := strings.ToLower(detail)
+	switch action {
+	case "tool_approval_approved":
+		if strings.Contains(detailLower, "remediation_status=applied") {
+			return "allowed", "PII_REMEDIATED_APPROVED",
+				"Residual PII remediation applied and tool approval granted.",
+				"Proceed with monitored release and verify post-remediation evidence.", true
+		}
+		return "allowed", "TOOL_APPROVAL_APPROVED", "Tool execution approved by operator.", "", true
+	case "tool_approval_denied":
+		return "blocked", "TOOL_APPROVAL_DENIED", "Tool execution denied by operator.",
+			"Review the request and submit remediated content for approval.", true
+	case "tool_approval_remediation_failed":
+		return "blocked", "PII_REMEDIATION_FAILED",
+			"Remediation failed; recognized PII remains after re-redact/re-scan.",
+			"Adjust content or policy, then retry remediation through the approval workflow.", true
+	default:
+		return "", "", "", "", false
+	}
 }
 
 func codeFromReasons(reasons []string) (code string, text string) {
@@ -202,6 +238,12 @@ func fixFromCode(code string) string {
 	switch code {
 	case "PII_RESIDUAL_BLOCKED":
 		return "Use the approval workflow to remediate: adjust policy or content, re-redact, then re-scan."
+	case "PII_REMEDIATED_APPROVED":
+		return "Proceed with monitored release and keep the remediation evidence linked to the approval."
+	case "PII_REMEDIATION_FAILED":
+		return "Fix the offending fields and retry remediation; direct bypass is not allowed."
+	case "TOOL_APPROVAL_DENIED":
+		return "Rework the request and submit a remediated version for approval."
 	case "PII_IBAN", "PII_DETECTED":
 		return "Mask or remove sensitive data before sending the request."
 	case "POLICY_MODEL_DENIED":

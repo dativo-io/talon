@@ -447,6 +447,68 @@ func TestHandleToolApprovalDecide_InvalidDecision(t *testing.T) {
 	tas.Approve(reqID, "test", "")
 }
 
+func TestHandleToolApprovalDecide_ApproveWithRemediation(t *testing.T) {
+	srv, _, _, tas := controlPlaneServer(t)
+	ctx := context.Background()
+	correlationID := "req_remed1234"
+	toolCallID := "call_remed_1"
+
+	go func() {
+		tas.RequestApproval(ctx, correlationID, "acme", "bot", "send_email", toolCallID,
+			map[string]any{"to": "john@example.com", "body": "Contact john@example.com"})
+	}()
+
+	require.Eventually(t, func() bool {
+		return len(tas.ListPending()) > 0
+	}, 2*time.Second, 10*time.Millisecond)
+
+	reqID := tas.ListPending()[0].ID
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, adminReq(http.MethodPost, "/v1/tool-approvals/"+reqID+"/decide",
+		`{"decision":"approve","reason":"apply remediation","remediation":{"mode":"re_redact_rescan"}}`))
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	out := decodeJSON(t, rec)
+	assert.Equal(t, "approved", out["status"])
+	assert.Equal(t, "re_redact_rescan", out["remediation_mode"])
+	assert.Equal(t, "applied", out["remediation_status"])
+
+	remediated, ok := tas.RemediatedArguments(correlationID, toolCallID)
+	require.True(t, ok, "approved request should expose remediated arguments")
+	raw, err := json.Marshal(remediated)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "john@example.com", "raw PII must not remain in remediated arguments")
+}
+
+func TestHandleToolApprovalDecide_RemediationFailureDoesNotBypass(t *testing.T) {
+	srv, _, _, tas := controlPlaneServer(t)
+	ctx := context.Background()
+	correlationID := "req_remedfail1"
+	toolCallID := "call_remed_fail"
+
+	go func() {
+		tas.RequestApproval(ctx, correlationID, "acme", "bot", "send_email", toolCallID,
+			map[string]any{"to": "john@example.com"})
+	}()
+
+	require.Eventually(t, func() bool {
+		return len(tas.ListPending()) > 0
+	}, 2*time.Second, 10*time.Millisecond)
+
+	reqID := tas.ListPending()[0].ID
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, adminReq(http.MethodPost, "/v1/tool-approvals/"+reqID+"/decide",
+		`{"decision":"approve","reason":"attempt bypass","remediation":{"mode":"unsupported_mode"}}`))
+
+	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+	pending := tas.Get(reqID)
+	require.NotNil(t, pending)
+	assert.Equal(t, agent.ToolApprovalPending, pending.Status, "failed remediation must leave approval pending (no bypass)")
+
+	// Cleanup: approve to unblock pending RequestApproval goroutine.
+	tas.Approve(reqID, "test", "")
+}
+
 func TestHandleToolApprovalGet_NotFound(t *testing.T) {
 	srv, _, _, _ := controlPlaneServer(t)
 

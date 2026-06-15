@@ -269,6 +269,38 @@ func TestCompilePIIPatternsInvalidRegex(t *testing.T) {
 	assert.Contains(t, err.Error(), "compiling pattern")
 }
 
+func TestCompilePIIPatternsValidatorFlags(t *testing.T) {
+	score := 0.8
+	recognizers := []RecognizerConfig{
+		{
+			Name:            "Spanish IDs",
+			SupportedEntity: "ES_DNI",
+			Patterns: []PatternConfig{
+				{Name: "dni", Regex: `\b\d{8}[A-Z]\b`, Score: &score},
+			},
+			ValidateDNI: true,
+			ValidateNIE: true,
+			ValidateNIF: true,
+		},
+		{
+			Name:            "IPv4",
+			SupportedEntity: "IP_ADDRESS",
+			Patterns: []PatternConfig{
+				{Name: "ip", Regex: `\b(?:\d{1,3}\.){3}\d{1,3}\b`, Score: &score},
+			},
+			ValidateIPv4: true,
+		},
+	}
+
+	compiled, err := CompilePIIPatterns(recognizers)
+	require.NoError(t, err)
+	require.Len(t, compiled, 2)
+	assert.True(t, compiled[0].ValidateDNI)
+	assert.True(t, compiled[0].ValidateNIE)
+	assert.True(t, compiled[0].ValidateNIF)
+	assert.True(t, compiled[1].ValidateIPv4)
+}
+
 func TestValidateRecognizerLayer(t *testing.T) {
 	score := 0.9
 	t.Run("duplicate name within layer fails", func(t *testing.T) {

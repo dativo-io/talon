@@ -47,6 +47,18 @@ Byte offsets are canonical for enforcement and redaction.
   - Rune spans that split combining sequences
   - Ranges that do not map back to the expected substring
 
+## Evidence attribution output
+
+When `data_flow` evidence is recorded, Talon now emits compact per-entity
+attribution metadata in `entity_attributions` (no raw values):
+
+- `type` (canonical PII type)
+- `field_path` (best-effort source path such as `messages[].content`, `arguments`, `result`, `response.content`)
+- `start`/`end` byte offsets (when available)
+
+This attribution is additive and backward-compatible: older records without the
+field remain valid and verifiable.
+
 ## When to use it
 
 - **Off (default):** No attributes; placeholders are `[TYPE]` only. Use when you don’t need attributes or want minimal change.
@@ -120,6 +132,21 @@ policies:
    - Legacy: you should see `[PERSON]`, `[LOCATION]`, `[EMAIL]`.  
    - Enriched: you should see `<PII type="person" ... gender="female"/>`, `<PII type="location" ... scope="city"/>`, and `<PII type="email" id="3"/>` (no extra attributes for email).
 4. **Metrics:** Use `talon.pii.enrichment.attempts.total`, `talon.pii.enrichment.attributes.emitted.total`, and `talon.pii.enrichment.fallback_unknown.total` (see [Observability](#observability)).
+
+### End-to-end smoke flow (detect -> redact -> verify -> block -> remediate -> pass)
+
+Use this sequence as a closure check for Epic #112:
+
+1. **Detect + redact + verify gates**
+   - `go test ./internal/gateway/... -run 'PII|Egress|Residual|NoPIIEgress' -count=1`
+   - `go test ./internal/mcp/... -run 'PII|Egress|Residual|NoPIIEgress' -count=1`
+   - `go test ./internal/agent/... -run 'PII|Tool|Residual|NoPIIEgress' -count=1`
+2. **Residual block remains fail-closed**
+   - Run the `Residual`/`NoPIIEgress` suites above; bypass tests must stay green.
+3. **Remediation pass in approval flow**
+   - `go test ./internal/server/... -run 'TestHandleToolApprovalDecide_ApproveWithRemediation|TestHandleToolApprovalDecide_RemediationFailureDoesNotBypass' -count=1`
+4. **Aggregate proof gate**
+   - `make proof-gates`
 
 ## PERSON and LOCATION detection
 

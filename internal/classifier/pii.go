@@ -270,6 +270,35 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 				}
 			}
 
+			// Hard validation gate: Spanish DNI checksum letter
+			if pattern.ValidateDNI {
+				if !validateDNI(value) {
+					continue
+				}
+			}
+
+			// Hard validation gate: Spanish NIE checksum letter
+			if pattern.ValidateNIE {
+				if !validateNIE(value) {
+					continue
+				}
+			}
+
+			// Hard validation gate: Portuguese NIF check digit
+			if pattern.ValidateNIF {
+				if !validateNIF(value) {
+					continue
+				}
+			}
+
+			// Hard validation gate: IPv4 octets must be in range 0-255.
+			// IPv6 patterns bypass this gate.
+			if pattern.ValidateIPv4 {
+				if !validateIPv4(value) {
+					continue
+				}
+			}
+
 			// Presidio-style confidence: base score + context word boost
 			confidence := enhanceScoreWithContext(text, match[0], pattern.Score, pattern.ContextWords)
 			if confidence < s.minScore {
@@ -537,6 +566,119 @@ func validatePESEL(digits string) bool {
 	}
 	control := (10 - (sum % 10)) % 10
 	return int(digits[10]-'0') == control
+}
+
+var dniLetters = []byte("TRWAGMYFPDXBNJZSQVHLCKE")
+
+// validateDNI checks Spanish DNI format (8 digits + checksum letter).
+func validateDNI(value string) bool {
+	if len(value) != 9 {
+		return false
+	}
+	num := 0
+	for i := 0; i < 8; i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+		num = num*10 + int(value[i]-'0')
+	}
+	letter := value[8]
+	if letter >= 'a' && letter <= 'z' {
+		letter -= 'a' - 'A'
+	}
+	return letter == dniLetters[num%23]
+}
+
+// validateNIE checks Spanish NIE format (X/Y/Z + 7 digits + checksum letter).
+func validateNIE(value string) bool {
+	if len(value) != 9 {
+		return false
+	}
+	first := value[0]
+	switch first {
+	case 'X', 'x':
+		first = '0'
+	case 'Y', 'y':
+		first = '1'
+	case 'Z', 'z':
+		first = '2'
+	default:
+		return false
+	}
+
+	num := int(first - '0')
+	for i := 1; i < 8; i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+		num = num*10 + int(value[i]-'0')
+	}
+	letter := value[8]
+	if letter >= 'a' && letter <= 'z' {
+		letter -= 'a' - 'A'
+	}
+	return letter == dniLetters[num%23]
+}
+
+// validateNIF checks Portuguese NIF (9 digits, weighted checksum).
+func validateNIF(value string) bool {
+	digits := stripNonDigits(value)
+	if len(digits) != 9 {
+		return false
+	}
+
+	first := digits[0]
+	if first != '1' && first != '2' && first != '3' && first != '5' && first != '6' && first != '8' && first != '9' {
+		return false
+	}
+
+	sum := 0
+	for i := 0; i < 8; i++ {
+		d := digits[i]
+		if d < '0' || d > '9' {
+			return false
+		}
+		weight := 9 - i
+		sum += int(d-'0') * weight
+	}
+	check := 11 - (sum % 11)
+	if check >= 10 {
+		check = 0
+	}
+	last := digits[8]
+	if last < '0' || last > '9' {
+		return false
+	}
+	return int(last-'0') == check
+}
+
+// validateIPv4 checks that dotted-quad octets are in range [0,255].
+// IPv6 strings bypass this gate.
+func validateIPv4(value string) bool {
+	if strings.Contains(value, ":") {
+		return true
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || len(p) > 3 {
+			return false
+		}
+		n := 0
+		for i := 0; i < len(p); i++ {
+			ch := p[i]
+			if ch < '0' || ch > '9' {
+				return false
+			}
+			n = n*10 + int(ch-'0')
+		}
+		if n > 255 {
+			return false
+		}
+	}
+	return true
 }
 
 // validateIBANLength checks that the IBAN has the correct length for its country code.

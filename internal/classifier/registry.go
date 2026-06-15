@@ -32,6 +32,10 @@ type RecognizerConfig struct {
 	ValidateIBAN  bool     `yaml:"validate_iban,omitempty" json:"validate_iban,omitempty"`
 	ValidateBSN   bool     `yaml:"validate_bsn,omitempty" json:"validate_bsn,omitempty"`
 	ValidatePESEL bool     `yaml:"validate_pesel,omitempty" json:"validate_pesel,omitempty"`
+	ValidateDNI   bool     `yaml:"validate_dni,omitempty" json:"validate_dni,omitempty"`
+	ValidateNIE   bool     `yaml:"validate_nie,omitempty" json:"validate_nie,omitempty"`
+	ValidateNIF   bool     `yaml:"validate_nif,omitempty" json:"validate_nif,omitempty"`
+	ValidateIPv4  bool     `yaml:"validate_ipv4,omitempty" json:"validate_ipv4,omitempty"`
 	// Injection-specific extension (used by attachment scanner only)
 	Severity int `yaml:"severity,omitempty" json:"severity,omitempty"`
 }
@@ -161,6 +165,10 @@ func CompilePIIPatterns(recognizers []RecognizerConfig) ([]PIIPattern, error) {
 				ValidateIBAN:  rec.ValidateIBAN,
 				ValidateBSN:   rec.ValidateBSN,
 				ValidatePESEL: rec.ValidatePESEL,
+				ValidateDNI:   rec.ValidateDNI,
+				ValidateNIE:   rec.ValidateNIE,
+				ValidateNIF:   rec.ValidateNIF,
+				ValidateIPv4:  rec.ValidateIPv4,
 			})
 		}
 	}

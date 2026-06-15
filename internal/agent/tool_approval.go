@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -22,19 +23,22 @@ const (
 
 // ToolApprovalRequest represents a pending tool execution awaiting human approval.
 type ToolApprovalRequest struct {
-	ID            string             `json:"id"`
-	CorrelationID string             `json:"correlation_id"`
-	TenantID      string             `json:"tenant_id"`
-	AgentID       string             `json:"agent_id"`
-	ToolName      string             `json:"tool_name"`
-	ToolCallID    string             `json:"tool_call_id"`
-	Arguments     map[string]any     `json:"arguments"`
-	Status        ToolApprovalStatus `json:"status"`
-	CreatedAt     time.Time          `json:"created_at"`
-	ResolvedAt    time.Time          `json:"resolved_at,omitempty"`
-	ResolvedBy    string             `json:"resolved_by,omitempty"`
-	Reason        string             `json:"reason,omitempty"`
-	ch            chan ToolApprovalStatus
+	ID                string             `json:"id"`
+	CorrelationID     string             `json:"correlation_id"`
+	TenantID          string             `json:"tenant_id"`
+	AgentID           string             `json:"agent_id"`
+	ToolName          string             `json:"tool_name"`
+	ToolCallID        string             `json:"tool_call_id"`
+	Arguments         map[string]any     `json:"arguments"`
+	Status            ToolApprovalStatus `json:"status"`
+	CreatedAt         time.Time          `json:"created_at"`
+	ResolvedAt        time.Time          `json:"resolved_at,omitempty"`
+	ResolvedBy        string             `json:"resolved_by,omitempty"`
+	Reason            string             `json:"reason,omitempty"`
+	RemediationMode   string             `json:"remediation_mode,omitempty"`
+	RemediationStatus string             `json:"remediation_status,omitempty"` // "applied" | "failed"
+	RemediatedArgs    map[string]any     `json:"-"`
+	ch                chan ToolApprovalStatus
 }
 
 // ToolApprovalStore tracks pending tool approval requests. The agentic loop
@@ -59,11 +63,7 @@ func NewToolApprovalStore(timeout time.Duration) *ToolApprovalStore {
 // RequestApproval creates a pending approval and blocks until approved, denied, or timed out.
 // Returns the final status. The caller should check the status to decide whether to execute.
 func (s *ToolApprovalStore) RequestApproval(ctx context.Context, correlationID, tenantID, agentID, toolName, toolCallID string, args map[string]any) ToolApprovalStatus {
-	suffix := correlationID
-	if len(suffix) > 8 {
-		suffix = suffix[len(suffix)-8:]
-	}
-	reqID := fmt.Sprintf("tappr_%s_%s", suffix, toolCallID)
+	reqID := approvalRequestID(correlationID, toolCallID)
 
 	req := &ToolApprovalRequest{
 		ID:            reqID,
@@ -72,7 +72,7 @@ func (s *ToolApprovalStore) RequestApproval(ctx context.Context, correlationID, 
 		AgentID:       agentID,
 		ToolName:      toolName,
 		ToolCallID:    toolCallID,
-		Arguments:     args,
+		Arguments:     cloneArgs(args),
 		Status:        ToolApprovalPending,
 		CreatedAt:     time.Now(),
 		ch:            make(chan ToolApprovalStatus, 1),
@@ -121,6 +121,12 @@ func (s *ToolApprovalStore) RequestApproval(ctx context.Context, correlationID, 
 
 // Approve approves a pending tool execution. Returns true if the request was found and pending.
 func (s *ToolApprovalStore) Approve(reqID, approvedBy, reason string) bool {
+	return s.ApproveWithRemediation(reqID, approvedBy, reason, "", "", nil)
+}
+
+// ApproveWithRemediation approves a pending tool execution and optionally stores
+// remediated arguments that should be used at execution time.
+func (s *ToolApprovalStore) ApproveWithRemediation(reqID, approvedBy, reason, remediationMode, remediationStatus string, remediatedArgs map[string]any) bool {
 	s.mu.Lock()
 	req, ok := s.requests[reqID]
 	if !ok || req.Status != ToolApprovalPending {
@@ -131,6 +137,9 @@ func (s *ToolApprovalStore) Approve(reqID, approvedBy, reason string) bool {
 	req.ResolvedAt = time.Now()
 	req.ResolvedBy = approvedBy
 	req.Reason = reason
+	req.RemediationMode = remediationMode
+	req.RemediationStatus = remediationStatus
+	req.RemediatedArgs = cloneArgs(remediatedArgs)
 	s.mu.Unlock()
 
 	select {
@@ -202,4 +211,32 @@ func (s *ToolApprovalStore) Cleanup(olderThan time.Duration) int {
 		}
 	}
 	return removed
+}
+
+// RemediatedArguments returns remediated tool arguments for an approved request,
+// if present. A cloned copy is returned for safe caller mutation.
+func (s *ToolApprovalStore) RemediatedArguments(correlationID, toolCallID string) (map[string]any, bool) {
+	reqID := approvalRequestID(correlationID, toolCallID)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	req, ok := s.requests[reqID]
+	if !ok || req.Status != ToolApprovalApproved || len(req.RemediatedArgs) == 0 {
+		return nil, false
+	}
+	return cloneArgs(req.RemediatedArgs), true
+}
+
+func approvalRequestID(correlationID, toolCallID string) string {
+	suffix := correlationID
+	if len(suffix) > 8 {
+		suffix = suffix[len(suffix)-8:]
+	}
+	return fmt.Sprintf("tappr_%s_%s", suffix, toolCallID)
+}
+
+func cloneArgs(args map[string]any) map[string]any {
+	if len(args) == 0 {
+		return nil
+	}
+	return maps.Clone(args)
 }

@@ -675,11 +675,20 @@
         if (reasonCode.indexOf('residual') >= 0 || reasonText.indexOf('residual pii') >= 0) {
           chips.push('<span class="signal-chip risk">Remediation required</span>');
         }
+        if (reasonCode.indexOf('pii_remediation_failed') >= 0) {
+          chips.push('<span class="signal-chip risk">Remediation failed</span>');
+        }
+        if (reasonCode.indexOf('pii_remediated_approved') >= 0 || reasonText.indexOf('remediation applied') >= 0) {
+          chips.push('<span class="signal-chip ok">Remediated & approved</span>');
+        }
+        if (reasonCode.indexOf('tool_approval_denied') >= 0) {
+          chips.push('<span class="signal-chip warn">Approval denied</span>');
+        }
         if (ev.cache_hit === true) chips.push('<span class="signal-chip ok">Cache hit</span>');
         if (ev.cost_saved != null && !isNaN(Number(ev.cost_saved)) && Number(ev.cost_saved) > 0) {
           chips.push('<span class="signal-chip ok">Saved €' + Number(ev.cost_saved).toFixed(4) + '</span>');
         }
-        if (chips.length > 3) chips = chips.slice(0, 3);
+        if (chips.length > 4) chips = chips.slice(0, 4);
         if (chips.length === 0) return '';
         return '<div>' + chips.join('') + '</div>';
       }

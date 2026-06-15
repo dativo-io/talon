@@ -4,7 +4,8 @@
 
 # -----------------------------------------------------------------------------
 # Section 28: Operational Control Plane admin API
-# Proves: runs list, kill, pause/resume, overrides lockdown, tool disable, tool approval listing.
+# Proves: runs list, kill, pause/resume, overrides lockdown, tool disable,
+# tool approval list/get/decide endpoint behavior, remediation decision fail-closed.
 # Black-box: uses only curl against the admin API. No internal Go wiring tested here.
 # -----------------------------------------------------------------------------
 test_section_28_control_plane() {
@@ -200,7 +201,56 @@ test_section_28_control_plane() {
   fi
   rm -f "$ta_body"
 
-  # --- 28i: POST /v1/runs/{id}/kill returns 404 for nonexistent run ---
+  # --- 28i: GET /v1/tool-approvals/{id} returns 404 for nonexistent id ---
+  local ta_get_code
+  ta_get_code="$(curl -s -o /dev/null -w '%{http_code}' -H "$admin_hdr" "${cp_base}/v1/tool-approvals/nonexistent" 2>/dev/null)"
+  if [[ "$ta_get_code" == "404" ]]; then
+    echo "  ✓  control_plane_tool_approval_get_not_found (HTTP 404 for nonexistent request)"
+    record_pass
+  else
+    log_failure "control_plane_tool_approval_get_not_found expected HTTP 404, got $ta_get_code"
+  fi
+
+  # --- 28j: POST /v1/tool-approvals/{id}/decide invalid body returns 400 ---
+  local ta_decide_invalid_code
+  ta_decide_invalid_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "$admin_hdr" -H "Content-Type: application/json" \
+    -d '{' \
+    "${cp_base}/v1/tool-approvals/nonexistent/decide" 2>/dev/null)"
+  if [[ "$ta_decide_invalid_code" == "400" ]]; then
+    echo "  ✓  control_plane_tool_approval_decide_invalid_body (HTTP 400)"
+    record_pass
+  else
+    log_failure "control_plane_tool_approval_decide_invalid_body expected HTTP 400, got $ta_decide_invalid_code"
+  fi
+
+  # --- 28k: POST /v1/tool-approvals/{id}/decide approve returns 404 for nonexistent id ---
+  local ta_decide_missing_code
+  ta_decide_missing_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "$admin_hdr" -H "Content-Type: application/json" \
+    -d '{"decision":"approve","reason":"smoke approve"}' \
+    "${cp_base}/v1/tool-approvals/nonexistent/decide" 2>/dev/null)"
+  if [[ "$ta_decide_missing_code" == "404" ]]; then
+    echo "  ✓  control_plane_tool_approval_decide_not_found (HTTP 404)"
+    record_pass
+  else
+    log_failure "control_plane_tool_approval_decide_not_found expected HTTP 404, got $ta_decide_missing_code"
+  fi
+
+  # --- 28l: remediation payload on nonexistent approval stays fail-closed (404, no bypass) ---
+  local ta_remediate_missing_code
+  ta_remediate_missing_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "$admin_hdr" -H "Content-Type: application/json" \
+    -d '{"decision":"approve","reason":"apply remediation","remediation":{"mode":"re_redact_rescan"}}' \
+    "${cp_base}/v1/tool-approvals/nonexistent/decide" 2>/dev/null)"
+  if [[ "$ta_remediate_missing_code" == "404" ]]; then
+    echo "  ✓  control_plane_tool_approval_remediation_not_found_fail_closed (HTTP 404)"
+    record_pass
+  else
+    log_failure "control_plane_tool_approval_remediation_not_found_fail_closed expected HTTP 404, got $ta_remediate_missing_code"
+  fi
+
+  # --- 28m: POST /v1/runs/{id}/kill returns 404 for nonexistent run ---
   local kill_code
   kill_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "$admin_hdr" "${cp_base}/v1/runs/nonexistent-run/kill" 2>/dev/null)"
   if [[ "$kill_code" == "404" ]]; then
@@ -210,7 +260,7 @@ test_section_28_control_plane() {
     log_failure "control_plane_kill_not_found expected HTTP 404, got $kill_code"
   fi
 
-  # --- 28j: POST /v1/runs/kill-all without tenant_id returns 400 ---
+  # --- 28n: POST /v1/runs/kill-all without tenant_id returns 400 ---
   local killall_code
   killall_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "$admin_hdr" "${cp_base}/v1/runs/kill-all" 2>/dev/null)"
   if [[ "$killall_code" == "400" ]]; then
@@ -220,7 +270,7 @@ test_section_28_control_plane() {
     log_failure "control_plane_killall_requires_tenant expected HTTP 400, got $killall_code"
   fi
 
-  # --- 28k: POST tools/disable with empty body returns 400 ---
+  # --- 28o: POST tools/disable with empty body returns 400 ---
   local empty_disable_code
   empty_disable_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     -H "$admin_hdr" -H "Content-Type: application/json" \

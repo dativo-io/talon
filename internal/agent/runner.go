@@ -1522,6 +1522,9 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 							messages = append(messages, llm.Message{Role: "tool", Content: fmt.Sprintf("[TOOL-RESULT:%s]\n%s\n[/TOOL-RESULT]", tc.Name, resultContent), ToolCallID: tc.ID})
 							continue
 						}
+						if remediatedArgs, ok := r.toolApprovals.RemediatedArguments(correlationID, tc.ID); ok {
+							tc.Arguments = remediatedArgs
+						}
 					}
 
 					// Pre-execution evidence: write a "pending" record so a kill/crash

@@ -90,6 +90,8 @@ func TestGatewayDataFlow_PromptToProviderAndResponseToClient(t *testing.T) {
 	assert.Contains(t, prompt.EntityTypes, "email")
 	assert.Contains(t, prompt.EntityTypes, "iban")
 	require.NotEmpty(t, prompt.ValueDigests)
+	require.NotEmpty(t, prompt.EntityAttributions)
+	assert.Equal(t, "messages[].content", prompt.EntityAttributions[0].FieldPath)
 
 	// Response -> client: the same email surfaced in the output; redacted by
 	// response scanning, and the digest matches the prompt-side digest.
@@ -98,6 +100,8 @@ func TestGatewayDataFlow_PromptToProviderAndResponseToClient(t *testing.T) {
 	assert.Equal(t, evidence.FlowDestClient, response.Destination.Kind)
 	assert.Equal(t, "openclaw-main", response.Destination.Name)
 	assert.Contains(t, response.EntityTypes, "email")
+	require.NotEmpty(t, response.EntityAttributions)
+	assert.Equal(t, "response.content", response.EntityAttributions[0].FieldPath)
 
 	emailDigest := evidence.FlowDigest(ev.TenantID, ev.CorrelationID, "email", dataFlowTestEmail)
 	assert.Contains(t, prompt.ValueDigests, emailDigest)

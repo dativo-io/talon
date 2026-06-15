@@ -84,6 +84,48 @@ func TestFromEvidence_ResidualPIIReasonGetsRemediationFix(t *testing.T) {
 	assert.Contains(t, out.SuggestedFix, "re-scan")
 }
 
+func TestFromEvidence_ControlPlaneRemediationAppliedSurfaced(t *testing.T) {
+	ev := &evidence.Evidence{
+		ID:              "ev-remediation-applied",
+		Timestamp:       time.Now().UTC(),
+		TenantID:        "acme",
+		InvocationType:  "control_plane",
+		RequestSourceID: "admin_api",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: true,
+			Action:  "tool_approval_approved",
+			Reasons: []string{"approval_id=tappr_1 remediation_mode=re_redact_rescan remediation_status=applied"},
+		},
+	}
+
+	out := FromEvidence(ev)
+	assert.Equal(t, "allowed", out.Decision)
+	assert.Equal(t, "PII_REMEDIATED_APPROVED", out.ReasonCode)
+	assert.Contains(t, strings.ToLower(out.ReasonText), "remediation applied")
+	assert.Contains(t, strings.ToLower(out.SuggestedFix), "evidence")
+}
+
+func TestFromEvidence_ControlPlaneRemediationFailedSurfaced(t *testing.T) {
+	ev := &evidence.Evidence{
+		ID:              "ev-remediation-failed",
+		Timestamp:       time.Now().UTC(),
+		TenantID:        "acme",
+		InvocationType:  "control_plane",
+		RequestSourceID: "admin_api",
+		PolicyDecision: evidence.PolicyDecision{
+			Allowed: true,
+			Action:  "tool_approval_remediation_failed",
+			Reasons: []string{"approval_id=tappr_2 remediation_mode=re_redact_rescan error=residual pii"},
+		},
+	}
+
+	out := FromEvidence(ev)
+	assert.Equal(t, "blocked", out.Decision)
+	assert.Equal(t, "PII_REMEDIATION_FAILED", out.ReasonCode)
+	assert.Contains(t, strings.ToLower(out.ReasonText), "remediation failed")
+	assert.Contains(t, strings.ToLower(out.SuggestedFix), "retry remediation")
+}
+
 func TestFromEvidence_SanitizesSignalsAndReasonText(t *testing.T) {
 	ev := &evidence.Evidence{
 		ID:        "ev-3",

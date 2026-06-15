@@ -188,6 +188,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 		argTier = cls.Tier
 		if cls.HasPII {
 			argEntities = classifier.MergeEntitySpans(argStr, cls.Entities)
+			argEntities = applyServerFlowFieldPath(argEntities, "arguments")
 			redactedArgs := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedArgs); verifyErr != nil {
 				return &jsonrpcResponse{
@@ -281,6 +282,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 			resultTier = cls.Tier
 			if cls.HasPII {
 				resultEntities = classifier.MergeEntitySpans(resultStr, cls.Entities)
+				resultEntities = applyServerFlowFieldPath(resultEntities, "result")
 				redacted := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
 				if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redacted); verifyErr != nil {
 					return &jsonrpcResponse{
@@ -410,4 +412,19 @@ func writeRPCError(w http.ResponseWriter, id interface{}, code int, message stri
 		ID:      id,
 		Error:   &rpcError{Code: code, Message: message},
 	})
+}
+
+func applyServerFlowFieldPath(entities []classifier.PIIEntity, fieldPath string) []classifier.PIIEntity {
+	if len(entities) == 0 {
+		return entities
+	}
+	out := make([]classifier.PIIEntity, 0, len(entities))
+	for _, e := range entities {
+		cpy := e
+		if cpy.FieldPath == "" {
+			cpy.FieldPath = fieldPath
+		}
+		out = append(out, cpy)
+	}
+	return out
 }

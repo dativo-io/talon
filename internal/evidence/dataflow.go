@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/text/unicode/norm"
@@ -57,14 +58,27 @@ type DataFlow struct {
 
 // DataFlowItem links one classified data source to one destination.
 type DataFlowItem struct {
-	Source       string          `json:"source"`                  // prompt | attachment | tool_args | tool_result | response
-	SourceDetail string          `json:"source_detail,omitempty"` // attachment filename, tool name
-	Tier         int             `json:"tier"`                    // 0-2
-	EntityTypes  []string        `json:"entity_types,omitempty"`  // deduped, sorted canonical types: ["email","iban"]
-	EntityCount  int             `json:"entity_count,omitempty"`  // merged (non-overlapping) entity spans
-	ValueDigests []string        `json:"value_digests,omitempty"` // per-request salted SHA-256 prefixes; never raw values
-	Disposition  string          `json:"disposition"`             // forwarded | redacted | blocked | surfaced
-	Destination  FlowDestination `json:"destination"`
+	Source       string   `json:"source"`                  // prompt | attachment | tool_args | tool_result | response
+	SourceDetail string   `json:"source_detail,omitempty"` // attachment filename, tool name
+	Tier         int      `json:"tier"`                    // 0-2
+	EntityTypes  []string `json:"entity_types,omitempty"`  // deduped, sorted canonical types: ["email","iban"]
+	EntityCount  int      `json:"entity_count,omitempty"`  // merged (non-overlapping) entity spans
+	ValueDigests []string `json:"value_digests,omitempty"` // per-request salted SHA-256 prefixes; never raw values
+	// EntityAttributions provide compact, additive span attribution for evidence
+	// (field path + byte range), never raw values.
+	EntityAttributions []FlowEntityAttribution `json:"entity_attributions,omitempty"`
+	Disposition        string                  `json:"disposition"` // forwarded | redacted | blocked | surfaced
+	Destination        FlowDestination         `json:"destination"`
+}
+
+// FlowEntityAttribution carries compact per-entity attribution details used for
+// auditability and targeted remediation. It intentionally excludes raw values.
+type FlowEntityAttribution struct {
+	Type       string            `json:"type"`
+	FieldPath  string            `json:"field_path,omitempty"`
+	Start      *int              `json:"start,omitempty"` // byte offset
+	End        *int              `json:"end,omitempty"`   // byte offset
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
 // FlowDestination identifies where classified data was sent.
@@ -146,14 +160,15 @@ func NewDataFlowItem(tenantID, correlationID, source, sourceDetail string, tier 
 		}
 	}
 	return DataFlowItem{
-		Source:       source,
-		SourceDetail: sourceDetail,
-		Tier:         tier,
-		EntityTypes:  sortedSetKeys(typeSet),
-		EntityCount:  len(entities),
-		ValueDigests: sortedSetKeys(digestSet),
-		Disposition:  disposition,
-		Destination:  dest,
+		Source:             source,
+		SourceDetail:       sourceDetail,
+		Tier:               tier,
+		EntityTypes:        sortedSetKeys(typeSet),
+		EntityCount:        len(entities),
+		ValueDigests:       sortedSetKeys(digestSet),
+		EntityAttributions: compactEntityAttributions(source, entities),
+		Disposition:        disposition,
+		Destination:        dest,
 	}
 }
 
@@ -186,4 +201,89 @@ func sortedSetKeys(set map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func compactEntityAttributions(source string, entities []classifier.PIIEntity) []FlowEntityAttribution {
+	if len(entities) == 0 {
+		return nil
+	}
+
+	out := make([]FlowEntityAttribution, 0, len(entities))
+	seen := make(map[string]struct{}, len(entities))
+	defaultPath := defaultFieldPathForSource(source)
+
+	for _, e := range entities {
+		if e.Type == "" {
+			continue
+		}
+		fieldPath := strings.TrimSpace(e.FieldPath)
+		if fieldPath == "" {
+			fieldPath = defaultPath
+		}
+		start := e.Position
+		end := e.Position + len(e.Value)
+		att := FlowEntityAttribution{
+			Type:      e.Type,
+			FieldPath: fieldPath,
+		}
+		if e.Position >= 0 {
+			att.Start = &start
+		}
+		if end >= 0 {
+			att.End = &end
+		}
+		key := att.Type + "|" + att.FieldPath + "|" + ptrIntKey(att.Start) + "|" + ptrIntKey(att.End)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, att)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Type != out[j].Type {
+			return out[i].Type < out[j].Type
+		}
+		if out[i].FieldPath != out[j].FieldPath {
+			return out[i].FieldPath < out[j].FieldPath
+		}
+		li, ri := ptrIntValue(out[i].Start), ptrIntValue(out[j].Start)
+		if li != ri {
+			return li < ri
+		}
+		return ptrIntValue(out[i].End) < ptrIntValue(out[j].End)
+	})
+
+	return out
+}
+
+func defaultFieldPathForSource(source string) string {
+	switch source {
+	case FlowSourcePrompt:
+		return "messages[].content"
+	case FlowSourceResponse:
+		return "response.content"
+	case FlowSourceToolArgs:
+		return "arguments"
+	case FlowSourceToolResult:
+		return "result"
+	case FlowSourceAttachment:
+		return "attachment.text"
+	default:
+		return ""
+	}
+}
+
+func ptrIntKey(v *int) string {
+	if v == nil {
+		return "_"
+	}
+	return strconv.Itoa(*v)
+}
+
+func ptrIntValue(v *int) int {
+	if v == nil {
+		return -1
+	}
+	return *v
 }

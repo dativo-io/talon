@@ -1,0 +1,10 @@
+{
+  "benchmark": "BenchmarkPIIScan",
+  "unit": "ns/op",
+  "baseline_ns_per_op": 72671,
+  "threshold_percent": 10,
+  "sample_count": 5,
+  "bench_time": "1s",
+  "generated_at_utc": "2026-06-15T08:21:00Z",
+  "notes": "Median from local BenchmarkPIIScan runs on darwin/arm64."
+}

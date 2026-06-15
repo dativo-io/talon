@@ -307,3 +307,109 @@ func TestBug5b_ValidCreditCardIsDetected(t *testing.T) {
 	}
 	assert.True(t, found, "BUG-5b: credit_card entity must be present for Luhn-valid number")
 }
+
+// BUG-6: LOCATION recognizer used a high base score and triggered on ambiguous
+// city names in regular prose without contextual location cues.
+func TestBug6_LocationWithoutContextIsFiltered(t *testing.T) {
+	scanner := MustNewScanner()
+	ctx := context.Background()
+
+	result := scanner.Scan(ctx, "The Paris agreement entered into force in 2016")
+	for _, e := range result.Entities {
+		assert.NotEqual(t, "location", e.Type,
+			"BUG-6: ambiguous city names without location context must not be detected as location, got: %+v", e)
+	}
+}
+
+// BUG-6b: LOCATION detection must still work when context words are present.
+func TestBug6b_LocationWithContextIsDetected(t *testing.T) {
+	scanner := MustNewScanner()
+	ctx := context.Background()
+
+	result := scanner.Scan(ctx, "Our office city is Berlin")
+	assert.True(t, result.HasPII, "BUG-6b: location with context should be detected")
+
+	found := false
+	for _, e := range result.Entities {
+		if e.Type == "location" {
+			found = true
+		}
+	}
+	assert.True(t, found, "BUG-6b: location entity must be present when context words are present")
+}
+
+// BUG-7: Spanish DNI regex matched any 8 digits + letter, including invalid
+// checksum letters.
+func TestBug7_DNIChecksumValidation(t *testing.T) {
+	scanner := MustNewScanner()
+	ctx := context.Background()
+
+	invalid := scanner.Scan(ctx, "DNI 12345678A")
+	for _, e := range invalid.Entities {
+		assert.NotEqual(t, "national_id", e.Type,
+			"BUG-7: invalid DNI checksum letter must be filtered, got: %+v", e)
+	}
+
+	valid := scanner.Scan(ctx, "DNI 12345678Z")
+	found := false
+	for _, e := range valid.Entities {
+		if e.Type == "national_id" {
+			found = true
+		}
+	}
+	assert.True(t, found, "BUG-7: valid DNI must still be detected")
+}
+
+// BUG-7b: Spanish NIE regex matched invalid control letters.
+func TestBug7b_NIEChecksumValidation(t *testing.T) {
+	scanner := MustNewScanner()
+	ctx := context.Background()
+
+	invalid := scanner.Scan(ctx, "NIE X1234567A")
+	for _, e := range invalid.Entities {
+		assert.NotEqual(t, "national_id", e.Type,
+			"BUG-7b: invalid NIE checksum letter must be filtered, got: %+v", e)
+	}
+
+	valid := scanner.Scan(ctx, "NIE X1234567L")
+	found := false
+	for _, e := range valid.Entities {
+		if e.Type == "national_id" {
+			found = true
+		}
+	}
+	assert.True(t, found, "BUG-7b: valid NIE must still be detected")
+}
+
+// BUG-8: Portuguese NIF regex matched any 9 digits in context, causing false positives.
+func TestBug8_NIFChecksumValidation(t *testing.T) {
+	scanner := MustNewScanner()
+	ctx := context.Background()
+
+	invalid := scanner.Scan(ctx, "NIF 123456780")
+	for _, e := range invalid.Entities {
+		assert.NotEqual(t, "tax_id", e.Type,
+			"BUG-8: invalid NIF check digit must be filtered, got: %+v", e)
+	}
+
+	valid := scanner.Scan(ctx, "NIF 123456789")
+	found := false
+	for _, e := range valid.Entities {
+		if e.Type == "tax_id" {
+			found = true
+		}
+	}
+	assert.True(t, found, "BUG-8: valid NIF must still be detected")
+}
+
+// BUG-9: IPv4 regex accepted octets >255 as valid addresses.
+func TestBug9_IPv4OctetRangeValidation(t *testing.T) {
+	scanner := MustNewScanner()
+	ctx := context.Background()
+
+	result := scanner.Scan(ctx, "Server at 999.999.999.999")
+	for _, e := range result.Entities {
+		assert.NotEqual(t, "ip_address", e.Type,
+			"BUG-9: invalid IPv4 octets must be filtered, got: %+v", e)
+	}
+}

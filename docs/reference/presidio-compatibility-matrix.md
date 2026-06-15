@@ -60,3 +60,20 @@ Byte offsets are canonical for enforcement and redaction.
 - Tests: `internal/classifier/presidio/normalize_test.go`, `internal/classifier/offset_test.go`
 - Scanner seam: `internal/classifier/facade.go`
 
+## Proof gates and regression bar
+
+Epic #112 closure is enforced by reproducible proof gates:
+
+- `make proof-gates`
+  - recognizer matrix coverage
+  - normalization parity checks
+  - egress residual fail-closed tests (gateway/MCP/agent)
+  - fuzz sanity runs
+  - benchmark regression check
+
+`BenchmarkPIIScan` regression is bounded to **<=10%** over the checked-in
+baseline artifact:
+
+- Baseline artifact: `testdata/benchmarks/pii_scan_baseline.json`
+- Gate script: `scripts/check-pii-benchmark-regression.sh`
+

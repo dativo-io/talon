@@ -1,6 +1,6 @@
 # Evidence Integrity Specification
 
-**Status:** stable · **Version:** 1.2 · **Scope:** the signed evidence record produced by Talon.
+**Status:** stable · **Version:** 1.3 · **Scope:** the signed evidence record produced by Talon.
 
 This is the normative specification for how a Talon evidence record is serialized,
 signed, and verified. It is written so that a third party can independently verify a
@@ -110,6 +110,9 @@ nested fields are:
   `source`, `source_detail` (optional), `tier`, `entity_types` (sorted array,
   optional), `entity_count` (optional), `value_digests` (sorted array of
   per-request salted SHA-256 prefixes, optional — never raw values),
+  `entity_attributions` (optional array of compact attribution objects:
+  `type`, `field_path` (optional), `start` (optional), `end` (optional),
+  `attributes` (optional)),
   `disposition`, and a `destination` object (`kind`, `name`, `model`,
   `endpoint`, `region`; the last three optional).
 - `egress_decision` (optional): outcome of the gateway egress policy
@@ -227,6 +230,10 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 
 ## 8. Changelog
 
+- **1.3** — added optional nested field `data_flow.items[].entity_attributions`
+  (compact field-path + span attribution, no raw values). This is additive and
+  backward-compatible: records that omit the field keep identical canonical
+  bytes and verify unchanged.
 - **1.2** — added optional top-level field `egress_decision` (#47), appended
   after `data_flow`. Records signed under spec 1.0/1.1 verify unchanged (the
   field is omitted when absent, so their canonical bytes are identical). The
