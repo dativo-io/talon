@@ -159,6 +159,7 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 		tenantID = "default"
 	}
 	agentID := "mcp-client"
+	flow := &serverFlowState{}
 
 	// Policy check
 	var paramsMap map[string]interface{}
@@ -180,17 +181,35 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 
 	// Classify tool arguments: every governed tool call records what data
 	// reached the tool, classified or not (same posture as gateway/proxy).
-	var argEntities []classifier.PIIEntity
-	argTier := 0
 	if h.classifier != nil && len(params.Arguments) > 0 {
 		argStr := string(params.Arguments)
 		cls := h.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
-		argTier = cls.Tier
+		flow.argTier = cls.Tier
 		if cls.HasPII {
-			argEntities = classifier.MergeEntitySpans(argStr, cls.Entities)
-			argEntities = applyServerFlowFieldPath(argEntities, "arguments")
+			flow.argEntities = classifier.MergeEntitySpans(argStr, cls.Entities)
+			flow.argEntities = applyServerFlowFieldPath(flow.argEntities, "arguments")
 			redactedArgs := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
+			flow.argRedacted = redactedArgs != argStr
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedArgs); verifyErr != nil {
+				flow.argBlocked = true
+				correlationID := "mcp_" + uuid.New().String()[:8]
+				blockEv := h.newServerEvidence(tenantID, agentID, correlationID, params.Name, evidence.PolicyDecision{
+					Allowed:       false,
+					Action:        "deny",
+					Reasons:       []string{"request_residual_pii_after_redaction"},
+					PolicyVersion: decision.PolicyVersion,
+				}, "request residual pii after redaction", 0, flow)
+				blockEv.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
+					Code:            explanation.CodePolicyDeniedPIIInput,
+					Decision:        explanation.DecisionDeny,
+					Stage:           explanation.StagePolicyEvaluation,
+					Trigger:         "request_residual_pii_after_redaction",
+					PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
+					VersionIdentity: decision.PolicyVersion,
+				}})
+				if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
+					span.RecordError(storeErr)
+				}
 				return &jsonrpcResponse{
 					JSONRPC: jsonrpcVersion,
 					ID:      req.ID,
@@ -201,6 +220,25 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 				}
 			}
 			if !json.Valid([]byte(redactedArgs)) {
+				flow.argBlocked = true
+				correlationID := "mcp_" + uuid.New().String()[:8]
+				blockEv := h.newServerEvidence(tenantID, agentID, correlationID, params.Name, evidence.PolicyDecision{
+					Allowed:       false,
+					Action:        "deny",
+					Reasons:       []string{"request_redaction_invalid_json"},
+					PolicyVersion: decision.PolicyVersion,
+				}, "request redaction invalid json", 0, flow)
+				blockEv.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
+					Code:            explanation.CodeExecutionFailed,
+					Decision:        explanation.DecisionFailure,
+					Stage:           explanation.StagePolicyEvaluation,
+					Trigger:         "request_redaction_invalid_json",
+					PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
+					VersionIdentity: decision.PolicyVersion,
+				}})
+				if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
+					span.RecordError(storeErr)
+				}
 				return &jsonrpcResponse{
 					JSONRPC: jsonrpcVersion,
 					ID:      req.ID,
@@ -217,40 +255,22 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 			msg = decision.Reasons[0]
 		}
 		span.SetAttributes(attribute.String("policy.deny", msg))
+		flow.argBlocked = true
 		denyCorrelationID := "mcp_" + uuid.New().String()[:8]
-		denyEv := &evidence.Evidence{
-			ID:              "req_" + uuid.New().String()[:8],
-			CorrelationID:   denyCorrelationID,
-			Timestamp:       time.Now(),
-			TenantID:        tenantID,
-			AgentID:         agentID,
-			InvocationType:  "mcp",
-			RequestSourceID: "mcp",
-			PolicyDecision: evidence.PolicyDecision{
-				Allowed:       false,
-				Action:        decision.Action,
-				Reasons:       decision.Reasons,
-				PolicyVersion: decision.PolicyVersion,
-			},
-			Execution: evidence.Execution{
-				ToolsCalled: []string{params.Name},
-				Error:       msg,
-			},
-			Classification: evidence.Classification{
-				InputTier:   argTier,
-				PIIDetected: entityTypeSet(argEntities),
-			},
-			DataFlow: h.buildServerDataFlow(tenantID, denyCorrelationID, params.Name,
-				argTier, argEntities, evidence.FlowDispositionBlocked, 0, nil),
-			Explanations: explanation.BuildFromFacts(explanation.BuildLegacyFacts(
-				false,
-				decision.Action,
-				decision.Reasons,
-				explanation.StagePolicyEvaluation,
-				explanation.PolicyRef(decision.PolicyVersion),
-				decision.PolicyVersion,
-			)),
-		}
+		denyEv := h.newServerEvidence(tenantID, agentID, denyCorrelationID, params.Name, evidence.PolicyDecision{
+			Allowed:       false,
+			Action:        decision.Action,
+			Reasons:       decision.Reasons,
+			PolicyVersion: decision.PolicyVersion,
+		}, msg, 0, flow)
+		denyEv.Explanations = explanation.BuildFromFacts(explanation.BuildLegacyFacts(
+			false,
+			decision.Action,
+			decision.Reasons,
+			explanation.StagePolicyEvaluation,
+			explanation.PolicyRef(decision.PolicyVersion),
+			decision.PolicyVersion,
+		))
 		if storeErr := h.evidenceStore.Store(ctx, denyEv); storeErr != nil {
 			span.RecordError(storeErr)
 		}
@@ -273,18 +293,36 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 	duration := time.Since(start).Milliseconds()
 
 	// Classify the tool result before it is surfaced to the client.
-	var resultEntities []classifier.PIIEntity
-	resultTier := 0
 	if h.classifier != nil && execErr == nil && result != nil {
 		if resultJSON, marshalErr := json.Marshal(result); marshalErr == nil {
 			resultStr := string(resultJSON)
 			cls := h.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
-			resultTier = cls.Tier
+			flow.resultTier = cls.Tier
 			if cls.HasPII {
-				resultEntities = classifier.MergeEntitySpans(resultStr, cls.Entities)
-				resultEntities = applyServerFlowFieldPath(resultEntities, "result")
+				flow.resultEntities = classifier.MergeEntitySpans(resultStr, cls.Entities)
+				flow.resultEntities = applyServerFlowFieldPath(flow.resultEntities, "result")
 				redacted := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
+				flow.resultRedacted = redacted != resultStr
 				if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redacted); verifyErr != nil {
+					flow.resultBlocked = true
+					correlationID := "mcp_" + uuid.New().String()[:8]
+					blockEv := h.newServerEvidence(tenantID, agentID, correlationID, params.Name, evidence.PolicyDecision{
+						Allowed:       false,
+						Action:        "deny",
+						Reasons:       []string{"output_pii_blocked_residual"},
+						PolicyVersion: decision.PolicyVersion,
+					}, "output pii blocked residual", duration, flow)
+					blockEv.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
+						Code:            explanation.CodePolicyDeniedPIIOutput,
+						Decision:        explanation.DecisionDeny,
+						Stage:           explanation.StageOutputValidation,
+						Trigger:         "output_pii_blocked_residual",
+						PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
+						VersionIdentity: decision.PolicyVersion,
+					}})
+					if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
+						span.RecordError(storeErr)
+					}
 					return &jsonrpcResponse{
 						JSONRPC: jsonrpcVersion,
 						ID:      req.ID,
@@ -301,33 +339,11 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 
 	// Record evidence
 	correlationID := "mcp_" + uuid.New().String()[:8]
-	ev := &evidence.Evidence{
-		ID:              "req_" + uuid.New().String()[:8],
-		CorrelationID:   correlationID,
-		Timestamp:       time.Now(),
-		TenantID:        tenantID,
-		AgentID:         agentID,
-		InvocationType:  "mcp",
-		RequestSourceID: "mcp",
-		PolicyDecision: evidence.PolicyDecision{
-			Allowed:       true,
-			Action:        "allow",
-			PolicyVersion: decision.PolicyVersion,
-		},
-		Execution: evidence.Execution{
-			ToolsCalled: []string{params.Name},
-			DurationMS:  duration,
-		},
-		Classification: evidence.Classification{
-			InputTier:         argTier,
-			OutputTier:        resultTier,
-			PIIDetected:       entityTypeSet(argEntities),
-			OutputPIIDetected: len(resultEntities) > 0,
-			OutputPIITypes:    entityTypeSet(resultEntities),
-		},
-		DataFlow: h.buildServerDataFlow(tenantID, correlationID, params.Name,
-			argTier, argEntities, evidence.FlowDispositionForwarded, resultTier, resultEntities),
-	}
+	ev := h.newServerEvidence(tenantID, agentID, correlationID, params.Name, evidence.PolicyDecision{
+		Allowed:       true,
+		Action:        "allow",
+		PolicyVersion: decision.PolicyVersion,
+	}, "", duration, flow)
 	ev.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
 		Code:            explanation.CodePolicyAllowed,
 		Decision:        explanation.DecisionAllow,
@@ -373,26 +389,50 @@ func mcpResidualBlockMessage(prefix string, types []string) string {
 // tool_args -> tool flow, classified or not — same posture as the gateway,
 // agent runner, and MCP proxy. Embedded tools execute in-process, so the
 // destination region is LOCAL (a fact, not a guess). Digests only, never raw values.
+type serverFlowState struct {
+	argTier        int
+	argEntities    []classifier.PIIEntity
+	argBlocked     bool
+	argRedacted    bool
+	resultTier     int
+	resultEntities []classifier.PIIEntity
+	resultBlocked  bool
+	resultRedacted bool
+}
+
 func (h *Handler) buildServerDataFlow(
 	tenantID, correlationID, toolName string,
-	argTier int, argEntities []classifier.PIIEntity, argDisposition string,
-	resultTier int, resultEntities []classifier.PIIEntity,
+	flow *serverFlowState,
 ) *evidence.DataFlow {
+	argDisposition := evidence.FlowDispositionForwarded
+	switch {
+	case flow.argBlocked:
+		argDisposition = evidence.FlowDispositionBlocked
+	case flow.argRedacted:
+		argDisposition = evidence.FlowDispositionRedacted
+	}
 	items := []evidence.DataFlowItem{evidence.NewDataFlowItem(
 		tenantID, correlationID,
 		evidence.FlowSourceToolArgs, toolName,
-		argTier, argEntities,
+		flow.argTier, flow.argEntities,
 		argDisposition, evidence.FlowDestination{
 			Kind:   evidence.FlowDestMCPTool,
 			Name:   toolName,
 			Region: "LOCAL",
 		})}
-	if len(resultEntities) > 0 {
+	if len(flow.resultEntities) > 0 {
+		resultDisposition := evidence.FlowDispositionSurfaced
+		switch {
+		case flow.resultBlocked:
+			resultDisposition = evidence.FlowDispositionBlocked
+		case flow.resultRedacted:
+			resultDisposition = evidence.FlowDispositionRedacted
+		}
 		items = append(items, evidence.NewDataFlowItem(
 			tenantID, correlationID,
 			evidence.FlowSourceToolResult, toolName,
-			resultTier, resultEntities,
-			evidence.FlowDispositionSurfaced, evidence.FlowDestination{
+			flow.resultTier, flow.resultEntities,
+			resultDisposition, evidence.FlowDestination{
 				Kind: evidence.FlowDestClient,
 				Name: tenantID,
 			}))
@@ -402,6 +442,41 @@ func (h *Handler) buildServerDataFlow(
 		detector = h.classifier.Detector()
 	}
 	return &evidence.DataFlow{Detector: detector, Items: items}
+}
+
+func (h *Handler) newServerEvidence(
+	tenantID, agentID, correlationID, toolName string,
+	decision evidence.PolicyDecision,
+	execErr string,
+	durationMS int64,
+	flow *serverFlowState,
+) *evidence.Evidence {
+	ev := &evidence.Evidence{
+		ID:              "req_" + uuid.New().String()[:8],
+		CorrelationID:   correlationID,
+		Timestamp:       time.Now(),
+		TenantID:        tenantID,
+		AgentID:         agentID,
+		InvocationType:  "mcp",
+		RequestSourceID: "mcp",
+		PolicyDecision:  decision,
+		Execution: evidence.Execution{
+			ToolsCalled: []string{toolName},
+			DurationMS:  durationMS,
+			Error:       execErr,
+		},
+		Classification: evidence.Classification{
+			InputTier:         flow.argTier,
+			OutputTier:        flow.resultTier,
+			PIIDetected:       entityTypeSet(flow.argEntities),
+			PIIRedacted:       flow.resultRedacted,
+			InputPIIRedacted:  flow.argRedacted,
+			OutputPIIDetected: len(flow.resultEntities) > 0,
+			OutputPIITypes:    entityTypeSet(flow.resultEntities),
+		},
+	}
+	ev.DataFlow = h.buildServerDataFlow(tenantID, correlationID, toolName, flow)
+	return ev
 }
 
 func writeRPCError(w http.ResponseWriter, id interface{}, code int, message string) {
