@@ -72,8 +72,12 @@ Epic #112 closure is enforced by reproducible proof gates:
   - benchmark regression check
 
 `BenchmarkPIIScan` regression is bounded to **<=10%** over the checked-in
-baseline artifact:
+platform baseline artifact:
 
-- Baseline artifact: `testdata/benchmarks/pii_scan_baseline.json`
+- Baseline artifacts: `testdata/benchmarks/pii_scan_baseline.<goos>.<goarch>.json`
+  (for example `pii_scan_baseline.linux.amd64.json`, `pii_scan_baseline.darwin.arm64.json`)
 - Gate script: `scripts/check-pii-benchmark-regression.sh`
+- Regenerate for your host: `make benchmark-baseline-update`
+- Skip benchmark gate only when no baseline exists for your platform:
+  `SKIP_BENCHMARK_REGRESSION=1 make proof-gates`
 

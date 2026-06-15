@@ -3,12 +3,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-BASELINE_FILE="${BASELINE_FILE:-testdata/benchmarks/pii_scan_baseline.json}"
+GOOS="$(go env GOOS)"
+GOARCH="$(go env GOARCH)"
+PLATFORM="${GOOS}.${GOARCH}"
+DEFAULT_BASELINE="testdata/benchmarks/pii_scan_baseline.${PLATFORM}.json"
+BASELINE_FILE="${BASELINE_FILE:-$DEFAULT_BASELINE}"
 BENCH_TIME="${BENCH_TIME:-1s}"
 BENCH_COUNT="${BENCH_COUNT:-5}"
 
 if [ ! -f "$BASELINE_FILE" ]; then
-  echo "baseline file not found: $BASELINE_FILE" >&2
+  echo "baseline file not found for ${GOOS}/${GOARCH}: $BASELINE_FILE" >&2
+  echo "Generate one with: make benchmark-baseline-update" >&2
+  echo "Or skip this gate with: SKIP_BENCHMARK_REGRESSION=1 make proof-gates" >&2
   exit 2
 fi
 
@@ -54,9 +60,10 @@ if not vals:
     sys.exit(2)
 
 median_ns = statistics.median(vals)
+platform = baseline.get("platform", "unknown")
 print(
     f"BenchmarkPIIScan median: {median_ns:.0f} ns/op "
-    f"(baseline {baseline_ns:.0f}, allowed <= {allowed_ns:.0f}, threshold {threshold:.1f}%)"
+    f"(baseline {baseline_ns:.0f}, allowed <= {allowed_ns:.0f}, threshold {threshold:.1f}%, platform {platform})"
 )
 
 if median_ns > allowed_ns:
