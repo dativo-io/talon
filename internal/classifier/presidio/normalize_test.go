@@ -92,6 +92,11 @@ func TestNormalizeResults_SubstringMismatchRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "expected substring")
 }
 
+func TestEntityToCanonicalType(t *testing.T) {
+	assert.Equal(t, "email", EntityToCanonicalType("EMAIL_ADDRESS"))
+	assert.Equal(t, "custom_ticket", EntityToCanonicalType("CUSTOM_TICKET"))
+}
+
 func TestNormalizeResults_OptionalAndFallbackFields(t *testing.T) {
 	text := "XYZ-001"
 	conf := 0.99

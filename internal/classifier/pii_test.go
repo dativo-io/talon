@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/dativo-io/talon/internal/classifier/enrich"
+	"github.com/dativo-io/talon/internal/classifier/presidio"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -576,6 +577,31 @@ func FuzzPIIScan(f *testing.F) {
 		}
 		_ = scanner.Scan(ctx, string(data))
 	})
+}
+
+func TestPresidioFallbackPIIEntitiesUsesCanonicalTypes(t *testing.T) {
+	entities := presidioFallbackPIIEntities([]presidio.RecognizerResult{
+		{
+			EntityType:          "EMAIL_ADDRESS",
+			Start:               0,
+			End:                 16,
+			Score:               0.9,
+			ExpectedSubstring:   "user@example.com",
+			ExpectedSensitivity: 2,
+		},
+		{
+			EntityType:          "CUSTOM_TICKET",
+			Start:               20,
+			End:                 28,
+			Score:               0.8,
+			ExpectedSubstring:   "TKT-1234",
+			ExpectedSensitivity: 1,
+		},
+	})
+
+	require.Len(t, entities, 2)
+	assert.Equal(t, "email", entities[0].Type)
+	assert.Equal(t, "custom_ticket", entities[1].Type)
 }
 
 func BenchmarkPIIScan(b *testing.B) {

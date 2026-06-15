@@ -84,9 +84,9 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 				return result
 			}
 			if redacted != argStr {
-				if !json.Valid([]byte(redacted)) {
+				if redactionBreaksJSON(argStr, redacted) {
 					result.Blocked = true
-					result.BlockReason = "PII redaction produced invalid JSON (fail-closed)"
+					result.BlockReason = invalidJSONAfterRedactionMessage("tool arguments blocked")
 					result.Findings = append(result.Findings, ToolPIIFinding{
 						Field:     "_raw",
 						Action:    string(policy.PIIActionBlock),
@@ -94,7 +94,12 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 					})
 					return result
 				}
-				result.ModifiedArgs = json.RawMessage(redacted)
+				if json.Valid([]byte(redacted)) {
+					result.ModifiedArgs = json.RawMessage(redacted)
+				} else {
+					redactedJSON, _ := json.Marshal(redacted)
+					result.ModifiedArgs = redactedJSON
+				}
 			}
 		}
 		return result
@@ -154,6 +159,18 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 				continue
 			}
 			if redacted != valStr {
+				if redactionBreaksJSON(valStr, redacted) {
+					if !result.Blocked {
+						result.Blocked = true
+						result.BlockReason = invalidJSONAfterRedactionMessage("tool arguments blocked")
+					}
+					result.Findings = append(result.Findings, ToolPIIFinding{
+						Field:     field,
+						Action:    string(policy.PIIActionBlock),
+						Direction: "argument",
+					})
+					continue
+				}
 				redactedJSON, _ := json.Marshal(redacted)
 				argsMap[field] = redactedJSON
 				modified = true
@@ -206,13 +223,13 @@ func applyToolResultPII(ctx context.Context, scanner *classifier.Scanner, toolNa
 			})
 			return fmt.Sprintf(`{"error":"%s"}`, residualPIIMessage("tool result blocked: recognized PII remains after redaction", types)), findings
 		}
-		if redacted != resultContent && !json.Valid([]byte(redacted)) {
+		if redactionBreaksJSON(resultContent, redacted) {
 			findings = append(findings, ToolPIIFinding{
 				Field:     "_result",
 				Action:    string(policy.PIIActionBlock),
 				Direction: "result",
 			})
-			return `{"error":"PII redaction of tool result produced invalid JSON (fail-closed)"}`, findings
+			return fmt.Sprintf(`{"error":"%s"}`, invalidJSONAfterRedactionMessage("tool result blocked")), findings
 		}
 		return redacted, findings
 	}
@@ -260,6 +277,14 @@ func residualPIIMessage(prefix string, types []string) string {
 		return prefix + "." + remediation
 	}
 	return prefix + " (types: " + strings.Join(types, ", ") + ")." + remediation
+}
+
+func redactionBreaksJSON(original, redacted string) bool {
+	return redacted != original && json.Valid([]byte(original)) && !json.Valid([]byte(redacted))
+}
+
+func invalidJSONAfterRedactionMessage(prefix string) string {
+	return prefix + ": PII redaction produced invalid JSON (fail-closed)"
 }
 
 // resolveToolPolicy returns the ToolPIIPolicy for a tool, checking tool_policies[toolName],

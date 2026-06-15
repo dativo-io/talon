@@ -261,6 +261,67 @@ func TestApplyToolArgumentPII_NonJSONArgs_BlockMode(t *testing.T) {
 	assert.NotEmpty(t, result.BlockReason)
 }
 
+func newJSONBreakingRedactionScanner(t *testing.T) *classifier.Scanner {
+	t.Helper()
+	score := 0.95
+	s, err := classifier.NewScanner(classifier.WithCustomRecognizers([]classifier.RecognizerConfig{
+		{
+			Name:            "Quoted Email",
+			SupportedEntity: "EMAIL_ADDRESS",
+			Patterns: []classifier.PatternConfig{
+				{Name: "quoted-email", Regex: `"[^"]*@[^"]*"`, Score: &score},
+			},
+		},
+	}))
+	require.NoError(t, err)
+
+	argStr := `{"email":"user@example.com"}`
+	ctx := context.Background()
+	redacted := s.Redact(ctx, argStr)
+	require.NotEqual(t, argStr, redacted, "fixture must change payload on redaction")
+	require.False(t, json.Valid([]byte(redacted)), "fixture must produce invalid JSON")
+	require.NoError(t, s.VerifyEgress(ctx, redacted), "fixture must pass egress verification")
+
+	return s
+}
+
+func TestApplyToolArgumentPII_InvalidJSONAfterRedaction_FailClosed(t *testing.T) {
+	scanner := newJSONBreakingRedactionScanner(t)
+	ctx := context.Background()
+	rawEmail := "user@example.com"
+
+	pol := &policy.Policy{
+		ToolPolicies: map[string]policy.ToolPIIPolicy{
+			"_default": {ArgumentDefault: policy.PIIActionRedact},
+		},
+	}
+
+	rawArgs := json.RawMessage(`["` + rawEmail + `"]`)
+	result := applyToolArgumentPII(ctx, scanner, "some_tool", rawArgs, pol)
+	require.NotNil(t, result)
+	assert.True(t, result.Blocked, "invalid JSON after redaction must fail closed")
+	assert.Contains(t, result.BlockReason, "invalid JSON")
+	assert.Nil(t, result.ModifiedArgs)
+}
+
+func TestApplyToolResultPII_InvalidJSONAfterRedaction_FailClosed(t *testing.T) {
+	scanner := newJSONBreakingRedactionScanner(t)
+	ctx := context.Background()
+	rawEmail := "user@example.com"
+
+	pol := &policy.Policy{
+		ToolPolicies: map[string]policy.ToolPIIPolicy{
+			"crm_tool": {Result: policy.PIIActionRedact},
+		},
+	}
+
+	resultContent := `{"email":"` + rawEmail + `"}`
+	returned, findings := applyToolResultPII(ctx, scanner, "crm_tool", resultContent, pol)
+	assert.Contains(t, returned, "invalid JSON")
+	assert.NotContains(t, returned, rawEmail)
+	assert.NotEmpty(t, findings)
+}
+
 func TestApplyToolResultPII_RedactMode(t *testing.T) {
 	scanner := newTestScanner(t)
 	ctx := context.Background()

@@ -332,18 +332,7 @@ func (s *Scanner) Scan(ctx context.Context, text string) *Classification {
 		if err != nil {
 			span.RecordError(err)
 			span.SetAttributes(attribute.Bool("pii.normalization_failed", true))
-			fallbackEntities := make([]PIIEntity, 0, len(presidioResults))
-		for i := range presidioResults {
-			r := &presidioResults[i]
-			fallbackEntities = append(fallbackEntities, PIIEntity{
-				Type:        presidio.PresidioEntityToType(r.EntityType),
-				Value:       r.ExpectedSubstring,
-				Position:    r.Start,
-				Confidence:  r.Score,
-				Sensitivity: r.ExpectedSensitivity,
-			})
-		}
-			result.Entities = fallbackEntities
+			result.Entities = presidioFallbackPIIEntities(presidioResults)
 			result.HasPII = true
 		} else {
 			result.Entities = CanonicalToPIIEntities(canonical)
@@ -748,4 +737,19 @@ func stripNonDigits(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func presidioFallbackPIIEntities(results []presidio.RecognizerResult) []PIIEntity {
+	out := make([]PIIEntity, 0, len(results))
+	for i := range results {
+		r := &results[i]
+		out = append(out, PIIEntity{
+			Type:        presidio.EntityToCanonicalType(r.EntityType),
+			Value:       r.ExpectedSubstring,
+			Position:    r.Start,
+			Confidence:  r.Score,
+			Sensitivity: r.ExpectedSensitivity,
+		})
+	}
+	return out
 }

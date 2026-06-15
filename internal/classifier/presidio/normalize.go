@@ -62,7 +62,7 @@ func NormalizeResults(text string, results []RecognizerResult) ([]*entity.Canoni
 
 		out = append(out, &entity.CanonicalEntity{
 			Id:          i + 1,
-			Type:        PresidioEntityToType(r.EntityType),
+			Type:        EntityToCanonicalType(r.EntityType),
 			Raw:         raw,
 			Start:       start,
 			End:         end,
@@ -240,9 +240,8 @@ var presidioEntityTypeMap = map[string]string{
 	"LOCATION":        "location",
 }
 
-// PresidioEntityToType maps a Presidio supported_entity name (e.g. EMAIL_ADDRESS)
-// to the canonical internal type string (e.g. email).
-func PresidioEntityToType(entityName string) string {
+// EntityToCanonicalType maps a Presidio entity_type label to Talon's internal type string.
+func EntityToCanonicalType(entityName string) string {
 	if mapped, ok := presidioEntityTypeMap[entityName]; ok {
 		return mapped
 	}
