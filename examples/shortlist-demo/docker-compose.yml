@@ -39,9 +39,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - sh
-      - -c
       - |
         set -e
         talon secrets set openai-api-key mock-demo-not-a-real-key >/dev/null 2>&1 || true
