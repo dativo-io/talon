@@ -1,0 +1,48 @@
+agent:
+  name: "shortlist-demo"
+  description: "North-star shortlist demo agent (#107)"
+  version: "1.0.0"
+  model_tier: 0
+
+capabilities:
+  allowed_tools: []
+  forbidden_patterns: []
+
+policies:
+  cost_limits:
+    per_request: 1.00
+    daily: 100.00
+    monthly: 1000.00
+  data_classification:
+    input_scan: true
+    output_scan: true
+    redact_pii: false
+
+audit:
+  log_level: "detailed"
+  retention_days: 90
+  include_prompts: true
+  include_responses: false
+
+compliance:
+  frameworks: [gdpr, eu-ai-act]
+  data_residency: eu
+  declarations:
+    processing:
+      purposes:
+        - "customer support ticket triage"
+        - "internal AI assistance for platform teams"
+      data_subject_categories:
+        - "customers"
+        - "employees"
+      personal_data_categories:
+        - "contact details"
+        - "payment identifiers"
+        - "support ticket content"
+      retention_period: "90 days after ticket closure"
+      legal_basis: "contract (Art. 6(1)(b))"
+      safeguards: "Role-based access; signed evidence retained for audit review"
+    system:
+      system_description: "Governed LLM gateway demo for EU shortlist evaluation"
+      intended_purpose: "Demonstrate policy enforcement, PII handling, and auditor exports"
+      oversight_description: "Platform operator reviews denied requests and evidence in Mission Control"
