@@ -124,7 +124,8 @@ cmd_audit() {
 }
 
 latest_evidence_id() {
-  talon_in_container audit list --limit 1 2>/dev/null | grep -oE 'req_[a-zA-Z0-9]+' | head -1
+  # Gateway evidence uses gw_*; agent runs use req_*.
+  talon_in_container audit list --limit 1 2>/dev/null | grep -oE '(gw_|req_)[a-zA-Z0-9_-]+' | head -1
 }
 
 cmd_verify() {
