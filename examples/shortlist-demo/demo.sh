@@ -20,9 +20,29 @@ cd "$SCRIPT_DIR"
 GATEWAY="${GATEWAY:-http://localhost:8080}"
 ENDPOINT="${GATEWAY}/v1/proxy/openai/v1/chat/completions"
 OUT_DIR="${OUT_DIR:-${SCRIPT_DIR}/out}"
-COMPOSE="docker compose"
 
 mkdir -p "$OUT_DIR"
+
+# Use sudo for compose when the stack was started with sudo (common on fresh VMs).
+detect_compose() {
+  if [[ -n "${COMPOSE:-}" ]]; then
+    return 0
+  fi
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE="docker compose"
+    return 0
+  fi
+  if sudo docker compose version >/dev/null 2>&1; then
+    COMPOSE="sudo docker compose"
+    return 0
+  fi
+  echo "Error: docker compose not available (permission denied on /var/run/docker.sock?)." >&2
+  echo "Fix: sudo usermod -aG docker \"\$USER\" && newgrp docker" >&2
+  echo "Or: sudo ./demo.sh $*" >&2
+  exit 1
+}
+
+detect_compose "$@"
 
 dc() {
   $COMPOSE "$@"

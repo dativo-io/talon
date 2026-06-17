@@ -37,13 +37,18 @@ sudo apt-get update
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 ```
 
-Verify, then (optionally) run without `sudo`:
+Verify, then run without `sudo` (recommended):
 
 ```bash
 sudo docker run --rm hello-world
 docker compose version
-sudo usermod -aG docker "$USER"   # then log out and back in
+sudo usermod -aG docker "$USER"   # then log out and back in (or: newgrp docker)
 ```
+
+If you started the stack with `sudo make shortlist-demo`, `./demo.sh` auto-uses
+`sudo docker compose` when your user cannot access the Docker socket. For a cleaner
+setup, add yourself to the `docker` group and run both `make shortlist-demo` and
+`./demo.sh` without sudo.
 
 ## What this proves (in order)
 
