@@ -23,6 +23,10 @@ OUT_DIR="${OUT_DIR:-${SCRIPT_DIR}/out}"
 NARRATE=0
 PROOF_TOTAL=6
 
+# Match Talon CLI separators (audit show, init wizard).
+readonly DEMO_SEP='─────────────────────────────────────────────────────'
+readonly DEMO_WIDE_SEP='─────────────────────────────────────────────────────────'
+
 mkdir -p "$OUT_DIR"
 
 # shellcheck source=../../scripts/lib/docker-compose-detect.sh
@@ -39,40 +43,40 @@ talon_in_container() {
 
 require_stack() {
   if ! curl -sf "${GATEWAY}/health" >/dev/null 2>&1; then
-    echo "Error: Talon gateway not healthy at ${GATEWAY}" >&2
-    echo "Start the stack: make shortlist-demo  (from repo root)" >&2
+    echo "✗ Talon gateway not healthy at ${GATEWAY}" >&2
+    echo "  → Start the stack: make shortlist-demo  (from repo root)" >&2
     exit 1
   fi
 }
 
-# ── Narration helpers (enabled for ./demo.sh all) ───────────────────────────
+# ── Output helpers (narrated ./demo.sh all; mirrors talon init / audit / doctor) ──
 
 demo_intro() {
   [[ "$NARRATE" == "1" ]] || return 0
   echo ""
-  echo "╔══════════════════════════════════════════════════════════════════════╗"
-  echo "║         Talon Shortlist Demo — enforce-mode governance proof         ║"
-  echo "╚══════════════════════════════════════════════════════════════════════╝"
+  echo "🦅 Dativo Talon — Shortlist Demo (#107)"
+  echo "$DEMO_WIDE_SEP"
+  echo "Enforce-mode governance proof — mock OpenAI provider, no real API key."
   echo ""
-  echo "  This walkthrough proves six capabilities auditors and security teams"
-  echo "  care about: governed access, policy deny with reasons, PII blocking,"
-  echo "  EU egress enforcement, signed evidence, and compliance exports."
+  echo "  Proves: allow · policy deny · PII block · EU egress · signed evidence · compliance export"
   echo ""
-  explain "Gateway" "$GATEWAY"
-  explain "Provider" "mock OpenAI (no real API key)"
-  explain "Mode" "enforce — Talon blocks violations before they reach the LLM"
+  kv "Gateway" "$GATEWAY"
+  kv "Provider" "mock OpenAI"
+  kv "Mode" "enforce (violations blocked before the LLM)"
   echo ""
-  echo "  ────────────────────────────────────────────────────────────────────"
-  echo ""
+}
+
+kv() {
+  printf "  %-18s %s\n" "$1:" "$2"
 }
 
 proof_section() {
   local num="$1" title="$2"
   [[ "$NARRATE" == "1" ]] || return 0
   echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  printf "  Proof %s of %s — %s\n" "$num" "$PROOF_TOTAL" "$title"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "$DEMO_SEP"
+  printf "[%s/%s] %s\n" "$num" "$PROOF_TOTAL" "$title"
+  echo "$DEMO_SEP"
   echo ""
 }
 
@@ -85,26 +89,30 @@ proof_story() {
   echo ""
 }
 
-explain() {
-  printf "  %-14s %s\n" "$1" "$2"
-}
-
 proof_request() {
   [[ "$NARRATE" == "1" ]] || return 0
   echo "  Request"
-  explain "Caller" "$1"
-  explain "Model" "$2"
-  [[ -n "${3:-}" ]] && explain "Payload" "$3"
+  kv "Caller" "$1"
+  kv "Model" "$2"
+  [[ -n "${3:-}" ]] && kv "Payload" "$3"
   echo ""
+}
+
+status_icon() {
+  local code="$1"
+  case "$code" in
+    2*) echo "✓" ;;
+    *) echo "✗" ;;
+  esac
 }
 
 proof_outcome() {
   local icon="$1" headline="$2"
   shift 2
   if [[ "$NARRATE" == "1" ]]; then
-    echo "  Outcome  ${icon}  ${headline}"
+    printf "  %s %s\n" "$icon" "$headline"
     while [[ $# -gt 0 ]]; do
-      echo "           $1"
+      echo "    → $1"
       shift
     done
     echo ""
@@ -113,9 +121,8 @@ proof_outcome() {
 
 proof_detail() {
   [[ "$NARRATE" == "1" ]] || return 0
-  echo "  Detail"
   while [[ $# -gt 0 ]]; do
-    echo "    · $1"
+    echo "    → $1"
     shift
   done
   echo ""
@@ -124,9 +131,9 @@ proof_detail() {
 section_plain() {
   if [[ "$NARRATE" == "1" ]]; then
     echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  $1"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "$DEMO_SEP"
+    echo "$1"
+    echo "$DEMO_SEP"
     echo ""
   else
     echo ""
@@ -134,27 +141,43 @@ section_plain() {
   fi
 }
 
+# Indent Talon CLI output so it reads as nested under the demo script.
+talon_pretty() {
+  if [[ "$NARRATE" == "1" ]]; then
+    talon_in_container "$@" | sed 's/^/  /'
+  else
+    talon_in_container "$@"
+  fi
+}
+
+# Compact summary from `talon audit verify --file` (skip per-record spam in narrate mode).
+verify_file_summary() {
+  local path="$1"
+  talon_in_container audit verify --file "$path" 2>&1 | grep -E '^(File:|Total records:|Valid records:|Invalid records:|Missing signature:|Hint:)' | sed 's/^/  /' || true
+}
+
 demo_finale() {
   [[ "$NARRATE" == "1" ]] || return 0
   echo ""
-  echo "╔══════════════════════════════════════════════════════════════════════╗"
-  echo "║                    Shortlist demo complete ✓                         ║"
-  echo "╚══════════════════════════════════════════════════════════════════════╝"
+  echo "$DEMO_WIDE_SEP"
+  echo "📋 Shortlist demo complete"
+  echo "$DEMO_WIDE_SEP"
   echo ""
-  echo "  You just demonstrated:"
-  echo "    1. Governed allow     — clean request forwarded with audit record"
-  echo "    2. Policy deny        — model allowlist enforced with reason"
-  echo "    3. PII block          — sensitive data stopped before provider call"
-  echo "    4. EU egress deny     — non-EU destination blocked with evidence"
-  echo "    5. Evidence integrity — HMAC signatures verify; tampering is detected"
-  echo "    6. Compliance export  — RoPA + Annex IV packs ready for auditor review"
+  echo "  ✓ Governed allow      — clean request forwarded with audit record"
+  echo "  ✓ Policy deny         — model allowlist enforced with reason"
+  echo "  ✓ PII block           — sensitive data stopped before provider call"
+  echo "  ✓ EU egress deny      — non-EU destination blocked with evidence"
+  echo "  ✓ Evidence integrity  — HMAC verify passes; tampering is detected"
+  echo "  ✓ Compliance export   — RoPA + Annex IV packs for auditor review"
   echo ""
-  echo "  Artifacts written to: ${OUT_DIR}/"
+  echo "  Artifacts:"
+  kv "Directory" "$OUT_DIR"
   echo "    ropa.html · annex-iv.html · evidence.signed.json"
   echo ""
-  echo "  Dig deeper:"
-  echo "    $COMPOSE exec talon talon audit show <evidence-id>"
-  echo "    $COMPOSE exec talon talon audit list --limit 20"
+  echo "  Next steps:"
+  echo "    → $COMPOSE exec talon talon audit show <evidence-id>"
+  echo "    → $COMPOSE exec talon talon audit list --limit 20"
+  echo "    → open ${OUT_DIR}/ropa.html and ${OUT_DIR}/annex-iv.html"
   echo ""
 }
 
@@ -182,12 +205,12 @@ post_chat() {
     -d "$payload")"
 
   if [[ "$NARRATE" == "1" ]]; then
-    explain "HTTP status" "$code"
+    kv "HTTP status" "$code $(status_icon "$code")"
     if [[ -s "$body_file" ]]; then
       local excerpt
       excerpt="$(jq -r '.error.message // .choices[0].message.content // empty' "$body_file" 2>/dev/null | head -c 120)"
       if [[ -n "$excerpt" ]]; then
-        explain "Response" "${excerpt}…"
+        kv "Response" "${excerpt}…"
       fi
     fi
     echo ""
@@ -199,11 +222,10 @@ post_chat() {
   fi
 
   if [[ "${EXPECT_HTTP:-}" != "" && "$code" != "$EXPECT_HTTP" ]]; then
-    echo "Error: expected HTTP ${EXPECT_HTTP}, got ${code}" >&2
+    echo "✗ Expected HTTP ${EXPECT_HTTP}, got ${code}" >&2
     cat "$body_file" >&2 || true
     exit 1
   fi
-  echo "$code"
 }
 
 cmd_allowed_request() {
@@ -219,8 +241,8 @@ cmd_allowed_request() {
     "gpt-4o-mini" \
     "Summarize key AI governance risks for a European SaaS company."
   proof_outcome "✓" "HTTP 200 — request allowed and forwarded" \
-    "Evidence recorded with POLICY_ALLOWED and HMAC signature." \
-    "Cost and latency tracked even for allowed traffic."
+    "Evidence recorded with POLICY_ALLOWED and HMAC signature" \
+    "Cost and latency tracked even for allowed traffic"
 }
 
 cmd_policy_deny() {
@@ -236,8 +258,8 @@ cmd_policy_deny() {
     "gpt-4o" \
     "Summarize key AI governance risks for a European SaaS company."
   proof_outcome "✗" "HTTP 403 — routing policy denied the request" \
-    "Error explains: model not in caller allowlist." \
-    "Denial is audited (POLICY_DENIED_ROUTING) — not a silent drop."
+    "Error: model not in caller allowlist" \
+    "Audited as POLICY_DENIED_ROUTING — not a silent drop"
 }
 
 cmd_pii_request() {
@@ -253,8 +275,8 @@ cmd_pii_request() {
     "gpt-4o-mini" \
     "Customer jan@example.com has IBAN DE89370400440532013000. Help draft a support reply."
   proof_outcome "✗" "HTTP 400 — PII blocked at the gateway" \
-    "No token left your infrastructure for this request." \
-    "Evidence tagged POLICY_DENIED_PII_INPUT for audit review."
+    "No token left your infrastructure for this request" \
+    "Audited as POLICY_DENIED_PII_INPUT"
 }
 
 cmd_eu_strict_routing() {
@@ -262,8 +284,8 @@ cmd_eu_strict_routing() {
   proof_section "4" "EU strict egress — deny non-EU destination"
   proof_story \
     "Caller shortlist-eu-strict allows egress only to EU/LOCAL regions." \
-    "The mock OpenAI provider is configured region: US — so Talon denies with evidence." \
-    "This is an explicit deny, not a silent reroute to another region."
+    "Mock OpenAI provider is region: US — Talon denies with evidence." \
+    "Explicit deny, not a silent reroute to another region."
   proof_request "shortlist-eu-strict" "gpt-4o-mini" "clean prompt; egress rule is what fails"
   EXPECT_HTTP=403 post_chat \
     "Proof 4 — EU strict egress: non-EU provider region denied with evidence" \
@@ -271,8 +293,8 @@ cmd_eu_strict_routing() {
     "gpt-4o-mini" \
     "Summarize key AI governance risks for a European SaaS company."
   proof_outcome "✗" "HTTP 403 — tier 0 data may not egress to US provider" \
-    "Evidence includes egress_tier / POLICY_DENIED_EGRESS for auditors." \
-    "Demonstrates data-sovereignty enforcement at the gateway."
+    "Evidence includes POLICY_DENIED_EGRESS for auditors" \
+    "Demonstrates data-sovereignty enforcement at the gateway"
 }
 
 cmd_audit() {
@@ -281,15 +303,15 @@ cmd_audit() {
   if [[ "$NARRATE" == "1" ]]; then
     proof_story \
       "Each request above produced an evidence row in SQLite." \
-      "✓ = allowed   ✗ = denied   Brackets show the primary explanation code."
+      "✓ = allowed   ✗ = denied   [brackets] = primary explanation code"
     echo ""
   fi
-  talon_in_container audit list --limit 10
+  talon_pretty audit list --limit 10
   if [[ "$NARRATE" == "1" ]]; then
     echo ""
     proof_detail \
-      "Compare the four newest rows to proofs 1–4 from this run." \
-      "Use audit show <id> to inspect policy reasons, egress tier, and PII flags."
+      "Compare the four newest rows to proofs 1–4 from this run" \
+      "Run: $COMPOSE exec talon talon audit show <evidence-id>"
   else
     echo ""
     echo "Tip: $COMPOSE exec talon talon audit show <evidence-id>"
@@ -307,25 +329,25 @@ cmd_verify() {
     id="$(latest_evidence_id)"
   fi
   if [[ -z "$id" ]]; then
-    echo "Error: no evidence id found" >&2
+    echo "✗ No evidence id found" >&2
     exit 1
   fi
   proof_section "5" "Signed evidence verification (HMAC integrity)"
   if [[ "$NARRATE" == "1" ]]; then
     proof_story \
       "Every evidence record is HMAC-signed at write time." \
-      "Auditors can independently verify that records were not altered in storage."
-    explain "Evidence ID" "$id"
+      "Auditors can independently verify records were not altered in storage."
+    kv "Evidence ID" "$id"
     echo ""
   else
     echo ""
     echo "==> Proof 5 — signature verification (${id})"
   fi
-  talon_in_container audit verify "$id"
+  talon_pretty audit verify "$id"
   if [[ "$NARRATE" == "1" ]]; then
     echo ""
     proof_outcome "✓" "Signature VALID — record integrity confirmed" \
-      "The signing key (TALON_SIGNING_KEY) matches the server that wrote this evidence."
+      "TALON_SIGNING_KEY matches the server that wrote this evidence"
   fi
 }
 
@@ -337,7 +359,7 @@ cmd_tamper_evidence() {
   if [[ "$NARRATE" == "1" ]]; then
     section_plain "Tamper detection — altered exports must fail verification"
     proof_story \
-      "We export signed JSON, flip one field offline, and verify again." \
+      "Export signed JSON, flip one field offline, verify again." \
       "If verification still passes after tampering, the audit chain is broken."
     echo ""
   else
@@ -346,19 +368,25 @@ cmd_tamper_evidence() {
   fi
 
   talon_in_container audit export --format signed-json --limit 20 >"$signed"
-  if [[ "$NARRATE" != "1" ]]; then
+  if [[ "$NARRATE" == "1" ]]; then
+    echo "  Signed export (expected: all valid)"
+    verify_file_summary "/home/talon/shortlist-out/evidence.signed.json"
+    talon_in_container audit verify --file "/home/talon/shortlist-out/evidence.signed.json" >/dev/null 2>&1 \
+      || { echo "✗ Signed export verification failed" >&2; exit 1; }
+    echo ""
+  else
     echo "==> Verify exported bundle"
+    talon_in_container audit verify --file "/home/talon/shortlist-out/evidence.signed.json"
   fi
-  talon_in_container audit verify --file "/home/talon/shortlist-out/evidence.signed.json"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "Skip tamper step: jq not installed on host" >&2
+    echo "⚠ Skip tamper step: jq not installed on host" >&2
     return 0
   fi
 
   if [[ "$NARRATE" == "1" ]]; then
-    proof_detail "Exported $(jq '.records | length' "$signed" 2>/dev/null || echo '?') records to evidence.signed.json"
-    echo "  Simulating attacker: flip records[0].policy_decision.allowed (always changes the signed payload)"
+    proof_detail "Exported $(jq '.records | length' "$signed" 2>/dev/null || echo '?') records → evidence.signed.json"
+    echo "  Simulating attacker: flip records[0].policy_decision.allowed"
     echo ""
   else
     echo ""
@@ -368,21 +396,28 @@ cmd_tamper_evidence() {
 
   if [[ "$NARRATE" != "1" ]]; then
     echo "==> Verify tampered export (expect failure)"
+  else
+    echo "  Tampered export (expected: invalid records > 0)"
   fi
   set +e
-  local verify_out
-  verify_out="$(talon_in_container audit verify --file "/home/talon/shortlist-out/evidence.tampered.json" 2>&1)"
-  local rc=$?
+  if [[ "$NARRATE" == "1" ]]; then
+    verify_file_summary "/home/talon/shortlist-out/evidence.tampered.json"
+    talon_in_container audit verify --file "/home/talon/shortlist-out/evidence.tampered.json" >/dev/null 2>&1
+    local rc=$?
+  else
+    talon_in_container audit verify --file "/home/talon/shortlist-out/evidence.tampered.json"
+    local rc=$?
+  fi
   set -e
-  echo "$verify_out"
   if [[ "$rc" -eq 0 ]]; then
-    echo "Error: tampered export should fail verification" >&2
+    echo "✗ Tampered export should fail verification" >&2
     exit 1
   fi
   if [[ "$NARRATE" == "1" ]]; then
+    echo ""
     proof_outcome "✓" "Tamper detected — verification failed as expected" \
-      "Offline modification of signed fields breaks the HMAC chain." \
-      "This is what you want in a compliance-grade audit trail."
+      "Offline modification breaks the HMAC chain" \
+      "Compliance-grade audit trail behaviour"
   else
     echo "    Tamper detected (exit ${rc}) — expected"
   fi
@@ -393,8 +428,8 @@ cmd_exports() {
   proof_section "6" "Auditor-ready compliance exports"
   if [[ "$NARRATE" == "1" ]]; then
     proof_story \
-      "Talon merges declared facts (controller, purposes, retention) with runtime" \
-      "evidence from the gateway to produce documentation packs auditors expect."
+      "Talon merges declared facts with runtime gateway evidence" \
+      "to produce documentation packs auditors expect."
     proof_detail \
       "RoPA (HTML/JSON) — GDPR Art. 30 Record of Processing Activities" \
       "Annex IV (HTML/JSON) — EU AI Act technical documentation starter pack"
@@ -414,7 +449,7 @@ cmd_exports() {
     fi
     proof_outcome "✓" "Exports written to ${OUT_DIR}/" \
       "ropa.html · ropa.json · annex-iv.html · annex-iv.json" \
-      "RoPA declaration warnings: ${warnings} (demo uses pre-filled declarations)"
+      "RoPA declaration warnings: ${warnings}"
     proof_detail "Open ropa.html and annex-iv.html in a browser — print-to-PDF ready"
   else
     echo "    Wrote ${OUT_DIR}/ropa.html and ${OUT_DIR}/annex-iv.html"
@@ -451,7 +486,7 @@ main() {
   shift || true
   if [[ "$cmd" == "all" || "$cmd" == "allowed-request" || "$cmd" == "policy-deny" || "$cmd" == "pii-request" || "$cmd" == "eu-strict-routing" ]]; then
     if ! command -v jq >/dev/null 2>&1; then
-      echo "Error: jq is required for demo.sh request payloads" >&2
+      echo "✗ jq is required for demo.sh request payloads" >&2
       exit 1
     fi
   fi
