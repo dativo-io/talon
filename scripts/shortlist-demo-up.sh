@@ -9,6 +9,17 @@ TIMEOUT="${SHORTLIST_DEMO_TIMEOUT:-120}"
 
 cd "$DEMO_DIR"
 
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Error: docker not found. The shortlist demo requires Docker Engine and the Compose plugin." >&2
+  echo "See examples/shortlist-demo/README.md#prerequisites for install steps." >&2
+  exit 127
+fi
+if ! docker compose version >/dev/null 2>&1; then
+  echo "Error: docker compose plugin not found (need 'docker compose', not legacy docker-compose)." >&2
+  echo "See examples/shortlist-demo/README.md#prerequisites for install steps." >&2
+  exit 127
+fi
+
 echo "==> Building and starting shortlist demo stack..."
 docker compose up --build -d
 

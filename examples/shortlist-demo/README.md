@@ -7,6 +7,44 @@ mock OpenAI provider from `examples/docker-compose` — **no real LLM API key**.
 This demo supports compliance evidence and documentation workflows. **It does not
 make a company compliant by itself.**
 
+## Prerequisites
+
+- **Docker Engine** with the **Compose plugin** (`docker compose` — v2 plugin, not legacy `docker-compose`)
+- **curl** and **bash** (`demo.sh` and `make shortlist-demo` health checks)
+- No LLM API key (mock provider)
+
+`make shortlist-demo` runs `docker compose up --build` under the hood. There is no
+non-Docker path for this demo (unlike `make auditor-pack`, which can fall back to
+offline fixtures).
+
+### Install Docker
+
+On Ubuntu (and most fresh cloud VMs), Docker is not pre-installed. Follow the
+[official Docker Engine install guide](https://docs.docker.com/engine/install/ubuntu/)
+or run:
+
+```bash
+# Ubuntu — Docker Engine + Compose plugin (official packages)
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "${VERSION_CODENAME}") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Verify, then (optionally) run without `sudo`:
+
+```bash
+sudo docker run --rm hello-world
+docker compose version
+sudo usermod -aG docker "$USER"   # then log out and back in
+```
+
 ## What this proves (in order)
 
 | Step | Proof | How |
