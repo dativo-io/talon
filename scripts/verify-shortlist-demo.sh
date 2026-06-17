@@ -7,9 +7,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEMO_DIR="${REPO_ROOT}/examples/shortlist-demo"
 OUT_DIR="${DEMO_DIR}/out"
 
+# shellcheck source=lib/docker-compose-detect.sh
+source "${REPO_ROOT}/scripts/lib/docker-compose-detect.sh"
+detect_docker_compose
+
 cleanup() {
   if [[ "${SHORTLIST_SKIP_DOWN:-}" != "1" ]]; then
-    (cd "$DEMO_DIR" && docker compose down -v 2>/dev/null) || true
+    (cd "$DEMO_DIR" && $COMPOSE down -v 2>/dev/null) || true
   fi
 }
 trap cleanup EXIT

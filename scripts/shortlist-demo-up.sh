@@ -7,21 +7,14 @@ DEMO_DIR="${REPO_ROOT}/examples/shortlist-demo"
 GATEWAY="${GATEWAY:-http://localhost:8080}"
 TIMEOUT="${SHORTLIST_DEMO_TIMEOUT:-120}"
 
+# shellcheck source=lib/docker-compose-detect.sh
+source "${REPO_ROOT}/scripts/lib/docker-compose-detect.sh"
+detect_docker_compose
+
 cd "$DEMO_DIR"
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Error: docker not found. The shortlist demo requires Docker Engine and the Compose plugin." >&2
-  echo "See examples/shortlist-demo/README.md#prerequisites for install steps." >&2
-  exit 127
-fi
-if ! docker compose version >/dev/null 2>&1; then
-  echo "Error: docker compose plugin not found (need 'docker compose', not legacy docker-compose)." >&2
-  echo "See examples/shortlist-demo/README.md#prerequisites for install steps." >&2
-  exit 127
-fi
-
 echo "==> Building and starting shortlist demo stack..."
-docker compose up --build -d
+$COMPOSE up --build -d
 
 echo "==> Waiting for Talon health (timeout ${TIMEOUT}s)..."
 elapsed=0
@@ -40,6 +33,6 @@ while [[ "$elapsed" -lt "$TIMEOUT" ]]; do
 done
 
 echo "Error: Talon did not become healthy within ${TIMEOUT}s" >&2
-docker compose ps >&2 || true
-docker compose logs --tail 40 talon >&2 || true
+$COMPOSE ps >&2 || true
+$COMPOSE logs --tail 40 talon >&2 || true
 exit 1
