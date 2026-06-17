@@ -358,21 +358,23 @@ cmd_tamper_evidence() {
 
   if [[ "$NARRATE" == "1" ]]; then
     proof_detail "Exported $(jq '.records | length' "$signed" 2>/dev/null || echo '?') records to evidence.signed.json"
-    echo "  Simulating attacker: set records[0].policy_decision.allowed = false"
+    echo "  Simulating attacker: flip records[0].policy_decision.allowed (always changes the signed payload)"
     echo ""
   else
     echo ""
-    echo "==> Tamper one signed field (policy_decision.allowed)"
+    echo "==> Tamper one signed field (flip policy_decision.allowed)"
   fi
-  jq '(.records[0].policy_decision.allowed) = false' "$signed" >"$tampered"
+  jq '(.records[0].policy_decision.allowed) |= not' "$signed" >"$tampered"
 
   if [[ "$NARRATE" != "1" ]]; then
     echo "==> Verify tampered export (expect failure)"
   fi
   set +e
-  talon_in_container audit verify --file "/home/talon/shortlist-out/evidence.tampered.json"
+  local verify_out
+  verify_out="$(talon_in_container audit verify --file "/home/talon/shortlist-out/evidence.tampered.json" 2>&1)"
   local rc=$?
   set -e
+  echo "$verify_out"
   if [[ "$rc" -eq 0 ]]; then
     echo "Error: tampered export should fail verification" >&2
     exit 1

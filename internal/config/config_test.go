@@ -261,7 +261,6 @@ func TestLoad_WithPartialComplianceBlock(t *testing.T) {
 }
 
 func TestExampleDockerComposeEnvKeys(t *testing.T) {
-	t.Parallel()
 	_, thisFile, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
@@ -276,7 +275,6 @@ func TestExampleDockerComposeEnvKeys(t *testing.T) {
 	for _, path := range composeFiles {
 		path := path
 		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
-			t.Parallel()
 			data, err := os.ReadFile(path)
 			require.NoError(t, err)
 
