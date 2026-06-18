@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 # Conformance suite: the evidence + policy paths whose passing test/subtest
 # count is published as Talon's honest conformance number. See
@@ -130,6 +130,12 @@ demo-clean: ## Clean up docker-compose demo
 
 verify-flow0: ## Verify Flow 0 end-to-end (docker-compose demo)
 	@bash scripts/verify-flow0.sh --in-place
+
+shortlist-demo: ## Start #107 shortlist demo stack (enforce mode, mock provider)
+	@bash scripts/shortlist-demo-up.sh
+
+verify-shortlist-demo: ## Run full #107 shortlist demo verification (Docker)
+	@bash scripts/verify-shortlist-demo.sh
 
 # Provider registry and EU routing
 provider-list: build ## List registered LLM providers (compliance metadata)

@@ -1,0 +1,51 @@
+# Talon #107 shortlist demo — enforce mode, mock OpenAI, no real API key.
+#
+#   make shortlist-demo          # from repo root
+#   cd examples/shortlist-demo && ./demo.sh all
+
+services:
+  mock-openai:
+    build:
+      context: ../docker-compose/mock-provider
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  talon:
+    build:
+      context: ../../
+    ports:
+      - "8080:8080"
+    environment:
+      - TALON_SECRETS_KEY=abcdefghijklmnopqrstuvwxyz012345
+      - TALON_SIGNING_KEY=demo-signing-key-not-for-production
+      - TALON_LOG_LEVEL=info
+      - TALON_LOG_FORMAT=json
+    volumes:
+      - ./talon.config.shortlist.yaml:/etc/talon/talon.config.yaml:ro
+      - ./talon.config.shortlist.yaml:/home/talon/.talon/talon.config.yaml:ro
+      - ./agent.talon.yaml:/home/talon/agent.talon.yaml:ro
+      - ./out:/home/talon/shortlist-out
+      - talon-data:/home/talon/.talon
+    depends_on:
+      mock-openai:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        talon secrets set openai-api-key mock-demo-not-a-real-key >/dev/null 2>&1 || true
+        exec talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
+
+volumes:
+  talon-data:
+    driver: local

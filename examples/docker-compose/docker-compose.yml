@@ -31,7 +31,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - TALON_SECRETS_KEY=demo-secret-key-not-for-production
+      - TALON_SECRETS_KEY=abcdefghijklmnopqrstuvwxyz012345
       - TALON_LOG_LEVEL=info
       - TALON_LOG_FORMAT=json
     volumes:

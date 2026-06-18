@@ -1,6 +1,10 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -254,4 +258,35 @@ func TestLoad_WithPartialComplianceBlock(t *testing.T) {
 	assert.Equal(t, "Example GmbH", decl.Name)
 	assert.Empty(t, decl.Contact)
 	assert.Empty(t, decl.DPOContact)
+}
+
+func TestExampleDockerComposeEnvKeys(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
+
+	composeFiles := []string{
+		filepath.Join(repoRoot, "examples", "shortlist-demo", "docker-compose.yml"),
+		filepath.Join(repoRoot, "examples", "docker-compose", "docker-compose.yml"),
+	}
+	secretsRE := regexp.MustCompile(`TALON_SECRETS_KEY=([^\s#]+)`)
+	signingRE := regexp.MustCompile(`TALON_SIGNING_KEY=([^\s#]+)`)
+
+	for _, path := range composeFiles {
+		path := path
+		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			m := secretsRE.FindSubmatch(data)
+			require.NotNil(t, m, "TALON_SECRETS_KEY in %s", path)
+			resetViper(t)
+			t.Setenv("TALON_SECRETS_KEY", string(m[1]))
+			if sm := signingRE.FindSubmatch(data); sm != nil {
+				t.Setenv("TALON_SIGNING_KEY", string(sm[1]))
+			}
+			_, err = Load()
+			require.NoError(t, err, "compose env keys in %s", path)
+		})
+	}
 }
