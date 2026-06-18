@@ -156,6 +156,38 @@ verify_file_summary() {
   talon_in_container audit verify --file "$path" 2>&1 | grep -E '^(File:|Total records:|Valid records:|Invalid records:|Missing signature:|Hint:)' | sed 's/^/  /' || true
 }
 
+# Compliance export writes WARNING lines to stderr; suppress in narrated mode (warnings stay in HTML/JSON).
+compliance_export() {
+  local rc=0
+  if [[ "$NARRATE" == "1" ]]; then
+    talon_in_container compliance "$@" >/dev/null 2>&1 || rc=$?
+  else
+    talon_in_container compliance "$@" || rc=$?
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    echo "✗ compliance export failed: talon compliance $*" >&2
+    exit "$rc"
+  fi
+}
+
+export_consistency_note() {
+  [[ "$NARRATE" == "1" ]] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    return 0
+  fi
+  local msg
+  msg="$(jq -r '.warnings[]? | select(startswith("consistency:"))' "${OUT_DIR}/ropa.json" 2>/dev/null | head -1)"
+  [[ -n "$msg" ]] || return 0
+  echo ""
+  echo "  Note (expected for this demo)"
+  echo "    ⚠ RoPA reports one consistency warning — not a failure."
+  echo "    → Declared data_residency: eu (agent.talon.yaml)"
+  echo "    → Mock OpenAI provider region: US (needed for Proof 4 egress deny)"
+  echo "    → Talon surfaces the mismatch in exports so auditors see declared vs observed flows"
+  echo "    → Full text is in out/ropa.json and the warnings box in out/ropa.html"
+  echo ""
+}
+
 demo_finale() {
   [[ "$NARRATE" == "1" ]] || return 0
   echo ""
@@ -438,18 +470,25 @@ cmd_exports() {
     echo ""
     echo "==> Proof 6 — auditor-ready exports (RoPA + Annex IV)"
   fi
-  talon_in_container compliance ropa --format html --output /home/talon/shortlist-out/ropa.html
-  talon_in_container compliance ropa --format json --output /home/talon/shortlist-out/ropa.json
-  talon_in_container compliance annex-iv --format html --output /home/talon/shortlist-out/annex-iv.html
-  talon_in_container compliance annex-iv --format json --output /home/talon/shortlist-out/annex-iv.json
+  if [[ "$NARRATE" == "1" ]]; then
+    echo "  Generating RoPA and Annex IV (warnings captured in HTML/JSON, not echoed here)…"
+    echo ""
+  fi
+  compliance_export ropa --format html --output /home/talon/shortlist-out/ropa.html
+  compliance_export ropa --format json --output /home/talon/shortlist-out/ropa.json
+  compliance_export annex-iv --format html --output /home/talon/shortlist-out/annex-iv.html
+  compliance_export annex-iv --format json --output /home/talon/shortlist-out/annex-iv.json
+  export_consistency_note
   if [[ "$NARRATE" == "1" ]]; then
     local warnings="?"
+    local consistency="0"
     if command -v jq >/dev/null 2>&1; then
       warnings="$(jq '(.warnings // []) | length' "${OUT_DIR}/ropa.json" 2>/dev/null || echo "?")"
+      consistency="$(jq '[.warnings[]? | select(startswith("consistency:"))] | length' "${OUT_DIR}/ropa.json" 2>/dev/null || echo "0")"
     fi
     proof_outcome "✓" "Exports written to ${OUT_DIR}/" \
       "ropa.html · ropa.json · annex-iv.html · annex-iv.json" \
-      "RoPA declaration warnings: ${warnings}"
+      "RoPA warnings: ${warnings} (${consistency} expected consistency check for this demo)"
     proof_detail "Open ropa.html and annex-iv.html in a browser — print-to-PDF ready"
   else
     echo "    Wrote ${OUT_DIR}/ropa.html and ${OUT_DIR}/annex-iv.html"

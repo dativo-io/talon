@@ -129,6 +129,11 @@ docker compose exec talon talon audit verify <id-from-list>
 Zoom moments: `HTTP 403` on policy deny, `HTTP 400` on PII, `egress_tier` in
 `audit show`, `signature VALID`, `ropa.html` / `annex-iv.html`.
 
+During `./demo.sh all`, Proof 6 may show **one expected RoPA consistency warning**
+in the exported files (declared `data_residency: eu` vs mock provider `region: US`
+from Proof 4). The narrated script explains this; warnings appear in
+`out/ropa.html` and `out/ropa.json`, not as duplicate stderr lines.
+
 ## Verification (CI / local)
 
 ```bash

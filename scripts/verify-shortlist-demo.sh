@@ -33,8 +33,11 @@ test -s "${OUT_DIR}/evidence.signed.json"
 if command -v jq >/dev/null 2>&1; then
   ropa_warn="$(jq '(.warnings // []) | length' "${OUT_DIR}/ropa.json")"
   annex_warn="$(jq '(.warnings // []) | length' "${OUT_DIR}/annex-iv.json")"
-  if [[ "$ropa_warn" -gt 0 ]]; then
-    echo "Error: RoPA has ${ropa_warn} declaration warnings" >&2
+  ropa_consistency="$(jq '[.warnings[]? | select(startswith("consistency:"))] | length' "${OUT_DIR}/ropa.json")"
+  ropa_other=$((ropa_warn - ropa_consistency))
+  if [[ "$ropa_other" -gt 0 ]]; then
+    echo "Error: RoPA has ${ropa_other} unexpected declaration warning(s)" >&2
+    jq -r '.warnings[]?' "${OUT_DIR}/ropa.json" >&2
     exit 1
   fi
   if [[ "$annex_warn" -gt 0 ]]; then
