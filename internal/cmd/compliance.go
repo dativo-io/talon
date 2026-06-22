@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 
 	"github.com/dativo-io/talon/internal/compliance"
 	"github.com/dativo-io/talon/internal/config"
@@ -257,7 +258,12 @@ func runSovereigntyPosture(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	postureCfg := buildSovereigntyPostureConfig(ctx, opCfg, complianceGatewayConfig)
+
+	gwPath := complianceGatewayConfig
+	if gwPath == "" {
+		gwPath = viper.ConfigFileUsed()
+	}
+	postureCfg, cfgWarnings := buildSovereigntyPostureConfig(ctx, opCfg, gwPath)
 
 	store, err := openEvidenceStore()
 	if err != nil {
@@ -283,6 +289,7 @@ func runSovereigntyPosture(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("generating sovereignty posture report: %w", err)
 	}
+	doc.Warnings = append(cfgWarnings, doc.Warnings...)
 	for _, w := range doc.Warnings {
 		fmt.Fprintln(cmd.ErrOrStderr(), "WARNING:", w)
 	}
@@ -309,8 +316,9 @@ func runSovereigntyPosture(cmd *cobra.Command) error {
 	return os.WriteFile(complianceOutput, out, 0o600)
 }
 
-func buildSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config, gatewayConfigPath string) compliance.SovereigntyPostureConfig {
+func buildSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config, gatewayConfigPath string) (compliance.SovereigntyPostureConfig, []string) {
 	cfg := compliance.SovereigntyPostureConfig{}
+	var warnings []string
 	if opCfg.LLM != nil && opCfg.LLM.Routing != nil {
 		cfg.DataSovereigntyMode = opCfg.LLM.Routing.DataSovereigntyMode
 	}
@@ -320,7 +328,10 @@ func buildSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config, ga
 		cfg.AllowedEgressHosts = append([]string(nil), opCfg.Sovereignty.AllowedEgressHosts...)
 	}
 	if gatewayConfigPath != "" {
-		if gwCfg, err := gateway.LoadGatewayConfig(gatewayConfigPath); err == nil {
+		gwCfg, err := gateway.LoadGatewayConfig(gatewayConfigPath)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not load gateway config %s: %v — gateway providers section may be incomplete", gatewayConfigPath, err))
+		} else {
 			for name := range gwCfg.Providers {
 				p := gwCfg.Providers[name]
 				cfg.GatewayProviders = append(cfg.GatewayProviders, compliance.SovereigntyGatewayProvider{
@@ -362,7 +373,7 @@ func buildSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config, ga
 			cfg.LLMProviders = append(cfg.LLMProviders, row)
 		}
 	}
-	return cfg
+	return cfg, warnings
 }
 
 var (
@@ -401,7 +412,7 @@ func init() {
 	complianceSovereigntyCmd.Flags().StringVar(&complianceFrom, "from", "", "Start date (YYYY-MM-DD)")
 	complianceSovereigntyCmd.Flags().StringVar(&complianceTo, "to", "", "End date (YYYY-MM-DD)")
 	complianceSovereigntyCmd.Flags().StringVar(&complianceOutput, "output", "", "Write document to file")
-	complianceSovereigntyCmd.Flags().StringVar(&complianceGatewayConfig, "gateway-config", "talon.config.yaml", "Gateway config path for declared upstream providers")
+	complianceSovereigntyCmd.Flags().StringVar(&complianceGatewayConfig, "gateway-config", "", "Gateway config path for declared upstream providers (default: active config file)")
 
 	complianceCmd.AddCommand(complianceReportCmd)
 	complianceCmd.AddCommand(complianceRopaCmd)
