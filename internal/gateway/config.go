@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -49,6 +50,8 @@ type GatewayConfig struct {
 	// The gateway uses this at evidence time to annotate requests with
 	// quickstart_unsafe_listen without relying on process-wide environment state.
 	QuickstartUnsafeListen bool `yaml:"-" json:"-"`
+	// UpstreamTransport when set wraps the gateway upstream HTTP client (air-gap egress guard).
+	UpstreamTransport http.RoundTripper `yaml:"-" json:"-"`
 }
 
 // ProviderConfig holds per-provider gateway settings.

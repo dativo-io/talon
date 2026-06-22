@@ -15,6 +15,7 @@ import (
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
+	"github.com/dativo-io/talon/internal/sovereignty"
 )
 
 // CheckResult is a single doctor check outcome.
@@ -95,6 +96,7 @@ func checkConfig() []CheckResult {
 	results = append(results, checkCryptoKeys(cfg)...)
 	results = append(results, checkEvidenceDB(cfg))
 	results = append(results, checkCache(cfg))
+	results = append(results, checkAirGap(cfg, nil))
 	return results
 }
 
@@ -297,6 +299,7 @@ func checkGateway(ctx context.Context, opts Options) []CheckResult {
 	results = append(results, checkGatewayMode(gwCfg))
 	results = append(results, checkGatewayCallers(gwCfg))
 	results = append(results, checkGatewayToolPolicy(gwCfg))
+	results = append(results, checkAirGapFromGateway(gwCfg))
 
 	if !opts.SkipUpstream {
 		results = append(results, checkGatewayUpstreams(ctx, gwCfg)...)
@@ -519,4 +522,42 @@ func checkSystem() []CheckResult {
 	}
 
 	return results
+}
+
+func checkAirGap(cfg *config.Config, gwCfg *gateway.GatewayConfig) CheckResult {
+	if cfg.Sovereignty == nil || !cfg.Sovereignty.AirGapEnabled() {
+		return CheckResult{
+			Name: "air_gap_mode", Category: "sovereignty", Status: "pass",
+			Message: "standard deployment (sovereignty.deployment_mode not air_gap)",
+		}
+	}
+	if cfg.UsingDefaultKeys() {
+		return CheckResult{
+			Name: "air_gap_crypto_keys", Category: "sovereignty", Status: "fail",
+			Message: "air_gap requires explicit TALON_SECRETS_KEY and TALON_SIGNING_KEY",
+			Fix:     "Set both keys via env vars before enabling air_gap mode",
+		}
+	}
+	if err := sovereignty.ValidateAirGap(cfg, gwCfg); err != nil {
+		return CheckResult{
+			Name: "air_gap_config", Category: "sovereignty", Status: "fail",
+			Message: err.Error(),
+			Fix:     "Use EU/LOCAL gateway providers only; set llm.routing.data_sovereignty_mode: eu_strict",
+		}
+	}
+	return CheckResult{
+		Name: "air_gap_config", Category: "sovereignty", Status: "pass",
+		Message: "air_gap deployment configuration validated",
+	}
+}
+
+func checkAirGapFromGateway(gwCfg *gateway.GatewayConfig) CheckResult {
+	cfg, err := config.Load()
+	if err != nil {
+		return CheckResult{
+			Name: "air_gap_gateway", Category: "sovereignty", Status: "warn",
+			Message: "cannot load operator config for air-gap gateway check",
+		}
+	}
+	return checkAirGap(cfg, gwCfg)
 }

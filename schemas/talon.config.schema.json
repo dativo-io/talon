@@ -125,6 +125,23 @@
         }
       }
     },
+    "sovereignty": {
+      "type": "object",
+      "description": "Deployment sovereignty mode (air-gap presets and egress guard). Feature bet 5.3.",
+      "properties": {
+        "deployment_mode": {
+          "type": "string",
+          "enum": ["standard", "air_gap"],
+          "default": "standard",
+          "description": "air_gap enables eu_strict routing preset, EU/LOCAL egress defaults, and transport-level egress allowlist."
+        },
+        "allowed_egress_hosts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional hosts/URLs added to the air-gap egress allowlist beyond ollama_base_url and gateway providers."
+        }
+      }
+    },
     "cache": {
       "type": "object",
       "description": "Governed semantic cache (optional, off by default). Validated by `talon doctor`.",

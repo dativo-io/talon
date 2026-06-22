@@ -35,6 +35,7 @@ import (
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/server"
 	talonsession "github.com/dativo-io/talon/internal/session"
+	"github.com/dativo-io/talon/internal/sovereignty"
 	"github.com/dativo-io/talon/internal/trigger"
 	"github.com/dativo-io/talon/web"
 )
@@ -349,6 +350,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 		gatewayCfg, err := gateway.LoadGatewayConfig(serveGatewayConfig)
 		if err != nil {
 			return fmt.Errorf("loading gateway config: %w", err)
+		}
+		if err := sovereignty.ValidateAirGap(cfg, gatewayCfg); err != nil {
+			return fmt.Errorf("air-gap validation: %w", err)
+		}
+		guard, err := sovereignty.ApplyAirGapPreset(cfg, gatewayCfg)
+		if err != nil {
+			return fmt.Errorf("air-gap preset: %w", err)
+		}
+		if guard != nil {
+			gatewayCfg.UpstreamTransport = guard
+		}
+		if err := gatewayCfg.ApplyDefaults(); err != nil {
+			return fmt.Errorf("gateway defaults: %w", err)
 		}
 		tenantKeys = gatewayCfg.TenantKeyMap()
 		log.Info().Int("tenant_keys", len(tenantKeys)).Int("callers", len(gatewayCfg.Callers)).Msg("gateway_tenant_keys_loaded")

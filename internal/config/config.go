@@ -73,6 +73,31 @@ type LLMConfig struct {
 	PricingFile string                       `mapstructure:"pricing_file"` // path to pricing/models.yaml; default "pricing/models.yaml"
 }
 
+// Sovereignty deployment modes (feature bet 5.3).
+const (
+	SovereigntyModeStandard = "standard"
+	SovereigntyModeAirGap   = "air_gap"
+)
+
+// SovereigntyConfig is the optional sovereignty block from talon.config.yaml.
+type SovereigntyConfig struct {
+	DeploymentMode     string   `mapstructure:"deployment_mode" yaml:"deployment_mode"`
+	AllowedEgressHosts []string `mapstructure:"allowed_egress_hosts" yaml:"allowed_egress_hosts"`
+}
+
+// Mode returns the normalized deployment mode (standard when unset).
+func (c *SovereigntyConfig) Mode() string {
+	if c == nil || c.DeploymentMode == "" {
+		return SovereigntyModeStandard
+	}
+	return c.DeploymentMode
+}
+
+// AirGapEnabled reports whether transport-level egress guarding is active.
+func (c *SovereigntyConfig) AirGapEnabled() bool {
+	return c.Mode() == SovereigntyModeAirGap
+}
+
 // ComplianceConfig is the optional compliance block from talon.config.yaml.
 // It declares org-level facts (controller identity) used to populate auditor
 // exports such as the GDPR Art. 30 RoPA. Declared facts only — runtime facts
@@ -95,15 +120,16 @@ type CacheConfig struct {
 // For tenant-level secrets (LLM API keys, webhook tokens), use the
 // secrets vault (internal/secrets.SecretStore).
 type Config struct {
-	DataDir         string            // Base directory for all state (~/.talon)
-	SecretsKey      string            // AES-256 encryption key for the vault (exactly 32 bytes)
-	SigningKey      string            // HMAC-SHA256 key for evidence signing (≥32 bytes)
-	DefaultPolicy   string            // Filename of the agent policy file (agent.talon.yaml by default)
-	MaxAttachmentMB int               // Maximum attachment size in MB
-	OllamaBaseURL   string            // Ollama API endpoint (operator infrastructure)
-	LLM             *LLMConfig        // Optional: llm block from config file (providers, routing)
-	Cache           *CacheConfig      // Optional: governed semantic cache (off by default)
-	Compliance      *ComplianceConfig // Optional: declared controller identity for auditor exports
+	DataDir         string             // Base directory for all state (~/.talon)
+	SecretsKey      string             // AES-256 encryption key for the vault (exactly 32 bytes)
+	SigningKey      string             // HMAC-SHA256 key for evidence signing (≥32 bytes)
+	DefaultPolicy   string             // Filename of the agent policy file (agent.talon.yaml by default)
+	MaxAttachmentMB int                // Maximum attachment size in MB
+	OllamaBaseURL   string             // Ollama API endpoint (operator infrastructure)
+	LLM             *LLMConfig         // Optional: llm block from config file (providers, routing)
+	Cache           *CacheConfig       // Optional: governed semantic cache (off by default)
+	Compliance      *ComplianceConfig  // Optional: declared controller identity for auditor exports
+	Sovereignty     *SovereigntyConfig // Optional: air-gap / deployment sovereignty mode
 
 	usingDefaultSecretsKey bool
 	usingDefaultSigningKey bool
@@ -191,6 +217,7 @@ func Load() (*Config, error) {
 		LLM:             loadLLMConfig(),
 		Cache:           loadCacheConfig(),
 		Compliance:      loadComplianceConfig(),
+		Sovereignty:     loadSovereigntyConfig(),
 	}
 
 	if cfg.SecretsKey == "" {
@@ -233,6 +260,18 @@ const (
 	DefaultCacheSimilarity          = 0.92
 	DefaultCacheMaxEntriesPerTenant = 10000
 )
+
+// loadSovereigntyConfig reads the optional sovereignty block from Viper.
+func loadSovereigntyConfig() *SovereigntyConfig {
+	if !viper.IsSet("sovereignty") {
+		return nil
+	}
+	var sc SovereigntyConfig
+	if err := viper.UnmarshalKey("sovereignty", &sc); err != nil {
+		return nil
+	}
+	return &sc
+}
 
 // loadComplianceConfig reads the optional compliance block from Viper.
 // Returns nil when absent.
