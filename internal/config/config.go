@@ -27,6 +27,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 
 	"github.com/dativo-io/talon/internal/compliance"
 	"github.com/dativo-io/talon/internal/cryptoutil"
@@ -271,6 +272,22 @@ func loadSovereigntyConfig() *SovereigntyConfig {
 		return nil
 	}
 	return &sc
+}
+
+// LoadSovereigntyFromFile reads the sovereignty block from a YAML file path.
+// Returns nil when the file does not contain a sovereignty section.
+func LoadSovereigntyFromFile(path string) *SovereigntyConfig {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var raw struct {
+		Sovereignty *SovereigntyConfig `yaml:"sovereignty"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	return raw.Sovereignty
 }
 
 // loadComplianceConfig reads the optional compliance block from Viper.

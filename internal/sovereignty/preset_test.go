@@ -60,6 +60,29 @@ func TestApplyAirGapPreset_ForcesEUStrictAndEgress(t *testing.T) {
 	assert.Equal(t, gateway.EgressActionDeny, gw.ServerDefaults.Egress.DefaultAction)
 }
 
+func TestApplyAirGapPreset_EmptyEgressStillAppliesPreset(t *testing.T) {
+	op := &config.Config{
+		Sovereignty:   &config.SovereigntyConfig{DeploymentMode: ModeAirGap},
+		OllamaBaseURL: "http://localhost:11434",
+		SecretsKey:    testutil.TestEncryptionKey,
+		SigningKey:    testutil.TestSigningKey,
+	}
+	gw := &gateway.GatewayConfig{
+		Providers: map[string]gateway.ProviderConfig{
+			"ollama": {Enabled: true, BaseURL: "http://127.0.0.1:11434", Region: "LOCAL"},
+		},
+		ServerDefaults: gateway.ServerDefaults{
+			Egress: &gateway.EgressPolicyConfig{DefaultAction: "allow"},
+		},
+	}
+	guard, err := ApplyAirGapPreset(op, gw)
+	require.NoError(t, err)
+	require.NotNil(t, guard)
+	require.NotNil(t, gw.ServerDefaults.Egress)
+	assert.Equal(t, gateway.EgressActionDeny, gw.ServerDefaults.Egress.DefaultAction)
+	assert.NotEmpty(t, gw.ServerDefaults.Egress.Rules)
+}
+
 func TestValidateAirGap_RejectsUSProvider(t *testing.T) {
 	op := &config.Config{
 		Sovereignty: &config.SovereigntyConfig{DeploymentMode: ModeAirGap},

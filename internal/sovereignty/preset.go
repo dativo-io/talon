@@ -42,7 +42,7 @@ func ApplyAirGapPreset(op *config.Config, gw *gateway.GatewayConfig) (*EgressGua
 		return nil, fmt.Errorf("sovereignty.deployment_mode air_gap requires llm.routing.data_sovereignty_mode eu_strict (got %q)", op.LLM.Routing.DataSovereigntyMode)
 	}
 
-	if gw != nil && gw.ServerDefaults.Egress == nil {
+	if gw != nil && isEgressUnconfigured(gw.ServerDefaults.Egress) {
 		gw.ServerDefaults.Egress = DefaultAirGapEgress()
 	}
 
@@ -103,4 +103,14 @@ func BuildAllowlist(op *config.Config, gw *gateway.GatewayConfig) ([]string, err
 		out = append(out, h)
 	}
 	return out, nil
+}
+
+// isEgressUnconfigured returns true when the egress policy is nil or
+// effectively empty (default allow with no rules), meaning the operator
+// did not provide a meaningful custom egress configuration.
+func isEgressUnconfigured(e *gateway.EgressPolicyConfig) bool {
+	if e == nil {
+		return true
+	}
+	return len(e.Rules) == 0 && (e.DefaultAction == "" || e.DefaultAction == gateway.EgressActionAllow)
 }

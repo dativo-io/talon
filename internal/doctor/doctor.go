@@ -299,7 +299,7 @@ func checkGateway(ctx context.Context, opts Options) []CheckResult {
 	results = append(results, checkGatewayMode(gwCfg))
 	results = append(results, checkGatewayCallers(gwCfg))
 	results = append(results, checkGatewayToolPolicy(gwCfg))
-	results = append(results, checkAirGapFromGateway(gwCfg))
+	results = append(results, checkAirGapFromGateway(gwCfg, opts.GatewayConfigPath))
 
 	if !opts.SkipUpstream {
 		results = append(results, checkGatewayUpstreams(ctx, gwCfg)...)
@@ -538,6 +538,13 @@ func checkAirGap(cfg *config.Config, gwCfg *gateway.GatewayConfig) CheckResult {
 			Fix:     "Set both keys via env vars before enabling air_gap mode",
 		}
 	}
+	if gwCfg == nil {
+		return CheckResult{
+			Name: "air_gap_config", Category: "sovereignty", Status: "warn",
+			Message: "air_gap enabled but no gateway config provided; provider region checks skipped",
+			Fix:     "Run with --gateway-config to validate full air-gap deployment",
+		}
+	}
 	if err := sovereignty.ValidateAirGap(cfg, gwCfg); err != nil {
 		return CheckResult{
 			Name: "air_gap_config", Category: "sovereignty", Status: "fail",
@@ -551,12 +558,17 @@ func checkAirGap(cfg *config.Config, gwCfg *gateway.GatewayConfig) CheckResult {
 	}
 }
 
-func checkAirGapFromGateway(gwCfg *gateway.GatewayConfig) CheckResult {
+func checkAirGapFromGateway(gwCfg *gateway.GatewayConfig, gatewayConfigPath string) CheckResult {
 	cfg, err := config.Load()
 	if err != nil {
 		return CheckResult{
 			Name: "air_gap_gateway", Category: "sovereignty", Status: "warn",
 			Message: "cannot load operator config for air-gap gateway check",
+		}
+	}
+	if cfg.Sovereignty == nil && gatewayConfigPath != "" {
+		if sc := config.LoadSovereigntyFromFile(gatewayConfigPath); sc != nil {
+			cfg.Sovereignty = sc
 		}
 	}
 	return checkAirGap(cfg, gwCfg)

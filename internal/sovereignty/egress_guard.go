@@ -23,8 +23,9 @@ type EgressGuard struct {
 	violations atomic.Int64
 }
 
-// NewEgressGuard creates a guard wrapping the default transport.
-func NewEgressGuard(allowedHosts []string) *EgressGuard {
+// NewEgressGuard creates a guard wrapping the given base transport (or
+// http.DefaultTransport when base is nil).
+func NewEgressGuard(allowedHosts []string, base ...http.RoundTripper) *EgressGuard {
 	allowed := make(map[string]struct{})
 	for _, h := range allowedHosts {
 		if host, err := hostFromAllowEntry(h); err == nil && host != "" {
@@ -35,11 +36,16 @@ func NewEgressGuard(allowedHosts []string) *EgressGuard {
 	for _, h := range []string{"localhost", "127.0.0.1", "::1"} {
 		allowed[h] = struct{}{}
 	}
-	base := http.DefaultTransport
-	if base == nil {
-		base = &http.Transport{}
+	var rt http.RoundTripper
+	if len(base) > 0 && base[0] != nil {
+		rt = base[0]
+	} else {
+		rt = http.DefaultTransport
+		if rt == nil {
+			rt = &http.Transport{}
+		}
 	}
-	return &EgressGuard{base: base, allowed: allowed}
+	return &EgressGuard{base: rt, allowed: allowed}
 }
 
 func hostFromAllowEntry(raw string) (string, error) {
@@ -72,6 +78,14 @@ func (g *EgressGuard) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("%w: host %q not in allowlist", ErrEgressBlocked, host)
 	}
 	return g.base.RoundTrip(req)
+}
+
+// SetBase replaces the underlying transport. Used by HTTPClientForGateway to
+// inject the timeout-aware transport after guard construction.
+func (g *EgressGuard) SetBase(rt http.RoundTripper) {
+	if rt != nil {
+		g.base = rt
+	}
 }
 
 // Violations returns the number of blocked egress attempts since creation.
