@@ -14,6 +14,9 @@ import (
 	"github.com/dativo-io/talon/internal/compliance"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/gateway"
+	"github.com/dativo-io/talon/internal/llm"
+	_ "github.com/dativo-io/talon/internal/llm/providers"
 	"github.com/dativo-io/talon/internal/policy"
 )
 
@@ -111,6 +114,23 @@ model provider to complete. Missing declarations are reported as warnings and
 rendered as flagged placeholder sections.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runAuditorDocument(cmd, generateAnnexIVDocument)
+	},
+}
+
+var complianceSovereigntyCmd = &cobra.Command{
+	Use:   "sovereignty",
+	Short: "Generate a sovereignty posture report (configured mode + observed egress)",
+	Long: `Generate a sovereignty posture report for security review.
+
+Declared facts (data_sovereignty_mode, deployment_mode, gateway providers,
+LLM registry allowlist) come from talon.config.yaml. Runtime facts (observed
+destinations, egress denials, routing rejections) come from the signed evidence
+store.
+
+This is supporting evidence for data-residency posture — not a compliance
+determination.`,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		return runSovereigntyPosture(cmd)
 	},
 }
 
@@ -229,7 +249,126 @@ func loadComplianceDeclarations(ctx context.Context, policyFile string, warn io.
 	return decl
 }
 
-var compliancePolicyFile string
+func runSovereigntyPosture(cmd *cobra.Command) error {
+	ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Minute)
+	defer cancel()
+
+	opCfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	postureCfg := buildSovereigntyPostureConfig(ctx, opCfg, complianceGatewayConfig)
+
+	store, err := openEvidenceStore()
+	if err != nil {
+		return fmt.Errorf("initializing evidence store: %w", err)
+	}
+	defer store.Close()
+
+	from, to, err := parseAuditDateRange(complianceFrom, complianceTo)
+	if err != nil {
+		return err
+	}
+	list, err := store.List(ctx, complianceTenant, complianceAgent, from, to, 200000)
+	if err != nil {
+		return fmt.Errorf("querying evidence: %w", err)
+	}
+
+	doc, err := compliance.GenerateSovereigntyPosture(ctx, postureCfg, list, compliance.SovereigntyPostureOptions{
+		TenantID: complianceTenant,
+		AgentID:  complianceAgent,
+		From:     complianceFrom,
+		To:       complianceTo,
+	})
+	if err != nil {
+		return fmt.Errorf("generating sovereignty posture report: %w", err)
+	}
+	for _, w := range doc.Warnings {
+		fmt.Fprintln(cmd.ErrOrStderr(), "WARNING:", w)
+	}
+
+	var out []byte
+	switch strings.ToLower(complianceFormat) {
+	case "json":
+		out, err = compliance.RenderDocumentJSON(doc)
+	case "html":
+		out, err = compliance.RenderDocumentHTML(doc)
+	default:
+		return fmt.Errorf("unsupported --format %q; use html or json", complianceFormat)
+	}
+	if err != nil {
+		return fmt.Errorf("rendering document: %w", err)
+	}
+	if complianceOutput == "" {
+		_, _ = cmd.OutOrStdout().Write(out)
+		if len(out) == 0 || out[len(out)-1] != '\n' {
+			_, _ = cmd.OutOrStdout().Write([]byte("\n"))
+		}
+		return nil
+	}
+	return os.WriteFile(complianceOutput, out, 0o600)
+}
+
+func buildSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config, gatewayConfigPath string) compliance.SovereigntyPostureConfig {
+	cfg := compliance.SovereigntyPostureConfig{}
+	if opCfg.LLM != nil && opCfg.LLM.Routing != nil {
+		cfg.DataSovereigntyMode = opCfg.LLM.Routing.DataSovereigntyMode
+	}
+	if opCfg.Sovereignty != nil {
+		cfg.DeploymentMode = opCfg.Sovereignty.Mode()
+		cfg.AirGapEgressGuard = opCfg.Sovereignty.AirGapEnabled()
+		cfg.AllowedEgressHosts = append([]string(nil), opCfg.Sovereignty.AllowedEgressHosts...)
+	}
+	if gatewayConfigPath != "" {
+		if gwCfg, err := gateway.LoadGatewayConfig(gatewayConfigPath); err == nil {
+			for name := range gwCfg.Providers {
+				p := gwCfg.Providers[name]
+				cfg.GatewayProviders = append(cfg.GatewayProviders, compliance.SovereigntyGatewayProvider{
+					Name: name, Region: p.Region, Enabled: p.Enabled,
+				})
+			}
+		}
+	}
+	mode := cfg.DataSovereigntyMode
+	if mode == "" {
+		mode = "global"
+	}
+	pol := &policy.Policy{VersionTag: "v1", Policies: policy.PoliciesConfig{}}
+	eng, err := policy.NewEngine(ctx, pol)
+	if err == nil {
+		list := llm.ListForWizard(false)
+		for i := range list {
+			meta := list[i]
+			region := ""
+			if len(meta.EURegions) > 0 {
+				region = meta.EURegions[0]
+			}
+			row := compliance.SovereigntyLLMProvider{ID: meta.ID}
+			dec, evalErr := eng.EvaluateRouting(ctx, &policy.RoutingInput{
+				SovereigntyMode:      mode,
+				ProviderID:           meta.ID,
+				ProviderJurisdiction: meta.Jurisdiction,
+				ProviderRegion:       region,
+				DataTier:             0,
+			})
+			switch {
+			case evalErr != nil:
+				row.Reason = evalErr.Error()
+			case dec.Allowed:
+				row.Allowed = true
+			default:
+				row.Reason = strings.Join(dec.Reasons, "; ")
+			}
+			cfg.LLMProviders = append(cfg.LLMProviders, row)
+		}
+	}
+	return cfg
+}
+
+var (
+	compliancePolicyFile    string
+	complianceGatewayConfig string
+)
 
 func init() {
 	complianceReportCmd.Flags().StringVar(&complianceFramework, "framework", "", "Framework filter: gdpr, eu-ai-act, nis2, dora, iso-27001")
@@ -256,8 +395,17 @@ func init() {
 	complianceAnnexIVCmd.Flags().StringVar(&complianceOutput, "output", "", "Write document to file")
 	complianceAnnexIVCmd.Flags().StringVar(&compliancePolicyFile, "policy", "", "Agent policy file for declarations (default: from talon.config.yaml)")
 
+	complianceSovereigntyCmd.Flags().StringVar(&complianceFormat, "format", "html", "Output format: html or json")
+	complianceSovereigntyCmd.Flags().StringVar(&complianceTenant, "tenant", "", "Filter by tenant ID")
+	complianceSovereigntyCmd.Flags().StringVar(&complianceAgent, "agent", "", "Filter by agent ID")
+	complianceSovereigntyCmd.Flags().StringVar(&complianceFrom, "from", "", "Start date (YYYY-MM-DD)")
+	complianceSovereigntyCmd.Flags().StringVar(&complianceTo, "to", "", "End date (YYYY-MM-DD)")
+	complianceSovereigntyCmd.Flags().StringVar(&complianceOutput, "output", "", "Write document to file")
+	complianceSovereigntyCmd.Flags().StringVar(&complianceGatewayConfig, "gateway-config", "talon.config.yaml", "Gateway config path for declared upstream providers")
+
 	complianceCmd.AddCommand(complianceReportCmd)
 	complianceCmd.AddCommand(complianceRopaCmd)
 	complianceCmd.AddCommand(complianceAnnexIVCmd)
+	complianceCmd.AddCommand(complianceSovereigntyCmd)
 	rootCmd.AddCommand(complianceCmd)
 }
