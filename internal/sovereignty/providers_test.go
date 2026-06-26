@@ -23,7 +23,7 @@ func TestAllowsProvider(t *testing.T) {
 		{"eu_strict allows bedrock (US + EU regions)", config.DataSovereigntyEUStrict, "bedrock", true},
 		{"eu_strict rejects openai (US)", config.DataSovereigntyEUStrict, "openai", false},
 		{"eu_strict rejects anthropic (US)", config.DataSovereigntyEUStrict, "anthropic", false},
-		{"eu_strict allows unknown provider (registry validates)", config.DataSovereigntyEUStrict, "made-up", true},
+		{"eu_strict rejects unknown provider (fail closed)", config.DataSovereigntyEUStrict, "made-up", false},
 		{"eu_preferred allows openai", config.DataSovereigntyEUPreferred, "openai", true},
 		{"global allows openai", config.DataSovereigntyGlobal, "openai", true},
 		{"empty mode allows openai", "", "openai", true},

@@ -300,7 +300,7 @@ func checkGateway(ctx context.Context, opts Options) []CheckResult {
 	results = append(results, checkGatewayMode(gwCfg))
 	results = append(results, checkGatewayCallers(gwCfg))
 	results = append(results, checkGatewayToolPolicy(gwCfg))
-	results = append(results, checkSovereigntyFromGateway(gwCfg))
+	results = append(results, checkSovereigntyFromGateway(gwCfg, opts.GatewayConfigPath))
 	results = append(results, checkAirGapFromGateway(gwCfg, opts.GatewayConfigPath))
 
 	if !opts.SkipUpstream {
@@ -547,12 +547,17 @@ func checkSovereignty(cfg *config.Config, gwCfg *gateway.GatewayConfig) CheckRes
 	}
 }
 
-func checkSovereigntyFromGateway(gwCfg *gateway.GatewayConfig) CheckResult {
+func checkSovereigntyFromGateway(gwCfg *gateway.GatewayConfig, gatewayConfigPath string) CheckResult {
 	cfg, err := config.Load()
 	if err != nil {
 		return CheckResult{
 			Name: "sovereignty_gateway", Category: "sovereignty", Status: "warn",
 			Message: "cannot load operator config for sovereignty gateway check",
+		}
+	}
+	if cfg.Sovereignty == nil && gatewayConfigPath != "" {
+		if sc := config.LoadSovereigntyFromFile(gatewayConfigPath); sc != nil {
+			cfg.Sovereignty = sc
 		}
 	}
 	return checkSovereignty(cfg, gwCfg)

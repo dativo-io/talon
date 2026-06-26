@@ -26,13 +26,13 @@ var operatorKeyedProviders = []struct {
 // allowed when its jurisdiction is EU or LOCAL, or it exposes at least one EU
 // region (e.g. Bedrock eu-central-1, Azure westeurope). eu_preferred and global
 // allow all providers (routing applies preference). Unknown provider types are
-// allowed here and rejected by the registry's own validation.
+// rejected under eu_strict (fail closed).
 func AllowsProvider(mode, providerType string) bool {
 	switch mode {
 	case config.DataSovereigntyEUStrict:
 		meta, ok := llm.ProviderMetadataByType(providerType)
 		if !ok {
-			return true
+			return false
 		}
 		j := strings.ToUpper(strings.TrimSpace(meta.Jurisdiction))
 		return j == "EU" || j == "LOCAL" || len(meta.EURegions) > 0
@@ -75,11 +75,15 @@ func validateOperatorProviders(op *config.Config, mode string) error {
 		}
 	}
 	if op.LLM != nil {
-		for id := range op.LLM.Providers {
-			if !AllowsProvider(mode, id) {
+		for id, p := range op.LLM.Providers {
+			providerType := p.Type
+			if providerType == "" {
+				providerType = id
+			}
+			if !AllowsProvider(mode, providerType) {
 				return fmt.Errorf(
-					"sovereignty mode %s: llm.providers includes %q (%s jurisdiction) which is not EU/LOCAL",
-					mode, id, llm.JurisdictionForProvider(id))
+					"sovereignty mode %s: llm.providers includes %q (type %q, %s jurisdiction) which is not EU/LOCAL",
+					mode, id, providerType, llm.JurisdictionForProvider(providerType))
 			}
 		}
 	}
