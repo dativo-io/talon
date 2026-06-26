@@ -127,8 +127,13 @@
     },
     "sovereignty": {
       "type": "object",
-      "description": "Deployment sovereignty mode (air-gap presets and egress guard). Feature bet 5.3.",
+      "description": "Deployment sovereignty (provider gate, air-gap presets and egress guard). Feature bet 5.3.",
       "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["eu_strict", "eu_preferred", "global"],
+          "description": "Single source of truth for data sovereignty. When set it supersedes llm.routing.data_sovereignty_mode and gates providers: eu_strict allows only EU/LOCAL (or EU-region-capable) providers and fails closed on any other declared provider. deployment_mode air_gap implies eu_strict."
+        },
         "deployment_mode": {
           "type": "string",
           "enum": ["standard", "air_gap"],

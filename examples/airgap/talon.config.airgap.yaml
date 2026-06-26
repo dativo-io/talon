@@ -2,6 +2,12 @@
 # Requires explicit TALON_SECRETS_KEY and TALON_SIGNING_KEY — no generated defaults.
 
 sovereignty:
+  # mode is the single source of truth for data sovereignty. It supersedes
+  # llm.routing.data_sovereignty_mode and gates providers: under eu_strict only
+  # EU/LOCAL (or EU-region-capable) providers are allowed; any other declared
+  # provider fails closed at startup. deployment_mode air_gap implies eu_strict,
+  # so the line below is optional here and shown for clarity.
+  mode: eu_strict
   deployment_mode: air_gap
   # Optional extra private EU endpoints (host or URL):
   # allowed_egress_hosts:
@@ -10,8 +16,9 @@ sovereignty:
 ollama_base_url: "http://127.0.0.1:11434"
 
 llm:
-  routing:
-    data_sovereignty_mode: eu_strict
+  # No need to set routing.data_sovereignty_mode — it is derived from
+  # sovereignty.mode (eu_strict here). Setting a conflicting value triggers a
+  # warning and is overridden.
   providers:
     ollama:
       type: ollama

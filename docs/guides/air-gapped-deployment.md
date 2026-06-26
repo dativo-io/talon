@@ -4,21 +4,41 @@ Deploy Talon with **provable in-region operation**: no surprise outbound traffic
 
 This guide implements [feature bet 5.3](https://github.com/dativo-io/talon/issues/111) / issue [#132](https://github.com/dativo-io/talon/issues/132). It supports EU regulated buyers who need evidence that AI traffic stays inside Europe — Talon's structural advantage as a single self-hosted Go binary.
 
-## What air_gap mode does
+## `sovereignty.mode` is the single source of truth
 
-When `sovereignty.deployment_mode: air_gap` is set in `talon.config.yaml`:
+`sovereignty.mode` (`eu_strict` | `eu_preferred` | `global`) is the one knob that
+defines your data-sovereignty posture. When set, it:
 
-1. **Routing** — forces `llm.routing.data_sovereignty_mode: eu_strict` (or requires it if you set it explicitly).
-2. **Gateway egress** — applies deny-by-default egress rules allowing only `EU` and `LOCAL` regions when no custom `gateway.default_policy.egress` block is present.
-3. **Transport guard** — wraps the gateway upstream HTTP client with an allowlist derived from:
+1. **Supersedes** `llm.routing.data_sovereignty_mode` — you set the mode once at the
+   top level; the routing engine inherits it. A conflicting routing value is
+   overridden with a warning.
+2. **Gates providers (fail closed)** — under `eu_strict`, only providers whose
+   jurisdiction is `EU`/`LOCAL` (or that expose an EU region, e.g. Bedrock
+   `eu-central-1`) are allowed. Any other **declared** provider is rejected at
+   startup:
+   - an enabled gateway provider in a non-EU/LOCAL region,
+   - an operator-keyed provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`),
+   - a non-sovereign entry in the `llm.providers` block.
+   Non-sovereign providers that were *not* explicitly configured are simply
+   filtered out of the available set so routing cannot select them.
+
+`eu_preferred` and `global` impose no hard provider gate (routing still applies EU
+preference under `eu_preferred`).
+
+## What air_gap mode adds
+
+`sovereignty.deployment_mode: air_gap` is a **stricter sub-mode**. It implies
+`sovereignty.mode: eu_strict` (setting a looser `mode` is rejected) and adds:
+
+1. **Gateway egress** — applies deny-by-default egress rules allowing only `EU` and `LOCAL` regions when no custom `gateway.default_policy.egress` block is present.
+2. **Transport guard** — wraps the gateway upstream HTTP client with an allowlist derived from:
    - `ollama_base_url`
    - enabled gateway provider `base_url` values
    - optional `sovereignty.allowed_egress_hosts`
    - loopback (`localhost`, `127.0.0.1`, `::1`)
-4. **Crypto hardening** — rejects startup when `TALON_SECRETS_KEY` / `TALON_SIGNING_KEY` are generated defaults (air-gap deployments must use explicit keys).
-5. **Provider regions** — rejects gateway providers whose `region` is not `EU` or `LOCAL`.
+3. **Crypto hardening** — rejects startup when `TALON_SECRETS_KEY` / `TALON_SIGNING_KEY` are generated defaults (air-gap deployments must use explicit keys).
 
-Defense in depth: policy egress blocks disallowed destinations **before** forward; the transport guard catches misconfiguration or code paths that would otherwise surprise-egress.
+Defense in depth: the sovereignty gate rejects non-EU providers at config load; policy egress blocks disallowed destinations **before** forward; the transport guard catches misconfiguration or code paths that would otherwise surprise-egress.
 
 ## Quick start
 
@@ -59,12 +79,15 @@ Point your OpenAI-compatible client at `http://127.0.0.1:8080/v1/proxy/ollama/v1
 
 ```yaml
 sovereignty:
-  deployment_mode: air_gap          # standard | air_gap
+  mode: eu_strict                   # eu_strict | eu_preferred | global (source of truth)
+  deployment_mode: air_gap          # standard | air_gap (air_gap implies eu_strict)
   allowed_egress_hosts:             # optional extension to auto allowlist
     - "llm.internal.example"
 ```
 
-Mirror `llm.routing.data_sovereignty_mode: eu_strict` in agent policies when using `talon run` — gateway and agent paths are configured separately today. See [configuration reference](../reference/configuration.md).
+You no longer need to mirror `llm.routing.data_sovereignty_mode` — it is derived
+from `sovereignty.mode` for both the gateway and `talon run` paths. See
+[configuration reference](../reference/configuration.md).
 
 ## Secrets vault rotation (air-gap hardening)
 

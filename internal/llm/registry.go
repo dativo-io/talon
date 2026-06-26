@@ -88,15 +88,26 @@ func AllRegisteredProviders() []Provider {
 // ("EU", "US", "LOCAL", ...) from its static metadata, or "" when the
 // provider type is not registered. No network calls.
 func JurisdictionForProvider(providerType string) string {
-	factory, ok := registry[providerType]
+	meta, ok := ProviderMetadataByType(providerType)
 	if !ok {
 		return ""
 	}
+	return meta.Jurisdiction
+}
+
+// ProviderMetadataByType returns the static metadata for a registered provider
+// type (jurisdiction, EU regions, etc.) without making network calls. The second
+// return value is false when the provider type is not registered.
+func ProviderMetadataByType(providerType string) (ProviderMetadata, bool) {
+	factory, ok := registry[providerType]
+	if !ok {
+		return ProviderMetadata{}, false
+	}
 	p, err := factory(nil) // nil config — metadata only
 	if err != nil || p == nil {
-		return ""
+		return ProviderMetadata{}, false
 	}
-	return p.Metadata().Jurisdiction
+	return p.Metadata(), true
 }
 
 // RegisteredTypes returns the list of registered provider type names (sorted).

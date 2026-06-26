@@ -290,3 +290,72 @@ func TestExampleDockerComposeEnvKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveSovereignty_AirGapImpliesEUStrict(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	viper.Set("sovereignty", map[string]interface{}{"deployment_mode": "air_gap"})
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, DataSovereigntyEUStrict, cfg.EffectiveSovereigntyMode())
+	require.NotNil(t, cfg.LLM)
+	require.NotNil(t, cfg.LLM.Routing)
+	assert.Equal(t, DataSovereigntyEUStrict, cfg.LLM.Routing.DataSovereigntyMode)
+}
+
+func TestResolveSovereignty_ModeSupersedesRouting(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	viper.Set("sovereignty", map[string]interface{}{"mode": "eu_strict"})
+	viper.Set("llm", map[string]interface{}{
+		"routing": map[string]interface{}{"data_sovereignty_mode": "global"},
+	})
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	// sovereignty.mode is the source of truth and overrides the conflicting routing value.
+	assert.Equal(t, DataSovereigntyEUStrict, cfg.EffectiveSovereigntyMode())
+	assert.Equal(t, DataSovereigntyEUStrict, cfg.LLM.Routing.DataSovereigntyMode)
+}
+
+func TestResolveSovereignty_InvalidMode(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	viper.Set("sovereignty", map[string]interface{}{"mode": "eu_only"})
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sovereignty.mode")
+}
+
+func TestResolveSovereignty_AirGapConflictsWithLooserMode(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	viper.Set("sovereignty", map[string]interface{}{
+		"deployment_mode": "air_gap",
+		"mode":            "global",
+	})
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "air_gap")
+}
+
+func TestEffectiveSovereigntyMode_FallbackToRouting(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	viper.Set("llm", map[string]interface{}{
+		"routing": map[string]interface{}{"data_sovereignty_mode": "eu_preferred"},
+	})
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Sovereignty)
+	assert.Equal(t, DataSovereigntyEUPreferred, cfg.EffectiveSovereigntyMode())
+}

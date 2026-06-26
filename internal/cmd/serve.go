@@ -113,6 +113,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
 
+	if err := sovereignty.ValidateSovereignty(cfg, nil); err != nil {
+		return fmt.Errorf("sovereignty validation: %w", err)
+	}
+
 	providers := buildProviders(cfg)
 	pricingTable := loadPricingTable(cfg, policyBaseDir)
 	injectPricingInProviders(providers, pricingTable)
@@ -355,6 +359,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 			if sc := config.LoadSovereigntyFromFile(serveGatewayConfig); sc != nil {
 				cfg.Sovereignty = sc
 			}
+		}
+		if err := sovereignty.ValidateSovereignty(cfg, gatewayCfg); err != nil {
+			return fmt.Errorf("sovereignty validation: %w", err)
 		}
 		if err := sovereignty.ValidateAirGap(cfg, gatewayCfg); err != nil {
 			return fmt.Errorf("air-gap validation: %w", err)

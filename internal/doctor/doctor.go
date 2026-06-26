@@ -96,6 +96,7 @@ func checkConfig() []CheckResult {
 	results = append(results, checkCryptoKeys(cfg)...)
 	results = append(results, checkEvidenceDB(cfg))
 	results = append(results, checkCache(cfg))
+	results = append(results, checkSovereignty(cfg, nil))
 	results = append(results, checkAirGap(cfg, nil))
 	return results
 }
@@ -299,6 +300,7 @@ func checkGateway(ctx context.Context, opts Options) []CheckResult {
 	results = append(results, checkGatewayMode(gwCfg))
 	results = append(results, checkGatewayCallers(gwCfg))
 	results = append(results, checkGatewayToolPolicy(gwCfg))
+	results = append(results, checkSovereigntyFromGateway(gwCfg))
 	results = append(results, checkAirGapFromGateway(gwCfg, opts.GatewayConfigPath))
 
 	if !opts.SkipUpstream {
@@ -522,6 +524,38 @@ func checkSystem() []CheckResult {
 	}
 
 	return results
+}
+
+func checkSovereignty(cfg *config.Config, gwCfg *gateway.GatewayConfig) CheckResult {
+	mode := cfg.EffectiveSovereigntyMode()
+	if mode == "" || mode == config.DataSovereigntyGlobal {
+		return CheckResult{
+			Name: "sovereignty_mode", Category: "sovereignty", Status: "pass",
+			Message: "no sovereignty restriction (mode unset or global)",
+		}
+	}
+	if err := sovereignty.ValidateSovereignty(cfg, gwCfg); err != nil {
+		return CheckResult{
+			Name: "sovereignty_providers", Category: "sovereignty", Status: "fail",
+			Message: err.Error(),
+			Fix:     "Use EU/LOCAL providers only, or relax sovereignty.mode",
+		}
+	}
+	return CheckResult{
+		Name: "sovereignty_providers", Category: "sovereignty", Status: "pass",
+		Message: fmt.Sprintf("all declared providers satisfy sovereignty mode %q", mode),
+	}
+}
+
+func checkSovereigntyFromGateway(gwCfg *gateway.GatewayConfig) CheckResult {
+	cfg, err := config.Load()
+	if err != nil {
+		return CheckResult{
+			Name: "sovereignty_gateway", Category: "sovereignty", Status: "warn",
+			Message: "cannot load operator config for sovereignty gateway check",
+		}
+	}
+	return checkSovereignty(cfg, gwCfg)
 }
 
 func checkAirGap(cfg *config.Config, gwCfg *gateway.GatewayConfig) CheckResult {
