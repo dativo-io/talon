@@ -316,9 +316,7 @@ func runSovereigntyPosture(cmd *cobra.Command) error {
 	return os.WriteFile(complianceOutput, out, 0o600)
 }
 
-func buildSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config, gatewayConfigPath string) (compliance.SovereigntyPostureConfig, []string) {
-	cfg := compliance.SovereigntyPostureConfig{}
-	var warnings []string
+func buildSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config, gatewayConfigPath string) (cfg compliance.SovereigntyPostureConfig, warnings []string) {
 	if opCfg.LLM != nil && opCfg.LLM.Routing != nil {
 		cfg.DataSovereigntyMode = opCfg.LLM.Routing.DataSovereigntyMode
 	}
