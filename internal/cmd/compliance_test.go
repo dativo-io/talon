@@ -17,7 +17,7 @@ import (
 )
 
 func TestComplianceCmd_HasSubcommands(t *testing.T) {
-	expected := []string{"report", "ropa", "annex-iv"}
+	expected := []string{"report", "ropa", "annex-iv", "sovereignty"}
 	registered := make(map[string]bool)
 	for _, c := range complianceCmd.Commands() {
 		registered[c.Name()] = true
@@ -237,6 +237,98 @@ compliance:
 	operator := findSection(t, doc, "Items to complete outside Talon")
 	require.NotNil(t, operator.Table)
 	assert.Len(t, operator.Table.Rows, 4)
+}
+
+// TestComplianceSovereignty_MergesGatewaySovereignty verifies that a
+// sovereignty block declared in --gateway-config (air_gap) is merged into the
+// operator config and reflected as the effective eu_strict mode in the report.
+// This is the same class of bug fixed in #185 for serve/doctor.
+func TestComplianceSovereignty_MergesGatewaySovereignty(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	seedComplianceEvidence(t)
+
+	gwPath := filepath.Join(dir, "gw.airgap.yaml")
+	gwYAML := `sovereignty:
+  deployment_mode: air_gap
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "shadow"
+  providers:
+    ollama:
+      enabled: true
+      base_url: "http://127.0.0.1:11434"
+      region: "LOCAL"
+      secret_name: "ollama-api-key"
+  callers:
+    - name: "local"
+      tenant_key: "k-local"
+      tenant_id: "default"
+  default_policy:
+    default_pii_action: "warn"
+`
+	require.NoError(t, os.WriteFile(gwPath, []byte(gwYAML), 0o600))
+
+	outPath := filepath.Join(dir, "sov.json")
+	rootCmd.SetErr(&bytes.Buffer{})
+	rootCmd.SetArgs([]string{
+		"compliance", "sovereignty",
+		"--format", "json",
+		"--gateway-config", gwPath,
+		"--from", "2020-01-01",
+		"--output", outPath,
+	})
+	t.Cleanup(func() {
+		rootCmd.SetErr(nil)
+		complianceFormat, complianceFrom, complianceGatewayConfig, complianceOutput = "html", "", "", ""
+	})
+
+	require.NoError(t, rootCmd.Execute())
+
+	raw, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	var doc compliance.Document
+	require.NoError(t, json.Unmarshal(raw, &doc))
+
+	assert.Equal(t, "Sovereignty Posture Report", doc.Title)
+	cfgSection := findSection(t, doc, "1. Configured sovereignty posture")
+	assert.Contains(t, cfgSection.Body, "eu_strict", "gateway air_gap should resolve to effective eu_strict routing mode")
+	assert.Contains(t, cfgSection.Body, "air_gap", "deployment mode should reflect gateway-declared air_gap")
+
+	// Gateway providers were loaded (no GatewayConfigError path).
+	gw := findSection(t, doc, "3. Gateway upstream providers")
+	require.NotNil(t, gw.Table)
+}
+
+// TestComplianceSovereignty_ExplicitInvalidGatewayConfigFails verifies that an
+// explicitly provided --gateway-config that cannot be loaded is a hard error,
+// not a report rendering "No gateway providers configured."
+func TestComplianceSovereignty_ExplicitInvalidGatewayConfigFails(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	seedComplianceEvidence(t)
+
+	badGw := filepath.Join(dir, "bad.gateway.yaml")
+	require.NoError(t, os.WriteFile(badGw, []byte("gateway: [this is not valid\n"), 0o600))
+
+	rootCmd.SetErr(&bytes.Buffer{})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetArgs([]string{
+		"compliance", "sovereignty",
+		"--format", "json",
+		"--gateway-config", badGw,
+		"--from", "2020-01-01",
+	})
+	t.Cleanup(func() {
+		rootCmd.SetErr(nil)
+		rootCmd.SetOut(nil)
+		complianceFormat, complianceFrom, complianceGatewayConfig = "html", "", ""
+	})
+
+	err := rootCmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gateway config")
 }
 
 func TestComplianceRopa_RejectsUnknownFormat(t *testing.T) {
