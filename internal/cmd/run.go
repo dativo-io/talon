@@ -140,9 +140,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
 
-	if err := sovereignty.ValidateSovereignty(cfg, nil); err != nil {
-		return fmt.Errorf("sovereignty validation: %w", err)
-	}
+	sovereignty.ApplySovereigntyGate(cfg, nil)
 
 	providers := buildProviders(cfg)
 	pricingTable := loadPricingTable(cfg, baseDir)
@@ -321,9 +319,8 @@ func runAgent(cmd *cobra.Command, args []string) error {
 // so vault-only keys work. Use "talon secrets set openai-api-key <key>" etc.
 //
 // When the effective sovereignty mode is eu_strict, providers that are not
-// EU/LOCAL (and have no EU regions) are filtered out so the available set
-// reflects the declared sovereignty; explicitly keyed non-sovereign providers are
-// rejected earlier by sovereignty.ValidateSovereignty (fail closed).
+// EU/LOCAL (and have no EU regions) are filtered out; explicitly declared
+// non-sovereign providers are logged at ERROR by ApplySovereigntyGate.
 func buildProviders(cfg *config.Config) map[string]llm.Provider {
 	mode := cfg.EffectiveSovereigntyMode()
 	providers := make(map[string]llm.Provider)

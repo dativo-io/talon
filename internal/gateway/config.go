@@ -52,6 +52,8 @@ type GatewayConfig struct {
 	QuickstartUnsafeListen bool `yaml:"-" json:"-"`
 	// UpstreamTransport when set wraps the gateway upstream HTTP client (air-gap egress guard).
 	UpstreamTransport http.RoundTripper `yaml:"-" json:"-"`
+	// EffectiveSovereigntyMode is set at runtime by serve from operator config (not YAML).
+	EffectiveSovereigntyMode string `yaml:"-" json:"-"`
 }
 
 // ProviderConfig holds per-provider gateway settings.

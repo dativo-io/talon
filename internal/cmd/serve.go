@@ -128,9 +128,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := sovereignty.ValidateSovereignty(cfg, nil); err != nil {
-		return fmt.Errorf("sovereignty validation: %w", err)
+	var preloadedGatewayCfg *gateway.GatewayConfig
+	if serveGateway {
+		preloadedGatewayCfg, err = gateway.LoadGatewayConfig(serveGatewayConfig)
+		if err != nil {
+			return fmt.Errorf("loading gateway config for sovereignty: %w", err)
+		}
 	}
+	sovereignty.ApplySovereigntyGate(cfg, preloadedGatewayCfg)
 
 	providers := buildProviders(cfg)
 	pricingTable := loadPricingTable(cfg, policyBaseDir)
@@ -366,13 +371,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	var gatewayCfgForMode *gateway.GatewayConfig
 	tenantKeys := map[string]string{}
 	if serveGateway {
-		gatewayCfg, err := gateway.LoadGatewayConfig(serveGatewayConfig)
-		if err != nil {
-			return fmt.Errorf("loading gateway config: %w", err)
-		}
-		if err := sovereignty.ValidateSovereignty(cfg, gatewayCfg); err != nil {
-			return fmt.Errorf("sovereignty validation: %w", err)
-		}
+		gatewayCfg := preloadedGatewayCfg
 		if err := sovereignty.ValidateAirGap(cfg, gatewayCfg); err != nil {
 			return fmt.Errorf("air-gap validation: %w", err)
 		}
@@ -393,6 +392,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			log.Info().Msg("--gateway flag set; enabling gateway (config had enabled: false)")
 			gatewayCfg.Enabled = true
 		}
+		gatewayCfg.EffectiveSovereigntyMode = cfg.EffectiveSovereigntyMode()
 		{
 			gatewayPolicy, err := policy.NewGatewayEngine(ctx)
 			if err != nil {
@@ -427,6 +427,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if guard != nil {
 			quickstartCfg.UpstreamTransport = guard
 		}
+		quickstartCfg.EffectiveSovereigntyMode = cfg.EffectiveSovereigntyMode()
 		gatewayPolicy, err := policy.NewGatewayEngine(ctx)
 		if err != nil {
 			return fmt.Errorf("gateway policy engine: %w", err)

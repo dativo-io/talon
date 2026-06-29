@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -550,11 +551,24 @@ func checkSovereignty(cfg *config.Config, gwCfg *gateway.GatewayConfig) CheckRes
 			Message: "no sovereignty restriction (mode unset or global)",
 		}
 	}
-	if err := sovereignty.ValidateSovereignty(cfg, gwCfg); err != nil {
+	eval := sovereignty.EvaluateSovereignty(cfg, gwCfg)
+	if mode == config.DataSovereigntyEUStrict && !eval.HasRoutableProvider {
 		return CheckResult{
 			Name: "sovereignty_providers", Category: "sovereignty", Status: "fail",
-			Message: err.Error(),
-			Fix:     "Use EU/LOCAL providers only, or relax sovereignty.mode",
+			Message: fmt.Sprintf("sovereignty mode %q but no EU/LOCAL provider is routable", mode),
+			Fix:     "Configure at least one EU or LOCAL gateway/LLM provider, or relax sovereignty.mode",
+		}
+	}
+	if len(eval.Excluded) > 0 {
+		names := make([]string, 0, len(eval.Excluded))
+		for _, ex := range eval.Excluded {
+			names = append(names, ex.Provider)
+		}
+		sort.Strings(names)
+		return CheckResult{
+			Name: "sovereignty_providers", Category: "sovereignty", Status: "warn",
+			Message: fmt.Sprintf("sovereignty mode %q: excluded declared provider(s): %s", mode, strings.Join(names, ", ")),
+			Fix:     "Remove non-EU providers or relax sovereignty.mode; compliant providers remain available",
 		}
 	}
 	return CheckResult{
@@ -606,7 +620,7 @@ func checkAirGap(cfg *config.Config, gwCfg *gateway.GatewayConfig) CheckResult {
 		return CheckResult{
 			Name: "air_gap_config", Category: "sovereignty", Status: "fail",
 			Message: err.Error(),
-			Fix:     "Use EU/LOCAL gateway providers only; set llm.routing.data_sovereignty_mode: eu_strict",
+			Fix:     "Set explicit TALON_SECRETS_KEY and TALON_SIGNING_KEY before enabling air_gap mode",
 		}
 	}
 	return CheckResult{

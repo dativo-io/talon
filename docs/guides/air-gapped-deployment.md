@@ -12,15 +12,17 @@ defines your data-sovereignty posture. When set, it:
 1. **Supersedes** `llm.routing.data_sovereignty_mode` — you set the mode once at the
    top level; the routing engine inherits it. A conflicting routing value is
    overridden with a warning.
-2. **Gates providers (fail closed)** — under `eu_strict`, only providers whose
-   jurisdiction is `EU`/`LOCAL` (or that expose an EU region, e.g. Bedrock
-   `eu-central-1`) are allowed. Any other **declared** provider is rejected at
-   startup:
+2. **Excludes non-compliant providers** — under `eu_strict`, declared providers
+   whose jurisdiction is not `EU`/`LOCAL` (and that do not expose an EU region,
+   e.g. Bedrock `eu-central-1`) are **excluded from routing** with an ERROR log
+   at startup. The process keeps running so compliant providers remain available.
+   Direct gateway requests to an excluded provider receive HTTP 403 with signed
+   audit evidence. This covers:
    - an enabled gateway provider in a non-EU/LOCAL region,
    - an operator-keyed provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`),
    - a non-sovereign entry in the `llm.providers` block.
-   Non-sovereign providers that were *not* explicitly configured are simply
-   filtered out of the available set so routing cannot select them.
+   Non-sovereign providers that were *not* explicitly configured are filtered
+   silently from the available set (Debug log) so routing cannot select them.
 
 `eu_preferred` and `global` impose no hard provider gate (routing still applies EU
 preference under `eu_preferred`).
@@ -38,7 +40,7 @@ preference under `eu_preferred`).
    - loopback (`localhost`, `127.0.0.1`, `::1`)
 3. **Crypto hardening** — rejects startup when `TALON_SECRETS_KEY` / `TALON_SIGNING_KEY` are generated defaults (air-gap deployments must use explicit keys).
 
-Defense in depth: the sovereignty gate rejects non-EU providers at config load; policy egress blocks disallowed destinations **before** forward; the transport guard catches misconfiguration or code paths that would otherwise surprise-egress.
+Defense in depth: excluded providers are dropped from routing and denied at the gateway (403); policy egress blocks disallowed destinations **before** forward; the transport guard catches misconfiguration or code paths that would otherwise surprise-egress.
 
 ## Quick start
 

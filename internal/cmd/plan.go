@@ -27,6 +27,7 @@ import (
 	talonprompt "github.com/dativo-io/talon/internal/prompt"
 	"github.com/dativo-io/talon/internal/secrets"
 	talonsession "github.com/dativo-io/talon/internal/session"
+	"github.com/dativo-io/talon/internal/sovereignty"
 )
 
 var (
@@ -328,6 +329,8 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 	cls := classifier.MustNewScanner()
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
+
+	sovereignty.ApplySovereigntyGate(cfg, nil)
 
 	providers := buildProviders(cfg)
 	pricingTable := loadPricingTable(cfg, baseDir)

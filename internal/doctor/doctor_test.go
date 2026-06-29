@@ -182,12 +182,65 @@ gateway:
 	require.NoError(t, err)
 
 	res := checkAirGapFromGateway(gwCfg, gwCfgPath)
-	assert.Equal(t, "fail", res.Status,
-		"gateway air_gap + US upstream must fail even when operator carries a standard sovereignty block")
+	assert.Equal(t, "pass", res.Status,
+		"air_gap crypto keys are set; provider exclusions are non-fatal")
 
 	sov := checkSovereigntyFromGateway(gwCfg, gwCfgPath)
 	assert.Equal(t, "fail", sov.Status,
-		"sovereignty provider gate must fail for US gateway upstream under merged eu_strict")
+		"US-only gateway under eu_strict has no routable EU/LOCAL provider")
+}
+
+func TestDoctorGatewaySovereignty_MixedProvidersWarns(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	t.Setenv("OPENAI_API_KEY", "")
+
+	viper.Set("sovereignty", map[string]interface{}{"mode": "eu_strict"})
+	t.Cleanup(func() {
+		viper.Reset()
+		viper.SetEnvPrefix("TALON")
+		viper.AutomaticEnv()
+		viper.SetDefault(config.KeyDefaultPolicy, config.DefaultPolicy)
+		viper.SetDefault(config.KeyMaxAttachmentMB, config.DefaultMaxAttachMB)
+		viper.SetDefault(config.KeyOllamaBaseURL, config.DefaultOllamaURL)
+	})
+
+	gwCfgPath := filepath.Join(dir, "talon.config.yaml")
+	gwYAML := `sovereignty:
+  mode: eu_strict
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "shadow"
+  providers:
+    openai:
+      enabled: true
+      base_url: "https://api.openai.com"
+      region: "US"
+      secret_name: "openai-api-key"
+    ollama:
+      enabled: true
+      base_url: "http://127.0.0.1:11434"
+      region: "LOCAL"
+      secret_name: "ollama-api-key"
+  callers:
+    - name: "test"
+      tenant_key: "test-key"
+      tenant_id: "default"
+  default_policy:
+    default_pii_action: "warn"
+    forbidden_tools: ["rm_rf"]
+`
+	require.NoError(t, os.WriteFile(gwCfgPath, []byte(gwYAML), 0o600))
+
+	gwCfg, err := gateway.LoadGatewayConfig(gwCfgPath)
+	require.NoError(t, err)
+
+	sov := checkSovereigntyFromGateway(gwCfg, gwCfgPath)
+	assert.Equal(t, "warn", sov.Status)
+	assert.Contains(t, sov.Message, "openai")
 }
 
 // TestCheckLLMKeys_RecognizesLocalProviders guards the air-gap operator path:

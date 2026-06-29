@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -299,6 +300,77 @@ gateway:
 	// Gateway providers were loaded (no GatewayConfigError path).
 	gw := findSection(t, doc, "3. Gateway upstream providers")
 	require.NotNil(t, gw.Table)
+}
+
+func TestComplianceSovereignty_ExcludedDeclaredProvider(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	seedComplianceEvidence(t)
+
+	gwPath := filepath.Join(dir, "gw.mixed.yaml")
+	gwYAML := `sovereignty:
+  mode: eu_strict
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "shadow"
+  providers:
+    openai:
+      enabled: true
+      base_url: "https://api.openai.com"
+      region: "US"
+      secret_name: "openai-api-key"
+    ollama:
+      enabled: true
+      base_url: "http://127.0.0.1:11434"
+      region: "LOCAL"
+      secret_name: "ollama-api-key"
+  callers:
+    - name: "local"
+      tenant_key: "k-local"
+      tenant_id: "default"
+  default_policy:
+    default_pii_action: "warn"
+`
+	require.NoError(t, os.WriteFile(gwPath, []byte(gwYAML), 0o600))
+
+	outPath := filepath.Join(dir, "sov.json")
+	rootCmd.SetErr(&bytes.Buffer{})
+	rootCmd.SetArgs([]string{
+		"compliance", "sovereignty",
+		"--format", "json",
+		"--gateway-config", gwPath,
+		"--from", "2020-01-01",
+		"--output", outPath,
+	})
+	t.Cleanup(func() {
+		rootCmd.SetErr(nil)
+		complianceFormat, complianceFrom, complianceGatewayConfig, complianceOutput = "html", "", "", ""
+	})
+
+	require.NoError(t, rootCmd.Execute())
+
+	raw, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	var doc compliance.Document
+	require.NoError(t, json.Unmarshal(raw, &doc))
+
+	foundExcluded := false
+	for _, w := range doc.Warnings {
+		if strings.Contains(w, "excluded") && strings.Contains(w, "openai") {
+			foundExcluded = true
+		}
+	}
+	assert.True(t, foundExcluded, "warnings should mention excluded openai")
+
+	gwSection := findSection(t, doc, "3. Gateway upstream providers")
+	require.NotNil(t, gwSection.Table)
+	for _, row := range gwSection.Table.Rows {
+		if row[0] == "openai" {
+			assert.Equal(t, "excluded", row[3])
+		}
+	}
 }
 
 // TestComplianceSovereignty_ExplicitInvalidGatewayConfigFails verifies that an

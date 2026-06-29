@@ -19,6 +19,7 @@ import (
 	"github.com/dativo-io/talon/internal/llm"
 	_ "github.com/dativo-io/talon/internal/llm/providers"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/sovereignty"
 )
 
 var (
@@ -340,72 +341,121 @@ func resolveSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config) 
 }
 
 func buildSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config, gatewayConfigPath string, gatewayExplicit bool) (cfg compliance.SovereigntyPostureConfig, warnings []string) {
-	// Use the resolved effective mode (sovereignty.mode, or air_gap implying
-	// eu_strict, falling back to llm.routing.data_sovereignty_mode) rather than
-	// reading the routing value directly, so a gateway-declared posture is
-	// reflected after ResolveSovereigntyForGateway.
 	cfg.DataSovereigntyMode = opCfg.EffectiveSovereigntyMode()
 	if opCfg.Sovereignty != nil {
 		cfg.DeploymentMode = opCfg.Sovereignty.Mode()
 		cfg.AirGapEgressGuard = opCfg.Sovereignty.AirGapEnabled()
 		cfg.AllowedEgressHosts = append([]string(nil), opCfg.Sovereignty.AllowedEgressHosts...)
 	}
-	if gatewayConfigPath != "" {
-		gwCfg, err := gateway.LoadGatewayConfig(gatewayConfigPath)
-		switch {
-		case err != nil && gatewayExplicit:
-			// Explicit --gateway-config that fails to load is surfaced distinctly
-			// (and turned into a hard error by the caller) so the gateway section
-			// is never misread as "no providers configured".
-			cfg.GatewayConfigError = err.Error()
-			warnings = append(warnings, fmt.Sprintf("could not load gateway config %s: %v", gatewayConfigPath, err))
-		case err != nil:
-			// Auto-detected config without a (valid) gateway block: treat as "no
-			// gateway providers", but note it so the operator can tell why.
-			warnings = append(warnings, fmt.Sprintf("active config %s has no usable gateway block (%v); gateway providers section will be empty", gatewayConfigPath, err))
-		default:
-			for name := range gwCfg.Providers {
-				p := gwCfg.Providers[name]
-				cfg.GatewayProviders = append(cfg.GatewayProviders, compliance.SovereigntyGatewayProvider{
-					Name: name, Region: p.Region, Enabled: p.Enabled,
-				})
-			}
+	gwCfg, gwWarnings := loadGatewayProvidersForPosture(gatewayConfigPath, gatewayExplicit)
+	warnings = append(warnings, gwWarnings...)
+	cfg.GatewayProviders = gwCfg.providers
+	cfg.GatewayConfigError = gwCfg.loadError
+
+	excludedGateway, excludedLLM := sovereigntyExclusionMaps(sovereignty.EvaluateSovereignty(opCfg, gwCfg.cfg))
+	applyGatewayPostureLabels(cfg.GatewayProviders, excludedGateway)
+	cfg.LLMProviders = buildLLMProviderRowsForPosture(ctx, cfg.DataSovereigntyMode, excludedLLM)
+	return cfg, warnings
+}
+
+type postureGatewayLoad struct {
+	cfg       *gateway.GatewayConfig
+	providers []compliance.SovereigntyGatewayProvider
+	loadError string
+}
+
+func loadGatewayProvidersForPosture(gatewayConfigPath string, gatewayExplicit bool) (loaded postureGatewayLoad, warnings []string) {
+	if gatewayConfigPath == "" {
+		return postureGatewayLoad{}, nil
+	}
+	gwCfg, err := gateway.LoadGatewayConfig(gatewayConfigPath)
+	switch {
+	case err != nil && gatewayExplicit:
+		return postureGatewayLoad{loadError: err.Error()},
+			[]string{fmt.Sprintf("could not load gateway config %s: %v", gatewayConfigPath, err)}
+	case err != nil:
+		return postureGatewayLoad{},
+			[]string{fmt.Sprintf("active config %s has no usable gateway block (%v); gateway providers section will be empty", gatewayConfigPath, err)}
+	default:
+		out := postureGatewayLoad{cfg: gwCfg}
+		for name := range gwCfg.Providers {
+			p := gwCfg.Providers[name]
+			out.providers = append(out.providers, compliance.SovereigntyGatewayProvider{
+				Name: name, Region: p.Region, Enabled: p.Enabled,
+			})
+		}
+		return out, nil
+	}
+}
+
+func sovereigntyExclusionMaps(eval sovereignty.Evaluation) (gateway, llm map[string]bool) {
+	gateway = make(map[string]bool)
+	llm = make(map[string]bool)
+	for _, ex := range eval.Excluded {
+		switch ex.Scope {
+		case sovereignty.ExclusionScopeGateway:
+			gateway[ex.Provider] = true
+		case sovereignty.ExclusionScopeEnv, sovereignty.ExclusionScopeLLMProviders:
+			llm[ex.Provider] = true
 		}
 	}
-	mode := cfg.DataSovereigntyMode
+	return gateway, llm
+}
+
+func applyGatewayPostureLabels(providers []compliance.SovereigntyGatewayProvider, excluded map[string]bool) {
+	for i := range providers {
+		switch {
+		case !providers[i].Enabled:
+			providers[i].Posture = "disabled"
+		case excluded[providers[i].Name]:
+			providers[i].Posture = "excluded"
+		default:
+			providers[i].Posture = "allowed"
+		}
+	}
+}
+
+func buildLLMProviderRowsForPosture(ctx context.Context, mode string, excludedLLM map[string]bool) []compliance.SovereigntyLLMProvider {
 	if mode == "" {
 		mode = "global"
 	}
 	pol := &policy.Policy{VersionTag: "v1", Policies: policy.PoliciesConfig{}}
 	eng, err := policy.NewEngine(ctx, pol)
-	if err == nil {
-		list := llm.ListForWizard(false)
-		for i := range list {
-			meta := list[i]
-			region := ""
-			if len(meta.EURegions) > 0 {
-				region = meta.EURegions[0]
-			}
-			row := compliance.SovereigntyLLMProvider{ID: meta.ID}
-			dec, evalErr := eng.EvaluateRouting(ctx, &policy.RoutingInput{
-				SovereigntyMode:      mode,
-				ProviderID:           meta.ID,
-				ProviderJurisdiction: meta.Jurisdiction,
-				ProviderRegion:       region,
-				DataTier:             0,
-			})
-			switch {
-			case evalErr != nil:
-				row.Reason = evalErr.Error()
-			case dec.Allowed:
-				row.Allowed = true
-			default:
-				row.Reason = strings.Join(dec.Reasons, "; ")
-			}
-			cfg.LLMProviders = append(cfg.LLMProviders, row)
-		}
+	if err != nil {
+		return nil
 	}
-	return cfg, warnings
+	list := llm.ListForWizard(false)
+	rows := make([]compliance.SovereigntyLLMProvider, 0, len(list))
+	for i := range list {
+		meta := list[i]
+		region := ""
+		if len(meta.EURegions) > 0 {
+			region = meta.EURegions[0]
+		}
+		row := compliance.SovereigntyLLMProvider{ID: meta.ID}
+		dec, evalErr := eng.EvaluateRouting(ctx, &policy.RoutingInput{
+			SovereigntyMode:      mode,
+			ProviderID:           meta.ID,
+			ProviderJurisdiction: meta.Jurisdiction,
+			ProviderRegion:       region,
+			DataTier:             0,
+		})
+		switch {
+		case evalErr != nil:
+			row.Reason = evalErr.Error()
+		case excludedLLM[meta.ID]:
+			row.Status = "excluded_declared"
+			row.Reason = "declared but excluded under eu_strict"
+		case dec.Allowed:
+			row.Allowed = true
+			row.Status = "allowed"
+		default:
+			row.Status = "not_allowed"
+			row.Reason = strings.Join(dec.Reasons, "; ")
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 var (

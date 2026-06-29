@@ -35,7 +35,7 @@ func TestAllowsProvider(t *testing.T) {
 	}
 }
 
-func TestValidateSovereignty_EUStrictRejectsGatewayUSProvider(t *testing.T) {
+func TestEvaluateSovereignty_EUStrictExcludesGatewayUSProvider(t *testing.T) {
 	clearProviderKeys(t)
 	op := &config.Config{
 		Sovereignty: &config.SovereigntyConfig{SovereigntyMode: config.DataSovereigntyEUStrict},
@@ -45,13 +45,14 @@ func TestValidateSovereignty_EUStrictRejectsGatewayUSProvider(t *testing.T) {
 			"openai": {Enabled: true, BaseURL: "https://api.openai.com", Region: "US"},
 		},
 	}
-	err := ValidateSovereignty(op, gw)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openai")
-	assert.Contains(t, err.Error(), "eu_strict")
+	eval := EvaluateSovereignty(op, gw)
+	require.Len(t, eval.Excluded, 1)
+	assert.Equal(t, "openai", eval.Excluded[0].Provider)
+	assert.Equal(t, ExclusionScopeGateway, eval.Excluded[0].Scope)
+	assert.False(t, eval.HasRoutableProvider)
 }
 
-func TestValidateSovereignty_EUStrictAllowsEUAndLocal(t *testing.T) {
+func TestEvaluateSovereignty_EUStrictAllowsEUAndLocal(t *testing.T) {
 	clearProviderKeys(t)
 	op := &config.Config{
 		Sovereignty: &config.SovereigntyConfig{SovereigntyMode: config.DataSovereigntyEUStrict},
@@ -60,24 +61,46 @@ func TestValidateSovereignty_EUStrictAllowsEUAndLocal(t *testing.T) {
 		Providers: map[string]gateway.ProviderConfig{
 			"mistral":  {Enabled: true, BaseURL: "https://api.mistral.ai", Region: "EU"},
 			"ollama":   {Enabled: true, BaseURL: "http://127.0.0.1:11434", Region: "LOCAL"},
-			"disabled": {Enabled: false, BaseURL: "https://api.openai.com", Region: "US"}, // ignored: not enabled
+			"disabled": {Enabled: false, BaseURL: "https://api.openai.com", Region: "US"},
 		},
 	}
-	require.NoError(t, ValidateSovereignty(op, gw))
+	eval := EvaluateSovereignty(op, gw)
+	assert.Empty(t, eval.Excluded)
+	assert.True(t, eval.HasRoutableProvider)
+	assert.ElementsMatch(t, []string{"mistral", "ollama"}, eval.CompliantGatewayProviders)
 }
 
-func TestValidateSovereignty_EUStrictRejectsKeyedOpenAI(t *testing.T) {
+func TestEvaluateSovereignty_EUStrictMixedProviders(t *testing.T) {
+	clearProviderKeys(t)
+	op := &config.Config{
+		Sovereignty: &config.SovereigntyConfig{SovereigntyMode: config.DataSovereigntyEUStrict},
+	}
+	gw := &gateway.GatewayConfig{
+		Providers: map[string]gateway.ProviderConfig{
+			"openai": {Enabled: true, BaseURL: "https://api.openai.com", Region: "US"},
+			"ollama": {Enabled: true, BaseURL: "http://127.0.0.1:11434", Region: "LOCAL"},
+		},
+	}
+	eval := EvaluateSovereignty(op, gw)
+	require.Len(t, eval.Excluded, 1)
+	assert.Equal(t, "openai", eval.Excluded[0].Provider)
+	assert.True(t, eval.HasRoutableProvider)
+}
+
+func TestEvaluateSovereignty_EUStrictExcludesKeyedOpenAI(t *testing.T) {
 	clearProviderKeys(t)
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 	op := &config.Config{
 		Sovereignty: &config.SovereigntyConfig{SovereigntyMode: config.DataSovereigntyEUStrict},
 	}
-	err := ValidateSovereignty(op, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "OPENAI_API_KEY")
+	eval := EvaluateSovereignty(op, nil)
+	require.Len(t, eval.Excluded, 1)
+	assert.Equal(t, "openai", eval.Excluded[0].Provider)
+	assert.Equal(t, ExclusionScopeEnv, eval.Excluded[0].Scope)
+	assert.True(t, eval.HasRoutableProvider, "native run still has implicit ollama")
 }
 
-func TestValidateSovereignty_EUStrictRejectsLLMProvidersBlock(t *testing.T) {
+func TestEvaluateSovereignty_EUStrictExcludesLLMProvidersBlock(t *testing.T) {
 	clearProviderKeys(t)
 	op := &config.Config{
 		Sovereignty: &config.SovereigntyConfig{SovereigntyMode: config.DataSovereigntyEUStrict},
@@ -85,12 +108,12 @@ func TestValidateSovereignty_EUStrictRejectsLLMProvidersBlock(t *testing.T) {
 			Providers: map[string]config.LLMProviderConfig{"openai": {Enabled: true}},
 		},
 	}
-	err := ValidateSovereignty(op, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "llm.providers")
+	eval := EvaluateSovereignty(op, nil)
+	require.Len(t, eval.Excluded, 1)
+	assert.Contains(t, eval.Excluded[0].Reason, "llm.providers")
 }
 
-func TestValidateSovereignty_GlobalAllowsAll(t *testing.T) {
+func TestEvaluateSovereignty_GlobalAllowsAll(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 	op := &config.Config{
 		Sovereignty: &config.SovereigntyConfig{SovereigntyMode: config.DataSovereigntyGlobal},
@@ -100,23 +123,32 @@ func TestValidateSovereignty_GlobalAllowsAll(t *testing.T) {
 			"openai": {Enabled: true, BaseURL: "https://api.openai.com", Region: "US"},
 		},
 	}
-	require.NoError(t, ValidateSovereignty(op, gw))
+	eval := EvaluateSovereignty(op, gw)
+	assert.Empty(t, eval.Excluded)
+	assert.True(t, eval.HasRoutableProvider)
 }
 
-func TestValidateSovereignty_NoSovereigntyBlockIsNoop(t *testing.T) {
+func TestEvaluateSovereignty_NoSovereigntyBlockIsNoop(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 	op := &config.Config{}
-	require.NoError(t, ValidateSovereignty(op, nil))
+	eval := EvaluateSovereignty(op, nil)
+	assert.Empty(t, eval.Excluded)
+	assert.True(t, eval.HasRoutableProvider)
 }
 
-// TestValidateOperatorProviders_UsesProviderTypeNotAlias is the regression for
+func clearProviderKeys(t *testing.T) {
+	t.Helper()
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+}
+
+// TestEvaluateOperatorProviders_UsesProviderTypeNotAlias is the regression for
 // the "provider gate uses map key" bug: the gate must classify llm.providers
 // entries by their Type field, not by the (operator-chosen) map alias.
-func TestValidateOperatorProviders_UsesProviderTypeNotAlias(t *testing.T) {
+func TestEvaluateOperatorProviders_UsesProviderTypeNotAlias(t *testing.T) {
 	clearProviderKeys(t)
 
-	// Alias looks EU-friendly but the real type is openai (US) → must be rejected.
-	t.Run("rejects by type not alias", func(t *testing.T) {
+	t.Run("excludes by type not alias", func(t *testing.T) {
 		op := &config.Config{
 			Sovereignty: &config.SovereigntyConfig{SovereigntyMode: config.DataSovereigntyEUStrict},
 			LLM: &config.LLMConfig{
@@ -125,12 +157,12 @@ func TestValidateOperatorProviders_UsesProviderTypeNotAlias(t *testing.T) {
 				},
 			},
 		}
-		err := validateOperatorProviders(op, config.DataSovereigntyEUStrict)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "openai")
+		excluded, compliant := evaluateOperatorProviders(op, config.DataSovereigntyEUStrict)
+		require.Len(t, excluded, 1)
+		assert.Equal(t, "openai", excluded[0].Provider)
+		assert.False(t, compliant)
 	})
 
-	// Alias looks like a US provider but the real type is mistral (EU) → allowed.
 	t.Run("allows by type not alias", func(t *testing.T) {
 		op := &config.Config{
 			Sovereignty: &config.SovereigntyConfig{SovereigntyMode: config.DataSovereigntyEUStrict},
@@ -140,14 +172,8 @@ func TestValidateOperatorProviders_UsesProviderTypeNotAlias(t *testing.T) {
 				},
 			},
 		}
-		require.NoError(t, validateOperatorProviders(op, config.DataSovereigntyEUStrict))
+		excluded, compliant := evaluateOperatorProviders(op, config.DataSovereigntyEUStrict)
+		assert.Empty(t, excluded)
+		assert.True(t, compliant)
 	})
-}
-
-// clearProviderKeys ensures operator-keyed provider env vars are unset so the
-// fail-closed gate is exercised deterministically regardless of the dev shell.
-func clearProviderKeys(t *testing.T) {
-	t.Helper()
-	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("ANTHROPIC_API_KEY", "")
 }
