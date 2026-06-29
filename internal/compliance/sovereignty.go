@@ -22,6 +22,10 @@ type SovereigntyPostureConfig struct {
 	AllowedEgressHosts  []string
 	GatewayProviders    []SovereigntyGatewayProvider
 	LLMProviders        []SovereigntyLLMProvider
+	// GatewayConfigError, when non-empty, records that a declared gateway config
+	// could not be loaded. The gateway section renders this distinctly so an
+	// empty provider list is never misread as "no providers configured".
+	GatewayConfigError string
 }
 
 // SovereigntyGatewayProvider is one configured gateway upstream.
@@ -192,6 +196,13 @@ func sovereigntyLLMProvidersSection(cfg SovereigntyPostureConfig) DocSection {
 }
 
 func sovereigntyGatewaySection(cfg SovereigntyPostureConfig) DocSection {
+	if cfg.GatewayConfigError != "" {
+		return DocSection{
+			Heading: "3. Gateway upstream providers",
+			Body: "Gateway config could not be loaded: " + cfg.GatewayConfigError +
+				"\nProvider rows are unavailable for this report. This is NOT a statement that no gateway providers are configured — resolve the gateway config and regenerate.",
+		}
+	}
 	if len(cfg.GatewayProviders) == 0 {
 		return DocSection{
 			Heading: "3. Gateway upstream providers",

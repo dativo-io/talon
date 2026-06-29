@@ -91,6 +91,28 @@ func TestGenerateSovereigntyPosture_GoldenShape(t *testing.T) {
 	assert.Contains(t, string(out), "eu_strict")
 }
 
+// TestGenerateSovereigntyPosture_GatewayConfigError ensures a gateway-config
+// load failure renders a distinct section rather than the misleading
+// "No gateway providers configured." auditors must not misread.
+func TestGenerateSovereigntyPosture_GatewayConfigError(t *testing.T) {
+	cfg := SovereigntyPostureConfig{
+		DataSovereigntyMode: "eu_strict",
+		GatewayConfigError:  "parsing gateway config: yaml: line 3: did not find expected key",
+	}
+	doc, err := GenerateSovereigntyPosture(context.Background(), cfg, nil, SovereigntyPostureOptions{Now: fixedTime})
+	require.NoError(t, err)
+
+	var gw *DocSection
+	for i := range doc.Sections {
+		if doc.Sections[i].Heading == "3. Gateway upstream providers" {
+			gw = &doc.Sections[i]
+		}
+	}
+	require.NotNil(t, gw)
+	assert.Contains(t, gw.Body, "could not be loaded")
+	assert.NotContains(t, gw.Body, "No gateway providers configured")
+}
+
 func TestGenerateSovereigntyPosture_HTML(t *testing.T) {
 	doc, err := GenerateSovereigntyPosture(context.Background(), SovereigntyPostureConfig{
 		DataSovereigntyMode: "eu_strict",

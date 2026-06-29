@@ -259,11 +259,10 @@ func runSovereigntyPosture(cmd *cobra.Command) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	gwPath := complianceGatewayConfig
-	if gwPath == "" {
-		gwPath = viper.ConfigFileUsed()
+	postureCfg, cfgWarnings, err := resolveSovereigntyPostureConfig(ctx, opCfg)
+	if err != nil {
+		return err
 	}
-	postureCfg, cfgWarnings := buildSovereigntyPostureConfig(ctx, opCfg, gwPath)
 
 	store, err := openEvidenceStore()
 	if err != nil {
@@ -316,10 +315,36 @@ func runSovereigntyPosture(cmd *cobra.Command) error {
 	return os.WriteFile(complianceOutput, out, 0o600)
 }
 
-func buildSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config, gatewayConfigPath string) (cfg compliance.SovereigntyPostureConfig, warnings []string) {
-	if opCfg.LLM != nil && opCfg.LLM.Routing != nil {
-		cfg.DataSovereigntyMode = opCfg.LLM.Routing.DataSovereigntyMode
+// resolveSovereigntyPostureConfig resolves the effective sovereignty posture for
+// the report. Sovereignty (air_gap / eu_strict) commonly lives in the
+// --gateway-config file, so it merges any gateway-declared block into the
+// operator config fail-safe (stronger posture wins) — the same resolution the
+// gateway and `talon doctor` use — before building the posture config. An
+// explicitly provided --gateway-config that cannot be loaded is a hard error so
+// an auditor-facing report never silently renders "no providers".
+func resolveSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config) (compliance.SovereigntyPostureConfig, []string, error) {
+	gwPath := complianceGatewayConfig
+	if gwPath == "" {
+		gwPath = viper.ConfigFileUsed()
 	}
+	if gwPath != "" {
+		if err := config.ResolveSovereigntyForGateway(opCfg, gwPath); err != nil {
+			return compliance.SovereigntyPostureConfig{}, nil, fmt.Errorf("resolving sovereignty config: %w", err)
+		}
+	}
+	postureCfg, warnings := buildSovereigntyPostureConfig(ctx, opCfg, gwPath, complianceGatewayConfig != "")
+	if complianceGatewayConfig != "" && postureCfg.GatewayConfigError != "" {
+		return compliance.SovereigntyPostureConfig{}, nil, fmt.Errorf("loading gateway config %s: %s", complianceGatewayConfig, postureCfg.GatewayConfigError)
+	}
+	return postureCfg, warnings, nil
+}
+
+func buildSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config, gatewayConfigPath string, gatewayExplicit bool) (cfg compliance.SovereigntyPostureConfig, warnings []string) {
+	// Use the resolved effective mode (sovereignty.mode, or air_gap implying
+	// eu_strict, falling back to llm.routing.data_sovereignty_mode) rather than
+	// reading the routing value directly, so a gateway-declared posture is
+	// reflected after ResolveSovereigntyForGateway.
+	cfg.DataSovereigntyMode = opCfg.EffectiveSovereigntyMode()
 	if opCfg.Sovereignty != nil {
 		cfg.DeploymentMode = opCfg.Sovereignty.Mode()
 		cfg.AirGapEgressGuard = opCfg.Sovereignty.AirGapEnabled()
@@ -327,9 +352,18 @@ func buildSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config, ga
 	}
 	if gatewayConfigPath != "" {
 		gwCfg, err := gateway.LoadGatewayConfig(gatewayConfigPath)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("could not load gateway config %s: %v — gateway providers section may be incomplete", gatewayConfigPath, err))
-		} else {
+		switch {
+		case err != nil && gatewayExplicit:
+			// Explicit --gateway-config that fails to load is surfaced distinctly
+			// (and turned into a hard error by the caller) so the gateway section
+			// is never misread as "no providers configured".
+			cfg.GatewayConfigError = err.Error()
+			warnings = append(warnings, fmt.Sprintf("could not load gateway config %s: %v", gatewayConfigPath, err))
+		case err != nil:
+			// Auto-detected config without a (valid) gateway block: treat as "no
+			// gateway providers", but note it so the operator can tell why.
+			warnings = append(warnings, fmt.Sprintf("active config %s has no usable gateway block (%v); gateway providers section will be empty", gatewayConfigPath, err))
+		default:
 			for name := range gwCfg.Providers {
 				p := gwCfg.Providers[name]
 				cfg.GatewayProviders = append(cfg.GatewayProviders, compliance.SovereigntyGatewayProvider{
