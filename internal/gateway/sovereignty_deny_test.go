@@ -139,6 +139,79 @@ func TestGateway_SovereigntyAllow_EUProvider(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
+func TestGateway_SovereigntyDeny_ShadowModeForwardsAndRecords(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"1","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	dir := t.TempDir()
+	cfg := &GatewayConfig{
+		Enabled:                  true,
+		ListenPrefix:             "/v1/proxy",
+		Mode:                     ModeShadow,
+		EffectiveSovereigntyMode: config.DataSovereigntyEUStrict,
+		Providers: map[string]ProviderConfig{
+			"openai": {
+				Enabled:    true,
+				BaseURL:    upstream.URL,
+				SecretName: "openai-api-key",
+				Region:     "US",
+			},
+		},
+		Callers: []CallerConfig{
+			{
+				Name:      "test",
+				TenantKey: "talon-gw-sov-shadow",
+				TenantID:  "default",
+			},
+		},
+		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
+		Timeouts: TimeoutsConfig{
+			ConnectTimeout:    "5s",
+			RequestTimeout:    "30s",
+			StreamIdleTimeout: "60s",
+		},
+	}
+
+	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evStore.Close() })
+
+	secStore, err := secrets.NewSecretStore(filepath.Join(dir, "s.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secStore.Close() })
+	require.NoError(t, secStore.Set(context.Background(), "openai-api-key",
+		[]byte("sk-test"), secrets.ACL{Tenants: []string{"default"}, Agents: []string{"*"}}))
+
+	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	require.NoError(t, err)
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
+	w := makeGatewayRequestWithKey(gw, "/v1/proxy/openai/v1/chat/completions", body, "talon-gw-sov-shadow")
+
+	assert.Equal(t, http.StatusOK, w.Code, "shadow mode should forward sovereignty-denied requests")
+	assert.Equal(t, int64(1), upstreamCalls.Load(), "shadow mode must reach upstream")
+
+	records, err := evStore.List(context.Background(), "default", "", time.Time{}, time.Now(), 5)
+	require.NoError(t, err)
+	require.NotEmpty(t, records)
+
+	ev := records[0]
+	assert.True(t, ev.ObservationModeOverride, "shadow violation should flag observation mode override")
+	hasSovereigntyViolation := false
+	for _, sv := range ev.ShadowViolations {
+		if sv.Type == "sovereignty_deny" {
+			hasSovereigntyViolation = true
+		}
+	}
+	assert.True(t, hasSovereigntyViolation, "should record sovereignty_deny shadow violation, got %+v", ev.ShadowViolations)
+}
+
 func makeGatewayRequestWithKey(gw *Gateway, path, body, tenantKey string) *httptest.ResponseRecorder {
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) {

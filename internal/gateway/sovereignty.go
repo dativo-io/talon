@@ -2,18 +2,23 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/rs/zerolog/log"
 )
 
 const sovereigntyDenyReason = "sovereignty: provider not EU/LOCAL"
 
 // denySovereigntyExcluded responds with 403 when the routed provider is excluded
-// under eu_strict (non-EU/LOCAL region). Returns true when the request was denied.
+// under eu_strict (non-EU/LOCAL region). In shadow mode it records a violation
+// and returns false so the request continues to upstream. Returns true when the
+// request was hard-denied (enforce mode only).
 func (g *Gateway) denySovereigntyExcluded(
 	w http.ResponseWriter,
 	ctx context.Context,
@@ -24,6 +29,8 @@ func (g *Gateway) denySovereigntyExcluded(
 	extracted ExtractedRequest,
 	classification *classifier.Classification,
 	attSummary *AttachmentsScanSummary,
+	isShadow bool,
+	shadowViolations *[]evidence.ShadowViolation,
 ) bool {
 	mode := g.config.EffectiveSovereigntyMode
 	if mode != config.DataSovereigntyEUStrict {
@@ -31,6 +38,17 @@ func (g *Gateway) denySovereigntyExcluded(
 	}
 	region := strings.ToUpper(strings.TrimSpace(g.providerRegion(route.Provider)))
 	if region == "EU" || region == "LOCAL" {
+		return false
+	}
+
+	if isShadow {
+		*shadowViolations = append(*shadowViolations, evidence.ShadowViolation{
+			Type:   "sovereignty_deny",
+			Detail: fmt.Sprintf("provider %s region %s blocked by sovereignty.mode=eu_strict", route.Provider, region),
+			Action: "block",
+		})
+		log.Warn().Str("caller", caller.Name).Str("provider", route.Provider).Str("region", region).Str("enforcement_mode", "shadow").Msg("shadow_sovereignty_deny")
+		RecordSovereigntyProviderDenied(ctx, route.Provider)
 		return false
 	}
 

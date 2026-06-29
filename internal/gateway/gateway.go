@@ -375,7 +375,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if g.denySovereigntyExcluded(w, ctx, caller, route, start, correlationID, extracted, classification, attSummary) {
+	if g.denySovereigntyExcluded(w, ctx, caller, route, start, correlationID, extracted, classification, attSummary, isShadow, &shadowViolations) {
 		return
 	}
 
