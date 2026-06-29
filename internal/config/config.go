@@ -27,6 +27,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 
 	"github.com/dativo-io/talon/internal/compliance"
 	"github.com/dativo-io/talon/internal/cryptoutil"
@@ -73,6 +74,44 @@ type LLMConfig struct {
 	PricingFile string                       `mapstructure:"pricing_file"` // path to pricing/models.yaml; default "pricing/models.yaml"
 }
 
+// Sovereignty deployment modes (feature bet 5.3).
+const (
+	SovereigntyModeStandard = "standard"
+	SovereigntyModeAirGap   = "air_gap"
+)
+
+// Data-sovereignty routing modes. These are the single vocabulary used both for
+// agent routing (routing.rego) and for the top-level sovereignty.mode provider gate.
+const (
+	DataSovereigntyEUStrict    = "eu_strict"
+	DataSovereigntyEUPreferred = "eu_preferred"
+	DataSovereigntyGlobal      = "global"
+)
+
+// SovereigntyConfig is the optional sovereignty block from talon.config.yaml.
+// When SovereigntyMode is set it is the single source of truth for data
+// sovereignty: it supersedes llm.routing.data_sovereignty_mode and gates which
+// providers are allowed. DeploymentMode air_gap additionally implies eu_strict.
+type SovereigntyConfig struct {
+	// SovereigntyMode is the required jurisdiction posture: eu_strict | eu_preferred | global.
+	SovereigntyMode    string   `mapstructure:"mode" yaml:"mode"`
+	DeploymentMode     string   `mapstructure:"deployment_mode" yaml:"deployment_mode"`
+	AllowedEgressHosts []string `mapstructure:"allowed_egress_hosts" yaml:"allowed_egress_hosts"`
+}
+
+// Mode returns the normalized deployment mode (standard when unset).
+func (c *SovereigntyConfig) Mode() string {
+	if c == nil || c.DeploymentMode == "" {
+		return SovereigntyModeStandard
+	}
+	return c.DeploymentMode
+}
+
+// AirGapEnabled reports whether transport-level egress guarding is active.
+func (c *SovereigntyConfig) AirGapEnabled() bool {
+	return c.Mode() == SovereigntyModeAirGap
+}
+
 // ComplianceConfig is the optional compliance block from talon.config.yaml.
 // It declares org-level facts (controller identity) used to populate auditor
 // exports such as the GDPR Art. 30 RoPA. Declared facts only — runtime facts
@@ -95,15 +134,16 @@ type CacheConfig struct {
 // For tenant-level secrets (LLM API keys, webhook tokens), use the
 // secrets vault (internal/secrets.SecretStore).
 type Config struct {
-	DataDir         string            // Base directory for all state (~/.talon)
-	SecretsKey      string            // AES-256 encryption key for the vault (exactly 32 bytes)
-	SigningKey      string            // HMAC-SHA256 key for evidence signing (≥32 bytes)
-	DefaultPolicy   string            // Filename of the agent policy file (agent.talon.yaml by default)
-	MaxAttachmentMB int               // Maximum attachment size in MB
-	OllamaBaseURL   string            // Ollama API endpoint (operator infrastructure)
-	LLM             *LLMConfig        // Optional: llm block from config file (providers, routing)
-	Cache           *CacheConfig      // Optional: governed semantic cache (off by default)
-	Compliance      *ComplianceConfig // Optional: declared controller identity for auditor exports
+	DataDir         string             // Base directory for all state (~/.talon)
+	SecretsKey      string             // AES-256 encryption key for the vault (exactly 32 bytes)
+	SigningKey      string             // HMAC-SHA256 key for evidence signing (≥32 bytes)
+	DefaultPolicy   string             // Filename of the agent policy file (agent.talon.yaml by default)
+	MaxAttachmentMB int                // Maximum attachment size in MB
+	OllamaBaseURL   string             // Ollama API endpoint (operator infrastructure)
+	LLM             *LLMConfig         // Optional: llm block from config file (providers, routing)
+	Cache           *CacheConfig       // Optional: governed semantic cache (off by default)
+	Compliance      *ComplianceConfig  // Optional: declared controller identity for auditor exports
+	Sovereignty     *SovereigntyConfig // Optional: air-gap / deployment sovereignty mode
 
 	usingDefaultSecretsKey bool
 	usingDefaultSigningKey bool
@@ -191,6 +231,7 @@ func Load() (*Config, error) {
 		LLM:             loadLLMConfig(),
 		Cache:           loadCacheConfig(),
 		Compliance:      loadComplianceConfig(),
+		Sovereignty:     loadSovereigntyConfig(),
 	}
 
 	if cfg.SecretsKey == "" {
@@ -202,11 +243,179 @@ func Load() (*Config, error) {
 		cfg.usingDefaultSigningKey = true
 	}
 
+	if err := cfg.resolveSovereignty(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
 	return cfg, nil
+}
+
+// EffectiveSovereigntyMode returns the resolved data-sovereignty mode. The
+// top-level sovereignty block is the source of truth: sovereignty.mode wins, and
+// deployment_mode air_gap implies eu_strict. Falls back to
+// llm.routing.data_sovereignty_mode when no sovereignty block mode is declared.
+func (c *Config) EffectiveSovereigntyMode() string {
+	if c.Sovereignty != nil {
+		if c.Sovereignty.AirGapEnabled() {
+			return DataSovereigntyEUStrict
+		}
+		if c.Sovereignty.SovereigntyMode != "" {
+			return c.Sovereignty.SovereigntyMode
+		}
+	}
+	if c.LLM != nil && c.LLM.Routing != nil {
+		return c.LLM.Routing.DataSovereigntyMode
+	}
+	return ""
+}
+
+// resolveSovereignty makes the top-level sovereignty block the single source of
+// truth for data sovereignty (fail closed). It validates the declared mode,
+// reconciles air_gap (which implies eu_strict), and propagates the effective
+// mode into llm.routing.data_sovereignty_mode so the routing engine and provider
+// gate observe one consistent value. A conflicting llm.routing value is
+// overridden with a warning.
+func (c *Config) resolveSovereignty() error {
+	if c.Sovereignty == nil {
+		return nil
+	}
+
+	if dm := c.Sovereignty.DeploymentMode; dm != "" && dm != SovereigntyModeStandard && dm != SovereigntyModeAirGap {
+		return fmt.Errorf("sovereignty.deployment_mode %q is invalid (use %s or %s)",
+			dm, SovereigntyModeStandard, SovereigntyModeAirGap)
+	}
+
+	declared := c.Sovereignty.SovereigntyMode
+	if !validSovereigntyMode(declared) {
+		return fmt.Errorf("sovereignty.mode %q is invalid (use %s, %s, or %s)",
+			declared, DataSovereigntyEUStrict, DataSovereigntyEUPreferred, DataSovereigntyGlobal)
+	}
+
+	effective := declared
+	if c.Sovereignty.AirGapEnabled() {
+		if declared != "" && declared != DataSovereigntyEUStrict {
+			return fmt.Errorf("sovereignty.deployment_mode air_gap requires sovereignty.mode %s (got %q)",
+				DataSovereigntyEUStrict, declared)
+		}
+		effective = DataSovereigntyEUStrict
+	}
+	if effective == "" {
+		return nil
+	}
+
+	if c.LLM == nil {
+		c.LLM = &LLMConfig{}
+	}
+	if c.LLM.Routing == nil {
+		c.LLM.Routing = &LLMRoutingConfig{}
+	}
+	if existing := c.LLM.Routing.DataSovereigntyMode; existing != "" && existing != effective {
+		log.Warn().
+			Str("sovereignty_mode", effective).
+			Str("llm_routing_data_sovereignty_mode", existing).
+			Msg("sovereignty.mode supersedes conflicting llm.routing.data_sovereignty_mode")
+	}
+	c.LLM.Routing.DataSovereigntyMode = effective
+	return nil
+}
+
+// validSovereigntyMode reports whether m is an accepted data-sovereignty mode
+// (empty is accepted: it means "unset").
+func validSovereigntyMode(m string) bool {
+	switch m {
+	case "", DataSovereigntyEUStrict, DataSovereigntyEUPreferred, DataSovereigntyGlobal:
+		return true
+	default:
+		return false
+	}
+}
+
+// ResolveSovereigntyForGateway merges the sovereignty block declared in the
+// gateway config file into the operator config, then re-runs the same
+// sovereignty resolution used by Load(). It exists because air-gap deployments
+// commonly declare sovereignty in the gateway config file passed to
+// `talon serve --gateway-config`, while the operator config may already carry a
+// weaker (or empty/standard) sovereignty block that would otherwise mask it.
+//
+// Precedence is fail-safe: the stronger posture from either source is adopted —
+// air_gap is never downgraded, the stricter data-sovereignty mode wins
+// (eu_strict > eu_preferred > global), and allowed_egress_hosts are unioned.
+// Re-running resolution then propagates the effective mode into
+// llm.routing.data_sovereignty_mode and rejects genuine conflicts (e.g.
+// deployment_mode air_gap combined with an explicit non-eu_strict mode).
+func ResolveSovereigntyForGateway(op *Config, gatewayConfigPath string) error {
+	if op == nil || gatewayConfigPath == "" {
+		return nil
+	}
+	gwSov := LoadSovereigntyFromFile(gatewayConfigPath)
+	if gwSov == nil {
+		return nil
+	}
+	if op.Sovereignty == nil {
+		op.Sovereignty = &SovereigntyConfig{}
+	}
+	op.Sovereignty.mergeStronger(gwSov)
+	return op.resolveSovereignty()
+}
+
+// mergeStronger overlays other onto c, adopting the stronger posture per field
+// so that a stronger sovereignty declaration in either source is never silently
+// downgraded.
+func (c *SovereigntyConfig) mergeStronger(other *SovereigntyConfig) {
+	if c == nil || other == nil {
+		return
+	}
+	// Deployment mode: air_gap (the stronger posture) wins; otherwise fill gaps.
+	if other.AirGapEnabled() {
+		c.DeploymentMode = SovereigntyModeAirGap
+	} else if c.DeploymentMode == "" {
+		c.DeploymentMode = other.DeploymentMode
+	}
+	// Data-sovereignty mode: the stricter mode wins.
+	if sovereigntyModeStrength(other.SovereigntyMode) > sovereigntyModeStrength(c.SovereigntyMode) {
+		c.SovereigntyMode = other.SovereigntyMode
+	}
+	// Allowed egress hosts are additive declarations: union both sources.
+	c.AllowedEgressHosts = unionStrings(c.AllowedEgressHosts, other.AllowedEgressHosts)
+}
+
+// sovereigntyModeStrength ranks data-sovereignty modes by strictness so the
+// stronger posture can be selected during a merge.
+func sovereigntyModeStrength(m string) int {
+	switch m {
+	case DataSovereigntyEUStrict:
+		return 3
+	case DataSovereigntyEUPreferred:
+		return 2
+	case DataSovereigntyGlobal:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// unionStrings returns the de-duplicated union of a and b, preserving order
+// (a first, then any new entries from b).
+func unionStrings(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, list := range [][]string{a, b} {
+		for _, s := range list {
+			if _, ok := seen[s]; ok {
+				continue
+			}
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // DefaultPricingFile is the default path to the LLM pricing table.
@@ -233,6 +442,34 @@ const (
 	DefaultCacheSimilarity          = 0.92
 	DefaultCacheMaxEntriesPerTenant = 10000
 )
+
+// loadSovereigntyConfig reads the optional sovereignty block from Viper.
+func loadSovereigntyConfig() *SovereigntyConfig {
+	if !viper.IsSet("sovereignty") {
+		return nil
+	}
+	var sc SovereigntyConfig
+	if err := viper.UnmarshalKey("sovereignty", &sc); err != nil {
+		return nil
+	}
+	return &sc
+}
+
+// LoadSovereigntyFromFile reads the sovereignty block from a YAML file path.
+// Returns nil when the file does not contain a sovereignty section.
+func LoadSovereigntyFromFile(path string) *SovereigntyConfig {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var raw struct {
+		Sovereignty *SovereigntyConfig `yaml:"sovereignty"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	return raw.Sovereignty
+}
 
 // loadComplianceConfig reads the optional compliance block from Viper.
 // Returns nil when absent.

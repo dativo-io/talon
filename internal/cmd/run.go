@@ -28,6 +28,7 @@ import (
 	talonprompt "github.com/dativo-io/talon/internal/prompt"
 	"github.com/dativo-io/talon/internal/secrets"
 	talonsession "github.com/dativo-io/talon/internal/session"
+	"github.com/dativo-io/talon/internal/sovereignty"
 )
 
 var (
@@ -138,6 +139,10 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
+
+	if err := sovereignty.ValidateSovereignty(cfg, nil); err != nil {
+		return fmt.Errorf("sovereignty validation: %w", err)
+	}
 
 	providers := buildProviders(cfg)
 	pricingTable := loadPricingTable(cfg, baseDir)
@@ -314,8 +319,27 @@ func runAgent(cmd *cobra.Command, args []string) error {
 // buildProviders creates LLM providers from OPERATOR-LEVEL environment variables
 // via the provider registry. Ensures openai/anthropic/ollama are always registered
 // so vault-only keys work. Use "talon secrets set openai-api-key <key>" etc.
+//
+// When the effective sovereignty mode is eu_strict, providers that are not
+// EU/LOCAL (and have no EU regions) are filtered out so the available set
+// reflects the declared sovereignty; explicitly keyed non-sovereign providers are
+// rejected earlier by sovereignty.ValidateSovereignty (fail closed).
 func buildProviders(cfg *config.Config) map[string]llm.Provider {
+	mode := cfg.EffectiveSovereigntyMode()
 	providers := make(map[string]llm.Provider)
+
+	register := func(providerType string, configYAML []byte) {
+		if !sovereignty.AllowsProvider(mode, providerType) {
+			log.Debug().
+				Str("provider", providerType).
+				Str("sovereignty_mode", mode).
+				Msg("provider excluded by sovereignty mode")
+			return
+		}
+		if p, err := llm.NewProvider(providerType, configYAML); err == nil {
+			providers[providerType] = p
+		}
+	}
 
 	openaiCfg := map[string]string{"api_key": os.Getenv("OPENAI_API_KEY")}
 	if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
@@ -325,34 +349,26 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 		log.Debug().Msg("OPENAI_API_KEY set — using as operator fallback (use vault for production)")
 	}
 	openaiYAML, _ := yaml.Marshal(openaiCfg)
-	if p, err := llm.NewProvider("openai", openaiYAML); err == nil {
-		providers["openai"] = p
-	}
+	register("openai", openaiYAML)
 
 	anthropicCfg := map[string]string{"api_key": os.Getenv("ANTHROPIC_API_KEY")}
 	anthropicYAML, _ := yaml.Marshal(anthropicCfg)
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
 		log.Debug().Msg("ANTHROPIC_API_KEY set — using as operator fallback (use vault for production)")
 	}
-	if p, err := llm.NewProvider("anthropic", anthropicYAML); err == nil {
-		providers["anthropic"] = p
-	}
+	register("anthropic", anthropicYAML)
 
 	ollamaCfg := map[string]string{"base_url": cfg.OllamaBaseURL}
 	if ollamaCfg["base_url"] == "" {
 		ollamaCfg["base_url"] = "http://localhost:11434"
 	}
 	ollamaYAML, _ := yaml.Marshal(ollamaCfg)
-	if p, err := llm.NewProvider("ollama", ollamaYAML); err == nil {
-		providers["ollama"] = p
-	}
+	register("ollama", ollamaYAML)
 
 	if region := os.Getenv("AWS_REGION"); region != "" {
 		bedrockCfg := map[string]string{"region": region}
 		bedrockYAML, _ := yaml.Marshal(bedrockCfg)
-		if p, err := llm.NewProvider("bedrock", bedrockYAML); err == nil {
-			providers["bedrock"] = p
-		}
+		register("bedrock", bedrockYAML)
 	}
 
 	return providers

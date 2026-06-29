@@ -329,7 +329,7 @@ func TestHTTPClientForGateway(t *testing.T) {
 		RequestTimeout:    10 * time.Second,
 		StreamIdleTimeout: 30 * time.Second,
 	}
-	client := HTTPClientForGateway(timeouts)
+	client := HTTPClientForGateway(timeouts, nil)
 	require.NotNil(t, client)
 	require.Equal(t, 10*time.Second, client.Timeout)
 }

@@ -279,11 +279,21 @@ func parseUsageFromJSON(body []byte, _ string, usage *TokenUsage) {
 }
 
 // HTTPClientForGateway returns an http.Client with gateway timeouts.
-func HTTPClientForGateway(timeouts ParsedTimeouts) *http.Client {
+// When transport is non-nil it wraps the timeout-aware base transport
+// (e.g. air-gap egress guard layered on top of the ResponseHeaderTimeout transport).
+func HTTPClientForGateway(timeouts ParsedTimeouts, transport http.RoundTripper) *http.Client {
+	base := &http.Transport{
+		ResponseHeaderTimeout: timeouts.ConnectTimeout,
+	}
+	var rt http.RoundTripper = base
+	if transport != nil {
+		if guard, ok := transport.(interface{ SetBase(http.RoundTripper) }); ok {
+			guard.SetBase(base)
+		}
+		rt = transport
+	}
 	return &http.Client{
-		Timeout: timeouts.RequestTimeout,
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: timeouts.ConnectTimeout,
-		},
+		Timeout:   timeouts.RequestTimeout,
+		Transport: rt,
 	}
 }

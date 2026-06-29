@@ -163,7 +163,7 @@ func NewGateway(
 	if err != nil {
 		return nil, err
 	}
-	client := HTTPClientForGateway(timeouts)
+	client := HTTPClientForGateway(timeouts, config.UpstreamTransport)
 	rl := NewRateLimiter(
 		config.RateLimits.GlobalRequestsPerMin,
 		config.RateLimits.PerCallerRequestsPerMin,

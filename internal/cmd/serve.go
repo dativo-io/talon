@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -35,6 +36,7 @@ import (
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/server"
 	talonsession "github.com/dativo-io/talon/internal/session"
+	"github.com/dativo-io/talon/internal/sovereignty"
 	"github.com/dativo-io/talon/internal/trigger"
 	"github.com/dativo-io/talon/web"
 )
@@ -95,7 +97,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	pol, err := policy.LoadPolicy(ctx, policyPath, false, policyBaseDir)
 	if err != nil {
-		return fmt.Errorf("loading policy: %w", err)
+		gatewayOnly := serveGateway || serveProxyQuickstart
+		if gatewayOnly && errors.Is(err, os.ErrNotExist) {
+			pol = &policy.Policy{
+				Agent: policy.AgentConfig{Name: "gateway", Version: "0.0.0"},
+			}
+			log.Warn().Str("path", policyPath).Msg("agent policy not found; using minimal default for gateway-only mode")
+		} else {
+			return fmt.Errorf("loading policy: %w", err)
+		}
 	}
 	policyPath = safePath
 	policyBaseDir = filepath.Dir(safePath) // so pricing and other project paths resolve relative to policy directory
@@ -111,6 +121,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
+
+	if serveGateway {
+		if err := config.ResolveSovereigntyForGateway(cfg, serveGatewayConfig); err != nil {
+			return fmt.Errorf("resolving sovereignty config: %w", err)
+		}
+	}
+
+	if err := sovereignty.ValidateSovereignty(cfg, nil); err != nil {
+		return fmt.Errorf("sovereignty validation: %w", err)
+	}
 
 	providers := buildProviders(cfg)
 	pricingTable := loadPricingTable(cfg, policyBaseDir)
@@ -350,6 +370,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("loading gateway config: %w", err)
 		}
+		if err := sovereignty.ValidateSovereignty(cfg, gatewayCfg); err != nil {
+			return fmt.Errorf("sovereignty validation: %w", err)
+		}
+		if err := sovereignty.ValidateAirGap(cfg, gatewayCfg); err != nil {
+			return fmt.Errorf("air-gap validation: %w", err)
+		}
+		guard, err := sovereignty.ApplyAirGapPreset(cfg, gatewayCfg)
+		if err != nil {
+			return fmt.Errorf("air-gap preset: %w", err)
+		}
+		if guard != nil {
+			gatewayCfg.UpstreamTransport = guard
+		}
+		if err := gatewayCfg.ApplyDefaults(); err != nil {
+			return fmt.Errorf("gateway defaults: %w", err)
+		}
 		tenantKeys = gatewayCfg.TenantKeyMap()
 		log.Info().Int("tenant_keys", len(tenantKeys)).Int("callers", len(gatewayCfg.Callers)).Msg("gateway_tenant_keys_loaded")
 		// --gateway flag explicitly opts in; override config's enabled field
@@ -380,6 +416,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 		})
 		if err != nil {
 			return fmt.Errorf("building quickstart gateway config: %w", err)
+		}
+		if err := sovereignty.ValidateAirGap(cfg, quickstartCfg); err != nil {
+			return fmt.Errorf("air-gap validation: %w", err)
+		}
+		guard, err := sovereignty.ApplyAirGapPreset(cfg, quickstartCfg)
+		if err != nil {
+			return fmt.Errorf("air-gap preset: %w", err)
+		}
+		if guard != nil {
+			quickstartCfg.UpstreamTransport = guard
 		}
 		gatewayPolicy, err := policy.NewGatewayEngine(ctx)
 		if err != nil {

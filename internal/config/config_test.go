@@ -290,3 +290,131 @@ func TestExampleDockerComposeEnvKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveSovereignty_AirGapImpliesEUStrict(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	viper.Set("sovereignty", map[string]interface{}{"deployment_mode": "air_gap"})
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, DataSovereigntyEUStrict, cfg.EffectiveSovereigntyMode())
+	require.NotNil(t, cfg.LLM)
+	require.NotNil(t, cfg.LLM.Routing)
+	assert.Equal(t, DataSovereigntyEUStrict, cfg.LLM.Routing.DataSovereigntyMode)
+}
+
+func TestResolveSovereignty_ModeSupersedesRouting(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	viper.Set("sovereignty", map[string]interface{}{"mode": "eu_strict"})
+	viper.Set("llm", map[string]interface{}{
+		"routing": map[string]interface{}{"data_sovereignty_mode": "global"},
+	})
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	// sovereignty.mode is the source of truth and overrides the conflicting routing value.
+	assert.Equal(t, DataSovereigntyEUStrict, cfg.EffectiveSovereigntyMode())
+	assert.Equal(t, DataSovereigntyEUStrict, cfg.LLM.Routing.DataSovereigntyMode)
+}
+
+func TestResolveSovereignty_InvalidMode(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	viper.Set("sovereignty", map[string]interface{}{"mode": "eu_only"})
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sovereignty.mode")
+}
+
+func TestResolveSovereignty_AirGapConflictsWithLooserMode(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	viper.Set("sovereignty", map[string]interface{}{
+		"deployment_mode": "air_gap",
+		"mode":            "global",
+	})
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "air_gap")
+}
+
+func TestEffectiveSovereigntyMode_FallbackToRouting(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	viper.Set("llm", map[string]interface{}{
+		"routing": map[string]interface{}{"data_sovereignty_mode": "eu_preferred"},
+	})
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Sovereignty)
+	assert.Equal(t, DataSovereigntyEUPreferred, cfg.EffectiveSovereigntyMode())
+}
+
+func TestResolveSovereignty_InvalidDeploymentMode(t *testing.T) {
+	resetViper(t)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	viper.Set("sovereignty", map[string]interface{}{"deployment_mode": "offline"})
+
+	_, err := Load()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deployment_mode")
+}
+
+// TestResolveSovereigntyForGateway_WeakOperatorBlockUpgradedByGatewayAirGap is
+// the regression for the doctor/serve "merge is fragile" bug: a weak (standard)
+// operator sovereignty block must NOT mask a stronger air_gap block declared in
+// the gateway config file.
+func TestResolveSovereigntyForGateway_WeakOperatorBlockUpgradedByGatewayAirGap(t *testing.T) {
+	dir := t.TempDir()
+	gwPath := filepath.Join(dir, "talon.config.airgap.yaml")
+	require.NoError(t, os.WriteFile(gwPath, []byte("sovereignty:\n  deployment_mode: air_gap\n  allowed_egress_hosts: [\"llm.internal.example\"]\n"), 0o600))
+
+	op := &Config{Sovereignty: &SovereigntyConfig{
+		DeploymentMode:     SovereigntyModeStandard,
+		AllowedEgressHosts: []string{"ops.internal.example"},
+	}}
+	require.NoError(t, ResolveSovereigntyForGateway(op, gwPath))
+
+	assert.True(t, op.Sovereignty.AirGapEnabled(), "gateway air_gap must override operator standard")
+	assert.Equal(t, DataSovereigntyEUStrict, op.EffectiveSovereigntyMode())
+	require.NotNil(t, op.LLM)
+	require.NotNil(t, op.LLM.Routing)
+	assert.Equal(t, DataSovereigntyEUStrict, op.LLM.Routing.DataSovereigntyMode)
+	// allowed_egress_hosts from both sources are unioned, not replaced.
+	assert.Contains(t, op.Sovereignty.AllowedEgressHosts, "ops.internal.example")
+	assert.Contains(t, op.Sovereignty.AllowedEgressHosts, "llm.internal.example")
+}
+
+func TestResolveSovereigntyForGateway_AirGapPlusOperatorGlobalErrors(t *testing.T) {
+	dir := t.TempDir()
+	gwPath := filepath.Join(dir, "talon.config.airgap.yaml")
+	require.NoError(t, os.WriteFile(gwPath, []byte("sovereignty:\n  deployment_mode: air_gap\n"), 0o600))
+
+	// Operator explicitly demands global; the gateway demands air_gap. This is a
+	// genuine conflict (air_gap implies eu_strict) and must fail closed.
+	op := &Config{Sovereignty: &SovereigntyConfig{SovereigntyMode: DataSovereigntyGlobal}}
+	err := ResolveSovereigntyForGateway(op, gwPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "air_gap")
+}
+
+func TestResolveSovereigntyForGateway_NoGatewaySovereigntyIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	gwPath := filepath.Join(dir, "talon.config.yaml")
+	require.NoError(t, os.WriteFile(gwPath, []byte("gateway:\n  enabled: true\n"), 0o600))
+
+	op := &Config{Sovereignty: &SovereigntyConfig{SovereigntyMode: DataSovereigntyEUPreferred}}
+	require.NoError(t, ResolveSovereigntyForGateway(op, gwPath))
+	assert.Equal(t, DataSovereigntyEUPreferred, op.EffectiveSovereigntyMode())
+}

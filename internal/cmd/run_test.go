@@ -82,6 +82,24 @@ func TestBuildProviders_OllamaCustomURL(t *testing.T) {
 	assert.Contains(t, providers, "ollama")
 }
 
+func TestBuildProviders_EUStrictFiltersNonSovereignProviders(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("AWS_REGION", "eu-west-1")
+
+	cfg := &config.Config{
+		OllamaBaseURL: "http://localhost:11434",
+		Sovereignty:   &config.SovereigntyConfig{SovereigntyMode: config.DataSovereigntyEUStrict},
+	}
+	providers := buildProviders(cfg)
+	// US providers are filtered out under eu_strict.
+	assert.NotContains(t, providers, "openai")
+	assert.NotContains(t, providers, "anthropic")
+	// LOCAL and EU-region-capable providers remain available.
+	assert.Contains(t, providers, "ollama")
+	assert.Contains(t, providers, "bedrock")
+}
+
 func TestValidatePolicyFile_Valid(t *testing.T) {
 	dir := t.TempDir()
 	policyPath := testutil.WriteTestPolicyFile(t, dir, "valid-agent")
