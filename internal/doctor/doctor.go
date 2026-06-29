@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/dativo-io/talon/internal/config"
@@ -92,7 +93,7 @@ func checkConfig() []CheckResult {
 
 	results = append(results, checkDataDir(cfg))
 	results = append(results, checkPolicy(cfg))
-	results = append(results, checkLLMKeys())
+	results = append(results, checkLLMKeys(cfg))
 	results = append(results, checkCryptoKeys(cfg)...)
 	results = append(results, checkEvidenceDB(cfg))
 	results = append(results, checkCache(cfg))
@@ -126,10 +127,13 @@ func checkDataDir(cfg *config.Config) CheckResult {
 func checkPolicy(cfg *config.Config) CheckResult {
 	policyPath := cfg.DefaultPolicy
 	if _, err := os.Stat(policyPath); err != nil {
+		// A missing agent policy is advisory, not fatal: gateway-only deployments
+		// (e.g. air-gap proxy) govern requests via the gateway default_policy and
+		// need no agent.talon.yaml. It is only required for the `talon run` path.
 		return CheckResult{
-			Name: "policy_valid", Category: "config", Status: "fail",
-			Message: fmt.Sprintf("%s — file not found", policyPath),
-			Fix:     "Run 'talon init' to create a policy file",
+			Name: "policy_valid", Category: "config", Status: "warn",
+			Message: fmt.Sprintf("%s — file not found (not required for gateway-only deployments)", policyPath),
+			Fix:     "Run 'talon init' to create an agent policy file (needed for 'talon run')",
 		}
 	}
 	pol, loadErr := policy.LoadPolicy(context.Background(), policyPath, false, ".")
@@ -145,30 +149,41 @@ func checkPolicy(cfg *config.Config) CheckResult {
 	}
 }
 
-func checkLLMKeys() CheckResult {
-	hasOpenAI := os.Getenv("OPENAI_API_KEY") != ""
-	hasAnthropic := os.Getenv("ANTHROPIC_API_KEY") != ""
-	hasAWS := os.Getenv("AWS_ACCESS_KEY_ID") != "" || os.Getenv("AWS_PROFILE") != ""
-	if !hasOpenAI && !hasAnthropic && !hasAWS {
-		return CheckResult{
-			Name: "llm_keys", Category: "config", Status: "fail",
-			Message: "No OPENAI_API_KEY, ANTHROPIC_API_KEY, or AWS credentials found",
-			Fix:     "Set at least one LLM provider key (env or vault)",
+func checkLLMKeys(cfg *config.Config) CheckResult {
+	var sources []string
+	if os.Getenv("OPENAI_API_KEY") != "" {
+		sources = append(sources, "openai (env)")
+	}
+	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		sources = append(sources, "anthropic (env)")
+	}
+	if os.Getenv("AWS_ACCESS_KEY_ID") != "" || os.Getenv("AWS_PROFILE") != "" {
+		sources = append(sources, "aws (env)")
+	}
+	// Local-first / air-gap deployments declare providers in llm.providers with
+	// vault-backed (or, for Ollama, no) credentials. These are valid provider
+	// paths and must not be reported as "no LLM keys" just because no cloud env
+	// key is set.
+	if cfg.LLM != nil {
+		for id := range cfg.LLM.Providers {
+			p := cfg.LLM.Providers[id]
+			providerType := p.Type
+			if providerType == "" {
+				providerType = id
+			}
+			sources = append(sources, providerType+" (llm.providers)")
 		}
 	}
-	var keys []string
-	if hasOpenAI {
-		keys = append(keys, "openai")
-	}
-	if hasAnthropic {
-		keys = append(keys, "anthropic")
-	}
-	if hasAWS {
-		keys = append(keys, "aws")
+	if len(sources) == 0 {
+		return CheckResult{
+			Name: "llm_keys", Category: "config", Status: "fail",
+			Message: "No LLM provider configured (no OPENAI_API_KEY/ANTHROPIC_API_KEY/AWS credentials and no llm.providers)",
+			Fix:     "Set a provider key (env or vault) or declare a local provider (e.g. Ollama) in llm.providers",
+		}
 	}
 	return CheckResult{
 		Name: "llm_keys", Category: "config", Status: "pass",
-		Message: fmt.Sprintf("%v (env)", keys),
+		Message: "LLM providers available: " + strings.Join(sources, ", "),
 	}
 }
 

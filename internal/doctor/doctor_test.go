@@ -190,6 +190,37 @@ gateway:
 		"sovereignty provider gate must fail for US gateway upstream under merged eu_strict")
 }
 
+// TestCheckLLMKeys_RecognizesLocalProviders guards the air-gap operator path:
+// an Ollama-only deployment declares a local provider in llm.providers and must
+// satisfy the LLM-provider check without any cloud key set.
+func TestCheckLLMKeys_RecognizesLocalProviders(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_PROFILE", "")
+
+	cfg := &config.Config{LLM: &config.LLMConfig{
+		Providers: map[string]config.LLMProviderConfig{
+			"ollama": {Type: "ollama", Enabled: true},
+		},
+	}}
+	res := checkLLMKeys(cfg)
+	assert.Equal(t, "pass", res.Status)
+	assert.Contains(t, res.Message, "ollama")
+
+	// No providers and no cloud key → still fails closed.
+	assert.Equal(t, "fail", checkLLMKeys(&config.Config{}).Status)
+}
+
+// TestCheckPolicy_MissingFileWarnsNotFails ensures a missing agent policy is
+// advisory (gateway-only deployments need no agent.talon.yaml), not a failure.
+func TestCheckPolicy_MissingFileWarnsNotFails(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{DefaultPolicy: filepath.Join(dir, "does-not-exist.talon.yaml")}
+	res := checkPolicy(cfg)
+	assert.Equal(t, "warn", res.Status)
+}
+
 func TestCheckResult_StatusValues(t *testing.T) {
 	statuses := []string{"pass", "warn", "fail"}
 	for _, s := range statuses {

@@ -51,14 +51,14 @@ Defense in depth: the sovereignty gate rejects non-EU providers at config load; 
 2. Set explicit crypto keys (required for air_gap):
 
    ```bash
-   export TALON_SECRETS_KEY="$(openssl rand -hex 16)"
-   export TALON_SIGNING_KEY="$(openssl rand -hex 32)"
+   export TALON_SECRETS_KEY="$(openssl rand -hex 32)"   # AES-256: 64 hex chars (32 bytes)
+   export TALON_SIGNING_KEY="$(openssl rand -hex 32)"   # HMAC: 64 hex chars (32 bytes)
    ```
 
 3. Store local provider credentials in the vault (even for Ollama, use a placeholder if your endpoint has no auth):
 
    ```bash
-   talon secrets set ollama-api-key 'local-only' --tenant default --agent '*'
+   talon secrets set ollama-api-key 'local-only'
    ```
 
 4. Validate before serving:

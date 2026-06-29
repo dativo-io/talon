@@ -151,7 +151,7 @@ Optional. When present, the `llm:` block configures the provider registry and da
 | Section | Purpose |
 |---------|---------|
 | `llm.providers` | Map of provider IDs to `type`, `config`, and `enabled`. Used when building providers from config instead of env vars only. |
-| `llm.routing.data_sovereignty_mode` | `eu_strict`, `eu_preferred`, or `global`. When set, the router evaluates each candidate with OPA `routing.rego` and records the selected provider and rejected candidates in evidence. |
+| `llm.routing.data_sovereignty_mode` | `eu_strict`, `eu_preferred`, or `global`. When set, the router evaluates each candidate with OPA `routing.rego` and records the selected provider and rejected candidates in evidence. **Superseded by the top-level [`sovereignty.mode`](#sovereignty-block-data-residency--air-gap)** — when `sovereignty.mode` is set it is the source of truth and overrides this value (with a warning). |
 | `llm.pricing_file` | Path to the LLM pricing table (default: `pricing/models.yaml`). Used for cost estimation in evidence and OTel; see [Provider registry — Cost estimation](provider-registry.md#cost-estimation). |
 
 Example:
@@ -168,6 +168,41 @@ llm:
 ```
 
 See [Provider registry](provider-registry.md) for the full reference.
+
+---
+
+### Sovereignty block (data residency & air-gap)
+
+Optional. The top-level `sovereignty:` block is the **single source of truth** for
+your data-sovereignty posture. When `sovereignty.mode` is set it supersedes
+`llm.routing.data_sovereignty_mode` (a conflicting routing value is overridden
+with a warning) and applies to **both** the `talon run` agent path and the
+gateway. This is the recommended way to declare sovereignty — set it once here
+rather than mirroring it under `llm.routing`.
+
+| Field | Values | Purpose |
+|-------|--------|---------|
+| `sovereignty.mode` | `eu_strict`, `eu_preferred`, `global` | Data-sovereignty posture (source of truth). Under `eu_strict` the **provider gate fails closed**: any explicitly declared provider that is not EU/LOCAL (or EU-region-capable, e.g. Bedrock `eu-central-1`) is rejected at startup — this covers operator-keyed providers (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`), `llm.providers` entries, and enabled gateway upstreams. Non-sovereign providers that were not explicitly configured are filtered out of the router set. `eu_preferred` and `global` impose no hard gate. |
+| `sovereignty.deployment_mode` | `standard`, `air_gap` | `air_gap` is a stricter sub-mode that **implies `eu_strict`** (a looser `mode` is rejected). It adds deny-by-default EU/LOCAL gateway egress, a transport-level egress allowlist guard, and rejects generated default crypto keys. See the [air-gapped deployment guide](../guides/air-gapped-deployment.md). |
+| `sovereignty.allowed_egress_hosts` | list of host or URL strings | Optional extension to the air-gap transport allowlist (in addition to `ollama_base_url`, enabled gateway `base_url`s, and loopback). |
+
+Precedence: `sovereignty.mode` (and `deployment_mode: air_gap`, which forces
+`eu_strict`) wins over `llm.routing.data_sovereignty_mode`. When a `sovereignty`
+block is present in a `--gateway-config` file, it is merged with the operator
+config fail-safe (the stronger posture wins) before validation.
+
+Example:
+
+```yaml
+sovereignty:
+  mode: eu_strict                 # source of truth; gates providers (fail closed)
+  deployment_mode: air_gap        # optional: implies eu_strict + egress hardening
+  allowed_egress_hosts:           # optional extra private EU endpoints
+    - "llm.internal.example"
+```
+
+Validated by `talon doctor` (`sovereignty_providers`, `air_gap_config`, and the
+`air_gap_egress_guard` transport probe).
 
 ---
 
@@ -306,7 +341,9 @@ Behavior:
 
 **Relationship to `llm.routing.data_sovereignty_mode`:** the two controls are
 complementary and share the same sources of truth, but govern different
-planes:
+planes. (Note: `data_sovereignty_mode` is itself set by the top-level
+[`sovereignty.mode`](#sovereignty-block-data-residency--air-gap) when present —
+declare the posture there once.)
 
 - `data_sovereignty_mode` (`eu_strict` / `eu_preferred` / `global`) applies
   when **Talon selects the provider** — agent runs (`talon run`, triggers,
