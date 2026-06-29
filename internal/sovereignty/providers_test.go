@@ -109,6 +109,41 @@ func TestValidateSovereignty_NoSovereigntyBlockIsNoop(t *testing.T) {
 	require.NoError(t, ValidateSovereignty(op, nil))
 }
 
+// TestValidateOperatorProviders_UsesProviderTypeNotAlias is the regression for
+// the "provider gate uses map key" bug: the gate must classify llm.providers
+// entries by their Type field, not by the (operator-chosen) map alias.
+func TestValidateOperatorProviders_UsesProviderTypeNotAlias(t *testing.T) {
+	clearProviderKeys(t)
+
+	// Alias looks EU-friendly but the real type is openai (US) → must be rejected.
+	t.Run("rejects by type not alias", func(t *testing.T) {
+		op := &config.Config{
+			Sovereignty: &config.SovereigntyConfig{SovereigntyMode: config.DataSovereigntyEUStrict},
+			LLM: &config.LLMConfig{
+				Providers: map[string]config.LLMProviderConfig{
+					"my-eu-llm": {Type: "openai", Enabled: true},
+				},
+			},
+		}
+		err := validateOperatorProviders(op, config.DataSovereigntyEUStrict)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "openai")
+	})
+
+	// Alias looks like a US provider but the real type is mistral (EU) → allowed.
+	t.Run("allows by type not alias", func(t *testing.T) {
+		op := &config.Config{
+			Sovereignty: &config.SovereigntyConfig{SovereigntyMode: config.DataSovereigntyEUStrict},
+			LLM: &config.LLMConfig{
+				Providers: map[string]config.LLMProviderConfig{
+					"openai": {Type: "mistral", Enabled: true},
+				},
+			},
+		}
+		require.NoError(t, validateOperatorProviders(op, config.DataSovereigntyEUStrict))
+	})
+}
+
 // clearProviderKeys ensures operator-keyed provider env vars are unset so the
 // fail-closed gate is exercised deterministically regardless of the dev shell.
 func clearProviderKeys(t *testing.T) {

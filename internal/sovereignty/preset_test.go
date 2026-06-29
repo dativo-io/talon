@@ -60,6 +60,32 @@ func TestApplyAirGapPreset_ForcesEUStrictAndEgress(t *testing.T) {
 	assert.Equal(t, gateway.EgressActionDeny, gw.ServerDefaults.Egress.DefaultAction)
 }
 
+// TestAirGapPreset_OverridesConflictingLLMRouting is the regression for the
+// "single source of truth" bug: under air_gap the preset must force eu_strict
+// and override a conflicting llm.routing.data_sovereignty_mode (with a warning),
+// not error. The genuine conflict (sovereignty.mode global + air_gap) is caught
+// earlier by config.resolveSovereignty during load.
+func TestAirGapPreset_OverridesConflictingLLMRouting(t *testing.T) {
+	op := &config.Config{
+		Sovereignty:   &config.SovereigntyConfig{DeploymentMode: ModeAirGap},
+		OllamaBaseURL: "http://localhost:11434",
+		LLM: &config.LLMConfig{
+			Routing: &config.LLMRoutingConfig{DataSovereigntyMode: config.DataSovereigntyGlobal},
+		},
+		SecretsKey: testutil.TestEncryptionKey,
+		SigningKey: testutil.TestSigningKey,
+	}
+	gw := &gateway.GatewayConfig{
+		Providers: map[string]gateway.ProviderConfig{
+			"ollama": {Enabled: true, BaseURL: "http://127.0.0.1:11434", Region: "LOCAL"},
+		},
+	}
+	guard, err := ApplyAirGapPreset(op, gw)
+	require.NoError(t, err, "air_gap must override conflicting routing, not error")
+	require.NotNil(t, guard)
+	assert.Equal(t, config.DataSovereigntyEUStrict, op.LLM.Routing.DataSovereigntyMode)
+}
+
 func TestApplyAirGapPreset_EmptyEgressStillAppliesPreset(t *testing.T) {
 	op := &config.Config{
 		Sovereignty:   &config.SovereigntyConfig{DeploymentMode: ModeAirGap},

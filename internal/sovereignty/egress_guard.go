@@ -93,6 +93,12 @@ func (g *EgressGuard) Violations() int64 {
 	return g.violations.Load()
 }
 
+// AllowlistSize returns the number of hosts permitted by the guard, including
+// the always-allowed loopback addresses.
+func (g *EgressGuard) AllowlistSize() int {
+	return len(g.allowed)
+}
+
 func normalizeHost(host string) string {
 	host = strings.TrimSpace(strings.ToLower(host))
 	if host == "" {

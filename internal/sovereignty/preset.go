@@ -1,7 +1,12 @@
 package sovereignty
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/http"
+
+	"github.com/rs/zerolog/log"
 
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/gateway"
@@ -26,6 +31,12 @@ func DefaultAirGapEgress() *gateway.EgressPolicyConfig {
 // ApplyAirGapPreset mutates operator and gateway config for air-gap mode:
 // forces eu_strict routing, applies default egress when absent, and returns
 // an egress guard built from declared upstream endpoints.
+//
+// Consistent with the single-source-of-truth model, air_gap forces eu_strict
+// and overrides any conflicting llm.routing.data_sovereignty_mode with a warning
+// rather than erroring. The genuine conflict (deployment_mode air_gap combined
+// with an explicit sovereignty.mode other than eu_strict, e.g. global) is
+// rejected earlier by config.resolveSovereignty during load.
 func ApplyAirGapPreset(op *config.Config, gw *gateway.GatewayConfig) (*EgressGuard, error) {
 	if op == nil || op.Sovereignty == nil || !op.Sovereignty.AirGapEnabled() {
 		return nil, nil
@@ -36,10 +47,13 @@ func ApplyAirGapPreset(op *config.Config, gw *gateway.GatewayConfig) (*EgressGua
 	if op.LLM.Routing == nil {
 		op.LLM.Routing = &config.LLMRoutingConfig{}
 	}
-	if op.LLM.Routing.DataSovereigntyMode == "" {
-		op.LLM.Routing.DataSovereigntyMode = "eu_strict"
-	} else if op.LLM.Routing.DataSovereigntyMode != "eu_strict" {
-		return nil, fmt.Errorf("sovereignty.deployment_mode air_gap requires llm.routing.data_sovereignty_mode eu_strict (got %q)", op.LLM.Routing.DataSovereigntyMode)
+	if op.LLM.Routing.DataSovereigntyMode != config.DataSovereigntyEUStrict {
+		if op.LLM.Routing.DataSovereigntyMode != "" {
+			log.Warn().
+				Str("data_sovereignty_mode", op.LLM.Routing.DataSovereigntyMode).
+				Msg("air_gap forces eu_strict; overriding llm.routing.data_sovereignty_mode")
+		}
+		op.LLM.Routing.DataSovereigntyMode = config.DataSovereigntyEUStrict
 	}
 
 	if gw != nil && isEgressUnconfigured(gw.ServerDefaults.Egress) {
@@ -103,6 +117,33 @@ func BuildAllowlist(op *config.Config, gw *gateway.GatewayConfig) ([]string, err
 		out = append(out, h)
 	}
 	return out, nil
+}
+
+// VerifyEgressGuard builds the air-gap egress guard from the same inputs serve
+// uses and self-tests that it blocks a synthetic, non-allowlisted host. The
+// guard consults its allowlist before calling the base transport, so the probe
+// makes no network call. Returns the number of allowlisted hosts (loopback plus
+// declared upstreams). It returns an error only when the guard fails to block
+// surprise egress — proving to `talon doctor` that a transport-level
+// enforcement path exists, not merely that the config parsed.
+func VerifyEgressGuard(op *config.Config, gw *gateway.GatewayConfig) (int, error) {
+	allow, err := BuildAllowlist(op, gw)
+	if err != nil {
+		return 0, err
+	}
+	guard := NewEgressGuard(allow)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://surprise-egress.invalid/probe", nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, rtErr := guard.RoundTrip(req)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if !errors.Is(rtErr, ErrEgressBlocked) {
+		return 0, fmt.Errorf("egress guard did not block surprise egress (got %v)", rtErr)
+	}
+	return guard.AllowlistSize(), nil
 }
 
 // isEgressUnconfigured returns true when the egress policy is nil or

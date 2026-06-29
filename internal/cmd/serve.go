@@ -355,10 +355,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("loading gateway config: %w", err)
 		}
-		if cfg.Sovereignty == nil {
-			if sc := config.LoadSovereigntyFromFile(serveGatewayConfig); sc != nil {
-				cfg.Sovereignty = sc
-			}
+		if err := config.ResolveSovereigntyForGateway(cfg, serveGatewayConfig); err != nil {
+			return fmt.Errorf("resolving sovereignty config: %w", err)
 		}
 		if err := sovereignty.ValidateSovereignty(cfg, gatewayCfg); err != nil {
 			return fmt.Errorf("sovereignty validation: %w", err)

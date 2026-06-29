@@ -302,6 +302,7 @@ func checkGateway(ctx context.Context, opts Options) []CheckResult {
 	results = append(results, checkGatewayToolPolicy(gwCfg))
 	results = append(results, checkSovereigntyFromGateway(gwCfg, opts.GatewayConfigPath))
 	results = append(results, checkAirGapFromGateway(gwCfg, opts.GatewayConfigPath))
+	results = append(results, checkAirGapEgressGuardFromGateway(gwCfg, opts.GatewayConfigPath))
 
 	if !opts.SkipUpstream {
 		results = append(results, checkGatewayUpstreams(ctx, gwCfg)...)
@@ -555,9 +556,11 @@ func checkSovereigntyFromGateway(gwCfg *gateway.GatewayConfig, gatewayConfigPath
 			Message: "cannot load operator config for sovereignty gateway check",
 		}
 	}
-	if cfg.Sovereignty == nil && gatewayConfigPath != "" {
-		if sc := config.LoadSovereigntyFromFile(gatewayConfigPath); sc != nil {
-			cfg.Sovereignty = sc
+	if err := config.ResolveSovereigntyForGateway(cfg, gatewayConfigPath); err != nil {
+		return CheckResult{
+			Name: "sovereignty_gateway", Category: "sovereignty", Status: "fail",
+			Message: err.Error(),
+			Fix:     "Reconcile sovereignty blocks in operator and gateway config (e.g. air_gap requires eu_strict)",
 		}
 	}
 	return checkSovereignty(cfg, gwCfg)
@@ -605,10 +608,54 @@ func checkAirGapFromGateway(gwCfg *gateway.GatewayConfig, gatewayConfigPath stri
 			Message: "cannot load operator config for air-gap gateway check",
 		}
 	}
-	if cfg.Sovereignty == nil && gatewayConfigPath != "" {
-		if sc := config.LoadSovereigntyFromFile(gatewayConfigPath); sc != nil {
-			cfg.Sovereignty = sc
+	if err := config.ResolveSovereigntyForGateway(cfg, gatewayConfigPath); err != nil {
+		return CheckResult{
+			Name: "air_gap_gateway", Category: "sovereignty", Status: "fail",
+			Message: err.Error(),
+			Fix:     "Reconcile sovereignty blocks in operator and gateway config (e.g. air_gap requires eu_strict)",
 		}
 	}
 	return checkAirGap(cfg, gwCfg)
+}
+
+// checkAirGapEgressGuard confirms a transport-level egress guard exists and
+// actively blocks non-allowlisted hosts (not merely that config parsed). This
+// is the buyer-facing promise of air_gap: "no surprise egress path exists."
+func checkAirGapEgressGuard(cfg *config.Config, gwCfg *gateway.GatewayConfig) CheckResult {
+	if cfg.Sovereignty == nil || !cfg.Sovereignty.AirGapEnabled() {
+		return CheckResult{
+			Name: "air_gap_egress_guard", Category: "sovereignty", Status: "pass",
+			Message: "not applicable (sovereignty.deployment_mode not air_gap)",
+		}
+	}
+	n, err := sovereignty.VerifyEgressGuard(cfg, gwCfg)
+	if err != nil {
+		return CheckResult{
+			Name: "air_gap_egress_guard", Category: "sovereignty", Status: "fail",
+			Message: fmt.Sprintf("transport egress guard not enforcing: %v", err),
+			Fix:     "Ensure allowed_egress_hosts and gateway upstreams are valid URLs/hosts",
+		}
+	}
+	return CheckResult{
+		Name: "air_gap_egress_guard", Category: "sovereignty", Status: "pass",
+		Message: fmt.Sprintf("transport egress guard blocks non-allowlisted hosts (%d hosts allowlisted)", n),
+	}
+}
+
+func checkAirGapEgressGuardFromGateway(gwCfg *gateway.GatewayConfig, gatewayConfigPath string) CheckResult {
+	cfg, err := config.Load()
+	if err != nil {
+		return CheckResult{
+			Name: "air_gap_egress_guard", Category: "sovereignty", Status: "warn",
+			Message: "cannot load operator config for egress guard check",
+		}
+	}
+	if err := config.ResolveSovereigntyForGateway(cfg, gatewayConfigPath); err != nil {
+		return CheckResult{
+			Name: "air_gap_egress_guard", Category: "sovereignty", Status: "fail",
+			Message: err.Error(),
+			Fix:     "Reconcile sovereignty blocks in operator and gateway config (e.g. air_gap requires eu_strict)",
+		}
+	}
+	return checkAirGapEgressGuard(cfg, gwCfg)
 }

@@ -284,6 +284,11 @@ func (c *Config) resolveSovereignty() error {
 		return nil
 	}
 
+	if dm := c.Sovereignty.DeploymentMode; dm != "" && dm != SovereigntyModeStandard && dm != SovereigntyModeAirGap {
+		return fmt.Errorf("sovereignty.deployment_mode %q is invalid (use %s or %s)",
+			dm, SovereigntyModeStandard, SovereigntyModeAirGap)
+	}
+
 	declared := c.Sovereignty.SovereigntyMode
 	if !validSovereigntyMode(declared) {
 		return fmt.Errorf("sovereignty.mode %q is invalid (use %s, %s, or %s)",
@@ -327,6 +332,90 @@ func validSovereigntyMode(m string) bool {
 	default:
 		return false
 	}
+}
+
+// ResolveSovereigntyForGateway merges the sovereignty block declared in the
+// gateway config file into the operator config, then re-runs the same
+// sovereignty resolution used by Load(). It exists because air-gap deployments
+// commonly declare sovereignty in the gateway config file passed to
+// `talon serve --gateway-config`, while the operator config may already carry a
+// weaker (or empty/standard) sovereignty block that would otherwise mask it.
+//
+// Precedence is fail-safe: the stronger posture from either source is adopted —
+// air_gap is never downgraded, the stricter data-sovereignty mode wins
+// (eu_strict > eu_preferred > global), and allowed_egress_hosts are unioned.
+// Re-running resolution then propagates the effective mode into
+// llm.routing.data_sovereignty_mode and rejects genuine conflicts (e.g.
+// deployment_mode air_gap combined with an explicit non-eu_strict mode).
+func ResolveSovereigntyForGateway(op *Config, gatewayConfigPath string) error {
+	if op == nil || gatewayConfigPath == "" {
+		return nil
+	}
+	gwSov := LoadSovereigntyFromFile(gatewayConfigPath)
+	if gwSov == nil {
+		return nil
+	}
+	if op.Sovereignty == nil {
+		op.Sovereignty = &SovereigntyConfig{}
+	}
+	op.Sovereignty.mergeStronger(gwSov)
+	return op.resolveSovereignty()
+}
+
+// mergeStronger overlays other onto c, adopting the stronger posture per field
+// so that a stronger sovereignty declaration in either source is never silently
+// downgraded.
+func (c *SovereigntyConfig) mergeStronger(other *SovereigntyConfig) {
+	if c == nil || other == nil {
+		return
+	}
+	// Deployment mode: air_gap (the stronger posture) wins; otherwise fill gaps.
+	if other.AirGapEnabled() {
+		c.DeploymentMode = SovereigntyModeAirGap
+	} else if c.DeploymentMode == "" {
+		c.DeploymentMode = other.DeploymentMode
+	}
+	// Data-sovereignty mode: the stricter mode wins.
+	if sovereigntyModeStrength(other.SovereigntyMode) > sovereigntyModeStrength(c.SovereigntyMode) {
+		c.SovereigntyMode = other.SovereigntyMode
+	}
+	// Allowed egress hosts are additive declarations: union both sources.
+	c.AllowedEgressHosts = unionStrings(c.AllowedEgressHosts, other.AllowedEgressHosts)
+}
+
+// sovereigntyModeStrength ranks data-sovereignty modes by strictness so the
+// stronger posture can be selected during a merge.
+func sovereigntyModeStrength(m string) int {
+	switch m {
+	case DataSovereigntyEUStrict:
+		return 3
+	case DataSovereigntyEUPreferred:
+		return 2
+	case DataSovereigntyGlobal:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// unionStrings returns the de-duplicated union of a and b, preserving order
+// (a first, then any new entries from b).
+func unionStrings(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, list := range [][]string{a, b} {
+		for _, s := range list {
+			if _, ok := seen[s]; ok {
+				continue
+			}
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // DefaultPricingFile is the default path to the LLM pricing table.

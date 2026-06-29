@@ -6,8 +6,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/gateway"
 )
 
 func TestRun_ConfigCategory(t *testing.T) {
@@ -124,6 +128,66 @@ func TestRun_InvalidGatewayConfig(t *testing.T) {
 		}
 	}
 	assert.True(t, found)
+}
+
+// TestDoctorGatewaySovereigntyFromGatewayConfig_WhenOperatorSovereigntyEmpty is
+// the regression for the "doctor sovereignty merge is fragile" bug: even when
+// the operator config already carries a weak/empty sovereignty block, the
+// stronger air_gap block declared in --gateway-config must be honored, so a
+// non-EU gateway upstream is flagged.
+func TestDoctorGatewaySovereigntyFromGatewayConfig_WhenOperatorSovereigntyEmpty(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	// Operator config carries an empty/standard sovereignty block (the case that
+	// previously masked the gateway file's air_gap declaration).
+	viper.Set("sovereignty", map[string]interface{}{"deployment_mode": "standard"})
+	t.Cleanup(func() {
+		viper.Reset()
+		viper.SetEnvPrefix("TALON")
+		viper.AutomaticEnv()
+		viper.SetDefault(config.KeyDefaultPolicy, config.DefaultPolicy)
+		viper.SetDefault(config.KeyMaxAttachmentMB, config.DefaultMaxAttachMB)
+		viper.SetDefault(config.KeyOllamaBaseURL, config.DefaultOllamaURL)
+	})
+
+	gwCfgPath := filepath.Join(dir, "talon.config.airgap.yaml")
+	gwYAML := `sovereignty:
+  deployment_mode: air_gap
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "shadow"
+  providers:
+    openai:
+      enabled: true
+      base_url: "https://api.openai.com"
+      region: "US"
+      secret_name: "openai-api-key"
+  callers:
+    - name: "test"
+      tenant_key: "test-key"
+      tenant_id: "default"
+  default_policy:
+    default_pii_action: "warn"
+    forbidden_tools: ["rm_rf"]
+`
+	require.NoError(t, os.WriteFile(gwCfgPath, []byte(gwYAML), 0o600))
+
+	gwCfg, err := gateway.LoadGatewayConfig(gwCfgPath)
+	require.NoError(t, err)
+
+	res := checkAirGapFromGateway(gwCfg, gwCfgPath)
+	assert.Equal(t, "fail", res.Status,
+		"gateway air_gap + US upstream must fail even when operator carries a standard sovereignty block")
+
+	sov := checkSovereigntyFromGateway(gwCfg, gwCfgPath)
+	assert.Equal(t, "fail", sov.Status,
+		"sovereignty provider gate must fail for US gateway upstream under merged eu_strict")
 }
 
 func TestCheckResult_StatusValues(t *testing.T) {
