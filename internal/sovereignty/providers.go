@@ -76,6 +76,9 @@ func validateOperatorProviders(op *config.Config, mode string) error {
 	}
 	if op.LLM != nil {
 		for id, p := range op.LLM.Providers {
+			if !p.Enabled {
+				continue
+			}
 			providerType := p.Type
 			if providerType == "" {
 				providerType = id
