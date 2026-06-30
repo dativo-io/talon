@@ -305,3 +305,29 @@ func IsGatewayProviderExcluded(eval Evaluation, provider string) bool {
 	}
 	return false
 }
+
+// DeclaredOperatorRegions returns configured regions for operator-declared
+// providers (env keys and llm.providers). Used by compliance reporting so
+// region-aware providers are evaluated against their actual configured region,
+// not a metadata default EU region.
+func DeclaredOperatorRegions(op *config.Config) map[string]string {
+	regions := make(map[string]string)
+	if region := strings.TrimSpace(os.Getenv("AWS_REGION")); region != "" {
+		regions["bedrock"] = region
+	}
+	if op != nil && op.LLM != nil {
+		for id, p := range op.LLM.Providers {
+			if !p.Enabled {
+				continue
+			}
+			providerType := p.Type
+			if providerType == "" {
+				providerType = id
+			}
+			if r := providerRegionFromConfig(p); r != "" {
+				regions[providerType] = r
+			}
+		}
+	}
+	return regions
+}

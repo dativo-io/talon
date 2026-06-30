@@ -354,7 +354,7 @@ func buildSovereigntyPostureConfig(ctx context.Context, opCfg *config.Config, ga
 
 	excludedGateway, excludedLLM := sovereigntyExclusionMaps(sovereignty.EvaluateSovereignty(opCfg, gwCfg.cfg))
 	applyGatewayPostureLabels(cfg.GatewayProviders, excludedGateway)
-	cfg.LLMProviders = buildLLMProviderRowsForPosture(ctx, cfg.DataSovereigntyMode, excludedLLM)
+	cfg.LLMProviders = buildLLMProviderRowsForPosture(ctx, opCfg, cfg.DataSovereigntyMode, excludedLLM)
 	return cfg, warnings
 }
 
@@ -415,10 +415,11 @@ func applyGatewayPostureLabels(providers []compliance.SovereigntyGatewayProvider
 	}
 }
 
-func buildLLMProviderRowsForPosture(ctx context.Context, mode string, excludedLLM map[string]bool) []compliance.SovereigntyLLMProvider {
+func buildLLMProviderRowsForPosture(ctx context.Context, opCfg *config.Config, mode string, excludedLLM map[string]bool) []compliance.SovereigntyLLMProvider {
 	if mode == "" {
 		mode = "global"
 	}
+	declaredRegions := sovereignty.DeclaredOperatorRegions(opCfg)
 	pol := &policy.Policy{VersionTag: "v1", Policies: policy.PoliciesConfig{}}
 	eng, err := policy.NewEngine(ctx, pol)
 	if err != nil {
@@ -428,10 +429,10 @@ func buildLLMProviderRowsForPosture(ctx context.Context, mode string, excludedLL
 	rows := make([]compliance.SovereigntyLLMProvider, 0, len(list))
 	for i := range list {
 		meta := list[i]
-		region := ""
-		if len(meta.EURegions) > 0 {
-			region = meta.EURegions[0]
-		}
+		// Use the operator-declared configured region when present. Never
+		// substitute metadata EURegions[0] for region-aware providers — that
+		// would misreport e.g. AWS_REGION=us-east-1 as an EU-routed Bedrock.
+		region := declaredRegions[meta.ID]
 		row := compliance.SovereigntyLLMProvider{ID: meta.ID}
 		dec, evalErr := eng.EvaluateRouting(ctx, &policy.RoutingInput{
 			SovereigntyMode:      mode,

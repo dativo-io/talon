@@ -274,3 +274,18 @@ func TestEvaluateOperatorProviders_UsesProviderTypeNotAlias(t *testing.T) {
 		assert.True(t, compliant)
 	})
 }
+
+func TestDeclaredOperatorRegions(t *testing.T) {
+	clearProviderKeys(t)
+	t.Setenv("AWS_REGION", "us-east-1")
+	op := &config.Config{
+		LLM: &config.LLMConfig{
+			Providers: map[string]config.LLMProviderConfig{
+				"azure": {Type: "azure-openai", Enabled: true, Config: map[string]interface{}{"region": "westeurope"}},
+			},
+		},
+	}
+	regions := DeclaredOperatorRegions(op)
+	assert.Equal(t, "us-east-1", regions["bedrock"])
+	assert.Equal(t, "westeurope", regions["azure-openai"])
+}
