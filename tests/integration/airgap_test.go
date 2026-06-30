@@ -99,6 +99,7 @@ gateway:
 	require.NoError(t, err)
 	require.NotNil(t, guard)
 	gwCfg.UpstreamTransport = guard
+	gwCfg.EffectiveSovereigntyMode = opCfg.EffectiveSovereigntyMode()
 	require.NoError(t, gwCfg.ApplyDefaults())
 
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
@@ -150,7 +151,10 @@ gateway:
 	assert.True(t, evStore.VerifyRecord(&records[0]))
 }
 
-func TestAirGap_RejectsUSProviderAtValidation(t *testing.T) {
+func TestAirGap_USProviderExcludedNotFatal(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("AWS_REGION", "")
 	op := &config.Config{
 		Sovereignty: &config.SovereigntyConfig{DeploymentMode: sovereignty.ModeAirGap},
 		SecretsKey:  testutil.TestEncryptionKey,
@@ -161,7 +165,9 @@ func TestAirGap_RejectsUSProviderAtValidation(t *testing.T) {
 			"openai": {Enabled: true, BaseURL: "https://api.openai.com", Region: "US"},
 		},
 	}
-	err := sovereignty.ValidateAirGap(op, gw)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "US")
+	require.NoError(t, sovereignty.ValidateAirGap(op, gw))
+	eval := sovereignty.EvaluateSovereignty(op, gw)
+	require.Len(t, eval.Excluded, 1)
+	assert.Equal(t, "openai", eval.Excluded[0].Provider)
+	assert.False(t, eval.HasRoutableProvider)
 }

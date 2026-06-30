@@ -100,6 +100,20 @@ func TestBuildProviders_EUStrictFiltersNonSovereignProviders(t *testing.T) {
 	assert.Contains(t, providers, "bedrock")
 }
 
+func TestBuildProviders_EUStrictExcludesBedrockUSRegion(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("AWS_REGION", "us-east-1")
+
+	cfg := &config.Config{
+		OllamaBaseURL: "http://localhost:11434",
+		Sovereignty:   &config.SovereigntyConfig{SovereigntyMode: config.DataSovereigntyEUStrict},
+	}
+	providers := buildProviders(cfg)
+	assert.NotContains(t, providers, "bedrock", "us-east-1 Bedrock must be excluded under eu_strict")
+	assert.Contains(t, providers, "ollama")
+}
+
 func TestValidatePolicyFile_Valid(t *testing.T) {
 	dir := t.TempDir()
 	policyPath := testutil.WriteTestPolicyFile(t, dir, "valid-agent")

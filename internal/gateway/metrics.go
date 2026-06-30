@@ -12,16 +12,17 @@ import (
 var gatewayMeter = otel.Meter("github.com/dativo-io/talon/internal/gateway")
 
 var (
-	gatewayRequestsCounter  metric.Int64Counter
-	gatewayErrorsCounter    metric.Int64Counter
-	dataTierCounter         metric.Int64Counter
-	toolGovernanceCounter   metric.Int64Counter
-	cacheHitsCounter        metric.Int64Counter
-	cacheMissesCounter      metric.Int64Counter
-	shadowViolationsCounter metric.Int64Counter
-	egressDecisionsCounter  metric.Int64Counter
-	budgetUtilizationGauge  metric.Float64Gauge
-	budgetAlertsCounter     metric.Int64Counter
+	gatewayRequestsCounter   metric.Int64Counter
+	gatewayErrorsCounter     metric.Int64Counter
+	dataTierCounter          metric.Int64Counter
+	toolGovernanceCounter    metric.Int64Counter
+	cacheHitsCounter         metric.Int64Counter
+	cacheMissesCounter       metric.Int64Counter
+	shadowViolationsCounter  metric.Int64Counter
+	egressDecisionsCounter   metric.Int64Counter
+	sovereigntyDeniedCounter metric.Int64Counter
+	budgetUtilizationGauge   metric.Float64Gauge
+	budgetAlertsCounter      metric.Int64Counter
 
 	gwMetricsOnce       sync.Once
 	gwMetricsRegistered bool
@@ -96,6 +97,13 @@ func initGatewayMetrics() {
 	budgetAlertsCounter, err = gatewayMeter.Int64Counter("talon.budget.alerts.total",
 		metric.WithDescription("Budget threshold breach alerts"),
 		metric.WithUnit("{alert}"))
+	if err != nil {
+		return
+	}
+
+	sovereigntyDeniedCounter, err = gatewayMeter.Int64Counter("talon.sovereignty.provider_denied_total",
+		metric.WithDescription("Gateway requests denied because provider is excluded under eu_strict"),
+		metric.WithUnit("{request}"))
 	if err != nil {
 		return
 	}
@@ -221,4 +229,13 @@ func RecordBudgetAlert(ctx context.Context, tenantID string, threshold float64) 
 		attribute.String("tenant_id", tenantID),
 		attribute.Float64("threshold", threshold),
 	))
+}
+
+// RecordSovereigntyProviderDenied increments the sovereignty runtime denial counter.
+func RecordSovereigntyProviderDenied(ctx context.Context, provider string) {
+	ensureGatewayMetrics()
+	if !gwMetricsRegistered {
+		return
+	}
+	sovereigntyDeniedCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("provider", provider)))
 }

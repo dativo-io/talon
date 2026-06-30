@@ -12,8 +12,8 @@ talon doctor --gateway-config ~/.talon/talon.config.yaml --skip-upstream
 talon serve --gateway --gateway-config ~/.talon/talon.config.yaml
 ```
 
-`talon doctor` should report `0 failures` (a couple of advisory warnings are
-expected: no agent policy is needed for a gateway-only deployment, and an empty
-`forbidden_tools` list).
+`talon doctor` should report `0 failures` for a healthy air-gap deployment (a couple of advisory warnings are
+expected: no agent policy is needed for a gateway-only deployment, an empty
+`forbidden_tools` list, or excluded non-EU providers when a compliant LOCAL/EU provider also exists).
 
 See [Air-gapped deployment guide](../../docs/guides/air-gapped-deployment.md) for the full runbook.

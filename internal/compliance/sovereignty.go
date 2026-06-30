@@ -33,6 +33,8 @@ type SovereigntyGatewayProvider struct {
 	Name    string
 	Region  string
 	Enabled bool
+	// Posture is allowed, excluded (declared under eu_strict), or disabled.
+	Posture string
 }
 
 // SovereigntyLLMProvider is one registry provider evaluated under the
@@ -41,6 +43,8 @@ type SovereigntyLLMProvider struct {
 	ID      string
 	Allowed bool
 	Reason  string
+	// Status is allowed, not_allowed, or excluded_declared.
+	Status string
 }
 
 // SovereigntyPostureOptions scopes the export and carries presentation inputs.
@@ -155,6 +159,16 @@ func sovereigntyWarnings(cfg SovereigntyPostureConfig, destinations []Destinatio
 			warnings = append(warnings, fmt.Sprintf("observed egress to non-EU region %q via %s (%s)", d.Region, d.Name, d.Kind))
 		}
 	}
+	for _, p := range cfg.LLMProviders {
+		if p.Status == "excluded_declared" {
+			warnings = append(warnings, fmt.Sprintf("declared provider %q excluded under %s", p.ID, cfg.DataSovereigntyMode))
+		}
+	}
+	for _, p := range cfg.GatewayProviders {
+		if p.Posture == "excluded" {
+			warnings = append(warnings, fmt.Sprintf("declared gateway provider %q excluded under %s", p.Name, cfg.DataSovereigntyMode))
+		}
+	}
 	if stats.egressDenials > 0 && cfg.DataSovereigntyMode != "eu_strict" {
 		warnings = append(warnings, "egress denials observed while data_sovereignty_mode is not eu_strict — align routing and egress policy")
 	}
@@ -181,17 +195,20 @@ func sovereigntyLLMProvidersSection(cfg SovereigntyPostureConfig) DocSection {
 	}
 	rows := make([][]string, 0, len(cfg.LLMProviders))
 	for _, p := range cfg.LLMProviders {
-		allowed := "no"
-		if p.Allowed {
-			allowed = "yes"
+		status := p.Status
+		if status == "" {
+			status = "not_allowed"
+			if p.Allowed {
+				status = "allowed"
+			}
 		}
-		rows = append(rows, []string{p.ID, allowed, p.Reason})
+		rows = append(rows, []string{p.ID, status, p.Reason})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i][0] < rows[j][0] })
 	return DocSection{
 		Heading: "2. LLM providers (registry evaluation)",
 		Body:    "Providers evaluated under the configured data_sovereignty_mode using routing.rego.",
-		Table:   &DocTable{Headers: []string{"Provider", "Allowed", "Reason"}, Rows: rows},
+		Table:   &DocTable{Headers: []string{"Provider", "Status", "Reason"}, Rows: rows},
 	}
 }
 
@@ -211,12 +228,19 @@ func sovereigntyGatewaySection(cfg SovereigntyPostureConfig) DocSection {
 	}
 	rows := make([][]string, 0, len(cfg.GatewayProviders))
 	for _, p := range cfg.GatewayProviders {
-		rows = append(rows, []string{p.Name, p.Region, boolLabel(p.Enabled)})
+		posture := p.Posture
+		if posture == "" {
+			posture = "allowed"
+			if !p.Enabled {
+				posture = "disabled"
+			}
+		}
+		rows = append(rows, []string{p.Name, p.Region, boolLabel(p.Enabled), posture})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i][0] < rows[j][0] })
 	return DocSection{
 		Heading: "3. Gateway upstream providers",
-		Table:   &DocTable{Headers: []string{"Provider", "Region", "Enabled"}, Rows: rows},
+		Table:   &DocTable{Headers: []string{"Provider", "Region", "Enabled", "Posture"}, Rows: rows},
 	}
 }
 

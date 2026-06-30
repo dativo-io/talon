@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -109,7 +110,37 @@ func TestApplyAirGapPreset_EmptyEgressStillAppliesPreset(t *testing.T) {
 	assert.NotEmpty(t, gw.ServerDefaults.Egress.Rules)
 }
 
-func TestValidateAirGap_RejectsUSProvider(t *testing.T) {
+func TestValidateAirGap_RejectsDefaultCryptoKeys(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SECRETS_KEY", "")
+	t.Setenv("TALON_SIGNING_KEY", "")
+
+	viper.Set("sovereignty", map[string]interface{}{"deployment_mode": ModeAirGap})
+	t.Cleanup(func() {
+		viper.Reset()
+		viper.SetEnvPrefix("TALON")
+		viper.AutomaticEnv()
+		viper.SetDefault(config.KeyDefaultPolicy, config.DefaultPolicy)
+		viper.SetDefault(config.KeyMaxAttachmentMB, config.DefaultMaxAttachMB)
+		viper.SetDefault(config.KeyOllamaBaseURL, config.DefaultOllamaURL)
+	})
+
+	op, err := config.Load()
+	require.NoError(t, err)
+	require.True(t, op.UsingDefaultKeys())
+
+	gw := &gateway.GatewayConfig{
+		Providers: map[string]gateway.ProviderConfig{
+			"openai": {Enabled: true, BaseURL: "https://api.openai.com", Region: "US"},
+		},
+	}
+	err = ValidateAirGap(op, gw)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TALON_SECRETS_KEY")
+}
+
+func TestValidateAirGap_USProviderIsNonFatal(t *testing.T) {
 	op := &config.Config{
 		Sovereignty: &config.SovereigntyConfig{DeploymentMode: ModeAirGap},
 		SecretsKey:  testutil.TestEncryptionKey,
@@ -120,9 +151,10 @@ func TestValidateAirGap_RejectsUSProvider(t *testing.T) {
 			"openai": {Enabled: true, BaseURL: "https://api.openai.com", Region: "US"},
 		},
 	}
-	err := ValidateAirGap(op, gw)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openai")
+	require.NoError(t, ValidateAirGap(op, gw))
+	eval := EvaluateSovereignty(op, gw)
+	require.Len(t, eval.Excluded, 1)
+	assert.Equal(t, "openai", eval.Excluded[0].Provider)
 }
 
 func TestBuildAllowlist_IncludesOllamaAndProviders(t *testing.T) {
