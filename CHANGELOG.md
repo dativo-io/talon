@@ -17,6 +17,18 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.6.6] - 2026-06-30
+
+### Added
+
+- **feat(sovereignty): air-gap deployment mode with egress guard (#132, #185).** Operators in regulated EU environments can now deploy Talon with provable in-region operation: `sovereignty.deployment_mode: air_gap` implies `eu_strict`, applies deny-by-default gateway egress (EU/LOCAL only when no custom rules are set), wraps the upstream HTTP client with an allowlist derived from declared Ollama/gateway endpoints and optional `allowed_egress_hosts`, and **hard-fails startup** when `TALON_SECRETS_KEY` / `TALON_SIGNING_KEY` are missing or still the generated defaults. Verify quickly: `cp examples/airgap/talon.config.airgap.yaml ~/.talon/talon.config.yaml`, set explicit 64-hex keys, `talon doctor --gateway-config ~/.talon/talon.config.yaml --skip-upstream`. Docs: [air-gapped deployment guide](docs/guides/air-gapped-deployment.md), [examples/airgap](examples/airgap/README.md).
+- **feat(compliance): `talon compliance sovereignty` posture report (#133, #186).** Security and DPO reviewers can now export a sovereignty posture document (HTML or JSON) that merges declared facts (`sovereignty.mode`, `deployment_mode`, gateway provider regions, operator env keys) with observed egress from signed evidence — including providers that were declared but excluded under `eu_strict` (`excluded_declared` / gateway `excluded` posture). Verify quickly: `talon compliance sovereignty --format html --output sovereignty.html --from 2020-01-01`. Docs: [configuration reference](docs/reference/configuration.md).
+- **feat(demo): reproducible shortlist demo bundle (#107, #184).** A self-contained `examples/shortlist-demo/` bundle (config, agent policy, `demo.sh`, docker-compose) for repeatable buyer shortlist walkthroughs without ad-hoc setup. Verify quickly: `cd examples/shortlist-demo && ./demo.sh`.
+
+### Changed
+
+- **feat(sovereignty): non-fatal `eu_strict` provider gate with runtime gateway denial (#111, #188).** Under `eu_strict`, Talon no longer refuses startup when non-EU/LOCAL providers are declared alongside compliant ones — they are excluded from routing with ERROR logs and `talon.sovereignty.provider_excluded_total`, while EU/LOCAL providers keep the process running. The gateway denies direct requests to excluded providers at runtime (HTTP 403 + signed evidence + `talon.sovereignty.provider_denied_total`; shadow mode records violations but still forwards). Region-aware gating (Bedrock, Azure OpenAI, Vertex) uses the **configured region** (`AWS_REGION`, provider config) — e.g. `us-east-1` excludes Bedrock even when metadata lists EU regions. `talon doctor` **warns** (exit 0) when exclusions exist but something EU/LOCAL remains routable; it **fails** only when nothing is routable, with gateway vs native checks separated so a compliant native provider does not mask an all-US gateway. `serve` / `run` / `plan` call `ApplySovereigntyGate` instead of hard-failing `ValidateSovereignty`. **Breaking change:** operators who relied on startup failure to discover misconfigured US providers must now check ERROR logs, `talon doctor`, gateway 403 responses, or `talon compliance sovereignty`. Recommended: run `talon doctor --gateway-config ... --skip-upstream` in CI. Verify quickly: declare OpenAI (US) + Ollama (LOCAL), `talon serve --gateway` starts, OpenAI proxy returns 403, Ollama returns 200, doctor warns with exit 0. Docs: [air-gapped deployment guide](docs/guides/air-gapped-deployment.md#sovereigntymode-is-the-single-source-of-truth), [configuration reference](docs/reference/configuration.md).
+
 ## [1.6.5] - 2026-06-15
 
 ### Changed
@@ -542,7 +554,8 @@ For user-facing entries, include:
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.6.5...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.6.6...HEAD
+[1.6.6]: https://github.com/dativo-io/talon/compare/v1.6.5...v1.6.6
 [1.6.5]: https://github.com/dativo-io/talon/compare/v1.6.0...v1.6.5
 [1.6.0]: https://github.com/dativo-io/talon/compare/v1.5.5...v1.6.0
 [1.5.5]: https://github.com/dativo-io/talon/compare/v1.5.0...v1.5.5
