@@ -552,11 +552,23 @@ func checkSovereignty(cfg *config.Config, gwCfg *gateway.GatewayConfig) CheckRes
 		}
 	}
 	eval := sovereignty.EvaluateSovereignty(cfg, gwCfg)
-	if mode == config.DataSovereigntyEUStrict && !eval.HasRoutableProvider {
-		return CheckResult{
-			Name: "sovereignty_providers", Category: "sovereignty", Status: "fail",
-			Message: fmt.Sprintf("sovereignty mode %q but no EU/LOCAL provider is routable", mode),
-			Fix:     "Configure at least one EU or LOCAL gateway/LLM provider, or relax sovereignty.mode",
+	if mode == config.DataSovereigntyEUStrict {
+		// Gateway and native routability are evaluated separately: a compliant
+		// native/LLM provider must not mask a gateway whose providers are all
+		// excluded, and vice versa.
+		if eval.GatewayEvaluated && !eval.HasCompliantGatewayProvider {
+			return CheckResult{
+				Name: "sovereignty_providers", Category: "sovereignty", Status: "fail",
+				Message: fmt.Sprintf("sovereignty mode %q but the gateway has no EU/LOCAL provider routable", mode),
+				Fix:     "Configure at least one enabled EU or LOCAL gateway provider, or relax sovereignty.mode",
+			}
+		}
+		if !eval.GatewayEvaluated && !eval.HasCompliantOperatorProvider {
+			return CheckResult{
+				Name: "sovereignty_providers", Category: "sovereignty", Status: "fail",
+				Message: fmt.Sprintf("sovereignty mode %q but no EU/LOCAL provider is routable", mode),
+				Fix:     "Configure at least one EU or LOCAL LLM provider, or relax sovereignty.mode",
+			}
 		}
 	}
 	if len(eval.Excluded) > 0 {

@@ -3,6 +3,7 @@ package llm
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -93,6 +94,44 @@ func JurisdictionForProvider(providerType string) string {
 		return ""
 	}
 	return meta.Jurisdiction
+}
+
+// RegionAwareProvider reports whether the provider type has a region dimension
+// that affects data residency (e.g. Bedrock, Azure OpenAI, Vertex). For these
+// providers the configured region — not just the jurisdiction — determines
+// whether traffic stays in the EU.
+func RegionAwareProvider(providerType string) bool {
+	meta, ok := ProviderMetadataByType(providerType)
+	if !ok {
+		return false
+	}
+	return meta.Wizard.RequiresRegion || len(meta.EURegions) > 0
+}
+
+// IsEURegion reports whether the given configured region for a provider type is
+// an EU region. It consults the provider's declared EURegions first, then the
+// wizard AvailableRegions IsEU flags. Returns false for unknown providers,
+// empty regions, or regions not declared as EU (fail closed).
+func IsEURegion(providerType, region string) bool {
+	meta, ok := ProviderMetadataByType(providerType)
+	if !ok {
+		return false
+	}
+	r := strings.TrimSpace(region)
+	if r == "" {
+		return false
+	}
+	for _, er := range meta.EURegions {
+		if strings.EqualFold(er, r) {
+			return true
+		}
+	}
+	for _, ar := range meta.Wizard.AvailableRegions {
+		if strings.EqualFold(ar.ID, r) {
+			return ar.IsEU
+		}
+	}
+	return false
 }
 
 // ProviderMetadataByType returns the static metadata for a registered provider

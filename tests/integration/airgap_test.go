@@ -152,6 +152,9 @@ gateway:
 }
 
 func TestAirGap_USProviderExcludedNotFatal(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("AWS_REGION", "")
 	op := &config.Config{
 		Sovereignty: &config.SovereigntyConfig{DeploymentMode: sovereignty.ModeAirGap},
 		SecretsKey:  testutil.TestEncryptionKey,

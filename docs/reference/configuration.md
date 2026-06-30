@@ -182,7 +182,7 @@ rather than mirroring it under `llm.routing`.
 
 | Field | Values | Purpose |
 |-------|--------|---------|
-| `sovereignty.mode` | `eu_strict`, `eu_preferred`, `global` | Data-sovereignty posture (source of truth). Under `eu_strict`, declared non-EU/LOCAL providers are **excluded from routing** (ERROR log at startup) and **denied at the gateway** (HTTP 403 + audit evidence). The process continues unless `deployment_mode: air_gap` is set without explicit crypto keys. Covers operator-keyed providers (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`), `llm.providers` entries, and enabled gateway upstreams. Non-declared registry defaults are filtered silently. `eu_preferred` and `global` impose no hard gate. |
+| `sovereignty.mode` | `eu_strict`, `eu_preferred`, `global` | Data-sovereignty posture (source of truth). Under `eu_strict`, declared non-EU/LOCAL providers are **excluded from routing** (ERROR log at startup) and **denied at the gateway** (HTTP 403 + audit evidence). The process continues unless `deployment_mode: air_gap` is set without explicit crypto keys. Covers operator-keyed providers (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`), `llm.providers` entries, and enabled gateway upstreams. Region-aware providers (Bedrock, Azure OpenAI, Vertex) are gated on their **configured region**, not just metadata: e.g. `AWS_REGION=us-east-1` excludes Bedrock, while `AWS_REGION=eu-central-1` keeps it routable. Non-declared registry defaults are filtered silently. `eu_preferred` and `global` impose no hard gate. |
 | `sovereignty.deployment_mode` | `standard`, `air_gap` | `air_gap` is a stricter sub-mode that **implies `eu_strict`** (a looser `mode` is rejected). It adds deny-by-default EU/LOCAL gateway egress, a transport-level egress allowlist guard, and rejects generated default crypto keys. See the [air-gapped deployment guide](../guides/air-gapped-deployment.md). |
 | `sovereignty.allowed_egress_hosts` | list of host or URL strings | Optional extension to the air-gap transport allowlist (in addition to `ollama_base_url`, enabled gateway `base_url`s, and loopback). |
 
@@ -201,7 +201,7 @@ sovereignty:
     - "llm.internal.example"
 ```
 
-Validated by `talon doctor` (`sovereignty_providers` warns when exclusions exist but compliant providers remain; fails only when nothing EU/LOCAL is routable; `air_gap_crypto_keys` fails on default keys; `air_gap_egress_guard` transport probe). See the [air-gapped deployment guide](../guides/air-gapped-deployment.md).
+Validated by `talon doctor` (`sovereignty_providers` warns when exclusions exist but compliant providers remain; fails only when nothing EU/LOCAL is routable. Gateway and native routability are checked **independently** — with `--gateway-config`, the gateway must have at least one compliant enabled provider, and a compliant native/LLM provider does not mask an all-excluded gateway. `air_gap_crypto_keys` fails on default keys; `air_gap_egress_guard` transport probe). See the [air-gapped deployment guide](../guides/air-gapped-deployment.md).
 
 ---
 

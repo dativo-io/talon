@@ -31,6 +31,12 @@ import (
 // declared US providers without refusing startup, and denies gateway requests
 // at runtime with signed evidence.
 func TestSovereigntyGate_NonFatalStartupAndGatewayDeny(t *testing.T) {
+	// Keep operator/native routability deterministic: no ambient provider keys
+	// or AWS_REGION should make an operator provider compliant.
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("AWS_REGION", "")
+
 	var upstreamCalls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls.Add(1)

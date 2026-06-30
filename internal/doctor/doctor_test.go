@@ -243,6 +243,63 @@ gateway:
 	assert.Contains(t, sov.Message, "openai")
 }
 
+// TestDoctorGatewaySovereignty_NativeProviderDoesNotMaskGateway is the
+// regression for the "doctor mixes native and gateway routability" bug: a
+// gateway config whose providers are all excluded must fail even when an
+// unrelated compliant native provider (here Bedrock in an EU region) is
+// configured. Gateway routability is evaluated independently of native.
+func TestDoctorGatewaySovereignty_NativeProviderDoesNotMaskGateway(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SECRETS_KEY", "abcdefghijklmnopqrstuvwxyz012345")
+	t.Setenv("TALON_SIGNING_KEY", "my-signing-key-at-least-32-chars!")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	// A compliant native provider (Bedrock in an EU region) is configured.
+	t.Setenv("AWS_REGION", "eu-central-1")
+
+	viper.Set("sovereignty", map[string]interface{}{"mode": "eu_strict"})
+	t.Cleanup(func() {
+		viper.Reset()
+		viper.SetEnvPrefix("TALON")
+		viper.AutomaticEnv()
+		viper.SetDefault(config.KeyDefaultPolicy, config.DefaultPolicy)
+		viper.SetDefault(config.KeyMaxAttachmentMB, config.DefaultMaxAttachMB)
+		viper.SetDefault(config.KeyOllamaBaseURL, config.DefaultOllamaURL)
+	})
+
+	gwCfgPath := filepath.Join(dir, "talon.config.yaml")
+	gwYAML := `sovereignty:
+  mode: eu_strict
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "shadow"
+  providers:
+    openai:
+      enabled: true
+      base_url: "https://api.openai.com"
+      region: "US"
+      secret_name: "openai-api-key"
+  callers:
+    - name: "test"
+      tenant_key: "test-key"
+      tenant_id: "default"
+  default_policy:
+    default_pii_action: "warn"
+    forbidden_tools: ["rm_rf"]
+`
+	require.NoError(t, os.WriteFile(gwCfgPath, []byte(gwYAML), 0o600))
+
+	gwCfg, err := gateway.LoadGatewayConfig(gwCfgPath)
+	require.NoError(t, err)
+
+	sov := checkSovereigntyFromGateway(gwCfg, gwCfgPath)
+	assert.Equal(t, "fail", sov.Status,
+		"gateway has no compliant provider; a compliant native provider must not mask it")
+	assert.Contains(t, sov.Message, "gateway")
+}
+
 // TestCheckLLMKeys_RecognizesLocalProviders guards the air-gap operator path:
 // an Ollama-only deployment declares a local provider in llm.providers and must
 // satisfy the LLM-provider check without any cloud key set.

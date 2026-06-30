@@ -325,10 +325,11 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 	mode := cfg.EffectiveSovereigntyMode()
 	providers := make(map[string]llm.Provider)
 
-	register := func(providerType string, configYAML []byte) {
-		if !sovereignty.AllowsProvider(mode, providerType) {
+	registerRegion := func(providerType, region string, configYAML []byte) {
+		if !sovereignty.AllowsProviderRegion(mode, providerType, region) {
 			log.Debug().
 				Str("provider", providerType).
+				Str("region", region).
 				Str("sovereignty_mode", mode).
 				Msg("provider excluded by sovereignty mode")
 			return
@@ -336,6 +337,9 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 		if p, err := llm.NewProvider(providerType, configYAML); err == nil {
 			providers[providerType] = p
 		}
+	}
+	register := func(providerType string, configYAML []byte) {
+		registerRegion(providerType, "", configYAML)
 	}
 
 	openaiCfg := map[string]string{"api_key": os.Getenv("OPENAI_API_KEY")}
@@ -365,7 +369,7 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 	if region := os.Getenv("AWS_REGION"); region != "" {
 		bedrockCfg := map[string]string{"region": region}
 		bedrockYAML, _ := yaml.Marshal(bedrockCfg)
-		register("bedrock", bedrockYAML)
+		registerRegion("bedrock", region, bedrockYAML)
 	}
 
 	return providers
