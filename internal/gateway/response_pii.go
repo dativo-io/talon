@@ -25,6 +25,9 @@ type ResponsePIIScanResult struct {
 	Entities []classifier.PIIEntity
 	// Tier is the response content classification tier (0-2).
 	Tier int
+	// ScannerFailure is set when the scan engine itself failed and the
+	// response was blocked fail-closed (no raw error details, evidence-safe).
+	ScannerFailure string
 }
 
 // responseCapture wraps an http.ResponseWriter to capture the response body
@@ -78,7 +81,7 @@ func resolveResponsePIIAction(defaultPolicy *ServerDefaults, callerOverrides *Ca
 // response body for PII and applies the action. API envelope fields (id, created,
 // usage, model, etc.) are never scanned, preventing false positives on timestamps
 // and token counts.
-func scanResponseForPII(ctx context.Context, body []byte, action string, scanner *classifier.Scanner) ([]byte, *ResponsePIIScanResult) {
+func scanResponseForPII(ctx context.Context, body []byte, action string, scanner classifier.Facade) ([]byte, *ResponsePIIScanResult) {
 	result := &ResponsePIIScanResult{}
 	if scanner == nil || action == "allow" || action == "" {
 		return body, result
@@ -89,7 +92,19 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 		return body, result
 	}
 
-	cls := scanner.Scan(ctx, contentText)
+	cls, scanErr := scanner.Analyze(ctx, contentText)
+	if scanErr != nil {
+		// The scan gates egress for block/redact: fail closed. warn never
+		// gates, so the response passes with a logged warning.
+		if action == "block" || action == "redact" {
+			result.Blocked = true
+			result.ScannerFailure = "scanner_unavailable"
+			log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_blocked")
+			return scannerUnavailableBody(), result
+		}
+		log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_warn")
+		return body, result
+	}
 	if cls == nil || !cls.HasPII {
 		return body, result
 	}
@@ -108,7 +123,14 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 
 	switch action {
 	case "redact":
-		modified := redactResponseContentFields(ctx, body, scanner)
+		modified, redactErr := redactResponseContentFields(ctx, body, scanner)
+		if redactErr != nil {
+			result.Redacted = true
+			result.Blocked = true
+			result.ScannerFailure = "scanner_unavailable"
+			log.Warn().Err(redactErr).Msg("response_pii_redaction_failed_blocked")
+			return scannerUnavailableBody(), result
+		}
 		redactedText := extractResponseContentText(modified)
 		if err := scanner.VerifyEgress(ctx, redactedText); err != nil {
 			safeErr := map[string]interface{}{
@@ -154,6 +176,18 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 	}
 
 	return body, result
+}
+
+// scannerUnavailableBody is the JSON error returned when the PII scan engine
+// failed and the response was blocked fail-closed.
+func scannerUnavailableBody() []byte {
+	blocked, _ := json.Marshal(map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": "Response blocked: PII scanner unavailable (fail-closed)",
+			"type":    "scanner_unavailable",
+		},
+	})
+	return blocked
 }
 
 func residualPIIBlockMessage(prefix string, types []string) string {
@@ -283,11 +317,12 @@ func contentFieldToText(c interface{}) string {
 
 // redactResponseContentFields redacts PII only within the LLM content fields
 // of the JSON response, leaving the API envelope (id, created, usage, etc.)
-// untouched. Falls back to returning the original body on parse errors.
-func redactResponseContentFields(ctx context.Context, body []byte, scanner *classifier.Scanner) []byte {
+// untouched. Falls back to returning the original body on parse errors; a
+// scan-engine failure is returned as an error (fail-closed at the caller).
+func redactResponseContentFields(ctx context.Context, body []byte, scanner classifier.Facade) ([]byte, error) {
 	var m map[string]interface{}
 	if err := json.Unmarshal(body, &m); err != nil {
-		return body
+		return body, nil
 	}
 
 	// OpenAI Chat Completions: choices[].message.content
@@ -298,45 +333,58 @@ func redactResponseContentFields(ctx context.Context, body []byte, scanner *clas
 				continue
 			}
 			if msg, ok := choice["message"].(map[string]interface{}); ok {
-				msg["content"] = redactContentField(ctx, msg["content"], scanner)
+				redacted, err := redactContentField(ctx, msg["content"], scanner)
+				if err != nil {
+					return nil, err
+				}
+				msg["content"] = redacted
 			}
 		}
 	}
 
 	// Anthropic: content[].text
-	redactAnthropicResponseContent(ctx, m, scanner)
+	if err := redactAnthropicResponseContent(ctx, m, scanner); err != nil {
+		return nil, err
+	}
 
 	// OpenAI Responses API: output[].content[].text (type "output_text")
-	redactResponsesOutputContent(ctx, m, scanner)
+	if err := redactResponsesOutputContent(ctx, m, scanner); err != nil {
+		return nil, err
+	}
 
 	out, err := json.Marshal(m)
 	if err != nil {
-		return body
+		return body, nil
 	}
-	return out
+	return out, nil
 }
 
 // redactAnthropicResponseContent redacts PII in Anthropic response content[].text blocks.
-func redactAnthropicResponseContent(ctx context.Context, m map[string]interface{}, scanner *classifier.Scanner) {
+func redactAnthropicResponseContent(ctx context.Context, m map[string]interface{}, scanner classifier.Facade) error {
 	content, ok := m["content"].([]interface{})
 	if !ok {
-		return
+		return nil
 	}
 	for _, block := range content {
 		if b, ok := block.(map[string]interface{}); ok {
 			if text, ok := b["text"].(string); ok {
-				b["text"] = scanner.Redact(ctx, text)
+				redacted, err := scanner.RedactText(ctx, text)
+				if err != nil {
+					return err
+				}
+				b["text"] = redacted
 			}
 		}
 	}
+	return nil
 }
 
 // redactResponsesOutputContent redacts PII in OpenAI Responses API
 // output[].content[] blocks of type "output_text".
-func redactResponsesOutputContent(ctx context.Context, m map[string]interface{}, scanner *classifier.Scanner) {
+func redactResponsesOutputContent(ctx context.Context, m map[string]interface{}, scanner classifier.Facade) error {
 	output, ok := m["output"].([]interface{})
 	if !ok {
-		return
+		return nil
 	}
 	for _, item := range output {
 		obj, ok := item.(map[string]interface{})
@@ -354,34 +402,43 @@ func redactResponsesOutputContent(ctx context.Context, m map[string]interface{},
 			}
 			if typ, _ := b["type"].(string); typ == "output_text" {
 				if text, ok := b["text"].(string); ok {
-					b["text"] = scanner.Redact(ctx, text)
+					redacted, err := scanner.RedactText(ctx, text)
+					if err != nil {
+						return err
+					}
+					b["text"] = redacted
 				}
 			}
 		}
 	}
+	return nil
 }
 
 // redactContentField redacts PII in an OpenAI content field (string or array).
-func redactContentField(ctx context.Context, c interface{}, scanner *classifier.Scanner) interface{} {
+func redactContentField(ctx context.Context, c interface{}, scanner classifier.Facade) (interface{}, error) {
 	if c == nil {
-		return nil
+		return nil, nil
 	}
 	switch v := c.(type) {
 	case string:
-		return scanner.Redact(ctx, v)
+		return scanner.RedactText(ctx, v)
 	case []interface{}:
 		for _, part := range v {
 			if m, ok := part.(map[string]interface{}); ok {
 				if typ, _ := m["type"].(string); typ == "text" {
 					if text, ok := m["text"].(string); ok {
-						m["text"] = scanner.Redact(ctx, text)
+						redacted, err := scanner.RedactText(ctx, text)
+						if err != nil {
+							return nil, err
+						}
+						m["text"] = redacted
 					}
 				}
 			}
 		}
-		return v
+		return v, nil
 	}
-	return c
+	return c, nil
 }
 
 func extractContentFromSSE(m map[string]interface{}) string {
@@ -431,7 +488,7 @@ func handleStreamingPIIScan(
 	w http.ResponseWriter,
 	capture *responseCapture,
 	action string,
-	scanner *classifier.Scanner,
+	scanner classifier.Facade,
 ) *ResponsePIIScanResult {
 	raw := capture.body.Bytes()
 
@@ -453,7 +510,17 @@ func handleStreamingPIIScan(
 		return nil
 	}
 
-	cls := scanner.Scan(ctx, contentText)
+	cls, scanErr := scanner.Analyze(ctx, contentText)
+	if scanErr != nil {
+		if action == "block" || action == "redact" {
+			forwardScannerUnavailableResponse(w)
+			log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_blocked_stream")
+			return &ResponsePIIScanResult{Blocked: true, ScannerFailure: "scanner_unavailable"}
+		}
+		log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_warn_stream")
+		forwardBufferedSSE(w, capture)
+		return &ResponsePIIScanResult{}
+	}
 	if cls == nil || !cls.HasPII {
 		forwardBufferedSSE(w, capture)
 		return &ResponsePIIScanResult{PIIDetected: false}
@@ -483,7 +550,15 @@ func handleStreamingPIIScan(
 
 	case "redact":
 		if completedJSON != nil {
-			redacted := redactResponseContentFields(ctx, completedJSON, scanner)
+			redacted, redactErr := redactResponseContentFields(ctx, completedJSON, scanner)
+			if redactErr != nil {
+				forwardScannerUnavailableResponse(w)
+				result.Redacted = true
+				result.Blocked = true
+				result.ScannerFailure = "scanner_unavailable"
+				log.Warn().Err(redactErr).Msg("response_pii_redaction_failed_blocked_stream")
+				break
+			}
 			if err := scanner.VerifyEgress(ctx, extractResponseContentText(redacted)); err != nil {
 				forwardBlockedResponse(w)
 				result.Redacted = true
@@ -495,7 +570,15 @@ func handleStreamingPIIScan(
 			}
 			forwardRedactedAsSSE(w, capture, completedJSON, redacted)
 		} else {
-			redactedContent := scanner.Redact(ctx, contentText)
+			redactedContent, redactErr := scanner.RedactText(ctx, contentText)
+			if redactErr != nil {
+				forwardScannerUnavailableResponse(w)
+				result.Redacted = true
+				result.Blocked = true
+				result.ScannerFailure = "scanner_unavailable"
+				log.Warn().Err(redactErr).Msg("response_pii_redaction_failed_blocked_stream")
+				break
+			}
 			if err := scanner.VerifyEgress(ctx, redactedContent); err != nil {
 				forwardBlockedResponse(w)
 				result.Redacted = true
@@ -607,6 +690,15 @@ func forwardBlockedResponse(w http.ResponseWriter) {
 	})
 	//nolint:gosec // G705: error response body (JSON), not HTML
 	_, _ = w.Write(safeErr)
+}
+
+// forwardScannerUnavailableResponse writes a JSON error when the PII scan
+// engine failed and the buffered stream was discarded fail-closed.
+func forwardScannerUnavailableResponse(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadGateway)
+	//nolint:gosec // G705: error response body (JSON), not HTML
+	_, _ = w.Write(scannerUnavailableBody())
 }
 
 // extractCompletedResponseFromSSE finds the response.completed event or the

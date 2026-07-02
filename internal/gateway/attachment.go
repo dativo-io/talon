@@ -61,7 +61,7 @@ func ScanRequestAttachments(
 	body []byte,
 	provider string,
 	extractor *attachment.Extractor,
-	piiScanner *classifier.Scanner,
+	piiScanner classifier.Facade,
 	injScanner *attachment.Scanner,
 	policy *AttachmentPolicyConfig,
 ) *AttachmentsScanSummary {
@@ -124,7 +124,7 @@ func scanSingleFileBlock(
 	ctx context.Context,
 	fb *FileBlock,
 	extractor *attachment.Extractor,
-	piiScanner *classifier.Scanner,
+	piiScanner classifier.Facade,
 	injScanner *attachment.Scanner,
 	policy *AttachmentPolicyConfig,
 ) AttachmentScanResult {
@@ -176,10 +176,15 @@ func scanSingleFileBlock(
 	}
 	result.TextExtracted = true
 
-	// PII scan
+	// PII scan. A scan failure is fail-closed: content Talon cannot verify is
+	// treated as PII-bearing so the configured action (block/strip) applies.
 	if piiScanner != nil {
-		cls := piiScanner.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), text)
-		if cls != nil && cls.HasPII {
+		cls, scanErr := piiScanner.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), text)
+		if scanErr != nil {
+			log.Warn().Err(scanErr).Str("filename", fb.Filename).Msg("attachment_pii_scan_failed")
+			result.PIIFound = true
+			result.PIITypes = append(result.PIITypes, "scanner_unavailable")
+		} else if cls != nil && cls.HasPII {
 			result.PIIFound = true
 			result.Tier = cls.Tier
 			types := map[string]bool{}
