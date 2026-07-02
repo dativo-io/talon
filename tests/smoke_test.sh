@@ -540,6 +540,7 @@ main() {
   run_section "32_egress" test_section_32_egress
   run_section "33_auditor_documents" test_section_33_auditor_documents
   run_section "34_compliance_dashboard" test_section_34_compliance_dashboard
+  run_section "35_failover" test_section_35_failover
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency

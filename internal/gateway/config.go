@@ -74,6 +74,31 @@ type ProviderConfig struct {
 	BlockedModels    []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
 	ForbiddenTools   []string `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
 	ToolPolicyAction string   `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"` // filter | block
+	// Fallback is the ordered error-driven fallback chain for this provider:
+	// on a transient upstream failure (timeout / connection error / 429 / 5xx)
+	// the gateway retries the request against each target in order, subject to
+	// the candidate filter pipeline (sovereignty under eu_strict). All chain
+	// members must share the provider's API family (the request body is
+	// forwarded as-is except for an optional model rewrite).
+	Fallback []FallbackTarget `yaml:"fallback,omitempty" json:"fallback,omitempty"`
+}
+
+// FallbackTarget is one candidate in a provider's error-driven fallback chain.
+type FallbackTarget struct {
+	Provider string `yaml:"provider" json:"provider"`
+	// Model, when set, replaces the "model" field of the forwarded JSON body
+	// (the only rewrite performed; the wire format must already match).
+	Model string `yaml:"model,omitempty" json:"model,omitempty"`
+}
+
+// providerAPIFamily groups providers by wire format for fallback chain
+// validation. Anthropic uses its own Messages API; every other gateway
+// provider is treated as OpenAI-compatible (matching WriteProviderError).
+func providerAPIFamily(name string) string {
+	if name == "anthropic" {
+		return "anthropic"
+	}
+	return "openai"
 }
 
 // CallerConfig identifies an application or team that uses the gateway.
@@ -296,8 +321,11 @@ func normalizeProviderRegions(providers map[string]ProviderConfig) {
 		p := providers[name]
 		if p.Region != "" {
 			p.Region = normalizeEgressRegion(p.Region)
-			providers[name] = p
 		}
+		for i := range p.Fallback {
+			p.Fallback[i].Provider = strings.ToLower(strings.TrimSpace(p.Fallback[i].Provider))
+		}
+		providers[name] = p
 	}
 }
 
@@ -352,6 +380,15 @@ func (c *GatewayConfig) Validate() error {
 		}
 		c.Providers[name] = p
 	}
+	for name := range c.Providers {
+		p := c.Providers[name]
+		if !p.Enabled {
+			continue
+		}
+		if err := c.validateFallbackChain(name, p); err != nil {
+			return err
+		}
+	}
 	if p := c.ServerDefaults.AttachmentPolicy; p != nil {
 		switch p.Action {
 		case "block", "strip", "warn", "allow":
@@ -386,6 +423,34 @@ func (c *GatewayConfig) Validate() error {
 			}
 		} else if caller.TenantKey == "" && c.ServerDefaults.CallerIDRequired() {
 			return fmt.Errorf("gateway caller %q: tenant_key or identify_by=source_ip with source_ip_ranges is required", caller.Name)
+		}
+	}
+	return nil
+}
+
+// validateFallbackChain checks a provider's error-driven fallback chain at
+// load time: every target must exist, be enabled, differ from the owner,
+// appear at most once, and share the owner's API family (the body is
+// forwarded verbatim apart from a model rewrite, so cross-family fallback
+// would send an incompatible payload).
+func (c *GatewayConfig) validateFallbackChain(owner string, p ProviderConfig) error {
+	seen := map[string]bool{owner: true}
+	family := providerAPIFamily(owner)
+	for i, target := range p.Fallback {
+		tname := strings.ToLower(strings.TrimSpace(target.Provider))
+		if tname == "" {
+			return fmt.Errorf("gateway provider %q: fallback[%d]: provider is required", owner, i)
+		}
+		if seen[tname] {
+			return fmt.Errorf("gateway provider %q: fallback[%d]: duplicate or self-referencing target %q", owner, i, tname)
+		}
+		seen[tname] = true
+		tp, ok := c.Providers[tname]
+		if !ok || !tp.Enabled {
+			return fmt.Errorf("gateway provider %q: fallback[%d]: target %q is not an enabled gateway provider", owner, i, tname)
+		}
+		if tf := providerAPIFamily(tname); tf != family {
+			return fmt.Errorf("gateway provider %q: fallback[%d]: target %q API family %q does not match %q — fallback forwards the request body as-is (only the model field is rewritten)", owner, i, tname, tf, family)
 		}
 	}
 	return nil

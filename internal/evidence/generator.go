@@ -92,6 +92,7 @@ type GenerateParams struct {
 	FailureReason    string             // Structured classification: cost_exceeded, llm_error, policy_deny, operator_kill, etc.
 	PlanID           string             // Execution plan ID for lineage (links to execution_plans.id)
 	GraphRunID       string             // Graph runtime run ID for external orchestrators (LangGraph, LangChain, etc.)
+	Failover         *FailoverContext   // Provider fallback-chain context (failed attempt / fallback decision / fail-closed)
 }
 
 // StepParams holds inputs for creating a step-level evidence record (one LLM call or one tool call within a run).
@@ -246,6 +247,7 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 		FailureReason:   params.FailureReason,
 		PlanID:          params.PlanID,
 		GraphRunID:      params.GraphRunID,
+		Failover:        params.Failover,
 	}
 	ev.Explanations = g.buildExplanations(params)
 	if len(ev.Explanations) == 0 {

@@ -26,6 +26,7 @@ import (
 	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/llm"
 	"github.com/dativo-io/talon/internal/metrics"
+	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/session"
 )
@@ -757,11 +758,31 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		StreamingMetrics: &streamingMetrics,
 	}
 
+	// Error-driven provider failover (issue #138): the primary attempt plus
+	// the provider's ordered fallback chain, sovereignty-filtered. Failed
+	// attempts are recorded as separate signed evidence facts, each with its
+	// own data-flow section (the prompt did egress to the failed provider).
+	recordAttempt := func(aCtx context.Context, rec failoverAttemptRecord) string {
+		attemptFlow := g.buildDataFlow(dataFlowInputs{
+			CorrelationID:    correlationID,
+			TenantID:         caller.TenantID,
+			CallerName:       caller.Name,
+			Provider:         rec.Provider,
+			Model:            rec.Model,
+			Allowed:          true,
+			InputPIIRedacted: inputPIIRedacted,
+			InputText:        extracted.Text,
+			Classification:   classification,
+		})
+		return g.recordFailoverAttemptEvidence(aCtx, correlationID, caller, g.config.EffectiveSovereigntyMode, tier, rec, attemptFlow)
+	}
+	var failoverOut *failoverOutcome
+
 	switch {
 	case needsResponseScan && !isStreaming:
 		// Non-streaming: capture response, scan, then write
 		capture := &responseCapture{ResponseWriter: w}
-		forwardErr = Forward(capture, fwdParams)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt)
 		if forwardErr == nil {
 			scannedBody, scanResult := scanResponseForPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), capture.body.Bytes(), responsePIIAction, g.classifier)
 			responsePII = scanResult
@@ -801,7 +822,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// scan for PII. If clean, forward the original buffered events. If
 		// PII found, return the redacted content wrapped in SSE format.
 		capture := &responseCapture{ResponseWriter: w}
-		forwardErr = Forward(capture, fwdParams)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt)
 		if forwardErr == nil {
 			responsePII = handleStreamingPIIScan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), w, capture, responsePIIAction, g.classifier)
 		} else {
@@ -809,11 +830,35 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 	default:
-		forwardErr = Forward(w, fwdParams)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, w, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt)
 	}
 
 	durationMS := time.Since(start).Milliseconds()
-	cost := g.costEstimate(extracted.Model, tokenUsage.Input, tokenUsage.Output)
+
+	// Provider/model actually used (may differ from the route when failover
+	// dispatched a fallback candidate). Evidence must record the truth.
+	selectedProvider, selectedModel := route.Provider, extracted.Model
+	if failoverOut != nil && failoverOut.SelectedProvider != "" {
+		selectedProvider, selectedModel = failoverOut.SelectedProvider, failoverOut.SelectedModel
+	}
+	failoverEvCtx := g.buildFailoverDecisionContext(failoverOut, g.config.EffectiveSovereigntyMode)
+	if failoverEvCtx != nil {
+		if span := trace.SpanFromContext(ctx); span.IsRecording() {
+			span.SetAttributes(
+				otel.TalonProviderOriginal.String(route.Provider),
+				otel.TalonProviderSelected.String(selectedProvider),
+				otel.TalonProviderFallbackReason.String(failoverOut.FailedAttempts[0].Class.Class),
+				otel.TalonFallbackChainPosition.Int(failoverOut.ChainPosition),
+				otel.TalonFallbackFailedAttempts.Int(len(failoverOut.FailedAttempts)),
+				otel.TalonFallbackFailClosed.Bool(failoverOut.FailClosed),
+			)
+		}
+		if !failoverOut.FailClosed {
+			llm.RecordFailover(ctx, extracted.Model, selectedModel, failoverOut.FailedAttempts[0].Class.Class)
+		}
+	}
+
+	cost := g.costEstimate(selectedModel, tokenUsage.Input, tokenUsage.Output)
 	if tokenUsage.Input == 0 && tokenUsage.Output == 0 {
 		cost = estimatedCost
 	}
@@ -833,7 +878,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardErr != nil {
 		forwardErrStr = forwardErr.Error()
 	}
-	persisted, recordErr := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, &tokenUsage, cost, durationMS, forwardErrStr, true, nil, inputPIIRedacted, responsePII, attSummary, toolResult, shadowViolations, false, "", 0, 0, cacheStored, ttftMS, tpotMS, estimatedCost)
+	persisted, recordErr := g.recordEvidence(ctx, correlationID, caller, selectedProvider, selectedModel, start, extracted.Text, classification, &tokenUsage, cost, durationMS, forwardErrStr, true, nil, inputPIIRedacted, responsePII, attSummary, toolResult, shadowViolations, false, "", 0, 0, cacheStored, ttftMS, tpotMS, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+		p.Failover = failoverEvCtx
+		if failoverOut != nil && failoverOut.FailClosed {
+			p.Status = "failed"
+			p.FailureReason = evidence.FailureReasonNoSovereignFallback
+		}
+	})
 	if recordErr != nil {
 		g.handleEvidenceWriteFailure(ctx, recordErr)
 		return
@@ -841,7 +892,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.trackSessionUsage(ctx, sessionID, caller.TenantID, caller.Name, cost, tokenUsage.Input+tokenUsage.Output)
 
 	// Emit OTel + dashboard metrics
-	g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations,
+	g.emitMetrics(ctx, caller, selectedProvider, selectedModel, classification, toolResult, shadowViolations,
 		&tokenUsage, cost, durationMS, forwardErr != nil, false, piiAction, false, 0, ttftMS, tpotMS, persisted)
 	if forwardErr != nil {
 		log.Warn().Err(forwardErr).Msg("gateway_forward_error")
@@ -849,7 +900,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 //nolint:gocyclo // evidence assembly branches on optional subsystems (cache, egress, attachments, tools)
-func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, inputText string, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, executionError string, allowed bool, reasons []string, inputPIIRedacted bool, responsePII *ResponsePIIScanResult, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, cacheStored bool, ttftMS int64, tpotMS float64, estimatedCost float64) (*evidence.Evidence, error) {
+func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, inputText string, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, executionError string, allowed bool, reasons []string, inputPIIRedacted bool, responsePII *ResponsePIIScanResult, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, cacheStored bool, ttftMS int64, tpotMS float64, estimatedCost float64, opts ...func(*RecordGatewayEvidenceParams)) (*evidence.Evidence, error) {
 	if classification == nil {
 		classification = &classifier.Classification{}
 	}
@@ -974,6 +1025,9 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	params.GatewayAnnotations = gatewayAnnotationsForEvidence(g, caller)
 	params.TTFTMS = ttftMS
 	params.TPOTMS = tpotMS
+	for _, opt := range opts {
+		opt(&params)
+	}
 	ev, err := RecordGatewayEvidence(ctx, g.evidenceStore, params)
 	if err != nil {
 		return nil, err

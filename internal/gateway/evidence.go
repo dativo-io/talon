@@ -62,6 +62,15 @@ type RecordGatewayEvidenceParams struct {
 	// EgressDecision records the egress allow/deny outcome (tier x destination).
 	// Nil when egress is not configured or was not evaluated for this request.
 	EgressDecision *evidence.EgressDecision
+	// InvocationType overrides the default "gateway" (e.g.
+	// "gateway_failover_attempt" for failed provider attempt records).
+	InvocationType string
+	// Status/FailureReason classify failed outcomes (evidence-by-default).
+	Status        string
+	FailureReason string
+	// Failover carries fallback-chain context (failed attempt, fallback
+	// decision, or fail-closed outcome).
+	Failover *evidence.FailoverContext
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -76,6 +85,10 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		}
 	}
 
+	invocationType := params.InvocationType
+	if invocationType == "" {
+		invocationType = "gateway"
+	}
 	ev := &evidence.Evidence{
 		ID:              "gw_" + uuid.New().String()[:12],
 		CorrelationID:   params.CorrelationID,
@@ -86,7 +99,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		TenantID:        params.TenantID,
 		AgentID:         params.CallerName,
 		Team:            params.Team,
-		InvocationType:  "gateway",
+		InvocationType:  invocationType,
 		RequestSourceID: params.CallerName,
 		PolicyDecision: evidence.PolicyDecision{
 			Allowed:       params.PolicyAllowed,
@@ -135,6 +148,9 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		},
 		DataFlow:       params.DataFlow,
 		EgressDecision: params.EgressDecision,
+		Status:         params.Status,
+		FailureReason:  params.FailureReason,
+		Failover:       params.Failover,
 	}
 	if !params.PolicyAllowed {
 		ev.PolicyDecision.Action = "deny"

@@ -379,6 +379,58 @@ gateway:
   preference order only makes sense when Talon picks the provider, not when
   it admits a caller-chosen one.)
 
+#### Provider fallback chains (error-driven failover)
+
+On a **transient** upstream failure (timeout, connection failure, HTTP 429 or
+5xx) Talon can retry the request against an ordered fallback chain. Permanent
+errors (401/403/4xx) never trigger failover. Every candidate passes a filter
+pipeline before dispatch — under `sovereignty.mode: eu_strict` a non-EU/LOCAL
+candidate is skipped, never called. When no policy-valid candidate succeeds
+the request **fails closed**: the caller gets an error and the refusal is
+recorded as a governance outcome.
+
+Gateway (proxy path) — chain per provider; all members must share the
+provider's API family (the body is forwarded as-is except an optional model
+rewrite):
+
+```yaml
+gateway:
+  providers:
+    openai:
+      base_url: "https://api.openai.com"
+      secret_name: "openai-api-key"
+      region: "EU"
+      fallback:
+        - provider: "mistral-eu"        # tried in order on transient failure
+          model: "mistral-large-latest" # optional: rewrite the body's model field
+    mistral-eu:
+      base_url: "https://api.mistral.ai"
+      secret_name: "mistral-api-key"
+      region: "EU"
+```
+
+Agent runs (`talon run`) — chain per routing tier; candidates are re-checked
+against the compliance routing policy (sovereignty) before dispatch:
+
+```yaml
+policies:
+  model_routing:
+    tier_1:
+      primary: gpt-4o
+      fallback_chain:        # supersedes the legacy single `fallback` for error-driven failover
+        - mistral-large-latest
+        - llama3:70b
+```
+
+Evidence: each failed attempt is a separate signed record
+(`gateway_failover_attempt` / `llm_failover_attempt`, `failover.role:
+failed_attempt`), and the request's final record carries the fallback decision
+(`failover.role: fallback_decision` with the provider actually used and links
+to the failed attempts) or the fail-closed outcome (`failover.role:
+fail_closed`). Verify chains with `talon audit verify --failover
+[correlation-id]`. OTel spans expose `talon.provider.original`,
+`talon.provider.selected`, and `talon.provider.fallback_reason`.
+
 **Relationship to `compliance.data_residency` (agent policy):** that field is
 a *declaration*, not an enforcement knob — it is stamped into evidence and
 used by auditor exports. If you declare `data_residency: eu` but run with

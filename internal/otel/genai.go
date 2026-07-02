@@ -33,6 +33,14 @@ const (
 	TalonDataTier               = attribute.Key("talon.data.tier")
 	TalonRoutingRejectedCount   = attribute.Key("talon.routing.rejected_count")
 
+	// Talon provider failover attributes (error-driven fallback chains)
+	TalonProviderOriginal       = attribute.Key("talon.provider.original")        // primary provider that failed
+	TalonProviderSelected       = attribute.Key("talon.provider.selected")        // provider actually used
+	TalonProviderFallbackReason = attribute.Key("talon.provider.fallback_reason") // error class that triggered failover
+	TalonFallbackChainPosition  = attribute.Key("talon.fallback.chain_position")  // position of selected candidate (0 = primary)
+	TalonFallbackFailedAttempts = attribute.Key("talon.fallback.failed_attempts") // number of failed runtime attempts
+	TalonFallbackFailClosed     = attribute.Key("talon.fallback.fail_closed")     // true when no policy-valid candidate existed
+
 	// Talon cost estimation attributes (from pricing table)
 	TalonCostEstimatedUSD = attribute.Key("talon.cost.estimated_usd")
 	TalonCostPricingKnown = attribute.Key("talon.cost.pricing_known")

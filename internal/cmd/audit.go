@@ -30,6 +30,7 @@ var (
 	auditViolationsOnly bool
 	auditOutputFile     string
 	auditVerifyFile     string
+	auditVerifyFailover bool
 )
 
 var auditCmd = &cobra.Command{
@@ -52,7 +53,7 @@ var auditShowCmd = &cobra.Command{
 
 var auditVerifyCmd = &cobra.Command{
 	Use:   "verify [evidence-id]",
-	Short: "Verify HMAC signature of an evidence record",
+	Short: "Verify HMAC signature of an evidence record (--failover: semantic fallback-chain verification)",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  auditVerify,
 }
@@ -69,6 +70,7 @@ func init() {
 	auditListCmd.Flags().IntVar(&auditLimit, "limit", 20, "Maximum records to show")
 
 	auditVerifyCmd.Flags().StringVar(&auditVerifyFile, "file", "", "Verify all records from a signed export file")
+	auditVerifyCmd.Flags().BoolVar(&auditVerifyFailover, "failover", false, "Verify provider fallback chains: with a correlation ID argument verifies that chain; without, verifies all failover evidence")
 	auditExportCmd.Flags().StringVar(&auditExportFmt, "format", "csv", "Output format: csv, json, ndjson, signed-json, signed-ndjson, or html")
 	auditExportCmd.Flags().StringVar(&auditFrom, "from", "", "Start date (YYYY-MM-DD)")
 	auditExportCmd.Flags().StringVar(&auditTo, "to", "", "End date (YYYY-MM-DD)")
@@ -166,6 +168,13 @@ func auditVerify(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
+	if auditVerifyFailover {
+		if auditVerifyFile != "" {
+			return fmt.Errorf("use either --failover or --file, not both")
+		}
+		return auditVerifyFailoverChains(ctx, store, args)
+	}
+
 	if auditVerifyFile != "" {
 		if len(args) > 0 {
 			return fmt.Errorf("use either evidence ID or --file, not both")
@@ -202,6 +211,59 @@ func auditVerify(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("signature verification failed for %s", evidenceID)
 	}
 	return nil
+}
+
+// auditVerifyFailoverChains runs the semantic failover verifier: with an
+// argument, over that correlation ID; without, over all correlation IDs that
+// carry failover evidence. Non-zero exit when any chain is invalid or
+// insufficient.
+func auditVerifyFailoverChains(ctx context.Context, store *evidence.Store, args []string) error {
+	var correlationIDs []string
+	if len(args) > 0 {
+		correlationIDs = []string{args[0]}
+	} else {
+		ids, err := store.ListFailoverCorrelationIDs(ctx, 1000)
+		if err != nil {
+			return fmt.Errorf("listing failover evidence: %w", err)
+		}
+		correlationIDs = ids
+	}
+	if len(correlationIDs) == 0 {
+		fmt.Fprintln(os.Stdout, "No failover evidence found.")
+		return nil
+	}
+	failed := 0
+	checked := 0
+	for _, id := range correlationIDs {
+		finding, err := store.VerifyFailoverChain(ctx, id)
+		if err != nil {
+			return fmt.Errorf("verifying failover chain %s: %w", id, err)
+		}
+		if finding == nil {
+			continue
+		}
+		checked++
+		renderFailoverFinding(os.Stdout, finding)
+		if !finding.OK() {
+			failed++
+		}
+	}
+	fmt.Fprintf(os.Stdout, "\nFailover chains checked: %d, failed: %d\n", checked, failed)
+	if failed > 0 {
+		return fmt.Errorf("%d failover chain(s) failed verification", failed)
+	}
+	return nil
+}
+
+func renderFailoverFinding(w io.Writer, f *evidence.FailoverFinding) {
+	status := "PASS"
+	if !f.OK() {
+		status = "FAIL"
+	}
+	fmt.Fprintf(w, "[%s] %s  verdict=%s  records=%s\n", status, f.CorrelationID, f.Verdict, strings.Join(f.EvidenceIDs, ","))
+	for _, d := range f.Details {
+		fmt.Fprintf(w, "       - %s\n", d)
+	}
 }
 
 func auditExport(cmd *cobra.Command, _ []string) error {
