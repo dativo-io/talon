@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 
 	"github.com/dativo-io/talon/internal/config"
@@ -104,6 +105,7 @@ type failoverAttemptRecord struct {
 	ErrMsg         string
 	ChainPosition  int
 	RuleID         string
+	GroupID        string
 	DurationMS     int64
 	EvidenceID     string
 }
@@ -115,8 +117,11 @@ type failoverOutcome struct {
 	SelectedModel    string
 	ChainPosition    int
 	RuleID           string
-	FailedAttempts   []failoverAttemptRecord
-	Skipped          []evidence.SkippedCandidate
+	// GroupID identifies this failover engagement in evidence (one gateway
+	// request = one group).
+	GroupID        string
+	FailedAttempts []failoverAttemptRecord
+	Skipped        []evidence.SkippedCandidate
 	// FailClosed is true when the failover machinery was engaged and the
 	// caller received an error: either no policy-valid candidate existed
 	// (no fallback dispatch at all) or every valid candidate failed. Under
@@ -294,6 +299,7 @@ func (g *Gateway) forwardWithFailover(
 	}
 
 	out.Engaged = true
+	out.GroupID = newFailoverGroupID()
 	primaryRec := failoverAttemptRecord{
 		Provider:       route.Provider,
 		Model:          clientModel,
@@ -301,6 +307,7 @@ func (g *Gateway) forwardWithFailover(
 		UpstreamStatus: fw.status,
 		ChainPosition:  0,
 		RuleID:         fmt.Sprintf("gateway.providers.%s", route.Provider),
+		GroupID:        out.GroupID,
 		DurationMS:     time.Since(primaryStart).Milliseconds(),
 	}
 	if err != nil {
@@ -419,6 +426,7 @@ func (g *Gateway) forwardWithFailover(
 			UpstreamStatus: fw.status,
 			ChainPosition:  i + 1,
 			RuleID:         ruleID,
+			GroupID:        out.GroupID,
 			DurationMS:     time.Since(attemptStart).Milliseconds(),
 		}
 		if err != nil {
@@ -438,7 +446,7 @@ func (g *Gateway) forwardWithFailover(
 	if lastBuffered.status != 0 || lastBuffered.buf.Len() > 0 {
 		lastBuffered.flushTo()
 	} else {
-		WriteProviderError(dst, route.Provider, http.StatusBadGateway,
+		WriteProviderError(dst, g.config.providerAPIFamily(route.Provider), http.StatusBadGateway,
 			"upstream provider failed and no policy-valid fallback candidate exists (fail-closed)")
 	}
 	if err == nil {
@@ -450,6 +458,12 @@ func (g *Gateway) forwardWithFailover(
 // ErrNoFallbackCandidate is returned when a transient upstream failure could
 // not be recovered because no policy-valid fallback candidate succeeded.
 var ErrNoFallbackCandidate = errors.New("no policy-valid fallback candidate available")
+
+// newFailoverGroupID mints the identifier tying one failover engagement's
+// evidence records together.
+func newFailoverGroupID() string {
+	return "fog_" + uuid.New().String()[:12]
+}
 
 // recordFailoverAttemptEvidence persists a signed evidence record for one
 // failed provider attempt (evidence-by-default: the failed attempt is a fact
@@ -482,6 +496,7 @@ func (g *Gateway) recordFailoverAttemptEvidence(ctx context.Context, correlation
 		DataFlow:       dataFlow,
 		Failover: &evidence.FailoverContext{
 			Role:            evidence.FailoverRoleFailedAttempt,
+			FailoverGroupID: rec.GroupID,
 			Provider:        rec.Provider,
 			Region:          g.providerRegion(rec.Provider),
 			Model:           rec.Model,
@@ -507,6 +522,7 @@ func (g *Gateway) buildFailoverDecisionContext(out *failoverOutcome, mode string
 	}
 	fc := &evidence.FailoverContext{
 		Role:              evidence.FailoverRoleFallbackDecision,
+		FailoverGroupID:   out.GroupID,
 		Provider:          out.SelectedProvider,
 		Model:             out.SelectedModel,
 		ChainPosition:     out.ChainPosition,

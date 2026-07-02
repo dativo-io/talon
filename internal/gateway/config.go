@@ -389,6 +389,9 @@ func (c *GatewayConfig) Validate() error {
 		default:
 			return fmt.Errorf("gateway provider %q: api_family must be openai or anthropic", name)
 		}
+		if p.UpstreamAuthMode == "client_bearer" && (p.APIFamily == "anthropic" || name == "anthropic") {
+			return fmt.Errorf("gateway provider %q: upstream_auth_mode client_bearer is not supported for the anthropic API family (Anthropic uses x-api-key, not bearer tokens)", name)
+		}
 		if p.BaseURL == "" && (name == "openai" || name == "anthropic" || name == "ollama") {
 			return fmt.Errorf("gateway provider %q: base_url is required", name)
 		}

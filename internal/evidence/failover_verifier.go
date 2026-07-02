@@ -79,28 +79,26 @@ func (s *Store) ListFailoverCorrelationIDs(ctx context.Context, limit int) ([]st
 }
 
 // VerifyFailoverRecords applies the failover verifier rules to the records of
-// one correlation ID. verifySig verifies a record's HMAC signature (pass
-// Store.VerifyRecord; a nil func skips signature checks — tests only).
+// one correlation ID. Records are grouped by failover_group_id — one group
+// per failover engagement (a gateway request, or one LLM call within an
+// agentic run that may make many) — and each group must independently
+// satisfy the chain invariants. verifySig verifies a record's HMAC signature
+// (pass Store.VerifyRecord; a nil func skips signature checks — tests only).
 // Returns nil when no record carries failover context.
-//
-//nolint:gocyclo // rule evaluation is a flat sequence of independent checks
 func VerifyFailoverRecords(correlationID string, records []*Evidence, verifySig func(*Evidence) bool) *FailoverFinding {
-	attempts := map[string]*Evidence{}
-	var decisions, failClosed []*Evidence
+	groups := map[string][]*Evidence{}
+	var groupOrder []string
 	var involved []*Evidence
 	for _, ev := range records {
 		if ev.Failover == nil {
 			continue
 		}
 		involved = append(involved, ev)
-		switch ev.Failover.Role {
-		case FailoverRoleFailedAttempt:
-			attempts[ev.ID] = ev
-		case FailoverRoleFallbackDecision:
-			decisions = append(decisions, ev)
-		case FailoverRoleFailClosed:
-			failClosed = append(failClosed, ev)
+		gid := ev.Failover.FailoverGroupID
+		if _, seen := groups[gid]; !seen {
+			groupOrder = append(groupOrder, gid)
 		}
+		groups[gid] = append(groups[gid], ev)
 	}
 	if len(involved) == 0 {
 		return nil
@@ -129,6 +127,44 @@ func VerifyFailoverRecords(correlationID string, records []*Evidence, verifySig 
 		}
 	}
 
+	sawDecision := false
+	for _, gid := range groupOrder {
+		if verifyFailoverGroup(groups[gid], addDetail) {
+			sawDecision = true
+		}
+	}
+
+	if worst != "" {
+		finding.Verdict = worst
+		return finding
+	}
+	if sawDecision {
+		finding.Verdict = FailoverVerdictValidFallback
+		return finding
+	}
+	finding.Verdict = FailoverVerdictValidFailClosed
+	return finding
+}
+
+// verifyFailoverGroup applies the chain invariants to one failover
+// engagement's records. Returns true when the group's terminal record is a
+// fallback decision (successful dispatch).
+//
+//nolint:gocyclo // rule evaluation is a flat sequence of independent checks
+func verifyFailoverGroup(records []*Evidence, addDetail func(verdict, detail string)) (hasDecision bool) {
+	attempts := map[string]*Evidence{}
+	var decisions, failClosed []*Evidence
+	for _, ev := range records {
+		switch ev.Failover.Role {
+		case FailoverRoleFailedAttempt:
+			attempts[ev.ID] = ev
+		case FailoverRoleFallbackDecision:
+			decisions = append(decisions, ev)
+		case FailoverRoleFailClosed:
+			failClosed = append(failClosed, ev)
+		}
+	}
+
 	checkAttemptRefs := func(ev *Evidence) {
 		if len(ev.Failover.FailedAttemptIDs) == 0 {
 			addDetail(FailoverVerdictInsufficient,
@@ -144,12 +180,11 @@ func VerifyFailoverRecords(correlationID string, records []*Evidence, verifySig 
 	}
 
 	// Chain invariant: exactly one terminal record (fallback decision or
-	// fail-closed) per correlation ID. More than one means the chain's
-	// provenance is ambiguous (e.g. a caller reusing correlation IDs across
-	// requests) and the trail cannot be attributed.
+	// fail-closed) per failover engagement. More than one within a group
+	// means the chain's provenance is ambiguous and cannot be attributed.
 	if len(decisions)+len(failClosed) > 1 {
 		addDetail(FailoverVerdictInvalid,
-			fmt.Sprintf("%d terminal failover records share one correlation id (expected exactly one fallback decision or fail-closed record)", len(decisions)+len(failClosed)))
+			fmt.Sprintf("%d terminal failover records share one failover group (expected exactly one fallback decision or fail-closed record)", len(decisions)+len(failClosed)))
 	}
 
 	referenced := map[string]bool{}
@@ -203,24 +238,15 @@ func VerifyFailoverRecords(correlationID string, records []*Evidence, verifySig 
 	// applies to attempts a terminal record does not account for.
 	if len(decisions) == 0 && len(failClosed) == 0 {
 		addDetail(FailoverVerdictInsufficient,
-			"failed provider attempt(s) recorded without a fallback decision or fail-closed record")
+			"failed provider attempt(s) recorded without a fallback decision or fail-closed record in their failover group")
 	} else {
 		for id := range attempts {
 			if !referenced[id] {
 				addDetail(FailoverVerdictInsufficient,
-					fmt.Sprintf("failed attempt %s is not referenced by any terminal failover record", id))
+					fmt.Sprintf("failed attempt %s is not referenced by any terminal record in its failover group", id))
 			}
 		}
 	}
 
-	if worst != "" {
-		finding.Verdict = worst
-		return finding
-	}
-	if len(decisions) > 0 {
-		finding.Verdict = FailoverVerdictValidFallback
-		return finding
-	}
-	finding.Verdict = FailoverVerdictValidFailClosed
-	return finding
+	return len(decisions) > 0
 }

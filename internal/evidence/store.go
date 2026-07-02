@@ -120,9 +120,9 @@ const (
 // transient (timeout/connection/429/5xx) vs permanent (auth/4xx) — the
 // failure_reason and failover.error_class must never contradict each other.
 const (
-	FailureReasonProviderTransient   = "provider_transient_error"
-	FailureReasonProviderPermanent   = "provider_permanent_error"
-	FailureReasonNoSovereignFallback = "no_valid_fallback_candidate"
+	FailureReasonProviderTransient        = "provider_transient_error"
+	FailureReasonProviderPermanent        = "provider_permanent_error"
+	FailureReasonNoValidFallbackCandidate = "no_valid_fallback_candidate"
 )
 
 // FailoverContext captures why traffic moved between providers, so audits can
@@ -130,6 +130,12 @@ const (
 type FailoverContext struct {
 	// Role is one of the FailoverRole* constants.
 	Role string `json:"role"`
+	// FailoverGroupID ties the records of ONE failover engagement together
+	// (one gateway request, or one LLM call within an agent run). A single
+	// correlation ID may legitimately carry several groups — an agentic run
+	// makes many LLM calls — so verification is per group, not per
+	// correlation ID. Empty on records written before this field existed.
+	FailoverGroupID string `json:"failover_group_id,omitempty"`
 	// Provider/Region/Model describe the attempt (failed_attempt role) or the
 	// provider actually used (fallback_decision role).
 	Provider string `json:"provider"`

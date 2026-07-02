@@ -239,6 +239,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WriteProviderError(w, "openai", http.StatusBadRequest, err.Error())
 		return
 	}
+	// Wire format (api_family) of the routed provider: drives request
+	// parsing, PII redaction, tool filtering, attachment extraction, and
+	// provider-native error shape. Governance parsing must never depend on
+	// the provider map key -- an aliased Anthropic-compatible endpoint gets
+	// Anthropic parsing, not the OpenAI default.
+	wire := g.config.providerAPIFamily(route.Provider)
 
 	// Step 2: Identify
 	var caller *CallerConfig
@@ -251,12 +257,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if err == ErrCallerIDRequired || err == ErrCallerNotFound {
 				RecordGatewayError(ctx, "auth")
 				RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
-				WriteProviderError(w, route.Provider, http.StatusUnauthorized, "Invalid or missing tenant key")
+				WriteProviderError(w, wire, http.StatusUnauthorized, "Invalid or missing tenant key")
 				return
 			}
 			RecordGatewayError(ctx, "auth")
 			RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
-			WriteProviderError(w, route.Provider, http.StatusInternalServerError, err.Error())
+			WriteProviderError(w, wire, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
@@ -277,7 +283,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			log.Warn().Str("caller", caller.Name).Msg("gateway_rate_limited")
 			durationMS := time.Since(start).Milliseconds()
-			WriteProviderError(w, route.Provider, http.StatusTooManyRequests, "Rate limit exceeded")
+			WriteProviderError(w, wire, http.StatusTooManyRequests, "Rate limit exceeded")
 			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, "", start, "", &classifier.Classification{}, nil, 0, durationMS, "", false, []string{"rate limit exceeded"}, false, nil, nil, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
@@ -292,7 +298,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		RecordGatewayRequest(ctx, caller.Name, "", route.Provider, "error")
 		RecordGatewayError(ctx, "invalid_method")
-		WriteProviderError(w, route.Provider, http.StatusMethodNotAllowed, "Method not allowed")
+		WriteProviderError(w, wire, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 
@@ -300,17 +306,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		RecordGatewayRequest(ctx, caller.Name, "", route.Provider, "error")
 		RecordGatewayError(ctx, "read_body")
-		WriteProviderError(w, route.Provider, http.StatusBadRequest, "Failed to read request body")
+		WriteProviderError(w, wire, http.StatusBadRequest, "Failed to read request body")
 		return
 	}
 	_ = r.Body.Close()
 
 	// Step 3: Extract
-	extracted, err := ExtractForProvider(route.Provider, body)
+	extracted, err := ExtractForProvider(wire, body)
 	if err != nil {
 		RecordGatewayRequest(ctx, caller.Name, "", route.Provider, "error")
 		RecordGatewayError(ctx, "extract_request")
-		WriteProviderError(w, route.Provider, http.StatusBadRequest, "Invalid request body")
+		WriteProviderError(w, wire, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -318,7 +324,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	attPolicy := ResolveAttachmentPolicy(&g.config.ServerDefaults, caller.PolicyOverrides)
 	var attSummary *AttachmentsScanSummary
 	if attPolicy.Action != "allow" {
-		attSummary = ScanRequestAttachments(ctx, body, route.Provider,
+		attSummary = ScanRequestAttachments(ctx, body, wire,
 			g.attExtractor, g.classifier, g.attInjScanner, attPolicy)
 	}
 	if attSummary != nil && attSummary.BlockRequest {
@@ -329,7 +335,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_attachment_block")
 		} else {
 			durationMS := time.Since(start).Milliseconds()
-			WriteProviderError(w, route.Provider, http.StatusBadRequest,
+			WriteProviderError(w, wire, http.StatusBadRequest,
 				"Request blocked: attachment violates policy")
 			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text,
 				g.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text), nil, 0, 0, "", false,
@@ -366,7 +372,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if !allowed {
 			durationMS := time.Since(start).Milliseconds()
-			WriteProviderError(w, route.Provider, http.StatusForbidden, "Caller not allowed for this provider")
+			WriteProviderError(w, wire, http.StatusForbidden, "Caller not allowed for this provider")
 			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"provider not allowed"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
@@ -398,7 +404,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("pii", piiTypes).Msg("shadow_pii_block")
 		} else {
 			durationMS := time.Since(start).Milliseconds()
-			WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request contains PII that is not allowed")
+			WriteProviderError(w, wire, http.StatusBadRequest, "Request contains PII that is not allowed")
 			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, []string{"PII block"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
@@ -426,20 +432,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 95)
 	}
 	destinationRegion := g.providerRegion(route.Provider)
-	policyInput := buildGatewayPolicyInput(caller, g.config.ServerDefaults, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost, destinationRegion)
-	if g.sessionStore != nil && sessionID != "" {
-		if sess, err := g.sessionStore.Get(ctx, sessionID); err == nil {
-			policyInput["session_cost_total"] = sess.TotalCost
-		}
-		if sc, err := g.sessionStore.GetStageCounts(ctx, sessionID); err == nil {
-			policyInput["session_stage_counts"] = map[string]int{
-				"generation": sc.Generation,
-				"judge":      sc.Judge,
-				"commit":     sc.Commit,
-			}
-		}
-		policyInput["session_stage"] = stageFromContext(ctx)
-	}
+	policyInput := g.buildPolicyInputForRequest(ctx, caller, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost, sessionID)
 	if g.policy != nil && (g.config.Mode == ModeEnforce || isShadow) {
 		allowed, reasons, policyErr := g.policy.EvaluateGateway(ctx, policyInput)
 		if policyErr != nil {
@@ -450,7 +443,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				log.Warn().Err(policyErr).Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_policy_error")
 			} else {
 				durationMS := time.Since(start).Milliseconds()
-				WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Policy evaluation failed")
+				WriteProviderError(w, wire, http.StatusInternalServerError, "Policy evaluation failed")
 				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"policy evaluation error"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
@@ -484,7 +477,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						Str("reason", egressReason).
 						Msg("gateway_egress_denied")
 				}
-				WriteProviderError(w, route.Provider, http.StatusForbidden, preferredDenyReason(reasons))
+				WriteProviderError(w, wire, http.StatusForbidden, preferredDenyReason(reasons))
 				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
@@ -517,7 +510,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					Str("caller", caller.Name).
 					Strs("forbidden", tr.Removed).
 					Msg("gateway_tool_blocked")
-				WriteProviderError(w, route.Provider, http.StatusForbidden,
+				WriteProviderError(w, wire, http.StatusForbidden,
 					fmt.Sprintf("Request contains forbidden tools: %v", tr.Removed))
 				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text,
 					classification, nil, 0, 0, "", false, []string{"tool governance block"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
@@ -528,14 +521,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
 				return
 			default:
-				filtered, filterErr := FilterRequestBodyTools(route.Provider, forwardBody, tr.Kept)
+				filtered, filterErr := FilterRequestBodyTools(wire, forwardBody, tr.Kept)
 				if filterErr != nil {
 					durationMS := time.Since(start).Milliseconds()
 					log.Error().Err(filterErr).
 						Str("caller", caller.Name).
 						Strs("forbidden", tr.Removed).
 						Msg("gateway_tool_filter_failed")
-					WriteProviderError(w, route.Provider, http.StatusInternalServerError,
+					WriteProviderError(w, wire, http.StatusInternalServerError,
 						"Failed to filter forbidden tools from request")
 					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text,
 						classification, nil, 0, 0, "", false, []string{"tool filter error"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
@@ -559,7 +552,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	inputPIIRedacted := false
 	// Step 7: Redact (if policy says redact and PII found, skip in shadow mode)
 	if !isShadow && piiAction == "redact" && classification.HasPII {
-		redacted, redactErr := RedactRequestBody(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), route.Provider, forwardBody, g.classifier)
+		redacted, redactErr := RedactRequestBody(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), wire, forwardBody, g.classifier)
 		if redactErr == nil {
 			forwardBody = redacted
 			inputPIIRedacted = true
@@ -567,10 +560,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Fail closed if redacted request text still contains recognized PII.
 	if !isShadow && inputPIIRedacted && g.classifier != nil {
-		redactedExtracted, extractErr := ExtractForProvider(route.Provider, forwardBody)
+		redactedExtracted, extractErr := ExtractForProvider(wire, forwardBody)
 		if extractErr != nil {
 			durationMS := time.Since(start).Milliseconds()
-			WriteProviderError(w, route.Provider, http.StatusBadRequest, "Request blocked: unable to verify redacted payload")
+			WriteProviderError(w, wire, http.StatusBadRequest, "Request blocked: unable to verify redacted payload")
 			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request redaction verification failed"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
@@ -586,7 +579,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if types != "" {
 				msg += " (types: " + types + ")"
 			}
-			WriteProviderError(w, route.Provider, http.StatusBadRequest, msg)
+			WriteProviderError(w, wire, http.StatusBadRequest, msg)
 			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request residual pii after redaction"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
@@ -600,7 +593,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 7b: Ensure Responses API requests use store:true so multi-turn works through a proxy.
 	// Without this, OpenAI doesn't persist response items and follow-up messages that reference
 	// previous response IDs get 404 "Items are not persisted when store is set to false".
-	if route.Provider == "openai" && isResponsesAPIPath(route.Path) {
+	if wire == "openai" && isResponsesAPIPath(route.Path) {
 		forwardBody = ensureResponsesStore(forwardBody)
 	}
 
@@ -649,7 +642,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, false, false, piiAction, true, costSaved, 0, 0, persisted)
-					writeCachedCompletion(w, route.Provider, extracted.Model, hit.ResponseText)
+					writeCachedCompletion(w, wire, extracted.Model, hit.ResponseText)
 					return
 				}
 			}
@@ -704,7 +697,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if clientKey == "" {
 			RecordGatewayError(ctx, "missing_upstream_key")
 			RecordGatewayRequest(ctx, caller.Name, extracted.Model, route.Provider, "error")
-			WriteProviderError(w, route.Provider, http.StatusUnauthorized,
+			WriteProviderError(w, wire, http.StatusUnauthorized,
 				"no upstream credential: set OPENAI_API_KEY or send Authorization: Bearer ...")
 			return
 		}
@@ -718,7 +711,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				durationMS := time.Since(start).Milliseconds()
 				log.Warn().Err(err).Str("secret", prov.SecretName).Msg("gateway_secret_get_failed")
-				WriteProviderError(w, route.Provider, http.StatusInternalServerError, "Service configuration error")
+				WriteProviderError(w, wire, http.StatusInternalServerError, "Service configuration error")
 				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"secret retrieval error"}, false, nil, attSummary, toolResult, shadowViolations, false, "", 0, 0, false, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
@@ -777,12 +770,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return g.recordFailoverAttemptEvidence(aCtx, correlationID, caller, g.config.EffectiveSovereigntyMode, tier, rec, attemptFlow)
 	}
-	// Fallback candidates must pass the same gates the primary passed:
-	// the caller's provider allowlist and the full gateway policy (caller
-	// model lists, egress rules, budgets) with the candidate's provider,
-	// model, and destination region. Dispatching a fallback is a
-	// Talon-initiated action, so candidates are policy-gated even in shadow
-	// mode — failover must never become a policy bypass.
+	// Fallback candidates must pass the same gates the primary passed.
+	// Shadow mode must never change runtime behavior: policy and tool
+	// violations are recorded as shadow violations and the dispatch
+	// proceeds, exactly like the primary path. Two gates stay hard in every
+	// mode: the caller's provider allowlist (the primary route enforces it
+	// unconditionally too) and the sovereignty filter inside the failover
+	// pipeline (an explicit hard invariant — under eu_strict Talon never
+	// dispatches outside EU/LOCAL, shadow or not).
 	checkCandidate := func(cCtx context.Context, candProvider, candModel string) failover.FilterResult {
 		if len(caller.AllowedProviders) > 0 {
 			allowed := false
@@ -796,13 +791,47 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return failover.FilterResult{Filter: "caller_allowlist", Reason: fmt.Sprintf("caller %s not allowed for provider %s", caller.Name, candProvider)}
 			}
 		}
-		if g.policy != nil {
-			candInput := buildGatewayPolicyInput(caller, g.config.ServerDefaults, candProvider, candModel, tier, estimatedCost, dailyCost, monthlyCost, g.providerRegion(candProvider))
-			allowed, reasons, policyErr := g.policy.EvaluateGateway(cCtx, candInput)
-			if policyErr != nil {
-				return failover.FilterResult{Filter: "gateway_policy", Reason: "policy evaluation error: " + policyErr.Error()}
+		// Provider-level tool governance of the TARGET provider: a fallback
+		// must not deliver tools the target's policy forbids. The body was
+		// filtered against the primary's tool policy only.
+		if len(extracted.ToolNames) > 0 {
+			candProv, _ := g.config.Provider(candProvider)
+			candToolPolicy := ResolveToolPolicy(&g.config.ServerDefaults, candProv, caller.PolicyOverrides)
+			if len(candToolPolicy.AllowedTools) > 0 || len(candToolPolicy.ForbiddenTools) > 0 {
+				forwarded := extracted.ToolNames
+				if toolResult != nil {
+					forwarded = toolResult.Kept
+				}
+				if tr := EvaluateToolPolicy(forwarded, candToolPolicy.AllowedTools, candToolPolicy.ForbiddenTools); len(tr.Removed) > 0 {
+					if isShadow {
+						shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+							Type: "tool_block", Detail: fmt.Sprintf("failover candidate %s: forbidden tools %v", candProvider, tr.Removed), Action: "block",
+						})
+					} else {
+						return failover.FilterResult{Filter: "tool_policy", Reason: fmt.Sprintf("target provider %s forbids tools %v", candProvider, tr.Removed)}
+					}
+				}
 			}
-			if !allowed {
+		}
+		// Full gateway policy with the CANDIDATE's provider, model,
+		// recomputed cost estimate, and destination region — built by the
+		// same function as the primary's input (session context included).
+		if g.policy != nil && (g.config.Mode == ModeEnforce || isShadow) {
+			candEstimate := g.costEstimate(candModel, estTokensIn, estTokensOut)
+			candInput := g.buildPolicyInputForRequest(cCtx, caller, candProvider, candModel, tier, candEstimate, dailyCost, monthlyCost, sessionID)
+			allowed, reasons, policyErr := g.policy.EvaluateGateway(cCtx, candInput)
+			switch {
+			case policyErr != nil && isShadow:
+				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+					Type: "policy_deny", Detail: fmt.Sprintf("failover candidate %s/%s: policy evaluation error: %v", candProvider, candModel, policyErr), Action: "block",
+				})
+			case policyErr != nil:
+				return failover.FilterResult{Filter: "gateway_policy", Reason: "policy evaluation error: " + policyErr.Error()}
+			case !allowed && isShadow:
+				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+					Type: "policy_deny", Detail: fmt.Sprintf("failover candidate %s/%s: %s", candProvider, candModel, preferredDenyReason(reasons)), Action: "block",
+				})
+			case !allowed:
 				return failover.FilterResult{Filter: "gateway_policy", Reason: preferredDenyReason(reasons)}
 			}
 		}
@@ -828,15 +857,23 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if content := extractContentFromOpenAIResponse(scannedBody); content != "" {
 					emb, err := g.cacheEmbedder.Embed(extracted.Text)
 					if err == nil {
+						// The response must be cached under the model that
+						// actually produced it: a failover model rewrite
+						// makes the fallback-selected model the truth, not
+						// the model the client asked for.
+						cachedModel := extracted.Model
+						if failoverOut != nil && failoverOut.SelectedProvider != "" && failoverOut.SelectedModel != "" {
+							cachedModel = failoverOut.SelectedModel
+						}
 						// Use canonical tenant ID from config-derived map so cache key is not tainted by request path (CodeQL go/weak-sensitive-data-hashing).
 						scopeTenantID := g.canonicalTenantIDForCache(caller.TenantID)
-						keyHash := cache.DeriveEntryKey(scopeTenantID, extracted.Model, extracted.Text)
+						keyHash := cache.DeriveEntryKey(scopeTenantID, cachedModel, extracted.Text)
 						tierLabel := cache.TierLabel(tier)
 						ttl := cache.TTLForTier(tierLabel, g.cacheConfig.TTLByTier, g.cacheConfig.DefaultTTL)
 						now := time.Now().UTC()
 						entry := &cache.Entry{
 							TenantID: caller.TenantID, CacheKey: keyHash, EmbeddingData: emb, ResponseText: content,
-							Model: extracted.Model, DataTier: tierLabel, PIIScrubbed: true,
+							Model: cachedModel, DataTier: tierLabel, PIIScrubbed: true,
 							CreatedAt: now, ExpiresAt: now.Add(ttl),
 						}
 						if insertErr := g.cacheStore.Insert(ctx, entry); insertErr == nil {
@@ -914,7 +951,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.Failover = failoverEvCtx
 		if failoverOut != nil && failoverOut.FailClosed {
 			p.Status = "failed"
-			p.FailureReason = evidence.FailureReasonNoSovereignFallback
+			p.FailureReason = evidence.FailureReasonNoValidFallbackCandidate
 		}
 	})
 	if recordErr != nil {
@@ -1229,6 +1266,29 @@ func (g *Gateway) trackSessionUsage(ctx context.Context, sessionID, tenantID, ca
 			log.Warn().Err(err).Str("session_id", sessionID).Str("stage", stage).Msg("stage count increment failed")
 		}
 	}
+}
+
+// buildPolicyInputForRequest builds the gateway policy input for a
+// (provider, model) pair with the full request context — destination region
+// and session budget/stage included. The primary request and every fallback
+// candidate MUST go through this same function so the two policy surfaces
+// cannot drift apart (see TestPolicyInputParity_PrimaryVsCandidate).
+func (g *Gateway) buildPolicyInputForRequest(ctx context.Context, caller *CallerConfig, provider, model string, tier int, estimatedCost, dailyCost, monthlyCost float64, sessionID string) map[string]interface{} {
+	input := buildGatewayPolicyInput(caller, g.config.ServerDefaults, provider, model, tier, estimatedCost, dailyCost, monthlyCost, g.providerRegion(provider))
+	if g.sessionStore != nil && sessionID != "" {
+		if sess, err := g.sessionStore.Get(ctx, sessionID); err == nil {
+			input["session_cost_total"] = sess.TotalCost
+		}
+		if sc, err := g.sessionStore.GetStageCounts(ctx, sessionID); err == nil {
+			input["session_stage_counts"] = map[string]int{
+				"generation": sc.Generation,
+				"judge":      sc.Judge,
+				"commit":     sc.Commit,
+			}
+		}
+		input["session_stage"] = stageFromContext(ctx)
+	}
+	return input
 }
 
 func buildGatewayPolicyInput(caller *CallerConfig, defaults ServerDefaults, provider, model string, dataTier int, estimatedCost, dailyCost, monthlyCost float64, destinationRegion string) map[string]interface{} {

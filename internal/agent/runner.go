@@ -1410,7 +1410,6 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					}),
 					Status:        string(RunStatusFailed),
 					FailureReason: string(llmFailReason),
-					Failover:      fo.decision,
 				}); evErr != nil {
 					log.Error().Err(evErr).
 						Str("correlation_id", correlationID).
@@ -1699,7 +1698,6 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				}),
 				Status:        string(RunStatusFailed),
 				FailureReason: string(singleFailReason),
-				Failover:      fo.decision,
 			}); evErr != nil {
 				log.Error().Err(evErr).
 					Str("correlation_id", correlationID).
@@ -1938,8 +1936,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			PolicyRef:       explanationPolicyRef(pol.VersionTag),
 			VersionIdentity: pol.VersionTag,
 		}},
-		Status:   string(RunStatusCompleted),
-		Failover: fo.decision,
+		Status: string(RunStatusCompleted),
 	})
 	evidenceID := ""
 	if err != nil {

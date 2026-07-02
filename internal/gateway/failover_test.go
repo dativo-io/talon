@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
@@ -35,9 +37,11 @@ type failoverUpstream struct {
 	// status controls the response code (200 = success). 0 = kill connection.
 	status atomic.Int64
 	// lastModel records the "model" field of the last request body.
-	lastModel  atomic.Value
-	lastAuth   atomic.Value
-	statusBody string
+	lastModel   atomic.Value
+	lastAuth    atomic.Value
+	lastBody    atomic.Value // full raw request body
+	lastHeaders atomic.Value // http.Header of the last request
+	statusBody  string
 }
 
 func newFailoverUpstream(t *testing.T, status int) *failoverUpstream {
@@ -46,10 +50,13 @@ func newFailoverUpstream(t *testing.T, status int) *failoverUpstream {
 	u.status.Store(int64(status))
 	u.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u.calls.Add(1)
+		raw, _ := io.ReadAll(r.Body)
+		u.lastBody.Store(string(raw))
+		u.lastHeaders.Store(r.Header.Clone())
 		var body struct {
 			Model string `json:"model"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.Unmarshal(raw, &body)
 		u.lastModel.Store(body.Model)
 		u.lastAuth.Store(r.Header.Get("Authorization"))
 		st := int(u.status.Load())
@@ -217,6 +224,9 @@ func TestGatewayFailover_Upstream5xx_FailsOverToSecondary(t *testing.T) {
 	assert.Equal(t, "allowed", final.Failover.SovereigntyCheck)
 	assert.Equal(t, []string{att.ID}, final.Failover.FailedAttemptIDs)
 	assert.Equal(t, "backup", final.RoutingDecision.SelectedProvider, "evidence must record the provider actually used")
+	assert.NotEmpty(t, final.Failover.FailoverGroupID)
+	assert.Equal(t, att.Failover.FailoverGroupID, final.Failover.FailoverGroupID,
+		"attempt and terminal record must share one failover group")
 	assert.True(t, store.VerifyRecord(final))
 
 	finding, err := store.VerifyFailoverChain(context.Background(), correlationID)
@@ -262,7 +272,7 @@ func TestGatewayFailover_EUStrict_USSecondary_FailsClosed(t *testing.T) {
 	require.NotNil(t, final.Failover)
 	assert.Equal(t, evidence.FailoverRoleFailClosed, final.Failover.Role)
 	assert.Equal(t, "failed", final.Status)
-	assert.Equal(t, evidence.FailureReasonNoSovereignFallback, final.FailureReason)
+	assert.Equal(t, evidence.FailureReasonNoValidFallbackCandidate, final.FailureReason)
 	require.Len(t, final.Failover.SkippedCandidates, 1)
 	assert.Equal(t, "backup", final.Failover.SkippedCandidates[0].Provider)
 	assert.Equal(t, "sovereignty", final.Failover.SkippedCandidates[0].Filter)
@@ -487,6 +497,165 @@ func TestGatewayFailover_CallerModelPolicy_SkipsCandidate(t *testing.T) {
 	assert.Equal(t, "gateway_policy", final.Failover.SkippedCandidates[0].Filter)
 }
 
+// An Anthropic-compatible ALIAS must get Anthropic governance end to end:
+// extraction, PII redaction, auth conventions, and error shape must follow
+// api_family, never the provider map key. Anything less lets an alias bypass
+// PII scanning by being parsed as OpenAI.
+func TestGatewayAlias_AnthropicFamilyGovernance(t *testing.T) {
+	upstream := newFailoverUpstream(t, http.StatusOK)
+	dir := t.TempDir()
+	cfg := &GatewayConfig{
+		Enabled:      true,
+		ListenPrefix: "/v1/proxy",
+		Mode:         ModeEnforce,
+		Providers: map[string]ProviderConfig{
+			"anthropic-eu": {Enabled: true, BaseURL: upstream.server.URL, SecretName: "anthropic-eu-key", Region: "EU", APIFamily: "anthropic"},
+		},
+		Callers: []CallerConfig{{
+			Name: "alias-bot", TenantKey: failoverTestTenantKey, TenantID: "test-tenant",
+			PolicyOverrides: &CallerPolicyOverrides{PIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		}},
+		ServerDefaults: ServerDefaults{DefaultPIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+	}
+	require.NoError(t, cfg.Validate())
+	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evStore.Close() })
+	secStore, err := secrets.NewSecretStore(filepath.Join(dir, "s.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secStore.Close() })
+	require.NoError(t, secStore.Set(context.Background(), "anthropic-eu-key", []byte("sk-ant-alias-key-123456"),
+		secrets.ACL{Tenants: []string{"test-tenant"}, Agents: []string{"*"}}))
+	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	require.NoError(t, err)
+
+	anthropicBody := `{"model":"claude-sonnet-4-20250514","max_tokens":100,"messages":[{"role":"user","content":"Contact jan.kowalski@example.com about the invoice"}]}`
+	r := chi.NewRouter()
+	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"http://test/v1/proxy/anthropic-eu/v1/messages", bytes.NewReader([]byte(anthropicBody)))
+	req.Header.Set("Authorization", "Bearer "+failoverTestTenantKey)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	// Extraction followed the Anthropic wire format: the model was found.
+	assert.Equal(t, "claude-sonnet-4-20250514", upstream.lastModel.Load())
+
+	// PII redaction followed the Anthropic wire format: the email never
+	// reached the upstream.
+	sentBody, _ := upstream.lastBody.Load().(string)
+	assert.NotContains(t, sentBody, "jan.kowalski@example.com",
+		"alias request must be redacted via the Anthropic extractor, not the OpenAI default")
+
+	// Auth followed the Anthropic conventions for the alias.
+	hdrs, _ := upstream.lastHeaders.Load().(http.Header)
+	require.NotNil(t, hdrs)
+	assert.Equal(t, "sk-ant-alias-key-123456", hdrs.Get("x-api-key"))
+	assert.NotEmpty(t, hdrs.Get("anthropic-version"))
+	assert.Empty(t, hdrs.Get("Authorization"))
+
+	// Evidence recorded the extracted model (proves extraction worked).
+	correlationID := correlationIDFromResponse(t, w)
+	records, err := evStore.ListByCorrelationID(context.Background(), correlationID)
+	require.NoError(t, err)
+	require.NotEmpty(t, records)
+	assert.Equal(t, "claude-sonnet-4-20250514", records[len(records)-1].Execution.ModelUsed)
+}
+
+// Shadow mode must never change runtime behavior: a candidate the gateway
+// policy would deny is still dispatched in shadow mode, with the would-be
+// denial recorded as a shadow violation on the final evidence record.
+func TestGatewayFailover_ShadowMode_CandidatePolicyDoesNotBlock(t *testing.T) {
+	primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
+	backup := newFailoverUpstream(t, http.StatusOK)
+	gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "gpt-4o")
+	gw.config.Mode = ModeShadow
+	// Caller model policy denies everything except the primary's model —
+	// in enforce mode the gpt-4o fallback rewrite would be skipped.
+	gw.config.Callers[0].PolicyOverrides.AllowedModels = []string{"gpt-4o-mini"}
+	policyEngine, err := policy.NewGatewayEngine(context.Background())
+	require.NoError(t, err)
+	gw.policy = policyEngine
+
+	w := makeFailoverRequest(gw, failoverTestBody)
+
+	assert.Equal(t, http.StatusOK, w.Code, "shadow mode must not fail closed on a policy-denied candidate")
+	assert.Equal(t, int64(1), backup.calls.Load(), "candidate must be dispatched in shadow mode")
+
+	correlationID := correlationIDFromResponse(t, w)
+	_, final := failoverRecords(t, store, correlationID)
+	require.NotNil(t, final)
+	require.NotNil(t, final.Failover)
+	assert.Equal(t, evidence.FailoverRoleFallbackDecision, final.Failover.Role)
+	found := false
+	for _, sv := range final.ShadowViolations {
+		if sv.Type == "policy_deny" && strings.Contains(sv.Detail, "failover candidate") {
+			found = true
+		}
+	}
+	assert.True(t, found, "the would-be candidate denial must be recorded as a shadow violation: %+v", final.ShadowViolations)
+}
+
+// The primary request and fallback candidates must be evaluated against the
+// exact same policy input surface — guard against the two constructions
+// drifting apart.
+func TestPolicyInputParity_PrimaryVsCandidate(t *testing.T) {
+	primary := newFailoverUpstream(t, http.StatusOK)
+	backup := newFailoverUpstream(t, http.StatusOK)
+	gw, _ := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
+	caller := &gw.config.Callers[0]
+
+	primaryInput := gw.buildPolicyInputForRequest(context.Background(), caller, "openai", "gpt-4o-mini", 1, 0.01, 1, 2, "")
+	candidateInput := gw.buildPolicyInputForRequest(context.Background(), caller, "backup", "gpt-4o", 1, 0.02, 1, 2, "")
+
+	primaryKeys := make([]string, 0, len(primaryInput))
+	for k := range primaryInput {
+		primaryKeys = append(primaryKeys, k)
+	}
+	candidateKeys := make([]string, 0, len(candidateInput))
+	for k := range candidateInput {
+		candidateKeys = append(candidateKeys, k)
+	}
+	assert.ElementsMatch(t, primaryKeys, candidateKeys,
+		"primary and candidate policy inputs must expose the same fields")
+	assert.Equal(t, "gpt-4o", candidateInput["model"])
+	assert.Equal(t, "backup", candidateInput["provider"])
+	assert.Equal(t, 0.02, candidateInput["estimated_cost"], "candidate cost must be recomputed for the candidate model")
+}
+
+// A failover model rewrite makes the fallback-selected model the truth: the
+// semantic cache must store the response under that model, not the one the
+// client asked for.
+func TestGatewayFailover_CacheStoresSelectedModel(t *testing.T) {
+	primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
+	backup := newFailoverUpstream(t, http.StatusOK)
+	gw, _ := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "gpt-4o-mini-eu")
+
+	dir := t.TempDir()
+	cacheStore, err := cache.NewStore(filepath.Join(dir, "c.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cacheStore.Close() })
+	embedder := cache.NewBM25()
+	cachePolicy, err := cache.NewEvaluator(context.Background())
+	require.NoError(t, err)
+	gw.SetCache(cacheStore, embedder, nil, cachePolicy, true, 3600, nil, 0.9, 100)
+
+	w := makeFailoverRequest(gw, failoverTestBody)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	queryBlob, err := embedder.Embed("Summarize our public roadmap")
+	require.NoError(t, err)
+	hit, err := cacheStore.Lookup(context.Background(), "test-tenant", queryBlob, 0.9, 100, embedder.SimilarityFunc())
+	require.NoError(t, err)
+	require.NotNil(t, hit, "response must have been cached")
+	assert.Equal(t, "gpt-4o-mini-eu", hit.Entry.Model,
+		"cache entry must carry the fallback-selected model, not the requested one")
+}
+
 // api_family lets aliased Anthropic-compatible endpoints join chains and get
 // Anthropic auth conventions (x-api-key + anthropic-version).
 func TestGatewayFailover_APIFamilyAliases(t *testing.T) {
@@ -615,6 +784,13 @@ func TestGatewayConfig_ValidateFallbackChain(t *testing.T) {
 				c.Providers["openai"] = p
 			},
 			wantErr: "api_family must be openai or anthropic",
+		},
+		{
+			name: "client_bearer with anthropic api_family is rejected",
+			mutate: func(c *GatewayConfig) {
+				c.Providers["anthropic-eu"] = ProviderConfig{Enabled: true, BaseURL: "https://eu.anthropic.example.com", APIFamily: "anthropic", UpstreamAuthMode: "client_bearer"}
+			},
+			wantErr: "client_bearer is not supported for the anthropic API family",
 		},
 	}
 	for _, tt := range tests {

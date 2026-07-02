@@ -15,8 +15,8 @@ import (
 	"github.com/dativo-io/talon/internal/testutil"
 )
 
-// flakyProvider fails Generate with the given error until failCount calls
-// have happened, then succeeds.
+// flakyProvider fails Generate with the given error until failWith is
+// cleared, then succeeds.
 type flakyProvider struct {
 	name         string
 	jurisdiction string
@@ -59,6 +59,23 @@ func newFailoverTestRunner(t *testing.T, providers map[string]llm.Provider, rout
 	}, store
 }
 
+// runFailoverRecords splits a correlation's records into failed attempts and
+// per-engagement terminal records.
+func runFailoverRecords(t *testing.T, store *evidence.Store, correlationID string) (attempts, terminals []*evidence.Evidence) {
+	t.Helper()
+	records, err := store.ListByCorrelationID(context.Background(), correlationID)
+	require.NoError(t, err)
+	for _, ev := range records {
+		switch ev.InvocationType {
+		case "llm_failover_attempt":
+			attempts = append(attempts, ev)
+		case "llm_failover_decision":
+			terminals = append(terminals, ev)
+		}
+	}
+	return attempts, terminals
+}
+
 func TestRunFailover_TransientErrorFailsOverToChainCandidate(t *testing.T) {
 	primary := &flakyProvider{name: "openai", jurisdiction: "US", failWith: &llm.ProviderError{Code: "server_error", Provider: "openai", Message: "boom"}}
 	backup := &flakyProvider{name: "ollama", jurisdiction: "LOCAL"}
@@ -79,21 +96,28 @@ func TestRunFailover_TransientErrorFailsOverToChainCandidate(t *testing.T) {
 	assert.Equal(t, 1, primary.calls)
 	assert.Equal(t, 1, backup.calls)
 
-	require.NotNil(t, fo.decision)
-	assert.Equal(t, evidence.FailoverRoleFallbackDecision, fo.decision.Role)
-	assert.Equal(t, "ollama", fo.decision.Provider)
-	assert.Len(t, fo.decision.FailedAttemptIDs, 1)
-
-	records, err := store.ListByCorrelationID(context.Background(), "corr-fo-1")
-	require.NoError(t, err)
-	require.Len(t, records, 1, "one failed-attempt record")
-	att := records[0]
-	assert.Equal(t, "llm_failover_attempt", att.InvocationType)
+	attempts, terminals := runFailoverRecords(t, store, "corr-fo-1")
+	require.Len(t, attempts, 1, "one failed-attempt record")
+	att := attempts[0]
 	assert.Equal(t, evidence.FailoverRoleFailedAttempt, att.Failover.Role)
 	assert.Equal(t, "openai", att.Failover.Provider)
 	assert.Equal(t, "upstream_5xx", att.Failover.ErrorClass)
 	assert.Equal(t, evidence.FailureReasonProviderTransient, att.FailureReason)
+	assert.NotEmpty(t, att.Failover.FailoverGroupID)
 	assert.True(t, store.VerifyRecord(att))
+
+	require.Len(t, terminals, 1, "one terminal record per engagement")
+	dec := terminals[0]
+	assert.Equal(t, evidence.FailoverRoleFallbackDecision, dec.Failover.Role)
+	assert.Equal(t, "ollama", dec.Failover.Provider)
+	assert.Equal(t, att.Failover.FailoverGroupID, dec.Failover.FailoverGroupID, "attempt and terminal share a group")
+	assert.Equal(t, []string{att.ID}, dec.Failover.FailedAttemptIDs)
+	assert.True(t, store.VerifyRecord(dec))
+
+	finding, err := store.VerifyFailoverChain(context.Background(), "corr-fo-1")
+	require.NoError(t, err)
+	require.NotNil(t, finding)
+	assert.Equal(t, evidence.FailoverVerdictValidFallback, finding.Verdict, "details: %v", finding.Details)
 }
 
 func TestRunFailover_PermanentErrorDoesNotFailOver(t *testing.T) {
@@ -111,7 +135,6 @@ func TestRunFailover_PermanentErrorDoesNotFailOver(t *testing.T) {
 		primary, "gpt-4o", &llm.Request{Model: "gpt-4o"})
 	require.Error(t, err)
 	assert.Equal(t, 0, backup.calls, "permanent errors must not trigger failover")
-	assert.Nil(t, fo.decision)
 
 	records, err := store.ListByCorrelationID(context.Background(), "corr-fo-2")
 	require.NoError(t, err)
@@ -133,13 +156,16 @@ func TestRunFailover_AllCandidatesFail_FailsClosed(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, 1, backup.calls)
 
-	require.NotNil(t, fo.decision)
-	assert.Equal(t, evidence.FailoverRoleFailClosed, fo.decision.Role)
-	assert.Len(t, fo.decision.FailedAttemptIDs, 2)
+	attempts, terminals := runFailoverRecords(t, store, "corr-fo-3")
+	assert.Len(t, attempts, 2, "both failed attempts evidenced")
+	require.Len(t, terminals, 1)
+	assert.Equal(t, evidence.FailoverRoleFailClosed, terminals[0].Failover.Role)
+	assert.Equal(t, evidence.FailureReasonNoValidFallbackCandidate, terminals[0].FailureReason)
+	assert.Len(t, terminals[0].Failover.FailedAttemptIDs, 2)
 
-	records, err := store.ListByCorrelationID(context.Background(), "corr-fo-3")
+	finding, err := store.VerifyFailoverChain(context.Background(), "corr-fo-3")
 	require.NoError(t, err)
-	assert.Len(t, records, 2, "both failed attempts evidenced")
+	assert.Equal(t, evidence.FailoverVerdictValidFailClosed, finding.Verdict, "details: %v", finding.Details)
 }
 
 // Once failover is engaged, a permanently failing fallback candidate is
@@ -164,18 +190,15 @@ func TestRunFailover_ChainContinuesPastPermanentFallback(t *testing.T) {
 	assert.Equal(t, 1, badBackup.calls)
 	assert.Equal(t, 1, goodBackup.calls)
 
-	require.NotNil(t, fo.decision)
-	assert.Equal(t, evidence.FailoverRoleFallbackDecision, fo.decision.Role)
-	assert.Equal(t, "ollama", fo.decision.Provider)
-	assert.Len(t, fo.decision.FailedAttemptIDs, 2)
-
-	records, err := store.ListByCorrelationID(context.Background(), "corr-fo-5")
-	require.NoError(t, err)
-	require.Len(t, records, 2)
-	assert.Equal(t, evidence.FailureReasonProviderTransient, records[0].FailureReason)
-	assert.Equal(t, "auth_error", records[1].Failover.ErrorClass)
-	assert.Equal(t, evidence.FailureReasonProviderPermanent, records[1].FailureReason,
+	attempts, terminals := runFailoverRecords(t, store, "corr-fo-5")
+	require.Len(t, attempts, 2)
+	assert.Equal(t, evidence.FailureReasonProviderTransient, attempts[0].FailureReason)
+	assert.Equal(t, "auth_error", attempts[1].Failover.ErrorClass)
+	assert.Equal(t, evidence.FailureReasonProviderPermanent, attempts[1].FailureReason,
 		"failure_reason must not contradict the error class")
+	require.Len(t, terminals, 1)
+	assert.Equal(t, "ollama", terminals[0].Failover.Provider)
+	assert.Len(t, terminals[0].Failover.FailedAttemptIDs, 2)
 }
 
 func TestRunFailover_ComplianceModeExcludesSovereigntyRejectedCandidates(t *testing.T) {
@@ -193,21 +216,56 @@ func TestRunFailover_ComplianceModeExcludesSovereigntyRejectedCandidates(t *test
 	require.Error(t, err)
 	assert.Equal(t, 0, usBackup.calls, "sovereignty-rejected candidate must never be dispatched")
 
-	require.NotNil(t, fo.decision)
-	assert.Equal(t, evidence.FailoverRoleFailClosed, fo.decision.Role)
+	attempts, terminals := runFailoverRecords(t, store, "corr-fo-4")
+	require.Len(t, attempts, 1)
+	require.Len(t, terminals, 1)
+	assert.Equal(t, evidence.FailoverRoleFailClosed, terminals[0].Failover.Role)
+	assert.NotEmpty(t, terminals[0].Failover.SkippedCandidates)
 
-	records, err := store.ListByCorrelationID(context.Background(), "corr-fo-4")
+	finding, err := store.VerifyFailoverChain(context.Background(), "corr-fo-4")
 	require.NoError(t, err)
-	require.Len(t, records, 1)
-	finding := evidence.VerifyFailoverRecords("corr-fo-4", append(records, failClosedRunRecord("corr-fo-4", fo.decision)), nil)
 	require.NotNil(t, finding)
 	assert.Equal(t, evidence.FailoverVerdictValidFailClosed, finding.Verdict, "details: %v", finding.Details)
 }
 
-// failClosedRunRecord simulates the run's final evidence record carrying the
-// fail-closed decision (the real record is written by executeLLMPipeline).
-func failClosedRunRecord(correlationID string, fc *evidence.FailoverContext) *evidence.Evidence {
-	return &evidence.Evidence{ID: "req_final", CorrelationID: correlationID, Failover: fc}
+// An agentic run makes many LLM calls under one correlation ID: every call
+// gets its own failover engagement with a fresh chain walk and its own group,
+// and each group verifies independently.
+func TestRunFailover_MultipleEngagementsPerRun_GetSeparateGroups(t *testing.T) {
+	primary := &flakyProvider{name: "openai", jurisdiction: "US", failWith: &llm.ProviderError{Code: "server_error", Provider: "openai"}}
+	backup := &flakyProvider{name: "ollama", jurisdiction: "LOCAL"}
+	routing := &policy.ModelRoutingConfig{
+		Tier1: &policy.TierConfig{Primary: "gpt-4o", FallbackChain: []string{"llama3:70b"}},
+	}
+	r, store := newFailoverTestRunner(t, map[string]llm.Provider{"openai": primary, "ollama": backup}, routing)
+
+	req := &RunRequest{TenantID: "t1", AgentName: "a1", InvocationType: "manual"}
+	fo := r.newRunFailover(context.Background(), req, "corr-fo-6", 1, nil, "", nil)
+
+	// Call 1: primary fails, fallback succeeds.
+	_, p1, m1, err := fo.generate(context.Background(), primary, "gpt-4o", &llm.Request{Model: "gpt-4o"})
+	require.NoError(t, err)
+
+	// Call 2 (same run, later loop iteration): the now-current provider
+	// fails too — the engagement must walk a FRESH chain copy, not the
+	// consumed remainder of call 1.
+	backup.failWith = &llm.ProviderError{Code: "server_error", Provider: "ollama"}
+	_, _, _, err = fo.generate(context.Background(), p1, m1, &llm.Request{Model: m1})
+	require.Error(t, err, "no other candidate remains for call 2")
+
+	attempts, terminals := runFailoverRecords(t, store, "corr-fo-6")
+	require.Len(t, terminals, 2, "each engagement gets its own terminal record")
+	assert.Equal(t, evidence.FailoverRoleFallbackDecision, terminals[0].Failover.Role)
+	assert.Equal(t, evidence.FailoverRoleFailClosed, terminals[1].Failover.Role,
+		"call 2's outcome must not inherit call 1's successful decision")
+	assert.NotEqual(t, terminals[0].Failover.FailoverGroupID, terminals[1].Failover.FailoverGroupID,
+		"engagements must not share a failover group")
+	require.Len(t, attempts, 2)
+
+	finding, err := store.VerifyFailoverChain(context.Background(), "corr-fo-6")
+	require.NoError(t, err)
+	require.NotNil(t, finding)
+	assert.True(t, finding.OK(), "both groups must verify independently: %v", finding.Details)
 }
 
 // euOnlyRoutingEvaluator rejects non-EU/LOCAL jurisdictions (eu_strict stub).

@@ -54,7 +54,7 @@ func (g *Gateway) denySovereigntyExcluded(
 
 	durationMS := time.Since(start).Milliseconds()
 	msg := "provider blocked by sovereignty.mode=eu_strict (non-EU/LOCAL region)"
-	WriteProviderError(w, route.Provider, http.StatusForbidden, msg)
+	WriteProviderError(w, g.config.providerAPIFamily(route.Provider), http.StatusForbidden, msg)
 	RecordSovereigntyProviderDenied(ctx, route.Provider)
 	persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text,
 		classification, nil, 0, durationMS, "", false, []string{sovereigntyDenyReason}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
