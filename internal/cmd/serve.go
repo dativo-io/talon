@@ -33,6 +33,7 @@ import (
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/policy"
 	talonprompt "github.com/dativo-io/talon/internal/prompt"
+	"github.com/dativo-io/talon/internal/scanner"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/server"
 	talonsession "github.com/dativo-io/talon/internal/session"
@@ -115,9 +116,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("policy engine: %w", err)
 	}
 
-	cls, err := policy.NewPIIScannerForPolicyWithEnrichment(ctx, pol, "", policyEngine)
+	cls, err := scanner.Build(ctx, cfg, pol, policyEngine)
 	if err != nil {
-		return fmt.Errorf("initializing policy-aware PII scanner: %w", err)
+		return fmt.Errorf("initializing PII scanner: %w", err)
 	}
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
@@ -551,6 +552,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		tenantKeys,
 		opts...,
 	)
+	srv.SetClassifier(cls)
 
 	addr, err := resolveServeAddress(serveHost, servePort, serveProxyQuickstart, serveUnsafeListen)
 	if err != nil {

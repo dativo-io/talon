@@ -17,7 +17,6 @@ import (
 	"github.com/dativo-io/talon/internal/approver"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/cache"
-	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/llm"
@@ -25,6 +24,7 @@ import (
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/policy"
 	talonprompt "github.com/dativo-io/talon/internal/prompt"
+	"github.com/dativo-io/talon/internal/scanner"
 	"github.com/dativo-io/talon/internal/secrets"
 	talonsession "github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/sovereignty"
@@ -326,7 +326,10 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 	policyPath = safePath
 	baseDir = filepath.Dir(safePath)
 
-	cls := classifier.MustNewScanner()
+	cls, err := scanner.Build(ctx, cfg, nil, nil)
+	if err != nil {
+		return fmt.Errorf("initializing PII scanner: %w", err)
+	}
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
 
