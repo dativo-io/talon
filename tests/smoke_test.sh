@@ -453,7 +453,7 @@ for _section_file in \
   23_dashboard_metrics.sh 24_plan_dispatch.sh 25_sessions.sh \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
   29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh \
-  33_auditor_documents.sh 34_compliance_dashboard.sh; do
+  33_auditor_documents.sh 34_compliance_dashboard.sh 35_failover.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
