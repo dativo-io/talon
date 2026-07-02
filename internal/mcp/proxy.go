@@ -32,7 +32,7 @@ type ProxyHandler struct {
 	config        *policy.ProxyPolicyConfig
 	proxyEngine   *policy.ProxyEngine
 	evidenceStore *evidence.Store
-	classifier    *classifier.Scanner
+	classifier    classifier.Facade
 	httpClient    *http.Client
 	runtime       ProxyRuntimeConfig
 }
@@ -42,7 +42,7 @@ func NewProxyHandler(
 	cfg *policy.ProxyPolicyConfig,
 	proxyEngine *policy.ProxyEngine,
 	evidenceStore *evidence.Store,
-	cls *classifier.Scanner,
+	cls classifier.Facade,
 ) *ProxyHandler {
 	timeout := 30 * time.Second
 	return &ProxyHandler{
@@ -165,11 +165,17 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: strings.Join(decision.Reasons, "; ")}}
 	}
 
-	// PII scan on arguments
+	// PII scan on arguments. A scanner failure blocks the call fail-closed:
+	// arguments Talon cannot classify must not reach the upstream tool.
 	var flow proxyFlowState
 	if h.classifier != nil {
 		argStr := string(params.Arguments)
-		result := h.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
+		result, scanErr := h.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
+		if scanErr != nil {
+			flow.requestBlocked = true
+			h.recordEvidence(ctx, tenantID, "proxy_pii_scan_error", toolName, nil, "scanner_unavailable", &flow)
+			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Request blocked: PII scanner unavailable (fail-closed)"}}
+		}
 		if result != nil && len(result.Entities) > 0 {
 			flow.requestEntities = classifier.MergeEntitySpans(argStr, result.Entities)
 			flow.requestEntities = applyFlowFieldPath(flow.requestEntities, "arguments")
@@ -188,7 +194,12 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 				h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "pii_detected_in_request", &flow)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII detected in request"}}
 			}
-			redactedArgs := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
+			redactedArgs, redactErr := h.classifier.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
+			if redactErr != nil {
+				flow.requestBlocked = true
+				h.recordEvidence(ctx, tenantID, "proxy_pii_scan_error", toolName, nil, "scanner_unavailable", &flow)
+				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Request blocked: PII redaction failed (fail-closed)"}}
+			}
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedArgs); verifyErr != nil {
 				flow.requestBlocked = true
 				h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "request_residual_pii_after_redaction", &flow)
@@ -235,11 +246,17 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 	}
 	out.ID = req.ID
 
-	// Response PII scanning: scan tool result before returning to caller
+	// Response PII scanning: scan tool result before returning to caller.
+	// A scanner failure blocks the result fail-closed.
 	if h.classifier != nil && out.Result != nil {
 		resultBytes, _ := json.Marshal(out.Result)
 		resultStr := string(resultBytes)
-		cls := h.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
+		cls, scanErr := h.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
+		if scanErr != nil {
+			flow.responseBlocked = true
+			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_scanner_unavailable", &flow)
+			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Tool result blocked: PII scanner unavailable (fail-closed)"}}
+		}
 		if cls != nil && cls.HasPII {
 			piiTypes := make([]string, 0, len(cls.Entities))
 			for _, e := range cls.Entities {
@@ -254,7 +271,12 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			flow.responseEntities = applyFlowFieldPath(flow.responseEntities, "result")
 			flow.responseTier = cls.Tier
 			flow.responseRedacted = true
-			redacted := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
+			redacted, redactErr := h.classifier.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
+			if redactErr != nil {
+				flow.responseBlocked = true
+				h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_scanner_unavailable", &flow)
+				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Tool result blocked: PII redaction failed (fail-closed)"}}
+			}
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redacted); verifyErr != nil {
 				flow.responseBlocked = true
 				h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_pii_blocked_residual", &flow)
