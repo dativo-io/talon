@@ -22,8 +22,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
@@ -120,6 +123,125 @@ type ComplianceConfig struct {
 	Controller *compliance.ControllerDeclarations `mapstructure:"controller"`
 }
 
+// Scanner engine types for the optional scanner block. When the block is
+// absent (or type is regex) the built-in regex scanner is used — zero-config
+// default, no runtime dependency.
+const (
+	ScannerTypeRegex    = "regex"
+	ScannerTypePresidio = "presidio" // Presidio analyzer REST wire format, rune offsets by default
+	ScannerTypeHTTP     = "http"     // Presidio wire format, byte offsets by default (custom engines)
+	ScannerTypeLLM      = "llm"      // OpenAI-compatible chat endpoint prompted for NER (e.g. Ollama)
+)
+
+// Scanner offset encodings an external engine may declare. Empty means
+// "use the type default" (presidio → rune, http → byte).
+const (
+	ScannerOffsetByte = "byte"
+	ScannerOffsetRune = "rune"
+)
+
+// Scanner defaults.
+const (
+	// DefaultScannerTimeout bounds a single external scan call. Failures are
+	// fail-closed in enforce mode, so this is also the worst-case added latency
+	// before a request is blocked.
+	DefaultScannerTimeout = 10 * time.Second
+	// DefaultScannerMinScore mirrors classifier.DefaultMinScore (the
+	// Presidio-compatible confidence threshold). Kept as a literal here so the
+	// config package does not import the classifier.
+	DefaultScannerMinScore = 0.5
+	// DefaultScannerLanguage is forwarded in Presidio /analyze requests.
+	DefaultScannerLanguage = "en"
+)
+
+// ScannerLLMConfig is the llm sub-block of the scanner config, used only when
+// scanner.type is llm.
+type ScannerLLMConfig struct {
+	Model      string  `mapstructure:"model" yaml:"model"`           // required, e.g. "llama3.1:8b"
+	Confidence float64 `mapstructure:"confidence" yaml:"confidence"` // score assigned to relocated entities; default 0.8
+}
+
+// DefaultScannerLLMConfidence is the confidence assigned to LLM-detected
+// entities (LLMs emit no scores; relocation makes offsets exact).
+const DefaultScannerLLMConfidence = 0.8
+
+// EffectiveConfidence returns the configured entity confidence or the default.
+func (l *ScannerLLMConfig) EffectiveConfidence() float64 {
+	if l == nil || l.Confidence == 0 {
+		return DefaultScannerLLMConfidence
+	}
+	return l.Confidence
+}
+
+// ScannerConfig is the optional scanner block from talon.config.yaml. It
+// selects ONE globally active PII scanner engine per Talon instance. External
+// engines replace the built-in regex scanner entirely (no result merging) and
+// are fail-closed: an adapter timeout/error blocks egress in enforce mode.
+type ScannerConfig struct {
+	Type           string            `mapstructure:"type" yaml:"type"`
+	Endpoint       string            `mapstructure:"endpoint" yaml:"endpoint"` // http(s)://host:port or unix:///path.sock
+	Timeout        string            `mapstructure:"timeout" yaml:"timeout"`   // Go duration, default 10s
+	MinScore       float64           `mapstructure:"min_score" yaml:"min_score"`
+	Language       string            `mapstructure:"language" yaml:"language"`
+	OffsetEncoding string            `mapstructure:"offset_encoding" yaml:"offset_encoding"` // ""|byte|rune
+	Name           string            `mapstructure:"name" yaml:"name"`                       // detector identity in evidence
+	EngineVersion  string            `mapstructure:"engine_version" yaml:"engine_version"`   // operator-declared, recorded in evidence
+	Entities       []string          `mapstructure:"entities" yaml:"entities"`               // optional, forwarded to the engine
+	HealthCheck    *bool             `mapstructure:"health_check" yaml:"health_check"`       // default true
+	LLM            *ScannerLLMConfig `mapstructure:"llm" yaml:"llm"`
+}
+
+// EngineType returns the normalized engine type (regex when the block is
+// absent or type is empty).
+func (s *ScannerConfig) EngineType() string {
+	if s == nil || s.Type == "" {
+		return ScannerTypeRegex
+	}
+	return s.Type
+}
+
+// IsExternal reports whether an out-of-process scanner engine is configured.
+func (s *ScannerConfig) IsExternal() bool {
+	return s.EngineType() != ScannerTypeRegex
+}
+
+// ParsedTimeout returns the scan timeout (default 10s). validate() guarantees
+// the configured value parses, so errors here fall back to the default.
+func (s *ScannerConfig) ParsedTimeout() time.Duration {
+	if s == nil || s.Timeout == "" {
+		return DefaultScannerTimeout
+	}
+	d, err := time.ParseDuration(s.Timeout)
+	if err != nil || d <= 0 {
+		return DefaultScannerTimeout
+	}
+	return d
+}
+
+// HealthCheckEnabled reports whether the eager startup probe runs (default true).
+func (s *ScannerConfig) HealthCheckEnabled() bool {
+	if s == nil || s.HealthCheck == nil {
+		return true
+	}
+	return *s.HealthCheck
+}
+
+// EffectiveMinScore returns the configured score threshold or the default.
+func (s *ScannerConfig) EffectiveMinScore() float64 {
+	if s == nil || s.MinScore == 0 {
+		return DefaultScannerMinScore
+	}
+	return s.MinScore
+}
+
+// EffectiveLanguage returns the configured language or the default.
+func (s *ScannerConfig) EffectiveLanguage() string {
+	if s == nil || s.Language == "" {
+		return DefaultScannerLanguage
+	}
+	return s.Language
+}
+
 // CacheConfig is the optional cache block from talon.config.yaml (governed semantic cache).
 // When nil or Enabled false, no cache lookup or storage occurs.
 type CacheConfig struct {
@@ -144,6 +266,7 @@ type Config struct {
 	Cache           *CacheConfig       // Optional: governed semantic cache (off by default)
 	Compliance      *ComplianceConfig  // Optional: declared controller identity for auditor exports
 	Sovereignty     *SovereigntyConfig // Optional: air-gap / deployment sovereignty mode
+	Scanner         *ScannerConfig     // Optional: external PII scanner engine (built-in regex by default)
 
 	usingDefaultSecretsKey bool
 	usingDefaultSigningKey bool
@@ -232,6 +355,15 @@ func Load() (*Config, error) {
 		Cache:           loadCacheConfig(),
 		Compliance:      loadComplianceConfig(),
 		Sovereignty:     loadSovereigntyConfig(),
+	}
+
+	scanner, err := loadScannerConfig()
+	if err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+	cfg.Scanner = scanner
+	if cfg.Scanner.EngineType() == ScannerTypeLLM && cfg.Scanner.Endpoint == "" {
+		cfg.Scanner.Endpoint = strings.TrimRight(cfg.OllamaBaseURL, "/") + "/v1"
 	}
 
 	if cfg.SecretsKey == "" {
@@ -493,6 +625,21 @@ func (c *Config) ControllerDeclarations() compliance.ControllerDeclarations {
 	return *c.Compliance.Controller
 }
 
+// loadScannerConfig reads the optional scanner block from Viper. Unlike the
+// other optional blocks, a malformed scanner block is a hard error: silently
+// falling back to the built-in regex engine when the operator configured an
+// external scanner would be fail-open.
+func loadScannerConfig() (*ScannerConfig, error) {
+	if !viper.IsSet("scanner") {
+		return nil, nil
+	}
+	var sc ScannerConfig
+	if err := viper.UnmarshalKey("scanner", &sc); err != nil {
+		return nil, fmt.Errorf("scanner block is malformed: %w", err)
+	}
+	return &sc, nil
+}
+
 // loadCacheConfig reads the optional cache block from Viper. Returns nil when absent.
 // When present, Enabled defaults to false so cache is off unless explicitly enabled.
 func loadCacheConfig() *CacheConfig {
@@ -547,6 +694,67 @@ func (c *Config) validate() error {
 	}
 	if c.MaxAttachmentMB <= 0 {
 		return fmt.Errorf("max_attachment_mb must be positive")
+	}
+	if err := c.Scanner.validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validate checks the scanner block. A nil receiver (block absent) is valid:
+// the built-in regex engine is the zero-config default.
+func (s *ScannerConfig) validate() error {
+	if s == nil {
+		return nil
+	}
+	switch s.EngineType() {
+	case ScannerTypeRegex, ScannerTypePresidio, ScannerTypeHTTP, ScannerTypeLLM:
+	default:
+		return fmt.Errorf("scanner.type %q is invalid (use %s, %s, %s, or %s)",
+			s.Type, ScannerTypeRegex, ScannerTypePresidio, ScannerTypeHTTP, ScannerTypeLLM)
+	}
+	if s.Timeout != "" {
+		d, err := time.ParseDuration(s.Timeout)
+		if err != nil {
+			return fmt.Errorf("scanner.timeout %q is not a valid duration: %w", s.Timeout, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("scanner.timeout must be positive (got %q)", s.Timeout)
+		}
+	}
+	if s.MinScore < 0 || s.MinScore > 1 {
+		return fmt.Errorf("scanner.min_score must be between 0 and 1 (got %v)", s.MinScore)
+	}
+	switch s.OffsetEncoding {
+	case "", ScannerOffsetByte, ScannerOffsetRune:
+	default:
+		return fmt.Errorf("scanner.offset_encoding %q is invalid (use %s or %s)",
+			s.OffsetEncoding, ScannerOffsetByte, ScannerOffsetRune)
+	}
+	if !s.IsExternal() {
+		return nil
+	}
+	if s.Endpoint == "" {
+		return fmt.Errorf("scanner.endpoint is required for scanner.type %s", s.EngineType())
+	}
+	u, err := url.Parse(s.Endpoint)
+	if err != nil {
+		return fmt.Errorf("scanner.endpoint %q is not a valid URL: %w", s.Endpoint, err)
+	}
+	switch u.Scheme {
+	case "http", "https":
+		if u.Host == "" {
+			return fmt.Errorf("scanner.endpoint %q has no host", s.Endpoint)
+		}
+	case "unix":
+		if u.Path == "" {
+			return fmt.Errorf("scanner.endpoint %q has no socket path (use unix:///path/to.sock)", s.Endpoint)
+		}
+	default:
+		return fmt.Errorf("scanner.endpoint scheme %q is unsupported (use http, https, or unix)", u.Scheme)
+	}
+	if s.EngineType() == ScannerTypeLLM && (s.LLM == nil || s.LLM.Model == "") {
+		return fmt.Errorf("scanner.llm.model is required for scanner.type llm")
 	}
 	return nil
 }
