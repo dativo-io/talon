@@ -185,5 +185,15 @@ itself.
   placeholders are used.
 - Redact-and-verify paths make two engine calls per egress (scan + re-scan of
   the redacted text). Budget latency accordingly for slow engines.
-- `scanner.type: llm` ships separately (built-in NER prompting for
-  OpenAI-compatible endpoints such as Ollama).
+
+## The llm engine (local models)
+
+`scanner.type: llm` prompts any OpenAI-compatible endpoint (Ollama,
+llama.cpp server, vLLM) for NER with a fixed, versioned prompt
+(`llm-ner/v1`, recorded in evidence). The model returns entity type +
+verbatim value only; Talon relocates every occurrence to byte offsets
+itself, drops values not found verbatim (hallucination guard), and ignores
+placeholder-shaped values so verify re-scans of redacted text don't
+false-block. The entity set is derived from the effective policy. See the
+[local scanner engines guide](../guides/local-scanner-engines.md) and
+[`examples/scanners/ollama/`](../../examples/scanners/ollama/).
