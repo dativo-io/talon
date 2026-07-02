@@ -31,13 +31,13 @@ var ErrMemoryConflict = errors.New("memory entry conflicts with existing entries
 // evalOPAMemoryWrite (when using g.opa) are safe under concurrent Run() calls.
 type Governance struct {
 	store      *Store
-	classifier *classifier.Scanner
+	classifier classifier.Facade
 	opa        PolicyEvaluator // optional; nil = skip OPA check; guarded by opaMu
 	opaMu      sync.RWMutex
 }
 
 // NewGovernance creates a governance checker backed by the given store and PII scanner.
-func NewGovernance(store *Store, cls *classifier.Scanner) *Governance {
+func NewGovernance(store *Store, cls classifier.Facade) *Governance {
 	return &Governance{store: store, classifier: cls}
 }
 
@@ -117,10 +117,15 @@ func (g *Governance) ValidateWrite(ctx context.Context, entry *Entry, pol *polic
 		return deny("category", err)
 	}
 
-	// Check 2: PII scan (Title and Content — both must be free of PII)
+	// Check 2: PII scan (Title and Content — both must be free of PII).
+	// A scanner failure denies the write fail-closed: never persist content
+	// that could not be verified.
 	if g.classifier != nil {
 		combined := entry.Title + "\n" + entry.Content
-		result := g.classifier.Scan(ctx, combined)
+		result, scanErr := g.classifier.Analyze(ctx, combined)
+		if scanErr != nil {
+			return deny("pii", fmt.Errorf("memory write PII scan failed (fail-closed): %w", scanErr))
+		}
 		if result.HasPII {
 			return deny("pii", fmt.Errorf("memory write contains PII: %w", ErrPIIDetected))
 		}
