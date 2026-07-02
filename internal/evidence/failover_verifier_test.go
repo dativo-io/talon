@@ -29,6 +29,7 @@ func decisionRecord(id, provider, region, check string, attemptIDs []string) *Ev
 			Role:             FailoverRoleFallbackDecision,
 			Provider:         provider,
 			Region:           region,
+			ChainPosition:    1,
 			SovereigntyMode:  "eu_strict",
 			SovereigntyCheck: check,
 			FailedAttemptIDs: attemptIDs,
@@ -129,6 +130,47 @@ func TestVerifyFailoverRecords(t *testing.T) {
 		assert.Equal(t, FailoverVerdictInsufficient, f.Verdict)
 	})
 
+	t.Run("multiple terminal records for one correlation id = invalid", func(t *testing.T) {
+		records := []*Evidence{
+			attemptRecord("att-1", "openai-eu", "EU"),
+			decisionRecord("dec-1", "mistral", "EU", "allowed", []string{"att-1"}),
+			failClosedRecord("fc-1", []string{"att-1"}, nil),
+		}
+		f := VerifyFailoverRecords("corr-1", records, nil)
+		require.NotNil(t, f)
+		assert.Equal(t, FailoverVerdictInvalid, f.Verdict)
+	})
+
+	t.Run("fallback decision at chain position 0 = invalid", func(t *testing.T) {
+		dec := decisionRecord("dec-1", "mistral", "EU", "allowed", []string{"att-1"})
+		dec.Failover.ChainPosition = 0
+		records := []*Evidence{attemptRecord("att-1", "openai-eu", "EU"), dec}
+		f := VerifyFailoverRecords("corr-1", records, nil)
+		require.NotNil(t, f)
+		assert.Equal(t, FailoverVerdictInvalid, f.Verdict)
+	})
+
+	t.Run("fallback provider equal to failed attempt provider = invalid", func(t *testing.T) {
+		records := []*Evidence{
+			attemptRecord("att-1", "mistral", "EU"),
+			decisionRecord("dec-1", "mistral", "EU", "allowed", []string{"att-1"}),
+		}
+		f := VerifyFailoverRecords("corr-1", records, nil)
+		require.NotNil(t, f)
+		assert.Equal(t, FailoverVerdictInvalid, f.Verdict)
+	})
+
+	t.Run("attempt not referenced by the terminal record = insufficient", func(t *testing.T) {
+		records := []*Evidence{
+			attemptRecord("att-1", "openai-eu", "EU"),
+			attemptRecord("att-orphan", "mistral-old", "EU"),
+			decisionRecord("dec-1", "mistral", "EU", "allowed", []string{"att-1"}),
+		}
+		f := VerifyFailoverRecords("corr-1", records, nil)
+		require.NotNil(t, f)
+		assert.Equal(t, FailoverVerdictInsufficient, f.Verdict)
+	})
+
 	t.Run("invalid signature = invalid, outranks insufficient", func(t *testing.T) {
 		records := []*Evidence{
 			decisionRecord("dec-1", "mistral", "EU", "allowed", nil),
@@ -149,6 +191,7 @@ func TestVerifyFailoverRecords(t *testing.T) {
 					Role:             FailoverRoleFallbackDecision,
 					Provider:         "anthropic",
 					Region:           "US",
+					ChainPosition:    1,
 					SovereigntyMode:  "global",
 					SovereigntyCheck: "not_evaluated",
 					FailedAttemptIDs: []string{"att-1"},

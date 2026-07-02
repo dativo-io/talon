@@ -436,6 +436,11 @@
       "properties": {
         "primary": {"type": "string"},
         "fallback": {"type": "string"},
+        "fallback_chain": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Ordered error-driven fallback chain: on a transient provider failure (timeout/connection/429/5xx) the runner retries these models in order, subject to the same compliance/sovereignty routing checks as the primary. Supersedes the single `fallback` for error-driven failover."
+        },
         "location": {"type": "string"},
         "bedrock_only": {"type": "boolean"}
       }

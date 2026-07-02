@@ -19,10 +19,12 @@ import (
 
 // failoverWriter defers committing the response to the destination writer
 // until the upstream outcome is known. Headers and status are buffered; a
-// success status (<400) commits immediately so SSE streams pass through
-// unbuffered, while error responses stay buffered so the gateway can retry
-// the request against a fallback candidate and only flush the buffered
-// upstream error when no candidate remains. Once committed (first byte on a
+// success status (<400) commits on the FIRST BODY WRITE — not on the header
+// write — so an upstream that returns 200 headers and then dies before any
+// body byte is read can still fail over. SSE streams pass through unbuffered
+// from their first event; error responses stay fully buffered so the gateway
+// can retry against a fallback candidate and only flush the buffered upstream
+// error when no candidate remains. Once committed (first body byte of a
 // success response), failover is no longer possible for this request.
 type failoverWriter struct {
 	dst       http.ResponseWriter
@@ -48,12 +50,12 @@ func (f *failoverWriter) WriteHeader(code int) {
 		return
 	}
 	f.status = code
-	if code < 400 {
-		f.commit()
-	}
 }
 
 func (f *failoverWriter) Write(b []byte) (int, error) {
+	if !f.committed && f.status != 0 && f.status < 400 {
+		f.commit()
+	}
 	if f.committed {
 		return f.dst.Write(b)
 	}
@@ -144,6 +146,13 @@ func (o *failoverOutcome) failedAttemptIDs() []string {
 // returns its evidence ID ("" when persistence failed; the request continues
 // — evidence write failures are logged, never silently drop traffic).
 type recordAttemptFn func(ctx context.Context, rec failoverAttemptRecord) string
+
+// checkCandidateFn re-runs caller/provider authorization and gateway policy
+// for a fallback candidate (provider, model). Failover dispatch is a
+// Talon-initiated action: it must pass the same gates the caller's own
+// request passed for the primary (allowed_providers, caller model lists,
+// egress rules, budgets) or the chain becomes a policy bypass.
+type checkCandidateFn func(ctx context.Context, provider, model string) failover.FilterResult
 
 // classifyAttempt classifies a Forward outcome from its transport error
 // and/or buffered upstream status.
@@ -264,6 +273,7 @@ func (g *Gateway) forwardWithFailover(
 	clientModel string,
 	originalAuthorization string,
 	recordAttempt recordAttemptFn,
+	checkCandidate checkCandidateFn,
 ) (*failoverOutcome, error) {
 	out := &failoverOutcome{SelectedProvider: route.Provider, SelectedModel: clientModel}
 
@@ -271,6 +281,7 @@ func (g *Gateway) forwardWithFailover(
 	chain := prov.Fallback
 
 	fw := newFailoverWriter(dst)
+	primaryStart := time.Now()
 	err := Forward(fw, p)
 	class := classifyAttempt(err, fw.status)
 
@@ -290,7 +301,7 @@ func (g *Gateway) forwardWithFailover(
 		UpstreamStatus: fw.status,
 		ChainPosition:  0,
 		RuleID:         fmt.Sprintf("gateway.providers.%s", route.Provider),
-		DurationMS:     0,
+		DurationMS:     time.Since(primaryStart).Milliseconds(),
 	}
 	if err != nil {
 		primaryRec.ErrMsg = err.Error()
@@ -343,6 +354,16 @@ func (g *Gateway) forwardWithFailover(
 				Filter: "model_allowlist", Reason: fmt.Sprintf("model %q not allowed for provider %s", model, target.Provider),
 			})
 			continue
+		}
+		if checkCandidate != nil {
+			if res := checkCandidate(ctx, target.Provider, model); !res.Allowed {
+				out.Skipped = append(out.Skipped, evidence.SkippedCandidate{
+					Provider: target.Provider, Model: model, ChainPosition: i + 1,
+					Filter: res.Filter, Reason: res.Reason,
+				})
+				log.Warn().Str("provider", target.Provider).Str("filter", res.Filter).Str("reason", res.Reason).Msg("gateway_failover_candidate_skipped")
+				continue
+			}
 		}
 
 		headers, hdrErr := g.fallbackAuthHeaders(ctx, caller, target.Provider, tprov, originalAuthorization, p.Headers)

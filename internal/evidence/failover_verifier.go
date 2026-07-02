@@ -143,11 +143,35 @@ func VerifyFailoverRecords(correlationID string, records []*Evidence, verifySig 
 		}
 	}
 
-	// Rule 1+3: fallback decisions must link failed attempts and must not have
-	// dispatched to a sovereignty-rejected provider.
+	// Chain invariant: exactly one terminal record (fallback decision or
+	// fail-closed) per correlation ID. More than one means the chain's
+	// provenance is ambiguous (e.g. a caller reusing correlation IDs across
+	// requests) and the trail cannot be attributed.
+	if len(decisions)+len(failClosed) > 1 {
+		addDetail(FailoverVerdictInvalid,
+			fmt.Sprintf("%d terminal failover records share one correlation id (expected exactly one fallback decision or fail-closed record)", len(decisions)+len(failClosed)))
+	}
+
+	referenced := map[string]bool{}
+
+	// Rule 1+3: fallback decisions must link failed attempts, must sit at a
+	// fallback chain position, must name a provider distinct from every
+	// failed attempt, and must not have dispatched to a sovereignty-rejected
+	// provider.
 	for _, ev := range decisions {
 		fc := ev.Failover
 		checkAttemptRefs(ev)
+		if fc.ChainPosition <= 0 {
+			addDetail(FailoverVerdictInvalid,
+				fmt.Sprintf("record %s claims a fallback decision at chain position %d — the primary cannot be its own fallback", ev.ID, fc.ChainPosition))
+		}
+		for _, id := range fc.FailedAttemptIDs {
+			referenced[id] = true
+			if att, ok := attempts[id]; ok && att.Failover.Provider == fc.Provider {
+				addDetail(FailoverVerdictInvalid,
+					fmt.Sprintf("record %s selects provider %s which also appears as failed attempt %s", ev.ID, fc.Provider, id))
+			}
+		}
 		if strings.EqualFold(strings.TrimSpace(fc.SovereigntyMode), "eu_strict") {
 			region := strings.ToUpper(strings.TrimSpace(fc.Region))
 			if fc.SovereigntyCheck != "allowed" || (region != "EU" && region != "LOCAL") {
@@ -166,6 +190,7 @@ func VerifyFailoverRecords(correlationID string, records []*Evidence, verifySig 
 			continue
 		}
 		for _, id := range ev.Failover.FailedAttemptIDs {
+			referenced[id] = true
 			if _, ok := attempts[id]; !ok {
 				addDetail(FailoverVerdictInsufficient,
 					fmt.Sprintf("fail-closed record %s references failed attempt %s which is missing from the correlation trail", ev.ID, id))
@@ -174,10 +199,18 @@ func VerifyFailoverRecords(correlationID string, records []*Evidence, verifySig 
 	}
 
 	// Rule 4: failed attempts with no decision context are insufficient —
-	// the trail shows an error but not the governance outcome.
+	// the trail shows an error but not the governance outcome. The same
+	// applies to attempts a terminal record does not account for.
 	if len(decisions) == 0 && len(failClosed) == 0 {
 		addDetail(FailoverVerdictInsufficient,
 			"failed provider attempt(s) recorded without a fallback decision or fail-closed record")
+	} else {
+		for id := range attempts {
+			if !referenced[id] {
+				addDetail(FailoverVerdictInsufficient,
+					fmt.Sprintf("failed attempt %s is not referenced by any terminal failover record", id))
+			}
+		}
 	}
 
 	if worst != "" {

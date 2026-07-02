@@ -289,7 +289,24 @@
                 "type": "array",
                 "items": { "type": "string" }
               },
-              "tool_policy_action": { "$ref": "#/definitions/toolPolicyAction" }
+              "tool_policy_action": { "$ref": "#/definitions/toolPolicyAction" },
+              "api_family": {
+                "type": "string",
+                "enum": ["openai", "anthropic"],
+                "description": "Wire format of this provider for fallback-chain validation and upstream auth conventions. Defaults by name: 'anthropic' uses the Anthropic Messages API (x-api-key + anthropic-version); everything else is OpenAI-compatible. Set explicitly for aliased endpoints."
+              },
+              "fallback": {
+                "type": "array",
+                "description": "Ordered error-driven fallback chain: on a transient upstream failure (timeout/connection/429/5xx) the gateway retries these targets in order, subject to candidate filters (sovereignty under eu_strict, caller allowlists, gateway policy). All targets must share this provider's API family.",
+                "items": {
+                  "type": "object",
+                  "required": ["provider"],
+                  "properties": {
+                    "provider": { "type": "string", "description": "Name of an enabled gateway provider to fail over to." },
+                    "model": { "type": "string", "description": "Optional: rewrite the request body's model field for this target." }
+                  }
+                }
+              }
             }
           }
         },

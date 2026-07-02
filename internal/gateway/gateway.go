@@ -24,6 +24,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
+	"github.com/dativo-io/talon/internal/failover"
 	"github.com/dativo-io/talon/internal/llm"
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/otel"
@@ -776,13 +777,44 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return g.recordFailoverAttemptEvidence(aCtx, correlationID, caller, g.config.EffectiveSovereigntyMode, tier, rec, attemptFlow)
 	}
+	// Fallback candidates must pass the same gates the primary passed:
+	// the caller's provider allowlist and the full gateway policy (caller
+	// model lists, egress rules, budgets) with the candidate's provider,
+	// model, and destination region. Dispatching a fallback is a
+	// Talon-initiated action, so candidates are policy-gated even in shadow
+	// mode — failover must never become a policy bypass.
+	checkCandidate := func(cCtx context.Context, candProvider, candModel string) failover.FilterResult {
+		if len(caller.AllowedProviders) > 0 {
+			allowed := false
+			for _, p := range caller.AllowedProviders {
+				if p == candProvider {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return failover.FilterResult{Filter: "caller_allowlist", Reason: fmt.Sprintf("caller %s not allowed for provider %s", caller.Name, candProvider)}
+			}
+		}
+		if g.policy != nil {
+			candInput := buildGatewayPolicyInput(caller, g.config.ServerDefaults, candProvider, candModel, tier, estimatedCost, dailyCost, monthlyCost, g.providerRegion(candProvider))
+			allowed, reasons, policyErr := g.policy.EvaluateGateway(cCtx, candInput)
+			if policyErr != nil {
+				return failover.FilterResult{Filter: "gateway_policy", Reason: "policy evaluation error: " + policyErr.Error()}
+			}
+			if !allowed {
+				return failover.FilterResult{Filter: "gateway_policy", Reason: preferredDenyReason(reasons)}
+			}
+		}
+		return failover.FilterResult{Allowed: true}
+	}
 	var failoverOut *failoverOutcome
 
 	switch {
 	case needsResponseScan && !isStreaming:
 		// Non-streaming: capture response, scan, then write
 		capture := &responseCapture{ResponseWriter: w}
-		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
 		if forwardErr == nil {
 			scannedBody, scanResult := scanResponseForPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), capture.body.Bytes(), responsePIIAction, g.classifier)
 			responsePII = scanResult
@@ -822,7 +854,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// scan for PII. If clean, forward the original buffered events. If
 		// PII found, return the redacted content wrapped in SSE format.
 		capture := &responseCapture{ResponseWriter: w}
-		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
 		if forwardErr == nil {
 			responsePII = handleStreamingPIIScan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), w, capture, responsePIIAction, g.classifier)
 		} else {
@@ -830,7 +862,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 	default:
-		failoverOut, forwardErr = g.forwardWithFailover(ctx, w, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, w, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
 	}
 
 	durationMS := time.Since(start).Milliseconds()

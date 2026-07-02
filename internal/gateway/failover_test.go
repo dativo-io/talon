@@ -18,6 +18,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 )
@@ -57,6 +58,17 @@ func newFailoverUpstream(t *testing.T, status int) *failoverUpstream {
 			hj, ok := w.(http.Hijacker)
 			require.True(t, ok)
 			conn, _, _ := hj.Hijack()
+			_ = conn.Close()
+			return
+		}
+		if st == -1 {
+			// 200 headers, then die before delivering the promised body:
+			// the client's body read fails with unexpected EOF.
+			hj, ok := w.(http.Hijacker)
+			require.True(t, ok)
+			conn, buf, _ := hj.Hijack()
+			_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"partial\":")
+			_ = buf.Flush()
 			_ = conn.Close()
 			return
 		}
@@ -402,6 +414,79 @@ func TestGatewayFailover_ChainContinuesPastPermanentFallback(t *testing.T) {
 	assert.Equal(t, evidence.FailoverVerdictValidFallback, finding.Verdict, "details: %v", finding.Details)
 }
 
+// A 200-with-headers upstream that dies before the body is delivered must
+// still be able to fail over: the failoverWriter commits on the first body
+// write, not on the header write.
+func TestGatewayFailover_200HeadersThenBodyEOF_FailsOver(t *testing.T) {
+	primary := newFailoverUpstream(t, -1) // 200 headers, then connection dies
+	backup := newFailoverUpstream(t, http.StatusOK)
+	gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
+
+	w := makeFailoverRequest(gw, failoverTestBody)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "fallback says hi")
+	assert.Equal(t, int64(1), backup.calls.Load())
+
+	correlationID := correlationIDFromResponse(t, w)
+	attempts, final := failoverRecords(t, store, correlationID)
+	require.Len(t, attempts, 1)
+	assert.Equal(t, "connection_error", attempts[0].Failover.ErrorClass)
+	require.NotNil(t, final.Failover)
+	assert.Equal(t, evidence.FailoverRoleFallbackDecision, final.Failover.Role)
+}
+
+// Fallback candidates must pass the caller's allowed_providers gate — the
+// same authorization the primary route passed. A candidate outside the
+// caller's allowlist is skipped, never dispatched.
+func TestGatewayFailover_CallerAllowedProviders_SkipsCandidate(t *testing.T) {
+	primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
+	backup := newFailoverUpstream(t, http.StatusOK)
+	gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
+	// Restrict the caller to the primary provider only.
+	gw.config.Callers[0].AllowedProviders = []string{"openai"}
+
+	w := makeFailoverRequest(gw, failoverTestBody)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Equal(t, int64(0), backup.calls.Load(), "candidate outside caller allowed_providers must never be dispatched")
+
+	correlationID := correlationIDFromResponse(t, w)
+	_, final := failoverRecords(t, store, correlationID)
+	require.NotNil(t, final)
+	require.NotNil(t, final.Failover)
+	assert.Equal(t, evidence.FailoverRoleFailClosed, final.Failover.Role)
+	require.Len(t, final.Failover.SkippedCandidates, 1)
+	assert.Equal(t, "caller_allowlist", final.Failover.SkippedCandidates[0].Filter)
+}
+
+// Fallback candidates re-run the full gateway policy with their own provider
+// and model, so a caller-level model restriction cannot be bypassed by a
+// fallback model rewrite.
+func TestGatewayFailover_CallerModelPolicy_SkipsCandidate(t *testing.T) {
+	primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
+	backup := newFailoverUpstream(t, http.StatusOK)
+	gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "gpt-4o")
+	gw.config.Callers[0].PolicyOverrides.AllowedModels = []string{"gpt-4o-mini"}
+	// Wire the real gateway policy engine so caller model lists are enforced.
+	policyEngine, err := policy.NewGatewayEngine(context.Background())
+	require.NoError(t, err)
+	gw.policy = policyEngine
+
+	w := makeFailoverRequest(gw, failoverTestBody)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Equal(t, int64(0), backup.calls.Load(), "fallback model outside caller allowed_models must never be dispatched")
+
+	correlationID := correlationIDFromResponse(t, w)
+	_, final := failoverRecords(t, store, correlationID)
+	require.NotNil(t, final)
+	require.NotNil(t, final.Failover)
+	assert.Equal(t, evidence.FailoverRoleFailClosed, final.Failover.Role)
+	require.Len(t, final.Failover.SkippedCandidates, 1)
+	assert.Equal(t, "gateway_policy", final.Failover.SkippedCandidates[0].Filter)
+}
+
 // api_family lets aliased Anthropic-compatible endpoints join chains and get
 // Anthropic auth conventions (x-api-key + anthropic-version).
 func TestGatewayFailover_APIFamilyAliases(t *testing.T) {
@@ -548,16 +633,27 @@ func TestGatewayConfig_ValidateFallbackChain(t *testing.T) {
 }
 
 func TestFailoverWriter(t *testing.T) {
-	t.Run("success status commits immediately", func(t *testing.T) {
+	t.Run("success status commits on first body write, not on headers", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		fw := newFailoverWriter(rec)
 		fw.Header().Set("Content-Type", "application/json")
 		fw.WriteHeader(http.StatusOK)
-		assert.True(t, fw.committed)
+		assert.False(t, fw.committed, "200 headers alone must not commit — a body-read failure can still fail over")
 		_, _ = fw.Write([]byte("hello"))
+		assert.True(t, fw.committed)
 		assert.Equal(t, http.StatusOK, rec.Code)
 		assert.Equal(t, "hello", rec.Body.String())
 		assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	})
+
+	t.Run("success status with empty body commits on flushTo", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		fw := newFailoverWriter(rec)
+		fw.WriteHeader(http.StatusNoContent)
+		assert.False(t, fw.committed)
+		fw.flushTo()
+		assert.True(t, fw.committed)
+		assert.Equal(t, http.StatusNoContent, rec.Code)
 	})
 
 	t.Run("error status stays buffered until flushTo", func(t *testing.T) {

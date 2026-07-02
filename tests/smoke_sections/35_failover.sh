@@ -30,6 +30,13 @@ test_section_35_failover() {
     cd "$REPO_ROOT" || true
     return 0
   fi
+  # Scenario A fails over to the real OpenAI endpoint: skip the whole section
+  # when no credential is available rather than asserting a doomed 200.
+  if ! run_talon secrets list 2>/dev/null | grep -q openai-api-key; then
+    echo "  -  (skip failover: no openai-api-key credential in vault)"
+    cd "$REPO_ROOT" || true
+    return 0
+  fi
 
   local fo_key="talon-gw-failover-001"
   # Dead primary (nothing listens on this port) + real OpenAI as fallback target.
