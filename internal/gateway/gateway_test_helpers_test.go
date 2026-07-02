@@ -21,6 +21,13 @@ import (
 // the forwarded request for inspection.
 func setupOpenClawGateway(t *testing.T, piiAction string, upstreamHandler http.HandlerFunc) (*Gateway, *httptest.Server, *evidence.Store) {
 	t.Helper()
+	return setupGatewayWithClassifier(t, piiAction, ModeEnforce, upstreamHandler, nil)
+}
+
+// setupGatewayWithClassifier is setupOpenClawGateway with an explicit mode and
+// scanner engine (nil = built-in regex scanner).
+func setupGatewayWithClassifier(t *testing.T, piiAction string, mode Mode, upstreamHandler http.HandlerFunc, cls classifier.Facade) (*Gateway, *httptest.Server, *evidence.Store) {
+	t.Helper()
 
 	upstream := httptest.NewServer(upstreamHandler)
 	t.Cleanup(upstream.Close)
@@ -30,7 +37,7 @@ func setupOpenClawGateway(t *testing.T, piiAction string, upstreamHandler http.H
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
+		Mode:         mode,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
 		},
@@ -71,7 +78,9 @@ func setupOpenClawGateway(t *testing.T, piiAction string, upstreamHandler http.H
 		[]byte("sk-test-REAL-secret-key-1234567890"),
 		secrets.ACL{Tenants: []string{"test-tenant"}, Agents: []string{"*"}}))
 
-	cls := classifier.MustNewScanner()
+	if cls == nil {
+		cls = classifier.MustNewScanner()
+	}
 
 	gw, err := NewGateway(cfg, cls, evStore, secStore, nil, nil)
 	require.NoError(t, err)
