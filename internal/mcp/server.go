@@ -581,6 +581,16 @@ func (h *Handler) newServerEvidence(
 			OutputPIITypes:    entityTypeSet(flow.resultEntities),
 		},
 	}
+	// Every record identifies the scan engine behind its classification;
+	// scanner-driven denials also carry the failure kind.
+	if scannerInfo := evidence.NewScannerInfo(h.classifier); scannerInfo != nil {
+		for _, r := range decision.Reasons {
+			if strings.Contains(r, "scanner_unavailable") {
+				scannerInfo.Failure = "scanner_unavailable"
+			}
+		}
+		ev.Classification.Scanner = scannerInfo
+	}
 	ev.DataFlow = h.buildServerDataFlow(tenantID, correlationID, toolName, flow)
 	return ev
 }

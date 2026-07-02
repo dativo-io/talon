@@ -94,10 +94,15 @@ Well-known Presidio entity labels map to Talon's canonical types
 `INTERNAL_PROJECT_CODE` → `internal_project_code`) so policies can match
 custom detectors without code changes.
 
-External engines do not carry Talon sensitivity levels; entities default to
-sensitivity 1 (tier 1) unless the engine supplies `expected_sensitivity`
-(1–3) per result. High-sensitivity tiering for custom engines therefore
-requires that field.
+Sensitivity (and therefore tiering) is resolved in this order:
+
+1. An explicit `expected_sensitivity` (1–3) on the wire result always wins.
+2. Otherwise, **known built-in labels get their registry sensitivity
+   automatically** — a stock Presidio `IBAN_CODE`, `PASSPORT`, or
+   `CREDIT_CARD` detection tiers as 2 with no Talon-specific fields.
+3. Unknown custom entity types default to sensitivity 1 (tier 1); supply
+   `expected_sensitivity` per result if a custom detector's findings should
+   tier higher.
 
 ## Failure semantics
 
@@ -109,7 +114,7 @@ which is untrusted. There are **no retries**; tune `scanner.timeout` instead.
 |------|-------------------|
 | Gateway request scan (enforce) | HTTP 502, `scanner_unavailable` error body, request never reaches the provider |
 | Gateway request scan (shadow) | Forwarded; a `scanner_unavailable` shadow violation is recorded |
-| Gateway response scan, action `block`/`redact` | Response replaced with a `scanner_unavailable` error body |
+| Gateway response scan, action `block`/`redact` | HTTP 502 with a `scanner_unavailable` error body — never the upstream 200 |
 | Gateway response scan, action `warn` | Forwarded with a logged warning (warn never gates) |
 | Request/response redaction | Blocked — content known to contain PII is never forwarded unredacted |
 | Egress verification (post-redaction re-scan) | Blocked — an egress that cannot be verified does not proceed |
@@ -121,6 +126,14 @@ which is untrusted. There are **no retries**; tune `scanner.timeout` instead.
 | Evidence text sanitization | Text withheld (`[content withheld: PII scanner unavailable]`) |
 
 ## Evidence and observability
+
+Every blocked outcome is a real denial end to end: the caller receives a
+non-200 error body (451 for PII policy blocks, 502 for scanner failures on
+the response path), evidence records `policy_decision.allowed=false` with a
+machine reason (`output_pii_blocked`, `output_residual_pii_after_redaction`,
+`output_scanner_unavailable`, …), and metrics count the request as blocked.
+Shadow mode inverts this consistently: nothing is blocked or mutated, and
+the would-be enforcement is recorded as a shadow violation.
 
 Each evidence record carries `classification.scanner` — engine identity,
 type, declared version, scan duration, and the failure kind when a scanner

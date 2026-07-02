@@ -28,6 +28,10 @@ type ResponsePIIScanResult struct {
 	// ScannerFailure is set when the scan engine itself failed and the
 	// response was blocked fail-closed (no raw error details, evidence-safe).
 	ScannerFailure string
+	// BlockReason is the machine reason recorded in evidence when Blocked:
+	// output_pii_blocked | output_residual_pii_after_redaction |
+	// output_scanner_unavailable.
+	BlockReason string
 }
 
 // responseCapture wraps an http.ResponseWriter to capture the response body
@@ -101,6 +105,7 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 		if action == "block" || action == "redact" {
 			result.Blocked = true
 			result.ScannerFailure = "scanner_unavailable"
+			result.BlockReason = "output_scanner_unavailable"
 			log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_blocked")
 			return scannerUnavailableBody(), result
 		}
@@ -130,6 +135,7 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 			result.Redacted = true
 			result.Blocked = true
 			result.ScannerFailure = "scanner_unavailable"
+			result.BlockReason = "output_scanner_unavailable"
 			log.Warn().Err(redactErr).Msg("response_pii_redaction_failed_blocked")
 			return scannerUnavailableBody(), result
 		}
@@ -144,6 +150,7 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 			blocked, _ := json.Marshal(safeErr)
 			result.Redacted = true
 			result.Blocked = true
+			result.BlockReason = "output_residual_pii_after_redaction"
 			log.Warn().
 				Strs("pii_types", classifier.ResidualTypes(err)).
 				Msg("response_pii_residual_blocked")
@@ -165,6 +172,7 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 		blocked, _ := json.Marshal(safeErr)
 		result.Redacted = true
 		result.Blocked = true
+		result.BlockReason = "output_pii_blocked"
 		log.Warn().
 			Strs("pii_types", result.PIITypes).
 			Msg("response_pii_blocked")
@@ -517,7 +525,7 @@ func handleStreamingPIIScan(
 		if action == "block" || action == "redact" {
 			forwardScannerUnavailableResponse(w)
 			log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_blocked_stream")
-			return &ResponsePIIScanResult{Blocked: true, ScannerFailure: "scanner_unavailable"}
+			return &ResponsePIIScanResult{Blocked: true, ScannerFailure: "scanner_unavailable", BlockReason: "output_scanner_unavailable"}
 		}
 		log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_warn_stream")
 		forwardBufferedSSE(w, capture)
@@ -558,6 +566,7 @@ func handleStreamingPIIScan(
 				result.Redacted = true
 				result.Blocked = true
 				result.ScannerFailure = "scanner_unavailable"
+				result.BlockReason = "output_scanner_unavailable"
 				log.Warn().Err(redactErr).Msg("response_pii_redaction_failed_blocked_stream")
 				break
 			}
@@ -565,6 +574,7 @@ func handleStreamingPIIScan(
 				forwardBlockedResponse(w)
 				result.Redacted = true
 				result.Blocked = true
+				result.BlockReason = "output_residual_pii_after_redaction"
 				log.Warn().
 					Strs("pii_types", classifier.ResidualTypes(err)).
 					Msg("response_pii_residual_blocked_stream")
@@ -578,6 +588,7 @@ func handleStreamingPIIScan(
 				result.Redacted = true
 				result.Blocked = true
 				result.ScannerFailure = "scanner_unavailable"
+				result.BlockReason = "output_scanner_unavailable"
 				log.Warn().Err(redactErr).Msg("response_pii_redaction_failed_blocked_stream")
 				break
 			}
@@ -585,6 +596,7 @@ func handleStreamingPIIScan(
 				forwardBlockedResponse(w)
 				result.Redacted = true
 				result.Blocked = true
+				result.BlockReason = "output_residual_pii_after_redaction"
 				log.Warn().
 					Strs("pii_types", classifier.ResidualTypes(err)).
 					Msg("response_pii_residual_blocked_stream")
@@ -602,6 +614,7 @@ func handleStreamingPIIScan(
 		forwardBlockedResponse(w)
 		result.Redacted = true
 		result.Blocked = true
+		result.BlockReason = "output_pii_blocked"
 		log.Warn().
 			Strs("pii_types", piiTypes).
 			Msg("response_pii_blocked_stream")

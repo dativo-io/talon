@@ -771,8 +771,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx = context.WithValue(ctx, gatewayUpstreamAuthMode, upstreamAuthMode)
 	}
 
-	// Resolve response PII action
+	// Resolve response PII action. Shadow mode never blocks or mutates:
+	// the scan still runs for evidence, but block/redact degrade to warn and
+	// the would-be enforcement is recorded as a shadow violation below.
 	responsePIIAction := resolveResponsePIIAction(&g.config.ServerDefaults, caller.PolicyOverrides)
+	enforcedResponseAction := responsePIIAction
+	if isShadow && responsePIIAction != "allow" && responsePIIAction != "" {
+		responsePIIAction = "warn"
+	}
 	isStreaming := isStreamingRequest(forwardBody)
 
 	var tokenUsage TokenUsage
@@ -889,8 +895,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if forwardErr == nil {
 			scannedBody, scanResult := scanResponseForPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), capture.body.Bytes(), responsePIIAction, g.classifier)
 			responsePII = scanResult
-			if capture.statusCode != 0 {
-				w.WriteHeader(capture.statusCode)
+			status := capture.statusCode
+			if scanResult != nil && scanResult.Blocked {
+				// A blocked response must not masquerade as the upstream 200:
+				// clients and monitors need to see the denial.
+				w.Header().Set("Content-Type", "application/json")
+				if scanResult.ScannerFailure != "" {
+					status = http.StatusBadGateway
+				} else {
+					status = http.StatusUnavailableForLegalReasons
+				}
+			}
+			if status != 0 {
+				w.WriteHeader(status)
 			}
 			//nolint:gosec // G705: LLM API response body (JSON), not HTML; PII-scanned/redacted before write
 			_, _ = w.Write(scannedBody)
@@ -944,6 +961,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failoverOut, forwardErr = g.forwardWithFailover(ctx, w, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
 	}
 
+	// Shadow mode: record what response enforcement would have done.
+	if isShadow && responsePII != nil && responsePII.PIIDetected &&
+		(enforcedResponseAction == "block" || enforcedResponseAction == "redact") {
+		shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+			Type:   "response_pii",
+			Detail: fmt.Sprintf("response PII detected: %v", responsePII.PIITypes),
+			Action: enforcedResponseAction,
+		})
+		log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").
+			Strs("pii", responsePII.PIITypes).Msg("shadow_response_pii")
+	}
+
 	durationMS := time.Since(start).Milliseconds()
 
 	// Provider/model actually used (may differ from the route when failover
@@ -984,12 +1013,25 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Step 10: Evidence
+	// Step 10: Evidence. A response blocked by the output PII scan (or by a
+	// scanner failure) is a denial: evidence must say so, never allowed=true
+	// for a request whose caller received a blocked body.
 	var forwardErrStr string
 	if forwardErr != nil {
 		forwardErrStr = forwardErr.Error()
 	}
-	persisted, recordErr := g.recordEvidence(ctx, correlationID, caller, selectedProvider, selectedModel, start, extracted.Text, classification, &tokenUsage, cost, durationMS, forwardErrStr, true, nil, inputPIIRedacted, responsePII, attSummary, toolResult, shadowViolations, false, "", 0, 0, cacheStored, ttftMS, tpotMS, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+	responseBlocked := responsePII != nil && responsePII.Blocked
+	evAllowed := !responseBlocked
+	var evReasons []string
+	if responseBlocked {
+		reason := responsePII.BlockReason
+		if reason == "" {
+			reason = "output_pii_blocked"
+		}
+		evReasons = []string{reason}
+		RecordGatewayError(ctx, reason)
+	}
+	persisted, recordErr := g.recordEvidence(ctx, correlationID, caller, selectedProvider, selectedModel, start, extracted.Text, classification, &tokenUsage, cost, durationMS, forwardErrStr, evAllowed, evReasons, inputPIIRedacted, responsePII, attSummary, toolResult, shadowViolations, false, "", 0, 0, cacheStored, ttftMS, tpotMS, estimatedCost, func(p *RecordGatewayEvidenceParams) {
 		p.Failover = failoverEvCtx
 		if failoverOut != nil && failoverOut.FailClosed {
 			p.Status = "failed"
@@ -1004,7 +1046,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Emit OTel + dashboard metrics
 	g.emitMetrics(ctx, caller, selectedProvider, selectedModel, classification, toolResult, shadowViolations,
-		&tokenUsage, cost, durationMS, forwardErr != nil, false, piiAction, false, 0, ttftMS, tpotMS, persisted)
+		&tokenUsage, cost, durationMS, forwardErr != nil, responseBlocked, piiAction, false, 0, ttftMS, tpotMS, persisted)
 	if forwardErr != nil {
 		log.Warn().Err(forwardErr).Msg("gateway_forward_error")
 	}

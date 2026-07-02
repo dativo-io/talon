@@ -549,7 +549,14 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 	if h.evidenceStore == nil {
 		return
 	}
+	// Allowed must reflect what actually happened, not the event label: the
+	// output fail-closed branches (scanner unavailable, residual PII, invalid
+	// redaction JSON) record eventType proxy_tool_call with a blocked flow,
+	// and evidence must say denied for those.
 	allowed := eventType == "proxy_tool_call" || (eventType == "proxy_pii_request_detected" && reason == "")
+	if flow != nil && (flow.requestBlocked || flow.responseBlocked) {
+		allowed = false
+	}
 	action := "allow"
 	if !allowed {
 		action = "deny"
@@ -593,6 +600,14 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 				Int("flow_items", len(ev.DataFlow.Items)).
 				Msg("data_flow_recorded")
 		}
+	}
+	// Every record identifies the scan engine behind its classification;
+	// scanner-driven denials also carry the failure kind.
+	if scannerInfo := evidence.NewScannerInfo(h.classifier); scannerInfo != nil {
+		if strings.Contains(reason, "scanner_unavailable") {
+			scannerInfo.Failure = "scanner_unavailable"
+		}
+		ev.Classification.Scanner = scannerInfo
 	}
 	ev.Explanations = explanation.BuildFromFacts(proxyExplanationFacts(eventType, reason, toolName, allowed))
 	_ = h.evidenceStore.Store(ctx, ev)
