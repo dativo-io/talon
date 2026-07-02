@@ -734,27 +734,35 @@ func (s *ScannerConfig) validate() error {
 	if !s.IsExternal() {
 		return nil
 	}
-	if s.Endpoint == "" {
-		return fmt.Errorf("scanner.endpoint is required for scanner.type %s", s.EngineType())
+	if err := validateScannerEndpoint(s.Endpoint, s.EngineType()); err != nil {
+		return err
 	}
-	u, err := url.Parse(s.Endpoint)
+	if s.EngineType() == ScannerTypeLLM && (s.LLM == nil || s.LLM.Model == "") {
+		return fmt.Errorf("scanner.llm.model is required for scanner.type llm")
+	}
+	return nil
+}
+
+// validateScannerEndpoint checks the endpoint URL of an external scanner.
+func validateScannerEndpoint(endpoint, engineType string) error {
+	if endpoint == "" {
+		return fmt.Errorf("scanner.endpoint is required for scanner.type %s", engineType)
+	}
+	u, err := url.Parse(endpoint)
 	if err != nil {
-		return fmt.Errorf("scanner.endpoint %q is not a valid URL: %w", s.Endpoint, err)
+		return fmt.Errorf("scanner.endpoint %q is not a valid URL: %w", endpoint, err)
 	}
 	switch u.Scheme {
 	case "http", "https":
 		if u.Host == "" {
-			return fmt.Errorf("scanner.endpoint %q has no host", s.Endpoint)
+			return fmt.Errorf("scanner.endpoint %q has no host", endpoint)
 		}
 	case "unix":
 		if u.Path == "" {
-			return fmt.Errorf("scanner.endpoint %q has no socket path (use unix:///path/to.sock)", s.Endpoint)
+			return fmt.Errorf("scanner.endpoint %q has no socket path (use unix:///path/to.sock)", endpoint)
 		}
 	default:
 		return fmt.Errorf("scanner.endpoint scheme %q is unsupported (use http, https, or unix)", u.Scheme)
-	}
-	if s.EngineType() == ScannerTypeLLM && (s.LLM == nil || s.LLM.Model == "") {
-		return fmt.Errorf("scanner.llm.model is required for scanner.type llm")
 	}
 	return nil
 }

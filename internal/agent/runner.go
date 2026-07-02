@@ -2526,6 +2526,8 @@ func postBudgetAlert(ctx context.Context, webhookURL string, payload map[string]
 
 // processAttachments scans, sandboxes, and appends attachment content to the prompt.
 // Returns the processed prompt, scan results, sandbox token (empty if no attachments), and error.
+//
+//nolint:gocyclo // extract/scan/injection gates per attachment are intentionally linear
 func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *policy.Policy, piiScanner classifier.Facade) (processedPrompt string, scan *evidence.AttachmentScan, token string, err error) {
 	if len(req.Attachments) == 0 {
 		return req.Prompt, nil, "", nil
@@ -3202,6 +3204,7 @@ func sourceTypeFromInvocation(invocationType string) string {
 	}
 }
 
+//nolint:gocyclo // span-merge + replacement pipeline is kept together for auditability
 func sanitizeMemoryObservationText(ctx context.Context, scanner classifier.Facade, text string) string {
 	if scanner == nil || text == "" {
 		return text

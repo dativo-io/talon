@@ -12,7 +12,7 @@ import (
 
 // FuzzAdapterResponseDecode feeds arbitrary bytes as the engine response and
 // asserts the adapter either returns a valid classification or a classified
-// AdapterError — never a panic, and never entities pointing outside the text.
+// Error — never a panic, and never entities pointing outside the text.
 func FuzzAdapterResponseDecode(f *testing.F) {
 	f.Add([]byte(`[]`))
 	f.Add([]byte(`[{"entity_type":"EMAIL_ADDRESS","start":0,"end":4,"score":0.9}]`))
@@ -43,7 +43,7 @@ func FuzzAdapterResponseDecode(f *testing.F) {
 		cls, err := a.Analyze(context.Background(), text)
 		if err != nil {
 			if adapter.FailureKind(err) == "" {
-				t.Fatalf("non-AdapterError failure: %v", err)
+				t.Fatalf("non-Error failure: %v", err)
 			}
 			return
 		}

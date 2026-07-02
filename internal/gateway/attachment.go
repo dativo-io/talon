@@ -120,6 +120,7 @@ func ScanRequestAttachments(
 	return summary
 }
 
+//nolint:gocyclo // enforcement gates (type/size/extract/PII/injection) are intentionally linear
 func scanSingleFileBlock(
 	ctx context.Context,
 	fb *FileBlock,

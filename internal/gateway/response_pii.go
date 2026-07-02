@@ -81,6 +81,8 @@ func resolveResponsePIIAction(defaultPolicy *ServerDefaults, callerOverrides *Ca
 // response body for PII and applies the action. API envelope fields (id, created,
 // usage, model, etc.) are never scanned, preventing false positives on timestamps
 // and token counts.
+//
+//nolint:gocyclo // action dispatch + fail-closed scanner-error branches are kept together
 func scanResponseForPII(ctx context.Context, body []byte, action string, scanner classifier.Facade) ([]byte, *ResponsePIIScanResult) {
 	result := &ResponsePIIScanResult{}
 	if scanner == nil || action == "allow" || action == "" {

@@ -27,10 +27,11 @@ func ParseEndpoint(endpoint string) (baseURL, socketPath string, err error) {
 		}
 		return strings.TrimRight(endpoint, "/"), "", nil
 	case "unix":
-		// unix:///var/run/x.sock parses with empty Host and Path=/var/run/x.sock.
+		// With the canonical triple-slash form the socket path lands in
+		// u.Path; with a double slash the first segment lands in u.Host, so
+		// rejoin it to tolerate both spellings.
 		path := u.Path
 		if u.Host != "" {
-			// Tolerate unix://var/run/x.sock (host swallows the first segment).
 			path = "/" + u.Host + u.Path
 		}
 		if path == "" || path == "/" {

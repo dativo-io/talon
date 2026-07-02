@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -41,7 +42,7 @@ func NewUDSScannerServer(t *testing.T, analyze ScannerAnalyzeFunc) string {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	socketPath := filepath.Join(dir, "scanner.sock")
-	ln, err := net.Listen("unix", socketPath)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", socketPath)
 	if err != nil {
 		t.Fatalf("listening on unix socket: %v", err)
 	}

@@ -38,26 +38,26 @@ const (
 	KindValidation Kind = "validation"
 )
 
-// AdapterError is a classified failure from an external scanner engine.
-type AdapterError struct {
+// Error is a classified failure from an external scanner engine.
+type Error struct {
 	Kind     Kind
 	Detector string
 	Err      error
 }
 
-func (e *AdapterError) Error() string {
+func (e *Error) Error() string {
 	return fmt.Sprintf("scanner %s: %s failure: %v", e.Detector, e.Kind, e.Err)
 }
 
-func (e *AdapterError) Unwrap() error { return e.Err }
+func (e *Error) Unwrap() error { return e.Err }
 
-// Is makes every AdapterError match ErrScannerUnavailable.
-func (e *AdapterError) Is(target error) bool { return target == ErrScannerUnavailable }
+// Is makes every Error match ErrScannerUnavailable.
+func (e *Error) Is(target error) bool { return target == ErrScannerUnavailable }
 
-// FailureKind returns the failure kind when err wraps an AdapterError, or ""
+// FailureKind returns the failure kind when err wraps an Error, or ""
 // otherwise. Used to populate evidence without exposing error internals.
 func FailureKind(err error) string {
-	var ae *AdapterError
+	var ae *Error
 	if errors.As(err, &ae) {
 		return string(ae.Kind)
 	}

@@ -127,7 +127,7 @@ type analyzeRequest struct {
 // Analyze scans text through the external engine and normalizes the response
 // into Talon's canonical model. Any failure — timeout, transport, status,
 // decode, or a single invalid entity — rejects the whole scan with an
-// *AdapterError; callers on enforcement paths must block egress.
+// *Error; callers on enforcement paths must block egress.
 func (a *HTTPAdapter) Analyze(ctx context.Context, text string) (*classifier.Classification, error) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, a.cfg.Timeout)
@@ -197,8 +197,15 @@ func (a *HTTPAdapter) analyze(ctx context.Context, text string) (*classifier.Cla
 		return nil, a.fail(KindDecode, errors.New("response is not a recognizer result array"))
 	}
 
+	return a.normalize(ctx, text, results)
+}
+
+// normalize filters, offset-normalizes, and canonicalizes untrusted engine
+// results into a Classification.
+func (a *HTTPAdapter) normalize(ctx context.Context, text string, results []presidio.RecognizerResult) (*classifier.Classification, error) {
 	kept := results[:0]
-	for _, r := range results {
+	for i := range results {
+		r := results[i]
 		if r.Score < a.cfg.MinScore {
 			continue
 		}
@@ -290,8 +297,8 @@ func (a *HTTPAdapter) HealthCheck(ctx context.Context) error {
 	}
 }
 
-func (a *HTTPAdapter) fail(kind Kind, err error) *AdapterError {
-	return &AdapterError{Kind: kind, Detector: a.detector, Err: err}
+func (a *HTTPAdapter) fail(kind Kind, err error) *Error {
+	return &Error{Kind: kind, Detector: a.detector, Err: err}
 }
 
 // classifyTransportError separates deadline expiry from other transport
