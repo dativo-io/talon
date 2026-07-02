@@ -160,12 +160,14 @@ func initConfig() {
 	if cfgFile != "" {
 		viper.SetConfigFile(cfgFile)
 	} else {
-		// Search in ~/.talon/ and current directory
+		// Search the current directory first, then ~/.talon — the project's
+		// own talon.config.yaml must win over a machine-wide one (this is
+		// also the documented order of the --config default).
+		viper.AddConfigPath(".")
 		home, err := os.UserHomeDir()
 		if err == nil {
 			viper.AddConfigPath(home + "/.talon")
 		}
-		viper.AddConfigPath(".")
 		viper.SetConfigName("talon.config")
 		viper.SetConfigType("yaml")
 	}
