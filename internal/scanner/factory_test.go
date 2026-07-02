@@ -86,15 +86,32 @@ func TestBuild_AirGapAcceptsLoopback(t *testing.T) {
 	require.NoError(t, err, "loopback endpoints are local; air-gap must accept them")
 }
 
-func TestBuild_LLMNotImplementedYet(t *testing.T) {
-	_, err := Build(context.Background(), &config.Config{
+func TestBuild_LLMEngine(t *testing.T) {
+	srv := testutil.NewNERMockServer(t, func(string) string { return `{"entities":[]}` }, "llama3.1:8b")
+
+	facade, err := Build(context.Background(), &config.Config{
 		Scanner: &config.ScannerConfig{
 			Type:     config.ScannerTypeLLM,
-			Endpoint: "http://localhost:11434/v1",
+			Endpoint: srv.URL + "/v1",
 			LLM:      &config.ScannerLLMConfig{Model: "llama3.1:8b"},
 		},
 	}, nil, nil)
-	require.Error(t, err)
+	require.NoError(t, err)
+	assert.Equal(t, "llm:llama3.1:8b", facade.Detector())
+}
+
+func TestBuild_LLMStartupFailsWhenModelMissing(t *testing.T) {
+	srv := testutil.NewNERMockServer(t, func(string) string { return `{"entities":[]}` }, "some-other-model")
+
+	_, err := Build(context.Background(), &config.Config{
+		Scanner: &config.ScannerConfig{
+			Type:     config.ScannerTypeLLM,
+			Endpoint: srv.URL + "/v1",
+			LLM:      &config.ScannerLLMConfig{Model: "llama3.1:8b"},
+		},
+	}, nil, nil)
+	require.Error(t, err, "health probe must verify the configured model is pulled")
+	assert.Contains(t, err.Error(), "refuses to start")
 }
 
 func TestValidateEndpointLocality(t *testing.T) {

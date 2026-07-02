@@ -152,7 +152,7 @@ func (a *HTTPAdapter) Analyze(ctx context.Context, text string) (*classifier.Cla
 			attribute.Int("pii.tier", cls.Tier),
 		)
 	}
-	recordScan(ctx, a.detector, outcome, time.Since(started))
+	RecordScan(ctx, a.detector, outcome, time.Since(started))
 	return cls, err
 }
 

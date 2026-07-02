@@ -9,6 +9,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/classifier/adapter"
+	"github.com/dativo-io/talon/internal/classifier/adapter/llm"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/sovereignty"
@@ -37,7 +38,7 @@ func Build(ctx context.Context, cfg *config.Config, pol *policy.Policy, engine *
 	case config.ScannerTypePresidio, config.ScannerTypeHTTP:
 		return buildHTTP(ctx, cfg, sc)
 	case config.ScannerTypeLLM:
-		return nil, fmt.Errorf("scanner.type llm is not implemented yet (see docs/reference/external-scanners.md)")
+		return buildLLM(ctx, cfg, sc, pol)
 	default:
 		return nil, fmt.Errorf("scanner.type %q is not supported", sc.EngineType())
 	}
@@ -87,6 +88,59 @@ func buildHTTP(ctx context.Context, cfg *config.Config, sc *config.ScannerConfig
 		return nil, fmt.Errorf("initializing external scanner adapter: %w", err)
 	}
 
+	return finishExternal(ctx, a, sc, sc.EngineVersion)
+}
+
+// buildLLM assembles the OpenAI-compatible NER engine (e.g. Ollama). The
+// entity set the prompt hunts for is derived from the effective policy so the
+// model targets exactly what the policy governs.
+func buildLLM(ctx context.Context, cfg *config.Config, sc *config.ScannerConfig, pol *policy.Policy) (classifier.Facade, error) {
+	airGap := cfg.Sovereignty.AirGapEnabled()
+	if err := ValidateEndpointLocality(sc.Endpoint, airGap); err != nil {
+		return nil, err
+	}
+
+	var transport http.RoundTripper
+	if airGap {
+		transport = sovereignty.NewEgressGuard(append([]string{sc.Endpoint}, cfg.Sovereignty.AllowedEgressHosts...))
+	}
+
+	var scanOpts []classifier.ScannerOption
+	if pol != nil {
+		var err error
+		scanOpts, err = policy.PIIScannerOptions(pol.Policies.DataClassification, "")
+		if err != nil {
+			return nil, fmt.Errorf("deriving scanner options from policy: %w", err)
+		}
+	}
+	entityTypes, err := classifier.SupportedEntityTypes(scanOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("deriving entity types for llm scanner: %w", err)
+	}
+
+	a, err := llm.New(llm.Config{
+		Endpoint:    sc.Endpoint,
+		Model:       sc.LLM.Model,
+		Confidence:  sc.LLM.EffectiveConfidence(),
+		Timeout:     sc.ParsedTimeout(),
+		EntityTypes: entityTypes,
+		Name:        sc.Name,
+		Transport:   transport,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initializing llm scanner adapter: %w", err)
+	}
+	return finishExternal(ctx, a, sc, llm.PromptVersion)
+}
+
+// externalEngine is the common surface of every external adapter.
+type externalEngine interface {
+	classifier.Facade
+	HealthCheck(ctx context.Context) error
+}
+
+// finishExternal runs the startup probe and logs engine activation.
+func finishExternal(ctx context.Context, a externalEngine, sc *config.ScannerConfig, version string) (classifier.Facade, error) {
 	if sc.HealthCheckEnabled() {
 		if err := probeHealth(ctx, a, sc); err != nil {
 			return nil, err
@@ -98,7 +152,7 @@ func buildHTTP(ctx context.Context, cfg *config.Config, sc *config.ScannerConfig
 	log.Info().
 		Str("engine", a.Detector()).
 		Str("type", sc.EngineType()).
-		Str("version", sc.EngineVersion).
+		Str("version", version).
 		Dur("timeout", sc.ParsedTimeout()).
 		Msg("external PII scanner engine active (replaces built-in regex scanner; fail-closed on errors)")
 	return a, nil

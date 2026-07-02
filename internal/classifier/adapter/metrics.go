@@ -29,8 +29,9 @@ func init() {
 		metric.WithUnit("ms"))
 }
 
-// recordScan records one adapter call with its outcome ("ok" or the failure kind).
-func recordScan(ctx context.Context, engine, outcome string, elapsed time.Duration) {
+// RecordScan records one adapter call with its outcome ("ok" or the failure
+// kind). Shared by all external engine adapters (HTTP/UDS and llm).
+func RecordScan(ctx context.Context, engine, outcome string, elapsed time.Duration) {
 	attrs := metric.WithAttributes(
 		attribute.String("engine", engine),
 		attribute.String("outcome", outcome),
