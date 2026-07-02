@@ -147,14 +147,14 @@ func (f *runFailover) generate(ctx context.Context, provider llm.Provider, model
 		}
 		class = llm.ClassifyGenerateError(err)
 		f.recordAttempt(ctx, cand.ProviderName, cand.Jurisdiction, cand.Model, class, cand.ChainPosition, cand.RuleID, err, time.Since(attemptStart).Milliseconds())
-		if !class.Transient {
-			break
-		}
+		// Once failover is engaged, only success ends the chain: a fallback
+		// candidate failing permanently (bad key, model not on that provider)
+		// is that candidate's problem, not the request's — keep walking.
 	}
 
-	// Chain exhausted (or a permanent failure ended the walk): fail closed.
-	// The caller receives the error; the refusal to dispatch further is a
-	// governance outcome recorded on the final run record.
+	// Chain exhausted: fail closed. The caller receives the error; the
+	// refusal to dispatch further is a governance outcome recorded on the
+	// final run record.
 	f.decision = &evidence.FailoverContext{
 		Role:              evidence.FailoverRoleFailClosed,
 		ErrorClass:        class.Class,
@@ -179,6 +179,10 @@ func (f *runFailover) recordAttempt(ctx context.Context, providerName, jurisdict
 	if f.dataFlow != nil {
 		flow = f.dataFlow(providerName, model)
 	}
+	failureReason := evidence.FailureReasonProviderTransient
+	if !class.Transient {
+		failureReason = evidence.FailureReasonProviderPermanent
+	}
 	ev, err := f.r.evidence.Generate(ctx, evidence.GenerateParams{
 		CorrelationID:   f.correlationID,
 		TenantID:        f.req.TenantID,
@@ -192,7 +196,7 @@ func (f *runFailover) recordAttempt(ctx context.Context, providerName, jurisdict
 		DurationMS:      durationMS,
 		Error:           genErr.Error(),
 		Status:          string(RunStatusFailed),
-		FailureReason:   evidence.FailureReasonProviderTransient,
+		FailureReason:   failureReason,
 		Failover: &evidence.FailoverContext{
 			Role:            evidence.FailoverRoleFailedAttempt,
 			Provider:        providerName,

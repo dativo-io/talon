@@ -195,18 +195,32 @@ func (g *Gateway) fallbackAuthHeaders(ctx context.Context, caller *CallerConfig,
 		headers["Authorization"] = "Bearer " + clientKey
 		return headers, nil
 	}
+	anthropicFamily := g.config.providerAPIFamily(providerName) == "anthropic"
 	if prov.SecretName != "" {
 		secret, err := g.secretsStore.Get(ctx, prov.SecretName, caller.TenantID, caller.Name)
 		if err != nil {
 			return nil, fmt.Errorf("fallback provider %s: secret retrieval: %w", providerName, err)
 		}
-		if providerName == "anthropic" {
+		if anthropicFamily {
 			headers["x-api-key"] = string(secret.Value)
 		} else {
 			headers["Authorization"] = "Bearer " + string(secret.Value)
 		}
 	}
+	if anthropicFamily && !headerPresent(headers, "anthropic-version") {
+		headers["anthropic-version"] = "2023-06-01"
+	}
 	return headers, nil
+}
+
+// headerPresent reports whether a header key exists in the map, ignoring case.
+func headerPresent(headers map[string]string, key string) bool {
+	for k := range headers {
+		if strings.EqualFold(k, key) {
+			return true
+		}
+	}
+	return false
 }
 
 // modelAllowedForProvider checks a fallback target's model against the target
@@ -360,9 +374,15 @@ func (g *Gateway) forwardWithFailover(
 		err = Forward(fw, ap)
 		class = classifyAttempt(err, fw.status)
 
-		if !class.Transient || fw.committed {
-			// Success (or permanent upstream response, or mid-stream failure):
-			// this candidate is the provider actually used.
+		success := err == nil && class.Class == failover.ClassNone
+		if success || fw.committed {
+			// Success — or a mid-stream failure after bytes already reached
+			// the client, which makes this candidate the provider actually
+			// used whether we like it or not. Only these outcomes may become
+			// the fallback decision: once failover is engaged, a fallback
+			// candidate that fails for ANY reason (transient or permanent,
+			// e.g. a misconfigured secret returning 401) is a failed attempt,
+			// never "the provider actually used".
 			out.SelectedProvider = target.Provider
 			out.SelectedModel = model
 			out.ChainPosition = i + 1
@@ -419,6 +439,10 @@ func (g *Gateway) recordFailoverAttemptEvidence(ctx context.Context, correlation
 	if errMsg == "" && rec.UpstreamStatus != 0 {
 		errMsg = fmt.Sprintf("upstream status %d", rec.UpstreamStatus)
 	}
+	failureReason := evidence.FailureReasonProviderTransient
+	if !rec.Class.Transient {
+		failureReason = evidence.FailureReasonProviderPermanent
+	}
 	ev, err := RecordGatewayEvidence(ctx, g.evidenceStore, RecordGatewayEvidenceParams{
 		CorrelationID:  correlationID,
 		SessionID:      sessionIDFromContext(ctx),
@@ -433,7 +457,7 @@ func (g *Gateway) recordFailoverAttemptEvidence(ctx context.Context, correlation
 		Error:          errMsg,
 		InvocationType: "gateway_failover_attempt",
 		Status:         "failed",
-		FailureReason:  evidence.FailureReasonProviderTransient,
+		FailureReason:  failureReason,
 		DataFlow:       dataFlow,
 		Failover: &evidence.FailoverContext{
 			Role:            evidence.FailoverRoleFailedAttempt,

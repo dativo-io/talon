@@ -72,23 +72,38 @@ func newFailoverUpstream(t *testing.T, status int) *failoverUpstream {
 	return u
 }
 
+// extraBackup adds another provider to the fallback chain after "backup".
+type extraBackup struct {
+	name   string
+	region string
+	up     *failoverUpstream
+}
+
 // setupFailoverGateway wires a gateway with a primary provider ("openai") and
 // a fallback provider ("backup") whose regions and chain are configurable.
-func setupFailoverGateway(t *testing.T, sovereigntyMode, primaryRegion, backupRegion string, primary, backup *failoverUpstream, fallbackModel string) (*Gateway, *evidence.Store) {
+// Additional chain targets can be appended via extras.
+func setupFailoverGateway(t *testing.T, sovereigntyMode, primaryRegion, backupRegion string, primary, backup *failoverUpstream, fallbackModel string, extras ...extraBackup) (*Gateway, *evidence.Store) {
 	t.Helper()
 	dir := t.TempDir()
+
+	chain := []FallbackTarget{{Provider: "backup", Model: fallbackModel}}
+	providers := map[string]ProviderConfig{
+		"backup": {Enabled: true, BaseURL: backup.server.URL, SecretName: "backup-api-key", Region: backupRegion},
+	}
+	for _, e := range extras {
+		providers[e.name] = ProviderConfig{Enabled: true, BaseURL: e.up.server.URL, SecretName: "backup-api-key", Region: e.region}
+		chain = append(chain, FallbackTarget{Provider: e.name})
+	}
+	providers["openai"] = ProviderConfig{
+		Enabled: true, BaseURL: primary.server.URL, SecretName: "openai-api-key", Region: primaryRegion,
+		Fallback: chain,
+	}
 
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
 		Mode:         ModeEnforce,
-		Providers: map[string]ProviderConfig{
-			"openai": {
-				Enabled: true, BaseURL: primary.server.URL, SecretName: "openai-api-key", Region: primaryRegion,
-				Fallback: []FallbackTarget{{Provider: "backup", Model: fallbackModel}},
-			},
-			"backup": {Enabled: true, BaseURL: backup.server.URL, SecretName: "backup-api-key", Region: backupRegion},
-		},
+		Providers:    providers,
 		Callers: []CallerConfig{
 			{
 				Name: "failover-bot", TenantKey: failoverTestTenantKey, TenantID: "test-tenant",
@@ -306,6 +321,107 @@ func TestGatewayFailover_BothProvidersFail_FailClosedWithAttempts(t *testing.T) 
 	assert.Equal(t, evidence.FailoverVerdictValidFailClosed, finding.Verdict, "details: %v", finding.Details)
 }
 
+// A fallback candidate failing with a PERMANENT error (misconfigured secret,
+// missing model) must never be recorded as the provider actually used: it is
+// a failed attempt and the outcome is fail-closed, not a fallback decision.
+func TestGatewayFailover_FallbackPermanentError_FailsClosed(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     int
+		wantClass  string
+		statusBody string
+	}{
+		{name: "fallback 401", status: http.StatusUnauthorized, wantClass: "auth_error", statusBody: `{"error":{"message":"bad key","type":"invalid_request_error"}}`},
+		{name: "fallback 404", status: http.StatusNotFound, wantClass: "client_error", statusBody: `{"error":{"message":"model not found","type":"invalid_request_error"}}`},
+		{name: "fallback 422", status: http.StatusUnprocessableEntity, wantClass: "client_error", statusBody: `{"error":{"message":"unprocessable","type":"invalid_request_error"}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
+			backup := newFailoverUpstream(t, tc.status)
+			backup.statusBody = tc.statusBody
+			gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
+
+			w := makeFailoverRequest(gw, failoverTestBody)
+
+			assert.Equal(t, tc.status, w.Code, "caller sees the fallback's upstream error")
+			assert.Equal(t, int64(1), backup.calls.Load())
+
+			correlationID := correlationIDFromResponse(t, w)
+			attempts, final := failoverRecords(t, store, correlationID)
+			require.Len(t, attempts, 2, "the permanent fallback failure must be a failed attempt too")
+			assert.Equal(t, "upstream_5xx", attempts[0].Failover.ErrorClass)
+			assert.Equal(t, evidence.FailureReasonProviderTransient, attempts[0].FailureReason)
+			assert.Equal(t, tc.wantClass, attempts[1].Failover.ErrorClass)
+			assert.Equal(t, evidence.FailureReasonProviderPermanent, attempts[1].FailureReason,
+				"failure_reason must match the error class, not claim transient")
+
+			require.NotNil(t, final)
+			require.NotNil(t, final.Failover)
+			assert.Equal(t, evidence.FailoverRoleFailClosed, final.Failover.Role,
+				"a failed fallback must never become the fallback decision")
+			assert.Equal(t, "failed", final.Status)
+			assert.Len(t, final.Failover.FailedAttemptIDs, 2)
+
+			finding, err := store.VerifyFailoverChain(context.Background(), correlationID)
+			require.NoError(t, err)
+			assert.Equal(t, evidence.FailoverVerdictValidFailClosed, finding.Verdict, "details: %v", finding.Details)
+		})
+	}
+}
+
+// Once failover is engaged, only success ends the chain: a permanently
+// failing fallback candidate is skipped over and the next candidate is tried.
+func TestGatewayFailover_ChainContinuesPastPermanentFallback(t *testing.T) {
+	primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
+	badBackup := newFailoverUpstream(t, http.StatusUnauthorized)
+	goodBackup := newFailoverUpstream(t, http.StatusOK)
+	gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, badBackup, "",
+		extraBackup{name: "backup2", region: "EU", up: goodBackup})
+
+	w := makeFailoverRequest(gw, failoverTestBody)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "fallback says hi")
+	assert.Equal(t, int64(1), badBackup.calls.Load())
+	assert.Equal(t, int64(1), goodBackup.calls.Load())
+
+	correlationID := correlationIDFromResponse(t, w)
+	attempts, final := failoverRecords(t, store, correlationID)
+	require.Len(t, attempts, 2)
+	assert.Equal(t, "auth_error", attempts[1].Failover.ErrorClass)
+
+	require.NotNil(t, final.Failover)
+	assert.Equal(t, evidence.FailoverRoleFallbackDecision, final.Failover.Role)
+	assert.Equal(t, "backup2", final.Failover.Provider)
+	assert.Equal(t, 2, final.Failover.ChainPosition)
+	assert.Len(t, final.Failover.FailedAttemptIDs, 2)
+
+	finding, err := store.VerifyFailoverChain(context.Background(), correlationID)
+	require.NoError(t, err)
+	assert.Equal(t, evidence.FailoverVerdictValidFallback, finding.Verdict, "details: %v", finding.Details)
+}
+
+// api_family lets aliased Anthropic-compatible endpoints join chains and get
+// Anthropic auth conventions (x-api-key + anthropic-version).
+func TestGatewayFailover_APIFamilyAliases(t *testing.T) {
+	t.Run("fallbackAuthHeaders uses x-api-key for anthropic-family alias", func(t *testing.T) {
+		primary := newFailoverUpstream(t, http.StatusOK)
+		backup := newFailoverUpstream(t, http.StatusOK)
+		gw, _ := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
+
+		prov := ProviderConfig{Enabled: true, BaseURL: backup.server.URL, SecretName: "backup-api-key", APIFamily: "anthropic"}
+		gw.config.Providers["anthropic-eu"] = prov
+		headers, err := gw.fallbackAuthHeaders(context.Background(),
+			gw.config.CallerByName("failover-bot"), "anthropic-eu", prov,
+			"Bearer client-token", map[string]string{"Authorization": "Bearer old", "Content-Type": "application/json"})
+		require.NoError(t, err)
+		assert.Equal(t, "sk-backup-key-1234567890", headers["x-api-key"])
+		assert.Equal(t, "2023-06-01", headers["anthropic-version"])
+		assert.Empty(t, headers["Authorization"], "bearer auth of the failed provider must not leak to an anthropic-family target")
+	})
+}
+
 func TestGatewayConfig_ValidateFallbackChain(t *testing.T) {
 	base := func() *GatewayConfig {
 		return &GatewayConfig{
@@ -388,14 +504,32 @@ func TestGatewayConfig_ValidateFallbackChain(t *testing.T) {
 			wantErr: "provider is required",
 		},
 		{
-			name: "anthropic to anthropic-family is fine",
+			name: "anthropic alias without api_family is rejected",
 			mutate: func(c *GatewayConfig) {
 				c.Providers["anthropic-eu"] = ProviderConfig{Enabled: true, BaseURL: "https://eu.anthropic.example.com", SecretName: "k4"}
 				p := c.Providers["anthropic"]
 				p.Fallback = []FallbackTarget{{Provider: "anthropic-eu"}}
 				c.Providers["anthropic"] = p
 			},
-			wantErr: "API family", // anthropic-eu resolves to openai family by name; must be rejected
+			wantErr: "API family", // without api_family, anthropic-eu resolves to openai by name
+		},
+		{
+			name: "anthropic alias with api_family anthropic is accepted",
+			mutate: func(c *GatewayConfig) {
+				c.Providers["anthropic-eu"] = ProviderConfig{Enabled: true, BaseURL: "https://eu.anthropic.example.com", SecretName: "k4", APIFamily: "anthropic"}
+				p := c.Providers["anthropic"]
+				p.Fallback = []FallbackTarget{{Provider: "anthropic-eu"}}
+				c.Providers["anthropic"] = p
+			},
+		},
+		{
+			name: "invalid api_family value is rejected",
+			mutate: func(c *GatewayConfig) {
+				p := c.Providers["openai"]
+				p.APIFamily = "grpc"
+				c.Providers["openai"] = p
+			},
+			wantErr: "api_family must be openai or anthropic",
 		},
 	}
 	for _, tt := range tests {

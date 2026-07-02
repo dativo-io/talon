@@ -142,6 +142,42 @@ func TestRunFailover_AllCandidatesFail_FailsClosed(t *testing.T) {
 	assert.Len(t, records, 2, "both failed attempts evidenced")
 }
 
+// Once failover is engaged, a permanently failing fallback candidate is
+// evidenced (with a permanent failure reason) and the chain keeps walking.
+func TestRunFailover_ChainContinuesPastPermanentFallback(t *testing.T) {
+	primary := &flakyProvider{name: "openai", jurisdiction: "US", failWith: &llm.ProviderError{Code: "server_error", Provider: "openai"}}
+	badBackup := &flakyProvider{name: "anthropic", jurisdiction: "US", failWith: &llm.ProviderError{Code: "auth_failed", Provider: "anthropic"}}
+	goodBackup := &flakyProvider{name: "ollama", jurisdiction: "LOCAL"}
+	routing := &policy.ModelRoutingConfig{
+		Tier1: &policy.TierConfig{Primary: "gpt-4o", FallbackChain: []string{"claude-sonnet-4-20250514", "llama3:70b"}},
+	}
+	r, store := newFailoverTestRunner(t, map[string]llm.Provider{"openai": primary, "anthropic": badBackup, "ollama": goodBackup}, routing)
+
+	req := &RunRequest{TenantID: "t1", AgentName: "a1", InvocationType: "manual"}
+	fo := r.newRunFailover(context.Background(), req, "corr-fo-5", 1, nil, "", nil)
+
+	resp, usedProvider, usedModel, err := fo.generate(context.Background(), primary, "gpt-4o", &llm.Request{Model: "gpt-4o"})
+	require.NoError(t, err)
+	assert.Equal(t, "ok from ollama", resp.Content)
+	assert.Equal(t, "ollama", usedProvider.Name())
+	assert.Equal(t, "llama3:70b", usedModel)
+	assert.Equal(t, 1, badBackup.calls)
+	assert.Equal(t, 1, goodBackup.calls)
+
+	require.NotNil(t, fo.decision)
+	assert.Equal(t, evidence.FailoverRoleFallbackDecision, fo.decision.Role)
+	assert.Equal(t, "ollama", fo.decision.Provider)
+	assert.Len(t, fo.decision.FailedAttemptIDs, 2)
+
+	records, err := store.ListByCorrelationID(context.Background(), "corr-fo-5")
+	require.NoError(t, err)
+	require.Len(t, records, 2)
+	assert.Equal(t, evidence.FailureReasonProviderTransient, records[0].FailureReason)
+	assert.Equal(t, "auth_error", records[1].Failover.ErrorClass)
+	assert.Equal(t, evidence.FailureReasonProviderPermanent, records[1].FailureReason,
+		"failure_reason must not contradict the error class")
+}
+
 func TestRunFailover_ComplianceModeExcludesSovereigntyRejectedCandidates(t *testing.T) {
 	primary := &flakyProvider{name: "ollama", jurisdiction: "LOCAL", failWith: &llm.ProviderError{Code: "server_error", Provider: "ollama"}}
 	usBackup := &flakyProvider{name: "openai", jurisdiction: "US"}

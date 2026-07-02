@@ -116,8 +116,12 @@ const (
 )
 
 // Structured failure reasons for failover outcomes (Evidence.FailureReason).
+// Failed-attempt records carry the reason matching their error class:
+// transient (timeout/connection/429/5xx) vs permanent (auth/4xx) — the
+// failure_reason and failover.error_class must never contradict each other.
 const (
 	FailureReasonProviderTransient   = "provider_transient_error"
+	FailureReasonProviderPermanent   = "provider_permanent_error"
 	FailureReasonNoSovereignFallback = "no_valid_fallback_candidate"
 )
 

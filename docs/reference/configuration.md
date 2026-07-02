@@ -382,16 +382,24 @@ gateway:
 #### Provider fallback chains (error-driven failover)
 
 On a **transient** upstream failure (timeout, connection failure, HTTP 429 or
-5xx) Talon can retry the request against an ordered fallback chain. Permanent
-errors (401/403/4xx) never trigger failover. Every candidate passes a filter
-pipeline before dispatch — under `sovereignty.mode: eu_strict` a non-EU/LOCAL
-candidate is skipped, never called. When no policy-valid candidate succeeds
+5xx) Talon can retry the request against an ordered fallback chain. A
+permanent error from the **primary** (401/403/4xx) passes through unchanged —
+it never triggers failover. Once failover **is** engaged, only a successful
+response ends the chain: a fallback candidate that fails for any reason
+(including a permanent 401 from a misconfigured secret) is recorded as a
+failed attempt and the walk continues to the next candidate. Every candidate
+passes a filter pipeline before dispatch — under `sovereignty.mode: eu_strict`
+a non-EU/LOCAL candidate is skipped, never called. When the chain is exhausted
 the request **fails closed**: the caller gets an error and the refusal is
-recorded as a governance outcome.
+recorded as a governance outcome — a failed fallback is never evidenced as
+"the provider actually used".
 
 Gateway (proxy path) — chain per provider; all members must share the
 provider's API family (the body is forwarded as-is except an optional model
-rewrite):
+rewrite). The family defaults by name (`anthropic` → Anthropic Messages API,
+everything else → OpenAI-compatible); set `api_family` explicitly for aliased
+endpoints so validation and upstream auth conventions (x-api-key +
+anthropic-version vs bearer) apply correctly:
 
 ```yaml
 gateway:
@@ -407,6 +415,11 @@ gateway:
       base_url: "https://api.mistral.ai"
       secret_name: "mistral-api-key"
       region: "EU"
+    anthropic-eu:
+      base_url: "https://eu.anthropic.example.com"
+      secret_name: "anthropic-eu-key"
+      region: "EU"
+      api_family: "anthropic"   # anthropic-compatible alias: joins anthropic chains
 ```
 
 Agent runs (`talon run`) — chain per routing tier; candidates are re-checked

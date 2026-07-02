@@ -678,7 +678,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			headers[k] = v[0]
 		}
 	}
-	if route.Provider == "anthropic" {
+	if g.config.providerAPIFamily(route.Provider) == "anthropic" {
 		if v := r.Header.Get("anthropic-version"); v != "" {
 			headers["anthropic-version"] = v
 		} else {
@@ -726,7 +726,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
 				return
 			}
-			if route.Provider == "anthropic" {
+			if g.config.providerAPIFamily(route.Provider) == "anthropic" {
 				headers["x-api-key"] = string(secret.Value)
 			} else {
 				headers["Authorization"] = "Bearer " + string(secret.Value)

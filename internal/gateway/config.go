@@ -74,6 +74,13 @@ type ProviderConfig struct {
 	BlockedModels    []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
 	ForbiddenTools   []string `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
 	ToolPolicyAction string   `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"` // filter | block
+	// APIFamily declares the provider's wire format: "openai" or "anthropic".
+	// Used for fallback-chain validation and upstream auth conventions
+	// (x-api-key + anthropic-version vs Authorization: Bearer). When empty it
+	// defaults by provider name: "anthropic" → anthropic, everything else →
+	// openai-compatible. Set it explicitly for aliased endpoints (e.g. an
+	// "anthropic-eu" provider pointing at an Anthropic-compatible base_url).
+	APIFamily string `yaml:"api_family,omitempty" json:"api_family,omitempty"`
 	// Fallback is the ordered error-driven fallback chain for this provider:
 	// on a transient upstream failure (timeout / connection error / 429 / 5xx)
 	// the gateway retries the request against each target in order, subject to
@@ -91,10 +98,14 @@ type FallbackTarget struct {
 	Model string `yaml:"model,omitempty" json:"model,omitempty"`
 }
 
-// providerAPIFamily groups providers by wire format for fallback chain
-// validation. Anthropic uses its own Messages API; every other gateway
-// provider is treated as OpenAI-compatible (matching WriteProviderError).
-func providerAPIFamily(name string) string {
+// providerAPIFamily resolves a provider's wire format: the explicit
+// api_family config field wins; otherwise the name convention applies —
+// "anthropic" uses the Anthropic Messages API, every other provider is
+// treated as OpenAI-compatible (matching WriteProviderError).
+func (c *GatewayConfig) providerAPIFamily(name string) string {
+	if p, ok := c.Providers[name]; ok && p.APIFamily != "" {
+		return p.APIFamily
+	}
 	if name == "anthropic" {
 		return "anthropic"
 	}
@@ -325,6 +336,7 @@ func normalizeProviderRegions(providers map[string]ProviderConfig) {
 		for i := range p.Fallback {
 			p.Fallback[i].Provider = strings.ToLower(strings.TrimSpace(p.Fallback[i].Provider))
 		}
+		p.APIFamily = strings.ToLower(strings.TrimSpace(p.APIFamily))
 		providers[name] = p
 	}
 }
@@ -371,6 +383,11 @@ func (c *GatewayConfig) Validate() error {
 		case "secret", "client_bearer":
 		default:
 			return fmt.Errorf("gateway provider %q: upstream_auth_mode must be secret or client_bearer", name)
+		}
+		switch p.APIFamily {
+		case "", "openai", "anthropic":
+		default:
+			return fmt.Errorf("gateway provider %q: api_family must be openai or anthropic", name)
 		}
 		if p.BaseURL == "" && (name == "openai" || name == "anthropic" || name == "ollama") {
 			return fmt.Errorf("gateway provider %q: base_url is required", name)
@@ -435,7 +452,7 @@ func (c *GatewayConfig) Validate() error {
 // would send an incompatible payload).
 func (c *GatewayConfig) validateFallbackChain(owner string, p ProviderConfig) error {
 	seen := map[string]bool{owner: true}
-	family := providerAPIFamily(owner)
+	family := c.providerAPIFamily(owner)
 	for i, target := range p.Fallback {
 		tname := strings.ToLower(strings.TrimSpace(target.Provider))
 		if tname == "" {
@@ -449,7 +466,7 @@ func (c *GatewayConfig) validateFallbackChain(owner string, p ProviderConfig) er
 		if !ok || !tp.Enabled {
 			return fmt.Errorf("gateway provider %q: fallback[%d]: target %q is not an enabled gateway provider", owner, i, tname)
 		}
-		if tf := providerAPIFamily(tname); tf != family {
+		if tf := c.providerAPIFamily(tname); tf != family {
 			return fmt.Errorf("gateway provider %q: fallback[%d]: target %q API family %q does not match %q — fallback forwards the request body as-is (only the model field is rewritten)", owner, i, tname, tf, family)
 		}
 	}
