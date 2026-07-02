@@ -232,6 +232,45 @@ Confidential-tier and high-severity-PII requests are not cached (OPA cache polic
 
 ---
 
+### Scanner block (external PII engines)
+
+Optional. Selects **one** globally active PII scanner engine per Talon
+instance. When absent, the built-in regex scanner is used — zero config, no
+runtime dependency. An external engine **replaces** the built-in scanner (no
+result merging) and is **fail-closed**: a scan timeout or error blocks egress
+in enforce mode.
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `scanner.type` | `regex` | `regex` (built-in), `presidio` (Presidio analyzer REST sidecar), `http` (custom engine speaking the Presidio wire format), or `llm` (OpenAI-compatible endpoint prompted for NER, e.g. Ollama). |
+| `scanner.endpoint` | — | `http(s)://host:port` or `unix:///path/to.sock`. Required for `presidio`/`http`; defaults to `ollama_base_url` + `/v1` for `llm`. |
+| `scanner.timeout` | `10s` | Per-scan deadline. No retries — a timeout is an engine failure and blocks in enforce mode. |
+| `scanner.min_score` | `0.5` | Entities below this confidence are discarded. |
+| `scanner.language` | `en` | Forwarded in Presidio `/analyze` requests. |
+| `scanner.offset_encoding` | per type | Override the offset encoding the engine reports: `byte` or `rune`. Defaults: `presidio` → `rune` (stock Presidio reports codepoint offsets), `http` → `byte`. |
+| `scanner.name` | engine type | Detector identity recorded in evidence. |
+| `scanner.engine_version` | — | Operator-declared version recorded in evidence. |
+| `scanner.entities` | — | Optional entity-type list forwarded to the engine. |
+| `scanner.health_check` | `true` | Eager startup probe; Talon refuses to start when the engine is unreachable. |
+| `scanner.llm.model` | — | Model id for `type: llm` (required), e.g. `llama3.1:8b`. |
+| `scanner.llm.confidence` | `0.8` | Confidence assigned to LLM-detected entities. |
+
+```yaml
+scanner:
+  type: presidio
+  endpoint: "http://localhost:5002"
+  timeout: "10s"
+  name: "presidio-prod"
+  engine_version: "2.2.354"
+```
+
+Under `sovereignty.deployment_mode: air_gap`, only provably local endpoints
+are accepted (unix sockets, loopback, private/link-local addresses). See
+[External scanner engines](external-scanners.md) for the wire protocol,
+fail-closed semantics, and deployment patterns.
+
+---
+
 ### Compliance block (controller identity)
 
 Optional. Org-level declared facts for auditor exports, owned by the platform team together with the DPO. The controller identity populates GDPR Art. 30(1)(a) in the RoPA export; per-agent processing declarations live in `agent.talon.yaml` (see above).
