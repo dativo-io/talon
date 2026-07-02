@@ -915,6 +915,19 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			r.recordEarlyTermination(ctx, correlationID, req, "scanner_unavailable: "+redactErr.Error(), startTime)
 			return nil, fmt.Errorf("PII redaction failed (fail-closed): %w", redactErr)
 		}
+		// Redaction is best-effort until verified: re-scan the redacted prompt
+		// and fail closed on residual PII or an unverifiable scan (same
+		// posture as gateway request redaction).
+		if verifyErr := runClassifier.VerifyEgress(
+			classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedPrompt); verifyErr != nil {
+			span.RecordError(verifyErr)
+			reason := "input_residual_pii_after_redaction"
+			if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
+				reason = "scanner_unavailable: input redaction could not be verified"
+			}
+			r.recordEarlyTermination(ctx, correlationID, req, reason, startTime)
+			return nil, fmt.Errorf("input redaction verification failed (fail-closed): %w", verifyErr)
+		}
 		finalPrompt = redactedPrompt
 		inputPIIRedacted = true
 		span.SetAttributes(attribute.Bool("classification.input_pii_redacted", true))
@@ -1294,9 +1307,60 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 							}
 							if dc.ShouldRedactOutput() {
 								redactedCache, cacheRedactErr := piiScanner.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), hit.ResponseText)
+								if cacheRedactErr == nil {
+									cacheRedactErr = piiScanner.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redactedCache)
+								}
 								if cacheRedactErr != nil {
-									// Fail-closed: deny the cached response outright.
-									return &RunResponse{PolicyAllow: false, DenyReason: "Cached output redaction failed: PII scanner unavailable (fail-closed)", SessionID: req.SessionID}, nil
+									// Fail-closed: deny the cached response outright,
+									// with a signed audit trail for the denial.
+									denyReason := "Cached output redaction failed: PII scanner unavailable (fail-closed)"
+									evReason := "cached output redaction failed: scanner unavailable"
+									if errors.Is(cacheRedactErr, classifier.ErrPIIDetected) {
+										denyReason = "Cached output blocked: recognized PII remains after redaction (fail-closed)"
+										evReason = "cached output residual pii after redaction"
+									}
+									scannerInfo := evidence.NewScannerInfo(piiScanner)
+									if scannerInfo != nil && !errors.Is(cacheRedactErr, classifier.ErrPIIDetected) {
+										scannerInfo.Failure = "scanner_unavailable"
+									}
+									if _, err := r.evidence.Generate(ctx, evidence.GenerateParams{
+										CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+										InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
+										PolicyDecision: evidence.PolicyDecision{
+											Allowed: false, Action: "block_on_output_pii",
+											Reasons:       []string{evReason},
+											PolicyVersion: pol.VersionTag,
+										},
+										Classification: evidence.Classification{
+											InputTier:   tier,
+											PIIDetected: append(piiNames, cacheOutputPIINames...),
+											Scanner:     scannerInfo,
+										},
+										CacheHit: true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity,
+										Compliance: compliance, InputPrompt: req.Prompt,
+										DataFlow: buildRunDataFlow(runFlowInputs{
+											TenantID: req.TenantID, InvocationType: req.InvocationType,
+											CacheHit: true, CacheEntryID: hit.ID,
+											InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
+											OutputTier: cacheOutputClass.Tier, OutputPIITypes: cacheOutputPIINames, OutputBlocked: true,
+											Detector: piiScanner.Detector(),
+										}),
+										ExplanationFacts: []explanation.Fact{{
+											Code:            explanation.CodePolicyDeniedPIIOutput,
+											Decision:        explanation.DecisionDeny,
+											Stage:           explanation.StageOutputValidation,
+											Trigger:         evReason,
+											PolicyRef:       explanationPolicyRef(pol.VersionTag),
+											VersionIdentity: pol.VersionTag,
+										}},
+									}); err != nil {
+										log.Error().Err(err).
+											Str("correlation_id", correlationID).
+											Str("tenant_id", req.TenantID).
+											Str("agent_id", req.AgentName).
+											Msg("evidence_write_failed_cache_output_redaction_block")
+									}
+									return &RunResponse{PolicyAllow: false, DenyReason: denyReason, SessionID: req.SessionID}, nil
 								}
 								cacheResponseText = redactedCache
 								cacheOutputRedacted = true
@@ -1924,6 +1988,20 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				span.RecordError(redactErr)
 				r.recordEarlyTermination(ctx, correlationID, req, "output_scanner_unavailable: "+redactErr.Error(), startTime)
 				return &RunResponse{PolicyAllow: false, DenyReason: "Output redaction failed: PII scanner unavailable (fail-closed)", SessionID: req.SessionID}, nil
+			}
+			// Verify the redacted output before it is surfaced: residual PII
+			// or an unverifiable re-scan denies the run (fail-closed), same
+			// posture as gateway/MCP response redaction.
+			if verifyErr := piiScanner.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redactedOutput); verifyErr != nil {
+				span.RecordError(verifyErr)
+				reason := "output_residual_pii_after_redaction"
+				deny := "Output blocked: recognized PII remains after redaction (fail-closed)"
+				if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
+					reason = "output_scanner_unavailable: redaction could not be verified"
+					deny = "Output blocked: redaction could not be verified (fail-closed)"
+				}
+				r.recordEarlyTermination(ctx, correlationID, req, reason, startTime)
+				return &RunResponse{PolicyAllow: false, DenyReason: deny, SessionID: req.SessionID}, nil
 			}
 			responseContent = redactedOutput
 			outputPIIRedacted = true

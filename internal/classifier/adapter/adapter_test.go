@@ -291,3 +291,62 @@ func TestNew_RejectsBadEndpoints(t *testing.T) {
 		assert.Error(t, err, endpoint)
 	}
 }
+
+func TestAnalyze_StockPresidioHighRiskTypesTierTwo(t *testing.T) {
+	// Stock Presidio sends no Talon expected_sensitivity; high-risk built-in
+	// types must still tier as 2, or model routing and sovereignty gates
+	// silently degrade (issue #181 review finding).
+	tests := []struct {
+		entityType string
+		value      string
+	}{
+		{"IBAN_CODE", "DE89370400440532013000"},
+		{"PASSPORT", "C01X00T47"},
+		{"CREDIT_CARD", "4111111111111111"},
+		{"PL_PESEL", "44051401359"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.entityType, func(t *testing.T) {
+			text := "value " + tt.value + " here"
+			srv := testutil.NewPresidioMockServer(t, func(got string) []presidio.RecognizerResult {
+				start := strings.Index(got, tt.value)
+				return []presidio.RecognizerResult{{
+					EntityType: tt.entityType,
+					Start:      start,
+					End:        start + len(tt.value),
+					Score:      0.9,
+					// No ExpectedSensitivity: stock Presidio behavior.
+				}}
+			})
+			a := newAdapter(t, adapter.Config{Type: adapter.TypePresidio, Endpoint: srv.URL})
+
+			cls, err := a.Analyze(context.Background(), text)
+			require.NoError(t, err)
+			require.Len(t, cls.Entities, 1)
+			assert.GreaterOrEqual(t, cls.Entities[0].Sensitivity, 2,
+				"%s must keep its built-in sensitivity without a wire hint", tt.entityType)
+			assert.Equal(t, 2, cls.Tier, "high-risk external detection must yield tier 2")
+		})
+	}
+}
+
+func TestAnalyze_ExplicitWireSensitivityWins(t *testing.T) {
+	text := "code XY-123 here"
+	srv := testutil.NewPresidioMockServer(t, func(got string) []presidio.RecognizerResult {
+		start := strings.Index(got, "XY-123")
+		return []presidio.RecognizerResult{{
+			EntityType:          "INTERNAL_PROJECT_CODE",
+			Start:               start,
+			End:                 start + len("XY-123"),
+			Score:               0.9,
+			ExpectedSensitivity: 3,
+		}}
+	})
+	a := newAdapter(t, adapter.Config{Type: adapter.TypeHTTP, Endpoint: srv.URL})
+
+	cls, err := a.Analyze(context.Background(), text)
+	require.NoError(t, err)
+	require.Len(t, cls.Entities, 1)
+	assert.Equal(t, 3, cls.Entities[0].Sensitivity, "an explicit wire sensitivity is never overridden")
+	assert.Equal(t, 2, cls.Tier)
+}

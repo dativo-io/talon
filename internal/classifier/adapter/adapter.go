@@ -212,6 +212,13 @@ func (a *HTTPAdapter) normalize(ctx context.Context, text string, results []pres
 		if r.OffsetEncoding == "" {
 			r.OffsetEncoding = a.cfg.DefaultOffsetEncoding
 		}
+		if r.ExpectedSensitivity == 0 {
+			// External engines carry no Talon sensitivity levels; without
+			// this, stock Presidio detections (IBAN_CODE, PASSPORT, …) would
+			// all tier as 1 and break model routing/sovereignty gates. Map
+			// from the built-in registry; unknown custom types stay 1.
+			r.ExpectedSensitivity = classifier.SensitivityForType(r.EntityType)
+		}
 		kept = append(kept, r)
 	}
 
