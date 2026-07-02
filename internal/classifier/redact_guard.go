@@ -44,20 +44,25 @@ func ResidualTypes(err error) []string {
 
 // RedactGuard verifies that no recognized PII remains before egress.
 type RedactGuard struct {
-	scanner *Scanner
+	analyzer Analyzer
 }
 
-// NewRedactGuard returns a verifier bound to the scanner.
-func NewRedactGuard(scanner *Scanner) *RedactGuard {
-	return &RedactGuard{scanner: scanner}
+// NewRedactGuard returns a verifier bound to the analysis engine.
+func NewRedactGuard(analyzer Analyzer) *RedactGuard {
+	return &RedactGuard{analyzer: analyzer}
 }
 
-// Verify runs a post-redaction scan and fails closed on residual PII.
+// Verify runs a post-redaction scan and fails closed: residual PII yields a
+// *ResidualPIIError, and an engine failure yields the scan error itself — an
+// egress that cannot be verified must not proceed.
 func (g *RedactGuard) Verify(ctx context.Context, text string) error {
-	if g == nil || g.scanner == nil || text == "" {
+	if g == nil || g.analyzer == nil || text == "" {
 		return nil
 	}
-	cls := g.scanner.Scan(ctx, text)
+	cls, err := g.analyzer.Analyze(ctx, text)
+	if err != nil {
+		return fmt.Errorf("egress verification scan failed (fail-closed): %w", err)
+	}
 	if cls == nil || !cls.HasPII || len(cls.Entities) == 0 {
 		return nil
 	}
