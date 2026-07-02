@@ -10,6 +10,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/dativo-io/talon/internal/classifier"
+	"github.com/dativo-io/talon/internal/classifier/adapter"
 )
 
 // ResponsePIIScanResult captures what the response PII scanner found.
@@ -49,6 +50,11 @@ func (rc *responseCapture) WriteHeader(code int) {
 
 func (rc *responseCapture) Write(b []byte) (int, error) {
 	rc.written = true
+	// net/http defaults an unset status to 200 on first Write; mirror that so
+	// downstream checks (e.g. cache-on-200) see the effective status.
+	if rc.statusCode == 0 {
+		rc.statusCode = http.StatusOK
+	}
 	return rc.body.Write(b)
 }
 
@@ -104,7 +110,7 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 		// gates, so the response passes with a logged warning.
 		if action == "block" || action == "redact" {
 			result.Blocked = true
-			result.ScannerFailure = "scanner_unavailable"
+			result.ScannerFailure = scannerFailureKind(scanErr)
 			result.BlockReason = "output_scanner_unavailable"
 			log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_blocked")
 			return scannerUnavailableBody(), result
@@ -134,7 +140,7 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 		if redactErr != nil {
 			result.Redacted = true
 			result.Blocked = true
-			result.ScannerFailure = "scanner_unavailable"
+			result.ScannerFailure = scannerFailureKind(redactErr)
 			result.BlockReason = "output_scanner_unavailable"
 			log.Warn().Err(redactErr).Msg("response_pii_redaction_failed_blocked")
 			return scannerUnavailableBody(), result
@@ -198,6 +204,16 @@ func scannerUnavailableBody() []byte {
 		},
 	})
 	return blocked
+}
+
+// scannerFailureKind returns the typed adapter failure kind (timeout,
+// transport, status, decode, validation) for evidence, falling back to the
+// generic scanner_unavailable for non-adapter engines.
+func scannerFailureKind(err error) string {
+	if kind := adapter.FailureKind(err); kind != "" {
+		return kind
+	}
+	return "scanner_unavailable"
 }
 
 func residualPIIBlockMessage(prefix string, types []string) string {
@@ -525,7 +541,7 @@ func handleStreamingPIIScan(
 		if action == "block" || action == "redact" {
 			forwardScannerUnavailableResponse(w)
 			log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_blocked_stream")
-			return &ResponsePIIScanResult{Blocked: true, ScannerFailure: "scanner_unavailable", BlockReason: "output_scanner_unavailable"}
+			return &ResponsePIIScanResult{Blocked: true, ScannerFailure: scannerFailureKind(scanErr), BlockReason: "output_scanner_unavailable"}
 		}
 		log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_warn_stream")
 		forwardBufferedSSE(w, capture)
@@ -565,7 +581,7 @@ func handleStreamingPIIScan(
 				forwardScannerUnavailableResponse(w)
 				result.Redacted = true
 				result.Blocked = true
-				result.ScannerFailure = "scanner_unavailable"
+				result.ScannerFailure = scannerFailureKind(redactErr)
 				result.BlockReason = "output_scanner_unavailable"
 				log.Warn().Err(redactErr).Msg("response_pii_redaction_failed_blocked_stream")
 				break
@@ -587,7 +603,7 @@ func handleStreamingPIIScan(
 				forwardScannerUnavailableResponse(w)
 				result.Redacted = true
 				result.Blocked = true
-				result.ScannerFailure = "scanner_unavailable"
+				result.ScannerFailure = scannerFailureKind(redactErr)
 				result.BlockReason = "output_scanner_unavailable"
 				log.Warn().Err(redactErr).Msg("response_pii_redaction_failed_blocked_stream")
 				break

@@ -86,7 +86,8 @@ func TestExternalScannerFailClosed_EnforceBlocksRequest(t *testing.T) {
 	ev := latestGatewayEvidence(t, evStore)
 	require.NotNil(t, ev.Classification.Scanner, "evidence must identify the scan engine")
 	assert.Equal(t, "failing-engine", ev.Classification.Scanner.Engine)
-	assert.Equal(t, "scanner_unavailable", ev.Classification.Scanner.Failure)
+	assert.Equal(t, "status", ev.Classification.Scanner.Failure,
+		"adapter-backed failures record the typed kind, not a generic label")
 	assert.False(t, ev.PolicyDecision.Allowed)
 }
 
@@ -243,7 +244,8 @@ func TestExternalScannerFailClosed_ResponseScanFailure502AndEvidenceDenied(t *te
 	assert.False(t, ev.PolicyDecision.Allowed)
 	assert.Contains(t, ev.PolicyDecision.Reasons, "output_scanner_unavailable")
 	require.NotNil(t, ev.Classification.Scanner)
-	assert.Equal(t, "scanner_unavailable", ev.Classification.Scanner.Failure)
+	assert.Equal(t, "status", ev.Classification.Scanner.Failure,
+		"response-path scanner failures record the typed adapter kind")
 }
 
 func TestExternalScanner_ShadowResponsePII_ForwardsAndRecordsViolation(t *testing.T) {
@@ -265,4 +267,41 @@ func TestExternalScanner_ShadowResponsePII_ForwardsAndRecordsViolation(t *testin
 		}
 	}
 	assert.True(t, found, "shadow evidence must record the would-be response block, got %+v", ev.ShadowViolations)
+}
+
+// ibanDetectingExternalScanner reports IBAN_CODE (built-in sensitivity 2)
+// for every occurrence of the given IBAN — no wire sensitivity hints.
+func ibanDetectingExternalScanner(t *testing.T, iban string) *adapter.HTTPAdapter {
+	t.Helper()
+	srv := testutil.NewPresidioMockServer(t, func(text string) []presidio.RecognizerResult {
+		idx := strings.Index(text, iban)
+		if idx < 0 {
+			return nil
+		}
+		return []presidio.RecognizerResult{{
+			EntityType: "IBAN_CODE", Start: idx, End: idx + len(iban), Score: 1.0,
+		}}
+	})
+	a, err := adapter.New(adapter.Config{Type: adapter.TypePresidio, Endpoint: srv.URL, Name: "iban-engine"})
+	require.NoError(t, err)
+	return a
+}
+
+func TestExternalScanner_OutputTierReflectsResponseContent(t *testing.T) {
+	// Clean tier-0 prompt; the RESPONSE leaks an IBAN (sensitivity 2).
+	// Evidence must record output_tier 2, not a copy of the input tier.
+	const iban = "DE89370400440532013000"
+	gw, _, evStore := setupGatewayWithClassifier(t, "block", ModeEnforce,
+		chatUpstreamWithContent("wire the funds to "+iban),
+		ibanDetectingExternalScanner(t, iban))
+
+	w := makeGatewayRequest(gw, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"clean prompt"}]}`)
+	require.Equal(t, http.StatusUnavailableForLegalReasons, w.Code)
+
+	ev := latestGatewayEvidence(t, evStore)
+	assert.Equal(t, 0, ev.Classification.InputTier, "prompt was clean")
+	assert.Equal(t, 2, ev.Classification.OutputTier,
+		"blocked high-risk output must record its own tier, not the input tier")
+	assert.True(t, ev.Classification.OutputPIIDetected)
+	assert.False(t, ev.PolicyDecision.Allowed)
 }

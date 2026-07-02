@@ -26,6 +26,7 @@ type RecordGatewayEvidenceParams struct {
 	ObservationModeOverride bool
 	ShadowViolations        []evidence.ShadowViolation
 	InputTier               int
+	OutputTier              int
 	PIIDetected             []string
 	PIIRedacted             bool
 	OutputPIIDetected       bool
@@ -112,7 +113,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		},
 		Classification: evidence.Classification{
 			InputTier:         params.InputTier,
-			OutputTier:        params.InputTier,
+			OutputTier:        params.OutputTier,
 			PIIDetected:       params.PIIDetected,
 			PIIRedacted:       params.PIIRedacted,
 			OutputPIIDetected: params.OutputPIIDetected,

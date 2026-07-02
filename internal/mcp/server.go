@@ -187,29 +187,8 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 		cls, scanErr := h.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
 		if scanErr != nil {
 			flow.argBlocked = true
-			correlationID := "mcp_" + uuid.New().String()[:8]
-			blockEv := h.newServerEvidence(tenantID, agentID, correlationID, params.Name, evidence.PolicyDecision{
-				Allowed:       false,
-				Action:        "deny",
-				Reasons:       []string{"scanner_unavailable"},
-				PolicyVersion: decision.PolicyVersion,
-			}, "scanner unavailable", 0, flow)
-			blockEv.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
-				Code:            explanation.CodeExecutionFailed,
-				Decision:        explanation.DecisionDeny,
-				Stage:           explanation.StagePolicyEvaluation,
-				Trigger:         "scanner_unavailable",
-				PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
-				VersionIdentity: decision.PolicyVersion,
-			}})
-			if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
-				span.RecordError(storeErr)
-			}
-			return &jsonrpcResponse{
-				JSONRPC: jsonrpcVersion,
-				ID:      req.ID,
-				Error:   &rpcError{Code: codeServerError, Message: "Tool arguments blocked: PII scanner unavailable (fail-closed)"},
-			}
+			return h.scannerBlockedResponse(ctx, span, req.ID, tenantID, agentID, params.Name, decision.PolicyVersion,
+				scanErr, "scanner_unavailable", "scanner unavailable", "Tool arguments blocked: PII scanner unavailable (fail-closed)", explanation.StagePolicyEvaluation, 0, flow)
 		}
 		flow.argTier = cls.Tier
 		if cls.HasPII {
@@ -218,29 +197,8 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 			redactedArgs, redactErr := h.classifier.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
 			if redactErr != nil {
 				flow.argBlocked = true
-				correlationID := "mcp_" + uuid.New().String()[:8]
-				blockEv := h.newServerEvidence(tenantID, agentID, correlationID, params.Name, evidence.PolicyDecision{
-					Allowed:       false,
-					Action:        "deny",
-					Reasons:       []string{"scanner_unavailable"},
-					PolicyVersion: decision.PolicyVersion,
-				}, "redaction failed: scanner unavailable", 0, flow)
-				blockEv.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
-					Code:            explanation.CodeExecutionFailed,
-					Decision:        explanation.DecisionDeny,
-					Stage:           explanation.StagePolicyEvaluation,
-					Trigger:         "scanner_unavailable",
-					PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
-					VersionIdentity: decision.PolicyVersion,
-				}})
-				if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
-					span.RecordError(storeErr)
-				}
-				return &jsonrpcResponse{
-					JSONRPC: jsonrpcVersion,
-					ID:      req.ID,
-					Error:   &rpcError{Code: codeServerError, Message: "Tool arguments blocked: PII redaction failed (fail-closed)"},
-				}
+				return h.scannerBlockedResponse(ctx, span, req.ID, tenantID, agentID, params.Name, decision.PolicyVersion,
+					redactErr, "scanner_unavailable", "redaction failed: scanner unavailable", "Tool arguments blocked: PII redaction failed (fail-closed)", explanation.StagePolicyEvaluation, 0, flow)
 			}
 			flow.argRedacted = redactedArgs != argStr
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedArgs); verifyErr != nil {
@@ -353,29 +311,8 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 			cls, scanErr := h.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
 			if scanErr != nil {
 				flow.resultBlocked = true
-				correlationID := "mcp_" + uuid.New().String()[:8]
-				blockEv := h.newServerEvidence(tenantID, agentID, correlationID, params.Name, evidence.PolicyDecision{
-					Allowed:       false,
-					Action:        "deny",
-					Reasons:       []string{"output_scanner_unavailable"},
-					PolicyVersion: decision.PolicyVersion,
-				}, "output scanner unavailable", duration, flow)
-				blockEv.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
-					Code:            explanation.CodeExecutionFailed,
-					Decision:        explanation.DecisionDeny,
-					Stage:           explanation.StageOutputValidation,
-					Trigger:         "output_scanner_unavailable",
-					PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
-					VersionIdentity: decision.PolicyVersion,
-				}})
-				if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
-					span.RecordError(storeErr)
-				}
-				return &jsonrpcResponse{
-					JSONRPC: jsonrpcVersion,
-					ID:      req.ID,
-					Error:   &rpcError{Code: codeServerError, Message: "Tool result blocked: PII scanner unavailable (fail-closed)"},
-				}
+				return h.scannerBlockedResponse(ctx, span, req.ID, tenantID, agentID, params.Name, decision.PolicyVersion,
+					scanErr, "output_scanner_unavailable", "output scanner unavailable", "Tool result blocked: PII scanner unavailable (fail-closed)", explanation.StageOutputValidation, duration, flow)
 			}
 			flow.resultTier = cls.Tier
 			if cls.HasPII {
@@ -384,29 +321,8 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 				redacted, redactErr := h.classifier.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
 				if redactErr != nil {
 					flow.resultBlocked = true
-					correlationID := "mcp_" + uuid.New().String()[:8]
-					blockEv := h.newServerEvidence(tenantID, agentID, correlationID, params.Name, evidence.PolicyDecision{
-						Allowed:       false,
-						Action:        "deny",
-						Reasons:       []string{"output_scanner_unavailable"},
-						PolicyVersion: decision.PolicyVersion,
-					}, "output redaction failed: scanner unavailable", duration, flow)
-					blockEv.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
-						Code:            explanation.CodeExecutionFailed,
-						Decision:        explanation.DecisionDeny,
-						Stage:           explanation.StageOutputValidation,
-						Trigger:         "output_scanner_unavailable",
-						PolicyRef:       explanation.PolicyRef(decision.PolicyVersion),
-						VersionIdentity: decision.PolicyVersion,
-					}})
-					if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
-						span.RecordError(storeErr)
-					}
-					return &jsonrpcResponse{
-						JSONRPC: jsonrpcVersion,
-						ID:      req.ID,
-						Error:   &rpcError{Code: codeServerError, Message: "Tool result blocked: PII redaction failed (fail-closed)"},
-					}
+					return h.scannerBlockedResponse(ctx, span, req.ID, tenantID, agentID, params.Name, decision.PolicyVersion,
+						redactErr, "output_scanner_unavailable", "output redaction failed: scanner unavailable", "Tool result blocked: PII redaction failed (fail-closed)", explanation.StageOutputValidation, duration, flow)
 				}
 				flow.resultRedacted = redacted != resultStr
 				if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redacted); verifyErr != nil {
@@ -548,6 +464,38 @@ func (h *Handler) buildServerDataFlow(
 		detector = h.classifier.Detector()
 	}
 	return &evidence.DataFlow{Detector: detector, Items: items}
+}
+
+// scannerBlockedResponse records fail-closed deny evidence for a scan-engine
+// failure (typed failure kind included) and returns the JSON-RPC error to
+// surface to the caller.
+func (h *Handler) scannerBlockedResponse(ctx context.Context, span trace.Span, reqID interface{}, tenantID, agentID, toolName, policyVersion string, scanErr error, trigger, evReason, clientMsg, stage string, durationMS int64, flow *serverFlowState) *jsonrpcResponse {
+	correlationID := "mcp_" + uuid.New().String()[:8]
+	blockEv := h.newServerEvidence(tenantID, agentID, correlationID, toolName, evidence.PolicyDecision{
+		Allowed:       false,
+		Action:        "deny",
+		Reasons:       []string{trigger},
+		PolicyVersion: policyVersion,
+	}, evReason, durationMS, flow)
+	if blockEv.Classification.Scanner != nil {
+		blockEv.Classification.Scanner.Failure = scannerFailureKind(scanErr)
+	}
+	blockEv.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
+		Code:            explanation.CodeExecutionFailed,
+		Decision:        explanation.DecisionDeny,
+		Stage:           stage,
+		Trigger:         trigger,
+		PolicyRef:       explanation.PolicyRef(policyVersion),
+		VersionIdentity: policyVersion,
+	}})
+	if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
+		span.RecordError(storeErr)
+	}
+	return &jsonrpcResponse{
+		JSONRPC: jsonrpcVersion,
+		ID:      reqID,
+		Error:   &rpcError{Code: codeServerError, Message: clientMsg},
+	}
 }
 
 func (h *Handler) newServerEvidence(

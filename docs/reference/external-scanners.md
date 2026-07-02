@@ -127,17 +127,23 @@ which is untrusted. There are **no retries**; tune `scanner.timeout` instead.
 
 ## Evidence and observability
 
-Every blocked outcome is a real denial end to end: the caller receives a
-non-200 error body (451 for PII policy blocks, 502 for scanner failures on
-the response path), evidence records `policy_decision.allowed=false` with a
-machine reason (`output_pii_blocked`, `output_residual_pii_after_redaction`,
-`output_scanner_unavailable`, …), and metrics count the request as blocked.
-Shadow mode inverts this consistently: nothing is blocked or mutated, and
-the would-be enforcement is recorded as a shadow violation.
+Every blocked outcome is a real denial end to end: gateway HTTP paths return
+a non-200 error body (451 for PII policy blocks, 502 for scanner failures —
+never the upstream 200), while MCP paths return a JSON-RPC error object (over
+HTTP 200, per JSON-RPC convention). In both cases evidence records
+`policy_decision.allowed=false` with a machine reason (`output_pii_blocked`,
+`output_residual_pii_after_redaction`, `output_scanner_unavailable`, …), and
+metrics count the request as blocked. Shadow mode inverts this consistently:
+nothing is blocked or mutated, and the would-be enforcement is recorded as a
+shadow violation.
 
 Each evidence record carries `classification.scanner` — engine identity,
-type, declared version, scan duration, and the failure kind when a scanner
-failure drove a block ([spec v1.4](evidence-integrity-spec.md)). Raw PII
+type, declared version, scan duration, and on scanner-driven blocks the
+**typed failure kind** (`timeout`, `transport`, `status`, `decode`,
+`validation`; `scanner_unavailable` only for engines outside the adapter
+error model) — see [spec v1.4](evidence-integrity-spec.md). `output_tier`
+reflects the scanned response content itself, so a clean prompt whose
+response leaked an IBAN records `input_tier: 0, output_tier: 2`. Raw PII
 text and raw engine errors are never stored.
 
 OTel: spans `scanner.adapter.analyze` / `scanner.adapter.health`; metrics

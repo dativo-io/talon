@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/classifier"
+	"github.com/dativo-io/talon/internal/classifier/adapter"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
@@ -31,7 +33,7 @@ type markerFacade struct {
 
 func (f *markerFacade) Analyze(_ context.Context, text string) (*classifier.Classification, error) {
 	if f.failMarker != "" && strings.Contains(text, f.failMarker) {
-		return nil, &scannerDownError{}
+		return nil, &adapter.Error{Kind: adapter.KindTimeout, Detector: "marker-engine", Err: errEngineTimedOut}
 	}
 	if f.piiMarker != "" {
 		if idx := strings.Index(text, f.piiMarker); idx >= 0 {
@@ -48,7 +50,7 @@ func (f *markerFacade) Detector() string { return "marker-engine" }
 
 func (f *markerFacade) RedactText(_ context.Context, text string) (string, error) {
 	if f.failMarker != "" && strings.Contains(text, f.failMarker) {
-		return "", &scannerDownError{}
+		return "", &adapter.Error{Kind: adapter.KindTimeout, Detector: "marker-engine", Err: errEngineTimedOut}
 	}
 	return text, nil // sloppy: leaves PII in place
 }
@@ -57,9 +59,7 @@ func (f *markerFacade) VerifyEgress(ctx context.Context, text string) error {
 	return classifier.NewRedactGuard(f).Verify(ctx, text)
 }
 
-type scannerDownError struct{}
-
-func (e *scannerDownError) Error() string { return "external PII scanner unavailable: engine down" }
+var errEngineTimedOut = errors.New("engine timed out")
 
 var _ classifier.Facade = (*markerFacade)(nil)
 
@@ -133,7 +133,8 @@ func TestProxyEvidence_OutputScannerUnavailable_Denied(t *testing.T) {
 	assert.Contains(t, ev.PolicyDecision.Reasons, "output_scanner_unavailable")
 	require.NotNil(t, ev.Classification.Scanner, "proxy evidence must identify the scan engine")
 	assert.Equal(t, "marker-engine", ev.Classification.Scanner.Engine)
-	assert.Equal(t, "scanner_unavailable", ev.Classification.Scanner.Failure)
+	assert.Equal(t, "timeout", ev.Classification.Scanner.Failure,
+		"adapter-backed failures record the typed kind, not a generic label")
 }
 
 func TestProxyEvidence_OutputResidualPII_Denied(t *testing.T) {

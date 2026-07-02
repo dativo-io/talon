@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 
 	"github.com/dativo-io/talon/internal/classifier"
+	"github.com/dativo-io/talon/internal/classifier/adapter"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/otel"
@@ -173,6 +174,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		result, scanErr := h.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
 		if scanErr != nil {
 			flow.requestBlocked = true
+			flow.scannerFailure = scannerFailureKind(scanErr)
 			h.recordEvidence(ctx, tenantID, "proxy_pii_scan_error", toolName, nil, "scanner_unavailable", &flow)
 			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Request blocked: PII scanner unavailable (fail-closed)"}}
 		}
@@ -197,6 +199,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			redactedArgs, redactErr := h.classifier.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
 			if redactErr != nil {
 				flow.requestBlocked = true
+				flow.scannerFailure = scannerFailureKind(redactErr)
 				h.recordEvidence(ctx, tenantID, "proxy_pii_scan_error", toolName, nil, "scanner_unavailable", &flow)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Request blocked: PII redaction failed (fail-closed)"}}
 			}
@@ -254,6 +257,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		cls, scanErr := h.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
 		if scanErr != nil {
 			flow.responseBlocked = true
+			flow.scannerFailure = scannerFailureKind(scanErr)
 			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_scanner_unavailable", &flow)
 			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Tool result blocked: PII scanner unavailable (fail-closed)"}}
 		}
@@ -274,6 +278,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			redacted, redactErr := h.classifier.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
 			if redactErr != nil {
 				flow.responseBlocked = true
+				flow.scannerFailure = scannerFailureKind(redactErr)
 				h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_scanner_unavailable", &flow)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Tool result blocked: PII redaction failed (fail-closed)"}}
 			}
@@ -516,6 +521,16 @@ func (h *ProxyHandler) doUpstreamRequest(ctx context.Context, body []byte) (*htt
 // proxyFlowState carries in-memory classification results across the proxy
 // pipeline so evidence records get classification and data-flow sections.
 // Entity values stay in memory only — evidence carries digests.
+// scannerFailureKind returns the typed adapter failure kind (timeout,
+// transport, status, decode, validation) for evidence, falling back to the
+// generic scanner_unavailable for non-adapter engines.
+func scannerFailureKind(err error) string {
+	if kind := adapter.FailureKind(err); kind != "" {
+		return kind
+	}
+	return "scanner_unavailable"
+}
+
 type proxyFlowState struct {
 	requestEntities  []classifier.PIIEntity // merged (non-overlapping) spans from tool arguments
 	requestTier      int
@@ -525,6 +540,10 @@ type proxyFlowState struct {
 	responseTier     int
 	responseRedacted bool
 	responseBlocked  bool
+	// scannerFailure is the typed adapter failure kind (timeout, transport,
+	// status, decode, validation) when a scanner failure drove a block;
+	// "scanner_unavailable" for non-adapter engines.
+	scannerFailure string
 }
 
 // upstreamRegion returns the configured jurisdiction of the upstream vendor
@@ -602,9 +621,12 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 		}
 	}
 	// Every record identifies the scan engine behind its classification;
-	// scanner-driven denials also carry the failure kind.
+	// scanner-driven denials also carry the typed failure kind.
 	if scannerInfo := evidence.NewScannerInfo(h.classifier); scannerInfo != nil {
-		if strings.Contains(reason, "scanner_unavailable") {
+		switch {
+		case flow != nil && flow.scannerFailure != "":
+			scannerInfo.Failure = flow.scannerFailure
+		case strings.Contains(reason, "scanner_unavailable"):
 			scannerInfo.Failure = "scanner_unavailable"
 		}
 		ev.Classification.Scanner = scannerInfo

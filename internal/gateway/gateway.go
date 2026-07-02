@@ -372,7 +372,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			durationMS := time.Since(start).Milliseconds()
 			RecordGatewayError(ctx, "scanner_unavailable")
 			WriteProviderError(w, wire, http.StatusBadGateway, "Request blocked: PII scanner unavailable (fail-closed)")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, nil, nil, 0, durationMS, "", false, []string{"scanner unavailable"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, nil, nil, 0, durationMS, "", false, []string{"scanner unavailable"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0, func(p *RecordGatewayEvidenceParams) {
+				if p.Scanner != nil {
+					p.Scanner.Failure = scannerFailureKind(scanErr)
+				}
+			})
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
@@ -586,7 +590,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			durationMS := time.Since(start).Milliseconds()
 			RecordGatewayError(ctx, "scanner_unavailable")
 			WriteProviderError(w, wire, http.StatusBadGateway, "Request blocked: PII redaction failed (fail-closed)")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request redaction failed"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request redaction failed"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+				if p.Scanner != nil {
+					p.Scanner.Failure = scannerFailureKind(redactErr)
+				}
+			})
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
@@ -1071,9 +1079,17 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	}
 	var outputPIIDetected bool
 	var outputPIITypes []string
+	// Output tier defaults to the input tier (pre-response-scan behavior);
+	// when the response was scanned and PII found, the response content's own
+	// tier is the truth — a clean tier-0 prompt whose response leaked an IBAN
+	// must record output_tier 2, not 0.
+	outputTier := classification.Tier
 	if responsePII != nil {
 		outputPIIDetected = responsePII.PIIDetected
 		outputPIITypes = responsePII.PIITypes
+		if responsePII.PIIDetected {
+			outputTier = responsePII.Tier
+		}
 	}
 	execErr := resolveExecutionError(executionError, reasons)
 
@@ -1143,6 +1159,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		ObservationModeOverride: len(shadowViolations) > 0,
 		ShadowViolations:        shadowViolations,
 		InputTier:               classification.Tier,
+		OutputTier:              outputTier,
 		PIIDetected:             piiDetected,
 		PIIRedacted:             inputPIIRedacted,
 		OutputPIIDetected:       outputPIIDetected,
