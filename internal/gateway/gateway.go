@@ -358,7 +358,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Step 4: Scan PII. A scanner failure is fail-closed in enforce mode:
 	// a request Talon cannot classify must not reach the provider.
+	scanStart := time.Now()
 	classification, scanErr := g.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text)
+	ctx = withScanDuration(ctx, time.Since(scanStart))
 	if scanErr != nil {
 		if isShadow {
 			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
@@ -1134,6 +1136,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	params.GatewayAnnotations = gatewayAnnotationsForEvidence(g, caller)
 	params.TTFTMS = ttftMS
 	params.TPOTMS = tpotMS
+	params.Scanner = g.buildScannerEvidence(ctx, reasons, responsePII)
 	for _, opt := range opts {
 		opt(&params)
 	}
@@ -1142,6 +1145,40 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		return nil, err
 	}
 	return ev, nil
+}
+
+// buildScannerEvidence describes the scan engine for evidence, including the
+// scan duration (when measured on this request) and whether a scanner failure
+// drove the outcome.
+func (g *Gateway) buildScannerEvidence(ctx context.Context, reasons []string, responsePII *ResponsePIIScanResult) *evidence.ScannerInfo {
+	info := evidence.NewScannerInfo(g.classifier)
+	if info == nil {
+		return nil
+	}
+	info.ScanDurationMS = scanDurationFromContext(ctx)
+	for _, r := range reasons {
+		if r == "scanner unavailable" || r == "request redaction failed" {
+			info.Failure = "scanner_unavailable"
+		}
+	}
+	if responsePII != nil && responsePII.ScannerFailure != "" {
+		info.Failure = responsePII.ScannerFailure
+	}
+	return info
+}
+
+type scanDurationKey struct{}
+
+// withScanDuration stores the request PII scan duration for evidence.
+func withScanDuration(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, scanDurationKey{}, d.Milliseconds())
+}
+
+func scanDurationFromContext(ctx context.Context) int64 {
+	if v, ok := ctx.Value(scanDurationKey{}).(int64); ok {
+		return v
+	}
+	return 0
 }
 
 func (g *Gateway) handleEvidenceWriteFailure(ctx context.Context, err error) {

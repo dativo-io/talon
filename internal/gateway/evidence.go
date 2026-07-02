@@ -71,6 +71,9 @@ type RecordGatewayEvidenceParams struct {
 	// Failover carries fallback-chain context (failed attempt, fallback
 	// decision, or fail-closed outcome).
 	Failover *evidence.FailoverContext
+	// Scanner identifies the PII scan engine used for this request's
+	// classification (and its failure kind on scanner-driven blocks).
+	Scanner *evidence.ScannerInfo
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -114,6 +117,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			PIIRedacted:       params.PIIRedacted,
 			OutputPIIDetected: params.OutputPIIDetected,
 			OutputPIITypes:    params.OutputPIITypes,
+			Scanner:           params.Scanner,
 		},
 		Execution: evidence.Execution{
 			ModelUsed:     params.Model,

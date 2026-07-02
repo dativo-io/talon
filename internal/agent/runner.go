@@ -1083,6 +1083,13 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 		status = string(RunStatusDenied)
 		failureReason = string(FailurePolicyDeny)
 	}
+	var scannerInfo *evidence.ScannerInfo
+	if strings.HasPrefix(reason, "scanner_unavailable") || strings.HasPrefix(reason, "output_scanner_unavailable") {
+		scannerInfo = evidence.NewScannerInfo(r.classifier)
+		if scannerInfo != nil {
+			scannerInfo.Failure = "scanner_unavailable"
+		}
+	}
 	if _, err := r.evidence.Generate(ctx, evidence.GenerateParams{
 		CorrelationID:   correlationID,
 		TenantID:        req.TenantID,
@@ -1094,6 +1101,7 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 			Action:  "early_termination",
 			Reasons: []string{reason},
 		},
+		Classification:   evidence.Classification{Scanner: scannerInfo},
 		DurationMS:       time.Since(startTime).Milliseconds(),
 		InputPrompt:      req.Prompt,
 		ExplanationFacts: explanation.BuildLegacyFacts(false, "early_termination", []string{reason}, explanation.StagePreExecution, "", ""),
@@ -1960,6 +1968,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			PIIDetected:      append(piiNames, outputEntityNames...),
 			PIIRedacted:      outputPIIRedacted,
 			InputPIIRedacted: inputPIIRedacted,
+			Scanner:          evidence.NewScannerInfo(piiScanner),
 		},
 		AttachmentScan:          attScan,
 		ModelUsed:               model,

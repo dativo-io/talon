@@ -249,6 +249,10 @@ type Classification struct {
 	InputPIIRedacted  bool     `json:"input_pii_redacted,omitempty"`
 	OutputPIIDetected bool     `json:"output_pii_detected,omitempty"`
 	OutputPIITypes    []string `json:"output_pii_types,omitempty"`
+	// Scanner identifies the scan engine (and failure kind, when a scanner
+	// failure drove a fail-closed block). Optional; absent on records
+	// predating external scanner support.
+	Scanner *ScannerInfo `json:"scanner,omitempty"`
 }
 
 // ToolGovernance captures tool filtering/blocking decisions for gateway requests.
