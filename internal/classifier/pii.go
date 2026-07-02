@@ -37,6 +37,13 @@ func piiDirection(ctx context.Context) string {
 	return "unknown"
 }
 
+// PIIDirectionFromContext returns the PII scan direction carried by ctx
+// ("request", "response", or "unknown"). Exported for engine adapters that
+// record the same detection metrics as the built-in scanner.
+func PIIDirectionFromContext(ctx context.Context) string {
+	return piiDirection(ctx)
+}
+
 var tracer = otel.Tracer("github.com/dativo-io/talon/internal/classifier")
 
 const (
