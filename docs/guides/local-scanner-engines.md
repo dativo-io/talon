@@ -42,7 +42,11 @@ export TALON_ADMIN_KEY=$(openssl rand -hex 32)
 export TALON_DATA_DIR="$PWD/.talon"        # keep the test drive self-contained
 
 # --- 2. The scanner engine: host Ollama with a llama model ---
-ollama pull llama3.1:8b                     # or llama3.2:1b for a quick spin
+# SIZE THE MODEL TO THE HOST: an 8B model needs ~8 GB free RAM. On small
+# hosts (e.g. 4 GB VPS) use llama3.2:1b — a pulled-but-unloadable model
+# fails the startup warm-up probe with an actionable error.
+ollama pull llama3.1:8b                     # >= 8 GB RAM hosts
+# ollama pull llama3.2:1b                   # small hosts / quick spin
 
 # --- 3. Project scaffold + provider credential in the vault ---
 mkdir -p ~/talon-scanner-drive && cd ~/talon-scanner-drive
@@ -94,8 +98,9 @@ curl -s -X POST http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions \
 # The upstream model answers about [EMAIL] / [IBAN] — it never saw the raw
 # values. Evidence attributes the engine and the versioned prompt:
 talon audit export --format json --from 2020-01-01 --to 2099-12-31 \
-  | jq '.[-1] | {allowed, scanner_engine, scanner_type, scanner_version, pii_detected, input_tier}'
+  | jq '.records[-1] | {allowed, scanner_engine, scanner_type, scanner_version, pii_detected, input_tier}'
 # -> "scanner_engine": "llm:llama3.1:8b", "scanner_version": "llm-ner/v1", ...
+# (the export is an envelope: metadata + .records[])
 ```
 
 Fail-closed, observed as an end user:
@@ -176,6 +181,13 @@ scan that misses its deadline blocks (enforce) or logs (shadow/warn).
 - **Recall beats size-efficiency here**: a missed entity is a PII leak.
   `llama3.1:8b` and `qwen2.5:7b` are solid defaults; `llama3.2:1b` is
   demo-grade only.
+- **Size the model to the host's RAM** (~1 GB per billion parameters at
+  Q4 quantization, plus headroom): an 8B model on a 4 GB machine is
+  *listed* by Ollama but cannot load. Talon's startup probe warms the
+  model up with a real completion, so this misconfiguration fails at
+  `talon serve` with an actionable error rather than fail-closed-blocking
+  every request at runtime. The warm-up also absorbs the cold-load
+  latency before the first real scan.
 - Models that support JSON mode (`response_format: json_object` — Ollama
   does) are markedly more reliable; Talon requests it and also tolerates
   code fences.

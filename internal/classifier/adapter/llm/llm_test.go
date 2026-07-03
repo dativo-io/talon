@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -244,4 +246,28 @@ func TestParseDetections_CapsRunaway(t *testing.T) {
 	dets, err := llm.ParseDetections(sb.String())
 	require.NoError(t, err)
 	assert.Len(t, dets, 256, "detection count is bounded (untrusted input)")
+}
+
+func TestHealthCheck_ListedButUnrunnableModelFailsStartup(t *testing.T) {
+	// The undersized-host failure mode: /v1/models lists the pulled model, but
+	// completions fail (e.g. Ollama cannot load an 8B model in 4GB RAM). The
+	// eager health probe must catch this at startup instead of letting every
+	// scan fail-closed-block at runtime.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"llama3.1:8b"}]}`))
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"model requires more system memory"}`, http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	a, err := llm.New(llm.Config{Endpoint: srv.URL + "/v1", Model: "llama3.1:8b"})
+	require.NoError(t, err)
+
+	err = a.HealthCheck(context.Background())
+	require.Error(t, err, "a model that lists but cannot run must fail the startup probe")
+	assert.Contains(t, err.Error(), "warm-up")
 }

@@ -313,22 +313,39 @@ func (a *Adapter) HealthCheck(ctx context.Context) error {
 		if err := json.Unmarshal(raw, &mr); err != nil {
 			return a.fail(adapter.KindDecode, errors.New("models response is not valid JSON"))
 		}
+		found := false
 		for _, m := range mr.Data {
 			if m.ID == a.cfg.Model {
-				return nil
+				found = true
+				break
 			}
 		}
-		return a.fail(adapter.KindValidation,
-			fmt.Errorf("model %q is not available at the endpoint (pull it first, e.g. `ollama pull %s`)", a.cfg.Model, a.cfg.Model))
-	case http.StatusNotFound, http.StatusMethodNotAllowed:
-		// No /models endpoint: probe with a minimal completion.
-		if _, err := a.complete(ctx, []chatMessage{{Role: "user", Content: "ping"}}); err != nil {
-			return err
+		if !found {
+			return a.fail(adapter.KindValidation,
+				fmt.Errorf("model %q is not available at the endpoint (pull it first, e.g. `ollama pull %s`)", a.cfg.Model, a.cfg.Model))
 		}
-		return nil
+		// Listed is not runnable: a host without enough memory still lists a
+		// pulled model but fails to load it on first use, which would pass a
+		// presence-only probe and then fail-closed-block every scan. Warm the
+		// model up with a minimal completion (within the scan timeout) so
+		// startup fails with an actionable error instead — and the first real
+		// scan doesn't pay the cold-load latency.
+		return a.warmUp(ctx)
+	case http.StatusNotFound, http.StatusMethodNotAllowed:
+		// No /models endpoint: the completion probe is the whole check.
+		return a.warmUp(ctx)
 	default:
 		return a.fail(adapter.KindStatus, fmt.Errorf("models endpoint returned HTTP %d", resp.StatusCode))
 	}
+}
+
+// warmUp issues a minimal completion to prove the model actually runs on
+// this host (and to absorb the cold-start load before real scans).
+func (a *Adapter) warmUp(ctx context.Context) error {
+	if _, err := a.complete(ctx, []chatMessage{{Role: "user", Content: "ping"}}); err != nil {
+		return fmt.Errorf("model %q is listed but did not answer a warm-up completion within the scan timeout — the host may lack memory for it or the model is too slow for scanner.timeout: %w", a.cfg.Model, err)
+	}
+	return nil
 }
 
 func (a *Adapter) fail(kind adapter.Kind, err error) *adapter.Error {
