@@ -39,7 +39,10 @@ export PATH="$HOME/talon/bin:$PATH"
 export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 export TALON_SIGNING_KEY=$(openssl rand -hex 32)
 export TALON_ADMIN_KEY=$(openssl rand -hex 32)
-export TALON_DATA_DIR="$PWD/.talon"        # keep the test drive self-contained
+# ABSOLUTE path, exported in EVERY shell that runs talon (serve, curl checks,
+# audit export). A relative $PWD here silently splits your evidence across
+# directories; a shell without it reads an empty store and jq shows nulls.
+export TALON_DATA_DIR="$HOME/talon-scanner-drive/.talon"
 
 # --- 2. The scanner engine: host Ollama with a llama model ---
 # SIZE THE MODEL TO THE HOST: an 8B model needs ~8 GB free RAM. On small
@@ -49,7 +52,7 @@ ollama pull llama3.1:8b                     # >= 8 GB RAM hosts
 # ollama pull llama3.2:1b                   # small hosts / quick spin
 
 # --- 3. Project scaffold + provider credential in the vault ---
-mkdir -p ~/talon-scanner-drive && cd ~/talon-scanner-drive
+mkdir -p "$HOME/talon-scanner-drive" && cd "$HOME/talon-scanner-drive"
 talon init --scaffold --name scanner-drive
 talon secrets set openai-api-key "sk-proj-..."   # real key; vault-encrypted
 
@@ -96,7 +99,9 @@ curl -s -X POST http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Email jan.kowalski@example.com about IBAN DE89370400440532013000"}]}'
 
 # The upstream model answers about [EMAIL] / [IBAN] — it never saw the raw
-# values. Evidence attributes the engine and the versioned prompt:
+# values. Evidence attributes the engine and the versioned prompt
+# (same TALON_DATA_DIR must be exported in this shell; sanity-check with
+#  jq '.export_metadata.total_records' — 0 means you are reading the wrong store):
 talon audit export --format json --from 2020-01-01 --to 2099-12-31 \
   | jq '.records[-1] | {allowed, scanner_engine, scanner_type, scanner_version, pii_detected, input_tier}'
 # -> "scanner_engine": "llm:llama3.1:8b", "scanner_version": "llm-ner/v1", ...
