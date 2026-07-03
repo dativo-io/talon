@@ -181,6 +181,20 @@ Raise the gateway `request_timeout` accordingly — it must cover request scan
 + upstream call + response scan + verify. There are no retries by design; a
 scan that misses its deadline blocks (enforce) or logs (shadow/warn).
 
+Two levers for constrained hosts (small VPS class):
+
+- **Narrow the prompt**: `scanner.entities: ["EMAIL_ADDRESS", "IBAN_CODE", …]`
+  replaces the full policy-derived entity list in the NER prompt. Prompt
+  evaluation dominates CPU scan latency, so hunting 4 types instead of ~30
+  cuts every call substantially. (Only the listed types are detected —
+  scope it to what your policy actually governs.)
+- **Budget honestly**: on a 2-vCPU host expect 15–30 s per call; with
+  request scan + redact + verify + response scan that is 4+ sequential
+  calls per PII request. Set `scanner.timeout: "180s"` rather than letting
+  a borderline call fail closed, or set
+  `gateway.default_policy.response_pii_action: "allow"` to skip
+  response-side scanning where the demo/use-case doesn't need it.
+
 ## Model choice
 
 - **Recall beats size-efficiency here**: a missed entity is a PII leak.

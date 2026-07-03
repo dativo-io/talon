@@ -105,17 +105,25 @@ func buildLLM(ctx context.Context, cfg *config.Config, sc *config.ScannerConfig,
 		transport = sovereignty.NewEgressGuard(append([]string{sc.Endpoint}, cfg.Sovereignty.AllowedEgressHosts...))
 	}
 
-	var scanOpts []classifier.ScannerOption
-	if pol != nil {
-		var err error
-		scanOpts, err = policy.PIIScannerOptions(pol.Policies.DataClassification, "")
-		if err != nil {
-			return nil, fmt.Errorf("deriving scanner options from policy: %w", err)
+	// scanner.entities, when set, is the explicit entity list the prompt
+	// hunts for — the operator's lever for shrinking the NER prompt (prompt
+	// evaluation dominates scan latency on CPU hosts). Otherwise the list is
+	// derived from the effective policy.
+	entityTypes := sc.Entities
+	if len(entityTypes) == 0 {
+		var scanOpts []classifier.ScannerOption
+		if pol != nil {
+			var err error
+			scanOpts, err = policy.PIIScannerOptions(pol.Policies.DataClassification, "")
+			if err != nil {
+				return nil, fmt.Errorf("deriving scanner options from policy: %w", err)
+			}
 		}
-	}
-	entityTypes, err := classifier.SupportedEntityTypes(scanOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("deriving entity types for llm scanner: %w", err)
+		var err error
+		entityTypes, err = classifier.SupportedEntityTypes(scanOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("deriving entity types for llm scanner: %w", err)
+		}
 	}
 
 	a, err := llm.New(llm.Config{

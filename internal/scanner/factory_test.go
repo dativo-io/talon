@@ -2,6 +2,10 @@ package scanner
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -143,4 +147,59 @@ func TestValidateEndpointLocality(t *testing.T) {
 			assert.NoError(t, err, "%s airGap=%v", tt.endpoint, tt.airGap)
 		}
 	}
+}
+
+func TestBuild_LLMEntitiesOverrideNarrowsPrompt(t *testing.T) {
+	// scanner.entities is the operator lever for prompt size (prompt eval
+	// dominates CPU scan latency); it must reach the llm engine's prompt,
+	// replacing the full policy-derived entity list.
+	var mu sync.Mutex
+	var systemPrompts []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"llama3.2:1b"}]}`))
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, m := range req.Messages {
+			if m.Role == "system" {
+				mu.Lock()
+				systemPrompts = append(systemPrompts, m.Content)
+				mu.Unlock()
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"entities\":[]}"}}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	facade, err := Build(context.Background(), &config.Config{
+		Scanner: &config.ScannerConfig{
+			Type:     config.ScannerTypeLLM,
+			Endpoint: srv.URL + "/v1",
+			Entities: []string{"EMAIL_ADDRESS", "IBAN_CODE"},
+			LLM:      &config.ScannerLLMConfig{Model: "llama3.2:1b"},
+		},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	_, err = facade.Analyze(context.Background(), "some text")
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, systemPrompts, "warm-up and scan must carry the system prompt")
+	prompt := systemPrompts[len(systemPrompts)-1]
+	assert.Contains(t, prompt, "EMAIL_ADDRESS")
+	assert.Contains(t, prompt, "IBAN_CODE")
+	assert.NotContains(t, prompt, "PL_PESEL",
+		"the policy-derived full entity list must be replaced, not appended to")
 }

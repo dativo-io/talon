@@ -250,7 +250,7 @@ in enforce mode.
 | `scanner.offset_encoding` | per type | Override the offset encoding the engine reports: `byte` or `rune`. Defaults: `presidio` → `rune` (stock Presidio reports codepoint offsets), `http` → `byte`. |
 | `scanner.name` | engine type | Detector identity recorded in evidence. |
 | `scanner.engine_version` | — | Operator-declared version recorded in evidence. |
-| `scanner.entities` | — | Optional entity-type list forwarded to the engine. |
+| `scanner.entities` | — | Optional entity-type list. presidio/http: forwarded in each `/analyze` request. llm: replaces the policy-derived list in the NER prompt — the lever for shrinking prompt size (and CPU scan latency) to just the types you govern. |
 | `scanner.health_check` | `true` | Eager startup probe; Talon refuses to start when the engine is unreachable. |
 | `scanner.llm.model` | — | Model id for `type: llm` (required), e.g. `llama3.1:8b`. |
 | `scanner.llm.confidence` | `0.8` | Confidence assigned to LLM-detected entities. |
