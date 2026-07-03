@@ -20,6 +20,8 @@ import (
 	"github.com/dativo-io/talon/internal/classifier/adapter"
 	"github.com/dativo-io/talon/internal/classifier/presidio"
 	talonotel "github.com/dativo-io/talon/internal/otel"
+
+	"github.com/rs/zerolog/log"
 )
 
 var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/classifier/adapter/llm")
@@ -182,7 +184,14 @@ func (a *Adapter) analyze(ctx context.Context, text string) (*classifier.Classif
 
 	detections, err := ParseDetections(content)
 	if err != nil {
-		// Never echo the untrusted model output into the error.
+		// Never echo the untrusted model output into the error or evidence.
+		// A truncated head at debug level is the operator escape hatch for
+		// diagnosing model-side reply shapes (run serve with --log-level debug).
+		log.Debug().
+			Str("engine", a.detector).
+			Int("reply_len", len(content)).
+			Str("reply_head", truncateForLog(content, 300)).
+			Msg("llm_ner_reply_unparseable")
 		return nil, a.fail(adapter.KindDecode, err)
 	}
 
@@ -371,4 +380,12 @@ func classifyTransportError(err error) adapter.Kind {
 		return adapter.KindTimeout
 	}
 	return adapter.KindTransport
+}
+
+// truncateForLog bounds untrusted text for debug logging.
+func truncateForLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…(truncated)"
 }
