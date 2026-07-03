@@ -432,6 +432,8 @@ func FuzzParseDetections(f *testing.F) {
 	f.Add(`{"entities":[{"type":"X","value":42}]}`)
 	f.Add(`prose with {"entities": broken`)
 	f.Add(``)
+	f.Add("{\"entities\":[{\"type\":\"EMAIL_ADDRESS\",\"value\":\"[EMAIL]\"}\n\n]\n\n \n\n ")
+	f.Add(`{"entities":[{"type":"X","value":"v"},`)
 	f.Fuzz(func(t *testing.T, reply string) {
 		dets, err := llm.ParseDetections(reply)
 		if err != nil {
@@ -441,4 +443,54 @@ func FuzzParseDetections(f *testing.F) {
 			t.Fatalf("detection cap violated: %d", len(dets))
 		}
 	})
+}
+
+func TestParseDetections_EnvelopeRepair(t *testing.T) {
+	// Field shape #4 (llama3.2:1b): complete entities array, outer brace never
+	// emitted, whitespace drift to EOS.
+	fieldReply := `{"entities":[{"type":"EMAIL_ADDRESS","value":"[EMAIL]"}` + "\n\n]" +
+		strings.Repeat("\n\n ", 30)
+
+	tests := []struct {
+		name    string
+		reply   string
+		want    int
+		wantErr bool
+	}{
+		{"field reply: unterminated object with trailing whitespace", fieldReply, 1, false},
+		{"unterminated array of detections", `[{"type":"X","value":"v"}` + "\n \n", 1, false},
+		{"missing both array and object closers", `{"entities":[{"type":"X","value":"v"}`, 1, false},
+		{"stops mid-string: refused", `{"entities":[{"type":"X","value":"unterminated`, 0, true},
+		{"stops after comma: refused", `{"entities":[{"type":"X","value":"v"},`, 0, true},
+		{"stops after colon: refused", `{"entities":[{"type":"X","value":`, 0, true},
+		{"stops right after opener: refused", `{"entities":[`, 0, true},
+		{"mismatched closers: refused", `{"entities":[}]`, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dets, err := llm.ParseDetections(tt.reply)
+			if tt.wantErr {
+				require.Error(t, err, "murky truncation must stay fail-closed")
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, dets, tt.want)
+		})
+	}
+}
+
+func TestVerifyEgress_UnterminatedFieldReply(t *testing.T) {
+	// End-to-end with field shape #4 on the verify re-scan: must parse, the
+	// placeholder value drops in relocation, verify passes.
+	unterminated := `{"entities":[{"type":"EMAIL_ADDRESS","value":"[EMAIL]"}` + "\n\n]" + strings.Repeat("\n\n ", 30)
+	a := newAdapter(t, func(userText string) string {
+		if strings.Contains(userText, "kai@example.com") {
+			return nerReply([2]string{"EMAIL_ADDRESS", "kai@example.com"})
+		}
+		return unterminated
+	})
+
+	redacted, err := a.RedactText(context.Background(), "mail kai@example.com now")
+	require.NoError(t, err)
+	require.NoError(t, a.VerifyEgress(context.Background(), redacted))
 }

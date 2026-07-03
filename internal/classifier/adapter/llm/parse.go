@@ -97,7 +97,17 @@ func ParseDetections(content string) ([]Detection, error) {
 }
 
 // extractJSONValue returns the first top-level {...} object or [...] array in
-// s, stripping markdown code fences.
+// s, stripping markdown code fences. Small models drift in known ways; the
+// fourth field-observed shape was a complete entities array whose outer
+// object brace never arrived — the model wandered into whitespace and hit
+// EOS ({"entities":[{...}\n\n]\n\n \n\n …). When the input ends with open
+// delimiters, only whitespace after the last token, not inside a string, and
+// not mid-structure (after , : { [), the missing closers are appended.
+// json.Unmarshal remains the gate afterwards, so repair can only complete an
+// envelope — never fabricate or alter detections; anything murkier stays a
+// fail-closed decode error.
+//
+//nolint:gocyclo // string-aware delimiter scan: the states are inherent to JSON
 func extractJSONValue(s string) string {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "```") {
@@ -112,13 +122,10 @@ func extractJSONValue(s string) string {
 	if start < 0 {
 		return ""
 	}
-	open, closing := byte('{'), byte('}')
-	if s[start] == '[' {
-		open, closing = '[', ']'
-	}
-	depth := 0
+	var stack []byte
 	inString := false
 	escaped := false
+	lastToken := -1
 	for i := start; i < len(s); i++ {
 		c := s[i]
 		switch {
@@ -129,14 +136,41 @@ func extractJSONValue(s string) string {
 		case c == '"':
 			inString = !inString
 		case inString:
-		case c == open:
-			depth++
-		case c == closing:
-			depth--
-			if depth == 0 {
+		case c == '{' || c == '[':
+			stack = append(stack, c)
+		case c == '}' || c == ']':
+			if len(stack) == 0 {
+				return ""
+			}
+			open := stack[len(stack)-1]
+			if (c == '}' && open != '{') || (c == ']' && open != '[') {
+				return "" // mismatched close: refuse
+			}
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
 				return s[start : i+1]
 			}
 		}
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			lastToken = i
+		}
 	}
-	return ""
+	// Input exhausted with open delimiters: conservative envelope repair.
+	const maxRepairDepth = 8
+	if len(stack) == 0 || len(stack) > maxRepairDepth || inString || lastToken < start {
+		return ""
+	}
+	switch s[lastToken] {
+	case '{', '[', ',', ':':
+		return "" // stopped mid-structure: cannot know what was coming
+	}
+	closers := make([]byte, len(stack))
+	for i := range stack {
+		if stack[len(stack)-1-i] == '{' {
+			closers[i] = '}'
+		} else {
+			closers[i] = ']'
+		}
+	}
+	return s[start:lastToken+1] + string(closers)
 }
