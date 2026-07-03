@@ -14,8 +14,43 @@ type Detection struct {
 	Value string `json:"value"`
 }
 
+// rawDetection defers value decoding: small models emit "value" as a string
+// (the prompted shape) or as an array of strings (observed from llama3.2:1b:
+// {"type":"EMAIL_ADDRESS","value":["[EMAIL]"]}). Any other shape is a
+// fail-closed decode error.
+type rawDetection struct {
+	Type  string          `json:"type"`
+	Value json.RawMessage `json:"value"`
+}
+
 type nerResponse struct {
-	Entities []Detection `json:"entities"`
+	Entities []rawDetection `json:"entities"`
+}
+
+// expandDetections normalizes raw detections into the canonical one-value-per-
+// detection form. Missing/empty values are skipped (nothing to relocate);
+// non-string value shapes reject the whole reply (fail-closed).
+func expandDetections(raw []rawDetection) ([]Detection, error) {
+	out := make([]Detection, 0, len(raw))
+	for _, r := range raw {
+		if len(r.Value) == 0 || string(r.Value) == "null" {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(r.Value, &s); err == nil {
+			out = append(out, Detection{Type: r.Type, Value: s})
+			continue
+		}
+		var arr []string
+		if err := json.Unmarshal(r.Value, &arr); err == nil {
+			for _, v := range arr {
+				out = append(out, Detection{Type: r.Type, Value: v})
+			}
+			continue
+		}
+		return nil, errNotNERJSON
+	}
+	return out, nil
 }
 
 // maxDetections bounds how many reported entities are processed per scan —
@@ -36,9 +71,9 @@ func ParseDetections(content string) ([]Detection, error) {
 	if payload == "" {
 		return nil, errNotNERJSON
 	}
-	var dets []Detection
+	var raw []rawDetection
 	if strings.HasPrefix(payload, "[") {
-		if err := json.Unmarshal([]byte(payload), &dets); err != nil {
+		if err := json.Unmarshal([]byte(payload), &raw); err != nil {
 			return nil, errNotNERJSON
 		}
 	} else {
@@ -46,7 +81,14 @@ func ParseDetections(content string) ([]Detection, error) {
 		if err := json.Unmarshal([]byte(payload), &resp); err != nil {
 			return nil, errNotNERJSON
 		}
-		dets = resp.Entities
+		raw = resp.Entities
+	}
+	if len(raw) > maxDetections {
+		raw = raw[:maxDetections]
+	}
+	dets, err := expandDetections(raw)
+	if err != nil {
+		return nil, err
 	}
 	if len(dets) > maxDetections {
 		dets = dets[:maxDetections]

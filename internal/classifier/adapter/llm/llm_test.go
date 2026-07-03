@@ -347,3 +347,98 @@ func TestVerifyEgress_BareArrayReplyOnRedactedText(t *testing.T) {
 	assert.NoError(t, a.VerifyEgress(context.Background(), redacted),
 		"a bare-array 'nothing found' reply must verify clean")
 }
+
+func TestParseDetections_ValueShapeVariants(t *testing.T) {
+	tests := []struct {
+		name    string
+		reply   string
+		want    []llm.Detection
+		wantErr bool
+	}{
+		{
+			// The exact field reply from llama3.2:1b on placeholder-only text.
+			name:  "value as string array (field-observed)",
+			reply: `{"entities":[{"type":"EMAIL_ADDRESS","value":["[EMAIL]"]}]}`,
+			want:  []llm.Detection{{Type: "EMAIL_ADDRESS", Value: "[EMAIL]"}},
+		},
+		{
+			name:  "array value with multiple entries expands",
+			reply: `{"entities":[{"type":"EMAIL_ADDRESS","value":["a@b.co","c@d.co"]}]}`,
+			want: []llm.Detection{
+				{Type: "EMAIL_ADDRESS", Value: "a@b.co"},
+				{Type: "EMAIL_ADDRESS", Value: "c@d.co"},
+			},
+		},
+		{
+			name:  "mixed string and array detections",
+			reply: `{"entities":[{"type":"IBAN","value":"DE89"},{"type":"EMAIL_ADDRESS","value":["a@b.co"]}]}`,
+			want: []llm.Detection{
+				{Type: "IBAN", Value: "DE89"},
+				{Type: "EMAIL_ADDRESS", Value: "a@b.co"},
+			},
+		},
+		{
+			name:  "missing and null values are skipped",
+			reply: `{"entities":[{"type":"X"},{"type":"Y","value":null},{"type":"Z","value":"ok"}]}`,
+			want:  []llm.Detection{{Type: "Z", Value: "ok"}},
+		},
+		{
+			name:    "numeric value shape fails closed",
+			reply:   `{"entities":[{"type":"X","value":42}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "object value shape fails closed",
+			reply:   `{"entities":[{"type":"X","value":{"v":"a@b.co"}}]}`,
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dets, err := llm.ParseDetections(tt.reply)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, dets)
+		})
+	}
+}
+
+func TestVerifyEgress_FieldReplyShapeOnRedactedText(t *testing.T) {
+	// End-to-end with the verbatim field reply: verify must pass (placeholder
+	// values are dropped by relocation, not treated as residual PII).
+	a := newAdapter(t, func(userText string) string {
+		if strings.Contains(userText, "kai@example.com") {
+			return nerReply([2]string{"EMAIL_ADDRESS", "kai@example.com"})
+		}
+		return `{"entities":[{"type":"EMAIL_ADDRESS","value":["[EMAIL]"]}]}`
+	})
+
+	redacted, err := a.RedactText(context.Background(), "mail kai@example.com now")
+	require.NoError(t, err)
+	require.NoError(t, a.VerifyEgress(context.Background(), redacted),
+		"the field-observed array-value placeholder reply must verify clean")
+}
+
+// FuzzParseDetections asserts the parser never panics and never fabricates
+// detections from garbage: model reply shapes are an adversarial input space.
+func FuzzParseDetections(f *testing.F) {
+	f.Add(`{"entities":[{"type":"EMAIL_ADDRESS","value":"a@b.co"}]}`)
+	f.Add(`{"entities":[{"type":"EMAIL_ADDRESS","value":["[EMAIL]"]}]}`)
+	f.Add(`[]`)
+	f.Add("```json\n{}\n```")
+	f.Add(`{"entities":[{"type":"X","value":42}]}`)
+	f.Add(`prose with {"entities": broken`)
+	f.Add(``)
+	f.Fuzz(func(t *testing.T, reply string) {
+		dets, err := llm.ParseDetections(reply)
+		if err != nil {
+			return
+		}
+		if len(dets) > 256 {
+			t.Fatalf("detection cap violated: %d", len(dets))
+		}
+	})
+}
