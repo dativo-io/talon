@@ -1245,6 +1245,9 @@ func (s *Server) handleGovernanceAlerts(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	if alerts == nil {
+		alerts = []evidence.GovernanceAlert{}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"alerts": alerts})
 }
 

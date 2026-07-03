@@ -96,6 +96,19 @@ record_fail() {
   fi
 }
 
+# --- Redact credentials before any command line or output reaches a log ---
+# The harness logs fully expanded command lines and output tails, so without
+# this a `secrets set <name> <value>` assertion writes the real credential to
+# disk, and API keys can surface in dumped headers or bodies. Deliberately
+# short test tokens (test-key-123, talon-gw-*) stay readable for debugging.
+redact_secrets() {
+  sed -E \
+    -e 's/(secrets[[:space:]]+set[[:space:]]+[^[:space:]]+[[:space:]]+).*/\1***REDACTED***/' \
+    -e 's/sk-[A-Za-z0-9_-]{20,}/sk-***REDACTED***/g' \
+    -e 's/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/=-]{32,}/\1***REDACTED***/g'
+}
+redact_str() { printf '%s' "$1" | redact_secrets; }
+
 # --- Write command execution to consolidated log (parseable: [SMOKE] CMD|... / EXIT|... / STDOUT_TAIL / STDERR_TAIL) ---
 write_cmd_log() {
   local description="$1" cmd="$2" code="$3" tmp_out="$4" tmp_err="$5"
@@ -103,13 +116,13 @@ write_cmd_log() {
   {
     echo "[SMOKE] SECTION|$CURRENT_SECTION"
     echo "[SMOKE] ASSERT_DESC|$description"
-    echo "[SMOKE] CMD|$cmd"
+    echo "[SMOKE] CMD|$(redact_str "$cmd")"
     echo "[SMOKE] EXIT|$code"
     echo "[SMOKE] STDOUT_TAIL<<"
-    [[ -f "$tmp_out" ]] && tail -30 "$tmp_out"
+    [[ -f "$tmp_out" ]] && tail -30 "$tmp_out" | redact_secrets
     echo "[SMOKE] STDOUT_TAIL>>"
     echo "[SMOKE] STDERR_TAIL<<"
-    [[ -f "$tmp_err" ]] && tail -30 "$tmp_err"
+    [[ -f "$tmp_err" ]] && tail -30 "$tmp_err" | redact_secrets
     echo "[SMOKE] STDERR_TAIL>>"
     echo ""
   } >> "$SMOKE_CONSOLIDATED_LOG"
@@ -129,7 +142,8 @@ assert_pass() {
   fi
   local code
   code=$?
-  local cmd_detail="$*"
+  local cmd_detail
+  cmd_detail="$(redact_str "$*")"
   echo "  ✗  $description (exit $code) [$cmd_detail]"
   write_cmd_log "$description" "$cmd_detail" "$code" "$tmp_out" "$tmp_err"
   record_fail "$description"
@@ -141,16 +155,16 @@ assert_pass() {
       echo "Command: $cmd_detail"
       echo "Exit code: $code"
       echo "Stdout (last 100 lines):"
-      tail -100 "$tmp_out"
+      tail -100 "$tmp_out" | redact_secrets
       echo "Stderr (last 100 lines):"
-      tail -100 "$tmp_err"
+      tail -100 "$tmp_err" | redact_secrets
       echo ""
     } >> "$SMOKE_LOG_FILE"
   fi
   # Show last few stderr lines so bugs are visible without opening the log
   if [[ -s "$tmp_err" ]]; then
     echo "    Last stderr:"
-    tail -5 "$tmp_err" | sed 's/^/    | /'
+    tail -5 "$tmp_err" | redact_secrets | sed 's/^/    | /'
   fi
   rm -f "$tmp_out" "$tmp_err"
   return 1
@@ -167,7 +181,7 @@ assert_fail() {
     write_cmd_log "$description" "$*" "$code" "$tmp_out" "$tmp_err"
     record_fail "$description"
     if [[ -n "$SMOKE_LOG_FILE" ]]; then
-      { echo "--- FAIL: $description ---"; echo "Section: $CURRENT_SECTION"; echo "Command succeeded but should have failed: $*"; echo ""; } >> "$SMOKE_LOG_FILE"
+      { echo "--- FAIL: $description ---"; echo "Section: $CURRENT_SECTION"; echo "Command succeeded but should have failed: $(redact_str "$*")"; echo ""; } >> "$SMOKE_LOG_FILE"
     fi
     rm -f "$tmp_out" "$tmp_err"
     return 1
@@ -187,6 +201,7 @@ assert_fail() {
 log_failure() {
   local description="$1"
   local detail="${2:-}"
+  [[ -n "$detail" ]] && detail="$(redact_str "$detail")"
   echo "  ✗  $description"
   record_fail "$description"
   if [[ -n "$SMOKE_LOG_FILE" ]]; then
@@ -204,10 +219,10 @@ log_failure() {
 dump_diag_kv() {
   local label="$1"; shift
   if [[ -n "$SMOKE_LOG_FILE" ]]; then
-    { echo "  [DIAG] $label"; for kv in "$@"; do echo "    $kv"; done; echo ""; } >> "$SMOKE_LOG_FILE"
+    { echo "  [DIAG] $label"; for kv in "$@"; do echo "    $(redact_str "$kv")"; done; echo ""; } >> "$SMOKE_LOG_FILE"
   fi
   if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]]; then
-    { echo "[SMOKE] DIAG|$label"; for kv in "$@"; do echo "[SMOKE] DIAG_KV|$kv"; done; } >> "$SMOKE_CONSOLIDATED_LOG"
+    { echo "[SMOKE] DIAG|$label"; for kv in "$@"; do echo "[SMOKE] DIAG_KV|$(redact_str "$kv")"; done; } >> "$SMOKE_CONSOLIDATED_LOG"
   fi
 }
 
@@ -215,16 +230,17 @@ dump_diag_kv() {
 dump_diag_file() {
   local label="$1" filepath="$2" max_lines="${3:-80}"
   if [[ -n "$SMOKE_LOG_FILE" ]] && [[ -f "$filepath" ]]; then
-    { echo "  [DIAG] $label ($filepath):"; tail -"$max_lines" "$filepath" | sed 's/^/    | /'; echo ""; } >> "$SMOKE_LOG_FILE"
+    { echo "  [DIAG] $label ($filepath):"; tail -"$max_lines" "$filepath" | redact_secrets | sed 's/^/    | /'; echo ""; } >> "$SMOKE_LOG_FILE"
   fi
   if [[ -n "${SMOKE_CONSOLIDATED_LOG:-}" ]] && [[ -f "$filepath" ]]; then
-    { echo "[SMOKE] DIAG_FILE|$label|$filepath"; tail -"$max_lines" "$filepath" | sed 's/^/[SMOKE] DIAG_LINE|/'; echo "[SMOKE] DIAG_FILE_END|$label"; } >> "$SMOKE_CONSOLIDATED_LOG"
+    { echo "[SMOKE] DIAG_FILE|$label|$filepath"; tail -"$max_lines" "$filepath" | redact_secrets | sed 's/^/[SMOKE] DIAG_LINE|/'; echo "[SMOKE] DIAG_FILE_END|$label"; } >> "$SMOKE_CONSOLIDATED_LOG"
   fi
 }
 
 # Dump JSON body (pretty-printed via jq if available) to the failure log.
 dump_diag_json() {
   local label="$1" json_str="$2" max_lines="${3:-60}"
+  [[ -n "$json_str" ]] && json_str="$(redact_str "$json_str")"
   if [[ -n "$SMOKE_LOG_FILE" ]] && [[ -n "$json_str" ]]; then
     {
       echo "  [DIAG] $label:"
@@ -453,7 +469,7 @@ for _section_file in \
   23_dashboard_metrics.sh 24_plan_dispatch.sh 25_sessions.sh \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
   29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh \
-  33_auditor_documents.sh 34_compliance_dashboard.sh; do
+  33_auditor_documents.sh 34_compliance_dashboard.sh 35_failover.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -540,6 +556,7 @@ main() {
   run_section "32_egress" test_section_32_egress
   run_section "33_auditor_documents" test_section_33_auditor_documents
   run_section "34_compliance_dashboard" test_section_34_compliance_dashboard
+  run_section "35_failover" test_section_35_failover
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency

@@ -21,6 +21,7 @@ func DefaultMappings() []ControlMapping {
 		{Framework: "eu-ai-act", Article: "Art. 14", Control: "Human oversight via plan review gate", Source: "internal/agent/plan_review.go"},
 		{Framework: "nis2", Article: "Art. 21", Control: "Risk controls, policy enforcement, and monitoring", Source: "internal/policy/engine.go"},
 		{Framework: "dora", Article: "Art. 6", Control: "ICT risk management via policy-as-code cost and resource limits", Source: "internal/policy/engine.go"},
+		{Framework: "dora", Article: "Art. 7", Control: "Reliable ICT systems: error-driven, sovereignty-filtered provider fallback chains with signed failed-attempt and fallback-decision evidence", Source: "internal/failover/failover.go"},
 		{Framework: "dora", Article: "Art. 11", Control: "ICT incident traceability with signed audit trail", Source: "internal/evidence/store.go"},
 		{Framework: "iso-27001", Article: "A.8.15", Control: "Cryptographic integrity of logs (HMAC)", Source: "internal/evidence/signature.go"},
 		{Framework: "iso-27001", Article: "A.8.16", Control: "Monitoring and governance metrics", Source: "internal/gateway/metrics.go"},

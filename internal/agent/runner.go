@@ -1093,6 +1093,16 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		r.recordEarlyTermination(ctx, correlationID, req, "provider_resolution_failed: "+err.Error(), startTime)
 		return nil, err
 	}
+	// Error-driven provider failover across the tier's fallback_chain (#138).
+	fo := r.newRunFailover(ctx, req, correlationID, tier, routingEngine, req.SovereigntyMode, &secretsAccessed)
+	fo.dataFlow = func(providerName, m string) *evidence.DataFlow {
+		return buildRunDataFlow(runFlowInputs{
+			TenantID: req.TenantID, InvocationType: req.InvocationType,
+			Provider: providerName, Model: m,
+			InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
+			Detector: piiScanner.Detector(),
+		})
+	}
 	const preRunEstimateInput, preRunEstimateOutput = 300, 300
 	var evRouting *evidence.RoutingDecision
 	if routeDecision != nil {
@@ -1371,7 +1381,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				Tools:       llmTools,
 			}
 			iterStart := time.Now()
-			resp, err := provider.Generate(ctx, llmReq)
+			resp, usedProvider, usedModel, err := fo.generate(ctx, provider, model, llmReq)
+			provider, model = usedProvider, usedModel
 			if err != nil {
 				span.RecordError(err)
 				llmFailReason := FailureLLMError
@@ -1660,7 +1671,8 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			MaxTokens:   2000,
 		}
 		singleStart := time.Now()
-		resp, err := provider.Generate(ctx, llmReq)
+		resp, usedProvider, usedModel, err := fo.generate(ctx, provider, model, llmReq)
+		provider, model = usedProvider, usedModel
 		if err != nil {
 			span.RecordError(err)
 			singleFailReason := FailureLLMError

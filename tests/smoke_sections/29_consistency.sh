@@ -171,7 +171,11 @@ test_section_29_consistency() {
     ops_redacted="$(echo "$ops_json" | jq '[.records[] | select(.pii_redacted == true)] | length' 2>/dev/null || echo 0)"
     ops_routed="$(echo "$ops_json" | jq '[.records[] | select((.model_used // "") != "")] | length' 2>/dev/null || echo 0)"
 
-    if [[ "$ops_total" -eq $((ops_allowed + ops_blocked)) ]] && [[ "$ops_routed" -le "$ops_allowed" ]]; then
+    # routed counts records with a model_used, which includes DENIED gateway
+    # records (the routing decision is evidenced even when policy blocks the
+    # dispatch) — so routed is NOT a subset of allowed. Only the allow/block
+    # partition is an invariant.
+    if [[ "$ops_total" -eq $((ops_allowed + ops_blocked)) ]]; then
       echo "  ✓  CONSISTENCY: decision reconciliation from export is valid (block/redact/route/allow)"
       echo "[SMOKE] CONSISTENCY|ops_decision_reconcile_export|PASS|total=$ops_total allowed=$ops_allowed blocked=$ops_blocked redacted=$ops_redacted routed=$ops_routed"
       record_pass

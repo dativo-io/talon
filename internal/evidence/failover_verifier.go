@@ -1,0 +1,252 @@
+package evidence
+
+import (
+	"context"
+	"fmt"
+	"strings"
+)
+
+// Failover verifier verdicts (semantic rules layered on top of per-record
+// HMAC verification):
+//
+//   - valid_fallback: failed attempt(s) + fallback decision share the
+//     correlation ID, the dispatched provider passed the sovereignty check.
+//   - valid_fail_closed: failed attempt(s) and/or policy-skipped candidates
+//     with no successful provider dispatch — the governance layer refusing to
+//     route (e.g. out of Europe under eu_strict) is a successful outcome.
+//   - invalid: fallback was dispatched to a provider the sovereignty policy
+//     rejected, or an involved record fails signature verification.
+//   - insufficient: evidence records the final provider without the failed
+//     attempt and decision context (proves where the answer came from but not
+//     why traffic moved there), or attempts exist with no decision record.
+const (
+	FailoverVerdictValidFallback   = "valid_fallback"
+	FailoverVerdictValidFailClosed = "valid_fail_closed"
+	FailoverVerdictInvalid         = "invalid"
+	FailoverVerdictInsufficient    = "insufficient"
+)
+
+// FailoverFinding is the verifier outcome for one correlation ID.
+type FailoverFinding struct {
+	CorrelationID string   `json:"correlation_id"`
+	Verdict       string   `json:"verdict"`
+	Details       []string `json:"details,omitempty"`
+	EvidenceIDs   []string `json:"evidence_ids,omitempty"`
+}
+
+// OK reports whether the finding is a passing verdict.
+func (f *FailoverFinding) OK() bool {
+	return f.Verdict == FailoverVerdictValidFallback || f.Verdict == FailoverVerdictValidFailClosed
+}
+
+// VerifyFailoverChain loads all records sharing a correlation ID and applies
+// the failover verifier rules. Returns nil when the correlation ID has no
+// failover-related evidence.
+func (s *Store) VerifyFailoverChain(ctx context.Context, correlationID string) (*FailoverFinding, error) {
+	records, err := s.ListByCorrelationID(ctx, correlationID)
+	if err != nil {
+		return nil, err
+	}
+	return VerifyFailoverRecords(correlationID, records, s.VerifyRecord), nil
+}
+
+// ListFailoverCorrelationIDs returns correlation IDs that have failover
+// evidence, newest first, up to limit.
+func (s *Store) ListFailoverCorrelationIDs(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT correlation_id FROM evidence
+		 WHERE invocation_type IN ('gateway_failover_attempt', 'llm_failover_attempt')
+		    OR evidence_json LIKE '%"failover":%'
+		 GROUP BY correlation_id
+		 ORDER BY MAX(timestamp) DESC
+		 LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("querying failover correlation ids: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning correlation id: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// VerifyFailoverRecords applies the failover verifier rules to the records of
+// one correlation ID. Records are grouped by failover_group_id — one group
+// per failover engagement (a gateway request, or one LLM call within an
+// agentic run that may make many) — and each group must independently
+// satisfy the chain invariants. verifySig verifies a record's HMAC signature
+// (pass Store.VerifyRecord; a nil func skips signature checks — tests only).
+// Returns nil when no record carries failover context.
+func VerifyFailoverRecords(correlationID string, records []*Evidence, verifySig func(*Evidence) bool) *FailoverFinding {
+	groups := map[string][]*Evidence{}
+	var groupOrder []string
+	var involved []*Evidence
+	for _, ev := range records {
+		if ev.Failover == nil {
+			continue
+		}
+		involved = append(involved, ev)
+		gid := ev.Failover.FailoverGroupID
+		if _, seen := groups[gid]; !seen {
+			groupOrder = append(groupOrder, gid)
+		}
+		groups[gid] = append(groups[gid], ev)
+	}
+	if len(involved) == 0 {
+		return nil
+	}
+
+	finding := &FailoverFinding{CorrelationID: correlationID}
+	for _, ev := range involved {
+		finding.EvidenceIDs = append(finding.EvidenceIDs, ev.ID)
+	}
+	worst := ""
+	addDetail := func(verdict, detail string) {
+		finding.Details = append(finding.Details, detail)
+		if verdict == FailoverVerdictInvalid || worst == FailoverVerdictInvalid {
+			worst = FailoverVerdictInvalid
+			return
+		}
+		worst = FailoverVerdictInsufficient
+	}
+
+	// Rule 0: every involved record must carry a valid signature.
+	if verifySig != nil {
+		for _, ev := range involved {
+			if !verifySig(ev) {
+				addDetail(FailoverVerdictInvalid, fmt.Sprintf("record %s fails signature verification", ev.ID))
+			}
+		}
+	}
+
+	sawDecision := false
+	for _, gid := range groupOrder {
+		if verifyFailoverGroup(groups[gid], addDetail) {
+			sawDecision = true
+		}
+	}
+
+	if worst != "" {
+		finding.Verdict = worst
+		return finding
+	}
+	if sawDecision {
+		finding.Verdict = FailoverVerdictValidFallback
+		return finding
+	}
+	finding.Verdict = FailoverVerdictValidFailClosed
+	return finding
+}
+
+// verifyFailoverGroup applies the chain invariants to one failover
+// engagement's records. Returns true when the group's terminal record is a
+// fallback decision (successful dispatch).
+//
+//nolint:gocyclo // rule evaluation is a flat sequence of independent checks
+func verifyFailoverGroup(records []*Evidence, addDetail func(verdict, detail string)) (hasDecision bool) {
+	attempts := map[string]*Evidence{}
+	var decisions, failClosed []*Evidence
+	for _, ev := range records {
+		switch ev.Failover.Role {
+		case FailoverRoleFailedAttempt:
+			attempts[ev.ID] = ev
+		case FailoverRoleFallbackDecision:
+			decisions = append(decisions, ev)
+		case FailoverRoleFailClosed:
+			failClosed = append(failClosed, ev)
+		}
+	}
+
+	checkAttemptRefs := func(ev *Evidence) {
+		if len(ev.Failover.FailedAttemptIDs) == 0 {
+			addDetail(FailoverVerdictInsufficient,
+				fmt.Sprintf("record %s (%s) has no linked failed-attempt records: evidence proves the final provider but not why traffic moved", ev.ID, ev.Failover.Role))
+			return
+		}
+		for _, id := range ev.Failover.FailedAttemptIDs {
+			if _, ok := attempts[id]; !ok {
+				addDetail(FailoverVerdictInsufficient,
+					fmt.Sprintf("record %s references failed attempt %s which is missing from the correlation trail", ev.ID, id))
+			}
+		}
+	}
+
+	// Chain invariant: exactly one terminal record (fallback decision or
+	// fail-closed) per failover engagement. More than one within a group
+	// means the chain's provenance is ambiguous and cannot be attributed.
+	if len(decisions)+len(failClosed) > 1 {
+		addDetail(FailoverVerdictInvalid,
+			fmt.Sprintf("%d terminal failover records share one failover group (expected exactly one fallback decision or fail-closed record)", len(decisions)+len(failClosed)))
+	}
+
+	referenced := map[string]bool{}
+
+	// Rule 1+3: fallback decisions must link failed attempts, must sit at a
+	// fallback chain position, must name a provider distinct from every
+	// failed attempt, and must not have dispatched to a sovereignty-rejected
+	// provider.
+	for _, ev := range decisions {
+		fc := ev.Failover
+		checkAttemptRefs(ev)
+		if fc.ChainPosition <= 0 {
+			addDetail(FailoverVerdictInvalid,
+				fmt.Sprintf("record %s claims a fallback decision at chain position %d — the primary cannot be its own fallback", ev.ID, fc.ChainPosition))
+		}
+		for _, id := range fc.FailedAttemptIDs {
+			referenced[id] = true
+			if att, ok := attempts[id]; ok && att.Failover.Provider == fc.Provider {
+				addDetail(FailoverVerdictInvalid,
+					fmt.Sprintf("record %s selects provider %s which also appears as failed attempt %s", ev.ID, fc.Provider, id))
+			}
+		}
+		if strings.EqualFold(strings.TrimSpace(fc.SovereigntyMode), "eu_strict") {
+			region := strings.ToUpper(strings.TrimSpace(fc.Region))
+			if fc.SovereigntyCheck != "allowed" || (region != "EU" && region != "LOCAL") {
+				addDetail(FailoverVerdictInvalid,
+					fmt.Sprintf("record %s dispatched fallback to provider %s (region %q, sovereignty_check %q) under eu_strict", ev.ID, fc.Provider, fc.Region, fc.SovereigntyCheck))
+			}
+		}
+	}
+
+	// Rule 2: fail-closed outcomes must show why nothing was dispatched
+	// (failed attempts and/or policy-skipped candidates).
+	for _, ev := range failClosed {
+		if len(ev.Failover.FailedAttemptIDs) == 0 && len(ev.Failover.SkippedCandidates) == 0 {
+			addDetail(FailoverVerdictInsufficient,
+				fmt.Sprintf("fail-closed record %s has neither failed attempts nor skipped candidates", ev.ID))
+			continue
+		}
+		for _, id := range ev.Failover.FailedAttemptIDs {
+			referenced[id] = true
+			if _, ok := attempts[id]; !ok {
+				addDetail(FailoverVerdictInsufficient,
+					fmt.Sprintf("fail-closed record %s references failed attempt %s which is missing from the correlation trail", ev.ID, id))
+			}
+		}
+	}
+
+	// Rule 4: failed attempts with no decision context are insufficient —
+	// the trail shows an error but not the governance outcome. The same
+	// applies to attempts a terminal record does not account for.
+	if len(decisions) == 0 && len(failClosed) == 0 {
+		addDetail(FailoverVerdictInsufficient,
+			"failed provider attempt(s) recorded without a fallback decision or fail-closed record in their failover group")
+	} else {
+		for id := range attempts {
+			if !referenced[id] {
+				addDetail(FailoverVerdictInsufficient,
+					fmt.Sprintf("failed attempt %s is not referenced by any terminal record in its failover group", id))
+			}
+		}
+	}
+
+	return len(decisions) > 0
+}

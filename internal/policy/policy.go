@@ -367,10 +367,17 @@ type ModelRoutingConfig struct {
 // provider registry metadata combined with llm.routing.data_sovereignty_mode
 // (routing.rego) and, at the gateway, egress rules.
 type TierConfig struct {
-	Primary     string `yaml:"primary" json:"primary"`
-	Fallback    string `yaml:"fallback,omitempty" json:"fallback,omitempty"`
-	Location    string `yaml:"location,omitempty" json:"location,omitempty"`
-	BedrockOnly bool   `yaml:"bedrock_only,omitempty" json:"bedrock_only,omitempty"`
+	Primary  string `yaml:"primary" json:"primary"`
+	Fallback string `yaml:"fallback,omitempty" json:"fallback,omitempty"`
+	// FallbackChain is the ordered error-driven fallback chain for this tier:
+	// on a transient provider failure (timeout / connection / 429 / 5xx) the
+	// runner retries the request against each model in order, subject to the
+	// same compliance/sovereignty routing checks as the primary. When set it
+	// supersedes the single legacy Fallback entry for error-driven failover
+	// (Fallback still applies to provider-unavailable-at-route-time).
+	FallbackChain []string `yaml:"fallback_chain,omitempty" json:"fallback_chain,omitempty"`
+	Location      string   `yaml:"location,omitempty" json:"location,omitempty"`
+	BedrockOnly   bool     `yaml:"bedrock_only,omitempty" json:"bedrock_only,omitempty"`
 }
 
 // TimeRestrictionsConfig limits when the agent can run.
@@ -526,6 +533,18 @@ func validateTierRouting(tierName string, tier *TierConfig) (warnings []RoutingW
 					"fallback will also be forced through Bedrock provider",
 				tier.Fallback),
 		})
+	}
+
+	for i, m := range tier.FallbackChain {
+		if !isBedrockModelName(m) {
+			warnings = append(warnings, RoutingWarning{
+				Tier: tierName,
+				Message: fmt.Sprintf(
+					"bedrock_only is true but fallback_chain[%d] model %q does not use Bedrock naming; "+
+						"it will also be forced through Bedrock provider",
+					i, m),
+			})
+		}
 	}
 
 	return warnings, nil

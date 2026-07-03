@@ -343,6 +343,11 @@ func redactAnthropicContent(ctx context.Context, c interface{}, scanner *classif
 	if c == nil {
 		return nil
 	}
+	// The Anthropic Messages API accepts plain-string content as well as
+	// content-block arrays; both forms must be redacted.
+	if s, ok := c.(string); ok {
+		return scanner.Redact(ctx, s)
+	}
 	if arr, ok := c.([]interface{}); ok {
 		out := make([]interface{}, len(arr))
 		for i, part := range arr {

@@ -74,6 +74,42 @@ type ProviderConfig struct {
 	BlockedModels    []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
 	ForbiddenTools   []string `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
 	ToolPolicyAction string   `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"` // filter | block
+	// APIFamily declares the provider's wire format: "openai" or "anthropic".
+	// Used for fallback-chain validation and upstream auth conventions
+	// (x-api-key + anthropic-version vs Authorization: Bearer). When empty it
+	// defaults by provider name: "anthropic" → anthropic, everything else →
+	// openai-compatible. Set it explicitly for aliased endpoints (e.g. an
+	// "anthropic-eu" provider pointing at an Anthropic-compatible base_url).
+	APIFamily string `yaml:"api_family,omitempty" json:"api_family,omitempty"`
+	// Fallback is the ordered error-driven fallback chain for this provider:
+	// on a transient upstream failure (timeout / connection error / 429 / 5xx)
+	// the gateway retries the request against each target in order, subject to
+	// the candidate filter pipeline (sovereignty under eu_strict). All chain
+	// members must share the provider's API family (the request body is
+	// forwarded as-is except for an optional model rewrite).
+	Fallback []FallbackTarget `yaml:"fallback,omitempty" json:"fallback,omitempty"`
+}
+
+// FallbackTarget is one candidate in a provider's error-driven fallback chain.
+type FallbackTarget struct {
+	Provider string `yaml:"provider" json:"provider"`
+	// Model, when set, replaces the "model" field of the forwarded JSON body
+	// (the only rewrite performed; the wire format must already match).
+	Model string `yaml:"model,omitempty" json:"model,omitempty"`
+}
+
+// providerAPIFamily resolves a provider's wire format: the explicit
+// api_family config field wins; otherwise the name convention applies —
+// "anthropic" uses the Anthropic Messages API, every other provider is
+// treated as OpenAI-compatible (matching WriteProviderError).
+func (c *GatewayConfig) providerAPIFamily(name string) string {
+	if p, ok := c.Providers[name]; ok && p.APIFamily != "" {
+		return p.APIFamily
+	}
+	if name == "anthropic" {
+		return "anthropic"
+	}
+	return "openai"
 }
 
 // CallerConfig identifies an application or team that uses the gateway.
@@ -296,8 +332,12 @@ func normalizeProviderRegions(providers map[string]ProviderConfig) {
 		p := providers[name]
 		if p.Region != "" {
 			p.Region = normalizeEgressRegion(p.Region)
-			providers[name] = p
 		}
+		for i := range p.Fallback {
+			p.Fallback[i].Provider = strings.ToLower(strings.TrimSpace(p.Fallback[i].Provider))
+		}
+		p.APIFamily = strings.ToLower(strings.TrimSpace(p.APIFamily))
+		providers[name] = p
 	}
 }
 
@@ -344,6 +384,14 @@ func (c *GatewayConfig) Validate() error {
 		default:
 			return fmt.Errorf("gateway provider %q: upstream_auth_mode must be secret or client_bearer", name)
 		}
+		switch p.APIFamily {
+		case "", "openai", "anthropic":
+		default:
+			return fmt.Errorf("gateway provider %q: api_family must be openai or anthropic", name)
+		}
+		if p.UpstreamAuthMode == "client_bearer" && (p.APIFamily == "anthropic" || name == "anthropic") {
+			return fmt.Errorf("gateway provider %q: upstream_auth_mode client_bearer is not supported for the anthropic API family (Anthropic uses x-api-key, not bearer tokens)", name)
+		}
 		if p.BaseURL == "" && (name == "openai" || name == "anthropic" || name == "ollama") {
 			return fmt.Errorf("gateway provider %q: base_url is required", name)
 		}
@@ -351,6 +399,15 @@ func (c *GatewayConfig) Validate() error {
 			return fmt.Errorf("gateway provider %q: secret_name is required", name)
 		}
 		c.Providers[name] = p
+	}
+	for name := range c.Providers {
+		p := c.Providers[name]
+		if !p.Enabled {
+			continue
+		}
+		if err := c.validateFallbackChain(name, p); err != nil {
+			return err
+		}
 	}
 	if p := c.ServerDefaults.AttachmentPolicy; p != nil {
 		switch p.Action {
@@ -386,6 +443,34 @@ func (c *GatewayConfig) Validate() error {
 			}
 		} else if caller.TenantKey == "" && c.ServerDefaults.CallerIDRequired() {
 			return fmt.Errorf("gateway caller %q: tenant_key or identify_by=source_ip with source_ip_ranges is required", caller.Name)
+		}
+	}
+	return nil
+}
+
+// validateFallbackChain checks a provider's error-driven fallback chain at
+// load time: every target must exist, be enabled, differ from the owner,
+// appear at most once, and share the owner's API family (the body is
+// forwarded verbatim apart from a model rewrite, so cross-family fallback
+// would send an incompatible payload).
+func (c *GatewayConfig) validateFallbackChain(owner string, p ProviderConfig) error {
+	seen := map[string]bool{owner: true}
+	family := c.providerAPIFamily(owner)
+	for i, target := range p.Fallback {
+		tname := strings.ToLower(strings.TrimSpace(target.Provider))
+		if tname == "" {
+			return fmt.Errorf("gateway provider %q: fallback[%d]: provider is required", owner, i)
+		}
+		if seen[tname] {
+			return fmt.Errorf("gateway provider %q: fallback[%d]: duplicate or self-referencing target %q", owner, i, tname)
+		}
+		seen[tname] = true
+		tp, ok := c.Providers[tname]
+		if !ok || !tp.Enabled {
+			return fmt.Errorf("gateway provider %q: fallback[%d]: target %q is not an enabled gateway provider", owner, i, tname)
+		}
+		if tf := c.providerAPIFamily(tname); tf != family {
+			return fmt.Errorf("gateway provider %q: fallback[%d]: target %q API family %q does not match %q — fallback forwards the request body as-is (only the model field is rewritten)", owner, i, tname, tf, family)
 		}
 	}
 	return nil

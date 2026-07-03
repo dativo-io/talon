@@ -379,6 +379,97 @@ gateway:
   preference order only makes sense when Talon picks the provider, not when
   it admits a caller-chosen one.)
 
+#### Provider fallback chains (error-driven failover)
+
+**Scope: this is same-wire-format failover, not cross-provider translation.**
+A chain moves traffic between endpoints that speak the same API — an
+OpenAI-compatible endpoint to another OpenAI-compatible endpoint, or an
+Anthropic-compatible endpoint to another Anthropic-compatible one. Talon does
+not translate request/response schemas between families (e.g. OpenAI ↔
+Anthropic); the body is forwarded as-is except for an optional model rewrite,
+and cross-family chains are rejected at config load.
+
+On a **transient** upstream failure (timeout, connection failure, HTTP 429 or
+5xx) Talon retries the request against the ordered fallback chain. A
+permanent error from the **primary** (401/403/4xx) passes through unchanged —
+it never triggers failover. Once failover **is** engaged, only a successful
+response ends the chain: a fallback candidate that fails for any reason
+(including a permanent 401 from a misconfigured secret) is recorded as a
+failed attempt and the walk continues to the next candidate. When the chain
+is exhausted the request **fails closed**: the caller gets an error and the
+refusal is recorded as a governance outcome — a failed fallback is never
+evidenced as "the provider actually used".
+
+Every candidate passes a filter pipeline before dispatch:
+
+- **Sovereignty (hard invariant):** under `sovereignty.mode: eu_strict` a
+  non-EU/LOCAL candidate is skipped in every gateway mode, shadow included —
+  Talon never dispatches outside EU/LOCAL under eu_strict.
+- **Caller provider allowlist (hard):** a candidate outside the caller's
+  `allowed_providers` is never dispatched.
+- **Target tool policy and gateway policy (mode-aware):** each candidate
+  re-runs the target provider's tool policy and the full gateway policy with
+  the candidate's provider, model, recomputed cost estimate, destination
+  region, and session context — the same input surface as the primary. In
+  `enforce` mode a denial skips the candidate; in `shadow` mode the would-be
+  denial is recorded as a shadow violation and the dispatch proceeds (shadow
+  never changes runtime behavior).
+
+Gateway (proxy path) — chain per provider; all members must share the
+provider's API family. The family defaults by name (`anthropic` → Anthropic
+Messages API, everything else → OpenAI-compatible); set `api_family`
+explicitly for aliased endpoints — it drives request parsing, PII redaction,
+tool filtering, provider-native error shape, chain validation, and upstream
+auth conventions (x-api-key + anthropic-version vs bearer):
+
+```yaml
+gateway:
+  providers:
+    openai:
+      base_url: "https://api.openai.com"
+      secret_name: "openai-api-key"
+      region: "EU"
+      fallback:
+        - provider: "mistral-eu"        # tried in order on transient failure
+          model: "mistral-large-latest" # optional: rewrite the body's model field
+    mistral-eu:
+      base_url: "https://api.mistral.ai"
+      secret_name: "mistral-api-key"
+      region: "EU"
+    anthropic-eu:
+      base_url: "https://eu.anthropic.example.com"
+      secret_name: "anthropic-eu-key"
+      region: "EU"
+      api_family: "anthropic"   # anthropic-compatible alias: joins anthropic chains
+```
+
+Agent runs (`talon run`) — chain per routing tier; candidates are re-checked
+against the compliance routing policy (sovereignty) before dispatch:
+
+```yaml
+policies:
+  model_routing:
+    tier_1:
+      primary: gpt-4o
+      fallback_chain:        # supersedes the legacy single `fallback` for error-driven failover
+        - mistral-large-latest
+        - llama3:70b
+```
+
+Evidence: each failed attempt is a separate signed record
+(`gateway_failover_attempt` / `llm_failover_attempt`, `failover.role:
+failed_attempt`), and each failover engagement gets exactly one terminal
+record — the fallback decision (`failover.role: fallback_decision` with the
+provider actually used and links to the failed attempts) or the fail-closed
+outcome (`failover.role: fail_closed`). For gateway requests the terminal
+lives on the request's final record; agent runs persist a dedicated
+`llm_failover_decision` record per engagement. All records of one engagement
+share a `failover_group_id` — an agentic run makes many LLM calls under one
+correlation ID, and each call's chain verifies independently. Verify with
+`talon audit verify --failover [correlation-id]`. OTel spans expose
+`talon.provider.original`, `talon.provider.selected`, and
+`talon.provider.fallback_reason`.
+
 **Relationship to `compliance.data_residency` (agent policy):** that field is
 a *declaration*, not an enforcement knob — it is stamped into evidence and
 used by auditor exports. If you declare `data_residency: eu` but run with

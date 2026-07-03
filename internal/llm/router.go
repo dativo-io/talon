@@ -102,7 +102,7 @@ func (r *Router) Route(ctx context.Context, tier int, opts *RouteOptions) (Provi
 	useCompliance := opts != nil && opts.PolicyEngine != nil && opts.SovereigntyMode != ""
 
 	if useCompliance {
-		return r.routeWithCompliance(ctx, span, tier, tierConfig, opts)
+		return r.routeWithCompliance(ctx, span, tier, opts)
 	}
 
 	model := tierConfig.Primary
@@ -147,97 +147,180 @@ func (r *Router) Route(ctx context.Context, tier int, opts *RouteOptions) (Provi
 	return provider, model, nil, nil
 }
 
-// routeWithCompliance builds candidate (provider, model) pairs, evaluates each with OPA routing
-// policy, and returns the first allowed provider plus a RouteDecision with rejected candidates.
-func (r *Router) routeWithCompliance(ctx context.Context, span trace.Span, tier int, tierConfig *policy.TierConfig, opts *RouteOptions) (Provider, string, *RouteDecision, error) {
-	dataTier := opts.DataTier
-	if dataTier < 0 || dataTier > 2 {
-		dataTier = tier
+// routeWithCompliance resolves the tier's candidate list (primary +
+// fallback_chain), evaluates each with OPA routing policy, and returns the
+// first allowed provider plus a RouteDecision with rejected candidates.
+func (r *Router) routeWithCompliance(ctx context.Context, span trace.Span, tier int, opts *RouteOptions) (Provider, string, *RouteDecision, error) {
+	resolved, rejected, err := r.ResolveCandidates(ctx, tier, opts)
+	if err != nil {
+		span.RecordError(err)
+		return nil, "", nil, err
 	}
-	requireEU := dataTier == 2
-
-	candidates := r.buildCandidates(tierConfig)
-	var rejected []RejectedRouteCandidate
-	for _, c := range candidates {
-		prov, ok := r.providers[c.providerName]
-		if !ok {
-			continue
-		}
-		meta := prov.Metadata()
+	if len(resolved) > 0 {
+		c := resolved[0]
+		meta := c.Provider.Metadata()
 		region := ""
 		if len(meta.EURegions) > 0 {
 			region = meta.EURegions[0]
 		}
-		dec, err := opts.PolicyEngine.EvaluateRouting(ctx, &policy.RoutingInput{
-			SovereigntyMode:      opts.SovereigntyMode,
-			ProviderID:           meta.ID,
-			ProviderJurisdiction: meta.Jurisdiction,
-			ProviderRegion:       region,
-			DataTier:             dataTier,
-			RequireEURouting:     requireEU,
-		})
-		if err != nil {
-			span.RecordError(err)
-			rejected = append(rejected, RejectedRouteCandidate{ProviderID: c.providerName, Reason: err.Error()})
-			continue
-		}
-		if dec.Allowed {
-			span.SetAttributes(
-				attribute.String("gen_ai.request.model", c.model),
-				attribute.String("llm.provider", c.providerName),
-				otel.TalonProviderJurisdiction.String(meta.Jurisdiction),
-				otel.TalonProviderRegion.String(region),
-				otel.TalonRoutingRejectedCount.Int(len(rejected)),
-				otel.TalonRoutingSelectionReason.String("first candidate allowed by routing policy"),
-			)
-			return prov, c.model, &RouteDecision{
-				SelectedProvider: c.providerName,
-				SelectedModel:    c.model,
-				Rejected:         rejected,
-			}, nil
-		}
-		for _, reason := range dec.Reasons {
-			rejected = append(rejected, RejectedRouteCandidate{ProviderID: c.providerName, Reason: reason})
-		}
+		span.SetAttributes(
+			attribute.String("gen_ai.request.model", c.Model),
+			attribute.String("llm.provider", c.ProviderName),
+			otel.TalonProviderJurisdiction.String(meta.Jurisdiction),
+			otel.TalonProviderRegion.String(region),
+			otel.TalonRoutingRejectedCount.Int(len(rejected)),
+			otel.TalonRoutingSelectionReason.String("first candidate allowed by routing policy"),
+		)
+		return c.Provider, c.Model, &RouteDecision{
+			SelectedProvider: c.ProviderName,
+			SelectedModel:    c.Model,
+			Rejected:         rejected,
+		}, nil
 	}
-	err := fmt.Errorf("no provider allowed by routing policy for tier %d (sovereignty %s): %d candidate(s) rejected", tier, opts.SovereigntyMode, len(rejected))
+	err = fmt.Errorf("no provider allowed by routing policy for tier %d (sovereignty %s): %d candidate(s) rejected", tier, opts.SovereigntyMode, len(rejected))
 	span.SetAttributes(otel.TalonRoutingRejectedCount.Int(len(rejected)))
 	span.RecordError(err)
 	return nil, "", nil, err
 }
 
 type routeCandidate struct {
-	providerName string
-	model        string
+	providerName  string
+	model         string
+	chainPosition int
+	ruleID        string
 }
 
-func (r *Router) buildCandidates(tierConfig *policy.TierConfig) []routeCandidate {
-	var out []routeCandidate
+// buildCandidates returns the ordered candidate list for a tier: the primary,
+// then the error-driven fallback_chain entries, then the legacy single
+// fallback when no chain is configured. Chain entries whose model cannot be
+// resolved to a provider are returned as rejected (fail-closed and visible in
+// evidence rather than silently dropped).
+func (r *Router) buildCandidates(tier int, tierConfig *policy.TierConfig) (candidates []routeCandidate, rejected []RejectedRouteCandidate) {
 	primary := strings.TrimSpace(tierConfig.Primary)
 	if primary == "" {
-		return out
+		return nil, nil
 	}
 	providerName, err := inferProvider(primary)
 	if err != nil {
-		return out
+		return nil, nil
 	}
 	if tierConfig.BedrockOnly {
 		providerName = "bedrock"
 	}
-	out = append(out, routeCandidate{providerName: providerName, model: primary})
-	if tierConfig.Fallback != "" {
-		fb := strings.TrimSpace(tierConfig.Fallback)
-		fbProvider, fbErr := inferProvider(fb)
-		if fbErr == nil {
-			if tierConfig.BedrockOnly {
-				fbProvider = "bedrock"
+	candidates = append(candidates, routeCandidate{
+		providerName: providerName, model: primary,
+		chainPosition: 0, ruleID: fmt.Sprintf("policies.model_routing.tier_%d.primary", tier),
+	})
+	seen := map[string]bool{providerName + "/" + primary: true}
+
+	appendCandidate := func(model, ruleID string) {
+		m := strings.TrimSpace(model)
+		if m == "" {
+			return
+		}
+		p, inferErr := inferProvider(m)
+		if inferErr != nil {
+			rejected = append(rejected, RejectedRouteCandidate{ProviderID: m, Reason: fmt.Sprintf("%s: %v", ruleID, inferErr)})
+			return
+		}
+		if tierConfig.BedrockOnly {
+			p = "bedrock"
+		}
+		if seen[p+"/"+m] {
+			return
+		}
+		seen[p+"/"+m] = true
+		candidates = append(candidates, routeCandidate{
+			providerName: p, model: m,
+			chainPosition: len(candidates), ruleID: ruleID,
+		})
+	}
+
+	for i, m := range tierConfig.FallbackChain {
+		appendCandidate(m, fmt.Sprintf("policies.model_routing.tier_%d.fallback_chain[%d]", tier, i))
+	}
+	if len(tierConfig.FallbackChain) == 0 && tierConfig.Fallback != "" {
+		appendCandidate(tierConfig.Fallback, fmt.Sprintf("policies.model_routing.tier_%d.fallback", tier))
+	}
+	return candidates, rejected
+}
+
+// ResolvedCandidate is a dispatchable (provider, model) pair from a tier's
+// candidate list, in dispatch order. ChainPosition 0 is the primary.
+type ResolvedCandidate struct {
+	Provider      Provider
+	ProviderName  string
+	Model         string
+	ChainPosition int
+	RuleID        string
+	Jurisdiction  string
+}
+
+// ResolveCandidates returns the ordered, policy-valid candidate list for a
+// tier. When opts enables compliance-aware routing, each candidate is
+// evaluated with the OPA routing policy (sovereignty-aware) and refused
+// candidates are returned in rejected — they are never dispatched, so
+// error-driven failover cannot become a sovereignty bypass.
+func (r *Router) ResolveCandidates(ctx context.Context, tier int, opts *RouteOptions) (resolved []ResolvedCandidate, rejected []RejectedRouteCandidate, err error) {
+	tierConfig, err := r.getTierConfig(tier)
+	if err != nil {
+		return nil, nil, err
+	}
+	if strings.TrimSpace(tierConfig.Primary) == "" {
+		return nil, nil, fmt.Errorf("tier %d: %w", tier, ErrNoPrimaryModel)
+	}
+	candidates, rejected := r.buildCandidates(tier, tierConfig)
+	useCompliance := opts != nil && opts.PolicyEngine != nil && opts.SovereigntyMode != ""
+	dataTier := tier
+	requireEU := false
+	if useCompliance {
+		dataTier = opts.DataTier
+		if dataTier < 0 || dataTier > 2 {
+			dataTier = tier
+		}
+		requireEU = dataTier == 2
+	}
+	for _, c := range candidates {
+		prov, ok := r.providers[c.providerName]
+		if !ok {
+			rejected = append(rejected, RejectedRouteCandidate{ProviderID: c.providerName, Reason: fmt.Sprintf("%s: provider not available", c.ruleID)})
+			continue
+		}
+		meta := prov.Metadata()
+		if useCompliance {
+			region := ""
+			if len(meta.EURegions) > 0 {
+				region = meta.EURegions[0]
 			}
-			if fbProvider != providerName || fb != primary {
-				out = append(out, routeCandidate{providerName: fbProvider, model: fb})
+			dec, evalErr := opts.PolicyEngine.EvaluateRouting(ctx, &policy.RoutingInput{
+				SovereigntyMode:      opts.SovereigntyMode,
+				ProviderID:           meta.ID,
+				ProviderJurisdiction: meta.Jurisdiction,
+				ProviderRegion:       region,
+				DataTier:             dataTier,
+				RequireEURouting:     requireEU,
+			})
+			if evalErr != nil {
+				rejected = append(rejected, RejectedRouteCandidate{ProviderID: c.providerName, Reason: evalErr.Error()})
+				continue
+			}
+			if !dec.Allowed {
+				for _, reason := range dec.Reasons {
+					rejected = append(rejected, RejectedRouteCandidate{ProviderID: c.providerName, Reason: reason})
+				}
+				continue
 			}
 		}
+		resolved = append(resolved, ResolvedCandidate{
+			Provider:      prov,
+			ProviderName:  c.providerName,
+			Model:         c.model,
+			ChainPosition: c.chainPosition,
+			RuleID:        c.ruleID,
+			Jurisdiction:  meta.Jurisdiction,
+		})
 	}
-	return out
+	return resolved, rejected, nil
 }
 
 // GracefulRoute selects provider and model like Route, but may downgrade to a fallback model

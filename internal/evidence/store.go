@@ -96,6 +96,84 @@ type Evidence struct {
 	// pre-existing record signatures remain valid
 	// (see docs/reference/evidence-integrity-spec.md §2).
 	EgressDecision *EgressDecision `json:"egress_decision,omitempty"`
+	// Failover records provider fallback-chain context (failed attempt,
+	// fallback decision, or fail-closed outcome). Appended after
+	// egress_decision so pre-existing record signatures remain valid
+	// (see docs/reference/evidence-integrity-spec.md §2).
+	Failover *FailoverContext `json:"failover,omitempty"`
+}
+
+// Failover evidence roles. A failover produces separate signed facts:
+// one FailoverRoleFailedAttempt record per failed runtime attempt, plus the
+// request's final record carrying FailoverRoleFallbackDecision (a fallback
+// provider was dispatched) or FailoverRoleFailClosed (no policy-valid
+// candidate existed; the caller received an error and that refusal is a
+// successful governance outcome).
+const (
+	FailoverRoleFailedAttempt    = "failed_attempt"
+	FailoverRoleFallbackDecision = "fallback_decision"
+	FailoverRoleFailClosed       = "fail_closed"
+)
+
+// Structured failure reasons for failover outcomes (Evidence.FailureReason).
+// Failed-attempt records carry the reason matching their error class:
+// transient (timeout/connection/429/5xx) vs permanent (auth/4xx) — the
+// failure_reason and failover.error_class must never contradict each other.
+const (
+	FailureReasonProviderTransient        = "provider_transient_error"
+	FailureReasonProviderPermanent        = "provider_permanent_error"
+	FailureReasonNoValidFallbackCandidate = "no_valid_fallback_candidate"
+)
+
+// FailoverContext captures why traffic moved between providers, so audits can
+// prove both where an answer came from and why it came from there.
+type FailoverContext struct {
+	// Role is one of the FailoverRole* constants.
+	Role string `json:"role"`
+	// FailoverGroupID ties the records of ONE failover engagement together
+	// (one gateway request, or one LLM call within an agent run). A single
+	// correlation ID may legitimately carry several groups — an agentic run
+	// makes many LLM calls — so verification is per group, not per
+	// correlation ID. Empty on records written before this field existed.
+	FailoverGroupID string `json:"failover_group_id,omitempty"`
+	// Provider/Region/Model describe the attempt (failed_attempt role) or the
+	// provider actually used (fallback_decision role).
+	Provider string `json:"provider"`
+	Region   string `json:"region,omitempty"`
+	Model    string `json:"model,omitempty"`
+	// ErrorClass classifies the upstream failure (failed_attempt role):
+	// timeout, connection_error, rate_limited, upstream_5xx, ...
+	ErrorClass string `json:"error_class,omitempty"`
+	// UpstreamStatus is the upstream HTTP status of a failed attempt (0 for
+	// transport-level failures).
+	UpstreamStatus int `json:"upstream_status,omitempty"`
+	// ChainPosition is the candidate's position in the fallback chain
+	// (0 = primary).
+	ChainPosition int `json:"chain_position"`
+	// FallbackRuleID names the config rule that produced the candidate,
+	// e.g. "gateway.providers.openai.fallback[1]".
+	FallbackRuleID string `json:"fallback_rule_id,omitempty"`
+	// SovereigntyMode is the effective data-sovereignty mode at decision time.
+	SovereigntyMode string `json:"sovereignty_mode,omitempty"`
+	// SovereigntyCheck is the sovereignty filter outcome for the dispatched
+	// candidate: "allowed", "denied", or "not_evaluated".
+	SovereigntyCheck string `json:"sovereignty_check,omitempty"`
+	// FailedAttemptIDs are the evidence IDs of the failed-attempt records this
+	// decision is based on (fallback_decision and fail_closed roles).
+	FailedAttemptIDs []string `json:"failed_attempt_ids,omitempty"`
+	// SkippedCandidates are chain candidates refused by a policy filter before
+	// any provider call was made — distinct from failed runtime attempts.
+	SkippedCandidates []SkippedCandidate `json:"skipped_candidates,omitempty"`
+}
+
+// SkippedCandidate is a fallback candidate refused by a candidate filter
+// (e.g. sovereignty) before dispatch. Talon never called this provider.
+type SkippedCandidate struct {
+	Provider      string `json:"provider"`
+	Model         string `json:"model,omitempty"`
+	ChainPosition int    `json:"chain_position"`
+	Filter        string `json:"filter"`
+	Reason        string `json:"reason"`
 }
 
 // EgressDecision records the outcome of matching a gateway request against
@@ -617,12 +695,16 @@ func (s *Store) ListBySessionID(ctx context.Context, sessionID string) ([]*Evide
 		trace.WithAttributes(attribute.String("session_id", sessionID)))
 	defer span.End()
 
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT evidence_json FROM evidence WHERE session_id = ? ORDER BY timestamp DESC`,
-		sessionID,
-	)
+	return s.queryEvidenceJSON(ctx, "session",
+		`SELECT evidence_json FROM evidence WHERE session_id = ? ORDER BY timestamp DESC`, sessionID)
+}
+
+// queryEvidenceJSON runs a single-argument evidence_json query and unmarshals
+// each row into an Evidence record. scope names the query for error wrapping.
+func (s *Store) queryEvidenceJSON(ctx context.Context, scope, query, arg string) ([]*Evidence, error) {
+	rows, err := s.db.QueryContext(ctx, query, arg)
 	if err != nil {
-		return nil, fmt.Errorf("querying evidence by session: %w", err)
+		return nil, fmt.Errorf("querying evidence by %s: %w", scope, err)
 	}
 	defer rows.Close()
 
@@ -639,6 +721,18 @@ func (s *Store) ListBySessionID(ctx context.Context, sessionID string) ([]*Evide
 		results = append(results, &ev)
 	}
 	return results, rows.Err()
+}
+
+// ListByCorrelationID returns all evidence records sharing a correlation ID,
+// oldest first. Used by the failover verifier to reconstruct a fallback chain
+// (failed attempts + fallback decision) from linked signed records.
+func (s *Store) ListByCorrelationID(ctx context.Context, correlationID string) ([]*Evidence, error) {
+	ctx, span := tracer.Start(ctx, "evidence.list_by_correlation",
+		trace.WithAttributes(attribute.String("correlation_id", correlationID)))
+	defer span.End()
+
+	return s.queryEvidenceJSON(ctx, "correlation",
+		`SELECT evidence_json FROM evidence WHERE correlation_id = ? ORDER BY timestamp ASC`, correlationID)
 }
 
 // Get retrieves evidence by ID.
