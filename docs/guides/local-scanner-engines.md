@@ -27,6 +27,110 @@ scanner:
 At startup Talon queries `GET /models` and refuses to start if the model
 isn't pulled.
 
+## End-user test drive (host binary, real provider)
+
+Full manual walkthrough on a single host: Talon binary + host Ollama as the
+scanner + a real OpenAI upstream. Everything is observable with curl and
+`talon audit`.
+
+```bash
+# --- 1. Environment (adjust paths; generate real keys once) ---
+export PATH="$HOME/talon/bin:$PATH"
+export TALON_SECRETS_KEY=$(openssl rand -hex 32)
+export TALON_SIGNING_KEY=$(openssl rand -hex 32)
+export TALON_ADMIN_KEY=$(openssl rand -hex 32)
+export TALON_DATA_DIR="$PWD/.talon"        # keep the test drive self-contained
+
+# --- 2. The scanner engine: host Ollama with a llama model ---
+ollama pull llama3.1:8b                     # or llama3.2:1b for a quick spin
+
+# --- 3. Project scaffold + provider credential in the vault ---
+mkdir -p ~/talon-scanner-drive && cd ~/talon-scanner-drive
+talon init --scaffold --name scanner-drive
+talon secrets set openai-api-key "sk-proj-..."   # real key; vault-encrypted
+
+# --- 4. Configure the llm scanner + gateway (talon.config.yaml) ---
+cat >> talon.config.yaml <<'CFG'
+
+scanner:
+  type: llm
+  timeout: "60s"          # endpoint defaults to ollama_base_url + /v1
+  llm:
+    model: "llama3.1:8b"
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "enforce"
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+  callers:
+    - name: "me"
+      tenant_key: "talon-drive-key"
+      tenant_id: "default"
+      policy_overrides:
+        pii_action: "redact"
+  default_policy:
+    default_pii_action: "redact"
+    require_caller_id: true
+CFG
+
+# --- 5. Serve (startup health-probes Ollama and the model; fail-closed) ---
+talon serve --port 8080 --gateway --gateway-config talon.config.yaml
+# log line to look for:
+#   external PII scanner engine active ... engine=llm:llama3.1:8b
+```
+
+In a second terminal, send PII through and inspect what actually happened:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions \
+  -H "Authorization: Bearer talon-drive-key" -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Email jan.kowalski@example.com about IBAN DE89370400440532013000"}]}'
+
+# The upstream model answers about [EMAIL] / [IBAN] — it never saw the raw
+# values. Evidence attributes the engine and the versioned prompt:
+talon audit export --format json --from 2020-01-01 --to 2099-12-31 \
+  | jq '.[-1] | {allowed, scanner_engine, scanner_type, scanner_version, pii_detected, input_tier}'
+# -> "scanner_engine": "llm:llama3.1:8b", "scanner_version": "llm-ner/v1", ...
+```
+
+Fail-closed, observed as an end user:
+
+```bash
+# Kill the engine mid-flight: requests block, they don't degrade.
+pkill ollama
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/v1/proxy/openai/v1/chat/completions \
+  -H "Authorization: Bearer talon-drive-key" -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}'
+# -> 502 (scanner_unavailable); the denial is in `talon audit export` with
+#    scanner_failure set to the typed kind (e.g. "transport").
+
+# Restarting talon while the engine is down refuses to start:
+talon serve --port 8080 --gateway --gateway-config talon.config.yaml
+# -> "external scanner ... unreachable ...; Talon refuses to start (fail-closed)"
+```
+
+To drive a **Presidio** engine instead, swap step 2 and the scanner block:
+
+```bash
+docker run -d --name presidio -p 127.0.0.1:5002:3000 mcr.microsoft.com/presidio-analyzer:latest
+```
+
+```yaml
+scanner:
+  type: presidio
+  endpoint: "http://127.0.0.1:5002"
+  name: "presidio-drive"
+  engine_version: "latest"
+```
+
+Same curl, same audit checks — `scanner_engine` becomes `presidio-drive`,
+and `docker stop presidio` gives you the same 502/startup-refusal behavior.
+
 ## How detection works (and why offsets are safe)
 
 LLMs are unreliable at reporting character positions, so Talon never asks for
