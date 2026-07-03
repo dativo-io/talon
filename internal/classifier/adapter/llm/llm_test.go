@@ -297,3 +297,53 @@ func TestAnalyze_RequestsAreTokenBounded(t *testing.T) {
 	assert.Equal(t, float64(2048), req["max_tokens"], "NER completions must be token-bounded")
 	assert.Equal(t, float64(0), req["temperature"])
 }
+
+func TestParseDetections_ToleratedModelShapes(t *testing.T) {
+	// Small models under JSON mode degenerate in structured but unambiguous
+	// ways; each accepted shape is still gated by relocation afterwards.
+	tests := []struct {
+		name    string
+		reply   string
+		want    int
+		wantErr bool
+	}{
+		{"canonical object", `{"entities":[{"type":"EMAIL_ADDRESS","value":"a@b.co"}]}`, 1, false},
+		{"bare empty array (llama3.2:1b on placeholder-only text)", `[]`, 0, false},
+		{"bare detection array", `[{"type":"EMAIL_ADDRESS","value":"a@b.co"}]`, 1, false},
+		{"fenced array", "```json\n[]\n```", 0, false},
+		{"array with prose around it", "Here you go: [] — nothing found.", 0, false},
+		{"empty object", `{}`, 0, false},
+		{"entities null", `{"entities":null}`, 0, false},
+		{"prose only", "There is no PII in this text.", 0, true},
+		{"empty reply", "", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dets, err := llm.ParseDetections(tt.reply)
+			if tt.wantErr {
+				require.Error(t, err, "unparseable replies stay fail-closed")
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, dets, tt.want)
+		})
+	}
+}
+
+func TestVerifyEgress_BareArrayReplyOnRedactedText(t *testing.T) {
+	// End-to-end shape of the field failure: raw text gets the canonical
+	// object, the redacted verify re-scan gets a bare [] — the verify pass
+	// must succeed instead of blocking with a decode failure.
+	a := newAdapter(t, func(userText string) string {
+		if strings.Contains(userText, "kai@example.com") {
+			return nerReply([2]string{"EMAIL_ADDRESS", "kai@example.com"})
+		}
+		return `[]`
+	})
+
+	redacted, err := a.RedactText(context.Background(), "mail kai@example.com now")
+	require.NoError(t, err)
+	assert.Equal(t, "mail [EMAIL] now", redacted)
+	assert.NoError(t, a.VerifyEgress(context.Background(), redacted),
+		"a bare-array 'nothing found' reply must verify clean")
+}

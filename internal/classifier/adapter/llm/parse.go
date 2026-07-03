@@ -24,28 +24,39 @@ const maxDetections = 256
 
 var errNotNERJSON = errors.New("model response is not the expected entities JSON object")
 
-// ParseDetections extracts the {"entities":[...]} object from a model reply.
-// Code fences and surrounding prose are tolerated (small local models often
-// add them despite instructions); anything without a parseable entities
-// object is an error — fail-closed, never "no PII found".
+// ParseDetections extracts the model's detections from its reply. The prompt
+// demands {"entities":[...]}, but small models under JSON mode degenerate in
+// known structured ways that are still unambiguous detections — a bare
+// top-level array ([] or [{"type":...}], observed deterministically from
+// llama3.2:1b on placeholder-only verify re-scans) — so both shapes are
+// accepted. Code fences and surrounding prose are tolerated. Anything without
+// a parseable JSON value is an error — fail-closed, never "no PII found".
 func ParseDetections(content string) ([]Detection, error) {
-	payload := extractJSONObject(content)
+	payload := extractJSONValue(content)
 	if payload == "" {
 		return nil, errNotNERJSON
 	}
-	var resp nerResponse
-	if err := json.Unmarshal([]byte(payload), &resp); err != nil {
-		return nil, errNotNERJSON
+	var dets []Detection
+	if strings.HasPrefix(payload, "[") {
+		if err := json.Unmarshal([]byte(payload), &dets); err != nil {
+			return nil, errNotNERJSON
+		}
+	} else {
+		var resp nerResponse
+		if err := json.Unmarshal([]byte(payload), &resp); err != nil {
+			return nil, errNotNERJSON
+		}
+		dets = resp.Entities
 	}
-	if len(resp.Entities) > maxDetections {
-		resp.Entities = resp.Entities[:maxDetections]
+	if len(dets) > maxDetections {
+		dets = dets[:maxDetections]
 	}
-	return resp.Entities, nil
+	return dets, nil
 }
 
-// extractJSONObject returns the first top-level {...} object in s, stripping
-// markdown code fences.
-func extractJSONObject(s string) string {
+// extractJSONValue returns the first top-level {...} object or [...] array in
+// s, stripping markdown code fences.
+func extractJSONValue(s string) string {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "```") {
 		s = strings.TrimPrefix(s, "```json")
@@ -55,9 +66,13 @@ func extractJSONObject(s string) string {
 		}
 		s = strings.TrimSpace(s)
 	}
-	start := strings.Index(s, "{")
+	start := strings.IndexAny(s, "{[")
 	if start < 0 {
 		return ""
+	}
+	open, closing := byte('{'), byte('}')
+	if s[start] == '[' {
+		open, closing = '[', ']'
 	}
 	depth := 0
 	inString := false
@@ -72,9 +87,9 @@ func extractJSONObject(s string) string {
 		case c == '"':
 			inString = !inString
 		case inString:
-		case c == '{':
+		case c == open:
 			depth++
-		case c == '}':
+		case c == closing:
 			depth--
 			if depth == 0 {
 				return s[start : i+1]
