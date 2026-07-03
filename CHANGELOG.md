@@ -17,6 +17,18 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.6.7] - 2026-07-03
+
+### Added
+
+- **feat(reliability): error-driven, sovereignty-respecting provider fallback chains (#138, #191).** Operators can now keep agent traffic flowing through provider outages without giving up governance guarantees. On a **transient** upstream failure (timeout, connection error, HTTP 429/5xx) Talon walks an ordered fallback chain — on both the gateway proxy (`gateway.providers.<name>.fallback`, optional per-target model rewrite) and the `talon run` path (`policies.model_routing.tier_N.fallback_chain`). Chains are same-wire-format (OpenAI-compatible ↔ OpenAI-compatible, Anthropic ↔ Anthropic; validated at load). Permanent errors (401/4xx) pass through unchanged; once a chain is engaged only success ends it; exhaustion **fails closed** and the refusal is recorded as a successful governance outcome. Every candidate re-runs the caller's full policy surface (provider allowlist, model lists, target tool policy, budgets, session context) so failover can never become a policy bypass, and under `eu_strict` a non-EU/LOCAL candidate is never dispatched — shadow mode included, where would-be denials are recorded as shadow violations without changing runtime behavior. Each engagement produces signed evidence: one `gateway_failover_attempt`/`llm_failover_attempt` record per failed provider plus exactly one terminal record (fallback decision or fail-closed), linked by `correlation_id` and a per-engagement `failover_group_id`. The new `api_family` provider field lets aliased Anthropic-compatible endpoints get correct parsing, PII redaction, tool filtering, auth conventions (x-api-key + anthropic-version), and error shape. OTel spans expose `talon.provider.original` / `talon.provider.selected` / `talon.provider.fallback_reason`. Verify quickly: point a provider's `base_url` at a dead port, add `fallback: [{provider: backup}]`, POST through the gateway → 200 served by the backup, then `talon audit verify --failover`. Docs: [configuration reference](docs/reference/configuration.md).
+
+### Fixed
+
+- **fix(config): project-local `talon.config.yaml` takes precedence over `~/.talon` (#191).** Viper searched the home directory first, contradicting the documented `--config` default (`./talon.config.yaml or ~/.talon/talon.config.yaml`) — a machine-wide config silently overrode per-project sovereignty mode, cache settings, and compliance controller declarations. **Upgrade impact:** operators who (perhaps unknowingly) relied on `~/.talon/talon.config.yaml` overriding a project-local file now get the local file; pass `--config ~/.talon/talon.config.yaml` explicitly to keep the old behavior. Verify quickly: run `talon config show` in a directory with its own `talon.config.yaml`.
+- **fix(gateway): Anthropic plain-string message content is now PII-redacted (#191).** The redactor only handled content-block arrays; the Messages API's plain-string `content` form reached the post-redaction verifier unredacted and failed closed in `redact` mode.
+- **fix(server): `/v1/dashboard/governance-alerts` returns `"alerts": []` instead of JSON `null` when no alerts exist (#191).**
+
 ## [1.6.6] - 2026-06-30
 
 ### Added
@@ -554,7 +566,8 @@ For user-facing entries, include:
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.6.6...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.6.7...HEAD
+[1.6.7]: https://github.com/dativo-io/talon/compare/v1.6.6...v1.6.7
 [1.6.6]: https://github.com/dativo-io/talon/compare/v1.6.5...v1.6.6
 [1.6.5]: https://github.com/dativo-io/talon/compare/v1.6.0...v1.6.5
 [1.6.0]: https://github.com/dativo-io/talon/compare/v1.5.5...v1.6.0
