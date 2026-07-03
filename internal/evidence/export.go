@@ -58,6 +58,13 @@ type ExportRecord struct {
 	FlowDestinations []string `json:"flow_destinations,omitempty"`
 	FlowRegions      []string `json:"flow_regions,omitempty"`
 	FlowEntityTypes  []string `json:"flow_entity_types,omitempty"`
+	// Scanner engine attribution (trailing, backward-compatible): which PII
+	// scan engine produced the classification, and the typed failure kind
+	// when a scanner failure drove a fail-closed block (#181).
+	ScannerEngine  string `json:"scanner_engine,omitempty"`
+	ScannerType    string `json:"scanner_type,omitempty"`
+	ScannerVersion string `json:"scanner_version,omitempty"`
+	ScannerFailure string `json:"scanner_failure,omitempty"`
 }
 
 // ExportMetadata wraps JSON export with context about the export run.
@@ -154,6 +161,12 @@ func ToExportRecord(e *Evidence) ExportRecord {
 		rec.FlowDestinations = sortedSetKeys(destSet)
 		rec.FlowRegions = sortedSetKeys(regionSet)
 		rec.FlowEntityTypes = sortedSetKeys(typeSet)
+	}
+	if s := e.Classification.Scanner; s != nil {
+		rec.ScannerEngine = s.Engine
+		rec.ScannerType = s.Type
+		rec.ScannerVersion = s.Version
+		rec.ScannerFailure = s.Failure
 	}
 	return rec
 }

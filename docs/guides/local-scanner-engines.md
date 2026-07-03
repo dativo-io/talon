@@ -80,6 +80,24 @@ scan that misses its deadline blocks (enforce) or logs (shadow/warn).
   missing entities on the verify pass — these fail closed, so they surface
   as blocked egress, not leaks).
 
+## Verifying your setup
+
+The smoke suite has a dedicated section for the llm engine
+(`tests/smoke_sections/36_external_scanner.sh`): by default it runs against a
+hermetic llama stand-in (same Ollama wire protocol), covering fail-closed
+startup, end-to-end redaction, evidence attribution, and mid-flight engine
+loss. Point it at your real Ollama to validate an actual llama model:
+
+```bash
+TALON_SMOKE_OLLAMA_URL=http://localhost:11434 \
+TALON_SMOKE_OLLAMA_MODEL=llama3.1:8b \
+make test-smoke
+```
+
+(The real-model scenario asserts pipeline health and evidence attribution,
+not recall — recall is model-dependent, which is exactly why the hermetic
+scenario exists.)
+
 ## Shadow-mode rollout
 
 Test recall without blocking traffic: set the gateway to `mode: shadow` and

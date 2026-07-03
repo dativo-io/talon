@@ -41,7 +41,9 @@
 #   14 deny | 15 multi-tenant | 16 shadow | 17 config-provider | 18 compliance-export |
 #   19 CI/CD | 20 edge-cases | 21 doctor/report/enforce | 22 cache | 23 dashboard-metrics | 24 plan-dispatch | 25 sessions |
 #   26 pii-enrichment | 27 runtime-governance | 28 control-plane | 29 consistency |
-#   30 graph-events | 31 quickstart.
+#   30 graph-events | 31 quickstart | 32 egress | 33 auditor-documents |
+#   34 compliance-dashboard | 35 failover | 36 external-scanner (llama/llm engine;
+#   hermetic llama stand-in by default, TALON_SMOKE_OLLAMA_URL opts into real Ollama).
 #
 # QA notes (from brief):
 # - Section 16 (Shadow mode): Evidence shadow signal is in shadow_violations or
@@ -469,7 +471,8 @@ for _section_file in \
   23_dashboard_metrics.sh 24_plan_dispatch.sh 25_sessions.sh \
   26_pii_enrichment.sh 27_runtime_governance.sh 28_control_plane.sh \
   29_consistency.sh 30_graph_events.sh 31_quickstart.sh 32_egress.sh \
-  33_auditor_documents.sh 34_compliance_dashboard.sh 35_failover.sh; do
+  33_auditor_documents.sh 34_compliance_dashboard.sh 35_failover.sh \
+  36_external_scanner.sh; do
   # shellcheck source=/dev/null
   source "${SMOKE_SECTIONS_DIR}/${_section_file}"
 done
@@ -557,6 +560,7 @@ main() {
   run_section "33_auditor_documents" test_section_33_auditor_documents
   run_section "34_compliance_dashboard" test_section_34_compliance_dashboard
   run_section "35_failover" test_section_35_failover
+  run_section "36_external_scanner" test_section_36_external_scanner
 
   # Section 29: Consistency checks — cross-command flow verification
   run_section "29_consistency" test_section_29_consistency

@@ -150,6 +150,27 @@ OTel: spans `scanner.adapter.analyze` / `scanner.adapter.health`; metrics
 `talon.scanner.requests.total{engine,outcome}`, `talon.scanner.latency{engine}`,
 `talon.scanner.failures.total{engine,kind}`.
 
+`talon audit export` surfaces the same attribution as flat fields on every
+record: `scanner_engine`, `scanner_type`, `scanner_version`, and
+`scanner_failure`.
+
+## Test coverage
+
+- **Unit/integration (mocks, every CI run)**: adapter offset/failure-kind
+  suites, gateway/MCP/agent fail-closed integration tests, and response
+  fuzzing — wired into `make proof-gates`.
+- **Smoke (black-box, real binary)**: `tests/smoke_sections/36_external_scanner.sh`
+  runs `talon serve` with `scanner.type: llm` against a hermetic **llama
+  stand-in** speaking the exact Ollama wire protocol (`/v1/models` +
+  `/v1/chat/completions`): startup refusal against a dead engine, PII
+  detection + redaction before the upstream provider sees the prompt,
+  evidence attribution (`llm:<model>`, `llm-ner/v1`), and a mid-flight
+  engine kill blocking 502 with denial evidence. Set `TALON_SMOKE_OLLAMA_URL`
+  (and optionally `TALON_SMOKE_OLLAMA_MODEL`, default `llama3.2:1b`) to also
+  run the scenario against a **real Ollama llama model**.
+- **Nightly**: the `scanner-ollama-smoke` GitHub workflow exercises the llm
+  adapter against real Ollama with `llama3.2:1b`.
+
 ## Deployment patterns
 
 ### Presidio sidecar (docker compose)
