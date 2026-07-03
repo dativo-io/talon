@@ -305,3 +305,62 @@ func TestExternalScanner_OutputTierReflectsResponseContent(t *testing.T) {
 	assert.True(t, ev.Classification.OutputPIIDetected)
 	assert.False(t, ev.PolicyDecision.Allowed)
 }
+
+// detectThenFailScanner detects scannerTestEmail in raw text but errors on any
+// text containing redaction placeholders — the field-observed failure mode
+// where the verify re-scan of "[EMAIL]..." fails while the first two scans
+// succeed (e.g. a small model repetition-spiraling on placeholder-only text).
+func detectThenFailScanner(t *testing.T) *adapter.HTTPAdapter {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.HandleFunc("/analyze", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Text string `json:"text"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if strings.Contains(req.Text, "[EMAIL]") {
+			http.Error(w, "engine spiraled", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		results := []presidio.RecognizerResult{}
+		if idx := strings.Index(req.Text, scannerTestEmail); idx >= 0 {
+			results = append(results, presidio.RecognizerResult{
+				EntityType: "EMAIL_ADDRESS", Start: idx, End: idx + len(scannerTestEmail),
+				Score: 1.0, OffsetEncoding: presidio.OffsetEncodingByte,
+			})
+		}
+		_ = json.NewEncoder(w).Encode(results)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	a, err := adapter.New(adapter.Config{Type: adapter.TypeHTTP, Endpoint: srv.URL, Name: "spiral-engine"})
+	require.NoError(t, err)
+	return a
+}
+
+func TestExternalScannerFailClosed_VerifyScanFailureIsTruthful(t *testing.T) {
+	upstreamHit := false
+	gw, _, evStore := setupGatewayWithClassifier(t, "redact", ModeEnforce,
+		func(w http.ResponseWriter, _ *http.Request) {
+			upstreamHit = true
+			_, _ = w.Write([]byte(`{}`))
+		},
+		detectThenFailScanner(t))
+
+	w := makeGatewayRequest(gw, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"mail `+scannerTestEmail+` now"}]}`)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code,
+		"an unverifiable redaction is an engine failure (502), not a policy 400")
+	assert.Contains(t, w.Body.String(), "could not be verified")
+	assert.False(t, upstreamHit, "unverified redaction must never be forwarded")
+
+	ev := latestGatewayEvidence(t, evStore)
+	assert.False(t, ev.PolicyDecision.Allowed)
+	assert.Contains(t, ev.PolicyDecision.Reasons, "request redaction verification failed: scanner unavailable",
+		"evidence must not claim residual PII when the verify scan itself failed")
+	require.NotNil(t, ev.Classification.Scanner)
+	assert.Equal(t, "status", ev.Classification.Scanner.Failure,
+		"typed failure kind from the verify scan is recorded")
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -270,4 +271,29 @@ func TestHealthCheck_ListedButUnrunnableModelFailsStartup(t *testing.T) {
 	err = a.HealthCheck(context.Background())
 	require.Error(t, err, "a model that lists but cannot run must fail the startup probe")
 	assert.Contains(t, err.Error(), "warm-up")
+}
+
+func TestAnalyze_RequestsAreTokenBounded(t *testing.T) {
+	// Without a max_tokens ceiling, small models in JSON mode can repetition-
+	// spiral on placeholder-only text and generate until the context fills —
+	// which surfaces as deterministic scan timeouts on CPU hosts.
+	var captured []byte
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"entities\":[]}"}}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	a, err := llm.New(llm.Config{Endpoint: srv.URL + "/v1", Model: "m"})
+	require.NoError(t, err)
+	_, err = a.Analyze(context.Background(), "Email [EMAIL] about IBAN [IBAN]")
+	require.NoError(t, err)
+
+	var req map[string]interface{}
+	require.NoError(t, json.Unmarshal(captured, &req))
+	assert.Equal(t, float64(2048), req["max_tokens"], "NER completions must be token-bounded")
+	assert.Equal(t, float64(0), req["temperature"])
 }

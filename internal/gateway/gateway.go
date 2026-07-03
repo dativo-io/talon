@@ -621,16 +621,30 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if verifyErr := g.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedExtracted.Text); verifyErr != nil {
 			durationMS := time.Since(start).Milliseconds()
+			// Residual PII (policy outcome) and an unverifiable scan (engine
+			// failure) are different facts: status, message, evidence reason,
+			// and scanner failure kind must each say which one happened.
+			residual := errors.Is(verifyErr, classifier.ErrPIIDetected)
 			types := strings.Join(classifier.ResidualTypes(verifyErr), ", ")
 			msg := "Request blocked: recognized PII remains after redaction"
-			if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
+			status := http.StatusBadRequest
+			reason := "request residual pii after redaction"
+			if !residual {
 				msg = "Request blocked: redaction could not be verified (fail-closed)"
+				status = http.StatusBadGateway
+				reason = "request redaction verification failed: scanner unavailable"
+				RecordGatewayError(ctx, "scanner_unavailable")
+				log.Warn().Err(verifyErr).Str("caller", caller.Name).Msg("request_redaction_verification_scanner_unavailable")
 			}
 			if types != "" {
 				msg += " (types: " + types + ")"
 			}
-			WriteProviderError(w, wire, http.StatusBadRequest, msg)
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request residual pii after redaction"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
+			WriteProviderError(w, wire, status, msg)
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{reason}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+				if !residual && p.Scanner != nil {
+					p.Scanner.Failure = scannerFailureKind(verifyErr)
+				}
+			})
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return

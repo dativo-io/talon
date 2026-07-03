@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -205,13 +206,20 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			}
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedArgs); verifyErr != nil {
 				flow.requestBlocked = true
-				h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "request_residual_pii_after_redaction", &flow)
+				reason := "request_residual_pii_after_redaction"
+				msg := residualBlockMessage("Request blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr))
+				if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
+					reason = "request_redaction_verification_scanner_unavailable"
+					msg = "Request blocked: redaction could not be verified (fail-closed)"
+					flow.scannerFailure = scannerFailureKind(verifyErr)
+				}
+				h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, reason, &flow)
 				return &jsonrpcResponse{
 					JSONRPC: jsonrpcVersion,
 					ID:      req.ID,
 					Error: &rpcError{
 						Code:    codeServerError,
-						Message: residualBlockMessage("Request blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr)),
+						Message: msg,
 					},
 				}
 			}
@@ -284,13 +292,20 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			}
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redacted); verifyErr != nil {
 				flow.responseBlocked = true
-				h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_pii_blocked_residual", &flow)
+				reason := "output_pii_blocked_residual"
+				msg := residualBlockMessage("Tool result blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr))
+				if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
+					reason = "output_redaction_verification_scanner_unavailable"
+					msg = "Tool result blocked: redaction could not be verified (fail-closed)"
+					flow.scannerFailure = scannerFailureKind(verifyErr)
+				}
+				h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, reason, &flow)
 				return &jsonrpcResponse{
 					JSONRPC: jsonrpcVersion,
 					ID:      req.ID,
 					Error: &rpcError{
 						Code:    codeServerError,
-						Message: residualBlockMessage("Tool result blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr)),
+						Message: msg,
 					},
 				}
 			}

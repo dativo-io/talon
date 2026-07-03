@@ -4,6 +4,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -203,6 +204,11 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 			flow.argRedacted = redactedArgs != argStr
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedArgs); verifyErr != nil {
 				flow.argBlocked = true
+				if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
+					return h.scannerBlockedResponse(ctx, span, req.ID, tenantID, agentID, params.Name, decision.PolicyVersion,
+						verifyErr, "request_redaction_verification_scanner_unavailable", "request redaction verification failed: scanner unavailable",
+						"Tool arguments blocked: redaction could not be verified (fail-closed)", explanation.StagePolicyEvaluation, 0, flow)
+				}
 				correlationID := "mcp_" + uuid.New().String()[:8]
 				blockEv := h.newServerEvidence(tenantID, agentID, correlationID, params.Name, evidence.PolicyDecision{
 					Allowed:       false,
@@ -327,6 +333,11 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 				flow.resultRedacted = redacted != resultStr
 				if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redacted); verifyErr != nil {
 					flow.resultBlocked = true
+					if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
+						return h.scannerBlockedResponse(ctx, span, req.ID, tenantID, agentID, params.Name, decision.PolicyVersion,
+							verifyErr, "output_redaction_verification_scanner_unavailable", "output redaction verification failed: scanner unavailable",
+							"Tool result blocked: redaction could not be verified (fail-closed)", explanation.StageOutputValidation, duration, flow)
+					}
 					correlationID := "mcp_" + uuid.New().String()[:8]
 					blockEv := h.newServerEvidence(tenantID, agentID, correlationID, params.Name, evidence.PolicyDecision{
 						Allowed:       false,

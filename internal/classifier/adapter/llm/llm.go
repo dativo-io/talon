@@ -104,11 +104,19 @@ func (a *Adapter) EngineType() string { return "llm" }
 // semantics define what this engine detects.
 func (a *Adapter) EngineVersion() string { return PromptVersion }
 
+// maxCompletionTokens bounds NER generation. A correct entities object for
+// maxDetections entities fits comfortably; without a ceiling, small models in
+// JSON mode can fall into repetition spirals on unusual inputs (e.g. text that
+// is only redaction placeholders) and generate until the context window fills
+// — minutes on CPU hosts, surfacing as deterministic scan timeouts.
+const maxCompletionTokens = 2048
+
 // chatRequest is the OpenAI-compatible /chat/completions request body.
 type chatRequest struct {
 	Model          string        `json:"model"`
 	Messages       []chatMessage `json:"messages"`
 	Temperature    float64       `json:"temperature"`
+	MaxTokens      int           `json:"max_tokens"`
 	Stream         bool          `json:"stream"`
 	ResponseFormat *respFormat   `json:"response_format,omitempty"`
 }
@@ -216,6 +224,7 @@ func (a *Adapter) complete(ctx context.Context, messages []chatMessage) (string,
 		Model:          a.cfg.Model,
 		Messages:       messages,
 		Temperature:    0,
+		MaxTokens:      maxCompletionTokens,
 		Stream:         false,
 		ResponseFormat: &respFormat{Type: "json_object"},
 	})
