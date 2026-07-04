@@ -200,6 +200,12 @@ func TestGatewayToolContentScan_EvidenceOnly(t *testing.T) {
 	assert.Empty(t, rec.Classification.PIIDetected, "main-text classification must not include tool content")
 	// Signature still verifies with the new omitempty block present.
 	assert.True(t, evStore.VerifyRecord(rec), "signature must verify with tool_content present")
+	// Flat export carries the observation (talon audit export --format json).
+	exp := evidence.ToExportRecord(rec)
+	require.NotNil(t, exp.ToolContentScanned)
+	assert.True(t, *exp.ToolContentScanned)
+	assert.True(t, exp.ToolContentHasPII)
+	assert.Contains(t, exp.ToolContentEntityTypes, "email")
 }
 
 func TestGatewayToolContentScan_Off(t *testing.T) {
