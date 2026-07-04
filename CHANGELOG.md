@@ -17,6 +17,8 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.6.8] - 2026-07-04
+
 ### Added
 
 - **feat(scanner): external EntityScanner adapters and local scanner engines (#181, #204).** Operators can now replace Talon's built-in regex PII scanner with an out-of-process engine — a Microsoft Presidio sidecar, any custom detector speaking the Presidio wire format (HTTP or Unix domain socket), or a local LLM (`scanner.type: llm`, flagship: Ollama) — without changing gateway, MCP, agent, evidence, or redaction paths. Who cares: operators who need detection quality beyond regexes (names, addresses, fuzzy identifiers) or who must keep scanning on their own hardware (air-gap/sovereignty). The core stays deterministic and fail-closed: adapter output is untrusted (size-capped, one invalid entity rejects the scan, rune→byte offset normalization verified against the text), engine timeouts/errors block egress in enforce mode with truthful evidence (`classification.scanner` with engine identity, version, scan duration, and typed failure kind — spec v1.4; flattened as `scanner_engine`/`scanner_type`/`scanner_version`/`scanner_failure` in `talon audit export`), and a residual-PII block is never conflated with an unverifiable scan. Startup health probes refuse to serve against a dead or unrunnable engine (the `llm` probe warm-loads the model). The `llm` engine never trusts model offsets: it prompts for verbatim values (fixed versioned prompt `llm-ner/v1`), relocates every occurrence to byte offsets itself, drops hallucinated and placeholder-shaped values, token-bounds generation, and tolerates field-observed small-model reply shapes (bare arrays, string-array values, unterminated envelopes) while staying fail-closed on anything murkier. `scanner.entities` narrows the NER prompt for CPU-constrained hosts. Built-in regex remains the zero-config default. Verify quickly: `cd examples/scanners/presidio && docker compose up`, send a PII prompt through the gateway, then `talon audit export --format json | jq '.records[-1].scanner_engine'`; or the Ollama variant in `examples/scanners/ollama/`. Docs: [external scanners reference](docs/reference/external-scanners.md), [local scanner engines cookbook](docs/guides/local-scanner-engines.md). Smoke: `tests/smoke_sections/36_external_scanner.sh` (hermetic llama stand-in; `TALON_SMOKE_OLLAMA_URL` opts into real Ollama); nightly `scanner-ollama-smoke` workflow.
@@ -570,7 +572,8 @@ For user-facing entries, include:
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.6.7...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.6.8...HEAD
+[1.6.8]: https://github.com/dativo-io/talon/compare/v1.6.7...v1.6.8
 [1.6.7]: https://github.com/dativo-io/talon/compare/v1.6.6...v1.6.7
 [1.6.6]: https://github.com/dativo-io/talon/compare/v1.6.5...v1.6.6
 [1.6.5]: https://github.com/dativo-io/talon/compare/v1.6.0...v1.6.5
