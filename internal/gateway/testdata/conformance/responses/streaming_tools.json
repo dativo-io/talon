@@ -1,0 +1,36 @@
+{
+  "name": "streaming_tools",
+  "caller_pii_action": "warn",
+  "request_body": {
+    "model": "gpt-5.3-codex",
+    "stream": true,
+    "instructions": "You are a coding assistant operating in a terminal.",
+    "input": [
+      {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "list the go files then read main.go"}]}
+    ],
+    "tools": [
+      {"type": "function", "name": "shell", "description": "Run a shell command", "parameters": {"type": "object", "properties": {"command": {"type": "array", "items": {"type": "string"}}}, "required": ["command"]}}
+    ],
+    "store": false,
+    "prompt_cache_key": "b7c1e0d2-9a4f-4c3e-8b1a-000000000001",
+    "client_metadata": {"session_id": "b7c1e0d2-9a4f-4c3e-8b1a-000000000001", "thread_id": "t-000000000001", "turn_id": "turn-1"}
+  },
+  "upstream": {
+    "status": 200,
+    "sse_events": [
+      "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_conf_stream\",\"status\":\"in_progress\"}}",
+      "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"shell\",\"call_id\":\"call_conf_1\"}}",
+      "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"command\\\":[\\\"ls\\\"\"}",
+      "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\",\\\"*.go\\\"]}\"}",
+      "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"shell\",\"call_id\":\"call_conf_1\",\"arguments\":\"{\\\"command\\\":[\\\"ls\\\",\\\"*.go\\\"]}\"}}",
+      "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_conf_stream\",\"status\":\"completed\",\"usage\":{\"input_tokens\":42,\"input_tokens_details\":{\"cached_tokens\":16},\"output_tokens\":11}}}"
+    ]
+  },
+  "expect": {
+    "status": 200,
+    "forwarded_contains": ["\"stream\": true", "shell", "prompt_cache_key", "client_metadata"],
+    "forwarded_not_contains": [],
+    "forwarded_json_valid": true,
+    "response_equals_upstream": true
+  }
+}

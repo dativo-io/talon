@@ -685,11 +685,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Step 7b: Ensure Responses API requests use store:true so multi-turn works through a proxy.
-	// Without this, OpenAI doesn't persist response items and follow-up messages that reference
-	// previous response IDs get 404 "Items are not persisted when store is set to false".
+	// Step 7b: Apply the provider's Responses API store mode. Default is
+	// "preserve" — an explicit client store:false is a data-retention decision
+	// the gateway must not silently reverse (#213). Clients that reference
+	// previous_response_id across turns (e.g. OpenClaw) opt into
+	// force_if_absent; force_true records any override of explicit client
+	// intent in signed evidence.
+	responsesStoreOverridden := false
 	if wire == "openai" && isResponsesAPIPath(route.Path) {
-		forwardBody = ensureResponsesStore(forwardBody)
+		forwardBody, responsesStoreOverridden = applyResponsesStoreMode(forwardBody, g.config.Providers[route.Provider].ResponsesStoreMode)
 	}
 
 	// Step 8: Reroute (same-provider model override) — MVP: no model change, just forward
@@ -1100,6 +1104,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.InvocationType = "gateway_count_tokens"
 		}
 		p.ToolContent = toolContentScan
+		if responsesStoreOverridden {
+			// force_true reversed an explicit client store:false — that
+			// retention decision must be visible in signed evidence.
+			p.GatewayAnnotations = append(p.GatewayAnnotations, "responses_store_overridden")
+		}
 	})
 	if recordErr != nil {
 		g.handleEvidenceWriteFailure(ctx, recordErr)

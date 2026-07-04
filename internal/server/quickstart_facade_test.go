@@ -52,6 +52,9 @@ func TestQuickstartFacade_PathMappingAnd404(t *testing.T) {
 	}
 }
 
+// Quickstart runs with responses_store_mode: force_if_absent — store:true is
+// injected only when the client sent no store field; an explicit client
+// store:false is a retention decision the gateway must not reverse (#213).
 func TestQuickstartFacade_ResponsesStoreInjection(t *testing.T) {
 	var gotBody []byte
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -66,16 +69,28 @@ func TestQuickstartFacade_ResponsesStoreInjection(t *testing.T) {
 	defer upstream.Close()
 
 	facade, _ := newFacadeForTest(t, upstream.URL)
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-4o-mini","input":"hello","store":false}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer sk-facade")
-	rec := httptest.NewRecorder()
-	facade.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	send := func(body string) {
+		t.Helper()
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/responses", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer sk-facade")
+		rec := httptest.NewRecorder()
+		facade.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
 	}
+
+	// store absent → injected for previous_response_id continuity (OpenClaw).
+	send(`{"model":"gpt-4o-mini","input":"hello"}`)
 	if !strings.Contains(string(gotBody), `"store":true`) {
-		t.Fatalf("expected store:true injection, body=%s", string(gotBody))
+		t.Fatalf("expected store:true injection when absent, body=%s", string(gotBody))
+	}
+
+	// explicit store:false → preserved (client retention intent, #213).
+	send(`{"model":"gpt-4o-mini","input":"hello","store":false}`)
+	if !strings.Contains(string(gotBody), `"store":false`) {
+		t.Fatalf("expected explicit store:false to be preserved, body=%s", string(gotBody))
 	}
 }
 
@@ -117,7 +132,10 @@ func newFacadeForTest(t *testing.T, upstreamURL string) (http.Handler, *evidence
 		ListenPrefix: "/v1/proxy",
 		Mode:         gateway.ModeEnforce,
 		Providers: map[string]gateway.ProviderConfig{
-			"openai": {Enabled: true, BaseURL: upstreamURL, UpstreamAuthMode: "client_bearer"},
+			// Mirror the real quickstart facade, which sets force_if_absent so
+			// previous_response_id continuity works while honoring an explicit
+			// client store:false (#213).
+			"openai": {Enabled: true, BaseURL: upstreamURL, UpstreamAuthMode: "client_bearer", ResponsesStoreMode: gateway.ResponsesStoreForceIfAbsent},
 		},
 		Callers: []gateway.CallerConfig{
 			{Name: "quickstart-local", TenantID: "quickstart", Tags: []string{"quickstart"}, AllowedProviders: []string{"openai"}},
