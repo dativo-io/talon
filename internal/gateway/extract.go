@@ -344,8 +344,17 @@ func redactAnthropicBody(ctx context.Context, body []byte, scanner classifier.Fa
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
+	// system is a string or an array of content blocks. Claude Code sends the
+	// block-array form (with cache_control) on every request; redacting only
+	// the string form would leave detected PII in place and fail closed.
 	if s, ok := req["system"].(string); ok && s != "" {
 		redacted, err := scanner.RedactText(ctx, s)
+		if err != nil {
+			return nil, err
+		}
+		req["system"] = redacted
+	} else if arr, ok := req["system"].([]interface{}); ok {
+		redacted, err := redactAnthropicContent(ctx, arr, scanner)
 		if err != nil {
 			return nil, err
 		}

@@ -98,11 +98,14 @@ func Forward(w http.ResponseWriter, p ForwardParams) error {
 }
 
 func copyResponseHeaders(w http.ResponseWriter, from http.Header, upstreamHeaders map[string]string) {
-	// Forward rate-limit and other provider headers
+	// Forward rate-limit and other provider headers. Retry-After and the
+	// Anthropic request-id/token-remaining/reset headers matter for client
+	// backoff during 429s; dropping them breaks coding-agent retry behavior.
 	for _, h := range []string{
-		"Content-Type", "X-Request-Id",
+		"Content-Type", "X-Request-Id", "Request-Id", "Anthropic-Request-Id", "Retry-After",
 		"x-ratelimit-limit-requests", "x-ratelimit-remaining-requests", "x-ratelimit-reset-requests",
-		"anthropic-ratelimit-requests-limit", "anthropic-ratelimit-requests-remaining", "anthropic-ratelimit-tokens-limit",
+		"anthropic-ratelimit-requests-limit", "anthropic-ratelimit-requests-remaining", "anthropic-ratelimit-requests-reset",
+		"anthropic-ratelimit-tokens-limit", "anthropic-ratelimit-tokens-remaining", "anthropic-ratelimit-tokens-reset",
 	} {
 		if v := from.Get(h); v != "" {
 			w.Header().Set(h, v)
@@ -224,18 +227,13 @@ func extractUsageFromJSONPayload(payload []byte, usage *TokenUsage) {
 	if err := json.Unmarshal(payload, &m); err != nil {
 		return
 	}
-	// OpenAI usage at top level
-	if u, ok := m["usage"].(map[string]interface{}); ok {
-		if n, _ := u["prompt_tokens"].(float64); n > 0 {
-			usage.Input = int(n)
-		}
-		if n, _ := u["completion_tokens"].(float64); n > 0 {
-			usage.Output = int(n)
-		}
-		return
-	}
-	// Anthropic message_start has message.usage.input_tokens
-	if typ, _ := m["type"].(string); typ == "message_start" {
+	// Anthropic events are typed and must be handled before the generic
+	// top-level "usage" branch: a real message_delta event carries usage as a
+	// top-level sibling of "delta", so the OpenAI branch would match it, find
+	// no prompt/completion tokens, and return — losing output tokens entirely.
+	switch typ, _ := m["type"].(string); typ {
+	case "message_start":
+		// message_start has message.usage.input_tokens
 		if msg, ok := m["message"].(map[string]interface{}); ok {
 			if u, ok := msg["usage"].(map[string]interface{}); ok {
 				if n, _ := u["input_tokens"].(float64); n > 0 {
@@ -244,13 +242,22 @@ func extractUsageFromJSONPayload(payload []byte, usage *TokenUsage) {
 			}
 		}
 		return
-	}
-	// Anthropic message_delta has usage.output_tokens
-	if typ, _ := m["type"].(string); typ == "message_delta" {
+	case "message_delta":
+		// message_delta has top-level usage.output_tokens (cumulative)
 		if u, ok := m["usage"].(map[string]interface{}); ok {
 			if n, _ := u["output_tokens"].(float64); n > 0 {
 				usage.Output = int(n)
 			}
+		}
+		return
+	}
+	// OpenAI usage at top level
+	if u, ok := m["usage"].(map[string]interface{}); ok {
+		if n, _ := u["prompt_tokens"].(float64); n > 0 {
+			usage.Input = int(n)
+		}
+		if n, _ := u["completion_tokens"].(float64); n > 0 {
+			usage.Output = int(n)
 		}
 	}
 }
@@ -275,6 +282,13 @@ func parseUsageFromJSON(body []byte, _ string, usage *TokenUsage) {
 				usage.Output = int(n)
 			}
 		}
+		return
+	}
+	// Anthropic /v1/messages/count_tokens responds {"input_tokens": N} with no
+	// usage wrapper; record the count so evidence carries a meaningful token
+	// figure (the request itself is free — cost is zeroed by the caller).
+	if n, _ := m["input_tokens"].(float64); n > 0 {
+		usage.Input = int(n)
 	}
 }
 

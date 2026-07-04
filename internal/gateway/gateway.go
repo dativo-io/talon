@@ -247,6 +247,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Anthropic parsing, not the OpenAI default.
 	wire := g.config.providerAPIFamily(route.Provider)
 
+	// count_tokens is governed like any request (the body egresses) but is
+	// free at the provider and returns a count, not a completion: cost and
+	// budget input must be zero or signed evidence records fabricated spend.
+	isCountTokens := wire == "anthropic" && strings.HasSuffix(route.Path, "/count_tokens")
+
 	// Step 2: Identify
 	var caller *CallerConfig
 	qc := QuickstartCallerFromContext(ctx)
@@ -449,6 +454,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Estimated cost for policy (use default token estimate if we don't have real tokens yet)
 	estTokensIn, estTokensOut := 500, 500
 	estimatedCost := g.costEstimate(extracted.Model, estTokensIn, estTokensOut)
+	if isCountTokens {
+		estimatedCost = 0 // free endpoint: a nonzero estimate would leak into budget input and deny evidence (#218)
+	}
 	dailyCost, monthlyCost := g.callerCostTotals(ctx, caller)
 	if d := g.config.ServerDefaults.MaxDailyCost; d > 0 {
 		pct := (dailyCost / d) * 100
@@ -1024,6 +1032,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if tokenUsage.Input == 0 && tokenUsage.Output == 0 {
 		cost = estimatedCost
 	}
+	if isCountTokens {
+		// tokenUsage.Input holds the count *result*, not consumed tokens; the
+		// endpoint is free. Cost stays zero so CostByAgent budget sums (which
+		// have no invocation-type filter) remain truthful (#218).
+		cost = 0
+	}
 
 	// Streaming metrics: TTFT and TPOT for GenAI SemConv
 	var ttftMS int64
@@ -1059,12 +1073,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.Status = "failed"
 			p.FailureReason = evidence.FailureReasonNoValidFallbackCandidate
 		}
+		if isCountTokens {
+			p.InvocationType = "gateway_count_tokens"
+		}
 	})
 	if recordErr != nil {
 		g.handleEvidenceWriteFailure(ctx, recordErr)
 		return
 	}
-	g.trackSessionUsage(ctx, sessionID, caller.TenantID, caller.Name, cost, tokenUsage.Input+tokenUsage.Output)
+	if !isCountTokens {
+		// count_tokens neither spends nor consumes: keep session cost/token
+		// accumulation and stage counts free of count-only traffic.
+		g.trackSessionUsage(ctx, sessionID, caller.TenantID, caller.Name, cost, tokenUsage.Input+tokenUsage.Output)
+	}
 
 	// Emit OTel + dashboard metrics
 	g.emitMetrics(ctx, caller, selectedProvider, selectedModel, classification, toolResult, shadowViolations,
