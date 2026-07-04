@@ -168,10 +168,23 @@ type ServerDefaults struct {
 	AttachmentPolicy        *AttachmentPolicyConfig `yaml:"attachment_policy,omitempty" json:"attachment_policy,omitempty"`
 	ForbiddenTools          []string                `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
 	ToolPolicyAction        string                  `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"` // filter (default) | block
+	// ScanToolContent controls the observation-only PII scan of tool-related
+	// request content (tool_use inputs, tool_result outputs, function-call
+	// arguments): "evidence_only" (default) records findings in evidence
+	// without influencing enforcement; "off" disables the scan. Enforcement
+	// on tool content is deliberately not offered until per-block-type tool
+	// redaction exists (#212).
+	ScanToolContent string `yaml:"scan_tool_content,omitempty" json:"scan_tool_content,omitempty"` // evidence_only (default) | off
 	// Egress restricts which destinations (providers/regions) each data tier
 	// may egress to. When nil, egress is not evaluated.
 	Egress *EgressPolicyConfig `yaml:"egress,omitempty" json:"egress,omitempty"`
 }
+
+// ScanToolContent modes.
+const (
+	ScanToolContentEvidenceOnly = "evidence_only"
+	ScanToolContentOff          = "off"
+)
 
 // CallerIDRequired returns whether anonymous requests must be rejected. Default is true when unset.
 func (d *ServerDefaults) CallerIDRequired() bool {
@@ -295,6 +308,9 @@ func (c *GatewayConfig) ApplyDefaults() error {
 	if c.ServerDefaults.DefaultPIIAction == "" {
 		c.ServerDefaults.DefaultPIIAction = DefaultPIIAction
 	}
+	if c.ServerDefaults.ScanToolContent == "" {
+		c.ServerDefaults.ScanToolContent = ScanToolContentEvidenceOnly
+	}
 	if c.ServerDefaults.MaxDailyCost == 0 {
 		c.ServerDefaults.MaxDailyCost = 100
 	}
@@ -369,6 +385,11 @@ func (c *GatewayConfig) Validate() error {
 	case ModeEnforce, ModeShadow, ModeLogOnly:
 	default:
 		return fmt.Errorf("gateway mode must be enforce, shadow, or log_only")
+	}
+	switch c.ServerDefaults.ScanToolContent {
+	case "", ScanToolContentEvidenceOnly, ScanToolContentOff:
+	default:
+		return fmt.Errorf("gateway default_policy scan_tool_content must be evidence_only or off")
 	}
 	for name := range c.Providers {
 		p := c.Providers[name]

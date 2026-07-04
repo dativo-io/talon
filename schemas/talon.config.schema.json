@@ -458,6 +458,12 @@
               "items": { "type": "string" }
             },
             "tool_policy_action": { "$ref": "#/definitions/toolPolicyAction" },
+            "scan_tool_content": {
+              "type": "string",
+              "enum": ["evidence_only", "off"],
+              "default": "evidence_only",
+              "description": "Observation-only PII scan of tool-related request content (tool_use inputs, tool_result outputs, function-call arguments). evidence_only records findings in evidence without influencing enforcement; off disables the scan. Enforcement on tool content is not offered until per-block-type tool redaction exists (#212)."
+            },
             "egress": { "$ref": "#/definitions/gatewayEgressPolicy" }
           }
         },

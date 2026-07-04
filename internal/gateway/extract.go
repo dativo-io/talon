@@ -14,6 +14,13 @@ type ExtractedRequest struct {
 	Text      string // Concatenated message text for PII scanning
 	Model     string
 	ToolNames []string // Tool function names declared in the request (for tool governance)
+	// ToolText is tool-related content (tool_use inputs, tool_result outputs,
+	// function-call arguments) collected for the observation-only PII scan
+	// (#212). It is deliberately NOT part of Text: enforcement (block/redact)
+	// does not act on tool content in v1 — including it in Text would 400
+	// every redact-mode deployment on agentic traffic, because tool blocks
+	// cannot be redacted yet.
+	ToolText string
 }
 
 // ExtractOpenAI extracts message text and model from an OpenAI request body.
@@ -29,6 +36,17 @@ func ExtractOpenAI(body []byte) (ExtractedRequest, error) {
 	}
 
 	var sb strings.Builder
+	var toolSB strings.Builder
+
+	// Responses API: instructions is the system-prompt equivalent — ordinary
+	// prompt text that must be scanned (and is redactable) like any other.
+	if rawInstr, ok := raw["instructions"]; ok {
+		var instr string
+		if err := json.Unmarshal(rawInstr, &instr); err == nil && instr != "" {
+			sb.WriteString(instr)
+			sb.WriteString("\n")
+		}
+	}
 
 	// Chat Completions: messages[]
 	if rawMsgs, ok := raw["messages"]; ok {
@@ -37,6 +55,12 @@ func ExtractOpenAI(body []byte) (ExtractedRequest, error) {
 			for _, m := range msgs {
 				sb.WriteString(openAIContentToText(m.Content))
 				sb.WriteString("\n")
+				for _, tc := range m.ToolCalls {
+					if tc.Function.Arguments != "" {
+						toolSB.WriteString(tc.Function.Arguments)
+						toolSB.WriteString("\n")
+					}
+				}
 			}
 		}
 	}
@@ -44,6 +68,7 @@ func ExtractOpenAI(body []byte) (ExtractedRequest, error) {
 	// Responses API: input (string or array of message objects)
 	if rawInput, ok := raw["input"]; ok {
 		sb.WriteString(extractResponsesInput(rawInput))
+		toolSB.WriteString(extractResponsesToolOutputs(rawInput))
 	}
 
 	toolNames := extractOpenAIToolNames(raw)
@@ -52,7 +77,35 @@ func ExtractOpenAI(body []byte) (ExtractedRequest, error) {
 		Text:      strings.TrimSpace(sb.String()),
 		Model:     strings.TrimSpace(model),
 		ToolNames: toolNames,
+		ToolText:  strings.TrimSpace(toolSB.String()),
 	}, nil
+}
+
+// extractResponsesToolOutputs collects function_call_output payloads (and
+// function_call arguments) from a Responses API input array for the
+// observation-only tool-content scan.
+func extractResponsesToolOutputs(raw json.RawMessage) string {
+	var items []map[string]interface{}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return ""
+	}
+	var sb strings.Builder
+	for _, item := range items {
+		typ, _ := item["type"].(string)
+		switch typ {
+		case "function_call_output":
+			if out, ok := item["output"].(string); ok && out != "" {
+				sb.WriteString(out)
+				sb.WriteString("\n")
+			}
+		case "function_call":
+			if args, ok := item["arguments"].(string); ok && args != "" {
+				sb.WriteString(args)
+				sb.WriteString("\n")
+			}
+		}
+	}
+	return sb.String()
 }
 
 // extractOpenAIToolNames extracts tool function names from an OpenAI request body.
@@ -120,6 +173,13 @@ func extractResponsesInput(raw json.RawMessage) string {
 type openAIMsg struct {
 	Role    string      `json:"role"`
 	Content interface{} `json:"content"` // string or []ContentPart
+	// ToolCalls carries assistant-side function-call arguments (scanned as
+	// tool content, observation-only).
+	ToolCalls []struct {
+		Function struct {
+			Arguments string `json:"arguments"`
+		} `json:"function"`
+	} `json:"tool_calls"`
 }
 
 func openAIContentToText(c interface{}) string {
@@ -159,11 +219,13 @@ func ExtractAnthropic(body []byte) (ExtractedRequest, error) {
 		return ExtractedRequest{}, fmt.Errorf("anthropic request body: %w", err)
 	}
 	var sb strings.Builder
+	var toolSB strings.Builder
 	sb.WriteString(anthropicContentToText(req.System))
 	sb.WriteString("\n")
 	for _, m := range req.Messages {
 		sb.WriteString(anthropicContentToText(m.Content))
 		sb.WriteString("\n")
+		toolSB.WriteString(anthropicToolContentToText(m.Content))
 	}
 	toolNames := extractAnthropicToolNames(body)
 
@@ -171,7 +233,47 @@ func ExtractAnthropic(body []byte) (ExtractedRequest, error) {
 		Text:      strings.TrimSpace(sb.String()),
 		Model:     strings.TrimSpace(req.Model),
 		ToolNames: toolNames,
+		ToolText:  strings.TrimSpace(toolSB.String()),
 	}, nil
+}
+
+// anthropicToolContentToText collects tool_use inputs and tool_result outputs
+// from a content-block array for the observation-only tool-content scan.
+// tool_result content is a string or a nested block array; tool_use input is
+// an arbitrary JSON object (serialized so string values are scannable).
+func anthropicToolContentToText(c interface{}) string {
+	arr, ok := c.([]interface{})
+	if !ok {
+		return ""
+	}
+	var sb strings.Builder
+	for _, part := range arr {
+		m, ok := part.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		switch typ, _ := m["type"].(string); typ {
+		case "tool_use":
+			if input, ok := m["input"]; ok && input != nil {
+				if raw, err := json.Marshal(input); err == nil {
+					sb.Write(raw)
+					sb.WriteString("\n")
+				}
+			}
+		case "tool_result":
+			switch content := m["content"].(type) {
+			case string:
+				sb.WriteString(content)
+				sb.WriteString("\n")
+			case []interface{}:
+				if text := anthropicContentToText(content); text != "" {
+					sb.WriteString(text)
+					sb.WriteString("\n")
+				}
+			}
+		}
+	}
+	return sb.String()
 }
 
 // extractAnthropicToolNames extracts tool names from an Anthropic request body.
@@ -281,6 +383,15 @@ func redactOpenAIBody(ctx context.Context, body []byte, scanner classifier.Facad
 				msg["content"] = redacted
 			}
 		}
+	}
+
+	// Responses API: instructions (system-prompt equivalent, plain string)
+	if instr, ok := m["instructions"].(string); ok && instr != "" {
+		redacted, err := scanner.RedactText(ctx, instr)
+		if err != nil {
+			return nil, err
+		}
+		m["instructions"] = redacted
 	}
 
 	// Responses API: input (string or array of message/reference items)

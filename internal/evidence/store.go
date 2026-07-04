@@ -253,6 +253,22 @@ type Classification struct {
 	// failure drove a fail-closed block). Optional; absent on records
 	// predating external scanner support.
 	Scanner *ScannerInfo `json:"scanner,omitempty"`
+	// ToolContent records the observation-only PII scan of tool-related
+	// request content (tool_use inputs, tool_result outputs, function-call
+	// arguments) that the enforcement pipeline does not act on. Detection is
+	// evidence-only in v1 (#212): enforcement waits on per-block-type tool
+	// redaction. Additive omitempty per spec §2 append rule (spec 1.5);
+	// absent on older records and when scan_tool_content is off.
+	ToolContent *ToolContentScan `json:"tool_content,omitempty"`
+}
+
+// ToolContentScan is the evidence-only PII observation over tool-related
+// request content. It never influences allow/deny or redaction in v1.
+type ToolContentScan struct {
+	Scanned     bool     `json:"scanned"` // false = scanner error; content forwarded unscanned
+	HasPII      bool     `json:"has_pii,omitempty"`
+	EntityTypes []string `json:"entity_types,omitempty"` // unique detected entity types (e.g. EMAIL, IBAN)
+	EntityCount int      `json:"entity_count,omitempty"`
 }
 
 // ToolGovernance captures tool filtering/blocking decisions for gateway requests.

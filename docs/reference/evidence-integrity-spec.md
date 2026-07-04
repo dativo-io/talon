@@ -1,6 +1,6 @@
 # Evidence Integrity Specification
 
-**Status:** stable · **Version:** 1.4 · **Scope:** the signed evidence record produced by Talon.
+**Status:** stable · **Version:** 1.5 · **Scope:** the signed evidence record produced by Talon.
 
 This is the normative specification for how a Talon evidence record is serialized,
 signed, and verified. It is written so that a third party can independently verify a
@@ -107,7 +107,10 @@ nested fields are:
   `version`, `scan_duration_ms`, and `failure` (adapter failure kind —
   `timeout`/`transport`/`status`/`decode`/`validation` — when a scanner
   failure drove a fail-closed block). Entity types only; never raw PII text
-  or raw engine errors.
+  or raw engine errors. The optional `tool_content` object (spec 1.5, #212)
+  records the observation-only PII scan of tool-related request content
+  (`scanned`, `has_pii`, `entity_types`, `entity_count`); detection is
+  evidence-only and never influences allow/deny or redaction in this version.
 - `execution`: `model_used` (string), `cost` (number), `tokens` (object),
   `duration_ms` (number), plus optional fields.
 - `audit_trail`: SHA-256 `input_hash` / `output_hash` content digests.
@@ -237,6 +240,13 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 
 ## 8. Changelog
 
+- **1.5** — added optional nested field `classification.tool_content` (#212):
+  the observation-only PII scan of tool-related request content (tool_use
+  inputs, tool_result outputs, function-call arguments) — `scanned`, `has_pii`,
+  `entity_types`, `entity_count`. Detection is evidence-only: it never
+  influences allow/deny or redaction in this version. Additive and
+  backward-compatible: records that omit the field keep identical canonical
+  bytes and verify unchanged; use a 1.5 verifier for records that carry it.
 - **1.4** — added optional nested field `classification.scanner` (external
   EntityScanner adapter support, #181): scan engine identity, type, declared
   version, scan duration, and failure kind on fail-closed blocks. Additive and
