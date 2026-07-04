@@ -292,6 +292,22 @@ func LoadGatewayConfig(path string) (*GatewayConfig, error) {
 }
 
 // ApplyDefaults sets default values for missing fields.
+// applyDefaults fills zero-valued server-wide policy defaults.
+func (d *ServerDefaults) applyDefaults() {
+	if d.DefaultPIIAction == "" {
+		d.DefaultPIIAction = DefaultPIIAction
+	}
+	if d.ScanToolContent == "" {
+		d.ScanToolContent = ScanToolContentEvidenceOnly
+	}
+	if d.MaxDailyCost == 0 {
+		d.MaxDailyCost = 100
+	}
+	if d.MaxMonthlyCost == 0 {
+		d.MaxMonthlyCost = 2000
+	}
+}
+
 func (c *GatewayConfig) ApplyDefaults() error {
 	if c.ListenPrefix == "" {
 		c.ListenPrefix = DefaultListenPrefix
@@ -305,18 +321,7 @@ func (c *GatewayConfig) ApplyDefaults() error {
 	if c.Callers == nil {
 		c.Callers = []CallerConfig{}
 	}
-	if c.ServerDefaults.DefaultPIIAction == "" {
-		c.ServerDefaults.DefaultPIIAction = DefaultPIIAction
-	}
-	if c.ServerDefaults.ScanToolContent == "" {
-		c.ServerDefaults.ScanToolContent = ScanToolContentEvidenceOnly
-	}
-	if c.ServerDefaults.MaxDailyCost == 0 {
-		c.ServerDefaults.MaxDailyCost = 100
-	}
-	if c.ServerDefaults.MaxMonthlyCost == 0 {
-		c.ServerDefaults.MaxMonthlyCost = 2000
-	}
+	c.ServerDefaults.applyDefaults()
 	if c.RateLimits.GlobalRequestsPerMin == 0 {
 		c.RateLimits.GlobalRequestsPerMin = DefaultGlobalRPM
 	}

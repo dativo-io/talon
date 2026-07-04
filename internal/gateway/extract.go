@@ -385,20 +385,29 @@ func redactOpenAIBody(ctx context.Context, body []byte, scanner classifier.Facad
 		}
 	}
 
-	// Responses API: instructions (system-prompt equivalent, plain string)
+	if err := redactResponsesFields(ctx, m, scanner); err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(m)
+}
+
+// redactResponsesFields redacts the Responses API prompt surfaces in place:
+// instructions (the system-prompt equivalent, plain string) and input
+// (string or array of message/reference items).
+func redactResponsesFields(ctx context.Context, m map[string]interface{}, scanner classifier.Facade) error {
 	if instr, ok := m["instructions"].(string); ok && instr != "" {
 		redacted, err := scanner.RedactText(ctx, instr)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		m["instructions"] = redacted
 	}
 
-	// Responses API: input (string or array of message/reference items)
 	if input, ok := m["input"].(string); ok {
 		redacted, err := scanner.RedactText(ctx, input)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		m["input"] = redacted
 	} else if input, ok := m["input"].([]interface{}); ok {
@@ -407,15 +416,14 @@ func redactOpenAIBody(ctx context.Context, body []byte, scanner classifier.Facad
 				if c, exists := item["content"]; exists {
 					redacted, err := redactOpenAIContent(ctx, c, scanner)
 					if err != nil {
-						return nil, err
+						return err
 					}
 					item["content"] = redacted
 				}
 			}
 		}
 	}
-
-	return json.Marshal(m)
+	return nil
 }
 
 func redactOpenAIContent(ctx context.Context, c interface{}, scanner classifier.Facade) (interface{}, error) {
