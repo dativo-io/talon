@@ -443,3 +443,117 @@ func TestGateway_Upstream429_RateLimitError(t *testing.T) {
 	assert.Equal(t, "0", w.Header().Get("x-ratelimit-remaining-requests"),
 		"rate-limit headers from upstream must be forwarded")
 }
+
+// TestExtractUsageFromJSONPayload_AnthropicMessageDelta is the regression test
+// for #211: Anthropic message_delta events carry usage as a top-level sibling
+// of "delta", so the generic OpenAI usage branch used to match first, find no
+// prompt/completion tokens, and drop output tokens entirely. Typed Anthropic
+// events must be handled before the generic branch.
+func TestExtractUsageFromJSONPayload_AnthropicMessageDelta(t *testing.T) {
+	tests := []struct {
+		name       string
+		payload    string
+		wantInput  int
+		wantOutput int
+	}{
+		{
+			name:       "anthropic_message_delta_sets_output",
+			payload:    `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":23}}`,
+			wantInput:  0,
+			wantOutput: 23,
+		},
+		{
+			name:       "anthropic_message_start_sets_input_ignores_cache_fields",
+			payload:    `{"type":"message_start","message":{"usage":{"input_tokens":25,"cache_creation_input_tokens":100,"cache_read_input_tokens":2000}}}`,
+			wantInput:  25,
+			wantOutput: 0,
+		},
+		{
+			name:       "openai_final_chunk_sets_both",
+			payload:    `{"usage":{"prompt_tokens":10,"completion_tokens":5}}`,
+			wantInput:  10,
+			wantOutput: 5,
+		},
+		{
+			name:       "openai_delta_chunk_without_usage_sets_nothing",
+			payload:    `{"choices":[{"delta":{"content":"Hi"}}]}`,
+			wantInput:  0,
+			wantOutput: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var usage TokenUsage
+			extractUsageFromJSONPayload([]byte(tt.payload), &usage)
+			require.Equal(t, tt.wantInput, usage.Input, "input tokens")
+			require.Equal(t, tt.wantOutput, usage.Output, "output tokens")
+		})
+	}
+}
+
+// TestParseUsageFromJSON_CountTokensShape verifies that the Anthropic
+// count_tokens response shape {"input_tokens": N} (no usage wrapper) is
+// recorded, and that the normal OpenAI/Anthropic wrapped shapes still parse.
+func TestParseUsageFromJSON_CountTokensShape(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantInput  int
+		wantOutput int
+	}{
+		{
+			name:       "anthropic_count_tokens_no_usage_wrapper",
+			body:       `{"input_tokens":2095}`,
+			wantInput:  2095,
+			wantOutput: 0,
+		},
+		{
+			name:       "anthropic_wrapped_usage",
+			body:       `{"usage":{"input_tokens":10,"output_tokens":4}}`,
+			wantInput:  10,
+			wantOutput: 4,
+		},
+		{
+			name:       "openai_wrapped_usage",
+			body:       `{"usage":{"prompt_tokens":7,"completion_tokens":3}}`,
+			wantInput:  7,
+			wantOutput: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var usage TokenUsage
+			parseUsageFromJSON([]byte(tt.body), "", &usage)
+			require.Equal(t, tt.wantInput, usage.Input, "input tokens")
+			require.Equal(t, tt.wantOutput, usage.Output, "output tokens")
+		})
+	}
+}
+
+// TestCopyResponseHeaders_BackoffHeaders verifies that Retry-After and the
+// Anthropic request-id/rate-limit headers clients need for 429 backoff are
+// forwarded, and that headers outside the allowlist are dropped.
+func TestCopyResponseHeaders_BackoffHeaders(t *testing.T) {
+	from := http.Header{}
+	from.Set("Retry-After", "13")
+	from.Set("request-id", "req_test_0001")
+	from.Set("anthropic-request-id", "req_ant_test_0001")
+	from.Set("anthropic-ratelimit-tokens-remaining", "12000")
+	from.Set("anthropic-ratelimit-tokens-reset", "2026-07-04T00:00:30Z")
+	from.Set("anthropic-ratelimit-requests-reset", "2026-07-04T00:00:10Z")
+	from.Set("x-internal-debug", "should-not-leak")
+
+	w := httptest.NewRecorder()
+	copyResponseHeaders(w, from, nil)
+
+	require.Equal(t, "13", w.Header().Get("Retry-After"))
+	require.Equal(t, "req_test_0001", w.Header().Get("Request-Id"))
+	require.Equal(t, "req_ant_test_0001", w.Header().Get("Anthropic-Request-Id"))
+	require.Equal(t, "12000", w.Header().Get("anthropic-ratelimit-tokens-remaining"))
+	require.Equal(t, "2026-07-04T00:00:30Z", w.Header().Get("anthropic-ratelimit-tokens-reset"))
+	require.Equal(t, "2026-07-04T00:00:10Z", w.Header().Get("anthropic-ratelimit-requests-reset"))
+	require.Empty(t, w.Header().Get("x-internal-debug"),
+		"non-allowlisted headers must not be forwarded")
+}

@@ -4,6 +4,7 @@
 #
 # Measures:
 #   - Gateway pipeline overhead (ServeHTTP + local mock upstream, no WAN RTT)
+#   - Gateway pipeline overhead with a ~50KB Anthropic prompt (informational)
 #   - PII scan latency (classifier)
 #   - Evidence write throughput (signed SQLite record per op)
 #
@@ -21,7 +22,7 @@ OUTPUT=""
 BENCH_TIME="${BENCH_TIME:-2s}"
 BENCH_COUNT="${BENCH_COUNT:-5}"
 BENCH_PKGS="./internal/gateway/... ./internal/classifier/... ./internal/evidence/..."
-BENCH_REGEX='Benchmark(GatewayPipelineOverhead|PIIScan|EvidenceStore)$'
+BENCH_REGEX='Benchmark(GatewayPipelineOverhead|GatewayPipelineOverheadLargePrompt|PIIScan|EvidenceStore)$'
 
 while getopts "o:" opt; do
   case "$opt" in
@@ -48,16 +49,18 @@ bench_out=$("${GO_ENV[@]}" go test \
 }
 
 # Parse last result line per benchmark name (go test -count repeats runs).
+# The name match is anchored ("Name" or "Name-GOMAXPROCS", nothing after) so
+# BenchmarkGatewayPipelineOverhead never swallows ...OverheadLargePrompt lines.
 parse_ns_per_op() {
   local name="$1"
   printf '%s\n' "$bench_out" \
-    | awk -v n="$name" '$1 ~ "^Benchmark" n && $1 !~ "/" { last=$3 } END { print last+0 }'
+    | awk -v n="$name" '$1 ~ ("^Benchmark" n "(-[0-9]+)?$") { last=$3 } END { print last+0 }'
 }
 
 parse_allocs() {
   local name="$1"
   printf '%s\n' "$bench_out" \
-    | awk -v n="$name" '$1 ~ "^Benchmark" n && $1 !~ "/" && $0 ~ /allocs\/op/ { last=$(NF-1)" "$NF } END { print last }'
+    | awk -v n="$name" '$1 ~ ("^Benchmark" n "(-[0-9]+)?$") && $0 ~ /allocs\/op/ { last=$(NF-1)" "$NF } END { print last }'
 }
 
 ns_to_ms() {
@@ -69,15 +72,18 @@ ns_to_ops_per_sec() {
 }
 
 gw_ns=$(parse_ns_per_op GatewayPipelineOverhead)
+gwlp_ns=$(parse_ns_per_op GatewayPipelineOverheadLargePrompt)
 pii_ns=$(parse_ns_per_op PIIScan)
 ev_ns=$(parse_ns_per_op EvidenceStore)
 
 gw_ms=$(ns_to_ms "$gw_ns")
+gwlp_ms=$(ns_to_ms "$gwlp_ns")
 pii_ms=$(ns_to_ms "$pii_ns")
 ev_ms=$(ns_to_ms "$ev_ns")
 ev_ops=$(ns_to_ops_per_sec "$ev_ns")
 
 gw_allocs=$(parse_allocs GatewayPipelineOverhead)
+gwlp_allocs=$(parse_allocs GatewayPipelineOverheadLargePrompt)
 pii_allocs=$(parse_allocs PIIScan)
 ev_allocs=$(parse_allocs EvidenceStore)
 
@@ -93,6 +99,7 @@ table=$(cat <<EOF
 | Metric | Benchmark | Median (last of ${BENCH_COUNT} runs) | Allocs/op |
 |--------|-----------|--------------------------------------|-----------|
 | Gateway pipeline overhead | \`BenchmarkGatewayPipelineOverhead\` | **${gw_ms} ms**/req | ${gw_allocs:-n/a} |
+| Gateway overhead — ~50KB Anthropic prompt (informational) | \`BenchmarkGatewayPipelineOverheadLargePrompt\` | **${gwlp_ms} ms**/req | ${gwlp_allocs:-n/a} |
 | PII scan latency | \`BenchmarkPIIScan\` | **${pii_ms} ms**/scan | ${pii_allocs:-n/a} |
 | Evidence write throughput | \`BenchmarkEvidenceStore\` | **${ev_ops} writes/s** (~${ev_ms} ms/write) | ${ev_allocs:-n/a} |
 
@@ -105,6 +112,8 @@ Gateway overhead uses a local \`httptest\` upstream (no WAN RTT). Compare to the
 [What Talon does to your request](../explanation/what-talon-does-to-your-request.md).
 
 Retry/fallback decision overhead is **not** included until Epic #113 (#138/#139) lands.
+The ~50KB Anthropic large-prompt benchmark is informational only and does not join the
+benchmark regression gate yet.
 EOF
 )
 

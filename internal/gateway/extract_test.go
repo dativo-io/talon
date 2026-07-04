@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
@@ -251,4 +252,67 @@ func TestGateway_PIIBlockModePreventsForwarding(t *testing.T) {
 		"upstream must NOT be called when PII is blocked")
 	assert.Contains(t, w.Body.String(), "PII",
 		"error response should mention PII")
+}
+
+// TestRedactAnthropicBody_SystemBlockArray verifies that PII inside a
+// block-array system prompt (the form Claude Code sends on every request) is
+// redacted while cache_control markers on the blocks survive untouched.
+func TestRedactAnthropicBody_SystemBlockArray(t *testing.T) {
+	scanner := classifier.MustNewScanner()
+	ctx := context.Background()
+
+	t.Run("block_array_system", func(t *testing.T) {
+		body := []byte(`{"model":"claude-3-5-sonnet","system":[{"type":"text","text":"contact jane.doe@example.com now","cache_control":{"type":"ephemeral"}},{"type":"text","text":"clean block"}],"messages":[{"role":"user","content":"Hi"}]}`)
+		redacted, err := RedactRequestBody(ctx, "anthropic", body, scanner)
+		require.NoError(t, err)
+
+		var m map[string]interface{}
+		require.NoError(t, json.Unmarshal(redacted, &m), "redacted body must be valid JSON")
+		require.NotContains(t, string(redacted), "jane.doe@example.com",
+			"email in block-array system must be redacted")
+		require.Contains(t, string(redacted), "[EMAIL]",
+			"redaction placeholder must be present")
+
+		sys, ok := m["system"].([]interface{})
+		require.True(t, ok, "system must remain a block array")
+		require.Len(t, sys, 2)
+
+		first, ok := sys[0].(map[string]interface{})
+		require.True(t, ok)
+		require.Equal(t, map[string]interface{}{"type": "ephemeral"}, first["cache_control"],
+			"cache_control must survive redaction exactly")
+
+		second, ok := sys[1].(map[string]interface{})
+		require.True(t, ok)
+		require.Equal(t, "clean block", second["text"],
+			"PII-free block text must be unchanged")
+	})
+
+	t.Run("string_system_still_redacts", func(t *testing.T) {
+		body := []byte(`{"model":"claude-3-5-sonnet","system":"escalate to jane.doe@example.com","messages":[{"role":"user","content":"Hi"}]}`)
+		redacted, err := RedactRequestBody(ctx, "anthropic", body, scanner)
+		require.NoError(t, err)
+		require.NotContains(t, string(redacted), "jane.doe@example.com",
+			"string-form system must still be redacted")
+		require.Contains(t, string(redacted), "[EMAIL]")
+	})
+}
+
+// TestRedactAnthropicBody_Deterministic verifies that redacting the same
+// PII-bearing body twice produces byte-identical output (evidence hashes and
+// dedup depend on this).
+func TestRedactAnthropicBody_Deterministic(t *testing.T) {
+	scanner := classifier.MustNewScanner()
+	ctx := context.Background()
+
+	body := []byte(`{"model":"claude-3-5-sonnet","system":[{"type":"text","text":"contact jane.doe@example.com now","cache_control":{"type":"ephemeral"}},{"type":"text","text":"clean block"}],"messages":[{"role":"user","content":[{"type":"text","text":"My email is test@example.com and my colleague is bob@example.com"}]}]}`)
+
+	first, err := RedactRequestBody(ctx, "anthropic", body, scanner)
+	require.NoError(t, err)
+
+	second, err := RedactRequestBody(ctx, "anthropic", body, scanner)
+	require.NoError(t, err)
+
+	require.Equal(t, string(first), string(second),
+		"redacting the same body twice must produce byte-identical output")
 }

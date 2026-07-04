@@ -29,8 +29,14 @@ Requirements: Go 1.22+ (project pins 1.25.x in CI), CGO enabled (SQLite), repo r
 | Metric | Go benchmark | Package | What it includes |
 |--------|--------------|---------|------------------|
 | **Gateway pipeline overhead** | `BenchmarkGatewayPipelineOverhead` | `internal/gateway` | One non-streaming `ServeHTTP` round trip: route, caller auth, request extract, PII scan, OPA policy evaluation, forward to a **local** `httptest` mock upstream, response PII scan, signed evidence write, metrics. Representative payload includes EU email + IBAN patterns. |
+| **Gateway overhead — large Anthropic prompt** (informational) | `BenchmarkGatewayPipelineOverheadLargePrompt` | `internal/gateway` | Same non-streaming `ServeHTTP` round trip through the Anthropic wire format (`/v1/messages`), with a deterministic ~50KB system prompt built from a repeated fixed sentence containing a corpus email — exercises the PII scanner at large-prompt scale. |
 | **PII scan latency** | `BenchmarkPIIScan` | `internal/classifier` | One `Scanner.Scan` on fixed text (email, IBAN, card). Isolates classifier cost without HTTP or SQLite. |
 | **Evidence write throughput** | `BenchmarkEvidenceStore` | `internal/evidence` | One `Generator.Generate` (HMAC-signed SQLite insert) per iteration. Isolates evidence path without gateway HTTP. |
+
+> **Note:** `BenchmarkGatewayPipelineOverheadLargePrompt` is **informational**. It tracks
+> large-prompt scaling on the Anthropic path (its numbers are expected to sit well above
+> the 15 ms small-payload budget because the PII scan cost scales with input size) and
+> does **not** join the benchmark regression gate yet.
 
 ### What is excluded
 
