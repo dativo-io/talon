@@ -198,8 +198,16 @@ Two levers for constrained hosts (small VPS class):
 ## Model choice
 
 - **Recall beats size-efficiency here**: a missed entity is a PII leak.
-  `llama3.1:8b` and `qwen2.5:7b` are solid defaults; `llama3.2:1b` is
-  demo-grade only.
+  `llama3.1:8b` and `qwen2.5:7b` are solid defaults. Field-tested floor for
+  small (4 GB) hosts: `llama3.2:3b` with `scanner.entities` narrowed to
+  pattern-like types (email/IBAN/phone) — it detects bare, keyword-less
+  values that `llama3.2:1b` misses. `llama3.2:1b` is demo-grade only: it
+  misses unlabeled values and emits erratic reply shapes.
+- **Scope out fuzzy classes on small models**: PERSON/LOCATION are noisy in
+  both directions below ~7B — over-redacting inputs (a country name as
+  [PERSON]) and residual-blocking outputs (template tokens like
+  "[Recipient's Name]" flagged as persons). Prefer pattern-like entity types
+  in `scanner.entities` unless the model has the headroom.
 - **Size the model to the host's RAM** (~1 GB per billion parameters at
   Q4 quantization, plus headroom): an 8B model on a 4 GB machine is
   *listed* by Ollama but cannot load. Talon's startup probe warms the
