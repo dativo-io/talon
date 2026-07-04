@@ -1,0 +1,22 @@
+{
+  "name": "count_tokens",
+  "path": "/v1/messages/count_tokens",
+  "caller_pii_action": "warn",
+  "request_body": {
+    "model": "claude-sonnet-5",
+    "messages": [
+      {"role": "user", "content": "Count the tokens of this coding prompt before sending it."}
+    ]
+  },
+  "upstream": {
+    "status": 200,
+    "json": {"input_tokens": 2095}
+  },
+  "expect": {
+    "status": 200,
+    "forwarded_contains": ["claude-sonnet-5"],
+    "forwarded_json_valid": true,
+    "response_equals_upstream": true,
+    "evidence": {"input_tokens": 2095, "output_tokens": 0, "cost_zero": true, "invocation_type": "gateway_count_tokens"}
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "name": "tool_use_round_trip",
+  "path": "/v1/messages",
+  "caller_pii_action": "warn",
+  "request_body": {
+    "model": "claude-sonnet-5",
+    "max_tokens": 1024,
+    "tools": [
+      {
+        "name": "read_file",
+        "description": "Read a file from the workspace",
+        "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+      }
+    ],
+    "messages": [
+      {"role": "user", "content": "What does config.go do?"},
+      {
+        "role": "assistant",
+        "content": [
+          {"type": "tool_use", "id": "toolu_conf_01", "name": "read_file", "input": {"path": "internal/config/config.go"}}
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {"type": "tool_result", "tool_use_id": "toolu_conf_01", "content": "package config // loads talon.yaml"}
+        ]
+      }
+    ]
+  },
+  "upstream": {
+    "status": 200,
+    "json": {
+      "id": "msg_conf_tools",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5",
+      "content": [{"type": "text", "text": "It loads talon.yaml."}],
+      "stop_reason": "end_turn",
+      "usage": {"input_tokens": 55, "output_tokens": 7}
+    }
+  },
+  "expect": {
+    "status": 200,
+    "forwarded_contains": ["tool_use", "tool_result", "toolu_conf_01", "read_file", "input_schema"],
+    "forwarded_json_valid": true,
+    "response_equals_upstream": true,
+    "evidence": {"input_tokens": 55, "output_tokens": 7}
+  }
+}

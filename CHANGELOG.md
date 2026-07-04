@@ -17,6 +17,19 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+### Fixed
+
+- **Anthropic streaming cost evidence was silently input-only (#211).** Real `message_delta` SSE events carry top-level `usage`, which matched the OpenAI parsing branch first — streaming output tokens were never captured, so signed cost undercounted every streamed Anthropic response and TPOT was never computed. Typed Anthropic events are now parsed before the generic branch. Who cares: anyone reading `talon costs` or signed FinOps evidence for streamed Anthropic traffic. Verify: `go test ./internal/gateway/ -run TestConformanceAnthropic_Fixtures/streaming_sse -v`.
+- **`count_tokens` recorded fabricated spend (#218).** The free `/v1/messages/count_tokens` endpoint returns no `usage` wrapper, so evidence fell back to the fixed pre-request estimate and the invented cost counted against caller budgets. Now classified as `invocation_type: "gateway_count_tokens"` with cost 0 and zero budget estimate — still fully governed (PII scan + policy run; the token count is recorded in evidence). Verify: `go test ./internal/gateway/ -run TestConformanceAnthropic_Fixtures/count_tokens -v`.
+- **Block-array `system` prompts could not be redacted.** The form Claude Code sends on every request (with `cache_control`) was extracted for detection but only string-form `system` was rewritten, so PII + `pii_action: redact` failed closed with HTTP 400 on every such request. Block arrays are now redacted; `cache_control` and untouched blocks survive byte-identically.
+- **Client backoff headers were dropped.** `Retry-After`, `request-id`/`anthropic-request-id`, and the Anthropic token-remaining/reset rate-limit headers are now forwarded to callers — coding-agent 429 backoff depends on them.
+
+### Added
+
+- **Anthropic protocol conformance suite (#193, epic #192 PR-A).** Recorded Claude-Code-shaped fixtures (streaming SSE, block-array system + `cache_control`, tool_use/tool_result round-trips, `count_tokens`, image blocks, `tool_choice`, ~50KB system prompts) replayed through the full gateway pipeline against a canned upstream, plus a transform-determinism guarantee: identical input yields byte-identical rewritten bodies (non-determinism would silently break provider-side prompt caching for clients). Fixtures are sanitized (synthetic keys, corpus emails) with a scripted recapture procedure (`scripts/record-conformance-fixtures.sh`) and a pinned last-verified client version (`internal/gateway/testdata/conformance/README.md`).
+- **Pricing table refreshed to the current Anthropic and OpenAI lineups** (verified against vendor pricing pages, 2026-07): Claude Fable 5 / Opus 4.8-4.5 / Sonnet 5 / Sonnet 4.6-4.5 / Haiku 4.5, and GPT-5.5/5.4 families + gpt-5.3-codex. Fixes `unknown model for cost estimation` warnings (and the resulting flat-fallback cost evidence) for current-model traffic. Legacy entries retained; operators can still override in `pricing/models.yaml`. Cache read/write rates land with the cache-aware pricing schema (#196).
+- **Large-prompt pipeline benchmark.** `BenchmarkGatewayPipelineOverheadLargePrompt` runs a ~50KB PII-bearing system prompt through the full pipeline (informational row in `docs/reference/benchmarks.md`; not regression-gated yet).
+
 ## [1.6.8] - 2026-07-04
 
 ### Added
