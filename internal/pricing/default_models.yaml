@@ -25,9 +25,65 @@ providers:
       o3-mini:
         input_per_1m: 1.10
         output_per_1m: 4.40
+      # Current lineup, verified against developers.openai.com/api/docs/pricing,
+      # 2026-07. Cached-input rates land with the cache-aware pricing schema
+      # (epic #192 PR-E / #196).
+      gpt-5.5:
+        input_per_1m: 5.00
+        output_per_1m: 30.00
+      gpt-5.5-pro:
+        input_per_1m: 30.00
+        output_per_1m: 180.00
+      gpt-5.4:
+        input_per_1m: 2.50
+        output_per_1m: 15.00
+      gpt-5.4-mini:
+        input_per_1m: 0.75
+        output_per_1m: 4.50
+      gpt-5.4-nano:
+        input_per_1m: 0.20
+        output_per_1m: 1.25
+      gpt-5.4-pro:
+        input_per_1m: 30.00
+        output_per_1m: 180.00
+      gpt-5.3-codex:
+        input_per_1m: 1.75
+        output_per_1m: 14.00
 
   anthropic:
+    # Verified against platform.claude.com pricing, 2026-07. Cache read/write
+    # rates land with the cache-aware pricing schema (epic #192 PR-E / #196).
     models:
+      claude-fable-5:
+        input_per_1m: 10.00
+        output_per_1m: 50.00
+      claude-opus-4-8:
+        input_per_1m: 5.00
+        output_per_1m: 25.00
+      claude-opus-4-7:
+        input_per_1m: 5.00
+        output_per_1m: 25.00
+      claude-opus-4-6:
+        input_per_1m: 5.00
+        output_per_1m: 25.00
+      claude-opus-4-5:
+        input_per_1m: 5.00
+        output_per_1m: 25.00
+      # Standard rate; introductory $2/$10 applies through 2026-08-31 —
+      # operators on intro pricing can lower this locally.
+      claude-sonnet-5:
+        input_per_1m: 3.00
+        output_per_1m: 15.00
+      claude-sonnet-4-6:
+        input_per_1m: 3.00
+        output_per_1m: 15.00
+      claude-sonnet-4-5:
+        input_per_1m: 3.00
+        output_per_1m: 15.00
+      claude-haiku-4-5:
+        input_per_1m: 1.00
+        output_per_1m: 5.00
+      # Deprecated / legacy models still callable:
       claude-sonnet-4-20250514:
         input_per_1m: 3.00
         output_per_1m: 15.00

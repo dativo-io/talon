@@ -27,6 +27,7 @@ For user-facing entries, include:
 ### Added
 
 - **Anthropic protocol conformance suite (#193, epic #192 PR-A).** Recorded Claude-Code-shaped fixtures (streaming SSE, block-array system + `cache_control`, tool_use/tool_result round-trips, `count_tokens`, image blocks, `tool_choice`, ~50KB system prompts) replayed through the full gateway pipeline against a canned upstream, plus a transform-determinism guarantee: identical input yields byte-identical rewritten bodies (non-determinism would silently break provider-side prompt caching for clients). Fixtures are sanitized (synthetic keys, corpus emails) with a scripted recapture procedure (`scripts/record-conformance-fixtures.sh`) and a pinned last-verified client version (`internal/gateway/testdata/conformance/README.md`).
+- **Pricing table refreshed to the current Anthropic and OpenAI lineups** (verified against vendor pricing pages, 2026-07): Claude Fable 5 / Opus 4.8-4.5 / Sonnet 5 / Sonnet 4.6-4.5 / Haiku 4.5, and GPT-5.5/5.4 families + gpt-5.3-codex. Fixes `unknown model for cost estimation` warnings (and the resulting flat-fallback cost evidence) for current-model traffic. Legacy entries retained; operators can still override in `pricing/models.yaml`. Cache read/write rates land with the cache-aware pricing schema (#196).
 - **Large-prompt pipeline benchmark.** `BenchmarkGatewayPipelineOverheadLargePrompt` runs a ~50KB PII-bearing system prompt through the full pipeline (informational row in `docs/reference/benchmarks.md`; not regression-gated yet).
 
 ## [1.6.8] - 2026-07-04
