@@ -75,6 +75,9 @@ type RecordGatewayEvidenceParams struct {
 	// Scanner identifies the PII scan engine used for this request's
 	// classification (and its failure kind on scanner-driven blocks).
 	Scanner *evidence.ScannerInfo
+	// ToolContent carries the evidence-only PII observation over tool-related
+	// request content (#212). Never used for enforcement in v1.
+	ToolContent *evidence.ToolContentScan
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -119,6 +122,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			OutputPIIDetected: params.OutputPIIDetected,
 			OutputPIITypes:    params.OutputPIITypes,
 			Scanner:           params.Scanner,
+			ToolContent:       params.ToolContent,
 		},
 		Execution: evidence.Execution{
 			ModelUsed:     params.Model,

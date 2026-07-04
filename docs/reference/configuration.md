@@ -298,6 +298,7 @@ When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml
 | `gateway.callers` | Application identities (tenant key, tenant, allowed providers, policy overrides) |
 | `gateway.default_policy` | Server-wide defaults (PII action, cost caps, tool governance, attachment scanning, egress rules) |
 | `gateway.rate_limits` | Global and per-caller request rate limits |
+| `gateway.default_policy.scan_tool_content` | Observation-only PII scan of tool-related request content: `evidence_only` (default) records findings in signed evidence (`classification.tool_content`) without influencing enforcement; `off` disables it. Enforcement on tool content is not offered until per-block-type tool redaction exists (#212). |
 | `gateway.timeouts` | Connect, request, and stream idle timeouts |
 
 Provider auth mode:

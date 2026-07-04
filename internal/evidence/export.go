@@ -65,6 +65,14 @@ type ExportRecord struct {
 	ScannerType    string `json:"scanner_type,omitempty"`
 	ScannerVersion string `json:"scanner_version,omitempty"`
 	ScannerFailure string `json:"scanner_failure,omitempty"`
+	// Tool-content observation (trailing, backward-compatible): the
+	// evidence-only PII scan of tool-related request content (#212).
+	// Scanned is a pointer so "scanned": false (scanner error — content went
+	// out unscanned) survives omitempty; nil = scan not performed.
+	ToolContentScanned     *bool    `json:"tool_content_scanned,omitempty"`
+	ToolContentHasPII      bool     `json:"tool_content_has_pii,omitempty"`
+	ToolContentEntityTypes []string `json:"tool_content_entity_types,omitempty"`
+	ToolContentEntityCount int      `json:"tool_content_entity_count,omitempty"`
 }
 
 // ExportMetadata wraps JSON export with context about the export run.
@@ -167,6 +175,13 @@ func ToExportRecord(e *Evidence) ExportRecord {
 		rec.ScannerType = s.Type
 		rec.ScannerVersion = s.Version
 		rec.ScannerFailure = s.Failure
+	}
+	if tc := e.Classification.ToolContent; tc != nil {
+		scanned := tc.Scanned
+		rec.ToolContentScanned = &scanned
+		rec.ToolContentHasPII = tc.HasPII
+		rec.ToolContentEntityTypes = tc.EntityTypes
+		rec.ToolContentEntityCount = tc.EntityCount
 	}
 	return rec
 }

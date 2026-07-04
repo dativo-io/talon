@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -395,6 +396,28 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tier := classification.Tier
 	if tier > 2 {
 		tier = 2
+	}
+
+	// Observation-only tool-content scan (#212): tool_use inputs, tool_result
+	// outputs and function-call arguments are scanned for evidence, never for
+	// enforcement — tool blocks cannot be redacted yet, so acting on this
+	// signal would fail-close every redact-mode deployment on agentic traffic.
+	var toolContentScan *evidence.ToolContentScan
+	if g.config.ServerDefaults.ScanToolContent != ScanToolContentOff && extracted.ToolText != "" {
+		tc, tcErr := g.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.ToolText)
+		if tcErr != nil {
+			// Evidence-only scan: a scanner error must not fail-close the
+			// request; the record says the content went out unscanned.
+			toolContentScan = &evidence.ToolContentScan{Scanned: false}
+			log.Warn().Str("caller", caller.Name).Err(tcErr).Msg("tool_content_scan_failed")
+		} else {
+			toolContentScan = &evidence.ToolContentScan{
+				Scanned:     true,
+				HasPII:      tc.HasPII,
+				EntityTypes: uniqueEntityTypes(tc.Entities),
+				EntityCount: len(tc.Entities),
+			}
+		}
 	}
 
 	// Caller allowed for this provider?
@@ -1076,6 +1099,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if isCountTokens {
 			p.InvocationType = "gateway_count_tokens"
 		}
+		p.ToolContent = toolContentScan
 	})
 	if recordErr != nil {
 		g.handleEvidenceWriteFailure(ctx, recordErr)
@@ -1650,4 +1674,23 @@ func writeCachedCompletion(w http.ResponseWriter, provider, model string, conten
 		"usage": map[string]interface{}{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
 	}
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// uniqueEntityTypes returns the sorted unique entity types from PII entities
+// (for the observation-only tool-content scan evidence).
+func uniqueEntityTypes(entities []classifier.PIIEntity) []string {
+	if len(entities) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(entities))
+	var out []string
+	for _, e := range entities {
+		if _, ok := seen[e.Type]; ok {
+			continue
+		}
+		seen[e.Type] = struct{}{}
+		out = append(out, e.Type)
+	}
+	sort.Strings(out)
+	return out
 }
