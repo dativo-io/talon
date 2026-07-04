@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -317,4 +319,103 @@ func toLowerSnake(s string) string {
 		}
 	}
 	return string(result)
+}
+
+// SupportedEntityTypes returns the sorted Presidio-style entity labels the
+// effective recognizer configuration governs (built-in defaults + optional
+// pattern file + custom recognizers, after enabled/disabled filtering).
+// External engines that must be told what to hunt for (e.g. the llm scanner
+// adapter's NER prompt) derive their entity list from this, so the engine
+// targets exactly what the policy governs.
+func SupportedEntityTypes(opts ...ScannerOption) ([]string, error) {
+	var cfg scannerConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	defaults, err := DefaultRecognizers()
+	if err != nil {
+		return nil, fmt.Errorf("loading default recognizers: %w", err)
+	}
+
+	var globalRecs []*RecognizerConfig
+	if cfg.patternFile != "" {
+		rf, err := LoadRecognizerFile(cfg.patternFile)
+		if err != nil {
+			return nil, fmt.Errorf("loading global pattern file: %w", err)
+		}
+		if rf != nil {
+			globalRecs = toPtrSlice(rf.Recognizers)
+		}
+	}
+
+	merged := MergeRecognizers(toPtrSlice(defaults), globalRecs, toPtrSlice(cfg.customRecognizers))
+	merged = FilterByEntities(merged, cfg.enabledEntities, cfg.disabledEntities)
+
+	set := make(map[string]struct{}, len(merged))
+	for i := range merged {
+		r := merged[i]
+		if !r.isEnabled() || r.SupportedEntity == "" {
+			continue
+		}
+		set[r.SupportedEntity] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for e := range set {
+		out = append(out, e)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// SensitivityForType returns the sensitivity (1-3) the built-in registry
+// assigns to the given entity type (Presidio-style label or canonical
+// lower_snake type). Unknown types default to 1. External engines carry no
+// Talon sensitivity levels, so adapters use this to tier their detections
+// consistently with the built-in scanner.
+func SensitivityForType(entityType string) int {
+	table := builtinSensitivityTable()
+	if s, ok := table[entityType]; ok {
+		return s
+	}
+	if s, ok := table[entityToType(entityType)]; ok {
+		return s
+	}
+	return 1
+}
+
+var (
+	sensitivityTableOnce sync.Once
+	sensitivityTable     map[string]int
+)
+
+// builtinSensitivityTable maps both the Presidio-style label and the canonical
+// type of every built-in recognizer to its maximum declared sensitivity.
+func builtinSensitivityTable() map[string]int {
+	sensitivityTableOnce.Do(func() {
+		table := map[string]int{}
+		defaults, err := DefaultRecognizers()
+		if err != nil {
+			sensitivityTable = table
+			return
+		}
+		record := func(key string, sensitivity int) {
+			if key == "" {
+				return
+			}
+			if sensitivity < 1 {
+				sensitivity = 1
+			}
+			if sensitivity > table[key] {
+				table[key] = sensitivity
+			}
+		}
+		for i := range defaults {
+			r := defaults[i]
+			record(r.SupportedEntity, r.Sensitivity)
+			record(entityToType(r.SupportedEntity), r.Sensitivity)
+		}
+		sensitivityTable = table
+	})
+	return sensitivityTable
 }

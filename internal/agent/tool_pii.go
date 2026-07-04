@@ -36,7 +36,7 @@ type toolPIIResult struct {
 // the (possibly modified) arguments along with any findings.
 //
 //nolint:gocyclo // per-field PII scanning with action dispatch requires branching
-func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, toolName string, args json.RawMessage, pol *policy.Policy) *toolPIIResult {
+func applyToolArgumentPII(ctx context.Context, scanner classifier.Facade, toolName string, args json.RawMessage, pol *policy.Policy) *toolPIIResult {
 	if scanner == nil {
 		return &toolPIIResult{}
 	}
@@ -59,7 +59,14 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 		if action == "" {
 			action = policy.PIIActionRedact
 		}
-		result.Findings = append(result.Findings, applyPIIAction(ctx, scanner, "_raw", argStr, action, "argument")...)
+		rawFindings, rawScanErr := applyPIIAction(ctx, scanner, "_raw", argStr, action, "argument")
+		if rawScanErr != nil {
+			result.Blocked = true
+			result.BlockReason = scannerUnavailableMessage("tool arguments blocked")
+			result.Findings = append(result.Findings, scannerUnavailableFinding("_raw", "argument"))
+			return result
+		}
+		result.Findings = append(result.Findings, rawFindings...)
 		if action == policy.PIIActionBlock {
 			for _, f := range result.Findings {
 				if f.PIICount > 0 {
@@ -70,7 +77,13 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 			}
 		}
 		if action == policy.PIIActionRedact {
-			redacted := scanner.Redact(ctx, argStr)
+			redacted, redactErr := scanner.RedactText(ctx, argStr)
+			if redactErr != nil {
+				result.Blocked = true
+				result.BlockReason = scannerUnavailableMessage("tool arguments blocked")
+				result.Findings = append(result.Findings, scannerUnavailableFinding("_raw", "argument"))
+				return result
+			}
 			if verifyErr := scanner.VerifyEgress(ctx, redacted); verifyErr != nil {
 				result.Blocked = true
 				result.BlockReason = residualPIIMessage("tool arguments blocked: recognized PII remains after redaction", classifier.ResidualTypes(verifyErr))
@@ -130,7 +143,15 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 			valStr = textVal
 		}
 
-		findings := applyPIIAction(ctx, scanner, field, valStr, action, "argument")
+		findings, fieldScanErr := applyPIIAction(ctx, scanner, field, valStr, action, "argument")
+		if fieldScanErr != nil {
+			if !result.Blocked {
+				result.Blocked = true
+				result.BlockReason = scannerUnavailableMessage("tool arguments blocked")
+			}
+			result.Findings = append(result.Findings, scannerUnavailableFinding(field, "argument"))
+			continue
+		}
 		result.Findings = append(result.Findings, findings...)
 
 		for _, f := range findings {
@@ -143,7 +164,15 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 		}
 
 		if action == policy.PIIActionRedact {
-			redacted := scanner.Redact(ctx, valStr)
+			redacted, redactErr := scanner.RedactText(ctx, valStr)
+			if redactErr != nil {
+				if !result.Blocked {
+					result.Blocked = true
+					result.BlockReason = scannerUnavailableMessage("tool arguments blocked")
+				}
+				result.Findings = append(result.Findings, scannerUnavailableFinding(field, "argument"))
+				continue
+			}
 			if verifyErr := scanner.VerifyEgress(ctx, redacted); verifyErr != nil {
 				if !result.Blocked {
 					result.Blocked = true
@@ -186,7 +215,7 @@ func applyToolArgumentPII(ctx context.Context, scanner *classifier.Scanner, tool
 }
 
 // applyToolResultPII scans a tool result per the tool's result PII policy.
-func applyToolResultPII(ctx context.Context, scanner *classifier.Scanner, toolName string, resultContent string, pol *policy.Policy) (string, []ToolPIIFinding) {
+func applyToolResultPII(ctx context.Context, scanner classifier.Facade, toolName string, resultContent string, pol *policy.Policy) (string, []ToolPIIFinding) {
 	if scanner == nil {
 		return resultContent, nil
 	}
@@ -208,10 +237,18 @@ func applyToolResultPII(ctx context.Context, scanner *classifier.Scanner, toolNa
 		trace.WithAttributes(attribute.String("tool_name", toolName)))
 	defer span.End()
 
-	findings := applyPIIAction(ctx, scanner, "_result", resultContent, action, "result")
+	findings, resultScanErr := applyPIIAction(ctx, scanner, "_result", resultContent, action, "result")
+	if resultScanErr != nil {
+		findings = append(findings, scannerUnavailableFinding("_result", "result"))
+		return fmt.Sprintf(`{"error":"%s"}`, scannerUnavailableMessage("tool result blocked")), findings
+	}
 
 	if action == policy.PIIActionRedact {
-		redacted := scanner.Redact(ctx, resultContent)
+		redacted, redactErr := scanner.RedactText(ctx, resultContent)
+		if redactErr != nil {
+			findings = append(findings, scannerUnavailableFinding("_result", "result"))
+			return fmt.Sprintf(`{"error":"%s"}`, scannerUnavailableMessage("tool result blocked")), findings
+		}
 		if verifyErr := scanner.VerifyEgress(ctx, redacted); verifyErr != nil {
 			types := classifier.ResidualTypes(verifyErr)
 			findings = append(findings, ToolPIIFinding{
@@ -237,10 +274,13 @@ func applyToolResultPII(ctx context.Context, scanner *classifier.Scanner, toolNa
 	return resultContent, findings
 }
 
-func applyPIIAction(ctx context.Context, scanner *classifier.Scanner, field, text string, action policy.PIIAction, direction string) []ToolPIIFinding {
-	cls := scanner.Scan(ctx, text)
+func applyPIIAction(ctx context.Context, scanner classifier.Facade, field, text string, action policy.PIIAction, direction string) ([]ToolPIIFinding, error) {
+	cls, err := scanner.Analyze(ctx, text)
+	if err != nil {
+		return nil, err
+	}
 	if cls == nil || !cls.HasPII {
-		return nil
+		return nil, nil
 	}
 
 	types := make(map[string]bool)
@@ -268,7 +308,23 @@ func applyPIIAction(ctx context.Context, scanner *classifier.Scanner, field, tex
 		Int("pii_count", len(cls.Entities)).
 		Msg("tool_pii_finding")
 
-	return []ToolPIIFinding{finding}
+	return []ToolPIIFinding{finding}, nil
+}
+
+// scannerUnavailableFinding is the blocking finding recorded when the scan
+// engine itself failed (fail-closed).
+func scannerUnavailableFinding(field, direction string) ToolPIIFinding {
+	return ToolPIIFinding{
+		Field:     field,
+		Action:    string(policy.PIIActionBlock),
+		PIITypes:  []string{"scanner_unavailable"},
+		PIICount:  1,
+		Direction: direction,
+	}
+}
+
+func scannerUnavailableMessage(prefix string) string {
+	return prefix + ": PII scanner unavailable (fail-closed)"
 }
 
 func residualPIIMessage(prefix string, types []string) string {

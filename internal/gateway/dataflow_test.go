@@ -154,7 +154,8 @@ func TestGatewayBuildDataFlow_CacheHit(t *testing.T) {
 	gw, _, _ := setupOpenClawGateway(t, "warn", chatCompletionUpstream("unused"))
 
 	text := "Email " + dataFlowTestEmail
-	cls := gw.classifier.Scan(context.Background(), text)
+	cls, scanErr := gw.classifier.Analyze(context.Background(), text)
+	require.NoError(t, scanErr)
 	require.True(t, cls.HasPII)
 
 	df := gw.buildDataFlow(dataFlowInputs{
@@ -186,7 +187,8 @@ func TestGatewayBuildDataFlow_CacheStoreAfterForward(t *testing.T) {
 	gw, _, _ := setupOpenClawGateway(t, "warn", chatCompletionUpstream("unused"))
 
 	text := "Email " + dataFlowTestEmail
-	cls := gw.classifier.Scan(context.Background(), text)
+	cls, scanErr := gw.classifier.Analyze(context.Background(), text)
+	require.NoError(t, scanErr)
 	require.True(t, cls.HasPII)
 
 	df := gw.buildDataFlow(dataFlowInputs{

@@ -147,6 +147,77 @@
         }
       }
     },
+    "scanner": {
+      "type": "object",
+      "description": "External PII scanner engine (optional). When absent, the built-in regex scanner is used (zero-config default). Selects ONE globally active engine; external engines replace the regex scanner and are fail-closed — an adapter timeout/error blocks egress in enforce mode.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["regex", "presidio", "http", "llm"],
+          "default": "regex",
+          "description": "regex = built-in. presidio = Presidio analyzer REST sidecar (rune offsets by default). http = custom engine speaking the Presidio wire format (byte offsets by default). llm = OpenAI-compatible chat endpoint prompted for NER (e.g. Ollama)."
+        },
+        "endpoint": {
+          "type": "string",
+          "description": "Engine endpoint: http(s)://host:port or unix:///path/to.sock. Required for presidio/http; for llm defaults to ollama_base_url + /v1. In air_gap deployments only unix sockets, loopback, and private addresses are accepted."
+        },
+        "timeout": {
+          "type": "string",
+          "default": "10s",
+          "description": "Per-scan deadline (Go duration). No retries; a timeout is an adapter failure and blocks egress in enforce mode."
+        },
+        "min_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5,
+          "description": "Entities reported below this confidence are discarded before normalization."
+        },
+        "language": {
+          "type": "string",
+          "default": "en",
+          "description": "Forwarded in Presidio /analyze requests."
+        },
+        "offset_encoding": {
+          "type": "string",
+          "enum": ["byte", "rune"],
+          "description": "Override for the offset encoding the engine reports. Default depends on type: presidio → rune (stock Presidio reports codepoint offsets), http → byte."
+        },
+        "name": {
+          "type": "string",
+          "description": "Detector identity recorded in evidence (defaults to the engine type)."
+        },
+        "engine_version": {
+          "type": "string",
+          "description": "Operator-declared engine version recorded in evidence (the Presidio /analyze response carries no version)."
+        },
+        "entities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional entity-type list forwarded to the engine in each request."
+        },
+        "health_check": {
+          "type": "boolean",
+          "default": true,
+          "description": "Probe the engine at startup; Talon refuses to start when the probe fails (fail-closed)."
+        },
+        "llm": {
+          "type": "object",
+          "description": "Settings for scanner.type llm.",
+          "required": ["model"],
+          "properties": {
+            "model": { "type": "string", "description": "Model id at the OpenAI-compatible endpoint, e.g. llama3.1:8b." },
+            "confidence": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1,
+              "default": 0.8,
+              "description": "Confidence assigned to LLM-detected entities (LLMs emit no scores)."
+            }
+          }
+        }
+      }
+    },
     "cache": {
       "type": "object",
       "description": "Governed semantic cache (optional, off by default). Validated by `talon doctor`.",

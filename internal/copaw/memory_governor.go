@@ -20,13 +20,13 @@ import (
 // a webhook or sync). CoPaw's in-process memory compaction that uses the LLM is already
 // governed when CoPaw points at the Talon gateway.
 type MemoryGovernor struct {
-	Scanner          *classifier.Scanner
+	Scanner          classifier.Facade
 	ForbiddenPhrases []string // optional; nil/empty uses defaultForbiddenMemoryPhrases
 }
 
 // NewMemoryGovernor creates a governor that validates CoPaw memory content with the given PII scanner.
 // forbiddenPhrases is optional (e.g. from policy.Copaw.Memory.ForbiddenPhrases); nil or empty uses built-in defaults.
-func NewMemoryGovernor(scanner *classifier.Scanner, forbiddenPhrases []string) *MemoryGovernor {
+func NewMemoryGovernor(scanner classifier.Facade, forbiddenPhrases []string) *MemoryGovernor {
 	phrases := forbiddenPhrases
 	if len(phrases) == 0 {
 		phrases = defaultForbiddenMemoryPhrases
@@ -62,9 +62,14 @@ func (g *MemoryGovernor) ValidateWrite(ctx context.Context, tenantID, agentID, c
 		}
 	}
 
-	// 3. PII scan
+	// 3. PII scan. A scanner failure denies the write fail-closed.
 	if g.Scanner != nil {
-		result := g.Scanner.Scan(ctx, content)
+		result, scanErr := g.Scanner.Analyze(ctx, content)
+		if scanErr != nil {
+			span.RecordError(scanErr)
+			span.SetStatus(codes.Error, "PII scanner unavailable")
+			return fmt.Errorf("copaw memory: PII scan failed (fail-closed): %w", scanErr)
+		}
 		if result.HasPII {
 			entityTypes := make([]string, 0, len(result.Entities))
 			for _, e := range result.Entities {

@@ -1,0 +1,74 @@
+# Talon + Ollama: a local Llama model as the PII scanner engine.
+# Everything runs on your machine — no cloud scanner, no data leaves the host.
+#
+# Usage:
+#   cd examples/scanners/ollama
+#   docker compose up
+#   # first start pulls llama3.2:1b (~1.3 GB) — watch the model-pull service
+#
+# Then in another terminal:
+#   curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
+#     -H "Authorization: Bearer talon-demo-key" \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"My email is jan@example.com"}]}'
+#
+#   docker compose exec talon /usr/local/bin/talon audit list
+#   # classification.scanner: {"engine":"llm:llama3.2:1b","type":"llm","version":"llm-ner/v1",...}
+#
+# Swap llama3.2:1b for a stronger model (llama3.1:8b, qwen2.5:7b) in BOTH the
+# model-pull command and talon.config.yaml for better recall; budget more RAM
+# and latency.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: pulls the model into the shared volume, then exits.
+  model-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["ollama", "pull", "llama3.2:1b"]
+    restart: "no"
+
+  mock-openai:
+    build:
+      context: ../../docker-compose/mock-provider
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  talon:
+    build:
+      context: ../../../
+    command: serve --config /etc/talon/talon.config.yaml --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
+    ports:
+      - "8080:8080"
+    environment:
+      - TALON_SECRETS_KEY=abcdefghijklmnopqrstuvwxyz012345
+      - TALON_LOG_LEVEL=info
+      - TALON_LOG_FORMAT=json
+    volumes:
+      - ./talon.config.yaml:/etc/talon/talon.config.yaml:ro
+      - talon-data:/home/talon/.talon
+    depends_on:
+      model-pull:
+        condition: service_completed_successfully
+      mock-openai:
+        condition: service_healthy
+
+volumes:
+  ollama-models:
+  talon-data:

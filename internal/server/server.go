@@ -10,6 +10,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/agent/graphadapter"
+	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/compliance"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/memory"
@@ -60,6 +61,14 @@ type Server struct {
 	eventsRecentMaxLimit int
 	eventsPollInterval   time.Duration
 	declarationsLoader   DeclarationsLoader
+	classifier           classifier.Facade
+}
+
+// SetClassifier attaches the process-wide scanner engine. Call after
+// NewServer; when set to an external engine it is used for tool-approval
+// remediation instead of a per-policy regex scanner.
+func (s *Server) SetClassifier(cls classifier.Facade) {
+	s.classifier = cls
 }
 
 // DeclarationsLoader returns the declared compliance facts (controller

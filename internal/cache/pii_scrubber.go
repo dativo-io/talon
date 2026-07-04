@@ -8,22 +8,23 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 )
 
-// PIIScrubber wraps the PII classifier's Redact to produce cache-safe response text.
+// PIIScrubber wraps the PII classifier's redaction to produce cache-safe response text.
 // Responses are scrubbed (PII replaced with placeholders like [EMAIL]) before storage.
 type PIIScrubber struct {
-	scanner *classifier.Scanner
+	scanner classifier.Facade
 }
 
 // NewPIIScrubber returns a scrubber that uses the given classifier scanner.
-func NewPIIScrubber(scanner *classifier.Scanner) *PIIScrubber {
+func NewPIIScrubber(scanner classifier.Facade) *PIIScrubber {
 	return &PIIScrubber{scanner: scanner}
 }
 
 // Scrub returns text with PII replaced by type-based placeholders (e.g. [EMAIL], [IBAN]).
-// Use this for LLM response text before storing in the cache.
-func (p *PIIScrubber) Scrub(ctx context.Context, text string) string {
+// Use this for LLM response text before storing in the cache. An error means
+// the text could not be scanned; callers must skip the cache store (fail-closed).
+func (p *PIIScrubber) Scrub(ctx context.Context, text string) (string, error) {
 	if p.scanner == nil {
-		return text
+		return text, nil
 	}
-	return p.scanner.Redact(ctx, text)
+	return p.scanner.RedactText(ctx, text)
 }

@@ -1,0 +1,58 @@
+# Talon + Microsoft Presidio analyzer as the external PII scanner engine.
+#
+# Usage:
+#   cd examples/scanners/presidio
+#   docker compose up
+#
+# Then in another terminal:
+#   curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
+#     -H "Authorization: Bearer talon-demo-key" \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"My email is jan@example.com"}]}'
+#
+#   # The scan ran through Presidio — check the evidence:
+#   docker compose exec talon /usr/local/bin/talon audit list
+#
+# Fail-closed demo: `docker compose stop presidio-analyzer`, repeat the curl —
+# the request is blocked with HTTP 502 scanner_unavailable. Restarting talon
+# while the analyzer is down refuses to start (eager health check).
+
+services:
+  presidio-analyzer:
+    image: mcr.microsoft.com/presidio-analyzer:latest
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:3000/health')\" || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mock-openai:
+    build:
+      context: ../../docker-compose/mock-provider
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  talon:
+    build:
+      context: ../../../
+    command: serve --config /etc/talon/talon.config.yaml --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
+    ports:
+      - "8080:8080"
+    environment:
+      - TALON_SECRETS_KEY=abcdefghijklmnopqrstuvwxyz012345
+      - TALON_LOG_LEVEL=info
+      - TALON_LOG_FORMAT=json
+    volumes:
+      - ./talon.config.yaml:/etc/talon/talon.config.yaml:ro
+      - talon-data:/home/talon/.talon
+    depends_on:
+      presidio-analyzer:
+        condition: service_healthy
+      mock-openai:
+        condition: service_healthy
+
+volumes:
+  talon-data:

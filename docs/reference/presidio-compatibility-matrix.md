@@ -7,7 +7,8 @@ Talon is Presidio-compatible at the **external result shape** boundary. Internal
 ## Scope boundary
 
 - **In scope (#112):** Presidio-shaped result contract, normalization, fixtures, and scanner seam.
-- **Out of scope (#112):** production external runtime adapter selection, HTTP/gRPC adapter clients, Llama/ONNX runtime wiring, sidecar lifecycle (tracked in #181).
+- **Added by #181:** runtime HTTP and Unix-domain-socket adapter clients for Presidio-compatible engines, selected via the `scanner:` config block — see [external scanners](external-scanners.md). A stock Presidio analyzer container works with zero glue (`type: presidio` defaults results to rune offsets).
+- **Still out of scope:** gRPC transports, Talon-managed sidecar lifecycle, in-process Llama/ONNX runtime wiring.
 - **No parity claim:** Talon does not claim full behavioral parity with Presidio recognizer internals.
 
 ## Required external fields

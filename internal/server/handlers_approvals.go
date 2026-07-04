@@ -132,7 +132,10 @@ func (s *Server) remediateApprovalArguments(ctx context.Context, req *agent.Tool
 	if err != nil {
 		return nil, fmt.Errorf("encoding approval arguments: %w", err)
 	}
-	redacted := scanner.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), string(rawArgs))
+	redacted, redactErr := scanner.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), string(rawArgs))
+	if redactErr != nil {
+		return nil, fmt.Errorf("remediation failed: PII scanner unavailable (fail-closed): %w", redactErr)
+	}
 	if verifyErr := scanner.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redacted); verifyErr != nil {
 		types := classifier.ResidualTypes(verifyErr)
 		if len(types) == 0 {
@@ -150,7 +153,15 @@ func (s *Server) remediateApprovalArguments(ctx context.Context, req *agent.Tool
 	return remediated, nil
 }
 
-func (s *Server) toolApprovalRemediationScanner(ctx context.Context) (*classifier.Scanner, error) {
+func (s *Server) toolApprovalRemediationScanner(ctx context.Context) (classifier.Facade, error) {
+	// When an external scanner engine is configured it is authoritative:
+	// building a per-policy regex scanner here would silently bypass the
+	// operator's engine choice.
+	if s.classifier != nil {
+		if _, isBuiltin := s.classifier.(*classifier.Scanner); !isBuiltin {
+			return s.classifier, nil
+		}
+	}
 	if s.policy == nil {
 		return nil, fmt.Errorf("policy is required for remediation")
 	}

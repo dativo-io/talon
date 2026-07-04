@@ -74,11 +74,14 @@ benchmark-baseline-update: ## Regenerate BenchmarkPIIScan baseline for this GOOS
 
 proof-gates: ## Run Epic #112 proof gates (matrix/parity/egress/fuzz/benchmark)
 	@$(GO_ENV) go test -count=1 ./internal/classifier/... -run 'TestRecognizerMatrix_AllBuiltInsHavePositiveAndNegativeCoverage|TestBuiltInScannerNormalizationParity|TestPresidioOffsetUnicodeMatrixRoundTrip'
-	@$(GO_ENV) go test -count=1 ./internal/gateway/... -run 'PII|Egress|Residual|NoPIIEgress'
+	@$(GO_ENV) go test -count=1 ./internal/gateway/... -run 'PII|Egress|Residual|NoPIIEgress|ExternalScanner'
 	@$(GO_ENV) go test -count=1 ./internal/mcp/... -run 'PII|Egress|Residual|NoPIIEgress'
-	@$(GO_ENV) go test -count=1 ./internal/agent/... -run 'PII|Tool|Residual|NoPIIEgress|Remediation'
+	@$(GO_ENV) go test -count=1 ./internal/agent/... -run 'PII|Tool|Residual|NoPIIEgress|Remediation|ScannerFailure'
+	@$(GO_ENV) go test -count=1 ./internal/classifier/adapter/... -run 'TestAnalyze|TestRedactText|TestVerifyEgress'
+	@$(GO_ENV) go test -count=1 ./internal/scanner/... -run 'TestBuild|TestValidateEndpointLocality'
 	@$(GO_ENV) go test -run '^$$' -fuzz=FuzzPIIRedactVerify -fuzztime=3s ./internal/classifier
 	@$(GO_ENV) go test -run '^$$' -fuzz=FuzzNormalizeResultsOffsets -fuzztime=3s ./internal/classifier/presidio
+	@$(GO_ENV) go test -run '^$$' -fuzz=FuzzAdapterResponseDecode -fuzztime=3s ./internal/classifier/adapter
 	@if [ "${SKIP_BENCHMARK_REGRESSION:-}" = "1" ]; then \
 		echo "Skipping benchmark regression (SKIP_BENCHMARK_REGRESSION=1)"; \
 	else \

@@ -247,8 +247,10 @@ func ExtractForProvider(provider string, body []byte) (ExtractedRequest, error) 
 }
 
 // RedactRequestBody redacts PII in the request body using the classifier.
-// Returns the modified JSON body for the given provider format.
-func RedactRequestBody(ctx context.Context, provider string, body []byte, scanner *classifier.Scanner) ([]byte, error) {
+// Returns the modified JSON body for the given provider format. An error
+// means some content could not be scanned; callers must not forward the
+// original body (fail-closed).
+func RedactRequestBody(ctx context.Context, provider string, body []byte, scanner classifier.Facade) ([]byte, error) {
 	if scanner == nil {
 		return body, nil
 	}
@@ -262,7 +264,7 @@ func RedactRequestBody(ctx context.Context, provider string, body []byte, scanne
 	}
 }
 
-func redactOpenAIBody(ctx context.Context, body []byte, scanner *classifier.Scanner) ([]byte, error) {
+func redactOpenAIBody(ctx context.Context, body []byte, scanner classifier.Facade) ([]byte, error) {
 	var m map[string]interface{}
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, err
@@ -272,19 +274,31 @@ func redactOpenAIBody(ctx context.Context, body []byte, scanner *classifier.Scan
 	if msgs, ok := m["messages"].([]interface{}); ok {
 		for _, raw := range msgs {
 			if msg, ok := raw.(map[string]interface{}); ok {
-				msg["content"] = redactOpenAIContent(ctx, msg["content"], scanner)
+				redacted, err := redactOpenAIContent(ctx, msg["content"], scanner)
+				if err != nil {
+					return nil, err
+				}
+				msg["content"] = redacted
 			}
 		}
 	}
 
 	// Responses API: input (string or array of message/reference items)
 	if input, ok := m["input"].(string); ok {
-		m["input"] = scanner.Redact(ctx, input)
+		redacted, err := scanner.RedactText(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+		m["input"] = redacted
 	} else if input, ok := m["input"].([]interface{}); ok {
 		for _, raw := range input {
 			if item, ok := raw.(map[string]interface{}); ok {
 				if c, exists := item["content"]; exists {
-					item["content"] = redactOpenAIContent(ctx, c, scanner)
+					redacted, err := redactOpenAIContent(ctx, c, scanner)
+					if err != nil {
+						return nil, err
+					}
+					item["content"] = redacted
 				}
 			}
 		}
@@ -293,13 +307,13 @@ func redactOpenAIBody(ctx context.Context, body []byte, scanner *classifier.Scan
 	return json.Marshal(m)
 }
 
-func redactOpenAIContent(ctx context.Context, c interface{}, scanner *classifier.Scanner) interface{} {
+func redactOpenAIContent(ctx context.Context, c interface{}, scanner classifier.Facade) (interface{}, error) {
 	if c == nil {
-		return nil
+		return nil, nil
 	}
 	switch v := c.(type) {
 	case string:
-		return scanner.Redact(ctx, v)
+		return scanner.RedactText(ctx, v)
 	case []interface{}:
 		out := make([]interface{}, len(v))
 		for i, part := range v {
@@ -307,7 +321,11 @@ func redactOpenAIContent(ctx context.Context, c interface{}, scanner *classifier
 				typ, _ := m["type"].(string)
 				if typ == "text" || typ == "input_text" || typ == "output_text" {
 					if text, _ := m["text"].(string); text != "" {
-						m["text"] = scanner.Redact(ctx, text)
+						redacted, err := scanner.RedactText(ctx, text)
+						if err != nil {
+							return nil, err
+						}
+						m["text"] = redacted
 					}
 				}
 				out[i] = m
@@ -315,38 +333,46 @@ func redactOpenAIContent(ctx context.Context, c interface{}, scanner *classifier
 				out[i] = part
 			}
 		}
-		return out
+		return out, nil
 	default:
-		return c
+		return c, nil
 	}
 }
 
-func redactAnthropicBody(ctx context.Context, body []byte, scanner *classifier.Scanner) ([]byte, error) {
+func redactAnthropicBody(ctx context.Context, body []byte, scanner classifier.Facade) ([]byte, error) {
 	var req map[string]interface{}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
 	if s, ok := req["system"].(string); ok && s != "" {
-		req["system"] = scanner.Redact(ctx, s)
+		redacted, err := scanner.RedactText(ctx, s)
+		if err != nil {
+			return nil, err
+		}
+		req["system"] = redacted
 	}
 	if raw, ok := req["messages"].([]interface{}); ok {
 		for _, m := range raw {
 			if msg, ok := m.(map[string]interface{}); ok {
-				msg["content"] = redactAnthropicContent(ctx, msg["content"], scanner)
+				redacted, err := redactAnthropicContent(ctx, msg["content"], scanner)
+				if err != nil {
+					return nil, err
+				}
+				msg["content"] = redacted
 			}
 		}
 	}
 	return json.Marshal(req)
 }
 
-func redactAnthropicContent(ctx context.Context, c interface{}, scanner *classifier.Scanner) interface{} {
+func redactAnthropicContent(ctx context.Context, c interface{}, scanner classifier.Facade) (interface{}, error) {
 	if c == nil {
-		return nil
+		return nil, nil
 	}
 	// The Anthropic Messages API accepts plain-string content as well as
 	// content-block arrays; both forms must be redacted.
 	if s, ok := c.(string); ok {
-		return scanner.Redact(ctx, s)
+		return scanner.RedactText(ctx, s)
 	}
 	if arr, ok := c.([]interface{}); ok {
 		out := make([]interface{}, len(arr))
@@ -354,7 +380,11 @@ func redactAnthropicContent(ctx context.Context, c interface{}, scanner *classif
 			if m, ok := part.(map[string]interface{}); ok {
 				if typ, _ := m["type"].(string); typ == "text" {
 					if text, _ := m["text"].(string); text != "" {
-						m["text"] = scanner.Redact(ctx, text)
+						redacted, err := scanner.RedactText(ctx, text)
+						if err != nil {
+							return nil, err
+						}
+						m["text"] = redacted
 					}
 				}
 				out[i] = m
@@ -362,7 +392,7 @@ func redactAnthropicContent(ctx context.Context, c interface{}, scanner *classif
 				out[i] = part
 			}
 		}
-		return out
+		return out, nil
 	}
-	return c
+	return c, nil
 }

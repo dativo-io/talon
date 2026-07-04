@@ -1,6 +1,6 @@
 # Evidence Integrity Specification
 
-**Status:** stable · **Version:** 1.3 · **Scope:** the signed evidence record produced by Talon.
+**Status:** stable · **Version:** 1.4 · **Scope:** the signed evidence record produced by Talon.
 
 This is the normative specification for how a Talon evidence record is serialized,
 signed, and verified. It is written so that a third party can independently verify a
@@ -100,7 +100,14 @@ nested fields are:
 - `policy_decision`: `allowed` (bool), `action` (string), `reasons` (array, optional),
   `policy_version` (string).
 - `classification`: `input_tier`, `output_tier` (numbers), `pii_detected` (array,
-  optional), `pii_redacted` (bool), and optional output-scan fields.
+  optional), `pii_redacted` (bool), and optional output-scan fields. The optional
+  `scanner` object identifies the scan engine behind the verdict: `engine`
+  (detector identity, e.g. `talon-regex` or the configured external engine
+  name), `type` (`regex` | `presidio` | `http` | `llm`), and optional
+  `version`, `scan_duration_ms`, and `failure` (adapter failure kind —
+  `timeout`/`transport`/`status`/`decode`/`validation` — when a scanner
+  failure drove a fail-closed block). Entity types only; never raw PII text
+  or raw engine errors.
 - `execution`: `model_used` (string), `cost` (number), `tokens` (object),
   `duration_ms` (number), plus optional fields.
 - `audit_trail`: SHA-256 `input_hash` / `output_hash` content digests.
@@ -230,6 +237,11 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 
 ## 8. Changelog
 
+- **1.4** — added optional nested field `classification.scanner` (external
+  EntityScanner adapter support, #181): scan engine identity, type, declared
+  version, scan duration, and failure kind on fail-closed blocks. Additive and
+  backward-compatible: records that omit the field keep identical canonical
+  bytes and verify unchanged.
 - **1.3** — added optional nested field `data_flow.items[].entity_attributions`
   (compact field-path + span attribution, no raw values). This is additive and
   backward-compatible: records that omit the field keep identical canonical

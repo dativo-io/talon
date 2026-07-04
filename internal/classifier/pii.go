@@ -37,6 +37,13 @@ func piiDirection(ctx context.Context) string {
 	return "unknown"
 }
 
+// PIIDirectionFromContext returns the PII scan direction carried by ctx
+// ("request", "response", or "unknown"). Exported for engine adapters that
+// record the same detection metrics as the built-in scanner.
+func PIIDirectionFromContext(ctx context.Context) string {
+	return piiDirection(ctx)
+}
+
 var tracer = otel.Tracer("github.com/dativo-io/talon/internal/classifier")
 
 const (
@@ -418,6 +425,20 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 	}
 
 	// Legacy path: [TYPE] placeholders
+	return RedactEntities(ctx, text, merged)
+}
+
+// RedactText implements the Facade surface for the built-in scanner, whose
+// redaction cannot fail.
+func (s *Scanner) RedactText(ctx context.Context, text string) (string, error) {
+	return s.Redact(ctx, text), nil
+}
+
+// RedactEntities replaces merged, non-overlapping entity spans with [TYPE]
+// placeholders using byte-exact position replacement. Entities must already be
+// merged via MergeEntitySpans. Shared by the built-in scanner and external
+// engine adapters so redaction semantics stay byte-identical across engines.
+func RedactEntities(ctx context.Context, text string, merged []PIIEntity) string {
 	result := []byte(text)
 	for i := len(merged) - 1; i >= 0; i-- {
 		m := merged[i]
@@ -430,11 +451,16 @@ func (s *Scanner) Redact(ctx context.Context, text string) string {
 }
 
 // determineTier classifies data sensitivity based on detected entities.
+func (s *Scanner) determineTier(entities []PIIEntity) int {
+	return DetermineTier(entities)
+}
+
+// DetermineTier classifies data sensitivity based on detected entities.
 // Tier 0 = no PII, Tier 1 = low-sensitivity PII, Tier 2 = high-sensitivity PII.
 // Uses each entity's Sensitivity from the recognizer (1-3); 0 is treated as 1.
 // Any entity with sensitivity >= 2 yields tier 2 so model_routing selects
 // restrictive providers for passport, SSN, IBAN, and custom high-sensitivity recognizers.
-func (s *Scanner) determineTier(entities []PIIEntity) int {
+func DetermineTier(entities []PIIEntity) int {
 	if len(entities) == 0 {
 		return 0
 	}

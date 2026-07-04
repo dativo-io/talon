@@ -167,7 +167,7 @@ func (t *ActiveRunTracker) ActiveRunCount() int {
 type Runner struct {
 	policyDir         string
 	defaultPolicyPath string // used by RunFromTrigger when PolicyPath is not set (e.g. serve uses cfg.DefaultPolicy)
-	classifier        *classifier.Scanner
+	classifier        classifier.Facade
 	attScanner        *attachment.Scanner
 	extractor         *attachment.Extractor
 	router            *llm.Router
@@ -211,7 +211,7 @@ type cacheConfig struct {
 type RunnerConfig struct {
 	PolicyDir         string // base directory for policy path resolution
 	DefaultPolicyPath string // path to default .talon.yaml (e.g. agent.talon.yaml); used by RunFromTrigger when request has no PolicyPath
-	Classifier        *classifier.Scanner
+	Classifier        classifier.Facade
 	AttScanner        *attachment.Scanner
 	Extractor         *attachment.Extractor
 	Router            *llm.Router
@@ -531,15 +531,28 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	}
 	runClassifier := r.classifier
 	if pol.Policies.SemanticEnrichment != nil && pol.Policies.SemanticEnrichment.Enabled {
-		if s, err := policy.NewPIIScannerForPolicyWithEnrichment(ctx, pol, "", engine); err == nil {
-			runClassifier = s
+		// Semantic enrichment is a built-in regex-engine feature. When an
+		// external scanner engine is configured it stays authoritative:
+		// silently swapping in a per-run regex scanner would bypass the
+		// operator's engine choice (enrichment is skipped, documented in
+		// LIMITATIONS.md).
+		if _, isBuiltin := r.classifier.(*classifier.Scanner); isBuiltin {
+			if s, err := policy.NewPIIScannerForPolicyWithEnrichment(ctx, pol, "", engine); err == nil {
+				runClassifier = s
+			}
 		}
 	}
 	// Prompt version store is populated after input redaction (see below)
 	// so the stored text reflects what the LLM actually received (GDPR Art. 5(1)(c) data minimization).
 
-	// Step 2: Classify input
-	inputClass := runClassifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), req.Prompt)
+	// Step 2: Classify input. A scanner failure terminates the run
+	// fail-closed: a prompt Talon cannot classify must not reach the LLM.
+	inputClass, scanErr := runClassifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), req.Prompt)
+	if scanErr != nil {
+		span.RecordError(scanErr)
+		r.recordEarlyTermination(ctx, correlationID, req, "scanner_unavailable: "+scanErr.Error(), startTime)
+		return nil, fmt.Errorf("PII scanner unavailable (fail-closed): %w", scanErr)
+	}
 	inputEntityNames := entityNames(inputClass.Entities)
 	span.SetAttributes(
 		attribute.Int("classification.input_tier", inputClass.Tier),
@@ -853,9 +866,17 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 				// Re-classify memory content to detect tier upgrades from persisted
 				// classified data — prevents sending tier-1/tier-2 memory content
 				// to a lower-tier model (data sovereignty protection).
-				memClass := runClassifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), memPrompt)
-				if memClass.Tier > effectiveTier {
-					effectiveTier = memClass.Tier
+				// Fail-closed: unclassifiable memory content is assumed tier 2.
+				memClass, memScanErr := runClassifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), memPrompt)
+				memTier := 2
+				if memScanErr == nil {
+					memTier = memClass.Tier
+				} else {
+					span.RecordError(memScanErr)
+					log.Warn().Err(memScanErr).Msg("memory_reclassification_scanner_unavailable_assuming_tier2")
+				}
+				if memTier > effectiveTier {
+					effectiveTier = memTier
 					span.SetAttributes(attribute.Int("classification.tier_upgraded_by_memory", effectiveTier))
 				}
 			}
@@ -885,8 +906,29 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 
 	var inputPIIRedacted bool
 	if dc := pol.Policies.DataClassification; dc != nil && dc.InputScan && dc.ShouldRedactInput() && effectiveHasPII {
-		finalPrompt = runClassifier.Redact(
+		redactedPrompt, redactErr := runClassifier.RedactText(
 			classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), finalPrompt)
+		if redactErr != nil {
+			// The prompt is known to contain PII; forwarding it unredacted is
+			// never acceptable (fail-closed).
+			span.RecordError(redactErr)
+			r.recordEarlyTermination(ctx, correlationID, req, "scanner_unavailable: "+redactErr.Error(), startTime)
+			return nil, fmt.Errorf("PII redaction failed (fail-closed): %w", redactErr)
+		}
+		// Redaction is best-effort until verified: re-scan the redacted prompt
+		// and fail closed on residual PII or an unverifiable scan (same
+		// posture as gateway request redaction).
+		if verifyErr := runClassifier.VerifyEgress(
+			classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedPrompt); verifyErr != nil {
+			span.RecordError(verifyErr)
+			reason := "input_residual_pii_after_redaction"
+			if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
+				reason = "scanner_unavailable: input redaction could not be verified"
+			}
+			r.recordEarlyTermination(ctx, correlationID, req, reason, startTime)
+			return nil, fmt.Errorf("input redaction verification failed (fail-closed): %w", verifyErr)
+		}
+		finalPrompt = redactedPrompt
 		inputPIIRedacted = true
 		span.SetAttributes(attribute.Bool("classification.input_pii_redacted", true))
 	}
@@ -1054,6 +1096,13 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 		status = string(RunStatusDenied)
 		failureReason = string(FailurePolicyDeny)
 	}
+	var scannerInfo *evidence.ScannerInfo
+	if strings.HasPrefix(reason, "scanner_unavailable") || strings.HasPrefix(reason, "output_scanner_unavailable") {
+		scannerInfo = evidence.NewScannerInfo(r.classifier)
+		if scannerInfo != nil {
+			scannerInfo.Failure = "scanner_unavailable"
+		}
+	}
 	if _, err := r.evidence.Generate(ctx, evidence.GenerateParams{
 		CorrelationID:   correlationID,
 		TenantID:        req.TenantID,
@@ -1065,6 +1114,7 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 			Action:  "early_termination",
 			Reasons: []string{reason},
 		},
+		Classification:   evidence.Classification{Scanner: scannerInfo},
 		DurationMS:       time.Since(startTime).Milliseconds(),
 		InputPrompt:      req.Prompt,
 		ExplanationFacts: explanation.BuildLegacyFacts(false, "early_termination", []string{reason}, explanation.StagePreExecution, "", ""),
@@ -1085,7 +1135,7 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 // costEstimate is the pre-run cost estimate from Run() (same value used for policy input and plan-review gate).
 //
 //nolint:gocyclo // orchestration flow is inherently branched; splitting would obscure the pipeline
-func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64, piiScanner *classifier.Scanner, sandboxToken string, inputPIIRedacted bool) (*RunResponse, error) {
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64, piiScanner classifier.Facade, sandboxToken string, inputPIIRedacted bool) (*RunResponse, error) {
 	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
 	provider, model, degraded, originalModel, routeDecision, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx, routingEngine, req.SovereigntyMode)
 	if err != nil {
@@ -1203,109 +1253,172 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						costSaved, _ = r.pricing.Estimate(provider.Name(), model, 300, 300)
 					}
 
-					// Output PII enforcement on cache hits
-					cacheOutputClass := piiScanner.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), hit.ResponseText)
-					cacheOutputPIINames := entityNames(cacheOutputClass.Entities)
-					cacheResponseText := hit.ResponseText
-					var cacheOutputRedacted bool
-					if dc := pol.Policies.DataClassification; dc != nil && dc.OutputScan && cacheOutputClass.HasPII {
-						if dc.BlockOnPII {
-							log.Warn().
-								Str("correlation_id", correlationID).
-								Strs("pii_detected", cacheOutputPIINames).
-								Msg("block_on_output_pii: cached response contains PII, run denied")
-							if _, err := r.evidence.Generate(ctx, evidence.GenerateParams{
-								CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
-								InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
-								PolicyDecision: evidence.PolicyDecision{
-									Allowed: false, Action: "block_on_output_pii",
-									Reasons:       []string{"Cached output contains PII (policy: block_on_pii + output_scan)"},
-									PolicyVersion: pol.VersionTag,
-								},
-								Classification: evidence.Classification{InputTier: tier, PIIDetected: append(piiNames, cacheOutputPIINames...)},
-								CacheHit:       true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity,
-								Compliance: compliance, InputPrompt: req.Prompt, OutputResponse: hit.ResponseText,
-								DataFlow: buildRunDataFlow(runFlowInputs{
-									TenantID: req.TenantID, InvocationType: req.InvocationType,
-									CacheHit: true, CacheEntryID: hit.ID,
-									InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
-									OutputTier: cacheOutputClass.Tier, OutputPIITypes: cacheOutputPIINames, OutputBlocked: true,
-									Detector: piiScanner.Detector(),
-								}),
-								ExplanationFacts: []explanation.Fact{{
-									Code:            explanation.CodePolicyDeniedPIIOutput,
-									Decision:        explanation.DecisionDeny,
-									Stage:           explanation.StageOutputValidation,
-									Trigger:         strings.Join(cacheOutputPIINames, ","),
-									PolicyRef:       explanationPolicyRef(pol.VersionTag),
-									VersionIdentity: pol.VersionTag,
-								}},
-							}); err != nil {
-								log.Error().Err(err).
+					// Output PII enforcement on cache hits. A scanner failure
+					// bypasses the cache entirely (fail-closed: never serve
+					// content that cannot be verified); the LLM path below
+					// enforces its own fail-closed output scan.
+					cacheOutputClass, cacheScanErr := piiScanner.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), hit.ResponseText)
+					if cacheScanErr != nil {
+						log.Warn().Err(cacheScanErr).Str("correlation_id", correlationID).Msg("cache_hit_scanner_unavailable_bypassing_cache")
+					} else {
+						cacheOutputPIINames := entityNames(cacheOutputClass.Entities)
+						cacheResponseText := hit.ResponseText
+						var cacheOutputRedacted bool
+						if dc := pol.Policies.DataClassification; dc != nil && dc.OutputScan && cacheOutputClass.HasPII {
+							if dc.BlockOnPII {
+								log.Warn().
 									Str("correlation_id", correlationID).
-									Str("tenant_id", req.TenantID).
-									Str("agent_id", req.AgentName).
-									Msg("evidence_write_failed_cache_output_pii_block")
+									Strs("pii_detected", cacheOutputPIINames).
+									Msg("block_on_output_pii: cached response contains PII, run denied")
+								if _, err := r.evidence.Generate(ctx, evidence.GenerateParams{
+									CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+									InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
+									PolicyDecision: evidence.PolicyDecision{
+										Allowed: false, Action: "block_on_output_pii",
+										Reasons:       []string{"Cached output contains PII (policy: block_on_pii + output_scan)"},
+										PolicyVersion: pol.VersionTag,
+									},
+									Classification: evidence.Classification{InputTier: tier, PIIDetected: append(piiNames, cacheOutputPIINames...)},
+									CacheHit:       true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity,
+									Compliance: compliance, InputPrompt: req.Prompt, OutputResponse: hit.ResponseText,
+									DataFlow: buildRunDataFlow(runFlowInputs{
+										TenantID: req.TenantID, InvocationType: req.InvocationType,
+										CacheHit: true, CacheEntryID: hit.ID,
+										InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
+										OutputTier: cacheOutputClass.Tier, OutputPIITypes: cacheOutputPIINames, OutputBlocked: true,
+										Detector: piiScanner.Detector(),
+									}),
+									ExplanationFacts: []explanation.Fact{{
+										Code:            explanation.CodePolicyDeniedPIIOutput,
+										Decision:        explanation.DecisionDeny,
+										Stage:           explanation.StageOutputValidation,
+										Trigger:         strings.Join(cacheOutputPIINames, ","),
+										PolicyRef:       explanationPolicyRef(pol.VersionTag),
+										VersionIdentity: pol.VersionTag,
+									}},
+								}); err != nil {
+									log.Error().Err(err).
+										Str("correlation_id", correlationID).
+										Str("tenant_id", req.TenantID).
+										Str("agent_id", req.AgentName).
+										Msg("evidence_write_failed_cache_output_pii_block")
+								}
+								return &RunResponse{PolicyAllow: false, DenyReason: "Cached output contains PII (policy: block_on_pii + output_scan)", SessionID: req.SessionID}, nil
 							}
-							return &RunResponse{PolicyAllow: false, DenyReason: "Cached output contains PII (policy: block_on_pii + output_scan)", SessionID: req.SessionID}, nil
+							if dc.ShouldRedactOutput() {
+								redactedCache, cacheRedactErr := piiScanner.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), hit.ResponseText)
+								if cacheRedactErr == nil {
+									cacheRedactErr = piiScanner.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redactedCache)
+								}
+								if cacheRedactErr != nil {
+									// Fail-closed: deny the cached response outright,
+									// with a signed audit trail for the denial.
+									denyReason := "Cached output redaction failed: PII scanner unavailable (fail-closed)"
+									evReason := "cached output redaction failed: scanner unavailable"
+									if errors.Is(cacheRedactErr, classifier.ErrPIIDetected) {
+										denyReason = "Cached output blocked: recognized PII remains after redaction (fail-closed)"
+										evReason = "cached output residual pii after redaction"
+									}
+									scannerInfo := evidence.NewScannerInfo(piiScanner)
+									if scannerInfo != nil && !errors.Is(cacheRedactErr, classifier.ErrPIIDetected) {
+										scannerInfo.Failure = "scanner_unavailable"
+									}
+									if _, err := r.evidence.Generate(ctx, evidence.GenerateParams{
+										CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+										InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
+										PolicyDecision: evidence.PolicyDecision{
+											Allowed: false, Action: "block_on_output_pii",
+											Reasons:       []string{evReason},
+											PolicyVersion: pol.VersionTag,
+										},
+										Classification: evidence.Classification{
+											InputTier:   tier,
+											PIIDetected: append(piiNames, cacheOutputPIINames...),
+											Scanner:     scannerInfo,
+										},
+										CacheHit: true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity,
+										Compliance: compliance, InputPrompt: req.Prompt,
+										DataFlow: buildRunDataFlow(runFlowInputs{
+											TenantID: req.TenantID, InvocationType: req.InvocationType,
+											CacheHit: true, CacheEntryID: hit.ID,
+											InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
+											OutputTier: cacheOutputClass.Tier, OutputPIITypes: cacheOutputPIINames, OutputBlocked: true,
+											Detector: piiScanner.Detector(),
+										}),
+										ExplanationFacts: []explanation.Fact{{
+											Code:            explanation.CodePolicyDeniedPIIOutput,
+											Decision:        explanation.DecisionDeny,
+											Stage:           explanation.StageOutputValidation,
+											Trigger:         evReason,
+											PolicyRef:       explanationPolicyRef(pol.VersionTag),
+											VersionIdentity: pol.VersionTag,
+										}},
+									}); err != nil {
+										log.Error().Err(err).
+											Str("correlation_id", correlationID).
+											Str("tenant_id", req.TenantID).
+											Str("agent_id", req.AgentName).
+											Msg("evidence_write_failed_cache_output_redaction_block")
+									}
+									return &RunResponse{PolicyAllow: false, DenyReason: denyReason, SessionID: req.SessionID}, nil
+								}
+								cacheResponseText = redactedCache
+								cacheOutputRedacted = true
+							}
 						}
-						if dc.ShouldRedactOutput() {
-							cacheResponseText = piiScanner.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), hit.ResponseText)
-							cacheOutputRedacted = true
-						}
-					}
 
-					duration := time.Since(startTime)
-					cacheEv, err := r.evidence.Generate(ctx, evidence.GenerateParams{
-						CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
-						InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
-						PolicyDecision: policyDec,
-						Classification: evidence.Classification{
-							InputTier:   tier,
-							OutputTier:  cacheOutputClass.Tier,
-							PIIDetected: append(piiNames, cacheOutputPIINames...),
-							PIIRedacted: cacheOutputRedacted,
-						},
-						AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
-						ModelRoutingRationale: modelRationale + " (cache hit)", DurationMS: duration.Milliseconds(),
-						SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
-						ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
-						CacheHit: true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity, CostSaved: costSaved,
-						Cost: 0, Tokens: evidence.TokenUsage{}, OutputResponse: cacheResponseText,
-						DataFlow: buildRunDataFlow(runFlowInputs{
-							TenantID: req.TenantID, InvocationType: req.InvocationType,
-							CacheHit: true, CacheEntryID: hit.ID,
-							InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
-							OutputTier: cacheOutputClass.Tier, OutputPIITypes: cacheOutputPIINames, OutputRedacted: cacheOutputRedacted,
-							Detector: piiScanner.Detector(),
-						}),
-						ExplanationFacts: []explanation.Fact{{
-							Code:            explanation.CodePolicyAllowed,
-							Decision:        explanation.DecisionAllow,
-							Stage:           explanation.StagePolicyEvaluation,
-							PolicyRef:       explanationPolicyRef(pol.VersionTag),
-							VersionIdentity: pol.VersionTag,
-						}},
-					})
-					if err != nil {
-						log.Error().Err(err).
-							Str("correlation_id", correlationID).
-							Str("tenant_id", req.TenantID).
-							Str("agent_id", req.AgentName).
-							Msg("evidence_write_failed_cache_hit")
+						duration := time.Since(startTime)
+						cacheEv, err := r.evidence.Generate(ctx, evidence.GenerateParams{
+							CorrelationID: correlationID, TenantID: req.TenantID, AgentID: req.AgentName,
+							InvocationType: req.InvocationType, RequestSourceID: req.InvocationType,
+							PolicyDecision: policyDec,
+							Classification: evidence.Classification{
+								InputTier:   tier,
+								OutputTier:  cacheOutputClass.Tier,
+								PIIDetected: append(piiNames, cacheOutputPIINames...),
+								PIIRedacted: cacheOutputRedacted,
+							},
+							AttachmentScan: attScan, ModelUsed: model, OriginalModel: originalModel, Degraded: degraded,
+							ModelRoutingRationale: modelRationale + " (cache hit)", DurationMS: duration.Milliseconds(),
+							SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
+							ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
+							CacheHit: true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity, CostSaved: costSaved,
+							Cost: 0, Tokens: evidence.TokenUsage{}, OutputResponse: cacheResponseText,
+							DataFlow: buildRunDataFlow(runFlowInputs{
+								TenantID: req.TenantID, InvocationType: req.InvocationType,
+								CacheHit: true, CacheEntryID: hit.ID,
+								InputTier: tier, InputPIITypes: piiNames, InputPIIRedacted: inputPIIRedacted,
+								OutputTier: cacheOutputClass.Tier, OutputPIITypes: cacheOutputPIINames, OutputRedacted: cacheOutputRedacted,
+								Detector: piiScanner.Detector(),
+							}),
+							ExplanationFacts: []explanation.Fact{{
+								Code:            explanation.CodePolicyAllowed,
+								Decision:        explanation.DecisionAllow,
+								Stage:           explanation.StagePolicyEvaluation,
+								PolicyRef:       explanationPolicyRef(pol.VersionTag),
+								VersionIdentity: pol.VersionTag,
+							}},
+						})
+						if err != nil {
+							log.Error().Err(err).
+								Str("correlation_id", correlationID).
+								Str("tenant_id", req.TenantID).
+								Str("agent_id", req.AgentName).
+								Msg("evidence_write_failed_cache_hit")
+						}
+						resp := &RunResponse{
+							Response:    cacheResponseText,
+							Cost:        0,
+							DurationMS:  duration.Milliseconds(),
+							PolicyAllow: true,
+							ModelUsed:   model,
+							SessionID:   req.SessionID,
+						}
+						if cacheEv != nil {
+							resp.EvidenceID = cacheEv.ID
+						}
+						return resp, nil
 					}
-					resp := &RunResponse{
-						Response:    cacheResponseText,
-						Cost:        0,
-						DurationMS:  duration.Milliseconds(),
-						PolicyAllow: true,
-						ModelUsed:   model,
-						SessionID:   req.SessionID,
-					}
-					if cacheEv != nil {
-						resp.EvidenceID = cacheEv.ID
-					}
-					return resp, nil
 				}
 			}
 		}
@@ -1773,11 +1886,15 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				Str("agent_id", req.AgentName).
 				Msg("evidence_step_write_failed_single_llm")
 		}
-		// Store in semantic cache when allowed (PII-scrubbed response)
+		// Store in semantic cache when allowed (PII-scrubbed response).
+		// A scrub failure skips the store (fail-closed: never cache
+		// content that could not be verified).
 		if cacheAllowStore && r.cacheStore != nil && r.cacheScrubber != nil && r.cacheEmbedder != nil && r.cacheConfig != nil {
-			scrubbed := r.cacheScrubber.Scrub(ctx, resp.Content)
+			scrubbed, scrubErr := r.cacheScrubber.Scrub(ctx, resp.Content)
 			emb, err := r.cacheEmbedder.Embed(prompt)
-			if err == nil {
+			if scrubErr != nil {
+				log.Warn().Err(scrubErr).Str("correlation_id", correlationID).Msg("cache_store_skipped_scrubber_unavailable")
+			} else if err == nil {
 				cacheKey := cache.DeriveEntryKey(req.TenantID, model, prompt)
 				tierLabel := cache.TierLabel(tier)
 				ttl := cache.TTLForTier(tierLabel, r.cacheConfig.TTLByTier, r.cacheConfig.DefaultTTL)
@@ -1794,8 +1911,15 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		toolsCalled = r.executeToolInvocations(ctx, span, req, policyEval, pol, piiScanner)
 	}
 
-	// Step 8: Classify output and enforce output PII policy
-	outputClass := piiScanner.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), llmResp.Content)
+	// Step 8: Classify output and enforce output PII policy. A scanner
+	// failure denies the run fail-closed: output Talon cannot classify must
+	// not be surfaced.
+	outputClass, outputScanErr := piiScanner.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), llmResp.Content)
+	if outputScanErr != nil {
+		span.RecordError(outputScanErr)
+		r.recordEarlyTermination(ctx, correlationID, req, "output_scanner_unavailable: "+outputScanErr.Error(), startTime)
+		return &RunResponse{PolicyAllow: false, DenyReason: "Output blocked: PII scanner unavailable (fail-closed)", SessionID: req.SessionID}, nil
+	}
 	outputEntityNames := entityNames(outputClass.Entities)
 
 	responseContent := llmResp.Content
@@ -1858,7 +1982,28 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			return &RunResponse{PolicyAllow: false, DenyReason: "Output contains PII (policy: block_on_pii + output_scan)", SessionID: req.SessionID}, nil
 		}
 		if dc.ShouldRedactOutput() {
-			responseContent = piiScanner.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), llmResp.Content)
+			redactedOutput, redactErr := piiScanner.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), llmResp.Content)
+			if redactErr != nil {
+				// The output is known to contain PII; fail closed.
+				span.RecordError(redactErr)
+				r.recordEarlyTermination(ctx, correlationID, req, "output_scanner_unavailable: "+redactErr.Error(), startTime)
+				return &RunResponse{PolicyAllow: false, DenyReason: "Output redaction failed: PII scanner unavailable (fail-closed)", SessionID: req.SessionID}, nil
+			}
+			// Verify the redacted output before it is surfaced: residual PII
+			// or an unverifiable re-scan denies the run (fail-closed), same
+			// posture as gateway/MCP response redaction.
+			if verifyErr := piiScanner.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redactedOutput); verifyErr != nil {
+				span.RecordError(verifyErr)
+				reason := "output_residual_pii_after_redaction"
+				deny := "Output blocked: recognized PII remains after redaction (fail-closed)"
+				if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
+					reason = "output_scanner_unavailable: redaction could not be verified"
+					deny = "Output blocked: redaction could not be verified (fail-closed)"
+				}
+				r.recordEarlyTermination(ctx, correlationID, req, reason, startTime)
+				return &RunResponse{PolicyAllow: false, DenyReason: deny, SessionID: req.SessionID}, nil
+			}
+			responseContent = redactedOutput
 			outputPIIRedacted = true
 		}
 	}
@@ -1901,6 +2046,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			PIIDetected:      append(piiNames, outputEntityNames...),
 			PIIRedacted:      outputPIIRedacted,
 			InputPIIRedacted: inputPIIRedacted,
+			Scanner:          evidence.NewScannerInfo(piiScanner),
 		},
 		AttachmentScan:          attScan,
 		ModelUsed:               model,
@@ -1985,7 +2131,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 // executeToolInvocations runs each requested tool through policy and the registry, and returns the list of tool names actually executed (for evidence).
 //
 //nolint:gocyclo // policy check, PII scan, registry lookup, execute; splitting would obscure the flow
-func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, req *RunRequest, policyEval memory.PolicyEvaluator, pol *policy.Policy, piiScanner *classifier.Scanner) []string {
+func (r *Runner) executeToolInvocations(ctx context.Context, span trace.Span, req *RunRequest, policyEval memory.PolicyEvaluator, pol *policy.Policy, piiScanner classifier.Facade) []string {
 	if len(req.ToolInvocations) == 0 || r.toolRegistry == nil {
 		return nil
 	}
@@ -2118,7 +2264,7 @@ type ToolCallResult struct {
 // agentID, correlationID, and sessionID are used for idempotency key derivation when tool_governance is set (Gap T8).
 //
 //nolint:gocyclo // tool execution pipeline: policy, idempotency, PII, validation, timeout, execute, result PII
-func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.PolicyEvaluator, pol *policy.Policy, tc llm.ToolCall, toolHistory []map[string]interface{}, agentID, correlationID, sessionID string, piiScanner *classifier.Scanner) ToolCallResult {
+func (r *Runner) executeToolCallFull(ctx context.Context, policyEval memory.PolicyEvaluator, pol *policy.Policy, tc llm.ToolCall, toolHistory []map[string]interface{}, agentID, correlationID, sessionID string, piiScanner classifier.Facade) ToolCallResult {
 	result := ToolCallResult{ToolName: tc.Name}
 	if r.toolRegistry == nil {
 		result.Content = `{"error":"tool registry not available"}`
@@ -2458,7 +2604,9 @@ func postBudgetAlert(ctx context.Context, webhookURL string, payload map[string]
 
 // processAttachments scans, sandboxes, and appends attachment content to the prompt.
 // Returns the processed prompt, scan results, sandbox token (empty if no attachments), and error.
-func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *policy.Policy, piiScanner *classifier.Scanner) (processedPrompt string, scan *evidence.AttachmentScan, token string, err error) {
+//
+//nolint:gocyclo // extract/scan/injection gates per attachment are intentionally linear
+func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *policy.Policy, piiScanner classifier.Facade) (processedPrompt string, scan *evidence.AttachmentScan, token string, err error) {
 	if len(req.Attachments) == 0 {
 		return req.Prompt, nil, "", nil
 	}
@@ -2486,7 +2634,11 @@ func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *p
 			text = string(att.Content)
 		}
 		if piiScanner != nil {
-			attachClass := piiScanner.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), text)
+			attachClass, attScanErr := piiScanner.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), text)
+			if attScanErr != nil {
+				// Fail-closed: an attachment Talon cannot classify aborts the run.
+				return "", nil, "", fmt.Errorf("scanning %s: PII scanner unavailable (fail-closed): %w", att.Filename, attScanErr)
+			}
 			if attachClass.Tier > maxAttachmentTier {
 				maxAttachmentTier = attachClass.Tier
 			}
@@ -3130,11 +3282,16 @@ func sourceTypeFromInvocation(invocationType string) string {
 	}
 }
 
-func sanitizeMemoryObservationText(ctx context.Context, scanner *classifier.Scanner, text string) string {
+//nolint:gocyclo // span-merge + replacement pipeline is kept together for auditability
+func sanitizeMemoryObservationText(ctx context.Context, scanner classifier.Facade, text string) string {
 	if scanner == nil || text == "" {
 		return text
 	}
-	class := scanner.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), text)
+	class, err := scanner.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), text)
+	if err != nil {
+		// Fail-closed: never persist an observation that could not be scanned.
+		return "[content withheld: PII scanner unavailable]"
+	}
 	if !class.HasPII {
 		return text
 	}

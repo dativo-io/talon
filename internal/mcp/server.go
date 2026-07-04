@@ -4,6 +4,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -61,13 +62,13 @@ type Handler struct {
 	registry      *tools.ToolRegistry
 	policyEngine  *policy.Engine
 	evidenceStore *evidence.Store
-	classifier    *classifier.Scanner
+	classifier    classifier.Facade
 }
 
 // NewHandler creates an MCP handler with the given registry, policy engine,
 // evidence store, and PII classifier (used for tool argument/result
 // classification and data-flow evidence).
-func NewHandler(registry *tools.ToolRegistry, policyEngine *policy.Engine, evidenceStore *evidence.Store, cls *classifier.Scanner) *Handler {
+func NewHandler(registry *tools.ToolRegistry, policyEngine *policy.Engine, evidenceStore *evidence.Store, cls classifier.Facade) *Handler {
 	return &Handler{
 		registry:      registry,
 		policyEngine:  policyEngine,
@@ -181,17 +182,33 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 
 	// Classify tool arguments: every governed tool call records what data
 	// reached the tool, classified or not (same posture as gateway/proxy).
+	// A scanner failure blocks the call fail-closed.
 	if h.classifier != nil && len(params.Arguments) > 0 {
 		argStr := string(params.Arguments)
-		cls := h.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
+		cls, scanErr := h.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
+		if scanErr != nil {
+			flow.argBlocked = true
+			return h.scannerBlockedResponse(ctx, span, req.ID, tenantID, agentID, params.Name, decision.PolicyVersion,
+				scanErr, "scanner_unavailable", "scanner unavailable", "Tool arguments blocked: PII scanner unavailable (fail-closed)", explanation.StagePolicyEvaluation, 0, flow)
+		}
 		flow.argTier = cls.Tier
 		if cls.HasPII {
 			flow.argEntities = classifier.MergeEntitySpans(argStr, cls.Entities)
 			flow.argEntities = applyServerFlowFieldPath(flow.argEntities, "arguments")
-			redactedArgs := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
+			redactedArgs, redactErr := h.classifier.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
+			if redactErr != nil {
+				flow.argBlocked = true
+				return h.scannerBlockedResponse(ctx, span, req.ID, tenantID, agentID, params.Name, decision.PolicyVersion,
+					redactErr, "scanner_unavailable", "redaction failed: scanner unavailable", "Tool arguments blocked: PII redaction failed (fail-closed)", explanation.StagePolicyEvaluation, 0, flow)
+			}
 			flow.argRedacted = redactedArgs != argStr
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedArgs); verifyErr != nil {
 				flow.argBlocked = true
+				if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
+					return h.scannerBlockedResponse(ctx, span, req.ID, tenantID, agentID, params.Name, decision.PolicyVersion,
+						verifyErr, "request_redaction_verification_scanner_unavailable", "request redaction verification failed: scanner unavailable",
+						"Tool arguments blocked: redaction could not be verified (fail-closed)", explanation.StagePolicyEvaluation, 0, flow)
+				}
 				correlationID := "mcp_" + uuid.New().String()[:8]
 				blockEv := h.newServerEvidence(tenantID, agentID, correlationID, params.Name, evidence.PolicyDecision{
 					Allowed:       false,
@@ -293,18 +310,34 @@ func (h *Handler) handleToolsCall(ctx context.Context, req *jsonrpcRequest) *jso
 	duration := time.Since(start).Milliseconds()
 
 	// Classify the tool result before it is surfaced to the client.
+	// A scanner failure blocks the result fail-closed.
 	if h.classifier != nil && execErr == nil && result != nil {
 		if resultJSON, marshalErr := json.Marshal(result); marshalErr == nil {
 			resultStr := string(resultJSON)
-			cls := h.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
+			cls, scanErr := h.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
+			if scanErr != nil {
+				flow.resultBlocked = true
+				return h.scannerBlockedResponse(ctx, span, req.ID, tenantID, agentID, params.Name, decision.PolicyVersion,
+					scanErr, "output_scanner_unavailable", "output scanner unavailable", "Tool result blocked: PII scanner unavailable (fail-closed)", explanation.StageOutputValidation, duration, flow)
+			}
 			flow.resultTier = cls.Tier
 			if cls.HasPII {
 				flow.resultEntities = classifier.MergeEntitySpans(resultStr, cls.Entities)
 				flow.resultEntities = applyServerFlowFieldPath(flow.resultEntities, "result")
-				redacted := h.classifier.Redact(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
+				redacted, redactErr := h.classifier.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), resultStr)
+				if redactErr != nil {
+					flow.resultBlocked = true
+					return h.scannerBlockedResponse(ctx, span, req.ID, tenantID, agentID, params.Name, decision.PolicyVersion,
+						redactErr, "output_scanner_unavailable", "output redaction failed: scanner unavailable", "Tool result blocked: PII redaction failed (fail-closed)", explanation.StageOutputValidation, duration, flow)
+				}
 				flow.resultRedacted = redacted != resultStr
 				if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redacted); verifyErr != nil {
 					flow.resultBlocked = true
+					if !errors.Is(verifyErr, classifier.ErrPIIDetected) {
+						return h.scannerBlockedResponse(ctx, span, req.ID, tenantID, agentID, params.Name, decision.PolicyVersion,
+							verifyErr, "output_redaction_verification_scanner_unavailable", "output redaction verification failed: scanner unavailable",
+							"Tool result blocked: redaction could not be verified (fail-closed)", explanation.StageOutputValidation, duration, flow)
+					}
 					correlationID := "mcp_" + uuid.New().String()[:8]
 					blockEv := h.newServerEvidence(tenantID, agentID, correlationID, params.Name, evidence.PolicyDecision{
 						Allowed:       false,
@@ -444,6 +477,38 @@ func (h *Handler) buildServerDataFlow(
 	return &evidence.DataFlow{Detector: detector, Items: items}
 }
 
+// scannerBlockedResponse records fail-closed deny evidence for a scan-engine
+// failure (typed failure kind included) and returns the JSON-RPC error to
+// surface to the caller.
+func (h *Handler) scannerBlockedResponse(ctx context.Context, span trace.Span, reqID interface{}, tenantID, agentID, toolName, policyVersion string, scanErr error, trigger, evReason, clientMsg, stage string, durationMS int64, flow *serverFlowState) *jsonrpcResponse {
+	correlationID := "mcp_" + uuid.New().String()[:8]
+	blockEv := h.newServerEvidence(tenantID, agentID, correlationID, toolName, evidence.PolicyDecision{
+		Allowed:       false,
+		Action:        "deny",
+		Reasons:       []string{trigger},
+		PolicyVersion: policyVersion,
+	}, evReason, durationMS, flow)
+	if blockEv.Classification.Scanner != nil {
+		blockEv.Classification.Scanner.Failure = scannerFailureKind(scanErr)
+	}
+	blockEv.Explanations = explanation.BuildFromFacts([]explanation.Fact{{
+		Code:            explanation.CodeExecutionFailed,
+		Decision:        explanation.DecisionDeny,
+		Stage:           stage,
+		Trigger:         trigger,
+		PolicyRef:       explanation.PolicyRef(policyVersion),
+		VersionIdentity: policyVersion,
+	}})
+	if storeErr := h.evidenceStore.Store(ctx, blockEv); storeErr != nil {
+		span.RecordError(storeErr)
+	}
+	return &jsonrpcResponse{
+		JSONRPC: jsonrpcVersion,
+		ID:      reqID,
+		Error:   &rpcError{Code: codeServerError, Message: clientMsg},
+	}
+}
+
 func (h *Handler) newServerEvidence(
 	tenantID, agentID, correlationID, toolName string,
 	decision evidence.PolicyDecision,
@@ -474,6 +539,16 @@ func (h *Handler) newServerEvidence(
 			OutputPIIDetected: len(flow.resultEntities) > 0,
 			OutputPIITypes:    entityTypeSet(flow.resultEntities),
 		},
+	}
+	// Every record identifies the scan engine behind its classification;
+	// scanner-driven denials also carry the failure kind.
+	if scannerInfo := evidence.NewScannerInfo(h.classifier); scannerInfo != nil {
+		for _, r := range decision.Reasons {
+			if strings.Contains(r, "scanner_unavailable") {
+				scannerInfo.Failure = "scanner_unavailable"
+			}
+		}
+		ev.Classification.Scanner = scannerInfo
 	}
 	ev.DataFlow = h.buildServerDataFlow(tenantID, correlationID, toolName, flow)
 	return ev

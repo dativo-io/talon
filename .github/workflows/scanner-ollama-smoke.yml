@@ -1,0 +1,45 @@
+# Nightly/manual smoke test of the llm scanner adapter against a real Ollama
+# instance with a small model. Non-required check: local model inference is
+# slow and occasionally flaky; unit/integration coverage runs on mocks in ci.yml.
+name: scanner-ollama-smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 3 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  ollama-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Wait for Ollama and pull the model
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:11434/api/tags >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://localhost:11434/api/pull \
+            -d '{"name":"llama3.2:1b","stream":false}' --max-time 900
+
+      - name: Run smoke test
+        env:
+          TALON_SCANNER_SMOKE_URL: http://localhost:11434/v1
+          TALON_SCANNER_SMOKE_MODEL: llama3.2:1b
+        run: |
+          go test -tags ollama_smoke ./internal/classifier/adapter/llm \
+            -run TestOllamaSmoke -count=1 -v -timeout 20m

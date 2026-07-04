@@ -45,7 +45,9 @@ This document serves as an explicit boundaries guide so that operators and secur
 **Talon supports a Presidio-compatible result shape at the ingestion boundary.**
 - Talon normalizes external scanner results to canonical internal entities and enforces byte-offset semantics for redaction and policy checks.
 - This is a contract compatibility seam, **not** a claim of full Presidio behavioral parity across recognizer internals.
-- Production external scanner runtime adapters (HTTP/gRPC, local model runtimes, sidecar lifecycle) are tracked separately and are not implied by boundary-shape support alone.
+- HTTP and Unix-domain-socket adapters for Presidio-compatible engines are supported via the `scanner:` config block (see [external scanners](docs/reference/external-scanners.md)); the adapter protocol carries no authentication yet, so engines must be network-isolated. gRPC transports and Talon-managed sidecar lifecycles are not supported.
+- Semantic enrichment is a built-in-regex-engine feature: when an external scanner engine is configured, enrichment is skipped and legacy `[TYPE]` placeholders are used.
+- External engines report no Talon sensitivity levels. Known built-in labels (e.g. `IBAN_CODE`, `PASSPORT`, `CREDIT_CARD`) automatically get their registry sensitivity, so stock Presidio detections tier correctly; **unknown custom entity types** default to tier 1 unless the engine supplies `expected_sensitivity` per result (an explicit wire value always wins).
 - Runtime remediation is intentionally minimal in MVP scope: Talon supports approval-flow re-redact/re-scan remediation for tool-approval decisions, but does not implement the full remediation workflow stack yet (tracked in follow-up epics).
 - Residual PII enforcement remains fail-closed: remediation failures do not bypass policy blocks.
 

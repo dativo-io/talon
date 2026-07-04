@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -76,7 +77,7 @@ func hasCallerTag(caller *CallerConfig, tag string) bool {
 // Gateway is the LLM API gateway handler.
 type Gateway struct {
 	config        *GatewayConfig
-	classifier    *classifier.Scanner
+	classifier    classifier.Facade
 	evidenceStore *evidence.Store
 	secretsStore  *secrets.SecretStore
 	policy        GatewayPolicyEvaluator
@@ -152,7 +153,7 @@ func (g *Gateway) SetCache(store *cache.Store, embedder *cache.BM25, scrubber *c
 // NewGateway creates a new Gateway.
 func NewGateway(
 	config *GatewayConfig,
-	classifier *classifier.Scanner,
+	classifier classifier.Facade,
 	evidenceStore *evidence.Store,
 	secretsStore *secrets.SecretStore,
 	policy GatewayPolicyEvaluator,
@@ -337,8 +338,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, wire, http.StatusBadRequest,
 				"Request blocked: attachment violates policy")
+			// The request is blocked either way; the scan only enriches
+			// evidence, so a scanner failure degrades to nil classification.
+			attCls, _ := g.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text)
 			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text,
-				g.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text), nil, 0, 0, "", false,
+				attCls, nil, 0, 0, "", false,
 				[]string{"attachment policy block"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
@@ -352,8 +356,35 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body = attSummary.ModifiedBody
 	}
 
-	// Step 4: Scan PII
-	classification := g.classifier.Scan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text)
+	// Step 4: Scan PII. A scanner failure is fail-closed in enforce mode:
+	// a request Talon cannot classify must not reach the provider.
+	scanStart := time.Now()
+	classification, scanErr := g.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text)
+	ctx = withScanDuration(ctx, time.Since(scanStart))
+	if scanErr != nil {
+		if isShadow {
+			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+				Type: "scanner_unavailable", Detail: "PII scanner failed; request would be blocked", Action: "block",
+			})
+			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Err(scanErr).Msg("shadow_scanner_unavailable")
+			classification = &classifier.Classification{}
+		} else {
+			durationMS := time.Since(start).Milliseconds()
+			RecordGatewayError(ctx, "scanner_unavailable")
+			WriteProviderError(w, wire, http.StatusBadGateway, "Request blocked: PII scanner unavailable (fail-closed)")
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, nil, nil, 0, durationMS, "", false, []string{"scanner unavailable"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0, func(p *RecordGatewayEvidenceParams) {
+				if p.Scanner != nil {
+					p.Scanner.Failure = scannerFailureKind(scanErr)
+				}
+			})
+			if err != nil {
+				g.handleEvidenceWriteFailure(ctx, err)
+				return
+			}
+			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
+			return
+		}
+	}
 
 	// Step 5: Classify (tier from PII)
 	tier := classification.Tier
@@ -550,13 +581,29 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	inputPIIRedacted := false
-	// Step 7: Redact (if policy says redact and PII found, skip in shadow mode)
+	// Step 7: Redact (if policy says redact and PII found, skip in shadow mode).
+	// Redaction failure is fail-closed: the request is known to contain PII,
+	// so forwarding it unredacted is never acceptable.
 	if !isShadow && piiAction == "redact" && classification.HasPII {
 		redacted, redactErr := RedactRequestBody(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), wire, forwardBody, g.classifier)
-		if redactErr == nil {
-			forwardBody = redacted
-			inputPIIRedacted = true
+		if redactErr != nil {
+			durationMS := time.Since(start).Milliseconds()
+			RecordGatewayError(ctx, "scanner_unavailable")
+			WriteProviderError(w, wire, http.StatusBadGateway, "Request blocked: PII redaction failed (fail-closed)")
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request redaction failed"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+				if p.Scanner != nil {
+					p.Scanner.Failure = scannerFailureKind(redactErr)
+				}
+			})
+			if err != nil {
+				g.handleEvidenceWriteFailure(ctx, err)
+				return
+			}
+			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
+			return
 		}
+		forwardBody = redacted
+		inputPIIRedacted = true
 	}
 	// Fail closed if redacted request text still contains recognized PII.
 	if !isShadow && inputPIIRedacted && g.classifier != nil {
@@ -574,13 +621,30 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if verifyErr := g.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedExtracted.Text); verifyErr != nil {
 			durationMS := time.Since(start).Milliseconds()
+			// Residual PII (policy outcome) and an unverifiable scan (engine
+			// failure) are different facts: status, message, evidence reason,
+			// and scanner failure kind must each say which one happened.
+			residual := errors.Is(verifyErr, classifier.ErrPIIDetected)
 			types := strings.Join(classifier.ResidualTypes(verifyErr), ", ")
 			msg := "Request blocked: recognized PII remains after redaction"
+			status := http.StatusBadRequest
+			reason := "request residual pii after redaction"
+			if !residual {
+				msg = "Request blocked: redaction could not be verified (fail-closed)"
+				status = http.StatusBadGateway
+				reason = "request redaction verification failed: scanner unavailable"
+				RecordGatewayError(ctx, "scanner_unavailable")
+				log.Warn().Err(verifyErr).Str("caller", caller.Name).Msg("request_redaction_verification_scanner_unavailable")
+			}
 			if types != "" {
 				msg += " (types: " + types + ")"
 			}
-			WriteProviderError(w, wire, http.StatusBadRequest, msg)
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request residual pii after redaction"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
+			WriteProviderError(w, wire, status, msg)
+			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{reason}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+				if !residual && p.Scanner != nil {
+					p.Scanner.Failure = scannerFailureKind(verifyErr)
+				}
+			})
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
@@ -729,8 +793,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx = context.WithValue(ctx, gatewayUpstreamAuthMode, upstreamAuthMode)
 	}
 
-	// Resolve response PII action
+	// Resolve response PII action. Shadow mode never blocks or mutates:
+	// the scan still runs for evidence, but block/redact degrade to warn and
+	// the would-be enforcement is recorded as a shadow violation below.
 	responsePIIAction := resolveResponsePIIAction(&g.config.ServerDefaults, caller.PolicyOverrides)
+	enforcedResponseAction := responsePIIAction
+	if isShadow && responsePIIAction != "allow" && responsePIIAction != "" {
+		responsePIIAction = "warn"
+	}
 	isStreaming := isStreamingRequest(forwardBody)
 
 	var tokenUsage TokenUsage
@@ -847,8 +917,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if forwardErr == nil {
 			scannedBody, scanResult := scanResponseForPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), capture.body.Bytes(), responsePIIAction, g.classifier)
 			responsePII = scanResult
-			if capture.statusCode != 0 {
-				w.WriteHeader(capture.statusCode)
+			status := capture.statusCode
+			if scanResult != nil && scanResult.Blocked {
+				// A blocked response must not masquerade as the upstream 200:
+				// clients and monitors need to see the denial.
+				w.Header().Set("Content-Type", "application/json")
+				if scanResult.ScannerFailure != "" {
+					status = http.StatusBadGateway
+				} else {
+					status = http.StatusUnavailableForLegalReasons
+				}
+			}
+			if status != 0 {
+				w.WriteHeader(status)
 			}
 			//nolint:gosec // G705: LLM API response body (JSON), not HTML; PII-scanned/redacted before write
 			_, _ = w.Write(scannedBody)
@@ -902,6 +983,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failoverOut, forwardErr = g.forwardWithFailover(ctx, w, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
 	}
 
+	// Shadow mode: record what response enforcement would have done.
+	if isShadow && responsePII != nil && responsePII.PIIDetected &&
+		(enforcedResponseAction == "block" || enforcedResponseAction == "redact") {
+		shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+			Type:   "response_pii",
+			Detail: fmt.Sprintf("response PII detected: %v", responsePII.PIITypes),
+			Action: enforcedResponseAction,
+		})
+		log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").
+			Strs("pii", responsePII.PIITypes).Msg("shadow_response_pii")
+	}
+
 	durationMS := time.Since(start).Milliseconds()
 
 	// Provider/model actually used (may differ from the route when failover
@@ -942,12 +1035,25 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Step 10: Evidence
+	// Step 10: Evidence. A response blocked by the output PII scan (or by a
+	// scanner failure) is a denial: evidence must say so, never allowed=true
+	// for a request whose caller received a blocked body.
 	var forwardErrStr string
 	if forwardErr != nil {
 		forwardErrStr = forwardErr.Error()
 	}
-	persisted, recordErr := g.recordEvidence(ctx, correlationID, caller, selectedProvider, selectedModel, start, extracted.Text, classification, &tokenUsage, cost, durationMS, forwardErrStr, true, nil, inputPIIRedacted, responsePII, attSummary, toolResult, shadowViolations, false, "", 0, 0, cacheStored, ttftMS, tpotMS, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+	responseBlocked := responsePII != nil && responsePII.Blocked
+	evAllowed := !responseBlocked
+	var evReasons []string
+	if responseBlocked {
+		reason := responsePII.BlockReason
+		if reason == "" {
+			reason = "output_pii_blocked"
+		}
+		evReasons = []string{reason}
+		RecordGatewayError(ctx, reason)
+	}
+	persisted, recordErr := g.recordEvidence(ctx, correlationID, caller, selectedProvider, selectedModel, start, extracted.Text, classification, &tokenUsage, cost, durationMS, forwardErrStr, evAllowed, evReasons, inputPIIRedacted, responsePII, attSummary, toolResult, shadowViolations, false, "", 0, 0, cacheStored, ttftMS, tpotMS, estimatedCost, func(p *RecordGatewayEvidenceParams) {
 		p.Failover = failoverEvCtx
 		if failoverOut != nil && failoverOut.FailClosed {
 			p.Status = "failed"
@@ -962,7 +1068,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Emit OTel + dashboard metrics
 	g.emitMetrics(ctx, caller, selectedProvider, selectedModel, classification, toolResult, shadowViolations,
-		&tokenUsage, cost, durationMS, forwardErr != nil, false, piiAction, false, 0, ttftMS, tpotMS, persisted)
+		&tokenUsage, cost, durationMS, forwardErr != nil, responseBlocked, piiAction, false, 0, ttftMS, tpotMS, persisted)
 	if forwardErr != nil {
 		log.Warn().Err(forwardErr).Msg("gateway_forward_error")
 	}
@@ -987,9 +1093,17 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	}
 	var outputPIIDetected bool
 	var outputPIITypes []string
+	// Output tier defaults to the input tier (pre-response-scan behavior);
+	// when the response was scanned and PII found, the response content's own
+	// tier is the truth — a clean tier-0 prompt whose response leaked an IBAN
+	// must record output_tier 2, not 0.
+	outputTier := classification.Tier
 	if responsePII != nil {
 		outputPIIDetected = responsePII.PIIDetected
 		outputPIITypes = responsePII.PIITypes
+		if responsePII.PIIDetected {
+			outputTier = responsePII.Tier
+		}
 	}
 	execErr := resolveExecutionError(executionError, reasons)
 
@@ -1059,6 +1173,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		ObservationModeOverride: len(shadowViolations) > 0,
 		ShadowViolations:        shadowViolations,
 		InputTier:               classification.Tier,
+		OutputTier:              outputTier,
 		PIIDetected:             piiDetected,
 		PIIRedacted:             inputPIIRedacted,
 		OutputPIIDetected:       outputPIIDetected,
@@ -1094,6 +1209,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	params.GatewayAnnotations = gatewayAnnotationsForEvidence(g, caller)
 	params.TTFTMS = ttftMS
 	params.TPOTMS = tpotMS
+	params.Scanner = g.buildScannerEvidence(ctx, reasons, responsePII)
 	for _, opt := range opts {
 		opt(&params)
 	}
@@ -1102,6 +1218,40 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		return nil, err
 	}
 	return ev, nil
+}
+
+// buildScannerEvidence describes the scan engine for evidence, including the
+// scan duration (when measured on this request) and whether a scanner failure
+// drove the outcome.
+func (g *Gateway) buildScannerEvidence(ctx context.Context, reasons []string, responsePII *ResponsePIIScanResult) *evidence.ScannerInfo {
+	info := evidence.NewScannerInfo(g.classifier)
+	if info == nil {
+		return nil
+	}
+	info.ScanDurationMS = scanDurationFromContext(ctx)
+	for _, r := range reasons {
+		if r == "scanner unavailable" || r == "request redaction failed" {
+			info.Failure = "scanner_unavailable"
+		}
+	}
+	if responsePII != nil && responsePII.ScannerFailure != "" {
+		info.Failure = responsePII.ScannerFailure
+	}
+	return info
+}
+
+type scanDurationKey struct{}
+
+// withScanDuration stores the request PII scan duration for evidence.
+func withScanDuration(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, scanDurationKey{}, d.Milliseconds())
+}
+
+func scanDurationFromContext(ctx context.Context) int64 {
+	if v, ok := ctx.Value(scanDurationKey{}).(int64); ok {
+		return v
+	}
+	return 0
 }
 
 func (g *Gateway) handleEvidenceWriteFailure(ctx context.Context, err error) {
