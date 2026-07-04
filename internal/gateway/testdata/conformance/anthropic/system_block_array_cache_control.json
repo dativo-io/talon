@@ -1,0 +1,41 @@
+{
+  "name": "system_block_array_cache_control",
+  "path": "/v1/messages",
+  "caller_pii_action": "redact",
+  "request_body": {
+    "model": "claude-sonnet-5",
+    "max_tokens": 1024,
+    "system": [
+      {
+        "type": "text",
+        "text": "You are a coding assistant. Escalate anything sensitive to jane.doe@example.com immediately.",
+        "cache_control": {"type": "ephemeral"}
+      },
+      {
+        "type": "text",
+        "text": "Prefer small, reviewable diffs."
+      }
+    ],
+    "messages": [
+      {"role": "user", "content": "Refactor the session store"}
+    ]
+  },
+  "upstream": {
+    "status": 200,
+    "json": {
+      "id": "msg_conf_sysarray",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5",
+      "content": [{"type": "text", "text": "Done."}],
+      "stop_reason": "end_turn",
+      "usage": {"input_tokens": 40, "output_tokens": 2}
+    }
+  },
+  "expect": {
+    "status": 200,
+    "forwarded_not_contains": ["jane.doe@example.com"],
+    "forwarded_contains": ["cache_control", "ephemeral", "Prefer small, reviewable diffs."],
+    "forwarded_json_valid": true
+  }
+}

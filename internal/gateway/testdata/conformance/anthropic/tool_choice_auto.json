@@ -1,0 +1,39 @@
+{
+  "name": "tool_choice_auto",
+  "path": "/v1/messages",
+  "caller_pii_action": "warn",
+  "request_body": {
+    "model": "claude-sonnet-5",
+    "max_tokens": 1024,
+    "tools": [
+      {
+        "name": "run_tests",
+        "description": "Run the test suite",
+        "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}}
+      }
+    ],
+    "tool_choice": {"type": "auto"},
+    "messages": [
+      {"role": "user", "content": "Run the gateway tests"}
+    ]
+  },
+  "upstream": {
+    "status": 200,
+    "json": {
+      "id": "msg_conf_toolchoice",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5",
+      "content": [{"type": "tool_use", "id": "toolu_conf_02", "name": "run_tests", "input": {"pattern": "./internal/gateway/"}}],
+      "stop_reason": "tool_use",
+      "usage": {"input_tokens": 30, "output_tokens": 15}
+    }
+  },
+  "expect": {
+    "status": 200,
+    "forwarded_contains": ["tool_choice", "run_tests"],
+    "forwarded_json_valid": true,
+    "response_equals_upstream": true,
+    "evidence": {"input_tokens": 30, "output_tokens": 15}
+  }
+}

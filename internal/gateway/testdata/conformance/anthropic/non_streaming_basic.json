@@ -1,0 +1,31 @@
+{
+  "name": "non_streaming_basic",
+  "path": "/v1/messages",
+  "caller_pii_action": "warn",
+  "request_body": {
+    "model": "claude-sonnet-5",
+    "max_tokens": 1024,
+    "messages": [
+      {"role": "user", "content": "Summarize the build failure in ci.log"}
+    ]
+  },
+  "upstream": {
+    "status": 200,
+    "json": {
+      "id": "msg_conf_basic",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5",
+      "content": [{"type": "text", "text": "The build failed because of a missing dependency."}],
+      "stop_reason": "end_turn",
+      "usage": {"input_tokens": 12, "output_tokens": 8}
+    }
+  },
+  "expect": {
+    "status": 200,
+    "forwarded_contains": ["claude-sonnet-5", "ci.log"],
+    "forwarded_json_valid": true,
+    "response_equals_upstream": true,
+    "evidence": {"input_tokens": 12, "output_tokens": 8, "cost_zero": false}
+  }
+}
