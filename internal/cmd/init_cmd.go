@@ -65,7 +65,7 @@ func init() {
 	initCmd.Flags().StringVar(&initName, "name", "my-agent", "agent name")
 	initCmd.Flags().StringVar(&initOwner, "owner", "", "agent owner email")
 	initCmd.Flags().BoolVar(&initMinimal, "minimal", false, "generate minimal agent.talon.yaml (with --scaffold)")
-	initCmd.Flags().StringVar(&initPack, "pack", "", "starter pack: openclaw, fintech-eu, ecommerce-eu, saas-eu, telecom-eu, langchain, generic")
+	initCmd.Flags().StringVar(&initPack, "pack", "", "starter pack: openclaw, copaw, langchain, crewai, coding-agents, fintech-eu, ecommerce-eu, saas-eu, telecom-eu, generic")
 	initCmd.Flags().BoolVar(&initScaffold, "scaffold", false, "skip wizard; generate default files from templates")
 	initCmd.Flags().BoolVar(&initDryRun, "dry-run", false, "print configs to stdout, write no files")
 	initCmd.Flags().BoolVar(&initForce, "force", false, "overwrite existing agent.talon.yaml and talon.config.yaml")

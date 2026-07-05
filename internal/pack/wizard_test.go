@@ -125,3 +125,14 @@ func TestFindByID(t *testing.T) {
 		assert.Equal(t, "Custom", p.DisplayName)
 	})
 }
+
+func TestFindByID_CodingAgentsHasFilesAndPostMessage(t *testing.T) {
+	p, ok := FindByID("coding-agents")
+	require.True(t, ok)
+	assert.Equal(t, "Coding Agents", p.DisplayName)
+	assert.NotEmpty(t, p.Files, "coding-agents pack should have template files")
+	assert.NotEmpty(t, p.PostMessage, "coding-agents pack should have post-init message")
+	assert.Len(t, p.Files, 2, "coding-agents should have agent and config templates")
+	assert.Contains(t, p.PostMessage, "ANTHROPIC_BASE_URL")
+	assert.Contains(t, p.PostMessage, "wire_api")
+}

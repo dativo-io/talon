@@ -1,0 +1,43 @@
+# Example Talon config for CoPaw gateway. Use with: talon serve --gateway
+# Copy to project root or use --gateway-config path.
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "shadow"
+
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+      allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+
+  callers:
+    - name: "copaw-main"
+      api_key: "talon-gw-copaw-001"
+      tenant_id: "default"
+      allowed_providers: ["openai"]
+      policy_overrides:
+        max_daily_cost: 25.00
+        max_monthly_cost: 500.00
+        pii_action: "redact"
+        allowed_models: ["gpt-4o", "gpt-4o-mini"]
+
+  default_policy:
+    default_pii_action: "warn"
+    response_pii_action: "warn"
+    max_daily_cost: 100.00
+    max_monthly_cost: 2000.00
+    require_caller_id: true
+    log_prompts: true
+    log_responses: false
+
+  rate_limits:
+    global_requests_per_min: 300
+    per_caller_requests_per_min: 60
+
+  timeouts:
+    connect_timeout: 10s
+    request_timeout: 120s
+    stream_idle_timeout: 60s
