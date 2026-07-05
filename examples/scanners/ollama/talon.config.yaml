@@ -1,0 +1,46 @@
+# Talon + Ollama scanner example config.
+#
+# scanner.type llm makes a local model the active PII engine: Talon prompts
+# it for NER (fixed versioned prompt), relocates the reported values to byte
+# offsets itself, and fails closed when the model is unreachable or replies
+# with garbage. Timeout is generous — small models on CPU take seconds.
+
+scanner:
+  type: llm
+  endpoint: "http://ollama:11434/v1"
+  timeout: "60s"
+  llm:
+    model: "llama3.2:1b"
+    confidence: 0.8
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "enforce"
+
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "http://mock-openai:9090"
+      allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+
+  callers:
+    - name: "demo-user"
+      tenant_key: "talon-demo-key"
+      tenant_id: "demo"
+      team: "demo"
+      policy_overrides:
+        pii_action: "redact"
+
+  default_policy:
+    default_pii_action: "redact"
+    require_caller_id: true
+
+  response_scanning:
+    enabled: true
+
+  timeouts:
+    connect_timeout: 10s
+    request_timeout: 180s   # request scan + upstream + response scan + verify, all through the model
+    stream_idle_timeout: 60s

@@ -44,6 +44,38 @@ policies:
     input_scan: true
     output_scan: true
     redact_pii: false
+    # Credential recognizers (#201): the pack's advertised "credential
+    # recognizers" — high-precision prefixed formats and PEM blocks only.
+    # Talon is not a secret scanner; keep gitleaks/trufflehog in pre-commit.
+    custom_recognizers:
+      - name: "PEM private key block"
+        supported_entity: "PRIVATE_KEY"
+        sensitivity: 3
+        patterns:
+          - name: "pem_private_key"
+            regex: '-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----'
+            score: 0.95
+      - name: "AWS access key id"
+        supported_entity: "AWS_ACCESS_KEY"
+        sensitivity: 3
+        patterns:
+          - name: "aws_akia"
+            regex: '\bAKIA[0-9A-Z]{16}\b'
+            score: 0.9
+      - name: "GitHub token"
+        supported_entity: "GITHUB_TOKEN"
+        sensitivity: 3
+        patterns:
+          - name: "github_pat"
+            regex: '\b(?:ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,})\b'
+            score: 0.9
+      - name: "LLM provider API key"
+        supported_entity: "LLM_API_KEY"
+        sensitivity: 3
+        patterns:
+          - name: "anthropic_or_openai_key"
+            regex: '\bsk-(?:ant-[A-Za-z0-9_-]{24,}|proj-[A-Za-z0-9_-]{24,})\b'
+            score: 0.9
 
   model_routing:
     tier_0:

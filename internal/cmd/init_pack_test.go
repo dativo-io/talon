@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -352,4 +353,106 @@ func TestInitScaffold_NumericNameIsValidYAML(t *testing.T) {
 	}
 	require.NoError(t, yaml.Unmarshal(raw, &doc))
 	assert.Equal(t, "192", doc.Agent.Name, "name must be the YAML string \"192\", not the integer 192")
+}
+
+// Coding-agents pack (#201, epic #192 PR-I).
+
+func TestInitPack_CodingAgents_GeneratesFiles(t *testing.T) {
+	resetInitFlags()
+	t.Cleanup(resetInitFlags)
+	dir := t.TempDir()
+	prevWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(prevWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	rootCmd.SetArgs([]string{"init", "--pack", "coding-agents", "--skip-verify"})
+	require.NoError(t, rootCmd.Execute())
+
+	agentContent, err := os.ReadFile(filepath.Join(dir, "agent.talon.yaml"))
+	require.NoError(t, err)
+	configContent, err := os.ReadFile(filepath.Join(dir, "talon.config.yaml"))
+	require.NoError(t, err)
+
+	// Contract-critical defaults (#201): honest streaming default + soft
+	// session cap on both coding callers.
+	cfg := string(configContent)
+	assert.Contains(t, cfg, "talon-gw-claude-code-001")
+	assert.Contains(t, cfg, "talon-gw-codex-001")
+	assert.Equal(t, 2, strings.Count(cfg, `response_pii_action: "allow"`)+strings.Count(cfg, "response_pii_action: allow")-1,
+		"both coding callers must default response_pii_action to allow (plus the default_policy line)")
+	assert.Equal(t, 2, strings.Count(cfg, "max_session_cost:"), "both callers carry the soft session cap")
+	assert.Contains(t, cfg, `secret_name: "anthropic-api-key"`, "anthropic family is vault-secret only")
+
+	// The generated policy must be schema-valid.
+	require.NoError(t, policy.ValidateSchema(agentContent, false))
+}
+
+// TestInitPack_CodingAgents_RecognizersDetectFixtureSecrets loads the
+// scaffolded policy through the real loader + scanner and asserts the pack's
+// credential recognizers fire on fixture secrets (test-shaped, not real).
+func TestInitPack_CodingAgents_RecognizersDetectFixtureSecrets(t *testing.T) {
+	resetInitFlags()
+	t.Cleanup(resetInitFlags)
+	dir := t.TempDir()
+	prevWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(prevWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	rootCmd.SetArgs([]string{"init", "--pack", "coding-agents", "--skip-verify"})
+	require.NoError(t, rootCmd.Execute())
+
+	pol, err := policy.LoadPolicy(context.Background(), filepath.Join(dir, "agent.talon.yaml"), false, dir)
+	require.NoError(t, err)
+	scanner, err := policy.NewPIIScannerForPolicy(pol, "")
+	require.NoError(t, err)
+
+	// Scan results carry canonical lower_snake entity types.
+	fixtures := map[string]string{
+		"private_key":    "please review -----BEGIN RSA PRIVATE KEY----- MIIB...",
+		"aws_access_key": "creds: AKIAIOSFODNN7EXAMPLE region eu-west-1",
+		"github_token":   "push failed with ghp_0123456789abcdefghijklmnopqrstuv1234",
+		"llm_api_key":    "use sk-ant-api03-abcdefghijklmnopqrstuvwx to call the API",
+	}
+	for entity, text := range fixtures {
+		res := scanner.Scan(context.Background(), text)
+		found := false
+		for _, e := range res.Entities {
+			if e.Type == entity {
+				found = true
+			}
+		}
+		assert.True(t, found, "recognizer for %s must fire on fixture %q; got %+v", entity, text, res.Entities)
+	}
+
+	// Boundary: ordinary code-looking text must NOT fire the credential set.
+	clean := scanner.Scan(context.Background(), "func main() { key := os.Getenv(\"API_KEY\"); fmt.Println(key) }")
+	for _, e := range clean.Entities {
+		assert.NotContains(t, []string{"private_key", "aws_access_key", "github_token", "llm_api_key"}, e.Type,
+			"no credential recognizer may fire on plain code: %+v", e)
+	}
+}
+
+// The OpenClaw pack's "credential recognizers" claim must be backed by the
+// same recognizers in its generated policy (#201 reconciliation).
+func TestInitPack_OpenClaw_CredentialRecognizersPresent(t *testing.T) {
+	resetInitFlags()
+	t.Cleanup(resetInitFlags)
+	dir := t.TempDir()
+	prevWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(prevWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	rootCmd.SetArgs([]string{"init", "--pack", "openclaw", "--name", "openclaw-agent", "--skip-verify"})
+	require.NoError(t, rootCmd.Execute())
+
+	agentContent, err := os.ReadFile(filepath.Join(dir, "agent.talon.yaml"))
+	require.NoError(t, err)
+	require.NoError(t, policy.ValidateSchema(agentContent, false))
+	assert.Contains(t, string(agentContent), "PRIVATE_KEY")
+	assert.Contains(t, string(agentContent), "AWS_ACCESS_KEY")
+	assert.Contains(t, string(agentContent), "GITHUB_TOKEN")
+	assert.Contains(t, string(agentContent), "LLM_API_KEY", "same recognizer set as the coding-agents pack")
 }

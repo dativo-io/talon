@@ -41,6 +41,11 @@ temp/
 
 # Local configuration (may contain secrets)
 talon.config.yaml
+# ...but pack templates and example stacks ship intentional, secret-free
+# configs under this exact name — without these exceptions they silently
+# fall out of commits and //go:embed (bit the coding-agents pack, #192 PR-I).
+!internal/pack/templates/**/talon.config.yaml
+!examples/**/talon.config.yaml
 .env
 .env.local
 

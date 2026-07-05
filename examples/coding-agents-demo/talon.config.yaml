@@ -1,0 +1,46 @@
+# Talon coding-agents demo config (#203): enforce mode, dual-wire mock,
+# tiny session budget so the deny is reachable in seconds.
+# Both "providers" are the same offline mock speaking the respective wire.
+
+log_level: info
+log_format: json
+
+# No llm.pricing_file: the container has no repo checkout, so the binary's
+# embedded pricing table (kept current since #231/#233) is used directly.
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "enforce"
+
+  providers:
+    anthropic:
+      enabled: true
+      base_url: "http://mock-provider:9090"
+      secret_name: "anthropic-api-key"
+      api_family: "anthropic"
+    openai:
+      enabled: true
+      base_url: "http://mock-provider:9090"
+      secret_name: "openai-api-key"
+
+  callers:
+    - name: "claude-code"
+      tenant_key: "talon-gw-demo-coding-0001"
+      tenant_id: "demo"
+      team: "coding"
+      policy_overrides:
+        pii_action: "warn"            # PII request is evidenced + warned, not blocked
+        response_pii_action: "allow"  # streaming stays interactive (see LIMITATIONS.md)
+        max_session_cost: 0.02        # SOFT cap — trips within a handful of mock requests
+        max_daily_cost: 5.00
+        max_monthly_cost: 50.00
+
+  default_policy:
+    default_pii_action: "warn"
+    response_pii_action: "allow"
+    max_daily_cost: 10.00
+    max_monthly_cost: 100.00
+    require_caller_id: true
+    log_prompts: true
+    log_responses: false

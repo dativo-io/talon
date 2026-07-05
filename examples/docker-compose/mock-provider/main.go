@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -204,18 +205,253 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"status":"ok","provider":"mock-openai"}`)
 }
 
+// reqCounter makes mock IDs deterministic per process run (msg_mock_000001,
+// resp_mock_000001, ...) so demo transcripts are reproducible.
+var reqCounter atomic.Int64
+
+func nextID(prefix string) string {
+	return fmt.Sprintf("%s_mock_%06d", prefix, reqCounter.Add(1))
+}
+
+// ---- Anthropic Messages API (wire family: anthropic) ----------------------
+//
+// Shapes mirror internal/gateway/testdata/conformance/anthropic fixtures:
+// non-streaming usage carries input/cache_creation/cache_read/output tokens;
+// streaming emits message_start (usage incl. cache counts) ->
+// content_block_delta* -> message_delta (output_tokens) -> message_stop.
+
+type anthropicRequest struct {
+	Model    string    `json:"model"`
+	Messages []message `json:"messages"`
+	Stream   bool      `json:"stream"`
+}
+
+func anthropicUsage(promptTokens int) map[string]int {
+	// Fixed cache counts keep the demo deterministic: every request "writes"
+	// 120 cache tokens and "reads" 2048 — enough to show cache-aware pricing
+	// (cache_read_tokens > 0, pricing_basis table) in signed evidence.
+	return map[string]int{
+		"input_tokens":                promptTokens,
+		"cache_creation_input_tokens": 120,
+		"cache_read_input_tokens":     2048,
+	}
+}
+
+func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"Method not allowed"}}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var req anthropicRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":"Invalid JSON: %s"}}`, err), http.StatusBadRequest)
+		return
+	}
+	content := pickResponse(req.Messages)
+	model := req.Model
+	if model == "" {
+		model = "claude-sonnet-5"
+	}
+	promptTokens := 0
+	for _, m := range req.Messages {
+		promptTokens += estimateTokens(m.Content)
+	}
+	outputTokens := estimateTokens(content)
+	id := nextID("msg")
+
+	if req.Stream {
+		handleAnthropicStreaming(w, id, model, content, promptTokens, outputTokens)
+		return
+	}
+
+	usage := anthropicUsage(promptTokens)
+	usage["output_tokens"] = outputTokens
+	resp := map[string]interface{}{
+		"id":            id,
+		"type":          "message",
+		"role":          "assistant",
+		"model":         model,
+		"content":       []map[string]string{{"type": "text", "text": content}},
+		"stop_reason":   "end_turn",
+		"stop_sequence": nil,
+		"usage":         usage,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func sseEvent(w http.ResponseWriter, flusher http.Flusher, event string, payload interface{}) {
+	data, _ := json.Marshal(payload)
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+	flusher.Flush()
+}
+
+func handleAnthropicStreaming(w http.ResponseWriter, id, model, content string, promptTokens, outputTokens int) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+
+	startUsage := anthropicUsage(promptTokens)
+	startUsage["output_tokens"] = 1
+	sseEvent(w, flusher, "message_start", map[string]interface{}{
+		"type": "message_start",
+		"message": map[string]interface{}{
+			"id": id, "type": "message", "role": "assistant", "model": model,
+			"content": []interface{}{}, "stop_reason": nil, "usage": startUsage,
+		},
+	})
+	sseEvent(w, flusher, "content_block_start", map[string]interface{}{
+		"type": "content_block_start", "index": 0,
+		"content_block": map[string]string{"type": "text", "text": ""},
+	})
+	words := strings.Fields(content)
+	for i, word := range words {
+		delta := word
+		if i < len(words)-1 {
+			delta += " "
+		}
+		sseEvent(w, flusher, "content_block_delta", map[string]interface{}{
+			"type": "content_block_delta", "index": 0,
+			"delta": map[string]string{"type": "text_delta", "text": delta},
+		})
+		time.Sleep(5 * time.Millisecond)
+	}
+	sseEvent(w, flusher, "content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": 0})
+	sseEvent(w, flusher, "message_delta", map[string]interface{}{
+		"type":  "message_delta",
+		"delta": map[string]interface{}{"stop_reason": "end_turn", "stop_sequence": nil},
+		"usage": map[string]int{"output_tokens": outputTokens},
+	})
+	sseEvent(w, flusher, "message_stop", map[string]interface{}{"type": "message_stop"})
+}
+
+// ---- OpenAI Responses API (wire family: openai, Codex-style) ---------------
+//
+// Shapes mirror internal/gateway/testdata/conformance/responses fixtures:
+// usage rides the terminal response.completed event (nested under response),
+// with cached tokens as a SUBSET in input_tokens_details.cached_tokens.
+
+type responsesRequest struct {
+	Model  string      `json:"model"`
+	Input  interface{} `json:"input"`
+	Stream bool        `json:"stream"`
+	Store  *bool       `json:"store"`
+}
+
+func responsesInputText(in interface{}) string {
+	switch v := in.(type) {
+	case string:
+		return v
+	case []interface{}:
+		var b strings.Builder
+		for _, item := range v {
+			if m, ok := item.(map[string]interface{}); ok {
+				if c, ok := m["content"].(string); ok {
+					b.WriteString(c + " ")
+				}
+			}
+		}
+		return b.String()
+	default:
+		return ""
+	}
+}
+
+func handleResponses(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":{"message":"Method not allowed","type":"invalid_request_error"}}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var req responsesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":{"message":"Invalid JSON: %s","type":"invalid_request_error"}}`, err), http.StatusBadRequest)
+		return
+	}
+	inputText := responsesInputText(req.Input)
+	content := pickResponse([]message{{Role: "user", Content: inputText}})
+	model := req.Model
+	if model == "" {
+		model = "gpt-5.3-codex"
+	}
+	inputTokens := estimateTokens(inputText)
+	if inputTokens < 16 {
+		inputTokens = 16
+	}
+	outputTokens := estimateTokens(content)
+	id := nextID("resp")
+	store := false
+	if req.Store != nil {
+		store = *req.Store
+	}
+
+	usage := map[string]interface{}{
+		"input_tokens":         inputTokens,
+		"input_tokens_details": map[string]int{"cached_tokens": 16}, // subset of input
+		"output_tokens":        outputTokens,
+		"total_tokens":         inputTokens + outputTokens,
+	}
+	response := map[string]interface{}{
+		"id": id, "object": "response", "status": "completed", "model": model,
+		"store": store,
+		"output": []map[string]interface{}{{
+			"type": "message", "role": "assistant", "status": "completed",
+			"content": []map[string]interface{}{{"type": "output_text", "text": content, "annotations": []interface{}{}}},
+		}},
+		"usage": usage,
+	}
+
+	if req.Stream {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming not supported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		sseEvent(w, flusher, "response.created", map[string]interface{}{
+			"type": "response.created", "response": map[string]interface{}{"id": id, "status": "in_progress"},
+		})
+		words := strings.Fields(content)
+		for i, word := range words {
+			delta := word
+			if i < len(words)-1 {
+				delta += " "
+			}
+			sseEvent(w, flusher, "response.output_text.delta", map[string]interface{}{
+				"type": "response.output_text.delta", "delta": delta,
+			})
+			time.Sleep(5 * time.Millisecond)
+		}
+		sseEvent(w, flusher, "response.completed", map[string]interface{}{
+			"type": "response.completed", "response": response,
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 func main() {
 	port := flag.Int("port", 9090, "listen port")
 	flag.Parse()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", handleChatCompletions)
+	mux.HandleFunc("/v1/messages", handleAnthropicMessages)
+	mux.HandleFunc("/v1/responses", handleResponses)
 	mux.HandleFunc("/v1/models", handleModels)
 	mux.HandleFunc("/health", handleHealth)
 
 	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("Mock OpenAI provider listening on %s", addr)
-	log.Printf("  POST /v1/chat/completions  (streaming + non-streaming)")
+	log.Printf("Mock multi-wire provider listening on %s", addr)
+	log.Printf("  POST /v1/chat/completions  (OpenAI Chat, streaming + non-streaming)")
+	log.Printf("  POST /v1/messages          (Anthropic Messages, streaming + non-streaming, cache usage)")
+	log.Printf("  POST /v1/responses         (OpenAI Responses, streaming + non-streaming, cached_tokens)")
 	log.Printf("  GET  /v1/models")
 	log.Printf("  GET  /health")
 	if err := http.ListenAndServe(addr, mux); err != nil {

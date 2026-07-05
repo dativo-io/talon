@@ -350,6 +350,43 @@ attachment_handling:
 
 ---
 
+## Govern coding agents (Claude Code, Codex CLI)
+
+**Goal:** Per-session budgets, per-subagent audit, and credential detection for coding-agent traffic — without breaking streaming or coding UX.
+
+**Where:** `talon.config.yaml` gateway callers (or scaffold everything with `talon init --pack coding-agents`).
+
+```yaml
+gateway:
+  callers:
+    - name: "claude-code"
+      tenant_key: "talon-gw-claude-code-001"
+      tenant_id: "default"
+      policy_overrides:
+        pii_action: "warn"           # input scan: evidence + warning, code keeps flowing
+        response_pii_action: "allow" # anything else buffers whole SSE streams (LIMITATIONS.md §7)
+        max_session_cost: 10.00      # SOFT cap per coding session (#198); reservation is #144
+```
+
+Credential recognizers go in `agent.talon.yaml` (high-precision only — PEM blocks, prefixed API keys; Talon is not a secret scanner, keep gitleaks/trufflehog in pre-commit):
+
+```yaml
+policies:
+  data_classification:
+    custom_recognizers:
+      - name: "PEM private key block"
+        supported_entity: "PRIVATE_KEY"
+        sensitivity: 3
+        patterns:
+          - name: "pem_private_key"
+            regex: '-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----'
+            score: 0.95
+```
+
+Watch a session: `talon audit list --session <id>` (per-subagent rollup), `talon costs --session <id> --json`, or the dashboard's Coding Sessions panel — all three read the same signed evidence through the same aggregation. Full walk-through: [Governing coding agents](governing-coding-agents.md).
+
+---
+
 ## Where to put snippets
 
 | Snippet type | `agent.talon.yaml` (governance team) | `talon.config.yaml` gateway block (DevOps team) |

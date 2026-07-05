@@ -998,7 +998,7 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 // PacksWithGateway returns pack IDs that use the LLM gateway (talon.config.yaml gateway block + talon serve --gateway).
 // Used so wizard infra and next-steps stay consistent with pack nature.
 func PacksWithGateway() []string {
-	return []string{"openclaw", "copaw"}
+	return []string{"openclaw", "copaw", "coding-agents"}
 }
 
 func packRequiresGateway(packID string) bool {
@@ -1018,6 +1018,10 @@ func gatewayCallerForPack(packID string) (name, tenantKey string) {
 		return "copaw-main", "talon-gw-copaw-001"
 	case "openclaw":
 		return "openclaw-main", "talon-gw-openclaw-001"
+	case "coding-agents":
+		// Primary caller only (Claude Code); the codex caller ships in the
+		// pack's talon.config.yaml alongside it.
+		return "claude-code", "talon-gw-claude-code-001"
 	default:
 		return "gateway-main", "talon-gw-001"
 	}

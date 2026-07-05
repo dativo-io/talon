@@ -1,0 +1,26 @@
+# Minimal gateway config — the smallest working Talon gateway.
+# Proxies OpenAI API calls with PII scanning and audit logging.
+#
+# Usage:
+#   talon secrets set openai-api-key "sk-your-key"
+#   talon serve --gateway --gateway-config examples/gateway-minimal/talon.config.yaml
+#
+# Then point your app at:
+#   OPENAI_BASE_URL=http://localhost:8080/v1/proxy/openai/v1
+gateway:
+  enabled: true
+  mode: "shadow"
+
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+
+  callers:
+    - name: "my-app"
+      api_key: "talon-gw-myapp-001"
+      tenant_id: "default"
+      team: "engineering"
+
+  default_policy:
+    log_prompts: true

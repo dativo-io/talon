@@ -55,8 +55,9 @@ Talon initialized for CrewAI! Next steps:
      talon serve --gateway
 
   5. Point CrewAI at Talon (e.g. in your Python env):
-     OPENAI_API_BASE=http://localhost:8080/v1/proxy/openai
+     OPENAI_API_BASE=http://localhost:8080/v1/proxy/openai/v1
      OPENAI_API_KEY=talon-gw-crew-researcher
+     (trailing /v1 matters: the SDK appends /chat/completions, #235)
 
   6. Verify and monitor:
      talon doctor
@@ -67,11 +68,47 @@ Talon initialized for CrewAI! Next steps:
      talon enforce enable
 `
 
+const codingAgentsPostInit = `
+Coding-agents pack scaffolded. Next steps:
+
+  1. Set the vault key (same shell for steps 2-4):
+     export TALON_SECRETS_KEY=$(openssl rand -hex 32)
+
+  2. Store real provider keys in the vault (Talon injects them upstream;
+     the coding tools only ever see their tenant keys):
+     talon secrets set anthropic-api-key "sk-ant-..."
+     talon secrets set openai-api-key "sk-..."
+
+  3. Start the gateway:
+     talon serve --gateway
+
+  4. Point the tools at Talon:
+     Claude Code:
+       export ANTHROPIC_BASE_URL=http://localhost:8080/v1/proxy/anthropic
+       export ANTHROPIC_AUTH_TOKEN=talon-gw-claude-code-001
+     Codex CLI (~/.codex/config.toml profile):
+       base_url = "http://localhost:8080/v1/proxy/openai/v1"
+       wire_api = "responses"   # auth: tenant key talon-gw-codex-001
+       (trailing /v1 matters: Codex appends /responses to base_url, #235)
+
+  5. Watch a session:
+     talon audit list --session <id>       # per-subagent rollup
+     open http://localhost:8080/gateway/dashboard   # Coding Sessions panel
+
+  6. Enforce once the shadow evidence looks right:
+     talon enforce report && talon enforce enable
+
+Notes: response_pii_action is "allow" for coding callers because any other
+value buffers whole SSE streams today; max_session_cost is a SOFT cap; the
+credential recognizers are traffic guards, not a secret scanner — keep
+gitleaks/trufflehog in pre-commit. See docs/guides/governing-coding-agents.md.
+`
+
 var builtinPacks = []PackDescriptor{
 	{
 		ID:          "openclaw",
 		DisplayName: "OpenClaw",
-		Description: "Full governance — memory, soul, skill protection, credential scanning",
+		Description: "Full governance — memory, soul, skill protection, credential recognizers",
 		Order:       10,
 		Framework:   "OpenClaw",
 	},
@@ -116,6 +153,18 @@ var builtinPacks = []PackDescriptor{
 			{TemplatePath: "templates/crewai/talon.config.yaml", OutputPath: "talon.config.yaml", Description: "Infrastructure config"},
 		},
 		PostMessage: crewaiPostInit,
+	},
+	{
+		ID:          "coding-agents",
+		DisplayName: "Coding Agents",
+		Description: "Claude Code + Codex CLI — session budgets, subagent audit, credential recognizers",
+		Order:       47,
+		Framework:   "Claude Code / Codex CLI",
+		Files: []PackFile{
+			{TemplatePath: "templates/coding-agents/agent.talon.yaml", OutputPath: "agent.talon.yaml", Description: "Agent policy (credential recognizers)"},
+			{TemplatePath: "templates/coding-agents/talon.config.yaml", OutputPath: "talon.config.yaml", Description: "Gateway config (claude-code + codex callers)"},
+		},
+		PostMessage: codingAgentsPostInit,
 	},
 	{
 		ID:          "generic",
