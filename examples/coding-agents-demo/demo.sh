@@ -8,6 +8,9 @@
 # Commands: session | pii | budget | audit | verify | all
 set -euo pipefail
 
+# Never die silently: any failing step names itself and points at the stack.
+trap 'echo "ERROR: demo aborted at line $LINENO (see above). Stack state: docker compose ps · logs: docker compose logs talon" >&2' ERR
+
 GATEWAY="${GATEWAY:-http://localhost:8080}"
 TENANT_KEY="talon-gw-demo-coding-0001"
 SESSION="sess-coding-demo"
@@ -16,6 +19,18 @@ mkdir -p "$OUT_DIR"
 
 say()  { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
+
+# The talon container seeds vault secrets before binding the port, so the
+# gateway is briefly unreachable after `docker compose up -d` returns
+# (started != ready). Gate every run on /health instead of racing it.
+wait_ready() {
+  for _ in $(seq 1 60); do
+    if curl -sf -o /dev/null "$GATEWAY/health"; then return 0; fi
+    sleep 1
+  done
+  echo "ERROR: gateway at $GATEWAY not ready after 60s — check: docker compose logs talon" >&2
+  return 1
+}
 
 talon_exec() { docker compose exec -T talon talon "$@"; }
 
@@ -97,6 +112,8 @@ cmd_all() {
   note "with structured {limit, spent, estimate} in signed evidence · zero real API keys."
   note "Dashboard: $GATEWAY/gateway/dashboard?talon_admin_key=demo-admin-key (Coding Sessions panel)"
 }
+
+wait_ready
 
 case "${1:-all}" in
   session) cmd_session ;;
