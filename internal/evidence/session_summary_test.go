@@ -174,3 +174,27 @@ func TestListRecentOrchestrationSessionIDs(t *testing.T) {
 		t.Fatalf("limit=1 → %v, want [sess-new]", one)
 	}
 }
+
+// The session's client/source label comes from the EARLIEST orchestrated
+// record (the client that opened the session), regardless of input order —
+// ListBySessionID returns newest-first, which used to mislabel a
+// mostly-claude-code session as "codex" (found in the #203 demo).
+func TestBuildSessionSummary_ClientFromEarliestRecord(t *testing.T) {
+	older := rec("s", "acme", "coder", true, 0.01, 1, 1, 0, 0, "anthropic", "claude-sonnet-5",
+		&OrchestrationContext{AgentID: "generator", Client: "claude-code", SessionSource: "client_asserted"})
+	older.Timestamp = ts(1)
+	newer := rec("s", "acme", "coder", true, 0.01, 1, 1, 0, 0, "openai", "gpt-5.3-codex",
+		&OrchestrationContext{AgentID: "executor", Client: "codex", SessionSource: "vendor_asserted"})
+	newer.Timestamp = ts(30)
+
+	// Newest-first input (the ListBySessionID order).
+	sum := BuildSessionSummary("s", []*Evidence{newer, older})
+	if sum.Client != "claude-code" || sum.SessionSource != "client_asserted" {
+		t.Fatalf("client/source = %q/%q, want claude-code/client_asserted (earliest record)", sum.Client, sum.SessionSource)
+	}
+	// Order-independence: oldest-first gives the same answer.
+	sum2 := BuildSessionSummary("s", []*Evidence{older, newer})
+	if sum2.Client != sum.Client || sum2.SessionSource != sum.SessionSource {
+		t.Fatalf("client selection must be input-order independent")
+	}
+}
