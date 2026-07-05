@@ -366,6 +366,12 @@
                 "enum": ["openai", "anthropic"],
                 "description": "Wire format of this provider for fallback-chain validation and upstream auth conventions. Defaults by name: 'anthropic' uses the Anthropic Messages API (x-api-key + anthropic-version); everything else is OpenAI-compatible. Set explicitly for aliased endpoints."
               },
+              "responses_store_mode": {
+                "type": "string",
+                "enum": ["preserve", "force_if_absent", "force_true"],
+                "default": "preserve",
+                "description": "OpenAI Responses API 'store' handling. 'preserve' (default) forwards client intent untouched — an explicit store:false is honored for every client. 'force_if_absent' sets store:true only when the client sent no store field (opt-in for previous_response_id continuity, e.g. OpenClaw). 'force_true' always stores, recording any override of an explicit client store:false in signed evidence (annotation responses_store_overridden). See #213."
+              },
               "fallback": {
                 "type": "array",
                 "description": "Ordered error-driven fallback chain: on a transient upstream failure (timeout/connection/429/5xx) the gateway retries these targets in order, subject to candidate filters (sovereignty under eu_strict, caller allowlists, gateway policy). All targets must share this provider's API family.",

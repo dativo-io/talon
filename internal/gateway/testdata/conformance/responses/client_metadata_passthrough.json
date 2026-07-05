@@ -1,0 +1,34 @@
+{
+  "name": "client_metadata_passthrough",
+  "caller_pii_action": "redact",
+  "request_body": {
+    "model": "gpt-5.3-codex",
+    "instructions": "You are a coding assistant operating in a terminal.",
+    "input": "refactor the session store; escalate to jane.doe@example.com if unsure",
+    "store": false,
+    "prompt_cache_key": "b7c1e0d2-9a4f-4c3e-8b1a-000000000002",
+    "client_metadata": {
+      "session_id": "b7c1e0d2-9a4f-4c3e-8b1a-000000000002",
+      "thread_id": "t-000000000002",
+      "turn_id": "turn-1",
+      "x-codex-installation-id": "inst-abc",
+      "x-codex-window-id": "win-1"
+    }
+  },
+  "upstream": {
+    "status": 200,
+    "json": {
+      "id": "resp_conf_meta",
+      "object": "response",
+      "status": "completed",
+      "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "done"}]}],
+      "usage": {"input_tokens": 30, "input_tokens_details": {"cached_tokens": 8}, "output_tokens": 2}
+    }
+  },
+  "expect": {
+    "status": 200,
+    "forwarded_not_contains": ["jane.doe@example.com"],
+    "forwarded_contains": ["prompt_cache_key", "b7c1e0d2-9a4f-4c3e-8b1a-000000000002", "x-codex-installation-id", "client_metadata"],
+    "forwarded_json_valid": true
+  }
+}

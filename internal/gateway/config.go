@@ -88,6 +88,14 @@ type ProviderConfig struct {
 	// members must share the provider's API family (the request body is
 	// forwarded as-is except for an optional model rewrite).
 	Fallback []FallbackTarget `yaml:"fallback,omitempty" json:"fallback,omitempty"`
+	// ResponsesStoreMode controls the OpenAI Responses API "store" field:
+	// "preserve" (default) forwards client intent untouched — an explicit
+	// store:false is honored for every client (#213); "force_if_absent" sets
+	// store:true only when the field is missing (opt-in for
+	// previous_response_id continuity, e.g. OpenClaw); "force_true" always
+	// stores, recording any override of an explicit store:false in signed
+	// evidence.
+	ResponsesStoreMode string `yaml:"responses_store_mode,omitempty" json:"responses_store_mode,omitempty"` // preserve (default) | force_if_absent | force_true
 }
 
 // FallbackTarget is one candidate in a provider's error-driven fallback chain.
@@ -423,6 +431,11 @@ func (c *GatewayConfig) Validate() error {
 		}
 		if name != "ollama" && p.UpstreamAuthMode == "secret" && p.SecretName == "" {
 			return fmt.Errorf("gateway provider %q: secret_name is required", name)
+		}
+		switch p.ResponsesStoreMode {
+		case "", ResponsesStorePreserve, ResponsesStoreForceIfAbsent, ResponsesStoreForceTrue:
+		default:
+			return fmt.Errorf("gateway provider %q: responses_store_mode must be preserve, force_if_absent, or force_true", name)
 		}
 		c.Providers[name] = p
 	}

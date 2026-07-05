@@ -44,6 +44,11 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 		BaseURL:          baseURL,
 		UpstreamAuthMode: "client_bearer",
 		AllowedModels:    []string{"gpt-4o-mini", "gpt-4o"},
+		// Quickstart serves OpenClaw-style clients that reference
+		// previous_response_id across turns: stored items are required or
+		// follow-up turns 404. force_if_absent keeps that working while still
+		// honoring an explicit client store:false (#213).
+		ResponsesStoreMode: ResponsesStoreForceIfAbsent,
 	}
 
 	annotations := []string{"quickstart_mode"}

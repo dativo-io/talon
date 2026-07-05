@@ -307,6 +307,13 @@ Provider auth mode:
   - `secret` (default): read provider credential from Talon vault (`secret_name` required).
   - `client_bearer`: forward caller bearer upstream (quickstart profile only).
 
+Responses API store handling:
+
+- `gateway.providers.<provider>.responses_store_mode` controls the OpenAI Responses API `store` field:
+  - `preserve` (default): forward the client's `store` intent untouched — an explicit `store: false` is honored for every client. This is the right choice for Codex CLI (which sends `store: false` and resends the full transcript each turn).
+  - `force_if_absent`: set `store: true` only when the client sent no `store` field. Opt-in for clients that reference `previous_response_id` across turns (e.g. OpenClaw) — stored items are required or follow-up turns 404.
+  - `force_true`: always set `store: true`, overriding an explicit client `store: false`. Any such override is recorded in signed evidence (gateway annotation `responses_store_overridden`), because it reverses the client's stated retention intent.
+
 Quickstart note:
 
 - `talon serve --proxy-quickstart` builds gateway config in memory (no YAML required).

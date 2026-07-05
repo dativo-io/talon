@@ -39,7 +39,10 @@ func setupGatewayWithClassifier(t *testing.T, piiAction string, mode Mode, upstr
 		ListenPrefix: "/v1/proxy",
 		Mode:         mode,
 		Providers: map[string]ProviderConfig{
-			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
+			// OpenClaw references previous_response_id across turns, so its
+			// gateway opts into force_if_absent (the pre-#213 forcing became
+			// opt-in; the gateway default is preserve).
+			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key", ResponsesStoreMode: ResponsesStoreForceIfAbsent},
 		},
 		Callers: []CallerConfig{
 			{

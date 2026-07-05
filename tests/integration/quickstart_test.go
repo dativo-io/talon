@@ -117,7 +117,8 @@ func TestQuickstartFacadeGatewayIntegration_401AndRedactAndResponses(t *testing.
 	require.NotEmpty(t, capturedBodies)
 	require.NotContains(t, string(capturedBodies[len(capturedBodies)-1]), "DE89370400440532013000")
 
-	// Responses API should force store:true.
+	// Responses API under quickstart's force_if_absent mode: an explicit
+	// client store:false is honored (#213), not reversed.
 	reqResp, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, api.URL+"/v1/responses",
 		strings.NewReader(`{"model":"gpt-4o-mini","input":"hello","store":false}`))
 	reqResp.Header.Set("Content-Type", "application/json")
@@ -126,8 +127,10 @@ func TestQuickstartFacadeGatewayIntegration_401AndRedactAndResponses(t *testing.
 	require.NoError(t, err)
 	defer resp1.Body.Close()
 	require.Equal(t, http.StatusOK, resp1.StatusCode)
-	require.Contains(t, string(capturedBodies[len(capturedBodies)-1]), `"store":true`)
+	require.Contains(t, string(capturedBodies[len(capturedBodies)-1]), `"store":false`)
 
+	// A request that references previous_response_id but omits store: absent →
+	// force_if_absent injects store:true so the referenced response persists.
 	reqResp2, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, api.URL+"/v1/responses",
 		strings.NewReader(`{"model":"gpt-4o-mini","input":"follow up","previous_response_id":"resp_1"}`))
 	reqResp2.Header.Set("Content-Type", "application/json")

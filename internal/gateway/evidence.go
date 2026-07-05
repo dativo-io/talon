@@ -201,6 +201,9 @@ func sanitizeGatewayAnnotations(in []string) []string {
 		"quickstart_model_allowlist_disabled": {},
 		"quickstart_unsafe_listen":            {},
 		"quickstart_shadow_mode":              {},
+		// force_true reversed an explicit client store:false on a Responses
+		// API request (#213) — a retention decision that must be evidenced.
+		"responses_store_overridden": {},
 	}
 	out := make([]string, 0, len(in))
 	for _, v := range in {

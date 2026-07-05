@@ -31,51 +31,70 @@ func TestIsResponsesAPIPath(t *testing.T) {
 	}
 }
 
-func TestEnsureResponsesStore(t *testing.T) {
-	t.Run("adds store true when missing", func(t *testing.T) {
-		input := `{"model":"gpt-4o","input":"Hello"}`
-		result := ensureResponsesStore([]byte(input))
-
+func TestApplyResponsesStoreMode(t *testing.T) {
+	parse := func(t *testing.T, b []byte) map[string]interface{} {
+		t.Helper()
 		var m map[string]interface{}
-		require.NoError(t, json.Unmarshal(result, &m))
-		assert.Equal(t, true, m["store"])
-		assert.Equal(t, "gpt-4o", m["model"])
-		assert.Equal(t, "Hello", m["input"])
-	})
+		require.NoError(t, json.Unmarshal(b, &m))
+		return m
+	}
 
-	t.Run("overwrites store false so multi-turn works through proxy", func(t *testing.T) {
+	t.Run("preserve keeps explicit store false", func(t *testing.T) {
 		input := `{"model":"gpt-4o","input":"Hello","store":false}`
-		result := ensureResponsesStore([]byte(input))
-
-		var m map[string]interface{}
-		require.NoError(t, json.Unmarshal(result, &m))
-		assert.Equal(t, true, m["store"], "gateway forces store:true so referenced response IDs persist")
+		result, overrode := applyResponsesStoreMode([]byte(input), ResponsesStorePreserve)
+		assert.False(t, overrode)
+		assert.Equal(t, input, string(result), "preserve must forward the body untouched")
 	})
 
-	t.Run("preserves store true when already set", func(t *testing.T) {
+	t.Run("preserve keeps absent store absent", func(t *testing.T) {
+		input := `{"model":"gpt-4o","input":"Hello"}`
+		result, overrode := applyResponsesStoreMode([]byte(input), "")
+		assert.False(t, overrode)
+		assert.Equal(t, input, string(result), "default (empty) mode is preserve")
+	})
+
+	t.Run("force_if_absent adds store true only when missing", func(t *testing.T) {
+		result, overrode := applyResponsesStoreMode([]byte(`{"model":"gpt-4o","input":"Hello"}`), ResponsesStoreForceIfAbsent)
+		assert.False(t, overrode)
+		assert.Equal(t, true, parse(t, result)["store"])
+
+		input := `{"model":"gpt-4o","input":"Hello","store":false}`
+		result, overrode = applyResponsesStoreMode([]byte(input), ResponsesStoreForceIfAbsent)
+		assert.False(t, overrode)
+		assert.Equal(t, input, string(result), "explicit client store:false is honored")
+	})
+
+	t.Run("force_true overrides explicit false and reports it", func(t *testing.T) {
+		result, overrode := applyResponsesStoreMode([]byte(`{"model":"gpt-4o","input":"Hello","store":false}`), ResponsesStoreForceTrue)
+		assert.True(t, overrode, "reversing explicit client intent must be reported for evidence")
+		assert.Equal(t, true, parse(t, result)["store"])
+	})
+
+	t.Run("force_true without explicit false does not report an override", func(t *testing.T) {
+		result, overrode := applyResponsesStoreMode([]byte(`{"model":"gpt-4o","input":"Hello"}`), ResponsesStoreForceTrue)
+		assert.False(t, overrode, "adding store to a body without one reverses nothing")
+		assert.Equal(t, true, parse(t, result)["store"])
+
 		input := `{"model":"gpt-4o","input":"Hello","store":true}`
-		result := ensureResponsesStore([]byte(input))
-
-		var m map[string]interface{}
-		require.NoError(t, json.Unmarshal(result, &m))
-		assert.Equal(t, true, m["store"])
+		result, overrode = applyResponsesStoreMode([]byte(input), ResponsesStoreForceTrue)
+		assert.False(t, overrode)
+		assert.Equal(t, input, string(result), "store already true: body untouched")
 	})
 
-	t.Run("preserves all other fields", func(t *testing.T) {
+	t.Run("preserves all other fields when rewriting", func(t *testing.T) {
 		input := `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"Hi"}],"previous_response_id":"rs_abc123","temperature":0.7}`
-		result := ensureResponsesStore([]byte(input))
-
-		var m map[string]interface{}
-		require.NoError(t, json.Unmarshal(result, &m))
+		result, _ := applyResponsesStoreMode([]byte(input), ResponsesStoreForceIfAbsent)
+		m := parse(t, result)
 		assert.Equal(t, true, m["store"])
 		assert.Equal(t, "gpt-4o", m["model"])
 		assert.Equal(t, "rs_abc123", m["previous_response_id"])
-		assert.InDelta(t, 0.7, m["temperature"], 0.001)
+		assert.InDelta(t, 0.7, m["temperature"].(float64), 0.001)
 	})
 
 	t.Run("invalid json returns original body", func(t *testing.T) {
 		input := `not json`
-		result := ensureResponsesStore([]byte(input))
+		result, overrode := applyResponsesStoreMode([]byte(input), ResponsesStoreForceTrue)
+		assert.False(t, overrode)
 		assert.Equal(t, input, string(result))
 	})
 }
