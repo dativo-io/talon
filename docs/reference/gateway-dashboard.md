@@ -160,7 +160,36 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/me
     "modified": 1,
     "dispatched": 8,
     "dispatch_failures": 1
-  }
+  },
+  "sessions": [
+    {
+      "session_id": "sess-a41f",
+      "tenant_id": "default",
+      "session_source": "client_asserted",
+      "client": "claude-code",
+      "callers": ["claude-code"],
+      "providers": ["anthropic", "openai"],
+      "models": ["claude-opus-4-8", "gpt-5.3-codex"],
+      "record_count": 14,
+      "allowed": 13,
+      "denied": 1,
+      "errors": 0,
+      "total_cost": 0.8412,
+      "input_tokens": 48210,
+      "output_tokens": 9120,
+      "cache_read_tokens": 31000,
+      "first_seen": "2026-07-05T13:01:11Z",
+      "last_seen": "2026-07-05T13:24:53Z",
+      "agents": [
+        {"agent_id": "generator", "record_count": 9, "total_cost": 0.71, "input_tokens": 40100, "output_tokens": 8000},
+        {"agent_id": "judge", "parent_agent_id": "generator", "record_count": 5, "total_cost": 0.13, "input_tokens": 8110, "output_tokens": 1120}
+      ]
+    }
+  ],
+  "denials_by_reason": [
+    {"reason": "session_budget_exceeded", "count": 3},
+    {"reason": "policy_deny", "count": 1}
+  ]
 }
 ```
 
@@ -304,6 +333,38 @@ Plan lifecycle counters (same values surfaced in `summary.*_plans` fields).
 | `modified` | int | Plans approved with modifications. |
 | `dispatched` | int | Approved plans marked as dispatched. |
 | `dispatch_failures` | int | Dispatched plans with non-empty `dispatch_error`. |
+
+### `sessions`
+
+Orchestration session drill-down (#199): the most recently active client- or
+vendor-asserted coding sessions (bounded to the 20 most recent), re-derived
+from signed evidence on every snapshot by the **same pure function** behind
+`talon audit list --session <id>` (`evidence.BuildSessionSummary`) — the
+dashboard and the CLI cannot disagree, and a metrics-collector rebuild
+(`ReconcileFromStore`) cannot change these numbers. Omitted when no
+orchestration data exists (synthetic per-request session ids never appear).
+Each entry is a session summary:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_id` | string | Client-asserted session id (hostile input — escape before rendering). |
+| `tenant_id` | string | Owning tenant. |
+| `session_source` | string | `client_asserted` \| `vendor_asserted`. |
+| `client` | string | Adapter that asserted it (`claude-code`, `codex`, `generic`). |
+| `callers` | array | Every gateway caller observed on this session id (a cross-caller collision is visible, never merged). |
+| `providers` / `models` | array | Distinct providers/models used — a mixed-provider session is ONE session. |
+| `record_count` / `allowed` / `denied` / `errors` | int | Request outcome counts. |
+| `total_cost` | float | Accumulated signed spend (EUR). |
+| `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` | int | Token totals. |
+| `first_seen` / `last_seen` | timestamp | Session activity window. |
+| `agents` | array | Per-subagent rollup (client-asserted `agent_id`, optional `parent_agent_id`), sorted by descending cost. |
+
+### `denials_by_reason`
+
+Denied requests bucketed by the machine-code prefix of their first policy
+reason (`session_budget_exceeded`, `budget_exceeded`, `egress_*`, …) so
+session denials do not lump under a generic `policy_deny` (#199). Sorted by
+descending count; omitted when there are no denials.
 
 ---
 

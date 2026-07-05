@@ -496,6 +496,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 				return activeRunTracker.Count(metricsTenantID)
 			}),
 			metrics.WithTenantID(metricsTenantID),
+			// Sessions panel (#199): re-derived from evidence at snapshot
+			// time via the same aggregation as `talon audit --session`.
+			metrics.WithSessionQuerier(evidenceStore),
 		}
 		if planReviewStore != nil {
 			collectorOpts = append(collectorOpts, metrics.WithPlanStatsFn(func(ctx context.Context, tenantID string) (metrics.PlanStats, error) {

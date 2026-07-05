@@ -220,6 +220,19 @@
     </table>
   </div>
 
+  <!-- Orchestration Sessions (#199): derived from signed evidence via the
+       same aggregation as `talon audit list --session`; hidden when no
+       client-asserted orchestration data exists. -->
+  <div class="panel grid-full" id="panel-sessions" style="display:none">
+    <div class="panel-title">Coding Sessions (orchestration)</div>
+    <div class="kpi-sub">Client-asserted coding sessions across providers &mdash; identical numbers to <code>talon audit list --session &lt;id&gt;</code>. Click a session for its per-agent breakdown.</div>
+    <table>
+      <thead><tr><th></th><th>Session</th><th>Client</th><th>Caller</th><th>Requests</th><th>Denied</th><th>Models</th><th>Providers</th><th>Tokens in/out</th><th>Cost (EUR)</th><th>Last Active</th></tr></thead>
+      <tbody id="sessions-table"></tbody>
+    </table>
+    <div class="kpi-sub" id="sessions-denials" style="margin-top:8px;"></div>
+  </div>
+
   <!-- PII Breakdown -->
   <div class="panel">
     <div class="panel-title">PII Types</div>
@@ -269,7 +282,7 @@
   </div>
   <aside class="split-right">
     <div class="card">
-      <div class="kpi-label">Session Timeline (Lifecycle)</div>
+      <div class="kpi-label">Gateway Activity Feed</div>
       <div class="kpi-sub">Intent -> Guard -> Action -> Outcome -> Evidence</div>
       <ul class="mission-feed-list" id="gw-lifecycle-feed">
         <li>Waiting for telemetry events...</li>
@@ -470,6 +483,7 @@
     renderProviders(d.provider_breakdown || []);
     renderBudget(d.budget_status);
     renderCache(d.cache_stats);
+    renderSessions(d.sessions, d.denials_by_reason);
   }
 
   function fmt(n) { return (n == null ? 0 : n).toLocaleString(); }
@@ -512,6 +526,65 @@
       var evidenceLink = '<a href="' + evidenceDashboardURL() + '" style="color:var(--brand-light);text-decoration:none;">Open</a>';
       return '<tr><td>' + esc(c.caller) + '</td><td>' + fmt(c.requests) + '</td><td>' + fmt(c.successful) + '</td><td>' + fmt(c.failed) + '</td><td>' + fmt(c.timed_out) + '</td><td>' + fmt(c.denied) + '</td><td class="' + rateClass + '">' + (rate * 100).toFixed(1) + '%</td><td>€' + (c.cost_eur || 0).toFixed(4) + '</td><td class="' + cpsClass + '">€' + cps.toFixed(4) + '</td><td>' + c.avg_latency_ms + 'ms</td><td>' + renderCallerTrend(c.violation_trend) + '</td><td>' + evidenceLink + '</td></tr>';
     }).join('');
+  }
+
+  // Sessions panel (#199). session_id / agent_id / client / models are
+  // client-asserted strings — hostile input; esc() EVERYTHING interpolated.
+  function renderSessions(sessions, denials) {
+    var panel = document.getElementById('panel-sessions');
+    var tb = document.getElementById('sessions-table');
+    if (!panel || !tb) return;
+    if (!sessions || sessions.length === 0) { panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    tb.innerHTML = sessions.map(function(sess, i) {
+      var agents = sess.agents || [];
+      var hasAgents = agents.length > 0;
+      var caret = hasAgents ? '<span class="sess-caret" id="sess-caret-' + i + '">&#9656;</span>' : '';
+      var deniedCell = (sess.denied || 0) > 0 ? '<span class="rate-bad">' + fmt(sess.denied) + '</span>' : fmt(sess.denied || 0);
+      var row = '<tr class="sess-row" data-idx="' + i + '" style="cursor:' + (hasAgents ? 'pointer' : 'default') + '">' +
+        '<td>' + caret + '</td>' +
+        '<td>' + esc(sess.session_id) + '</td>' +
+        '<td>' + esc(sess.client || '-') + '</td>' +
+        '<td>' + esc((sess.callers || []).join(', ')) + '</td>' +
+        '<td>' + fmt(sess.record_count) + '</td>' +
+        '<td>' + deniedCell + '</td>' +
+        '<td>' + esc((sess.models || []).join(', ')) + '</td>' +
+        '<td>' + esc((sess.providers || []).join(', ')) + '</td>' +
+        '<td>' + fmt(sess.input_tokens) + ' / ' + fmt(sess.output_tokens) + '</td>' +
+        '<td>&euro;' + (sess.total_cost || 0).toFixed(4) + '</td>' +
+        '<td>' + esc(new Date(sess.last_seen).toLocaleTimeString()) + '</td></tr>';
+      var agentRows = agents.map(function(a) {
+        var parent = a.parent_agent_id ? ' &larr; ' + esc(a.parent_agent_id) : '';
+        return '<tr class="sess-agent-row sess-agents-' + i + '" style="display:none;color:var(--text-dim)">' +
+          '<td></td><td style="padding-left:18px">&#8627; ' + esc(a.agent_id || '(unattributed)') + parent + '</td>' +
+          '<td></td><td></td><td>' + fmt(a.record_count) + '</td><td></td><td></td><td></td>' +
+          '<td>' + fmt(a.input_tokens) + ' / ' + fmt(a.output_tokens) + '</td>' +
+          '<td>&euro;' + (a.total_cost || 0).toFixed(4) + '</td><td></td></tr>';
+      }).join('');
+      return row + agentRows;
+    }).join('');
+    Array.prototype.forEach.call(tb.querySelectorAll('tr.sess-row'), function(row) {
+      row.addEventListener('click', function() {
+        var i = row.getAttribute('data-idx');
+        var caret = document.getElementById('sess-caret-' + i);
+        var expanded = false;
+        Array.prototype.forEach.call(tb.querySelectorAll('tr.sess-agents-' + i), function(ar) {
+          expanded = ar.style.display === 'none';
+          ar.style.display = expanded ? '' : 'none';
+        });
+        if (caret) caret.innerHTML = expanded ? '&#9662;' : '&#9656;';
+      });
+    });
+    var denialsEl = document.getElementById('sessions-denials');
+    if (denialsEl) {
+      if (denials && denials.length > 0) {
+        denialsEl.innerHTML = 'Denials by reason: ' + denials.map(function(dd) {
+          return esc(dd.reason) + ' &times; ' + fmt(dd.count);
+        }).join(' &middot; ');
+      } else {
+        denialsEl.innerHTML = '';
+      }
+    }
   }
 
   function setSuccessRateColor(el, rate) {

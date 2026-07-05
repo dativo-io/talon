@@ -30,6 +30,24 @@ type Snapshot struct {
 	BudgetStatus      *BudgetStatus       `json:"budget_status,omitempty"`
 	CacheStats        *CacheStats         `json:"cache_stats,omitempty"`
 	PlanStats         *PlanStats          `json:"plan_stats,omitempty"`
+	// Sessions is the orchestration session drill-down (#199): the most
+	// recently active client/vendor-asserted sessions, each aggregated by the
+	// SAME pure function behind `talon audit --session`
+	// (evidence.BuildSessionSummary) over the store's records — the dashboard
+	// and the CLI are structurally incapable of disagreeing, and a destructive
+	// ReconcileFromStore rebuild cannot change these numbers. Empty (omitted)
+	// when no orchestration data exists.
+	Sessions []evidence.SessionSummary `json:"sessions,omitempty"`
+	// DenialsByReason buckets denied requests by the machine-code prefix of
+	// their first policy reason (session_budget_exceeded, budget_exceeded,
+	// egress_* ...) so session denials don't lump under policy_deny (#199).
+	DenialsByReason []ReasonCount `json:"denials_by_reason,omitempty"`
+}
+
+// ReasonCount is one denial-reason bucket, sorted by descending count.
+type ReasonCount struct {
+	Reason string `json:"reason"`
+	Count  int    `json:"count"`
 }
 
 // Summary holds top-level KPIs.
@@ -204,6 +222,13 @@ type GatewayEvent struct {
 	CostSaved        float64
 	TTFTMS           int64   // time to first token (streaming); 0 when not streaming
 	TPOTMS           float64 // time per output token (streaming); 0 when not applicable
+	// Session/orchestration projection (#199) — attribution only, from the
+	// evidence record's session spine and client-asserted orchestration block.
+	SessionID      string
+	SessionSource  string // client_asserted | vendor_asserted | synthetic ("" pre-#194 records)
+	OrchAgentID    string
+	OrchClient     string
+	DenyReasonCode string // machine-code prefix of the first deny reason; "" when not blocked
 
 	IntentClassification *IntentClassificationEvent
 	IsBulk               bool
@@ -270,6 +295,7 @@ type Collector struct {
 	toolFiltered        map[string]int
 	toolRequested       int
 	shadowViolations    map[string]*shadowViolationAccum
+	denialsByReason     map[string]int
 	byRiskLevel         map[string]*riskLevelAccum
 	bulkOperations      int
 	irreversibleBlocked int
@@ -292,6 +318,8 @@ type Collector struct {
 	latencyRingLen      int
 
 	metricsQuerier evidence.MetricsQuerier
+	// sessionQuerier feeds the sessions panel (#199); optional — nil hides it.
+	sessionQuerier evidence.SessionQuerier
 	activeRunsFn   func() int
 	budgetDaily    float64
 	budgetMonthly  float64
@@ -329,6 +357,13 @@ func WithTenantID(tenantID string) CollectorOption {
 }
 
 // WithPlanStatsFn sets a callback for plan lifecycle counters.
+// WithSessionQuerier enables the orchestration sessions panel (#199): at
+// snapshot time the collector re-derives session stats from the evidence
+// store via evidence.BuildSessionSummary. Optional; nil keeps the panel off.
+func WithSessionQuerier(q evidence.SessionQuerier) CollectorOption {
+	return func(c *Collector) { c.sessionQuerier = q }
+}
+
 func WithPlanStatsFn(fn func(context.Context, string) (PlanStats, error)) CollectorOption {
 	return func(c *Collector) { c.planStatsFn = fn }
 }
@@ -346,6 +381,7 @@ func NewCollector(enforcementMode string, querier evidence.MetricsQuerier, opts 
 		piiCounts:        make(map[string]int),
 		toolFiltered:     make(map[string]int),
 		shadowViolations: make(map[string]*shadowViolationAccum),
+		denialsByReason:  make(map[string]int),
 		byRiskLevel:      make(map[string]*riskLevelAccum),
 		anomalousAgents:  make(map[string]bool),
 		metricsQuerier:   querier,
@@ -420,6 +456,14 @@ func (c *Collector) processEvent(e GatewayEvent) {
 		c.totalFailed++
 	case e.Blocked:
 		c.totalDenied++
+		code := e.DenyReasonCode
+		if code == "" {
+			code = "policy_deny"
+		}
+		if c.denialsByReason == nil {
+			c.denialsByReason = make(map[string]int)
+		}
+		c.denialsByReason[code]++
 	case e.HasError:
 		c.totalFailed++
 	default:
@@ -581,6 +625,7 @@ func (c *Collector) resetInMemoryAggregates() {
 	c.piiCounts = make(map[string]int)
 	c.toolFiltered = make(map[string]int)
 	c.shadowViolations = make(map[string]*shadowViolationAccum)
+	c.denialsByReason = make(map[string]int)
 	c.byRiskLevel = make(map[string]*riskLevelAccum)
 	c.anomalousAgents = make(map[string]bool)
 	c.piiRedactions = 0
@@ -743,7 +788,27 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 		PIIBreakdown:     piiBreakdown,
 		ToolGovernance:   toolGov,
 		ShadowSummary:    shadow,
+		DenialsByReason:  denialsByReasonSorted(c.denialsByReason),
 	}
+}
+
+// denialsByReasonSorted flattens the reason counters, highest count first
+// (ties by reason for determinism); nil when there are no denials.
+func denialsByReasonSorted(m map[string]int) []ReasonCount {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]ReasonCount, 0, len(m))
+	for reason, count := range m {
+		out = append(out, ReasonCount{Reason: reason, Count: count})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Reason < out[j].Reason
+	})
+	return out
 }
 
 func (c *Collector) buildCallerStat(caller string, cs *callerAccum) CallerStat {
@@ -847,6 +912,10 @@ func (c *Collector) buildShadowSummary() *ShadowSummary {
 
 func (c *Collector) fillAggregateMetrics(ctx context.Context, snap *Snapshot) {
 	c.applyPlanStats(ctx, snap)
+	// Sessions depend on the session querier only — fill before the
+	// metricsQuerier gate so a collector without cost aggregates still
+	// serves the sessions panel (#199).
+	c.fillSessions(ctx, snap)
 	if c.metricsQuerier == nil {
 		return
 	}
@@ -862,6 +931,45 @@ func (c *Collector) fillAggregateMetrics(ctx context.Context, snap *Snapshot) {
 	c.fillProviderBreakdown(ctx, snap, dayStart, dayEnd)
 	c.fillBudgetStatus(ctx, snap, dayStart, dayEnd, monthStart, monthEnd)
 	c.fillCacheStats(ctx, snap, last24h, now)
+}
+
+// maxDashboardSessions bounds the sessions panel to the most recently active
+// orchestration sessions (#199).
+const maxDashboardSessions = 20
+
+// fillSessions re-derives the orchestration session drill-down from persisted
+// evidence on every snapshot: recent asserted session ids, each aggregated by
+// evidence.BuildSessionSummary — the same pure function behind
+// `talon audit --session` (#192 §3.8, "one aggregation"). Because nothing is
+// kept in collector memory, a destructive ReconcileFromStore rebuild cannot
+// change these numbers, and there is no state to drift.
+func (c *Collector) fillSessions(ctx context.Context, snap *Snapshot) {
+	if c.sessionQuerier == nil {
+		return
+	}
+	ids, err := c.sessionQuerier.ListRecentOrchestrationSessionIDs(ctx, maxDashboardSessions)
+	if err != nil {
+		// A store failure must be distinguishable from "no orchestration
+		// data" in logs, even though the panel hides either way.
+		log.Warn().Err(err).Msg("dashboard_sessions_query_failed")
+		return
+	}
+	if len(ids) == 0 {
+		return
+	}
+	sessions := make([]evidence.SessionSummary, 0, len(ids))
+	for _, id := range ids {
+		records, err := c.sessionQuerier.ListBySessionID(ctx, id)
+		if err != nil {
+			log.Warn().Err(err).Str("session_id", id).Msg("dashboard_session_load_failed")
+			continue
+		}
+		if len(records) == 0 {
+			continue
+		}
+		sessions = append(sessions, evidence.BuildSessionSummary(id, records))
+	}
+	snap.Sessions = sessions
 }
 
 func (c *Collector) applyPlanStats(ctx context.Context, snap *Snapshot) {

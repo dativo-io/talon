@@ -53,7 +53,9 @@ func TestEmbeddedDashboardsContainUnifiedMissionControlMarkers(t *testing.T) {
 	assert.Contains(t, web.DashboardHTML, "renderEventSignalChips")
 
 	assert.Contains(t, web.GatewayDashboardHTML, "Talon <span>Mission Control</span>")
-	assert.Contains(t, web.GatewayDashboardHTML, "Session Timeline (Lifecycle)")
+	// Renamed from "Session Timeline (Lifecycle)" — that name now belongs to
+	// the orchestration sessions panel (#199 naming-collision requirement).
+	assert.Contains(t, web.GatewayDashboardHTML, "Gateway Activity Feed")
 	assert.Contains(t, web.GatewayDashboardHTML, "Compliance Report Preview")
 	assert.Contains(t, web.GatewayDashboardHTML, "reliability-badge")
 }

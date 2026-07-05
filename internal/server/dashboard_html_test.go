@@ -63,3 +63,41 @@ func TestGatewayDashboardHTML_ContainsEvidenceReviewLink(t *testing.T) {
 	assert.True(t, strings.Contains(html, "#evidence-gateway"))
 	assert.True(t, strings.Contains(html, "Open approvals and evidence review"))
 }
+
+// Orchestration sessions panel (#199, epic #192 PR-H).
+
+func TestGatewayDashboardHTML_SessionsPanel(t *testing.T) {
+	html := web.GatewayDashboardHTML
+	assert.Contains(t, html, `id="panel-sessions"`, "sessions panel must exist")
+	assert.Contains(t, html, `id="sessions-table"`)
+	assert.Contains(t, html, "Coding Sessions (orchestration)")
+	assert.Contains(t, html, `style="display:none"`, "sessions panel hidden by default")
+	assert.Contains(t, html, "renderSessions(d.sessions, d.denials_by_reason)")
+	// Naming collision resolved: the metrics feed card no longer claims the
+	// word "Session"; the new panel owns it.
+	assert.NotContains(t, html, "Session Timeline (Lifecycle)")
+	assert.Contains(t, html, "Gateway Activity Feed")
+}
+
+// TestGatewayDashboardHTML_SessionFieldsEscaped is the XSS fixture at the
+// source level: every client-asserted string the sessions renderer
+// interpolates must pass through esc(). session_id/agent_id/client/models are
+// hostile input (#199 hygiene requirement).
+func TestGatewayDashboardHTML_SessionFieldsEscaped(t *testing.T) {
+	html := web.GatewayDashboardHTML
+	for _, expr := range []string{
+		"esc(sess.session_id)",
+		"esc(sess.client || '-')",
+		"esc((sess.callers || []).join(', '))",
+		"esc((sess.models || []).join(', '))",
+		"esc((sess.providers || []).join(', '))",
+		"esc(a.agent_id || '(unattributed)')",
+		"esc(a.parent_agent_id)",
+		"esc(dd.reason)",
+	} {
+		assert.Contains(t, html, expr, "client-asserted value must be escaped: %s", expr)
+	}
+	// No raw interpolation of the hostile fields anywhere in the renderer.
+	assert.NotContains(t, html, "+ sess.session_id +", "session_id must never be interpolated unescaped")
+	assert.NotContains(t, html, "+ a.agent_id +", "agent_id must never be interpolated unescaped")
+}

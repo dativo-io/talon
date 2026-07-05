@@ -494,6 +494,10 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 	addColumnIfNotExists(db, "step_evidence", "graph_run_id", "TEXT")
 
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_session ON evidence(session_id)")
+	// Partial index for the dashboard sessions panel (#199): only rows with an
+	// orchestration block qualify, so the recent-sessions query scans asserted
+	// traffic only instead of json_extract-ing every evidence row.
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_orch_session ON evidence(session_id, timestamp) WHERE json_extract(evidence_json, '$.orchestration') IS NOT NULL")
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_step_evidence_session ON step_evidence(session_id)")
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_evidence_graph_run ON evidence(graph_run_id)")
 	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_step_evidence_graph_run ON step_evidence(graph_run_id)")
@@ -749,6 +753,37 @@ func (s *Store) ListStepsByCorrelationID(ctx context.Context, correlationID stri
 		steps = append(steps, step)
 	}
 	return steps, rows.Err()
+}
+
+// ListRecentOrchestrationSessionIDs returns session ids of the most recently
+// active sessions whose records carry an orchestration block (client- or
+// vendor-asserted identity, #194) — synthetic per-request session ids never
+// have one, so they never reach the dashboard sessions panel (#199). Newest
+// activity first, capped at limit.
+func (s *Store) ListRecentOrchestrationSessionIDs(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT session_id FROM evidence
+		WHERE session_id != ''
+		  AND json_extract(evidence_json, '$.orchestration') IS NOT NULL
+		GROUP BY session_id
+		ORDER BY MAX(timestamp) DESC, session_id ASC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("querying recent orchestration sessions: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning session id: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // ListBySessionID returns all evidence records for a given session, ordered by timestamp descending.
