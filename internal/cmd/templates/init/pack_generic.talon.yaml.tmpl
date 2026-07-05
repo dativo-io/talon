@@ -3,7 +3,7 @@
 # Date: {{ .Date }}
 
 agent:
-  name: {{ .Name }}
+  name: {{ printf "%q" .Name }}
   description: Generic AI agent with policy enforcement
   version: 1.0.0
   model_tier: 1

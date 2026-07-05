@@ -3,7 +3,7 @@
 # Date: {{ .Date }}
 
 agent:
-  name: {{ .Name }}
+  name: {{ printf "%q" .Name }}
   description: LangChain agent with policy governance
   version: 1.0.0
   model_tier: 1

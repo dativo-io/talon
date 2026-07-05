@@ -9,6 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
+
+	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 func TestInitPack_CrewAI_GeneratesFiles(t *testing.T) {
@@ -273,4 +276,80 @@ func TestInitListPacks_ShowsCrewAI(t *testing.T) {
 	assert.Contains(t, out, "ecommerce-eu")
 	assert.Contains(t, out, "saas-eu")
 	assert.Contains(t, out, "telecom-eu")
+}
+
+// resetInitFlags clears the package-global cobra flag state so scaffold tests
+// neither inherit a previous test's --pack/--compliance nor leak their own.
+func resetInitFlags() {
+	initName = ""
+	initOwner = ""
+	initMinimal = false
+	initPack = ""
+	initScaffold = false
+	initCompliance = ""
+	initDryRun = false
+	initForce = false
+	initVerify = false
+	initSkipVerify = false
+	initAgentOutput = ""
+	initInfraOutput = ""
+	initProvider = ""
+	initRegion = ""
+	initDataSovereignty = ""
+	initFeatures = ""
+	initListProviders = false
+	initListPacks = false
+	initListFeatures = false
+	initListCompliance = false
+}
+
+// #231: the scaffold-written pricing table must be byte-identical to the
+// binary's embedded default — a scaffolded file that drifts behind silently
+// shadows the current table (LoadOrDefault prefers a loadable file).
+func TestInitScaffold_PricingMatchesEmbeddedDefault(t *testing.T) {
+	resetInitFlags()
+	t.Cleanup(resetInitFlags)
+	dir := t.TempDir()
+	prevWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(prevWd); initName = ""; initScaffold = false })
+	require.NoError(t, os.Chdir(dir))
+
+	rootCmd.SetArgs([]string{"init", "--scaffold", "--name", "scaffold-pricing", "--skip-verify"})
+	require.NoError(t, rootCmd.Execute())
+
+	written, err := os.ReadFile(filepath.Join(dir, "pricing", "models.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, pricing.DefaultModelsYAML(), written,
+		"scaffold must write the embedded default table — no third drifting copy")
+	assert.Contains(t, string(written), "gpt-5.3-codex", "current models present")
+	assert.Contains(t, string(written), "cache_read_per_1m", "cache rates present (#196)")
+}
+
+// #232: a numeric-looking agent name must render as a YAML string; the
+// generated policy must pass schema validation out of the box.
+func TestInitScaffold_NumericNameIsValidYAML(t *testing.T) {
+	resetInitFlags()
+	t.Cleanup(resetInitFlags)
+	dir := t.TempDir()
+	prevWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(prevWd); initName = ""; initScaffold = false })
+	require.NoError(t, os.Chdir(dir))
+
+	rootCmd.SetArgs([]string{"init", "--scaffold", "--name", "192", "--skip-verify"})
+	require.NoError(t, rootCmd.Execute())
+
+	raw, err := os.ReadFile(filepath.Join(dir, "agent.talon.yaml"))
+	require.NoError(t, err)
+	require.NoError(t, policy.ValidateSchema(raw, false),
+		"scaffold output with --name 192 must be schema-valid")
+
+	var doc struct {
+		Agent struct {
+			Name any `yaml:"name"`
+		} `yaml:"agent"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &doc))
+	assert.Equal(t, "192", doc.Agent.Name, "name must be the YAML string \"192\", not the integer 192")
 }
