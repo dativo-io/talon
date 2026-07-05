@@ -35,6 +35,10 @@ type RecordGatewayEvidenceParams struct {
 	EstimatedCost           float64
 	InputTokens             int
 	OutputTokens            int
+	CacheReadTokens         int
+	CacheWriteTokens        int
+	PricingBasis            string // how Cost was derived (#196)
+	PricingKnown            bool
 	DurationMS              int64
 	TTFTMS                  int64   // time to first token (streaming); 0 when not streaming
 	TPOTMS                  float64 // time per output token (streaming); 0 when not applicable
@@ -131,7 +135,9 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			ModelUsed:     params.Model,
 			Cost:          params.Cost,
 			EstimatedCost: params.EstimatedCost,
-			Tokens:        evidence.TokenUsage{Input: params.InputTokens, Output: params.OutputTokens},
+			Tokens:        evidence.TokenUsage{Input: params.InputTokens, Output: params.OutputTokens, CacheRead: params.CacheReadTokens, CacheWrite: params.CacheWriteTokens},
+			PricingBasis:  params.PricingBasis,
+			PricingKnown:  params.PricingKnown,
 			DurationMS:    params.DurationMS,
 			TTFTMS:        params.TTFTMS,
 			TPOTMS:        params.TPOTMS,

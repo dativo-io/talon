@@ -42,8 +42,32 @@ type GatewayPolicyEvaluator interface {
 	EvaluateGateway(ctx context.Context, input map[string]interface{}) (allowed bool, reasons []string, err error)
 }
 
-// CostEstimator returns estimated cost in EUR for a request. Used for policy and evidence.
-type CostEstimator func(model string, inputTokens, outputTokens int) float64
+// Usage is the token breakdown a CostEstimator prices. Input excludes cache
+// tokens; CacheRead/CacheWrite are prompt-cache read/write counts.
+type Usage struct {
+	Input, CacheRead, CacheWrite, Output int
+}
+
+// CostResult is the outcome of a cost estimate. PricingBasis records HOW the
+// number was derived so a signed evidence cost is never silently a fallback.
+type CostResult struct {
+	Amount       float64
+	PricingKnown bool
+	PricingBasis string // "table" | "cache_fallback_input_rate" | "default_estimate"
+}
+
+// Cost-basis constants recorded in evidence.
+const (
+	PricingBasisTable        = "table"
+	PricingBasisCacheFalling = "cache_fallback_input_rate"
+	PricingBasisDefault      = "default_estimate"
+)
+
+// CostEstimator returns the estimated cost for a request, keyed on the routed
+// provider and model plus a full token breakdown (cache-aware). Provider is
+// threaded through so the routed provider's pricing is used, not a
+// max-across-providers guess.
+type CostEstimator func(provider, model string, usage Usage) CostResult
 
 // MetricsRecorder receives gateway events for dashboard aggregation.
 // Implemented by *metrics.Collector via an adapter to avoid import cycles.
@@ -501,7 +525,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Estimated cost for policy (use default token estimate if we don't have real tokens yet)
 	estTokensIn, estTokensOut := 500, 500
-	estimatedCost := g.costEstimate(extracted.Model, estTokensIn, estTokensOut)
+	estimatedCost := g.costEstimate(route.Provider, extracted.Model, Usage{Input: estTokensIn, Output: estTokensOut}).Amount
 	if isCountTokens {
 		estimatedCost = 0 // free endpoint: a nonzero estimate would leak into budget input and deny evidence (#218)
 	}
@@ -721,6 +745,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		forwardBody, responsesStoreOverridden = applyResponsesStoreMode(forwardBody, g.config.Providers[route.Provider].ResponsesStoreMode)
 	}
 
+	// Step 7c: Inject stream_options.include_usage on OpenAI chat-completions
+	// streaming requests so the upstream emits a final usage chunk — otherwise
+	// streamed chat cost is estimate-only (#196). Config-gated per provider;
+	// default on. Never touches Responses API (usage rides response.completed).
+	if wire == "openai" && g.config.Providers[route.Provider].InjectsStreamUsage() &&
+		!isResponsesAPIPath(route.Path) && isChatCompletionsPath(route.Path) {
+		forwardBody = ensureStreamUsage(forwardBody)
+	}
+
 	// Step 8: Reroute (same-provider model override) — MVP: no model change, just forward
 
 	// Step 8b: Semantic cache lookup (skip for tool calls and when disabled)
@@ -758,7 +791,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if err == nil && lookupResult != nil {
 					hit := lookupResult.Entry
 					_ = g.cacheStore.IncrementHitCount(ctx, hit.ID)
-					costSaved := g.costEstimate(extracted.Model, 300, 300)
+					costSaved := g.costEstimate(route.Provider, extracted.Model, Usage{Input: 300, Output: 300}).Amount
 					durationMS := time.Since(start).Milliseconds()
 					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", true, nil, inputPIIRedacted, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved, false, 0, 0, estimatedCost)
 					if err != nil {
@@ -947,7 +980,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// recomputed cost estimate, and destination region — built by the
 		// same function as the primary's input (session context included).
 		if g.policy != nil && (g.config.Mode == ModeEnforce || isShadow) {
-			candEstimate := g.costEstimate(candModel, estTokensIn, estTokensOut)
+			candEstimate := g.costEstimate(candProvider, candModel, Usage{Input: estTokensIn, Output: estTokensOut}).Amount
 			candInput := g.buildPolicyInputForRequest(cCtx, caller, candProvider, candModel, tier, candEstimate, dailyCost, monthlyCost, sessionID)
 			allowed, reasons, policyErr := g.policy.EvaluateGateway(cCtx, candInput)
 			switch {
@@ -1080,8 +1113,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	cost := g.costEstimate(selectedModel, tokenUsage.Input, tokenUsage.Output)
-	if tokenUsage.Input == 0 && tokenUsage.Output == 0 {
+	costResult := g.costEstimate(selectedProvider, selectedModel, Usage{
+		Input:      tokenUsage.Input,
+		CacheRead:  tokenUsage.CacheRead,
+		CacheWrite: tokenUsage.CacheWrite,
+		Output:     tokenUsage.Output,
+	})
+	cost := costResult.Amount
+	pricingBasis := costResult.PricingBasis
+	pricingKnown := costResult.PricingKnown
+	if tokenUsage.Input == 0 && tokenUsage.Output == 0 && tokenUsage.CacheRead == 0 && tokenUsage.CacheWrite == 0 {
 		cost = estimatedCost
 	}
 	if isCountTokens {
@@ -1134,6 +1175,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// retention decision must be visible in signed evidence.
 			p.GatewayAnnotations = append(p.GatewayAnnotations, "responses_store_overridden")
 		}
+		if !isCountTokens {
+			p.PricingBasis = pricingBasis
+			p.PricingKnown = pricingKnown
+		}
 	})
 	if recordErr != nil {
 		g.handleEvidenceWriteFailure(ctx, recordErr)
@@ -1159,8 +1204,10 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		classification = &classifier.Classification{}
 	}
 	inputTokens, outputTokens := 0, 0
+	cacheReadTokens, cacheWriteTokens := 0, 0
 	if usage != nil {
 		inputTokens, outputTokens = usage.Input, usage.Output
+		cacheReadTokens, cacheWriteTokens = usage.CacheRead, usage.CacheWrite
 	}
 	secretsAccessed := []string{}
 	if prov, ok := g.config.Provider(provider); ok && prov.SecretName != "" {
@@ -1261,6 +1308,8 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		EstimatedCost:           estimatedCost,
 		InputTokens:             inputTokens,
 		OutputTokens:            outputTokens,
+		CacheReadTokens:         cacheReadTokens,
+		CacheWriteTokens:        cacheWriteTokens,
 		DurationMS:              durationMS,
 		Error:                   execErr,
 		SecretsAccessed:         secretsAccessed,
@@ -1604,13 +1653,13 @@ func (g *Gateway) callerCostTotals(ctx context.Context, caller *CallerConfig) (d
 	return daily, monthly
 }
 
-func defaultCostEstimator(model string, inputTokens, outputTokens int) float64 {
-	// Rough EUR per 1k tokens for common models (MVP approximation)
-	n := float64(inputTokens+outputTokens) / 1000
+func defaultCostEstimator(_, _ string, usage Usage) CostResult {
+	// Rough per-1k-token approximation when no pricing table is wired.
+	n := float64(usage.Input+usage.CacheRead+usage.CacheWrite+usage.Output) / 1000
 	if n < 0.01 {
 		n = 0.01
 	}
-	return n * 0.002
+	return CostResult{Amount: n * 0.002, PricingKnown: false, PricingBasis: PricingBasisDefault}
 }
 
 func extractContentFromOpenAIResponse(body []byte) string {

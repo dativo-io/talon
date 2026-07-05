@@ -11,10 +11,14 @@ import (
 	"time"
 )
 
-// TokenUsage holds input/output token counts from the upstream response.
+// TokenUsage holds token counts from the upstream response. Input excludes
+// cache tokens (normalized per provider family); CacheRead/CacheWrite are the
+// prompt-cache read/write token counts when the provider reports them.
 type TokenUsage struct {
-	Input  int
-	Output int
+	Input      int
+	Output     int
+	CacheRead  int
+	CacheWrite int
 }
 
 // StreamingMetrics holds timing and counts for streaming responses (filled by streamCopy).
@@ -233,12 +237,10 @@ func extractUsageFromJSONPayload(payload []byte, usage *TokenUsage) {
 	// no prompt/completion tokens, and return — losing output tokens entirely.
 	switch typ, _ := m["type"].(string); typ {
 	case "message_start":
-		// message_start has message.usage.input_tokens
+		// message_start carries message.usage with input and cache tokens.
 		if msg, ok := m["message"].(map[string]interface{}); ok {
 			if u, ok := msg["usage"].(map[string]interface{}); ok {
-				if n, _ := u["input_tokens"].(float64); n > 0 {
-					usage.Input = int(n)
-				}
+				applyAnthropicUsage(u, usage)
 			}
 		}
 		return
@@ -250,15 +252,70 @@ func extractUsageFromJSONPayload(payload []byte, usage *TokenUsage) {
 			}
 		}
 		return
+	case "response.completed", "response.incomplete":
+		// OpenAI Responses API streaming: usage arrives nested under "response"
+		// only in the terminal event (Codex always streams; without this its
+		// cost is estimate-only).
+		if resp, ok := m["response"].(map[string]interface{}); ok {
+			if u, ok := resp["usage"].(map[string]interface{}); ok {
+				applyOpenAIUsage(u, usage)
+			}
+		}
+		return
 	}
-	// OpenAI usage at top level
+	// OpenAI chat-completions usage at top level (final chunk with include_usage).
 	if u, ok := m["usage"].(map[string]interface{}); ok {
-		if n, _ := u["prompt_tokens"].(float64); n > 0 {
-			usage.Input = int(n)
+		applyOpenAIUsage(u, usage)
+	}
+}
+
+// applyAnthropicUsage reads an Anthropic usage object. input_tokens EXCLUDES
+// cache tokens; cache_creation_input_tokens / cache_read_input_tokens are the
+// write/read counts. Values map to TokenUsage directly (no subtraction).
+func applyAnthropicUsage(u map[string]interface{}, usage *TokenUsage) {
+	if n, _ := u["input_tokens"].(float64); n > 0 {
+		usage.Input = int(n)
+	}
+	if n, _ := u["output_tokens"].(float64); n > 0 {
+		usage.Output = int(n)
+	}
+	if n, _ := u["cache_creation_input_tokens"].(float64); n > 0 {
+		usage.CacheWrite = int(n)
+	}
+	if n, _ := u["cache_read_input_tokens"].(float64); n > 0 {
+		usage.CacheRead = int(n)
+	}
+}
+
+// applyOpenAIUsage reads an OpenAI usage object (Chat Completions or Responses
+// API). cached_tokens is a SUBSET of prompt/input tokens, so Input is
+// normalized to prompt_tokens − cached_tokens and the cached count becomes
+// CacheRead. OpenAI has no cache-write token (caching is automatic, free-write).
+func applyOpenAIUsage(u map[string]interface{}, usage *TokenUsage) {
+	prompt, _ := u["prompt_tokens"].(float64)
+	if prompt == 0 {
+		prompt, _ = u["input_tokens"].(float64) // Responses API naming
+	}
+	var cached float64
+	if d, ok := u["prompt_tokens_details"].(map[string]interface{}); ok {
+		cached, _ = d["cached_tokens"].(float64)
+	} else if d, ok := u["input_tokens_details"].(map[string]interface{}); ok {
+		cached, _ = d["cached_tokens"].(float64)
+	}
+	if prompt > 0 {
+		in := prompt - cached
+		if in < 0 {
+			in = 0
 		}
-		if n, _ := u["completion_tokens"].(float64); n > 0 {
-			usage.Output = int(n)
-		}
+		usage.Input = int(in)
+	}
+	if cached > 0 {
+		usage.CacheRead = int(cached)
+	}
+	if n, _ := u["completion_tokens"].(float64); n > 0 {
+		usage.Output = int(n)
+	} else if n, _ := u["output_tokens"].(float64); n > 0 {
+		usage.Output = int(n)
 	}
 }
 
@@ -268,19 +325,16 @@ func parseUsageFromJSON(body []byte, _ string, usage *TokenUsage) {
 		return
 	}
 	if u, ok := m["usage"].(map[string]interface{}); ok {
-		if n, _ := u["prompt_tokens"].(float64); n > 0 {
-			usage.Input = int(n)
-		}
-		if n, _ := u["completion_tokens"].(float64); n > 0 {
-			usage.Output = int(n)
-		}
-		if usage.Input == 0 && usage.Output == 0 {
-			if n, _ := u["input_tokens"].(float64); n > 0 {
-				usage.Input = int(n)
-			}
-			if n, _ := u["output_tokens"].(float64); n > 0 {
-				usage.Output = int(n)
-			}
+		// Anthropic reports cache tokens as separate (non-subset) counts, so it
+		// must not go through the OpenAI subset normalization. Route by the
+		// presence of Anthropic cache-token keys; both families' non-cache
+		// shape ({input,output}_tokens) is handled correctly by applyOpenAIUsage.
+		_, hasCacheWrite := u["cache_creation_input_tokens"]
+		_, hasCacheRead := u["cache_read_input_tokens"]
+		if hasCacheWrite || hasCacheRead {
+			applyAnthropicUsage(u, usage)
+		} else {
+			applyOpenAIUsage(u, usage)
 		}
 		return
 	}

@@ -14,45 +14,58 @@ providers:
       gpt-4o:
         input_per_1m: 2.50
         output_per_1m: 10.00
+        cache_read_per_1m: 0.25
       gpt-4o-mini:
         input_per_1m: 0.15
         output_per_1m: 0.60
+        cache_read_per_1m: 0.015
       gpt-4-turbo:
         input_per_1m: 10.00
         output_per_1m: 30.00
+        cache_read_per_1m: 1.0
       o1:
         input_per_1m: 15.00
         output_per_1m: 60.00
+        cache_read_per_1m: 1.5
       o1-mini:
         input_per_1m: 1.10
         output_per_1m: 4.40
+        cache_read_per_1m: 0.11
       o3-mini:
         input_per_1m: 1.10
         output_per_1m: 4.40
+        cache_read_per_1m: 0.11
       # Current lineup, verified against developers.openai.com/api/docs/pricing,
       # 2026-07. Cached-input rates land with the cache-aware pricing schema
       # (epic #192 PR-E / #196).
       gpt-5.5:
         input_per_1m: 5.00
         output_per_1m: 30.00
+        cache_read_per_1m: 0.5
       gpt-5.5-pro:
         input_per_1m: 30.00
         output_per_1m: 180.00
+        cache_read_per_1m: 3.0
       gpt-5.4:
         input_per_1m: 2.50
         output_per_1m: 15.00
+        cache_read_per_1m: 0.25
       gpt-5.4-mini:
         input_per_1m: 0.75
         output_per_1m: 4.50
+        cache_read_per_1m: 0.075
       gpt-5.4-nano:
         input_per_1m: 0.20
         output_per_1m: 1.25
+        cache_read_per_1m: 0.02
       gpt-5.4-pro:
         input_per_1m: 30.00
         output_per_1m: 180.00
+        cache_read_per_1m: 3.0
       gpt-5.3-codex:
         input_per_1m: 1.75
         output_per_1m: 14.00
+        cache_read_per_1m: 0.175
 
   anthropic:
     # Verified against platform.claude.com pricing, 2026-07. Cache read/write
@@ -61,42 +74,66 @@ providers:
       claude-fable-5:
         input_per_1m: 10.00
         output_per_1m: 50.00
+        cache_read_per_1m: 1.0
+        cache_write_per_1m: 12.5
       claude-opus-4-8:
         input_per_1m: 5.00
         output_per_1m: 25.00
+        cache_read_per_1m: 0.5
+        cache_write_per_1m: 6.25
       claude-opus-4-7:
         input_per_1m: 5.00
         output_per_1m: 25.00
+        cache_read_per_1m: 0.5
+        cache_write_per_1m: 6.25
       claude-opus-4-6:
         input_per_1m: 5.00
         output_per_1m: 25.00
+        cache_read_per_1m: 0.5
+        cache_write_per_1m: 6.25
       claude-opus-4-5:
         input_per_1m: 5.00
         output_per_1m: 25.00
+        cache_read_per_1m: 0.5
+        cache_write_per_1m: 6.25
       # Standard rate; introductory $2/$10 applies through 2026-08-31 —
       # operators on intro pricing can lower this locally.
       claude-sonnet-5:
         input_per_1m: 3.00
         output_per_1m: 15.00
+        cache_read_per_1m: 0.3
+        cache_write_per_1m: 3.75
       claude-sonnet-4-6:
         input_per_1m: 3.00
         output_per_1m: 15.00
+        cache_read_per_1m: 0.3
+        cache_write_per_1m: 3.75
       claude-sonnet-4-5:
         input_per_1m: 3.00
         output_per_1m: 15.00
+        cache_read_per_1m: 0.3
+        cache_write_per_1m: 3.75
       claude-haiku-4-5:
         input_per_1m: 1.00
         output_per_1m: 5.00
+        cache_read_per_1m: 0.1
+        cache_write_per_1m: 1.25
       # Deprecated / legacy models still callable:
       claude-sonnet-4-20250514:
         input_per_1m: 3.00
         output_per_1m: 15.00
+        cache_read_per_1m: 0.3
+        cache_write_per_1m: 3.75
       claude-haiku-3-5:
         input_per_1m: 0.80
         output_per_1m: 4.00
+        cache_read_per_1m: 0.08
+        cache_write_per_1m: 1.0
       claude-opus-4-20250514:
         input_per_1m: 15.00
         output_per_1m: 75.00
+        cache_read_per_1m: 1.5
+        cache_write_per_1m: 18.75
 
   azure-openai:
     # Azure uses the same model pricing as OpenAI.

@@ -175,3 +175,50 @@ func TestEstimate_ExactOneMillionTokens(t *testing.T) {
 	assert.True(t, known)
 	assert.InDelta(t, 12.50, cost, 0.001)
 }
+
+func TestEstimateCached_AnthropicExplicitRates(t *testing.T) {
+	table, err := Load("../../pricing/models.yaml")
+	require.NoError(t, err)
+	// claude-sonnet-5: input 3.00, output 15.00, cache_read 0.3, cache_write 3.75 per 1M.
+	// 1M input + 1M cacheRead + 1M cacheWrite + 1M output.
+	cost, known, fallback := table.EstimateCached("anthropic", "claude-sonnet-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000)
+	require.True(t, known)
+	assert.False(t, fallback, "explicit cache rates present → no fallback")
+	assert.InDelta(t, 3.00+0.3+3.75+15.00, cost, 0.001)
+}
+
+func TestEstimateCached_OpenAIReadDiscountNoWrite(t *testing.T) {
+	table, err := Load("../../pricing/models.yaml")
+	require.NoError(t, err)
+	// gpt-5.5: input 5.00, output 30.00, cache_read 0.5, no cache_write.
+	cost, known, fallback := table.EstimateCached("openai", "gpt-5.5", 1_000_000, 1_000_000, 0, 1_000_000)
+	require.True(t, known)
+	assert.False(t, fallback)
+	assert.InDelta(t, 5.00+0.5+30.00, cost, 0.001)
+}
+
+func TestEstimateCached_FallbackToInputRate(t *testing.T) {
+	// A model with only input/output rates → cache tokens priced at input rate,
+	// fallback flagged (fail-conservative: never below the input rate).
+	table, err := loadFromData([]byte(`version: "1"
+providers:
+  openai:
+    models:
+      cheap:
+        input_per_1m: 10.0
+        output_per_1m: 20.0`))
+	require.NoError(t, err)
+	cost, known, fallback := table.EstimateCached("openai", "cheap", 0, 1_000_000, 0, 0)
+	require.True(t, known)
+	assert.True(t, fallback, "absent cache rate → fallback to input rate")
+	assert.InDelta(t, 10.0, cost, 0.001, "cache read priced at input rate, not lower")
+}
+
+func TestEstimateCached_UnknownModel(t *testing.T) {
+	table, err := Load("../../pricing/models.yaml")
+	require.NoError(t, err)
+	cost, known, fallback := table.EstimateCached("openai", "no-such-model", 100, 100, 0, 100)
+	assert.False(t, known)
+	assert.False(t, fallback)
+	assert.Equal(t, 0.0, cost)
+}

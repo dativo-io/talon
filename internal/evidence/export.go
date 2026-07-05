@@ -25,9 +25,13 @@ type ExportRecord struct {
 	Provider       string    `json:"provider,omitempty"`
 	InputTokens    int       `json:"input_tokens,omitempty"`
 	OutputTokens   int       `json:"output_tokens,omitempty"`
-	PolicyAction   string    `json:"policy_action,omitempty"`
-	DurationMS     int64     `json:"duration_ms"`
-	HasError       bool      `json:"has_error"`
+	// Prompt-cache token detail + how cost was derived (#196).
+	CacheReadTokens  int    `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int    `json:"cache_write_tokens,omitempty"`
+	PricingBasis     string `json:"pricing_basis,omitempty"`
+	PolicyAction     string `json:"policy_action,omitempty"`
+	DurationMS       int64  `json:"duration_ms"`
+	HasError         bool   `json:"has_error"`
 	// Classification (enriched export)
 	InputTier        int      `json:"input_tier"`
 	OutputTier       int      `json:"output_tier"`
@@ -122,6 +126,9 @@ func ToExportRecord(e *Evidence) ExportRecord {
 		ModelUsed:               e.Execution.ModelUsed,
 		InputTokens:             e.Execution.Tokens.Input,
 		OutputTokens:            e.Execution.Tokens.Output,
+		CacheReadTokens:         e.Execution.Tokens.CacheRead,
+		CacheWriteTokens:        e.Execution.Tokens.CacheWrite,
+		PricingBasis:            e.Execution.PricingBasis,
 		PolicyAction:            e.PolicyDecision.Action,
 		DurationMS:              e.Execution.DurationMS,
 		HasError:                e.Execution.Error != "",

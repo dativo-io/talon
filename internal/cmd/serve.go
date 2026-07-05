@@ -32,6 +32,7 @@ import (
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/pricing"
 	talonprompt "github.com/dativo-io/talon/internal/prompt"
 	"github.com/dativo-io/talon/internal/scanner"
 	"github.com/dativo-io/talon/internal/secrets"
@@ -141,7 +142,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	providers := buildProviders(cfg)
 	pricingTable := loadPricingTable(cfg, policyBaseDir)
 	injectPricingInProviders(providers, pricingTable)
-	gatewayEstimator := gatewayCostEstimator(providers)
+	gatewayEstimator := gatewayCostEstimator(pricingTable)
 	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, policyBaseDir)
 	router := llm.NewRouter(routing, providers, costLimits)
 
@@ -641,24 +642,28 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func gatewayCostEstimator(providers map[string]llm.Provider) gateway.CostEstimator {
-	return func(model string, inputTokens, outputTokens int) float64 {
-		// Use the highest known estimate across configured providers so pre-call budget checks
-		// stay conservative even when only model is known at this stage.
-		maxEstimate := 0.0
-		for _, provider := range providers {
-			if provider == nil {
-				continue
+// gatewayCostEstimator prices a gateway request against the routed provider's
+// entry in the pricing table, cache-aware (#196). Provider is the gateway
+// provider name; when it isn't in the pricing table (e.g. an aliased endpoint),
+// the estimate falls back to a flat default and pricing_known is false so the
+// signed evidence records that the cost is an estimate, not a table figure.
+func gatewayCostEstimator(pricingTable *pricing.PricingTable) gateway.CostEstimator {
+	return func(provider, model string, usage gateway.Usage) gateway.CostResult {
+		cost, known, cacheFallback := pricingTable.EstimateCached(
+			provider, model, usage.Input, usage.CacheRead, usage.CacheWrite, usage.Output)
+		if !known {
+			// Unknown provider/model: conservative flat estimate, marked unknown.
+			n := float64(usage.Input+usage.CacheRead+usage.CacheWrite+usage.Output) / 1000
+			if n < 0.01 {
+				n = 0.01
 			}
-			if estimate := provider.EstimateCost(model, inputTokens, outputTokens); estimate > maxEstimate {
-				maxEstimate = estimate
-			}
+			return gateway.CostResult{Amount: n * 0.002, PricingKnown: false, PricingBasis: gateway.PricingBasisDefault}
 		}
-		if maxEstimate > 0 {
-			return maxEstimate
+		basis := gateway.PricingBasisTable
+		if cacheFallback {
+			basis = gateway.PricingBasisCacheFalling
 		}
-		// Fallback when pricing is unavailable/unknown.
-		return 0.01
+		return gateway.CostResult{Amount: cost, PricingKnown: true, PricingBasis: basis}
 	}
 }
 
