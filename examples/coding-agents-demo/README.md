@@ -25,6 +25,73 @@ GATEWAY=http://localhost:18080 ./demo.sh all
 The same sequence is smoke-run in CI without Docker:
 `go test -tags=integration ./tests/integration -run TestCodingAgentsDemo_EndToEnd`.
 
+## Run it without Docker
+
+The mock provider is a plain zero-dependency Go binary — Docker is packaging,
+not a requirement. Two paths:
+
+**Path A — one command, CI-identical:**
+
+```bash
+go test -tags=integration ./tests/integration -run TestCodingAgentsDemo_EndToEnd -v
+```
+
+Compiles the real mock, drives a real gateway through the full sequence
+(cross-provider session, subagent rollup, budget deny with structured detail,
+cache tokens from both SSE wires, signature verification), ~2s.
+
+**Path B — hands-on, both processes under your control:**
+
+```bash
+# Terminal 1 — the dual-wire mock (Anthropic Messages + OpenAI Responses + Chat, all SSE)
+cd examples/docker-compose/mock-provider && go run . -port 9090
+```
+
+```bash
+# Terminal 2 — gateway in a scratch dir, pointed at the mock
+mkdir /tmp/talon-demo && cd /tmp/talon-demo
+cat > talon.config.yaml <<'EOF'
+gateway:
+  enabled: true
+  mode: enforce
+  providers:
+    anthropic:
+      enabled: true
+      base_url: "http://localhost:9090"
+      secret_name: "anthropic-api-key"
+      api_family: "anthropic"
+    openai:
+      enabled: true
+      base_url: "http://localhost:9090"
+      secret_name: "openai-api-key"
+  callers:
+    - name: "claude-code"
+      tenant_key: "talon-gw-demo-coding-0001"
+      tenant_id: "demo"
+      policy_overrides:
+        pii_action: "warn"
+        response_pii_action: "allow"
+        max_session_cost: 0.02
+EOF
+export TALON_SECRETS_KEY=$(openssl rand -hex 16) TALON_SIGNING_KEY=$(openssl rand -hex 16) TALON_ADMIN_KEY=demo-admin-key
+talon secrets set anthropic-api-key fake   # the mock ignores auth
+talon secrets set openai-api-key fake
+talon serve --gateway --gateway-config talon.config.yaml --port 8080
+```
+
+Then run the whole walk-through from a third terminal — `TALON_BIN` routes
+the script's CLI steps to your local binary instead of the container:
+
+```bash
+cd <repo>/examples/coding-agents-demo
+TALON_BIN=talon TALON_DATA_DIR=$HOME/.talon ./demo.sh all
+```
+
+(Use the same shell env — `TALON_SIGNING_KEY` etc. — as the serve terminal so
+`talon audit verify` checks against the right key.) This is also the setup
+for iterating on the mock itself: edit `main.go`, restart `go run`, re-fire
+a curl.
+
 ## What you'll watch (about 30 seconds)
 
 **1. One session, two providers.** A `generator` subagent calls the
@@ -32,6 +99,13 @@ The same sequence is smoke-run in CI without Docker:
 *openai Responses* route — both carrying `X-Talon-Session-ID: sess-coding-demo`.
 Talon records them as **one session** with per-subagent attribution
 (`provenance: client_asserted` — attribution, not authentication).
+
+> **The cast is made up.** `generator` and `executor` are arbitrary labels
+> `demo.sh` passes in `X-Talon-Agent-ID`; Talon assigns them no meaning and
+> validates them against no list — it records and rolls up whatever your
+> fleet sends (see [Governing coding agents →
+> Terminology](../../docs/guides/governing-coding-agents.md)). Only
+> `X-Talon-Stage` has a fixed vocabulary.
 
 **2. A PII event.** A prompt containing an email address is scanned, warned,
 and evidenced (`pii_action: warn`) — the request still flows, because
