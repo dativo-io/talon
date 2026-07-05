@@ -38,6 +38,11 @@ func WarnUnknownModelOnce(providerID, model string) {
 type ModelPricing struct {
 	InputPer1M  float64 `yaml:"input_per_1m"`
 	OutputPer1M float64 `yaml:"output_per_1m"`
+	// CacheReadPer1M / CacheWritePer1M price prompt-cache read/write tokens
+	// (#196). Optional: when absent (0), cache tokens fall back to the input
+	// rate — fail-conservative, never lower than pre-change reported cost.
+	CacheReadPer1M  float64 `yaml:"cache_read_per_1m,omitempty"`
+	CacheWritePer1M float64 `yaml:"cache_write_per_1m,omitempty"`
 }
 
 // ProviderPricing holds model pricing for a provider, with optional inherit from another provider.
@@ -151,33 +156,66 @@ func LoadOrDefault(path string) *PricingTable {
 // Model lookup tries exact key first, then a base name (e.g. gpt-4o-2024-08-06 -> gpt-4o) so API-returned
 // model IDs still match pricing table keys.
 func (t *PricingTable) Estimate(providerID, model string, inputTokens, outputTokens int) (cost float64, known bool) {
-	if t == nil || t.Providers == nil {
-		return 0, false
-	}
-	pp, ok := t.Providers[providerID]
-	if !ok {
-		return 0, false
-	}
-	if pp.Models == nil {
-		return 0, false
-	}
-	m, ok := pp.Models[model]
-	if !ok {
-		// Provider exists with empty models map → treat as free (e.g. ollama).
-		if len(pp.Models) == 0 {
-			return 0, true
-		}
-		// Try base model name (strip API-style suffix like -2024-08-06 or -v1:0).
-		if base := apiModelSuffix.ReplaceAllString(model, ""); base != model {
-			m, ok = pp.Models[base]
-		}
-		if !ok {
-			return 0, false
-		}
+	m, known, free := t.resolveModel(providerID, model)
+	if !known || free {
+		return 0, known
 	}
 	// Per 1M tokens: (input/1e6)*input_per_1m + (output/1e6)*output_per_1m
 	cost = (float64(inputTokens)/1e6)*m.InputPer1M + (float64(outputTokens)/1e6)*m.OutputPer1M
 	return cost, true
+}
+
+// EstimateCached prices a full token breakdown including prompt-cache read and
+// write tokens (#196). cacheFallback is true when cache tokens were priced at
+// the input rate because the model has no explicit cache rate — a
+// fail-conservative fallback that never reports less than the input rate.
+func (t *PricingTable) EstimateCached(providerID, model string, inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens int) (cost float64, known, cacheFallback bool) {
+	m, known, free := t.resolveModel(providerID, model)
+	if !known || free {
+		return 0, known, false
+	}
+	cacheReadRate := m.CacheReadPer1M
+	if cacheReadRate == 0 && cacheReadTokens > 0 {
+		cacheReadRate = m.InputPer1M
+		cacheFallback = true
+	}
+	cacheWriteRate := m.CacheWritePer1M
+	if cacheWriteRate == 0 && cacheWriteTokens > 0 {
+		cacheWriteRate = m.InputPer1M
+		cacheFallback = true
+	}
+	cost = (float64(inputTokens)/1e6)*m.InputPer1M +
+		(float64(cacheReadTokens)/1e6)*cacheReadRate +
+		(float64(cacheWriteTokens)/1e6)*cacheWriteRate +
+		(float64(outputTokens)/1e6)*m.OutputPer1M
+	return cost, true, cacheFallback
+}
+
+// resolveModel looks up a model's pricing. Returns (pricing, known, free):
+// known=false when the provider/model is absent; free=true when the provider
+// exists with an empty models map (e.g. ollama). Model lookup tries the exact
+// key, then a base name (stripping an API-style suffix like -2024-08-06).
+func (t *PricingTable) resolveModel(providerID, model string) (ModelPricing, bool, bool) {
+	if t == nil || t.Providers == nil {
+		return ModelPricing{}, false, false
+	}
+	pp, ok := t.Providers[providerID]
+	if !ok || pp.Models == nil {
+		return ModelPricing{}, false, false
+	}
+	m, ok := pp.Models[model]
+	if !ok {
+		if len(pp.Models) == 0 {
+			return ModelPricing{}, true, true // free provider (ollama)
+		}
+		if base := apiModelSuffix.ReplaceAllString(model, ""); base != model {
+			m, ok = pp.Models[base]
+		}
+		if !ok {
+			return ModelPricing{}, false, false
+		}
+	}
+	return m, true, false
 }
 
 // ModelCount returns the number of models configured for a provider (for PricingAvailable / CLI).

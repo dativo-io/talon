@@ -320,12 +320,24 @@ type Execution struct {
 	TTFTMS        int64      `json:"ttft_ms,omitempty"` // time to first token (streaming)
 	TPOTMS        float64    `json:"tpot_ms,omitempty"` // time per output token (streaming)
 	Error         string     `json:"error,omitempty"`
+	// PricingBasis records how Cost was derived (#196): "table" (model+cache
+	// rates from the pricing file), "cache_fallback_input_rate" (cache tokens
+	// priced at the input rate because cache rates were absent), or
+	// "default_estimate" (no pricing table). PricingKnown is false when the
+	// model/provider was not in the pricing table. Additive omitempty.
+	PricingBasis string `json:"pricing_basis,omitempty"`
+	PricingKnown bool   `json:"pricing_known,omitempty"`
 }
 
 // TokenUsage captures input/output token counts.
 type TokenUsage struct {
 	Input  int `json:"input"`
 	Output int `json:"output"`
+	// CacheRead/CacheWrite are prompt-cache read/write token counts (#196).
+	// Input excludes cache tokens (normalized per provider family). Additive
+	// omitempty per evidence-integrity spec §2 append rule.
+	CacheRead  int `json:"cache_read,omitempty"`
+	CacheWrite int `json:"cache_write,omitempty"`
 }
 
 // MemoryWrite records a soul directory write.

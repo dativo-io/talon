@@ -12,6 +12,43 @@ func isResponsesAPIPath(path string) bool {
 	return strings.HasPrefix(path, "/v1/responses")
 }
 
+// isChatCompletionsPath returns true if the path targets OpenAI Chat
+// Completions (/v1/chat/completions).
+func isChatCompletionsPath(path string) bool {
+	return strings.HasPrefix(path, "/v1/chat/completions")
+}
+
+// ensureStreamUsage sets stream_options.include_usage=true on a streaming chat
+// request so the upstream emits a final usage chunk (#196). It only mutates
+// requests that ask for streaming (stream:true); non-streaming bodies and
+// unparseable JSON pass through unchanged.
+func ensureStreamUsage(body []byte) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	if s, ok := m["stream"]; !ok || string(bytes.TrimSpace(s)) != "true" {
+		return body // not a streaming request
+	}
+	opts := map[string]json.RawMessage{}
+	if raw, ok := m["stream_options"]; ok {
+		if err := json.Unmarshal(raw, &opts); err != nil {
+			return body // client sent a non-object stream_options; don't clobber
+		}
+	}
+	opts["include_usage"] = json.RawMessage("true")
+	optsBytes, err := json.Marshal(opts)
+	if err != nil {
+		return body
+	}
+	m["stream_options"] = optsBytes
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // Responses API store-mode values (providers.<id>.responses_store_mode).
 const (
 	// ResponsesStorePreserve forwards the client's store field untouched

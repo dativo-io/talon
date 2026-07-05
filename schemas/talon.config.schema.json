@@ -372,6 +372,11 @@
                 "default": "preserve",
                 "description": "OpenAI Responses API 'store' handling. 'preserve' (default) forwards client intent untouched — an explicit store:false is honored for every client. 'force_if_absent' sets store:true only when the client sent no store field (opt-in for previous_response_id continuity, e.g. OpenClaw). 'force_true' always stores, recording any override of an explicit client store:false in signed evidence (annotation responses_store_overridden). See #213."
               },
+              "inject_stream_usage": {
+                "type": "boolean",
+                "default": true,
+                "description": "Add stream_options.include_usage to OpenAI chat-completions streaming requests so the upstream emits a final usage chunk — otherwise streamed chat cost is estimate-only. Default true. Set false to forward the client body unchanged. See #196."
+              },
               "fallback": {
                 "type": "array",
                 "description": "Ordered error-driven fallback chain: on a transient upstream failure (timeout/connection/429/5xx) the gateway retries these targets in order, subject to candidate filters (sovereignty under eu_strict, caller allowlists, gateway policy). All targets must share this provider's API family.",

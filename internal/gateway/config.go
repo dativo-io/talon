@@ -96,6 +96,18 @@ type ProviderConfig struct {
 	// stores, recording any override of an explicit store:false in signed
 	// evidence.
 	ResponsesStoreMode string `yaml:"responses_store_mode,omitempty" json:"responses_store_mode,omitempty"` // preserve (default) | force_if_absent | force_true
+	// InjectStreamUsage, when not false, adds stream_options.include_usage to
+	// OpenAI chat-completions streaming requests so the upstream emits a final
+	// usage chunk — otherwise streamed chat cost is estimate-only (#196).
+	// nil = true (default). Set false to forward the client body unchanged.
+	InjectStreamUsage *bool `yaml:"inject_stream_usage,omitempty" json:"inject_stream_usage,omitempty"`
+}
+
+// InjectsStreamUsage reports whether the gateway adds
+// stream_options.include_usage to streaming chat requests for this provider.
+// Default true when unset.
+func (p ProviderConfig) InjectsStreamUsage() bool {
+	return p.InjectStreamUsage == nil || *p.InjectStreamUsage
 }
 
 // FallbackTarget is one candidate in a provider's error-driven fallback chain.

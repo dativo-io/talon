@@ -1,6 +1,6 @@
 # Evidence Integrity Specification
 
-**Status:** stable · **Version:** 1.6 · **Scope:** the signed evidence record produced by Talon.
+**Status:** stable · **Version:** 1.7 · **Scope:** the signed evidence record produced by Talon.
 
 This is the normative specification for how a Talon evidence record is serialized,
 signed, and verified. It is written so that a third party can independently verify a
@@ -114,7 +114,11 @@ nested fields are:
   (`scanned`, `has_pii`, `entity_types`, `entity_count`); detection is
   evidence-only and never influences allow/deny or redaction in this version.
 - `execution`: `model_used` (string), `cost` (number), `tokens` (object),
-  `duration_ms` (number), plus optional fields.
+  `duration_ms` (number), plus optional fields. `tokens` carries `input` and
+  `output` always, plus optional `cache_read` / `cache_write` prompt-cache
+  token counts (spec 1.7, #196). Optional `pricing_basis` records how `cost`
+  was derived (`table` | `cache_fallback_input_rate` | `default_estimate`) and
+  `pricing_known` is true only when the model was priced from the table.
 - `audit_trail`: SHA-256 `input_hash` / `output_hash` content digests.
 - `compliance`: `frameworks` (array) and `data_location`.
 - `data_flow` (optional): `detector` (string, optional) and `items` (array of
@@ -252,6 +256,13 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 `Store.VerifyRecord`, and confirms that mutating a field invalidates the signature.
 
 ## 8. Changelog
+
+- **1.7** — added optional nested fields `execution.tokens.cache_read` /
+  `execution.tokens.cache_write` (prompt-cache token counts) and
+  `execution.pricing_basis` / `execution.pricing_known` (how the cost was
+  derived), #196. Additive and backward-compatible: records that omit them keep
+  identical canonical bytes and verify unchanged; use a 1.7 verifier for
+  records that carry them.
 
 - **1.6** — added optional nested field `orchestration` (#194): client-asserted
   coding-orchestration identity (`session_id`, `agent_id`, `parent_agent_id`,
