@@ -37,7 +37,11 @@ services:
     volumes:
       - ./talon.config.yaml:/etc/talon/talon.config.yaml:ro
       - ./talon.config.yaml:/home/talon/.talon/talon.config.yaml:ro
-      - ./out:/home/talon/demo-out
+      # NOTE: do not bind-mount ./out here. demo.sh writes ./out entirely
+      # host-side (curl -o, and `talon_exec … > ./out/…` redirects on the
+      # host), and a bind mount makes Docker create ./out as root — then the
+      # host-side curl can't write it and fails with exit 23 after the request
+      # already succeeded, killing the demo under `set -e`.
       - talon-data:/home/talon/.talon
     depends_on:
       mock-provider:

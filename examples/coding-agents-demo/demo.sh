@@ -16,6 +16,13 @@ TENANT_KEY="talon-gw-demo-coding-0001"
 SESSION="sess-coding-demo"
 OUT_DIR="./out"
 mkdir -p "$OUT_DIR"
+# Fail loudly, not silently, if ./out isn't host-writable (e.g. a stale
+# root-owned dir from an older compose that bind-mounted it).
+if ! : >"$OUT_DIR/.wtest" 2>/dev/null; then
+  echo "ERROR: $OUT_DIR is not writable by $(id -un). Remove it (it may be root-owned from an older demo: sudo rm -rf $OUT_DIR) and re-run." >&2
+  exit 1
+fi
+rm -f "$OUT_DIR/.wtest"
 
 say()  { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
@@ -34,21 +41,29 @@ wait_ready() {
 
 talon_exec() { docker compose exec -T talon talon "$@"; }
 
+# parent_header builds the optional -H array element(s) for a parent agent,
+# as a proper argv array so a value never word-splits into a broken header.
+parent_header() { # $1=parent (may be empty)
+  if [ -n "$1" ]; then printf '%s\n' "-H" "X-Talon-Parent-Agent-ID: $1"; fi
+}
+
 anthropic_call() { # $1=agent $2=parent $3=prompt -> prints http code
+  local parent=(); while IFS= read -r line; do parent+=("$line"); done < <(parent_header "$2")
   curl -s -o "$OUT_DIR/last-anthropic.json" -w '%{http_code}' \
     "$GATEWAY/v1/proxy/anthropic/v1/messages" \
     -H "Authorization: Bearer $TENANT_KEY" -H "content-type: application/json" \
     -H "X-Talon-Session-ID: $SESSION" -H "X-Talon-Agent-ID: $1" \
-    ${2:+-H "X-Talon-Parent-Agent-ID: $2"} -H "X-Talon-Client: claude-code" \
+    ${parent[@]+"${parent[@]}"} -H "X-Talon-Client: claude-code" \
     -d "{\"model\":\"claude-sonnet-5\",\"max_tokens\":128,\"messages\":[{\"role\":\"user\",\"content\":\"$3\"}]}"
 }
 
 responses_call() { # $1=agent $2=parent $3=prompt
+  local parent=(); while IFS= read -r line; do parent+=("$line"); done < <(parent_header "$2")
   curl -s -o "$OUT_DIR/last-responses.json" -w '%{http_code}' \
     "$GATEWAY/v1/proxy/openai/v1/responses" \
     -H "Authorization: Bearer $TENANT_KEY" -H "content-type: application/json" \
     -H "X-Talon-Session-ID: $SESSION" -H "X-Talon-Agent-ID: $1" \
-    ${2:+-H "X-Talon-Parent-Agent-ID: $2"} -H "X-Talon-Client: codex" \
+    ${parent[@]+"${parent[@]}"} -H "X-Talon-Client: codex" \
     -d "{\"model\":\"gpt-5.3-codex\",\"input\":\"$3\",\"store\":false}"
 }
 
