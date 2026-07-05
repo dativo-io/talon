@@ -1,6 +1,6 @@
 # Evidence Integrity Specification
 
-**Status:** stable · **Version:** 1.7 · **Scope:** the signed evidence record produced by Talon.
+**Status:** stable · **Version:** 1.8 · **Scope:** the signed evidence record produced by Talon.
 
 This is the normative specification for how a Talon evidence record is serialized,
 signed, and verified. It is written so that a third party can independently verify a
@@ -92,6 +92,7 @@ Top-level fields, **in serialization order** (this order is significant — see
 | 47 | `egress_decision` | object | optional |
 | 48 | `failover` | object | optional |
 | 49 | `orchestration` | object | optional |
+| 50 | `session_budget` | object | optional |
 
 Nested objects (`policy_decision`, `classification`, `execution`, `audit_trail`,
 `compliance`, and the optional objects) follow the same encoding rules recursively; their
@@ -150,6 +151,13 @@ nested fields are:
   `provenance` (always `"client_asserted"` in this version). Attribution
   metadata only — as trustworthy as the caller that presented the tenant key;
   never a policy input. All fields optional/omitempty.
+- `session_budget` (optional, spec 1.8, #198): the numbers a
+  `session_budget_exceeded` gateway deny was decided on. Fields: `limit` (the
+  caller's `max_session_cost` at evaluation time), `spent` (accumulated
+  session spend the deny rule saw), `estimate` (the pre-request estimate added
+  to spend). Present only on session-budget deny records (and their shadow
+  would-have-denied counterparts carry the reason in `shadow_violations`
+  instead). Appended after `orchestration` per the §2 append rule.
 
 ## 3. Canonical serialization
 
@@ -256,6 +264,13 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 `Store.VerifyRecord`, and confirms that mutating a field invalidates the signature.
 
 ## 8. Changelog
+
+- **1.8** — added optional top-level field `session_budget` (#198): the
+  structured `{limit, spent, estimate}` a `session_budget_exceeded` gateway
+  deny was decided on. Appended after `orchestration` per the §2 append rule.
+  Additive and backward-compatible: records that omit the field keep identical
+  canonical bytes and verify unchanged; use a 1.8 verifier for records that
+  carry it.
 
 - **1.7** — added optional nested fields `execution.tokens.cache_read` /
   `execution.tokens.cache_write` (prompt-cache token counts) and

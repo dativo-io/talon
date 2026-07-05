@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
+	talonsession "github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/testutil"
 	"github.com/go-chi/chi/v5"
 )
@@ -206,6 +208,45 @@ func BenchmarkGatewayPipelineOverheadLargePrompt(b *testing.B) {
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			b.Fatalf("status %d: %s", w.Code, w.Body.String())
+		}
+	}
+}
+
+// BenchmarkSessionBudgetLookup isolates the per-request cost the session
+// budget check (#198) adds to the hot path: one caller-scoped tuple read plus
+// the stage-count read on a populated session store. Budget: well under 1 ms
+// per op (see docs/reference/benchmarks.md).
+func BenchmarkSessionBudgetLookup(b *testing.B) {
+	dir := b.TempDir()
+	ss, err := talonsession.NewStore(filepath.Join(dir, "sessions.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer ss.Close()
+	ctx := context.Background()
+	// Populate a realistic store: 200 sessions across callers.
+	for i := 0; i < 200; i++ {
+		caller := "coder-" + strconv.Itoa(i%4)
+		if _, err := ss.GetOrCreateExternal(ctx, "default", caller, "sess-"+strconv.Itoa(i), talonsession.SourceClientAsserted); err != nil {
+			b.Fatal(err)
+		}
+	}
+	target, err := ss.GetOrCreateExternal(ctx, "default", "coder-1", "sess-101", talonsession.SourceClientAsserted)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := ss.IncrementStageCount(ctx, target.ID, "generation"); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sess, err := ss.GetByExternal(ctx, "default", "coder-1", "sess-101")
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := ss.GetStageCounts(ctx, sess.ID); err != nil {
+			b.Fatal(err)
 		}
 	}
 }

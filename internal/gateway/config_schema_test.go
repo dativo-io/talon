@@ -89,3 +89,39 @@ gateway:
 		assert.False(t, result.Valid(), "fallback targets require a provider")
 	})
 }
+
+// TestConfigSchema_MaxSessionCost guards that the published schema accepts the
+// per-caller session budget knob (#198) and rejects negative values.
+func TestConfigSchema_MaxSessionCost(t *testing.T) {
+	t.Run("max_session_cost accepted", func(t *testing.T) {
+		result := validateAgainstConfigSchema(t, `
+gateway:
+  enabled: true
+  providers:
+    openai:
+      enabled: true
+      base_url: "https://api.openai.com"
+      secret_name: "openai-api-key"
+  callers:
+    - name: "claude-code"
+      tenant_key: "talon-gw-test-000000000001"
+      tenant_id: "default"
+      policy_overrides:
+        max_session_cost: 10.5
+`)
+		assert.True(t, result.Valid(), "errors: %v", result.Errors())
+	})
+
+	t.Run("negative max_session_cost rejected", func(t *testing.T) {
+		result := validateAgainstConfigSchema(t, `
+gateway:
+  callers:
+    - name: "claude-code"
+      tenant_key: "talon-gw-test-000000000001"
+      tenant_id: "default"
+      policy_overrides:
+        max_session_cost: -1
+`)
+		assert.False(t, result.Valid(), "negative session budget must fail schema validation")
+	})
+}

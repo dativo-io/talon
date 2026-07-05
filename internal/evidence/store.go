@@ -107,6 +107,18 @@ type Evidence struct {
 	// presented the tenant key; never a policy input before attestation
 	// (#149). Appended after failover per the spec §2 append rule.
 	Orchestration *OrchestrationContext `json:"orchestration,omitempty"`
+	// SessionBudget records the numbers a session_budget_exceeded gateway deny
+	// was decided on (#198, spec 1.8): the caller's session cap, accumulated
+	// session spend at evaluation time, and the pre-request estimate. Appended
+	// after orchestration per the spec §2 append rule.
+	SessionBudget *SessionBudget `json:"session_budget,omitempty"`
+}
+
+// SessionBudget is the structured detail of a session-budget deny (#198).
+type SessionBudget struct {
+	Limit    float64 `json:"limit"`    // caller's max_session_cost at evaluation time
+	Spent    float64 `json:"spent"`    // accumulated session spend the rule saw
+	Estimate float64 `json:"estimate"` // pre-request estimate added to spend
 }
 
 // OrchestrationContext is the client-asserted orchestration identity for one

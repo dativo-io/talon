@@ -1704,13 +1704,20 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(s.dashboardHTML))
 }
 
+// sessionTenantScope returns the tenant filter for session reads/mutations:
+// a tenant-authenticated request is always scoped to its own tenant (#215);
+// admin and dev-mode (no tenant keys) requests are unscoped.
+func sessionTenantScope(r *http.Request) string {
+	return TenantIDFromContext(r.Context())
+}
+
 func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
 	if s.sessionStore == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session store not available"})
 		return
 	}
 	id := chi.URLParam(r, "id")
-	sess, err := s.sessionStore.Get(r.Context(), id)
+	sess, err := s.sessionStore.Get(r.Context(), id, sessionTenantScope(r))
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
@@ -1724,7 +1731,12 @@ func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
+	// A tenant-authenticated caller may only list its own tenant's sessions
+	// (#215); the query parameter cannot widen the scope. Admin and dev-mode
+	// requests keep the parameter (default tenant when absent).
+	if auth := sessionTenantScope(r); auth != "" {
+		tenantID = auth
+	} else if tenantID == "" {
 		tenantID = "default"
 	}
 	status := session.Status(r.URL.Query().Get("status"))
@@ -1742,7 +1754,12 @@ func (s *Server) handleSessionComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := s.sessionStore.Complete(r.Context(), id, 0, 0); err != nil {
+	if err := s.sessionStore.Complete(r.Context(), id, sessionTenantScope(r), 0, 0); err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			// Missing and other-tenant sessions are indistinguishable (#215).
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

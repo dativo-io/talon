@@ -2160,7 +2160,7 @@ func TestResolveSessionWithProvidedClosedSessionFails(t *testing.T) {
 
 	ss, err := s.Create(ctx, "acme", "agent-a", "reasoning", 0)
 	require.NoError(t, err)
-	require.NoError(t, s.Complete(ctx, ss.ID, 0, 0))
+	require.NoError(t, s.Complete(ctx, ss.ID, "acme", 0, 0))
 
 	r := NewRunner(RunnerConfig{SessionStore: s})
 	_, err = r.resolveSession(ctx, &RunRequest{

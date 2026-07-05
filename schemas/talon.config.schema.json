@@ -430,6 +430,11 @@
                 "properties": {
                   "max_daily_cost": { "type": "number", "minimum": 0 },
                   "max_monthly_cost": { "type": "number", "minimum": 0 },
+                  "max_session_cost": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Soft cap on accumulated spend per coding session (#198): a new request is denied once session spend plus the pre-request estimate exceeds this. Applies only to client/vendor-asserted session ids; a single in-flight request can overshoot (atomic reservation is #144)."
+                  },
                   "pii_action": { "$ref": "#/definitions/piiAction" },
                   "response_pii_action": { "$ref": "#/definitions/piiAction" },
                   "allowed_models": {
