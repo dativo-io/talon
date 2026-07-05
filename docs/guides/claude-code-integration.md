@@ -70,7 +70,7 @@ curl -s -X POST http://localhost:8080/v1/proxy/anthropic/v1/messages \
 
 You should get a JSON completion, not "Invalid or missing API key" (wrong tenant key) or "Service configuration error" (vault key mismatch).
 
-The Anthropic wire path — streaming SSE, cache-token accounting, `count_tokens` — is covered by conformance fixtures in `internal/gateway/conformance_anthropic_test.go` and `internal/gateway/testdata/conformance/anthropic/`.
+The Anthropic wire path — streaming SSE, cache-token accounting, `count_tokens` — is covered by conformance fixtures in `internal/gateway/conformance_anthropic_test.go` and `internal/gateway/testdata/conformance/anthropic/`. Note that `count_tokens` calls (Claude Code makes them constantly) are fully governed — PII-scanned, policy-checked, evidenced as `invocation_type: gateway_count_tokens` — but recorded at **cost 0** with zero budget impact: the endpoint is free at the provider, and a fabricated estimate would corrupt signed spend totals.
 
 ### 4. Point Claude Code at the gateway
 

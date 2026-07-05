@@ -39,7 +39,11 @@ wait_ready() {
   return 1
 }
 
-talon_exec() { docker compose exec -T talon talon "$@"; }
+# CLI steps run inside the compose container by default; set TALON_BIN to a
+# local binary for the no-Docker path (see README "Run it without Docker").
+talon_exec() {
+  if [ -n "${TALON_BIN:-}" ]; then "$TALON_BIN" "$@"; else docker compose exec -T talon talon "$@"; fi
+}
 
 # parent_header builds the optional -H array element(s) for a parent agent,
 # as a proper argv array so a value never word-splits into a broken header.

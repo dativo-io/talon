@@ -12,6 +12,18 @@ A platform team runs an orchestrator that plans a change, then fans out:
 - **Codex executors** call OpenAI's Responses API.
 - One logical coding session spans **both providers** and a tree of subagents.
 
+### Terminology: the roles are labels, not Talon concepts
+
+Every role name in this guide — *orchestrator*, *planner*, *generator*, *reviewer*, *executor*, *judge* — is an **illustration, not a vocabulary Talon knows**:
+
+- An **orchestrator** is simply whatever client code coordinates the work (a lead agent session, a script, a CI job) and passes one session id to everything it spawns. Talon never sees a role called "orchestrator" — it sees a caller, a session id, and per-request agent labels.
+- **`X-Talon-Agent-ID` / `X-Talon-Parent-Agent-ID` / `X-Talon-Client` values are free-form strings you choose.** Talon does not validate them against any known set, assigns them no semantics, and never uses them in policy — it records them as attribution (`provenance: client_asserted`) and rolls costs up by them. Name your subagents whatever your fleet calls them.
+- **The one enforced vocabulary is `X-Talon-Stage`**: exactly `generation` (producing candidate work), `judge` (evaluating or selecting between candidates), or `commit` (finalizing the chosen result). Any other value is silently dropped at ingestion — the request proceeds, no stage is recorded.
+- **Caller ≠ tenant ≠ agent.** A *caller* is a configured identity in `talon.config.yaml`, authenticated by its tenant key (e.g. one caller per tool); a *tenant* is the owning account callers belong to; an *agent id* is the client-asserted runtime label above. Budgets and policy bind to callers and tenants — never to agent ids.
+- A **wire family** (`api_family`) is the provider's HTTP API shape — `anthropic` (Messages API) or `openai` (Chat Completions / Responses) — which determines how Talon parses, redacts, and prices traffic on that route.
+
+In practice: with **Claude Code** and **Codex CLI**, the vendor adapters pick up whatever session/subagent headers the tools emit — nothing to invent. With a **custom orchestrator**, you choose the labels and set the generic headers yourself; if a tool version doesn't emit identity headers, set the generic ones from the process that launches it.
+
 The platform team wants three things:
 
 1. **Budgets** — a runaway session stops burning money, no matter which provider route it uses.
@@ -118,11 +130,11 @@ The first adapter with any populated header wins. Onboarding a new client is exa
 
 #### Precedence and provenance
 
-- **Precedence per field: generic > vendor > synthetic.** If both `X-Talon-Session-ID` and a vendor session header are present, the generic one wins (`TestResolveOrchestration_Precedence`).
+- **Precedence per field: generic > vendor > synthetic.** If both `X-Talon-Session-ID` and a vendor session header are present *with different values*, the generic value is recorded and the vendor value is ignored — per field, so a generic session id can coexist with a vendor-asserted agent id (`TestResolveOrchestration_Precedence`).
 - **`session_source`** records how the session id was obtained: `client_asserted` (generic header), `vendor_asserted` (adapter header), or `synthetic` (no client assertion; Talon derives `sess_<correlation-id>`).
 - **`provenance` is always `client_asserted`.** Orchestration identity distinguishes subagents *within an already-authenticated caller*; it does not authenticate them. It is exactly as trustworthy as the caller that presented the tenant key.
 - **Identity is never a policy input.** Budgets bind to the caller and the caller-scoped session tuple, never to `agent_id` (`TestPolicyInputParity_WithAssertedSession`). Acting on client-asserted identity waits for workload attestation (#149).
-- **Per-caller opt-out**: `accept_client_metadata: false` on a caller ignores asserted agent/parent/client identity and vendor session headers (the generic `X-Talon-Session-ID` still resolves the session id). Default is `true`; the flag gates *recording* only (`TestGatewayOrchestration_FlagOff`).
+- **Per-caller opt-out**: `accept_client_metadata: false` on a caller ignores asserted agent/parent/client identity and vendor session headers (the generic `X-Talon-Session-ID` still resolves the session id). Default is `true`; the flag gates *recording* only (`TestGatewayOrchestration_FlagOff`). Requests without any asserted session id get a synthetic `sess_<correlation-id>` in evidence either way — synthetic ids never create session-store state or budgets.
 - Optional `X-Talon-Stage` tags a request's pipeline stage; only `generation`, `judge`, `commit` are accepted — anything else is dropped at ingestion (`TestNormalizeStage`).
 
 #### Header hygiene
@@ -164,12 +176,15 @@ talon audit list --session sess-feature-4711
 # Verify HMAC integrity of every record in the session
 talon audit verify --session sess-feature-4711
 
-# Export only this session's records (for hand-off)
+# Export only this session's records (for hand-off). Cache-aware cost columns
+# (cache_read_tokens, cache_write_tokens, pricing_basis) are included.
 talon audit export --session sess-feature-4711
 
 # Per-session cost rollup, machine-readable
 talon costs --session sess-feature-4711 --json
 ```
+
+Scoping: without `--tenant`/`--caller` these session commands are **unscoped** (they show the whole session, whichever tenant owns it — local CLI access implies DB access anyway); pass `--tenant` and/or `--caller` to filter. Note `talon costs`' *calendar* rollups (no `--session`) default to tenant `default` — the session forms do not.
 
 The dashboard (`talon serve`) has a **Coding Sessions (orchestration)** panel showing active sessions with per-subagent attribution and `denials_by_reason` — budget trips show up as `session_budget_exceeded` counts.
 
