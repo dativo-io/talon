@@ -51,6 +51,21 @@ deny contains msg if {
 	msg := sprintf("budget_exceeded: request would exceed caller monthly cost limit (%.2f)", [input.caller_max_monthly_cost])
 }
 
+# Per-caller session cost limit (#198): soft cap over one coding session.
+# session_cost_total is present only for client/vendor-asserted sessions
+# (caller-scoped tuple lookup), so this rule cannot fire for synthetic ids.
+# A session-store read failure also omits session_cost_total: the rule cannot
+# evaluate and the request FAILS OPEN, evidenced by the
+# session_budget_unavailable gateway annotation (same contract as
+# callerCostTotals). In-flight requests can overshoot the cap; atomic
+# reservation is #144.
+deny contains msg if {
+	input.caller_max_session_cost != null
+	input.caller_max_session_cost > 0
+	input.session_cost_total + input.estimated_cost > input.caller_max_session_cost
+	msg := sprintf("session_budget_exceeded: session spend %.2f + estimate %.2f exceeds limit %.2f", [input.session_cost_total, input.estimated_cost, input.caller_max_session_cost])
+}
+
 # Per-caller data tier restriction: request tier must not exceed caller's max.
 deny contains msg if {
 	input.caller_max_data_tier != null

@@ -314,6 +314,29 @@ func runServe(cmd *cobra.Command, args []string) error {
 		defer stopRetention()
 	}
 
+	// Session rows follow audit.retention_days (#198, #214): a minimal daily
+	// sweep so asserted-session rows cannot accumulate forever. Not a
+	// lifecycle framework; evidence retention is governed separately.
+	if pol.Audit != nil && pol.Audit.RetentionDays > 0 {
+		retention := time.Duration(pol.Audit.RetentionDays) * 24 * time.Hour
+		go func() {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if n, err := sessionStore.PurgeOlderThan(ctx, time.Now().UTC().Add(-retention)); err != nil {
+						log.Warn().Err(err).Msg("session_retention_sweep_failed")
+					} else if n > 0 {
+						log.Info().Int64("purged", n).Msg("session_retention_sweep")
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
 	scheduler := trigger.NewScheduler(runner)
 	if err := scheduler.RegisterSchedules(pol); err != nil {
 		return fmt.Errorf("registering schedules: %w", err)

@@ -80,7 +80,8 @@ func sessionShow(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	sess, err := store.Get(context.Background(), args[0])
+	// Local CLI has direct DB access: unscoped read (operator context).
+	sess, err := store.Get(context.Background(), args[0], "")
 	if err != nil {
 		return fmt.Errorf("getting session %s: %w", args[0], err)
 	}

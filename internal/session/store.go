@@ -11,7 +11,22 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-var ErrSessionBudgetExceeded = errors.New("session budget exceeded")
+var (
+	ErrSessionBudgetExceeded = errors.New("session budget exceeded")
+	// ErrSessionNotFound is returned by tenant-scoped reads/mutations when the
+	// session does not exist OR belongs to a different tenant — callers must
+	// not be able to distinguish the two (#215).
+	ErrSessionNotFound = errors.New("session not found")
+)
+
+// Session source values: how the session row came to exist. "talon" rows are
+// created by Talon's own flows (agent runner, control plane); asserted rows
+// are created by the gateway from a client-asserted session id (#198).
+const (
+	SourceTalon          = "talon"
+	SourceClientAsserted = "client_asserted"
+	SourceVendorAsserted = "vendor_asserted"
+)
 
 type Status string
 
@@ -36,6 +51,12 @@ type Session struct {
 	TotalTokens int        `json:"total_tokens"`
 	MaxCost     float64    `json:"max_cost,omitempty"`
 	Reasoning   string     `json:"reasoning,omitempty"`
+	// ExternalSessionID/CallerID/Source identify gateway sessions created from
+	// a client-asserted session id (#198). The internal ID stays the opaque
+	// public handle; the external id is only unique per (tenant, caller).
+	ExternalSessionID string `json:"external_session_id,omitempty"`
+	CallerID          string `json:"caller_id,omitempty"`
+	Source            string `json:"source,omitempty"` // talon | client_asserted | vendor_asserted
 }
 
 type StageCounts struct {
@@ -122,15 +143,28 @@ func (s *Store) ensureSessionColumns(ctx context.Context) error {
 		return fmt.Errorf("iterating sessions schema: %w", err)
 	}
 
-	if !cols["max_cost"] {
-		if _, err := s.db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN max_cost REAL NOT NULL DEFAULT 0`); err != nil {
-			return fmt.Errorf("adding sessions.max_cost column: %w", err)
+	// Additive column migrations. The #198 columns key gateway sessions by
+	// (tenant, caller, external id) so two callers asserting the same external
+	// id can never share a session; pre-existing rows read back as source
+	// "talon".
+	migrations := []struct{ column, ddl string }{
+		{"max_cost", `ALTER TABLE sessions ADD COLUMN max_cost REAL NOT NULL DEFAULT 0`},
+		{"reasoning", `ALTER TABLE sessions ADD COLUMN reasoning TEXT`},
+		{"external_session_id", `ALTER TABLE sessions ADD COLUMN external_session_id TEXT`},
+		{"caller_id", `ALTER TABLE sessions ADD COLUMN caller_id TEXT`},
+		{"source", `ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'talon'`},
+	}
+	for _, m := range migrations {
+		if cols[m.column] {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, m.ddl); err != nil {
+			return fmt.Errorf("adding sessions.%s column: %w", m.column, err)
 		}
 	}
-	if !cols["reasoning"] {
-		if _, err := s.db.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN reasoning TEXT`); err != nil {
-			return fmt.Errorf("adding sessions.reasoning column: %w", err)
-		}
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_external_tuple
+		ON sessions(tenant_id, caller_id, external_session_id) WHERE external_session_id IS NOT NULL`); err != nil {
+		return fmt.Errorf("creating sessions external-tuple index: %w", err)
 	}
 	return nil
 }
@@ -156,12 +190,18 @@ func (s *Store) Create(ctx context.Context, tenantID, agentID, reasoning string,
 	return out, nil
 }
 
-func (s *Store) Get(ctx context.Context, id string) (*Session, error) {
+// sessionColumns is the canonical SELECT list scanned by scanSession.
+const sessionColumns = `id, tenant_id, agent_id, status, created_at, updated_at, completed_at, total_cost, total_tokens, max_cost, reasoning, external_session_id, caller_id, source`
+
+type rowScanner interface{ Scan(dest ...any) error }
+
+func scanSession(row rowScanner) (*Session, error) {
 	var out Session
 	var status string
 	var completed sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT id, tenant_id, agent_id, status, created_at, updated_at, completed_at, total_cost, total_tokens, max_cost, reasoning FROM sessions WHERE id = ?`, id).
-		Scan(&out.ID, &out.TenantID, &out.AgentID, &status, &out.CreatedAt, &out.UpdatedAt, &completed, &out.TotalCost, &out.TotalTokens, &out.MaxCost, &out.Reasoning)
+	var reasoning, external, callerID, source sql.NullString
+	err := row.Scan(&out.ID, &out.TenantID, &out.AgentID, &status, &out.CreatedAt, &out.UpdatedAt, &completed,
+		&out.TotalCost, &out.TotalTokens, &out.MaxCost, &reasoning, &external, &callerID, &source)
 	if err != nil {
 		return nil, err
 	}
@@ -170,22 +210,100 @@ func (s *Store) Get(ctx context.Context, id string) (*Session, error) {
 		t := completed.Time
 		out.CompletedAt = &t
 	}
+	out.Reasoning = reasoning.String
+	out.ExternalSessionID = external.String
+	out.CallerID = callerID.String
+	out.Source = source.String
 	return &out, nil
 }
 
-func (s *Store) Join(ctx context.Context, id, tenantID string) (*Session, error) {
-	ss, err := s.Get(ctx, id)
+// Get returns a session by internal id. A non-empty tenantID scopes the read
+// to that tenant: a session owned by another tenant is ErrSessionNotFound,
+// indistinguishable from a missing one (#215). Empty tenantID is unscoped and
+// reserved for admin/internal use.
+func (s *Store) Get(ctx context.Context, id, tenantID string) (*Session, error) {
+	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE id = ?`
+	args := []any{id}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	out, err := scanSession(s.db.QueryRowContext(ctx, query, args...))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSessionNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
-	if ss.TenantID != tenantID {
-		return nil, fmt.Errorf("session tenant mismatch")
+	return out, nil
+}
+
+func (s *Store) Join(ctx context.Context, id, tenantID string) (*Session, error) {
+	ss, err := s.Get(ctx, id, tenantID)
+	if err != nil {
+		return nil, err
 	}
 	if ss.Status == StatusCompleted || ss.Status == StatusFailed || ss.Status == StatusTimedOut {
 		return nil, fmt.Errorf("session is closed")
 	}
 	_, _ = s.db.ExecContext(ctx, `UPDATE sessions SET updated_at = ? WHERE id = ?`, time.Now().UTC(), id)
 	return ss, nil
+}
+
+// GetByExternal returns the session identified by the caller-scoped tuple
+// (tenant, caller, external session id), or ErrSessionNotFound. This is the
+// ONLY gateway read path: a raw client-asserted id is never used to look up
+// another tenant's or caller's session state (#215).
+func (s *Store) GetByExternal(ctx context.Context, tenantID, callerID, externalID string) (*Session, error) {
+	out, err := scanSession(s.db.QueryRowContext(ctx,
+		`SELECT `+sessionColumns+` FROM sessions WHERE tenant_id = ? AND caller_id = ? AND external_session_id = ?`,
+		tenantID, callerID, externalID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSessionNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetOrCreateExternal returns the session for the caller-scoped tuple,
+// creating it (internal opaque id, status active) on first sight (#198,
+// create-if-absent). source must be client_asserted or vendor_asserted —
+// synthetic session ids must never reach this method. Safe under concurrent
+// first-request races via the unique tuple index.
+func (s *Store) GetOrCreateExternal(ctx context.Context, tenantID, callerID, externalID, source string) (*Session, error) {
+	if externalID == "" {
+		return nil, fmt.Errorf("external session id is required")
+	}
+	if sess, err := s.GetByExternal(ctx, tenantID, callerID, externalID); err == nil {
+		return sess, nil
+	} else if !errors.Is(err, ErrSessionNotFound) {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	out := &Session{
+		ID:                "sess_" + uuid.New().String()[:12],
+		TenantID:          tenantID,
+		AgentID:           callerID,
+		Status:            StatusActive,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		ExternalSessionID: externalID,
+		CallerID:          callerID,
+		Source:            source,
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions (id, tenant_id, agent_id, status, created_at, updated_at, external_session_id, caller_id, source)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(tenant_id, caller_id, external_session_id) WHERE external_session_id IS NOT NULL DO NOTHING`,
+		out.ID, out.TenantID, out.AgentID, string(out.Status), out.CreatedAt, out.UpdatedAt,
+		out.ExternalSessionID, out.CallerID, out.Source)
+	if err != nil {
+		return nil, fmt.Errorf("creating external session: %w", err)
+	}
+	// Re-read: covers both our insert and a concurrent winner's row.
+	return s.GetByExternal(ctx, tenantID, callerID, externalID)
 }
 
 func (s *Store) AddUsage(ctx context.Context, id string, cost float64, tokens int) error {
@@ -195,15 +313,33 @@ func (s *Store) AddUsage(ctx context.Context, id string, cost float64, tokens in
 	return err
 }
 
-func (s *Store) Complete(ctx context.Context, id string, cost float64, tokens int) error {
+// Complete marks a session completed. A non-empty tenantID scopes the
+// mutation: another tenant's session is ErrSessionNotFound, never completed
+// cross-tenant (#215).
+func (s *Store) Complete(ctx context.Context, id, tenantID string, cost float64, tokens int) error {
 	now := time.Now().UTC()
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET status = ?, updated_at = ?, completed_at = ?, total_cost = total_cost + ?, total_tokens = total_tokens + ? WHERE id = ?`,
-		string(StatusCompleted), now, now, cost, tokens, id)
-	return err
+	query := `UPDATE sessions SET status = ?, updated_at = ?, completed_at = ?, total_cost = total_cost + ?, total_tokens = total_tokens + ? WHERE id = ?`
+	args := []any{string(StatusCompleted), now, now, cost, tokens, id}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("completing session %s: %w", id, err)
+	}
+	if n == 0 {
+		return ErrSessionNotFound
+	}
+	return nil
 }
 
 func (s *Store) CheckBudget(ctx context.Context, id string) error {
-	ss, err := s.Get(ctx, id)
+	ss, err := s.Get(ctx, id, "")
 	if err != nil {
 		return fmt.Errorf("checking session budget: %w", err)
 	}
@@ -211,6 +347,28 @@ func (s *Store) CheckBudget(ctx context.Context, id string) error {
 		return ErrSessionBudgetExceeded
 	}
 	return nil
+}
+
+// PurgeOlderThan deletes sessions (and their stage counts) not updated since
+// cutoff. Minimal retention sweep aligned with audit.retention_days (#214) —
+// not a lifecycle framework. Returns the number of sessions deleted.
+//
+// Expiry semantics: a session idle past the retention window that receives a
+// new request afterwards (or concurrently with the sweep) is recreated fresh —
+// prior spend is retained data and is deleted with the row, so the budget
+// restarts. That is retention doing its job, not a cap bypass; every request's
+// own spend remains in signed evidence regardless.
+func (s *Store) PurgeOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_stage_counts WHERE session_id IN (SELECT id FROM sessions WHERE updated_at < ?)`, cutoff); err != nil {
+		return 0, fmt.Errorf("purging stage counts: %w", err)
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE updated_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("purging sessions: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 func (s *Store) IncrementStageCount(ctx context.Context, sessionID, stage string) error {
@@ -254,10 +412,10 @@ func (s *Store) ListByTenant(ctx context.Context, tenantID string, status Status
 	var err error
 	if status == "" {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, tenant_id, agent_id, status, created_at, updated_at, completed_at, total_cost, total_tokens, max_cost, reasoning FROM sessions WHERE tenant_id = ? ORDER BY created_at DESC`, tenantID)
+			`SELECT `+sessionColumns+` FROM sessions WHERE tenant_id = ? ORDER BY created_at DESC`, tenantID)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, tenant_id, agent_id, status, created_at, updated_at, completed_at, total_cost, total_tokens, max_cost, reasoning FROM sessions WHERE tenant_id = ? AND status = ? ORDER BY created_at DESC`, tenantID, string(status))
+			`SELECT `+sessionColumns+` FROM sessions WHERE tenant_id = ? AND status = ? ORDER BY created_at DESC`, tenantID, string(status))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing sessions for tenant %s: %w", tenantID, err)
@@ -266,18 +424,11 @@ func (s *Store) ListByTenant(ctx context.Context, tenantID string, status Status
 
 	var out []*Session
 	for rows.Next() {
-		var ss Session
-		var st string
-		var completed sql.NullTime
-		if err := rows.Scan(&ss.ID, &ss.TenantID, &ss.AgentID, &st, &ss.CreatedAt, &ss.UpdatedAt, &completed, &ss.TotalCost, &ss.TotalTokens, &ss.MaxCost, &ss.Reasoning); err != nil {
+		ss, err := scanSession(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scanning session row: %w", err)
 		}
-		ss.Status = Status(st)
-		if completed.Valid {
-			t := completed.Time
-			ss.CompletedAt = &t
-		}
-		out = append(out, &ss)
+		out = append(out, ss)
 	}
 	return out, rows.Err()
 }

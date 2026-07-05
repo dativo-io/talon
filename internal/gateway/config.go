@@ -159,8 +159,13 @@ func (c *CallerConfig) AcceptsClientMetadata() bool {
 
 // CallerPolicyOverrides are per-caller policy overrides.
 type CallerPolicyOverrides struct {
-	MaxDailyCost      float64                 `yaml:"max_daily_cost,omitempty" json:"max_daily_cost,omitempty"`
-	MaxMonthlyCost    float64                 `yaml:"max_monthly_cost,omitempty" json:"max_monthly_cost,omitempty"`
+	MaxDailyCost   float64 `yaml:"max_daily_cost,omitempty" json:"max_daily_cost,omitempty"`
+	MaxMonthlyCost float64 `yaml:"max_monthly_cost,omitempty" json:"max_monthly_cost,omitempty"`
+	// MaxSessionCost is a soft cap on accumulated spend per coding session
+	// (#198): a new request is denied once session spend + the pre-request
+	// estimate exceeds it. In-flight requests can overshoot (atomic
+	// reservation is #144). Applies only to client/vendor-asserted sessions.
+	MaxSessionCost    float64                 `yaml:"max_session_cost,omitempty" json:"max_session_cost,omitempty"`
 	PIIAction         string                  `yaml:"pii_action,omitempty" json:"pii_action,omitempty"`                   // block | redact | warn | allow
 	ResponsePIIAction string                  `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from pii_action
 	AllowedModels     []string                `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`

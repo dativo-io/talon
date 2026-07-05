@@ -87,6 +87,7 @@ const (
 	gatewayUpstreamKeySource gatewayContextKey = "upstream_key_source"
 	gatewayUpstreamKeyFP     gatewayContextKey = "upstream_key_fingerprint"
 	gatewayOrchestrationKey  gatewayContextKey = "orchestration"
+	gatewaySessionSourceKey  gatewayContextKey = "session_source"
 )
 
 // hasCallerTag returns true when the caller has the given tag (e.g. "copaw" for CoPaw).
@@ -258,6 +259,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	isShadow := g.config.Mode == ModeShadow
 	var shadowViolations []evidence.ShadowViolation
+	var shadowSessionBudget *evidence.SessionBudget
 
 	// Step 1: Route
 	route, err := g.config.RouteRequest(r)
@@ -311,7 +313,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// identity from the neutral X-Talon-* headers or a vendor adapter (Claude
 	// Code, Codex). Evidence-only; never a policy input. A hygiene violation
 	// (oversized/invalid header) is rejected here so it never reaches evidence.
-	orch, resolvedSessionID, _, orchErr := resolveOrchestration(r, caller.AcceptsClientMetadata(), sessionID)
+	orch, resolvedSessionID, sessionSource, orchErr := resolveOrchestration(r, caller.AcceptsClientMetadata(), sessionID)
 	if orchErr != nil {
 		RecordGatewayError(ctx, "orchestration_header_invalid")
 		RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
@@ -325,6 +327,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx = context.WithValue(ctx, gatewaySessionIDKey, sessionID)
 		w.Header().Set("X-Talon-Session-ID", sessionID)
 	}
+	// Session source gates all session-store state (#198): only asserted
+	// sessions may read or create session rows; synthetic ids are evidence-only.
+	ctx = context.WithValue(ctx, gatewaySessionSourceKey, sessionSource)
 	if orch != nil {
 		ctx = context.WithValue(ctx, gatewayOrchestrationKey, orch)
 	}
@@ -543,7 +548,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 95)
 	}
 	destinationRegion := g.providerRegion(route.Provider)
-	policyInput := g.buildPolicyInputForRequest(ctx, caller, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost, sessionID)
+	policyInput, sessionBudgetUnavailable := g.buildPolicyInputForRequest(ctx, caller, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost, sessionID)
 	if g.policy != nil && (g.config.Mode == ModeEnforce || isShadow) {
 		allowed, reasons, policyErr := g.policy.EvaluateGateway(ctx, policyInput)
 		if policyErr != nil {
@@ -573,6 +578,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 					Type: "policy_deny", Detail: detail, Action: "block",
 				})
+				// A shadow session-budget deny carries the same structured
+				// {limit, spent, estimate} as an enforce-mode deny would, so
+				// operators can dry-run caps with full numeric evidence.
+				shadowSessionBudget = sessionBudgetDetail(reasons, policyInput, estimatedCost)
 				log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("reasons", reasons).Msg("shadow_policy_deny")
 			} else {
 				durationMS := time.Since(start).Milliseconds()
@@ -589,7 +598,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						Msg("gateway_egress_denied")
 				}
 				WriteProviderError(w, wire, http.StatusForbidden, preferredDenyReason(reasons))
-				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
+				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+					p.SessionBudget = sessionBudgetDetail(reasons, policyInput, estimatedCost)
+					if sessionBudgetUnavailable {
+						p.GatewayAnnotations = append(p.GatewayAnnotations, "session_budget_unavailable")
+					}
+				})
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
@@ -981,7 +995,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// same function as the primary's input (session context included).
 		if g.policy != nil && (g.config.Mode == ModeEnforce || isShadow) {
 			candEstimate := g.costEstimate(candProvider, candModel, Usage{Input: estTokensIn, Output: estTokensOut}).Amount
-			candInput := g.buildPolicyInputForRequest(cCtx, caller, candProvider, candModel, tier, candEstimate, dailyCost, monthlyCost, sessionID)
+			candInput, _ := g.buildPolicyInputForRequest(cCtx, caller, candProvider, candModel, tier, candEstimate, dailyCost, monthlyCost, sessionID)
 			allowed, reasons, policyErr := g.policy.EvaluateGateway(cCtx, candInput)
 			switch {
 			case policyErr != nil && isShadow:
@@ -1175,6 +1189,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// retention decision must be visible in signed evidence.
 			p.GatewayAnnotations = append(p.GatewayAnnotations, "responses_store_overridden")
 		}
+		if sessionBudgetUnavailable {
+			// Session-store read failed: the budget check fails open (#198),
+			// and that gap must be visible in signed evidence.
+			p.GatewayAnnotations = append(p.GatewayAnnotations, "session_budget_unavailable")
+		}
+		if shadowSessionBudget != nil {
+			p.SessionBudget = shadowSessionBudget
+		}
 		if !isCountTokens {
 			p.PricingBasis = pricingBasis
 			p.PricingKnown = pricingKnown
@@ -1187,7 +1209,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !isCountTokens {
 		// count_tokens neither spends nor consumes: keep session cost/token
 		// accumulation and stage counts free of count-only traffic.
-		g.trackSessionUsage(ctx, sessionID, caller.TenantID, caller.Name, cost, tokenUsage.Input+tokenUsage.Output)
+		g.trackSessionUsage(ctx, sessionID, sessionSource, caller.TenantID, caller.Name, cost, tokenUsage.Input+tokenUsage.Output)
 	}
 
 	// Emit OTel + dashboard metrics
@@ -1466,6 +1488,17 @@ func stageFromContext(ctx context.Context) string {
 	return ""
 }
 
+// sessionSourceFromContext returns the resolved session-source provenance
+// (client_asserted | vendor_asserted | synthetic); absent defaults to
+// synthetic so no code path can accidentally treat an unknown source as
+// asserted and materialize session state (#198).
+func sessionSourceFromContext(ctx context.Context) string {
+	if s, ok := ctx.Value(gatewaySessionSourceKey).(string); ok && s != "" {
+		return s
+	}
+	return orchSourceSynthetic
+}
+
 func candidateIndexFromContext(ctx context.Context) int {
 	v := ctx.Value(gatewayCandidateIndexKey)
 	if i, ok := v.(int); ok {
@@ -1529,29 +1562,39 @@ func gatewayAnnotationsForEvidence(g *Gateway, caller *CallerConfig) []string {
 	return out
 }
 
-// trackSessionUsage updates session cost/token counters when a session store is configured.
-func (g *Gateway) trackSessionUsage(ctx context.Context, sessionID, tenantID, callerName string, cost float64, tokens int) {
-	if g.sessionStore == nil || sessionID == "" {
+// trackSessionUsage accumulates cost/tokens onto the caller-scoped session row
+// (#198). Only client- or vendor-asserted session ids create-if-absent under
+// the (tenant, caller, external id) tuple; synthetic ids NEVER create session
+// rows — evidence keeps the synthetic id, and the pre-#198 orphan-row-per-
+// request growth (#214) is gone. Callers that reject client metadata assert
+// no session identity, so no row either.
+func (g *Gateway) trackSessionUsage(ctx context.Context, sessionID, sessionSource, tenantID, callerName string, cost float64, tokens int) {
+	if g.sessionStore == nil || sessionID == "" || !isAssertedSessionSource(sessionSource) {
 		return
 	}
-	_, err := g.sessionStore.Join(ctx, sessionID, tenantID)
+	sess, err := g.sessionStore.GetOrCreateExternal(ctx, tenantID, callerName, sessionID, sessionSource)
 	if err != nil {
-		// Session doesn't exist or is closed; create a new one only if it was not found.
-		created, createErr := g.sessionStore.Create(ctx, tenantID, callerName, "", 0)
-		if createErr != nil {
-			log.Warn().Err(createErr).Str("session_id", sessionID).Msg("gateway_session_create_failed")
-			return
-		}
-		sessionID = created.ID
+		log.Warn().Err(err).Str("session_id", sessionID).Msg("gateway_session_create_failed")
+		return
 	}
-	if usageErr := g.sessionStore.AddUsage(ctx, sessionID, cost, tokens); usageErr != nil {
-		log.Warn().Err(usageErr).Str("session_id", sessionID).Msg("gateway_session_usage_failed")
+	if usageErr := g.sessionStore.AddUsage(ctx, sess.ID, cost, tokens); usageErr != nil {
+		// AddUsage is also what refreshes updated_at (retention liveness);
+		// don't record stage counts for a request whose usage was lost.
+		log.Warn().Err(usageErr).Str("session_id", sess.ID).Msg("gateway_session_usage_failed")
+		return
 	}
 	if stage := stageFromContext(ctx); stage != "" {
-		if err := g.sessionStore.IncrementStageCount(ctx, sessionID, stage); err != nil {
-			log.Warn().Err(err).Str("session_id", sessionID).Str("stage", stage).Msg("stage count increment failed")
+		if err := g.sessionStore.IncrementStageCount(ctx, sess.ID, stage); err != nil {
+			log.Warn().Err(err).Str("session_id", sess.ID).Str("stage", stage).Msg("stage count increment failed")
 		}
 	}
+}
+
+// isAssertedSessionSource reports whether the session id was asserted by the
+// client (generic header) or a vendor adapter — the only sources allowed to
+// materialize session-store state (#198).
+func isAssertedSessionSource(source string) bool {
+	return source == orchSourceClientAsserted || source == orchSourceVendorAsserted
 }
 
 // buildPolicyInputForRequest builds the gateway policy input for a
@@ -1559,22 +1602,39 @@ func (g *Gateway) trackSessionUsage(ctx context.Context, sessionID, tenantID, ca
 // and session budget/stage included. The primary request and every fallback
 // candidate MUST go through this same function so the two policy surfaces
 // cannot drift apart (see TestPolicyInputParity_PrimaryVsCandidate).
-func (g *Gateway) buildPolicyInputForRequest(ctx context.Context, caller *CallerConfig, provider, model string, tier int, estimatedCost, dailyCost, monthlyCost float64, sessionID string) map[string]interface{} {
-	input := buildGatewayPolicyInput(caller, g.config.ServerDefaults, provider, model, tier, estimatedCost, dailyCost, monthlyCost, g.providerRegion(provider))
-	if g.sessionStore != nil && sessionID != "" {
-		if sess, err := g.sessionStore.Get(ctx, sessionID); err == nil {
-			input["session_cost_total"] = sess.TotalCost
-		}
-		if sc, err := g.sessionStore.GetStageCounts(ctx, sessionID); err == nil {
-			input["session_stage_counts"] = map[string]int{
-				"generation": sc.Generation,
-				"judge":      sc.Judge,
-				"commit":     sc.Commit,
-			}
-		}
-		input["session_stage"] = stageFromContext(ctx)
+//
+// Session state is read by the caller-scoped tuple, never the raw asserted id
+// (#215). sessionUnavailable reports a session-store read failure: the check
+// fails open (request proceeds without session budget input) and the caller
+// must record the "session_budget_unavailable" evidence annotation.
+func (g *Gateway) buildPolicyInputForRequest(ctx context.Context, caller *CallerConfig, provider, model string, tier int, estimatedCost, dailyCost, monthlyCost float64, sessionID string) (input map[string]interface{}, sessionUnavailable bool) {
+	input = buildGatewayPolicyInput(caller, g.config.ServerDefaults, provider, model, tier, estimatedCost, dailyCost, monthlyCost, g.providerRegion(provider))
+	if g.sessionStore == nil || sessionID == "" {
+		return input, false
 	}
-	return input
+	if isAssertedSessionSource(sessionSourceFromContext(ctx)) {
+		switch sess, err := g.sessionStore.GetByExternal(ctx, caller.TenantID, caller.Name, sessionID); {
+		case err == nil:
+			input["session_cost_total"] = sess.TotalCost
+			if sc, scErr := g.sessionStore.GetStageCounts(ctx, sess.ID); scErr == nil {
+				input["session_stage_counts"] = map[string]int{
+					"generation": sc.Generation,
+					"judge":      sc.Judge,
+					"commit":     sc.Commit,
+				}
+			}
+		case errors.Is(err, session.ErrSessionNotFound):
+			// First request of a session: zero spend, so a caller cap still
+			// bounds a single oversized request.
+			input["session_cost_total"] = 0.0
+		default:
+			// Store failure: fail open (like callerCostTotals) but surface it.
+			log.Warn().Err(err).Str("session_id", sessionID).Msg("gateway_session_budget_lookup_failed")
+			sessionUnavailable = true
+		}
+	}
+	input["session_stage"] = stageFromContext(ctx)
+	return input, sessionUnavailable
 }
 
 func buildGatewayPolicyInput(caller *CallerConfig, defaults ServerDefaults, provider, model string, dataTier int, estimatedCost, dailyCost, monthlyCost float64, destinationRegion string) map[string]interface{} {
@@ -1608,11 +1668,36 @@ func buildGatewayPolicyInput(caller *CallerConfig, defaults ServerDefaults, prov
 		if caller.PolicyOverrides.MaxMonthlyCost > 0 {
 			input["caller_max_monthly_cost"] = caller.PolicyOverrides.MaxMonthlyCost
 		}
+		if caller.PolicyOverrides.MaxSessionCost > 0 {
+			// One insertion in the shared builder covers the primary request
+			// and every fallback candidate identically (#198).
+			input["caller_max_session_cost"] = caller.PolicyOverrides.MaxSessionCost
+		}
 		if caller.PolicyOverrides.MaxDataTier != nil {
 			input["caller_max_data_tier"] = int(*caller.PolicyOverrides.MaxDataTier)
 		}
 	}
 	return input
+}
+
+// sessionBudgetDetail extracts the structured {limit, spent, estimate} session
+// budget detail when a session_budget_exceeded deny fired, from the same
+// policy input the rule evaluated — the signed record carries the numbers the
+// decision was made on, not a re-read.
+func sessionBudgetDetail(reasons []string, policyInput map[string]interface{}, estimatedCost float64) *evidence.SessionBudget {
+	fired := false
+	for _, r := range reasons {
+		if strings.HasPrefix(r, "session_budget_exceeded:") {
+			fired = true
+			break
+		}
+	}
+	if !fired {
+		return nil
+	}
+	limit, _ := policyInput["caller_max_session_cost"].(float64)
+	spent, _ := policyInput["session_cost_total"].(float64)
+	return &evidence.SessionBudget{Limit: limit, Spent: spent, Estimate: estimatedCost}
 }
 
 // tryBudgetAlert emits RecordBudgetAlert when utilization >= threshold, with a 1-hour cooldown per tenant+period+threshold.

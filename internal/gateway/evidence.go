@@ -85,6 +85,10 @@ type RecordGatewayEvidenceParams struct {
 	// Orchestration carries client-asserted coding-orchestration identity
 	// (#194). Evidence-only; never a policy input in v1.
 	Orchestration *evidence.OrchestrationContext
+	// SessionBudget carries the {limit, spent, estimate} a session-budget
+	// deny was decided on (#198). Nil unless a session_budget_exceeded
+	// deny fired.
+	SessionBudget *evidence.SessionBudget
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -170,6 +174,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		FailureReason:  params.FailureReason,
 		Failover:       params.Failover,
 		Orchestration:  params.Orchestration,
+		SessionBudget:  params.SessionBudget,
 	}
 	if !params.PolicyAllowed {
 		ev.PolicyDecision.Action = "deny"
@@ -214,6 +219,9 @@ func sanitizeGatewayAnnotations(in []string) []string {
 		// force_true reversed an explicit client store:false on a Responses
 		// API request (#213) — a retention decision that must be evidenced.
 		"responses_store_overridden": {},
+		// The session-store read failed and the session budget check failed
+		// open (#198) — the enforcement gap must be visible in evidence.
+		"session_budget_unavailable": {},
 	}
 	out := make([]string, 0, len(in))
 	for _, v := range in {
