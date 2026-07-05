@@ -1,6 +1,6 @@
 # Evidence Integrity Specification
 
-**Status:** stable · **Version:** 1.5 · **Scope:** the signed evidence record produced by Talon.
+**Status:** stable · **Version:** 1.6 · **Scope:** the signed evidence record produced by Talon.
 
 This is the normative specification for how a Talon evidence record is serialized,
 signed, and verified. It is written so that a third party can independently verify a
@@ -90,6 +90,8 @@ Top-level fields, **in serialization order** (this order is significant — see
 | 45 | `graph_run_id` | string | optional |
 | 46 | `data_flow` | object | optional |
 | 47 | `egress_decision` | object | optional |
+| 48 | `failover` | object | optional |
+| 49 | `orchestration` | object | optional |
 
 Nested objects (`policy_decision`, `classification`, `execution`, `audit_trail`,
 `compliance`, and the optional objects) follow the same encoding rules recursively; their
@@ -133,6 +135,17 @@ nested fields are:
   `egress_tier_destination_disallowed`). Present only when an egress policy
   is configured for the caller; recorded for allowed and denied requests so
   the control's execution can be evidenced.
+- `failover` (optional): provider fallback-chain context (#191). Present when
+  error-driven failover produced a failed-attempt record, a fallback decision,
+  or a fail-closed outcome. Fields are defined by the `FailoverContext` Go
+  struct; see the failover verifier (`talon audit verify --failover`).
+- `orchestration` (optional): client-asserted coding-orchestration identity
+  (#194). Fields: `session_id`, `agent_id`, `parent_agent_id`, `client`
+  (adapter-detected: `"claude-code"`, `"codex"`, or `"generic"`),
+  `session_source` (`client_asserted` | `vendor_asserted` | `synthetic`), and
+  `provenance` (always `"client_asserted"` in this version). Attribution
+  metadata only — as trustworthy as the caller that presented the tenant key;
+  never a policy input. All fields optional/omitempty.
 
 ## 3. Canonical serialization
 
@@ -239,6 +252,14 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 `Store.VerifyRecord`, and confirms that mutating a field invalidates the signature.
 
 ## 8. Changelog
+
+- **1.6** — added optional nested field `orchestration` (#194): client-asserted
+  coding-orchestration identity (`session_id`, `agent_id`, `parent_agent_id`,
+  `client`, `session_source`, `provenance`) observed on gateway requests.
+  Attribution metadata only, marked `provenance: "client_asserted"`; never a
+  policy input in this version. Additive and backward-compatible: records that
+  omit the field keep identical canonical bytes and verify unchanged; use a 1.6
+  verifier for records that carry it.
 
 - **1.5** — added optional nested field `classification.tool_content` (#212):
   the observation-only PII scan of tool-related request content (tool_use
