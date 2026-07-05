@@ -141,7 +141,7 @@ verify-shortlist-demo: ## Run full #107 shortlist demo verification (Docker)
 	@bash scripts/verify-shortlist-demo.sh
 
 coding-agents-demo: ## Run #203 coding-agents demo (multi-model orchestration, offline mock, Docker)
-	@cd examples/coding-agents-demo && docker compose up -d --build && ./demo.sh all
+	@cd examples/coding-agents-demo && docker compose up -d --build --wait && ./demo.sh all
 
 # Provider registry and EU routing
 provider-list: build ## List registered LLM providers (compliance metadata)
