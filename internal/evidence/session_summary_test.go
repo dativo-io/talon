@@ -131,3 +131,46 @@ func TestBuildSessionSummary_Empty(t *testing.T) {
 		t.Errorf("empty summary = %+v, want zeroed with SessionID set", sum)
 	}
 }
+
+func TestListRecentOrchestrationSessionIDs(t *testing.T) {
+	store, err := NewStore(t.TempDir()+"/e.db", "test-signing-key-1234567890123456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := t.Context()
+	now := time.Now().UTC()
+	put := func(id, sessionID string, orch *OrchestrationContext, ts time.Time) {
+		ev := &Evidence{
+			ID: id, CorrelationID: "c_" + id, SessionID: sessionID, Timestamp: ts,
+			TenantID: "default", AgentID: "coder", InvocationType: "gateway",
+			PolicyDecision: PolicyDecision{Allowed: true}, Orchestration: orch,
+		}
+		if err := store.Store(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orch := func(sid string) *OrchestrationContext {
+		return &OrchestrationContext{SessionID: sid, Client: "generic", SessionSource: "client_asserted", Provenance: "client_asserted"}
+	}
+	put("e1", "sess-old", orch("sess-old"), now.Add(-3*time.Hour))
+	put("e2", "sess-new", orch("sess-new"), now.Add(-1*time.Minute))
+	put("e3", "sess-old", orch("sess-old"), now.Add(-2*time.Hour))
+	put("e4", "sess_gw_synthetic", nil, now) // no orchestration block → excluded
+
+	ids, err := store.ListRecentOrchestrationSessionIDs(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] != "sess-new" || ids[1] != "sess-old" {
+		t.Fatalf("ids = %v, want [sess-new sess-old] (newest activity first, synthetic excluded)", ids)
+	}
+
+	one, err := store.ListRecentOrchestrationSessionIDs(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one) != 1 || one[0] != "sess-new" {
+		t.Fatalf("limit=1 → %v, want [sess-new]", one)
+	}
+}
