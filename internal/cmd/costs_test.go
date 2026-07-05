@@ -243,3 +243,51 @@ func TestCostsExportCmd_JSONIncludesProviderAndDeniedRow(t *testing.T) {
 	assert.Equal(t, "deny", rows[0]["policy_action"])
 	assert.EqualValues(t, 0, rows[0]["cost"])
 }
+
+// `talon costs --session` without --tenant must be UNSCOPED, not silently
+// scoped to the "default" tenant: the calendar rollups' tenant defaulting
+// emptied session summaries for any other tenant (found live in the #203
+// demo, tenant "demo" → record_count 0 while audit list showed the session).
+func TestCostsCmd_SessionRollup_NonDefaultTenantWithoutFlag(t *testing.T) {
+	resetAuditCostFlags()
+	t.Cleanup(resetAuditCostFlags)
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SIGNING_KEY", "test-signing-key-1234567890123456")
+
+	store, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), "test-signing-key-1234567890123456")
+	require.NoError(t, err)
+	gen := evidence.NewGenerator(store)
+	_, err = gen.Generate(context.Background(), evidence.GenerateParams{
+		CorrelationID: "c1", SessionID: "sess-demo-tenant", TenantID: "demo", AgentID: "claude-code",
+		InvocationType: "gateway", ModelUsed: "claude-sonnet-5", Cost: 0.05,
+		PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		InputPrompt:    "a", OutputResponse: "b",
+	})
+	require.NoError(t, err)
+	store.Close()
+
+	// Set the writer on costsCmd itself: earlier tests SetOut the package-
+	// global costsCmd, and a subcommand's own writer shadows rootCmd's.
+	var buf bytes.Buffer
+	costsCmd.SetOut(&buf)
+	costsCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"costs", "--session", "sess-demo-tenant", "--json"})
+	require.NoError(t, rootCmd.Execute())
+
+	var sum evidence.SessionSummary
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &sum))
+	assert.Equal(t, 1, sum.RecordCount, "no --tenant flag → unscoped, tenant 'demo' session must be visible")
+	assert.Equal(t, "demo", sum.TenantID)
+	assert.InDelta(t, 0.05, sum.TotalCost, 1e-9)
+
+	// An explicit mismatching --tenant still scopes (and empties) correctly.
+	var buf2 bytes.Buffer
+	costsCmd.SetOut(&buf2)
+	costsCmd.SetErr(&buf2)
+	rootCmd.SetArgs([]string{"costs", "--session", "sess-demo-tenant", "--tenant", "other", "--json"})
+	require.NoError(t, rootCmd.Execute())
+	var sum2 evidence.SessionSummary
+	require.NoError(t, json.Unmarshal(buf2.Bytes(), &sum2))
+	assert.Equal(t, 0, sum2.RecordCount, "explicit foreign tenant → scoped out")
+}

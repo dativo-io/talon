@@ -73,6 +73,9 @@ type sessionAgg struct {
 	providers map[string]struct{}
 	models    map[string]struct{}
 	agents    map[string]*SessionAgentRollup
+	// orchAt is the timestamp of the record whose orchestration block
+	// currently supplies SessionSource/Client (earliest wins).
+	orchAt time.Time
 }
 
 func newSessionAgg(sessionID string) *sessionAgg {
@@ -108,10 +111,13 @@ func (a *sessionAgg) addMetadata(ev *Evidence) {
 		a.providers[ev.RoutingDecision.SelectedProvider] = struct{}{}
 	}
 	if ev.Orchestration != nil {
-		if a.sum.SessionSource == "" {
+		// Session source/client come from the EARLIEST orchestrated record —
+		// the client that opened the session — independent of input order
+		// (ListBySessionID returns newest-first; taking the first iterated
+		// record labeled a mostly-claude-code session "codex").
+		if a.orchAt.IsZero() || ev.Timestamp.Before(a.orchAt) {
+			a.orchAt = ev.Timestamp
 			a.sum.SessionSource = ev.Orchestration.SessionSource
-		}
-		if a.sum.Client == "" {
 			a.sum.Client = ev.Orchestration.Client
 		}
 	}

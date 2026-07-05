@@ -110,7 +110,11 @@ var costsCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("querying session %s: %w", costsSession, err)
 			}
-			records = scopeSessionRecords(records, tenantID, costsAgent)
+			// Scope by the tenant the user actually passed — NOT the "default"
+			// fallback used by the calendar rollups below. Defaulting here
+			// silently emptied the summary for any session owned by another
+			// tenant (bit the coding-agents demo, tenant "demo").
+			records = scopeSessionRecords(records, costsTenant, costsAgent)
 			sum := evidence.BuildSessionSummary(costsSession, records)
 			if costsJSON {
 				enc := json.NewEncoder(sessionOut)
