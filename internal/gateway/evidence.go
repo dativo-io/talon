@@ -78,6 +78,9 @@ type RecordGatewayEvidenceParams struct {
 	// ToolContent carries the evidence-only PII observation over tool-related
 	// request content (#212). Never used for enforcement in v1.
 	ToolContent *evidence.ToolContentScan
+	// Orchestration carries client-asserted coding-orchestration identity
+	// (#194). Evidence-only; never a policy input in v1.
+	Orchestration *evidence.OrchestrationContext
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -160,6 +163,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		Status:         params.Status,
 		FailureReason:  params.FailureReason,
 		Failover:       params.Failover,
+		Orchestration:  params.Orchestration,
 	}
 	if !params.PolicyAllowed {
 		ev.PolicyDecision.Action = "deny"

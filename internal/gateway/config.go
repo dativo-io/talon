@@ -123,6 +123,18 @@ type CallerConfig struct {
 	SourceIPRanges   []string               `yaml:"source_ip_ranges,omitempty" json:"source_ip_ranges,omitempty"`
 	AllowedProviders []string               `yaml:"allowed_providers,omitempty" json:"allowed_providers,omitempty"`
 	PolicyOverrides  *CallerPolicyOverrides `yaml:"policy_overrides,omitempty" json:"policy_overrides,omitempty"`
+	// AcceptClientMetadata controls whether client-asserted orchestration
+	// identity (session/subagent/parent, from x-claude-code-* / Codex / generic
+	// X-Talon-* headers) is recorded in evidence for this caller. nil = true
+	// (default). It gates recording only — identity is never a policy input in
+	// v1 (evidence-only until attestation, #149). #194.
+	AcceptClientMetadata *bool `yaml:"accept_client_metadata,omitempty" json:"accept_client_metadata,omitempty"`
+}
+
+// AcceptsClientMetadata reports whether client-asserted orchestration identity
+// is recorded for this caller. Default is true when unset.
+func (c *CallerConfig) AcceptsClientMetadata() bool {
+	return c == nil || c.AcceptClientMetadata == nil || *c.AcceptClientMetadata
 }
 
 // CallerPolicyOverrides are per-caller policy overrides.

@@ -409,6 +409,11 @@
                 "type": "array",
                 "items": { "type": "string" }
               },
+              "accept_client_metadata": {
+                "type": "boolean",
+                "default": true,
+                "description": "Record client-asserted orchestration identity (session/subagent/parent, from x-claude-code-*, Codex, or generic X-Talon-* headers) in evidence for this caller. Default true. Gates recording only — client-asserted identity is never a policy input (evidence-only until attestation, #149). #194."
+              },
               "policy_overrides": {
                 "type": "object",
                 "properties": {

@@ -101,6 +101,24 @@ type Evidence struct {
 	// egress_decision so pre-existing record signatures remain valid
 	// (see docs/reference/evidence-integrity-spec.md §2).
 	Failover *FailoverContext `json:"failover,omitempty"`
+	// Orchestration records client-asserted coding-orchestration identity
+	// (session/subagent/parent) observed on gateway requests (#194, spec 1.6).
+	// Attribution metadata only — exactly as trustworthy as the caller that
+	// presented the tenant key; never a policy input before attestation
+	// (#149). Appended after failover per the spec §2 append rule.
+	Orchestration *OrchestrationContext `json:"orchestration,omitempty"`
+}
+
+// OrchestrationContext is the client-asserted orchestration identity for one
+// gateway request. The gateway ingests it from the neutral X-Talon-* headers
+// or a vendor adapter (Claude Code, Codex); it never invents identity.
+type OrchestrationContext struct {
+	SessionID     string `json:"session_id,omitempty"`      // mirrors the evidence session_id column
+	AgentID       string `json:"agent_id,omitempty"`        // subagent identity as asserted by the client
+	ParentAgentID string `json:"parent_agent_id,omitempty"` // spawning agent, when nested
+	Client        string `json:"client,omitempty"`          // adapter that matched ("claude-code", "codex") or "generic"
+	SessionSource string `json:"session_source,omitempty"`  // client_asserted | vendor_asserted | synthetic
+	Provenance    string `json:"provenance,omitempty"`      // always "client_asserted" in v1
 }
 
 // Failover evidence roles. A failover produces separate signed facts:

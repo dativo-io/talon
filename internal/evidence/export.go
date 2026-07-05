@@ -73,6 +73,13 @@ type ExportRecord struct {
 	ToolContentHasPII      bool     `json:"tool_content_has_pii,omitempty"`
 	ToolContentEntityTypes []string `json:"tool_content_entity_types,omitempty"`
 	ToolContentEntityCount int      `json:"tool_content_entity_count,omitempty"`
+	// Orchestration identity (trailing, backward-compatible): client-asserted
+	// session/subagent attribution observed by the gateway (#194, spec 1.6).
+	// session_id itself is already a first-class column above.
+	OrchAgentID       string `json:"orch_agent_id,omitempty"`
+	OrchParentAgentID string `json:"orch_parent_agent_id,omitempty"`
+	OrchClient        string `json:"orch_client,omitempty"`
+	OrchSessionSource string `json:"orch_session_source,omitempty"`
 }
 
 // ExportMetadata wraps JSON export with context about the export run.
@@ -182,6 +189,12 @@ func ToExportRecord(e *Evidence) ExportRecord {
 		rec.ToolContentHasPII = tc.HasPII
 		rec.ToolContentEntityTypes = tc.EntityTypes
 		rec.ToolContentEntityCount = tc.EntityCount
+	}
+	if o := e.Orchestration; o != nil {
+		rec.OrchAgentID = o.AgentID
+		rec.OrchParentAgentID = o.ParentAgentID
+		rec.OrchClient = o.Client
+		rec.OrchSessionSource = o.SessionSource
 	}
 	return rec
 }

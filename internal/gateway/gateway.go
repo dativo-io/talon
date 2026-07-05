@@ -62,6 +62,7 @@ const (
 	gatewayUpstreamAuthMode  gatewayContextKey = "upstream_auth_mode"
 	gatewayUpstreamKeySource gatewayContextKey = "upstream_key_source"
 	gatewayUpstreamKeyFP     gatewayContextKey = "upstream_key_fingerprint"
+	gatewayOrchestrationKey  gatewayContextKey = "orchestration"
 )
 
 // hasCallerTag returns true when the caller has the given tag (e.g. "copaw" for CoPaw).
@@ -222,7 +223,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, gatewayAgentReasoningKey, r.Header.Get("X-Talon-Reasoning"))
 	ctx = context.WithValue(ctx, gatewaySessionIDKey, sessionID)
 	ctx = context.WithValue(ctx, gatewayRetryAttemptKey, r.Header.Get("X-Talon-Retry-Attempt"))
-	ctx = context.WithValue(ctx, gatewayStageKey, r.Header.Get("X-Talon-Stage"))
+	// Only the known orchestration stages are accepted; any other value is
+	// dropped so unbounded junk never accumulates session_stage_counts (#194).
+	ctx = context.WithValue(ctx, gatewayStageKey, normalizeStage(r.Header.Get("X-Talon-Stage")))
 	if ciStr := r.Header.Get("X-Talon-Candidate-Index"); ciStr != "" {
 		if ci, err := strconv.Atoi(ciStr); err == nil {
 			ctx = context.WithValue(ctx, gatewayCandidateIndexKey, ci)
@@ -278,6 +281,28 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			attribute.String("copaw.caller", caller.Name),
 			attribute.String("copaw.channel", "gateway"),
 		)
+	}
+
+	// Orchestration metadata (#194): ingest client-asserted session/subagent
+	// identity from the neutral X-Talon-* headers or a vendor adapter (Claude
+	// Code, Codex). Evidence-only; never a policy input. A hygiene violation
+	// (oversized/invalid header) is rejected here so it never reaches evidence.
+	orch, resolvedSessionID, _, orchErr := resolveOrchestration(r, caller.AcceptsClientMetadata(), sessionID)
+	if orchErr != nil {
+		RecordGatewayError(ctx, "orchestration_header_invalid")
+		RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
+		WriteProviderError(w, wire, http.StatusBadRequest, "Invalid orchestration header: "+orchErr.Error())
+		return
+	}
+	if resolvedSessionID != sessionID {
+		// A client-asserted session id (generic or vendor) overrides the
+		// synthetic one for the evidence session spine and the echoed header.
+		sessionID = resolvedSessionID
+		ctx = context.WithValue(ctx, gatewaySessionIDKey, sessionID)
+		w.Header().Set("X-Talon-Session-ID", sessionID)
+	}
+	if orch != nil {
+		ctx = context.WithValue(ctx, gatewayOrchestrationKey, orch)
 	}
 
 	// Rate limit check (after caller identification, before any work)
@@ -1238,6 +1263,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		ExplanationFacts:        buildGatewayExplanationFacts(allowed, reasons, outputPIIDetected, outputPIITypes, stageFromContext(ctx)),
 		DataFlow:                dataFlow,
 		EgressDecision:          egressDecision,
+		Orchestration:           orchestrationFromContext(ctx),
 	}
 	if toolResult != nil {
 		params.ToolsRequested = toolResult.Requested
@@ -1365,6 +1391,13 @@ func retryAttemptFromContext(ctx context.Context) string {
 		return s
 	}
 	return ""
+}
+
+func orchestrationFromContext(ctx context.Context) *evidence.OrchestrationContext {
+	if v, ok := ctx.Value(gatewayOrchestrationKey).(*evidence.OrchestrationContext); ok {
+		return v
+	}
+	return nil
 }
 
 func stageFromContext(ctx context.Context) string {

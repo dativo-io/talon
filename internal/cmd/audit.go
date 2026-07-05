@@ -775,6 +775,20 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 	if len(ev.GatewayAnnotations) > 0 {
 		fmt.Fprintf(w, "Gateway Annotations: %s\n", strings.Join(ev.GatewayAnnotations, ", "))
 	}
+	if o := ev.Orchestration; o != nil {
+		fmt.Fprintln(w, "Orchestration (client-asserted)")
+		if o.AgentID != "" {
+			fmt.Fprintf(w, "  Agent:       %s\n", o.AgentID)
+		}
+		if o.ParentAgentID != "" {
+			fmt.Fprintf(w, "  Parent:      %s\n", o.ParentAgentID)
+		}
+		if o.Client != "" {
+			fmt.Fprintf(w, "  Client:      %s\n", o.Client)
+		}
+		fmt.Fprintf(w, "  Session Src: %s\n", o.SessionSource)
+		fmt.Fprintf(w, "  Provenance:  %s\n", o.Provenance)
+	}
 	if ev.CacheHit {
 		fmt.Fprintln(w, "Cache")
 		fmt.Fprintf(w, "  Hit:         true\n")
