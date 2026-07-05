@@ -47,6 +47,16 @@ func TestHealthEndpoint(t *testing.T) {
 	var out map[string]interface{}
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
 	assert.Equal(t, "ok", out["status"])
+
+	// HEAD must answer 200 too: `wget --spider` (the compose healthchecks)
+	// probes with HEAD, and chi's Get-only registration answered 405 —
+	// leaving every containerized Talon permanently "unhealthy" (#192 demo).
+	for _, path := range []string{"/health", "/v1/health"} {
+		headReq := httptest.NewRequestWithContext(context.Background(), http.MethodHead, path, nil)
+		headRec := httptest.NewRecorder()
+		r.ServeHTTP(headRec, headReq)
+		assert.Equal(t, http.StatusOK, headRec.Code, "HEAD %s must be 200 for wget --spider healthchecks", path)
+	}
 }
 
 func TestHealthDetail(t *testing.T) {
