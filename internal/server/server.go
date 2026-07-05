@@ -247,9 +247,14 @@ func (s *Server) Routes() http.Handler {
 	r.Use(otel.MiddlewareWithStatus())
 	r.Use(CORSMiddleware(s.corsOrigins))
 
-	// Unauthenticated
+	// Unauthenticated. HEAD is registered explicitly: chi's Get() answers 405
+	// to HEAD, and `wget --spider` (the healthcheck in every example compose
+	// stack) probes with HEAD — without this, containerized Talon reports
+	// permanently unhealthy while serving fine.
 	r.Get("/health", s.handleHealth)
+	r.Head("/health", s.handleHealth)
 	r.Get("/v1/health", s.handleHealth)
+	r.Head("/v1/health", s.handleHealth)
 
 	// Webhooks (no auth; signature validation can be added later)
 	r.Post("/v1/triggers/{name}", s.webhookHandler.HandleWebhook)
