@@ -498,3 +498,179 @@ func TestAuditVerifyFile_FailsForTamperedSignedExport(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "file verification failed")
 }
+
+func sessTestRecord(id, session, tenant, caller, model string, cost float64, allowed bool, orch *evidence.OrchestrationContext) *evidence.Evidence {
+	return &evidence.Evidence{
+		ID:             id,
+		SessionID:      session,
+		TenantID:       tenant,
+		AgentID:        caller,
+		Timestamp:      time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC),
+		PolicyDecision: evidence.PolicyDecision{Allowed: allowed},
+		Execution:      evidence.Execution{ModelUsed: model, Cost: cost, Tokens: evidence.TokenUsage{Input: 100, Output: 20}},
+		Orchestration:  orch,
+	}
+}
+
+func TestScopeSessionRecords(t *testing.T) {
+	records := []*evidence.Evidence{
+		sessTestRecord("a", "s", "acme", "callerA", "m", 0.01, true, nil),
+		sessTestRecord("b", "s", "acme", "callerB", "m", 0.01, true, nil),
+		sessTestRecord("c", "s", "other", "callerA", "m", 0.01, true, nil),
+	}
+	// No filters → all pass through.
+	assert.Len(t, scopeSessionRecords(records, "", ""), 3)
+	// Tenant filter.
+	assert.Len(t, scopeSessionRecords(records, "acme", ""), 2)
+	// Agent filter.
+	assert.Len(t, scopeSessionRecords(records, "", "callerA"), 2)
+	// Combined.
+	got := scopeSessionRecords(records, "acme", "callerA")
+	require.Len(t, got, 1)
+	assert.Equal(t, "a", got[0].ID)
+}
+
+func TestRenderSessionSummary_WithAgentBreakdown(t *testing.T) {
+	orchGen := &evidence.OrchestrationContext{AgentID: "generator", Client: "claude-code", SessionSource: "client_asserted"}
+	orchJudge := &evidence.OrchestrationContext{AgentID: "judge", ParentAgentID: "generator", Client: "claude-code", SessionSource: "client_asserted"}
+	records := []*evidence.Evidence{
+		sessTestRecord("a", "sess-x", "acme", "orch", "claude-opus-4-8", 0.20, true, orchGen),
+		sessTestRecord("b", "sess-x", "acme", "orch", "claude-haiku-4-5", 0.02, true, orchJudge),
+	}
+	var buf bytes.Buffer
+	renderSessionSummary(&buf, evidence.BuildSessionSummary("sess-x", records))
+	out := buf.String()
+	assert.Contains(t, out, "Session sess-x")
+	assert.Contains(t, out, "claude-code (client_asserted)")
+	assert.Contains(t, out, "Per-agent:")
+	assert.Contains(t, out, "generator")
+	assert.Contains(t, out, "judge")
+	assert.Contains(t, out, "←generator")
+}
+
+func TestRenderSessionSummary_SingleCallerNoBreakdown(t *testing.T) {
+	records := []*evidence.Evidence{
+		sessTestRecord("a", "sess-y", "acme", "cli", "m", 0.10, true, nil),
+	}
+	var buf bytes.Buffer
+	renderSessionSummary(&buf, evidence.BuildSessionSummary("sess-y", records))
+	out := buf.String()
+	assert.Contains(t, out, "Session sess-y")
+	// Single caller-keyed agent equal to the only caller → no per-agent table.
+	assert.NotContains(t, out, "Per-agent:")
+}
+
+func TestRenderSessionRecords(t *testing.T) {
+	orch := &evidence.OrchestrationContext{AgentID: "generator"}
+	records := []*evidence.Evidence{
+		sessTestRecord("ev_1", "s", "acme", "orch", "claude-opus-4-8", 0.10, true, orch),
+		sessTestRecord("ev_2", "s", "acme", "orch", "claude-opus-4-8", 0.00, false, nil),
+	}
+	records[1].Execution.Error = "boom"
+	var buf bytes.Buffer
+	renderSessionRecords(&buf, records)
+	out := buf.String()
+	assert.Contains(t, out, "Records (2, newest first)")
+	assert.Contains(t, out, "ev_1")
+	assert.Contains(t, out, "agent=generator")
+	assert.Contains(t, out, "[ERROR]")
+}
+
+// resetAuditCostFlags clears the package-global flag variables that cobra binds
+// across Execute() calls, so session-flag tests neither inherit nor leak state.
+func resetAuditCostFlags() {
+	auditSession = ""
+	auditVerifyFile = ""
+	auditVerifyFailover = false
+	auditTenant = ""
+	auditAgent = ""
+	auditCaller = ""
+	costsSession = ""
+	costsJSON = false
+	costsAgent = ""
+	costsCaller = ""
+	costsTenant = ""
+}
+
+func TestAuditListCmd_SessionScoped(t *testing.T) {
+	resetAuditCostFlags()
+	t.Cleanup(resetAuditCostFlags)
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SIGNING_KEY", "test-signing-key-1234567890123456")
+
+	store, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), "test-signing-key-1234567890123456")
+	require.NoError(t, err)
+	gen := evidence.NewGenerator(store)
+	for _, p := range []evidence.GenerateParams{
+		{CorrelationID: "c1", SessionID: "sess-A", TenantID: "default", AgentID: "coder", InvocationType: "gateway", ModelUsed: "claude-sonnet-5", Cost: 0.10, PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"}, InputPrompt: "a", OutputResponse: "b"},
+		{CorrelationID: "c2", SessionID: "sess-A", TenantID: "default", AgentID: "coder", InvocationType: "gateway", ModelUsed: "claude-sonnet-5", Cost: 0.05, PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"}, InputPrompt: "a", OutputResponse: "b"},
+		{CorrelationID: "c3", SessionID: "sess-B", TenantID: "default", AgentID: "coder", InvocationType: "gateway", ModelUsed: "claude-sonnet-5", Cost: 0.99, PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"}, InputPrompt: "a", OutputResponse: "b"},
+	} {
+		_, err := gen.Generate(context.Background(), p)
+		require.NoError(t, err)
+	}
+	store.Close()
+
+	// audit list --session sess-A → summary + only its 2 records, not sess-B.
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetArgs([]string{"audit", "list", "--session", "sess-A"})
+	// list writes summary to os.Stdout; capture via the render path instead.
+	// Re-open store and drive the shared function directly for a hermetic check.
+	store2, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), "test-signing-key-1234567890123456")
+	require.NoError(t, err)
+	defer store2.Close()
+	recs, err := store2.ListBySessionID(context.Background(), "sess-A")
+	require.NoError(t, err)
+	require.Len(t, recs, 2, "session scoping must return only sess-A records")
+	sum := evidence.BuildSessionSummary("sess-A", recs)
+	assert.InDelta(t, 0.15, sum.TotalCost, 1e-9)
+	assert.Equal(t, 2, sum.RecordCount)
+
+	// costs --session sess-B --json → single record, cost 0.99.
+	var cbuf bytes.Buffer
+	rootCmd.SetOut(&cbuf)
+	rootCmd.SetArgs([]string{"costs", "--session", "sess-B", "--json"})
+	require.NoError(t, rootCmd.Execute())
+	var payload evidence.SessionSummary
+	require.NoError(t, json.Unmarshal(cbuf.Bytes(), &payload))
+	assert.Equal(t, "sess-B", payload.SessionID)
+	assert.Equal(t, 1, payload.RecordCount)
+	assert.InDelta(t, 0.99, payload.TotalCost, 1e-9)
+}
+
+func TestAuditVerifyCmd_Session(t *testing.T) {
+	resetAuditCostFlags()
+	t.Cleanup(resetAuditCostFlags)
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SIGNING_KEY", "test-signing-key-1234567890123456")
+
+	store, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), "test-signing-key-1234567890123456")
+	require.NoError(t, err)
+	gen := evidence.NewGenerator(store)
+	_, err = gen.Generate(context.Background(), evidence.GenerateParams{
+		CorrelationID: "cv1", SessionID: "sess-V", TenantID: "default", AgentID: "coder",
+		InvocationType: "gateway", PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow"},
+		InputPrompt: "a", OutputResponse: "b",
+	})
+	require.NoError(t, err)
+	store.Close()
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetArgs([]string{"audit", "verify", "--session", "sess-V"})
+	require.NoError(t, rootCmd.Execute())
+}
+
+func TestAuditVerifyCmd_SessionAndFileMutuallyExclusive(t *testing.T) {
+	resetAuditCostFlags()
+	t.Cleanup(resetAuditCostFlags)
+	dir := t.TempDir()
+	t.Setenv("TALON_DATA_DIR", dir)
+	t.Setenv("TALON_SIGNING_KEY", "test-signing-key-1234567890123456")
+	rootCmd.SetArgs([]string{"audit", "verify", "--session", "s", "--file", "x.json"})
+	err := rootCmd.Execute()
+	require.Error(t, err)
+}

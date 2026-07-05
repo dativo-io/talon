@@ -27,6 +27,7 @@ var (
 	costsByModel      bool
 	costsByProvider   bool
 	costsByTeam       bool
+	costsSession      string
 	costsJSON         bool
 	costsExportFmt    string
 	costsExportFrom   string
@@ -101,6 +102,23 @@ var costsCmd = &cobra.Command{
 				return fmt.Errorf("--agent (%s) and --caller (%s) refer to different values", costsAgent, costsCaller)
 			}
 			costsAgent = costsCaller
+		}
+
+		if costsSession != "" {
+			sessionOut := cmd.OutOrStdout()
+			records, err := store.ListBySessionID(ctx, costsSession)
+			if err != nil {
+				return fmt.Errorf("querying session %s: %w", costsSession, err)
+			}
+			records = scopeSessionRecords(records, tenantID, costsAgent)
+			sum := evidence.BuildSessionSummary(costsSession, records)
+			if costsJSON {
+				enc := json.NewEncoder(sessionOut)
+				enc.SetIndent("", "  ")
+				return enc.Encode(sum)
+			}
+			renderSessionSummary(sessionOut, sum)
+			return nil
 		}
 
 		now := time.Now().UTC()
@@ -631,6 +649,7 @@ func init() {
 	costsCmd.Flags().BoolVar(&costsByModel, "by-model", false, "group output by model")
 	costsCmd.Flags().BoolVar(&costsByProvider, "by-provider", false, "group output by provider")
 	costsCmd.Flags().BoolVar(&costsByTeam, "by-team", false, "group output by caller team")
+	costsCmd.Flags().StringVar(&costsSession, "session", "", "show a per-session cost rollup (session_id)")
 	costsCmd.Flags().BoolVar(&costsJSON, "json", false, "output results as JSON")
 	costsExportCmd.Flags().StringVar(&costsExportFmt, "format", "csv", "output format: csv or json")
 	costsExportCmd.Flags().StringVar(&costsExportFrom, "from", "", "start date (YYYY-MM-DD)")
