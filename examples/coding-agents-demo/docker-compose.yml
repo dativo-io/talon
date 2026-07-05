@@ -10,8 +10,10 @@ services:
   mock-provider:
     build:
       context: ../docker-compose/mock-provider
-    ports:
-      - "9090:9090"
+    # No host port: Talon reaches the mock over the compose network, and a
+    # published 9090 collides with the other example stacks when two demos
+    # run on one box. Add `ports: ["9090:9090"]` locally if you want to poke
+    # the mock directly.
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/health || exit 1"]
       interval: 5s
@@ -22,7 +24,10 @@ services:
     build:
       context: ../../
     ports:
-      - "8080:8080"
+      # Override when 8080 is busy on the host (a local `talon serve`, the
+      # other example stacks): DEMO_GATEWAY_PORT=18080 docker compose up -d
+      # then GATEWAY=http://localhost:18080 ./demo.sh all
+      - "${DEMO_GATEWAY_PORT:-8080}:8080"
     environment:
       - TALON_SECRETS_KEY=abcdefghijklmnopqrstuvwxyz012345
       - TALON_SIGNING_KEY=demo-signing-key-not-for-production

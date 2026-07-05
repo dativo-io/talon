@@ -13,6 +13,15 @@ cd examples/coding-agents-demo
 docker compose up -d --build && ./demo.sh all
 ```
 
+Port busy? The gateway publishes host port 8080 by default (the mock is
+network-internal and publishes nothing). If another stack or a local
+`talon serve` holds 8080:
+
+```bash
+DEMO_GATEWAY_PORT=18080 docker compose up -d --build
+GATEWAY=http://localhost:18080 ./demo.sh all
+```
+
 The same sequence is smoke-run in CI without Docker:
 `go test -tags=integration ./tests/integration -run TestCodingAgentsDemo_EndToEnd`.
 
