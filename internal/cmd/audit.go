@@ -31,6 +31,7 @@ var (
 	auditOutputFile     string
 	auditVerifyFile     string
 	auditVerifyFailover bool
+	auditSession        string
 )
 
 var auditCmd = &cobra.Command{
@@ -68,8 +69,10 @@ func init() {
 	auditListCmd.Flags().StringVar(&auditTenant, "tenant", "", "Filter by tenant ID")
 	auditListCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
 	auditListCmd.Flags().IntVar(&auditLimit, "limit", 20, "Maximum records to show")
+	auditListCmd.Flags().StringVar(&auditSession, "session", "", "Show a per-session summary and the session's records (session_id)")
 
 	auditVerifyCmd.Flags().StringVar(&auditVerifyFile, "file", "", "Verify all records from a signed export file")
+	auditVerifyCmd.Flags().StringVar(&auditSession, "session", "", "Verify every record in a session (session_id)")
 	auditVerifyCmd.Flags().BoolVar(&auditVerifyFailover, "failover", false, "Verify provider fallback chains: with a correlation ID argument verifies that chain; without, verifies all failover evidence")
 	auditExportCmd.Flags().StringVar(&auditExportFmt, "format", "csv", "Output format: csv, json, ndjson, signed-json, signed-ndjson, or html")
 	auditExportCmd.Flags().StringVar(&auditFrom, "from", "", "Start date (YYYY-MM-DD)")
@@ -80,6 +83,7 @@ func init() {
 	auditExportCmd.Flags().BoolVar(&auditViolationsOnly, "violations-only", false, "Only export records with policy violations or shadow violations")
 	auditExportCmd.Flags().StringVar(&auditOutputFile, "output", "", "Write to file instead of stdout")
 	auditExportCmd.Flags().IntVar(&auditExportLimit, "limit", 10000, "Maximum records to export")
+	auditExportCmd.Flags().StringVar(&auditSession, "session", "", "Export only records for this session (session_id)")
 
 	auditCmd.AddCommand(auditListCmd)
 	auditCmd.AddCommand(auditShowCmd)
@@ -109,6 +113,21 @@ func auditList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("initializing evidence store: %w", err)
 	}
 	defer store.Close()
+
+	if auditSession != "" {
+		records, err := fetchSessionRecords(ctx, store, auditSession, auditTenant, auditAgent)
+		if err != nil {
+			return err
+		}
+		if len(records) == 0 {
+			fmt.Printf("No evidence records found for session %s.\n", auditSession)
+			return nil
+		}
+		renderSessionSummary(os.Stdout, evidence.BuildSessionSummary(auditSession, records))
+		fmt.Fprintln(os.Stdout)
+		renderSessionRecords(os.Stdout, records)
+		return nil
+	}
 
 	index, err := store.ListIndex(ctx, auditTenant, auditAgent, time.Time{}, time.Time{}, auditLimit, "", "", "")
 	if err != nil {
@@ -175,26 +194,18 @@ func auditVerify(cmd *cobra.Command, args []string) error {
 		return auditVerifyFailoverChains(ctx, store, args)
 	}
 
+	if auditSession != "" {
+		if auditVerifyFile != "" || len(args) > 0 {
+			return fmt.Errorf("use either --session, --file, or an evidence ID, not more than one")
+		}
+		return auditVerifySession(ctx, store, auditSession)
+	}
+
 	if auditVerifyFile != "" {
 		if len(args) > 0 {
 			return fmt.Errorf("use either evidence ID or --file, not both")
 		}
-		data, err := os.ReadFile(auditVerifyFile)
-		if err != nil {
-			return fmt.Errorf("reading verify file: %w", err)
-		}
-		report, verifyErr := store.VerifyExport(data)
-		renderVerifyFileReport(os.Stdout, auditVerifyFile, report)
-		if report.HasFailures() {
-			if verifyErr != nil {
-				return fmt.Errorf("file verification failed: %w", verifyErr)
-			}
-			return fmt.Errorf("file verification failed")
-		}
-		if verifyErr != nil {
-			return fmt.Errorf("verifying file: %w", verifyErr)
-		}
-		return nil
+		return auditVerifyFromFile(store, auditVerifyFile)
 	}
 	if len(args) == 0 {
 		return fmt.Errorf("evidence id is required when --file is not provided")
@@ -209,6 +220,27 @@ func auditVerify(cmd *cobra.Command, args []string) error {
 	renderVerifyResult(os.Stdout, evidenceID, valid, ev)
 	if !valid {
 		return fmt.Errorf("signature verification failed for %s", evidenceID)
+	}
+	return nil
+}
+
+// auditVerifyFromFile verifies every record in a signed export file and returns
+// a non-nil error if any record fails.
+func auditVerifyFromFile(store *evidence.Store, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading verify file: %w", err)
+	}
+	report, verifyErr := store.VerifyExport(data)
+	renderVerifyFileReport(os.Stdout, path, report)
+	if report.HasFailures() {
+		if verifyErr != nil {
+			return fmt.Errorf("file verification failed: %w", verifyErr)
+		}
+		return fmt.Errorf("file verification failed")
+	}
+	if verifyErr != nil {
+		return fmt.Errorf("verifying file: %w", verifyErr)
 	}
 	return nil
 }
@@ -282,9 +314,18 @@ func auditExport(cmd *cobra.Command, _ []string) error {
 	}
 	agentFilter := resolveAgentFilter(auditAgent, auditCaller)
 
-	list, err := store.List(ctx, auditTenant, agentFilter, from, to, auditExportLimit)
-	if err != nil {
-		return fmt.Errorf("querying evidence: %w", err)
+	var list []evidence.Evidence
+	if auditSession != "" {
+		records, ferr := fetchSessionRecords(ctx, store, auditSession, auditTenant, agentFilter)
+		if ferr != nil {
+			return ferr
+		}
+		list = derefEvidence(records)
+	} else {
+		list, err = store.List(ctx, auditTenant, agentFilter, from, to, auditExportLimit)
+		if err != nil {
+			return fmt.Errorf("querying evidence: %w", err)
+		}
 	}
 	filteredEvidence := filterEvidenceForExport(list, auditViolationsOnly)
 	records := toExportRecords(filteredEvidence)
@@ -354,6 +395,158 @@ func filterEvidenceForExport(list []evidence.Evidence, violationsOnly bool) []ev
 		filtered = append(filtered, ev)
 	}
 	return filtered
+}
+
+// fetchSessionRecords loads a session's evidence (newest first) and applies
+// caller-scoping: records whose tenant/agent do not match the (optional)
+// filters are dropped so one caller cannot read another caller's session.
+func fetchSessionRecords(ctx context.Context, store *evidence.Store, sessionID, tenant, agent string) ([]*evidence.Evidence, error) {
+	records, err := store.ListBySessionID(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("querying session %s: %w", sessionID, err)
+	}
+	return scopeSessionRecords(records, tenant, agent), nil
+}
+
+// scopeSessionRecords drops records that do not match the tenant/agent filters.
+// Empty filters match everything.
+func scopeSessionRecords(records []*evidence.Evidence, tenant, agent string) []*evidence.Evidence {
+	if tenant == "" && agent == "" {
+		return records
+	}
+	out := make([]*evidence.Evidence, 0, len(records))
+	for _, ev := range records {
+		if tenant != "" && ev.TenantID != tenant {
+			continue
+		}
+		if agent != "" && ev.AgentID != agent {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
+// derefEvidence copies a slice of evidence pointers into values (the shape the
+// export path expects).
+func derefEvidence(records []*evidence.Evidence) []evidence.Evidence {
+	out := make([]evidence.Evidence, 0, len(records))
+	for _, ev := range records {
+		if ev != nil {
+			out = append(out, *ev)
+		}
+	}
+	return out
+}
+
+// auditVerifySession verifies the HMAC signature of every record in a session
+// and prints a per-record + aggregate report. Returns a non-nil error (non-zero
+// exit) if any record fails or the session is empty.
+func auditVerifySession(ctx context.Context, store *evidence.Store, sessionID string) error {
+	records, err := fetchSessionRecords(ctx, store, sessionID, auditTenant, auditAgent)
+	if err != nil {
+		return err
+	}
+	if len(records) == 0 {
+		return fmt.Errorf("no evidence records found for session %s", sessionID)
+	}
+	invalid := 0
+	for _, ev := range records {
+		valid := store.VerifyRecord(ev)
+		mark := "✓"
+		if !valid {
+			mark = "✗"
+			invalid++
+		}
+		fmt.Fprintf(os.Stdout, "  %s %s | %s | €%s\n", mark, ev.ID,
+			ev.Timestamp.Format("2006-01-02 15:04:05"), formatCost(ev.Execution.Cost))
+	}
+	fmt.Fprintf(os.Stdout, "\nSession %s: %d record(s), %d valid, %d invalid\n",
+		sessionID, len(records), len(records)-invalid, invalid)
+	if invalid > 0 {
+		return fmt.Errorf("%d record(s) in session %s failed signature verification", invalid, sessionID)
+	}
+	return nil
+}
+
+// renderSessionSummary prints the caller-scoped session rollup produced by
+// evidence.BuildSessionSummary.
+func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
+	fmt.Fprintf(w, "Session %s\n", sum.SessionID)
+	if sum.RecordCount == 0 {
+		fmt.Fprintln(w, "  (no records)")
+		return
+	}
+	fmt.Fprintf(w, "  Tenant:    %s\n", sum.TenantID)
+	if len(sum.Callers) > 0 {
+		fmt.Fprintf(w, "  Caller:    %s\n", strings.Join(sum.Callers, ", "))
+	}
+	if sum.Client != "" || sum.SessionSource != "" {
+		fmt.Fprintf(w, "  Source:    %s (%s)\n", sum.Client, sum.SessionSource)
+	}
+	fmt.Fprintf(w, "  Window:    %s → %s\n",
+		sum.FirstSeen.Format(time.RFC3339), sum.LastSeen.Format(time.RFC3339))
+	fmt.Fprintf(w, "  Requests:  %d (%d allowed, %d denied, %d error)\n",
+		sum.RecordCount, sum.Allowed, sum.Denied, sum.Errors)
+	if len(sum.Providers) > 0 {
+		fmt.Fprintf(w, "  Providers: %s\n", strings.Join(sum.Providers, ", "))
+	}
+	if len(sum.Models) > 0 {
+		fmt.Fprintf(w, "  Models:    %s\n", strings.Join(sum.Models, ", "))
+	}
+	fmt.Fprintf(w, "  Tokens:    in %d / out %d / cache-read %d / cache-write %d\n",
+		sum.InputTokens, sum.OutputTokens, sum.CacheReadTokens, sum.CacheWriteTokens)
+	fmt.Fprintf(w, "  Cost:      €%s\n", formatCost(sum.TotalCost))
+	if sessionHasAgentBreakdown(sum) {
+		fmt.Fprintln(w, "\n  Per-agent:")
+		for i := range sum.Agents {
+			a := &sum.Agents[i]
+			id := a.AgentID
+			if id == "" {
+				id = "(unattributed)"
+			}
+			parent := ""
+			if a.ParentAgentID != "" {
+				parent = " ←" + a.ParentAgentID
+			}
+			fmt.Fprintf(w, "    %-24s%s  %d req  €%s  (in %d / out %d)\n",
+				id, parent, a.RecordCount, formatCost(a.TotalCost), a.InputTokens, a.OutputTokens)
+		}
+	}
+}
+
+// sessionHasAgentBreakdown reports whether the per-agent table adds information
+// beyond the session totals (more than one agent, or a single named subagent).
+func sessionHasAgentBreakdown(sum evidence.SessionSummary) bool {
+	if len(sum.Agents) > 1 {
+		return true
+	}
+	return len(sum.Agents) == 1 && sum.Agents[0].AgentID != "" &&
+		(len(sum.Callers) != 1 || sum.Agents[0].AgentID != sum.Callers[0])
+}
+
+// renderSessionRecords prints a compact per-record line list for a session
+// (newest first, as returned by ListBySessionID).
+func renderSessionRecords(w io.Writer, records []*evidence.Evidence) {
+	fmt.Fprintf(w, "Records (%d, newest first):\n", len(records))
+	for _, ev := range records {
+		status := "✓"
+		if !ev.PolicyDecision.Allowed {
+			status = "✗"
+		}
+		errMark := ""
+		if ev.Execution.Error != "" {
+			errMark = " [ERROR]"
+		}
+		agent := ""
+		if ev.Orchestration != nil && ev.Orchestration.AgentID != "" {
+			agent = " | agent=" + ev.Orchestration.AgentID
+		}
+		fmt.Fprintf(w, "  %s %s | %s | %s | €%s | %dms%s%s\n",
+			status, ev.ID, ev.Timestamp.Format("2006-01-02 15:04:05"),
+			ev.Execution.ModelUsed, formatCost(ev.Execution.Cost),
+			ev.Execution.DurationMS, agent, errMark)
+	}
 }
 
 func toExportRecords(list []evidence.Evidence) []evidence.ExportRecord {
