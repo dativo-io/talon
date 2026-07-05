@@ -19,13 +19,11 @@ import (
 	_ "github.com/dativo-io/talon/internal/llm/providers"
 	"github.com/dativo-io/talon/internal/pack"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 //go:embed templates/init/*.tmpl
 var initTemplates embed.FS
-
-//go:embed templates/init/pricing_models.yaml
-var initPricingModelsYAML []byte
 
 var (
 	initName            string
@@ -479,7 +477,7 @@ func writePricingFile() error {
 	}
 	path := filepath.Join("pricing", "models.yaml")
 	//nolint:gosec // G306: pricing file is not secret
-	if err := os.WriteFile(path, initPricingModelsYAML, 0o644); err != nil {
+	if err := os.WriteFile(path, pricing.DefaultModelsYAML(), 0o644); err != nil {
 		return fmt.Errorf("creating pricing/models.yaml: %w", err)
 	}
 	return nil

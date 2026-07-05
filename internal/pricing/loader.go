@@ -19,6 +19,14 @@ import (
 //go:embed default_models.yaml
 var defaultModelsYAML []byte
 
+// DefaultModelsYAML returns the embedded default pricing table bytes. This is
+// the single source scaffolding must write (#231): `talon init` copies these
+// bytes into the project's pricing/models.yaml so a scaffolded file can never
+// drift behind (and silently shadow) the binary's own table.
+func DefaultModelsYAML() []byte {
+	return append([]byte(nil), defaultModelsYAML...)
+}
+
 // apiModelSuffix matches common API model ID suffixes so we can fall back to base model in pricing.
 // e.g. gpt-4o-2024-08-06 -> gpt-4o, claude-3-5-sonnet-20241022-v2 -> claude-3-5-sonnet
 var apiModelSuffix = regexp.MustCompile(`-(?:20\d{2}-\d{2}-\d{2}|v\d+(?::\d+)?)$`)

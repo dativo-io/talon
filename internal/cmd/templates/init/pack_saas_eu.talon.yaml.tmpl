@@ -5,7 +5,7 @@
 # Infrastructure settings (providers, gateway, storage) live in talon.config.yaml.
 
 agent:
-  name: {{ .Name }}
+  name: {{ printf "%q" .Name }}
   description: SaaS AI agent with policy enforcement
   version: 1.0.0
   model_tier: 1
