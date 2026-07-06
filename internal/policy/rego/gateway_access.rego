@@ -35,12 +35,13 @@ deny contains msg if {
 	msg := sprintf("Model %s is blocked for this caller", [input.model])
 }
 
-# Per-caller daily cost limit.
+# Per-caller daily cost limit. Amounts use %.4f: real per-request API costs
+# are sub-cent, and this message is the evidence-facing deny reason (#255).
 deny contains msg if {
 	input.caller_max_daily_cost != null
 	input.caller_max_daily_cost > 0
 	input.daily_cost + input.estimated_cost > input.caller_max_daily_cost
-	msg := sprintf("budget_exceeded: request would exceed caller daily cost limit (%.2f)", [input.caller_max_daily_cost])
+	msg := sprintf("budget_exceeded: request would exceed caller daily cost limit (%.4f)", [input.caller_max_daily_cost])
 }
 
 # Per-caller monthly cost limit.
@@ -48,7 +49,7 @@ deny contains msg if {
 	input.caller_max_monthly_cost != null
 	input.caller_max_monthly_cost > 0
 	input.monthly_cost + input.estimated_cost > input.caller_max_monthly_cost
-	msg := sprintf("budget_exceeded: request would exceed caller monthly cost limit (%.2f)", [input.caller_max_monthly_cost])
+	msg := sprintf("budget_exceeded: request would exceed caller monthly cost limit (%.4f)", [input.caller_max_monthly_cost])
 }
 
 # Per-caller session cost limit (#198): soft cap over one coding session.
@@ -63,7 +64,7 @@ deny contains msg if {
 	input.caller_max_session_cost != null
 	input.caller_max_session_cost > 0
 	input.session_cost_total + input.estimated_cost > input.caller_max_session_cost
-	msg := sprintf("session_budget_exceeded: session spend %.2f + estimate %.2f exceeds limit %.2f", [input.session_cost_total, input.estimated_cost, input.caller_max_session_cost])
+	msg := sprintf("session_budget_exceeded: session spend %.4f + estimate %.4f exceeds limit %.4f", [input.session_cost_total, input.estimated_cost, input.caller_max_session_cost])
 }
 
 # Per-caller data tier restriction: request tier must not exceed caller's max.
