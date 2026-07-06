@@ -269,7 +269,7 @@ Verify release assets (linux/amd64):
 
 ```bash
 gh release view --repo dativo-io/talon --json tagName,assets -q '.assets[].name'
-# e.g. checksums.txt, talon_1.6.8_linux_amd64.tar.gz
+# e.g. checksums.txt, talon_1.7.0_linux_amd64.tar.gz
 ```
 
 ---
