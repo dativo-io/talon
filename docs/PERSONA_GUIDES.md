@@ -157,7 +157,7 @@ talon run --dry-run "..."                    # Policy decision without LLM (no s
 # Multi-tenant (isolation)
 talon run --tenant acme --agent sales-bot "..."  # Scoped run
 talon audit list --tenant acme               # Only acme evidence
-talon secrets set openai-api-key "..."       # Per-tenant key when using vault
+talon secrets set acme-key "..." --tenant acme   # Scope secret to a tenant (default is allow-all)
 ```
 
 ### Workflow example
