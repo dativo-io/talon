@@ -145,7 +145,10 @@ func TestToolApprovalStore_ListPending_Empty(t *testing.T) {
 }
 
 func TestToolApprovalStore_Cleanup(t *testing.T) {
-	store := NewToolApprovalStore(50 * time.Millisecond)
+	// The approval timeout must be far larger than any scheduling delay: with a
+	// short timeout the request can expire (and leave pending state) before the
+	// polling loop below ever observes it, hanging Eventually (#234).
+	store := NewToolApprovalStore(10 * time.Second)
 	ctx := context.Background()
 
 	// Create and resolve a request
@@ -158,16 +161,15 @@ func TestToolApprovalStore_Cleanup(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return len(store.ListPending()) > 0
-	}, 2*time.Second, 10*time.Millisecond)
+	}, 10*time.Second, 10*time.Millisecond)
 
 	reqID := store.ListPending()[0].ID
 	store.Approve(reqID, "admin", "")
 	wg.Wait()
 
-	// Wait for the request to become old enough for cleanup
-	time.Sleep(60 * time.Millisecond)
-
-	removed := store.Cleanup(50 * time.Millisecond)
+	// ResolvedAt was set at Approve, strictly before now — a zero max age
+	// removes the request without depending on wall-clock sleeps.
+	removed := store.Cleanup(0)
 	assert.Equal(t, 1, removed)
 	assert.Nil(t, store.Get(reqID))
 }

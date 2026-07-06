@@ -1403,6 +1403,12 @@ func TestActiveRunTracker(t *testing.T) {
 }
 
 func TestBudgetAlertClaimFire(t *testing.T) {
+	// The dedupe table is package-global with a 1h cooldown; start from a
+	// clean slate so repeat in-process runs (-count>1) stay independent (#246).
+	budgetAlertDedupe.mu.Lock()
+	budgetAlertDedupe.lastFired = make(map[string]time.Time)
+	budgetAlertDedupe.mu.Unlock()
+
 	// First claim for (t1, daily) succeeds
 	assert.True(t, budgetAlertClaimFire("t1", "daily"))
 
