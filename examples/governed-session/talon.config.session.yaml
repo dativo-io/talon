@@ -1,0 +1,65 @@
+# Governed-session demo (#107 Act II) — REAL Anthropic + OpenAI providers.
+# One agent session, two providers, one session budget, signed evidence for
+# every decision. Requires ANTHROPIC_API_KEY and OPENAI_API_KEY at stack start.
+#
+# Costs are enforced and displayed in the pricing table's currency (USD for
+# the shipped table, #216). Budget caps below are denominated in that unit.
+
+compliance:
+  controller:
+    name: "Example GmbH"
+    contact: "privacy@example.eu"
+    dpo_contact: "dpo@example.eu"
+    address: "Examplestr. 1, 10115 Berlin, Germany"
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "enforce"
+
+  providers:
+    anthropic:
+      enabled: true
+      secret_name: "anthropic-api-key"
+      base_url: "https://api.anthropic.com"
+      region: "US"
+      allowed_models: ["claude-sonnet-5", "claude-haiku-4-5"]
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+      region: "US"
+      allowed_models: ["gpt-4o", "gpt-4o-mini"]
+
+  callers:
+    - name: "session-demo"
+      tenant_key: "talon-session-demo"
+      tenant_id: "governed-session"
+      team: "governed-session-demo"
+      policy_overrides:
+        # Session budget gate: the next request is denied pre-forward once
+        # session spend + the fixed pre-request estimate exceeds this (#198).
+        # With claude-sonnet-5 planning and gpt-4o executing, the gate closes
+        # after roughly 5-8 executor calls (~$0.04 real spend per run).
+        max_session_cost: 0.04
+        # Runtime tool-schema governance: admin_* tools are stripped from the
+        # request body before the model can ever see them (filter action).
+        forbidden_tools: ["admin_*"]
+
+  default_policy:
+    default_pii_action: "block"
+    # Hard safety net so a misbehaving loop cannot spend real money:
+    max_daily_cost: 1.00
+    require_caller_id: true
+    # Real traffic: keep prompt/response bodies out of evidence storage.
+    log_prompts: false
+    log_responses: false
+
+  rate_limits:
+    global_requests_per_min: 120
+    per_caller_requests_per_min: 60
+
+  timeouts:
+    connect_timeout: 10s
+    request_timeout: 60s
+    stream_idle_timeout: 60s

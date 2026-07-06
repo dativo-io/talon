@@ -143,6 +143,9 @@ verify-shortlist-demo: ## Run full #107 shortlist demo verification (Docker)
 coding-agents-demo: ## Run #203 coding-agents demo (multi-model orchestration, offline mock, Docker)
 	@cd examples/coding-agents-demo && docker compose up -d --build --wait && ./demo.sh all
 
+governed-session: ## Start #107 governed-session demo stack (REAL providers; needs ANTHROPIC_API_KEY + OPENAI_API_KEY)
+	@bash scripts/governed-session-up.sh
+
 # Provider registry and EU routing
 provider-list: build ## List registered LLM providers (compliance metadata)
 	@./bin/$(BINARY_NAME) provider list

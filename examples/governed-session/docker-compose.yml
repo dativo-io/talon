@@ -1,0 +1,57 @@
+# Talon governed-session demo (#107 Act II) — REAL providers, no mock.
+# One session: Anthropic planner (prompt-cache write/read) + OpenAI executors
+# (cached_tokens reads) under one session budget, with PII and tool governance
+# in the same signed-evidence trail.
+#
+#   export ANTHROPIC_API_KEY=sk-ant-...   OPENAI_API_KEY=sk-...
+#   make governed-session                  # from repo root
+#   cd examples/governed-session && ./demo.sh all
+#
+# Each full run makes real API calls (cheap models, capped): ~$0.05.
+
+services:
+  talon:
+    build:
+      context: ../../
+    ports:
+      # Override when 8080 is busy (another demo stack, a local `talon serve`):
+      # DEMO_GATEWAY_PORT=18080 docker compose up -d
+      - "${DEMO_GATEWAY_PORT:-8080}:8080"
+    environment:
+      - TALON_SECRETS_KEY=abcdefghijklmnopqrstuvwxyz012345
+      - TALON_SIGNING_KEY=demo-signing-key-not-for-production
+      - TALON_LOG_LEVEL=info
+      - TALON_LOG_FORMAT=json
+      # Real provider keys, passed through from the host environment. They are
+      # stored in Talon's encrypted secret vault at container start and used
+      # only for upstream auth — never logged, never in evidence.
+      - ANTHROPIC_API_KEY
+      - OPENAI_API_KEY
+    volumes:
+      - ./talon.config.session.yaml:/etc/talon/talon.config.yaml:ro
+      - ./talon.config.session.yaml:/home/talon/.talon/talon.config.yaml:ro
+      # NOTE: ./out is written host-side by demo.sh (exec redirects); binding
+      # it here would make Docker create it root-owned and break host writes.
+      - talon-data:/home/talon/.talon
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ -z "$${ANTHROPIC_API_KEY:-}" ] || [ -z "$${OPENAI_API_KEY:-}" ]; then
+          echo "governed-session demo needs REAL keys:" >&2
+          echo "  export ANTHROPIC_API_KEY=sk-ant-...  OPENAI_API_KEY=sk-..." >&2
+          echo "then re-run: make governed-session" >&2
+          exit 1
+        fi
+        talon secrets set anthropic-api-key "$${ANTHROPIC_API_KEY}" >/dev/null
+        talon secrets set openai-api-key "$${OPENAI_API_KEY}" >/dev/null
+        exec talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
+
+volumes:
+  talon-data:
+    driver: local

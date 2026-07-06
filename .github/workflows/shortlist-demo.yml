@@ -1,0 +1,52 @@
+# Rot-guard for the #107 shortlist demo (Act I, mock provider, no API key):
+# the demo is a top-of-funnel conversion asset — if it breaks, the first
+# thing an evaluator runs fails. Path-gated on PRs, always on main pushes,
+# plus a nightly run to catch cross-cutting breakage the path list misses.
+name: Shortlist Demo
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'examples/shortlist-demo/**'
+      - 'examples/docker-compose/mock-provider/**'
+      - 'scripts/verify-shortlist-demo.sh'
+      - 'scripts/shortlist-demo-up.sh'
+      - 'scripts/lib/**'
+      - 'internal/gateway/**'
+      - 'internal/policy/**'
+      - 'internal/classifier/**'
+      - 'internal/evidence/**'
+      - 'internal/compliance/**'
+      - 'internal/cmd/**'
+      - 'internal/pricing/**'
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+  schedule:
+    - cron: '0 3 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify-shortlist-demo (#107 Act I)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run shortlist demo verification
+        env:
+          # Keep containers for the failure log dump; the runner VM is
+          # discarded anyway.
+          SHORTLIST_SKIP_DOWN: "1"
+        run: make verify-shortlist-demo
+
+      - name: Compose logs on failure
+        if: failure()
+        working-directory: examples/shortlist-demo
+        run: docker compose logs --tail 200 || true

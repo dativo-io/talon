@@ -1,0 +1,53 @@
+# Verifies the #107 Act II governed-session demo against REAL providers.
+# Spends real money (~$0.05/run, cheap models, session-capped), so it never
+# runs on PRs: nightly + manual dispatch on main only, and it skips cleanly
+# when the repo secrets are not configured (e.g. forks).
+name: Governed Session Demo
+
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: governed-session demo (#107 Act II, real providers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.DEMO_ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.DEMO_OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check demo secrets
+        id: secrets
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ] || [ -z "$OPENAI_API_KEY" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "DEMO_ANTHROPIC_API_KEY / DEMO_OPENAI_API_KEY not configured — skipping real-provider run."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Start stack (real providers)
+        if: steps.secrets.outputs.configured == 'true'
+        run: make governed-session
+
+      - name: Run full governed session
+        if: steps.secrets.outputs.configured == 'true'
+        working-directory: examples/governed-session
+        run: ./demo.sh all
+
+      - name: Compose logs on failure
+        if: failure() && steps.secrets.outputs.configured == 'true'
+        working-directory: examples/governed-session
+        run: docker compose logs --tail 200 || true
+
+      - name: Teardown
+        if: always() && steps.secrets.outputs.configured == 'true'
+        working-directory: examples/governed-session
+        run: docker compose down -v || true
