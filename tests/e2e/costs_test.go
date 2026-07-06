@@ -36,8 +36,9 @@ func TestE2E_CostsShowsSpend(t *testing.T) {
 	if !regexp.MustCompile(`Agent|Today|Month|Total`).MatchString(stdout) {
 		t.Errorf("costs output should contain table headers, got: %s", stdout)
 	}
-	// Costs are shown in EUR (€)
-	if !strings.Contains(stdout, "€") {
-		t.Errorf("costs output should show euro amounts (doc promise), got: %s", stdout)
+	// Costs are shown in the pricing table's declared currency (#216) —
+	// the shipped table is USD, so amounts render with a $ symbol.
+	if !strings.Contains(stdout, "$") {
+		t.Errorf("costs output should show amounts in the pricing-table currency (default USD/$), got: %s", stdout)
 	}
 }

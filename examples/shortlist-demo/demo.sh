@@ -183,7 +183,9 @@ export_consistency_note() {
     return 0
   fi
   local msg
-  msg="$(jq -r '.warnings[]? | select(startswith("consistency:"))' "${OUT_DIR}/ropa.json" 2>/dev/null | head -1)"
+  # `|| true` keeps an unreadable/missing export from killing the demo via
+  # set -e with jq's own error hidden by 2>/dev/null (#258).
+  msg="$(jq -r '.warnings[]? | select(startswith("consistency:"))' "${OUT_DIR}/ropa.json" 2>/dev/null | head -1 || true)"
   [[ -n "$msg" ]] || return 0
   echo ""
   echo "  Note (expected for this demo)"
@@ -485,6 +487,10 @@ cmd_exports() {
   compliance_export ropa --format json --output /home/talon/shortlist-out/ropa.json
   compliance_export annex-iv --format html --output /home/talon/shortlist-out/annex-iv.html
   compliance_export annex-iv --format json --output /home/talon/shortlist-out/annex-iv.json
+  # The container writes these 0600 under its own uid; on Linux hosts the
+  # host-side jq reads below (and verify-shortlist-demo.sh) would get EACCES
+  # through the bind mount (#258). Demo artifacts are non-sensitive.
+  dc exec -T talon sh -c 'chmod 644 /home/talon/shortlist-out/*.html /home/talon/shortlist-out/*.json' || true
   export_consistency_note
   if [[ "$NARRATE" == "1" ]]; then
     local warnings="?"
