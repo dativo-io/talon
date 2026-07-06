@@ -110,8 +110,9 @@ GWEOF
   local tenant_hdr="Authorization: Bearer ${TALON_TENANT_KEY}"
   local admin_hdr="X-Talon-Admin-Key: ${TALON_ADMIN_KEY}"
   local graph_url="${ge_base}/v1/graph/events"
-  local graph_run_id="gr_smoke_$(date +%s)"
-  local graph_session_id="sess_graph_$(date +%s)"
+  local graph_run_id graph_session_id
+  graph_run_id="gr_smoke_$(date +%s)"
+  graph_session_id="sess_graph_$(date +%s)"
 
   # Helper: POST a graph event and capture HTTP code + body
   post_graph_event() {
@@ -237,7 +238,8 @@ GWEOF
   rm -f "$resp_30f"
 
   # --- 30g: run_end returns allow on a clean run ---
-  local clean_run_id="gr_smoke_run_end_allow_$(date +%s)"
+  local clean_run_id
+  clean_run_id="gr_smoke_run_end_allow_$(date +%s)"
   local resp_30g_start body_30g_start code_30g_start
   resp_30g_start="$(mktemp)"
   body_30g_start="{\"type\":\"run_start\",\"graph_run_id\":\"${clean_run_id}\",\"session_id\":\"${graph_session_id}\",\"agent_id\":\"smoke-graph-agent\",\"run_meta\":{\"framework\":\"langgraph\",\"node_count\":1,\"model\":\"gpt-4o\"}}"
@@ -356,7 +358,8 @@ GWEOF
   fi
 
   # --- 30n: full lifecycle — 3-node google_search agent run ---
-  local lifecycle_id="gr_smoke_lifecycle_$(date +%s)"
+  local lifecycle_id
+  lifecycle_id="gr_smoke_lifecycle_$(date +%s)"
   local all_ok=true
 
   local events=(
@@ -409,7 +412,8 @@ GWEOF
   fi
 
   # --- 30p: max_tool_calls_per_run exceeded is denied ---
-  local toolcap_id="gr_smoke_tool_cap_$(date +%s)"
+  local toolcap_id
+  toolcap_id="gr_smoke_tool_cap_$(date +%s)"
   local resp_30p_start resp_30p_first resp_30p_second
   local code_30p_start code_30p_first code_30p_second
   resp_30p_start="$(mktemp)"
@@ -437,7 +441,8 @@ GWEOF
   rm -f "$resp_30p_start" "$resp_30p_first" "$resp_30p_second"
 
   # --- 30q: run_end final cost overrun is denied ---
-  local runend_cost_id="gr_smoke_run_end_cost_$(date +%s)"
+  local runend_cost_id
+  runend_cost_id="gr_smoke_run_end_cost_$(date +%s)"
   local resp_30q_start resp_30q_step resp_30q_end
   local code_30q_start code_30q_step code_30q_end
   resp_30q_start="$(mktemp)"
@@ -464,7 +469,8 @@ GWEOF
   rm -f "$resp_30q_start" "$resp_30q_step" "$resp_30q_end"
 
   # --- 30r: prior mid-run deny causes run_end deny ---
-  local denied_run_id="gr_smoke_midrun_denied_$(date +%s)"
+  local denied_run_id
+  denied_run_id="gr_smoke_midrun_denied_$(date +%s)"
   local resp_30r_start resp_30r_deny_step resp_30r_end
   local code_30r_start code_30r_deny_step code_30r_end
   resp_30r_start="$(mktemp)"

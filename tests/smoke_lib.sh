@@ -1,3 +1,6 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034  # canonical paths/bodies are consumed by the scripts that source this lib
+#
 # Smoke test request layer — central place for all Talon HTTP requests and canonical payloads.
 # Sourced by smoke_test.sh. Use these helpers so we don't duplicate URLs or request bodies.
 #

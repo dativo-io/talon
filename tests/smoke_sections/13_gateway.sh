@@ -99,9 +99,8 @@ GWEOF
   code_join="$(curl -s -o /tmp/talon_gw_resp_join.json -w '%{http_code}' -X POST "${gateway_base_url}${SMOKE_PATH_GW_PROXY}" \
     -H "Authorization: Bearer $gw_key" -H "Content-Type: application/json" -H "X-Talon-Session-ID: ${gw_sid}" -d "$SMOKE_BODY_SIMPLE" 2>/dev/null)"
   assert_pass "POST gateway chat/completions with provided session id returns 200" test "$code_join" = "200"
-  local gw_ev_index gw_ev_id gw_sid_match=0
+  local gw_ev_index gw_sid_match=0
   gw_ev_index="$(curl -s -H "X-Talon-Admin-Key: ${TALON_ADMIN_KEY}" "http://127.0.0.1:${gateway_port}/v1/evidence?limit=20")"
-  gw_ev_id="$(echo "$gw_ev_index" | jq -r '.entries[]? | select(.invocation_type=="gateway") | .id' | head -1)"
   if [[ -n "$gw_sid" ]]; then
     local evid
     while read -r evid; do

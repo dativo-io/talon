@@ -144,6 +144,19 @@ jobs:
           version: latest
           args: --timeout 5m
 
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Lint every tracked shell script (#242): three shell-only demo bugs
+      # (#239 #240 #241) shipped because CI never looked at *.sh. shellcheck
+      # is preinstalled on ubuntu runners; config lives in .shellcheckrc.
+      - name: shellcheck
+        run: git ls-files -z '*.sh' | xargs -0 shellcheck
+
   build:
     name: Build
     runs-on: ubuntu-latest

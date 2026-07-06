@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329,SC2034  # helpers/colour set mirror smoke_test.sh conventions; some are invoked or consumed indirectly
 #
 # Dativo Talon — PII Semantic Enrichment Quality Comparison Test
 #
@@ -65,8 +66,10 @@
 
 set -o pipefail
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 readonly NUM_PROMPTS="${NUM_PROMPTS:-10}"
 readonly MODEL="${MODEL:-gpt-4o-mini}"
 

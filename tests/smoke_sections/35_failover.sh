@@ -117,9 +117,9 @@ GWEOF
     grep -q "gateway_failover_attempt" <<< "$export_out"
 
   if [[ -n "$fo_corr" ]]; then
-    local verify_out
-    verify_out="$(run_talon audit verify --failover "$fo_corr" 2>&1)"
-    if [[ $? -eq 0 ]] && grep -q "valid_fallback" <<< "$verify_out"; then
+    local verify_out verify_rc=0
+    verify_out="$(run_talon audit verify --failover "$fo_corr" 2>&1)" || verify_rc=$?
+    if [[ $verify_rc -eq 0 ]] && grep -q "valid_fallback" <<< "$verify_out"; then
       echo "  ✓  audit verify --failover confirms valid fallback chain"
       record_pass
     else
@@ -176,9 +176,9 @@ SOVEOF
   smoke_stop_gateway_35 "$fo_pid_b" "$gateway_port"
 
   if [[ -n "$fo_corr_b" ]]; then
-    local verify_out_b
-    verify_out_b="$(run_talon audit verify --failover "$fo_corr_b" 2>&1)"
-    if [[ $? -eq 0 ]] && grep -q "valid_fail_closed" <<< "$verify_out_b"; then
+    local verify_out_b verify_rc_b=0
+    verify_out_b="$(run_talon audit verify --failover "$fo_corr_b" 2>&1)" || verify_rc_b=$?
+    if [[ $verify_rc_b -eq 0 ]] && grep -q "valid_fail_closed" <<< "$verify_out_b"; then
       echo "  ✓  audit verify --failover confirms fail-closed governance outcome"
       record_pass
     else

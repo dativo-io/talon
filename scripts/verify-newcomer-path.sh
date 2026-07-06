@@ -24,7 +24,8 @@ if ! command -v talon >/dev/null 2>&1; then
     else
       make -C "$REPO_ROOT" install
     fi
-    export PATH="$(go env GOPATH)/bin:${PATH}"
+    GOPATH_BIN="$(go env GOPATH)/bin"
+    export PATH="${GOPATH_BIN}:${PATH}"
   else
     echo "Error: talon not found and go not available to build." >&2
     exit 1

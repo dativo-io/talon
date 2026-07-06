@@ -18,7 +18,6 @@ test_section_18_compliance_export() {
   local csv_h; csv_h="$(run_talon audit export --format csv --from 2020-01-01 2>/dev/null | head -1)"; true
   assert_pass "CSV header contains id, timestamp, tenant_id, pii_detected" \
     grep -qE 'id|timestamp|tenant_id|pii' <<< "$csv_h"
-  local json_len; json_len="$(run_talon audit export --format json --from 2020-01-01 2>/dev/null | jq '.records | length')"
   assert_pass "talon audit export --format json returns valid JSON with records array" \
     jq -e '.records' <<< "$(run_talon audit export --format json --from 2020-01-01 2>/dev/null)" &>/dev/null
   local ev_id; ev_id="$(run_talon audit list --limit 1 2>/dev/null | awk '/req_/{print $2; exit}')"

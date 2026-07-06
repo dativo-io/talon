@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329  # helpers are invoked from section files sourced in a loop, invisible to shellcheck
 #
 # Dativo Talon — Smoke Test Suite
 # Brief version 1.0 — March 2026 — Dativo Talon CPO/CTO
@@ -58,9 +59,11 @@
 set -o pipefail
 # Do NOT use set -e: individual assertion failures must not abort the suite.
 
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
 # Repo root: one level up from tests/ when script lives in tests/
-readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+readonly REPO_ROOT
 
 # --- Counters and state ---
 PASS_COUNT=0
