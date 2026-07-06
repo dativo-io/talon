@@ -156,16 +156,23 @@ verify_file_summary() {
   talon_in_container audit verify --file "$path" 2>&1 | grep -E '^(File:|Total records:|Valid records:|Invalid records:|Missing signature:|Hint:)' | sed 's/^/  /' || true
 }
 
-# Compliance export writes WARNING lines to stderr; suppress in narrated mode (warnings stay in HTML/JSON).
+# Compliance export writes WARNING lines to stderr; suppress in narrated mode
+# (warnings stay in HTML/JSON) but keep them in a host-side file so a failure
+# is diagnosable from CI logs alone (#258).
 compliance_export() {
   local rc=0
+  local stderr_file="${OUT_DIR}/compliance.stderr"
   if [[ "$NARRATE" == "1" ]]; then
-    talon_in_container compliance "$@" >/dev/null 2>&1 || rc=$?
+    talon_in_container compliance "$@" >/dev/null 2>"$stderr_file" || rc=$?
   else
-    talon_in_container compliance "$@" || rc=$?
+    talon_in_container compliance "$@" 2> >(tee "$stderr_file" >&2) || rc=$?
   fi
   if [[ "$rc" -ne 0 ]]; then
     echo "✗ compliance export failed: talon compliance $*" >&2
+    if [[ -s "$stderr_file" ]]; then
+      echo "  stderr:" >&2
+      sed 's/^/    /' "$stderr_file" >&2
+    fi
     exit "$rc"
   fi
 }

@@ -13,6 +13,14 @@ detect_docker_compose
 
 cd "$DEMO_DIR"
 
+# The compose file bind-mounts ./out into the container, and Proof 6 writes the
+# compliance exports from INSIDE the container. On Linux hosts the checkout owns
+# ./out under the host uid, so the container's talon user cannot write it (#258;
+# macOS Docker uid-mapping hides this on dev machines). World-writable is fine
+# for throwaway demo artifacts.
+mkdir -p out
+chmod 0777 out
+
 echo "==> Building and starting shortlist demo stack..."
 $COMPOSE up --build -d
 
