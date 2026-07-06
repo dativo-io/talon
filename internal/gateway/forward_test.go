@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -618,4 +620,56 @@ func TestCopyResponseHeaders_BackoffHeaders(t *testing.T) {
 	require.Equal(t, "2026-07-04T00:00:10Z", w.Header().Get("anthropic-ratelimit-requests-reset"))
 	require.Empty(t, w.Header().Get("x-internal-debug"),
 		"non-allowlisted headers must not be forwarded")
+}
+
+// #195 item 4: a stream that dies mid-way must end with the family-correct
+// terminal event — Anthropic `event: error`, Responses `response.failed` —
+// instead of silent truncation. Chat Completions has no standard event and
+// gets nothing (documented).
+type failingReader struct {
+	data []byte
+	err  error
+	done bool
+}
+
+func (f *failingReader) Read(p []byte) (int, error) {
+	if !f.done {
+		f.done = true
+		n := copy(p, f.data)
+		return n, nil
+	}
+	return 0, f.err
+}
+
+func TestStreamCopy_MidStreamTerminalEvents(t *testing.T) {
+	upstream := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}\n\n"
+
+	run := func(flavor string) string {
+		w := httptest.NewRecorder()
+		r := &failingReader{data: []byte(upstream), err: errors.New("connection reset")}
+		err := streamCopy(context.Background(), w, r, time.Now(), nil, nil, "req-1", flavor)
+		require.Error(t, err)
+		return w.Body.String()
+	}
+
+	anth := run(streamFlavorAnthropic)
+	assert.Contains(t, anth, upstream, "upstream bytes forwarded before the failure")
+	assert.Contains(t, anth, "event: error\n", "anthropic terminal event")
+	assert.Contains(t, anth, `"type":"api_error"`, "valid enum member in terminal event")
+
+	resp := run(streamFlavorResponses)
+	assert.Contains(t, resp, "event: response.failed\n", "responses terminal event")
+	assert.Contains(t, resp, `"status":"failed"`)
+	assert.Contains(t, resp, `"code":"upstream_error"`)
+
+	chat := run(streamFlavorChat)
+	assert.Equal(t, upstream, chat, "chat completions: documented truncation, no synthetic event")
+}
+
+func TestStreamCopy_CleanStreamNoTerminalEvent(t *testing.T) {
+	w := httptest.NewRecorder()
+	clean := "data: {\"choices\":[]}\n\ndata: [DONE]\n\n"
+	err := streamCopy(context.Background(), w, strings.NewReader(clean), time.Now(), nil, nil, "req-1", streamFlavorAnthropic)
+	require.NoError(t, err)
+	assert.Equal(t, clean, w.Body.String(), "healthy streams must never gain a terminal error event")
 }

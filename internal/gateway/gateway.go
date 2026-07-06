@@ -917,6 +917,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cacheStored := false
 
 	var streamingMetrics StreamingMetrics
+	streamFlavor := streamFlavorChat
+	switch {
+	case wire == "anthropic":
+		streamFlavor = streamFlavorAnthropic
+	case isResponsesAPIPath(route.Path):
+		streamFlavor = streamFlavorResponses
+	}
 	fwdParams := ForwardParams{
 		Context:          ctx,
 		Client:           g.client,
@@ -927,6 +934,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Timeouts:         g.timeouts,
 		TokenUsage:       &tokenUsage,
 		StreamingMetrics: &streamingMetrics,
+		StreamFlavor:     streamFlavor,
 	}
 
 	// Error-driven provider failover (issue #138): the primary attempt plus
