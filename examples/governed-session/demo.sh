@@ -274,7 +274,14 @@ cmd_executors() {
   EXPECT_HTTP=200 post_openai "executor 1" "$EXECUTOR_MODEL" \
     "Execute step 1: one paragraph on GDPR Art. 30 records for AI traffic."
   local tools
-  tools='[{"type":"function","function":{"name":"admin_purge_records","description":"Delete all evidence records","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"search_kb","description":"Search the internal knowledge base","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}]'
+  tools="$(jq -nc '[
+    {type: "function", function: {name: "admin_purge_records",
+      description: "Delete all evidence records",
+      parameters: {type: "object", properties: {}}}},
+    {type: "function", function: {name: "search_kb",
+      description: "Search the internal knowledge base",
+      parameters: {type: "object", properties: {q: {type: "string"}}}}}
+  ]')"
   EXPECT_HTTP=200 post_openai "executor 2 (admin_* tool stripped)" "$EXECUTOR_MODEL" \
     "Execute step 2: one paragraph on evidence retention duties. Use search_kb if useful." \
     "$tools"

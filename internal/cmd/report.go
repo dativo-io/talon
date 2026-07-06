@@ -13,6 +13,7 @@ import (
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 var reportTenant string
@@ -61,11 +62,12 @@ func runReport(cmd *cobra.Command, args []string) error {
 	costMonth, _ := store.CostTotal(ctx, reportTenant, "", monthStart, monthEnd)
 
 	out := cmd.OutOrStdout()
+	reportCurrency := loadPricingTable(cfg, "").CurrencyCode()
 	fmt.Fprintf(out, "Compliance summary — tenant %s\n", reportTenant)
 	fmt.Fprintf(out, "  Evidence records today:  %d\n", countToday)
 	fmt.Fprintf(out, "  Evidence records (7d):   %d\n", countWeek)
-	fmt.Fprintf(out, "  Cost today (EUR):        %.4f\n", costToday)
-	fmt.Fprintf(out, "  Cost this month (EUR):   %.4f\n", costMonth)
+	fmt.Fprintf(out, "  Cost today (%s):        %.4f\n", reportCurrency, costToday)
+	fmt.Fprintf(out, "  Cost this month (%s):   %.4f\n", reportCurrency, costMonth)
 
 	hits7d, saved7d, _ := store.CacheSavings(ctx, reportTenant, weekStart, todayEnd)
 	if hits7d > 0 || saved7d > 0 {
@@ -74,7 +76,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 		if total7d > 0 {
 			hitRate7d = 100 * float64(hits7d) / float64(total7d)
 		}
-		fmt.Fprintf(out, "  Cache (7d):   %d from cache, €%.4f saved, %.1f%% hit rate\n", hits7d, saved7d, hitRate7d)
+		fmt.Fprintf(out, "  Cache (7d):   %d from cache, %s saved, %.1f%% hit rate\n", hits7d, pricing.FormatAmount(reportCurrency, fmt.Sprintf("%.4f", saved7d)), hitRate7d)
 	}
 	hits30d, saved30d, _ := store.CacheSavings(ctx, reportTenant, monthStart, monthEnd)
 	if hits30d > 0 || saved30d > 0 {
@@ -83,7 +85,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 		if total30d > 0 {
 			hitRate30d = 100 * float64(hits30d) / float64(total30d)
 		}
-		fmt.Fprintf(out, "  Cache (30d):  %d from cache, €%.4f saved, %.1f%% hit rate\n", hits30d, saved30d, hitRate30d)
+		fmt.Fprintf(out, "  Cache (30d):  %d from cache, %s saved, %.1f%% hit rate\n", hits30d, pricing.FormatAmount(reportCurrency, fmt.Sprintf("%.4f", saved30d)), hitRate30d)
 	}
 
 	if avgTTFT, err := store.AvgTTFT(ctx, reportTenant, "", weekStart, todayEnd); err == nil && avgTTFT > 0 {

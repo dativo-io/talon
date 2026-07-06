@@ -206,7 +206,8 @@ CACHEEOF
   assert_pass "dashboard HTML contains Success Rate KPI" grep -qi "Success Rate" <<< "$dash_html"
   assert_pass "dashboard HTML contains Timeouts KPI" grep -qi "Timeouts" <<< "$dash_html"
   assert_pass "dashboard HTML contains Violation Trend (7d) panel" grep -qi "Violation Trend (7d)" <<< "$dash_html"
-  assert_pass "dashboard caller table contains EUR/Success column" grep -qi "EUR/Success" <<< "$dash_html"
+  # Header carries the pricing-table currency since #216 (e.g. "Cost/Success (USD)").
+  assert_pass "dashboard caller table contains Cost/Success column" grep -qi "Cost/Success" <<< "$dash_html"
   assert_pass "dashboard caller table contains Trend(7d) column" grep -qi "Trend(7d)" <<< "$dash_html"
   assert_pass "dashboard caller table contains Success column header" grep -q ">Success<" <<< "$dash_html"
   assert_pass "dashboard caller table contains Failed column header" grep -q ">Failed<" <<< "$dash_html"
@@ -481,7 +482,7 @@ CACHEEOF
     fi
     if [[ -n "$cache_saved" ]] && [[ "$cache_saved" != "null" ]]; then
       if [[ "$(echo "${cache_saved:-0} >= 0" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
-        echo "  ✓  semantic cache metrics: cache_stats.cost_saved >= 0 (€$cache_saved)"
+        echo "  ✓  semantic cache metrics: cache_stats.cost_saved >= 0 ($cache_saved)"
         record_pass
       fi
     fi
@@ -489,14 +490,14 @@ CACHEEOF
     assert_pass "talon cache stats exits 0 (semantic cache CLI)" run_talon cache stats
     local costs_cache_line; costs_cache_line="$(run_talon costs 2>/dev/null | grep -i "Cache (7d)" || true)"
     if [[ -n "$costs_cache_line" ]] && [[ -n "$cache_saved" ]] && [[ "$cache_saved" != "null" ]]; then
-      local costs_saved; costs_saved="$(echo "$costs_cache_line" | grep -oE '€[0-9]+\.[0-9]+' | head -1 | tr -d '€')"
+      local costs_saved; costs_saved="$(echo "$costs_cache_line" | grep -oE '[€$][0-9]+\.[0-9]+' | head -1 | tr -d '€$')"
       if [[ -n "$costs_saved" ]]; then
         local saved_diff; saved_diff="$(echo "scale=8; d=$cache_saved - $costs_saved; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
         if [[ "$(echo "$saved_diff < 0.02" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
-          echo "  ✓  semantic cache CLI↔dashboard parity: cache_stats.cost_saved (€$cache_saved) ≈ talon costs (€$costs_saved)"
+          echo "  ✓  semantic cache CLI↔dashboard parity: cache_stats.cost_saved ($cache_saved) ≈ talon costs ($costs_saved)"
           record_pass
         else
-          echo "  -  cache cost_saved: dashboard €$cache_saved vs CLI €$costs_saved (diff=$saved_diff)"
+          echo "  -  cache cost_saved: dashboard $cache_saved vs CLI $costs_saved (diff=$saved_diff)"
         fi
       fi
     fi
@@ -553,8 +554,9 @@ CACHEEOF
   # --- 23.7: CLI costs ↔ dashboard cost parity ---
   local cli_cost_out; cli_cost_out="$(run_talon costs --tenant default 2>/dev/null)"; true
   assert_pass "talon costs --tenant default exits 0" run_talon costs --tenant default
-  # Extract the "Total" daily cost from CLI (€<value> in the Today column of the Total row)
-  local cli_daily_cost; cli_daily_cost="$(echo "$cli_cost_out" | grep -E '^Total' | grep -oE '€[0-9]+\.[0-9]+' | head -1 | tr -d '€')"
+  # Extract the "Total" daily cost from CLI (currency-symbol-prefixed value in
+  # the Today column of the Total row; symbol follows the pricing table, #216)
+  local cli_daily_cost; cli_daily_cost="$(echo "$cli_cost_out" | grep -E '^Total' | grep -oE '[€$][0-9]+\.[0-9]+' | head -1 | tr -d '€$')"
   if [[ -z "$cli_daily_cost" ]]; then
     cli_daily_cost="$(echo "$cli_cost_out" | grep -i 'today' | grep -oE '[0-9]+\.[0-9]+' | head -1)"
   fi
@@ -568,10 +570,10 @@ CACHEEOF
       # Both query CostTotal(dayStart, dayEnd) from the same SQLite evidence store
       local cost_diff; cost_diff="$(echo "scale=8; d=$dash_daily_used - $cli_daily_cost; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
       if [[ "$(echo "$cost_diff < 0.01" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
-        echo "  ✓  CLI daily cost (€$cli_daily_cost) ≈ dashboard budget_status.daily_used (€$dash_daily_used)"
+        echo "  ✓  CLI daily cost ($cli_daily_cost) ≈ dashboard budget_status.daily_used ($dash_daily_used)"
         record_pass
       else
-        log_failure "CLI daily cost (€$cli_daily_cost) != dashboard daily_used (€$dash_daily_used), diff=$cost_diff" \
+        log_failure "CLI daily cost ($cli_daily_cost) != dashboard daily_used ($dash_daily_used), diff=$cost_diff" \
           "cli=$cli_daily_cost dash=$dash_daily_used"
       fi
     else
@@ -597,8 +599,8 @@ CACHEEOF
   # CLI costs --by-model: compare model names with dashboard model_breakdown
   local cli_bymodel; cli_bymodel="$(run_talon costs --by-model --tenant default 2>/dev/null)"; true
   assert_pass "talon costs --by-model exits 0" run_talon costs --by-model --tenant default
-  # Extract model names from CLI output (lines between header/footer dashes that start with a non-dash word and have €)
-  local cli_models; cli_models="$(echo "$cli_bymodel" | grep '€' | grep -v '^Total' | awk '{print $1}' | sort)"
+  # Extract model names from CLI output (data rows carry a currency symbol, #216)
+  local cli_models; cli_models="$(echo "$cli_bymodel" | grep -E '[€$]' | grep -v '^Total' | awk '{print $1}' | sort)"
   local dash_models; dash_models="$(jq -r '.model_breakdown[].model // empty' <<< "$snap_after" 2>/dev/null | sort)"
   echo "[SMOKE] CONSISTENCY|cli_models|$(echo "$cli_models" | tr '\n' ',')"
   echo "[SMOKE] CONSISTENCY|dash_models|$(echo "$dash_models" | tr '\n' ',')"
@@ -617,7 +619,7 @@ CACHEEOF
   local cli_byprovider; cli_byprovider="$(run_talon costs --by-provider --tenant default 2>/dev/null)"; true
   assert_pass "talon costs --by-provider exits 0" run_talon costs --by-provider --tenant default
   local cli_providers
-  cli_providers="$(echo "$cli_byprovider" | awk '/€/ {print $1}' | grep -E '^[a-zA-Z0-9._-]+$' | grep -v -E '^(Total|Provider|Tenant|7d)$' | sort)"
+  cli_providers="$(echo "$cli_byprovider" | awk '/[€$]/ {print $1}' | grep -E '^[a-zA-Z0-9._-]+$' | grep -v -E '^(Total|Provider|Tenant|7d)$' | sort)"
   local dash_providers; dash_providers="$(jq -r '.provider_breakdown[].provider // empty' <<< "$snap_after" 2>/dev/null | sort)"
   echo "[SMOKE] CONSISTENCY|cli_providers|$(echo "$cli_providers" | tr '\n' ',')"
   echo "[SMOKE] CONSISTENCY|dash_providers|$(echo "$dash_providers" | tr '\n' ',')"
@@ -691,7 +693,7 @@ CACHEEOF
   if [[ -n "$report_cost" ]] && [[ -n "$cli_daily_cost" ]]; then
     local rc_diff; rc_diff="$(echo "scale=8; d=$report_cost - $cli_daily_cost; if (d < 0) -d else d" | bc -l 2>/dev/null || echo 999)"
     if [[ "$(echo "$rc_diff < 0.01" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
-      echo "  ✓  report cost today (€$report_cost) ≈ CLI costs today (€$cli_daily_cost)"
+      echo "  ✓  report cost today ($report_cost) ≈ CLI costs today ($cli_daily_cost)"
       record_pass
     else
       echo "  -  report vs CLI cost drift: report=$report_cost cli=$cli_daily_cost diff=$rc_diff"
@@ -895,10 +897,10 @@ CACHEEOF
       # cost_per_success * successful <= total caller cost (successes can't cost more than total)
       local success_cost; success_cost="$(echo "scale=8; $cps * $c_succ" | bc -l 2>/dev/null || echo 0)"
       if [[ "$(echo "$success_cost <= $c_cost + 0.0001" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
-        echo "  ✓  $cname cost_per_success*successful (€$success_cost) <= total cost (€$c_cost)"
+        echo "  ✓  $cname cost_per_success*successful ($success_cost) <= total cost ($c_cost)"
         record_pass
       else
-        log_failure "$cname cost_per_success*successful (€$success_cost) > total cost (€$c_cost)" "cps=$cps succ=$c_succ"
+        log_failure "$cname cost_per_success*successful ($success_cost) > total cost ($c_cost)" "cps=$cps succ=$c_succ"
       fi
     fi
   done

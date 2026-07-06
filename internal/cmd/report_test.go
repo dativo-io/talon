@@ -38,8 +38,9 @@ func TestReportCmd_RunSuccess(t *testing.T) {
 	assert.Contains(t, out, "Compliance summary")
 	assert.Contains(t, out, "Evidence records today")
 	assert.Contains(t, out, "Evidence records (7d)")
-	assert.Contains(t, out, "Cost today (EUR)")
-	assert.Contains(t, out, "Cost this month (EUR)")
+	// Cost labels carry the pricing-table currency; the shipped table is USD (#216).
+	assert.Contains(t, out, "Cost today (USD)")
+	assert.Contains(t, out, "Cost this month (USD)")
 	assert.Contains(t, out, "Plans pending")
 	assert.Contains(t, out, "Plans approved")
 	assert.Contains(t, out, "Plan dispatch failures")
