@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,6 +16,11 @@ var secretsCmd = &cobra.Command{
 	Use:   "secrets",
 	Short: "Manage encrypted secrets vault",
 }
+
+var (
+	secretsSetTenants []string
+	secretsSetAgents  []string
+)
 
 var secretsSetCmd = &cobra.Command{
 	Use:   "set [name] [value]",
@@ -43,6 +49,10 @@ var secretsRotateCmd = &cobra.Command{
 }
 
 func init() {
+	secretsSetCmd.Flags().StringSliceVar(&secretsSetTenants, "tenant", nil,
+		"Restrict retrieval to this tenant (repeatable; glob patterns allowed). Empty means every tenant.")
+	secretsSetCmd.Flags().StringSliceVar(&secretsSetAgents, "agent", nil,
+		"Restrict retrieval to this agent (repeatable; glob patterns allowed). Empty means every agent.")
 	secretsCmd.AddCommand(secretsSetCmd)
 	secretsCmd.AddCommand(secretsListCmd)
 	secretsCmd.AddCommand(secretsAuditCmd)
@@ -76,13 +86,28 @@ func secretsSet(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	acl := secrets.ACL{}
+	acl := secrets.ACL{Tenants: secretsSetTenants, Agents: secretsSetAgents}
 	if err := store.Set(ctx, name, []byte(value), acl); err != nil {
 		return fmt.Errorf("storing secret: %w", err)
 	}
 
 	fmt.Printf("\u2713 Secret '%s' stored (encrypted at rest)\n", name)
+	switch {
+	case len(acl.Tenants) == 0 && len(acl.Agents) == 0:
+		fmt.Fprintln(cmd.ErrOrStderr(),
+			"notice: stored with allow-all ACL \u2014 any tenant's gateway traffic can use this secret; scope with --tenant/--agent for multi-tenant deployments")
+	default:
+		fmt.Printf("  ACL: tenants=%s agents=%s (empty list = all)\n",
+			formatACLList(acl.Tenants), formatACLList(acl.Agents))
+	}
 	return nil
+}
+
+func formatACLList(patterns []string) string {
+	if len(patterns) == 0 {
+		return "[*]"
+	}
+	return "[" + strings.Join(patterns, ", ") + "]"
 }
 
 func secretsList(cmd *cobra.Command, args []string) error {

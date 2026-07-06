@@ -50,6 +50,20 @@ gateway:
 
 Customers use their own caller API key; they never see other customers’ keys or data. Costs and evidence are stored under their `tenant_id`.
 
+### Scope vault secrets per tenant
+
+`talon secrets set` stores an **allow-all** ACL by default — any authenticated tenant's gateway traffic can trigger retrieval of that secret. In a multi-tenant deployment, scope every provider key to the tenants (and optionally agents) that may use it:
+
+```bash
+# Only acme's traffic may use this key (repeat --tenant for more; globs allowed)
+talon secrets set acme-openai-key "sk-..." --tenant acme
+
+# Tenant- and agent-scoped
+talon secrets set acme-sales-key "sk-..." --tenant acme --agent "sales-*"
+```
+
+An unscoped `talon secrets set` prints a notice reminding you of the allow-all default. `talon secrets audit` shows per-tenant allow/deny decisions for every retrieval.
+
 ---
 
 ## 3. Operations: data directory and exports

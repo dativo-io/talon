@@ -55,10 +55,10 @@ services:
     command:
       - |
         set -e
-        # Demo scope: `talon secrets set` writes an allow-all ACL (the CLI has
-        # no per-tenant ACL flags yet) — fine here because this stack has
-        # exactly one tenant and the keys are fakes. Do NOT copy this pattern
-        # into multi-tenant deployments; scope secrets per tenant there.
+        # Demo scope: these secrets are stored with the default allow-all ACL —
+        # fine here because this stack has exactly one tenant and the keys are
+        # fakes. In multi-tenant deployments, scope each secret with
+        # `talon secrets set <name> <value> --tenant <tenant>` (#237).
         talon secrets set anthropic-api-key mock-demo-not-a-real-key >/dev/null 2>&1 || true
         talon secrets set openai-api-key mock-demo-not-a-real-key >/dev/null 2>&1 || true
         exec talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml

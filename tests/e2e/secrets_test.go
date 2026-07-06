@@ -13,13 +13,24 @@ func TestE2E_SecretsLifecycle(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("talon init failed: %d", code)
 	}
-	// set
+	// set — unscoped stores allow-all and must say so on stderr (#237)
 	_, stderr, code := RunTalon(t, dir, nil, "secrets", "set", "test-secret", "secret-value")
 	if code != 0 {
 		t.Fatalf("talon secrets set exited %d\nstderr: %s", code, stderr)
 	}
+	if !strings.Contains(stderr, "allow-all ACL") {
+		t.Errorf("unscoped secrets set should print the allow-all notice, stderr: %s", stderr)
+	}
+	// set with a tenant-scoped ACL (#237)
+	stdout, stderr, code := RunTalon(t, dir, nil, "secrets", "set", "scoped-secret", "v", "--tenant", "acme", "--agent", "sales-*")
+	if code != 0 {
+		t.Fatalf("talon secrets set --tenant exited %d\nstderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "acme") {
+		t.Errorf("scoped secrets set should echo the ACL, stdout: %s", stdout)
+	}
 	// list (should show test-secret or mask it)
-	stdout, stderr, code := RunTalon(t, dir, nil, "secrets", "list")
+	stdout, stderr, code = RunTalon(t, dir, nil, "secrets", "list")
 	if code != 0 {
 		t.Fatalf("talon secrets list exited %d\nstderr: %s", code, stderr)
 	}
