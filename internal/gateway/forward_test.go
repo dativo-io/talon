@@ -361,7 +361,9 @@ func TestHTTPClientForGateway_SlowHeadersExceedConnectTimeout(t *testing.T) {
 		ResponseHeaderTimeout: 5 * time.Second,
 	}, nil)
 
-	resp, err := client.Get(upstream.URL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL, nil)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
 	require.NoError(t, err, "slow-TTFB upstream must not be killed by connect_timeout")
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -382,8 +384,10 @@ func TestHTTPClientForGateway_ResponseHeaderTimeoutEnforced(t *testing.T) {
 		ResponseHeaderTimeout: 100 * time.Millisecond,
 	}, nil)
 
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL, nil)
+	require.NoError(t, err)
 	start := time.Now()
-	resp, err := client.Get(upstream.URL) //nolint:bodyclose // no response on error
+	resp, err := client.Do(req) //nolint:bodyclose // no response on error
 	require.Error(t, err, "header wait past response_header_timeout must fail")
 	if resp != nil {
 		_ = resp.Body.Close()
