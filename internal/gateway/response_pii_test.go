@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -72,7 +73,7 @@ func TestScanResponseForPII_Unit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, result := scanResponseForPII(ctx, []byte(tt.body), tt.action, scanner)
+			out, result := scanResponseForPII(ctx, "openai", []byte(tt.body), tt.action, scanner)
 			assert.Equal(t, tt.wantPII, result.PIIDetected)
 			if tt.wantRedacted {
 				assert.True(t, result.Redacted)
@@ -161,7 +162,7 @@ func TestScanResponseForPII_FalsePositivePrevention(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, result := scanResponseForPII(ctx, []byte(tt.body), "redact", scanner)
+			out, result := scanResponseForPII(ctx, "openai", []byte(tt.body), "redact", scanner)
 			assert.False(t, result.PIIDetected,
 				"no PII in content → no detection (envelope must not trigger false positive)")
 			assert.False(t, result.Redacted, "nothing to redact when no PII in content")
@@ -231,7 +232,7 @@ func TestScanResponseForPII_ContentPII_EnvelopePreserved(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, result := scanResponseForPII(ctx, []byte(tt.body), "redact", scanner)
+			out, result := scanResponseForPII(ctx, "openai", []byte(tt.body), "redact", scanner)
 			assert.True(t, result.PIIDetected, "PII in content should be detected")
 			assert.True(t, result.Redacted, "PII in content should be redacted")
 			outStr := string(out)
@@ -645,4 +646,60 @@ func TestGateway_ChatCompletions_StreamingNoPII(t *testing.T) {
 		"clean streaming response must pass through")
 	assert.Contains(t, respBody, "world",
 		"all delta content must be forwarded")
+}
+
+// #195: block bodies must be provider-native — Anthropic envelope on
+// anthropic-family routes, OpenAI envelope (with code) on openai routes.
+func TestScanResponseForPII_BlockBodyPerFamily(t *testing.T) {
+	scanner := classifier.MustNewScanner()
+	ctx := context.Background()
+	anthBody := `{"content":[{"type":"text","text":"mail jane.doe@example.com"}]}`
+
+	blocked, result := scanResponseForPII(ctx, "anthropic", []byte(anthBody), "block", scanner)
+	if result == nil || !result.Blocked {
+		t.Fatalf("expected block, got %+v", result)
+	}
+	var anthEnv struct {
+		Type  string `json:"type"`
+		Error struct{ Type, Message string }
+	}
+	if err := json.Unmarshal(blocked, &anthEnv); err != nil {
+		t.Fatalf("anthropic block body not JSON: %v: %s", err, blocked)
+	}
+	if anthEnv.Type != "error" || anthEnv.Error.Type != "pii_policy_violation" {
+		t.Errorf("anthropic block body must use the Anthropic envelope: %s", blocked)
+	}
+
+	oaiBody := `{"choices":[{"message":{"role":"assistant","content":"mail jane.doe@example.com"}}]}`
+	blockedOAI, resultOAI := scanResponseForPII(ctx, "openai", []byte(oaiBody), "block", scanner)
+	if resultOAI == nil || !resultOAI.Blocked {
+		t.Fatalf("expected block, got %+v", resultOAI)
+	}
+	var oaiEnv struct {
+		Error struct{ Message, Type, Code string }
+	}
+	if err := json.Unmarshal(blockedOAI, &oaiEnv); err != nil {
+		t.Fatalf("openai block body not JSON: %v", err)
+	}
+	if oaiEnv.Error.Type != "pii_policy_violation" || oaiEnv.Error.Code != "pii_policy_violation" {
+		t.Errorf("openai block body must use the OpenAI envelope with code: %s", blockedOAI)
+	}
+}
+
+// #195: streaming block/scanner-failure writers render per-family too.
+func TestForwardBlockedResponse_PerFamily(t *testing.T) {
+	w := httptest.NewRecorder()
+	forwardBlockedResponse(w, "anthropic")
+	if w.Code != http.StatusUnavailableForLegalReasons {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `"type":"error"`) || !strings.Contains(w.Body.String(), `"pii_policy_violation"`) {
+		t.Errorf("anthropic streaming block body: %s", w.Body.String())
+	}
+
+	w2 := httptest.NewRecorder()
+	forwardScannerUnavailableResponse(w2, "anthropic")
+	if !strings.Contains(w2.Body.String(), `"type":"error"`) {
+		t.Errorf("anthropic scanner-unavailable body must be Anthropic-shaped: %s", w2.Body.String())
+	}
 }

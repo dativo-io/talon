@@ -1022,7 +1022,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		capture := &responseCapture{ResponseWriter: w}
 		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
 		if forwardErr == nil {
-			scannedBody, scanResult := scanResponseForPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), capture.body.Bytes(), responsePIIAction, g.classifier)
+			scannedBody, scanResult := scanResponseForPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), wire, capture.body.Bytes(), responsePIIAction, g.classifier)
 			responsePII = scanResult
 			status := capture.statusCode
 			if scanResult != nil && scanResult.Blocked {
@@ -1081,7 +1081,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		capture := &responseCapture{ResponseWriter: w}
 		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
 		if forwardErr == nil {
-			responsePII = handleStreamingPIIScan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), w, capture, responsePIIAction, g.classifier)
+			responsePII = handleStreamingPIIScan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), w, capture, wire, responsePIIAction, g.classifier)
 		} else {
 			capture.flushTo(w)
 		}
@@ -1830,11 +1830,28 @@ func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provide
 	}
 }
 
-// writeCachedCompletion writes a minimal OpenAI-compatible chat completion JSON with the cached content.
-func writeCachedCompletion(w http.ResponseWriter, provider, model string, content string) {
+// writeCachedCompletion writes a minimal provider-native completion body with
+// the cached content: an Anthropic Messages object on anthropic-family routes,
+// an OpenAI chat completion otherwise (#195 — previously always OpenAI shape).
+func writeCachedCompletion(w http.ResponseWriter, apiFamily, model string, content string) {
 	w.Header().Set("Content-Type", "application/json")
+	id := "cache-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	if apiFamily == "anthropic" {
+		resp := map[string]interface{}{
+			"id":            id,
+			"type":          "message",
+			"role":          "assistant",
+			"model":         model,
+			"content":       []map[string]interface{}{{"type": "text", "text": content}},
+			"stop_reason":   "end_turn",
+			"stop_sequence": nil,
+			"usage":         map[string]interface{}{"input_tokens": 0, "output_tokens": 0},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
 	resp := map[string]interface{}{
-		"id":     "cache-" + fmt.Sprintf("%d", time.Now().UnixNano()),
+		"id":     id,
 		"object": "chat.completion",
 		"model":  model,
 		"choices": []map[string]interface{}{

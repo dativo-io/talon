@@ -90,10 +90,11 @@ func resolveResponsePIIAction(defaultPolicy *ServerDefaults, callerOverrides *Ca
 // scanResponseForPII scans only the LLM-generated content fields in a non-streaming
 // response body for PII and applies the action. API envelope fields (id, created,
 // usage, model, etc.) are never scanned, preventing false positives on timestamps
-// and token counts.
+// and token counts. apiFamily selects the provider-native error envelope for
+// any block body it returns (#195) — "anthropic" or "openai".
 //
 //nolint:gocyclo // action dispatch + fail-closed scanner-error branches are kept together
-func scanResponseForPII(ctx context.Context, body []byte, action string, scanner classifier.Facade) ([]byte, *ResponsePIIScanResult) {
+func scanResponseForPII(ctx context.Context, apiFamily string, body []byte, action string, scanner classifier.Facade) ([]byte, *ResponsePIIScanResult) {
 	result := &ResponsePIIScanResult{}
 	if scanner == nil || action == "allow" || action == "" {
 		return body, result
@@ -113,7 +114,7 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 			result.ScannerFailure = scannerFailureKind(scanErr)
 			result.BlockReason = "output_scanner_unavailable"
 			log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_blocked")
-			return scannerUnavailableBody(), result
+			return scannerUnavailableBody(apiFamily), result
 		}
 		log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_warn")
 		return body, result
@@ -143,17 +144,13 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 			result.ScannerFailure = scannerFailureKind(redactErr)
 			result.BlockReason = "output_scanner_unavailable"
 			log.Warn().Err(redactErr).Msg("response_pii_redaction_failed_blocked")
-			return scannerUnavailableBody(), result
+			return scannerUnavailableBody(apiFamily), result
 		}
 		redactedText := extractResponseContentText(modified)
 		if err := scanner.VerifyEgress(ctx, redactedText); err != nil {
-			safeErr := map[string]interface{}{
-				"error": map[string]interface{}{
-					"message": residualPIIBlockMessage("Response blocked: recognized PII remains after redaction", classifier.ResidualTypes(err)),
-					"type":    "pii_policy_violation",
-				},
-			}
-			blocked, _ := json.Marshal(safeErr)
+			blocked := providerErrorBody(apiFamily, http.StatusUnavailableForLegalReasons,
+				residualPIIBlockMessage("Response blocked: recognized PII remains after redaction", classifier.ResidualTypes(err)),
+				"pii_policy_violation")
 			result.Redacted = true
 			result.Blocked = true
 			result.BlockReason = "output_residual_pii_after_redaction"
@@ -169,13 +166,8 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 		return modified, result
 
 	case "block":
-		safeErr := map[string]interface{}{
-			"error": map[string]interface{}{
-				"message": "Response blocked: contains PII that violates policy",
-				"type":    "pii_policy_violation",
-			},
-		}
-		blocked, _ := json.Marshal(safeErr)
+		blocked := providerErrorBody(apiFamily, http.StatusUnavailableForLegalReasons,
+			"Response blocked: contains PII that violates policy", "pii_policy_violation")
 		result.Redacted = true
 		result.Blocked = true
 		result.BlockReason = "output_pii_blocked"
@@ -194,16 +186,11 @@ func scanResponseForPII(ctx context.Context, body []byte, action string, scanner
 	return body, result
 }
 
-// scannerUnavailableBody is the JSON error returned when the PII scan engine
-// failed and the response was blocked fail-closed.
-func scannerUnavailableBody() []byte {
-	blocked, _ := json.Marshal(map[string]interface{}{
-		"error": map[string]interface{}{
-			"message": "Response blocked: PII scanner unavailable (fail-closed)",
-			"type":    "scanner_unavailable",
-		},
-	})
-	return blocked
+// scannerUnavailableBody is the provider-native JSON error returned when the
+// PII scan engine failed and the response was blocked fail-closed (#195).
+func scannerUnavailableBody(apiFamily string) []byte {
+	return providerErrorBody(apiFamily, http.StatusBadGateway,
+		"Response blocked: PII scanner unavailable (fail-closed)", "scanner_unavailable")
 }
 
 // scannerFailureKind returns the typed adapter failure kind (timeout,
@@ -513,6 +500,7 @@ func handleStreamingPIIScan(
 	ctx context.Context,
 	w http.ResponseWriter,
 	capture *responseCapture,
+	apiFamily string,
 	action string,
 	scanner classifier.Facade,
 ) *ResponsePIIScanResult {
@@ -539,7 +527,7 @@ func handleStreamingPIIScan(
 	cls, scanErr := scanner.Analyze(ctx, contentText)
 	if scanErr != nil {
 		if action == "block" || action == "redact" {
-			forwardScannerUnavailableResponse(w)
+			forwardScannerUnavailableResponse(w, apiFamily)
 			log.Warn().Err(scanErr).Msg("response_pii_scanner_unavailable_blocked_stream")
 			return &ResponsePIIScanResult{Blocked: true, ScannerFailure: scannerFailureKind(scanErr), BlockReason: "output_scanner_unavailable"}
 		}
@@ -578,7 +566,7 @@ func handleStreamingPIIScan(
 		if completedJSON != nil {
 			redacted, redactErr := redactResponseContentFields(ctx, completedJSON, scanner)
 			if redactErr != nil {
-				forwardScannerUnavailableResponse(w)
+				forwardScannerUnavailableResponse(w, apiFamily)
 				result.Redacted = true
 				result.Blocked = true
 				result.ScannerFailure = scannerFailureKind(redactErr)
@@ -587,7 +575,7 @@ func handleStreamingPIIScan(
 				break
 			}
 			if err := scanner.VerifyEgress(ctx, extractResponseContentText(redacted)); err != nil {
-				forwardBlockedResponse(w)
+				forwardBlockedResponse(w, apiFamily)
 				result.Redacted = true
 				result.Blocked = true
 				result.BlockReason = "output_residual_pii_after_redaction"
@@ -600,7 +588,7 @@ func handleStreamingPIIScan(
 		} else {
 			redactedContent, redactErr := scanner.RedactText(ctx, contentText)
 			if redactErr != nil {
-				forwardScannerUnavailableResponse(w)
+				forwardScannerUnavailableResponse(w, apiFamily)
 				result.Redacted = true
 				result.Blocked = true
 				result.ScannerFailure = scannerFailureKind(redactErr)
@@ -609,7 +597,7 @@ func handleStreamingPIIScan(
 				break
 			}
 			if err := scanner.VerifyEgress(ctx, redactedContent); err != nil {
-				forwardBlockedResponse(w)
+				forwardBlockedResponse(w, apiFamily)
 				result.Redacted = true
 				result.Blocked = true
 				result.BlockReason = "output_residual_pii_after_redaction"
@@ -627,7 +615,7 @@ func handleStreamingPIIScan(
 			Msg("response_pii_redacted_stream")
 
 	case "block":
-		forwardBlockedResponse(w)
+		forwardBlockedResponse(w, apiFamily)
 		result.Redacted = true
 		result.Blocked = true
 		result.BlockReason = "output_pii_blocked"
@@ -707,29 +695,24 @@ func forwardRedactedAsSSE(w http.ResponseWriter, capture *responseCapture, origi
 	_, _ = w.Write(buf.Bytes())
 }
 
-// forwardBlockedResponse writes a JSON error for blocked streaming requests.
-// Since the SSE stream was buffered (never written to w), we can override
-// Content-Type and set an appropriate status code.
-func forwardBlockedResponse(w http.ResponseWriter) {
+// forwardBlockedResponse writes a provider-native JSON error for blocked
+// streaming requests (#195). Since the SSE stream was buffered (never written
+// to w), we can override Content-Type and set an appropriate status code.
+func forwardBlockedResponse(w http.ResponseWriter, apiFamily string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnavailableForLegalReasons)
-	safeErr, _ := json.Marshal(map[string]interface{}{
-		"error": map[string]interface{}{
-			"message": "Response blocked: contains PII that violates policy",
-			"type":    "pii_policy_violation",
-		},
-	})
 	//nolint:gosec // G705: error response body (JSON), not HTML
-	_, _ = w.Write(safeErr)
+	_, _ = w.Write(providerErrorBody(apiFamily, http.StatusUnavailableForLegalReasons,
+		"Response blocked: contains PII that violates policy", "pii_policy_violation"))
 }
 
-// forwardScannerUnavailableResponse writes a JSON error when the PII scan
-// engine failed and the buffered stream was discarded fail-closed.
-func forwardScannerUnavailableResponse(w http.ResponseWriter) {
+// forwardScannerUnavailableResponse writes a provider-native JSON error when
+// the PII scan engine failed and the buffered stream was discarded fail-closed.
+func forwardScannerUnavailableResponse(w http.ResponseWriter, apiFamily string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadGateway)
 	//nolint:gosec // G705: error response body (JSON), not HTML
-	_, _ = w.Write(scannerUnavailableBody())
+	_, _ = w.Write(scannerUnavailableBody(apiFamily))
 }
 
 // extractCompletedResponseFromSSE finds the response.completed event or the
