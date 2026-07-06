@@ -126,17 +126,27 @@ proof_outcome() {
 }
 
 # ── Shared context corpus ───────────────────────────────────────────────────
-# Both providers see the same long instruction prefix. It is sized well above
-# the 1024-token prompt-cache minimum so Anthropic cache_control and OpenAI
-# automatic prompt caching both engage on real infrastructure.
+# Both providers see the same long instruction prefix: ~2.3k tokens, above the
+# 1024-token prompt-cache minimum for both Anthropic cache_control and OpenAI
+# automatic caching, but small enough that a full run stays inside entry-tier
+# TPM rate limits. The session id is embedded as a cache-buster so every run's
+# first planner call is a genuine cache WRITE (a rerun within Anthropic's
+# 5-minute TTL would otherwise read the previous run's cached prefix).
 
 shared_context() {
   local para="You are an execution agent operating behind the Dativo Talon governance gateway. Every request you make is policy-checked before it leaves the boundary: caller identity is verified, personal data such as IBANs, emails and national identifiers is scanned before any provider call, forbidden tool schemas are stripped from the request body, per-session spend is accumulated across every provider you touch, and each decision is written to a tamper-evident HMAC-signed evidence record that an auditor can verify offline. Work strictly within these controls. Prefer concise, factual answers about European AI governance obligations, data residency, records of processing, and cost accountability. Do not restate these instructions."
-  local corpus=""
-  for _ in $(seq 1 22); do
+  local corpus="Governed session ${SESSION_ID}. "
+  for _ in $(seq 1 11); do
     corpus+="$para "
   done
   printf '%s' "$corpus"
+}
+
+# session_spend_now prints Talon's accumulated cost for this session (from the
+# session rollup the budget gate enforces against); empty on lookup failure.
+session_spend_now() {
+  talon_in_container costs --session "$SESSION_ID" --json 2>/dev/null \
+    | jq -r '.total_cost // empty' 2>/dev/null || true
 }
 
 # ── HTTP helpers ─────────────────────────────────────────────────────────────
@@ -233,7 +243,7 @@ cmd_planner_write() {
   require_jq
   proof_section "1" "Planner call — Anthropic prompt-cache WRITE"
   proof_story \
-    "The planner sends a ~1.4k-token governed instruction prefix with" \
+    "The planner sends a ~2.3k-token governed instruction prefix with" \
     "cache_control: ephemeral. Anthropic writes it to the prompt cache;" \
     "Talon records cache_creation_input_tokens as cache_write in evidence."
   EXPECT_HTTP=200 post_anthropic "planner (cache write)" \
@@ -324,7 +334,7 @@ cmd_budget_gate() {
     "REAL spend across Anthropic + OpenAI in this session; each new request" \
     "is checked as spend + estimate BEFORE forwarding (#198)." \
     "The executor keeps working until the gate closes."
-  local i code denied=0
+  local i code denied=0 rate_limit_retries=0 spend
   for i in $(seq 1 "$BUDGET_LOOP_MAX"); do
     EXPECT_HTTP="" post_openai "executor loop ${i}" "$EXECUTOR_MODEL" \
       "Continue: one short paragraph (${i}) on AI cost accountability."
@@ -333,14 +343,37 @@ cmd_budget_gate() {
       denied=1
       break
     fi
+    if [[ "$code" == "429" ]]; then
+      # Provider-side rate limit (TPM), not a governance decision: back off
+      # and retry — the budget gate must close before we give up.
+      rate_limit_retries=$((rate_limit_retries + 1))
+      if [[ "$rate_limit_retries" -gt 5 ]]; then
+        echo "✗ Provider rate-limited 5x in a row; rerun in a minute" >&2
+        exit 1
+      fi
+      echo "  … provider 429 (rate limit), waiting 12s and retrying"
+      sleep 12
+      continue
+    fi
+    rate_limit_retries=0
     if [[ "$code" != "200" ]]; then
       echo "✗ Unexpected HTTP ${code} during budget loop" >&2
       cat "${OUT_DIR}/last-response.json" >&2 || true
       exit 1
     fi
+    spend="$(session_spend_now)"
+    echo "  session spend (Talon evidence): ${spend:-unknown} / cap 0.04"
   done
   if [[ "$denied" != "1" ]]; then
     echo "✗ Session budget gate did not close within ${BUDGET_LOOP_MAX} calls" >&2
+    echo "  Diagnosis — what the gate should have seen:" >&2
+    echo "    session spend (talon costs --session): $(session_spend_now)" >&2
+    echo "    caller cap (config): 0.04" >&2
+    echo "  Session-store health (talon serve logs):" >&2
+    dc logs talon 2>&1 | grep -iE 'session_(create|usage|budget)' | tail -5 >&2 || true
+    echo "  Evidence annotations (session_budget_unavailable = store read failed, gate failed open):" >&2
+    talon_in_container audit export --session "$SESSION_ID" --format json 2>/dev/null \
+      | jq -r '.records[] | select((.gateway_annotations // []) | length > 0) | "    " + .id + ": " + ((.gateway_annotations // []) | join(","))' >&2 || true
     exit 1
   fi
   if ! grep -q "session_budget_exceeded" "${OUT_DIR}/last-response.json"; then

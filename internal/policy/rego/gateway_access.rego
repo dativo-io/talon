@@ -35,13 +35,15 @@ deny contains msg if {
 	msg := sprintf("Model %s is blocked for this caller", [input.model])
 }
 
-# Per-caller daily cost limit. Amounts use %.4f: real per-request API costs
-# are sub-cent, and this message is the evidence-facing deny reason (#255).
+# Per-caller daily cost limit. Amounts use %v with 4-decimal rounding: real
+# per-request API costs are sub-cent (so %.2f rendered 0.00), and OPA sprintf
+# refuses %f entirely for integral JSON numbers (#255). This message is the
+# evidence-facing deny reason.
 deny contains msg if {
 	input.caller_max_daily_cost != null
 	input.caller_max_daily_cost > 0
 	input.daily_cost + input.estimated_cost > input.caller_max_daily_cost
-	msg := sprintf("budget_exceeded: request would exceed caller daily cost limit (%.4f)", [input.caller_max_daily_cost])
+	msg := sprintf("budget_exceeded: request would exceed caller daily cost limit (%v)", [round(input.caller_max_daily_cost * 10000) / 10000])
 }
 
 # Per-caller monthly cost limit.
@@ -49,7 +51,7 @@ deny contains msg if {
 	input.caller_max_monthly_cost != null
 	input.caller_max_monthly_cost > 0
 	input.monthly_cost + input.estimated_cost > input.caller_max_monthly_cost
-	msg := sprintf("budget_exceeded: request would exceed caller monthly cost limit (%.4f)", [input.caller_max_monthly_cost])
+	msg := sprintf("budget_exceeded: request would exceed caller monthly cost limit (%v)", [round(input.caller_max_monthly_cost * 10000) / 10000])
 }
 
 # Per-caller session cost limit (#198): soft cap over one coding session.
@@ -64,7 +66,9 @@ deny contains msg if {
 	input.caller_max_session_cost != null
 	input.caller_max_session_cost > 0
 	input.session_cost_total + input.estimated_cost > input.caller_max_session_cost
-	msg := sprintf("session_budget_exceeded: session spend %.4f + estimate %.4f exceeds limit %.4f", [input.session_cost_total, input.estimated_cost, input.caller_max_session_cost])
+	# %v (with 4-decimal rounding), not %f: OPA sprintf refuses %f for
+	# integral JSON numbers — a zero spend rendered "%!f(int=0000)" (#255).
+	msg := sprintf("session_budget_exceeded: session spend %v + estimate %v exceeds limit %v", [round(input.session_cost_total * 10000) / 10000, round(input.estimated_cost * 10000) / 10000, round(input.caller_max_session_cost * 10000) / 10000])
 }
 
 # Per-caller data tier restriction: request tier must not exceed caller's max.
