@@ -56,9 +56,10 @@ gateway:
 func TestParseTimeouts(t *testing.T) {
 	cfg := &GatewayConfig{
 		Timeouts: TimeoutsConfig{
-			ConnectTimeout:    "5s",
-			RequestTimeout:    "30s",
-			StreamIdleTimeout: "60s",
+			ConnectTimeout:        "5s",
+			RequestTimeout:        "30s",
+			ResponseHeaderTimeout: "25s",
+			StreamIdleTimeout:     "60s",
 		},
 	}
 	pt, err := cfg.ParseTimeouts()
@@ -68,6 +69,28 @@ func TestParseTimeouts(t *testing.T) {
 	if pt.ConnectTimeout != 5*time.Second || pt.RequestTimeout != 30*time.Second || pt.StreamIdleTimeout != 60*time.Second {
 		t.Errorf("ParseTimeouts = %+v", pt)
 	}
+	if pt.ResponseHeaderTimeout != 25*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %v, want 25s", pt.ResponseHeaderTimeout)
+	}
+}
+
+// Unset response_header_timeout must fall back to request_timeout — the header
+// wait must never be cut shorter than the operator's request budget (#230).
+func TestParseTimeouts_ResponseHeaderDefaultsToRequestTimeout(t *testing.T) {
+	cfg := &GatewayConfig{
+		Timeouts: TimeoutsConfig{
+			ConnectTimeout:    "10s",
+			RequestTimeout:    "120s",
+			StreamIdleTimeout: "60s",
+		},
+	}
+	pt, err := cfg.ParseTimeouts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pt.ResponseHeaderTimeout != 120*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %v, want request_timeout (120s)", pt.ResponseHeaderTimeout)
+	}
 }
 
 func TestParseTimeouts_Invalid(t *testing.T) {
@@ -75,6 +98,19 @@ func TestParseTimeouts_Invalid(t *testing.T) {
 	_, err := cfg.ParseTimeouts()
 	if err == nil {
 		t.Error("expected error for invalid duration")
+	}
+}
+
+func TestParseTimeouts_InvalidResponseHeader(t *testing.T) {
+	cfg := &GatewayConfig{Timeouts: TimeoutsConfig{
+		ConnectTimeout:        "10s",
+		RequestTimeout:        "120s",
+		ResponseHeaderTimeout: "bogus",
+		StreamIdleTimeout:     "60s",
+	}}
+	_, err := cfg.ParseTimeouts()
+	if err == nil {
+		t.Error("expected error for invalid response_header_timeout")
 	}
 }
 

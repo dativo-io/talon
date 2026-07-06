@@ -325,13 +325,71 @@ func TestForward_GzipSuccessDecompressed(t *testing.T) {
 
 func TestHTTPClientForGateway(t *testing.T) {
 	timeouts := ParsedTimeouts{
-		ConnectTimeout:    2 * time.Second,
-		RequestTimeout:    10 * time.Second,
-		StreamIdleTimeout: 30 * time.Second,
+		ConnectTimeout:        2 * time.Second,
+		RequestTimeout:        10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		StreamIdleTimeout:     30 * time.Second,
 	}
 	client := HTTPClientForGateway(timeouts, nil)
 	require.NotNil(t, client)
 	require.Equal(t, 10*time.Second, client.Timeout)
+
+	base, ok := client.Transport.(*http.Transport)
+	require.True(t, ok, "base transport must be *http.Transport")
+	require.Equal(t, 10*time.Second, base.ResponseHeaderTimeout,
+		"header wait must be bounded by response_header_timeout, not connect_timeout (#230)")
+	require.NotNil(t, base.DialContext, "connect_timeout must bound dialing via DialContext (#230)")
+	require.Equal(t, 2*time.Second, base.TLSHandshakeTimeout)
+	require.True(t, base.ForceAttemptHTTP2, "custom DialContext must not silently disable HTTP/2")
+}
+
+// Regression for #230: an upstream whose time-to-first-header exceeds
+// connect_timeout must still succeed — connect_timeout is a dial budget, not a
+// TTFB budget. Under the old code (ResponseHeaderTimeout = connect_timeout)
+// this request was killed at 50ms.
+func TestHTTPClientForGateway_SlowHeadersExceedConnectTimeout(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(300 * time.Millisecond) // TTFB >> connect_timeout
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	client := HTTPClientForGateway(ParsedTimeouts{
+		ConnectTimeout:        50 * time.Millisecond,
+		RequestTimeout:        5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+	}, nil)
+
+	resp, err := client.Get(upstream.URL)
+	require.NoError(t, err, "slow-TTFB upstream must not be killed by connect_timeout")
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestHTTPClientForGateway_ResponseHeaderTimeoutEnforced(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	client := HTTPClientForGateway(ParsedTimeouts{
+		ConnectTimeout:        1 * time.Second,
+		RequestTimeout:        10 * time.Second,
+		ResponseHeaderTimeout: 100 * time.Millisecond,
+	}, nil)
+
+	start := time.Now()
+	resp, err := client.Get(upstream.URL) //nolint:bodyclose // no response on error
+	require.Error(t, err, "header wait past response_header_timeout must fail")
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.Less(t, time.Since(start), 5*time.Second,
+		"must fail at response_header_timeout, not request_timeout")
 }
 
 // ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ talon init --pack coding-agents
 
 This creates two files:
 
-- `talon.config.yaml` — gateway config with the Anthropic provider, a pre-configured `claude-code` caller (tenant key `talon-gw-claude-code-001`), and a `codex` caller for Codex CLI. The gateway starts in **shadow mode** and the caller ships with coding-tuned defaults: `pii_action: warn`, `response_pii_action: allow`, `max_session_cost: 10.00`, `max_daily_cost: 50.00`, `max_monthly_cost: 500.00`, and raised timeouts (`connect_timeout: 60s`, `request_timeout: 600s`).
+- `talon.config.yaml` — gateway config with the Anthropic provider, a pre-configured `claude-code` caller (tenant key `talon-gw-claude-code-001`), and a `codex` caller for Codex CLI. The gateway starts in **shadow mode** and the caller ships with coding-tuned defaults: `pii_action: warn`, `response_pii_action: allow`, `max_session_cost: 10.00`, `max_daily_cost: 50.00`, `max_monthly_cost: 500.00`, and a raised `request_timeout: 600s` (the response-header wait follows it by default).
 - `agent.talon.yaml` — agent policy with high-precision credential recognizers (PEM private-key blocks, AWS `AKIA...` key IDs, GitHub `ghp_`/`github_pat_` tokens, Anthropic/OpenAI `sk-ant-...`/`sk-proj-...` keys) so leaked credentials in prompt traffic land in evidence.
 
 These defaults are deliberate — see [Why the pack defaults look like this](#why-the-pack-defaults-look-like-this) below before changing them.
@@ -122,7 +122,7 @@ The dashboard (`talon serve` HTTP UI) shows the same data in the **Coding Sessio
 - **Claude Code gets authentication errors on every request, but `claude` worked before** — You are logged in with a subscription and only set `ANTHROPIC_BASE_URL`. The subscription OAuth token is not a tenant key and Talon rejects it. Set `ANTHROPIC_AUTH_TOKEN=talon-gw-claude-code-001` (or `ANTHROPIC_API_KEY`) so Claude Code presents the tenant key. [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
 - **`talon serve --gateway` fails at startup after you edited the provider block** — If the error is the `upstream_auth_mode client_bearer is not supported for the anthropic API family` message quoted in step 2, remove `upstream_auth_mode: client_bearer`; vault-secret is the only supported mode for Anthropic.
 - **`gateway_secret_get_failed` / "cipher: message authentication failed" / "Service configuration error"** — Vault decryption failed. Use the **same** `TALON_SECRETS_KEY` for `talon secrets set` and `talon serve`. If you lost it, set a new one and re-run `talon secrets set anthropic-api-key "sk-ant-..."`.
-- **Long generations are cut off mid-response** — Your `request_timeout` is too low. The pack sets `600s` for exactly this reason; the server-wide default of `120s` hard-cuts long coding generations. Note that `connect_timeout` currently doubles as the response-header wait budget (issue #230) — the pack's `60s` covers large non-streaming prompts that the `10s` default would kill.
+- **Long generations are cut off mid-response** — Your `request_timeout` is too low. The pack sets `600s` for exactly this reason; the server-wide default of `120s` hard-cuts long coding generations. The response-header wait defaults to `request_timeout` (tunable via `response_header_timeout`), so large non-streaming prompts get the same budget.
 - **Streaming shows nothing for a long time, then everything at once** — A `response_pii_action` other than `allow` buffers the entire SSE stream before release; time-to-first-token becomes total generation time. Set the caller back to `response_pii_action: allow` ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
 - **`talon audit list --session` finds nothing** — The session ID must match what Claude Code sent in `X-Claude-Code-Session-Id`. Check a recent record with `talon audit list --agent claude-code` and read the session ID from its orchestration metadata. Also note that orchestration header values over 128 bytes or containing non-token characters are rejected at ingestion (`internal/gateway/orchmeta.go`).
 
@@ -163,7 +163,7 @@ talon enforce enable
 |---|---|
 | `response_pii_action: allow` | Any other value (`warn`/`redact`/`block`) buffers the **entire** SSE stream before releasing it — time-to-first-token becomes total generation time, which is unusable for interactive coding. Input-side scanning (`pii_action: warn`) still applies. [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary). |
 | `pii_action: warn`, not `redact` | Redaction mangles code. `warn` records findings in evidence and lets the request flow. |
-| `request_timeout: 600s`, `connect_timeout: 60s` | The 120s default hard-cuts long coding generations, and `connect_timeout` currently doubles as the response-header wait budget (issue #230). |
+| `request_timeout: 600s` | The 120s default hard-cuts long coding generations. The response-header wait defaults to `request_timeout`, so slow non-streaming prompts are covered too. |
 | `max_session_cost` as a soft cap | Denies the *next* request over the limit rather than killing in-flight streams; see step 6 for the overshoot bounds. |
 | Credential recognizers, not a secret scanner | The `agent.talon.yaml` recognizers cover high-precision formats only (PEM, `AKIA...`, `ghp_...`, `sk-ant-...`) in prompt/response traffic. Talon is not a repository secret scanner — keep gitleaks/trufflehog in pre-commit. |
 
@@ -182,7 +182,7 @@ Talon governs **model API traffic**. Claude Code's local tool executions — fil
 | Agent loop burns budget inside one session | Soft session cap denies the next request with `session_budget_exceeded` + structured `session_budget` evidence | `max_session_cost` (`TestSessionBudget_*`) |
 | Slow-burn overspend across sessions | Per-caller daily/monthly caps | `max_daily_cost`, `max_monthly_cost` |
 | Credentials pasted into prompts (AWS keys, GitHub tokens, PEM blocks, `sk-ant-...`) | Input-side scan with high-precision recognizers; findings recorded in signed evidence | `agent.talon.yaml` `custom_recognizers`, `pii_action: warn` |
-| Long generation hard-cut mid-stream | Raised coding timeouts | `request_timeout: 600s`, `connect_timeout: 60s` (issue #230) |
+| Long generation hard-cut mid-stream | Raised coding timeouts | `request_timeout: 600s` (header wait follows it by default) |
 | Subagent spend invisible in aggregate numbers | Per-agent rollup inside the session summary | `talon audit list --session` (`evidence.BuildSessionSummary`) |
 | Hostile/oversized orchestration header values | Validated at ingestion: 128-byte cap, HTTP token charset, rejected not truncated; recorded as `client_asserted`, never a policy input | `internal/gateway/orchmeta.go`, `TestPolicyInputParity_WithAssertedSession` |
 | Enforcement flipped on blind | Shadow mode records would-have-denied violations first | `mode: "shadow"`, `talon enforce report` / `enable` |

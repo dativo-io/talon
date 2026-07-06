@@ -38,9 +38,9 @@ gateway:
 
   timeouts:
     # Coding generations are long; the default 120s request timeout hard-cuts
-    # them and the default 10s header budget kills big non-streaming prompts
-    # (see LIMITATIONS.md and issue #230).
-    connect_timeout: "60s"
+    # them (see LIMITATIONS.md). The response-header wait defaults to
+    # request_timeout, so slow non-streaming prompts get the full 600s (#230).
+    connect_timeout: "10s"
     request_timeout: "600s"
     stream_idle_timeout: "120s"
 

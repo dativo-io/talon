@@ -244,16 +244,22 @@ type RateLimitsConfig struct {
 
 // TimeoutsConfig holds gateway timeouts. Values are stored as strings (e.g. "10s") and parsed to time.Duration.
 type TimeoutsConfig struct {
-	ConnectTimeout    string `yaml:"connect_timeout" json:"connect_timeout"`
-	RequestTimeout    string `yaml:"request_timeout" json:"request_timeout"`
-	StreamIdleTimeout string `yaml:"stream_idle_timeout" json:"stream_idle_timeout"`
+	ConnectTimeout string `yaml:"connect_timeout" json:"connect_timeout"`
+	RequestTimeout string `yaml:"request_timeout" json:"request_timeout"`
+	// ResponseHeaderTimeout bounds the wait for upstream response headers
+	// (time-to-first-byte) after the request is fully written. Non-streaming
+	// LLM calls can legitimately take minutes before the first header, so
+	// this defaults to request_timeout, not connect_timeout (#230).
+	ResponseHeaderTimeout string `yaml:"response_header_timeout" json:"response_header_timeout"`
+	StreamIdleTimeout     string `yaml:"stream_idle_timeout" json:"stream_idle_timeout"`
 }
 
 // ParsedTimeouts holds parsed time.Duration values for use at runtime.
 type ParsedTimeouts struct {
-	ConnectTimeout    time.Duration
-	RequestTimeout    time.Duration
-	StreamIdleTimeout time.Duration
+	ConnectTimeout        time.Duration
+	RequestTimeout        time.Duration
+	ResponseHeaderTimeout time.Duration
+	StreamIdleTimeout     time.Duration
 }
 
 // NetworkInterceptionConfig is for enterprise DNS interception (Phase 2).
@@ -370,6 +376,11 @@ func (c *GatewayConfig) ApplyDefaults() error {
 	}
 	if c.Timeouts.RequestTimeout == "" {
 		c.Timeouts.RequestTimeout = DefaultRequestTimeout
+	}
+	// Default header wait to the operator's request budget: slow-TTFB
+	// non-streaming calls must not be cut short of request_timeout (#230).
+	if c.Timeouts.ResponseHeaderTimeout == "" {
+		c.Timeouts.ResponseHeaderTimeout = c.Timeouts.RequestTimeout
 	}
 	if c.Timeouts.StreamIdleTimeout == "" {
 		c.Timeouts.StreamIdleTimeout = DefaultStreamIdleTimeout
@@ -643,6 +654,14 @@ func (c *GatewayConfig) ParseTimeouts() (ParsedTimeouts, error) {
 	pt.RequestTimeout, err = time.ParseDuration(c.Timeouts.RequestTimeout)
 	if err != nil {
 		return pt, fmt.Errorf("request_timeout %q: %w", c.Timeouts.RequestTimeout, err)
+	}
+	if c.Timeouts.ResponseHeaderTimeout == "" {
+		pt.ResponseHeaderTimeout = pt.RequestTimeout
+	} else {
+		pt.ResponseHeaderTimeout, err = time.ParseDuration(c.Timeouts.ResponseHeaderTimeout)
+		if err != nil {
+			return pt, fmt.Errorf("response_header_timeout %q: %w", c.Timeouts.ResponseHeaderTimeout, err)
+		}
 	}
 	pt.StreamIdleTimeout, err = time.ParseDuration(c.Timeouts.StreamIdleTimeout)
 	if err != nil {

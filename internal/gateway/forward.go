@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -351,7 +352,18 @@ func parseUsageFromJSON(body []byte, _ string, usage *TokenUsage) {
 // (e.g. air-gap egress guard layered on top of the ResponseHeaderTimeout transport).
 func HTTPClientForGateway(timeouts ParsedTimeouts, transport http.RoundTripper) *http.Client {
 	base := &http.Transport{
-		ResponseHeaderTimeout: timeouts.ConnectTimeout,
+		// connect_timeout bounds connection establishment: TCP dial plus TLS
+		// handshake. It must not bound the header wait — non-streaming LLM
+		// calls routinely take >10s to first byte (#230).
+		DialContext: (&net.Dialer{
+			Timeout:   timeouts.ConnectTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   timeouts.ConnectTimeout,
+		ResponseHeaderTimeout: timeouts.ResponseHeaderTimeout,
+		// A custom DialContext disables the automatic HTTP/2 upgrade; keep h2
+		// for upstreams that negotiate it (OpenAI, Anthropic).
+		ForceAttemptHTTP2: true,
 	}
 	var rt http.RoundTripper = base
 	if transport != nil {
