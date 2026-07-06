@@ -158,7 +158,7 @@ policy_overrides:
 
 How `max_session_cost` behaves — precisely:
 
-- A **new** request is denied once accrued session spend + the pre-request estimate exceeds the limit. The denial is HTTP 403 with a **provider-native error body** (`session_budget_exceeded: session spend 6.00 + estimate 1.00 exceeds limit 5.00`), so clients surface it like any provider error.
+- A **new** request is denied once accrued session spend + the pre-request estimate exceeds the limit. The denial is HTTP 403 with a **provider-native error body** (`session_budget_exceeded: session spend 6.00 + estimate 1.00 exceeds limit 5.00`), so clients surface it like any provider error. One documented exception: errors emitted **before routing** (e.g. a request for an unknown provider prefix) use the OpenAI error shape, since no provider — and therefore no wire family — was resolved yet (#195).
 - Spend accumulates **per session, not per provider** — the same session is denied on the other provider's route too (`TestSessionBudget_CrossProviderDeny`).
 - It is a **soft cap**: one in-flight request whose real cost exceeds the estimate can overshoot, and N concurrent first requests are bounded only by N × per-request cost. Atomic reservation is #144 (`TestSessionBudget_SoftCapOvershoot`, `TestSessionBudget_ConcurrentBurstBound`).
 - Session denies carry a **structured evidence detail** (limit, spent, estimate) — populated only for session-budget denies, not other reasons (`TestSessionBudgetDetail_OnlyOnSessionDeny`).
