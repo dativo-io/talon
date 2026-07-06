@@ -111,7 +111,7 @@ CHECKSUM_URL="https://github.com/${REPO}/releases/download/${LATEST}/checksums.t
 
 echo "Downloading ${ASSET_NAME}..."
 TMP_DIR=$(mktemp -d)
-trap "rm -rf ${TMP_DIR}" EXIT
+trap 'rm -rf "${TMP_DIR}"' EXIT
 
 if ! curl -fsSL -o "${TMP_DIR}/${ARCHIVE_FILE}" "${DOWNLOAD_URL}"; then
     echo "Error: Download failed for ${ASSET_NAME}"

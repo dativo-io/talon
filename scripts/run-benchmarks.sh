@@ -21,7 +21,7 @@ cd "$(dirname "$0")/.."
 OUTPUT=""
 BENCH_TIME="${BENCH_TIME:-2s}"
 BENCH_COUNT="${BENCH_COUNT:-5}"
-BENCH_PKGS="./internal/gateway/... ./internal/classifier/... ./internal/evidence/..."
+BENCH_PKGS=(./internal/gateway/... ./internal/classifier/... ./internal/evidence/...)
 BENCH_REGEX='Benchmark(GatewayPipelineOverhead|GatewayPipelineOverheadLargePrompt|PIIScan|EvidenceStore)$'
 
 while getopts "o:" opt; do
@@ -43,7 +43,7 @@ bench_out=$("${GO_ENV[@]}" go test \
   -benchtime="$BENCH_TIME" \
   -count="$BENCH_COUNT" \
   -run='^$' \
-  $BENCH_PKGS 2>&1) || {
+  "${BENCH_PKGS[@]}" 2>&1) || {
   echo "$bench_out" >&2
   exit 1
 }

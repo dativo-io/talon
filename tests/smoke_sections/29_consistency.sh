@@ -7,7 +7,7 @@
 # -----------------------------------------------------------------------------
 test_section_29_consistency() {
   local section="29_consistency"
-  local dir; dir="$(setup_section_dir "$section")"
+  setup_section_dir "$section" >/dev/null
   local ev_id list_out show_out
   list_out="$(env TALON_DATA_DIR="$TALON_DATA_DIR" talon audit list --limit 1 2>/dev/null)" || true
   ev_id="$(echo "$list_out" | awk '/req_/{print $2; exit}')"
@@ -61,8 +61,9 @@ test_section_29_consistency() {
   # Edge case: unknown evidence id should fail for show/verify
   local missing_id="req_nonexistent_smoke_consistency_00000"
   local missing_show missing_verify
-  missing_show="$(env TALON_DATA_DIR="$TALON_DATA_DIR" talon audit show "$missing_id" 2>&1)"
-  if [[ $? -ne 0 ]] || echo "$missing_show" | grep -qiE 'not found|no evidence|missing'; then
+  local show_rc=0
+  missing_show="$(env TALON_DATA_DIR="$TALON_DATA_DIR" talon audit show "$missing_id" 2>&1)" || show_rc=$?
+  if [[ $show_rc -ne 0 ]] || echo "$missing_show" | grep -qiE 'not found|no evidence|missing'; then
     echo "  ✓  CONSISTENCY: audit show rejects nonexistent evidence id"
     echo "[SMOKE] CONSISTENCY|audit_show_missing_id|PASS|id=$missing_id"
     record_pass
@@ -72,8 +73,9 @@ test_section_29_consistency() {
     record_fail "CONSISTENCY: audit_show_missing_id"
   fi
 
-  missing_verify="$(env TALON_DATA_DIR="$TALON_DATA_DIR" talon audit verify "$missing_id" 2>&1)"
-  if [[ $? -ne 0 ]] || echo "$missing_verify" | grep -qiE 'not found|invalid|missing'; then
+  local verify_rc=0
+  missing_verify="$(env TALON_DATA_DIR="$TALON_DATA_DIR" talon audit verify "$missing_id" 2>&1)" || verify_rc=$?
+  if [[ $verify_rc -ne 0 ]] || echo "$missing_verify" | grep -qiE 'not found|invalid|missing'; then
     echo "  ✓  CONSISTENCY: audit verify rejects nonexistent evidence id"
     echo "[SMOKE] CONSISTENCY|audit_verify_missing_id|PASS|id=$missing_id"
     record_pass

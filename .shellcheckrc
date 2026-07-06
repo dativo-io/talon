@@ -1,0 +1,10 @@
+# Shellcheck config for all repo scripts (CI lints every tracked *.sh — see #242).
+
+# Follow source'd files relative to the sourcing script.
+external-sources=true
+source-path=SCRIPTDIR
+
+# SC2016 flags single-quoted strings containing $. Every instance in this repo
+# is intentional: jq --arg variables ('.session_id == $sid') and bash -c child
+# shells ('echo "$1"'), where expansion by the parent would be the bug.
+disable=SC2016

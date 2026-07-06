@@ -6,7 +6,6 @@
 # SECTION 01 — Binary and Version (docs/QUICKSTART.md, docs/README.md)
 # -----------------------------------------------------------------------------
 test_section_01_binary() {
-  local section="01_binary"
   echo ""
   echo "=== SECTION 01 — Binary and Version ==="
   # talon version exits 0 and stdout contains at least one digit
