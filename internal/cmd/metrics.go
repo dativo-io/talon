@@ -123,10 +123,11 @@ func filterCallers(in []metricsapi.CallerStat, caller string) []metricsapi.Calle
 }
 
 func renderMetricsSummary(w io.Writer, callers []metricsapi.CallerStat, snap metricsapi.Snapshot) {
+	cur := exportCurrency(snap.Currency)
 	fmt.Fprintln(w, "Agent Metrics (last 24h)")
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%-20s %8s %8s %8s %8s %8s %8s %10s %11s %13s\n",
-		"AGENT", "REQUESTS", "SUCCESS", "FAILED", "TIMEOUT", "DENIED", "RATE", "COST(EUR)", "EUR/SUCCESS", "VIOLATIONS(7d)")
+		"AGENT", "REQUESTS", "SUCCESS", "FAILED", "TIMEOUT", "DENIED", "RATE", "COST("+cur+")", cur+"/SUCCESS", "VIOLATIONS(7d)")
 
 	var totalReq, totalSuccess, totalFailed, totalTimeout, totalDenied int
 	var totalCost float64
@@ -153,12 +154,12 @@ func renderMetricsSummary(w io.Writer, callers []metricsapi.CallerStat, snap met
 
 	fmt.Fprintln(w)
 	if totalReq == 0 {
-		fmt.Fprintln(w, "Totals: 0 requests | 0 successful | 0 failed | 0 timeouts | 0 denied | EUR0.0000")
+		fmt.Fprintf(w, "Totals: 0 requests | 0 successful | 0 failed | 0 timeouts | 0 denied | %s0.0000\n", cur)
 		return
 	}
 	successRate := (float64(totalSuccess) / float64(totalReq)) * 100
-	fmt.Fprintf(w, "Totals: %d requests | %d successful | %d failed | %d timeouts | %d denied | EUR%.4f | success rate %.1f%%\n",
-		totalReq, totalSuccess, totalFailed, totalTimeout, totalDenied, totalCost, successRate)
+	fmt.Fprintf(w, "Totals: %d requests | %d successful | %d failed | %d timeouts | %d denied | %s%.4f | success rate %.1f%%\n",
+		totalReq, totalSuccess, totalFailed, totalTimeout, totalDenied, cur, totalCost, successRate)
 	_ = snap
 }
 
@@ -174,8 +175,9 @@ func renderMetricsAgentDetail(w io.Writer, requested string, callers []metricsap
 	fmt.Fprintf(w, "Timed out: %d\n", c.TimedOut)
 	fmt.Fprintf(w, "Denied: %d\n", c.Denied)
 	fmt.Fprintf(w, "Success rate: %.1f%%\n", c.SuccessRate*100)
-	fmt.Fprintf(w, "Cost (EUR): %.4f\n", c.CostEUR)
-	fmt.Fprintf(w, "Cost per success (EUR): %.4f\n", c.CostPerSuccess)
+	cur := exportCurrency(snap.Currency)
+	fmt.Fprintf(w, "Cost (%s): %.4f\n", cur, c.CostEUR)
+	fmt.Fprintf(w, "Cost per success (%s): %.4f\n", cur, c.CostPerSuccess)
 	fmt.Fprintf(w, "Avg latency: %dms\n", c.AvgLatencyMS)
 	fmt.Fprintf(w, "Global P99 latency: %dms\n", snap.Summary.P99LatencyMS)
 	if snap.BudgetStatus != nil {

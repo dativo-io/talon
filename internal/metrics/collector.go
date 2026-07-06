@@ -13,8 +13,14 @@ import (
 
 // Snapshot is the complete dashboard state returned by GET /api/v1/metrics.
 type Snapshot struct {
-	GeneratedAt       time.Time           `json:"generated_at"`
-	EnforcementMode   string              `json:"enforcement_mode"`
+	GeneratedAt     time.Time `json:"generated_at"`
+	EnforcementMode string    `json:"enforcement_mode"`
+	// Currency is the ISO-4217 unit of every cost figure in this snapshot,
+	// from the active pricing table (#216). Field/JSON names keep their
+	// legacy _eur suffix for consumer compatibility; Currency is the
+	// authoritative unit. Empty on snapshots from servers that predate the
+	// field (render as USD).
+	Currency          string              `json:"currency,omitempty"`
 	Uptime            string              `json:"uptime"`
 	DroppedEvents     uint64              `json:"dropped_events,omitempty"`
 	Summary           Summary             `json:"summary"`
@@ -286,6 +292,7 @@ type Collector struct {
 	mu                  sync.RWMutex
 	startTime           time.Time
 	enforcementMode     string
+	currency            string // ISO-4217 unit of cost figures, from the pricing table (#216)
 	events              chan GatewayEvent
 	done                chan struct{}
 	buckets             map[string]*bucket
@@ -354,6 +361,12 @@ func WithActiveRunsFn(fn func() int) CollectorOption {
 // WithTenantID scopes aggregate queries to a specific tenant.
 func WithTenantID(tenantID string) CollectorOption {
 	return func(c *Collector) { c.tenantID = tenantID }
+}
+
+// WithCurrency records the ISO-4217 code of the pricing table backing the
+// gateway's cost figures so snapshots carry their cost unit (#216).
+func WithCurrency(code string) CollectorOption {
+	return func(c *Collector) { c.currency = code }
 }
 
 // WithPlanStatsFn sets a callback for plan lifecycle counters.
@@ -760,6 +773,7 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 	return Snapshot{
 		GeneratedAt:     now,
 		EnforcementMode: c.enforcementMode,
+		Currency:        c.currency,
 		Uptime:          uptime,
 		DroppedEvents:   c.DroppedEvents(),
 		Summary: Summary{

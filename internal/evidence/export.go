@@ -21,10 +21,14 @@ type ExportRecord struct {
 	InvocationType string    `json:"invocation_type"`
 	Allowed        bool      `json:"allowed"`
 	Cost           float64   `json:"cost"`
-	ModelUsed      string    `json:"model_used"`
-	Provider       string    `json:"provider,omitempty"`
-	InputTokens    int       `json:"input_tokens,omitempty"`
-	OutputTokens   int       `json:"output_tokens,omitempty"`
+	// Currency is the ISO-4217 unit of Cost, stamped from the pricing table
+	// at write time (#216). Trailing/omitempty; empty for pre-field records
+	// (which were USD-denominated).
+	Currency     string `json:"currency,omitempty"`
+	ModelUsed    string `json:"model_used"`
+	Provider     string `json:"provider,omitempty"`
+	InputTokens  int    `json:"input_tokens,omitempty"`
+	OutputTokens int    `json:"output_tokens,omitempty"`
 	// Prompt-cache token detail + how cost was derived (#196).
 	CacheReadTokens  int    `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int    `json:"cache_write_tokens,omitempty"`
@@ -123,6 +127,7 @@ func ToExportRecord(e *Evidence) ExportRecord {
 		InvocationType:          e.InvocationType,
 		Allowed:                 e.PolicyDecision.Allowed,
 		Cost:                    e.Execution.Cost,
+		Currency:                e.Execution.Currency,
 		ModelUsed:               e.Execution.ModelUsed,
 		InputTokens:             e.Execution.Tokens.Input,
 		OutputTokens:            e.Execution.Tokens.Output,

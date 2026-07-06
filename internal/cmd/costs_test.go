@@ -17,7 +17,7 @@ import (
 
 func TestRenderCostReportSingleAgent(t *testing.T) {
 	var buf bytes.Buffer
-	renderCostReportSingleAgent(&buf, "acme", "sales-agent", 1.5, 42.0)
+	renderCostReportSingleAgent(&buf, "USD", "acme", "sales-agent", 1.5, 42.0)
 	out := buf.String()
 	assert.Contains(t, out, "Tenant: acme")
 	assert.Contains(t, out, "Agent: sales-agent")
@@ -29,7 +29,7 @@ func TestRenderCostReportSingleAgent(t *testing.T) {
 
 func TestRenderCostReportSingleAgent_SubCent(t *testing.T) {
 	var buf bytes.Buffer
-	renderCostReportSingleAgent(&buf, "acme", "agent", 0.0003, 0.0005)
+	renderCostReportSingleAgent(&buf, "USD", "acme", "agent", 0.0003, 0.0005)
 	out := buf.String()
 	assert.Contains(t, out, "0.000300")
 	assert.Contains(t, out, "0.000500")
@@ -39,7 +39,7 @@ func TestRenderCostReportAllAgents(t *testing.T) {
 	var buf bytes.Buffer
 	byDaily := map[string]float64{"agent-a": 0.5, "agent-b": 1.0}
 	byMonthly := map[string]float64{"agent-a": 10.0, "agent-b": 20.0}
-	renderCostReportAllAgents(&buf, "tenant1", byDaily, byMonthly)
+	renderCostReportAllAgents(&buf, "USD", "tenant1", byDaily, byMonthly)
 	out := buf.String()
 	assert.Contains(t, out, "Tenant: tenant1")
 	assert.Contains(t, out, "Agent")
@@ -53,7 +53,7 @@ func TestRenderCostReportAllAgents(t *testing.T) {
 
 func TestRenderCostReportAllAgents_EmptyMaps(t *testing.T) {
 	var buf bytes.Buffer
-	renderCostReportAllAgents(&buf, "tenant1", nil, nil)
+	renderCostReportAllAgents(&buf, "USD", "tenant1", nil, nil)
 	out := buf.String()
 	require.Contains(t, out, "Tenant: tenant1")
 	require.Contains(t, out, "Total")
@@ -68,7 +68,7 @@ func TestRenderCostByModel(t *testing.T) {
 	var buf bytes.Buffer
 	byDaily := map[string]float64{"gpt-4o": 0.5, "gpt-4o-mini": 1.0}
 	byMonthly := map[string]float64{"gpt-4o": 10.0, "gpt-4o-mini": 20.0}
-	renderCostByModel(&buf, "acme", "", byDaily, byMonthly)
+	renderCostByModel(&buf, "USD", "acme", "", byDaily, byMonthly)
 	out := buf.String()
 	assert.Contains(t, out, "Tenant: acme (by model)")
 	assert.Contains(t, out, "Model")
@@ -82,7 +82,7 @@ func TestRenderCostByModel(t *testing.T) {
 
 func TestRenderCostByModel_EmptyMaps(t *testing.T) {
 	var buf bytes.Buffer
-	renderCostByModel(&buf, "tenant1", "", nil, nil)
+	renderCostByModel(&buf, "USD", "tenant1", "", nil, nil)
 	out := buf.String()
 	require.Contains(t, out, "Tenant: tenant1 (by model)")
 	require.Contains(t, out, "Total")
@@ -94,7 +94,7 @@ func TestRenderCostByModel_OneModelOnlyInMonthly(t *testing.T) {
 	var buf bytes.Buffer
 	byDaily := map[string]float64{}
 	byMonthly := map[string]float64{"gpt-4o": 5.0}
-	renderCostByModel(&buf, "acme", "", byDaily, byMonthly)
+	renderCostByModel(&buf, "USD", "acme", "", byDaily, byMonthly)
 	out := buf.String()
 	assert.Contains(t, out, "gpt-4o")
 	assert.Contains(t, out, "0.000000") // daily is 0
@@ -106,7 +106,7 @@ func TestRenderCostByModel_WithAgent(t *testing.T) {
 	var buf bytes.Buffer
 	byDaily := map[string]float64{"gpt-4o-mini": 0.5}
 	byMonthly := map[string]float64{"gpt-4o-mini": 5.0}
-	renderCostByModel(&buf, "acme", "sales-bot", byDaily, byMonthly)
+	renderCostByModel(&buf, "USD", "acme", "sales-bot", byDaily, byMonthly)
 	out := buf.String()
 	require.Contains(t, out, "Tenant: acme | Agent: sales-bot (by model)")
 	require.Contains(t, out, "gpt-4o-mini")

@@ -16,18 +16,22 @@ import (
 // distinct top-level agent_id (caller) values observed so a cross-caller
 // session_id collision is visible rather than silently merged.
 type SessionSummary struct {
-	SessionID        string               `json:"session_id"`
-	TenantID         string               `json:"tenant_id"`
-	SessionSource    string               `json:"session_source,omitempty"` // orchestration session_source (client_asserted|vendor_asserted|synthetic), first seen
-	Client           string               `json:"client,omitempty"`         // orchestration client adapter (claude-code|codex|generic), first seen
-	Callers          []string             `json:"callers,omitempty"`
-	Providers        []string             `json:"providers,omitempty"`
-	Models           []string             `json:"models,omitempty"`
-	RecordCount      int                  `json:"record_count"`
-	Allowed          int                  `json:"allowed"`
-	Denied           int                  `json:"denied"`
-	Errors           int                  `json:"errors"`
-	TotalCost        float64              `json:"total_cost"`
+	SessionID     string   `json:"session_id"`
+	TenantID      string   `json:"tenant_id"`
+	SessionSource string   `json:"session_source,omitempty"` // orchestration session_source (client_asserted|vendor_asserted|synthetic), first seen
+	Client        string   `json:"client,omitempty"`         // orchestration client adapter (claude-code|codex|generic), first seen
+	Callers       []string `json:"callers,omitempty"`
+	Providers     []string `json:"providers,omitempty"`
+	Models        []string `json:"models,omitempty"`
+	RecordCount   int      `json:"record_count"`
+	Allowed       int      `json:"allowed"`
+	Denied        int      `json:"denied"`
+	Errors        int      `json:"errors"`
+	TotalCost     float64  `json:"total_cost"`
+	// Currency is the ISO-4217 unit of TotalCost, taken from the records'
+	// stamped currency (#216); empty when no record carries one (pre-field
+	// records — render as USD, the unit the shipped tables always used).
+	Currency         string               `json:"currency,omitempty"`
 	InputTokens      int                  `json:"input_tokens"`
 	OutputTokens     int                  `json:"output_tokens"`
 	CacheReadTokens  int                  `json:"cache_read_tokens,omitempty"`
@@ -135,6 +139,9 @@ func (a *sessionAgg) addOutcome(ev *Evidence) {
 }
 
 func (a *sessionAgg) addTotals(ev *Evidence) {
+	if a.sum.Currency == "" && ev.Execution.Currency != "" {
+		a.sum.Currency = ev.Execution.Currency
+	}
 	a.sum.TotalCost += ev.Execution.Cost
 	a.sum.InputTokens += ev.Execution.Tokens.Input
 	a.sum.OutputTokens += ev.Execution.Tokens.Output

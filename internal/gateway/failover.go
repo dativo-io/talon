@@ -487,6 +487,7 @@ func (g *Gateway) recordFailoverAttemptEvidence(ctx context.Context, correlation
 		Provider:       rec.Provider,
 		Model:          rec.Model,
 		PolicyAllowed:  true,
+		Currency:       g.pricingCurrency,
 		InputTier:      tier,
 		DurationMS:     rec.DurationMS,
 		Error:          errMsg,

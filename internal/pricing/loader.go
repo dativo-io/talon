@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/rs/zerolog/log"
@@ -31,6 +32,9 @@ func DefaultModelsYAML() []byte {
 // e.g. gpt-4o-2024-08-06 -> gpt-4o, claude-3-5-sonnet-20241022-v2 -> claude-3-5-sonnet
 var apiModelSuffix = regexp.MustCompile(`-(?:20\d{2}-\d{2}-\d{2}|v\d+(?::\d+)?)$`)
 
+// currencyCodeRe matches a 3-letter ISO-4217 currency code (after uppercasing).
+var currencyCodeRe = regexp.MustCompile(`^[A-Z]{3}$`)
+
 // unknownModelWarned tracks (providerID, model) pairs we have already logged to avoid spam.
 var unknownModelWarned sync.Map
 
@@ -42,7 +46,12 @@ func WarnUnknownModelOnce(providerID, model string) {
 	}
 }
 
-// ModelPricing holds per-1M-token USD prices for a single model.
+// DefaultCurrency is the currency assumed when a pricing table declares none.
+// The shipped tables are denominated in USD, so USD is the honest default (#216).
+const DefaultCurrency = "USD"
+
+// ModelPricing holds per-1M-token prices for a single model, denominated in
+// the table's declared currency (see PricingTable.Currency).
 type ModelPricing struct {
 	InputPer1M  float64 `yaml:"input_per_1m"`
 	OutputPer1M float64 `yaml:"output_per_1m"`
@@ -63,8 +72,36 @@ type ProviderPricing struct {
 //
 //nolint:revive // exported type name matches package; "PricingTable" is the documented API
 type PricingTable struct {
-	Version   string                     `yaml:"version"`
+	Version string `yaml:"version"`
+	// Currency is the ISO-4217 code all prices in this table are denominated
+	// in (and therefore the unit of every cost Talon computes and every
+	// budget cap compared against those costs). Optional; defaults to USD,
+	// matching the shipped tables (#216).
+	Currency  string                     `yaml:"currency,omitempty"`
 	Providers map[string]ProviderPricing `yaml:"providers"`
+}
+
+// CurrencyCode returns the table's ISO-4217 currency code, defaulting to USD
+// for tables that predate the currency field. Nil-safe.
+func (t *PricingTable) CurrencyCode() string {
+	if t == nil || t.Currency == "" {
+		return DefaultCurrency
+	}
+	return t.Currency
+}
+
+// FormatAmount prefixes an already-formatted numeric amount with the
+// currency's conventional symbol (USD → $, EUR → €); other codes are used as
+// a textual prefix ("CHF 1.23"). An empty code falls back to DefaultCurrency.
+func FormatAmount(code, amount string) string {
+	switch strings.ToUpper(code) {
+	case "", DefaultCurrency:
+		return "$" + amount
+	case "EUR":
+		return "€" + amount
+	default:
+		return strings.ToUpper(code) + " " + amount
+	}
 }
 
 // loadFromData parses YAML bytes, resolves inherit references (single depth, no chains),
@@ -77,6 +114,14 @@ func loadFromData(data []byte) (*PricingTable, error) {
 
 	if raw.Providers == nil {
 		raw.Providers = make(map[string]ProviderPricing)
+	}
+
+	raw.Currency = strings.ToUpper(strings.TrimSpace(raw.Currency))
+	if raw.Currency == "" {
+		raw.Currency = DefaultCurrency
+	}
+	if !currencyCodeRe.MatchString(raw.Currency) {
+		return nil, fmt.Errorf("invalid currency %q: expected a 3-letter ISO-4217 code (e.g. USD, EUR)", raw.Currency)
 	}
 
 	// Resolve inherit and validate
@@ -107,7 +152,7 @@ func loadFromData(data []byte) (*PricingTable, error) {
 		resolved[id] = pp
 	}
 
-	return &PricingTable{Version: raw.Version, Providers: resolved}, nil
+	return &PricingTable{Version: raw.Version, Currency: raw.Currency, Providers: resolved}, nil
 }
 
 // Load parses the YAML file at path, resolves inherit references (single depth, no chains),
@@ -150,7 +195,7 @@ func LoadOrDefault(path string) *PricingTable {
 		defaultTable, defaultErr := loadFromData(defaultModelsYAML)
 		if defaultErr != nil {
 			log.Warn().Err(defaultErr).Msg("embedded default pricing invalid; cost estimation will return 0")
-			return &PricingTable{Version: "1", Providers: map[string]ProviderPricing{}}
+			return &PricingTable{Version: "1", Currency: DefaultCurrency, Providers: map[string]ProviderPricing{}}
 		}
 		log.Info().Err(err).Str("path_attempted", abs).Msg("pricing file not found; using embedded default pricing")
 		return defaultTable
@@ -158,7 +203,8 @@ func LoadOrDefault(path string) *PricingTable {
 	return table
 }
 
-// Estimate looks up provider and model, computes cost in USD, and returns (cost, true) if found.
+// Estimate looks up provider and model, computes cost in the table's declared
+// currency (CurrencyCode), and returns (cost, true) if found.
 // Returns (0.0, false) if provider or model is not in the table. Safe for concurrent use.
 // If the provider exists with an empty models map (e.g. ollama), returns (0.0, true) for any model (free).
 // Model lookup tries exact key first, then a base name (e.g. gpt-4o-2024-08-06 -> gpt-4o) so API-returned

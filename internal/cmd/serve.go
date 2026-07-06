@@ -427,6 +427,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("initializing gateway: %w", err)
 			}
+			gw.SetPricingCurrency(pricingTable.CurrencyCode())
 			if serveCacheStore != nil && serveCachePolicy != nil && cfg.Cache != nil {
 				gw.SetCache(serveCacheStore, serveCacheEmbedder, serveCacheScrubber, serveCachePolicy,
 					cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.TTLByTier, cfg.Cache.SimilarityThreshold, cfg.Cache.MaxEntriesPerTenant)
@@ -461,6 +462,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("initializing quickstart gateway: %w", err)
 		}
+		gw.SetPricingCurrency(pricingTable.CurrencyCode())
 		if serveCacheStore != nil && serveCachePolicy != nil && cfg.Cache != nil {
 			gw.SetCache(serveCacheStore, serveCacheEmbedder, serveCacheScrubber, serveCachePolicy,
 				cfg.Cache.Enabled, cfg.Cache.DefaultTTL, cfg.Cache.TTLByTier, cfg.Cache.SimilarityThreshold, cfg.Cache.MaxEntriesPerTenant)
@@ -496,6 +498,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 				return activeRunTracker.Count(metricsTenantID)
 			}),
 			metrics.WithTenantID(metricsTenantID),
+			metrics.WithCurrency(pricingTable.CurrencyCode()),
 			// Sessions panel (#199): re-derived from evidence at snapshot
 			// time via the same aggregation as `talon audit --session`.
 			metrics.WithSessionQuerier(evidenceStore),

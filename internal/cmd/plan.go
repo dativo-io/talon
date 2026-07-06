@@ -425,6 +425,7 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 	fmt.Printf("✓ Executed approved plan: %s\n", plan.ID)
 	fmt.Printf("\n%s\n\n", resp.Response)
 	fmt.Printf("✓ Evidence stored: %s\n", resp.EvidenceID)
-	fmt.Printf("✓ Cost: €%s | Duration: %dms\n", formatCost(resp.Cost), resp.DurationMS)
+	fmt.Printf("✓ Cost: %s | Duration: %dms\n",
+		formatMoney(loadPricingTable(cfg, "").CurrencyCode(), resp.Cost), resp.DurationMS)
 	return nil
 }

@@ -320,18 +320,23 @@ type AttachmentScan struct {
 
 // Execution captures LLM call details.
 type Execution struct {
-	ModelUsed     string     `json:"model_used"`
-	OriginalModel string     `json:"original_model,omitempty"`
-	Degraded      bool       `json:"degraded,omitempty"`
-	ToolsCalled   []string   `json:"tools_called,omitempty"`
-	Cost          float64    `json:"cost"`
-	EstimatedCost float64    `json:"estimated_cost,omitempty"`
-	Tokens        TokenUsage `json:"tokens"`
-	MemoryTokens  int        `json:"memory_tokens,omitempty"` // tokens injected from memory context
-	DurationMS    int64      `json:"duration_ms"`
-	TTFTMS        int64      `json:"ttft_ms,omitempty"` // time to first token (streaming)
-	TPOTMS        float64    `json:"tpot_ms,omitempty"` // time per output token (streaming)
-	Error         string     `json:"error,omitempty"`
+	ModelUsed     string   `json:"model_used"`
+	OriginalModel string   `json:"original_model,omitempty"`
+	Degraded      bool     `json:"degraded,omitempty"`
+	ToolsCalled   []string `json:"tools_called,omitempty"`
+	Cost          float64  `json:"cost"`
+	EstimatedCost float64  `json:"estimated_cost,omitempty"`
+	// Currency is the ISO-4217 unit Cost/EstimatedCost are denominated in,
+	// stamped from the active pricing table at write time (#216). Additive
+	// omitempty; records that predate the field default to USD at render
+	// time (the shipped tables were always USD-denominated).
+	Currency     string     `json:"currency,omitempty"`
+	Tokens       TokenUsage `json:"tokens"`
+	MemoryTokens int        `json:"memory_tokens,omitempty"` // tokens injected from memory context
+	DurationMS   int64      `json:"duration_ms"`
+	TTFTMS       int64      `json:"ttft_ms,omitempty"` // time to first token (streaming)
+	TPOTMS       float64    `json:"tpot_ms,omitempty"` // time per output token (streaming)
+	Error        string     `json:"error,omitempty"`
 	// PricingBasis records how Cost was derived (#196): "table" (model+cache
 	// rates from the pricing file), "cache_fallback_input_rate" (cache tokens
 	// priced at the input rate because cache rates were absent), or
@@ -1617,6 +1622,7 @@ type Index struct {
 	InvocationType           string      `json:"invocation_type"`
 	Allowed                  bool        `json:"allowed"`
 	Cost                     float64     `json:"cost"`
+	Currency                 string      `json:"currency,omitempty"` // ISO-4217 unit of Cost (#216); empty for pre-field records
 	ModelUsed                string      `json:"model_used"`
 	DurationMS               int64       `json:"duration_ms"`
 	HasError                 bool        `json:"has_error"`
@@ -1792,6 +1798,7 @@ func toIndex(full *Evidence) Index {
 		InvocationType: full.InvocationType,
 		Allowed:        full.PolicyDecision.Allowed,
 		Cost:           full.Execution.Cost,
+		Currency:       full.Execution.Currency,
 		ModelUsed:      full.Execution.ModelUsed,
 		DurationMS:     full.Execution.DurationMS,
 		HasError:       full.Execution.Error != "",
