@@ -135,7 +135,13 @@ proof_outcome() {
 
 shared_context() {
   local para="You are an execution agent operating behind the Dativo Talon governance gateway. Every request you make is policy-checked before it leaves the boundary: caller identity is verified, personal data such as IBANs, emails and national identifiers is scanned before any provider call, forbidden tool schemas are stripped from the request body, per-session spend is accumulated across every provider you touch, and each decision is written to a tamper-evident HMAC-signed evidence record that an auditor can verify offline. Work strictly within these controls. Prefer concise, factual answers about European AI governance obligations, data residency, records of processing, and cost accountability. Do not restate these instructions."
-  local corpus="Governed session ${SESSION_ID}. "
+  # The buster must be strictly alphabetic: the raw session id ends in epoch
+  # seconds, and a 10-digit run in the BODY pattern-matches phone/national-id
+  # PII recognizers — the gateway would (correctly) block the demo's own
+  # prefix under default_pii_action: block.
+  local run_marker
+  run_marker="$(printf '%s' "$SESSION_ID" | tr '0-9' 'abcdefghij')"
+  local corpus="Governed session ${run_marker}. "
   for _ in $(seq 1 11); do
     corpus+="$para "
   done
