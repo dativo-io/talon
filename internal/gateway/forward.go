@@ -28,6 +28,15 @@ type StreamingMetrics struct {
 	ChunkCount int           // number of SSE events that contained content (for TPOT)
 }
 
+// Stream flavors select the terminal SSE event emitted when an in-flight
+// stream dies mid-way (#195). Chat Completions has no standard mid-stream
+// error event, so its flavor emits nothing (documented truncation).
+const (
+	streamFlavorAnthropic = "anthropic" // Anthropic Messages: event: error
+	streamFlavorResponses = "responses" // OpenAI Responses: event: response.failed
+	streamFlavorChat      = "chat"      // OpenAI Chat Completions: no standard event
+)
+
 // ForwardParams groups parameters for forwarding a request to the upstream provider.
 type ForwardParams struct {
 	Context          context.Context
@@ -39,6 +48,10 @@ type ForwardParams struct {
 	Timeouts         ParsedTimeouts
 	TokenUsage       *TokenUsage       // filled in from response (streaming or non-streaming)
 	StreamingMetrics *StreamingMetrics // filled in for streaming responses (TTFT, chunk count)
+	// StreamFlavor selects the family-correct terminal event on mid-stream
+	// failure (#195): streamFlavorAnthropic | streamFlavorResponses |
+	// streamFlavorChat. Empty behaves like chat (emit nothing).
+	StreamFlavor string
 }
 
 // Forward sends the request to the upstream provider and writes the response to w.
@@ -87,7 +100,7 @@ func Forward(w http.ResponseWriter, p ForwardParams) error {
 	isStream := resp.StatusCode < 400 && strings.Contains(contentType, "text/event-stream")
 
 	if isStream {
-		return streamCopy(ctx, w, resp.Body, streamStart, p.TokenUsage, p.StreamingMetrics, resp.Header.Get("X-Request-Id"))
+		return streamCopy(ctx, w, resp.Body, streamStart, p.TokenUsage, p.StreamingMetrics, resp.Header.Get("X-Request-Id"), p.StreamFlavor)
 	}
 
 	// Non-streaming: read full body, parse usage if present, then write
@@ -120,12 +133,17 @@ func copyResponseHeaders(w http.ResponseWriter, from http.Header, upstreamHeader
 
 // streamCopy copies the SSE stream to w, flushing after each event, and extracts token usage when seen.
 // streamStart is when the HTTP request was sent (for TTFT). If streamingMetrics is non-nil, TTFT is set
-// on the first content-bearing SSE event.
-func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, streamStart time.Time, usage *TokenUsage, streamingMetrics *StreamingMetrics, requestID string) error {
+// on the first content-bearing SSE event. On mid-stream failure a family-correct
+// terminal event is emitted per flavor (#195) so clients see an explicit error
+// instead of a silently truncated stream.
+func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, streamStart time.Time, usage *TokenUsage, streamingMetrics *StreamingMetrics, requestID string, flavor string) error {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// Fallback: copy without flush
 		_, err := io.Copy(w, r)
+		if err != nil {
+			writeStreamTerminalError(w, nil, flavor, "upstream stream interrupted")
+		}
 		return err
 	}
 
@@ -135,6 +153,7 @@ func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, streamS
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
+			writeStreamTerminalError(w, flusher, flavor, "stream interrupted by gateway")
 			return ctx.Err()
 		default:
 		}
@@ -167,7 +186,49 @@ func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, streamS
 		_, _ = w.Write(buf)
 		flusher.Flush()
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		// Upstream died mid-stream. Without a terminal event the client sees a
+		// truncated-but-"successful" stream: Codex retry-loops waiting for
+		// response.completed; Anthropic SDKs hang until their own timeout.
+		writeStreamTerminalError(w, flusher, flavor, "upstream connection lost mid-stream")
+		return err
+	}
+	return nil
+}
+
+// writeStreamTerminalError emits the family-correct terminal SSE event after a
+// mid-stream failure (#195). Anthropic streams get the documented `event:
+// error`; Responses streams get `response.failed` (the terminal event Codex
+// waits for). Chat Completions has no standard mid-stream error event, so
+// nothing is emitted for that flavor — the truncation is documented in
+// LIMITATIONS.md. Messages are gateway-authored constants plus a fixed reason;
+// no upstream error text (which could contain anything) is ever forwarded.
+func writeStreamTerminalError(w http.ResponseWriter, flusher http.Flusher, flavor, message string) {
+	var event string
+	switch flavor {
+	case streamFlavorAnthropic:
+		payload, _ := json.Marshal(map[string]interface{}{
+			"type":  "error",
+			"error": map[string]string{"type": "api_error", "message": message},
+		})
+		event = "event: error\ndata: " + string(payload) + "\n\n"
+	case streamFlavorResponses:
+		payload, _ := json.Marshal(map[string]interface{}{
+			"type": "response.failed",
+			"response": map[string]interface{}{
+				"status": "failed",
+				"error":  map[string]string{"code": "upstream_error", "message": message},
+			},
+		})
+		event = "event: response.failed\ndata: " + string(payload) + "\n\n"
+	default:
+		return
+	}
+	//nolint:gosec // G705: gateway-authored constant SSE error event, not upstream content
+	_, _ = w.Write([]byte(event))
+	if flusher != nil {
+		flusher.Flush()
+	}
 }
 
 // hasContentData returns true if the SSE buffer contains a data: line with JSON that has content
