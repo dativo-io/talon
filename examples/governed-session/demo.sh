@@ -21,6 +21,14 @@ GATEWAY="${GATEWAY:-http://localhost:8080}"
 OUT_DIR="${OUT_DIR:-${SCRIPT_DIR}/out}"
 mkdir -p "$OUT_DIR"
 
+# Ollama endpoint reachable FROM THE HOST (where this script runs) for the
+# readiness/warm probes. Talon-in-container uses TALON_OLLAMA_BASE_URL
+# (e.g. http://host.docker.internal:11434), but host.docker.internal doesn't
+# resolve on the host — so probe the same Ollama at its host-visible address.
+# Defaults to the host-native install; a sidecar is reachable the same way once
+# its port is published, or via the exec fallback in ollama_cli.
+OLLAMA_PROBE_URL="${OLLAMA_PROBE_URL:-http://localhost:11434}"
+
 # Strict mode (asset recording): a missing dependency or a skipped headline act
 # is a hard failure — never produce a committable GIF with a proof missing. The
 # record scripts set TALON_DEMO_STRICT=1; interactive runs default to lenient.
@@ -199,30 +207,40 @@ latest_evidence_id() {
     | grep -oE '(gw_|req_)[a-zA-Z0-9_-]+' | head -1
 }
 
-# ollama_cli — run an `ollama` subcommand against whichever Ollama is present:
-# the in-compose sidecar (default) or a HOST-native install (used on
-# RAM-constrained boxes where the sidecar can't load the model). Prefers the
-# sidecar; falls back to the host `ollama` binary. Extra args are passed through.
-ollama_cli() {
-  if dc ps --status running 2>/dev/null | grep -q '[-_]ollama[-_]'; then
-    dc exec -T ollama ollama "$@"
-  elif command -v ollama >/dev/null 2>&1; then
-    ollama "$@"
-  else
-    return 1
-  fi
+# ollama_sidecar_running — true when the in-compose Ollama sidecar is up.
+ollama_sidecar_running() {
+  dc ps --status running 2>/dev/null | grep -q '[-_]ollama[-_]'
 }
 
-# ollama_ready — true when an Ollama (sidecar or host) has the model.
+# ollama_ready — true when the Ollama that Talon will route to has the model.
+# Authoritative check: query the /api/tags HTTP endpoint at OLLAMA_PROBE_URL
+# (host-native or a published sidecar port). Falls back to a sidecar `exec` when
+# the sidecar's port isn't published on the host. This is the SAME Ollama Talon
+# reaches via TALON_OLLAMA_BASE_URL, just at its host-visible address.
 ollama_ready() {
-  ollama_cli list 2>/dev/null | grep -q 'llama3.2:1b'
+  if curl -sf "${OLLAMA_PROBE_URL}/api/tags" 2>/dev/null | grep -q 'llama3.2:1b'; then
+    return 0
+  fi
+  if ollama_sidecar_running; then
+    dc exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2:1b'
+    return $?
+  fi
+  return 1
 }
 
 # ollama_warm — load the model into memory so the routing act's first real
 # inference doesn't hit the runner's 60s call timeout on a cold start (common
-# on small CPU-only hosts). Best-effort; ignores the result.
+# on small CPU-only hosts). Best-effort; ignores the result. Uses the HTTP API
+# (host-visible) and falls back to a sidecar exec.
 ollama_warm() {
-  ollama_cli run llama3.2:1b "ok" >/dev/null 2>&1 || true
+  if curl -sf "${OLLAMA_PROBE_URL}/api/generate" \
+      -d '{"model":"llama3.2:1b","prompt":"ok","stream":false,"options":{"num_predict":1}}' \
+      >/dev/null 2>&1; then
+    return 0
+  fi
+  if ollama_sidecar_running; then
+    dc exec -T ollama ollama run llama3.2:1b "ok" >/dev/null 2>&1 || true
+  fi
 }
 
 # ── Acts ─────────────────────────────────────────────────────────────────────
@@ -279,12 +297,15 @@ act_route() {
     # STRICT (asset recording): a missing headline act is a hard failure — never
     # produce a committable GIF with sovereignty routing absent.
     if [[ "$STRICT" == 1 ]]; then
-      echo "✗ [strict] Ollama/llama3.2:1b not available — the routing act cannot be skipped in a recording." >&2
-      echo "  docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" >&2
+      echo "✗ [strict] Ollama/llama3.2:1b not reachable at ${OLLAMA_PROBE_URL} — the routing act cannot be skipped in a recording." >&2
+      echo "  sidecar:      docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" >&2
+      echo "  host-native:  curl -fsSL https://ollama.com/install.sh | sh && ollama pull llama3.2:1b" >&2
+      echo "                (then run Talon with TALON_OLLAMA_BASE_URL=http://host.docker.internal:11434)" >&2
       exit 1
     fi
-    block_result "⚠" "Ollama/llama3.2:1b not running — start it to see the local-serve half:"
-    block_evidence "docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b"
+    block_result "⚠" "Ollama/llama3.2:1b not reachable at ${OLLAMA_PROBE_URL} — start it to see the local-serve half:"
+    block_evidence "docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" \
+      "or host-native: ollama pull llama3.2:1b  (+ TALON_OLLAMA_BASE_URL=http://host.docker.internal:11434)"
     return 0
   fi
 
