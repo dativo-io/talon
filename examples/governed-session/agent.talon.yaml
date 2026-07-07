@@ -69,6 +69,24 @@ compliance:
   human_oversight: "none"
   frameworks: [gdpr, eu-ai-act]
   data_residency: eu
+  # GDPR Art. 30(1) declared facts for the RoPA export (act 11). Talon fills the
+  # runtime facts (recipients, observed PII entity types, transfers) from signed
+  # evidence; these are the operator-declared fields it can't infer. Filling them
+  # makes `talon compliance ropa` produce a complete Art. 30 pack with no
+  # "declaration missing" warnings.
+  declarations:
+    processing:
+      purposes:
+        - "Governed AI request handling — orchestration, execution, and policy enforcement across LLM providers"
+        - "Sovereignty-aware routing of confidential data to local models"
+      data_subject_categories:
+        - "Customers whose account identifiers appear in submitted requests"
+      personal_data_categories:
+        - "Financial account identifiers (IBAN)"
+        - "Contact identifiers (email address)"
+      retention_period: "Evidence retained 30 days (audit.retention_days); no request payloads persisted"
+      legal_basis: "Legitimate interest in secure, auditable AI governance (GDPR Art. 6(1)(f))"
+      safeguards: "PII detection with block/redact at the boundary; sovereignty routing keeps confidential data on local models; per-record HMAC-signed evidence"
 
 metadata:
   owner: ""
