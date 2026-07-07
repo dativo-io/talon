@@ -20,9 +20,9 @@
 
 Talon is a single Go binary that sits in front of OpenAI, Anthropic, AWS Bedrock, Azure OpenAI, and any OpenAI-compatible client. Change one URL and every request is policy-checked, PII-scanned, cost-tracked, and written to a tamper-evident, HMAC-signed evidence record — same SDK, same response shape, governed path. Built for EU teams that need real governance signals for GDPR, NIS2, DORA, and the EU AI Act. Apache 2.0.
 
-![Talon governed-session demo — a real Anthropic + OpenAI session governed end-to-end](docs/assets/talon_demo.gif)
+![Talon hero demo — one governed AI session: allowed, tool stripped, PII blocked, US destination routed to a local model, budget enforced](docs/assets/talon_hero.gif)
 
-*One real two-provider session through the gateway (37s): prompt-cache economics, a session budget gate, PII stop, tool governance, and signed evidence that verifies. Recorded with [asciinema](https://asciinema.org) — play it in your terminal from the self-contained [cast](docs/assets/talon_demo.cast) (`asciinema play docs/assets/talon_demo.cast`), or record your own run with [`scripts/record-governed-session.sh`](scripts/record-governed-session.sh).*
+*One AI session, one governed boundary: good traffic flows, a dangerous tool is stripped, PII is blocked before the provider, confidential data is refused by a US model and runs on a local one instead, runaway spend is stopped — and every decision verifies. Run it yourself: [60-second demo](#60-second-demo-no-api-key) (no key) · [deep governed-session demo](#governed-session-demo-real-providers-one-budget) (real providers).*
 
 ---
 
@@ -66,7 +66,7 @@ The record shows the PII detected (email, IBAN), the data tier, the policy decis
 
 ## Governed session demo (real providers, one budget)
 
-The deeper proof path runs one **real** agent session — an Anthropic planner and OpenAI executors — through the same gateway, bring-your-own keys (≈ $0.05/run, cheap models, session-capped):
+The deeper proof path runs one **real** agent session — an Anthropic planner and OpenAI executors — through the same gateway, bring-your-own keys (≈ $0.06/run, cheap models, session-capped):
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-... OPENAI_API_KEY=sk-...
@@ -74,17 +74,19 @@ make governed-session
 cd examples/governed-session && ./demo.sh all
 ```
 
+![Talon governed-session demo — 11 acts across Anthropic + OpenAI + a local model, one signed session](docs/assets/talon_demo.gif)
+
 ```
-session begins ──▶ Anthropic planner (prompt-cache write, then read)
-               ──▶ OpenAI executors (cached_tokens; forbidden admin_* tool stripped)
+session begins ──▶ Anthropic orchestrates (prompt-cache write, then read); ChatGPT executes the plan
+               ──▶ forbidden admin_* tool stripped · email redacted · model-allowlist deny
                ──▶ IBAN probe denied before any provider call
-               ──▶ real cross-provider spend reaches the session cap
-               ──▶ next estimated request rejected: 403 session_budget_exceeded
-               ──▶ money story: misleading naïve total vs Talon's cache-aware corrected total
-               ──▶ talon audit verify --session → N record(s), N valid, 0 invalid
+               ──▶ confidential data → US model rejected by policy → local Llama runs it (routed)
+               ──▶ real cross-provider spend reaches the session cap → 403 session_budget_exceeded
+               ──▶ money story: naïve total vs Talon's cache-aware corrected total; tamper breaks the signature
+               ──▶ talon audit verify --session → N record(s), N valid, 0 invalid + RoPA export
 ```
 
-Cache writes bill at 1.25× the input rate and cache reads at ~0.1× — Talon prices them exactly and enforces the budget against the corrected number, in the pricing table's declared currency. Every decision, including both denials, is a signed evidence record in one session trail: supporting controls and evidence for GDPR and EU AI Act reviews, not a compliance guarantee. Full walk-through: [governed-session demo](examples/governed-session/README.md). The six-proof mock demo above needs no keys; this one shows the same controls on live traffic.
+Cache writes bill at 1.25× the input rate and cache reads at ~0.1× — Talon prices them exactly and enforces the budget against the corrected number, in the pricing table's declared currency. The sovereignty act shows **data classification driving execution placement**: confidential input is refused by the US model and runs locally instead — the same IBAN the gateway blocks outright elsewhere, because policy (not the data alone) decides the outcome. Every decision is a signed evidence record in one session trail: supporting controls and evidence for GDPR and EU AI Act reviews, not a compliance guarantee. Recorded with [asciinema](https://asciinema.org) ([cast](docs/assets/talon_demo.cast) · [`scripts/record-governed-session.sh`](scripts/record-governed-session.sh)). Full walk-through: [governed-session demo](examples/governed-session/README.md). The six-proof mock demo above needs no keys; this one shows the same controls on live traffic. The sovereignty-routing act needs a local Ollama (opt-in `routing-demo` compose profile).
 
 ---
 
