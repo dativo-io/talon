@@ -35,11 +35,17 @@ asciinema rec --overwrite --cols 100 --rows 32 --idle-time-limit 2 \
 echo "    Wrote ${CAST}"
 
 if command -v agg >/dev/null 2>&1; then
-  echo "==> Rendering GIF..."
+  echo "==> Rendering GIF (agg)..."
   agg --font-size 16 "$CAST" "$GIF"
   echo "    Wrote ${GIF}"
+elif command -v docker >/dev/null 2>&1; then
+  echo "==> Rendering GIF (agg via Docker)..."
+  docker run --rm -v "${ASSET_DIR}:/data" ghcr.io/asciinema/agg \
+    --font-size 16 "/data/$(basename "$CAST")" "/data/$(basename "$GIF")"
+  echo "    Wrote ${GIF}"
 else
-  echo "⚠ agg not found — skipping GIF render (cargo install agg / brew install agg)"
+  echo "⚠ Neither agg nor docker found — GIF not rendered. Render the cast elsewhere:" >&2
+  echo "    agg --font-size 16 ${CAST} ${GIF}    (brew/cargo install agg)" >&2
 fi
 
 echo ""
