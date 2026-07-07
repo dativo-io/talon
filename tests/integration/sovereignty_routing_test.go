@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,6 +24,7 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/server"
+	talonsession "github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/testutil"
 )
 
@@ -163,4 +165,99 @@ compliance:
 	assert.Contains(t, openaiRejected.Reason, "confidential", "rejection must cite the confidential-tier routing policy")
 	assert.Equal(t, sessionID, ev.SessionID, "the client-asserted session id must be preserved in evidence")
 	assert.True(t, evStore.VerifyRecord(ev), "the routed record's HMAC signature must verify")
+}
+
+// buildRoutingServer builds a real server (eu_preferred) with jurisdiction-aware
+// fake providers, returning the httptest server + the evidence store.
+func buildRoutingServer(t *testing.T) (*httptest.Server, *evidence.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "gov.talon.yaml")
+	require.NoError(t, os.WriteFile(policyPath, []byte(`
+agent:
+  name: "gov"
+  version: "1.0.0"
+policies:
+  cost_limits: { per_request: 100.0, daily: 1000.0, monthly: 10000.0 }
+  data_classification: { input_scan: true, redact_pii: false }
+  model_routing:
+    tier_0: { primary: "gpt-4o", fallback_chain: ["llama3.2"] }
+    tier_1: { primary: "gpt-4o", fallback_chain: ["llama3.2"] }
+    tier_2: { primary: "gpt-4o", fallback_chain: ["llama3.2"] }
+compliance: { human_oversight: "none" }
+`), 0o600))
+
+	routingCfg := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4o", FallbackChain: []string{"llama3.2"}},
+		Tier1: &policy.TierConfig{Primary: "gpt-4o", FallbackChain: []string{"llama3.2"}},
+		Tier2: &policy.TierConfig{Primary: "gpt-4o", FallbackChain: []string{"llama3.2"}},
+	}
+	evStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evStore.Close() })
+	secStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { secStore.Close() })
+	sessStore, err := talonsession.NewStore(filepath.Join(dir, "sessions.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sessStore.Close() })
+	runner := agent.NewRunner(agent.RunnerConfig{
+		PolicyDir:  dir,
+		Classifier: classifier.MustNewScanner(),
+		AttScanner: attachment.MustNewScanner(),
+		Extractor:  attachment.NewExtractor(10),
+		Router: llm.NewRouter(routingCfg, map[string]llm.Provider{
+			"openai": &jurisdictionCountingProvider{name: "openai", jurisdiction: "US"},
+			"ollama": &jurisdictionCountingProvider{name: "ollama", jurisdiction: "LOCAL"},
+		}, nil),
+		Secrets:      secStore,
+		Evidence:     evStore,
+		SessionStore: sessStore,
+	})
+	srv := server.NewServer(runner, evStore, nil, nil, nil, policyPath, secStore, "",
+		map[string]string{"tenant-key-gov": "gov"}, server.WithSovereigntyMode("eu_preferred"))
+	api := httptest.NewServer(srv.Routes())
+	t.Cleanup(api.Close)
+	return api, evStore
+}
+
+func chatReq(t *testing.T, url, sessionID string) *http.Request {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"model":    "gpt-4o-mini",
+		"messages": []map[string]string{{"role": "user", "content": "Summarize GDPR Article 30 in one line."}},
+	})
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url+"/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer tenant-key-gov")
+	if sessionID != "" {
+		req.Header.Set("X-Talon-Session-ID", sessionID)
+	}
+	return req
+}
+
+// A request with NO X-Talon-Session-ID must still succeed and get a Talon
+// lifecycle session (auto-created) — the empty-id case must NOT be treated as
+// client-asserted (regression guard for the session-provenance redesign).
+func TestServerHTTP_NoSessionID_CreatesLifecycleSession(t *testing.T) {
+	api, evStore := buildRoutingServer(t)
+	resp, err := http.DefaultClient.Do(chatReq(t, api.URL, ""))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	records, err := evStore.List(context.Background(), "gov", "", time.Time{}, time.Time{}, 5)
+	require.NoError(t, err)
+	require.NotEmpty(t, records)
+	assert.NotEmpty(t, records[0].SessionID, "a lifecycle session id must be created when the client asserts none")
+}
+
+// An invalid client-asserted session id is a client input error → HTTP 400 at
+// the boundary, not a runner 500.
+func TestServerHTTP_InvalidSessionID_Returns400(t *testing.T) {
+	api, _ := buildRoutingServer(t)
+	resp, err := http.DefaultClient.Do(chatReq(t, api.URL, "bad id <script>"))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "a hostile session id must be a 400, not a 500")
 }
