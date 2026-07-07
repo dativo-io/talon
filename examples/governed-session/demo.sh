@@ -44,13 +44,17 @@ PROBE_MODEL="gpt-4o-mini"
 # demo reaches it having already spent more and trips within a few iterations.
 BUDGET_LOOP_MAX=20
 
-# Rates mirrored from pricing/models.yaml (per 1M tokens, table currency) for
-# the naïve-vs-corrected arithmetic. The CORRECTED total is read from Talon's
-# signed evidence; these rates only reconstruct the misleading naïve figure.
-SONNET_IN_RATE=3.00
-SONNET_OUT_RATE=15.00
-GPT4O_IN_RATE=2.50
-GPT4O_OUT_RATE=10.00
+# Per-model input/output rates (per 1M tokens, table currency), keyed by the
+# EXACT model string Talon records in execution.model_used — mirrored from
+# pricing/models.yaml. gpt-4o and gpt-4o-mini differ by ~17× on input, so the
+# naïve figure must be keyed on the real model, not a per-provider guess. The
+# CORRECTED total is read from Talon's signed evidence; these rates only
+# reconstruct the misleading naïve figure for the contrast.
+MODEL_RATES_JSON='{
+  "claude-sonnet-5": {"in": 3.00,  "out": 15.00},
+  "gpt-4o":          {"in": 2.50,  "out": 10.00},
+  "gpt-4o-mini":     {"in": 0.15,  "out": 0.60}
+}'
 
 # Record this run's session id — except for the read-only inspection acts,
 # which target the LAST run's session and must not clobber it.
@@ -402,16 +406,23 @@ act_money() {
   local tampered_file="${OUT_DIR}/session-evidence.tampered.json"
   talon_in_container audit export --session "$SESSION_ID" --format signed-json >"$export_file"
 
+  # signed-json wraps full Evidence records: cost/model/tokens live under
+  # .execution.*, tokens under .execution.tokens.{input,output,cache_read,cache_write}.
   local corrected currency naive reads writes
-  corrected="$(jq '[.records[].cost] | add // 0' "$export_file")"
-  currency="$(jq -r '[.records[].currency | select(. != null and . != "")][0] // "USD"' "$export_file")"
-  naive="$(jq --argjson sin "$SONNET_IN_RATE" --argjson sout "$SONNET_OUT_RATE" --argjson gin "$GPT4O_IN_RATE" --argjson gout "$GPT4O_OUT_RATE" '
-    [.records[] | . as $r
-      | (if $r.provider == "anthropic" then {in:$sin,out:$sout} elif $r.provider == "openai" then {in:$gin,out:$gout} else {in:0,out:0} end) as $rate
-      | ((($r.input_tokens // 0) + ($r.cache_read_tokens // 0) + ($r.cache_write_tokens // 0)) * $rate.in + ($r.output_tokens // 0) * $rate.out) / 1000000
+  corrected="$(jq '[.records[].execution.cost // 0] | add // 0' "$export_file")"
+  currency="$(jq -r '[.records[].execution.currency | select(. != null and . != "")][0] // "USD"' "$export_file")"
+  # Naïve = every input-family token (input + cache read + cache write) billed at
+  # the model's full input rate, output at the output rate — keyed on the exact
+  # model_used so gpt-4o vs gpt-4o-mini are priced apart. Unknown models cost 0
+  # in the naïve figure (never over-claims a delta).
+  naive="$(jq --argjson rates "$MODEL_RATES_JSON" '
+    [.records[] | .execution as $e | ($e.tokens // {}) as $t
+      | ($rates[$e.model_used] // {in:0,out:0}) as $rate
+      | ((($t.input // 0) + ($t.cache_read // 0) + ($t.cache_write // 0)) * $rate.in
+         + ($t.output // 0) * $rate.out) / 1000000
     ] | add // 0' "$export_file")"
-  reads="$(jq '[.records[].cache_read_tokens // 0] | add' "$export_file")"
-  writes="$(jq '[.records[].cache_write_tokens // 0] | add' "$export_file")"
+  reads="$(jq '[.records[].execution.tokens.cache_read // 0] | add' "$export_file")"
+  writes="$(jq '[.records[].execution.tokens.cache_write // 0] | add' "$export_file")"
   block_evidence "\$ talon audit export --session … --format signed-json"
   awk -v cur="$currency" -v n="$naive" -v c="$corrected" -v r="$reads" -v w="$writes" 'BEGIN {
     printf "             cache reads %s · cache writes %s\n", r, w
@@ -424,9 +435,13 @@ act_money() {
   # streams the file into the container's `audit verify --file` and returns its
   # exit code (nonzero = at least one record failed HMAC verification).
   jq '(.records[0].policy_decision.allowed) |= not' "$export_file" >"$tampered_file"
-  local clean_rc tampered_rc
-  verify_file_in_container "$export_file"; clean_rc=$?
-  verify_file_in_container "$tampered_file"; tampered_rc=$?
+  # Capture exit codes with if/then/else: a bare `verify_file_in_container …; rc=$?`
+  # would terminate the whole script under `set -euo pipefail` the instant verify
+  # returns nonzero (which is exactly what the tampered file is meant to do),
+  # before $? is ever read.
+  local clean_rc=1 tampered_rc=0
+  if verify_file_in_container "$export_file"; then clean_rc=0; else clean_rc=$?; fi
+  if verify_file_in_container "$tampered_file"; then tampered_rc=0; else tampered_rc=$?; fi
   if [[ "$clean_rc" -ne 0 ]]; then
     echo "✗ The untampered signed export should verify clean" >&2
     exit 1
@@ -465,17 +480,22 @@ act_verify() {
     echo "✗ Expected all session records valid (0 invalid)" >&2
     exit 1
   fi
-  # Actually generate the RoPA pack (GDPR Art. 30) inside the container and
-  # assert the artifact is non-empty — no claim without the file.
-  local ropa=/tmp/governed-session-ropa.html
-  talon_in_container compliance ropa --format html --output "$ropa" >/dev/null 2>&1 || true
+  # Actually generate the RoPA pack (GDPR Art. 30). `compliance ropa` with no
+  # --output streams HTML to stdout, so we capture it into a host-side file under
+  # out/ — the artifact is inspectable after the run, and a stale file can't fake
+  # a pass. rm -f the target first, DON'T swallow failure with `|| true` (a failed
+  # export must fail the act), then assert the file is freshly written and real
+  # HTML (non-trivial size + an <html> tag), not an empty shell.
+  local ropa_file="${OUT_DIR}/governed-session-ropa.html"
+  rm -f "$ropa_file"
+  talon_in_container compliance ropa --format html >"$ropa_file"
   local ropa_bytes
-  ropa_bytes="$(dc exec -T talon sh -c "wc -c < ${ropa} 2>/dev/null || echo 0" | tr -d '[:space:]')"
-  if [[ -z "$ropa_bytes" || "$ropa_bytes" -lt 100 ]]; then
-    echo "✗ RoPA export did not produce a document (${ropa_bytes:-0} bytes)" >&2
+  ropa_bytes="$(wc -c <"$ropa_file" | tr -d '[:space:]')"
+  if [[ ! -s "$ropa_file" || "$ropa_bytes" -lt 200 ]] || ! grep -qi '<html' "$ropa_file"; then
+    echo "✗ RoPA export did not produce a valid HTML document (${ropa_bytes:-0} bytes)" >&2
     exit 1
   fi
-  block_evidence "\$ talon compliance ropa --format html --output ropa.html   → ${ropa_bytes} bytes (GDPR Art. 30)"
+  block_evidence "\$ talon compliance ropa --format html > out/governed-session-ropa.html   → ${ropa_bytes} bytes (GDPR Art. 30)"
   block_result "✓" "Every decision verifies (0 invalid) — and an auditor-ready RoPA pack is generated"
 }
 
