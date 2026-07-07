@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -271,4 +272,17 @@ func TestPurgeOlderThan(t *testing.T) {
 	counts, err := s.GetStageCounts(ctx, old.ID)
 	require.NoError(t, err)
 	require.Zero(t, counts.Generation, "stage counts purged with the session")
+}
+
+func TestValidateExternalID(t *testing.T) {
+	// Valid: empty, and token-charset ids the demo uses.
+	for _, ok := range []string{"", "sess-governed-1783431294", "sess_abc.123", "A1~b|c"} {
+		require.NoError(t, ValidateExternalID(ok), "should accept %q", ok)
+	}
+	// Invalid: hostile charset (space, angle brackets, injection) and oversize.
+	for _, bad := range []string{"bad id", "<script>", "a b\tc", "with/slash"} {
+		require.Error(t, ValidateExternalID(bad), "should reject %q", bad)
+	}
+	require.Error(t, ValidateExternalID(strings.Repeat("a", 129)))
+	require.NoError(t, ValidateExternalID(strings.Repeat("a", 128)))
 }

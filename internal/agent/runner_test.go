@@ -2158,12 +2158,10 @@ func TestBuildLLMTools(t *testing.T) {
 	}
 }
 
-// A client-asserted session the runner cannot join (closed here, or opened by
-// the gateway under a different tuple) must NOT fail the run: the runner
-// proceeds without runner-side lifecycle but keeps the asserted id so signed
-// evidence stays tagged with the client's session (one visible session across
-// gateway + runner).
-func TestResolveSessionWithProvidedUnjoinableSessionProceeds(t *testing.T) {
+// INTERNAL (lifecycle) session ids are authoritative: joining a closed session
+// FAILS CLOSED. The runner must never insert new evidence into a closed
+// lifecycle session or degrade a join miss into accepting the raw id.
+func TestResolveSession_Internal_ClosedSessionFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	s, err := talonsession.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
 	require.NoError(t, err)
@@ -2171,25 +2169,65 @@ func TestResolveSessionWithProvidedUnjoinableSessionProceeds(t *testing.T) {
 
 	ss, err := s.Create(ctx, "acme", "agent-a", "reasoning", 0)
 	require.NoError(t, err)
-	require.NoError(t, s.Complete(ctx, ss.ID, "acme", 0, 0)) // closed → unjoinable
+	require.NoError(t, s.Complete(ctx, ss.ID, "acme", 0, 0))
 
 	r := NewRunner(RunnerConfig{SessionStore: s})
-	got, err := r.resolveSession(ctx, &RunRequest{
-		TenantID:  "acme",
-		AgentName: "agent-a",
-		SessionID: ss.ID,
+	_, err = r.resolveSession(ctx, &RunRequest{
+		TenantID: "acme", AgentName: "agent-a", SessionID: ss.ID,
+		// SessionSource empty = internal (lifecycle) — must fail closed.
 	})
-	require.NoError(t, err, "an unjoinable asserted session must not fail the run")
-	assert.Equal(t, ss.ID, got, "the asserted session id is preserved for evidence")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "joining session")
+}
 
-	// An entirely unknown asserted id likewise proceeds with the id preserved.
-	got, err = r.resolveSession(ctx, &RunRequest{
-		TenantID:  "acme",
-		AgentName: "agent-a",
-		SessionID: "sess-external-from-gateway",
+// INTERNAL: an unknown / cross-tenant lifecycle id also fails closed (a miss is
+// never silently accepted as the raw id).
+func TestResolveSession_Internal_UnknownIDFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	s, err := talonsession.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+	require.NoError(t, err)
+	defer s.Close()
+
+	r := NewRunner(RunnerConfig{SessionStore: s})
+	_, err = r.resolveSession(ctx, &RunRequest{
+		TenantID: "acme", AgentName: "agent-a", SessionID: "not-a-real-lifecycle-id",
+	})
+	require.Error(t, err)
+}
+
+// CLIENT-ASSERTED external correlation ids are NOT lifecycle sessions: they are
+// validated for hygiene and preserved for evidence grouping, never joined. A
+// closed/unknown id is fine — but a hostile id (bad charset / oversized) is
+// rejected before it can reach signed evidence.
+func TestResolveSession_ClientAsserted_ValidatedAndPreserved(t *testing.T) {
+	ctx := context.Background()
+	s, err := talonsession.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+	require.NoError(t, err)
+	defer s.Close()
+	r := NewRunner(RunnerConfig{SessionStore: s})
+
+	// A well-formed external id the runner never opened → preserved, no join.
+	got, err := r.resolveSession(ctx, &RunRequest{
+		TenantID: "acme", AgentName: "agent-a",
+		SessionID: "sess-governed-1783431294", SessionSource: talonsession.SourceClientAsserted,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "sess-external-from-gateway", got)
+	assert.Equal(t, "sess-governed-1783431294", got)
+
+	// A hostile id (space + angle brackets) is rejected before evidence.
+	_, err = r.resolveSession(ctx, &RunRequest{
+		TenantID: "acme", AgentName: "agent-a",
+		SessionID: "bad id <script>", SessionSource: talonsession.SourceClientAsserted,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid client-asserted session id")
+
+	// An oversized id is rejected.
+	_, err = r.resolveSession(ctx, &RunRequest{
+		TenantID: "acme", AgentName: "agent-a",
+		SessionID: strings.Repeat("a", 129), SessionSource: talonsession.SourceClientAsserted,
+	})
+	require.Error(t, err)
 }
 
 func TestResolveSessionWithProvidedActiveSessionJoins(t *testing.T) {

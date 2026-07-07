@@ -28,6 +28,36 @@ const (
 	SourceVendorAsserted = "vendor_asserted"
 )
 
+// externalIDMaxLen bounds a client-asserted session id, matching the gateway's
+// orchestration-header hygiene so hostile values never reach signed evidence.
+const externalIDMaxLen = 128
+
+// ValidateExternalID enforces hygiene on a client-asserted session id: it is
+// length-capped and restricted to the RFC 7230 token charset, and rejected —
+// never truncated — on violation. Empty is allowed (means "no asserted id").
+// This mirrors the gateway's validateOrchValue so both surfaces apply the same
+// bound before a client string reaches the signed audit spine.
+func ValidateExternalID(v string) error {
+	if v == "" {
+		return nil
+	}
+	if len(v) > externalIDMaxLen {
+		return fmt.Errorf("session id exceeds %d bytes", externalIDMaxLen)
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c >= '0' && c <= '9', c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':
+		case c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '\'' ||
+			c == '*' || c == '+' || c == '-' || c == '.' || c == '^' || c == '_' ||
+			c == '`' || c == '|' || c == '~':
+		default:
+			return fmt.Errorf("session id contains a disallowed character")
+		}
+	}
+	return nil
+}
+
 type Status string
 
 const (

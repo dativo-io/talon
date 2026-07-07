@@ -194,6 +194,7 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		Prompt:          req.Prompt,
 		AgentReasoning:  reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Reasoning"), req.AgentReasoning),
 		SessionID:       reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Session-ID"), req.SessionID),
+		SessionSource:   session.SourceClientAsserted, // X-Talon-Session-ID is client-asserted: validate + preserve, don't join Talon's lifecycle
 		InvocationType:  "api",
 		PolicyPath:      s.policyPath,
 		SovereigntyMode: s.sovereigntyMode,
@@ -304,6 +305,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Prompt:          prompt,
 		AgentReasoning:  reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Reasoning"), req.AgentReasoning),
 		SessionID:       reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Session-ID"), req.SessionID),
+		SessionSource:   session.SourceClientAsserted, // X-Talon-Session-ID is client-asserted: validate + preserve, don't join Talon's lifecycle
 		InvocationType:  "http",
 		PolicyPath:      s.policyPath,
 		SovereigntyMode: s.sovereigntyMode,
