@@ -1,12 +1,18 @@
 # pricing/models.yaml
 # Operator-editable LLM pricing table.
-# Prices are per 1,000,000 tokens in USD.
+# Prices are per 1,000,000 tokens, denominated in `currency` below.
 # Update this file when providers change pricing — no recompilation required.
 #
 # To disable cost estimation for a provider, omit it or set prices to 0.
 # Unknown models return cost 0.0 with a warning log.
 
 version: "1"
+
+# ISO-4217 code the prices below are denominated in. Costs, budget caps
+# (max_daily_cost / max_monthly_cost / max_session_cost), and every cost
+# display use this unit (#216). Default when omitted: USD. Teams that want
+# EUR set `currency: EUR` and maintain EUR-denominated rates here.
+currency: USD
 
 providers:
   openai:

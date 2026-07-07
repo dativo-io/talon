@@ -405,8 +405,8 @@ func memoryAudit(cmd *cobra.Command, args []string) error {
 						hmacStatus = "INVALID"
 					}
 				}
-				fmt.Printf("    Evidence: %s | %s | %s | EUR%.4f | HMAC: %s\n",
-					ev.ID, ev.InvocationType, ev.Execution.ModelUsed, ev.Execution.Cost, hmacStatus)
+				fmt.Printf("    Evidence: %s | %s | %s | %s%.4f | HMAC: %s\n",
+					ev.ID, ev.InvocationType, ev.Execution.ModelUsed, exportCurrency(ev.Execution.Currency), ev.Execution.Cost, hmacStatus)
 			}
 		}
 

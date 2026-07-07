@@ -222,3 +222,43 @@ func TestEstimateCached_UnknownModel(t *testing.T) {
 	assert.False(t, fallback)
 	assert.Equal(t, 0.0, cost)
 }
+
+// Currency (#216): the table declares the ISO-4217 unit of its prices; every
+// cost Talon computes and displays uses it. Default is USD — the unit the
+// shipped tables were always denominated in.
+func TestCurrency_DefaultAndDeclared(t *testing.T) {
+	// Shipped tables declare USD explicitly.
+	table, err := Load("../../pricing/models.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, "USD", table.CurrencyCode())
+
+	// Absent currency → USD (pre-field tables were USD).
+	legacy, err := loadFromData([]byte("version: \"1\"\nproviders: {}\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "USD", legacy.CurrencyCode())
+
+	// Declared currency is normalized (trimmed, uppercased).
+	eur, err := loadFromData([]byte("version: \"1\"\ncurrency: \" eur \"\nproviders: {}\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "EUR", eur.CurrencyCode())
+
+	// Nil table is safe and defaults.
+	var nilTable *PricingTable
+	assert.Equal(t, "USD", nilTable.CurrencyCode())
+}
+
+func TestCurrency_InvalidCodeRejected(t *testing.T) {
+	for _, bad := range []string{"EURO", "E", "12A", "US-D"} {
+		_, err := loadFromData([]byte("version: \"1\"\ncurrency: \"" + bad + "\"\nproviders: {}\n"))
+		require.Error(t, err, "currency %q must be rejected", bad)
+		assert.Contains(t, err.Error(), "invalid currency")
+	}
+}
+
+func TestFormatAmount(t *testing.T) {
+	assert.Equal(t, "$1.23", FormatAmount("USD", "1.23"))
+	assert.Equal(t, "$1.23", FormatAmount("", "1.23"), "empty code renders as USD (pre-field records)")
+	assert.Equal(t, "€1.23", FormatAmount("EUR", "1.23"))
+	assert.Equal(t, "CHF 1.23", FormatAmount("CHF", "1.23"))
+	assert.Equal(t, "€0.42", FormatAmount("eur", "0.42"), "case-insensitive")
+}

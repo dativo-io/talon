@@ -110,6 +110,7 @@ func newSessionBudgetGateway(t *testing.T, mode Mode, maxSessionCost float64) (e
 	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, policyEngine, sbEstimator)
 	require.NoError(t, err)
 	gw.SetSessionStore(sessStore)
+	gw.SetPricingCurrency("USD")
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })
 	return evStore, sessStore, r

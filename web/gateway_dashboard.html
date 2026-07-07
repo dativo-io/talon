@@ -215,7 +215,7 @@
   <div class="panel grid-full">
     <div class="panel-title">Caller Breakdown</div>
     <table>
-      <thead><tr><th>Caller</th><th>Requests</th><th>Success</th><th>Failed</th><th>Timeout</th><th>Denied</th><th>Rate</th><th>Cost (EUR)</th><th>EUR/Success</th><th>Avg Latency</th><th>Trend(7d)</th><th>Evidence</th></tr></thead>
+      <thead><tr><th>Caller</th><th>Requests</th><th>Success</th><th>Failed</th><th>Timeout</th><th>Denied</th><th>Rate</th><th data-cost-th="Cost">Cost (USD)</th><th data-cost-th="Cost/Success">Cost/Success (USD)</th><th>Avg Latency</th><th>Trend(7d)</th><th>Evidence</th></tr></thead>
       <tbody id="caller-table"></tbody>
     </table>
   </div>
@@ -227,7 +227,7 @@
     <div class="panel-title">Coding Sessions (orchestration)</div>
     <div class="kpi-sub">Client-asserted coding sessions across providers &mdash; identical numbers to <code>talon audit list --session &lt;id&gt;</code>. Click a session for its per-agent breakdown.</div>
     <table>
-      <thead><tr><th></th><th>Session</th><th>Client</th><th>Caller</th><th>Requests</th><th>Denied</th><th>Models</th><th>Providers</th><th>Tokens in/out</th><th>Cost (EUR)</th><th>Last Active</th></tr></thead>
+      <thead><tr><th></th><th>Session</th><th>Client</th><th>Caller</th><th>Requests</th><th>Denied</th><th>Models</th><th>Providers</th><th>Tokens in/out</th><th data-cost-th="Cost">Cost (USD)</th><th>Last Active</th></tr></thead>
       <tbody id="sessions-table"></tbody>
     </table>
     <div class="kpi-sub" id="sessions-denials" style="margin-top:8px;"></div>
@@ -243,7 +243,7 @@
   <div class="panel" id="panel-models">
     <div class="panel-title">Model Breakdown (today)</div>
     <table>
-      <thead><tr><th>Model</th><th>Cost (EUR)</th><th>Evidence</th></tr></thead>
+      <thead><tr><th>Model</th><th data-cost-th="Cost">Cost (USD)</th><th>Evidence</th></tr></thead>
       <tbody id="model-table"></tbody>
     </table>
   </div>
@@ -251,7 +251,7 @@
   <div class="panel" id="panel-providers">
     <div class="panel-title">Provider Breakdown (today)</div>
     <table>
-      <thead><tr><th>Provider</th><th>Cost (EUR)</th><th>Evidence</th></tr></thead>
+      <thead><tr><th>Provider</th><th data-cost-th="Cost">Cost (USD)</th><th>Evidence</th></tr></thead>
       <tbody id="provider-table"></tbody>
     </table>
   </div>
@@ -403,6 +403,12 @@
 
     document.getElementById('uptime').textContent = d.uptime || '--';
     document.getElementById('last-updated').textContent = 'Updated: ' + new Date(d.generated_at).toLocaleTimeString();
+    // Cost unit comes from the pricing table via the snapshot (#216);
+    // snapshots that predate the field are USD (the shipped tables' unit).
+    CUR = curSym(d.currency);
+    document.querySelectorAll('th[data-cost-th]').forEach(function (th) {
+      th.textContent = th.getAttribute('data-cost-th') + ' (' + (d.currency || 'USD') + ')';
+    });
 
     var s = d.summary || {};
     var reliabilityBadge = document.getElementById('reliability-badge');
@@ -424,7 +430,7 @@
     document.getElementById('kpi-pii').textContent = fmt(s.pii_detections);
     document.getElementById('kpi-pii-sub').textContent = s.pii_redactions ? s.pii_redactions + ' redacted' : '';
     document.getElementById('kpi-tools').textContent = fmt(s.tools_filtered);
-    document.getElementById('kpi-cost').textContent = '€' + (s.total_cost_eur || 0).toFixed(4);
+    document.getElementById('kpi-cost').textContent = CUR + (s.total_cost_eur || 0).toFixed(4);
     document.getElementById('kpi-latency').textContent = s.avg_latency_ms + 'ms';
     document.getElementById('kpi-p99').textContent = 'P99: ' + s.p99_latency_ms + 'ms';
     document.getElementById('kpi-errors').textContent = ((s.error_rate || 0) * 100).toFixed(1) + '%';
@@ -487,6 +493,8 @@
   }
 
   function fmt(n) { return (n == null ? 0 : n).toLocaleString(); }
+  function curSym(code) { if (!code || code === 'USD') return '$'; if (code === 'EUR') return '€'; return code + ' '; }
+  var CUR = '$';
 
   function renderSparkline(id, data, key, stroke, fill) {
     var svg = document.getElementById(id);
@@ -524,7 +532,7 @@
       var cps = c.cost_per_success || 0;
       var cpsClass = (avgCostPerSuccess > 0 && cps > (2 * avgCostPerSuccess)) ? 'cost-hot' : '';
       var evidenceLink = '<a href="' + evidenceDashboardURL() + '" style="color:var(--brand-light);text-decoration:none;">Open</a>';
-      return '<tr><td>' + esc(c.caller) + '</td><td>' + fmt(c.requests) + '</td><td>' + fmt(c.successful) + '</td><td>' + fmt(c.failed) + '</td><td>' + fmt(c.timed_out) + '</td><td>' + fmt(c.denied) + '</td><td class="' + rateClass + '">' + (rate * 100).toFixed(1) + '%</td><td>€' + (c.cost_eur || 0).toFixed(4) + '</td><td class="' + cpsClass + '">€' + cps.toFixed(4) + '</td><td>' + c.avg_latency_ms + 'ms</td><td>' + renderCallerTrend(c.violation_trend) + '</td><td>' + evidenceLink + '</td></tr>';
+      return '<tr><td>' + esc(c.caller) + '</td><td>' + fmt(c.requests) + '</td><td>' + fmt(c.successful) + '</td><td>' + fmt(c.failed) + '</td><td>' + fmt(c.timed_out) + '</td><td>' + fmt(c.denied) + '</td><td class="' + rateClass + '">' + (rate * 100).toFixed(1) + '%</td><td>' + CUR + (c.cost_eur || 0).toFixed(4) + '</td><td class="' + cpsClass + '">' + CUR + cps.toFixed(4) + '</td><td>' + c.avg_latency_ms + 'ms</td><td>' + renderCallerTrend(c.violation_trend) + '</td><td>' + evidenceLink + '</td></tr>';
     }).join('');
   }
 
@@ -723,7 +731,7 @@
     var tb = document.getElementById('model-table');
     if (models.length === 0) { tb.innerHTML = '<tr><td colspan="3" style="color:var(--text-dim)">No model data</td></tr>'; return; }
     tb.innerHTML = models.map(function(m) {
-      return '<tr><td>' + esc(m.model) + '</td><td>€' + (m.cost_eur || 0).toFixed(4) + '</td><td><a href="' + evidenceDashboardURL() + '" style="color:var(--brand-light);text-decoration:none;">Open</a></td></tr>';
+      return '<tr><td>' + esc(m.model) + '</td><td>' + CUR + (m.cost_eur || 0).toFixed(4) + '</td><td><a href="' + evidenceDashboardURL() + '" style="color:var(--brand-light);text-decoration:none;">Open</a></td></tr>';
     }).join('');
   }
 
@@ -734,7 +742,7 @@
       return;
     }
     tb.innerHTML = providers.map(function(p) {
-      return '<tr><td>' + esc(p.provider) + '</td><td>€' + (p.cost_eur || 0).toFixed(4) + '</td><td><a href="' + evidenceDashboardURL() + '" style="color:var(--brand-light);text-decoration:none;">Open</a></td></tr>';
+      return '<tr><td>' + esc(p.provider) + '</td><td>' + CUR + (p.cost_eur || 0).toFixed(4) + '</td><td><a href="' + evidenceDashboardURL() + '" style="color:var(--brand-light);text-decoration:none;">Open</a></td></tr>';
     }).join('');
   }
 
@@ -745,11 +753,11 @@
     var html = '';
     if (bs.daily_limit > 0) {
       var color = bs.daily_percent > 90 ? 'var(--red)' : bs.daily_percent > 70 ? 'var(--yellow)' : 'var(--green)';
-      html += '<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Daily</span><span>€' + bs.daily_used.toFixed(2) + ' / €' + bs.daily_limit.toFixed(2) + ' (' + bs.daily_percent.toFixed(1) + '%)</span></div><div class="bar-container"><div class="bar-fill" style="width:' + Math.min(bs.daily_percent, 100) + '%;background:' + color + '"></div></div></div>';
+      html += '<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Daily</span><span>' + CUR + bs.daily_used.toFixed(2) + ' / ' + CUR + bs.daily_limit.toFixed(2) + ' (' + bs.daily_percent.toFixed(1) + '%)</span></div><div class="bar-container"><div class="bar-fill" style="width:' + Math.min(bs.daily_percent, 100) + '%;background:' + color + '"></div></div></div>';
     }
     if (bs.monthly_limit > 0) {
       var color2 = bs.monthly_percent > 90 ? 'var(--red)' : bs.monthly_percent > 70 ? 'var(--yellow)' : 'var(--green)';
-      html += '<div><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Monthly</span><span>€' + bs.monthly_used.toFixed(2) + ' / €' + bs.monthly_limit.toFixed(2) + ' (' + bs.monthly_percent.toFixed(1) + '%)</span></div><div class="bar-container"><div class="bar-fill" style="width:' + Math.min(bs.monthly_percent, 100) + '%;background:' + color2 + '"></div></div></div>';
+      html += '<div><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Monthly</span><span>' + CUR + bs.monthly_used.toFixed(2) + ' / ' + CUR + bs.monthly_limit.toFixed(2) + ' (' + bs.monthly_percent.toFixed(1) + '%)</span></div><div class="bar-container"><div class="bar-fill" style="width:' + Math.min(bs.monthly_percent, 100) + '%;background:' + color2 + '"></div></div></div>';
     }
     document.getElementById('budget-content').innerHTML = html || '<span style="color:var(--text-dim)">No budget limits configured. Set caller max_daily_cost/max_monthly_cost in gateway config to enforce hard caps before provider calls.</span>';
   }
@@ -761,7 +769,7 @@
     document.getElementById('cache-content').innerHTML =
       '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;text-align:center">' +
       '<div><div class="kpi-label">Hits</div><div style="font-size:20px;font-weight:700">' + cs.hits + '</div></div>' +
-      '<div><div class="kpi-label">Cost Saved</div><div style="font-size:20px;font-weight:700">€' + (cs.cost_saved || 0).toFixed(4) + '</div></div>' +
+      '<div><div class="kpi-label">Cost Saved</div><div style="font-size:20px;font-weight:700">' + CUR + (cs.cost_saved || 0).toFixed(4) + '</div></div>' +
       '<div><div class="kpi-label">Hit Rate</div><div style="font-size:20px;font-weight:700">' + ((cs.hit_rate || 0) * 100).toFixed(1) + '%</div></div>' +
       '</div>';
   }

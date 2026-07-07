@@ -4,6 +4,10 @@
 
 version: "1"
 
+# ISO-4217 code the prices below are denominated in. Costs, budgets, and every
+# cost display use this unit (#216). Default when omitted: USD.
+currency: USD
+
 providers:
   openai:
     models:

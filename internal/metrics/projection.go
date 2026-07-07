@@ -166,6 +166,11 @@ func SnapshotFromEvidenceRecords(records []evidence.Evidence, now time.Time) Sna
 	}
 	for i := range records {
 		c.processEvent(GatewayEventFromEvidence(&records[i]))
+		if c.currency == "" {
+			// Standalone snapshots have no pricing table in scope: take the
+			// cost unit from the records themselves (#216).
+			c.currency = records[i].Execution.Currency
+		}
 	}
 	snap := c.buildInMemorySnapshot()
 	snap.GeneratedAt = now.UTC()

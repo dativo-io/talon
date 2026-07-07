@@ -124,6 +124,10 @@ type Gateway struct {
 	canonicalTenantIDs map[string]string
 	metricsRecorder    MetricsRecorder
 	sessionStore       *session.Store
+	// pricingCurrency is the ISO-4217 code of the pricing table backing
+	// costEstimate; stamped into evidence so records stay self-describing
+	// if the operator later changes the table (#216).
+	pricingCurrency string
 	// budgetAlertLast tracks last time we emitted a budget alert per tenant+period+threshold to avoid spamming
 	budgetAlertMu   sync.Mutex
 	budgetAlertLast map[string]time.Time
@@ -157,6 +161,13 @@ func (g *Gateway) SetMetricsRecorder(mr MetricsRecorder) {
 // SetSessionStore attaches a session store for lifecycle tracking. Call after NewGateway.
 func (g *Gateway) SetSessionStore(ss *session.Store) {
 	g.sessionStore = ss
+}
+
+// SetPricingCurrency records the ISO-4217 code of the pricing table backing
+// the cost estimator so evidence records carry their cost unit (#216). Call
+// after NewGateway.
+func (g *Gateway) SetPricingCurrency(code string) {
+	g.pricingCurrency = code
 }
 
 // SetCache wires the optional semantic cache into the gateway. Call after NewGateway when cache is enabled.
@@ -1336,6 +1347,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		OutputPIITypes:          outputPIITypes,
 		Cost:                    cost,
 		EstimatedCost:           estimatedCost,
+		Currency:                g.pricingCurrency,
 		InputTokens:             inputTokens,
 		OutputTokens:            outputTokens,
 		CacheReadTokens:         cacheReadTokens,

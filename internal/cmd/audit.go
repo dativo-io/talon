@@ -458,8 +458,8 @@ func auditVerifySession(ctx context.Context, store *evidence.Store, sessionID st
 			mark = "✗"
 			invalid++
 		}
-		fmt.Fprintf(os.Stdout, "  %s %s | %s | €%s\n", mark, ev.ID,
-			ev.Timestamp.Format("2006-01-02 15:04:05"), formatCost(ev.Execution.Cost))
+		fmt.Fprintf(os.Stdout, "  %s %s | %s | %s\n", mark, ev.ID,
+			ev.Timestamp.Format("2006-01-02 15:04:05"), formatMoney(ev.Execution.Currency, ev.Execution.Cost))
 	}
 	fmt.Fprintf(os.Stdout, "\nSession %s: %d record(s), %d valid, %d invalid\n",
 		sessionID, len(records), len(records)-invalid, invalid)
@@ -496,7 +496,7 @@ func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
 	}
 	fmt.Fprintf(w, "  Tokens:    in %d / out %d / cache-read %d / cache-write %d\n",
 		sum.InputTokens, sum.OutputTokens, sum.CacheReadTokens, sum.CacheWriteTokens)
-	fmt.Fprintf(w, "  Cost:      €%s\n", formatCost(sum.TotalCost))
+	fmt.Fprintf(w, "  Cost:      %s\n", formatMoney(sum.Currency, sum.TotalCost))
 	if sessionHasAgentBreakdown(sum) {
 		fmt.Fprintln(w, "\n  Per-agent:")
 		for i := range sum.Agents {
@@ -509,8 +509,8 @@ func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
 			if a.ParentAgentID != "" {
 				parent = " ←" + a.ParentAgentID
 			}
-			fmt.Fprintf(w, "    %-24s%s  %d req  €%s  (in %d / out %d)\n",
-				id, parent, a.RecordCount, formatCost(a.TotalCost), a.InputTokens, a.OutputTokens)
+			fmt.Fprintf(w, "    %-24s%s  %d req  %s  (in %d / out %d)\n",
+				id, parent, a.RecordCount, formatMoney(sum.Currency, a.TotalCost), a.InputTokens, a.OutputTokens)
 		}
 	}
 }
@@ -542,9 +542,9 @@ func renderSessionRecords(w io.Writer, records []*evidence.Evidence) {
 		if ev.Orchestration != nil && ev.Orchestration.AgentID != "" {
 			agent = " | agent=" + ev.Orchestration.AgentID
 		}
-		fmt.Fprintf(w, "  %s %s | %s | %s | €%s | %dms%s%s\n",
+		fmt.Fprintf(w, "  %s %s | %s | %s | %s | %dms%s%s\n",
 			status, ev.ID, ev.Timestamp.Format("2006-01-02 15:04:05"),
-			ev.Execution.ModelUsed, formatCost(ev.Execution.Cost),
+			ev.Execution.ModelUsed, formatMoney(ev.Execution.Currency, ev.Execution.Cost),
 			ev.Execution.DurationMS, agent, errMark)
 	}
 }
@@ -813,14 +813,14 @@ func renderAuditList(w io.Writer, index []evidence.Index) {
 		if entry.PrimaryExplanationCode != "" {
 			explanationMark = " [" + entry.PrimaryExplanationCode + "]"
 		}
-		fmt.Fprintf(w, "  %s %s | %s | %s/%s | %s | €%s | %dms%s%s%s\n",
+		fmt.Fprintf(w, "  %s %s | %s | %s/%s | %s | %s | %dms%s%s%s\n",
 			status,
 			entry.ID,
 			entry.Timestamp.Format("2006-01-02 15:04:05"),
 			entry.TenantID,
 			entry.AgentID,
 			entry.ModelUsed,
-			formatCost(entry.Cost),
+			formatMoney(entry.Currency, entry.Cost),
 			entry.DurationMS,
 			errorMark,
 			cacheMark,
@@ -848,12 +848,12 @@ func renderVerifyResult(w io.Writer, evidenceID string, valid bool, ev *evidence
 		if !ev.PolicyDecision.Allowed {
 			policyStatus = "DENIED"
 		}
-		fmt.Fprintf(w, "%s | %s/%s | %s | €%s | %dms\n",
+		fmt.Fprintf(w, "%s | %s/%s | %s | %s | %dms\n",
 			ev.Timestamp.Format(time.RFC3339),
 			ev.TenantID,
 			ev.AgentID,
 			ev.Execution.ModelUsed,
-			formatCost(ev.Execution.Cost),
+			formatMoney(ev.Execution.Currency, ev.Execution.Cost),
 			ev.Execution.DurationMS,
 		)
 		fmt.Fprintf(w, "Policy: %s | Tier: %d→%d | PII: %s | Redacted: %t\n",
@@ -933,9 +933,17 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		ev.Classification.InputPIIRedacted, ev.Classification.PIIRedacted)
 	fmt.Fprintln(w, "Execution")
 	fmt.Fprintf(w, "Model:         %s\n", ev.Execution.ModelUsed)
-	fmt.Fprintf(w, "Cost:          €%s\n", formatCost(ev.Execution.Cost))
+	fmt.Fprintf(w, "Cost:          %s\n", formatMoney(ev.Execution.Currency, ev.Execution.Cost))
 	fmt.Fprintf(w, "Duration:      %dms\n", ev.Execution.DurationMS)
-	fmt.Fprintf(w, "Tokens:        in=%d out=%d\n", ev.Execution.Tokens.Input, ev.Execution.Tokens.Output)
+	tokensLine := fmt.Sprintf("in=%d out=%d", ev.Execution.Tokens.Input, ev.Execution.Tokens.Output)
+	if ev.Execution.Tokens.CacheRead > 0 || ev.Execution.Tokens.CacheWrite > 0 {
+		tokensLine += fmt.Sprintf(" cache_read=%d cache_write=%d",
+			ev.Execution.Tokens.CacheRead, ev.Execution.Tokens.CacheWrite)
+	}
+	fmt.Fprintf(w, "Tokens:        %s\n", tokensLine)
+	if ev.Execution.PricingBasis != "" {
+		fmt.Fprintf(w, "Pricing Basis: %s\n", ev.Execution.PricingBasis)
+	}
 	toolsStr := strings.Join(ev.Execution.ToolsCalled, ", ")
 	if toolsStr == "" {
 		toolsStr = "(none)"
@@ -987,7 +995,7 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		fmt.Fprintf(w, "  Hit:         true\n")
 		fmt.Fprintf(w, "  Entry ID:    %s\n", ev.CacheEntryID)
 		fmt.Fprintf(w, "  Similarity:  %.2f\n", ev.CacheSimilarity)
-		fmt.Fprintf(w, "  Cost Saved:  €%s\n", formatCost(ev.CostSaved))
+		fmt.Fprintf(w, "  Cost Saved:  %s\n", formatMoney(ev.Execution.Currency, ev.CostSaved))
 	}
 	if ev.Execution.MemoryTokens > 0 {
 		fmt.Fprintf(w, "Memory Tokens: %d (injected into prompt)\n", ev.Execution.MemoryTokens)

@@ -38,6 +38,10 @@ func TestBuildSessionSummary_TotalsAndCounts(t *testing.T) {
 		rec("sess1", "acme", "coder", true, 0.05, 300, 50, 0, 0, "anthropic", "claude-sonnet-5", nil),
 	}
 	records[1].Execution.Error = "secret retrieval error"
+	// Deny record carries no currency (cost 0); the summary takes the unit
+	// from the first record that has one (#216).
+	records[0].Execution.Currency = "USD"
+	records[2].Execution.Currency = "USD"
 
 	sum := BuildSessionSummary("sess1", records)
 
@@ -46,6 +50,7 @@ func TestBuildSessionSummary_TotalsAndCounts(t *testing.T) {
 	assert.Equal(t, 1, sum.Denied)
 	assert.Equal(t, 1, sum.Errors)
 	assert.Equal(t, "acme", sum.TenantID)
+	assert.Equal(t, "USD", sum.Currency)
 	assert.InDelta(t, 0.15, sum.TotalCost, 1e-9)
 	assert.Equal(t, 1300, sum.InputTokens)
 	assert.Equal(t, 250, sum.OutputTokens)

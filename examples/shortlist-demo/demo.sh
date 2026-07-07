@@ -156,16 +156,23 @@ verify_file_summary() {
   talon_in_container audit verify --file "$path" 2>&1 | grep -E '^(File:|Total records:|Valid records:|Invalid records:|Missing signature:|Hint:)' | sed 's/^/  /' || true
 }
 
-# Compliance export writes WARNING lines to stderr; suppress in narrated mode (warnings stay in HTML/JSON).
+# Compliance export writes WARNING lines to stderr; suppress in narrated mode
+# (warnings stay in HTML/JSON) but keep them in a host-side file so a failure
+# is diagnosable from CI logs alone (#258).
 compliance_export() {
   local rc=0
+  local stderr_file="${OUT_DIR}/compliance.stderr"
   if [[ "$NARRATE" == "1" ]]; then
-    talon_in_container compliance "$@" >/dev/null 2>&1 || rc=$?
+    talon_in_container compliance "$@" >/dev/null 2>"$stderr_file" || rc=$?
   else
-    talon_in_container compliance "$@" || rc=$?
+    talon_in_container compliance "$@" 2> >(tee "$stderr_file" >&2) || rc=$?
   fi
   if [[ "$rc" -ne 0 ]]; then
     echo "✗ compliance export failed: talon compliance $*" >&2
+    if [[ -s "$stderr_file" ]]; then
+      echo "  stderr:" >&2
+      sed 's/^/    /' "$stderr_file" >&2
+    fi
     exit "$rc"
   fi
 }
@@ -176,7 +183,9 @@ export_consistency_note() {
     return 0
   fi
   local msg
-  msg="$(jq -r '.warnings[]? | select(startswith("consistency:"))' "${OUT_DIR}/ropa.json" 2>/dev/null | head -1)"
+  # `|| true` keeps an unreadable/missing export from killing the demo via
+  # set -e with jq's own error hidden by 2>/dev/null (#258).
+  msg="$(jq -r '.warnings[]? | select(startswith("consistency:"))' "${OUT_DIR}/ropa.json" 2>/dev/null | head -1 || true)"
   [[ -n "$msg" ]] || return 0
   echo ""
   echo "  Note (expected for this demo)"
@@ -478,6 +487,10 @@ cmd_exports() {
   compliance_export ropa --format json --output /home/talon/shortlist-out/ropa.json
   compliance_export annex-iv --format html --output /home/talon/shortlist-out/annex-iv.html
   compliance_export annex-iv --format json --output /home/talon/shortlist-out/annex-iv.json
+  # The container writes these 0600 under its own uid; on Linux hosts the
+  # host-side jq reads below (and verify-shortlist-demo.sh) would get EACCES
+  # through the bind mount (#258). Demo artifacts are non-sensitive.
+  dc exec -T talon sh -c 'chmod 644 /home/talon/shortlist-out/*.html /home/talon/shortlist-out/*.json' || true
   export_consistency_note
   if [[ "$NARRATE" == "1" ]]; then
     local warnings="?"

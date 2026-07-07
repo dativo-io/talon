@@ -13,6 +13,7 @@
 [Roadmap & focus](ROADMAP.md) ·
 [Quickstart](docs/tutorials/proxy-quickstart.md) ·
 [Docker demo](examples/docker-compose/README.md) ·
+[Governed session demo](examples/governed-session/README.md) ·
 [Dashboard](docs/reference/gateway-dashboard.md) ·
 [Limitations](LIMITATIONS.md) ·
 [Releases](https://github.com/dativo-io/talon/releases/latest)
@@ -68,6 +69,30 @@ docker compose exec talon /usr/local/bin/talon audit show <evidence-id>
 ```
 
 The record shows the PII detected (email, IBAN), the data tier, the policy decision, the cost, and a verifiable HMAC signature. Full walk-through: [60-second demo](docs/tutorials/quickstart-demo.md).
+
+---
+
+## Governed session demo (real providers, one budget)
+
+The deeper proof path runs one **real** agent session — an Anthropic planner and OpenAI executors — through the same gateway, bring-your-own keys (≈ $0.05/run, cheap models, session-capped):
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-... OPENAI_API_KEY=sk-...
+make governed-session
+cd examples/governed-session && ./demo.sh all
+```
+
+```
+session begins ──▶ Anthropic planner (prompt-cache write, then read)
+               ──▶ OpenAI executors (cached_tokens; forbidden admin_* tool stripped)
+               ──▶ IBAN probe denied before any provider call
+               ──▶ real cross-provider spend reaches the session cap
+               ──▶ next estimated request rejected: 403 session_budget_exceeded
+               ──▶ money story: misleading naïve total vs Talon's cache-aware corrected total
+               ──▶ talon audit verify --session → N record(s), N valid, 0 invalid
+```
+
+Cache writes bill at 1.25× the input rate and cache reads at ~0.1× — Talon prices them exactly and enforces the budget against the corrected number, in the pricing table's declared currency. Every decision, including both denials, is a signed evidence record in one session trail: supporting controls and evidence for GDPR and EU AI Act reviews, not a compliance guarantee. Full walk-through: [governed-session demo](examples/governed-session/README.md). The six-proof mock demo above needs no keys; this one shows the same controls on live traffic.
 
 ---
 

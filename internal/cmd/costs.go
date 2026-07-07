@@ -18,6 +18,7 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/pricing"
 )
 
 var (
@@ -46,8 +47,12 @@ var costsExportCmd = &cobra.Command{
 }
 
 type costsPayload struct {
-	TenantID       string             `json:"tenant_id"`
-	AgentID        string             `json:"agent_id,omitempty"`
+	TenantID string `json:"tenant_id"`
+	AgentID  string `json:"agent_id,omitempty"`
+	// Currency is the ISO-4217 unit of every amount in this payload, from the
+	// active pricing table (#216). Field names keep their legacy _eur suffix
+	// for consumer compatibility; Currency is the authoritative unit.
+	Currency       string             `json:"currency"`
 	TodayEUR       float64            `json:"today_eur"`
 	MonthEUR       float64            `json:"month_eur"`
 	SevenDaysEUR   float64            `json:"seven_days_eur"`
@@ -92,6 +97,8 @@ var costsCmd = &cobra.Command{
 			return fmt.Errorf("opening evidence store: %w", err)
 		}
 		defer store.Close()
+
+		costCurrency := loadPricingTable(cfg, "").CurrencyCode()
 
 		tenantID := costsTenant
 		if tenantID == "" {
@@ -145,7 +152,7 @@ var costsCmd = &cobra.Command{
 			}
 			weekTotal, _ := store.CostTotal(ctx, tenantID, costsAgent, weekStart, dayEnd)
 			if costsJSON {
-				return writeCostsJSON(out, costsPayload{
+				return writeCostsJSON(out, costCurrency, costsPayload{
 					TenantID:     tenantID,
 					AgentID:      costsAgent,
 					TodayEUR:     sumValues(byModelDaily),
@@ -154,9 +161,9 @@ var costsCmd = &cobra.Command{
 					ByModelEUR:   byModelDaily,
 				})
 			}
-			renderCostByModel(out, tenantID, costsAgent, byModelDaily, byModelMonthly)
+			renderCostByModel(out, costCurrency, tenantID, costsAgent, byModelDaily, byModelMonthly)
 			// Optional: 7d trend (same agent filter when --agent is set)
-			fmt.Fprintf(out, "  7d total: €%s\n", formatCost(weekTotal))
+			fmt.Fprintf(out, "  7d total: %s\n", formatMoney(costCurrency, weekTotal))
 			return nil
 		}
 		if costsByProvider {
@@ -170,7 +177,7 @@ var costsCmd = &cobra.Command{
 			}
 			weekTotal, _ := store.CostTotal(ctx, tenantID, costsAgent, weekStart, dayEnd)
 			if costsJSON {
-				return writeCostsJSON(out, costsPayload{
+				return writeCostsJSON(out, costCurrency, costsPayload{
 					TenantID:      tenantID,
 					AgentID:       costsAgent,
 					TodayEUR:      sumValues(byProviderDaily),
@@ -179,8 +186,8 @@ var costsCmd = &cobra.Command{
 					ByProviderEUR: byProviderDaily,
 				})
 			}
-			renderCostByProvider(out, tenantID, costsAgent, byProviderDaily, byProviderMonthly)
-			fmt.Fprintf(out, "  7d total: €%s\n", formatCost(weekTotal))
+			renderCostByProvider(out, costCurrency, tenantID, costsAgent, byProviderDaily, byProviderMonthly)
+			fmt.Fprintf(out, "  7d total: %s\n", formatMoney(costCurrency, weekTotal))
 			return nil
 		}
 		if costsByTeam {
@@ -194,7 +201,7 @@ var costsCmd = &cobra.Command{
 			}
 			if costsJSON {
 				weekTotal, _ := store.CostTotal(ctx, tenantID, "", weekStart, dayEnd)
-				return writeCostsJSON(out, costsPayload{
+				return writeCostsJSON(out, costCurrency, costsPayload{
 					TenantID:     tenantID,
 					TodayEUR:     sumValues(byTeamDaily),
 					MonthEUR:     sumValues(byTeamMonthly),
@@ -202,7 +209,7 @@ var costsCmd = &cobra.Command{
 					ByTeamEUR:    byTeamDaily,
 				})
 			}
-			renderCostByTeam(out, tenantID, byTeamDaily, byTeamMonthly)
+			renderCostByTeam(out, costCurrency, tenantID, byTeamDaily, byTeamMonthly)
 			return nil
 		}
 
@@ -218,7 +225,7 @@ var costsCmd = &cobra.Command{
 			dailyBudget, monthlyBudget := resolveBudgetUsage(ctx, cfg, tenantID, costsAgent, daily, monthly)
 			if costsJSON {
 				weekTotal, _ := store.CostTotal(ctx, tenantID, costsAgent, weekStart, dayEnd)
-				return writeCostsJSON(out, costsPayload{
+				return writeCostsJSON(out, costCurrency, costsPayload{
 					TenantID:      tenantID,
 					AgentID:       costsAgent,
 					TodayEUR:      daily,
@@ -228,10 +235,10 @@ var costsCmd = &cobra.Command{
 					MonthlyBudget: monthlyBudget,
 				})
 			}
-			renderCostReportSingleAgent(out, tenantID, costsAgent, daily, monthly)
+			renderCostReportSingleAgent(out, costCurrency, tenantID, costsAgent, daily, monthly)
 			weekTotal, _ := store.CostTotal(ctx, tenantID, costsAgent, weekStart, dayEnd)
-			fmt.Fprintf(out, "  7d total: €%s\n", formatCost(weekTotal))
-			printBudgetUtilization(out, dailyBudget, monthlyBudget)
+			fmt.Fprintf(out, "  7d total: %s\n", formatMoney(costCurrency, weekTotal))
+			printBudgetUtilization(out, costCurrency, dailyBudget, monthlyBudget)
 			return nil
 		}
 
@@ -249,7 +256,7 @@ var costsCmd = &cobra.Command{
 		dailyBudget, monthlyBudget := resolveBudgetUsage(ctx, cfg, tenantID, "", dailyTotal, monthlyTotal)
 		cache7d, cache30d := getCacheUsage(ctx, store, tenantID, weekStart, dayEnd, monthStart, monthEnd)
 		if costsJSON {
-			return writeCostsJSON(out, costsPayload{
+			return writeCostsJSON(out, costCurrency, costsPayload{
 				TenantID:       tenantID,
 				TodayEUR:       dailyTotal,
 				MonthEUR:       monthlyTotal,
@@ -261,29 +268,29 @@ var costsCmd = &cobra.Command{
 				CacheMonth:     cache30d,
 			})
 		}
-		renderCostReportAllAgents(out, tenantID, byAgentDaily, byAgentMonthly)
-		fmt.Fprintf(out, "  7d total: €%s\n", formatCost(weekTotal))
-		printBudgetUtilization(out, dailyBudget, monthlyBudget)
-		printCacheSavings(out, cache7d, cache30d)
+		renderCostReportAllAgents(out, costCurrency, tenantID, byAgentDaily, byAgentMonthly)
+		fmt.Fprintf(out, "  7d total: %s\n", formatMoney(costCurrency, weekTotal))
+		printBudgetUtilization(out, costCurrency, dailyBudget, monthlyBudget)
+		printCacheSavings(out, costCurrency, cache7d, cache30d)
 		return nil
 	},
 }
 
-func printCacheSavings(w io.Writer, cache7d, cache30d *cacheUsage) {
+func printCacheSavings(w io.Writer, currency string, cache7d, cache30d *cacheUsage) {
 	if cache7d != nil && (cache7d.Hits > 0 || cache7d.SavedEUR > 0) {
-		fmt.Fprintf(w, "  Cache (7d):   %d requests from cache, €%s saved, %.1f%% hit rate\n", cache7d.Hits, formatCost(cache7d.SavedEUR), cache7d.HitRate)
+		fmt.Fprintf(w, "  Cache (7d):   %d requests from cache, %s saved, %.1f%% hit rate\n", cache7d.Hits, formatMoney(currency, cache7d.SavedEUR), cache7d.HitRate)
 	}
 	if cache30d != nil && (cache30d.Hits > 0 || cache30d.SavedEUR > 0) {
-		fmt.Fprintf(w, "  Cache (30d):  %d requests from cache, €%s saved, %.1f%% hit rate\n", cache30d.Hits, formatCost(cache30d.SavedEUR), cache30d.HitRate)
+		fmt.Fprintf(w, "  Cache (30d):  %d requests from cache, %s saved, %.1f%% hit rate\n", cache30d.Hits, formatMoney(currency, cache30d.SavedEUR), cache30d.HitRate)
 	}
 }
 
-func printBudgetUtilization(w io.Writer, dailyBudget, monthlyBudget *budgetUsage) {
+func printBudgetUtilization(w io.Writer, currency string, dailyBudget, monthlyBudget *budgetUsage) {
 	if dailyBudget != nil && dailyBudget.LimitEUR > 0 {
-		fmt.Fprintf(w, "  Daily budget:   %.1f%% (€%s / €%.2f)\n", dailyBudget.Percent, formatCost(dailyBudget.UsedEUR), dailyBudget.LimitEUR)
+		fmt.Fprintf(w, "  Daily budget:   %.1f%% (%s / %s)\n", dailyBudget.Percent, formatMoney(currency, dailyBudget.UsedEUR), pricing.FormatAmount(currency, fmt.Sprintf("%.2f", dailyBudget.LimitEUR)))
 	}
 	if monthlyBudget != nil && monthlyBudget.LimitEUR > 0 {
-		fmt.Fprintf(w, "  Monthly budget: %.1f%% (€%s / €%.2f)\n", monthlyBudget.Percent, formatCost(monthlyBudget.UsedEUR), monthlyBudget.LimitEUR)
+		fmt.Fprintf(w, "  Monthly budget: %.1f%% (%s / %s)\n", monthlyBudget.Percent, formatMoney(currency, monthlyBudget.UsedEUR), pricing.FormatAmount(currency, fmt.Sprintf("%.2f", monthlyBudget.LimitEUR)))
 	}
 }
 
@@ -393,7 +400,8 @@ func sumValues(m map[string]float64) float64 {
 	return total
 }
 
-func writeCostsJSON(w io.Writer, payload costsPayload) error {
+func writeCostsJSON(w io.Writer, currency string, payload costsPayload) error {
+	payload.Currency = currency
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(payload); err != nil {
@@ -461,7 +469,7 @@ func renderCostsExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 	writer := csv.NewWriter(w)
 	header := []string{
 		"evidence_id", "tenant_id", "agent_id", "timestamp", "model", "provider",
-		"cost_eur", "input_tokens", "output_tokens", "policy_decision", "policy_reason",
+		"cost", "currency", "input_tokens", "output_tokens", "policy_decision", "policy_reason",
 	}
 	if err := writer.Write(header); err != nil {
 		return err
@@ -484,6 +492,7 @@ func renderCostsExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 			rec.ModelUsed,
 			rec.Provider,
 			formatCostNumeric(rec.Cost),
+			exportCurrency(rec.Currency),
 			strconv.Itoa(rec.InputTokens),
 			strconv.Itoa(rec.OutputTokens),
 			decision,
@@ -498,16 +507,16 @@ func renderCostsExportCSV(w io.Writer, records []evidence.ExportRecord) error {
 }
 
 // renderCostReportSingleAgent writes single-agent cost output to w (testable).
-func renderCostReportSingleAgent(w io.Writer, tenantID, agentID string, daily, monthly float64) {
+func renderCostReportSingleAgent(w io.Writer, currency, tenantID, agentID string, daily, monthly float64) {
 	fmt.Fprintf(w, "Tenant: %s | Agent: %s\n", tenantID, agentID)
-	fmt.Fprintf(w, "  Today:   €%s\n", formatCost(daily))
-	fmt.Fprintf(w, "  Month:   €%s\n", formatCost(monthly))
+	fmt.Fprintf(w, "  Today:   %s\n", formatMoney(currency, daily))
+	fmt.Fprintf(w, "  Month:   %s\n", formatMoney(currency, monthly))
 }
 
 // renderCostByModel writes per-model cost table to w. If agentID is non-empty, the header shows tenant and agent.
 //
 //nolint:dupl // similar to renderCostReportAllAgents but for model grouping; keeping separate for clarity
-func renderCostByModel(w io.Writer, tenantID, agentID string, byModelDaily, byModelMonthly map[string]float64) {
+func renderCostByModel(w io.Writer, currency, tenantID, agentID string, byModelDaily, byModelMonthly map[string]float64) {
 	models := make(map[string]bool)
 	for m := range byModelDaily {
 		models[m] = true
@@ -533,18 +542,18 @@ func renderCostByModel(w io.Writer, tenantID, agentID string, byModelDaily, byMo
 		m := byModelMonthly[model]
 		dailyTotal += d
 		monthlyTotal += m
-		fmt.Fprintf(w, "%-32s €%13s €%13s\n", model, formatCost(d), formatCost(m))
+		fmt.Fprintf(w, "%-32s %14s %14s\n", model, formatMoney(currency, d), formatMoney(currency, m))
 	}
 	if len(list) > 0 {
 		fmt.Fprintf(w, "%-32s %14s %14s\n", "-----", "-----", "-----")
 	}
-	fmt.Fprintf(w, "%-32s €%13s €%13s\n", "Total", formatCost(dailyTotal), formatCost(monthlyTotal))
+	fmt.Fprintf(w, "%-32s %14s %14s\n", "Total", formatMoney(currency, dailyTotal), formatMoney(currency, monthlyTotal))
 }
 
 // renderCostByProvider writes per-provider cost table to w.
 //
 //nolint:dupl // parallel to model/team renderers by design for readability in CLI output
-func renderCostByProvider(w io.Writer, tenantID, agentID string, byProviderDaily, byProviderMonthly map[string]float64) {
+func renderCostByProvider(w io.Writer, currency, tenantID, agentID string, byProviderDaily, byProviderMonthly map[string]float64) {
 	providers := make(map[string]bool)
 	for p := range byProviderDaily {
 		providers[p] = true
@@ -570,18 +579,18 @@ func renderCostByProvider(w io.Writer, tenantID, agentID string, byProviderDaily
 		m := byProviderMonthly[provider]
 		dailyTotal += d
 		monthlyTotal += m
-		fmt.Fprintf(w, "%-20s €%13s €%13s\n", provider, formatCost(d), formatCost(m))
+		fmt.Fprintf(w, "%-20s %14s %14s\n", provider, formatMoney(currency, d), formatMoney(currency, m))
 	}
 	if len(list) > 0 {
 		fmt.Fprintf(w, "%-20s %14s %14s\n", "--------", "-----", "-----")
 	}
-	fmt.Fprintf(w, "%-20s €%13s €%13s\n", "Total", formatCost(dailyTotal), formatCost(monthlyTotal))
+	fmt.Fprintf(w, "%-20s %14s %14s\n", "Total", formatMoney(currency, dailyTotal), formatMoney(currency, monthlyTotal))
 }
 
 // renderCostByTeam writes per-team cost table to w (testable).
 //
 //nolint:dupl // similar to renderCostByModel but for team grouping; keeping separate for clarity
-func renderCostByTeam(w io.Writer, tenantID string, byTeamDaily, byTeamMonthly map[string]float64) {
+func renderCostByTeam(w io.Writer, currency, tenantID string, byTeamDaily, byTeamMonthly map[string]float64) {
 	teams := make(map[string]bool)
 	for t := range byTeamDaily {
 		teams[t] = true
@@ -603,18 +612,18 @@ func renderCostByTeam(w io.Writer, tenantID string, byTeamDaily, byTeamMonthly m
 		m := byTeamMonthly[team]
 		dailyTotal += d
 		monthlyTotal += m
-		fmt.Fprintf(w, "%-32s €%13s €%13s\n", team, formatCost(d), formatCost(m))
+		fmt.Fprintf(w, "%-32s %14s %14s\n", team, formatMoney(currency, d), formatMoney(currency, m))
 	}
 	if len(list) > 0 {
 		fmt.Fprintf(w, "%-32s %14s %14s\n", "-----", "-----", "-----")
 	}
-	fmt.Fprintf(w, "%-32s €%13s €%13s\n", "Total", formatCost(dailyTotal), formatCost(monthlyTotal))
+	fmt.Fprintf(w, "%-32s %14s %14s\n", "Total", formatMoney(currency, dailyTotal), formatMoney(currency, monthlyTotal))
 }
 
 // renderCostReportAllAgents writes per-agent cost table to w (testable).
 //
 //nolint:dupl // similar to renderCostByModel but for agent grouping; keeping separate for clarity
-func renderCostReportAllAgents(w io.Writer, tenantID string, byAgentDaily, byAgentMonthly map[string]float64) {
+func renderCostReportAllAgents(w io.Writer, currency, tenantID string, byAgentDaily, byAgentMonthly map[string]float64) {
 	agents := make(map[string]bool)
 	for a := range byAgentDaily {
 		agents[a] = true
@@ -636,12 +645,12 @@ func renderCostReportAllAgents(w io.Writer, tenantID string, byAgentDaily, byAge
 		m := byAgentMonthly[agentID]
 		dailyTotal += d
 		monthlyTotal += m
-		fmt.Fprintf(w, "%-24s €%13s €%13s\n", agentID, formatCost(d), formatCost(m))
+		fmt.Fprintf(w, "%-24s %14s %14s\n", agentID, formatMoney(currency, d), formatMoney(currency, m))
 	}
 	if len(list) > 0 {
 		fmt.Fprintf(w, "%-24s %14s %14s\n", "----", "-----", "-----")
 	}
-	fmt.Fprintf(w, "%-24s €%13s €%13s\n", "Total", formatCost(dailyTotal), formatCost(monthlyTotal))
+	fmt.Fprintf(w, "%-24s %14s %14s\n", "Total", formatMoney(currency, dailyTotal), formatMoney(currency, monthlyTotal))
 }
 
 func init() {

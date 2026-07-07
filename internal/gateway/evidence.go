@@ -33,6 +33,7 @@ type RecordGatewayEvidenceParams struct {
 	OutputPIITypes          []string
 	Cost                    float64
 	EstimatedCost           float64
+	Currency                string // ISO-4217 unit of Cost/EstimatedCost, from the pricing table (#216)
 	InputTokens             int
 	OutputTokens            int
 	CacheReadTokens         int
@@ -139,6 +140,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			ModelUsed:     params.Model,
 			Cost:          params.Cost,
 			EstimatedCost: params.EstimatedCost,
+			Currency:      params.Currency,
 			Tokens:        evidence.TokenUsage{Input: params.InputTokens, Output: params.OutputTokens, CacheRead: params.CacheReadTokens, CacheWrite: params.CacheWriteTokens},
 			PricingBasis:  params.PricingBasis,
 			PricingKnown:  params.PricingKnown,
