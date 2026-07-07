@@ -35,15 +35,15 @@ services:
       # RAM-constrained boxes where the sidecar can't load the model) with:
       #   TALON_OLLAMA_BASE_URL=http://host.docker.internal:11434 docker compose up -d talon
       - TALON_OLLAMA_BASE_URL=${TALON_OLLAMA_BASE_URL:-http://ollama:11434}
-    extra_hosts:
-      # Make host.docker.internal resolve on Linux so a host-native Ollama is
-      # reachable from this container (no-op if unused).
-      - "host.docker.internal:host-gateway"
       # Real provider keys, passed through from the host environment. They are
       # stored in Talon's encrypted secret vault at container start and used
       # only for upstream auth — never logged, never in evidence.
       - ANTHROPIC_API_KEY
       - OPENAI_API_KEY
+    extra_hosts:
+      # Make host.docker.internal resolve on Linux so a host-native Ollama is
+      # reachable from this container (no-op if unused).
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./talon.config.session.yaml:/etc/talon/talon.config.yaml:ro
       - ./talon.config.session.yaml:/home/talon/.talon/talon.config.yaml:ro
