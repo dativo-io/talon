@@ -967,6 +967,15 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		fmt.Fprintf(w, "  Filtered:   %s\n", filt)
 		fmt.Fprintf(w, "  Forwarded:  %s\n", fwd)
 	}
+	if rd := ev.RoutingDecision; rd != nil && (rd.SelectedProvider != "" || len(rd.RejectedCandidates) > 0) {
+		fmt.Fprintln(w, "Routing Decision (sovereignty-aware)")
+		if rd.SelectedProvider != "" {
+			fmt.Fprintf(w, "  Selected:   %s / %s\n", rd.SelectedProvider, rd.SelectedModel)
+		}
+		for _, rc := range rd.RejectedCandidates {
+			fmt.Fprintf(w, "  Rejected:   %s (%s)\n", rc.ProviderID, rc.Reason)
+		}
+	}
 	if ev.UpstreamAuthMode != "" || ev.UpstreamKeySource != "" || ev.UpstreamKeyFingerprint != "" {
 		fmt.Fprintln(w, "Upstream Auth")
 		fmt.Fprintf(w, "  Mode:        %s\n", ev.UpstreamAuthMode)

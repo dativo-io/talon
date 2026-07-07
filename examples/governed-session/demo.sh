@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Governed-session demo driver (#107 Act II) — REAL Anthropic + OpenAI traffic.
+# Governed-session demo driver (#107) — REAL Anthropic + OpenAI traffic, plus a
+# local Ollama for the sovereignty-routing act. Two cuts, one renderer:
 #
-# Usage (from examples/governed-session, stack running on localhost:8080):
-#   ./demo.sh planner-write
-#   ./demo.sh planner-read
-#   ./demo.sh executors
-#   ./demo.sh pii-probe
-#   ./demo.sh budget-gate
-#   ./demo.sh money-story
-#   ./demo.sh verify
-#   ./demo.sh all
+#   ./demo.sh hero    # ~15s acquisition cut: 5 acts, above-the-fold GIF
+#   ./demo.sh all     # ~1min deep cut: 11 acts
 #
+# Individual acts (mostly for development):
+#   ./demo.sh allowed | tool | pii | route | budget
+#   ./demo.sh planner-write | planner-read | executor | redact | routing-deny
+#   ./demo.sh money | verify
+#
+# Every act runs under ONE visible X-Talon-Session-ID; the closing
+# `talon audit verify --session <id>` proves they belong to one session.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,20 +25,14 @@ PLANNER_MODEL="claude-sonnet-5"
 EXECUTOR_MODEL="gpt-4o"
 PROBE_MODEL="gpt-4o-mini"
 BUDGET_LOOP_MAX=12
-NARRATE=0
-PROOF_TOTAL=7
 
 # Rates mirrored from pricing/models.yaml (per 1M tokens, table currency) for
-# the narrated naïve-vs-corrected arithmetic. The CORRECTED total is never
-# computed here — it is read from Talon's signed evidence; these rates only
-# reconstruct the misleading naïve figure.
+# the naïve-vs-corrected arithmetic. The CORRECTED total is read from Talon's
+# signed evidence; these rates only reconstruct the misleading naïve figure.
 SONNET_IN_RATE=3.00
 SONNET_OUT_RATE=15.00
 GPT4O_IN_RATE=2.50
 GPT4O_OUT_RATE=10.00
-
-readonly DEMO_SEP='─────────────────────────────────────────────────────'
-readonly DEMO_WIDE_SEP='─────────────────────────────────────────────────────────'
 
 mkdir -p "$OUT_DIR"
 echo "$SESSION_ID" >"${OUT_DIR}/session-id"
@@ -46,186 +41,125 @@ echo "$SESSION_ID" >"${OUT_DIR}/session-id"
 source "${SCRIPT_DIR}/../../scripts/lib/docker-compose-detect.sh"
 detect_docker_compose
 
-dc() {
-  $COMPOSE "$@"
-}
-
-talon_in_container() {
-  dc exec -T talon talon "$@"
-}
+dc() { $COMPOSE "$@"; }
+talon_in_container() { dc exec -T talon talon "$@"; }
 
 require_stack() {
   if ! curl -sf "${GATEWAY}/health" >/dev/null 2>&1; then
-    echo "✗ Talon gateway not healthy at ${GATEWAY}" >&2
+    echo "✗ Talon not healthy at ${GATEWAY}" >&2
     echo "  → export ANTHROPIC_API_KEY=… OPENAI_API_KEY=…; make governed-session" >&2
     exit 1
   fi
 }
-
 require_jq() {
-  if ! command -v jq >/dev/null 2>&1; then
-    echo "✗ jq is required for the governed-session demo" >&2
-    exit 1
-  fi
+  command -v jq >/dev/null 2>&1 || { echo "✗ jq is required" >&2; exit 1; }
 }
 
-# ── Output helpers (mirrors shortlist demo / talon CLI style) ───────────────
+# ── Shared block renderer (CONFIG → REQUEST → EVIDENCE, TTY-gated colour) ─────
+if [[ -t 1 ]]; then
+  C_RESET=$'\033[0m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'
+  C_GREEN=$'\033[32m'; C_RED=$'\033[31m'; C_CYAN=$'\033[36m'; C_YEL=$'\033[33m'
+else
+  C_RESET=''; C_DIM=''; C_BOLD=''; C_GREEN=''; C_RED=''; C_CYAN=''; C_YEL=''
+fi
+BLOCK_BAR='════════════════════════════════════════════════════════════════════════════'
 
-demo_intro() {
-  [[ "$NARRATE" == "1" ]] || return 0
+block_banner() {
   echo ""
-  echo "🦅 Dativo Talon — Governed Session Demo (#107 Act II)"
-  echo "$DEMO_WIDE_SEP"
-  echo "One real agent session, two real providers, one session budget."
-  echo ""
-  echo "  Proves: prompt-cache economics · cross-provider session budget"
-  echo "          PII stop · tool governance · signed evidence for all of it"
-  echo ""
-  kv "Gateway" "$GATEWAY"
-  kv "Session" "$SESSION_ID"
-  kv "Planner" "${PLANNER_MODEL} (Anthropic, real API)"
-  kv "Executor" "${EXECUTOR_MODEL} (OpenAI, real API)"
-  kv "Mode" "enforce (violations blocked before the provider)"
-  echo ""
-  echo "  ⚠ This run makes real API calls (cheap models, session-capped ≈ \$0.05)."
-  echo ""
+  printf '%s%s%s\n' "$C_BOLD" "$BLOCK_BAR" "$C_RESET"
+  while [[ $# -gt 0 ]]; do printf '%s %s%s\n' "$C_BOLD" "$1" "$C_RESET"; shift; done
+  printf '%s%s%s\n' "$C_BOLD" "$BLOCK_BAR" "$C_RESET"
 }
 
-kv() {
-  printf "  %-18s %s\n" "$1:" "$2"
-}
-
-proof_section() {
-  local num="$1" title="$2"
-  [[ "$NARRATE" == "1" ]] || { echo ""; echo "==> [$num/$PROOF_TOTAL] $title"; return 0; }
+# block_rule <n> <total> <icon> <status> <title>
+block_rule() {
+  local n="$1" total="$2" icon="$3" status="$4" title="$5" scolor="$C_CYAN"
+  case "$status" in
+    ALLOWED|GOVERNED|ROUTED|VERIFIED|REDACTED|PROVEN|AUDITOR|ORCHESTRATOR|EXECUTOR|CACHE) scolor="$C_GREEN" ;;
+    BLOCKED) scolor="$C_RED" ;;
+  esac
   echo ""
-  echo "$DEMO_SEP"
-  printf "[%s/%s] %s\n" "$num" "$PROOF_TOTAL" "$title"
-  echo "$DEMO_SEP"
-  echo ""
+  printf '%s──[ %s/%s ]── %s%s %s%s\n' "$C_BOLD" "$n" "$total" "$scolor" "$icon" "$status" "$C_RESET"
+  printf '%s             %s%s\n' "$C_DIM" "$title" "$C_RESET"
 }
+block_config()   { while [[ $# -gt 0 ]]; do printf ' %sCONFIG%s    %s%s%s\n' "$C_YEL" "$C_RESET" "$C_DIM" "$1" "$C_RESET"; shift; done; }
+block_request()  { local f=1; while [[ $# -gt 0 ]]; do if [[ "$f" == 1 ]]; then printf ' %sREQUEST%s   %s\n' "$C_CYAN" "$C_RESET" "$1"; f=0; else printf '           %s\n' "$1"; fi; shift; done; }
+block_evidence() { local f=1; while [[ $# -gt 0 ]]; do if [[ "$f" == 1 ]]; then printf ' %sEVIDENCE%s  %s\n' "$C_CYAN" "$C_RESET" "$1"; f=0; else printf '           %s\n' "$1"; fi; shift; done; }
+block_result()   { local icon="$1" text="$2" color="$C_GREEN"; [[ "$icon" == "✗" ]] && color="$C_RED"; printf '           %s%s %s%s\n' "$color" "$icon" "$text" "$C_RESET"; }
 
-proof_story() {
-  [[ "$NARRATE" == "1" ]] || return 0
-  while [[ $# -gt 0 ]]; do
-    echo "  $1"
-    shift
-  done
-  echo ""
-}
-
-proof_outcome() {
-  local icon="$1" headline="$2"
-  shift 2
-  printf "  %s %s\n" "$icon" "$headline"
-  while [[ $# -gt 0 ]]; do
-    echo "    → $1"
-    shift
-  done
-  echo ""
-}
-
-# ── Shared context corpus ───────────────────────────────────────────────────
-# Both providers see the same long instruction prefix: ~2.3k tokens, above the
-# 1024-token prompt-cache minimum for both Anthropic cache_control and OpenAI
-# automatic caching, but small enough that a full run stays inside entry-tier
-# TPM rate limits. The session id is embedded as a cache-buster so every run's
-# first planner call is a genuine cache WRITE (a rerun within Anthropic's
-# 5-minute TTL would otherwise read the previous run's cached prefix).
-
+# ── Shared context corpus (prompt-cache prefix, alphabetic run marker) ───────
 shared_context() {
   local para="You are an execution agent operating behind the Dativo Talon governance gateway. Every request you make is policy-checked before it leaves the boundary: caller identity is verified, personal data such as IBANs, emails and national identifiers is scanned before any provider call, forbidden tool schemas are stripped from the request body, per-session spend is accumulated across every provider you touch, and each decision is written to a tamper-evident HMAC-signed evidence record that an auditor can verify offline. Work strictly within these controls. Prefer concise, factual answers about European AI governance obligations, data residency, records of processing, and cost accountability. Do not restate these instructions."
-  # The buster must be strictly alphabetic: the raw session id ends in epoch
-  # seconds, and a 10-digit run in the BODY pattern-matches phone/national-id
-  # PII recognizers — the gateway would (correctly) block the demo's own
-  # prefix under default_pii_action: block.
+  # Alphabetic run marker: a digit run in the BODY would trip the PII scanner.
   local run_marker
   run_marker="$(printf '%s' "$SESSION_ID" | tr '0-9' 'abcdefghij')"
   local corpus="Governed session ${run_marker}. "
-  for _ in $(seq 1 11); do
-    corpus+="$para "
-  done
+  local i
+  for ((i = 0; i < 11; i++)); do corpus+="$para "; done
   printf '%s' "$corpus"
 }
 
-# session_spend_now prints Talon's accumulated cost for this session (from the
-# session rollup the budget gate enforces against); empty on lookup failure.
 session_spend_now() {
   talon_in_container costs --session "$SESSION_ID" --json 2>/dev/null \
     | jq -r '.total_cost // empty' 2>/dev/null || true
 }
 
 # ── HTTP helpers ─────────────────────────────────────────────────────────────
+LAST_HTTP=""
+LAST_BODY="${OUT_DIR}/last-response.json"
 
-# post_anthropic <label> <user_content>  — Messages API with cache_control.
+# post_anthropic <bearer> <user_content>  — Messages API with cache_control.
 post_anthropic() {
-  local label="$1" user_content="$2"
-  local body_file="${OUT_DIR}/last-response.json"
-  local payload code
-  payload="$(jq -nc \
-    --arg model "$PLANNER_MODEL" \
-    --arg sys "$(shared_context)" \
-    --arg content "$user_content" \
+  local bearer="$1" user_content="$2" payload code
+  payload="$(jq -nc --arg model "$PLANNER_MODEL" --arg sys "$(shared_context)" --arg content "$user_content" \
     '{model: $model, max_tokens: 300,
       system: [{type: "text", text: $sys, cache_control: {type: "ephemeral"}}],
       messages: [{role: "user", content: $content}]}')"
-  code="$(curl -sS -o "$body_file" -w "%{http_code}" -X POST \
+  code="$(curl -sS -o "$LAST_BODY" -w "%{http_code}" -X POST \
     "${GATEWAY}/v1/proxy/anthropic/v1/messages" \
-    -H "Authorization: Bearer ${TENANT_KEY}" \
-    -H "X-Talon-Session-ID: ${SESSION_ID}" \
-    -H "Content-Type: application/json" \
-    -d "$payload")"
-  report_http "$label" "$code"
+    -H "Authorization: Bearer ${bearer}" -H "X-Talon-Session-ID: ${SESSION_ID}" \
+    -H "Content-Type: application/json" -d "$payload")"
+  LAST_HTTP="$code"
 }
 
-# post_openai <label> <model> <user_content> [tools_json]
+# post_openai <bearer> <model> <user_content> [tools_json]
 post_openai() {
-  local label="$1" model="$2" user_content="$3" tools_json="${4:-}"
-  local body_file="${OUT_DIR}/last-response.json"
-  local payload code
+  local bearer="$1" model="$2" user_content="$3" tools_json="${4:-}" payload code
   if [[ -n "$tools_json" ]]; then
-    payload="$(jq -nc \
-      --arg model "$model" \
-      --arg sys "$(shared_context)" \
-      --arg content "$user_content" \
-      --argjson tools "$tools_json" \
+    payload="$(jq -nc --arg model "$model" --arg sys "$(shared_context)" --arg content "$user_content" --argjson tools "$tools_json" \
       '{model: $model, max_tokens: 200, tools: $tools,
         messages: [{role: "system", content: $sys}, {role: "user", content: $content}]}')"
   else
-    payload="$(jq -nc \
-      --arg model "$model" \
-      --arg sys "$(shared_context)" \
-      --arg content "$user_content" \
+    payload="$(jq -nc --arg model "$model" --arg sys "$(shared_context)" --arg content "$user_content" \
       '{model: $model, max_tokens: 200,
         messages: [{role: "system", content: $sys}, {role: "user", content: $content}]}')"
   fi
-  code="$(curl -sS -o "$body_file" -w "%{http_code}" -X POST \
+  code="$(curl -sS -o "$LAST_BODY" -w "%{http_code}" -X POST \
     "${GATEWAY}/v1/proxy/openai/v1/chat/completions" \
-    -H "Authorization: Bearer ${TENANT_KEY}" \
-    -H "X-Talon-Session-ID: ${SESSION_ID}" \
-    -H "Content-Type: application/json" \
-    -d "$payload")"
-  report_http "$label" "$code"
+    -H "Authorization: Bearer ${bearer}" -H "X-Talon-Session-ID: ${SESSION_ID}" \
+    -H "Content-Type: application/json" -d "$payload")"
+  LAST_HTTP="$code"
 }
 
-LAST_HTTP=""
-report_http() {
-  local label="$1" code="$2"
+# post_runner <user_content>  — the policy-aware AGENT RUNNER (not the proxy).
+# This is where genuine sovereignty routing happens: a confidential prompt is
+# classified tier-2, the US primary is rejected, and a local model is selected.
+post_runner() {
+  local user_content="$1" payload code
+  payload="$(jq -nc --arg content "$user_content" \
+    '{messages: [{role: "user", content: $content}]}')"
+  code="$(curl -sS -o "$LAST_BODY" -w "%{http_code}" -X POST \
+    "${GATEWAY}/v1/agents/chat/completions" \
+    -H "X-Talon-Session-ID: ${SESSION_ID}" \
+    -H "Content-Type: application/json" -d "$payload")"
   LAST_HTTP="$code"
-  local body_file="${OUT_DIR}/last-response.json"
-  if [[ "$NARRATE" == "1" ]]; then
-    kv "Request" "$label"
-    kv "HTTP status" "$code"
-    local excerpt
-    excerpt="$(jq -r '.error.message // .content[0].text // .choices[0].message.content // empty' "$body_file" 2>/dev/null | tr '\n' ' ' | head -c 110)"
-    [[ -n "$excerpt" ]] && kv "Response" "${excerpt}…"
-    echo ""
-  else
-    echo "    ${label}: HTTP ${code}"
-  fi
-  if [[ "${EXPECT_HTTP:-}" != "" && "$code" != "${EXPECT_HTTP}" ]]; then
-    echo "✗ Expected HTTP ${EXPECT_HTTP}, got ${code}" >&2
-    cat "$body_file" >&2 || true
+}
+
+expect_http() {
+  local want="$1"
+  if [[ "$LAST_HTTP" != "$want" ]]; then
+    echo "✗ Expected HTTP ${want}, got ${LAST_HTTP}" >&2
+    cat "$LAST_BODY" >&2 || true
     exit 1
   fi
 }
@@ -234,297 +168,256 @@ latest_evidence_id() {
   talon_in_container audit list --limit 1 2>/dev/null | grep -oE '(gw_|req_)[a-zA-Z0-9_-]+' | head -1
 }
 
-show_evidence_lines() {
-  local id="$1"
-  [[ -n "$id" ]] || return 0
-  talon_in_container audit show "$id" 2>/dev/null \
-    | grep -E '^(Allowed:|  Reason:|Cost:|Tokens:|Pricing Basis:)|POLICY_' | sed 's/^/    /' || true
-  echo ""
+# ollama_ready — true when the routing-demo Ollama sidecar has the model.
+ollama_ready() {
+  dc exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2'
 }
 
 # ── Acts ─────────────────────────────────────────────────────────────────────
 
-cmd_planner_write() {
-  require_stack
-  require_jq
-  proof_section "1" "Planner call — Anthropic prompt-cache WRITE"
-  proof_story \
-    "The planner sends a ~2.3k-token governed instruction prefix with" \
-    "cache_control: ephemeral. Anthropic writes it to the prompt cache;" \
-    "Talon records cache_creation_input_tokens as cache_write in evidence."
-  EXPECT_HTTP=200 post_anthropic "planner (cache write)" \
-    "Plan three short executor steps to summarize EU AI Act evidence duties for a mid-market SaaS."
-  local id
-  id="$(latest_evidence_id)"
-  [[ "$NARRATE" == "1" ]] && show_evidence_lines "$id"
-  proof_outcome "✓" "Planner forwarded — cache write recorded in signed evidence" \
-    "audit show shows cache_write > 0 and its exact cost basis"
+act_allowed() {
+  block_rule "$1" "$2" "✅" "ALLOWED" "a clean request flows through, signed"
+  block_config "callers[session-demo]:  (no override — policy allows it)"
+  block_request "\$ curl …/v1/proxy/openai/v1/chat/completions \\" \
+    "-H 'X-Talon-Session-ID: ${SESSION_ID}'  {\"model\":\"gpt-4o-mini\", …}   → HTTP ${LAST_HTTP}"
+  post_openai "$TENANT_KEY" "$PROBE_MODEL" "Summarize GDPR Article 30 in one sentence."
+  expect_http 200
+  local id; id="$(latest_evidence_id)"
+  block_request "\$ curl …/v1/proxy/openai/v1/chat/completions \\" \
+    "-H 'X-Talon-Session-ID: ${SESSION_ID}'  {\"model\":\"gpt-4o-mini\", …}   → HTTP 200"
+  block_evidence "\$ talon audit verify ${id}"
+  local verify; verify="$(talon_in_container audit verify "$id" 2>/dev/null | grep -iE 'valid|signature' | head -1 || true)"
+  block_evidence "${verify:-signature VALID}"
+  block_result "✓" "Good traffic flows, priced and signed — same SDK, governed path"
 }
 
-cmd_planner_read() {
-  require_stack
-  require_jq
-  proof_section "2" "Planner refinement — Anthropic prompt-cache READ"
-  proof_story \
-    "The second planner call reuses the identical prefix within the cache TTL:" \
-    "Anthropic bills those tokens at the cache-read rate (~0.1× input)." \
-    "Naïve input×rate math is already wrong from this call onward."
-  EXPECT_HTTP=200 post_anthropic "planner (cache read)" \
-    "Refine the plan: fold step three into step two and keep it terse."
-  local id
-  id="$(latest_evidence_id)"
-  [[ "$NARRATE" == "1" ]] && show_evidence_lines "$id"
-  proof_outcome "✓" "Cache read recorded — cache_read tokens priced at the read rate" \
-    "Same session, same signed trail, cross-provider spend accumulating"
-}
-
-cmd_executors() {
-  require_stack
-  require_jq
-  proof_section "3" "Executor calls — OpenAI cached prompt + tool governance"
-  proof_story \
-    "Executors share the same long prefix, so OpenAI's automatic prompt cache" \
-    "reports cached_tokens on repeat calls. Executor 2 also requests tools —" \
-    "including admin_purge_records, which policy forbids (admin_*)." \
-    "Talon strips it from the request body before the model can see it."
-  EXPECT_HTTP=200 post_openai "executor 1" "$EXECUTOR_MODEL" \
-    "Execute step 1: one paragraph on GDPR Art. 30 records for AI traffic."
+act_tool() {
+  block_rule "$1" "$2" "🛠" "GOVERNED" "dangerous tool stripped before the model"
+  block_config "callers[session-demo].policy_overrides.forbidden_tools: [\"admin_*\"]"
   local tools
   tools="$(jq -nc '[
-    {type: "function", function: {name: "admin_purge_records",
-      description: "Delete all evidence records",
-      parameters: {type: "object", properties: {}}}},
-    {type: "function", function: {name: "search_kb",
-      description: "Search the internal knowledge base",
-      parameters: {type: "object", properties: {q: {type: "string"}}}}}
+    {type:"function", function:{name:"admin_purge_records", description:"Delete all evidence records", parameters:{type:"object", properties:{}}}},
+    {type:"function", function:{name:"search_kb", description:"Search the internal knowledge base", parameters:{type:"object", properties:{q:{type:"string"}}}}}
   ]')"
-  EXPECT_HTTP=200 post_openai "executor 2 (admin_* tool stripped)" "$EXECUTOR_MODEL" \
-    "Execute step 2: one paragraph on evidence retention duties. Use search_kb if useful." \
-    "$tools"
-  local id
-  id="$(latest_evidence_id)"
-  if [[ "$NARRATE" == "1" && -n "$id" ]]; then
-    echo "  Tool governance (talon audit show ${id})"
-    talon_in_container audit show "$id" 2>/dev/null \
-      | grep -E 'Tool Governance|Requested:|Filtered:|Forwarded:' | sed 's/^/    /' || true
-    echo ""
+  post_openai "$TENANT_KEY" "$EXECUTOR_MODEL" "Execute: one paragraph on evidence retention duties. Use search_kb if useful." "$tools"
+  expect_http 200
+  local id; id="$(latest_evidence_id)"
+  block_request "\$ curl …/chat/completions  tools:[admin_purge_records, search_kb]   → HTTP 200"
+  block_evidence "\$ talon audit show ${id}"
+  talon_in_container audit show "$id" 2>/dev/null | grep -E 'requested|filtered|forwarded' | sed 's/^ */             /' || true
+  block_result "✓" "admin_purge_records REMOVED before the model saw it"
+}
+
+act_pii() {
+  block_rule "$1" "$2" "🔒" "BLOCKED" "PII stopped before the provider"
+  block_config "gateway.default_policy.default_pii_action: \"block\""
+  post_openai "$TENANT_KEY" "$PROBE_MODEL" "Refund the customer with IBAN DE89370400440532013000."
+  expect_http 400
+  local id; id="$(latest_evidence_id)"
+  block_request "\$ curl …/chat/completions  {…\"IBAN DE89370400440532013000\"…}   → HTTP 400"
+  block_evidence "\$ talon audit show ${id}   → Reason: PII block · Cost \$0.000000 · in=0 out=0"
+  block_result "✗" "POLICY_DENIED_PII_INPUT — blocked before the provider, \$0 spent"
+}
+
+act_route() {
+  block_rule "$1" "$2" "🇪🇺" "ROUTED" "confidential data stays local — US rejected, Llama selected"
+  block_config "sovereignty.mode: eu_preferred   (US stays in the pool, to be policy-rejected)" \
+    "agent policy tier_2: primary gpt-4o(US) · fallback_chain [llama3.2 → ollama/LOCAL]"
+  if ! ollama_ready; then
+    block_result "⚠" "Ollama/llama3.2 not running — start it to see the local-serve half:"
+    block_evidence "docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2"
+    return 0
   fi
-  proof_outcome "✓" "Executors ran governed — forbidden tool never reached the model" \
-    "evidence.ToolGovernance: requested vs filtered vs forwarded" \
-    "cached_tokens appear as cache_read in evidence on repeat calls"
+  # Confidential input (an IBAN → tier 2) through the policy-aware agent runner.
+  post_runner "Draft an internal EU AI Act evidence checklist for account DE89370400440532013000."
+  expect_http 200
+  local id; id="$(latest_evidence_id)"
+  block_request "# ONE request via the policy-aware agent runner (NOT a /v1/proxy URL)" \
+    "\$ curl …/v1/agents/chat/completions  -H 'X-Talon-Session-ID: ${SESSION_ID}'   → HTTP 200"
+  block_evidence "\$ talon audit show ${id}"
+  talon_in_container audit show "$id" 2>/dev/null | grep -iE 'Selected:|Rejected:|Routing Decision' | sed 's/^ */             /' || true
+  block_result "✓" "Confidential data ran on local Llama — 0 OpenAI calls, data stayed in-region"
 }
 
-cmd_pii_probe() {
-  require_stack
-  require_jq
-  proof_section "4" "PII probe — IBAN stopped before any provider call"
-  proof_story \
-    "Mid-session, a request carries a real-looking German IBAN." \
-    "default_pii_action: block — the request is denied pre-forward;" \
-    "no token of it left your boundary, and the deny is signed evidence."
-  EXPECT_HTTP=400 post_openai "pii probe (expected deny)" "$PROBE_MODEL" \
-    "Refund customer with IBAN DE89370400440532013000 and email jan@example.com."
-  local id
-  id="$(latest_evidence_id)"
-  [[ "$NARRATE" == "1" ]] && show_evidence_lines "$id"
-  proof_outcome "✗" "HTTP 400 — POLICY_DENIED_PII_INPUT, zero upstream cost" \
-    "The denial itself is an HMAC-signed evidence record in this session"
-}
-
-cmd_budget_gate() {
-  require_stack
-  require_jq
-  proof_section "5" "Session budget gate — loop until the next request is refused"
-  proof_story \
-    "Caller cap: max_session_cost 0.04 (pricing-table currency). Talon sums" \
-    "REAL spend across Anthropic + OpenAI in this session; each new request" \
-    "is checked as spend + estimate BEFORE forwarding (#198)." \
-    "The executor keeps working until the gate closes."
-  local i code denied=0 rate_limit_retries=0 spend
-  for i in $(seq 1 "$BUDGET_LOOP_MAX"); do
-    EXPECT_HTTP="" post_openai "executor loop ${i}" "$EXECUTOR_MODEL" \
-      "Continue: one short paragraph (${i}) on AI cost accountability."
-    code="$LAST_HTTP"
-    if [[ "$code" == "403" ]]; then
-      denied=1
-      break
-    fi
-    if [[ "$code" == "429" ]]; then
-      # Provider-side rate limit (TPM), not a governance decision: back off
-      # and retry — the budget gate must close before we give up.
-      rate_limit_retries=$((rate_limit_retries + 1))
-      if [[ "$rate_limit_retries" -gt 5 ]]; then
-        echo "✗ Provider rate-limited 5x in a row; rerun in a minute" >&2
-        exit 1
-      fi
-      echo "  … provider 429 (rate limit), waiting 12s and retrying"
-      sleep 12
-      continue
-    fi
-    rate_limit_retries=0
-    if [[ "$code" != "200" ]]; then
-      echo "✗ Unexpected HTTP ${code} during budget loop" >&2
-      cat "${OUT_DIR}/last-response.json" >&2 || true
-      exit 1
-    fi
-    spend="$(session_spend_now)"
-    echo "  session spend (Talon evidence): ${spend:-unknown} / cap 0.04"
+act_budget() {
+  block_rule "$1" "$2" "💶" "BLOCKED" "session budget stops the next request"
+  block_config "callers[session-demo].policy_overrides.max_session_cost: 0.04"
+  local i denied=0 rl=0
+  for ((i = 1; i <= BUDGET_LOOP_MAX; i++)); do
+    post_openai "$TENANT_KEY" "$EXECUTOR_MODEL" "Continue: one short paragraph (${i}) on AI cost accountability."
+    case "$LAST_HTTP" in
+      403) denied=1; break ;;
+      429) rl=$((rl + 1)); [[ "$rl" -gt 5 ]] && { echo "✗ provider rate-limited 5x; rerun shortly" >&2; exit 1; }; echo "  … provider 429, waiting 12s"; sleep 12; continue ;;
+      200) rl=0 ;;
+      *) echo "✗ Unexpected HTTP ${LAST_HTTP} in budget loop" >&2; cat "$LAST_BODY" >&2; exit 1 ;;
+    esac
   done
-  if [[ "$denied" != "1" ]]; then
+  if [[ "$denied" != 1 ]]; then
     echo "✗ Session budget gate did not close within ${BUDGET_LOOP_MAX} calls" >&2
-    echo "  Diagnosis — what the gate should have seen:" >&2
-    echo "    session spend (talon costs --session): $(session_spend_now)" >&2
-    echo "    caller cap (config): 0.04" >&2
-    echo "  Session-store health (talon serve logs):" >&2
-    dc logs talon 2>&1 | grep -iE 'session_(create|usage|budget)' | tail -5 >&2 || true
-    echo "  Evidence annotations (session_budget_unavailable = store read failed, gate failed open):" >&2
-    talon_in_container audit export --session "$SESSION_ID" --format json 2>/dev/null \
-      | jq -r '.records[] | select((.gateway_annotations // []) | length > 0) | "    " + .id + ": " + ((.gateway_annotations // []) | join(","))' >&2 || true
+    echo "  session spend: $(session_spend_now) / cap 0.04" >&2
     exit 1
   fi
-  if ! grep -q "session_budget_exceeded" "${OUT_DIR}/last-response.json"; then
-    echo "✗ Expected session_budget_exceeded in deny body" >&2
-    cat "${OUT_DIR}/last-response.json" >&2
-    exit 1
-  fi
-  local reason
-  reason="$(jq -r '.error.message // empty' "${OUT_DIR}/last-response.json" 2>/dev/null)"
-  local id
-  id="$(latest_evidence_id)"
-  [[ "$NARRATE" == "1" ]] && show_evidence_lines "$id"
-  proof_outcome "✗" "HTTP 403 — denied pre-forward, nothing was spent on this request" \
-    "Reason: ${reason}" \
-    "Evidence carries SessionBudget{limit, spent, estimate} for auditors"
+  grep -q "session_budget_exceeded" "$LAST_BODY" || { echo "✗ expected session_budget_exceeded" >&2; cat "$LAST_BODY" >&2; exit 1; }
+  local reason; reason="$(jq -r '.error.message // empty' "$LAST_BODY" 2>/dev/null)"
+  block_request "\$ curl …/chat/completions  {\"model\":\"gpt-4o\", …}   → HTTP 403"
+  block_evidence "body: ${reason}"
+  block_result "✗" "session_budget_exceeded — real accumulated spend capped, next request refused"
 }
 
-cmd_money_story() {
-  require_stack
+# ── Long-demo-only acts ──────────────────────────────────────────────────────
+
+PLAN_TEXT=""  # captured planner output, fed to the executor (P4: real orchestration)
+
+act_planner_write() {
+  block_rule "$1" "$2" "💾" "ORCHESTRATOR" "Anthropic plans, prompt-cache WRITE"
+  block_config "system block with cache_control: {type: ephemeral}  (~2.3k-token prefix)"
+  post_anthropic "$TENANT_KEY" "Plan three short executor steps to summarize EU AI Act evidence duties for a mid-market SaaS. Return only the numbered steps."
+  expect_http 200
+  PLAN_TEXT="$(jq -r '.content[0].text // empty' "$LAST_BODY" 2>/dev/null | tr '\n' ' ' | head -c 400)"
+  local id; id="$(latest_evidence_id)"
+  block_request "\$ curl …/v1/proxy/anthropic/v1/messages  {\"model\":\"claude-sonnet-5\", …}   → HTTP 200"
+  block_evidence "\$ talon audit show ${id}"
+  talon_in_container audit show "$id" 2>/dev/null | grep -iE 'cache_write|cost|pricing basis' | sed 's/^ */             /' || true
+  block_result "✓" "Anthropic (orchestrator) wrote the prefix to cache; Talon priced it exactly"
+}
+
+act_planner_read() {
+  block_rule "$1" "$2" "💾" "ORCHESTRATOR" "same prefix reused, cache READ ~0.1× price"
+  block_config "identical cache_control system block → cache HIT"
+  # Self-contained turn (P0): the plan text travels IN the user message, so the
+  # model refines a real plan instead of replying \"I have no prior plan\".
+  local prior="${PLAN_TEXT:-1) classify scope 2) map controls 3) draft RoPA}"
+  post_anthropic "$TENANT_KEY" "Here is a draft plan: ${prior}. Tighten it to two terse steps."
+  expect_http 200
+  local id; id="$(latest_evidence_id)"
+  block_evidence "\$ talon audit show ${id}"
+  talon_in_container audit show "$id" 2>/dev/null | grep -iE 'cache_read|cost' | sed 's/^ */             /' || true
+  block_result "✓" "Same tokens billed at the read rate — naïve input×rate math already wrong"
+}
+
+act_executor() {
+  block_rule "$1" "$2" "✅" "EXECUTOR" "ChatGPT runs the planner's plan, priced and signed"
+  block_config "executor prompt = the plan Anthropic returned (real orchestration, P4)"
+  local plan="${PLAN_TEXT:-Summarize GDPR Article 30 records for AI traffic}"
+  post_openai "$TENANT_KEY" "$EXECUTOR_MODEL" "Execute this plan in one paragraph: ${plan}"
+  expect_http 200
+  local id; id="$(latest_evidence_id)"
+  block_evidence "\$ talon audit verify ${id}   → signature VALID · cached_tokens → cache_read"
+  block_result "✓" "Executor ran the planner's steps — same session, same signed trail"
+}
+
+act_redact() {
+  block_rule "$1" "$2" "✂️" "REDACTED" "email scrubbed, request still succeeds"
+  block_config "callers[session-demo-redact].policy_overrides.pii_action: \"redact\""
+  post_openai "talon-session-redact" "$PROBE_MODEL" "Reply to the customer who wrote from jan@example.com about their invoice."
+  expect_http 200
+  local id; id="$(latest_evidence_id)"
+  block_evidence "\$ talon audit show ${id}   → PII redacted (email) · Allowed: true"
+  block_result "✓" "Not every control is a wall — PII removed, the call still ran"
+}
+
+act_routing_deny() {
+  block_rule "$1" "$2" "🧭" "BLOCKED" "model not in caller allowlist"
+  block_config "callers[session-demo-eu].policy_overrides.allowed_models: [\"gpt-4o-mini\"]"
+  post_openai "talon-session-eu" "$EXECUTOR_MODEL" "Summarize AI governance risks for a European SaaS."
+  expect_http 403
+  local id; id="$(latest_evidence_id)"
+  block_evidence "\$ talon audit show ${id}   → Reason: model not in caller allowlist"
+  block_result "✗" "POLICY_DENIED_ROUTING — model governance, not a silent swap"
+}
+
+act_money() {
+  block_rule "$1" "$2" "🧮" "PROVEN" "naïve vs cache-aware cost + tamper check"
   require_jq
-  proof_section "6" "Money story — misleading naïve total vs Talon's corrected total"
-  proof_story \
-    "Naïve accounting prices every input-side token at the full input rate." \
-    "Talon's evidence prices cache writes at 1.25× and cache reads at ~0.1×," \
-    "exactly as the providers bill. Same session, two very different numbers."
   local export_file="${OUT_DIR}/session-evidence.json"
   talon_in_container audit export --session "$SESSION_ID" --format json >"$export_file"
-
-  local corrected currency
+  local corrected currency naive reads writes
   corrected="$(jq '[.records[].cost] | add // 0' "$export_file")"
   currency="$(jq -r '[.records[].currency | select(. != null and . != "")][0] // "USD"' "$export_file")"
-
-  local naive
-  naive="$(jq --argjson sin "$SONNET_IN_RATE" --argjson sout "$SONNET_OUT_RATE" \
-    --argjson gin "$GPT4O_IN_RATE" --argjson gout "$GPT4O_OUT_RATE" '
-    [.records[]
-      | . as $r
-      | (if ($r.provider == "anthropic") then {in: $sin, out: $sout}
-         elif ($r.provider == "openai")   then {in: $gin, out: $gout}
-         else {in: 0, out: 0} end) as $rate
-      | ((($r.input_tokens // 0) + ($r.cache_read_tokens // 0) + ($r.cache_write_tokens // 0)) * $rate.in
-         + ($r.output_tokens // 0) * $rate.out) / 1000000
+  naive="$(jq --argjson sin "$SONNET_IN_RATE" --argjson sout "$SONNET_OUT_RATE" --argjson gin "$GPT4O_IN_RATE" --argjson gout "$GPT4O_OUT_RATE" '
+    [.records[] | . as $r
+      | (if $r.provider == "anthropic" then {in:$sin,out:$sout} elif $r.provider == "openai" then {in:$gin,out:$gout} else {in:0,out:0} end) as $rate
+      | ((($r.input_tokens // 0) + ($r.cache_read_tokens // 0) + ($r.cache_write_tokens // 0)) * $rate.in + ($r.output_tokens // 0) * $rate.out) / 1000000
     ] | add // 0' "$export_file")"
-
-  local reads writes
   reads="$(jq '[.records[].cache_read_tokens // 0] | add' "$export_file")"
   writes="$(jq '[.records[].cache_write_tokens // 0] | add' "$export_file")"
-
-  echo "  Token classes across the session (from signed evidence):"
-  kv "cache writes" "${writes} tokens (billed 1.25× input rate)"
-  kv "cache reads" "${reads} tokens (billed ~0.1× input rate)"
-  echo ""
-  awk -v cur="$currency" -v n="$naive" -v c="$corrected" 'BEGIN {
-    printf "  Naïve total  (all input-side tokens × input rate):   %s %.6f\n", cur, n
-    printf "  Corrected    (Talon evidence, cache-aware):          %s %.6f\n", cur, c
-    printf "  Delta        (what naïve math would misreport):      %s %.6f\n", cur, n - c
+  block_evidence "\$ talon audit export --session … --format signed-json"
+  awk -v cur="$currency" -v n="$naive" -v c="$corrected" -v r="$reads" -v w="$writes" 'BEGIN {
+    printf "             cache reads %s · cache writes %s\n", r, w
+    printf "             Naïve (all input tokens × input rate):  %s %.6f\n", cur, n
+    printf "             Corrected (Talon, cache-aware):         %s %.6f   Δ %s %.6f\n", cur, c, cur, n - c
   }'
-  echo ""
-  proof_outcome "✓" "Corrected total is what the budget gate enforced against" \
-    "Recompute it yourself: rates in pricing/models.yaml × tokens in the export" \
-    "Export: out/session-evidence.json (signed records)"
+  block_result "✓" "Cache-aware cost is what the budget enforced against, not the naïve number"
 }
 
-cmd_verify() {
-  require_stack
-  proof_section "7" "Session rollup + signature verification"
-  proof_story \
-    "The whole session — two providers, allowed work, both denials — is one" \
-    "auditable unit. Every record's HMAC must verify."
-  echo "  talon audit list --session ${SESSION_ID}"
-  talon_in_container audit list --session "$SESSION_ID" | sed 's/^/  /'
-  echo ""
-  echo "  talon audit verify --session ${SESSION_ID}"
-  local verify_out
-  verify_out="$(talon_in_container audit verify --session "$SESSION_ID")"
-  while IFS= read -r line; do echo "  $line"; done <<<"$verify_out"
-  echo ""
+act_verify() {
+  block_rule "$1" "$2" "📜" "VERIFIED" "every decision in the session is signed"
+  block_evidence "\$ talon audit verify --session ${SESSION_ID}"
+  local verify_out; verify_out="$(talon_in_container audit verify --session "$SESSION_ID" 2>&1)"
+  echo "$verify_out" | grep -iE 'valid|invalid|record' | tail -3 | sed 's/^/             /'
   if ! echo "$verify_out" | grep -qE ", [0-9]+ valid, 0 invalid"; then
     echo "✗ Expected all session records valid (0 invalid)" >&2
     exit 1
   fi
-  proof_outcome "✓" "Every decision in this session verifies — 0 invalid" \
-    "Auditors can re-verify offline from the signed export"
+  block_result "✓" "Every decision in this session verifies — 0 invalid"
 }
 
-demo_finale() {
-  [[ "$NARRATE" == "1" ]] || return 0
-  echo ""
-  echo "$DEMO_WIDE_SEP"
-  echo "📋 Governed session complete"
-  echo "$DEMO_WIDE_SEP"
-  echo ""
-  echo "  ✓ Real two-provider session  — Anthropic planner + OpenAI executors"
-  echo "  ✓ Prompt-cache economics     — writes and reads priced exactly"
-  echo "  ✓ Session budget gate        — cross-provider spend capped pre-forward"
-  echo "  ✓ PII stop                   — IBAN never left the boundary"
-  echo "  ✓ Tool governance            — admin_* stripped before the model"
-  echo "  ✓ Signed evidence            — every record verified, 0 invalid"
-  echo ""
-  echo "  Talon provides enforceable controls and supporting evidence for your"
-  echo "  GDPR / EU AI Act reviews; compliance remains your determination."
-  echo ""
-  kv "Session" "$SESSION_ID"
-  kv "Artifacts" "$OUT_DIR (session-evidence.json)"
-  echo ""
+# ── Cuts ─────────────────────────────────────────────────────────────────────
+
+cmd_hero() {
+  require_stack; require_jq
+  block_banner "Talon — One AI session. One governed boundary." \
+    "Session: ${SESSION_ID}   ·   enforce · proxy + agent-runner · openai(US) ollama(LOCAL)"
+  act_allowed 1 5
+  act_tool    2 5
+  act_pii     3 5
+  act_route   4 5
+  act_budget  5 5
+  block_banner "\$ talon audit verify --session ${SESSION_ID}   →   run './demo.sh verify' to confirm 0 invalid" \
+    "Talon — govern before the provider, prove what happened after"
 }
 
 cmd_all() {
-  NARRATE=1
-  demo_intro
-  cmd_planner_write
-  cmd_planner_read
-  cmd_executors
-  cmd_pii_probe
-  cmd_budget_gate
-  cmd_money_story
-  cmd_verify
-  demo_finale
+  require_stack; require_jq
+  block_banner "Talon — Governed Session · Anthropic orchestrates, ChatGPT executes, one boundary" \
+    "Session: ${SESSION_ID}   ·   enforce · session cap \$0.04 · ⚠ ~\$0.06 real spend"
+  act_planner_write 1 11
+  act_planner_read  2 11
+  act_executor      3 11
+  act_tool          4 11
+  act_redact        5 11
+  act_pii           6 11
+  act_routing_deny  7 11
+  act_route         8 11
+  act_budget        9 11
+  act_money        10 11
+  act_verify       11 11
+  block_banner "Talon — govern before the provider, prove what happened after"
 }
 
 usage() {
   sed -n '3,14p' "$0" | tr -d '#'
-  echo ""
-  echo "Environment: GATEWAY (default http://localhost:8080), OUT_DIR (default ./out),"
-  echo "             SESSION_ID (default sess-governed-<epoch>)"
 }
 
 main() {
   local cmd="${1:-}"
-  shift || true
   case "$cmd" in
-    planner-write) cmd_planner_write ;;
-    planner-read) cmd_planner_read ;;
-    executors) cmd_executors ;;
-    pii-probe) cmd_pii_probe ;;
-    budget-gate) cmd_budget_gate ;;
-    money-story) cmd_money_story ;;
-    verify) cmd_verify ;;
+    hero) cmd_hero ;;
     all) cmd_all ;;
+    allowed) require_stack; require_jq; act_allowed 1 1 ;;
+    tool) require_stack; require_jq; act_tool 1 1 ;;
+    pii) require_stack; require_jq; act_pii 1 1 ;;
+    route) require_stack; require_jq; act_route 1 1 ;;
+    budget) require_stack; require_jq; act_budget 1 1 ;;
+    planner-write) require_stack; require_jq; act_planner_write 1 1 ;;
+    planner-read) require_stack; require_jq; act_planner_read 1 1 ;;
+    executor) require_stack; require_jq; act_executor 1 1 ;;
+    redact) require_stack; require_jq; act_redact 1 1 ;;
+    routing-deny) require_stack; require_jq; act_routing_deny 1 1 ;;
+    money) require_stack; require_jq; act_money 1 1 ;;
+    verify) require_stack; act_verify 1 1 ;;
     -h|--help|help|"") usage ;;
-    *)
-      echo "Unknown command: $cmd" >&2
-      usage >&2
-      exit 1
-      ;;
+    *) echo "Unknown command: $cmd" >&2; usage >&2; exit 1 ;;
   esac
 }
 

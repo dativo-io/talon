@@ -5,16 +5,16 @@
 #
 #   scripts/record-governed-session.sh
 #
-# Outputs:
-#   docs/assets/governed-session.cast   (committed source of truth)
-#   docs/assets/governed-session.gif    (README embed; only when `agg` exists)
+# Outputs (the deep demo GIF the README embeds):
+#   docs/assets/talon_demo.cast   (committed source of truth)
+#   docs/assets/talon_demo.gif    (README embed; only when `agg` exists)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEMO_DIR="${REPO_ROOT}/examples/governed-session"
 ASSET_DIR="${REPO_ROOT}/docs/assets"
-CAST="${ASSET_DIR}/governed-session.cast"
-GIF="${ASSET_DIR}/governed-session.gif"
+CAST="${ASSET_DIR}/talon_demo.cast"
+GIF="${ASSET_DIR}/talon_demo.gif"
 GATEWAY="${GATEWAY:-http://localhost:8080}"
 
 if ! command -v asciinema >/dev/null 2>&1; then
