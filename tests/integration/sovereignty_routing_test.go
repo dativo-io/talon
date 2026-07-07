@@ -3,12 +3,14 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,7 +22,7 @@ import (
 	"github.com/dativo-io/talon/internal/llm"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
-	"github.com/dativo-io/talon/internal/session"
+	"github.com/dativo-io/talon/internal/server"
 	"github.com/dativo-io/talon/internal/testutil"
 )
 
@@ -51,20 +53,21 @@ func (p *jurisdictionCountingProvider) WithHTTPClient(*http.Client) llm.Provider
 	return p
 }
 
-// TestSovereigntyRouting_ConfidentialToLocal_EndToEnd is the headline-capability
-// regression the reviewer required: the FULL runtime pipeline (real classifier,
-// real embedded routing policy, signed evidence) under eu_preferred routes a
-// confidential (tier-2, IBAN) prompt away from the healthy US provider and onto
-// the LOCAL one — recording BOTH candidates in signed evidence, and preserving
-// the client-asserted session id. Unlike the router-unit test, this uses the
-// real classifier + real rego + real evidence store, so the actual bug cannot
-// silently regress while it stays green.
-func TestSovereigntyRouting_ConfidentialToLocal_EndToEnd(t *testing.T) {
+// TestSovereigntyRouting_ServerHTTP_ConfidentialToLocal is the #261 regression:
+// it drives the REAL server HTTP handler (POST /v1/chat/completions), with the
+// server configured in eu_preferred mode, through the real classifier and the
+// real embedded routing rego (no custom evaluator) — proving a confidential
+// (tier-2, IBAN) request routes away from the healthy US provider to the LOCAL
+// one, with both candidates in signed evidence and the client-asserted session
+// id preserved. Without the #261 fix the server drops SovereigntyMode and no
+// RoutingDecision would be recorded, so this test protects the actual bug.
+func TestSovereigntyRouting_ServerHTTP_ConfidentialToLocal(t *testing.T) {
 	dir := t.TempDir()
 
 	// Agent policy mirrors examples/governed-session/agent.talon.yaml: tier-2's
 	// primary is a US model, its fallback a local llama; PII is NOT blocked (so
-	// confidential input reaches routing) and no human oversight gate.
+	// confidential input reaches routing) and no human-oversight gate. Named
+	// after the tenant key's agent so the server resolves it.
 	policyPath := filepath.Join(dir, "gov.talon.yaml")
 	require.NoError(t, os.WriteFile(policyPath, []byte(`
 agent:
@@ -86,14 +89,11 @@ compliance:
   human_oversight: "none"
 `), 0o600))
 
-	// The router's tier config (primary US, fallback local) — the same shape the
-	// agent policy declares; serve wires this from the policy at startup.
 	routingCfg := &policy.ModelRoutingConfig{
 		Tier0: &policy.TierConfig{Primary: "gpt-4o", FallbackChain: []string{"llama3.2"}},
 		Tier1: &policy.TierConfig{Primary: "gpt-4o", FallbackChain: []string{"llama3.2"}},
 		Tier2: &policy.TierConfig{Primary: "gpt-4o", FallbackChain: []string{"llama3.2"}},
 	}
-
 	openaiUS := &jurisdictionCountingProvider{name: "openai", jurisdiction: "US"}
 	ollamaLocal := &jurisdictionCountingProvider{name: "ollama", jurisdiction: "LOCAL"}
 
@@ -114,32 +114,43 @@ compliance:
 		Evidence:   evStore,
 	})
 
-	const sessionID = "sess-governed-abc123"
-	resp, err := runner.Run(context.Background(), &agent.RunRequest{
-		TenantID:  "acme",
-		AgentName: "gov",
-		// Confidential input: a valid German IBAN → sensitivity 3 → data tier 2.
-		Prompt:          "Summarize the AI Act evidence duty for IBAN DE89370400440532013000.",
-		InvocationType:  "http",
-		PolicyPath:      policyPath,
-		SovereigntyMode: "eu_preferred", // US stays in the pool, to be REJECTED (not absent)
-		SessionID:       sessionID,      // client-asserted external correlation id
-		SessionSource:   session.SourceClientAsserted,
-	})
-	require.NoError(t, err)
-	require.True(t, resp.PolicyAllow)
+	// Real server, eu_preferred mode — the #261 fix threads this into the
+	// RunRequest built by the /v1/chat/completions handler.
+	tenantKeys := map[string]string{"tenant-key-gov": "gov"}
+	srv := server.NewServer(runner, evStore, nil, nil, nil, policyPath, secStore, "",
+		tenantKeys, server.WithSovereigntyMode("eu_preferred"))
+	api := httptest.NewServer(srv.Routes())
+	t.Cleanup(api.Close)
 
-	// The US provider was rejected pre-emptively and never dispatched; the LOCAL
-	// provider served the request.
+	const sessionID = "sess-governed-abc123"
+	body, _ := json.Marshal(map[string]any{
+		"model": "gpt-4o",
+		"messages": []map[string]string{
+			{"role": "user", "content": "Summarize the AI Act evidence duty for IBAN DE89370400440532013000."},
+		},
+	})
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		api.URL+"/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer tenant-key-gov")
+	req.Header.Set("X-Talon-Session-ID", sessionID)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// US provider rejected pre-emptively (0 dispatches); LOCAL served it.
 	assert.Equal(t, 0, openaiUS.calls, "confidential tier: the US provider must never be called")
 	assert.Equal(t, 1, ollamaLocal.calls, "the LOCAL provider must serve the request")
 
 	// Signed evidence records BOTH candidates and preserves the asserted session.
-	records, err := evStore.List(context.Background(), "acme", "gov", time.Time{}, time.Time{}, 5)
+	// (The tenant key maps to tenant_id "gov"; the default agent name is "default".)
+	records, err := evStore.ListBySessionID(context.Background(), sessionID)
 	require.NoError(t, err)
 	require.NotEmpty(t, records)
-	ev := &records[0]
-	require.NotNil(t, ev.RoutingDecision, "a RoutingDecision must be recorded under eu_preferred routing")
+	ev := records[0]
+	require.NotNil(t, ev.RoutingDecision, "a RoutingDecision must be recorded — the #261 fix must have threaded SovereigntyMode through the handler")
 	assert.Equal(t, "ollama", ev.RoutingDecision.SelectedProvider)
 	require.NotEmpty(t, ev.RoutingDecision.RejectedCandidates, "the rejected US candidate must be recorded")
 	var openaiRejected *evidence.RejectedCandidate

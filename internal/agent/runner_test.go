@@ -2195,6 +2195,25 @@ func TestResolveSession_Internal_UnknownIDFailsClosed(t *testing.T) {
 	require.Error(t, err)
 }
 
+// INTERNAL: a session belonging to a DIFFERENT tenant fails closed — the
+// tenant-scoped Join must not let one tenant adopt another's lifecycle session
+// (indistinguishable from not-found, #215).
+func TestResolveSession_Internal_WrongTenantFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	s, err := talonsession.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+	require.NoError(t, err)
+	defer s.Close()
+
+	ss, err := s.Create(ctx, "tenant-a", "agent-a", "reasoning", 0) // owned by tenant-a
+	require.NoError(t, err)
+
+	r := NewRunner(RunnerConfig{SessionStore: s})
+	_, err = r.resolveSession(ctx, &RunRequest{
+		TenantID: "tenant-b", AgentName: "agent-a", SessionID: ss.ID, // tenant-b tries to join
+	})
+	require.Error(t, err, "a cross-tenant lifecycle join must fail closed")
+}
+
 // CLIENT-ASSERTED external correlation ids are NOT lifecycle sessions: they are
 // validated for hygiene and preserved for evidence grouping, never joined. A
 // closed/unknown id is fine — but a hostile id (bad charset / oversized) is
