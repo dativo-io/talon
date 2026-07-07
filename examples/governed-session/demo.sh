@@ -199,16 +199,30 @@ latest_evidence_id() {
     | grep -oE '(gw_|req_)[a-zA-Z0-9_-]+' | head -1
 }
 
-# ollama_ready — true when the routing-demo Ollama sidecar has the model.
+# ollama_cli — run an `ollama` subcommand against whichever Ollama is present:
+# the in-compose sidecar (default) or a HOST-native install (used on
+# RAM-constrained boxes where the sidecar can't load the model). Prefers the
+# sidecar; falls back to the host `ollama` binary. Extra args are passed through.
+ollama_cli() {
+  if dc ps --status running 2>/dev/null | grep -q '[-_]ollama[-_]'; then
+    dc exec -T ollama ollama "$@"
+  elif command -v ollama >/dev/null 2>&1; then
+    ollama "$@"
+  else
+    return 1
+  fi
+}
+
+# ollama_ready — true when an Ollama (sidecar or host) has the model.
 ollama_ready() {
-  dc exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2:1b'
+  ollama_cli list 2>/dev/null | grep -q 'llama3.2:1b'
 }
 
 # ollama_warm — load the model into memory so the routing act's first real
 # inference doesn't hit the runner's 60s call timeout on a cold start (common
-# on small CPU-only hosts). Best-effort; long timeout; ignores the result.
+# on small CPU-only hosts). Best-effort; ignores the result.
 ollama_warm() {
-  dc exec -T ollama ollama run llama3.2:1b "ok" >/dev/null 2>&1 || true
+  ollama_cli run llama3.2:1b "ok" >/dev/null 2>&1 || true
 }
 
 # ── Acts ─────────────────────────────────────────────────────────────────────
