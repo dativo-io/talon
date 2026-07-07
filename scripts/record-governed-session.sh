@@ -31,13 +31,21 @@ cd "$DEMO_DIR"
 
 # The deep demo's story also includes the sovereignty-routing act, so warm the
 # local model and record in strict mode — a skipped routing act fails the run.
-if docker compose exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2:1b'; then
-  echo "==> Warming llama3.2:1b (avoids a cold-start timeout in the recording)..."
-  echo "    (if this hangs on a small host, add swap — see the demo README)"
+# Probe the Ollama Talon routes to at its host-visible address (OLLAMA_PROBE_URL,
+# default http://localhost:11434) — host-native or a published sidecar port —
+# matching demo.sh's ollama_ready, with a sidecar-exec fallback.
+OLLAMA_PROBE_URL="${OLLAMA_PROBE_URL:-http://localhost:11434}"
+if curl -sf "${OLLAMA_PROBE_URL}/api/tags" 2>/dev/null | grep -q 'llama3.2:1b'; then
+  echo "==> Warming llama3.2:1b at ${OLLAMA_PROBE_URL} (avoids a cold-start timeout in the recording)..."
+  curl -sf "${OLLAMA_PROBE_URL}/api/generate" \
+    -d '{"model":"llama3.2:1b","prompt":"ok","stream":false,"options":{"num_predict":1}}' >/dev/null 2>&1 || true
+elif docker compose exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2:1b'; then
+  echo "==> Warming llama3.2:1b via the ollama sidecar..."
   docker compose exec -T ollama ollama run llama3.2:1b "ok" >/dev/null 2>&1 || true
 else
-  echo "✗ llama3.2:1b not found in the ollama sidecar — the deep demo's routing act needs it." >&2
-  echo "  docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" >&2
+  echo "✗ llama3.2:1b not reachable at ${OLLAMA_PROBE_URL} nor in a sidecar — the deep demo's routing act needs it." >&2
+  echo "  host-native: ollama pull llama3.2:1b  (+ run Talon with TALON_OLLAMA_BASE_URL=http://host.docker.internal:11434)" >&2
+  echo "  sidecar:     docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" >&2
   exit 1
 fi
 

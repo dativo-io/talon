@@ -30,16 +30,25 @@ fi
 mkdir -p "$ASSET_DIR"
 cd "$DEMO_DIR"
 
-# Ollama runs as a compose sidecar (reachable at ollama:11434 inside the
-# network, not on the host). Warm the model before recording so the ROUTED
-# act's first local inference doesn't hit the runner's call timeout.
-if docker compose exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2:1b'; then
-  echo "==> Warming llama3.2:1b (avoids a cold-start timeout in the recording)..."
-  echo "    (if this hangs on a small host, add swap — see the demo README)"
+# Warm the routing model before recording so the ROUTED act's first local
+# inference doesn't cold-start into the runner's call timeout. Probe the Ollama
+# that Talon actually routes to, at its HOST-visible address (OLLAMA_PROBE_URL,
+# default http://localhost:11434) — works for both a host-native Ollama and a
+# published sidecar port, matching demo.sh's ollama_ready. Falls back to a
+# sidecar exec if the HTTP endpoint isn't reachable from the host.
+OLLAMA_PROBE_URL="${OLLAMA_PROBE_URL:-http://localhost:11434}"
+if curl -sf "${OLLAMA_PROBE_URL}/api/tags" 2>/dev/null | grep -q 'llama3.2:1b'; then
+  echo "==> Warming llama3.2:1b at ${OLLAMA_PROBE_URL} (avoids a cold-start timeout in the recording)..."
+  curl -sf "${OLLAMA_PROBE_URL}/api/generate" \
+    -d '{"model":"llama3.2:1b","prompt":"ok","stream":false,"options":{"num_predict":1}}' >/dev/null 2>&1 || true
+elif docker compose exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2:1b'; then
+  echo "==> Warming llama3.2:1b via the ollama sidecar..."
   docker compose exec -T ollama ollama run llama3.2:1b "ok" >/dev/null 2>&1 || true
 else
-  echo "⚠ llama3.2:1b not found in the ollama sidecar — the ROUTED act will note it and skip the local-serve half." >&2
-  echo "  For the full recording: docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" >&2
+  echo "⚠ llama3.2:1b not reachable at ${OLLAMA_PROBE_URL} nor in a sidecar." >&2
+  echo "  host-native: ollama pull llama3.2:1b  (+ run Talon with TALON_OLLAMA_BASE_URL=http://host.docker.internal:11434)" >&2
+  echo "  sidecar:     docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" >&2
+  echo "  STRICT mode will fail the recording in the ROUTED act if it stays unreachable." >&2
 fi
 
 # Strict mode: a missing Ollama / skipped routing act FAILS the recording, so a
