@@ -83,7 +83,7 @@ func runFailoverRecords(t *testing.T, store *evidence.Store, correlationID strin
 // the SAME request, with BOTH candidates captured in the RouteDecision that
 // flows into signed evidence. This is distinct from error-driven failover.
 func TestResolveProvider_SovereigntyRoutes_USRejectedLocalSelected(t *testing.T) {
-	usPrimary := &flakyProvider{name: "openai", jurisdiction: "US"}      // healthy — not failing
+	usPrimary := &flakyProvider{name: "openai", jurisdiction: "US"} // healthy — not failing
 	localFallback := &flakyProvider{name: "ollama", jurisdiction: "LOCAL"}
 	routing := &policy.ModelRoutingConfig{
 		Tier2: &policy.TierConfig{Primary: "gpt-4o", FallbackChain: []string{"llama3:70b"}},
