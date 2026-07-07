@@ -1,13 +1,21 @@
 # Talon governed-session demo (#107 Act II) — REAL providers, no mock.
 # One session: Anthropic planner (prompt-cache write/read) + OpenAI executors
 # (cached_tokens reads) under one session budget, with PII and tool governance
-# in the same signed-evidence trail.
+# in the same signed-evidence trail — plus a genuine sovereignty-routing act
+# (confidential data → US rejected → local Llama selected via the agent runner).
 #
 #   export ANTHROPIC_API_KEY=sk-ant-...   OPENAI_API_KEY=sk-...
-#   make governed-session                  # from repo root
+#   make governed-session                  # from repo root (no Ollama needed)
 #   cd examples/governed-session && ./demo.sh all
 #
-# Each full run makes real API calls (cheap models, capped): ~$0.05.
+# The sovereignty-routing act needs a local Ollama. It is OPT-IN via the
+# `routing-demo` compose profile so a normal run never pulls a multi-GB model:
+#   docker compose --profile routing-demo up -d
+#   docker compose exec ollama ollama pull llama3.2
+# Without it, the routing act notes Ollama is unavailable and skips its
+# local-serve half instead of failing the demo.
+#
+# Each full run makes real API calls (cheap models, capped): ~$0.06.
 
 services:
   talon:
@@ -30,6 +38,10 @@ services:
     volumes:
       - ./talon.config.session.yaml:/etc/talon/talon.config.yaml:ro
       - ./talon.config.session.yaml:/home/talon/.talon/talon.config.yaml:ro
+      # Agent policy for the runner's sovereignty routing. serve resolves the
+      # policy at ./agent.talon.yaml relative to its working dir (/home/talon),
+      # so mount it there.
+      - ./agent.talon.yaml:/home/talon/agent.talon.yaml:ro
       # NOTE: ./out is written host-side by demo.sh (exec redirects); binding
       # it here would make Docker create it root-owned and break host writes.
       - talon-data:/home/talon/.talon
@@ -52,6 +64,24 @@ services:
         talon secrets set openai-api-key "$${OPENAI_API_KEY}" >/dev/null
         exec talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
 
+  # Local model for the sovereignty-routing act. OPT-IN via the `routing-demo`
+  # profile so a normal `make governed-session` never pulls a multi-GB model.
+  # The model persists in the ollama-models volume across runs.
+  #   docker compose --profile routing-demo up -d
+  #   docker compose exec ollama ollama pull llama3.2
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["routing-demo"]
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
 volumes:
   talon-data:
+    driver: local
+  ollama-models:
     driver: local

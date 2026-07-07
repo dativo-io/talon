@@ -1,9 +1,25 @@
-# Governed-session demo (#107 Act II) — REAL Anthropic + OpenAI providers.
-# One agent session, two providers, one session budget, signed evidence for
-# every decision. Requires ANTHROPIC_API_KEY and OPENAI_API_KEY at stack start.
+# Governed-session demo (#107 Act II) — REAL Anthropic + OpenAI providers,
+# plus a local Ollama for the sovereignty-routing act.
+# One agent session, one evidence trail, one visible X-Talon-Session-ID.
+# Requires ANTHROPIC_API_KEY and OPENAI_API_KEY at stack start.
 #
 # Costs are enforced and displayed in the pricing table's currency (USD for
 # the shipped table, #216). Budget caps below are denominated in that unit.
+
+# Data-sovereignty posture: eu_preferred (NOT eu_strict). Under eu_preferred,
+# US providers stay in the runner's candidate pool — so the sovereignty act
+# can show OpenAI/US POLICY-REJECTED (with a real reason) rather than silently
+# absent, then a local Llama SELECTED. eu_preferred is a no-op at the gateway
+# proxy (which only hard-denies under eu_strict), so the OpenAI-backed proxy
+# acts (happy path, tool strip, PII, budget) are unaffected. The confidential
+# (tier-2) → LOCAL-only routing is driven by the agent policy + input
+# classification, not by a demo shortcut.
+sovereignty:
+  mode: "eu_preferred"
+
+# Runner's Ollama endpoint (buildProviders reads ollama_base_url, not
+# llm.providers). Points at the ollama sidecar in the compose network.
+ollama_base_url: "http://ollama:11434"
 
 compliance:
   controller:
@@ -39,12 +55,28 @@ gateway:
       policy_overrides:
         # Session budget gate: the next request is denied pre-forward once
         # session spend + the fixed pre-request estimate exceeds this (#198).
-        # With claude-sonnet-5 planning and gpt-4o executing, the gate closes
-        # after roughly 5-8 executor calls (~$0.04 real spend per run).
+        # The long demo accumulates real spend to this cap over several
+        # executor calls; the hero crosses it after its two forwarded acts.
         max_session_cost: 0.04
         # Runtime tool-schema governance: admin_* tools are stripped from the
         # request body before the model can ever see them (filter action).
         forbidden_tools: ["admin_*"]
+    # Model governance (long-demo act): this caller may only use gpt-4o-mini,
+    # so a gpt-4o request is denied POLICY_DENIED_ROUTING at the gateway.
+    - name: "session-demo-eu"
+      tenant_key: "talon-session-eu"
+      tenant_id: "governed-session"
+      team: "governed-session-demo"
+      policy_overrides:
+        allowed_models: ["gpt-4o-mini"]
+    # Output redaction (long-demo act): an email is scrubbed before the
+    # provider call, but the request still succeeds (redact, not block).
+    - name: "session-demo-redact"
+      tenant_key: "talon-session-redact"
+      tenant_id: "governed-session"
+      team: "governed-session-demo"
+      policy_overrides:
+        pii_action: "redact"
 
   default_policy:
     default_pii_action: "block"
