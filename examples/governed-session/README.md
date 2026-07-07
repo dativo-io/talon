@@ -17,7 +17,8 @@ every decision — allowed or denied — is an HMAC-signed evidence record.
 
 The strongest beat: a **confidential** prompt (it contains an IBAN → data
 tier 2) goes through Talon's policy-aware **agent runner**
-(`/v1/agents/chat/completions`), not the proxy. The routing policy evaluates the
+(`/v1/chat/completions`, the tenant-authenticated runner endpoint), not the
+proxy. The routing policy evaluates the
 US model first, **rejects** it ("confidential tier requires LOCAL provider
 only"), and **selects** a local Llama — for the same request. Zero calls leave
 for the US provider; the signed `RoutingDecision` records both the rejected and

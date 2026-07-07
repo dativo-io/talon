@@ -144,12 +144,15 @@ post_openai() {
 # post_runner <user_content>  — the policy-aware AGENT RUNNER (not the proxy).
 # This is where genuine sovereignty routing happens: a confidential prompt is
 # classified tier-2, the US primary is rejected, and a local model is selected.
+# In gateway mode the runner's OpenAI-compatible endpoint is /v1/chat/completions
+# (tenant-authenticated); a caller tenant_key selects the tenant/agent.
 post_runner() {
   local user_content="$1" payload code
   payload="$(jq -nc --arg content "$user_content" \
     '{messages: [{role: "user", content: $content}]}')"
   code="$(curl -sS -o "$LAST_BODY" -w "%{http_code}" -X POST \
-    "${GATEWAY}/v1/agents/chat/completions" \
+    "${GATEWAY}/v1/chat/completions" \
+    -H "Authorization: Bearer ${TENANT_KEY}" \
     -H "X-Talon-Session-ID: ${SESSION_ID}" \
     -H "Content-Type: application/json" -d "$payload")"
   LAST_HTTP="$code"
@@ -233,7 +236,7 @@ act_route() {
   expect_http 200
   local id; id="$(latest_evidence_id)"
   block_request "# ONE request via the policy-aware agent runner (NOT a /v1/proxy URL)" \
-    "\$ curl …/v1/agents/chat/completions  -H 'X-Talon-Session-ID: ${SESSION_ID}'   → HTTP 200"
+    "\$ curl …/v1/chat/completions  -H 'X-Talon-Session-ID: ${SESSION_ID}'   → HTTP 200"
   block_evidence "\$ talon audit show ${id}"
   talon_in_container audit show "$id" 2>/dev/null | grep -iE 'Selected:|Rejected:|Routing Decision' | sed 's/^ */             /' || true
   block_result "✓" "Confidential data ran on local Llama — 0 OpenAI calls, data stayed in-region"
