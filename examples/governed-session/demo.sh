@@ -192,6 +192,13 @@ ollama_ready() {
   dc exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2'
 }
 
+# ollama_warm — load the model into memory so the routing act's first real
+# inference doesn't hit the runner's 60s call timeout on a cold start (common
+# on small CPU-only hosts). Best-effort; long timeout; ignores the result.
+ollama_warm() {
+  dc exec -T ollama ollama run llama3.2 "ok" >/dev/null 2>&1 || true
+}
+
 # ── Acts ─────────────────────────────────────────────────────────────────────
 
 act_allowed() {
@@ -239,16 +246,30 @@ act_pii() {
 }
 
 act_route() {
+  local have_ollama=0
+  if ollama_ready; then
+    have_ollama=1
+    # Warm the model BEFORE rendering so the recorded act isn't slowed (or
+    # failed) by a cold first inference on a small CPU host.
+    ollama_warm
+  fi
   block_rule "$1" "$2" "🇪🇺" "ROUTED" "confidential data stays local — US rejected, Llama selected"
   block_config "sovereignty.mode: eu_preferred   (US stays in the pool, to be policy-rejected)" \
     "agent policy tier_2: primary gpt-4o(US) · fallback_chain [llama3.2 → ollama/LOCAL]"
-  if ! ollama_ready; then
+  if [[ "$have_ollama" != 1 ]]; then
     block_result "⚠" "Ollama/llama3.2 not running — start it to see the local-serve half:"
     block_evidence "docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2"
     return 0
   fi
   # Confidential input (an IBAN → tier 2) through the policy-aware agent runner.
-  post_runner "Draft an internal EU AI Act evidence checklist for account DE89370400440532013000."
+  # Retry once on a slow-model 500 (cold cache): the routing decision is the
+  # same; only the local inference latency varies.
+  local attempt
+  for attempt in 1 2; do
+    post_runner "Draft an internal EU AI Act evidence checklist for account DE89370400440532013000."
+    [[ "$LAST_HTTP" == "200" ]] && break
+    [[ "$attempt" == 1 ]] && { ollama_warm; continue; }
+  done
   expect_http 200
   local id; id="$(latest_evidence_id)"
   block_request "# ONE request via the policy-aware agent runner (NOT a /v1/proxy URL)" \

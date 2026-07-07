@@ -27,13 +27,19 @@ if ! curl -sf "${GATEWAY}/health" >/dev/null 2>&1; then
   echo "✗ Stack not healthy at ${GATEWAY} — run: make governed-session" >&2
   exit 1
 fi
-if ! curl -sf "http://localhost:11434/api/tags" >/dev/null 2>&1; then
-  echo "⚠ Ollama not reachable at :11434 — the ROUTED act will note it and skip the local-serve half." >&2
-  echo "  For the full recording: ollama pull llama3.2 && ollama serve" >&2
-fi
-
 mkdir -p "$ASSET_DIR"
 cd "$DEMO_DIR"
+
+# Ollama runs as a compose sidecar (reachable at ollama:11434 inside the
+# network, not on the host). Warm the model before recording so the ROUTED
+# act's first local inference doesn't hit the runner's call timeout.
+if docker compose exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2'; then
+  echo "==> Warming llama3.2 (avoids a cold-start timeout in the recording)..."
+  docker compose exec -T ollama ollama run llama3.2 "ok" >/dev/null 2>&1 || true
+else
+  echo "⚠ llama3.2 not found in the ollama sidecar — the ROUTED act will note it and skip the local-serve half." >&2
+  echo "  For the full recording: docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2" >&2
+fi
 
 echo "==> Recording ./demo.sh hero (real API calls + local Llama, ~\$0.01)..."
 asciinema rec --overwrite --cols 100 --rows 30 --idle-time-limit 1 \
