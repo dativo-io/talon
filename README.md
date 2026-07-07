@@ -82,8 +82,8 @@ session begins ──▶ Anthropic orchestrates (prompt-cache write, then read);
                ──▶ IBAN probe denied before any provider call
                ──▶ confidential data → US model rejected by policy → local Llama runs it (routed)
                ──▶ real cross-provider spend reaches the session cap → 403 session_budget_exceeded
-               ──▶ money story: naïve total vs Talon's cache-aware corrected total; tamper breaks the signature
-               ──▶ talon audit verify --session → N record(s), N valid, 0 invalid + RoPA export
+               ──▶ money story from the signed export; flipping a signed field makes audit verify report INVALID
+               ──▶ talon audit verify --session → N valid, 0 invalid; talon compliance ropa → GDPR Art. 30 pack
 ```
 
 Cache writes bill at 1.25× the input rate and cache reads at ~0.1× — Talon prices them exactly and enforces the budget against the corrected number, in the pricing table's declared currency. The sovereignty act shows **data classification driving execution placement**: confidential input is refused by the US model and runs locally instead — the same IBAN the gateway blocks outright elsewhere, because policy (not the data alone) decides the outcome. Every decision is a signed evidence record in one session trail: supporting controls and evidence for GDPR and EU AI Act reviews, not a compliance guarantee. Recorded with [asciinema](https://asciinema.org) ([cast](docs/assets/talon_demo.cast) · [`scripts/record-governed-session.sh`](scripts/record-governed-session.sh)). Full walk-through: [governed-session demo](examples/governed-session/README.md). The six-proof mock demo above needs no keys; this one shows the same controls on live traffic. The sovereignty-routing act needs a local Ollama (opt-in `routing-demo` compose profile).

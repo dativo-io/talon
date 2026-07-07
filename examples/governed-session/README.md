@@ -109,8 +109,8 @@ the same unit.
 | 7 | Model governance | HTTP 403, `POLICY_DENIED_ROUTING` — model not in caller allowlist |
 | 8 | Sovereignty routing | runner: US model rejected (confidential → LOCAL only), local Llama selected; `RoutingDecision` shows both |
 | 9 | Session budget gate | HTTP 403, `session_budget_exceeded` with `SessionBudget{limit, spent, estimate}` evidence |
-| 10 | Money story + tamper | naïve vs corrected totals; flipping a byte breaks the signature |
-| 11 | Verify + RoPA | `audit verify --session` → 0 invalid; `compliance ropa` auditor pack |
+| 10 | Money story + tamper | naïve vs corrected totals from the signed export; flipping one signed field (`policy_decision.allowed`) makes `audit verify --file` report the record INVALID |
+| 11 | Verify + RoPA | `audit verify --session` → 0 invalid; `compliance ropa` generates a non-empty GDPR Art. 30 pack |
 
 The `hero` cut is acts 1(allowed)/tool/PII/route/budget in acquisition order.
 Because the traffic is real, per-run numbers vary a little (output lengths,
