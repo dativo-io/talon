@@ -24,7 +24,11 @@ TENANT_KEY="talon-session-demo"
 PLANNER_MODEL="claude-sonnet-5"
 EXECUTOR_MODEL="gpt-4o"
 PROBE_MODEL="gpt-4o-mini"
-BUDGET_LOOP_MAX=12
+# The budget act loops real gpt-4o calls until session spend + the next
+# estimate crosses the caller cap (0.03). ~$0.002/call, so the hero (which
+# reaches the loop with little prior spend) trips around call ~14; the long
+# demo reaches it having already spent more and trips within a few iterations.
+BUDGET_LOOP_MAX=20
 
 # Rates mirrored from pricing/models.yaml (per 1M tokens, table currency) for
 # the naïve-vs-corrected arithmetic. The CORRECTED total is read from Talon's
@@ -244,7 +248,7 @@ act_route() {
 
 act_budget() {
   block_rule "$1" "$2" "💶" "BLOCKED" "session budget stops the next request"
-  block_config "callers[session-demo].policy_overrides.max_session_cost: 0.04"
+  block_config "callers[session-demo].policy_overrides.max_session_cost: 0.03"
   local i denied=0 rl=0
   for ((i = 1; i <= BUDGET_LOOP_MAX; i++)); do
     post_openai "$TENANT_KEY" "$EXECUTOR_MODEL" "Continue: one short paragraph (${i}) on AI cost accountability."
@@ -257,7 +261,7 @@ act_budget() {
   done
   if [[ "$denied" != 1 ]]; then
     echo "✗ Session budget gate did not close within ${BUDGET_LOOP_MAX} calls" >&2
-    echo "  session spend: $(session_spend_now) / cap 0.04" >&2
+    echo "  session spend: $(session_spend_now) / cap 0.03" >&2
     exit 1
   fi
   grep -q "session_budget_exceeded" "$LAST_BODY" || { echo "✗ expected session_budget_exceeded" >&2; cat "$LAST_BODY" >&2; exit 1; }
@@ -383,7 +387,7 @@ cmd_hero() {
 cmd_all() {
   require_stack; require_jq
   block_banner "Talon — Governed Session · Anthropic orchestrates, ChatGPT executes, one boundary" \
-    "Session: ${SESSION_ID}   ·   enforce · session cap \$0.04 · ⚠ ~\$0.06 real spend"
+    "Session: ${SESSION_ID}   ·   enforce · session cap \$0.03 · ⚠ ~\$0.06 real spend"
   act_planner_write 1 11
   act_planner_read  2 11
   act_executor      3 11

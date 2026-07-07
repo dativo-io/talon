@@ -44,7 +44,7 @@ func TestLoadGovernedSessionGatewayConfig(t *testing.T) {
 	sessionCaller := callers["session-demo"]
 	require.NotNil(t, sessionCaller)
 	require.NotNil(t, sessionCaller.PolicyOverrides)
-	require.InDelta(t, 0.04, sessionCaller.PolicyOverrides.MaxSessionCost, 1e-9,
+	require.InDelta(t, 0.03, sessionCaller.PolicyOverrides.MaxSessionCost, 1e-9,
 		"session budget gate: demo.sh budget-gate loop is tuned to this cap")
 	require.Contains(t, sessionCaller.PolicyOverrides.ForbiddenTools, "admin_*")
 

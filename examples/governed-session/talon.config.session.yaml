@@ -57,7 +57,7 @@ gateway:
         # session spend + the fixed pre-request estimate exceeds this (#198).
         # The long demo accumulates real spend to this cap over several
         # executor calls; the hero crosses it after its two forwarded acts.
-        max_session_cost: 0.04
+        max_session_cost: 0.03
         # Runtime tool-schema governance: admin_* tools are stripped from the
         # request body before the model can ever see them (filter action).
         forbidden_tools: ["admin_*"]
