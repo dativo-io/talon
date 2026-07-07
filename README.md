@@ -22,6 +22,14 @@ Talon is a single Go binary that sits in front of OpenAI, Anthropic, AWS Bedrock
 
 **Positioning:** Portkey helps you operate AI. AGT helps you build governed agents. **Talon helps you prove your AI traffic was governed — inside Europe, with signed evidence.** See [Roadmap & focus](ROADMAP.md) for what we deliberately do *not* build.
 
+## Watch the demo (37s)
+
+One real two-provider session through the gateway — prompt-cache economics, a session budget gate, PII stop, tool governance, and signed evidence that verifies:
+
+![Talon governed-session demo — a real Anthropic + OpenAI session governed end-to-end](docs/assets/talon_demo.gif)
+
+Recorded with [asciinema](https://asciinema.org). Play it in your terminal from the self-contained [cast](docs/assets/talon_demo.cast) with `asciinema play docs/assets/talon_demo.cast`, or record your own run against real providers with [`scripts/record-governed-session.sh`](scripts/record-governed-session.sh).
+
 ```
 $ talon audit list
 ID          TIME                 CALLER        PII              COST(€)  MODEL         DECISION
