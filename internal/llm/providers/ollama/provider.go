@@ -23,13 +23,24 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/llm/providers
 //
 //nolint:revive // type name matches package for clarity at call sites
 type OllamaProvider struct {
-	baseURL    string
-	httpClient *http.Client
-	pricing    *pricing.PricingTable
+	baseURL       string
+	httpClient    *http.Client
+	pricing       *pricing.PricingTable
+	maxNumPredict int // clamp on num_predict; 0 = no clamp
 }
+
+// defaultOllamaMaxNumPredict bounds a single local generation. The runner sets
+// MaxTokens=2000 on every request; on a CPU-only host that is minutes of
+// generation and reads as a hang. Local models are used for short, governed
+// answers here, so we clamp to a modest ceiling unless an operator raises it.
+const defaultOllamaMaxNumPredict = 512
 
 type ollamaConfig struct {
 	BaseURL string `yaml:"base_url"`
+	// MaxNumPredict caps num_predict (output tokens) per request. Defaults to
+	// defaultOllamaMaxNumPredict; set 0 (via max_num_predict: 0) to disable the
+	// clamp and honor the caller's MaxTokens verbatim.
+	MaxNumPredict *int `yaml:"max_num_predict"`
 }
 
 type ollamaRequest struct {
@@ -48,10 +59,19 @@ type ollamaOptions struct {
 }
 
 // optionsFromRequest builds Ollama generation options from the llm.Request,
-// returning nil when nothing needs to be set.
-func optionsFromRequest(req *llm.Request) *ollamaOptions {
-	if req != nil && req.MaxTokens > 0 {
-		return &ollamaOptions{NumPredict: req.MaxTokens}
+// clamping num_predict to the provider's ceiling (maxNumPredict) so a large
+// caller MaxTokens can't turn a local CPU generation into a multi-minute hang.
+// Returns nil when nothing needs to be set.
+func (p *OllamaProvider) optionsFromRequest(req *llm.Request) *ollamaOptions {
+	if req == nil {
+		return nil
+	}
+	n := req.MaxTokens
+	if p.maxNumPredict > 0 && (n <= 0 || n > p.maxNumPredict) {
+		n = p.maxNumPredict
+	}
+	if n > 0 {
+		return &ollamaOptions{NumPredict: n}
 	}
 	return nil
 }
@@ -70,6 +90,7 @@ type ollamaResponse struct {
 func init() {
 	llm.Register("ollama", func(configYAML []byte) (llm.Provider, error) {
 		baseURL := "http://localhost:11434"
+		maxNumPredict := defaultOllamaMaxNumPredict
 		if len(configYAML) > 0 {
 			var cfg ollamaConfig
 			if err := yaml.Unmarshal(configYAML, &cfg); err != nil {
@@ -78,17 +99,21 @@ func init() {
 			if strings.TrimSpace(cfg.BaseURL) != "" {
 				baseURL = strings.TrimRight(cfg.BaseURL, "/")
 			}
+			if cfg.MaxNumPredict != nil {
+				maxNumPredict = *cfg.MaxNumPredict
+			}
 		}
-		return &OllamaProvider{baseURL: baseURL, httpClient: &http.Client{}}, nil
+		return &OllamaProvider{baseURL: baseURL, httpClient: &http.Client{}, maxNumPredict: maxNumPredict}, nil
 	})
 }
 
-// NewOllamaProvider creates an Ollama provider pointing at the given base URL.
+// NewOllamaProvider creates an Ollama provider pointing at the given base URL,
+// with the default num_predict clamp applied.
 func NewOllamaProvider(baseURL string) *OllamaProvider {
 	if baseURL == "" {
 		baseURL = "http://localhost:11434"
 	}
-	return &OllamaProvider{baseURL: strings.TrimRight(baseURL, "/"), httpClient: &http.Client{}}
+	return &OllamaProvider{baseURL: strings.TrimRight(baseURL, "/"), httpClient: &http.Client{}, maxNumPredict: defaultOllamaMaxNumPredict}
 }
 
 // Name returns the provider identifier.
@@ -122,7 +147,7 @@ func (p *OllamaProvider) Generate(ctx context.Context, req *llm.Request) (*llm.R
 		messages[i] = ollamaMessage{Role: msg.Role, Content: msg.Content}
 	}
 
-	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: false, Options: optionsFromRequest(req)}
+	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: false, Options: p.optionsFromRequest(req)}
 	body, err := json.Marshal(apiReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshalling ollama request: %w", err)
@@ -181,7 +206,7 @@ func (p *OllamaProvider) Stream(ctx context.Context, req *llm.Request, ch chan<-
 	for i, msg := range req.Messages {
 		messages[i] = ollamaMessage{Role: msg.Role, Content: msg.Content}
 	}
-	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: true, Options: optionsFromRequest(req)}
+	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: true, Options: p.optionsFromRequest(req)}
 	body, err := json.Marshal(apiReq)
 	if err != nil {
 		close(ch)

@@ -63,12 +63,14 @@ func TestOllamaGenerate_MaxTokensBecomesNumPredict(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// No MaxTokens → no options block (backward compatible).
-func TestOllamaGenerate_NoMaxTokens_NoOptions(t *testing.T) {
+// No MaxTokens → num_predict defaults to the provider clamp, so a bare local
+// call is still bounded (never an unbounded multi-minute generation).
+func TestOllamaGenerate_NoMaxTokens_DefaultsToClamp(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var reqBody ollamaRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqBody))
-		assert.Nil(t, reqBody.Options)
+		require.NotNil(t, reqBody.Options, "a bare local call must still be bounded by the default clamp")
+		assert.Equal(t, defaultOllamaMaxNumPredict, reqBody.Options.NumPredict)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(ollamaResponse{Message: struct {
 			Content string `json:"content"`
@@ -79,6 +81,52 @@ func TestOllamaGenerate_NoMaxTokens_NoOptions(t *testing.T) {
 	provider := NewOllamaProvider(server.URL)
 	_, err := provider.Generate(context.Background(), &llm.Request{
 		Model: "llama3.2:1b", Messages: []llm.Message{{Role: "user", Content: "Hi"}},
+	})
+	require.NoError(t, err)
+}
+
+// A caller MaxTokens above the clamp is capped down — this is the fix for the
+// runner's hardcoded MaxTokens=2000 hanging a CPU-only host for minutes.
+func TestOllamaGenerate_LargeMaxTokensClampedDown(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody ollamaRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqBody))
+		require.NotNil(t, reqBody.Options)
+		assert.Equal(t, defaultOllamaMaxNumPredict, reqBody.Options.NumPredict,
+			"a 2000-token request must be clamped to the local ceiling")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaResponse{Message: struct {
+			Content string `json:"content"`
+		}{Content: "ok"}})
+	}))
+	defer server.Close()
+
+	provider := NewOllamaProvider(server.URL)
+	_, err := provider.Generate(context.Background(), &llm.Request{
+		Model: "llama3.2:1b", Messages: []llm.Message{{Role: "user", Content: "Hi"}}, MaxTokens: 2000,
+	})
+	require.NoError(t, err)
+}
+
+// An operator can disable the clamp with max_num_predict: 0 and get the caller's
+// MaxTokens verbatim (e.g. on a GPU host that can afford long generations).
+func TestOllama_ClampDisabled_HonorsCallerMaxTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody ollamaRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqBody))
+		require.NotNil(t, reqBody.Options)
+		assert.Equal(t, 2000, reqBody.Options.NumPredict)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaResponse{Message: struct {
+			Content string `json:"content"`
+		}{Content: "ok"}})
+	}))
+	defer server.Close()
+
+	// maxNumPredict: 0 == clamp disabled (the max_num_predict: 0 config path).
+	prov := &OllamaProvider{baseURL: server.URL, httpClient: &http.Client{}, maxNumPredict: 0}
+	_, err := prov.Generate(context.Background(), &llm.Request{
+		Model: "llama3.2:1b", Messages: []llm.Message{{Role: "user", Content: "Hi"}}, MaxTokens: 2000,
 	})
 	require.NoError(t, err)
 }
