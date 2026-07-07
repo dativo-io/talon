@@ -976,11 +976,25 @@ func (r *Runner) resolveSession(ctx context.Context, req *RunRequest) (string, e
 		return req.SessionID, nil
 	}
 	if req.SessionID != "" {
+		// A client-asserted session id (X-Talon-Session-ID) may name a session
+		// this runner does not own — e.g. one the gateway proxy opened under a
+		// different (tenant, caller) tuple. Joining is best-effort: on success
+		// we adopt the internal id; on any miss we proceed WITHOUT runner-side
+		// session lifecycle rather than failing the whole run. The asserted id
+		// still travels into signed evidence, so the audit trail stays coherent.
 		ss, err := r.sessionStore.Join(ctx, req.SessionID, req.TenantID)
-		if err != nil {
-			return "", fmt.Errorf("joining session %q: %w", req.SessionID, err)
+		if err == nil {
+			return ss.ID, nil
 		}
-		return ss.ID, nil
+		// Join missed: keep the asserted id so signed evidence stays tagged with
+		// the client's session (one visible session across gateway + runner),
+		// just without runner-side lifecycle bookkeeping.
+		log.Debug().
+			Err(err).
+			Str("session_id", req.SessionID).
+			Str("tenant_id", req.TenantID).
+			Msg("asserted_session_join_missed_proceeding_without_lifecycle")
+		return req.SessionID, nil
 	}
 	ss, err := r.sessionStore.Create(ctx, req.TenantID, req.AgentName, req.AgentReasoning, 0)
 	if err != nil {

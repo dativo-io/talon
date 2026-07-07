@@ -2158,7 +2158,12 @@ func TestBuildLLMTools(t *testing.T) {
 	}
 }
 
-func TestResolveSessionWithProvidedClosedSessionFails(t *testing.T) {
+// A client-asserted session the runner cannot join (closed here, or opened by
+// the gateway under a different tuple) must NOT fail the run: the runner
+// proceeds without runner-side lifecycle but keeps the asserted id so signed
+// evidence stays tagged with the client's session (one visible session across
+// gateway + runner).
+func TestResolveSessionWithProvidedUnjoinableSessionProceeds(t *testing.T) {
 	ctx := context.Background()
 	s, err := talonsession.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
 	require.NoError(t, err)
@@ -2166,16 +2171,25 @@ func TestResolveSessionWithProvidedClosedSessionFails(t *testing.T) {
 
 	ss, err := s.Create(ctx, "acme", "agent-a", "reasoning", 0)
 	require.NoError(t, err)
-	require.NoError(t, s.Complete(ctx, ss.ID, "acme", 0, 0))
+	require.NoError(t, s.Complete(ctx, ss.ID, "acme", 0, 0)) // closed → unjoinable
 
 	r := NewRunner(RunnerConfig{SessionStore: s})
-	_, err = r.resolveSession(ctx, &RunRequest{
+	got, err := r.resolveSession(ctx, &RunRequest{
 		TenantID:  "acme",
 		AgentName: "agent-a",
 		SessionID: ss.ID,
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "joining session")
+	require.NoError(t, err, "an unjoinable asserted session must not fail the run")
+	assert.Equal(t, ss.ID, got, "the asserted session id is preserved for evidence")
+
+	// An entirely unknown asserted id likewise proceeds with the id preserved.
+	got, err = r.resolveSession(ctx, &RunRequest{
+		TenantID:  "acme",
+		AgentName: "agent-a",
+		SessionID: "sess-external-from-gateway",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "sess-external-from-gateway", got)
 }
 
 func TestResolveSessionWithProvidedActiveSessionJoins(t *testing.T) {
