@@ -523,7 +523,11 @@ act_verify() {
   # HTML (non-trivial size + an <html> tag), not an empty shell.
   local ropa_file="${OUT_DIR}/governed-session-ropa.html"
   rm -f "$ropa_file"
-  talon_in_container compliance ropa --format html >"$ropa_file"
+  # --policy points at the mounted agent policy so the GDPR Art. 30 declarations
+  # (compliance.declarations) are loaded. Without it the command falls back to
+  # cfg.DefaultPolicy (empty in this demo config) and prints "declaration
+  # missing" warnings for facts it can't infer.
+  talon_in_container compliance ropa --policy /home/talon/agent.talon.yaml --format html >"$ropa_file"
   local ropa_bytes
   ropa_bytes="$(wc -c <"$ropa_file" | tr -d '[:space:]')"
   if [[ ! -s "$ropa_file" || "$ropa_bytes" -lt 200 ]] || ! grep -qi '<html' "$ropa_file"; then
