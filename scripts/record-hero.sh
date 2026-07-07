@@ -42,7 +42,11 @@ else
   echo "  For the full recording: docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" >&2
 fi
 
-echo "==> Recording ./demo.sh hero (real API calls + local Llama, ~\$0.01)..."
+# Strict mode: a missing Ollama / skipped routing act FAILS the recording, so a
+# committed hero GIF can never be missing its headline sovereignty proof.
+export TALON_DEMO_STRICT=1
+echo "==> Recording ./demo.sh hero (real API calls + local Llama; the budget act"
+echo "    spends toward the \$0.03 session cap, so ~\$0.03 real spend)..."
 asciinema rec --overwrite --cols 100 --rows 30 --idle-time-limit 1 \
   -c "./demo.sh hero" "$CAST"
 echo "    Wrote ${CAST}"

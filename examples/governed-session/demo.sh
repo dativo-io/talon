@@ -21,6 +21,11 @@ GATEWAY="${GATEWAY:-http://localhost:8080}"
 OUT_DIR="${OUT_DIR:-${SCRIPT_DIR}/out}"
 mkdir -p "$OUT_DIR"
 
+# Strict mode (asset recording): a missing dependency or a skipped headline act
+# is a hard failure — never produce a committable GIF with a proof missing. The
+# record scripts set TALON_DEMO_STRICT=1; interactive runs default to lenient.
+STRICT="${TALON_DEMO_STRICT:-0}"
+
 # Read-only acts (verify, money) inspect an EXISTING session, so they default
 # to the last run's session id rather than minting a fresh (empty) one. Every
 # other command starts a new session. SESSION_ID from the environment always
@@ -183,8 +188,11 @@ expect_http() {
   fi
 }
 
+# latest_evidence_id — the newest evidence id FOR THIS SESSION, so a concurrent
+# run's records can never be picked up (the demo's whole claim is "one session").
 latest_evidence_id() {
-  talon_in_container audit list --limit 1 2>/dev/null | grep -oE '(gw_|req_)[a-zA-Z0-9_-]+' | head -1
+  talon_in_container audit list --session "$SESSION_ID" 2>/dev/null \
+    | grep -oE '(gw_|req_)[a-zA-Z0-9_-]+' | head -1
 }
 
 # ollama_ready — true when the routing-demo Ollama sidecar has the model.
@@ -204,13 +212,11 @@ ollama_warm() {
 act_allowed() {
   block_rule "$1" "$2" "✅" "ALLOWED" "a clean request flows through, signed"
   block_config "callers[session-demo]:  (no override — policy allows it)"
-  block_request "\$ curl …/v1/proxy/openai/v1/chat/completions \\" \
-    "-H 'X-Talon-Session-ID: ${SESSION_ID}'  {\"model\":\"gpt-4o-mini\", …}   → HTTP ${LAST_HTTP}"
   post_openai "$TENANT_KEY" "$PROBE_MODEL" "Summarize GDPR Article 30 in one sentence."
   expect_http 200
   local id; id="$(latest_evidence_id)"
   block_request "\$ curl …/v1/proxy/openai/v1/chat/completions \\" \
-    "-H 'X-Talon-Session-ID: ${SESSION_ID}'  {\"model\":\"gpt-4o-mini\", …}   → HTTP 200"
+    "-H 'X-Talon-Session-ID: ${SESSION_ID}'  {\"model\":\"gpt-4o-mini\", …}   → HTTP ${LAST_HTTP}"
   block_evidence "\$ talon audit verify ${id}"
   local verify; verify="$(talon_in_container audit verify "$id" 2>/dev/null | grep -iE 'valid|signature' | head -1 || true)"
   block_evidence "${verify:-signature VALID}"
@@ -247,35 +253,49 @@ act_pii() {
 
 act_route() {
   local have_ollama=0
-  if ollama_ready; then
-    have_ollama=1
-    # Warm the model BEFORE rendering so the recorded act isn't slowed (or
-    # failed) by a cold first inference on a small CPU host.
-    ollama_warm
-  fi
+  ollama_ready && have_ollama=1
   block_rule "$1" "$2" "🇪🇺" "ROUTED" "confidential data stays local — US rejected, Llama selected"
   block_config "sovereignty.mode: eu_preferred   (US stays in the pool, to be policy-rejected)" \
     "agent policy tier_2: primary gpt-4o(US) · fallback_chain [llama3.2:1b → ollama/LOCAL]"
   if [[ "$have_ollama" != 1 ]]; then
+    # STRICT (asset recording): a missing headline act is a hard failure — never
+    # produce a committable GIF with sovereignty routing absent.
+    if [[ "$STRICT" == 1 ]]; then
+      echo "✗ [strict] Ollama/llama3.2:1b not available — the routing act cannot be skipped in a recording." >&2
+      echo "  docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" >&2
+      exit 1
+    fi
     block_result "⚠" "Ollama/llama3.2:1b not running — start it to see the local-serve half:"
     block_evidence "docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b"
     return 0
   fi
+
+  # Pre-warm the model so the ONE governed request below is fast and doesn't
+  # cold-start. Warming is a separate operation, not the demonstrated request.
+  ollama_warm
+
   # Confidential input (an IBAN → tier 2) through the policy-aware agent runner.
-  # Keep the ask tiny: the point is the ROUTING decision, not a long answer —
-  # and a short generation keeps the local 1B model fast on a small CPU host.
-  # Retry once on a slow-model 500 (cold cache): the routing decision is the
-  # same; only the local inference latency varies.
-  local attempt
-  for attempt in 1 2; do
+  # Keep the ask tiny: the point is the ROUTING decision, not a long answer.
+  # Send exactly ONE request — that is what the block claims. In non-strict mode
+  # a single slow-model 500 is retried once (and rendered as a retry, honestly);
+  # in strict mode there is no retry — the recording must show one clean call.
+  post_runner "In one short sentence, name the top EU AI Act evidence duty for account DE89370400440532013000."
+  local retried=0
+  if [[ "$LAST_HTTP" != "200" && "$STRICT" != 1 ]]; then
+    ollama_warm
     post_runner "In one short sentence, name the top EU AI Act evidence duty for account DE89370400440532013000."
-    [[ "$LAST_HTTP" == "200" ]] && break
-    [[ "$attempt" == 1 ]] && { ollama_warm; continue; }
-  done
+    retried=1
+  fi
   expect_http 200
   local id; id="$(latest_evidence_id)"
-  block_request "# ONE request via the policy-aware agent runner (NOT a /v1/proxy URL)" \
-    "\$ curl …/v1/chat/completions  -H 'X-Talon-Session-ID: ${SESSION_ID}'   → HTTP 200"
+  if [[ "$retried" == 1 ]]; then
+    block_request "# TWO attempts via the agent runner — attempt 1 timed out on a cold local model," \
+      "# attempt 2 succeeded. Same routing decision; only local inference latency varied." \
+      "\$ curl …/v1/chat/completions  -H 'X-Talon-Session-ID: ${SESSION_ID}'   → HTTP 200"
+  else
+    block_request "# ONE request via the policy-aware agent runner (NOT a /v1/proxy URL)" \
+      "\$ curl …/v1/chat/completions  -H 'X-Talon-Session-ID: ${SESSION_ID}'   → HTTP 200"
+  fi
   block_evidence "\$ talon audit show ${id}"
   talon_in_container audit show "$id" 2>/dev/null | grep -iE 'Selected:|Rejected:|Routing Decision' | sed 's/^ */             /' || true
   block_result "✓" "Confidential data ran on local Llama — 0 OpenAI calls, data stayed in-region"
@@ -284,13 +304,16 @@ act_route() {
 act_budget() {
   block_rule "$1" "$2" "💶" "BLOCKED" "session budget stops the next request"
   block_config "callers[session-demo].policy_overrides.max_session_cost: 0.03"
-  local i denied=0 rl=0
+  # Drive real governed requests until the caller's session cap closes the gate.
+  # This is an honest loop, not one curl: the block below reports how many
+  # governed requests ran and the accumulated spend that tripped the cap.
+  local i denied=0 rl=0 sent=0
   for ((i = 1; i <= BUDGET_LOOP_MAX; i++)); do
     post_openai "$TENANT_KEY" "$EXECUTOR_MODEL" "Continue: one short paragraph (${i}) on AI cost accountability."
     case "$LAST_HTTP" in
       403) denied=1; break ;;
       429) rl=$((rl + 1)); [[ "$rl" -gt 5 ]] && { echo "✗ provider rate-limited 5x; rerun shortly" >&2; exit 1; }; echo "  … provider 429, waiting 12s"; sleep 12; continue ;;
-      200) rl=0 ;;
+      200) rl=0; sent=$((sent + 1)) ;;
       *) echo "✗ Unexpected HTTP ${LAST_HTTP} in budget loop" >&2; cat "$LAST_BODY" >&2; exit 1 ;;
     esac
   done
@@ -300,8 +323,10 @@ act_budget() {
     exit 1
   fi
   grep -q "session_budget_exceeded" "$LAST_BODY" || { echo "✗ expected session_budget_exceeded" >&2; cat "$LAST_BODY" >&2; exit 1; }
-  local reason; reason="$(jq -r '.error.message // empty' "$LAST_BODY" 2>/dev/null)"
-  block_request "\$ curl …/chat/completions  {\"model\":\"gpt-4o\", …}   → HTTP 403"
+  local reason spend; reason="$(jq -r '.error.message // empty' "$LAST_BODY" 2>/dev/null)"
+  spend="$(session_spend_now)"
+  block_request "SPEND     ${sent} governed gpt-4o requests → \$${spend:-?} accumulated in this session" \
+    "\$ curl …/chat/completions  {\"model\":\"gpt-4o\", …}  (the next request)   → HTTP 403"
   block_evidence "body: ${reason}"
   block_result "✗" "session_budget_exceeded — real accumulated spend capped, next request refused"
 }
@@ -371,8 +396,12 @@ act_routing_deny() {
 act_money() {
   block_rule "$1" "$2" "🧮" "PROVEN" "naïve vs cache-aware cost + tamper check"
   require_jq
+  # Export the SIGNED evidence bundle (HMAC per record) — the money story and
+  # the tamper check both operate on it.
   local export_file="${OUT_DIR}/session-evidence.json"
-  talon_in_container audit export --session "$SESSION_ID" --format json >"$export_file"
+  local tampered_file="${OUT_DIR}/session-evidence.tampered.json"
+  talon_in_container audit export --session "$SESSION_ID" --format signed-json >"$export_file"
+
   local corrected currency naive reads writes
   corrected="$(jq '[.records[].cost] | add // 0' "$export_file")"
   currency="$(jq -r '[.records[].currency | select(. != null and . != "")][0] // "USD"' "$export_file")"
@@ -389,19 +418,65 @@ act_money() {
     printf "             Naïve (all input tokens × input rate):  %s %.6f\n", cur, n
     printf "             Corrected (Talon, cache-aware):         %s %.6f   Δ %s %.6f\n", cur, c, cur, n - c
   }'
-  block_result "✓" "Cache-aware cost is what the budget enforced against, not the naïve number"
+
+  # Tamper check: flip a SIGNED field (policy_decision.allowed) in a valid-JSON
+  # copy, then re-verify. The signature must catch it. verify_file_in_container
+  # streams the file into the container's `audit verify --file` and returns its
+  # exit code (nonzero = at least one record failed HMAC verification).
+  jq '(.records[0].policy_decision.allowed) |= not' "$export_file" >"$tampered_file"
+  local clean_rc tampered_rc
+  verify_file_in_container "$export_file"; clean_rc=$?
+  verify_file_in_container "$tampered_file"; tampered_rc=$?
+  if [[ "$clean_rc" -ne 0 ]]; then
+    echo "✗ The untampered signed export should verify clean" >&2
+    exit 1
+  fi
+  if [[ "$tampered_rc" -eq 0 ]]; then
+    echo "✗ Tamper NOT detected — the signature did not catch a flipped field" >&2
+    exit 1
+  fi
+  block_evidence "\$ jq '.records[0].policy_decision.allowed |= not' … > tampered.json" \
+    "\$ talon audit verify --file tampered.json   → Invalid records: 1 (signature INVALID)"
+  block_result "✓" "Cache-aware cost is the budget's basis; flipping a signed field breaks the HMAC"
+}
+
+# verify_file_in_container <host-json-file> — stream a JSON export into the
+# container and run `audit verify --file` on it. Returns that command's exit
+# code (0 = all records valid; nonzero = at least one signature failed).
+verify_file_in_container() {
+  local f="$1"
+  dc exec -T talon sh -c 'cat > /tmp/verify-input.json && talon audit verify --file /tmp/verify-input.json' <"$f" >/dev/null 2>&1
+}
+
+# session_verify_clean — run `audit verify --session`, print its summary line,
+# and return nonzero if any record is invalid. Shared by act_verify and the
+# hero's closing proof.
+session_verify_clean() {
+  local verify_out
+  verify_out="$(talon_in_container audit verify --session "$SESSION_ID" 2>&1)"
+  echo "$verify_out" | grep -iE 'valid|invalid|record' | tail -1 | sed 's/^/             /'
+  echo "$verify_out" | grep -qE ", [0-9]+ valid, 0 invalid"
 }
 
 act_verify() {
-  block_rule "$1" "$2" "📜" "VERIFIED" "every decision in the session is signed"
+  block_rule "$1" "$2" "📜" "AUDITOR" "signed session verifies + RoPA export"
   block_evidence "\$ talon audit verify --session ${SESSION_ID}"
-  local verify_out; verify_out="$(talon_in_container audit verify --session "$SESSION_ID" 2>&1)"
-  echo "$verify_out" | grep -iE 'valid|invalid|record' | tail -3 | sed 's/^/             /'
-  if ! echo "$verify_out" | grep -qE ", [0-9]+ valid, 0 invalid"; then
+  if ! session_verify_clean; then
     echo "✗ Expected all session records valid (0 invalid)" >&2
     exit 1
   fi
-  block_result "✓" "Every decision in this session verifies — 0 invalid"
+  # Actually generate the RoPA pack (GDPR Art. 30) inside the container and
+  # assert the artifact is non-empty — no claim without the file.
+  local ropa=/tmp/governed-session-ropa.html
+  talon_in_container compliance ropa --format html --output "$ropa" >/dev/null 2>&1 || true
+  local ropa_bytes
+  ropa_bytes="$(dc exec -T talon sh -c "wc -c < ${ropa} 2>/dev/null || echo 0" | tr -d '[:space:]')"
+  if [[ -z "$ropa_bytes" || "$ropa_bytes" -lt 100 ]]; then
+    echo "✗ RoPA export did not produce a document (${ropa_bytes:-0} bytes)" >&2
+    exit 1
+  fi
+  block_evidence "\$ talon compliance ropa --format html --output ropa.html   → ${ropa_bytes} bytes (GDPR Art. 30)"
+  block_result "✓" "Every decision verifies (0 invalid) — and an auditor-ready RoPA pack is generated"
 }
 
 # ── Cuts ─────────────────────────────────────────────────────────────────────
@@ -415,8 +490,16 @@ cmd_hero() {
   act_pii     3 5
   act_route   4 5
   act_budget  5 5
-  block_banner "\$ talon audit verify --session ${SESSION_ID}   →   run './demo.sh verify' to confirm 0 invalid" \
-    "Talon — govern before the provider, prove what happened after"
+  # Closing proof: actually verify the WHOLE session and assert 0 invalid — the
+  # "every decision verifies" claim must be real and visible, not deferred.
+  echo ""
+  printf ' %sPROOF%s     $ talon audit verify --session %s\n' "$C_CYAN" "$C_RESET" "$SESSION_ID"
+  if ! session_verify_clean; then
+    echo "✗ Hero session did not verify clean (0 invalid)" >&2
+    exit 1
+  fi
+  block_banner "Talon — One AI session, every decision signed and verified." \
+    "govern before the provider, prove what happened after"
 }
 
 cmd_all() {

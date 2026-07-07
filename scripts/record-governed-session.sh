@@ -29,7 +29,20 @@ fi
 mkdir -p "$ASSET_DIR"
 cd "$DEMO_DIR"
 
-echo "==> Recording ./demo.sh all (real API calls, ~\$0.05)..."
+# The deep demo's story also includes the sovereignty-routing act, so warm the
+# local model and record in strict mode — a skipped routing act fails the run.
+if docker compose exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2:1b'; then
+  echo "==> Warming llama3.2:1b (avoids a cold-start timeout in the recording)..."
+  echo "    (if this hangs on a small host, add swap — see the demo README)"
+  docker compose exec -T ollama ollama run llama3.2:1b "ok" >/dev/null 2>&1 || true
+else
+  echo "✗ llama3.2:1b not found in the ollama sidecar — the deep demo's routing act needs it." >&2
+  echo "  docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" >&2
+  exit 1
+fi
+
+export TALON_DEMO_STRICT=1
+echo "==> Recording ./demo.sh all (real API calls + local Llama, ~\$0.06)..."
 asciinema rec --overwrite --cols 100 --rows 32 --idle-time-limit 2 \
   -c "./demo.sh all" "$CAST"
 echo "    Wrote ${CAST}"
