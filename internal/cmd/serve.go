@@ -358,6 +358,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		server.WithMemoryStore(memStore),
 		server.WithSessionStore(sessionStore),
 		server.WithCORSOrigins([]string{"*"}),
+		// Apply the configured data-sovereignty routing mode to server-side
+		// agent runs, matching the `talon run` CLI (previously the server
+		// silently skipped compliance routing — the SovereigntyMode fix).
+		server.WithSovereigntyMode(cfg.EffectiveSovereigntyMode()),
 		server.WithActiveRunTracker(activeRunTracker),
 		server.WithRunRegistry(runRegistry),
 		server.WithOverrideStore(overrideStore),

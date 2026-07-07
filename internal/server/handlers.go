@@ -189,14 +189,15 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runReq := &agent.RunRequest{
-		TenantID:       tenantID,
-		AgentName:      agentName,
-		Prompt:         req.Prompt,
-		AgentReasoning: reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Reasoning"), req.AgentReasoning),
-		SessionID:      reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Session-ID"), req.SessionID),
-		InvocationType: "api",
-		PolicyPath:     s.policyPath,
-		DryRun:         req.DryRun,
+		TenantID:        tenantID,
+		AgentName:       agentName,
+		Prompt:          req.Prompt,
+		AgentReasoning:  reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Reasoning"), req.AgentReasoning),
+		SessionID:       reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Session-ID"), req.SessionID),
+		InvocationType:  "api",
+		PolicyPath:      s.policyPath,
+		SovereigntyMode: s.sovereigntyMode,
+		DryRun:          req.DryRun,
 	}
 	if verified, err := s.verifyAgentRequestSignature(r.Context(), r, tenantID, agentName, req.Prompt); err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid_signature", err.Error())
@@ -298,13 +299,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runReq := &agent.RunRequest{
-		TenantID:       tenantID,
-		AgentName:      agentName,
-		Prompt:         prompt,
-		AgentReasoning: reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Reasoning"), req.AgentReasoning),
-		SessionID:      reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Session-ID"), req.SessionID),
-		InvocationType: "http",
-		PolicyPath:     s.policyPath,
+		TenantID:        tenantID,
+		AgentName:       agentName,
+		Prompt:          prompt,
+		AgentReasoning:  reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Reasoning"), req.AgentReasoning),
+		SessionID:       reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Session-ID"), req.SessionID),
+		InvocationType:  "http",
+		PolicyPath:      s.policyPath,
+		SovereigntyMode: s.sovereigntyMode,
 	}
 	if verified, err := s.verifyAgentRequestSignature(r.Context(), r, tenantID, agentName, prompt); err != nil {
 		writeOpenAIError(w, http.StatusUnauthorized, "invalid_signature", "invalid_request_error", err.Error())

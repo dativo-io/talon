@@ -62,6 +62,11 @@ type Server struct {
 	eventsPollInterval   time.Duration
 	declarationsLoader   DeclarationsLoader
 	classifier           classifier.Facade
+	// sovereigntyMode is the configured data-sovereignty routing mode
+	// (eu_strict | eu_preferred | global). It is threaded into every
+	// server-side RunRequest so the agent runner applies compliance-aware
+	// routing consistently with the `talon run` CLI (#server-sovereignty).
+	sovereigntyMode string
 }
 
 // SetClassifier attaches the process-wide scanner engine. Call after
@@ -122,6 +127,13 @@ func WithSessionStore(ss *session.Store) Option {
 // WithActiveRunTracker sets the in-flight run tracker for status/dashboard active_runs.
 func WithActiveRunTracker(tracker *agent.ActiveRunTracker) Option {
 	return func(s *Server) { s.activeRunTracker = tracker }
+}
+
+// WithSovereigntyMode sets the configured data-sovereignty routing mode applied
+// to every server-side agent run, so the HTTP runner path enforces the same
+// compliance-aware routing as the `talon run` CLI. Empty disables it.
+func WithSovereigntyMode(mode string) Option {
+	return func(s *Server) { s.sovereigntyMode = mode }
 }
 
 // WithGraphEventsHandler sets the handler for external graph runtime governance events.
