@@ -43,7 +43,7 @@ used only for upstream auth — never logged, never stored in evidence.
 `log_prompts`/`log_responses` are off: prompt bodies stay out of storage.
 
 **For the sovereignty-routing act** (`route` / `all`), a local Ollama is needed.
-It is opt-in via a compose profile so a normal run never pulls a multi-GB model:
+It is opt-in via a compose profile so a normal run never pulls a model:
 
 ```bash
 docker compose --profile routing-demo up -d
@@ -52,6 +52,18 @@ docker compose exec ollama ollama pull llama3.2:1b
 
 Without it, the routing act notes Ollama is unavailable and skips its
 local-serve half instead of failing the demo.
+
+**Small hosts (≤ 4 GB RAM):** Talon + Ollama loading a model can exhaust
+memory. If `ollama run` hangs, add swap so the model load doesn't thrash:
+
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+```
+
+The 1B model needs ~1.5 GB to load; with swap the first inference completes
+in seconds. `llama3.2:1b` is deliberately small — don't use the 3B
+`llama3.2` on a constrained box.
 
 ## Run it
 

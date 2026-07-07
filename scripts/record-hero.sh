@@ -35,6 +35,7 @@ cd "$DEMO_DIR"
 # act's first local inference doesn't hit the runner's call timeout.
 if docker compose exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2:1b'; then
   echo "==> Warming llama3.2:1b (avoids a cold-start timeout in the recording)..."
+  echo "    (if this hangs on a small host, add swap — see the demo README)"
   docker compose exec -T ollama ollama run llama3.2:1b "ok" >/dev/null 2>&1 || true
 else
   echo "⚠ llama3.2:1b not found in the ollama sidecar — the ROUTED act will note it and skip the local-serve half." >&2
