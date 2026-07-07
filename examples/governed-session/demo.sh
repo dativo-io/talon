@@ -19,6 +19,15 @@ cd "$SCRIPT_DIR"
 
 GATEWAY="${GATEWAY:-http://localhost:8080}"
 OUT_DIR="${OUT_DIR:-${SCRIPT_DIR}/out}"
+mkdir -p "$OUT_DIR"
+
+# Read-only acts (verify, money) inspect an EXISTING session, so they default
+# to the last run's session id rather than minting a fresh (empty) one. Every
+# other command starts a new session. SESSION_ID from the environment always
+# wins.
+if [[ -z "${SESSION_ID:-}" && ( "${1:-}" == "verify" || "${1:-}" == "money" ) && -s "${OUT_DIR}/session-id" ]]; then
+  SESSION_ID="$(cat "${OUT_DIR}/session-id")"
+fi
 SESSION_ID="${SESSION_ID:-sess-governed-$(date +%s)}"
 TENANT_KEY="talon-session-demo"
 PLANNER_MODEL="claude-sonnet-5"
@@ -38,8 +47,11 @@ SONNET_OUT_RATE=15.00
 GPT4O_IN_RATE=2.50
 GPT4O_OUT_RATE=10.00
 
-mkdir -p "$OUT_DIR"
-echo "$SESSION_ID" >"${OUT_DIR}/session-id"
+# Record this run's session id — except for the read-only inspection acts,
+# which target the LAST run's session and must not clobber it.
+if [[ "${1:-}" != "verify" && "${1:-}" != "money" ]]; then
+  echo "$SESSION_ID" >"${OUT_DIR}/session-id"
+fi
 
 # shellcheck source=../../scripts/lib/docker-compose-detect.sh
 source "${SCRIPT_DIR}/../../scripts/lib/docker-compose-detect.sh"
