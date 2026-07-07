@@ -40,6 +40,49 @@ func TestOllamaGenerate_Success(t *testing.T) {
 	assert.Equal(t, "llama3.1:70b", resp.Model)
 }
 
+// The runner sets MaxTokens to bound generation; Ollama honors it only via
+// options.num_predict. Without this, a slow local model generates unbounded
+// and blows past the caller's call timeout (seen live on a small CPU host).
+func TestOllamaGenerate_MaxTokensBecomesNumPredict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody ollamaRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqBody))
+		require.NotNil(t, reqBody.Options, "MaxTokens must produce an options block")
+		assert.Equal(t, 128, reqBody.Options.NumPredict)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaResponse{Message: struct {
+			Content string `json:"content"`
+		}{Content: "ok"}})
+	}))
+	defer server.Close()
+
+	provider := NewOllamaProvider(server.URL)
+	_, err := provider.Generate(context.Background(), &llm.Request{
+		Model: "llama3.2:1b", Messages: []llm.Message{{Role: "user", Content: "Hi"}}, MaxTokens: 128,
+	})
+	require.NoError(t, err)
+}
+
+// No MaxTokens → no options block (backward compatible).
+func TestOllamaGenerate_NoMaxTokens_NoOptions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody ollamaRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqBody))
+		assert.Nil(t, reqBody.Options)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaResponse{Message: struct {
+			Content string `json:"content"`
+		}{Content: "ok"}})
+	}))
+	defer server.Close()
+
+	provider := NewOllamaProvider(server.URL)
+	_, err := provider.Generate(context.Background(), &llm.Request{
+		Model: "llama3.2:1b", Messages: []llm.Message{{Role: "user", Content: "Hi"}},
+	})
+	require.NoError(t, err)
+}
+
 func TestOllamaGenerate_Non2xx(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

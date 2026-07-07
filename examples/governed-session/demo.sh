@@ -262,11 +262,13 @@ act_route() {
     return 0
   fi
   # Confidential input (an IBAN → tier 2) through the policy-aware agent runner.
+  # Keep the ask tiny: the point is the ROUTING decision, not a long answer —
+  # and a short generation keeps the local 1B model fast on a small CPU host.
   # Retry once on a slow-model 500 (cold cache): the routing decision is the
   # same; only the local inference latency varies.
   local attempt
   for attempt in 1 2; do
-    post_runner "Draft an internal EU AI Act evidence checklist for account DE89370400440532013000."
+    post_runner "In one short sentence, name the top EU AI Act evidence duty for account DE89370400440532013000."
     [[ "$LAST_HTTP" == "200" ]] && break
     [[ "$attempt" == 1 ]] && { ollama_warm; continue; }
   done

@@ -36,6 +36,24 @@ type ollamaRequest struct {
 	Model    string          `json:"model"`
 	Messages []ollamaMessage `json:"messages"`
 	Stream   bool            `json:"stream"`
+	Options  *ollamaOptions  `json:"options,omitempty"`
+}
+
+// ollamaOptions carries generation controls. num_predict caps the number of
+// output tokens; without it a slow local model can generate unbounded and blow
+// past the caller's call timeout (the runner sets MaxTokens but it was
+// previously dropped on the floor for Ollama).
+type ollamaOptions struct {
+	NumPredict int `json:"num_predict,omitempty"`
+}
+
+// optionsFromRequest builds Ollama generation options from the llm.Request,
+// returning nil when nothing needs to be set.
+func optionsFromRequest(req *llm.Request) *ollamaOptions {
+	if req != nil && req.MaxTokens > 0 {
+		return &ollamaOptions{NumPredict: req.MaxTokens}
+	}
+	return nil
 }
 
 type ollamaMessage struct {
@@ -104,7 +122,7 @@ func (p *OllamaProvider) Generate(ctx context.Context, req *llm.Request) (*llm.R
 		messages[i] = ollamaMessage{Role: msg.Role, Content: msg.Content}
 	}
 
-	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: false}
+	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: false, Options: optionsFromRequest(req)}
 	body, err := json.Marshal(apiReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshalling ollama request: %w", err)
@@ -163,7 +181,7 @@ func (p *OllamaProvider) Stream(ctx context.Context, req *llm.Request, ch chan<-
 	for i, msg := range req.Messages {
 		messages[i] = ollamaMessage{Role: msg.Role, Content: msg.Content}
 	}
-	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: true}
+	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: true, Options: optionsFromRequest(req)}
 	body, err := json.Marshal(apiReq)
 	if err != nil {
 		close(ch)
