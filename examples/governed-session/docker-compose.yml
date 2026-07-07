@@ -11,7 +11,7 @@
 # The sovereignty-routing act needs a local Ollama. It is OPT-IN via the
 # `routing-demo` compose profile so a normal run never pulls a multi-GB model:
 #   docker compose --profile routing-demo up -d
-#   docker compose exec ollama ollama pull llama3.2
+#   docker compose exec ollama ollama pull llama3.2:1b
 # Without it, the routing act notes Ollama is unavailable and skips its
 # local-serve half instead of failing the demo.
 #
@@ -68,7 +68,7 @@ services:
   # profile so a normal `make governed-session` never pulls a multi-GB model.
   # The model persists in the ollama-models volume across runs.
   #   docker compose --profile routing-demo up -d
-  #   docker compose exec ollama ollama pull llama3.2
+  #   docker compose exec ollama ollama pull llama3.2:1b
   ollama:
     image: ollama/ollama:latest
     profiles: ["routing-demo"]

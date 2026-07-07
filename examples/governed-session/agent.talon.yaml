@@ -13,7 +13,7 @@
 #   routing policy requires it to stay LOCAL. So the runner evaluates the
 #   tier-2 candidates: the US primary (gpt-4o) is REJECTED by routing.rego
 #   ("confidential tier requires LOCAL provider only") and the LOCAL fallback
-#   (llama3.2 → ollama) is SELECTED — with BOTH candidates in the signed
+#   (llama3.2:1b → ollama) is SELECTED — with BOTH candidates in the signed
 #   RoutingDecision. Contrast the gateway's PII-block act, where the SAME IBAN
 #   is blocked outright: policy, not the data alone, determines the outcome.
 #
@@ -45,15 +45,15 @@ policies:
   model_routing:
     tier_0:
       primary: gpt-4o
-      fallback_chain: [llama3.2]
+      fallback_chain: [llama3.2:1b]
       location: any
     tier_1:
       primary: gpt-4o
-      fallback_chain: [llama3.2]
+      fallback_chain: [llama3.2:1b]
       location: eu-west-1
     tier_2:
       primary: gpt-4o
-      fallback_chain: [llama3.2]
+      fallback_chain: [llama3.2:1b]
       location: eu-west-1
       bedrock_only: false
 

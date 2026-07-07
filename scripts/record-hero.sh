@@ -4,7 +4,7 @@
 # governed-session stack healthy (make governed-session). Not a CI step: real
 # spend + timestamp churn.
 #
-#   ollama pull llama3.2          # warm up the local model for the routing act
+#   ollama pull llama3.2:1b          # warm up the local model for the routing act
 #   scripts/record-hero.sh
 #
 # Outputs (README-readable size):
@@ -33,12 +33,12 @@ cd "$DEMO_DIR"
 # Ollama runs as a compose sidecar (reachable at ollama:11434 inside the
 # network, not on the host). Warm the model before recording so the ROUTED
 # act's first local inference doesn't hit the runner's call timeout.
-if docker compose exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2'; then
-  echo "==> Warming llama3.2 (avoids a cold-start timeout in the recording)..."
-  docker compose exec -T ollama ollama run llama3.2 "ok" >/dev/null 2>&1 || true
+if docker compose exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2:1b'; then
+  echo "==> Warming llama3.2:1b (avoids a cold-start timeout in the recording)..."
+  docker compose exec -T ollama ollama run llama3.2:1b "ok" >/dev/null 2>&1 || true
 else
-  echo "⚠ llama3.2 not found in the ollama sidecar — the ROUTED act will note it and skip the local-serve half." >&2
-  echo "  For the full recording: docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2" >&2
+  echo "⚠ llama3.2:1b not found in the ollama sidecar — the ROUTED act will note it and skip the local-serve half." >&2
+  echo "  For the full recording: docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" >&2
 fi
 
 echo "==> Recording ./demo.sh hero (real API calls + local Llama, ~\$0.01)..."

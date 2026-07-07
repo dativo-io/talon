@@ -47,7 +47,7 @@ It is opt-in via a compose profile so a normal run never pulls a multi-GB model:
 
 ```bash
 docker compose --profile routing-demo up -d
-docker compose exec ollama ollama pull llama3.2
+docker compose exec ollama ollama pull llama3.2:1b
 ```
 
 Without it, the routing act notes Ollama is unavailable and skips its

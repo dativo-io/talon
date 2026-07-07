@@ -189,14 +189,14 @@ latest_evidence_id() {
 
 # ollama_ready — true when the routing-demo Ollama sidecar has the model.
 ollama_ready() {
-  dc exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2'
+  dc exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2:1b'
 }
 
 # ollama_warm — load the model into memory so the routing act's first real
 # inference doesn't hit the runner's 60s call timeout on a cold start (common
 # on small CPU-only hosts). Best-effort; long timeout; ignores the result.
 ollama_warm() {
-  dc exec -T ollama ollama run llama3.2 "ok" >/dev/null 2>&1 || true
+  dc exec -T ollama ollama run llama3.2:1b "ok" >/dev/null 2>&1 || true
 }
 
 # ── Acts ─────────────────────────────────────────────────────────────────────
@@ -255,10 +255,10 @@ act_route() {
   fi
   block_rule "$1" "$2" "🇪🇺" "ROUTED" "confidential data stays local — US rejected, Llama selected"
   block_config "sovereignty.mode: eu_preferred   (US stays in the pool, to be policy-rejected)" \
-    "agent policy tier_2: primary gpt-4o(US) · fallback_chain [llama3.2 → ollama/LOCAL]"
+    "agent policy tier_2: primary gpt-4o(US) · fallback_chain [llama3.2:1b → ollama/LOCAL]"
   if [[ "$have_ollama" != 1 ]]; then
-    block_result "⚠" "Ollama/llama3.2 not running — start it to see the local-serve half:"
-    block_evidence "docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2"
+    block_result "⚠" "Ollama/llama3.2:1b not running — start it to see the local-serve half:"
+    block_evidence "docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b"
     return 0
   fi
   # Confidential input (an IBAN → tier 2) through the policy-aware agent runner.
