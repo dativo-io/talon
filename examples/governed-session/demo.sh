@@ -372,7 +372,13 @@ act_route() {
       "\$ curl …/v1/chat/completions  -H 'X-Talon-Session-ID: ${SESSION_ID}'   → HTTP 200"
   fi
   block_evidence "\$ talon audit show ${id}"
-  talon_in_container audit show "$id" 2>/dev/null | grep -iE 'Selected:|Rejected:|Routing Decision' | sed 's/^ */             /' || true
+  # Match Selected/Rejected/Routing-Decision headers AND the grouped reason
+  # sub-bullets (•), and re-pad to the evidence column while KEEPING the extra
+  # indent on sub-bullets so a provider rejected under several rules reads as one
+  # candidate with reasons, not duplicate dispatch.
+  talon_in_container audit show "$id" 2>/dev/null \
+    | grep -iE 'Selected:|Rejected:|Routing Decision|•' \
+    | sed -E 's/^  ( *)/             \1/' || true
   block_result "✓" "Confidential data ran on local Llama — 0 OpenAI calls, data stayed in-region"
 }
 

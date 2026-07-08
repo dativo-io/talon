@@ -297,6 +297,37 @@ func TestRenderAuditShow_RoutingDecision(t *testing.T) {
 	assert.Contains(t, out, "Rejected:   openai (confidential tier requires LOCAL provider only)")
 }
 
+// When ONE provider is rejected under several policy rules, it must render once
+// with its reasons as sub-bullets — not repeated as if dispatched twice.
+func TestRenderAuditShow_RoutingDecision_GroupsReasonsPerProvider(t *testing.T) {
+	var buf bytes.Buffer
+	ev := &evidence.Evidence{
+		ID:        "req_route_multi",
+		Timestamp: time.Now(),
+		TenantID:  "default", AgentID: "bot", InvocationType: "manual",
+		Classification: evidence.Classification{},
+		Execution:      evidence.Execution{ModelUsed: "llama3.2"},
+		AuditTrail:     evidence.AuditTrail{},
+		Compliance:     evidence.Compliance{},
+		RoutingDecision: &evidence.RoutingDecision{
+			SelectedProvider: "ollama",
+			SelectedModel:    "llama3.2",
+			RejectedCandidates: []evidence.RejectedCandidate{
+				{ProviderID: "openai", Reason: "confidential tier blocks cloud providers"},
+				{ProviderID: "openai", Reason: "confidential tier requires LOCAL provider only"},
+			},
+		},
+	}
+	renderAuditShow(&buf, ev, true)
+	out := buf.String()
+	// openai appears once as a header, then each reason as a sub-bullet.
+	assert.Equal(t, 1, strings.Count(out, "Rejected:   openai"), "one provider header, not one per reason")
+	assert.Contains(t, out, "• confidential tier blocks cloud providers")
+	assert.Contains(t, out, "• confidential tier requires LOCAL provider only")
+	// The old flattened "openai (reason)" form must NOT appear for the grouped case.
+	assert.NotContains(t, out, "Rejected:   openai (confidential tier blocks cloud providers)")
+}
+
 func TestRenderAuditShow_NoRoutingDecision_SectionOmitted(t *testing.T) {
 	var buf bytes.Buffer
 	ev := &evidence.Evidence{

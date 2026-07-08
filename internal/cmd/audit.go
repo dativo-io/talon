@@ -972,8 +972,27 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		if rd.SelectedProvider != "" {
 			fmt.Fprintf(w, "  Selected:   %s / %s\n", rd.SelectedProvider, rd.SelectedModel)
 		}
+		// Group by provider so a provider rejected under several policy rules
+		// prints once with its reasons as sub-bullets — a single provider was
+		// refused, not dispatched twice. Preserve first-seen provider order.
+		order := make([]string, 0, len(rd.RejectedCandidates))
+		reasons := make(map[string][]string)
 		for _, rc := range rd.RejectedCandidates {
-			fmt.Fprintf(w, "  Rejected:   %s (%s)\n", rc.ProviderID, rc.Reason)
+			if _, seen := reasons[rc.ProviderID]; !seen {
+				order = append(order, rc.ProviderID)
+			}
+			reasons[rc.ProviderID] = append(reasons[rc.ProviderID], rc.Reason)
+		}
+		for _, provider := range order {
+			rs := reasons[provider]
+			if len(rs) == 1 {
+				fmt.Fprintf(w, "  Rejected:   %s (%s)\n", provider, rs[0])
+				continue
+			}
+			fmt.Fprintf(w, "  Rejected:   %s\n", provider)
+			for _, r := range rs {
+				fmt.Fprintf(w, "                • %s\n", r)
+			}
 		}
 	}
 	if ev.UpstreamAuthMode != "" || ev.UpstreamKeySource != "" || ev.UpstreamKeyFingerprint != "" {
