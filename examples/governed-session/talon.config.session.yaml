@@ -20,6 +20,11 @@ sovereignty:
 # Runner's Ollama endpoint (buildProviders reads ollama_base_url, not
 # llm.providers). Points at the ollama sidecar in the compose network.
 ollama_base_url: "http://ollama:11434"
+# Opt-in output ceiling for this demo's local model on modest CPU hosts: cap
+# the routing act's generation so it returns promptly instead of grinding out
+# the runner's default 2000 tokens. This is a DEMO setting — Talon honors the
+# caller's requested output length verbatim by default (no global clamp).
+ollama_max_num_predict: 256
 
 compliance:
   controller:

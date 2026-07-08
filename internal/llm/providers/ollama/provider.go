@@ -26,20 +26,16 @@ type OllamaProvider struct {
 	baseURL       string
 	httpClient    *http.Client
 	pricing       *pricing.PricingTable
-	maxNumPredict int // clamp on num_predict; 0 = no clamp
+	maxNumPredict int // optional operator ceiling on num_predict; 0 = honor caller's MaxTokens verbatim (default)
 }
-
-// defaultOllamaMaxNumPredict bounds a single local generation. The runner sets
-// MaxTokens=2000 on every request; on a CPU-only host that is minutes of
-// generation and reads as a hang. Local models are used for short, governed
-// answers here, so we clamp to a modest ceiling unless an operator raises it.
-const defaultOllamaMaxNumPredict = 512
 
 type ollamaConfig struct {
 	BaseURL string `yaml:"base_url"`
-	// MaxNumPredict caps num_predict (output tokens) per request. Defaults to
-	// defaultOllamaMaxNumPredict; set 0 (via max_num_predict: 0) to disable the
-	// clamp and honor the caller's MaxTokens verbatim.
+	// MaxNumPredict, when set to a positive value, caps num_predict (output
+	// tokens) per request — an OPT-IN operator setting for slow local hosts
+	// where an unbounded generation would blow past the call timeout. Unset (or
+	// 0) means honor the caller's MaxTokens verbatim (the default): Talon does
+	// not silently shrink a caller's requested output length.
 	MaxNumPredict *int `yaml:"max_num_predict"`
 }
 
@@ -58,10 +54,11 @@ type ollamaOptions struct {
 	NumPredict int `json:"num_predict,omitempty"`
 }
 
-// optionsFromRequest builds Ollama generation options from the llm.Request,
-// clamping num_predict to the provider's ceiling (maxNumPredict) so a large
-// caller MaxTokens can't turn a local CPU generation into a multi-minute hang.
-// Returns nil when nothing needs to be set.
+// optionsFromRequest builds Ollama generation options from the llm.Request.
+// The caller's MaxTokens maps to num_predict verbatim (the real fix: MaxTokens
+// used to be dropped on the floor for Ollama). If — and only if — an operator
+// has configured a positive maxNumPredict ceiling, num_predict is capped to it
+// (opt-in, for slow local hosts). Returns nil when nothing needs to be set.
 func (p *OllamaProvider) optionsFromRequest(req *llm.Request) *ollamaOptions {
 	if req == nil {
 		return nil
@@ -90,7 +87,7 @@ type ollamaResponse struct {
 func init() {
 	llm.Register("ollama", func(configYAML []byte) (llm.Provider, error) {
 		baseURL := "http://localhost:11434"
-		maxNumPredict := defaultOllamaMaxNumPredict
+		maxNumPredict := 0 // default: honor the caller's MaxTokens verbatim
 		if len(configYAML) > 0 {
 			var cfg ollamaConfig
 			if err := yaml.Unmarshal(configYAML, &cfg); err != nil {
@@ -107,13 +104,13 @@ func init() {
 	})
 }
 
-// NewOllamaProvider creates an Ollama provider pointing at the given base URL,
-// with the default num_predict clamp applied.
+// NewOllamaProvider creates an Ollama provider pointing at the given base URL.
+// No num_predict clamp by default — the caller's MaxTokens is honored verbatim.
 func NewOllamaProvider(baseURL string) *OllamaProvider {
 	if baseURL == "" {
 		baseURL = "http://localhost:11434"
 	}
-	return &OllamaProvider{baseURL: strings.TrimRight(baseURL, "/"), httpClient: &http.Client{}, maxNumPredict: defaultOllamaMaxNumPredict}
+	return &OllamaProvider{baseURL: strings.TrimRight(baseURL, "/"), httpClient: &http.Client{}}
 }
 
 // Name returns the provider identifier.
