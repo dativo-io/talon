@@ -40,12 +40,13 @@ import (
 // (e.g. "secrets_key" → TALON_SECRETS_KEY) and to a YAML field
 // in talon.config.yaml (e.g. secrets_key: "...").
 const (
-	KeyDataDir         = "data_dir"
-	KeySecretsKey      = "secrets_key"
-	KeySigningKey      = "signing_key"
-	KeyDefaultPolicy   = "default_policy"
-	KeyMaxAttachmentMB = "max_attachment_mb"
-	KeyOllamaBaseURL   = "ollama_base_url"
+	KeyDataDir             = "data_dir"
+	KeySecretsKey          = "secrets_key"
+	KeySigningKey          = "signing_key"
+	KeyDefaultPolicy       = "default_policy"
+	KeyMaxAttachmentMB     = "max_attachment_mb"
+	KeyOllamaBaseURL       = "ollama_base_url"
+	KeyOllamaMaxNumPredict = "ollama_max_num_predict"
 )
 
 // Defaults that do NOT involve crypto material. Crypto keys intentionally
@@ -256,17 +257,21 @@ type CacheConfig struct {
 // For tenant-level secrets (LLM API keys, webhook tokens), use the
 // secrets vault (internal/secrets.SecretStore).
 type Config struct {
-	DataDir         string             // Base directory for all state (~/.talon)
-	SecretsKey      string             // AES-256 encryption key for the vault (exactly 32 bytes)
-	SigningKey      string             // HMAC-SHA256 key for evidence signing (≥32 bytes)
-	DefaultPolicy   string             // Filename of the agent policy file (agent.talon.yaml by default)
-	MaxAttachmentMB int                // Maximum attachment size in MB
-	OllamaBaseURL   string             // Ollama API endpoint (operator infrastructure)
-	LLM             *LLMConfig         // Optional: llm block from config file (providers, routing)
-	Cache           *CacheConfig       // Optional: governed semantic cache (off by default)
-	Compliance      *ComplianceConfig  // Optional: declared controller identity for auditor exports
-	Sovereignty     *SovereigntyConfig // Optional: air-gap / deployment sovereignty mode
-	Scanner         *ScannerConfig     // Optional: external PII scanner engine (built-in regex by default)
+	DataDir         string // Base directory for all state (~/.talon)
+	SecretsKey      string // AES-256 encryption key for the vault (exactly 32 bytes)
+	SigningKey      string // HMAC-SHA256 key for evidence signing (≥32 bytes)
+	DefaultPolicy   string // Filename of the agent policy file (agent.talon.yaml by default)
+	MaxAttachmentMB int    // Maximum attachment size in MB
+	OllamaBaseURL   string // Ollama API endpoint (operator infrastructure)
+	// OllamaMaxNumPredict, when > 0, caps num_predict (output tokens) on every
+	// Ollama request — an opt-in ceiling for slow local hosts. 0 (default) means
+	// honor the caller's requested output length verbatim.
+	OllamaMaxNumPredict int
+	LLM                 *LLMConfig         // Optional: llm block from config file (providers, routing)
+	Cache               *CacheConfig       // Optional: governed semantic cache (off by default)
+	Compliance          *ComplianceConfig  // Optional: declared controller identity for auditor exports
+	Sovereignty         *SovereigntyConfig // Optional: air-gap / deployment sovereignty mode
+	Scanner             *ScannerConfig     // Optional: external PII scanner engine (built-in regex by default)
 
 	usingDefaultSecretsKey bool
 	usingDefaultSigningKey bool
@@ -345,16 +350,17 @@ func init() {
 // file, and defaults) and returns a validated Config.
 func Load() (*Config, error) {
 	cfg := &Config{
-		DataDir:         resolveDataDir(),
-		SecretsKey:      viper.GetString(KeySecretsKey),
-		SigningKey:      viper.GetString(KeySigningKey),
-		DefaultPolicy:   viper.GetString(KeyDefaultPolicy),
-		MaxAttachmentMB: viper.GetInt(KeyMaxAttachmentMB),
-		OllamaBaseURL:   viper.GetString(KeyOllamaBaseURL),
-		LLM:             loadLLMConfig(),
-		Cache:           loadCacheConfig(),
-		Compliance:      loadComplianceConfig(),
-		Sovereignty:     loadSovereigntyConfig(),
+		DataDir:             resolveDataDir(),
+		SecretsKey:          viper.GetString(KeySecretsKey),
+		SigningKey:          viper.GetString(KeySigningKey),
+		DefaultPolicy:       viper.GetString(KeyDefaultPolicy),
+		MaxAttachmentMB:     viper.GetInt(KeyMaxAttachmentMB),
+		OllamaBaseURL:       viper.GetString(KeyOllamaBaseURL),
+		OllamaMaxNumPredict: viper.GetInt(KeyOllamaMaxNumPredict),
+		LLM:                 loadLLMConfig(),
+		Cache:               loadCacheConfig(),
+		Compliance:          loadComplianceConfig(),
+		Sovereignty:         loadSovereigntyConfig(),
 	}
 
 	scanner, err := loadScannerConfig()

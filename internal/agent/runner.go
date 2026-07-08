@@ -319,7 +319,8 @@ type RunRequest struct {
 	Prompt           string
 	AgentReasoning   string // Optional caller-provided reasoning (e.g. X-Talon-Reasoning)
 	AgentVerified    bool   // True when per-agent signature has been verified by API layer
-	SessionID        string // Optional session to join; empty means create a new one
+	SessionID        string // Optional session id. When SessionSource is internal (default), it is a Talon-lifecycle id to Join (fail-closed). When client_asserted, it is an external correlation id: validated for hygiene and preserved for evidence grouping, but NOT joined to Talon's internal lifecycle.
+	SessionSource    string // "" / "internal" = lifecycle id (Join); "client_asserted" = external correlation id (validate + preserve, don't Join). See resolveSession.
 	Attachments      []Attachment
 	InvocationType   string // "manual", "scheduled", "webhook:name"
 	DryRun           bool
@@ -972,9 +973,26 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 }
 
 func (r *Runner) resolveSession(ctx context.Context, req *RunRequest) (string, error) {
+	// A CLIENT-ASSERTED session id (X-Talon-Session-ID from an HTTP caller) is an
+	// external correlation id, NOT a Talon-lifecycle session. It may name a
+	// session opened elsewhere (e.g. the gateway proxy, under a different tuple),
+	// or none at all. We do NOT Join Talon's internal lifecycle for it — we
+	// validate its hygiene (so a hostile string never reaches signed evidence,
+	// matching the gateway's bound) and PRESERVE it for evidence grouping. This
+	// path never mutates lifecycle state and never fails the run on a store miss.
+	if req.SessionSource == talonsession.SourceClientAsserted {
+		if err := talonsession.ValidateExternalID(req.SessionID); err != nil {
+			return "", fmt.Errorf("invalid client-asserted session id: %w", err)
+		}
+		return req.SessionID, nil
+	}
+
 	if r.sessionStore == nil {
 		return req.SessionID, nil
 	}
+	// INTERNAL (lifecycle) session id: Join is authoritative and fail-closed —
+	// a not-found / cross-tenant miss, a closed session, or a store error is an
+	// error, never a silent degrade. (Restored after a demo-driven regression.)
 	if req.SessionID != "" {
 		ss, err := r.sessionStore.Join(ctx, req.SessionID, req.TenantID)
 		if err != nil {

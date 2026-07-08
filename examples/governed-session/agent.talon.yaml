@@ -1,0 +1,93 @@
+# Governed-session demo — agent policy for the SOVEREIGNTY ROUTING act (#107).
+#
+# The gateway proxy path (/v1/proxy/<provider>/…) is URL-addressed: it can only
+# allow or deny a destination, never reroute. GENUINE policy-driven routing
+# lives in the agent RUNNER, which reads model-routing tiers from THIS file
+# (policies.model_routing), not from talon.config.session.yaml. serve resolves
+# the policy at ./agent.talon.yaml relative to its working directory
+# (/home/talon in the container); the compose mounts this file there.
+#
+# THE STORY (data classification drives execution placement):
+#   Confidential input (an IBAN → sensitivity 3 → data tier 2) is NOT blocked
+#   here — this workload is ALLOWED to process confidential data, but the
+#   routing policy requires it to stay LOCAL. So the runner evaluates the
+#   tier-2 candidates: the US primary (gpt-4o) is REJECTED by routing.rego
+#   ("confidential tier requires LOCAL provider only") and the LOCAL fallback
+#   (llama3.2:1b → ollama) is SELECTED — with BOTH candidates in the signed
+#   RoutingDecision. Contrast the gateway's PII-block act, where the SAME IBAN
+#   is blocked outright: policy, not the data alone, determines the outcome.
+#
+# NOTE: block_on_pii is intentionally OFF so confidential input reaches routing
+# rather than being denied. redact_pii is off so the tier-2 classification
+# survives to drive the routing decision.
+
+agent:
+  name: governed-session
+  description: Governed session demo — confidential data classified and routed to a local model
+  version: 1.0.0
+  model_tier: 0
+
+capabilities:
+  allowed_tools: []
+
+policies:
+  cost_limits:
+    per_request: 1.0
+    daily: 5.0
+    monthly: 50.0
+  data_classification:
+    input_scan: true
+    output_scan: true
+    redact_pii: false
+  # tier_2 is the confidential path exercised by the routing act: US primary
+  # rejected (routing.rego confidential rule), LOCAL fallback selected. tier_0
+  # and tier_1 keep gpt-4o as a sensible default for non-confidential runs.
+  model_routing:
+    tier_0:
+      primary: gpt-4o
+      fallback_chain: [llama3.2:1b]
+      location: any
+    tier_1:
+      primary: gpt-4o
+      fallback_chain: [llama3.2:1b]
+      location: eu-west-1
+    tier_2:
+      primary: gpt-4o
+      fallback_chain: [llama3.2:1b]
+      location: eu-west-1
+      bedrock_only: false
+
+audit:
+  log_level: detailed
+  retention_days: 30
+
+compliance:
+  # This demo agent showcases AUTOMATED sovereignty routing, so it must execute
+  # without gating on human approval. "always" would draft a plan and return
+  # 202 plan_pending (EU AI Act Art. 14 human-in-the-loop) — correct for that
+  # workflow, but it would stop the routing act before it routes.
+  human_oversight: "none"
+  frameworks: [gdpr, eu-ai-act]
+  data_residency: eu
+  # GDPR Art. 30(1) declared facts for the RoPA export (act 11). Talon fills the
+  # runtime facts (recipients, observed PII entity types, transfers) from signed
+  # evidence; these are the operator-declared fields it can't infer. Filling them
+  # makes `talon compliance ropa` produce a complete Art. 30 pack with no
+  # "declaration missing" warnings.
+  declarations:
+    processing:
+      purposes:
+        - "Governed AI request handling — orchestration, execution, and policy enforcement across LLM providers"
+        - "Sovereignty-aware routing of confidential data to local models"
+      data_subject_categories:
+        - "Customers whose account identifiers appear in submitted requests"
+      personal_data_categories:
+        - "Financial account identifiers (IBAN)"
+        - "Contact identifiers (email address)"
+      retention_period: "Evidence retained 30 days (audit.retention_days); no request payloads persisted"
+      legal_basis: "Legitimate interest in secure, auditable AI governance (GDPR Art. 6(1)(f))"
+      safeguards: "PII detection with block/redact at the boundary; sovereignty routing keeps confidential data on local models; per-record HMAC-signed evidence"
+
+metadata:
+  owner: ""
+  tags: [governed-session, sovereignty]

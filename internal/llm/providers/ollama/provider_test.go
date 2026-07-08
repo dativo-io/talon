@@ -40,6 +40,95 @@ func TestOllamaGenerate_Success(t *testing.T) {
 	assert.Equal(t, "llama3.1:70b", resp.Model)
 }
 
+// The runner sets MaxTokens to bound generation; Ollama honors it only via
+// options.num_predict. Without this, a slow local model generates unbounded
+// and blows past the caller's call timeout (seen live on a small CPU host).
+func TestOllamaGenerate_MaxTokensBecomesNumPredict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody ollamaRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqBody))
+		require.NotNil(t, reqBody.Options, "MaxTokens must produce an options block")
+		assert.Equal(t, 128, reqBody.Options.NumPredict)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaResponse{Message: struct {
+			Content string `json:"content"`
+		}{Content: "ok"}})
+	}))
+	defer server.Close()
+
+	provider := NewOllamaProvider(server.URL)
+	_, err := provider.Generate(context.Background(), &llm.Request{
+		Model: "llama3.2:1b", Messages: []llm.Message{{Role: "user", Content: "Hi"}}, MaxTokens: 128,
+	})
+	require.NoError(t, err)
+}
+
+// No MaxTokens → no options block. Talon does not impose a default output
+// ceiling on Ollama; the caller's request is honored verbatim.
+func TestOllamaGenerate_NoMaxTokens_NoOptions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody ollamaRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqBody))
+		assert.Nil(t, reqBody.Options, "no MaxTokens and no operator ceiling → no options block")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaResponse{Message: struct {
+			Content string `json:"content"`
+		}{Content: "ok"}})
+	}))
+	defer server.Close()
+
+	provider := NewOllamaProvider(server.URL)
+	_, err := provider.Generate(context.Background(), &llm.Request{
+		Model: "llama3.2:1b", Messages: []llm.Message{{Role: "user", Content: "Hi"}},
+	})
+	require.NoError(t, err)
+}
+
+// By DEFAULT a large caller MaxTokens is honored verbatim — Talon must never
+// silently shrink a caller's requested output length.
+func TestOllamaGenerate_LargeMaxTokensHonoredByDefault(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody ollamaRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqBody))
+		require.NotNil(t, reqBody.Options)
+		assert.Equal(t, 2000, reqBody.Options.NumPredict, "caller's MaxTokens must pass through untouched")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaResponse{Message: struct {
+			Content string `json:"content"`
+		}{Content: "ok"}})
+	}))
+	defer server.Close()
+
+	provider := NewOllamaProvider(server.URL)
+	_, err := provider.Generate(context.Background(), &llm.Request{
+		Model: "llama3.2:1b", Messages: []llm.Message{{Role: "user", Content: "Hi"}}, MaxTokens: 2000,
+	})
+	require.NoError(t, err)
+}
+
+// An operator MAY opt into a ceiling (max_num_predict) for slow local hosts:
+// then, and only then, a larger caller MaxTokens is capped down to it.
+func TestOllama_OperatorCeiling_CapsLargeMaxTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody ollamaRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqBody))
+		require.NotNil(t, reqBody.Options)
+		assert.Equal(t, 256, reqBody.Options.NumPredict, "2000 must be capped to the configured 256 ceiling")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ollamaResponse{Message: struct {
+			Content string `json:"content"`
+		}{Content: "ok"}})
+	}))
+	defer server.Close()
+
+	// max_num_predict: 256 == opt-in operator ceiling.
+	prov := &OllamaProvider{baseURL: server.URL, httpClient: &http.Client{}, maxNumPredict: 256}
+	_, err := prov.Generate(context.Background(), &llm.Request{
+		Model: "llama3.2:1b", Messages: []llm.Message{{Role: "user", Content: "Hi"}}, MaxTokens: 2000,
+	})
+	require.NoError(t, err)
+}
+
 func TestOllamaGenerate_Non2xx(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

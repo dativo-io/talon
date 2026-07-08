@@ -360,9 +360,18 @@ func buildProviders(cfg *config.Config) map[string]llm.Provider {
 	}
 	register("anthropic", anthropicYAML)
 
-	ollamaCfg := map[string]string{"base_url": cfg.OllamaBaseURL}
-	if ollamaCfg["base_url"] == "" {
-		ollamaCfg["base_url"] = "http://localhost:11434"
+	ollamaCfg := struct {
+		BaseURL       string `yaml:"base_url"`
+		MaxNumPredict *int   `yaml:"max_num_predict,omitempty"`
+	}{BaseURL: cfg.OllamaBaseURL}
+	if ollamaCfg.BaseURL == "" {
+		ollamaCfg.BaseURL = "http://localhost:11434"
+	}
+	// Opt-in output ceiling for slow local hosts; omitted (nil) unless set, so
+	// the provider honors the caller's MaxTokens verbatim by default.
+	if cfg.OllamaMaxNumPredict > 0 {
+		n := cfg.OllamaMaxNumPredict
+		ollamaCfg.MaxNumPredict = &n
 	}
 	ollamaYAML, _ := yaml.Marshal(ollamaCfg)
 	register("ollama", ollamaYAML)

@@ -36,15 +36,28 @@ func TestLoadGovernedSessionGatewayConfig(t *testing.T) {
 	require.True(t, ok)
 	require.Contains(t, openai.AllowedModels, "gpt-4o")
 
-	var sessionCaller *gateway.CallerConfig
+	callers := map[string]*gateway.CallerConfig{}
 	for i := range cfg.Callers {
-		if cfg.Callers[i].Name == "session-demo" {
-			sessionCaller = &cfg.Callers[i]
-		}
+		callers[cfg.Callers[i].Name] = &cfg.Callers[i]
 	}
+
+	sessionCaller := callers["session-demo"]
 	require.NotNil(t, sessionCaller)
 	require.NotNil(t, sessionCaller.PolicyOverrides)
-	require.InDelta(t, 0.04, sessionCaller.PolicyOverrides.MaxSessionCost, 1e-9,
+	require.InDelta(t, 0.03, sessionCaller.PolicyOverrides.MaxSessionCost, 1e-9,
 		"session budget gate: demo.sh budget-gate loop is tuned to this cap")
 	require.Contains(t, sessionCaller.PolicyOverrides.ForbiddenTools, "admin_*")
+
+	// Model-governance act: this caller may only use gpt-4o-mini, so a gpt-4o
+	// request is denied POLICY_DENIED_ROUTING.
+	euCaller := callers["session-demo-eu"]
+	require.NotNil(t, euCaller, "model-governance act needs the session-demo-eu caller")
+	require.NotNil(t, euCaller.PolicyOverrides)
+	require.Equal(t, []string{"gpt-4o-mini"}, euCaller.PolicyOverrides.AllowedModels)
+
+	// Redaction act: an email is scrubbed but the request still forwards.
+	redactCaller := callers["session-demo-redact"]
+	require.NotNil(t, redactCaller, "redaction act needs the session-demo-redact caller")
+	require.NotNil(t, redactCaller.PolicyOverrides)
+	require.Equal(t, "redact", redactCaller.PolicyOverrides.PIIAction)
 }

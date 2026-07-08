@@ -2158,7 +2158,10 @@ func TestBuildLLMTools(t *testing.T) {
 	}
 }
 
-func TestResolveSessionWithProvidedClosedSessionFails(t *testing.T) {
+// INTERNAL (lifecycle) session ids are authoritative: joining a closed session
+// FAILS CLOSED. The runner must never insert new evidence into a closed
+// lifecycle session or degrade a join miss into accepting the raw id.
+func TestResolveSession_Internal_ClosedSessionFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	s, err := talonsession.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
 	require.NoError(t, err)
@@ -2170,12 +2173,80 @@ func TestResolveSessionWithProvidedClosedSessionFails(t *testing.T) {
 
 	r := NewRunner(RunnerConfig{SessionStore: s})
 	_, err = r.resolveSession(ctx, &RunRequest{
-		TenantID:  "acme",
-		AgentName: "agent-a",
-		SessionID: ss.ID,
+		TenantID: "acme", AgentName: "agent-a", SessionID: ss.ID,
+		// SessionSource empty = internal (lifecycle) — must fail closed.
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "joining session")
+}
+
+// INTERNAL: an unknown / cross-tenant lifecycle id also fails closed (a miss is
+// never silently accepted as the raw id).
+func TestResolveSession_Internal_UnknownIDFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	s, err := talonsession.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+	require.NoError(t, err)
+	defer s.Close()
+
+	r := NewRunner(RunnerConfig{SessionStore: s})
+	_, err = r.resolveSession(ctx, &RunRequest{
+		TenantID: "acme", AgentName: "agent-a", SessionID: "not-a-real-lifecycle-id",
+	})
+	require.Error(t, err)
+}
+
+// INTERNAL: a session belonging to a DIFFERENT tenant fails closed — the
+// tenant-scoped Join must not let one tenant adopt another's lifecycle session
+// (indistinguishable from not-found, #215).
+func TestResolveSession_Internal_WrongTenantFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	s, err := talonsession.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+	require.NoError(t, err)
+	defer s.Close()
+
+	ss, err := s.Create(ctx, "tenant-a", "agent-a", "reasoning", 0) // owned by tenant-a
+	require.NoError(t, err)
+
+	r := NewRunner(RunnerConfig{SessionStore: s})
+	_, err = r.resolveSession(ctx, &RunRequest{
+		TenantID: "tenant-b", AgentName: "agent-a", SessionID: ss.ID, // tenant-b tries to join
+	})
+	require.Error(t, err, "a cross-tenant lifecycle join must fail closed")
+}
+
+// CLIENT-ASSERTED external correlation ids are NOT lifecycle sessions: they are
+// validated for hygiene and preserved for evidence grouping, never joined. A
+// closed/unknown id is fine — but a hostile id (bad charset / oversized) is
+// rejected before it can reach signed evidence.
+func TestResolveSession_ClientAsserted_ValidatedAndPreserved(t *testing.T) {
+	ctx := context.Background()
+	s, err := talonsession.NewStore(filepath.Join(t.TempDir(), "sessions.db"))
+	require.NoError(t, err)
+	defer s.Close()
+	r := NewRunner(RunnerConfig{SessionStore: s})
+
+	// A well-formed external id the runner never opened → preserved, no join.
+	got, err := r.resolveSession(ctx, &RunRequest{
+		TenantID: "acme", AgentName: "agent-a",
+		SessionID: "sess-governed-1783431294", SessionSource: talonsession.SourceClientAsserted,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "sess-governed-1783431294", got)
+
+	// A hostile id (space + angle brackets) is rejected before evidence.
+	_, err = r.resolveSession(ctx, &RunRequest{
+		TenantID: "acme", AgentName: "agent-a",
+		SessionID: "bad id <script>", SessionSource: talonsession.SourceClientAsserted,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid client-asserted session id")
+
+	// An oversized id is rejected.
+	_, err = r.resolveSession(ctx, &RunRequest{
+		TenantID: "acme", AgentName: "agent-a",
+		SessionID: strings.Repeat("a", 129), SessionSource: talonsession.SourceClientAsserted,
+	})
+	require.Error(t, err)
 }
 
 func TestResolveSessionWithProvidedActiveSessionJoins(t *testing.T) {

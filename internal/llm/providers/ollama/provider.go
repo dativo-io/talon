@@ -23,19 +23,54 @@ var tracer = talonotel.Tracer("github.com/dativo-io/talon/internal/llm/providers
 //
 //nolint:revive // type name matches package for clarity at call sites
 type OllamaProvider struct {
-	baseURL    string
-	httpClient *http.Client
-	pricing    *pricing.PricingTable
+	baseURL       string
+	httpClient    *http.Client
+	pricing       *pricing.PricingTable
+	maxNumPredict int // optional operator ceiling on num_predict; 0 = honor caller's MaxTokens verbatim (default)
 }
 
 type ollamaConfig struct {
 	BaseURL string `yaml:"base_url"`
+	// MaxNumPredict, when set to a positive value, caps num_predict (output
+	// tokens) per request — an OPT-IN operator setting for slow local hosts
+	// where an unbounded generation would blow past the call timeout. Unset (or
+	// 0) means honor the caller's MaxTokens verbatim (the default): Talon does
+	// not silently shrink a caller's requested output length.
+	MaxNumPredict *int `yaml:"max_num_predict"`
 }
 
 type ollamaRequest struct {
 	Model    string          `json:"model"`
 	Messages []ollamaMessage `json:"messages"`
 	Stream   bool            `json:"stream"`
+	Options  *ollamaOptions  `json:"options,omitempty"`
+}
+
+// ollamaOptions carries generation controls. num_predict caps the number of
+// output tokens; without it a slow local model can generate unbounded and blow
+// past the caller's call timeout (the runner sets MaxTokens but it was
+// previously dropped on the floor for Ollama).
+type ollamaOptions struct {
+	NumPredict int `json:"num_predict,omitempty"`
+}
+
+// optionsFromRequest builds Ollama generation options from the llm.Request.
+// The caller's MaxTokens maps to num_predict verbatim (the real fix: MaxTokens
+// used to be dropped on the floor for Ollama). If — and only if — an operator
+// has configured a positive maxNumPredict ceiling, num_predict is capped to it
+// (opt-in, for slow local hosts). Returns nil when nothing needs to be set.
+func (p *OllamaProvider) optionsFromRequest(req *llm.Request) *ollamaOptions {
+	if req == nil {
+		return nil
+	}
+	n := req.MaxTokens
+	if p.maxNumPredict > 0 && (n <= 0 || n > p.maxNumPredict) {
+		n = p.maxNumPredict
+	}
+	if n > 0 {
+		return &ollamaOptions{NumPredict: n}
+	}
+	return nil
 }
 
 type ollamaMessage struct {
@@ -52,6 +87,7 @@ type ollamaResponse struct {
 func init() {
 	llm.Register("ollama", func(configYAML []byte) (llm.Provider, error) {
 		baseURL := "http://localhost:11434"
+		maxNumPredict := 0 // default: honor the caller's MaxTokens verbatim
 		if len(configYAML) > 0 {
 			var cfg ollamaConfig
 			if err := yaml.Unmarshal(configYAML, &cfg); err != nil {
@@ -60,12 +96,16 @@ func init() {
 			if strings.TrimSpace(cfg.BaseURL) != "" {
 				baseURL = strings.TrimRight(cfg.BaseURL, "/")
 			}
+			if cfg.MaxNumPredict != nil {
+				maxNumPredict = *cfg.MaxNumPredict
+			}
 		}
-		return &OllamaProvider{baseURL: baseURL, httpClient: &http.Client{}}, nil
+		return &OllamaProvider{baseURL: baseURL, httpClient: &http.Client{}, maxNumPredict: maxNumPredict}, nil
 	})
 }
 
 // NewOllamaProvider creates an Ollama provider pointing at the given base URL.
+// No num_predict clamp by default — the caller's MaxTokens is honored verbatim.
 func NewOllamaProvider(baseURL string) *OllamaProvider {
 	if baseURL == "" {
 		baseURL = "http://localhost:11434"
@@ -104,7 +144,7 @@ func (p *OllamaProvider) Generate(ctx context.Context, req *llm.Request) (*llm.R
 		messages[i] = ollamaMessage{Role: msg.Role, Content: msg.Content}
 	}
 
-	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: false}
+	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: false, Options: p.optionsFromRequest(req)}
 	body, err := json.Marshal(apiReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshalling ollama request: %w", err)
@@ -163,7 +203,7 @@ func (p *OllamaProvider) Stream(ctx context.Context, req *llm.Request, ch chan<-
 	for i, msg := range req.Messages {
 		messages[i] = ollamaMessage{Role: msg.Role, Content: msg.Content}
 	}
-	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: true}
+	apiReq := ollamaRequest{Model: req.Model, Messages: messages, Stream: true, Options: p.optionsFromRequest(req)}
 	body, err := json.Marshal(apiReq)
 	if err != nil {
 		close(ch)

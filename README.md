@@ -8,35 +8,50 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/dativo-io/talon)](https://goreportcard.com/report/github.com/dativo-io/talon)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-[Docs](docs/README.md) ·
-[Limitations](LIMITATIONS.md) ·
-[Roadmap & focus](ROADMAP.md) ·
-[Quickstart](docs/tutorials/proxy-quickstart.md) ·
-[Docker demo](examples/docker-compose/README.md) ·
-[Governed session demo](examples/governed-session/README.md) ·
-[Dashboard](docs/reference/gateway-dashboard.md) ·
-[Limitations](LIMITATIONS.md) ·
-[Releases](https://github.com/dativo-io/talon/releases/latest)
-
 Talon is a single Go binary that sits in front of OpenAI, Anthropic, AWS Bedrock, Azure OpenAI, and any OpenAI-compatible client. Change one URL and every request is policy-checked, PII-scanned, cost-tracked, and written to a tamper-evident, HMAC-signed evidence record — same SDK, same response shape, governed path. Built for EU teams that need real governance signals for GDPR, NIS2, DORA, and the EU AI Act. Apache 2.0.
 
-![Talon governed-session demo — a real Anthropic + OpenAI session governed end-to-end](docs/assets/talon_demo.gif)
+![Talon hero demo — one governed AI session: allowed, tool stripped, PII blocked, US destination routed to a local model, budget enforced](docs/assets/talon_hero.gif)
 
-*One real two-provider session through the gateway (37s): prompt-cache economics, a session budget gate, PII stop, tool governance, and signed evidence that verifies. Recorded with [asciinema](https://asciinema.org) — play it in your terminal from the self-contained [cast](docs/assets/talon_demo.cast) (`asciinema play docs/assets/talon_demo.cast`), or record your own run with [`scripts/record-governed-session.sh`](scripts/record-governed-session.sh).*
+*One AI session, one governed boundary: good traffic flows, a dangerous tool is stripped, PII is blocked before the provider, confidential data is refused by a US model and runs on a local one instead, runaway spend is stopped — and every decision verifies.*
 
----
-
-## Why Talon?
-
-- **PII is scanned before the provider call** — email, IBAN, VAT, national IDs and more are detected up front, then redacted, blocked, or routed to EU-only models.
-- **Policy is enforced before spend happens** — budgets and model allowlists are evaluated up front, not in a post-hoc alert after the money is gone.
-- **Dangerous tools are filtered before the model can call them** — forbidden tools are stripped from the request before the LLM ever sees them.
-- **Every decision becomes signed evidence** — each request produces an HMAC-SHA256 evidence record you can verify and export.
-- **Built for EU compliance signals** — supporting controls mapped to GDPR, NIS2, DORA, and the EU AI Act.
+**See it in 60 seconds, no API key →** [Try it now](#try-it-in-60-seconds-no-api-key) · **Deep proof on live providers →** [Governed session demo](#governed-session-demo-real-providers) · **Pilot on a real workload →** [Open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)
 
 ---
 
-## 60-second demo (no API key)
+## Is this you?
+
+Talon is for teams that **already have AI traffic in production** and need to answer:
+
+- **What sensitive data are we sending, and where?** (PII, IBANs, national IDs — and which provider/region got them)
+- **Which tools and models are actually allowed?** (not "should be" — enforced before the model runs)
+- **How do we stop spend before it happens?** (a cap that denies the request, not an alert after the bill)
+- **Can we prove the decision later?** (a signed record an auditor can verify offline)
+
+If those are your questions, Talon sits in front of your existing OpenAI/Anthropic traffic and answers them at the boundary — no SDK change, same response shape.
+
+---
+
+## Start with one workload
+
+You don't have to trust Talon in blocking mode on day one.
+
+1. **Put Talon in front of one** dev or internal workload (change the base URL, add a caller key).
+2. **Start in shadow mode** — Talon records what policy *would* do (PII, tools, spend, destinations) **without changing the response**.
+3. **Turn on one control** when you're ready: block PII, cap spend, keep confidential data local, or strip a dangerous tool.
+
+**Which are you?**
+
+| I have… | Start here |
+|---------|-----------|
+| An existing OpenAI/Anthropic app | [Change the base URL](#drop-in-openai-proxy) |
+| OpenClaw or a coding agent | [Use the integration pack](#integration-paths) |
+| A new agent to build | `talon init` → `talon run` ([guide](docs/tutorials/first-governed-agent.md)) |
+
+Or just [try it with no key](#try-it-in-60-seconds-no-api-key) first, then [open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A) with your stack and the first control you need.
+
+---
+
+## Try it in 60 seconds (no API key)
 
 The bundled Docker Compose stack runs Talon plus a mock provider, so the full pipeline (policy, PII, cost, evidence) runs without any real LLM key.
 
@@ -53,44 +68,36 @@ curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"My email is jan@example.com and my IBAN is DE89370400440532013000. Help me reset my password."}]}'
 ```
 
-You get a standard OpenAI-compatible JSON response from the mock provider — and Talon still ran every governance check. Inspect the evidence:
+You get a standard OpenAI-compatible JSON response — and Talon still ran every governance check. Inspect the signed evidence:
 
 ```bash
 docker compose exec talon /usr/local/bin/talon audit list
 docker compose exec talon /usr/local/bin/talon audit show <evidence-id>
 ```
 
-The record shows the PII detected (email, IBAN), the data tier, the policy decision, the cost, and a verifiable HMAC signature. Full walk-through: [60-second demo](docs/tutorials/quickstart-demo.md).
+The record shows the PII detected (email, IBAN), the data tier, the policy decision, the cost, and a verifiable HMAC signature.
+
+> **Why did the IBAN go through?** This demo ships in **shadow mode**: Talon *records* what policy would do — including the PII it found — **without changing the request**. That's the low-risk way to adopt: drop Talon in front of real traffic, see what it flags for a week, then flip to **enforce mode** to redact or block the IBAN before the provider (exactly what the hero above shows). One config line: `mode: shadow` → `mode: enforce`.
+
+Full walk-through: [60-second demo](docs/tutorials/quickstart-demo.md).
 
 ---
 
-## Governed session demo (real providers, one budget)
+## What Talon enforces (before the provider, then proves after)
 
-The deeper proof path runs one **real** agent session — an Anthropic planner and OpenAI executors — through the same gateway, bring-your-own keys (≈ $0.05/run, cheap models, session-capped):
+Everything happens **on the request path, before it reaches the model** — and every decision is recorded:
 
-```bash
-export ANTHROPIC_API_KEY=sk-ant-... OPENAI_API_KEY=sk-...
-make governed-session
-cd examples/governed-session && ./demo.sh all
-```
-
-```
-session begins ──▶ Anthropic planner (prompt-cache write, then read)
-               ──▶ OpenAI executors (cached_tokens; forbidden admin_* tool stripped)
-               ──▶ IBAN probe denied before any provider call
-               ──▶ real cross-provider spend reaches the session cap
-               ──▶ next estimated request rejected: 403 session_budget_exceeded
-               ──▶ money story: misleading naïve total vs Talon's cache-aware corrected total
-               ──▶ talon audit verify --session → N record(s), N valid, 0 invalid
-```
-
-Cache writes bill at 1.25× the input rate and cache reads at ~0.1× — Talon prices them exactly and enforces the budget against the corrected number, in the pricing table's declared currency. Every decision, including both denials, is a signed evidence record in one session trail: supporting controls and evidence for GDPR and EU AI Act reviews, not a compliance guarantee. Full walk-through: [governed-session demo](examples/governed-session/README.md). The six-proof mock demo above needs no keys; this one shows the same controls on live traffic.
+- **PII is scanned before the provider call** — email, IBAN, VAT, national IDs and more are detected up front, then redacted, blocked, or routed to EU-only models.
+- **Policy is enforced before spend happens** — budgets and model allowlists are evaluated up front, not in a post-hoc alert after the money is gone.
+- **Dangerous tools are filtered before the model can call them** — forbidden tools are stripped from the request before the LLM ever sees them.
+- **Confidential data can be kept in-region** — sovereignty routing rejects a US model for confidential data and runs the workload locally instead.
+- **Every decision becomes signed evidence** — each request produces an HMAC-SHA256 record you can verify and export, mapped to GDPR, NIS2, DORA, and the EU AI Act.
 
 ---
 
 ## Drop-in OpenAI proxy
 
-For an existing OpenAI SDK app, start the dev quickstart proxy and repoint the base URL:
+For an existing OpenAI SDK app, start the dev quickstart proxy and repoint the base URL — same request shape, same SDK, governed path:
 
 ```bash
 talon serve --proxy-quickstart --port 8080
@@ -98,16 +105,10 @@ export OPENAI_BASE_URL=http://127.0.0.1:8080/v1
 export OPENAI_API_KEY=sk-...
 ```
 
-Use your normal OpenAI SDK — same request shape, same SDK, governed path:
-
 ```python
 import openai
 
-client = openai.OpenAI(
-    base_url="http://127.0.0.1:8080/v1",
-    api_key="sk-...",
-)
-
+client = openai.OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="sk-...")
 resp = client.chat.completions.create(
     model="gpt-4o-mini",
     messages=[{"role": "user", "content": "Summarize EU AI Act obligations for SMBs."}],
@@ -119,21 +120,37 @@ Governance (policy, PII scan/redaction, evidence) stays active in quickstart mod
 
 ---
 
+## Governed session demo (real providers)
+
+The deeper proof path runs one **real** agent session — an Anthropic planner and OpenAI executors — through the same gateway, bring-your-own keys (≈ $0.03/run, cheap models, session-capped):
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-... OPENAI_API_KEY=sk-...
+make governed-session
+cd examples/governed-session && ./demo.sh all
+```
+
+![Talon governed-session demo — 11 acts across Anthropic + OpenAI + a local model, one signed session](docs/assets/talon_demo.gif)
+
+```
+session begins ──▶ Anthropic orchestrates (prompt-cache write, then read); ChatGPT executes the plan
+               ──▶ forbidden admin_* tool stripped · email redacted · model-allowlist deny
+               ──▶ IBAN probe denied before any provider call
+               ──▶ confidential data → US model rejected by policy → local Llama runs it (routed)
+               ──▶ real cross-provider spend reaches the session cap → 403 session_budget_exceeded
+               ──▶ money story from the signed export; flipping a signed field makes audit verify report INVALID
+               ──▶ talon audit verify --session → N valid, 0 invalid; talon compliance ropa → GDPR Art. 30 pack
+```
+
+The sovereignty act shows **data classification driving execution placement**: confidential input is refused by the US model and runs locally instead — the same IBAN the gateway blocks outright elsewhere, because policy (not the data alone) decides the outcome. Every decision is a signed evidence record in one session trail: supporting controls and evidence for GDPR and EU AI Act reviews, not a compliance guarantee.
+
+Recorded with [asciinema](https://asciinema.org) ([cast](docs/assets/talon_demo.cast) · [`scripts/record-governed-session.sh`](scripts/record-governed-session.sh)). Full walk-through: [governed-session demo](examples/governed-session/README.md). The sovereignty-routing act needs a local Ollama (opt-in `routing-demo` compose profile).
+
+---
+
 ## What Talon does to every request
 
-| # | Step | What happens |
-|---|------|--------------|
-| 1 | Identify caller | Look up caller from `Authorization: Bearer <key>`; load tenant, team, and policy overrides. |
-| 2 | Rate limit | Token-bucket check (global + per-caller). |
-| 3 | Extract model/text/tools | Provider-aware parse of the request body. |
-| 4 | PII scan (input) | Regex recognizers find email, phone, IBAN, VAT, national IDs, and more. |
-| 5 | Classify data tier | Highest-sensitivity finding sets the data tier. |
-| 6 | OPA policy decision | Embedded OPA evaluates model allowlist, cost, tier, and provider rules. |
-| 7 | Tool governance | Forbidden tools are filtered before forwarding. |
-| 8 | Redact / block | In enforce mode, PII is redacted or the request is blocked. |
-| 9 | Forward to provider | Request sent to the configured upstream (real key from the vault). |
-| 10 | Response scan | LLM output scanned for PII (allow/warn/redact/block). |
-| 11 | Evidence + cost | HMAC-signed evidence record written; cost attributed to the caller. |
+Each request flows through one governed pipeline before (and after) it reaches a provider:
 
 ```mermaid
 sequenceDiagram
@@ -148,80 +165,32 @@ sequenceDiagram
     Talon-->>Client: GovernedResponse
 ```
 
-Pipeline overhead is typically under 15ms excluding upstream latency. Reproduce on your machine: `make benchmarks`. Full byte-level breakdown: [What Talon does to your request](docs/explanation/what-talon-does-to-your-request.md) · [Benchmarks](docs/reference/benchmarks.md).
+Identify caller → rate limit → parse model/text/tools → **PII scan** → classify data tier → **OPA policy decision** (allowlist, cost, tier, provider) → **tool governance** → redact/block → forward with the vault key → response scan → **signed evidence + cost**. Pipeline overhead is typically under 15ms excluding upstream latency (`make benchmarks`).
+
+Full byte-level breakdown: [What Talon does to your request](docs/explanation/what-talon-does-to-your-request.md) · [Benchmarks](docs/reference/benchmarks.md).
 
 ---
 
 ## Core features
 
-### Evidence & compliance
+| Area | What you get | Details |
+|------|--------------|---------|
+| **Evidence & compliance** | HMAC-SHA256 signed record per request; export to CSV/JSON/signed-JSON; controls mapped to GDPR Art. 30, NIS2, DORA, EU AI Act. | [Evidence store](docs/explanation/evidence-store.md) · [Conformance](docs/reference/conformance.md) |
+| **PII & data protection** | Presidio-compatible input/output scanning; EU identifiers (IBAN MOD-97, VAT, national IDs) plus email, phone, card, passport, IP; redact/block/warn. | [Policy cookbook: PII](docs/guides/policy-cookbook.md#redact-pii-in-requests) |
+| **Cost governance / FinOps** | Per-caller daily/monthly caps evaluated before the call; per-request estimation from an editable pricing table; attribution by tenant/agent/caller. | [Cap AI spend per caller](docs/guides/cost-governance-by-caller.md) |
+| **Tool governance** | Allowed/forbidden lists with globs (`admin_*`); forbidden tools filtered before the model sees them; filtered tools recorded in evidence. | [Tool governance](docs/guides/openclaw-integration.md) |
+| **EU data sovereignty** | Provider registry with jurisdiction + EU region metadata; `eu_strict` / `eu_preferred` / `global` routing enforced by OPA. | [Provider registry](docs/reference/provider-registry.md) |
+| **Dashboard & observability** | Embedded gateway dashboard; metrics API + SSE stream; OpenTelemetry GenAI traces/metrics. | [Gateway dashboard](docs/reference/gateway-dashboard.md) |
 
-- HMAC-SHA256 signed evidence record per request; verify with `talon audit verify`.
-- Export to CSV, JSON, or signed JSON/NDJSON for auditors and offline verification.
-- Supporting controls mapped to GDPR Article 30, NIS2, DORA, and EU AI Act traceability.
-- Conformance: **317 passing tests** across the evidence + policy paths — reproduce with `make conformance`. See [Conformance suite & count](docs/reference/conformance.md).
-
-See [Evidence store](docs/explanation/evidence-store.md).
-
-### PII & data protection
-
-- Input and output scanning with Presidio-compatible recognizers.
-- EU identifiers: IBAN (MOD-97), VAT, national IDs across EU member states, plus email, phone, credit card, passport, IP.
-- Redact, block, or warn modes; tier-based routing for sensitive data.
-
-See [Policy cookbook: PII](docs/guides/policy-cookbook.md#redact-pii-in-requests).
-
-### Cost governance / FinOps
-
-- Per-caller daily and monthly budget caps, evaluated before the call.
-- Per-request cost estimation from an operator-editable pricing table.
-- Cost attribution by tenant, agent, and caller via `talon costs` and the dashboard.
-
-See [Cap AI spend per caller](docs/guides/cost-governance-by-caller.md).
-
-### Tool governance
-
-- Allowed/forbidden tool lists, including glob patterns like `admin_*`.
-- Forbidden tools are filtered out before the model sees them — prevention, not detection.
-- Filtered tools are recorded in evidence for audit.
-
-See [Tool governance](docs/guides/openclaw-integration.md).
-
-### EU data sovereignty
-
-- Provider registry with per-provider jurisdiction and EU region metadata.
-- Routing modes: `eu_strict`, `eu_preferred`, and `global`, enforced by OPA.
-- EU-capable providers: Azure OpenAI, AWS Bedrock (EU regions), Mistral, Vertex (EU regions), and local Ollama.
-
-See [Provider registry](docs/reference/provider-registry.md).
-
-### Dashboard & observability
-
-- Embedded gateway dashboard with live request, PII, cost, and tool-governance metrics.
-- Metrics API (`/api/v1/metrics`) plus an SSE stream for real-time updates.
-- OpenTelemetry traces and metrics using GenAI semantic conventions.
-
-See [Gateway dashboard](docs/reference/gateway-dashboard.md).
+**317 passing conformance tests** across the evidence + policy paths — reproduce with `make conformance`.
 
 ---
 
 ## Supported providers
 
-Provider IDs and EU metadata come from the built-in registry. See [Provider registry](docs/reference/provider-registry.md) for the authoritative list.
+EU-capable providers include **Azure OpenAI** (westeurope, swedencentral, francecentral, uksouth), **AWS Bedrock** (eu-central-1, eu-west-1, eu-west-3), **Mistral** (EU), **Vertex** (europe-west1/4/9), and **local Ollama**. US-jurisdiction providers (OpenAI, Anthropic, Cohere/CA) and any `generic-openai` endpoint are also supported, with jurisdiction metadata that routing policy can act on.
 
-| Provider | Gateway support | EU routing metadata | Notes |
-|----------|-----------------|---------------------|-------|
-| OpenAI (`openai`) | Yes | US jurisdiction | OpenAI API; custom base URL supported. |
-| Azure OpenAI (`azure-openai`) | Yes | EU regions (westeurope, swedencentral, francecentral, uksouth) | EU-hosted OpenAI models. |
-| Anthropic (`anthropic`) | Yes | US jurisdiction | Anthropic Messages API. |
-| AWS Bedrock (`bedrock`) | Yes | EU regions (eu-central-1, eu-west-1, eu-west-3) | EU region locking. |
-| Mistral (`mistral`) | Yes | EU jurisdiction | Mistral AI. |
-| Ollama (`ollama`) | Yes | Local | Local models, no key needed. |
-| Vertex (`vertex`) | Yes | EU regions (europe-west1/west4/west9) | Google Vertex AI. |
-| Cohere (`cohere`) | Yes | CA jurisdiction | Cohere. |
-| Generic OpenAI-compatible (`generic-openai`) | Yes | User-declared jurisdiction | Any OpenAI-compatible API. |
-
-Inspect live with `talon provider list`, `talon provider info <type>`, and `talon provider allowed`.
+Full table with regions and notes: [Provider registry](docs/reference/provider-registry.md). Inspect live: `talon provider list`, `talon provider info <type>`, `talon provider allowed`.
 
 ---
 
@@ -232,23 +201,17 @@ Inspect live with `talon provider list`, `talon provider info <type>`, and `talo
 | Existing app | You already call OpenAI/Anthropic | Change the base URL and use a Talon caller key. See [Add Talon to your existing app](docs/guides/add-talon-to-existing-app.md). |
 | Slack bot | A bot calls an LLM SDK | Route the OpenAI SDK through Talon. See [Slack bot integration](docs/guides/slack-bot-integration.md). |
 | OpenClaw | You run OpenClaw | Point its provider base URL at the gateway. See [OpenClaw integration](docs/guides/openclaw-integration.md). |
-| Coding agents | You run Claude Code or Codex CLI | `talon init --pack coding-agents`, point the tool's base URL at the gateway (conformance-suite verified: Anthropic Messages + OpenAI Responses wires incl. SSE). See [Claude Code](docs/guides/claude-code-integration.md), [Codex CLI](docs/guides/codex-cli-integration.md), and [Governing coding agents](docs/guides/governing-coding-agents.md). |
+| Coding agents | You run Claude Code or Codex CLI | `talon init --pack coding-agents`, point the tool's base URL at the gateway. See [Claude Code](docs/guides/claude-code-integration.md), [Codex CLI](docs/guides/codex-cli-integration.md), [Governing coding agents](docs/guides/governing-coding-agents.md). |
 | MCP / vendor proxy | Third-party AI vendors | Route MCP traffic through Talon for tool governance and evidence. See [Vendor integration guide](docs/VENDOR_INTEGRATION_GUIDE.md). |
 | Native Talon agent | Greenfield agent | Run governed agents directly with `talon run`. See [Your first governed agent](docs/tutorials/first-governed-agent.md). |
 
 ---
 
-## Talon vs alternatives
+## Where Talon fits
 
-Fair, factual positioning. Talon's differentiation is evidence-grade compliance and policy enforcement for EU teams.
+Talon is **not another LLM observability dashboard or routing proxy.** Its focus is the **governed boundary**: enforce policy *before* the request reaches the model — PII, tools, spend, data residency — then emit signed evidence you can verify afterward. Routers optimize latency and cost; observability tools show you what already happened. Talon decides what is allowed to happen, and proves the decision.
 
-| | Talon | Portkey | LiteLLM | Helicone | PII-only proxy |
-|---|-------|---------|---------|----------|----------------|
-| Primary focus | EU AI governance + signed evidence | AI gateway / routing | LLM proxy / routing | LLM observability | PII redaction |
-| EU governance | Yes (sovereignty routing) | Partial | No | No | Partial |
-| Signed evidence | Yes (HMAC) | No | No | No | No |
-| Tool governance | Yes (pre-execution filter) | Partial | No | No | No |
-| Cost controls | Yes (pre-spend caps) | Yes | Yes (alerts) | Yes (tracking) | No |
+Detailed comparison and why a PII-redaction proxy isn't enough: [Why not a PII proxy](docs/explanation/why-not-a-pii-proxy.md).
 
 ---
 
@@ -256,23 +219,20 @@ Fair, factual positioning. Talon's differentiation is evidence-grade compliance 
 
 Talon requires **CGO** (SQLite). Go **1.22+** recommended (CI uses 1.25.x).
 
-| Method | Platforms | Artifact / command |
-|--------|-----------|------------------|
-| **From source (recommended on macOS)** | linux, darwin (amd64, arm64) | `git clone … && make install` → `$(go env GOPATH)/bin/talon` |
-| **`go install`** | linux, darwin (amd64, arm64) | `go install github.com/dativo-io/talon/cmd/talon@latest` |
-| **Release tarball** | **linux/amd64 only** | `talon_<version>_linux_amd64.tar.gz` + `checksums.txt` on [Releases](https://github.com/dativo-io/talon/releases/latest) |
-| **Install script** | linux/amd64 prebuilt; **darwin/arm64 falls back to `go install`** | `curl -sSL https://install.gettalon.dev \| sh` |
-| **Docker / GHCR** | linux/amd64 images | `docker pull ghcr.io/dativo-io/talon:latest` (also `:vX.Y.Z`, `:X.Y`) |
-
-On macOS, if `go install` fails with `unsupported tapi file type '!tapi-tbd'`, use system Clang:
-
 ```bash
-CC=/usr/bin/clang CGO_ENABLED=1 go install github.com/dativo-io/talon/cmd/talon@latest
+# From source (recommended on macOS)
+git clone https://github.com/dativo-io/talon && cd talon && make install
+
+# Or go install
+go install github.com/dativo-io/talon/cmd/talon@latest
+
+# Or Docker
+docker pull ghcr.io/dativo-io/talon:latest
 ```
 
-Or clone the repo and run `make install` (Makefile sets `CC=/usr/bin/clang` on Darwin).
+Release tarballs (linux/amd64) and an install script are on [Releases](https://github.com/dativo-io/talon/releases/latest). Platform matrix, checksums, and the macOS `!tapi-tbd` workaround: [Quickstart install guide](docs/QUICKSTART.md).
 
-### First run (`talon init` → `talon run`)
+**First run:**
 
 ```bash
 export TALON_SECRETS_KEY="$(openssl rand -hex 32)"   # vault encryption key
@@ -280,50 +240,24 @@ talon init --scaffold --name my-agent                # agent.talon.yaml + talon.
 talon run --dry-run "hello"                          # no LLM API key required
 ```
 
-For a governed live call, set a provider key: `talon secrets set openai-api-key --value "$OPENAI_API_KEY"` (see [Your first governed agent](docs/tutorials/first-governed-agent.md)).
-
-Verify release assets (linux/amd64):
-
-```bash
-gh release view --repo dativo-io/talon --json tagName,assets -q '.assets[].name'
-# e.g. checksums.txt, talon_1.7.1_linux_amd64.tar.gz
-```
-
 ---
 
-## Configuration quick examples
+## Configuration
 
-Short snippets; see the [Policy cookbook](docs/guides/policy-cookbook.md) and [Configuration reference](docs/reference/configuration.md) for full schemas.
-
-**Block on PII** (`agent.talon.yaml`):
+Short examples below; full schemas in the [Policy cookbook](docs/guides/policy-cookbook.md) and [Configuration reference](docs/reference/configuration.md).
 
 ```yaml
+# agent.talon.yaml — block on PII, cap spend
 policies:
-  data_classification:
-    input_scan: true
-    block_on_pii: true
+  data_classification: { input_scan: true, block_on_pii: true }
+  cost_limits: { daily: 10.00, monthly: 200.00 }
 ```
 
-**Cap daily spend** (`agent.talon.yaml`):
-
 ```yaml
-policies:
-  cost_limits:
-    daily: 10.00
-    monthly: 200.00
-```
-
-**Forbid dangerous tools** (gateway `talon.config.yaml`):
-
-```yaml
+# talon.config.yaml — forbid dangerous tools, enforce EU-strict routing
 gateway:
   default_policy:
     forbidden_tools: ["delete_*", "admin_*", "bulk_*"]
-```
-
-**EU strict routing** (`talon.config.yaml`):
-
-```yaml
 llm:
   routing:
     data_sovereignty_mode: eu_strict
@@ -347,19 +281,32 @@ Artifacts a skeptical reviewer can grep in one session:
 
 ## Docs
 
-- [Documentation index](docs/README.md)
-- [60-second demo](docs/tutorials/quickstart-demo.md)
-- [Your first governed agent](docs/tutorials/first-governed-agent.md)
-- [Talon Security Boundaries & Limitations](LIMITATIONS.md)
-- [What Talon does to your request](docs/explanation/what-talon-does-to-your-request.md)
-- [Policy cookbook](docs/guides/policy-cookbook.md)
-- [Provider registry](docs/reference/provider-registry.md)
-- [Evidence store](docs/explanation/evidence-store.md)
-- [Conformance suite & count](docs/reference/conformance.md)
-- [Roadmap & focus](ROADMAP.md)
-- [Gateway dashboard](docs/reference/gateway-dashboard.md)
-- [OpenClaw integration](docs/guides/openclaw-integration.md)
-- [Slack bot integration](docs/guides/slack-bot-integration.md)
+[Documentation index](docs/README.md) ·
+[60-second demo](docs/tutorials/quickstart-demo.md) ·
+[Your first governed agent](docs/tutorials/first-governed-agent.md) ·
+[Limitations](LIMITATIONS.md) ·
+[What Talon does to your request](docs/explanation/what-talon-does-to-your-request.md) ·
+[Policy cookbook](docs/guides/policy-cookbook.md) ·
+[Provider registry](docs/reference/provider-registry.md) ·
+[Evidence store](docs/explanation/evidence-store.md) ·
+[Conformance](docs/reference/conformance.md) ·
+[Roadmap](ROADMAP.md) ·
+[Gateway dashboard](docs/reference/gateway-dashboard.md)
+
+---
+
+## Pilot Talon on a real workload
+
+The fastest way to know if Talon fits: put **one** workload behind it in shadow mode and see what it flags. Common first steps:
+
+| Workload | First control |
+|----------|--------------|
+| OpenAI support bot | Block customer PII before the provider |
+| OpenClaw / coding agent | Control which tools and models are allowed; signed execution evidence |
+| Regulated app | Keep confidential data on a local/EU model |
+| Any app with a growing bill | Cap spend before the request, not after |
+
+**[Open a pilot issue →](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)** with your current stack and the one control you need first — we'll help you get it running.
 
 ---
 

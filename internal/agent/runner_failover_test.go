@@ -76,6 +76,45 @@ func runFailoverRecords(t *testing.T, store *evidence.Store, correlationID strin
 	return attempts, terminals
 }
 
+// TestResolveProvider_SovereigntyRoutes_USRejectedLocalSelected proves the
+// genuine policy-driven sovereignty routing behind the demo's ROUTED act
+// (#107): under eu_strict, a HEALTHY US primary is pre-emptively rejected by
+// the routing policy (never dispatched) and a LOCAL candidate is selected for
+// the SAME request, with BOTH candidates captured in the RouteDecision that
+// flows into signed evidence. This is distinct from error-driven failover.
+func TestResolveProvider_SovereigntyRoutes_USRejectedLocalSelected(t *testing.T) {
+	usPrimary := &flakyProvider{name: "openai", jurisdiction: "US"} // healthy — not failing
+	localFallback := &flakyProvider{name: "ollama", jurisdiction: "LOCAL"}
+	routing := &policy.ModelRoutingConfig{
+		Tier2: &policy.TierConfig{Primary: "gpt-4o", FallbackChain: []string{"llama3:70b"}},
+	}
+	r, _ := newFailoverTestRunner(t, map[string]llm.Provider{"openai": usPrimary, "ollama": localFallback}, routing)
+
+	req := &RunRequest{TenantID: "t1", AgentName: "a1", InvocationType: "manual", SovereigntyMode: "eu_strict"}
+	provider, model, _, _, routeDecision, _, err := r.resolveProvider(
+		context.Background(), req, 2, nil, euOnlyRoutingEvaluator{}, req.SovereigntyMode)
+	require.NoError(t, err)
+
+	// LOCAL candidate selected; US primary never dispatched.
+	assert.Equal(t, "ollama", provider.Name(), "LOCAL candidate must be selected")
+	assert.Equal(t, "llama3:70b", model)
+	assert.Equal(t, 0, usPrimary.calls, "sovereignty-rejected US primary must never be dispatched")
+
+	// Evidence-bearing RouteDecision records BOTH the rejected US candidate and
+	// the selected LOCAL one.
+	require.NotNil(t, routeDecision)
+	assert.Equal(t, "ollama", routeDecision.SelectedProvider)
+	require.NotEmpty(t, routeDecision.Rejected, "the rejected US candidate must be recorded")
+	var rejectedOpenAI *llm.RejectedRouteCandidate
+	for i := range routeDecision.Rejected {
+		if routeDecision.Rejected[i].ProviderID == "openai" {
+			rejectedOpenAI = &routeDecision.Rejected[i]
+		}
+	}
+	require.NotNil(t, rejectedOpenAI, "openai/US must appear as a rejected candidate")
+	assert.NotEmpty(t, rejectedOpenAI.Reason, "rejection reason must be recorded")
+}
+
 func TestRunFailover_TransientErrorFailsOverToChainCandidate(t *testing.T) {
 	primary := &flakyProvider{name: "openai", jurisdiction: "US", failWith: &llm.ProviderError{Code: "server_error", Provider: "openai", Message: "boom"}}
 	backup := &flakyProvider{name: "ollama", jurisdiction: "LOCAL"}

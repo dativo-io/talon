@@ -42,6 +42,19 @@ func reasoningFromRequestHeaderOrBody(headerValue, bodyValue string) string {
 	return bodyValue
 }
 
+// clientAssertedSourceFor returns the session source for an HTTP run: a
+// non-empty id came from the client (X-Talon-Session-ID / body) and is
+// client-asserted — validated and preserved, never joined to Talon's
+// lifecycle. An EMPTY id must fall through to the internal path so the runner
+// AUTO-CREATES a Talon lifecycle session as before (returning "" here would
+// wrongly short-circuit that).
+func clientAssertedSourceFor(sessionID string) string {
+	if sessionID == "" {
+		return "" // internal: runner creates a lifecycle session
+	}
+	return session.SourceClientAsserted
+}
+
 func (s *Server) resolveApproverFromRequest(ctx context.Context, r *http.Request) (*approver.Record, error) {
 	key := bearerToken(r)
 	if key == "" || !strings.HasPrefix(key, "talon_appr_") {
@@ -188,15 +201,24 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "prompt is required")
 		return
 	}
+	assertedSession := reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Session-ID"), req.SessionID)
+	sessionSource := clientAssertedSourceFor(assertedSession)
+	if err := session.ValidateExternalID(assertedSession); err != nil {
+		// Client input error — reject at the boundary (400), not a runner 500.
+		writeError(w, http.StatusBadRequest, "invalid_session_id", err.Error())
+		return
+	}
 	runReq := &agent.RunRequest{
-		TenantID:       tenantID,
-		AgentName:      agentName,
-		Prompt:         req.Prompt,
-		AgentReasoning: reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Reasoning"), req.AgentReasoning),
-		SessionID:      reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Session-ID"), req.SessionID),
-		InvocationType: "api",
-		PolicyPath:     s.policyPath,
-		DryRun:         req.DryRun,
+		TenantID:        tenantID,
+		AgentName:       agentName,
+		Prompt:          req.Prompt,
+		AgentReasoning:  reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Reasoning"), req.AgentReasoning),
+		SessionID:       assertedSession,
+		SessionSource:   sessionSource, // client_asserted only when an id was actually supplied; empty → internal (auto-create)
+		InvocationType:  "api",
+		PolicyPath:      s.policyPath,
+		SovereigntyMode: s.sovereigntyMode,
+		DryRun:          req.DryRun,
 	}
 	if verified, err := s.verifyAgentRequestSignature(r.Context(), r, tenantID, agentName, req.Prompt); err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid_signature", err.Error())
@@ -297,14 +319,21 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "messages_required", "invalid_request_error", "no user message content in messages")
 		return
 	}
+	assertedSession := reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Session-ID"), req.SessionID)
+	if err := session.ValidateExternalID(assertedSession); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_session_id", "invalid_request_error", err.Error())
+		return
+	}
 	runReq := &agent.RunRequest{
-		TenantID:       tenantID,
-		AgentName:      agentName,
-		Prompt:         prompt,
-		AgentReasoning: reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Reasoning"), req.AgentReasoning),
-		SessionID:      reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Session-ID"), req.SessionID),
-		InvocationType: "http",
-		PolicyPath:     s.policyPath,
+		TenantID:        tenantID,
+		AgentName:       agentName,
+		Prompt:          prompt,
+		AgentReasoning:  reasoningFromRequestHeaderOrBody(r.Header.Get("X-Talon-Reasoning"), req.AgentReasoning),
+		SessionID:       assertedSession,
+		SessionSource:   clientAssertedSourceFor(assertedSession), // client_asserted only when an id was supplied; empty → internal (auto-create)
+		InvocationType:  "http",
+		PolicyPath:      s.policyPath,
+		SovereigntyMode: s.sovereigntyMode,
 	}
 	if verified, err := s.verifyAgentRequestSignature(r.Context(), r, tenantID, agentName, prompt); err != nil {
 		writeOpenAIError(w, http.StatusUnauthorized, "invalid_signature", "invalid_request_error", err.Error())
