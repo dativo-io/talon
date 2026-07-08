@@ -14,7 +14,40 @@ Talon is a single Go binary that sits in front of OpenAI, Anthropic, AWS Bedrock
 
 *One AI session, one governed boundary: good traffic flows, a dangerous tool is stripped, PII is blocked before the provider, confidential data is refused by a US model and runs on a local one instead, runaway spend is stopped — and every decision verifies.*
 
-**See it in 60 seconds, no API key →** [Try it now](#try-it-in-60-seconds-no-api-key) · **Deep proof on live providers →** [Governed session demo](#governed-session-demo-real-providers)
+**See it in 60 seconds, no API key →** [Try it now](#try-it-in-60-seconds-no-api-key) · **Deep proof on live providers →** [Governed session demo](#governed-session-demo-real-providers) · **Pilot on a real workload →** [Open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)
+
+---
+
+## Is this you?
+
+Talon is for teams that **already have AI traffic in production** and need to answer:
+
+- **What sensitive data are we sending, and where?** (PII, IBANs, national IDs — and which provider/region got them)
+- **Which tools and models are actually allowed?** (not "should be" — enforced before the model runs)
+- **How do we stop spend before it happens?** (a cap that denies the request, not an alert after the bill)
+- **Can we prove the decision later?** (a signed record an auditor can verify offline)
+
+If those are your questions, Talon sits in front of your existing OpenAI/Anthropic traffic and answers them at the boundary — no SDK change, same response shape.
+
+---
+
+## Start with one workload
+
+You don't have to trust Talon in blocking mode on day one.
+
+1. **Put Talon in front of one** dev or internal workload (change the base URL, add a caller key).
+2. **Start in shadow mode** — Talon records what policy *would* do (PII, tools, spend, destinations) **without changing the response**.
+3. **Turn on one control** when you're ready: block PII, cap spend, keep confidential data local, or strip a dangerous tool.
+
+**Which are you?**
+
+| I have… | Start here |
+|---------|-----------|
+| An existing OpenAI/Anthropic app | [Change the base URL](#drop-in-openai-proxy) |
+| OpenClaw or a coding agent | [Use the integration pack](#integration-paths) |
+| A new agent to build | `talon init` → `talon run` ([guide](docs/tutorials/first-governed-agent.md)) |
+
+Or just [try it with no key](#try-it-in-60-seconds-no-api-key) first, then [open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A) with your stack and the first control you need.
 
 ---
 
@@ -42,17 +75,23 @@ docker compose exec talon /usr/local/bin/talon audit list
 docker compose exec talon /usr/local/bin/talon audit show <evidence-id>
 ```
 
-The record shows the PII detected (email, IBAN), the data tier, the policy decision, the cost, and a verifiable HMAC signature. Full walk-through: [60-second demo](docs/tutorials/quickstart-demo.md).
+The record shows the PII detected (email, IBAN), the data tier, the policy decision, the cost, and a verifiable HMAC signature.
+
+> **Why did the IBAN go through?** This demo ships in **shadow mode**: Talon *records* what policy would do — including the PII it found — **without changing the request**. That's the low-risk way to adopt: drop Talon in front of real traffic, see what it flags for a week, then flip to **enforce mode** to redact or block the IBAN before the provider (exactly what the hero above shows). One config line: `mode: shadow` → `mode: enforce`.
+
+Full walk-through: [60-second demo](docs/tutorials/quickstart-demo.md).
 
 ---
 
-## Why Talon?
+## What Talon enforces (before the provider, then proves after)
+
+Everything happens **on the request path, before it reaches the model** — and every decision is recorded:
 
 - **PII is scanned before the provider call** — email, IBAN, VAT, national IDs and more are detected up front, then redacted, blocked, or routed to EU-only models.
 - **Policy is enforced before spend happens** — budgets and model allowlists are evaluated up front, not in a post-hoc alert after the money is gone.
 - **Dangerous tools are filtered before the model can call them** — forbidden tools are stripped from the request before the LLM ever sees them.
-- **Every decision becomes signed evidence** — each request produces an HMAC-SHA256 evidence record you can verify and export.
-- **Built for EU compliance signals** — supporting controls mapped to GDPR, NIS2, DORA, and the EU AI Act.
+- **Confidential data can be kept in-region** — sovereignty routing rejects a US model for confidential data and runs the workload locally instead.
+- **Every decision becomes signed evidence** — each request produces an HMAC-SHA256 record you can verify and export, mapped to GDPR, NIS2, DORA, and the EU AI Act.
 
 ---
 
@@ -168,17 +207,11 @@ Full table with regions and notes: [Provider registry](docs/reference/provider-r
 
 ---
 
-## Talon vs alternatives
+## Where Talon fits
 
-Talon's differentiation is evidence-grade compliance and policy enforcement for EU teams.
+Talon is **not another LLM observability dashboard or routing proxy.** Its focus is the **governed boundary**: enforce policy *before* the request reaches the model — PII, tools, spend, data residency — then emit signed evidence you can verify afterward. Routers optimize latency and cost; observability tools show you what already happened. Talon decides what is allowed to happen, and proves the decision.
 
-| | Talon | Portkey | LiteLLM | Helicone | PII-only proxy |
-|---|-------|---------|---------|----------|----------------|
-| Primary focus | EU AI governance + signed evidence | AI gateway / routing | LLM proxy / routing | LLM observability | PII redaction |
-| EU governance | Yes (sovereignty routing) | Partial | No | No | Partial |
-| Signed evidence | Yes (HMAC) | No | No | No | No |
-| Tool governance | Yes (pre-execution filter) | Partial | No | No | No |
-| Cost controls | Yes (pre-spend caps) | Yes | Yes (alerts) | Yes (tracking) | No |
+Detailed comparison and why a PII-redaction proxy isn't enough: [Why not a PII proxy](docs/explanation/why-not-a-pii-proxy.md).
 
 ---
 
@@ -259,6 +292,21 @@ Artifacts a skeptical reviewer can grep in one session:
 [Conformance](docs/reference/conformance.md) ·
 [Roadmap](ROADMAP.md) ·
 [Gateway dashboard](docs/reference/gateway-dashboard.md)
+
+---
+
+## Pilot Talon on a real workload
+
+The fastest way to know if Talon fits: put **one** workload behind it in shadow mode and see what it flags. Common first steps:
+
+| Workload | First control |
+|----------|--------------|
+| OpenAI support bot | Block customer PII before the provider |
+| OpenClaw / coding agent | Control which tools and models are allowed; signed execution evidence |
+| Regulated app | Keep confidential data on a local/EU model |
+| Any app with a growing bill | Cap spend before the request, not after |
+
+**[Open a pilot issue →](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)** with your current stack and the one control you need first — we'll help you get it running.
 
 ---
 
