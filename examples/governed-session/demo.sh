@@ -2,8 +2,8 @@
 # Governed-session demo driver (#107) — REAL Anthropic + OpenAI traffic, plus a
 # local Ollama for the sovereignty-routing act. Two cuts, one renderer:
 #
-#   ./demo.sh hero    # ~15s acquisition cut: 5 acts, above-the-fold GIF
-#   ./demo.sh all     # ~1min deep cut: 11 acts
+#   ./demo.sh hero    # ~30s acquisition cut: 5 acts, above-the-fold GIF
+#   ./demo.sh all     # ~70s deep cut: 11 acts
 #
 # Individual acts (mostly for development):
 #   ./demo.sh allowed | tool | pii | route | budget
@@ -404,9 +404,17 @@ act_budget() {
     exit 1
   fi
   grep -q "session_budget_exceeded" "$LAST_BODY" || { echo "✗ expected session_budget_exceeded" >&2; cat "$LAST_BODY" >&2; exit 1; }
-  local reason spend; reason="$(jq -r '.error.message // empty' "$LAST_BODY" 2>/dev/null)"
+  local reason spend spend_display; reason="$(jq -r '.error.message // empty' "$LAST_BODY" 2>/dev/null)"
   spend="$(session_spend_now)"
-  block_request "SPEND     ${sent} governed gpt-4o requests → \$${spend:-?} accumulated in this session" \
+  # Round for DISPLAY only (raw float has binary-fp noise like 0.0245986999…9998);
+  # the exact value stays in signed evidence. Four decimals reads cleanly and is
+  # more than enough resolution against a $0.03 cap.
+  if [[ "$spend" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    spend_display="$(printf '%.4f' "$spend")"
+  else
+    spend_display="${spend:-?}"
+  fi
+  block_request "SPEND     ${sent} governed gpt-4o requests → \$${spend_display} accumulated in this session" \
     "\$ curl …/chat/completions  {\"model\":\"gpt-4o\", …}  (the next request)   → HTTP 403"
   block_evidence "body: ${reason}"
   block_result "✗" "session_budget_exceeded — real accumulated spend capped, next request refused"
