@@ -49,28 +49,65 @@ else
   exit 1
 fi
 
+# PREFLIGHT: verify Talon-in-container can reach its CONFIGURED Ollama — the
+# exact path the routing act (act 8) uses. Catch a topology mismatch BEFORE
+# recording, not captured mid-cast as a 500.
+echo "==> Preflight: Talon → configured Ollama..."
+if ! ./demo.sh preflight; then
+  echo "✗ Preflight failed — not recording. Fix the topology above and retry." >&2
+  exit 1
+fi
+
 export TALON_DEMO_STRICT=1
 # Pace the 11 acts so the rendered GIF lands in the ~60-80s readable range.
 # --idle-time-limit MUST exceed DEMO_STEP_PAUSE or agg collapses the pause when
 # it rewrites the timeline; keep them in lockstep.
 export DEMO_STEP_PAUSE="${DEMO_STEP_PAUSE:-4}"
-echo "==> Recording ./demo.sh all (real API calls + local Llama, ~\$0.03)..."
-asciinema rec --overwrite --cols 100 --rows 32 --idle-time-limit 5 \
-  -c "./demo.sh all" "$CAST"
-echo "    Wrote ${CAST}"
 
+# TRANSACTIONAL RECORDING: record to a .tmp cast and promote to the committed
+# path ONLY after the run exits 0 AND the cast carries the act-11 terminal
+# markers (RoPA generated + the closing banner). Prevents asciinema --overwrite
+# from clobbering a good cast with a partial failed one.
+CAST_TMP="${CAST}.tmp"
+DEEP_MARKER_ROPA="RoPA generated"
+DEEP_MARKER_END="govern before the provider, prove what happened after"
+echo "==> Recording ./demo.sh all (real API calls + local Llama, ~\$0.03)..."
+rec_rc=0
+asciinema rec --overwrite --cols 100 --rows 32 --idle-time-limit 5 \
+  -c "./demo.sh all" "$CAST_TMP" || rec_rc=$?
+if [[ "$rec_rc" -ne 0 ]]; then
+  echo "✗ demo.sh all exited ${rec_rc} — recording NOT promoted. The committed cast is unchanged." >&2
+  rm -f "$CAST_TMP"
+  exit 1
+fi
+if ! grep -q "$DEEP_MARKER_ROPA" "$CAST_TMP" || ! grep -q "$DEEP_MARKER_END" "$CAST_TMP"; then
+  echo "✗ Recording is missing an act-11 terminal marker (RoPA export / closing banner) — NOT promoted." >&2
+  echo "  The run ended before act 11; the committed cast is unchanged." >&2
+  rm -f "$CAST_TMP"
+  exit 1
+fi
+mv -f "$CAST_TMP" "$CAST"
+echo "    Wrote ${CAST} (validated: exit 0 + act-11 terminal markers)"
+
+# Render the GIF from the VALIDATED cast, to a .tmp then promote.
+GIF_TMP="${GIF}.tmp"
+render_ok=0
 if command -v agg >/dev/null 2>&1; then
   echo "==> Rendering GIF (agg)..."
-  agg --font-size 16 "$CAST" "$GIF"
-  echo "    Wrote ${GIF}"
+  agg --font-size 16 "$CAST" "$GIF_TMP" && render_ok=1
 elif command -v docker >/dev/null 2>&1; then
   echo "==> Rendering GIF (agg via Docker)..."
   docker run --rm -v "${ASSET_DIR}:/data" ghcr.io/asciinema/agg \
-    --font-size 16 "/data/$(basename "$CAST")" "/data/$(basename "$GIF")"
+    --font-size 16 "/data/$(basename "$CAST")" "/data/$(basename "$GIF_TMP")" && render_ok=1
+else
+  echo "⚠ Neither agg nor docker found — GIF not rendered. Render the validated cast elsewhere:" >&2
+  echo "    agg --font-size 16 ${CAST} ${GIF}    (brew/cargo install agg)" >&2
+fi
+if [[ "$render_ok" == 1 && -s "$GIF_TMP" ]]; then
+  mv -f "$GIF_TMP" "$GIF"
   echo "    Wrote ${GIF}"
 else
-  echo "⚠ Neither agg nor docker found — GIF not rendered. Render the cast elsewhere:" >&2
-  echo "    agg --font-size 16 ${CAST} ${GIF}    (brew/cargo install agg)" >&2
+  rm -f "$GIF_TMP"
 fi
 
 echo ""

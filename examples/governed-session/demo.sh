@@ -253,6 +253,32 @@ ollama_warm() {
   fi
 }
 
+# require_runner_ollama — the routing act runs INSIDE the Talon container, which
+# reaches Ollama at its CONFIGURED TALON_OLLAMA_BASE_URL — NOT the host-visible
+# OLLAMA_PROBE_URL the readiness check uses. A recording that failed at the
+# routing act got a 500 because the container was pointed at http://ollama:11434
+# (no sidecar running) while the host probe passed. Test the CONTAINER's own
+# path here so a topology mismatch is caught BEFORE asciinema starts, not
+# captured mid-cast. Meant to be called by the record scripts.
+require_runner_ollama() {
+  local url
+  url="$(dc exec -T talon printenv TALON_OLLAMA_BASE_URL 2>/dev/null | tr -d '\r' || true)"
+  url="${url:-http://localhost:11434}"
+  if dc exec -T talon wget -q -O - "${url}/api/tags" 2>/dev/null | grep -q 'llama3.2:1b'; then
+    return 0
+  fi
+  echo "✗ Talon (in-container) cannot reach its configured Ollama at ${url} with llama3.2:1b." >&2
+  echo "  This is the exact path the routing act uses — recording now would capture a 500." >&2
+  echo "  Fix the topology, recreate Talon, then retry:" >&2
+  echo "    host-native:  export TALON_OLLAMA_BASE_URL=http://host.docker.internal:11434" >&2
+  echo "                  docker compose up -d --force-recreate talon" >&2
+  echo "                  (host Ollama must listen on 0.0.0.0: OLLAMA_HOST=0.0.0.0:11434)" >&2
+  echo "    sidecar:      unset TALON_OLLAMA_BASE_URL   # defaults to http://ollama:11434" >&2
+  echo "                  docker compose --profile routing-demo up -d --force-recreate talon ollama" >&2
+  echo "                  docker compose exec ollama ollama pull llama3.2:1b" >&2
+  return 1
+}
+
 # ── Acts ─────────────────────────────────────────────────────────────────────
 
 act_allowed() {
@@ -628,6 +654,7 @@ main() {
     routing-deny) require_stack; require_jq; act_routing_deny 1 1 ;;
     money) require_stack; require_jq; act_money 1 1 ;;
     verify) require_stack; act_verify 1 1 ;;
+    preflight) require_stack; require_runner_ollama ;;
     -h|--help|help|"") usage ;;
     *) echo "Unknown command: $cmd" >&2; usage >&2; exit 1 ;;
   esac
