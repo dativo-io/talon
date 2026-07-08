@@ -15,7 +15,8 @@
 # Without it, the routing act notes Ollama is unavailable and skips its
 # local-serve half instead of failing the demo.
 #
-# Each full run makes real API calls (cheap models, capped): ~$0.06.
+# Each full run makes real API calls (cheap models, session-capped): ~$0.03
+# (the recorded run's signed evidence totals ~$0.025 corrected; varies a little).
 
 services:
   talon:

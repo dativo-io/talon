@@ -104,6 +104,14 @@ block_banner() {
   printf '%s%s%s\n' "$C_BOLD" "$BLOCK_BAR" "$C_RESET"
 }
 
+# step_pause — a deliberate beat between acts so a viewer (and a recording) can
+# read each step before the next scrolls in. Defaults to 0 (live runs stay
+# snappy); the record scripts set DEMO_STEP_PAUSE so the rendered GIF breathes.
+# The record scripts also raise asciinema's --idle-time-limit above this value
+# so agg does NOT collapse the pause when it rewrites the timeline.
+DEMO_STEP_PAUSE="${DEMO_STEP_PAUSE:-0}"
+step_pause() { [[ "$DEMO_STEP_PAUSE" != 0 ]] && sleep "$DEMO_STEP_PAUSE"; return 0; }
+
 # block_rule <n> <total> <icon> <status> <title>
 block_rule() {
   local n="$1" total="$2" icon="$3" status="$4" title="$5" scolor="$C_CYAN"
@@ -111,6 +119,8 @@ block_rule() {
     ALLOWED|GOVERNED|ROUTED|VERIFIED|REDACTED|PROVEN|AUDITOR|ORCHESTRATOR|EXECUTOR|CACHE) scolor="$C_GREEN" ;;
     BLOCKED) scolor="$C_RED" ;;
   esac
+  # Beat before each act (after act 1) so the previous result stays on screen.
+  [[ "$n" != 1 ]] && step_pause
   echo ""
   printf '%s──[ %s/%s ]── %s%s %s%s\n' "$C_BOLD" "$n" "$total" "$scolor" "$icon" "$status" "$C_RESET"
   printf '%s             %s%s\n' "$C_DIM" "$title" "$C_RESET"
@@ -509,7 +519,7 @@ session_verify_clean() {
 }
 
 act_verify() {
-  block_rule "$1" "$2" "📜" "AUDITOR" "signed session verifies + RoPA export"
+  block_rule "$1" "$2" "📜" "AUDITOR" "signed session verifies · RoPA + runtime consistency check"
   block_evidence "\$ talon audit verify --session ${SESSION_ID}"
   if ! session_verify_clean; then
     echo "✗ Expected all session records valid (0 invalid)" >&2
@@ -522,20 +532,36 @@ act_verify() {
   # export must fail the act), then assert the file is freshly written and real
   # HTML (non-trivial size + an <html> tag), not an empty shell.
   local ropa_file="${OUT_DIR}/governed-session-ropa.html"
-  rm -f "$ropa_file"
+  local ropa_warn="${OUT_DIR}/governed-session-ropa.warnings"
+  rm -f "$ropa_file" "$ropa_warn"
   # --policy points at the mounted agent policy so the GDPR Art. 30 declarations
   # (compliance.declarations) are loaded. Without it the command falls back to
   # cfg.DefaultPolicy (empty in this demo config) and prints "declaration
-  # missing" warnings for facts it can't infer.
-  talon_in_container compliance ropa --policy /home/talon/agent.talon.yaml --format html >"$ropa_file"
+  # missing" warnings for facts it can't infer. HTML → stdout (host file);
+  # WARNINGS → stderr (captured) so we can surface the consistency finding.
+  talon_in_container compliance ropa --policy /home/talon/agent.talon.yaml --format html \
+    >"$ropa_file" 2>"$ropa_warn"
   local ropa_bytes
   ropa_bytes="$(wc -c <"$ropa_file" | tr -d '[:space:]')"
   if [[ ! -s "$ropa_file" || "$ropa_bytes" -lt 200 ]] || ! grep -qi '<html' "$ropa_file"; then
     echo "✗ RoPA export did not produce a valid HTML document (${ropa_bytes:-0} bytes)" >&2
     exit 1
   fi
-  block_evidence "\$ talon compliance ropa --format html > out/governed-session-ropa.html   → ${ropa_bytes} bytes (GDPR Art. 30)"
-  block_result "✓" "Every decision verifies (0 invalid) — and an auditor-ready RoPA pack is generated"
+  block_evidence "\$ talon compliance ropa --policy agent.talon.yaml --format html > out/…-ropa.html   → ${ropa_bytes} bytes"
+  # The RoPA generator cross-checks the declared data_residency against the
+  # DESTINATIONS observed in signed evidence. Under eu_preferred the US model is
+  # a real (rejected) candidate but US executor calls also happened, so it flags
+  # the transfer. Surface that as an explicit proof beat — Talon didn't just emit
+  # a document, it caught an inconsistency against runtime evidence.
+  local nonEU
+  nonEU="$(grep -oiE '[0-9]+ destination\(s\) outside EU/LOCAL' "$ropa_warn" | grep -oE '^[0-9]+' | head -1 || true)"
+  if [[ -n "$nonEU" ]]; then
+    block_evidence "CONSISTENCY  ${nonEU} destination(s) outside EU/LOCAL found in evidence (declared residency: eu)" \
+      "ACTION       enforce eu_strict, or document the transfer mechanism (SCCs / adequacy) with your DPO"
+    block_result "✓" "RoPA generated — and its runtime consistency check flagged ${nonEU} non-EU flow(s) to resolve"
+  else
+    block_result "✓" "RoPA generated — declaration and runtime evidence are consistent (no flagged transfers)"
+  fi
 }
 
 # ── Cuts ─────────────────────────────────────────────────────────────────────
@@ -551,6 +577,7 @@ cmd_hero() {
   act_budget  5 5
   # Closing proof: actually verify the WHOLE session and assert 0 invalid — the
   # "every decision verifies" claim must be real and visible, not deferred.
+  step_pause
   echo ""
   printf ' %sPROOF%s     $ talon audit verify --session %s\n' "$C_CYAN" "$C_RESET" "$SESSION_ID"
   if ! session_verify_clean; then
@@ -564,7 +591,7 @@ cmd_hero() {
 cmd_all() {
   require_stack; require_jq
   block_banner "Talon — Governed Session · Anthropic orchestrates, ChatGPT executes, one boundary" \
-    "Session: ${SESSION_ID}   ·   enforce · session cap \$0.03 · ⚠ ~\$0.06 real spend"
+    "Session: ${SESSION_ID}   ·   enforce · session cap \$0.03 · ~\$0.025 real spend (varies with output)"
   act_planner_write 1 11
   act_planner_read  2 11
   act_executor      3 11
@@ -576,6 +603,7 @@ cmd_all() {
   act_budget        9 11
   act_money        10 11
   act_verify       11 11
+  step_pause
   block_banner "Talon — govern before the provider, prove what happened after"
 }
 

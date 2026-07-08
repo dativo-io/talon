@@ -66,7 +66,7 @@ The record shows the PII detected (email, IBAN), the data tier, the policy decis
 
 ## Governed session demo (real providers, one budget)
 
-The deeper proof path runs one **real** agent session — an Anthropic planner and OpenAI executors — through the same gateway, bring-your-own keys (≈ $0.06/run, cheap models, session-capped):
+The deeper proof path runs one **real** agent session — an Anthropic planner and OpenAI executors — through the same gateway, bring-your-own keys (≈ $0.03/run, cheap models, session-capped):
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-... OPENAI_API_KEY=sk-...

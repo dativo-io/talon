@@ -54,9 +54,13 @@ fi
 # Strict mode: a missing Ollama / skipped routing act FAILS the recording, so a
 # committed hero GIF can never be missing its headline sovereignty proof.
 export TALON_DEMO_STRICT=1
+# Pace the acts so the rendered GIF lands in the ~20-30s readable range (5 acts
+# + closing proof). --idle-time-limit MUST exceed DEMO_STEP_PAUSE or agg
+# collapses the pause when it rewrites the timeline; keep them in lockstep.
+export DEMO_STEP_PAUSE="${DEMO_STEP_PAUSE:-3}"
 echo "==> Recording ./demo.sh hero (real API calls + local Llama; the budget act"
 echo "    spends toward the \$0.03 session cap, so ~\$0.03 real spend)..."
-asciinema rec --overwrite --cols 100 --rows 30 --idle-time-limit 1 \
+asciinema rec --overwrite --cols 100 --rows 30 --idle-time-limit 4 \
   -c "./demo.sh hero" "$CAST"
 echo "    Wrote ${CAST}"
 

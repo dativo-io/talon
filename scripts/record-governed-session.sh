@@ -50,8 +50,12 @@ else
 fi
 
 export TALON_DEMO_STRICT=1
-echo "==> Recording ./demo.sh all (real API calls + local Llama, ~\$0.06)..."
-asciinema rec --overwrite --cols 100 --rows 32 --idle-time-limit 2 \
+# Pace the 11 acts so the rendered GIF lands in the ~60-80s readable range.
+# --idle-time-limit MUST exceed DEMO_STEP_PAUSE or agg collapses the pause when
+# it rewrites the timeline; keep them in lockstep.
+export DEMO_STEP_PAUSE="${DEMO_STEP_PAUSE:-4}"
+echo "==> Recording ./demo.sh all (real API calls + local Llama, ~\$0.03)..."
+asciinema rec --overwrite --cols 100 --rows 32 --idle-time-limit 5 \
   -c "./demo.sh all" "$CAST"
 echo "    Wrote ${CAST}"
 
