@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Record the ~20s "hero" acquisition demo as an asciinema cast (+ optional GIF).
+# Record the ~30s "hero" acquisition demo as an asciinema cast (+ optional GIF).
 # Run on a dev machine with REAL keys exported, a warmed-up Ollama, and the
 # governed-session stack healthy (make governed-session). Not a CI step: real
 # spend + timestamp churn. The recording is transactional: it promotes over the

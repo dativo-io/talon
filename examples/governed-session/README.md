@@ -4,9 +4,9 @@ One agent session against **real** Anthropic + OpenAI APIs (and a local model
 for the sovereignty act), end to end through Talon — one visible
 `X-Talon-Session-ID`, one signed evidence trail. Two cuts share one renderer:
 
-- **`./demo.sh hero`** — the ~20s acquisition cut, 5 acts:
+- **`./demo.sh hero`** — the ~30s acquisition cut, 5 acts:
   ✅ allowed · 🛠 tool stripped · 🔒 PII blocked · 🇪🇺 routed (US → local) · 💶 budget.
-- **`./demo.sh all`** — the ~50s deep cut, 11 acts (adds cache economics,
+- **`./demo.sh all`** — the ~70s deep cut, 11 acts (adds cache economics,
   redaction, model governance, tamper detection, RoPA export).
 
 The recorded GIFs are paced (a beat between acts) so each step is readable;
@@ -74,8 +74,8 @@ in seconds. `llama3.2:1b` is deliberately small — don't use the 3B
 ```bash
 make governed-session          # from repo root: builds + starts + waits for health
 cd examples/governed-session
-./demo.sh hero                 # the 5-act acquisition cut (~20s recorded)
-./demo.sh all                  # the 11-act deep cut (~50s recorded)
+./demo.sh hero                 # the 5-act acquisition cut (~30s recorded)
+./demo.sh all                  # the 11-act deep cut (~70s recorded)
 ```
 
 Individual acts: `allowed`, `tool`, `pii`, `route`, `budget`, `planner-write`,
