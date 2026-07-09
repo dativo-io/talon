@@ -582,6 +582,16 @@ func (s *Store) Store(ctx context.Context, ev *Evidence) error {
 		))
 	defer span.End()
 
+	// Persist the timestamp in UTC. The mattn/go-sqlite3 driver serializes a
+	// time.Time with its original offset (e.g. "2026-07-08 18:00:00-08:00"), and
+	// cost-window queries compare those strings lexicographically — so a record
+	// written in server-local time gets bucketed into the wrong UTC day around
+	// midnight, making budget enforcement and `talon costs` disagree (#216).
+	// Normalizing here (before signing) keeps the same instant, renders it in UTC,
+	// and makes every window comparison apples-to-apples. .UTC() is a no-op when
+	// the timestamp is already UTC or zero.
+	ev.Timestamp = ev.Timestamp.UTC()
+
 	if len(ev.Explanations) == 0 {
 		policyRef := ""
 		if ev.PolicyDecision.PolicyVersion != "" {
@@ -646,6 +656,8 @@ func (s *Store) StoreStep(ctx context.Context, step *StepEvidence) error {
 		))
 	defer span.End()
 
+	step.Timestamp = step.Timestamp.UTC() // UTC-normalize for consistent time-window comparison (#216)
+
 	step.Signature = ""
 	stepJSON, err := json.Marshal(step)
 	if err != nil {
@@ -680,6 +692,8 @@ func (s *Store) StoreGraphSummary(ctx context.Context, gs *GraphSummary) error {
 			attribute.String("tenant_id", gs.TenantID),
 		))
 	defer span.End()
+
+	gs.Timestamp = gs.Timestamp.UTC() // UTC-normalize for consistent time-window comparison (#216)
 
 	gs.Signature = ""
 	summaryJSON, err := json.Marshal(gs)
@@ -884,11 +898,11 @@ func (s *Store) List(ctx context.Context, tenantID, agentID string, from, to tim
 	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp <= ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 
 	query += ` ORDER BY timestamp DESC, id DESC`
@@ -945,11 +959,11 @@ func (s *Store) CostTotal(ctx context.Context, tenantID, agentID string, from, t
 	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp < ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 
 	var total float64
@@ -972,11 +986,11 @@ func (s *Store) CacheSavings(ctx context.Context, tenantID string, from, to time
 	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp < ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 	err = s.db.QueryRowContext(ctx, query, args...).Scan(&hits, &costSaved)
 	if err != nil {
@@ -996,11 +1010,11 @@ func (s *Store) AvgTTFT(ctx context.Context, tenantID, agentID string, from, to 
 	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp < ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 	var avg *float64
 	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&avg); err != nil {
@@ -1023,11 +1037,11 @@ func (s *Store) AvgTPOT(ctx context.Context, tenantID, agentID string, from, to 
 	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp < ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 	var avg *float64
 	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&avg); err != nil {
@@ -1050,11 +1064,11 @@ func (s *Store) CountInRange(ctx context.Context, tenantID, agentID string, from
 	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp < ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 	var n int
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(&n)
@@ -1070,11 +1084,11 @@ func (s *Store) ListTenantIDs(ctx context.Context, from, to time.Time) ([]string
 	args := []interface{}{}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp < ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 	query += ` ORDER BY tenant_id`
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -1107,11 +1121,11 @@ func (s *Store) CountDeniedInRange(ctx context.Context, tenantID, agentID string
 	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp < ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 	var n int
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(&n)
@@ -1134,11 +1148,11 @@ func (s *Store) DenialsByReason(ctx context.Context, tenantID string, from, to t
 		}
 		if !from.IsZero() {
 			q += ` AND timestamp >= ?`
-			args = append(args, from)
+			args = append(args, from.UTC())
 		}
 		if !to.IsZero() {
 			q += ` AND timestamp < ?`
-			args = append(args, to)
+			args = append(args, to.UTC())
 		}
 		var n int
 		if e := s.db.QueryRowContext(ctx, q, args...).Scan(&n); e != nil {
@@ -1229,6 +1243,10 @@ func (s *Store) TenantsSummary(ctx context.Context, dayStart, dayEnd, monthStart
 		SUM(CASE WHEN timestamp >= ? AND timestamp < ? THEN COALESCE(CAST(json_extract(evidence_json, '$.execution.cost') AS REAL), CAST(json_extract(evidence_json, '$.execution.cost_eur') AS REAL), 0) ELSE 0 END),
 		SUM(CASE WHEN timestamp >= ? AND timestamp < ? AND (json_extract(evidence_json, '$.policy_decision.allowed') = 0 OR json_extract(evidence_json, '$.policy_decision.allowed') = 0.0) THEN 1 ELSE 0 END)
 		FROM evidence WHERE timestamp >= ? AND timestamp < ?`
+	// UTC-normalize bounds so string comparison against UTC-stored timestamps is
+	// apples-to-apples regardless of the caller's location (#216).
+	dayStart, dayEnd = dayStart.UTC(), dayEnd.UTC()
+	monthStart, monthEnd = monthStart.UTC(), monthEnd.UTC()
 	args := []interface{}{
 		dayStart, dayEnd, dayStart, dayEnd,
 		monthStart, monthEnd,
@@ -1292,11 +1310,11 @@ func (s *Store) AgentsSummary(ctx context.Context, from, to time.Time, tenantID 
 	args := []interface{}{}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp < ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 	if tenantID != "" {
 		query += ` AND tenant_id = ?`
@@ -1348,11 +1366,11 @@ func (s *Store) AgentHealthSummary(ctx context.Context, from, to time.Time, tena
 		args := []interface{}{a.TenantID, a.AgentID}
 		if !from.IsZero() {
 			errQ += ` AND timestamp >= ?`
-			args = append(args, from)
+			args = append(args, from.UTC())
 		}
 		if !to.IsZero() {
 			errQ += ` AND timestamp < ?`
-			args = append(args, to)
+			args = append(args, to.UTC())
 		}
 		var errorCount int
 		if err := s.db.QueryRowContext(ctx, errQ, args...).Scan(&errorCount); err != nil {
@@ -1401,11 +1419,11 @@ func (s *Store) CostByAgent(ctx context.Context, tenantID string, from, to time.
 	args := []interface{}{tenantID}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp < ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 	query += ` GROUP BY agent_id`
 
@@ -1457,11 +1475,11 @@ func (s *Store) CostByModel(ctx context.Context, tenantID, agentID string, from,
 	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp < ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 	query += ` GROUP BY 1`
 
@@ -1516,11 +1534,11 @@ func (s *Store) CostByProvider(ctx context.Context, tenantID, agentID string, fr
 	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp < ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 	query += ` GROUP BY 1`
 
@@ -1556,11 +1574,11 @@ func (s *Store) CostByTeam(ctx context.Context, tenantID string, from, to time.T
 	args := []interface{}{tenantID}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp < ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 	query += ` GROUP BY team`
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -1675,11 +1693,11 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, from, t
 	}
 	if !from.IsZero() {
 		query += ` AND timestamp >= ?`
-		args = append(args, from)
+		args = append(args, from.UTC())
 	}
 	if !to.IsZero() {
 		query += ` AND timestamp <= ?`
-		args = append(args, to)
+		args = append(args, to.UTC())
 	}
 	query += ` ORDER BY timestamp DESC, id DESC`
 	if limit > 0 {
@@ -1728,11 +1746,16 @@ func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int
 		return nil, fmt.Errorf("finding target evidence: %w", err)
 	}
 
+	// target.Timestamp is unmarshaled from evidence_json, so for a pre-#216 record
+	// it retains the original serialized offset. Bind it in UTC so the comparison
+	// against the UTC-stored timestamp column is apples-to-apples (#216).
+	targetTS := target.Timestamp.UTC()
+
 	// Collect entries before the target (earlier timestamps)
 	beforeQuery := `SELECT evidence_json FROM evidence
 	                WHERE tenant_id = ? AND timestamp < ?
 	                ORDER BY timestamp DESC LIMIT ?`
-	beforeRows, err := s.db.QueryContext(ctx, beforeQuery, target.TenantID, target.Timestamp, before)
+	beforeRows, err := s.db.QueryContext(ctx, beforeQuery, target.TenantID, targetTS, before)
 	if err != nil {
 		return nil, fmt.Errorf("querying before timeline: %w", err)
 	}
@@ -1764,7 +1787,7 @@ func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int
 	afterQuery := `SELECT evidence_json FROM evidence
 	               WHERE tenant_id = ? AND timestamp > ?
 	               ORDER BY timestamp ASC LIMIT ?`
-	afterRows, err := s.db.QueryContext(ctx, afterQuery, target.TenantID, target.Timestamp, after)
+	afterRows, err := s.db.QueryContext(ctx, afterQuery, target.TenantID, targetTS, after)
 	if err != nil {
 		return nil, fmt.Errorf("querying after timeline: %w", err)
 	}
