@@ -555,6 +555,26 @@ func (c *GatewayConfig) validateFallbackChain(owner string, p ProviderConfig) er
 	return nil
 }
 
+// ResolveCostCaps returns the effective daily and monthly cost caps for a
+// caller: the server default, replaced by a per-caller override when that
+// override is set (> 0). This is the single source of truth for "what cap does
+// this caller actually run against" — budget enforcement (via the policy input,
+// gateway_access.rego) and budget-utilization metrics/alerts must both read it,
+// or the dashboard disagrees with what runtime enforced (#216).
+func ResolveCostCaps(defaults *ServerDefaults, overrides *CallerPolicyOverrides) (daily, monthly float64) {
+	daily, monthly = defaults.MaxDailyCost, defaults.MaxMonthlyCost
+	if overrides == nil {
+		return daily, monthly
+	}
+	if overrides.MaxDailyCost > 0 {
+		daily = overrides.MaxDailyCost
+	}
+	if overrides.MaxMonthlyCost > 0 {
+		monthly = overrides.MaxMonthlyCost
+	}
+	return daily, monthly
+}
+
 // ResolveAttachmentPolicy returns the effective attachment policy for a caller,
 // merging caller overrides on top of the server default.
 func ResolveAttachmentPolicy(defaultPolicy *ServerDefaults, overrides *CallerPolicyOverrides) *AttachmentPolicyConfig {

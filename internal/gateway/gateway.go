@@ -546,14 +546,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		estimatedCost = 0 // free endpoint: a nonzero estimate would leak into budget input and deny evidence (#218)
 	}
 	dailyCost, monthlyCost := g.callerCostTotals(ctx, caller)
-	if d := g.config.ServerDefaults.MaxDailyCost; d > 0 {
-		pct := (dailyCost / d) * 100
+	// Utilization must be measured against the same effective caps enforcement
+	// uses (default overlaid by per-caller override), or the dashboard reports a
+	// different denominator than the runtime actually gates on (#216).
+	dailyCap, monthlyCap := ResolveCostCaps(&g.config.ServerDefaults, caller.PolicyOverrides)
+	if dailyCap > 0 {
+		pct := (dailyCost / dailyCap) * 100
 		RecordBudgetUtilization(ctx, caller.TenantID, "daily", pct)
 		g.tryBudgetAlert(ctx, caller.TenantID, "daily", pct, 80)
 		g.tryBudgetAlert(ctx, caller.TenantID, "daily", pct, 95)
 	}
-	if m := g.config.ServerDefaults.MaxMonthlyCost; m > 0 {
-		pct := (monthlyCost / m) * 100
+	if monthlyCap > 0 {
+		pct := (monthlyCost / monthlyCap) * 100
 		RecordBudgetUtilization(ctx, caller.TenantID, "monthly", pct)
 		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 80)
 		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 95)
@@ -1673,21 +1677,19 @@ func buildGatewayPolicyInput(caller *CallerConfig, defaults ServerDefaults, prov
 		input["egress_rules"] = egressRulesForPolicyInput(egress)
 		input["egress_default_action"] = egress.DefaultAction
 	}
-	if defaults.MaxDailyCost > 0 {
-		input["caller_max_daily_cost"] = defaults.MaxDailyCost
+	// Effective caps: server default overlaid by per-caller override. The same
+	// resolution feeds budget-utilization metrics/alerts so the dashboard and the
+	// enforcement decision agree on the denominator (#216).
+	dailyCap, monthlyCap := ResolveCostCaps(&defaults, caller.PolicyOverrides)
+	if dailyCap > 0 {
+		input["caller_max_daily_cost"] = dailyCap
 	}
-	if defaults.MaxMonthlyCost > 0 {
-		input["caller_max_monthly_cost"] = defaults.MaxMonthlyCost
+	if monthlyCap > 0 {
+		input["caller_max_monthly_cost"] = monthlyCap
 	}
 	if caller.PolicyOverrides != nil {
 		input["caller_allowed_models"] = caller.PolicyOverrides.AllowedModels
 		input["caller_blocked_models"] = caller.PolicyOverrides.BlockedModels
-		if caller.PolicyOverrides.MaxDailyCost > 0 {
-			input["caller_max_daily_cost"] = caller.PolicyOverrides.MaxDailyCost
-		}
-		if caller.PolicyOverrides.MaxMonthlyCost > 0 {
-			input["caller_max_monthly_cost"] = caller.PolicyOverrides.MaxMonthlyCost
-		}
 		if caller.PolicyOverrides.MaxSessionCost > 0 {
 			// One insertion in the shared builder covers the primary request
 			// and every fallback candidate identically (#198).
@@ -1742,9 +1744,12 @@ func (g *Gateway) tryBudgetAlert(ctx context.Context, tenantID, period string, u
 }
 
 func (g *Gateway) callerCostTotals(ctx context.Context, caller *CallerConfig) (daily, monthly float64) {
-	now := time.Now()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	// Day/month windows are computed in UTC so budget enforcement agrees with
+	// `talon costs` reporting, which also uses UTC. Server-local windows made the
+	// two disagree for the UTC-offset hours around midnight on non-UTC hosts (#216).
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	byAgent, err := g.evidenceStore.CostByAgent(ctx, caller.TenantID, todayStart, now)
 	if err != nil {
 		return 0, 0
