@@ -26,7 +26,7 @@ Pick the path that matches your goal. For what Talon is **not** building, read [
 
 1. [60-second demo](tutorials/quickstart-demo.md) — Docker Compose, mock provider, evidence in SQLite.
 2. [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) — verify, export, tamper, fail verification.
-3. [Sample auditor pack](../examples/auditor-pack/README.md) — browse a signed export, compliance report, GDPR Art. 30 RoPA, and EU AI Act Annex IV pack; regenerate with `make auditor-pack`.
+3. [Sample auditor pack](../examples/auditor-pack/README.md) — browse the proof layer: a signed export, compliance report, GDPR Art. 30 RoPA, and EU AI Act Annex IV pack; regenerate with `make auditor-pack`.
 
 ### Builder (native binary, cold start)
 
@@ -40,18 +40,20 @@ Smoke-check the builder path: `make verify-newcomer` (from repo root).
 
 Choose the shortest path for your situation:
 
-1. **"I need to show an auditor or DPO what we can hand off."**
+1. **"I need to operate my AI use cases: budgets, reliability, one policy, session visibility."**
+   - Cost: [Cap AI spend per caller](guides/cost-governance-by-caller.md)
+   - Reliability: [Provider fallback chains](reference/configuration.md#provider-fallback-chains-error-driven-failover)
+   - Policy: [Policy cookbook](guides/policy-cookbook.md) · [Policy packs](guides/policy-packs.md)
+   - Sessions: [Governing coding agents](guides/governing-coding-agents.md) · [Manual governed session](tutorials/manual-governed-session.md)
+   - The big picture: [Talon as a control plane](explanation/control-plane.md)
+2. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
+   - Start: [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
+   - Third-party vendor: [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md), then [Architecture: MCP proxy](ARCHITECTURE_MCP_PROXY.md)
+3. **"I need to prove what happened — to a customer, auditor, or my own board."**
    - Start: [Sample auditor pack](../examples/auditor-pack/README.md)
    - Learn the flow: [Turnkey compliance reports](tutorials/turnkey-compliance-reports.md) — init with EU policy packs to a downloaded RoPA in ~15 minutes
    - Verify everything: [How to verify turnkey compliance reports](guides/verify-turnkey-compliance-reports.md) — full checklist before a demo or release
-   - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
-   - Declarations: [How to clear DECLARATION MISSING blocks in RoPA exports](guides/ropa-declarations.md)
-2. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
-   - Start: [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
-   - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md)
-3. **"I need to govern a third-party AI vendor."**
-   - Start: [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md)
-   - Then: [Architecture: MCP proxy](ARCHITECTURE_MCP_PROXY.md)
+   - Then: [How to export evidence for auditors](guides/compliance-export-runbook.md) · [How to clear DECLARATION MISSING blocks](guides/ropa-declarations.md)
 4. **"I want to understand exactly what Talon enforces."**
    - Start: [What Talon does to your request](explanation/what-talon-does-to-your-request.md)
    - Then: [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md)
@@ -62,34 +64,41 @@ Choose the shortest path for your situation:
 
 ### Tutorials (learning-oriented)
 
-| Doc | Description |
-|-----|-------------|
-| [60-Second Demo (no API key)](tutorials/quickstart-demo.md) | Docker Compose demo with mock provider — see governance in action in 60 seconds. |
-| [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | End-to-end tamper-proof demo: verify in dashboard, export signed evidence, tamper one field, verify failure with CLI. |
-| [Your first governed agent](tutorials/first-governed-agent.md) | Install → init → run → see evidence. Native Talon (requires Go + API key). |
-| [Turnkey compliance reports](tutorials/turnkey-compliance-reports.md) | Init with EU policy packs → dashboard Compliance tab → signed RoPA / Annex IV exports, each leaving control-plane evidence. No API key needed. |
+| Doc | Pillar | Description |
+|-----|--------|-------------|
+| [60-Second Demo (no API key)](tutorials/quickstart-demo.md) | Integrate | Docker Compose demo with mock provider — see the full pipeline in action in 60 seconds. |
+| [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Proof | End-to-end tamper-proof demo: verify in dashboard, export signed evidence, tamper one field, verify failure with CLI. |
+| [Your first governed agent](tutorials/first-governed-agent.md) | Integrate | Install → init → run → see evidence. Native Talon (requires Go + API key). |
+| [Manual governed session](tutorials/manual-governed-session.md) | Sessions | Reproduce a governed session by hand: tools, enforcement, sovereignty, session budgets, tamper check. |
+| [Turnkey compliance reports](tutorials/turnkey-compliance-reports.md) | Proof | Init with EU policy packs → dashboard Compliance tab → signed RoPA / Annex IV exports, each leaving evidence. No API key needed. |
 
 ### How-to guides (goal-oriented)
 
-| Doc | Description |
-|-----|-------------|
-| [How to choose your integration path](guides/choosing-integration-path.md) | Pick MCP proxy vs LLM gateway vs native Talon. |
-| [Add Talon to your existing app](guides/add-talon-to-existing-app.md) | Point your existing app (Python, Node, curl) at Talon in a few minutes; first real request and evidence. |
-| [How to govern OpenClaw with Talon](guides/openclaw-integration.md) | Route OpenClaw LLM traffic through the gateway. |
-| [Docker primer: OpenClaw + Talon (cloud-ready)](guides/openclaw-talon-primer/docker-openclaw-talon-primer.md) | Predefined Docker setup to run Talon gateway for OpenClaw; deploy in the cloud. |
-| [How to add compliance to your Slack bot](guides/slack-bot-integration.md) | Route your Slack bot's LLM calls through Talon. |
-| [How to govern ChatGPT/Claude Desktop (enterprise)](guides/desktop-app-governance.md) | Route desktop app traffic via DNS/TLS and gateway. |
-| [Cap AI spend for a Slack/support bot in 10 minutes](guides/cost-governance-by-caller.md) | Fast path to caller-level daily/monthly hard caps, budget-deny proof, and evidence-backed cost attribution. |
-| [How to export evidence for auditors](guides/compliance-export-runbook.md) | Export, verify, and hand off audit evidence. |
-| [How to verify turnkey compliance reports](guides/verify-turnkey-compliance-reports.md) | End-to-end checklist: policy packs, compliance API, dashboard Compliance tab, FinOps, auth matrix, smoke section 34. |
-| [How to clear DECLARATION MISSING blocks in RoPA exports](guides/ropa-declarations.md) | Fill `talon.config.yaml` and `agent.talon.yaml` declarations; regenerate RoPA/Annex IV without placeholders. |
-| [How to run governed LLM calls in CI/CD](guides/cicd-pipeline-governance.md) | Use Talon from GitHub Actions or GitLab CI. |
-| [How to run a first-line support agent with Talon](guides/internal-support-agent.md) | Ticket summarization with PII and cost controls. |
-| [How to verify memory is used](guides/memory-verification.md) | CLI steps to confirm memory is written and injected into prompts. |
-| [How to offer Talon to multiple customers (multi-tenant/MSP)](guides/multi-tenant-msp.md) | Tenant isolation, API keys, and gateway callers. |
-| [Incident response playbook](guides/incident-response-playbook.md) | Common operational scenarios when running AI agents. |
-| [How to test and operate Plan Review](guides/plan-review-operators.md) | End-to-end human oversight gate: configure, trigger, approve, dispatch, verify evidence. |
-| [Plan Review E2E test case](guides/plan-review-e2e-testcase.md) | Feature inventory (F1–F30) and phased testcase TC-PR-001–012 with pass criteria. |
+| Doc | Pillar | Description |
+|-----|--------|-------------|
+| [Cap AI spend for a Slack/support bot in 10 minutes](guides/cost-governance-by-caller.md) | Cost | Fast path to caller-level daily/monthly hard caps, budget-deny proof, and evidence-backed cost attribution. |
+| [How to run a first-line support agent with Talon](guides/internal-support-agent.md) | Cost | Ticket summarization with PII and cost controls. |
+| [Incident response playbook](guides/incident-response-playbook.md) | Reliability | Common operational scenarios when running AI agents. |
+| [How to govern coding agents](guides/governing-coding-agents.md) | Sessions | Govern a fleet of coding agents; orchestration metadata contract, session attribution, cost rollups. |
+| [Claude Code integration](guides/claude-code-integration.md) | Sessions | Route Claude Code through Talon: setup, session attribution, limits. |
+| [Codex CLI integration](guides/codex-cli-integration.md) | Sessions | Route Codex CLI through Talon: setup, conformance notes, limits. |
+| [How to govern OpenClaw with Talon](guides/openclaw-integration.md) | Policy | Route OpenClaw LLM traffic through the gateway. |
+| [How to govern ChatGPT/Claude Desktop (enterprise)](guides/desktop-app-governance.md) | Policy | Route desktop app traffic via DNS/TLS and gateway. |
+| [How to offer Talon to multiple customers (multi-tenant/MSP)](guides/multi-tenant-msp.md) | Policy | Tenant isolation, API keys, and gateway callers. |
+| [EU policy packs](guides/policy-packs.md) | Policy | Ready-made policy baselines with framework annotations (GDPR/NIS2/DORA/EU AI Act) as proof-layer metadata. |
+| [Air-gapped deployment](guides/air-gapped-deployment.md) | Policy | Provable in-region / offline operation: egress guard, local models, sovereignty posture. |
+| [Local scanner engines](guides/local-scanner-engines.md) | Policy | Run PII scanning on a local LLM (Ollama) or Presidio sidecar — no data leaves the host. |
+| [How to verify memory is used](guides/memory-verification.md) | Policy | CLI steps to confirm memory is written and injected into prompts (optional layer). |
+| [How to test and operate Plan Review](guides/plan-review-operators.md) | Policy | Human oversight gate for native agents (optional layer): configure, trigger, approve, dispatch, verify evidence. |
+| [Plan Review E2E test case](guides/plan-review-e2e-testcase.md) | Policy | Feature inventory (F1–F30) and phased testcase TC-PR-001–012 with pass criteria. |
+| [How to choose your integration path](guides/choosing-integration-path.md) | Integrate | Pick MCP proxy vs LLM gateway vs native Talon. |
+| [Add Talon to your existing app](guides/add-talon-to-existing-app.md) | Integrate | Point your existing app (Python, Node, curl) at Talon in a few minutes; first real request and evidence. |
+| [Docker primer: OpenClaw + Talon (cloud-ready)](guides/openclaw-talon-primer/docker-openclaw-talon-primer.md) | Integrate | Predefined Docker setup to run Talon gateway for OpenClaw; deploy in the cloud. |
+| [Slack bot integration](guides/slack-bot-integration.md) | Integrate | Route your Slack bot's LLM calls through Talon for cost caps, PII controls, and an audit trail. |
+| [How to run governed LLM calls in CI/CD](guides/cicd-pipeline-governance.md) | Integrate | Use Talon from GitHub Actions or GitLab CI. |
+| [How to export evidence for auditors](guides/compliance-export-runbook.md) | Proof | Export, verify, and hand off audit evidence. |
+| [How to verify turnkey compliance reports](guides/verify-turnkey-compliance-reports.md) | Proof | End-to-end checklist: policy packs, compliance API, dashboard Compliance tab, FinOps, auth matrix, smoke section 34. |
+| [How to clear DECLARATION MISSING blocks in RoPA exports](guides/ropa-declarations.md) | Proof | Fill `talon.config.yaml` and `agent.talon.yaml` declarations; regenerate RoPA/Annex IV without placeholders. |
 
 ### Reference (technical description)
 
@@ -110,10 +119,11 @@ Choose the shortest path for your situation:
 
 | Doc | Description |
 |-----|-------------|
+| [Talon as a control plane](explanation/control-plane.md) | What the control plane for AI use cases means: four pillars, proof layer, vocabulary, what Talon is not. |
 | [What Talon does to your request](explanation/what-talon-does-to-your-request.md) | Full request lifecycle: every check, every byte transformation, latency budget. |
 | [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md) | Five failure scenarios: what a PII-only proxy misses, what Talon does, and how to verify. |
 | [Evidence store](explanation/evidence-store.md) | Evidence record structure, session_id, HMAC signing (TALON_SIGNING_KEY), progressive disclosure, storage, and export (CSV/JSON columns). |
-| [Roadmap & focus](../ROADMAP.md) | Public anti-goals, wedge narrative, phased direction, and buyer fit (what we are not building for 2.0). |
+| [Roadmap & focus](../ROADMAP.md) | Shipped-vs-target status by pillar, the active MVP roadmap, and public anti-goals. |
 | [Adoption scenarios](ADOPTION_SCENARIOS.md) | Greenfield, brownfield custom, brownfield vendor; timelines and ROI. |
 | [Persona guides](PERSONA_GUIDES.md) | Who uses Talon (DevOps, Compliance, CTO, SecOps, FinOps) and what they do. |
 | [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md) | Why vendor compliance matters; MCP proxy and patterns. |
@@ -132,7 +142,7 @@ Choose the shortest path for your situation:
 | [Evidence integrity specification](reference/evidence-integrity-spec.md) | Byte-exact spec so a third party can independently verify a record. |
 | [Conformance suite & count](reference/conformance.md) | Reproducible passing-test count for the evidence + policy paths (`make conformance`). |
 | [Reproducible benchmarks](reference/benchmarks.md) | `make benchmarks` — gateway overhead, PII scan, evidence write on your hardware. |
-| [Roadmap & focus](../ROADMAP.md) | Anti-goals and focus — answers "are you trying to be Portkey + AGT?" |
+| [Roadmap & focus](../ROADMAP.md) | Shipped-vs-target honesty table and published anti-goals — what Talon will not build. |
 | [Sample auditor pack](../examples/auditor-pack/README.md) | Generated signed export + compliance report + RoPA + Annex IV pack for handoff review. |
 | [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Fast proof moment for auditors/operators, including offline signed-export verification. |
 | [Threat model](reference/threat-model.md) | Attack surface, trust boundaries, and what the HMAC signature does and does not prove. |
@@ -158,9 +168,9 @@ Choose the shortest path for your situation:
 - [Release workflow](../.github/workflows/release.yml): GoReleaser + GHCR publish path.
 - [CodeQL workflow](../.github/workflows/codeql.yml) and [security workflow](../.github/workflows/security.yml): continuous supply-chain/security checks.
 
-### EU controls mapping (supporting controls)
+### EU controls mapping (proof layer)
 
-Talon supports these control objectives; it is not a compliance certification by itself.
+Talon's evidence layer supports these control objectives; it is not a compliance certification by itself.
 
 | Framework | Example Talon support |
 |-----------|-----------------------|

@@ -1,6 +1,6 @@
 # Agent Memory Governance
 
-Talon's agent memory is a compliance asset. Every learning is governed, audited, and defensible.
+Governed memory is an **optional layer** for native `talon run` agents — most Talon deployments (gateway proxying, coding agents) never enable it, and none of the four operating pillars depend on it. This page covers what an agent is allowed to remember across sessions: categories, retention, deduplication, and shadow mode. Every memory write and injection is linked to a signed evidence record, so what an agent "learned" stays attributable and verifiable.
 
 ## Use cases
 

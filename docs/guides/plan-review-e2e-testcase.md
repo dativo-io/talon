@@ -1,5 +1,7 @@
 # Plan Review — E2E test case
 
+Plan review is an **optional layer** for native `talon run` agents; this document is its test inventory.
+
 Structured end-to-end test for all **user-facing** Plan Review workflows. Pair with [How to test and operate Plan Review](plan-review-operators.md) for command reference.
 
 **Scope:** Pre-execution plan gate (`human_oversight` / `compliance.plan_review`).  

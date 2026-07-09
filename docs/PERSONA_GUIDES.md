@@ -1,6 +1,6 @@
 # Talon Persona Guides
 
-This guide describes how different roles in your organization use Talon: what they care about, which commands they run, and how policy configuration affects them.
+This guide describes how different roles in your organization use Talon: what they care about, which commands they run, and how policy configuration affects them. Day to day, DevOps, FinOps, and engineering leadership use Talon to operate AI use cases — cost control, reliability, shared policy, and session understanding — while compliance and security roles consume the signed evidence those operations produce as a cross-cutting proof layer.
 
 ---
 
@@ -9,10 +9,10 @@ This guide describes how different roles in your organization use Talon: what th
 | Persona | Primary goal | Typical tasks |
 |----------|--------------|----------------|
 | **DevOps Engineer** | Get agents running and keep them healthy | Install, init, run, validate, serve |
-| **Compliance Officer** | Prove processing records and regulatory readiness | Audit trail, exports, verification, reports |
+| **FinOps Engineer** | Cost control and budget compliance | Costs, budgets, model routing, export for analysis |
 | **CTO / Head of Engineering** | Oversight, costs, and governance posture | Costs, report, memory health, config |
 | **SecOps / Security Officer** | Secrets, PII, injection prevention, policy enforcement | Secrets vault, audit, PII tiers, budget denial |
-| **FinOps Engineer** | Cost control and budget compliance | Costs, budgets, model routing, export for analysis |
+| **Compliance Officer** | Prove processing records and regulatory readiness | Audit trail, exports, verification, reports |
 
 ---
 

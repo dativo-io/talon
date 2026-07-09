@@ -1,6 +1,6 @@
 # Agent Planning in Talon
 
-This document describes how Talon runs agents: execution model, multi-step tool use (agentic loop), plan review, step-level audit, and limits. It is written for operators and integrators who configure and run Talon.
+This document describes how Talon runs native `talon run` agents: execution model, multi-step tool use (agentic loop), plan review, step-level audit, and limits. Plan review is an **optional human-oversight gate** for native `talon run` agents — most Talon deployments (gateway proxying, coding agents) never enable it, and none of the four operating pillars depend on it. Where enabled, it provides supporting controls for EU AI Act Art. 14-style human oversight — not a compliance claim. This document is written for operators and integrators who configure and run Talon.
 
 ## Execution model
 
@@ -79,7 +79,7 @@ Before the first LLM call (and before the agentic loop starts), Talon can **gate
 
 Step-by-step operator E2E (CLI, serve auto-dispatch, dashboard, test matrix): [How to test and operate Plan Review](guides/plan-review-operators.md).
 
-Plans can be approved, rejected, or modified (with annotations). This satisfies **EU AI Act Art. 14** (human oversight).
+Plans can be approved, rejected, or modified (with annotations). This provides supporting controls for **EU AI Act Art. 14** (human oversight).
 
 ## Step-level evidence
 

@@ -27,7 +27,7 @@ Thanks for helping improve Talon.
 
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feat/my-feature`
-3. Make changes following this guide and [AI_ASSISTANCE.md](AI_ASSISTANCE.md)
+3. Make changes following this guide
 4. Run `make check` (lint, vet, unit + integration tests; must pass)
 5. Optionally run `make test-e2e` or `make test-all` for full CI parity (e2e included)
 6. Commit using conventional commits: `type(scope): description`

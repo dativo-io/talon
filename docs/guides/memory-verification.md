@@ -1,6 +1,6 @@
 # How to verify memory is used
 
-This guide shows that Talon **loads** stored memory and **injects** it into the prompt before calling the LLM. Same agent and tenant for all commands (memory is scoped by `tenant_id` and `agent_id`).
+Agent memory is an **optional layer** for native `talon run` agents — most Talon deployments (gateway proxying, coding agents) never enable it, and none of the four operating pillars depend on it. This guide shows that, when memory is enabled, Talon **loads** stored memory and **injects** it into the prompt before calling the LLM, with each injection recorded in signed evidence. Same agent and tenant for all commands (memory is scoped by `tenant_id` and `agent_id`).
 
 ## Prerequisites
 

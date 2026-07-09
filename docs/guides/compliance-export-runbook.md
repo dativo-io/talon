@@ -1,6 +1,6 @@
 # How to export evidence for auditors
 
-Use this runbook to export Talon evidence for auditors or regulators (e.g. GDPR Article 30, NIS2). Steps: export evidence in a chosen format, verify integrity (HMAC), and package for handoff.
+Auditor exports are part of Talon's **proof layer**: every budget, policy, and routing decision already produces a signed evidence record, so an audit package is exported from operations you are running anyway. Use this runbook to export Talon evidence for auditors or regulators (e.g. GDPR Article 30, NIS2). Steps: export evidence in a chosen format, verify integrity (HMAC), and package for handoff. What you hand over is supporting evidence for the framework in question, not a certification or a compliance determination.
 
 ---
 

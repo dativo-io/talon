@@ -1,6 +1,6 @@
 # How to clear DECLARATION MISSING blocks in RoPA exports
 
-Use this guide when `talon compliance ropa` (or `talon compliance annex-iv`) renders flagged **DECLARATION MISSING** sections or prints warnings on stderr. Talon does not fake completeness: it fills what can be **proven from signed evidence** and clearly flags what your organisation must **declare**. That is intentional — a trustworthy compliance story, not "one-click compliance."
+RoPA and Annex IV exports are part of Talon's **proof layer**: because every budget, policy, and routing decision already produces a signed evidence record, these documents are generated from operations you are running anyway. Use this guide when `talon compliance ropa` (or `talon compliance annex-iv`) renders flagged **DECLARATION MISSING** sections or prints warnings on stderr. Talon does not fake completeness: it fills what can be **proven from signed evidence** and clearly flags what your organisation must **declare**. That is intentional — supporting controls and evidence, not "one-click compliance."
 
 Missing declarations never fail the command. Fill the fields below, regenerate, and the placeholders disappear.
 

@@ -1,6 +1,6 @@
 # How to verify the turnkey compliance report generator end-to-end
 
-Use this checklist after upgrading Talon or before a release demo to confirm the Turnkey Compliance Report Generator (epic #109) still works: EU policy packs, the compliance HTTP API, the dashboard Compliance tab, the unified FinOps view, and the signed control-plane evidence each export leaves.
+The compliance report generator is part of Talon's **proof layer** — reports are generated from the signed evidence records that budgets, policies, and routing decisions already produce, so verifying it means verifying that chain end to end. Use this checklist after upgrading Talon or before a release demo to confirm the Turnkey Compliance Report Generator (epic #109) still works: EU policy packs, the compliance HTTP API, the dashboard Compliance tab, the unified FinOps view, and the signed control-plane evidence each export leaves.
 
 This is the **portable, repo-canonical** version of the interactive verification canvas. The steps and expected outcomes are the same; work through the checkboxes here in any editor, terminal, or CI prep session.
 

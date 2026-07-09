@@ -1,6 +1,6 @@
-# Dativo Talon — MCP Proxy Architecture (Addition to architecture.md)
+# Dativo Talon — MCP Proxy Architecture
 
-**This document extends architecture.md with vendor integration patterns**
+**This document describes how the MCP proxy fits Talon's architecture, and the vendor integration patterns it enables**
 
 ---
 
@@ -659,9 +659,7 @@ Talon's MCP proxy pattern enables:
 4. **Compliance proof** - Generate audit trails automatically
 5. **No vendor lock-in** - Switch vendors without rewriting governance
 
-**Key insight:** European companies can NOW adopt AI vendors (Zendesk, Intercom, HubSpot) while maintaining GDPR/NIS2/EU AI Act compliance. Talon makes vendor "compliance claims" verifiable.
-
-This is a **massive competitive advantage** - no other platform offers this.
+**Key insight:** companies can adopt AI vendors (Zendesk, Intercom, HubSpot) while keeping the same control plane they use for their own AI use cases — shared policy, cost attribution, and signed evidence for vendor traffic too. Vendor "compliance claims" become independently verifiable supporting evidence for GDPR/NIS2/EU AI Act reviews.
 
 ---
 

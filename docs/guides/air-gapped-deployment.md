@@ -2,7 +2,7 @@
 
 Deploy Talon with **provable in-region operation**: no surprise outbound traffic except endpoints you explicitly declare (local Ollama or chosen EU LLM providers).
 
-This guide implements [feature bet 5.3](https://github.com/dativo-io/talon/issues/111) / issue [#132](https://github.com/dativo-io/talon/issues/132). It supports EU regulated buyers who need evidence that AI traffic stays inside Europe — Talon's structural advantage as a single self-hosted Go binary.
+Air-gapped and EU-sovereign operation is a **trust-layer differentiator** on Talon's control plane: the same budgets, shared policy, routing, and signed evidence, deployed so that confidential data stays in-region or fully offline. Because Talon is a single self-hosted Go binary, in-region operation is provable rather than promised — teams that need evidence that AI traffic stays inside Europe get it from the same signed records. Background: issues [#111](https://github.com/dativo-io/talon/issues/111) and [#132](https://github.com/dativo-io/talon/issues/132).
 
 ## `sovereignty.mode` is the single source of truth
 
