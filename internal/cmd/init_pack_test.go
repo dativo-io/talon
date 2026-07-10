@@ -456,3 +456,54 @@ func TestInitPack_OpenClaw_CredentialRecognizersPresent(t *testing.T) {
 	assert.Contains(t, string(agentContent), "GITHUB_TOKEN")
 	assert.Contains(t, string(agentContent), "LLM_API_KEY", "same recognizer set as the coding-agents pack")
 }
+
+// #207: no shipped init template — scaffold, pack, or compliance overlay — may
+// produce model-routing warnings on first load. The regression shipped tier_2
+// with bedrock_only: true alongside non-Bedrock model naming, which warned on
+// every serve (twice, via a redundant policy re-load) and would force Bedrock
+// routing for models Bedrock cannot serve. This guards the whole generation and
+// overlay-merge surface so a brand-new user's first `serve` is warning-free.
+func TestInit_GeneratedPolicyHasNoRoutingWarnings(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"scaffold-default", []string{"init", "--scaffold"}},
+		{"scaffold-minimal", []string{"init", "--scaffold", "--minimal"}},
+		{"pack-generic", []string{"init", "--pack", "generic"}},
+		{"pack-langchain", []string{"init", "--pack", "langchain"}},
+		{"pack-crewai", []string{"init", "--pack", "crewai"}},
+		{"pack-fintech-eu", []string{"init", "--pack", "fintech-eu"}},
+		{"pack-ecommerce-eu", []string{"init", "--pack", "ecommerce-eu"}},
+		{"pack-saas-eu", []string{"init", "--pack", "saas-eu"}},
+		{"pack-telecom-eu", []string{"init", "--pack", "telecom-eu"}},
+		{"scaffold-gdpr", []string{"init", "--scaffold", "--compliance", "gdpr"}},
+		{"scaffold-dora", []string{"init", "--scaffold", "--compliance", "dora"}},
+		{"pack-langchain-gdpr", []string{"init", "--pack", "langchain", "--compliance", "gdpr"}},
+		{"pack-fintech-dora", []string{"init", "--pack", "fintech-eu", "--compliance", "dora"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetInitFlags()
+			t.Cleanup(resetInitFlags)
+			dir := t.TempDir()
+			prevWd, err := os.Getwd()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = os.Chdir(prevWd) })
+			require.NoError(t, os.Chdir(dir))
+
+			args := append([]string{}, tc.args...)
+			args = append(args, "--name", "warn-guard", "--skip-verify")
+			rootCmd.SetArgs(args)
+			require.NoError(t, rootCmd.Execute())
+
+			pol, err := policy.LoadPolicy(context.Background(), "agent.talon.yaml", false, ".")
+			require.NoError(t, err)
+			require.NotNil(t, pol.Policies.ModelRouting, "generated policy should define model_routing")
+
+			warnings, err := policy.ValidateRouting(pol.Policies.ModelRouting)
+			require.NoError(t, err)
+			assert.Empty(t, warnings, "generated policy must not produce routing warnings; got: %+v", warnings)
+		})
+	}
+}

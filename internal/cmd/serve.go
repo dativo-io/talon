@@ -143,7 +143,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	pricingTable := loadPricingTable(cfg, policyBaseDir)
 	injectPricingInProviders(providers, pricingTable)
 	gatewayEstimator := gatewayCostEstimator(pricingTable)
-	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, policyBaseDir)
+	// Reuse the policy already loaded above; re-loading here would parse and
+	// re-validate the same file a second time, double-logging routing warnings.
+	routing, costLimits := pol.Policies.ModelRouting, pol.Policies.CostLimits
 	router := llm.NewRouter(routing, providers, costLimits)
 
 	secretsStore, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)

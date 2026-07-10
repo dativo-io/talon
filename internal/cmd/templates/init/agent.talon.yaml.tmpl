@@ -68,12 +68,14 @@ policies:
       primary: gpt-4o
       fallback: gpt-4o-mini
       location: eu-west-1
-    # tier_2 is used for PII-bearing inputs. If you don't use AWS Bedrock, set bedrock_only: false
-    # and primary/fallback to OpenAI or Anthropic models (e.g. gpt-4o, gpt-4o-mini).
+    # tier_2 is used for PII-bearing inputs. It defaults to the same provider as the
+    # other tiers so the scaffold runs out of the box.
+    # To pin PII traffic to AWS Bedrock for data residency, set bedrock_only: true AND
+    # use Bedrock model naming (vendor.model, e.g. anthropic.claude-sonnet-4-20250514-v1:0).
     tier_2:
-      primary: claude-sonnet-4-20250514
+      primary: gpt-4o
+      fallback: gpt-4o-mini
       location: eu-west-1
-      bedrock_only: true
 
 audit:
   log_level: detailed
