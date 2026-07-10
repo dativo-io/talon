@@ -149,7 +149,7 @@ Governance (policy, PII scan/redaction, evidence) stays active in quickstart mod
 
 ## Governed session demo (real providers)
 
-Watch one AI use case operate under shared budgets, one policy, and per-session visibility — a **real** agent session with an Anthropic planner and OpenAI executors through the same gateway, bring-your-own keys (≈ $0.03/run, cheap models, session-capped):
+Watch one AI use case operate under a cross-provider session budget, central policy, and per-session visibility — a **real** agent session with an Anthropic planner and OpenAI executors through the same gateway, bring-your-own keys (≈ $0.03/run, cheap models, session-capped):
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-... OPENAI_API_KEY=sk-...
@@ -202,7 +202,7 @@ Full byte-level breakdown: [What Talon does to your request](docs/explanation/wh
 
 | Pillar | What you get | Details |
 |--------|--------------|---------|
-| **Cost control** | Per-caller daily/monthly caps evaluated before the call; session budgets; cache-aware, currency-labeled per-request estimation from an editable pricing table; attribution by tenant/agent/caller. | [Cap AI spend per caller](docs/guides/cost-governance-by-caller.md) |
+| **Cost control** | Per-caller daily/monthly caps evaluated before the call; session budgets (soft); cache-aware, currency-labeled per-request estimation from an editable pricing table; attribution by tenant/agent/caller. | [Cap AI spend per caller](docs/guides/cost-governance-by-caller.md) |
 | **Reliability** | Error-driven, policy-valid provider fallback chains; connect/response-header timeout controls; provider-native error shapes; OTel GenAI traces. | [Fallback chains](docs/reference/configuration.md#provider-fallback-chains-error-driven-failover) · [Observability](docs/OBSERVABILITY.md) |
 | **Shared policy** | Presidio-compatible input/output PII scanning (EU identifiers + email, phone, card, passport, IP) with redact/block/warn; tool allowlists/forbidden globs filtered before the model; egress and sovereignty rules. | [Policy cookbook](docs/guides/policy-cookbook.md) |
 | **Session understanding** | Session identity (explicit/vendor/synthetic), session-scoped audit + cost rollups, dashboard session drill-down, metrics API + SSE stream. | [Governing coding agents](docs/guides/governing-coding-agents.md) · [Gateway dashboard](docs/reference/gateway-dashboard.md) |

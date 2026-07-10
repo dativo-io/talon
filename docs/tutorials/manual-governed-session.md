@@ -448,7 +448,7 @@ rm -f session-evidence.json tampered.json ropa.html /tmp/talon-budget.json
 
 ## Next step
 
-Put one real workload behind Talon rather than recreating another demo:
+Put one real AI use case behind Talon rather than recreating another demo:
 
 - [Add Talon to an existing app](../guides/add-talon-to-existing-app.md)
 - [Choose an integration path](../guides/choosing-integration-path.md)

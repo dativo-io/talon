@@ -12,7 +12,7 @@ Companies create more AI use cases than they can reliably operate. Each one — 
 |--------|---------------|---------------|
 | **Cost control** | Spend is visible and capped per use case | Daily/monthly caps deny **before** the provider call; session budgets (soft caps); cache-aware, currency-labeled attribution |
 | **Reliability** | One failure behavior instead of N | Error-driven fallback chains on transient failures, every candidate policy-checked, fail-closed on exhaustion |
-| **Shared policy** | Write policy once; every use case inherits it | Org defaults + per-caller overrides for PII, tools, models, budgets, egress/sovereignty |
+| **Shared policy** | Central defaults, explicit per-use-case exceptions | Gateway defaults + per-caller overrides for PII, tools, models, budgets, egress/sovereignty |
 | **Session understanding** | Know what each use case did, spent, and why it failed | Session identity, session-scoped audit and cost rollups, dashboard drill-down |
 
 Underneath all four sits the **proof layer**: every enforcement decision becomes an HMAC-signed, tamper-evident record you can verify (including offline) and export. Compliance reports (GDPR Art. 30 RoPA, EU AI Act Annex IV) are generated from that evidence — supporting controls and documentation, never a compliance determination. See [Evidence store](evidence-store.md).

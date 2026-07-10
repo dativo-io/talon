@@ -25,7 +25,7 @@ Pick the path that matches your goal. For what Talon is **not** building, read [
 ### Evaluator (~15 minutes)
 
 1. [60-second demo](tutorials/quickstart-demo.md) — Docker Compose, mock provider, evidence in SQLite. No API key.
-2. [Governed session demo](../examples/governed-session/README.md) — the control-plane proof: one real session under budget caps, policy, fallback routing, and session-level audit. Read the recorded walkthrough with no keys, or run it with your own keys (≈ $0.03).
+2. [Governed session demo](../examples/governed-session/README.md) — the control-plane proof: one real session under budget caps, policy, sovereignty routing, and session-level audit. Read the recorded walkthrough with no keys, or run it with your own keys (≈ $0.03).
 3. [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) — verify, export, tamper, fail verification. No API key.
 
 When you need the proof layer for an auditor or customer review, continue with the [sample auditor pack](../examples/auditor-pack/README.md) (`make auditor-pack`).
