@@ -12,7 +12,7 @@ import (
 func intPtr(v int) *TierLevel { t := TierLevel(v); return &t }
 
 func TestPreferredDenyReason(t *testing.T) {
-	allowlist := "Model gpt-4o-mini not in caller allowlist"
+	allowlist := "Model gpt-4o-mini not in agent allowlist"
 	egress := EgressReasonTierDestination + ": tier 2 data may not egress to provider openai (region US)"
 
 	assert.Equal(t, egress, preferredDenyReason([]string{allowlist, egress}))
@@ -44,55 +44,55 @@ func TestNormalizeEgressPolicy_CaseFoldsTokens(t *testing.T) {
 	assert.Equal(t, "tier_2:allowed_regions", gotRegion.MatchedRule)
 }
 
-func TestResolveEgressPolicy(t *testing.T) {
-	serverPolicy := &EgressPolicyConfig{
+func TestResolveEffectivePolicy_Egress(t *testing.T) {
+	baselinePolicy := &EgressPolicyConfig{
 		DefaultAction: EgressActionDeny,
 		Rules:         []EgressRule{{Tier: intPtr(2), AllowedRegions: []string{"EU"}}},
 	}
-	callerPolicy := &EgressPolicyConfig{
+	agentPolicy := &EgressPolicyConfig{
 		Rules: []EgressRule{{Tier: intPtr(2), AllowedProviders: []string{"ollama"}}},
 	}
 
 	tests := []struct {
-		name      string
-		defaults  *ServerDefaults
-		overrides *CallerPolicyOverrides
-		want      *EgressPolicyConfig
+		name     string
+		baseline OrganizationPolicy
+		override *PolicyOverride
+		want     *EgressPolicyConfig
 	}{
 		{
-			name:      "unconfigured_returns_nil",
-			defaults:  &ServerDefaults{},
-			overrides: nil,
-			want:      nil,
+			name:     "unconfigured_returns_nil",
+			baseline: OrganizationPolicy{},
+			override: nil,
+			want:     nil,
 		},
 		{
-			name:      "server_default_used",
-			defaults:  &ServerDefaults{Egress: serverPolicy},
-			overrides: &CallerPolicyOverrides{},
-			want:      serverPolicy,
+			name:     "organization_baseline_used",
+			baseline: OrganizationPolicy{Egress: baselinePolicy},
+			override: &PolicyOverride{},
+			want:     baselinePolicy,
 		},
 		{
-			name:      "caller_override_replaces_default",
-			defaults:  &ServerDefaults{Egress: serverPolicy},
-			overrides: &CallerPolicyOverrides{Egress: callerPolicy},
+			name:     "agent_override_replaces_baseline",
+			baseline: OrganizationPolicy{Egress: baselinePolicy},
+			override: &PolicyOverride{Egress: agentPolicy},
 			want: &EgressPolicyConfig{
 				DefaultAction: EgressActionAllow, // normalized
-				Rules:         callerPolicy.Rules,
+				Rules:         agentPolicy.Rules,
 			},
 		},
 		{
-			name:      "caller_only",
-			defaults:  &ServerDefaults{},
-			overrides: &CallerPolicyOverrides{Egress: callerPolicy},
+			name:     "agent_only",
+			baseline: OrganizationPolicy{},
+			override: &PolicyOverride{Egress: agentPolicy},
 			want: &EgressPolicyConfig{
 				DefaultAction: EgressActionAllow,
-				Rules:         callerPolicy.Rules,
+				Rules:         agentPolicy.Rules,
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ResolveEgressPolicy(tt.defaults, tt.overrides)
+			got := ResolveEffectivePolicy(tt.baseline, ProviderConfig{}, tt.override).Egress
 			if tt.want == nil {
 				assert.Nil(t, got)
 				return
@@ -244,7 +244,7 @@ func TestValidateEgressPolicy(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateEgressPolicy("default_policy", tt.policy)
+			err := validateEgressPolicy("organization_policy", tt.policy)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 				return
@@ -268,17 +268,7 @@ gateway:
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
       region: "US"
-  callers:
-    - name: finance-bot
-      tenant_key: "talon-gw-abc"
-      tenant_id: "acme"
-      policy_overrides:
-        egress:
-          default_action: deny
-          rules:
-            - tier: 2
-              allowed_providers: ["ollama"]
-  default_policy:
+  organization_policy:
     default_pii_action: warn
     egress:
       rules:
@@ -291,15 +281,10 @@ gateway:
 	cfg, err := LoadGatewayConfig(path)
 	require.NoError(t, err)
 
-	require.NotNil(t, cfg.ServerDefaults.Egress)
-	assert.Equal(t, EgressActionAllow, cfg.ServerDefaults.Egress.DefaultAction, "default_action defaults to allow")
-	require.Len(t, cfg.ServerDefaults.Egress.Rules, 2)
-	assert.Equal(t, []string{"EU", "LOCAL"}, cfg.ServerDefaults.Egress.Rules[1].AllowedRegions)
-
-	caller := cfg.CallerByName("finance-bot")
-	require.NotNil(t, caller)
-	require.NotNil(t, caller.PolicyOverrides.Egress)
-	assert.Equal(t, EgressActionDeny, caller.PolicyOverrides.Egress.DefaultAction)
+	require.NotNil(t, cfg.OrganizationPolicy.Egress)
+	assert.Equal(t, EgressActionAllow, cfg.OrganizationPolicy.Egress.DefaultAction, "default_action defaults to allow")
+	require.Len(t, cfg.OrganizationPolicy.Egress.Rules, 2)
+	assert.Equal(t, []string{"EU", "LOCAL"}, cfg.OrganizationPolicy.Egress.Rules[1].AllowedRegions)
 
 	prov, ok := cfg.Provider("openai")
 	require.True(t, ok)
@@ -313,13 +298,7 @@ func TestLoadGatewayConfig_EgressNamedTiers(t *testing.T) {
 gateway:
   enabled: true
   mode: enforce
-  callers:
-    - name: finance-bot
-      tenant_key: "talon-gw-abc"
-      tenant_id: "acme"
-      policy_overrides:
-        max_data_tier: internal
-  default_policy:
+  organization_policy:
     egress:
       rules:
         - tier: public
@@ -333,16 +312,11 @@ gateway:
 	cfg, err := LoadGatewayConfig(path)
 	require.NoError(t, err)
 
-	rules := cfg.ServerDefaults.Egress.Rules
+	rules := cfg.OrganizationPolicy.Egress.Rules
 	require.Len(t, rules, 3)
 	assert.Equal(t, TierPublic, *rules[0].Tier, "named alias public")
 	assert.Equal(t, TierInternal, *rules[1].Tier, "numeric tier still accepted")
 	assert.Equal(t, TierConfidential, *rules[2].Tier, "named alias confidential")
-
-	caller := cfg.CallerByName("finance-bot")
-	require.NotNil(t, caller)
-	require.NotNil(t, caller.PolicyOverrides.MaxDataTier)
-	assert.Equal(t, TierInternal, *caller.PolicyOverrides.MaxDataTier, "max_data_tier accepts named alias")
 }
 
 func TestLoadGatewayConfig_EgressInvalidTierName(t *testing.T) {
@@ -352,7 +326,7 @@ func TestLoadGatewayConfig_EgressInvalidTierName(t *testing.T) {
 gateway:
   enabled: true
   mode: enforce
-  default_policy:
+  organization_policy:
     egress:
       rules:
         - tier: restricted
@@ -377,7 +351,7 @@ gateway:
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
       region: "us"
-  default_policy:
+  organization_policy:
     egress:
       rules:
         - tier: 2
@@ -392,7 +366,7 @@ gateway:
 	require.True(t, ok)
 	assert.Equal(t, "US", prov.Region)
 
-	rules := cfg.ServerDefaults.Egress.Rules
+	rules := cfg.OrganizationPolicy.Egress.Rules
 	require.Len(t, rules, 1)
 	assert.Equal(t, []string{"openai"}, rules[0].AllowedProviders)
 	assert.Equal(t, []string{"EU"}, rules[0].AllowedRegions)
@@ -405,7 +379,7 @@ func TestLoadGatewayConfig_EgressInvalid(t *testing.T) {
 gateway:
   enabled: true
   mode: enforce
-  default_policy:
+  organization_policy:
     egress:
       default_action: maybe
 `

@@ -31,16 +31,20 @@ func TestInitPack_CrewAI_GeneratesFiles(t *testing.T) {
 	require.FileExists(t, agentPath)
 	require.FileExists(t, configPath)
 
+	// Each crew role is its own agent with a vault-bound key (#266): the
+	// researcher is the primary file; writer and reviewer scaffold under agents/.
 	agentContent, err := os.ReadFile(agentPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(agentContent), "crewai-crew")
-	assert.Contains(t, string(agentContent), "CrewAI multi-agent crew")
+	assert.Contains(t, string(agentContent), "crew-researcher")
+	assert.Contains(t, string(agentContent), "crew-researcher-talon-key")
+
+	require.FileExists(t, filepath.Join(dir, "agents", "crew-writer.talon.yaml"))
+	require.FileExists(t, filepath.Join(dir, "agents", "crew-reviewer.talon.yaml"))
 
 	configContent, err := os.ReadFile(configPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(configContent), "talon-gw-crew-researcher")
-	assert.Contains(t, string(configContent), "talon-gw-crew-writer")
-	assert.Contains(t, string(configContent), "talon-gw-crew-reviewer")
+	assert.Contains(t, string(configContent), "organization_policy")
+	assert.NotContains(t, string(configContent), "tenant_key", "legacy identity must not scaffold")
 }
 
 func TestInitPack_ComplianceGDPR_MergesOverlay(t *testing.T) {
@@ -374,15 +378,25 @@ func TestInitPack_CodingAgents_GeneratesFiles(t *testing.T) {
 	configContent, err := os.ReadFile(filepath.Join(dir, "talon.config.yaml"))
 	require.NoError(t, err)
 
-	// Contract-critical defaults (#201): honest streaming default + soft
-	// session cap on both coding callers.
+	// Contract-critical defaults (#201, #266): honest streaming default in the
+	// organization baseline + soft session cap and vault key binding on both
+	// coding agents (claude-code primary, codex under agents/).
 	cfg := string(configContent)
-	assert.Contains(t, cfg, "talon-gw-claude-code-001")
-	assert.Contains(t, cfg, "talon-gw-codex-001")
-	assert.Equal(t, 2, strings.Count(cfg, `response_pii_action: "allow"`)+strings.Count(cfg, "response_pii_action: allow")-1,
-		"both coding callers must default response_pii_action to allow (plus the default_policy line)")
-	assert.Equal(t, 2, strings.Count(cfg, "max_session_cost:"), "both callers carry the soft session cap")
+	assert.Contains(t, cfg, "organization_policy")
+	assert.NotContains(t, cfg, "tenant_key", "legacy identity must not scaffold")
+	assert.GreaterOrEqual(t, strings.Count(cfg, `response_pii_action: "allow"`)+strings.Count(cfg, "response_pii_action: allow"), 1,
+		"the organization baseline must default response_pii_action to allow")
 	assert.Contains(t, cfg, `secret_name: "anthropic-api-key"`, "anthropic family is vault-secret only")
+
+	agent := string(agentContent)
+	assert.Contains(t, agent, "claude-code-talon-key", "primary agent binds its vault traffic key")
+	assert.Contains(t, agent, "max_cost: 10.00", "primary agent carries the soft session cap")
+
+	codexContent, err := os.ReadFile(filepath.Join(dir, "agents", "codex.talon.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(codexContent), "codex-talon-key", "codex agent binds its own key")
+	assert.Contains(t, string(codexContent), "max_cost: 10.00", "codex agent carries the soft session cap")
+	require.NoError(t, policy.ValidateSchema(codexContent, false))
 
 	// The generated policy must be schema-valid.
 	require.NoError(t, policy.ValidateSchema(agentContent, false))

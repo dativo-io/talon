@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
 )
@@ -127,6 +129,22 @@ func piiActionsFromClassification(dc *policy.DataClassificationConfig) (input, r
 		}
 	}
 	return input, response
+}
+
+// resolveRunTenant decides the tenant a native run attributes to (#266):
+// agent.tenant_id is authoritative — the same agent file yields the same
+// tenant on the gateway and the runner. An explicit --tenant flag may only
+// confirm it; a mismatch errors. When the file omits tenant_id, the flag
+// value applies (default "default").
+func resolveRunTenant(pol *policy.Policy, flagTenant string, flagSet bool) (string, error) {
+	fileTenant := pol.Agent.TenantID
+	if fileTenant == "" {
+		return flagTenant, nil
+	}
+	if flagSet && flagTenant != fileTenant {
+		return "", fmt.Errorf("--tenant %q conflicts with agent.tenant_id %q in the agent policy — the agent file is authoritative (#266); drop the flag or fix the file", flagTenant, fileTenant)
+	}
+	return fileTenant, nil
 }
 
 // egressFromPolicy converts the policy-side egress mirror into the gateway's

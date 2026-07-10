@@ -9,6 +9,10 @@ agent:
   description: AI agent with policy enforcement
   version: 1.0.0
   model_tier: 0
+  # Gateway traffic identity (#266): mint the key clients present with
+  #   talon secrets set {{ .Name }}-talon-key "$(openssl rand -hex 24)"
+  key:
+    secret_name: "{{ .Name }}-talon-key"
 
 policies:
   cost_limits:

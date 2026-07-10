@@ -19,7 +19,7 @@ import (
 	"github.com/dativo-io/talon/internal/testutil"
 )
 
-func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig)) (*Gateway, *evidence.Store) {
+func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig, *PolicyOverride)) (*Gateway, *evidence.Store) {
 	t.Helper()
 
 	upstream := testutil.NewOpenAICompatibleServer("shadow test response", 10, 20)
@@ -33,20 +33,7 @@ func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig)) (*Gateway, *
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
 		},
-		Callers: []CallerConfig{
-			{
-				Name:      "openclaw-main",
-				TenantKey: "talon-gw-openclaw-001",
-				TenantID:  "test-tenant",
-				PolicyOverrides: &CallerPolicyOverrides{
-					PIIAction:      "block",
-					MaxDailyCost:   100,
-					MaxMonthlyCost: 2000,
-					AllowedModels:  []string{"gpt-4o-mini", "gpt-4o"},
-				},
-			},
-		},
-		ServerDefaults: ServerDefaults{
+		OrganizationPolicy: OrganizationPolicy{
 			DefaultPIIAction: "block",
 			MaxDailyCost:     100,
 			MaxMonthlyCost:   2000,
@@ -54,8 +41,8 @@ func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig)) (*Gateway, *
 			ToolPolicyAction: "block",
 		},
 		RateLimits: RateLimitsConfig{
-			GlobalRequestsPerMin:    1,
-			PerCallerRequestsPerMin: 1,
+			GlobalRequestsPerMin:   1,
+			PerAgentRequestsPerMin: 1,
 		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
@@ -63,9 +50,16 @@ func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig)) (*Gateway, *
 			StreamIdleTimeout: "60s",
 		},
 	}
-	for _, opt := range opts {
-		opt(cfg)
+	override := &PolicyOverride{
+		PIIAction:      "block",
+		MaxDailyCost:   100,
+		MaxMonthlyCost: 2000,
+		AllowedModels:  []string{"gpt-4o-mini", "gpt-4o"},
 	}
+	for _, opt := range opts {
+		opt(cfg, override)
+	}
+	registry := testRegistry(testIdentity("openclaw-main", "test-tenant", "talon-gw-openclaw-001", override))
 
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
@@ -80,7 +74,7 @@ func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig)) (*Gateway, *
 		secrets.ACL{Tenants: []string{"test-tenant"}, Agents: []string{"*"}}))
 
 	cls := classifier.MustNewScanner()
-	gw, err := NewGateway(cfg, cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	return gw, evStore
@@ -169,12 +163,12 @@ func TestGateway_ShadowMode_ToolBlockBypassedAndLogged(t *testing.T) {
 }
 
 func TestGateway_ShadowMode_PolicyDenyBypassedAndLogged(t *testing.T) {
-	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig) {
-		cfg.ServerDefaults.ForbiddenTools = nil
-		cfg.ServerDefaults.DefaultPIIAction = "warn"
-		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
+	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig, override *PolicyOverride) {
+		cfg.OrganizationPolicy.ForbiddenTools = nil
+		cfg.OrganizationPolicy.DefaultPIIAction = "warn"
+		override.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
-		cfg.RateLimits.PerCallerRequestsPerMin = 60
+		cfg.RateLimits.PerAgentRequestsPerMin = 60
 	})
 
 	// Attach a policy evaluator that always denies
@@ -196,12 +190,12 @@ func TestGateway_ShadowMode_PolicyDenyBypassedAndLogged(t *testing.T) {
 }
 
 func TestGateway_ShadowMode_PolicyErrorBypassedAndLogged(t *testing.T) {
-	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig) {
-		cfg.ServerDefaults.ForbiddenTools = nil
-		cfg.ServerDefaults.DefaultPIIAction = "warn"
-		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
+	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig, override *PolicyOverride) {
+		cfg.OrganizationPolicy.ForbiddenTools = nil
+		cfg.OrganizationPolicy.DefaultPIIAction = "warn"
+		override.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
-		cfg.RateLimits.PerCallerRequestsPerMin = 60
+		cfg.RateLimits.PerAgentRequestsPerMin = 60
 	})
 
 	gw.policy = &errorPolicy{}
@@ -223,13 +217,13 @@ func TestGateway_ShadowMode_PolicyErrorBypassedAndLogged(t *testing.T) {
 }
 
 func TestGateway_EnforceMode_PolicyErrorStillReturns500(t *testing.T) {
-	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig) {
+	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig, override *PolicyOverride) {
 		cfg.Mode = ModeEnforce
-		cfg.ServerDefaults.ForbiddenTools = nil
-		cfg.ServerDefaults.DefaultPIIAction = "warn"
-		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
+		cfg.OrganizationPolicy.ForbiddenTools = nil
+		cfg.OrganizationPolicy.DefaultPIIAction = "warn"
+		override.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
-		cfg.RateLimits.PerCallerRequestsPerMin = 60
+		cfg.RateLimits.PerAgentRequestsPerMin = 60
 	})
 
 	gw.policy = &errorPolicy{}
@@ -258,7 +252,7 @@ func TestGateway_ShadowMode_EvidenceRecordsShadowViolations(t *testing.T) {
 }
 
 func TestGateway_EnforceMode_StillBlocks(t *testing.T) {
-	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig) {
+	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig, _ *PolicyOverride) {
 		cfg.Mode = ModeEnforce
 	})
 
@@ -268,7 +262,7 @@ func TestGateway_EnforceMode_StillBlocks(t *testing.T) {
 }
 
 func TestGateway_EnforceMode_ToolBlockStillBlocks(t *testing.T) {
-	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig) {
+	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig, _ *PolicyOverride) {
 		cfg.Mode = ModeEnforce
 	})
 
@@ -278,12 +272,12 @@ func TestGateway_EnforceMode_ToolBlockStillBlocks(t *testing.T) {
 }
 
 func TestGateway_ShadowMode_NoViolationsNoFlag(t *testing.T) {
-	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig) {
-		cfg.ServerDefaults.DefaultPIIAction = "warn"
-		cfg.ServerDefaults.ForbiddenTools = nil
-		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
+	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig, override *PolicyOverride) {
+		cfg.OrganizationPolicy.DefaultPIIAction = "warn"
+		cfg.OrganizationPolicy.ForbiddenTools = nil
+		override.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
-		cfg.RateLimits.PerCallerRequestsPerMin = 60
+		cfg.RateLimits.PerAgentRequestsPerMin = 60
 	})
 
 	rr := makeGatewayRequest(gw, requestClean())

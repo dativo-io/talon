@@ -541,6 +541,11 @@ func initializeProject() error {
 			default:
 				outPath = f.OutputPath
 			}
+			if dir := filepath.Dir(outPath); dir != "." {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					return fmt.Errorf("creating %s: %w", dir, err)
+				}
+			}
 			//nolint:gosec // G306: config files are not secret
 			if err := os.WriteFile(outPath, content, 0o644); err != nil {
 				return fmt.Errorf("writing %s: %w", outPath, err)

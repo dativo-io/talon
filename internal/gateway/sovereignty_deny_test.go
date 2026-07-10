@@ -42,20 +42,14 @@ func TestGateway_SovereigntyDeny_USProvider(t *testing.T) {
 				Region:     "US",
 			},
 		},
-		Callers: []CallerConfig{
-			{
-				Name:      "test",
-				TenantKey: "talon-gw-sov-deny",
-				TenantID:  "default",
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",
 			StreamIdleTimeout: "60s",
 		},
 	}
+	registry := testRegistry(testIdentity("test", "default", "talon-gw-sov-deny", nil))
 
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
@@ -67,7 +61,7 @@ func TestGateway_SovereigntyDeny_USProvider(t *testing.T) {
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key",
 		[]byte("sk-test"), secrets.ACL{Tenants: []string{"default"}, Agents: []string{"*"}}))
 
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
@@ -105,20 +99,14 @@ func TestGateway_SovereigntyAllow_EUProvider(t *testing.T) {
 				Region:     "LOCAL",
 			},
 		},
-		Callers: []CallerConfig{
-			{
-				Name:      "test",
-				TenantKey: "talon-gw-sov-allow",
-				TenantID:  "default",
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",
 			StreamIdleTimeout: "60s",
 		},
 	}
+	registry := testRegistry(testIdentity("test", "default", "talon-gw-sov-allow", nil))
 
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
@@ -130,7 +118,7 @@ func TestGateway_SovereigntyAllow_EUProvider(t *testing.T) {
 	require.NoError(t, secStore.Set(context.Background(), "ollama-api-key",
 		[]byte("local"), secrets.ACL{Tenants: []string{"default"}, Agents: []string{"*"}}))
 
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	body := `{"model":"llama3.2:1b","messages":[{"role":"user","content":"hi"}]}`
@@ -163,20 +151,14 @@ func TestGateway_SovereigntyDeny_ShadowModeForwardsAndRecords(t *testing.T) {
 				Region:     "US",
 			},
 		},
-		Callers: []CallerConfig{
-			{
-				Name:      "test",
-				TenantKey: "talon-gw-sov-shadow",
-				TenantID:  "default",
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",
 			StreamIdleTimeout: "60s",
 		},
 	}
+	registry := testRegistry(testIdentity("test", "default", "talon-gw-sov-shadow", nil))
 
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
@@ -188,7 +170,7 @@ func TestGateway_SovereigntyDeny_ShadowModeForwardsAndRecords(t *testing.T) {
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key",
 		[]byte("sk-test"), secrets.ACL{Tenants: []string{"default"}, Agents: []string{"*"}}))
 
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
@@ -212,7 +194,7 @@ func TestGateway_SovereigntyDeny_ShadowModeForwardsAndRecords(t *testing.T) {
 	assert.True(t, hasSovereigntyViolation, "should record sovereignty_deny shadow violation, got %+v", ev.ShadowViolations)
 }
 
-func makeGatewayRequestWithKey(gw *Gateway, path, body, tenantKey string) *httptest.ResponseRecorder {
+func makeGatewayRequestWithKey(gw *Gateway, path, body, agentKey string) *httptest.ResponseRecorder {
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) {
 		r.Handle("/*", gw)
@@ -221,7 +203,7 @@ func makeGatewayRequestWithKey(gw *Gateway, path, body, tenantKey string) *httpt
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		"http://test"+path,
 		bytes.NewReader([]byte(body)))
-	req.Header.Set("Authorization", "Bearer "+tenantKey)
+	req.Header.Set("Authorization", "Bearer "+agentKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()

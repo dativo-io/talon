@@ -68,7 +68,7 @@ func (s *metricsRecorderSpy) count() int {
 	return len(s.events)
 }
 
-func setupGatewayWithSpy(t *testing.T, cfg *GatewayConfig, policy GatewayPolicyEvaluator) (*Gateway, *metricsRecorderSpy, *evidence.Store) {
+func setupGatewayWithSpy(t *testing.T, cfg *GatewayConfig, registry *IdentityRegistry, policy GatewayPolicyEvaluator) (*Gateway, *metricsRecorderSpy, *evidence.Store) {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -86,7 +86,7 @@ func setupGatewayWithSpy(t *testing.T, cfg *GatewayConfig, policy GatewayPolicyE
 	}
 
 	cls := classifier.MustNewScanner()
-	gw, err := NewGateway(cfg, cls, evStore, secStore, policy, nil)
+	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, policy, nil)
 	require.NoError(t, err)
 
 	spy := &metricsRecorderSpy{}
@@ -116,16 +116,12 @@ func TestBlockedPath_ProviderNotAllowed_EmitsMetrics(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
-		Callers: []CallerConfig{
-			{
-				Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default",
-				AllowedProviders: []string{"anthropic"},
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
-	gw, spy, evStore := setupGatewayWithSpy(t, cfg, nil)
+	id := testIdentity("test-agent", "default", "talon-gw-test-001", nil)
+	id.AllowedProviders = []string{"anthropic"}
+	gw, spy, evStore := setupGatewayWithSpy(t, cfg, testRegistry(id), nil)
 
 	w := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
 		`{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}`)
@@ -136,7 +132,7 @@ func TestBlockedPath_ProviderNotAllowed_EmitsMetrics(t *testing.T) {
 	ev := spy.lastEvent()
 	assert.True(t, ev["blocked"].(bool), "event should mark request as blocked")
 
-	list, err := evStore.List(context.Background(), "default", "test-caller", time.Time{}, time.Time{}, 5)
+	list, err := evStore.List(context.Background(), "default", "test-agent", time.Time{}, time.Time{}, 5)
 	require.NoError(t, err)
 	require.Len(t, list, 1, "provider-not-allowed should record evidence")
 	assert.False(t, list[0].PolicyDecision.Allowed)
@@ -151,13 +147,11 @@ func TestBlockedPath_PolicyEvalError_EmitsMetrics(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
-		Callers: []CallerConfig{
-			{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
-	gw, spy, evStore := setupGatewayWithSpy(t, cfg, &errorPolicy{})
+	registry := testRegistry(testIdentity("test-agent", "default", "talon-gw-test-001", nil))
+	gw, spy, evStore := setupGatewayWithSpy(t, cfg, registry, &errorPolicy{})
 
 	w := postGateway(gw, "/v1/proxy/ollama/v1/chat/completions", "talon-gw-test-001",
 		`{"model":"llama2","messages":[{"role":"user","content":"Hello"}]}`)
@@ -169,7 +163,7 @@ func TestBlockedPath_PolicyEvalError_EmitsMetrics(t *testing.T) {
 	assert.True(t, ev["blocked"].(bool))
 	assert.True(t, ev["has_error"].(bool))
 
-	list, err := evStore.List(context.Background(), "default", "test-caller", time.Time{}, time.Time{}, 5)
+	list, err := evStore.List(context.Background(), "default", "test-agent", time.Time{}, time.Time{}, 5)
 	require.NoError(t, err)
 	require.Len(t, list, 1, "policy-eval-error should record evidence")
 	assert.False(t, list[0].PolicyDecision.Allowed)
@@ -184,12 +178,10 @@ func TestBlockedPath_SecretFailure_EmitsMetrics(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "http://localhost:1", SecretName: "nonexistent-secret"},
 		},
-		Callers: []CallerConfig{
-			{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
+	registry := testRegistry(testIdentity("test-agent", "default", "talon-gw-test-001", nil))
 	dir := t.TempDir()
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
@@ -199,7 +191,7 @@ func TestBlockedPath_SecretFailure_EmitsMetrics(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 
 	cls := classifier.MustNewScanner()
-	gw, err := NewGateway(cfg, cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	spy := &metricsRecorderSpy{}
@@ -215,7 +207,7 @@ func TestBlockedPath_SecretFailure_EmitsMetrics(t *testing.T) {
 	assert.True(t, ev["blocked"].(bool))
 	assert.True(t, ev["has_error"].(bool))
 
-	list, err := evStore.List(context.Background(), "default", "test-caller", time.Time{}, time.Time{}, 5)
+	list, err := evStore.List(context.Background(), "default", "test-agent", time.Time{}, time.Time{}, 5)
 	require.NoError(t, err)
 	require.Len(t, list, 1, "secret-failure should record evidence")
 	assert.False(t, list[0].PolicyDecision.Allowed)
@@ -229,12 +221,9 @@ func TestBlockedPath_AuthFailure_EmitsErrorCounter(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
-		Callers: []CallerConfig{
-			{Name: "test", TenantKey: "correct-key", TenantID: "default"},
-		},
-		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(true)},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		Timeouts: TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
+	registry := testRegistry(testIdentity("test", "default", "correct-key", nil))
 	dir := t.TempDir()
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
@@ -243,7 +232,7 @@ func TestBlockedPath_AuthFailure_EmitsErrorCounter(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = secStore.Close() })
 	cls := classifier.MustNewScanner()
-	gw, err := NewGateway(cfg, cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	metrics := collectGatewayMetrics(t, func(ctx context.Context) {
@@ -280,13 +269,11 @@ func TestBlockedPath_PIIBlock_EmitsDashboardEvent(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
-		Callers: []CallerConfig{
-			{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "block"},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "block"},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
-	gw, spy, _ := setupGatewayWithSpy(t, cfg, nil)
+	registry := testRegistry(testIdentity("test-agent", "default", "talon-gw-test-001", nil))
+	gw, spy, _ := setupGatewayWithSpy(t, cfg, registry, nil)
 
 	w := postGateway(gw, "/v1/proxy/ollama/v1/chat/completions", "talon-gw-test-001",
 		`{"model":"llama2","messages":[{"role":"user","content":"Email me at user@example.com"}]}`)
@@ -307,13 +294,11 @@ func TestBlockedPath_PolicyDeny_EmitsDashboardEvent(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
-		Callers: []CallerConfig{
-			{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
-	gw, spy, _ := setupGatewayWithSpy(t, cfg, &denyAllPolicy{})
+	registry := testRegistry(testIdentity("test-agent", "default", "talon-gw-test-001", nil))
+	gw, spy, _ := setupGatewayWithSpy(t, cfg, registry, &denyAllPolicy{})
 
 	w := postGateway(gw, "/v1/proxy/ollama/v1/chat/completions", "talon-gw-test-001",
 		`{"model":"llama2","messages":[{"role":"user","content":"Hello"}]}`)
@@ -333,16 +318,12 @@ func TestBlockedPath_EvidenceStoreFailure_DoesNotEmitMetrics(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
-		Callers: []CallerConfig{
-			{
-				Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default",
-				AllowedProviders: []string{"anthropic"},
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
-	gw, spy, evStore := setupGatewayWithSpy(t, cfg, nil)
+	id := testIdentity("test-agent", "default", "talon-gw-test-001", nil)
+	id.AllowedProviders = []string{"anthropic"}
+	gw, spy, evStore := setupGatewayWithSpy(t, cfg, testRegistry(id), nil)
 	require.NoError(t, evStore.Close())
 
 	w := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
@@ -363,20 +344,16 @@ func TestBlockedPath_RateLimitWritesEvidenceBeforeMetrics(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
-		Callers: []CallerConfig{
-			{
-				Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default",
-				AllowedProviders: []string{"anthropic"},
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
 		RateLimits: RateLimitsConfig{
-			GlobalRequestsPerMin:    100,
-			PerCallerRequestsPerMin: 1,
+			GlobalRequestsPerMin:   100,
+			PerAgentRequestsPerMin: 1,
 		},
 		Timeouts: TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
-	gw, spy, evStore := setupGatewayWithSpy(t, cfg, nil)
+	id := testIdentity("test-agent", "default", "talon-gw-test-001", nil)
+	id.AllowedProviders = []string{"anthropic"}
+	gw, spy, evStore := setupGatewayWithSpy(t, cfg, testRegistry(id), nil)
 
 	first := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
 		`{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}`)
@@ -386,7 +363,7 @@ func TestBlockedPath_RateLimitWritesEvidenceBeforeMetrics(t *testing.T) {
 		`{"model":"gpt-4o","messages":[{"role":"user","content":"Hello again"}]}`)
 	require.Equal(t, http.StatusTooManyRequests, second.Code)
 
-	list, err := evStore.List(context.Background(), "default", "test-caller", time.Time{}, time.Time{}, 10)
+	list, err := evStore.List(context.Background(), "default", "test-agent", time.Time{}, time.Time{}, 10)
 	require.NoError(t, err)
 	require.NotEmpty(t, list)
 
@@ -406,15 +383,15 @@ func TestBlockedPath_RateLimitWritesEvidenceBeforeMetrics(t *testing.T) {
 func TestBlockedPath_AllBlockedPathsConsistent(t *testing.T) {
 	tests := []struct {
 		name           string
-		setupOverrides func(*GatewayConfig)
+		setupOverrides func(*GatewayConfig, *ResolvedIdentity)
 		policy         GatewayPolicyEvaluator
 		body           string
 		wantStatus     int
 	}{
 		{
 			name: "pii_block",
-			setupOverrides: func(c *GatewayConfig) {
-				c.ServerDefaults.DefaultPIIAction = "block"
+			setupOverrides: func(c *GatewayConfig, _ *ResolvedIdentity) {
+				c.OrganizationPolicy.DefaultPIIAction = "block"
 			},
 			body:       `{"model":"gpt-4o","messages":[{"role":"user","content":"Email: user@example.com"}]}`,
 			wantStatus: http.StatusBadRequest,
@@ -427,8 +404,8 @@ func TestBlockedPath_AllBlockedPathsConsistent(t *testing.T) {
 		},
 		{
 			name: "provider_not_allowed",
-			setupOverrides: func(c *GatewayConfig) {
-				c.Callers[0].AllowedProviders = []string{"anthropic"}
+			setupOverrides: func(_ *GatewayConfig, id *ResolvedIdentity) {
+				id.AllowedProviders = []string{"anthropic"}
 			},
 			body:       `{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}`,
 			wantStatus: http.StatusForbidden,
@@ -444,16 +421,14 @@ func TestBlockedPath_AllBlockedPathsConsistent(t *testing.T) {
 				Providers: map[string]ProviderConfig{
 					"openai": {Enabled: true, BaseURL: "http://localhost:1"},
 				},
-				Callers: []CallerConfig{
-					{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
-				},
-				ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
-				Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+				OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+				Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 			}
+			id := testIdentity("test-agent", "default", "talon-gw-test-001", nil)
 			if tt.setupOverrides != nil {
-				tt.setupOverrides(cfg)
+				tt.setupOverrides(cfg, id)
 			}
-			gw, spy, _ := setupGatewayWithSpy(t, cfg, tt.policy)
+			gw, spy, _ := setupGatewayWithSpy(t, cfg, testRegistry(id), tt.policy)
 
 			w := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001", tt.body)
 
@@ -461,7 +436,7 @@ func TestBlockedPath_AllBlockedPathsConsistent(t *testing.T) {
 			require.Equal(t, 1, spy.count(), "blocked path %q should emit exactly 1 dashboard event", tt.name)
 			ev := spy.lastEvent()
 			assert.True(t, ev["blocked"].(bool), "blocked path %q should set blocked=true", tt.name)
-			assert.Equal(t, "test-caller", ev["caller_id"], "blocked path %q should include caller_id", tt.name)
+			assert.Equal(t, "test-agent", ev["caller_id"], "blocked path %q should include caller_id", tt.name)
 		})
 	}
 }
@@ -474,25 +449,19 @@ func TestGatewayMetrics_RuntimeEventMatchesEvidenceProjection(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
-		Callers: []CallerConfig{
-			{
-				Name:             "test-caller",
-				TenantKey:        "talon-gw-test-001",
-				TenantID:         "default",
-				AllowedProviders: []string{"anthropic"},
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
-	gw, spy, evStore := setupGatewayWithSpy(t, cfg, nil)
+	id := testIdentity("test-agent", "default", "talon-gw-test-001", nil)
+	id.AllowedProviders = []string{"anthropic"}
+	gw, spy, evStore := setupGatewayWithSpy(t, cfg, testRegistry(id), nil)
 
 	w := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
 		`{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}`)
 	require.Equal(t, http.StatusForbidden, w.Code)
 	require.Equal(t, 1, spy.count())
 
-	list, err := evStore.List(context.Background(), "default", "test-caller", time.Time{}, time.Time{}, 1)
+	list, err := evStore.List(context.Background(), "default", "test-agent", time.Time{}, time.Time{}, 1)
 	require.NoError(t, err)
 	require.Len(t, list, 1)
 
@@ -527,19 +496,17 @@ func TestBudgetDeniedRequest_RecordsSignedEvidence(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL},
 		},
-		Callers: []CallerConfig{
-			{Name: "test-caller", TenantKey: "talon-gw-test-001", TenantID: "default"},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 
-	gw, _, evStore := setupGatewayWithSpy(t, cfg, &budgetDenyPolicy{})
+	registry := testRegistry(testIdentity("test-agent", "default", "talon-gw-test-001", nil))
+	gw, _, evStore := setupGatewayWithSpy(t, cfg, registry, &budgetDenyPolicy{})
 	w := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
 		`{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}`)
 	require.Equal(t, http.StatusForbidden, w.Code)
 
-	list, err := evStore.List(context.Background(), "default", "test-caller", time.Time{}, time.Time{}, 5)
+	list, err := evStore.List(context.Background(), "default", "test-agent", time.Time{}, time.Time{}, 5)
 	require.NoError(t, err)
 	require.Len(t, list, 1)
 	ev := list[0]

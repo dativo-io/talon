@@ -1,0 +1,26 @@
+# Shortlist demo — EU-strict scenario: every data tier may egress only to
+# EU/LOCAL destinations; the egress override replaces the organization
+# baseline wholesale (#266).
+agent:
+  name: shortlist-eu-strict
+  description: "Shortlist demo: EU-only egress enforcement"
+  version: 1.0.0
+  tenant_id: shortlist
+  key:
+    secret_name: shortlist-eu-talon-key
+
+policies:
+  cost_limits:
+    daily: 100.00
+  egress:
+    default_action: deny
+    rules:
+      - tier: public
+        allowed_regions: ["EU", "LOCAL"]
+      - tier: internal
+        allowed_regions: ["EU", "LOCAL"]
+      - tier: confidential
+        allowed_regions: ["EU", "LOCAL"]
+
+metadata:
+  team: shortlist-demo

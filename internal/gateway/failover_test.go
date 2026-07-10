@@ -26,8 +26,8 @@ import (
 )
 
 const (
-	failoverTestTenantKey = "talon-gw-failover-001"
-	failoverTestBody      = `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Summarize our public roadmap"}]}`
+	failoverTestAgentKey = "talon-gw-failover-001"
+	failoverTestBody     = `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Summarize our public roadmap"}]}`
 )
 
 // failoverUpstream is a controllable fake provider endpoint.
@@ -119,21 +119,17 @@ func setupFailoverGateway(t *testing.T, sovereigntyMode, primaryRegion, backupRe
 	}
 
 	cfg := &GatewayConfig{
-		Enabled:      true,
-		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
-		Providers:    providers,
-		Callers: []CallerConfig{
-			{
-				Name: "failover-bot", TenantKey: failoverTestTenantKey, TenantID: "test-tenant",
-				PolicyOverrides: &CallerPolicyOverrides{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		Enabled:            true,
+		ListenPrefix:       "/v1/proxy",
+		Mode:               ModeEnforce,
+		Providers:          providers,
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	cfg.EffectiveSovereigntyMode = sovereigntyMode
 	require.NoError(t, cfg.Validate())
+	registry := testRegistry(testIdentity("failover-bot", "test-tenant", failoverTestAgentKey,
+		&PolicyOverride{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000}))
 
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
@@ -146,9 +142,15 @@ func setupFailoverGateway(t *testing.T, sovereigntyMode, primaryRegion, backupRe
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key", []byte("sk-primary-key-1234567890"), acl))
 	require.NoError(t, secStore.Set(context.Background(), "backup-api-key", []byte("sk-backup-key-1234567890"), acl))
 
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 	return gw, evStore
+}
+
+// failoverAgent returns the single registered agent identity for post-setup
+// policy tweaks (the identity pointer is shared with the gateway's registry).
+func failoverAgent(gw *Gateway) *ResolvedIdentity {
+	return gw.registry.identities[0]
 }
 
 func makeFailoverRequest(gw *Gateway, body string) *httptest.ResponseRecorder {
@@ -158,7 +160,7 @@ func makeFailoverRequest(gw *Gateway, body string) *httptest.ResponseRecorder {
 	})
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		"http://test/v1/proxy/openai/v1/chat/completions", bytes.NewReader([]byte(body)))
-	req.Header.Set("Authorization", "Bearer "+failoverTestTenantKey)
+	req.Header.Set("Authorization", "Bearer "+failoverTestAgentKey)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -260,7 +262,7 @@ func TestGatewayFailover_EUStrict_USSecondary_FailsClosed(t *testing.T) {
 
 	w := makeFailoverRequest(gw, failoverTestBody)
 
-	// The caller sees the primary's upstream error; the US secondary is never dispatched.
+	// The client sees the primary's upstream error; the US secondary is never dispatched.
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	assert.Equal(t, int64(1), primary.calls.Load())
 	assert.Equal(t, int64(0), backup.calls.Load(), "sovereignty-rejected candidate must never be dispatched")
@@ -329,7 +331,7 @@ func TestGatewayFailover_BothProvidersFail_FailClosedWithAttempts(t *testing.T) 
 
 	w := makeFailoverRequest(gw, failoverTestBody)
 
-	assert.Equal(t, http.StatusBadGateway, w.Code, "caller sees the last upstream error")
+	assert.Equal(t, http.StatusBadGateway, w.Code, "client sees the last upstream error")
 
 	correlationID := correlationIDFromResponse(t, w)
 	attempts, final := failoverRecords(t, store, correlationID)
@@ -366,7 +368,7 @@ func TestGatewayFailover_FallbackPermanentError_FailsClosed(t *testing.T) {
 
 			w := makeFailoverRequest(gw, failoverTestBody)
 
-			assert.Equal(t, tc.status, w.Code, "caller sees the fallback's upstream error")
+			assert.Equal(t, tc.status, w.Code, "client sees the fallback's upstream error")
 			assert.Equal(t, int64(1), backup.calls.Load())
 
 			correlationID := correlationIDFromResponse(t, w)
@@ -446,20 +448,20 @@ func TestGatewayFailover_200HeadersThenBodyEOF_FailsOver(t *testing.T) {
 	assert.Equal(t, evidence.FailoverRoleFallbackDecision, final.Failover.Role)
 }
 
-// Fallback candidates must pass the caller's allowed_providers gate — the
+// Fallback candidates must pass the agent's allowed_providers gate — the
 // same authorization the primary route passed. A candidate outside the
-// caller's allowlist is skipped, never dispatched.
-func TestGatewayFailover_CallerAllowedProviders_SkipsCandidate(t *testing.T) {
+// agent's allowlist is skipped, never dispatched.
+func TestGatewayFailover_AgentAllowedProviders_SkipsCandidate(t *testing.T) {
 	primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
 	backup := newFailoverUpstream(t, http.StatusOK)
 	gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
-	// Restrict the caller to the primary provider only.
-	gw.config.Callers[0].AllowedProviders = []string{"openai"}
+	// Restrict the agent to the primary provider only.
+	failoverAgent(gw).AllowedProviders = []string{"openai"}
 
 	w := makeFailoverRequest(gw, failoverTestBody)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Equal(t, int64(0), backup.calls.Load(), "candidate outside caller allowed_providers must never be dispatched")
+	assert.Equal(t, int64(0), backup.calls.Load(), "candidate outside agent allowed_providers must never be dispatched")
 
 	correlationID := correlationIDFromResponse(t, w)
 	_, final := failoverRecords(t, store, correlationID)
@@ -471,14 +473,14 @@ func TestGatewayFailover_CallerAllowedProviders_SkipsCandidate(t *testing.T) {
 }
 
 // Fallback candidates re-run the full gateway policy with their own provider
-// and model, so a caller-level model restriction cannot be bypassed by a
+// and model, so an agent-level model restriction cannot be bypassed by a
 // fallback model rewrite.
-func TestGatewayFailover_CallerModelPolicy_SkipsCandidate(t *testing.T) {
+func TestGatewayFailover_AgentModelPolicy_SkipsCandidate(t *testing.T) {
 	primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
 	backup := newFailoverUpstream(t, http.StatusOK)
 	gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "gpt-4o")
-	gw.config.Callers[0].PolicyOverrides.AllowedModels = []string{"gpt-4o-mini"}
-	// Wire the real gateway policy engine so caller model lists are enforced.
+	failoverAgent(gw).Override.AllowedModels = []string{"gpt-4o-mini"}
+	// Wire the real gateway policy engine so agent model lists are enforced.
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 	gw.policy = policyEngine
@@ -486,7 +488,7 @@ func TestGatewayFailover_CallerModelPolicy_SkipsCandidate(t *testing.T) {
 	w := makeFailoverRequest(gw, failoverTestBody)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Equal(t, int64(0), backup.calls.Load(), "fallback model outside caller allowed_models must never be dispatched")
+	assert.Equal(t, int64(0), backup.calls.Load(), "fallback model outside agent allowed_models must never be dispatched")
 
 	correlationID := correlationIDFromResponse(t, w)
 	_, final := failoverRecords(t, store, correlationID)
@@ -511,14 +513,12 @@ func TestGatewayAlias_AnthropicFamilyGovernance(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"anthropic-eu": {Enabled: true, BaseURL: upstream.server.URL, SecretName: "anthropic-eu-key", Region: "EU", APIFamily: "anthropic"},
 		},
-		Callers: []CallerConfig{{
-			Name: "alias-bot", TenantKey: failoverTestTenantKey, TenantID: "test-tenant",
-			PolicyOverrides: &CallerPolicyOverrides{PIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-		}},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	require.NoError(t, cfg.Validate())
+	registry := testRegistry(testIdentity("alias-bot", "test-tenant", failoverTestAgentKey,
+		&PolicyOverride{PIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000}))
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = evStore.Close() })
@@ -527,7 +527,7 @@ func TestGatewayAlias_AnthropicFamilyGovernance(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 	require.NoError(t, secStore.Set(context.Background(), "anthropic-eu-key", []byte("sk-ant-alias-key-123456"),
 		secrets.ACL{Tenants: []string{"test-tenant"}, Agents: []string{"*"}}))
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	anthropicBody := `{"model":"claude-sonnet-4-20250514","max_tokens":100,"messages":[{"role":"user","content":"Contact jan.kowalski@example.com about the invoice"}]}`
@@ -535,7 +535,7 @@ func TestGatewayAlias_AnthropicFamilyGovernance(t *testing.T) {
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		"http://test/v1/proxy/anthropic-eu/v1/messages", bytes.NewReader([]byte(anthropicBody)))
-	req.Header.Set("Authorization", "Bearer "+failoverTestTenantKey)
+	req.Header.Set("Authorization", "Bearer "+failoverTestAgentKey)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -574,9 +574,9 @@ func TestGatewayFailover_ShadowMode_CandidatePolicyDoesNotBlock(t *testing.T) {
 	backup := newFailoverUpstream(t, http.StatusOK)
 	gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "gpt-4o")
 	gw.config.Mode = ModeShadow
-	// Caller model policy denies everything except the primary's model —
+	// Agent model policy denies everything except the primary's model —
 	// in enforce mode the gpt-4o fallback rewrite would be skipped.
-	gw.config.Callers[0].PolicyOverrides.AllowedModels = []string{"gpt-4o-mini"}
+	failoverAgent(gw).Override.AllowedModels = []string{"gpt-4o-mini"}
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 	gw.policy = policyEngine
@@ -607,10 +607,10 @@ func TestPolicyInputParity_PrimaryVsCandidate(t *testing.T) {
 	primary := newFailoverUpstream(t, http.StatusOK)
 	backup := newFailoverUpstream(t, http.StatusOK)
 	gw, _ := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
-	caller := &gw.config.Callers[0]
+	agent := failoverAgent(gw)
 
-	primaryInput, _ := gw.buildPolicyInputForRequest(context.Background(), caller, "openai", "gpt-4o-mini", 1, 0.01, 1, 2, "")
-	candidateInput, _ := gw.buildPolicyInputForRequest(context.Background(), caller, "backup", "gpt-4o", 1, 0.02, 1, 2, "")
+	primaryInput, _ := gw.buildPolicyInputForRequest(context.Background(), agent, "openai", "gpt-4o-mini", 1, 0.01, 1, 2, "")
+	candidateInput, _ := gw.buildPolicyInputForRequest(context.Background(), agent, "backup", "gpt-4o", 1, 0.02, 1, 2, "")
 
 	primaryKeys := make([]string, 0, len(primaryInput))
 	for k := range primaryInput {
@@ -667,7 +667,7 @@ func TestGatewayFailover_APIFamilyAliases(t *testing.T) {
 		prov := ProviderConfig{Enabled: true, BaseURL: backup.server.URL, SecretName: "backup-api-key", APIFamily: "anthropic"}
 		gw.config.Providers["anthropic-eu"] = prov
 		headers, err := gw.fallbackAuthHeaders(context.Background(),
-			gw.config.CallerByName("failover-bot"), "anthropic-eu", prov,
+			failoverAgent(gw), "anthropic-eu", prov,
 			"Bearer client-token", map[string]string{"Authorization": "Bearer old", "Content-Type": "application/json"})
 		require.NoError(t, err)
 		assert.Equal(t, "sk-backup-key-1234567890", headers["x-api-key"])

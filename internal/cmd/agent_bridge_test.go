@@ -122,6 +122,32 @@ func TestLoadedAgentFromPolicyFullMapping(t *testing.T) {
 	assert.Equal(t, []string{"EU"}, o.Egress.Rules[0].AllowedRegions)
 }
 
+// Cross-plane tenant authority (#266): the --tenant matrix.
+func TestResolveRunTenant(t *testing.T) {
+	withTenant := &policy.Policy{Agent: policy.AgentConfig{Name: "a", TenantID: "acme"}}
+	noTenant := &policy.Policy{Agent: policy.AgentConfig{Name: "a"}}
+
+	got, err := resolveRunTenant(withTenant, "default", false)
+	require.NoError(t, err)
+	assert.Equal(t, "acme", got, "file wins when flag not set")
+
+	got, err = resolveRunTenant(withTenant, "acme", true)
+	require.NoError(t, err)
+	assert.Equal(t, "acme", got, "equal flag confirms")
+
+	_, err = resolveRunTenant(withTenant, "globex", true)
+	require.Error(t, err, "mismatch errors — the agent file is authoritative")
+	assert.Contains(t, err.Error(), "agent.tenant_id")
+
+	got, err = resolveRunTenant(noTenant, "globex", true)
+	require.NoError(t, err)
+	assert.Equal(t, "globex", got, "flag applies when file omits tenant_id")
+
+	got, err = resolveRunTenant(noTenant, "default", false)
+	require.NoError(t, err)
+	assert.Equal(t, "default", got)
+}
+
 func TestLoadedAgentFromPolicyMinimal(t *testing.T) {
 	pol := &policy.Policy{Agent: policy.AgentConfig{Name: "bare", Version: "0.0.1"}}
 	la := LoadedAgentFromPolicy(pol, "agent.talon.yaml")

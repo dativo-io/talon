@@ -1,0 +1,19 @@
+# Governed-session demo — model-governance act: this use case may only call
+# gpt-4o-mini, so a gpt-4o request is denied POLICY_DENIED_ROUTING at the
+# gateway (#266).
+agent:
+  name: session-demo-eu
+  description: "Governed-session demo: model allowlist enforcement"
+  version: 1.0.0
+  tenant_id: governed-session
+  key:
+    secret_name: session-demo-eu-talon-key
+
+policies:
+  cost_limits:
+    daily: 1.00
+  models:
+    allowed: ["gpt-4o-mini"]
+
+metadata:
+  team: governed-session-demo

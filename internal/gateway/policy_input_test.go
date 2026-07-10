@@ -6,48 +6,43 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestBuildGatewayPolicyInput_UsesServerDefaultsWhenCallerCapsUnset(t *testing.T) {
-	caller := &CallerConfig{
-		Name:     "support-slack-bot",
-		TenantID: "default",
-		PolicyOverrides: &CallerPolicyOverrides{
-			PIIAction: "warn",
-		},
-	}
-	defaults := ServerDefaults{
+func TestBuildGatewayPolicyInput_UsesBaselineWhenAgentCapsUnset(t *testing.T) {
+	agent := testIdentity("support-slack-bot", "default", "tk-support", &PolicyOverride{
+		PIIAction: "warn",
+	})
+	baseline := OrganizationPolicy{
 		MaxDailyCost:   10.0,
 		MaxMonthlyCost: 200.0,
 	}
+	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, agent.Override)
 
-	input := buildGatewayPolicyInput(caller, defaults, "openai", "gpt-4o-mini", 0, 0.5, 2.0, 15.0, "US")
+	input := buildGatewayPolicyInput(agent, eff, "openai", "gpt-4o-mini", 0, 0.5, 2.0, 15.0, "US")
 
-	assert.Equal(t, 10.0, input["caller_max_daily_cost"])
-	assert.Equal(t, 200.0, input["caller_max_monthly_cost"])
+	assert.Equal(t, 10.0, input["agent_max_daily_cost"])
+	assert.Equal(t, 200.0, input["agent_max_monthly_cost"])
 }
 
-func TestBuildGatewayPolicyInput_CallerCapsOverrideServerDefaults(t *testing.T) {
-	caller := &CallerConfig{
-		Name:     "support-slack-bot",
-		TenantID: "default",
-		PolicyOverrides: &CallerPolicyOverrides{
-			MaxDailyCost:   5.0,
-			MaxMonthlyCost: 120.0,
-		},
-	}
-	defaults := ServerDefaults{
+func TestBuildGatewayPolicyInput_AgentCapsOverrideBaseline(t *testing.T) {
+	agent := testIdentity("support-slack-bot", "default", "tk-support", &PolicyOverride{
+		MaxDailyCost:   5.0,
+		MaxMonthlyCost: 120.0,
+	})
+	baseline := OrganizationPolicy{
 		MaxDailyCost:   10.0,
 		MaxMonthlyCost: 200.0,
 	}
+	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, agent.Override)
 
-	input := buildGatewayPolicyInput(caller, defaults, "openai", "gpt-4o-mini", 0, 0.5, 2.0, 15.0, "US")
+	input := buildGatewayPolicyInput(agent, eff, "openai", "gpt-4o-mini", 0, 0.5, 2.0, 15.0, "US")
 
-	assert.Equal(t, 5.0, input["caller_max_daily_cost"])
-	assert.Equal(t, 120.0, input["caller_max_monthly_cost"])
+	assert.Equal(t, 5.0, input["agent_max_daily_cost"])
+	assert.Equal(t, 120.0, input["agent_max_monthly_cost"])
 }
 
 func TestBuildGatewayPolicyInput_EgressUnconfigured(t *testing.T) {
-	caller := &CallerConfig{Name: "bot", TenantID: "default"}
-	input := buildGatewayPolicyInput(caller, ServerDefaults{}, "openai", "gpt-4o-mini", 2, 0.5, 0, 0, "US")
+	agent := testIdentity("bot", "default", "tk-bot", nil)
+	eff := ResolveEffectivePolicy(OrganizationPolicy{}, ProviderConfig{}, agent.Override)
+	input := buildGatewayPolicyInput(agent, eff, "openai", "gpt-4o-mini", 2, 0.5, 0, 0, "US")
 
 	assert.Equal(t, "US", input["destination_region"])
 	_, hasRules := input["egress_rules"]
@@ -56,17 +51,18 @@ func TestBuildGatewayPolicyInput_EgressUnconfigured(t *testing.T) {
 	assert.False(t, hasAction)
 }
 
-func TestBuildGatewayPolicyInput_EgressFromServerDefaults(t *testing.T) {
+func TestBuildGatewayPolicyInput_EgressFromBaseline(t *testing.T) {
 	tier2 := TierConfidential
-	caller := &CallerConfig{Name: "bot", TenantID: "default"}
-	defaults := ServerDefaults{
+	agent := testIdentity("bot", "default", "tk-bot", nil)
+	baseline := OrganizationPolicy{
 		Egress: &EgressPolicyConfig{
 			DefaultAction: EgressActionDeny,
 			Rules:         []EgressRule{{Tier: &tier2, AllowedRegions: []string{"EU"}}},
 		},
 	}
+	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, agent.Override)
 
-	input := buildGatewayPolicyInput(caller, defaults, "openai", "gpt-4o-mini", 2, 0.5, 0, 0, "EU")
+	input := buildGatewayPolicyInput(agent, eff, "openai", "gpt-4o-mini", 2, 0.5, 0, 0, "EU")
 
 	assert.Equal(t, "EU", input["destination_region"])
 	assert.Equal(t, EgressActionDeny, input["egress_default_action"])
@@ -77,27 +73,24 @@ func TestBuildGatewayPolicyInput_EgressFromServerDefaults(t *testing.T) {
 	assert.Equal(t, []interface{}{"EU"}, rules[0]["allowed_regions"])
 }
 
-func TestBuildGatewayPolicyInput_EgressCallerOverrideWins(t *testing.T) {
+func TestBuildGatewayPolicyInput_EgressAgentOverrideWins(t *testing.T) {
 	tier2 := TierConfidential
-	caller := &CallerConfig{
-		Name:     "bot",
-		TenantID: "default",
-		PolicyOverrides: &CallerPolicyOverrides{
-			Egress: &EgressPolicyConfig{
-				Rules: []EgressRule{{Tier: &tier2, AllowedProviders: []string{"ollama"}}},
-			},
+	agent := testIdentity("bot", "default", "tk-bot", &PolicyOverride{
+		Egress: &EgressPolicyConfig{
+			Rules: []EgressRule{{Tier: &tier2, AllowedProviders: []string{"ollama"}}},
 		},
-	}
-	defaults := ServerDefaults{
+	})
+	baseline := OrganizationPolicy{
 		Egress: &EgressPolicyConfig{
 			DefaultAction: EgressActionDeny,
 			Rules:         []EgressRule{{Tier: &tier2, AllowedRegions: []string{"EU"}}},
 		},
 	}
+	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, agent.Override)
 
-	input := buildGatewayPolicyInput(caller, defaults, "ollama", "llama3", 2, 0.5, 0, 0, "LOCAL")
+	input := buildGatewayPolicyInput(agent, eff, "ollama", "llama3", 2, 0.5, 0, 0, "LOCAL")
 
-	assert.Equal(t, EgressActionAllow, input["egress_default_action"], "caller override replaces default wholesale")
+	assert.Equal(t, EgressActionAllow, input["egress_default_action"], "agent override replaces the baseline wholesale")
 	rules := input["egress_rules"].([]map[string]interface{})
 	assert.Len(t, rules, 1)
 	assert.Equal(t, []interface{}{"ollama"}, rules[0]["allowed_providers"])

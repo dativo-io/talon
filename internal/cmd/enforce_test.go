@@ -28,11 +28,7 @@ func writeTestGatewayConfig(t *testing.T, dir, mode string) string {
       enabled: true
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
-  callers:
-    - name: "test-caller"
-      tenant_key: "test-key-001"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
@@ -155,7 +151,7 @@ func TestUpdateGatewayMode_PreservesOtherContent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "listen_prefix")
 	assert.Contains(t, string(data), "openai")
-	assert.Contains(t, string(data), "test-caller")
+	assert.Contains(t, string(data), "organization_policy")
 }
 
 func TestUpdateGatewayMode_SkipsCommentBeforeMode(t *testing.T) {

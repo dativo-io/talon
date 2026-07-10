@@ -34,15 +34,17 @@ import (
 // scripts/record-conformance-fixtures.sh; see testdata/conformance/README.md.
 
 const (
-	confTenantKeyWarn   = "talon-gw-conf-warn-0001"
-	confTenantKeyRedact = "talon-gw-conf-redact-0001"
+	confAgentKeyWarn   = "talon-gw-conf-warn-0001"
+	confAgentKeyRedact = "talon-gw-conf-redact-0001"
 )
 
 type conformanceFixture struct {
-	Name            string          `json:"name"`
-	Path            string          `json:"path"`
-	CallerPIIAction string          `json:"caller_pii_action"`
-	RequestBody     json.RawMessage `json:"request_body"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// AgentPIIAction selects which registered agent replays the fixture
+	// (warn or redact). The json tag matches the recorded fixture corpus.
+	AgentPIIAction string          `json:"caller_pii_action"`
+	RequestBody    json.RawMessage `json:"request_body"`
 	Upstream        struct {
 		Status    int             `json:"status"`
 		JSON      json.RawMessage `json:"json,omitempty"`
@@ -117,25 +119,21 @@ func newConformanceGateway(t *testing.T, upstreamURL string) (*Gateway, *evidenc
 		Providers: map[string]ProviderConfig{
 			"anthropic": {Enabled: true, BaseURL: upstreamURL, SecretName: "anthropic-key"},
 		},
-		Callers: []CallerConfig{
-			{
-				Name: "conf-warn", TenantKey: confTenantKeyWarn, TenantID: "conf-tenant",
-				PolicyOverrides: &CallerPolicyOverrides{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-			},
-			{
-				Name: "conf-redact", TenantKey: confTenantKeyRedact, TenantID: "conf-tenant",
-				PolicyOverrides: &CallerPolicyOverrides{PIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-			},
-		},
 		// Response-side scanning is out of scope for request-path conformance:
 		// "allow" keeps streams passing through byte-identically.
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn", ResponsePIIAction: "allow", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-		// The whole corpus runs through one gateway; default per-caller RPM
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn", ResponsePIIAction: "allow", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		// The whole corpus runs through one gateway; default per-agent RPM
 		// would 429 everything after the first fixture.
-		RateLimits: RateLimitsConfig{GlobalRequestsPerMin: 10000, PerCallerRequestsPerMin: 10000},
+		RateLimits: RateLimitsConfig{GlobalRequestsPerMin: 10000, PerAgentRequestsPerMin: 10000},
 		Timeouts:   TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	require.NoError(t, cfg.Validate())
+	registry := testRegistry(
+		testIdentity("conf-warn", "conf-tenant", confAgentKeyWarn,
+			&PolicyOverride{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000}),
+		testIdentity("conf-redact", "conf-tenant", confAgentKeyRedact,
+			&PolicyOverride{PIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000}),
+	)
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = evStore.Close() })
@@ -144,7 +142,7 @@ func newConformanceGateway(t *testing.T, upstreamURL string) (*Gateway, *evidenc
 	t.Cleanup(func() { _ = secStore.Close() })
 	require.NoError(t, secStore.Set(context.Background(), "anthropic-key", []byte("sk-ant-test-000-conformance"),
 		secrets.ACL{Tenants: []string{"conf-tenant"}, Agents: []string{"*"}}))
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })
@@ -175,9 +173,9 @@ func runConformanceFixture(t *testing.T, fx *conformanceFixture, upstream *confo
 	t.Helper()
 	upstream.fixture.Store(fx)
 
-	key := confTenantKeyWarn
-	if fx.CallerPIIAction == "redact" {
-		key = confTenantKeyRedact
+	key := confAgentKeyWarn
+	if fx.AgentPIIAction == "redact" {
+		key = confAgentKeyRedact
 	}
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		"http://test/v1/proxy/anthropic"+fx.Path, bytes.NewReader(fx.RequestBody))
@@ -283,7 +281,7 @@ func TestConformanceAnthropic_LargeSystemPrompt(t *testing.T) {
 	raw, err := json.Marshal(body)
 	require.NoError(t, err)
 
-	fx := &conformanceFixture{Name: "large_system_prompt", Path: "/v1/messages", CallerPIIAction: "redact"}
+	fx := &conformanceFixture{Name: "large_system_prompt", Path: "/v1/messages", AgentPIIAction: "redact"}
 	fx.RequestBody = raw
 	fx.Upstream.Status = 200
 	fx.Upstream.JSON = json.RawMessage(`{"id":"msg_conf_large","type":"message","role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":13000,"output_tokens":2}}`)
@@ -310,7 +308,7 @@ func TestConformanceAnthropic_TransformDeterminism(t *testing.T) {
 	send := func() string {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
 			"http://test/v1/proxy/anthropic"+fx.Path, bytes.NewReader(fx.RequestBody))
-		req.Header.Set("Authorization", "Bearer "+confTenantKeyRedact)
+		req.Header.Set("Authorization", "Bearer "+confAgentKeyRedact)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)

@@ -28,15 +28,13 @@ func TestNewGateway(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://localhost:11434"},
 		},
-		Callers: []CallerConfig{
-			{Name: "test", TenantKey: "talon-gw-test", TenantID: "default"},
-		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",
 			StreamIdleTimeout: "60s",
 		},
 	}
+	registry := testRegistry(testIdentity("test", "default", "talon-gw-test", nil))
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = evStore.Close() })
@@ -45,7 +43,7 @@ func TestNewGateway(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 	cls := classifier.MustNewScanner()
 
-	gw, err := NewGateway(cfg, cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, gw)
 }
@@ -67,22 +65,17 @@ func TestGateway_ServeHTTP_Integration(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: upstream.URL},
 		},
-		Callers: []CallerConfig{
-			{
-				Name: "test", TenantKey: "talon-gw-key", TenantID: "default",
-				PolicyOverrides: &CallerPolicyOverrides{
-					AllowedModels: []string{"llama2", "gpt-4o"},
-					MaxDailyCost:  100,
-				},
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",
 			StreamIdleTimeout: "60s",
 		},
 	}
+	registry := testRegistry(testIdentity("test", "default", "talon-gw-key", &PolicyOverride{
+		AllowedModels: []string{"llama2", "gpt-4o"},
+		MaxDailyCost:  100,
+	}))
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = evStore.Close() })
@@ -93,7 +86,7 @@ func TestGateway_ServeHTTP_Integration(t *testing.T) {
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := NewGateway(cfg, cls, evStore, secStore, policyEngine, nil)
+	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, policyEngine, nil)
 	require.NoError(t, err)
 
 	// Mount like real server
@@ -126,19 +119,16 @@ func TestGateway_ServeHTTP_Unauthorized(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://localhost:11434"},
 		},
-		Callers: []CallerConfig{
-			{Name: "test", TenantKey: "secret", TenantID: "default"},
-		},
-		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(true)},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		Timeouts: TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
+	registry := testRegistry(testIdentity("test", "default", "secret", nil))
 	dir := t.TempDir()
 	evStore, _ := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	defer evStore.Close()
 	secStore, _ := secrets.NewSecretStore(filepath.Join(dir, "s.db"), "12345678901234567890123456789012")
 	defer secStore.Close()
 
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://test/v1/proxy/ollama/v1/chat/completions", bytes.NewReader([]byte(`{"model":"x","messages":[]}`)))
@@ -148,6 +138,7 @@ func TestGateway_ServeHTTP_Unauthorized(t *testing.T) {
 	gw.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.Contains(t, w.Body.String(), "Invalid or missing agent key")
 }
 
 // TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied ensures that when pii_action is "block"
@@ -160,12 +151,10 @@ func TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://localhost:11434"},
 		},
-		Callers: []CallerConfig{
-			{Name: "test", TenantKey: "talon-gw-pii-test", TenantID: "default"},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "block"},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "block"},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
+	registry := testRegistry(testIdentity("test", "default", "talon-gw-pii-test", nil))
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = evStore.Close() })
@@ -174,7 +163,7 @@ func TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 	cls := classifier.MustNewScanner()
 
-	gw, err := NewGateway(cfg, cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	// Request body containing PII (email) so classifier detects it
@@ -218,7 +207,7 @@ func TestGateway_RealAPIKeyNeverExposed(t *testing.T) {
 
 	responseBody := w.Body.String()
 	assert.NotContains(t, responseBody, "sk-test-",
-		"response to caller must not contain the real API key")
+		"response to the client must not contain the real API key")
 
 	records, err := evStore.List(context.Background(), "test-tenant", "",
 		time.Time{}, time.Time{}, 10)

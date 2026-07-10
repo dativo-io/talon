@@ -90,10 +90,13 @@ gateway:
 	})
 }
 
-// TestConfigSchema_MaxSessionCost guards that the published schema accepts the
-// per-caller session budget knob (#198) and rejects negative values.
-func TestConfigSchema_MaxSessionCost(t *testing.T) {
-	t.Run("max_session_cost accepted", func(t *testing.T) {
+// TestConfigSchema_OrganizationPolicy guards the renamed organization baseline
+// block, and that the removed caller-model keys fail schema validation — the
+// editor/docs contract must reject legacy configs just like the runtime does
+// (#266). Per-agent knobs (session budget, model lists, egress overrides) live
+// in agent.talon.yaml and are covered by that schema's tests.
+func TestConfigSchema_OrganizationPolicy(t *testing.T) {
+	t.Run("organization_policy accepted", func(t *testing.T) {
 		result := validateAgainstConfigSchema(t, `
 gateway:
   enabled: true
@@ -102,26 +105,50 @@ gateway:
       enabled: true
       base_url: "https://api.openai.com"
       secret_name: "openai-api-key"
-  callers:
-    - name: "claude-code"
-      tenant_key: "talon-gw-test-000000000001"
-      tenant_id: "default"
-      policy_overrides:
-        max_session_cost: 10.5
+  organization_policy:
+    default_pii_action: warn
+    max_daily_cost: 100
+    max_monthly_cost: 2000
+  rate_limits:
+    global_requests_per_min: 300
+    per_agent_requests_per_min: 60
 `)
 		assert.True(t, result.Valid(), "errors: %v", result.Errors())
 	})
 
-	t.Run("negative max_session_cost rejected", func(t *testing.T) {
+	t.Run("legacy callers block rejected", func(t *testing.T) {
 		result := validateAgainstConfigSchema(t, `
 gateway:
   callers:
     - name: "claude-code"
       tenant_key: "talon-gw-test-000000000001"
-      tenant_id: "default"
-      policy_overrides:
-        max_session_cost: -1
 `)
-		assert.False(t, result.Valid(), "negative session budget must fail schema validation")
+		assert.False(t, result.Valid(), "gateway.callers was removed (#266) and must fail schema validation")
+	})
+
+	t.Run("legacy default_policy block rejected", func(t *testing.T) {
+		result := validateAgainstConfigSchema(t, `
+gateway:
+  default_policy:
+    default_pii_action: warn
+`)
+		assert.False(t, result.Valid(), "gateway.default_policy was renamed organization_policy (#266)")
+	})
+
+	t.Run("legacy trusted_proxy_cidrs rejected", func(t *testing.T) {
+		result := validateAgainstConfigSchema(t, `
+gateway:
+  trusted_proxy_cidrs: ["10.0.0.0/8"]
+`)
+		assert.False(t, result.Valid(), "source-IP identity was removed (#266)")
+	})
+
+	t.Run("legacy require_caller_id rejected", func(t *testing.T) {
+		result := validateAgainstConfigSchema(t, `
+gateway:
+  organization_policy:
+    require_caller_id: false
+`)
+		assert.False(t, result.Valid(), "require_caller_id was removed (#266)")
 	})
 }

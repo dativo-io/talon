@@ -17,17 +17,8 @@ func TestQuickstartConfig_Defaults(t *testing.T) {
 	if cfg.ListenPrefix != "/v1/proxy" {
 		t.Fatalf("listen prefix = %q", cfg.ListenPrefix)
 	}
-	if cfg.ServerDefaults.DefaultPIIAction != "redact" {
-		t.Fatalf("default pii action = %q", cfg.ServerDefaults.DefaultPIIAction)
-	}
-	if cfg.ServerDefaults.CallerIDRequired() {
-		t.Fatal("quickstart should not require caller id")
-	}
-	if len(cfg.Callers) != 1 {
-		t.Fatalf("callers len = %d", len(cfg.Callers))
-	}
-	if cfg.Callers[0].Name != quickstartCallerName || cfg.Callers[0].TenantID != quickstartTenantID {
-		t.Fatalf("caller = %+v", cfg.Callers[0])
+	if cfg.OrganizationPolicy.DefaultPIIAction != "redact" {
+		t.Fatalf("default pii action = %q", cfg.OrganizationPolicy.DefaultPIIAction)
 	}
 	prov, ok := cfg.Provider("openai")
 	if !ok {
@@ -41,6 +32,21 @@ func TestQuickstartConfig_Defaults(t *testing.T) {
 	}
 	if len(prov.AllowedModels) == 0 {
 		t.Fatal("expected non-empty default model allowlist")
+	}
+}
+
+// Quickstart identity is synthetic and context-injected — the config carries
+// no identity at all (#266).
+func TestQuickstartIdentityShape(t *testing.T) {
+	id := NewQuickstartIdentity()
+	if id.Name != quickstartAgentName || id.TenantID != quickstartTenantID {
+		t.Fatalf("identity = %+v", id)
+	}
+	if !id.HasTag("quickstart") {
+		t.Fatal("expected quickstart tag")
+	}
+	if len(id.AllowedProviders) != 1 || id.AllowedProviders[0] != "openai" {
+		t.Fatalf("allowed providers = %v", id.AllowedProviders)
 	}
 }
 
@@ -99,7 +105,7 @@ func TestGatewayAnnotations_UnsafeListenFromConfigNotEnv(t *testing.T) {
 		t.Fatalf("QuickstartConfig() error = %v", err)
 	}
 	gw := &Gateway{config: cfg}
-	ann := gatewayAnnotationsForEvidence(gw, &cfg.Callers[0])
+	ann := gatewayAnnotationsForEvidence(gw, NewQuickstartIdentity())
 	for _, a := range ann {
 		if a == "quickstart_unsafe_listen" {
 			t.Fatalf("annotation should not be set from env var, got %v", ann)
@@ -111,7 +117,7 @@ func TestGatewayAnnotations_UnsafeListenFromConfigNotEnv(t *testing.T) {
 		t.Fatalf("QuickstartConfig(UnsafeListen) error = %v", err)
 	}
 	gw2 := &Gateway{config: cfg2}
-	ann2 := gatewayAnnotationsForEvidence(gw2, &cfg2.Callers[0])
+	ann2 := gatewayAnnotationsForEvidence(gw2, NewQuickstartIdentity())
 	found := false
 	for _, a := range ann2 {
 		if a == "quickstart_unsafe_listen" {
@@ -131,10 +137,6 @@ func TestGatewayConfigValidate_UpstreamAuthMode(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "https://api.openai.com", UpstreamAuthMode: "client_bearer"},
 		},
-		Callers: []CallerConfig{
-			{Name: "quickstart-local", TenantID: "quickstart"},
-		},
-		ServerDefaults: ServerDefaults{RequireCallerID: boolPtr(false)},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",

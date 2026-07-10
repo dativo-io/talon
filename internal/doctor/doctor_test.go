@@ -66,11 +66,7 @@ func TestRun_GatewayCategory_WithConfig(t *testing.T) {
       enabled: true
       base_url: "https://api.openai.com"
       secret_name: "openai-api-key"
-  callers:
-    - name: "test"
-      tenant_key: "test-key"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
     forbidden_tools: ["rm_rf", "delete_*"]
 `
@@ -85,7 +81,7 @@ func TestRun_GatewayCategory_WithConfig(t *testing.T) {
 			gatewayChecks++
 		}
 	}
-	assert.GreaterOrEqual(t, gatewayChecks, 3, "should have gateway config, mode, and callers checks")
+	assert.GreaterOrEqual(t, gatewayChecks, 3, "should have gateway config, mode, and agent-identity checks")
 
 	found := false
 	for _, c := range report.Checks {
@@ -168,11 +164,7 @@ gateway:
       base_url: "https://api.openai.com"
       region: "US"
       secret_name: "openai-api-key"
-  callers:
-    - name: "test"
-      tenant_key: "test-key"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
     forbidden_tools: ["rm_rf"]
 `
@@ -225,11 +217,7 @@ gateway:
       base_url: "http://127.0.0.1:11434"
       region: "LOCAL"
       secret_name: "ollama-api-key"
-  callers:
-    - name: "test"
-      tenant_key: "test-key"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
     forbidden_tools: ["rm_rf"]
 `
@@ -281,11 +269,7 @@ gateway:
       base_url: "https://api.openai.com"
       region: "US"
       secret_name: "openai-api-key"
-  callers:
-    - name: "test"
-      tenant_key: "test-key"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
     forbidden_tools: ["rm_rf"]
 `

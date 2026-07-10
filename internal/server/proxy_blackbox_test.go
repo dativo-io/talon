@@ -51,9 +51,6 @@ func proxyTestServer(t *testing.T, upstreamBody string) (baseURL string, talonAP
 		Providers: map[string]gateway.ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: mockUpstream.URL},
 		},
-		Callers: []gateway.CallerConfig{
-			{Name: "proxy-caller", TenantKey: "gateway-secret-key", TenantID: "default"},
-		},
 		Timeouts: gateway.TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",
@@ -61,26 +58,70 @@ func proxyTestServer(t *testing.T, upstreamBody string) (baseURL string, talonAP
 		},
 	}
 
+	// Agent identity end to end (#266): the traffic key lives in the vault and
+	// resolves through the registry, exactly like production serve wiring.
+	require.NoError(t, secStore.Set(context.Background(), "proxy-agent-talon-key",
+		[]byte("gateway-secret-key"), secrets.ACL{}))
+	registry, err := gateway.BuildIdentityRegistry(context.Background(), []gateway.LoadedAgent{
+		{Path: "agent.talon.yaml", Name: "proxy-agent", TenantID: "default", KeySecretName: "proxy-agent-talon-key"},
+	}, secStore)
+	require.NoError(t, err)
+
 	cls := classifier.MustNewScanner()
 	gwEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := gateway.NewGateway(gwCfg, cls, evStore, secStore, gwEngine, nil)
+	gw, err := gateway.NewGateway(gwCfg, registry, cls, evStore, secStore, gwEngine, nil)
 	require.NoError(t, err)
 
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
 	require.NoError(t, err)
 
+	// Server tenant-API auth is a projection of the SAME registry — one agent
+	// key works for /v1/proxy and the tenant-scoped APIs alike (#266).
 	talonAPIKey = "talon-api-key"
 	gatewayAPIKey = "gateway-secret-key"
-	apiKeys := map[string]string{talonAPIKey: "default"}
+	apiKeys := registry.AuthKeyTenantProjection()
+	apiKeys[talonAPIKey] = "default"
 
 	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, "", apiKeys, WithGateway(gw))
 	s := httptest.NewServer(srv.Routes())
 	t.Cleanup(s.Close)
 
 	return s.URL, talonAPIKey, gatewayAPIKey
+}
+
+// TestProxyBlackBox_AgentKeyWorksAcrossSurfaces is the #266 cross-surface
+// guarantee: the SAME agent key authenticates the data plane (/v1/proxy) and
+// the tenant-scoped control-plane APIs, scoped to the derived tenant.
+func TestProxyBlackBox_AgentKeyWorksAcrossSurfaces(t *testing.T) {
+	upstreamBody := `{"id":"gen-2","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":2,"completion_tokens":2}}`
+	baseURL, _, agentKey := proxyTestServer(t, upstreamBody)
+
+	body := []byte(`{"model":"llama2","messages":[{"role":"user","content":"Hi"}]}`)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/v1/proxy/ollama/v1/chat/completions", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+agentKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "agent key must authenticate the data plane")
+
+	costsReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/v1/costs", nil)
+	costsReq.Header.Set("Authorization", "Bearer "+agentKey)
+	costsResp, err := http.DefaultClient.Do(costsReq)
+	require.NoError(t, err)
+	defer costsResp.Body.Close()
+	require.Equal(t, http.StatusOK, costsResp.StatusCode, "the SAME agent key must authenticate tenant-scoped APIs")
+	var costs struct {
+		TenantID string  `json:"tenant_id"`
+		Daily    float64 `json:"daily"`
+	}
+	require.NoError(t, json.NewDecoder(costsResp.Body).Decode(&costs))
+	assert.Equal(t, "default", costs.TenantID, "scoped to the tenant derived key → agent → tenant_id")
+	assert.Greater(t, costs.Daily, 0.0, "the proxied spend is visible through the agent's own key")
 }
 
 // TestProxyBlackBox_Success treats the server as a black box: POST to proxy, then verify via public API.

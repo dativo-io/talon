@@ -1,0 +1,28 @@
+# Governed-session demo — hero act identity. One agent = one AI use case =
+# one vault-bound traffic key (#266).
+agent:
+  name: session-demo
+  description: "Governed-session demo: session budget + tool-schema governance"
+  version: 1.0.0
+  tenant_id: governed-session
+  key:
+    secret_name: session-demo-talon-key
+
+capabilities:
+  # Runtime tool-schema governance: admin_* tools are stripped from the
+  # request body before the model can ever see them (filter action).
+  forbidden_tools: ["admin_*"]
+
+policies:
+  cost_limits:
+    # Mirrors the organization safety net; the act's real gate is the session cap.
+    daily: 1.00
+  session_limits:
+    # Session budget gate: the next request is denied pre-forward once session
+    # spend + the fixed pre-request estimate exceeds this (#198). The long demo
+    # accumulates real spend to this cap over several executor calls; the hero
+    # crosses it after its two forwarded acts.
+    max_cost: 0.03
+
+metadata:
+  team: governed-session-demo

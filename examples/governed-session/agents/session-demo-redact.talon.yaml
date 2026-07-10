@@ -1,0 +1,19 @@
+# Governed-session demo — redaction act: an email is scrubbed before the
+# provider call, but the request still forwards (redact, not block) (#266).
+agent:
+  name: session-demo-redact
+  description: "Governed-session demo: input PII redaction"
+  version: 1.0.0
+  tenant_id: governed-session
+  key:
+    secret_name: session-demo-redact-talon-key
+
+policies:
+  cost_limits:
+    daily: 1.00
+  data_classification:
+    input_scan: true
+    redact_input: true
+
+metadata:
+  team: governed-session-demo

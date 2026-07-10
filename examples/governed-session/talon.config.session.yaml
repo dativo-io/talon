@@ -3,6 +3,15 @@
 # One agent session, one evidence trail, one visible X-Talon-Session-ID.
 # Requires ANTHROPIC_API_KEY and OPENAI_API_KEY at stack start.
 #
+# Identity (#266): each demo act runs as its own AI use case — one
+# agent.talon.yaml per act under agents/, each bound to a vault key:
+#   talon secrets set session-demo-talon-key        <key>
+#   talon secrets set session-demo-eu-talon-key     <key>
+#   talon secrets set session-demo-redact-talon-key <key>
+# The gateway serves the agent whose file is the active agent policy; the
+# demo script switches acts by pointing TALON_DEFAULT_POLICY at the act's
+# agent file (multi-agent discovery arrives with agents_dir, #267).
+#
 # Costs are enforced and displayed in the pricing table's currency (USD for
 # the shipped table, #216). Budget caps below are denominated in that unit.
 
@@ -23,7 +32,7 @@ ollama_base_url: "http://ollama:11434"
 # Opt-in output ceiling for this demo's local model on modest CPU hosts: cap
 # the routing act's generation so it returns promptly instead of grinding out
 # the runner's default 2000 tokens. This is a DEMO setting — Talon honors the
-# caller's requested output length verbatim by default (no global clamp).
+# requested output length verbatim by default (no global clamp).
 ollama_max_num_predict: 256
 
 compliance:
@@ -52,49 +61,17 @@ gateway:
       region: "US"
       allowed_models: ["gpt-4o", "gpt-4o-mini"]
 
-  callers:
-    - name: "session-demo"
-      tenant_key: "talon-session-demo"
-      tenant_id: "governed-session"
-      team: "governed-session-demo"
-      policy_overrides:
-        # Session budget gate: the next request is denied pre-forward once
-        # session spend + the fixed pre-request estimate exceeds this (#198).
-        # The long demo accumulates real spend to this cap over several
-        # executor calls; the hero crosses it after its two forwarded acts.
-        max_session_cost: 0.03
-        # Runtime tool-schema governance: admin_* tools are stripped from the
-        # request body before the model can ever see them (filter action).
-        forbidden_tools: ["admin_*"]
-    # Model governance (long-demo act): this caller may only use gpt-4o-mini,
-    # so a gpt-4o request is denied POLICY_DENIED_ROUTING at the gateway.
-    - name: "session-demo-eu"
-      tenant_key: "talon-session-eu"
-      tenant_id: "governed-session"
-      team: "governed-session-demo"
-      policy_overrides:
-        allowed_models: ["gpt-4o-mini"]
-    # Output redaction (long-demo act): an email is scrubbed before the
-    # provider call, but the request still succeeds (redact, not block).
-    - name: "session-demo-redact"
-      tenant_key: "talon-session-redact"
-      tenant_id: "governed-session"
-      team: "governed-session-demo"
-      policy_overrides:
-        pii_action: "redact"
-
-  default_policy:
+  organization_policy:
     default_pii_action: "block"
     # Hard safety net so a misbehaving loop cannot spend real money:
     max_daily_cost: 1.00
-    require_caller_id: true
     # Real traffic: keep prompt/response bodies out of evidence storage.
     log_prompts: false
     log_responses: false
 
   rate_limits:
     global_requests_per_min: 120
-    per_caller_requests_per_min: 60
+    per_agent_requests_per_min: 60
 
   timeouts:
     connect_timeout: 10s

@@ -57,8 +57,8 @@ func TestApplyAirGapPreset_ForcesEUStrictAndEgress(t *testing.T) {
 	require.NotNil(t, guard)
 	require.NotNil(t, op.LLM)
 	require.Equal(t, "eu_strict", op.LLM.Routing.DataSovereigntyMode)
-	require.NotNil(t, gw.ServerDefaults.Egress)
-	assert.Equal(t, gateway.EgressActionDeny, gw.ServerDefaults.Egress.DefaultAction)
+	require.NotNil(t, gw.OrganizationPolicy.Egress)
+	assert.Equal(t, gateway.EgressActionDeny, gw.OrganizationPolicy.Egress.DefaultAction)
 }
 
 // TestAirGapPreset_OverridesConflictingLLMRouting is the regression for the
@@ -98,16 +98,16 @@ func TestApplyAirGapPreset_EmptyEgressStillAppliesPreset(t *testing.T) {
 		Providers: map[string]gateway.ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://127.0.0.1:11434", Region: "LOCAL"},
 		},
-		ServerDefaults: gateway.ServerDefaults{
+		OrganizationPolicy: gateway.OrganizationPolicy{
 			Egress: &gateway.EgressPolicyConfig{DefaultAction: "allow"},
 		},
 	}
 	guard, err := ApplyAirGapPreset(op, gw)
 	require.NoError(t, err)
 	require.NotNil(t, guard)
-	require.NotNil(t, gw.ServerDefaults.Egress)
-	assert.Equal(t, gateway.EgressActionDeny, gw.ServerDefaults.Egress.DefaultAction)
-	assert.NotEmpty(t, gw.ServerDefaults.Egress.Rules)
+	require.NotNil(t, gw.OrganizationPolicy.Egress)
+	assert.Equal(t, gateway.EgressActionDeny, gw.OrganizationPolicy.Egress.DefaultAction)
+	assert.NotEmpty(t, gw.OrganizationPolicy.Egress.Rules)
 }
 
 func TestValidateAirGap_RejectsDefaultCryptoKeys(t *testing.T) {

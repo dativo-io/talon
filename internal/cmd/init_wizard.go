@@ -83,17 +83,18 @@ type WizardState struct {
 	CacheEnabled     bool     // semantic cache for cost savings (off by default)
 }
 
-// GatewayBlock is the gateway section written to talon.config.yaml when PackID is openclaw.
-// Structure matches gateway.GatewayConfig so LoadGatewayConfig parses it correctly.
+// GatewayBlock is the gateway section written to talon.config.yaml for
+// gateway packs. Structure matches gateway.GatewayConfig so LoadGatewayConfig
+// parses it correctly. Identity is NOT configured here — the agent policy
+// carries agent.key.secret_name (#266).
 type GatewayBlock struct {
-	Enabled        bool                       `yaml:"enabled"`
-	ListenPrefix   string                     `yaml:"listen_prefix"`
-	Mode           string                     `yaml:"mode"`
-	Providers      map[string]GatewayProvider `yaml:"providers"`
-	Callers        []GatewayCaller            `yaml:"callers"`
-	ServerDefaults *GatewayServerDefaults     `yaml:"default_policy,omitempty"`
-	RateLimits     *GatewayRateLimits         `yaml:"rate_limits,omitempty"`
-	Timeouts       *GatewayTimeouts           `yaml:"timeouts,omitempty"`
+	Enabled            bool                       `yaml:"enabled"`
+	ListenPrefix       string                     `yaml:"listen_prefix"`
+	Mode               string                     `yaml:"mode"`
+	Providers          map[string]GatewayProvider `yaml:"providers"`
+	OrganizationPolicy *GatewayOrganizationPolicy `yaml:"organization_policy,omitempty"`
+	RateLimits         *GatewayRateLimits         `yaml:"rate_limits,omitempty"`
+	Timeouts           *GatewayTimeouts           `yaml:"timeouts,omitempty"`
 }
 
 type GatewayProvider struct {
@@ -103,36 +104,19 @@ type GatewayProvider struct {
 	AllowedModels []string `yaml:"allowed_models,omitempty"`
 }
 
-type GatewayCaller struct {
-	Name             string                  `yaml:"name"`
-	TenantKey        string                  `yaml:"tenant_key"` //nolint:gosec // G117 — caller identifier, not a credential
-	TenantID         string                  `yaml:"tenant_id"`
-	Team             string                  `yaml:"team,omitempty"`
-	Tags             []string                `yaml:"tags,omitempty"`
-	AllowedProviders []string                `yaml:"allowed_providers,omitempty"`
-	PolicyOverrides  *GatewayCallerOverrides `yaml:"policy_overrides,omitempty"`
-}
-
-type GatewayCallerOverrides struct {
-	MaxDailyCost   float64  `yaml:"max_daily_cost,omitempty"`
-	MaxMonthlyCost float64  `yaml:"max_monthly_cost,omitempty"`
-	PIIAction      string   `yaml:"pii_action,omitempty"`
-	AllowedModels  []string `yaml:"allowed_models,omitempty"`
-}
-
-type GatewayServerDefaults struct {
+// GatewayOrganizationPolicy is the organization baseline every agent inherits (#266).
+type GatewayOrganizationPolicy struct {
 	DefaultPIIAction  string  `yaml:"default_pii_action"`
 	ResponsePIIAction string  `yaml:"response_pii_action,omitempty"`
 	MaxDailyCost      float64 `yaml:"max_daily_cost"`
 	MaxMonthlyCost    float64 `yaml:"max_monthly_cost"`
-	RequireCallerID   bool    `yaml:"require_caller_id"`
 	LogPrompts        bool    `yaml:"log_prompts"`
 	LogResponses      bool    `yaml:"log_responses"`
 }
 
 type GatewayRateLimits struct {
-	GlobalRequestsPerMin    int `yaml:"global_requests_per_min"`
-	PerCallerRequestsPerMin int `yaml:"per_caller_requests_per_min"`
+	GlobalRequestsPerMin   int `yaml:"global_requests_per_min"`
+	PerAgentRequestsPerMin int `yaml:"per_agent_requests_per_min"`
 }
 
 type GatewayTimeouts struct {
@@ -617,6 +601,10 @@ func baseAgentPolicy(state WizardState) *policy.Policy {
 			Description: state.AgentDescription,
 			Version:     "1.0.0",
 			ModelTier:   1,
+			// One agent = one vault-bound traffic key (#266). The binding is a
+			// vault secret NAME; the operator sets the actual key material via
+			// `talon secrets set` (next-steps prints the exact command).
+			Key: &policy.AgentKeyBinding{SecretName: agentKeySecretName(state.AgentName)},
 		},
 		Capabilities: &policy.CapabilitiesConfig{
 			AllowedTools:      []string{"sql_query", "file_read"},
@@ -938,13 +926,14 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 	}
 
 	// When user selected a pack that uses the gateway, enable it so "talon serve --gateway" works.
+	// Identity lives in the agent policy (agent.key.secret_name, #266) — the
+	// gateway block carries only providers and the organization baseline.
 	if packRequiresGateway(state.PackID) {
 		secretName := VaultSecretName(state.ProviderID)
 		if secretName == "" {
 			secretName = "openai-api-key" // #nosec G101 -- vault key name, not a credential
 		}
 		baseURL := defaultGatewayBaseURL(state.ProviderID)
-		callerName, callerKey := gatewayCallerForPack(state.PackID)
 		cfg.Gateway = &GatewayBlock{
 			Enabled:      true,
 			ListenPrefix: "/v1/proxy",
@@ -957,32 +946,17 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 					AllowedModels: []string{"gpt-4o", "gpt-4o-mini", "gpt-4-turbo"},
 				},
 			},
-			Callers: []GatewayCaller{{
-				Name:             callerName,
-				TenantKey:        callerKey,
-				TenantID:         tenantID,
-				Team:             "engineering",
-				Tags:             gatewayCallerTagsForPack(state.PackID),
-				AllowedProviders: []string{state.ProviderID},
-				PolicyOverrides: &GatewayCallerOverrides{
-					MaxDailyCost:   25.00,
-					MaxMonthlyCost: 500.00,
-					PIIAction:      "redact",
-					AllowedModels:  []string{"gpt-4o", "gpt-4o-mini"},
-				},
-			}},
-			ServerDefaults: &GatewayServerDefaults{
+			OrganizationPolicy: &GatewayOrganizationPolicy{
 				DefaultPIIAction:  "warn",
 				ResponsePIIAction: "warn",
 				MaxDailyCost:      100.00,
 				MaxMonthlyCost:    2000.00,
-				RequireCallerID:   true,
 				LogPrompts:        true,
 				LogResponses:      false,
 			},
 			RateLimits: &GatewayRateLimits{
-				GlobalRequestsPerMin:    300,
-				PerCallerRequestsPerMin: 60,
+				GlobalRequestsPerMin:   300,
+				PerAgentRequestsPerMin: 60,
 			},
 			Timeouts: &GatewayTimeouts{
 				ConnectTimeout:    "10s",
@@ -1010,31 +984,14 @@ func packRequiresGateway(packID string) bool {
 	return false
 }
 
-// gatewayCallerForPack returns the gateway caller name and tenant key for the given pack.
-// Used so CoPaw gets copaw-main/talon-gw-copaw-001 and OpenClaw gets openclaw-main/talon-gw-openclaw-001.
-func gatewayCallerForPack(packID string) (name, tenantKey string) {
-	switch packID {
-	case "copaw":
-		return "copaw-main", "talon-gw-copaw-001"
-	case "openclaw":
-		return "openclaw-main", "talon-gw-openclaw-001"
-	case "coding-agents":
-		// Primary caller only (Claude Code); the codex caller ships in the
-		// pack's talon.config.yaml alongside it.
-		return "claude-code", "talon-gw-claude-code-001"
-	default:
-		return "gateway-main", "talon-gw-001"
+// agentKeySecretName derives the conventional vault secret name binding an
+// agent's traffic key (#266): "<agent-name>-talon-key". The operator sets the
+// key material via `talon secrets set <name> <key>`.
+func agentKeySecretName(agentName string) string {
+	if agentName == "" {
+		agentName = "agent"
 	}
-}
-
-// gatewayCallerTagsForPack returns tags for the gateway caller (e.g. ["copaw"]) for OTel/dashboard classification.
-func gatewayCallerTagsForPack(packID string) []string {
-	switch packID {
-	case "copaw":
-		return []string{"copaw"}
-	default:
-		return nil
-	}
+	return agentName + "-talon-key"
 }
 
 // defaultGatewayBaseURL returns the default upstream base URL for the gateway for a given provider.

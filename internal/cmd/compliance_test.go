@@ -262,11 +262,7 @@ gateway:
       base_url: "http://127.0.0.1:11434"
       region: "LOCAL"
       secret_name: "ollama-api-key"
-  callers:
-    - name: "local"
-      tenant_key: "k-local"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
 `
 	require.NoError(t, os.WriteFile(gwPath, []byte(gwYAML), 0o600))
@@ -326,11 +322,7 @@ gateway:
       base_url: "http://127.0.0.1:11434"
       region: "LOCAL"
       secret_name: "ollama-api-key"
-  callers:
-    - name: "local"
-      tenant_key: "k-local"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
 `
 	require.NoError(t, os.WriteFile(gwPath, []byte(gwYAML), 0o600))

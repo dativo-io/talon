@@ -137,14 +137,10 @@ func newFacadeForTest(t *testing.T, upstreamURL string) (http.Handler, *evidence
 			// client store:false (#213).
 			"openai": {Enabled: true, BaseURL: upstreamURL, UpstreamAuthMode: "client_bearer", ResponsesStoreMode: gateway.ResponsesStoreForceIfAbsent},
 		},
-		Callers: []gateway.CallerConfig{
-			{Name: "quickstart-local", TenantID: "quickstart", Tags: []string{"quickstart"}, AllowedProviders: []string{"openai"}},
-		},
-		ServerDefaults: gateway.ServerDefaults{
+		OrganizationPolicy: gateway.OrganizationPolicy{
 			DefaultPIIAction: "redact",
-			RequireCallerID:  boolPtr(false),
 		},
-		RateLimits: gateway.RateLimitsConfig{GlobalRequestsPerMin: 1000, PerCallerRequestsPerMin: 1000},
+		RateLimits: gateway.RateLimitsConfig{GlobalRequestsPerMin: 1000, PerAgentRequestsPerMin: 1000},
 		Timeouts: gateway.TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",
@@ -165,11 +161,11 @@ func newFacadeForTest(t *testing.T, upstreamURL string) (http.Handler, *evidence
 		t.Fatalf("secrets store: %v", err)
 	}
 	t.Cleanup(func() { _ = secStore.Close() })
-	gw, err := gateway.NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	// Quickstart runs with a nil registry: the synthetic identity is injected
+	// per request by the facade and is the ONLY non-key identity (#266).
+	gw, err := gateway.NewGateway(cfg, nil, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
-	return newQuickstartFacade(gw, "/v1/proxy", &cfg.Callers[0]), evStore
+	return newQuickstartFacade(gw, "/v1/proxy", gateway.NewQuickstartIdentity()), evStore
 }
-
-func boolPtr(b bool) *bool { return &b }

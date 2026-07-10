@@ -10,10 +10,15 @@
 # traffic only.
 
 agent:
-  name: coding-agents
-  description: Coding agents (Claude Code, Codex CLI) governed by Talon
+  # Primary agent of the pack: Claude Code traffic. Codex is its own agent
+  # (agents/codex.talon.yaml) — one agent.talon.yaml = one AI use case = one
+  # vault-bound traffic key (#266).
+  name: claude-code
+  description: Claude Code traffic governed by Talon
   version: "1.0.0"
   model_tier: 1
+  key:
+    secret_name: "claude-code-talon-key"
 
 capabilities:
   allowed_tools:
@@ -30,6 +35,12 @@ policies:
     per_request: 2.0
     daily: 50.0
     monthly: 500.0
+  session_limits:
+    # Soft cap per coding session (#198): a new request is denied once accrued
+    # session spend + the pre-request estimate exceeds this. In-flight
+    # requests can overshoot; atomic reservation is #144.
+    max_cost: 10.00
+  allowed_providers: ["anthropic"]
   rate_limits:
     requests_per_minute: 120
     concurrent_executions: 10
