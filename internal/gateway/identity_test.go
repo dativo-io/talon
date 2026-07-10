@@ -1,0 +1,214 @@
+package gateway
+
+import (
+	"context"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/dativo-io/talon/internal/secrets"
+)
+
+const testVaultKey = "0123456789abcdef0123456789abcdef" // 32 bytes
+
+func newTestVault(t *testing.T) *secrets.SecretStore {
+	t.Helper()
+	store, err := secrets.NewSecretStore(filepath.Join(t.TempDir(), "secrets.db"), testVaultKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+func setSecret(t *testing.T, vault *secrets.SecretStore, name, value string) {
+	t.Helper()
+	require.NoError(t, vault.Set(context.Background(), name, []byte(value), secrets.ACL{}))
+}
+
+func TestBuildIdentityRegistryResolvesAgents(t *testing.T) {
+	vault := newTestVault(t)
+	setSecret(t, vault, "support-key", "tk-support-1")
+	setSecret(t, vault, "coding-key", "tk-coding-1")
+
+	reg, err := BuildIdentityRegistry(context.Background(), []LoadedAgent{
+		{Path: "support/agent.talon.yaml", Name: "customer-support", TenantID: "acme", KeySecretName: "support-key", Team: "support-eng"},
+		{Path: "coding/agent.talon.yaml", Name: "coding", KeySecretName: "coding-key", Tags: []string{"copaw"}},
+	}, vault)
+	require.NoError(t, err)
+	assert.Equal(t, 2, reg.Len())
+
+	id, ok := reg.ResolveKey("tk-support-1")
+	require.True(t, ok)
+	assert.Equal(t, "customer-support", id.Name)
+	assert.Equal(t, "acme", id.TenantID)
+	assert.Equal(t, "support-eng", id.Team)
+	assert.Equal(t, "support/agent.talon.yaml", id.ConfigPath)
+
+	// tenant_id omitted → "default".
+	id2, ok := reg.ResolveKey("tk-coding-1")
+	require.True(t, ok)
+	assert.Equal(t, "default", id2.TenantID)
+	assert.True(t, id2.HasTag("copaw"))
+
+	// Unknown key → rejected.
+	_, ok = reg.ResolveKey("tk-unknown")
+	assert.False(t, ok)
+	_, ok = reg.ResolveKey("")
+	assert.False(t, ok)
+
+	assert.Equal(t, []string{"acme", "default"}, reg.TenantIDs())
+	assert.Equal(t, "", reg.MetricsTenantScope()) // multi-tenant → all
+	proj := reg.AuthKeyTenantProjection()
+	assert.Equal(t, "acme", proj["tk-support-1"])
+	assert.Equal(t, "default", proj["tk-coding-1"])
+}
+
+func TestBuildIdentityRegistryFailClosed(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("duplicate agent name", func(t *testing.T) {
+		vault := newTestVault(t)
+		setSecret(t, vault, "k1", "v1")
+		setSecret(t, vault, "k2", "v2")
+		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
+			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1"},
+			{Path: "b/agent.talon.yaml", Name: "support", KeySecretName: "k2"},
+		}, vault)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate agent name")
+		assert.Contains(t, err.Error(), "a/agent.talon.yaml")
+		assert.Contains(t, err.Error(), "b/agent.talon.yaml")
+	})
+
+	t.Run("missing key binding", func(t *testing.T) {
+		vault := newTestVault(t)
+		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
+			{Path: "a/agent.talon.yaml", Name: "support"},
+		}, vault)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "agent.key.secret_name is required")
+	})
+
+	t.Run("missing secret", func(t *testing.T) {
+		vault := newTestVault(t)
+		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
+			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "nope"},
+		}, vault)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, secrets.ErrSecretNotFound)
+		assert.Contains(t, err.Error(), `"nope"`)
+	})
+
+	t.Run("ACL-denied secret", func(t *testing.T) {
+		vault := newTestVault(t)
+		require.NoError(t, vault.Set(ctx, "locked", []byte("v"), secrets.ACL{Agents: []string{"someone-else"}}))
+		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
+			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "locked"},
+		}, vault)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, secrets.ErrSecretAccessDenied)
+	})
+
+	t.Run("empty secret value", func(t *testing.T) {
+		vault := newTestVault(t)
+		setSecret(t, vault, "empty", "   ")
+		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
+			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "empty"},
+		}, vault)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "empty value")
+	})
+
+	t.Run("two agents same secret", func(t *testing.T) {
+		vault := newTestVault(t)
+		setSecret(t, vault, "shared", "v")
+		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
+			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "shared"},
+			{Path: "b/agent.talon.yaml", Name: "coding", KeySecretName: "shared"},
+		}, vault)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `both bind vault secret "shared"`)
+	})
+
+	t.Run("two agents same key material", func(t *testing.T) {
+		vault := newTestVault(t)
+		setSecret(t, vault, "k1", "same-value")
+		setSecret(t, vault, "k2", "same-value")
+		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
+			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1"},
+			{Path: "b/agent.talon.yaml", Name: "coding", KeySecretName: "k2"},
+		}, vault)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "same key material")
+	})
+
+	t.Run("invalid override", func(t *testing.T) {
+		vault := newTestVault(t)
+		setSecret(t, vault, "k1", "v1")
+		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
+			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1",
+				Override: &PolicyOverride{ToolPolicyAction: "explode"}},
+		}, vault)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "tool_policy_action")
+	})
+}
+
+// TestRegistrySnapshotSafety: identities must not alias the loader's structs —
+// mutating the source LoadedAgent after build must not change the registry
+// (atomic reload snapshots, #269).
+func TestRegistrySnapshotSafety(t *testing.T) {
+	vault := newTestVault(t)
+	setSecret(t, vault, "k1", "v1")
+
+	tier := TierConfidential
+	agents := []LoadedAgent{{
+		Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1",
+		Tags:             []string{"copaw"},
+		AllowedProviders: []string{"openai"},
+		Override: &PolicyOverride{
+			MaxDailyCost:  25,
+			AllowedModels: []string{"gpt-4o"},
+			MaxDataTier:   &tier,
+			Egress: &EgressPolicyConfig{Rules: []EgressRule{
+				{Tier: &tier, AllowedRegions: []string{"EU"}},
+			}},
+		},
+	}}
+
+	reg, err := BuildIdentityRegistry(context.Background(), agents, vault)
+	require.NoError(t, err)
+
+	// Mutate every mutable source field.
+	agents[0].Tags[0] = "mutated"
+	agents[0].AllowedProviders[0] = "mutated"
+	agents[0].Override.MaxDailyCost = 9999
+	agents[0].Override.AllowedModels[0] = "mutated"
+	*agents[0].Override.MaxDataTier = TierPublic
+	agents[0].Override.Egress.Rules[0].AllowedRegions[0] = "MUTATED"
+
+	id, ok := reg.ResolveKey("v1")
+	require.True(t, ok)
+	assert.Equal(t, "copaw", id.Tags[0])
+	assert.Equal(t, "openai", id.AllowedProviders[0])
+	assert.Equal(t, float64(25), id.Override.MaxDailyCost)
+	assert.Equal(t, "gpt-4o", id.Override.AllowedModels[0])
+	assert.Equal(t, TierConfidential, *id.Override.MaxDataTier)
+	assert.Equal(t, "EU", id.Override.Egress.Rules[0].AllowedRegions[0])
+}
+
+func TestQuickstartIdentityIsolated(t *testing.T) {
+	id := NewQuickstartIdentity()
+	assert.Equal(t, "quickstart", id.TenantID)
+	assert.True(t, id.HasTag("quickstart"))
+	assert.True(t, id.AcceptsClientMetadata())
+
+	// The synthetic identity is not reachable through key resolution.
+	vault := newTestVault(t)
+	reg, err := BuildIdentityRegistry(context.Background(), nil, vault)
+	require.NoError(t, err)
+	assert.Equal(t, 0, reg.Len())
+	_, ok := reg.ResolveKey("quickstart")
+	assert.False(t, ok)
+}
