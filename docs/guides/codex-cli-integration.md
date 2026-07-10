@@ -2,7 +2,7 @@
 
 This guide shows how to route Codex CLI's OpenAI traffic through Talon so every request is audited, attributed per session and subagent, and policy-checked. Allow about 15 minutes.
 
-One boundary up front, because it decides whether this guide applies to you: **Talon can only govern Codex when Codex authenticates with an API key, not a ChatGPT subscription login.** Codex sends subscription OAuth tokens when `requires_openai_auth = true` is set on a provider — Talon rejects those as unknown tenant keys. Governed operation is always *tenant key in, vault-stored API key out*. See [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
+One boundary up front, because it decides whether this guide applies to you: **Talon can only govern Codex when Codex authenticates with an API key, not a ChatGPT subscription login.** Codex sends subscription OAuth tokens when `requires_openai_auth = true` is set on a provider — Talon rejects those as unknown agent keys. Governed operation is always *Talon agent key in, vault-stored provider key out*. See [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
 
 Two wire facts shape everything below (verified 2026-07 against the `openai/codex` source; see the pin notes in `internal/gateway/testdata/conformance/responses/README.md`): Codex speaks the **OpenAI Responses API only** (`wire_api = "responses"`; the `"chat"` value was removed in Feb 2026), and Codex **always streams** — token usage arrives only inside the terminal `response.completed` SSE event, which Talon parses into signed cost evidence (`extractUsageFromJSONPayload` in `internal/gateway/forward.go`, pinned by `TestExtractUsage_ResponsesCompleted` in `internal/gateway/cache_pricing_test.go`, including `input_tokens_details.cached_tokens`).
 
@@ -21,36 +21,47 @@ mkdir talon-coding && cd talon-coding
 talon init --pack coding-agents
 ```
 
-This creates two files (source of truth: `internal/pack/templates/coding-agents/`):
+This creates three files (source of truth: `internal/pack/templates/coding-agents/`):
 
-- `talon.config.yaml` — gateway config with the OpenAI provider, a pre-configured `codex` caller (tenant key `talon-gw-codex-001`), and a `claude-code` caller for Claude Code. The gateway starts in **shadow mode** and the caller ships with coding-tuned defaults: `pii_action: warn`, `response_pii_action: allow`, `max_session_cost: 10.00`, `max_daily_cost: 50.00`, `max_monthly_cost: 500.00`, and a raised `request_timeout: 600s` (the response-header wait follows it by default).
-- `agent.talon.yaml` — agent policy with high-precision credential recognizers (PEM private-key blocks, AWS `AKIA...` key IDs, GitHub `ghp_`/`github_pat_` tokens, Anthropic/OpenAI `sk-ant-...`/`sk-proj-...` keys) so leaked credentials in prompt traffic land in evidence.
+- `agents/codex.talon.yaml` — the **`codex` agent**: Codex CLI's Talon traffic identity (`agent.key.secret_name: codex-talon-key`) plus its policy override with coding-tuned defaults — `session_limits.max_cost: 10.00`, `cost_limits.daily: 50.00` / `monthly: 500.00`, `input_scan: true` (input PII action `warn`), `allowed_providers: ["openai"]`, `metadata.team: coding` — and high-precision credential recognizers (PEM private-key blocks, AWS `AKIA...` key IDs, GitHub `ghp_`/`github_pat_` tokens, Anthropic/OpenAI `sk-ant-...`/`sk-proj-...` keys) so leaked credentials in prompt traffic land in evidence.
+- `agent.talon.yaml` — the `claude-code` agent for Claude Code (the pack's primary agent; see the [Claude Code guide](claude-code-integration.md)).
+- `talon.config.yaml` — gateway config with the OpenAI provider, the **organization baseline** (`organization_policy`: `default_pii_action: warn`, `response_pii_action: allow`), **shadow mode**, and a raised `request_timeout: 600s` (the response-header wait follows it by default).
+
+**One active agent per gateway process until #267:** #266 loads the single default agent policy file. To govern Codex traffic, activate the codex agent file for this gateway process (`export TALON_DEFAULT_POLICY=agents/codex.talon.yaml` before `talon serve`, or run it as a second gateway process alongside the Claude Code one); `agents_dir` discovery serves both from one process when #267 lands.
 
 These defaults are deliberate — see [Why the pack defaults look like this](#why-the-pack-defaults-look-like-this) below before changing them.
 
-### 2. Set the vault key and store the real OpenAI key
+### 2. Set the vault key, store the real OpenAI key, mint the agent key
 
-Talon encrypts secrets with `TALON_SECRETS_KEY`. Use the **same** value when storing the secret and when starting the server, or the gateway returns "Service configuration error" / "cipher: message authentication failed".
+Talon encrypts secrets with `TALON_SECRETS_KEY`. Use the **same** value when storing the secrets and when starting the server, or the gateway returns "Service configuration error" / "cipher: message authentication failed".
 
 ```bash
-# 1. Set the vault encryption key once; keep it for steps 2 and 3 (save it somewhere safe)
+# 1. Set the vault encryption key once; keep it for the next steps (save it somewhere safe)
 export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 
 # 2. Store your real OpenAI key (secret name must match the config's secret_name)
 talon secrets set openai-api-key "sk-your-openai-key"
 
-# 3. Start Talon with the gateway — same shell so TALON_SECRETS_KEY is still set
+# 3. Mint the codex agent's traffic key (bound via agent.key.secret_name);
+#    keep $CODEX_KEY — Codex will present it to the gateway
+CODEX_KEY="$(openssl rand -hex 24)"
+talon secrets set codex-talon-key "$CODEX_KEY"
+
+# 4. Start Talon with the gateway — same shell so TALON_SECRETS_KEY is still set,
+#    with the codex agent file active (see step 1)
+export TALON_DEFAULT_POLICY=agents/codex.talon.yaml
 talon serve --gateway
 ```
 
-Callers present a tenant key; Talon injects the vault-stored provider key upstream. Your real `sk-...` key never reaches developer machines.
+Codex presents its agent key; Talon resolves it to the `codex` agent (and its derived tenant) and injects the vault-stored provider key upstream. Your real `sk-...` key never reaches developer machines.
 
-**Two different keys (do not confuse):**
+**Three different keys (do not confuse):**
 
 | Key | Purpose | Where it lives |
 |-----|---------|----------------|
-| **TALON_SECRETS_KEY** | Encrypts/decrypts the vault. Must be the **same** for `talon secrets set` and `talon serve`. | Environment. Set before steps 2 and 3 above. |
-| **Caller tenant_key** (`talon-gw-codex-001`) | Token Codex sends to Talon as its "OpenAI API key". Not used for encryption. | `talon.config.yaml` → `gateway.callers[].tenant_key`, and in Codex's environment via the provider's `env_key` (step 4). |
+| **TALON_SECRETS_KEY** | Encrypts/decrypts the vault. Must be the **same** for `talon secrets set` and `talon serve`. | Environment. Set before the steps above. |
+| **Agent key** (`$CODEX_KEY`) | Workload identity Codex sends to Talon as its "OpenAI API key"; resolves to the `codex` agent and its derived tenant. Not used for encryption. | Vault secret `codex-talon-key` (referenced by `agent.key.secret_name`), and in Codex's environment via the provider's `env_key` (step 4). Rotate with `talon secrets set codex-talon-key <new>` + restart — one active key, never two. |
+| **Provider key** (`sk-...`) | Talon's upstream credential. | Vault secret `openai-api-key` only. |
 
 ### 3. Confirm the gateway is running
 
@@ -59,11 +70,11 @@ Leave `talon serve --gateway` running. Optional: test the Responses route with c
 ```bash
 curl -s -X POST http://localhost:8080/v1/proxy/openai/v1/responses \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer talon-gw-codex-001" \
+  -H "Authorization: Bearer $CODEX_KEY" \
   -d '{"model":"gpt-5.3-codex","input":"Say hi"}'
 ```
 
-You should get a JSON response, not "Invalid or missing API key" (wrong tenant key) or "Service configuration error" (vault key mismatch).
+You should get a JSON response, not "Invalid or missing agent key" (unknown key) or "Service configuration error" (vault key mismatch).
 
 The Responses wire path — streaming SSE with tool calls, `client_metadata`/`prompt_cache_key` passthrough, full-transcript resend, `store` semantics — is covered by conformance fixtures in `internal/gateway/conformance_responses_test.go` and `internal/gateway/testdata/conformance/responses/`. The fixtures assert SSE streams reach the client **byte-identical including the terminal `response.completed` event** — Codex treats a stream that never ends with `response.completed` as an error and retries.
 
@@ -83,10 +94,10 @@ model_provider = "talon"
 model = "gpt-5.3-codex"
 ```
 
-Then run Codex with the tenant key in the environment variable named by `env_key`:
+Then run Codex with the agent key in the environment variable named by `env_key`:
 
 ```bash
-export TALON_CODEX_KEY=talon-gw-codex-001
+export TALON_CODEX_KEY=$CODEX_KEY   # the value minted into codex-talon-key
 codex --profile talon
 ```
 
@@ -95,13 +106,13 @@ codex --profile talon
 **Important:**
 
 - **The trailing `/v1` in `base_url` is required.** Codex builds `POST {base_url}/responses`, and Talon's Responses handling matches the `/v1/responses` path (`isResponsesAPIPath` in `internal/gateway/responses_api.go`). Without it the joined path misses both Talon's Responses handling and OpenAI's endpoint — you get 404 on every request. Note: the pack wizard's printed next-steps currently omit the `/v1` (#235); use the value shown here.
-- **Never set `requires_openai_auth = true` on the Talon provider.** That makes Codex send its ChatGPT-subscription OAuth token, which Talon rejects as an unknown tenant key. Subscription billing cannot be governed; this is a hard boundary, not a configuration gap ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
-- The value in `TALON_CODEX_KEY` is the Talon **tenant key**, not your real OpenAI key. Talon identifies the caller by this key and injects the vault-stored key upstream — Codex never sees your `sk-...` key.
+- **Never set `requires_openai_auth = true` on the Talon provider.** That makes Codex send its ChatGPT-subscription OAuth token, which Talon rejects as an unknown agent key. Subscription billing cannot be governed; this is a hard boundary, not a configuration gap ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
+- The value in `TALON_CODEX_KEY` is the Talon **agent key**, not your real OpenAI key. Talon resolves the `codex` agent by this key and injects the vault-stored key upstream — Codex never sees your `sk-...` key.
 - The Codex IDE extension reads the same `~/.codex/config.toml`, including `model_providers`, so this configuration governs it too (verified 2026-07 against the `openai/codex` source; re-verify on Codex majors per the recapture notes in `internal/gateway/testdata/conformance/responses/README.md`).
 
 Codex's native identity headers (`session-id` for the session, `x-openai-subagent` for the subagent) are recognized automatically by the built-in `codex` vendor adapter (`vendorAdapters` in `internal/gateway/orchmeta.go`, pinned by the "codex vendor adapter" case in `TestResolveOrchestration_Precedence`) and recorded in signed evidence as orchestration metadata. Codex's `client_metadata` body object and `prompt_cache_key` are forwarded untouched — the `client_metadata_passthrough` conformance fixture asserts no transform drops them.
 
-Two honest caveats: header values are **attribution, not authentication** — they are recorded with `provenance: "client_asserted"` and are never a policy input (budgets bind to the caller and the caller-scoped session, never to `agent_id`; backed by `TestPolicyInputParity_WithAssertedSession`). And header values are validated at ingestion: longer than 128 bytes or outside the HTTP token charset means the request is rejected, not truncated (`internal/gateway/orchmeta.go`).
+Two honest caveats: header values are **attribution, not authentication** — they are recorded with `provenance: "client_asserted"` and are never a policy input (budgets bind to the Talon agent and the agent-scoped session, never to subagent labels; backed by `TestPolicyInputParity_WithAssertedSession`). And header values are validated at ingestion: longer than 128 bytes or outside the HTTP token charset means the request is rejected, not truncated (`internal/gateway/orchmeta.go`).
 
 **Optional — cross-tool session continuity:** to group Codex work into an orchestrator-chosen session (e.g. spanning Claude Code and Codex), inject the generic header from an environment variable:
 
@@ -119,7 +130,7 @@ Run any prompt in Codex, then check the audit trail:
 
 ```bash
 talon audit list
-# Traffic for this caller only:
+# Traffic for this agent only:
 talon audit list --agent codex
 ```
 
@@ -143,10 +154,10 @@ Because Codex always streams, cost figures depend on Talon parsing the usage blo
 **Troubleshooting**
 
 - **404 on every request** — The `base_url` is missing the trailing `/v1`. Codex appends `/responses`, so `.../v1/proxy/openai` becomes `.../v1/proxy/openai/responses`, which matches neither Talon's `/v1/responses` handling nor OpenAI's endpoint. Set `base_url = "http://localhost:8080/v1/proxy/openai/v1"` (#235).
-- **Authentication errors on every request** — Either `TALON_CODEX_KEY` is unset in the shell running Codex (the `env_key` mechanism sends nothing), or the provider has `requires_openai_auth = true` and Codex is sending subscription OAuth, which Talon rejects. Remove `requires_openai_auth`, export the tenant key, restart Codex. [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
+- **Authentication errors on every request** — Either `TALON_CODEX_KEY` is unset in the shell running Codex (the `env_key` mechanism sends nothing), or the provider has `requires_openai_auth = true` and Codex is sending subscription OAuth, which Talon rejects. Remove `requires_openai_auth`, export the agent key, restart Codex. [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
 - **`gateway_secret_get_failed` / "cipher: message authentication failed" / "Service configuration error"** — Vault decryption failed. Use the **same** `TALON_SECRETS_KEY` for `talon secrets set` and `talon serve`. If you lost it, set a new one and re-run `talon secrets set openai-api-key "sk-..."`.
 - **Long generations are cut off mid-response** — Your `request_timeout` is too low. The pack sets `600s`; the server-wide default of `120s` hard-cuts long coding generations. The response-header wait defaults to `request_timeout` (tunable via `response_header_timeout`), so slow non-streaming prompts get the same budget. Also note Codex itself aborts a stream that has been idle for ~300 seconds and retries; Talon cannot extend that client-side limit.
-- **Streaming shows nothing for a long time, then everything at once** — A `response_pii_action` other than `allow` buffers the entire SSE stream before release; time-to-first-token becomes total generation time. Set the caller back to `response_pii_action: allow` ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
+- **Streaming shows nothing for a long time, then everything at once** — A `response_pii_action` other than `allow` buffers the entire SSE stream before release; time-to-first-token becomes total generation time. Set the organization baseline back to `response_pii_action: allow` ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)).
 - **A Responses client (not Codex) fails with "Item with id 'rs_...' not found. Items are not persisted when store is set to false"** — That client relies on `previous_response_id` continuity while sending `store: false` or no `store` field. Codex does not — it resends the full transcript each turn (`full_transcript_resend` conformance fixture). For clients that do, set `responses_store_mode: force_if_absent` on the provider (step 6).
 - **`talon audit list --session` finds nothing** — The session ID must match what Codex sent in its `session-id` header. Check a recent record with `talon audit list --agent codex` and read the session ID from its orchestration metadata.
 
@@ -173,18 +184,19 @@ All three modes are pinned end-to-end by `TestConformanceResponses_StoreModes` i
 
 ### 7. Session budgets
 
-The pack sets a per-session spending cap on the `codex` caller:
+The pack sets a per-session spending cap in the `codex` agent file:
 
 ```yaml
-policy_overrides:
-  max_session_cost: 10.00
+policies:
+  session_limits:
+    max_cost: 10.00
 ```
 
 This is a **soft cap**: a new request is denied once accrued session spend plus the pre-request estimate exceeds the limit — HTTP 403 with a provider-native error body (deny reason `session_budget_exceeded`), and the evidence record carries a structured `session_budget` detail (`limit`, `spent`, `estimate`).
 
 Honest semantics, stated plainly ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)): one in-flight request whose real cost exceeds its estimate can overshoot the cap, and N concurrent first requests are bounded only by N × per-request cost. Atomic reservation is tracked as #144. The behavior is pinned by `TestSessionBudget_SoftCapOvershoot`, `TestSessionBudget_ConcurrentBurstBound`, and the rest of `TestSessionBudget_*` in `internal/gateway/session_budget_test.go`.
 
-Session budgets stack with the per-caller `max_daily_cost` and `max_monthly_cost` caps; session spend accumulates across provider routes for one caller (`TestSessionBudget_CrossProviderDeny`), and sessions from one caller never affect another caller's budget (`TestSessionBudget_CallerAndTenantIsolation`).
+Session budgets stack with the agent's daily/monthly caps (`policies.cost_limits`); session spend accumulates across provider routes for one agent (`TestSessionBudget_CrossProviderDeny`), and sessions from one agent never affect another agent's budget (`TestSessionBudget_AgentAndTenantIsolation`).
 
 ### 8. Roll out enforcement
 
@@ -206,11 +218,11 @@ talon enforce enable
 
 | Default | Reason |
 |---|---|
-| `response_pii_action: allow` | Any other value (`warn`/`redact`/`block`) buffers the **entire** SSE stream before releasing it — time-to-first-token becomes total generation time, and Codex always streams. Input-side scanning (`pii_action: warn`) still applies. [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary). |
-| `pii_action: warn`, not `redact` | Redaction mangles code. `warn` records findings in evidence and lets the request flow. |
+| `response_pii_action: allow` (organization baseline) | Any other value (`warn`/`redact`/`block`) buffers the **entire** SSE stream before releasing it — time-to-first-token becomes total generation time, and Codex always streams. Input-side scanning (warn) still applies, and a per-agent downgrade to `allow` is deliberately not expressible. [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary). |
+| Input PII action `warn` (`input_scan: true`, no redact), not `redact` | Redaction mangles code. `warn` records findings in evidence and lets the request flow. |
 | `request_timeout: 600s` | The 120s default hard-cuts long coding generations. The response-header wait defaults to `request_timeout`, so slow non-streaming prompts are covered too. Codex additionally aborts idle streams at ~300s on its side. |
 | `responses_store_mode: preserve` | Codex's `store: false` is an explicit retention decision; the gateway must not silently reverse it (`TestConformanceResponses_StoreModes`). |
-| `max_session_cost` as a soft cap | Denies the *next* request over the limit rather than killing in-flight streams; see step 7 for the overshoot bounds. |
+| `session_limits.max_cost` as a soft cap | Denies the *next* request over the limit rather than killing in-flight streams; see step 7 for the overshoot bounds. |
 | Credential recognizers, not a secret scanner | The `agent.talon.yaml` recognizers cover high-precision formats only (PEM, `AKIA...`, `ghp_...`, `sk-ant-...`/`sk-proj-...`) in prompt/response traffic. Talon is not a repository secret scanner — keep gitleaks/trufflehog in pre-commit. |
 
 ## What Talon does not see
@@ -261,7 +273,7 @@ Codex CLI now sends all OpenAI traffic through Talon. Talon logs every request i
 |------------|-----|
 | Govern Claude Code through the same gateway | [How to govern Claude Code with Talon](claude-code-integration.md) |
 | Run an orchestrated fleet across both providers | [Governing coding agents](governing-coding-agents.md) |
-| Cap spend per team or application | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Cap spend per team or application | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
 | Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
 | Understand the hard boundaries | [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) |
 

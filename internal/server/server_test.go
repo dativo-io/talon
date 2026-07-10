@@ -396,7 +396,7 @@ func TestStatusEndpoint_IncludesMetricsDroppedEvents(t *testing.T) {
 	collector := metrics.NewCollector("enforce", store)
 	collector.Close() // stop consumer to force backpressure drops
 	for i := 0; i < 1200; i++ {
-		collector.Record(metrics.GatewayEvent{Timestamp: time.Now().UTC(), CallerID: "app"})
+		collector.Record(metrics.GatewayEvent{Timestamp: time.Now().UTC(), AgentName: "app"})
 	}
 
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"}, WithMetricsCollector(collector))

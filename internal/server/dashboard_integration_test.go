@@ -127,10 +127,10 @@ func TestDashboardIntegration_EvidenceToAPI(t *testing.T) {
 	assert.InDelta(t, 1.0/3.0, snap.Summary.ErrorRate, 0.01)
 
 	// Caller stats
-	require.GreaterOrEqual(t, len(snap.CallerStats), 2)
-	callerMap := map[string]metrics.CallerStat{}
-	for _, cs := range snap.CallerStats {
-		callerMap[cs.Caller] = cs
+	require.GreaterOrEqual(t, len(snap.AgentStats), 2)
+	callerMap := map[string]metrics.AgentStat{}
+	for _, cs := range snap.AgentStats {
+		callerMap[cs.Agent] = cs
 	}
 	assert.Equal(t, 2, callerMap["app-sales"].Requests)
 	assert.InDelta(t, 0.17, callerMap["app-sales"].CostEUR, 0.001)

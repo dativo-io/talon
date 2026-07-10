@@ -478,8 +478,8 @@ func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
 		return
 	}
 	fmt.Fprintf(w, "  Tenant:    %s\n", sum.TenantID)
-	if len(sum.Callers) > 0 {
-		fmt.Fprintf(w, "  Caller:    %s\n", strings.Join(sum.Callers, ", "))
+	if len(sum.AgentIDs) > 0 {
+		fmt.Fprintf(w, "  Agent:     %s\n", strings.Join(sum.AgentIDs, ", "))
 	}
 	if sum.Client != "" || sum.SessionSource != "" {
 		fmt.Fprintf(w, "  Source:    %s (%s)\n", sum.Client, sum.SessionSource)
@@ -499,8 +499,8 @@ func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
 	fmt.Fprintf(w, "  Cost:      %s\n", formatMoney(sum.Currency, sum.TotalCost))
 	if sessionHasAgentBreakdown(sum) {
 		fmt.Fprintln(w, "\n  Per-agent:")
-		for i := range sum.Agents {
-			a := &sum.Agents[i]
+		for i := range sum.Subagents {
+			a := &sum.Subagents[i]
 			id := a.AgentID
 			if id == "" {
 				id = "(unattributed)"
@@ -518,11 +518,11 @@ func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
 // sessionHasAgentBreakdown reports whether the per-agent table adds information
 // beyond the session totals (more than one agent, or a single named subagent).
 func sessionHasAgentBreakdown(sum evidence.SessionSummary) bool {
-	if len(sum.Agents) > 1 {
+	if len(sum.Subagents) > 1 {
 		return true
 	}
-	return len(sum.Agents) == 1 && sum.Agents[0].AgentID != "" &&
-		(len(sum.Callers) != 1 || sum.Agents[0].AgentID != sum.Callers[0])
+	return len(sum.Subagents) == 1 && sum.Subagents[0].AgentID != "" &&
+		(len(sum.AgentIDs) != 1 || sum.Subagents[0].AgentID != sum.AgentIDs[0])
 }
 
 // renderSessionRecords prints a compact per-record line list for a session

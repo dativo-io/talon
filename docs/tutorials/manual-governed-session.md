@@ -437,7 +437,7 @@ The recorded GIF is only a compressed view of these same operations. This page i
 
 The longer recorded demo also shows Anthropic prompt-cache write/read economics and an OpenAI executor consuming the planner's returned output.
 
-Those details are real, but the payload is intentionally large and distracts from the core governance proof above. For the exact cache fields and pricing behavior, see [the governed-session example](../../examples/governed-session/README.md) and [cost governance by caller](../guides/cost-governance-by-caller.md).
+Those details are real, but the payload is intentionally large and distracts from the core governance proof above. For the exact cache fields and pricing behavior, see [the governed-session example](../../examples/governed-session/README.md) and [cost governance by caller](../guides/cost-governance-by-agent.md).
 
 ## Clean up
 

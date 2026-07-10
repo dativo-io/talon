@@ -97,7 +97,7 @@ You now have your Slack bot sending LLM calls through Talon. Talon is logging ev
 
 | I want to… | Doc |
 |------------|-----|
-| Cap cost or restrict models for this bot | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Cap cost or restrict models for this bot | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
 | Add Talon to another app (e.g. script or API) | [Add Talon to your existing app](add-talon-to-existing-app.md) |
 | Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
 | Understand the request lifecycle | [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) |

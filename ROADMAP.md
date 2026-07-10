@@ -74,7 +74,7 @@ These protect a small team from platform creep. If your primary need is below, a
 ## When to choose Talon
 
 - You have a **growing number of AI use cases** (bots, agents, copilots) and need per-use-case budget caps, one set of policy defaults, and per-session visibility across them — Talon is built for exactly this.
-- You have **one app with a growing bill** — start with [caller-level cost caps](docs/guides/cost-governance-by-caller.md) and grow from there.
+- You have **one app with a growing bill** — start with [caller-level cost caps](docs/guides/cost-governance-by-agent.md) and grow from there.
 - You need **provable records** of how AI traffic was handled (customer security reviews, DPAs, audits) — the evidence layer generates them from operations you run anyway.
 - You only need log shipping or cost dashboards, not enforcement before the provider — a plain observability stack may suffice.
 

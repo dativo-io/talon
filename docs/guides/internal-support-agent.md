@@ -83,4 +83,4 @@ You now have a first-line support agent (native or via gateway) with PII and cos
 | Route another bot through the gateway | [Add Talon to your existing app](add-talon-to-existing-app.md), [Slack bot](slack-bot-integration.md) |
 | Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
 | Add plan review for high-risk suggestions | [Agent planning](../AGENT_PLANNING.md), [Policy cookbook](policy-cookbook.md) |
-| Cap cost for this agent or caller | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Cap cost for this agent or caller | [How to cap daily spend per team or application](cost-governance-by-agent.md) |

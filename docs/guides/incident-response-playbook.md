@@ -231,6 +231,6 @@ You now have a playbook for containing and investigating runaway agents, PII lea
 |------------|-----|
 | Export evidence after an incident | [How to export evidence for auditors](compliance-export-runbook.md) |
 | Tighten policy to prevent recurrence | [Policy cookbook](policy-cookbook.md) |
-| Cap cost per team or app | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Cap cost per team or app | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
 | Use runtime overrides and kill switches | [Operational control plane](../reference/operational-control-plane.md) |
 | Understand the evidence record | [Evidence store](../explanation/evidence-store.md) |

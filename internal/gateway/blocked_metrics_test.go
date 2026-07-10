@@ -38,7 +38,7 @@ func (s *metricsRecorderSpy) RecordGatewayEvent(event interface{}) {
 	ev, ok := metrics.MapToGatewayEvent(event)
 	if ok {
 		s.events = append(s.events, map[string]interface{}{
-			"caller_id":      ev.CallerID,
+			"caller_id":      ev.AgentName,
 			"model":          ev.Model,
 			"blocked":        ev.Blocked,
 			"cost_eur":       ev.CostEUR,
@@ -470,7 +470,7 @@ func TestGatewayMetrics_RuntimeEventMatchesEvidenceProjection(t *testing.T) {
 	require.NotNil(t, observed)
 	assert.Equal(t, projected.Blocked, observed["blocked"])
 	assert.Equal(t, projected.HasError, observed["has_error"])
-	assert.Equal(t, projected.CallerID, observed["caller_id"])
+	assert.Equal(t, projected.AgentName, observed["caller_id"])
 	assert.Equal(t, projected.Model, observed["model"])
 	assert.Equal(t, projected.CostEUR, observed["cost_eur"])
 }

@@ -43,7 +43,7 @@ Smoke-check the builder path: `make verify-newcomer` (from repo root).
 Choose the shortest path for your situation:
 
 1. **"I need to operate my AI use cases: budgets, reliability, one policy, session visibility."**
-   - Cost: [Cap AI spend per caller](guides/cost-governance-by-caller.md)
+   - Cost: [Cap AI spend per caller](guides/cost-governance-by-agent.md)
    - Reliability: [Provider fallback chains](reference/configuration.md#provider-fallback-chains-error-driven-failover)
    - Policy: [Policy cookbook](guides/policy-cookbook.md) · [Policy packs](guides/policy-packs.md)
    - Sessions: [Governing coding agents](guides/governing-coding-agents.md) · [Manual governed session](tutorials/manual-governed-session.md)
@@ -78,7 +78,7 @@ Choose the shortest path for your situation:
 
 | Doc | Pillar | Description |
 |-----|--------|-------------|
-| [Cap AI spend for a Slack/support bot in 10 minutes](guides/cost-governance-by-caller.md) | Cost | Fast path to caller-level daily/monthly hard caps, budget-deny proof, and evidence-backed cost attribution. |
+| [Cap AI spend for a Slack/support bot in 10 minutes](guides/cost-governance-by-agent.md) | Cost | Fast path to caller-level daily/monthly hard caps, budget-deny proof, and evidence-backed cost attribution. |
 | [How to run a first-line support agent with Talon](guides/internal-support-agent.md) | Cost | Ticket summarization with PII and cost controls. |
 | [Incident response playbook](guides/incident-response-playbook.md) | Reliability | Common operational scenarios when running AI agents. |
 | [How to govern coding agents](guides/governing-coding-agents.md) | Sessions | Govern a fleet of coding agents; orchestration metadata contract, session attribution, cost rollups. |

@@ -73,7 +73,7 @@ func GatewayEventFromOperationalEvent(ev events.OperationalEvent) GatewayEvent {
 	return GatewayEvent{
 		EvidenceID:    ev.EvidenceID,
 		Timestamp:     ev.Timestamp,
-		CallerID:      firstNonEmpty(ev.Caller, ev.AgentID),
+		AgentName:      firstNonEmpty(ev.Agent, ev.AgentID),
 		Model:         ev.Model,
 		Blocked:       ev.Decision == "blocked",
 		CostEUR:       ev.CostEUR,
@@ -90,7 +90,7 @@ func GatewayEventFromOperationalEvent(ev events.OperationalEvent) GatewayEvent {
 
 func gatewayEventFromEvidence(e *evidence.Evidence) GatewayEvent {
 	ev := GatewayEventFromOperationalEvent(events.FromEvidence(e))
-	ev.CallerID = firstNonEmpty(e.RequestSourceID, ev.CallerID)
+	ev.AgentName = firstNonEmpty(e.RequestSourceID, ev.AgentName)
 	ev.TokensInput = e.Execution.Tokens.Input
 	ev.TokensOutput = e.Execution.Tokens.Output
 	ev.TTFTMS = e.Execution.TTFTMS
@@ -157,7 +157,7 @@ func SnapshotFromEvidenceRecords(records []evidence.Evidence, now time.Time) Sna
 		startTime:        now,
 		enforcementMode:  "standalone",
 		buckets:          make(map[string]*bucket),
-		callerStats:      make(map[string]*callerAccum),
+		agentStats:      make(map[string]*agentAccum),
 		piiCounts:        make(map[string]int),
 		toolFiltered:     make(map[string]int),
 		shadowViolations: make(map[string]*shadowViolationAccum),
@@ -201,8 +201,8 @@ func mapTimestampField(m map[string]interface{}, e *GatewayEvent) {
 }
 
 func mapStringFields(m map[string]interface{}, e *GatewayEvent) {
-	if v, ok := m["caller_id"].(string); ok {
-		e.CallerID = v
+	if v, ok := m["agent_name"].(string); ok {
+		e.AgentName = v
 	}
 	if v, ok := m["model"].(string); ok {
 		e.Model = v

@@ -74,21 +74,21 @@ func TestBuildSessionSummary_PerAgentRollupFromOrchestration(t *testing.T) {
 	if sum.Client != "claude-code" || sum.SessionSource != "client_asserted" {
 		t.Errorf("client/source = %q/%q, want claude-code/client_asserted", sum.Client, sum.SessionSource)
 	}
-	if len(sum.Agents) != 2 {
-		t.Fatalf("Agents = %d, want 2 (generator, judge)", len(sum.Agents))
+	if len(sum.Subagents) != 2 {
+		t.Fatalf("Agents = %d, want 2 (generator, judge)", len(sum.Subagents))
 	}
 	// Sorted by descending cost: generator (0.25) before judge (0.02).
-	if sum.Agents[0].AgentID != "generator" {
-		t.Errorf("Agents[0] = %q, want generator (highest cost first)", sum.Agents[0].AgentID)
+	if sum.Subagents[0].AgentID != "generator" {
+		t.Errorf("Agents[0] = %q, want generator (highest cost first)", sum.Subagents[0].AgentID)
 	}
-	if got, want := sum.Agents[0].TotalCost, 0.25; got < want-1e-9 || got > want+1e-9 {
+	if got, want := sum.Subagents[0].TotalCost, 0.25; got < want-1e-9 || got > want+1e-9 {
 		t.Errorf("generator cost = %v, want %v", got, want)
 	}
-	if sum.Agents[0].RecordCount != 2 {
-		t.Errorf("generator records = %d, want 2", sum.Agents[0].RecordCount)
+	if sum.Subagents[0].RecordCount != 2 {
+		t.Errorf("generator records = %d, want 2", sum.Subagents[0].RecordCount)
 	}
-	if sum.Agents[1].AgentID != "judge" || sum.Agents[1].ParentAgentID != "generator" {
-		t.Errorf("Agents[1] = %q parent %q, want judge/generator", sum.Agents[1].AgentID, sum.Agents[1].ParentAgentID)
+	if sum.Subagents[1].AgentID != "judge" || sum.Subagents[1].ParentAgentID != "generator" {
+		t.Errorf("Agents[1] = %q parent %q, want judge/generator", sum.Subagents[1].AgentID, sum.Subagents[1].ParentAgentID)
 	}
 }
 
@@ -97,11 +97,11 @@ func TestBuildSessionSummary_FallsBackToCallerWhenNoOrchestration(t *testing.T) 
 		rec("s", "acme", "cli-user", true, 0.10, 100, 20, 0, 0, "anthropic", "claude-sonnet-5", nil),
 	}
 	sum := BuildSessionSummary("s", records)
-	if len(sum.Agents) != 1 || sum.Agents[0].AgentID != "cli-user" {
-		t.Fatalf("Agents = %v, want single caller-keyed row cli-user", sum.Agents)
+	if len(sum.Subagents) != 1 || sum.Subagents[0].AgentID != "cli-user" {
+		t.Fatalf("Agents = %v, want single caller-keyed row cli-user", sum.Subagents)
 	}
-	if len(sum.Callers) != 1 || sum.Callers[0] != "cli-user" {
-		t.Errorf("Callers = %v, want [cli-user]", sum.Callers)
+	if len(sum.AgentIDs) != 1 || sum.AgentIDs[0] != "cli-user" {
+		t.Errorf("Callers = %v, want [cli-user]", sum.AgentIDs)
 	}
 }
 
@@ -111,8 +111,8 @@ func TestBuildSessionSummary_CrossCallerVisible(t *testing.T) {
 		rec("s", "acme", "callerB", true, 0.10, 100, 20, 0, 0, "anthropic", "claude-sonnet-5", nil),
 	}
 	sum := BuildSessionSummary("s", records)
-	if len(sum.Callers) != 2 {
-		t.Errorf("Callers = %v, want two distinct callers surfaced", sum.Callers)
+	if len(sum.AgentIDs) != 2 {
+		t.Errorf("Callers = %v, want two distinct callers surfaced", sum.AgentIDs)
 	}
 }
 
@@ -132,7 +132,7 @@ func TestBuildSessionSummary_TimeWindowAndNilSkip(t *testing.T) {
 
 func TestBuildSessionSummary_Empty(t *testing.T) {
 	sum := BuildSessionSummary("s", nil)
-	if sum.RecordCount != 0 || sum.SessionID != "s" || sum.Agents != nil {
+	if sum.RecordCount != 0 || sum.SessionID != "s" || sum.Subagents != nil {
 		t.Errorf("empty summary = %+v, want zeroed with SessionID set", sum)
 	}
 }

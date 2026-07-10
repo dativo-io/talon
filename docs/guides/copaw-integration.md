@@ -117,7 +117,7 @@ You now have CoPaw sending all LLM traffic through Talon. Talon is logging every
 
 | I want to… | Doc |
 |------------|-----|
-| Cap cost or restrict models for CoPaw | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Cap cost or restrict models for CoPaw | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
 | Run CoPaw + Talon in Docker | [CoPaw + Talon Docker primer](copaw-talon-primer/docker-copaw-talon-primer.md) |
 | Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
 | Add another app through the gateway | [Add Talon to your existing app](add-talon-to-existing-app.md) |

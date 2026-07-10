@@ -101,9 +101,9 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/me
     {"time": "14:25", "cost_eur": 0.15},
     {"time": "14:30", "cost_eur": 0.12}
   ],
-  "caller_stats": [
+  "agent_stats": [
     {
-      "caller": "openclaw-main",
+      "agent": "openclaw-main",
       "requests": 820,
       "pii_detected": 45,
       "blocked": 8,
@@ -258,18 +258,18 @@ Time-series arrays with 5-minute buckets. Used by the dashboard to render sparkl
 - `pii_timeline[].count` — PII detections in the bucket.
 - `cost_timeline[].cost_eur` — cost accrued in the bucket.
 
-### `caller_stats`
+### `agent_stats`
 
-Per-caller (application identity) aggregates. One entry per `gateway.callers[].name`.
+Per-agent aggregates. One entry per resolved agent identity (`agent.name` from its `agent.talon.yaml`).
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `caller` | string | Caller name from gateway config. |
-| `requests` | int | Total requests from this caller. |
-| `pii_detected` | int | PII entities detected in this caller's traffic. |
-| `blocked` | int | Requests from this caller that were blocked. |
-| `cost_eur` | float | Cost attributed to this caller. |
-| `avg_latency_ms` | int | Average latency for this caller. |
+| `agent` | string | Agent name (the identity the presented key resolved to). |
+| `requests` | int | Total requests from this agent. |
+| `pii_detected` | int | PII entities detected in this agent's traffic. |
+| `blocked` | int | Requests from this agent that were blocked. |
+| `cost_eur` | float | Cost attributed to this agent. |
+| `avg_latency_ms` | int | Average latency for this agent. |
 
 ### `pii_breakdown`
 
@@ -307,11 +307,20 @@ Per-provider request counts and cost. One entry per selected provider in evidenc
 | Field | Type | Description |
 |-------|------|-------------|
 | `daily_used` | float | EUR spent today. |
-| `daily_limit` | float | Daily cost cap from policy. |
+| `daily_limit` | float | Daily cost cap (see note below). |
 | `daily_percent` | float | Daily utilization percentage. |
 | `monthly_used` | float | EUR spent this month. |
-| `monthly_limit` | float | Monthly cost cap from policy. |
+| `monthly_limit` | float | Monthly cost cap (see note below). |
 | `monthly_percent` | float | Monthly utilization percentage. |
+
+The global budget widget shows the **organization baseline** caps — deliberately not a per-agent effective cap, because there is no single correct scalar across agents with different overrides. Per-agent spend against effective caps is the fleet view's job (#270/#143); until then use the budget endpoint below or `talon costs --agent <name>`.
+
+#### `GET /v1/costs/budget` (per-agent budget endpoint)
+
+Query params: `tenant_id` (or derived from the presenting agent key), `agent_id`. Returns `daily_used` / `monthly_used`, the applicable `daily_limit` / `monthly_limit`, and `budget_source`:
+
+- `"agent_effective_cap"` — the limits are the agent's **effective** caps, resolved for `agent_id` by the same shared computation enforcement uses (organization baseline → the agent's one override).
+- `"policy_cost_limits"` — no registered agent matched `agent_id` (or none was given); the limits come from the loaded agent policy file's `policies.cost_limits`.
 
 ### `cache_stats`
 
@@ -351,7 +360,7 @@ Each entry is a session summary:
 | `tenant_id` | string | Owning tenant. |
 | `session_source` | string | `client_asserted` \| `vendor_asserted`. |
 | `client` | string | Adapter that asserted it (`claude-code`, `codex`, `generic`). |
-| `callers` | array | Every gateway caller observed on this session id (a cross-caller collision is visible, never merged). |
+| `callers` | array | Every gateway agent identity observed on this session id (a cross-agent collision is visible, never merged); the JSON key predates the identity model rename (#266). |
 | `providers` / `models` | array | Distinct providers/models used — a mixed-provider session is ONE session. |
 | `record_count` / `allowed` / `denied` / `errors` | int | Request outcome counts. |
 | `total_cost` | float | Accumulated signed spend (EUR). |
@@ -379,8 +388,8 @@ The dashboard metrics and CLI commands (`talon costs`, `talon audit list`, `talo
 
 Cost export surfaces:
 
-- CLI: `talon costs export --format csv|json --tenant <id> [--agent <id>|--caller <id>]`
-- API: `POST /v1/costs/export` with `{tenant_id, agent_id|caller, from, to, format}`
+- CLI: `talon costs export --format csv|json --tenant <id> [--agent <id>]`
+- API: `POST /v1/costs/export` with `{tenant_id, agent_id, from, to, format}`
 
 Both export surfaces include evidence ID, tenant/agent, timestamp, model/provider, cost, token counts, and policy decision/reason so rows can be joined to signed evidence exports by evidence ID.
 
@@ -431,7 +440,7 @@ The dashboard and OTel metrics are complementary:
 | **Data source** | In-memory collector + evidence backfill | OTel SDK instruments |
 | **Retention** | In-process (resets on restart) | Depends on backend (Prometheus, etc.) |
 | **Access** | Browser / curl | Prometheus, Grafana, OTLP backends |
-| **Granularity** | 5-minute buckets, per-caller | Per-request via attributes |
+| **Granularity** | 5-minute buckets, per-agent | Per-request via attributes |
 
 Use the dashboard for at-a-glance monitoring. Use OTel + Grafana for historical analysis, alerting, and SLA tracking. See [Observability](../OBSERVABILITY.md) for the full OTel metrics catalogue and [`examples/observability/`](../../examples/observability/) for the local Grafana stack.
 

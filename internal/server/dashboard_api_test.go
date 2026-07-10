@@ -64,7 +64,7 @@ func TestHandleMetricsJSON(t *testing.T) {
 	s, collector := newTestServerWithDashboard(t, "")
 	collector.Record(metrics.GatewayEvent{
 		Timestamp: time.Now(),
-		CallerID:  "app-1",
+		AgentName:  "app-1",
 		CostEUR:   0.05,
 		LatencyMS: 100,
 	})
@@ -88,9 +88,9 @@ func TestHandleMetricsJSON(t *testing.T) {
 func TestMetricsEndpoint_ContainsNewFields(t *testing.T) {
 	s, collector := newTestServerWithDashboard(t, "")
 	now := time.Now().UTC()
-	collector.Record(metrics.GatewayEvent{Timestamp: now, CallerID: "agent-a", CostEUR: 0.02})
-	collector.Record(metrics.GatewayEvent{Timestamp: now, CallerID: "agent-a", Blocked: true})
-	collector.Record(metrics.GatewayEvent{Timestamp: now, CallerID: "agent-a", TimedOut: true, HasError: true})
+	collector.Record(metrics.GatewayEvent{Timestamp: now, AgentName: "agent-a", CostEUR: 0.02})
+	collector.Record(metrics.GatewayEvent{Timestamp: now, AgentName: "agent-a", Blocked: true})
+	collector.Record(metrics.GatewayEvent{Timestamp: now, AgentName: "agent-a", TimedOut: true, HasError: true})
 	time.Sleep(80 * time.Millisecond)
 
 	req := newTestRequest("GET", "/api/v1/metrics")
@@ -101,10 +101,10 @@ func TestMetricsEndpoint_ContainsNewFields(t *testing.T) {
 	var body map[string]interface{}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 
-	callersRaw, ok := body["caller_stats"].([]interface{})
+	agentsRaw, ok := body["agent_stats"].([]interface{})
 	require.True(t, ok)
-	require.NotEmpty(t, callersRaw)
-	first, ok := callersRaw[0].(map[string]interface{})
+	require.NotEmpty(t, agentsRaw)
+	first, ok := agentsRaw[0].(map[string]interface{})
 	require.True(t, ok)
 	_, ok = first["success_rate"]
 	assert.True(t, ok)
@@ -127,7 +127,7 @@ func TestHandleMetricsJSON_FullSnapshot(t *testing.T) {
 	now := time.Now()
 	collector.Record(metrics.GatewayEvent{
 		Timestamp:      now,
-		CallerID:       "sales-app",
+		AgentName:       "sales-app",
 		Model:          "gpt-4o",
 		CostEUR:        0.10,
 		LatencyMS:      200,
@@ -140,7 +140,7 @@ func TestHandleMetricsJSON_FullSnapshot(t *testing.T) {
 	})
 	collector.Record(metrics.GatewayEvent{
 		Timestamp: now.Add(1 * time.Second),
-		CallerID:  "hr-app",
+		AgentName:  "hr-app",
 		Model:     "claude-3",
 		CostEUR:   0.05,
 		LatencyMS: 100,
@@ -169,10 +169,10 @@ func TestHandleMetricsJSON_FullSnapshot(t *testing.T) {
 	assert.InDelta(t, 0.5, snap.Summary.ErrorRate, 0.01)
 
 	// Caller stats sorted by request count (1 each, deterministic order by sort)
-	require.Len(t, snap.CallerStats, 2)
-	callerMap := map[string]metrics.CallerStat{}
-	for _, cs := range snap.CallerStats {
-		callerMap[cs.Caller] = cs
+	require.Len(t, snap.AgentStats, 2)
+	callerMap := map[string]metrics.AgentStat{}
+	for _, cs := range snap.AgentStats {
+		callerMap[cs.Agent] = cs
 	}
 	assert.Equal(t, 1, callerMap["sales-app"].Requests)
 	assert.InDelta(t, 0.10, callerMap["sales-app"].CostEUR, 0.001)
@@ -256,7 +256,7 @@ func TestHandleMetricsJSON_MetricsCrossChecks(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		collector.Record(metrics.GatewayEvent{
 			Timestamp:   now,
-			CallerID:    "app-a",
+			AgentName:    "app-a",
 			Model:       "gpt-4o-mini",
 			CostEUR:     0.01 * float64(i+1),
 			LatencyMS:   int64(50 + i*8),
@@ -273,7 +273,7 @@ func TestHandleMetricsJSON_MetricsCrossChecks(t *testing.T) {
 		}
 		collector.Record(metrics.GatewayEvent{
 			Timestamp:   now,
-			CallerID:    "app-b",
+			AgentName:    "app-b",
 			Model:       "claude-3",
 			CostEUR:     0.05,
 			LatencyMS:   100,
@@ -295,7 +295,7 @@ func TestHandleMetricsJSON_MetricsCrossChecks(t *testing.T) {
 	// Cross-checks: total_requests == sum(caller_stats[].requests)
 	var callerRequests, callerBlocked int
 	var callerCost float64
-	for _, cs := range snap.CallerStats {
+	for _, cs := range snap.AgentStats {
 		callerRequests += cs.Requests
 		callerBlocked += cs.Blocked
 		callerCost += cs.CostEUR

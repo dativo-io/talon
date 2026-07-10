@@ -27,7 +27,7 @@ type Snapshot struct {
 	RequestsTimeline  []TimePoint         `json:"requests_timeline"`
 	PIITimeline       []TimePoint         `json:"pii_timeline"`
 	CostTimeline      []CostTimePoint     `json:"cost_timeline"`
-	CallerStats       []CallerStat        `json:"caller_stats"`
+	AgentStats        []AgentStat         `json:"agent_stats"`
 	PIIBreakdown      []PIITypeStat       `json:"pii_breakdown"`
 	ToolGovernance    ToolGovernanceStats `json:"tool_governance"`
 	ShadowSummary     *ShadowSummary      `json:"shadow_summary,omitempty"`
@@ -95,9 +95,9 @@ type CostTimePoint struct {
 	CostEUR float64 `json:"cost_eur"`
 }
 
-// CallerStat is per-caller aggregated stats.
-type CallerStat struct {
-	Caller       string  `json:"caller"`
+// AgentStat is per-agent aggregated stats.
+type AgentStat struct {
+	Agent        string  `json:"agent"`
 	Requests     int     `json:"requests"`
 	PIIDetected  int     `json:"pii_detected"`
 	Blocked      int     `json:"blocked"`
@@ -208,7 +208,7 @@ type PlanStats struct {
 type GatewayEvent struct {
 	EvidenceID       string
 	Timestamp        time.Time
-	CallerID         string
+	AgentName         string
 	Model            string
 	PIIDetected      []string
 	PIIAction        string
@@ -257,7 +257,7 @@ type bucket struct {
 	costEUR  float64
 }
 
-type callerAccum struct {
+type agentAccum struct {
 	requests   int
 	pii        int
 	blocked    int
@@ -296,7 +296,7 @@ type Collector struct {
 	events              chan GatewayEvent
 	done                chan struct{}
 	buckets             map[string]*bucket
-	callerStats         map[string]*callerAccum
+	agentStats         map[string]*agentAccum
 	piiCounts           map[string]int
 	piiRedactions       int
 	toolFiltered        map[string]int
@@ -390,7 +390,7 @@ func NewCollector(enforcementMode string, querier evidence.MetricsQuerier, opts 
 		events:           make(chan GatewayEvent, 1000),
 		done:             make(chan struct{}),
 		buckets:          make(map[string]*bucket),
-		callerStats:      make(map[string]*callerAccum),
+		agentStats:      make(map[string]*agentAccum),
 		piiCounts:        make(map[string]int),
 		toolFiltered:     make(map[string]int),
 		shadowViolations: make(map[string]*shadowViolationAccum),
@@ -500,7 +500,7 @@ func (c *Collector) processEvent(e GatewayEvent) {
 	}
 
 	c.updateBucket(e)
-	c.updateCallerStats(e)
+	c.updateAgentStats(e)
 	c.updateToolStats(e)
 	c.updateIntentClassification(e)
 	c.updateShadowViolations(e)
@@ -525,14 +525,14 @@ func (c *Collector) updateBucket(e GatewayEvent) {
 	}
 }
 
-func (c *Collector) updateCallerStats(e GatewayEvent) {
-	if e.CallerID == "" {
+func (c *Collector) updateAgentStats(e GatewayEvent) {
+	if e.AgentName == "" {
 		return
 	}
-	cs, ok := c.callerStats[e.CallerID]
+	cs, ok := c.agentStats[e.AgentName]
 	if !ok {
-		cs = &callerAccum{}
-		c.callerStats[e.CallerID] = cs
+		cs = &agentAccum{}
+		c.agentStats[e.AgentName] = cs
 	}
 	cs.requests++
 	cs.costEUR += e.CostEUR
@@ -560,12 +560,12 @@ func (c *Collector) updateCallerStats(e GatewayEvent) {
 			cs.violationsByDay = make(map[string]int)
 		}
 		cs.violationsByDay[dayKey]++
-		recordViolationDaily(dayKey, e.CallerID)
+		recordViolationDaily(dayKey, e.AgentName)
 	}
 
-	recordTaskOutcome(e.CallerID, e.Model, e.Blocked, e.HasError, e.TimedOut)
+	recordTaskOutcome(e.AgentName, e.Model, e.Blocked, e.HasError, e.TimedOut)
 	if !e.TimedOut && !e.Blocked && !e.HasError {
-		recordCostPerSuccess(e.CallerID, e.Model, e.CostEUR)
+		recordCostPerSuccess(e.AgentName, e.Model, e.CostEUR)
 	}
 }
 
@@ -634,7 +634,7 @@ func (c *Collector) ReconcileStatus() ReconcileStats {
 
 func (c *Collector) resetInMemoryAggregates() {
 	c.buckets = make(map[string]*bucket)
-	c.callerStats = make(map[string]*callerAccum)
+	c.agentStats = make(map[string]*agentAccum)
 	c.piiCounts = make(map[string]int)
 	c.toolFiltered = make(map[string]int)
 	c.shadowViolations = make(map[string]*shadowViolationAccum)
@@ -746,9 +746,9 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 		}
 	}
 
-	callers := make([]CallerStat, 0, len(c.callerStats))
-	for caller, cs := range c.callerStats {
-		callers = append(callers, c.buildCallerStat(caller, cs))
+	callers := make([]AgentStat, 0, len(c.agentStats))
+	for caller, cs := range c.agentStats {
+		callers = append(callers, c.buildAgentStat(caller, cs))
 	}
 	sort.Slice(callers, func(i, j int) bool { return callers[i].Requests > callers[j].Requests })
 
@@ -798,7 +798,7 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 		RequestsTimeline: reqTimeline,
 		PIITimeline:      piiTimeline,
 		CostTimeline:     costTimeline,
-		CallerStats:      callers,
+		AgentStats:      callers,
 		PIIBreakdown:     piiBreakdown,
 		ToolGovernance:   toolGov,
 		ShadowSummary:    shadow,
@@ -825,9 +825,9 @@ func denialsByReasonSorted(m map[string]int) []ReasonCount {
 	return out
 }
 
-func (c *Collector) buildCallerStat(caller string, cs *callerAccum) CallerStat {
-	stat := CallerStat{
-		Caller:      caller,
+func (c *Collector) buildAgentStat(agent string, cs *agentAccum) AgentStat {
+	stat := AgentStat{
+		Agent:       agent,
 		Requests:    cs.requests,
 		PIIDetected: cs.pii,
 		Blocked:     cs.blocked,

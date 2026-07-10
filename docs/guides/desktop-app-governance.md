@@ -82,7 +82,7 @@ You now know how to route ChatGPT/Claude Desktop traffic through Talon (DNS + ga
 
 | I want to… | Doc |
 |------------|-----|
-| Cap cost per team or by source IP | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Cap cost per team or by source IP | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
 | Route a Slack bot or script through Talon | [Add Talon to your existing app](add-talon-to-existing-app.md), [Slack bot](slack-bot-integration.md) |
 | Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
 | Understand the gateway pipeline | [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) |

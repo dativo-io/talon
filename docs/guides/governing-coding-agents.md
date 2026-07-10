@@ -2,7 +2,7 @@
 
 This guide shows how to govern an orchestrated coding-agent fleet — Claude Code subagents and Codex executors fanning out across two providers — through one Talon gateway, with per-session budgets, per-subagent attribution, and signed evidence. It is also the **canonical reference for the neutral orchestration-metadata contract**. Allow about 20 minutes.
 
-For single-tool setup without orchestration, start with the [OpenClaw guide](openclaw-integration.md) — the gateway mechanics (vault, callers, policy) are identical.
+For single-tool setup without orchestration, start with the [OpenClaw guide](openclaw-integration.md) — the gateway mechanics (vault, agent identity, policy) are identical.
 
 ## The scenario
 
@@ -16,10 +16,10 @@ A platform team runs an orchestrator that plans a change, then fans out:
 
 Every role name in this guide — *orchestrator*, *planner*, *generator*, *reviewer*, *executor*, *judge* — is an **illustration, not a vocabulary Talon knows**:
 
-- An **orchestrator** is simply whatever client code coordinates the work (a lead agent session, a script, a CI job) and passes one session id to everything it spawns. Talon never sees a role called "orchestrator" — it sees a caller, a session id, and per-request agent labels.
+- An **orchestrator** is simply whatever client code coordinates the work (a lead agent session, a script, a CI job) and passes one session id to everything it spawns. Talon never sees a role called "orchestrator" — it sees a Talon agent identity (which key authenticated), a session id, and per-request subagent labels.
 - **`X-Talon-Agent-ID` / `X-Talon-Parent-Agent-ID` / `X-Talon-Client` values are free-form strings you choose.** Talon does not validate them against any known set, assigns them no semantics, and never uses them in policy — it records them as attribution (`provenance: client_asserted`) and rolls costs up by them. Name your subagents whatever your fleet calls them.
 - **The one enforced vocabulary is `X-Talon-Stage`**: exactly `generation` (producing candidate work), `judge` (evaluating or selecting between candidates), or `commit` (finalizing the chosen result). Any other value is silently dropped at ingestion — the request proceeds, no stage is recorded.
-- **Caller ≠ tenant ≠ agent.** A *caller* is a configured identity in `talon.config.yaml`, authenticated by its tenant key (e.g. one caller per tool); a *tenant* is the owning account callers belong to; an *agent id* is the client-asserted runtime label above. Budgets and policy bind to callers and tenants — never to agent ids.
+- **Talon agent ≠ tenant ≠ subagent id.** A *Talon agent* is a traffic identity defined by one `agent.talon.yaml`, authenticated by its vault-bound agent key (e.g. one agent per tool); a *tenant* is the owning account, derived from the agent (`key → agent → tenant_id`); a *subagent id* is the client-asserted runtime label above. Budgets and policy bind to Talon agents and tenants — never to subagent ids.
 - A **wire family** (`api_family`) is the provider's HTTP API shape — `anthropic` (Messages API) or `openai` (Chat Completions / Responses) — which determines how Talon parses, redacts, and prices traffic on that route.
 
 In practice: with **Claude Code** and **Codex CLI**, the vendor adapters pick up whatever session/subagent headers the tools emit — nothing to invent. With a **custom orchestrator**, you choose the labels and set the generic headers yourself; if a tool version doesn't emit identity headers, set the generic ones from the process that launches it.
@@ -56,21 +56,21 @@ mkdir talon-coding && cd talon-coding
 talon init --pack coding-agents --name coding-gateway
 ```
 
-This creates `agent.talon.yaml` and `talon.config.yaml` pre-configured for coding traffic (source of truth: `internal/pack/templates/coding-agents/`). The defaults are deliberate:
+This creates `agent.talon.yaml`, `agents/codex.talon.yaml`, and `talon.config.yaml` pre-configured for coding traffic (source of truth: `internal/pack/templates/coding-agents/`). The defaults are deliberate:
 
-- **Two callers, one per tool** — `claude-code` (Anthropic route) and `codex` (OpenAI route), each with its own tenant key, `team: coding`, and its own budgets. Budgets and audit attribute **per tool**.
+- **Two agents, one per tool** — `claude-code` (the primary `agent.talon.yaml`, Anthropic route) and `codex` (`agents/codex.talon.yaml`, OpenAI route), each its own AI use case with its own vault-bound agent key, `metadata.team: coding`, `policies.allowed_providers`, and its own budgets. Budgets and audit attribute **per tool**. Note: #266 loads the single default `agent.talon.yaml` per gateway process — serving several agent files from one process arrives with `agents_dir` discovery (#267); until then activate one agent file per gateway process.
 - **Shadow mode** — would-have-denied decisions are recorded in signed evidence while nothing blocks. Flip to `mode: "enforce"` once the dashboard looks right.
-- **`response_pii_action: allow`** — the honest streaming default: any other value buffers the *entire* SSE stream before the first token reaches the developer (see [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)). Input-side scanning (`pii_action: warn`) still applies.
+- **`response_pii_action: allow`** (organization baseline) — the honest streaming default: any other value buffers the *entire* SSE stream before the first token reaches the developer (see [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary)). Input-side scanning (`input_scan: true` → warn) still applies, and a per-agent downgrade to `allow` is deliberately not expressible.
 - **Long timeouts** (`request_timeout: 600s`) — the 120s default hard-cuts long coding generations (#230).
 - **Credential recognizers** — high-precision patterns for PEM private keys, AWS `AKIA...` ids, GitHub tokens, and `sk-ant-`/`sk-proj-` LLM keys. Talon is not a secret scanner; run gitleaks/trufflehog in pre-commit for repository hygiene — these cover prompt/response traffic only.
-- **`max_session_cost: 10.00`** per caller — the per-session soft cap (see [step 4](#4-set-budgets)).
+- **`session_limits.max_cost: 10.00`** per agent — the per-session soft cap (see [step 4](#4-set-budgets)).
 
-**Caller topology choice** (this determines what "one session" means — see [session semantics](#session-semantics-what-one-session-means)):
+**Identity topology choice** (this determines what "one session" means — see [session semantics](#session-semantics-what-one-session-means)):
 
 | Topology | Effect | When |
 |---|---|---|
-| One caller per tool (pack default) | Per-tool budgets and attribution; a session id asserted under both callers is **two** sessions | Independent tools, per-team chargeback |
-| One caller for the whole orchestrator, allowed on both providers | One session spans both provider routes; subagent attribution via agent ids | Orchestrated fan-out with a single fleet budget (this is what the [demo](#6-run-the-offline-demo) does) |
+| One agent per tool (pack default) | Per-tool budgets and attribution; a session id asserted under both agents is **two** sessions | Independent tools, per-team chargeback |
+| One agent for the whole orchestrator, allowed on both providers (`policies.allowed_providers`) | One session spans both provider routes; subagent attribution via subagent ids | Orchestrated fan-out with a single fleet budget (this is what the [demo](#6-run-the-offline-demo) does) |
 
 ### 2. Store both provider keys and start the gateway
 
@@ -78,12 +78,17 @@ This creates `agent.talon.yaml` and `talon.config.yaml` pre-configured for codin
 export TALON_SECRETS_KEY=$(openssl rand -hex 32)   # keep it; same value at serve time
 talon secrets set anthropic-api-key "sk-ant-..."
 talon secrets set openai-api-key "sk-..."
+
+# Mint each tool's Talon agent key (bound via agent.key.secret_name)
+talon secrets set claude-code-talon-key "$(openssl rand -hex 24)"
+talon secrets set codex-talon-key       "$(openssl rand -hex 24)"
+
 talon serve --gateway
 ```
 
-Callers authenticate with their tenant key; Talon injects the real provider key upstream. For the Anthropic provider family, vault-stored keys are the **only** upstream auth mode — `upstream_auth_mode: client_bearer` is rejected at config load. This also means subscription/OAuth billing cannot be governed: pointing only `ANTHROPIC_BASE_URL` at Talon sends Claude Code's OAuth token, which Talon rejects. See [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
+Each tool authenticates with its **agent key**; Talon resolves the key to the agent, derives the tenant, and injects the real provider key upstream. For the Anthropic provider family, vault-stored keys are the **only** upstream auth mode — `upstream_auth_mode: client_bearer` is rejected at config load. This also means subscription/OAuth billing cannot be governed: pointing only `ANTHROPIC_BASE_URL` at Talon sends Claude Code's OAuth token, which Talon rejects. See [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
 
-Point each tool's base URL at the gateway (`http://localhost:8080/v1/proxy/anthropic` for the Anthropic SDK; `http://localhost:8080/v1/proxy/openai/v1` for OpenAI-SDK/Codex clients, which append their own path — the trailing `/v1` matters, #235) with its caller's tenant key as the bearer token. Per-tool walk-throughs: [Claude Code](claude-code-integration.md), [Codex CLI](codex-cli-integration.md).
+Point each tool's base URL at the gateway (`http://localhost:8080/v1/proxy/anthropic` for the Anthropic SDK; `http://localhost:8080/v1/proxy/openai/v1` for OpenAI-SDK/Codex clients, which append their own path — the trailing `/v1` matters, #235) with its agent key as the bearer token. Per-tool walk-throughs: [Claude Code](claude-code-integration.md), [Codex CLI](codex-cli-integration.md).
 
 ### 3. Send orchestration metadata — the neutral contract
 
@@ -101,16 +106,17 @@ This section is the canonical reference for the contract (implementation: `inter
 Any client that can set headers participates fully — **no Talon change needed**. Example fan-out (orchestrator sets the same session id on both wires):
 
 ```bash
-# Claude Code subagent → Anthropic route
+# Claude Code subagent → Anthropic route ($CLAUDE_CODE_KEY = the value minted
+# into claude-code-talon-key)
 curl -s -X POST http://localhost:8080/v1/proxy/anthropic/v1/messages \
-  -H "Authorization: Bearer talon-gw-claude-code-001" \
+  -H "Authorization: Bearer $CLAUDE_CODE_KEY" \
   -H "X-Talon-Session-ID: sess-feature-4711" \
   -H "X-Talon-Agent-ID: generator" \
   -H "content-type: application/json" -d '{...}'
 
 # Codex executor → OpenAI route, child of generator
 curl -s -X POST http://localhost:8080/v1/proxy/openai/v1/responses \
-  -H "Authorization: Bearer talon-gw-codex-001" \
+  -H "Authorization: Bearer $CODEX_KEY" \
   -H "X-Talon-Session-ID: sess-feature-4711" \
   -H "X-Talon-Agent-ID: executor" \
   -H "X-Talon-Parent-Agent-ID: generator" \
@@ -132,9 +138,9 @@ The first adapter with any populated header wins. Onboarding a new client is exa
 
 - **Precedence per field: generic > vendor > synthetic.** If both `X-Talon-Session-ID` and a vendor session header are present *with different values*, the generic value is recorded and the vendor value is ignored — per field, so a generic session id can coexist with a vendor-asserted agent id (`TestResolveOrchestration_Precedence`).
 - **`session_source`** records how the session id was obtained: `client_asserted` (generic header), `vendor_asserted` (adapter header), or `synthetic` (no client assertion; Talon derives `sess_<correlation-id>`).
-- **`provenance` is always `client_asserted`.** Orchestration identity distinguishes subagents *within an already-authenticated caller*; it does not authenticate them. It is exactly as trustworthy as the caller that presented the tenant key.
-- **Identity is never a policy input.** Budgets bind to the caller and the caller-scoped session tuple, never to `agent_id` (`TestPolicyInputParity_WithAssertedSession`). Acting on client-asserted identity waits for workload attestation (#149).
-- **Per-caller opt-out**: `accept_client_metadata: false` on a caller ignores asserted agent/parent/client identity and vendor session headers (the generic `X-Talon-Session-ID` still resolves the session id). Default is `true`; the flag gates *recording* only (`TestGatewayOrchestration_FlagOff`). Requests without any asserted session id get a synthetic `sess_<correlation-id>` in evidence either way — synthetic ids never create session-store state or budgets.
+- **`provenance` is always `client_asserted`.** Orchestration identity distinguishes subagents *within an already-authenticated agent*; it does not authenticate them. It is exactly as trustworthy as the workload that presented the agent key.
+- **Identity is never a policy input.** Budgets bind to the Talon agent and the agent-scoped session tuple, never to subagent `agent_id` labels (`TestPolicyInputParity_WithAssertedSession`). Acting on client-asserted identity waits for workload attestation (#149).
+- **Per-agent opt-out**: `agent.accept_client_metadata: false` in the agent file ignores asserted subagent/parent/client identity and vendor session headers (the generic `X-Talon-Session-ID` still resolves the session id). Default is `true`; the flag gates *recording* only (`TestGatewayOrchestration_FlagOff`). Requests without any asserted session id get a synthetic `sess_<correlation-id>` in evidence either way — synthetic ids never create session-store state or budgets.
 - Optional `X-Talon-Stage` tags a request's pipeline stage; only `generation`, `judge`, `commit` are accepted — anything else is dropped at ingestion (`TestNormalizeStage`).
 
 #### Header hygiene
@@ -143,20 +149,22 @@ Every orchestration value must be RFC 7230 token charset and at most **128 bytes
 
 #### Session semantics: what "one session" means
 
-One session id groups requests **across providers**, scoped per **(tenant, caller)**. Two different callers asserting the same session id get **separate sessions and separate session budgets** — a session id is not a cross-tenant or cross-caller join key (`TestSessionBudget_CallerAndTenantIsolation`). Synthetic session ids are evidence-only and never create session state or budget rows (`TestSessionBudget_SyntheticSessionsCreateNoRows`).
+One session id groups requests **across providers**, scoped per **(tenant, agent)**. Two different agents asserting the same session id get **separate sessions and separate session budgets** — a session id is not a cross-tenant or cross-agent join key (`TestSessionBudget_AgentAndTenantIsolation`). Synthetic session ids are evidence-only and never create session state or budget rows (`TestSessionBudget_SyntheticSessionsCreateNoRows`).
 
 ### 4. Set budgets
 
-Per-caller, in `talon.config.yaml` → `gateway.callers[].policy_overrides`:
+Per agent, in its `agent.talon.yaml` — the agent's one override over the organization baseline:
 
 ```yaml
-policy_overrides:
-  max_session_cost: 10.00   # soft cap per coding session
-  max_daily_cost: 50.00
-  max_monthly_cost: 500.00
+policies:
+  session_limits:
+    max_cost: 10.00   # soft cap per coding session
+  cost_limits:
+    daily: 50.00
+    monthly: 500.00
 ```
 
-How `max_session_cost` behaves — precisely:
+How the session cap (`session_limits.max_cost`) behaves — precisely:
 
 - A **new** request is denied once accrued session spend + the pre-request estimate exceeds the limit. The denial is HTTP 403 with a **provider-native error body** (`session_budget_exceeded: session spend 6.00 + estimate 1.00 exceeds limit 5.00`), so clients surface it like any provider error. One documented exception: errors emitted **before routing** (e.g. a request for an unknown provider prefix) use the OpenAI error shape, since no provider — and therefore no wire family — was resolved yet (#195).
 - Spend accumulates **per session, not per provider** — the same session is denied on the other provider's route too (`TestSessionBudget_CrossProviderDeny`).
@@ -184,7 +192,7 @@ talon audit export --session sess-feature-4711
 talon costs --session sess-feature-4711 --json
 ```
 
-Scoping: without `--tenant`/`--caller` these session commands are **unscoped** (they show the whole session, whichever tenant owns it — local CLI access implies DB access anyway); pass `--tenant` and/or `--caller` to filter. Note `talon costs`' *calendar* rollups (no `--session`) default to tenant `default` — the session forms do not.
+Scoping: without `--tenant`/`--agent` these session commands are **unscoped** (they show the whole session, whichever tenant owns it — local CLI access implies DB access anyway); pass `--tenant` and/or `--agent` to filter. Note `talon costs`' *calendar* rollups (no `--session`) default to tenant `default` — the session forms do not.
 
 The dashboard (`talon serve`) has a **Coding Sessions (orchestration)** panel showing active sessions with per-subagent attribution and `denials_by_reason` — budget trips show up as `session_budget_exceeded` counts.
 
@@ -207,10 +215,10 @@ The mock provider speaks both the Anthropic Messages wire and the OpenAI Respons
 |---|---|---|
 | Runaway spend inside one coding session | Per-session soft cap; new requests denied 403 with provider-native `session_budget_exceeded` | `max_session_cost`; `TestSessionBudget_SoftCapOvershoot` |
 | Session shifts spend to the other provider's route | Session spend accumulates cross-provider; denied on both routes | `TestSessionBudget_CrossProviderDeny` |
-| Two teams collide on the same session id | Sessions scoped per (tenant, caller) — separate sessions, separate budgets | `TestSessionBudget_CallerAndTenantIsolation` |
+| Two teams collide on the same session id | Sessions scoped per (tenant, agent) — separate sessions, separate budgets | `TestSessionBudget_AgentAndTenantIsolation` |
 | Hostile header value aimed at evidence or dashboards | Hygiene gate: token charset, ≤128 bytes, reject 400 (never truncate) | `TestGatewayOrchestration_HygieneRejectedAtGateway` |
 | Junk stage strings bloating session state | Fixed stage set (`generation`/`judge`/`commit`); others dropped at ingestion | `TestNormalizeStage` |
-| Subagent forges its identity | Attribution, not authentication: `provenance: client_asserted`; identity never a policy input; budgets bind to the caller | `TestPolicyInputParity_WithAssertedSession`; [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) |
+| Subagent forges its identity | Attribution, not authentication: `provenance: client_asserted`; identity never a policy input; budgets bind to the Talon agent | `TestPolicyInputParity_WithAssertedSession`; [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) |
 | Session store outage | Budget check fails open; gap annotated in signed evidence (`session_budget_unavailable`) | `TestSessionBudget_FailOpenAnnotated` |
 | Budget denials disrupting rollout | Shadow mode records would-have-denied as shadow violations while traffic flows | `mode: "shadow"`; `TestSessionBudget_ShadowMode` |
 | Credentials pasted into prompts | High-precision recognizers (PEM, `AKIA...`, GitHub tokens, `sk-ant-`/`sk-proj-`) evidenced via `pii_action: warn` | pack `agent.talon.yaml` `custom_recognizers` |
@@ -224,9 +232,9 @@ The mock provider speaks both the Anthropic Messages wire and the OpenAI Respons
 
 - **Local tool execution is invisible** — file edits, shell commands, and local tool runs never transit the gateway; evidence shows the model's tool_use *intentions*, not local execution.
 - **Client-asserted identity is attribution, not authentication** — attestation is #149.
-- **Subscription/OAuth billing cannot be governed** — governed operation requires the tenant-key + vault-injected-key model.
+- **Subscription/OAuth billing cannot be governed** — governed operation requires the agent-key + vault-injected-key model.
 - **Session budgets are soft caps** — atomic reservation is #144.
-- **Response-PII actions other than `allow` buffer whole streams** — which is why the pack defaults coding callers to `allow`.
+- **Response-PII actions other than `allow` buffer whole streams** — which is why the pack's organization baseline sets `response_pii_action: allow`.
 - **Cache pricing falls back to the input rate** when a pricing entry lacks cache rates.
 
 ## Summary
@@ -234,7 +242,7 @@ The mock provider speaks both the Anthropic Messages wire and the OpenAI Respons
 | Before | After |
 |---|---|
 | Orchestrator → two providers directly | Orchestrator → Talon → both providers |
-| Spend per API key, unattributed | Per-session soft caps + per-caller daily/monthly caps |
+| Spend per API key, unattributed | Per-session soft caps + per-agent daily/monthly caps |
 | No idea which subagent did what | Per-subagent attribution in one session view |
 | Logs you hope are intact | Signed evidence; `talon audit verify --session` |
 
@@ -249,7 +257,7 @@ Your fleet's traffic now flows through one gateway: every request carries sessio
 | I want to… | Doc |
 |------------|-----|
 | See the whole scenario run offline | [Coding-agents demo](../../examples/coding-agents-demo/README.md) (`make coding-agents-demo`) |
-| Cap daily spend per team | [Cost governance by caller](cost-governance-by-caller.md) |
+| Cap daily spend per team | [Cost governance by agent](cost-governance-by-agent.md) |
 | Hand evidence to an auditor | [Compliance export runbook](compliance-export-runbook.md) |
 | Copy-paste policy recipes | [Policy cookbook](policy-cookbook.md) |
 | Know exactly where the boundary is | [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) |

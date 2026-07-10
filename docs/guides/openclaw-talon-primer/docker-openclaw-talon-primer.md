@@ -288,7 +288,7 @@ You now have OpenClaw + Talon running in Docker. Talon is the gateway in front o
 
 | I want to… | Doc |
 |------------|-----|
-| Cap cost or restrict models | [How to cap daily spend per team or application](../cost-governance-by-caller.md) |
+| Cap cost or restrict models | [How to cap daily spend per team or application](../cost-governance-by-agent.md) |
 | Run OpenClaw + Talon without Docker | [How to govern OpenClaw with Talon](../openclaw-integration.md) |
 | Export evidence for auditors | [How to export evidence for auditors](../compliance-export-runbook.md) |
 | Add another app through the gateway | [Add Talon to your existing app](../add-talon-to-existing-app.md) |

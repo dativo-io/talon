@@ -77,8 +77,8 @@ func TestFillSessions_MixedProviderIsOneSession(t *testing.T) {
 	assert.Len(t, sess.Models, 2)
 	assert.Equal(t, 2, sess.RecordCount)
 	assert.InDelta(t, 0.30, sess.TotalCost, 1e-9)
-	require.Len(t, sess.Agents, 2, "per-agent rollup embedded")
-	assert.Equal(t, "generator", sess.Agents[0].AgentID, "agents sorted by descending cost")
+	require.Len(t, sess.Subagents, 2, "per-agent rollup embedded")
+	assert.Equal(t, "generator", sess.Subagents[0].AgentID, "agents sorted by descending cost")
 }
 
 // TestFillSessions_EqualsAuditSummary: the dashboard number and the

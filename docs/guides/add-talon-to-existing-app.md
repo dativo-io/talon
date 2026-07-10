@@ -149,7 +149,7 @@ You now have Talon in front of your app. Every LLM call is logged, PII is scanne
 
 | I want to… | Doc |
 |------------|-----|
-| Cap cost or restrict models for this app | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Cap cost or restrict models for this app | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
 | Switch from shadow to block/redact when PII is found | [Configuration and environment](../reference/configuration.md) (gateway `mode`, `default_policy`) |
 | Route another app (e.g. Slack bot) through Talon | [How to add compliance to your Slack bot](slack-bot-integration.md) |
 | Understand what happens to each request | [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) |

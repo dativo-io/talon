@@ -216,7 +216,7 @@
     <div class="panel-title">Caller Breakdown</div>
     <table>
       <thead><tr><th>Caller</th><th>Requests</th><th>Success</th><th>Failed</th><th>Timeout</th><th>Denied</th><th>Rate</th><th data-cost-th="Cost">Cost (USD)</th><th data-cost-th="Cost/Success">Cost/Success (USD)</th><th>Avg Latency</th><th>Trend(7d)</th><th>Evidence</th></tr></thead>
-      <tbody id="caller-table"></tbody>
+      <tbody id="agent-table"></tbody>
     </table>
   </div>
 
@@ -479,9 +479,9 @@
     renderSparkline('chart-requests', d.requests_timeline, 'count', 'rgba(108,114,203,1)', 'rgba(108,114,203,.15)');
     renderSparkline('chart-cost', d.cost_timeline, 'cost_eur', 'rgba(96,165,250,1)', 'rgba(96,165,250,.15)');
     renderSparkline('chart-pii', d.pii_timeline, 'count', 'rgba(248,113,113,1)', 'rgba(248,113,113,.15)');
-    renderViolationTrend(d.caller_stats || []);
+    renderViolationTrend(d.agent_stats || []);
 
-    renderCallerTable(d.caller_stats || []);
+    renderAgentTable(d.agent_stats || []);
     renderPIIBreakdown(d.pii_breakdown || []);
     renderToolGovernance(d.tool_governance);
     renderShadow(d.shadow_summary);
@@ -518,21 +518,21 @@
     return '/dashboard?talon_admin_key=' + encodeURIComponent(token) + '#evidence-gateway';
   }
 
-  function renderCallerTable(callers) {
-    var tb = document.getElementById('caller-table');
-    if (callers.length === 0) {
-      tb.innerHTML = '<tr><td colspan="12" style="color:var(--text-dim)">No caller data yet. Configure gateway callers with max_daily_cost/max_monthly_cost and send a proxied request to generate signed cost evidence.</td></tr>';
+  function renderAgentTable(agents) {
+    var tb = document.getElementById('agent-table');
+    if (agents.length === 0) {
+      tb.innerHTML = '<tr><td colspan="12" style="color:var(--text-dim)">No agent data yet. Set cost_limits in an agent.talon.yaml, mint its key (talon secrets set), and send a proxied request to generate signed cost evidence.</td></tr>';
       return;
     }
-    var totalCostPerSuccess = callers.reduce(function(acc, c) { return acc + (c.cost_per_success || 0); }, 0);
-    var avgCostPerSuccess = callers.length > 0 ? totalCostPerSuccess / callers.length : 0;
-    tb.innerHTML = callers.map(function(c) {
+    var totalCostPerSuccess = agents.reduce(function(acc, c) { return acc + (c.cost_per_success || 0); }, 0);
+    var avgCostPerSuccess = agents.length > 0 ? totalCostPerSuccess / agents.length : 0;
+    tb.innerHTML = agents.map(function(c) {
       var rate = c.success_rate || 0;
       var rateClass = rate >= 0.9 ? 'rate-good' : (rate >= 0.7 ? 'rate-warn' : 'rate-bad');
       var cps = c.cost_per_success || 0;
       var cpsClass = (avgCostPerSuccess > 0 && cps > (2 * avgCostPerSuccess)) ? 'cost-hot' : '';
       var evidenceLink = '<a href="' + evidenceDashboardURL() + '" style="color:var(--brand-light);text-decoration:none;">Open</a>';
-      return '<tr><td>' + esc(c.caller) + '</td><td>' + fmt(c.requests) + '</td><td>' + fmt(c.successful) + '</td><td>' + fmt(c.failed) + '</td><td>' + fmt(c.timed_out) + '</td><td>' + fmt(c.denied) + '</td><td class="' + rateClass + '">' + (rate * 100).toFixed(1) + '%</td><td>' + CUR + (c.cost_eur || 0).toFixed(4) + '</td><td class="' + cpsClass + '">' + CUR + cps.toFixed(4) + '</td><td>' + c.avg_latency_ms + 'ms</td><td>' + renderCallerTrend(c.violation_trend) + '</td><td>' + evidenceLink + '</td></tr>';
+      return '<tr><td>' + esc(c.agent) + '</td><td>' + fmt(c.requests) + '</td><td>' + fmt(c.successful) + '</td><td>' + fmt(c.failed) + '</td><td>' + fmt(c.timed_out) + '</td><td>' + fmt(c.denied) + '</td><td class="' + rateClass + '">' + (rate * 100).toFixed(1) + '%</td><td>' + CUR + (c.cost_eur || 0).toFixed(4) + '</td><td class="' + cpsClass + '">' + CUR + cps.toFixed(4) + '</td><td>' + c.avg_latency_ms + 'ms</td><td>' + renderCallerTrend(c.violation_trend) + '</td><td>' + evidenceLink + '</td></tr>';
     }).join('');
   }
 
@@ -545,7 +545,7 @@
     if (!sessions || sessions.length === 0) { panel.style.display = 'none'; return; }
     panel.style.display = '';
     tb.innerHTML = sessions.map(function(sess, i) {
-      var agents = sess.agents || [];
+      var agents = sess.subagents || [];
       var hasAgents = agents.length > 0;
       var caret = hasAgents ? '<span class="sess-caret" id="sess-caret-' + i + '">&#9656;</span>' : '';
       var deniedCell = (sess.denied || 0) > 0 ? '<span class="rate-bad">' + fmt(sess.denied) + '</span>' : fmt(sess.denied || 0);
@@ -553,7 +553,7 @@
         '<td>' + caret + '</td>' +
         '<td>' + esc(sess.session_id) + '</td>' +
         '<td>' + esc(sess.client || '-') + '</td>' +
-        '<td>' + esc((sess.callers || []).join(', ')) + '</td>' +
+        '<td>' + esc((sess.agents || []).join(', ')) + '</td>' +
         '<td>' + fmt(sess.record_count) + '</td>' +
         '<td>' + deniedCell + '</td>' +
         '<td>' + esc((sess.models || []).join(', ')) + '</td>' +
@@ -629,23 +629,23 @@
     return svg;
   }
 
-  function renderViolationTrend(callerStats) {
+  function renderViolationTrend(agentStats) {
     var svg = document.getElementById('chart-violations');
-    if (!callerStats || callerStats.length === 0) {
+    if (!agentStats || agentStats.length === 0) {
       svg.innerHTML = '<text x="200" y="45" text-anchor="middle" fill="#8b8fa4" font-size="12">No data</text>';
       return;
     }
 
     var dayCount = 7;
     var series = [];
-    callerStats.forEach(function(c) {
+    agentStats.forEach(function(c) {
       var trend = c.violation_trend || [];
       if (trend.length === 0) return;
       var values = [];
       for (var i = 0; i < dayCount; i++) {
         values.push((trend[i] && trend[i].count) ? trend[i].count : 0);
       }
-      series.push({ caller: c.caller, values: values });
+      series.push({ agent: c.agent, values: values });
     });
     if (series.length === 0) {
       svg.innerHTML = '<text x="200" y="45" text-anchor="middle" fill="#8b8fa4" font-size="12">No data</text>';
@@ -759,7 +759,7 @@
       var color2 = bs.monthly_percent > 90 ? 'var(--red)' : bs.monthly_percent > 70 ? 'var(--yellow)' : 'var(--green)';
       html += '<div><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Monthly</span><span>' + CUR + bs.monthly_used.toFixed(2) + ' / ' + CUR + bs.monthly_limit.toFixed(2) + ' (' + bs.monthly_percent.toFixed(1) + '%)</span></div><div class="bar-container"><div class="bar-fill" style="width:' + Math.min(bs.monthly_percent, 100) + '%;background:' + color2 + '"></div></div></div>';
     }
-    document.getElementById('budget-content').innerHTML = html || '<span style="color:var(--text-dim)">No budget limits configured. Set caller max_daily_cost/max_monthly_cost in gateway config to enforce hard caps before provider calls.</span>';
+    document.getElementById('budget-content').innerHTML = html || '<span style="color:var(--text-dim)">No budget limits configured. Set organization_policy caps or per-agent cost_limits to enforce hard caps before provider calls.</span>';
   }
 
   function renderCache(cs) {
