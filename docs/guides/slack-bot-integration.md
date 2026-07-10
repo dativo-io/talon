@@ -1,6 +1,6 @@
-# How to add compliance to your Slack bot
+# Govern your Slack bot with Talon
 
-Route your Slack bot's LLM calls through Talon for audit, PII detection, and cost control with a single config change. Allow about 10 minutes.
+Route your Slack bot's LLM calls through Talon to cap what the bot can spend, block PII before it leaves your infrastructure, and get a signed audit trail of every request — all with a single config change. The same evidence records support compliance reviews when you need them. Allow about 10 minutes.
 
 ## Prerequisites
 

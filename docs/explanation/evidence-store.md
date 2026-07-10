@@ -8,8 +8,11 @@ For a complete list of explanation codes and remediation guidance, see [explanat
 
 Every interaction that passes through Talon generates an **evidence record** --
 a structured JSON document that captures what happened, what policy decided, and
-what data was involved. Evidence records are the foundation of Talon's
-compliance story.
+what data was involved. The evidence store is the **proof layer** under Talon's
+four pillars -- cost control, reliability, shared policy, and session
+understanding: every budget, policy, and routing decision produces a signed
+record as it runs, and compliance reports are generated from those records
+rather than assembled separately.
 
 ```
 Request → Pipeline → Evidence Record → HMAC Sign → SQLite Write → Export

@@ -1,6 +1,6 @@
 # Turnkey compliance reports: from init to a signed RoPA
 
-In this tutorial we will go from an empty directory to a downloadable GDPR Record of Processing Activities (RoPA) in one path: initialize a project with EU compliance policy packs, declare the controller identity, start the server, review framework coverage in the dashboard, and export a RoPA and an EU AI Act Annex IV pack — with every export leaving its own signed evidence record. By the end you will have seen the full compliance reporting loop without writing any code.
+Compliance reports are Talon's **proof layer** at work: because every budget, policy, and routing decision already produces a signed evidence record, RoPA and Annex IV documents can be generated from operations you are running anyway — not assembled by hand. In this tutorial you go from an empty directory to a downloadable GDPR Record of Processing Activities (RoPA) in one path: initialize a project with EU compliance policy packs, declare the controller identity, start the server, review framework coverage in the dashboard, and export a RoPA and an EU AI Act Annex IV pack — with every export leaving its own signed evidence record. By the end you will have seen the full compliance reporting loop without writing any code.
 
 Everything Talon produces here is **supporting documentation**: evidence and declared facts mapped to framework articles. It is not a certification or a compliance determination.
 

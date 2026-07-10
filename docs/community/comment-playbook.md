@@ -7,6 +7,8 @@ Principles:
 - Lead with the user's problem, not the project name.
 - Explain failure modes in concrete technical terms.
 - Link only to proof pages/commands that directly support your claim.
+- When you do describe Talon, use the one-liner: "Talon is the control plane for your company's AI use cases — shared budgets, one policy, policy-valid failover, per-session visibility, signed evidence behind every decision."
+- Never frame Talon as an "alternative to <competitor>" or compare features point-by-point. Describe the problem, what a real fix requires, and link to the evidence commands that prove Talon does it.
 - For Hacker News: no generated/template comments. Keep responses personal, direct, and technical.
 
 ---
@@ -41,7 +43,7 @@ Principles:
 
 **Why the naive approach fails:** Alerting after the fact (e.g. "you've hit $500 today") doesn't stop the next request. By the time you get the alert, the money is spent. You need a hard cap that is evaluated **before** the LLM call is made, and a single place that all traffic goes through so one team can't bypass it.
 
-**What works:** Put a gateway in front of the LLM API that identifies the caller (e.g. by API key or source IP), keeps a running cost total per caller, and denies the request if the caller would exceed their budget. The call never reaches the provider, so no spend. Tools like LiteLLM can log and alert, but if they don't enforce before the call, you still need something that does the deny at the gateway.
+**What works:** Put a gateway in front of the LLM API that identifies the caller (e.g. by API key or source IP), keeps a running cost total per caller, and denies the request if the caller would exceed their budget. The call never reaches the provider, so no spend. Logging and alerting alone are not enough — if nothing enforces before the call, you still need something that does the deny at the gateway.
 
 **Optional link:** [Talon](https://github.com/dativo-io/talon) evaluates cost limits before forwarding: per-request, daily, and monthly caps per caller. When the limit is hit, the request is denied and logged. Demo: `git clone https://github.com/dativo-io/talon && cd talon/examples/docker-compose && docker compose up` — then `docker compose exec talon talon audit list` shows cost per request and decision.
 
@@ -61,9 +63,9 @@ Principles:
 
 ## 5. "Open-source Portkey/Helicone alternative?"
 
-**Opening:** You're looking for an open-source way to proxy LLM traffic with logging, cost tracking, and optional PII/tool controls.
+**Opening:** You're looking for an open-source, self-hostable control plane for your LLM traffic — shared budgets, one policy, and a verifiable record of every decision. Don't answer with a comparison; answer with what the job requires.
 
-**Why the naive approach fails:** Portkey and Helicone are hosted; you may want self-hosted, on-prem, or a single binary with no external services. Rolling your own means maintaining auth, rate limits, cost aggregation, and evidence storage — and it's easy to leave gaps (e.g. no pre-call budget check, or logs that can be altered).
+**Why the naive approach fails:** Hosted gateways put your traffic, spend data, and audit records in someone else's SaaS; you may want self-hosted, on-prem, or a single binary with no external services. Rolling your own means maintaining auth, rate limits, cost aggregation, and evidence storage — and it's easy to leave gaps (e.g. no pre-call budget check, or logs that can be altered).
 
 **What works:** An open-source proxy that: (1) sits in front of OpenAI/Anthropic/Bedrock, (2) identifies callers and enforces limits before the call, (3) scans for PII and can block/redact, (4) writes a signed record per request. Single binary and SQLite-by-default keeps deployment simple.
 

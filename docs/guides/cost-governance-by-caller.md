@@ -1,6 +1,6 @@
 # Cap AI spend for a Slack/support bot in 10 minutes
 
-Talon gives EMEA SMB operators a simple promise:
+If your bot or app's AI spend is growing, Talon gives you a simple promise:
 
 > You can cap AI spend before it runs away, and prove every allow/deny decision with signed evidence.
 

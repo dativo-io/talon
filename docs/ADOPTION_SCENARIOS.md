@@ -1,15 +1,17 @@
 # Dativo Talon — Adoption Scenarios
 
-**Three Paths to Governed AI Automation**
+> ⚠️ **Outdated — pending rewrite ([#274](https://github.com/dativo-io/talon/issues/274)).** This document predates the control-plane repositioning. It contains configuration layouts that are roadmap, not shipped (multi-agent `agents/` directories, [#267](https://github.com/dativo-io/talon/issues/267)), and timeline/ROI figures that are illustrative, not verified. It is intentionally not linked from the documentation index. For evaluation, use the [documentation index](README.md) and the integration guides instead.
+
+**Three Paths to Running Your AI Use Cases on a Control Plane**
 
 ---
 
 ## Overview
 
-Companies adopt Talon in three ways:
+Companies adopt Talon to operate their AI use cases — controlling cost, keeping calls reliable, enforcing shared policy, and understanding sessions — with signed evidence and compliance value as a supporting benefit. They get there in three ways:
 1. **Greenfield** — Building new AI automation from scratch
-2. **Brownfield Custom** — Adding governance to existing custom-built automation
-3. **Brownfield Vendor** — Adding compliance to third-party SaaS vendors
+2. **Brownfield Custom** — Bringing existing custom-built automation under cost, reliability, and policy control
+3. **Brownfield Vendor** — Routing third-party SaaS AI through Talon for visibility, control, and supporting evidence
 
 **Existing app (Slack bot, desktop app, script) that already calls OpenAI/Anthropic/Ollama?** Route traffic through Talon's **LLM API Gateway** (proxy mode) with no code change beyond base URL and a caller API key. See [Slack bot integration](guides/slack-bot-integration.md), [Desktop app governance](guides/desktop-app-governance.md), and [OpenClaw integration](guides/openclaw-integration.md).
 

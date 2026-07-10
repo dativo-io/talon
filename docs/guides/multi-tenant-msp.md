@@ -1,6 +1,6 @@
 # How to offer Talon to multiple customers (multi-tenant / MSP)
 
-If you are an MSP or ISV and want to offer Talon (or a compliance layer) to multiple customers, use tenant isolation, per-tenant tenant keys, and (optionally) multiple gateway callers per customer. This guide gives the steps; for architecture and adoption narrative see [Adoption scenarios](../ADOPTION_SCENARIOS.md).
+If you are an MSP or ISV and want to offer Talon (or a compliance layer) to multiple customers, use tenant isolation, per-tenant tenant keys, and (optionally) multiple gateway callers per customer. This guide gives the steps.
 
 ---
 
@@ -81,7 +81,7 @@ An unscoped `talon secrets set` prints a notice reminding you of the allow-all d
 | Gateway callers | One or more callers per tenant with `tenant_id` and optional `policy_overrides` |
 | Exports | Use tenant-scoped export (API with tenant key or tenant filter) for each customer |
 
-For deeper context on adoption and architecture see [Adoption scenarios](../ADOPTION_SCENARIOS.md) and [Architecture: MCP proxy](../ARCHITECTURE_MCP_PROXY.md).
+For deeper context on architecture see [Architecture: MCP proxy](../ARCHITECTURE_MCP_PROXY.md).
 
 ---
 

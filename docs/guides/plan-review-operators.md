@@ -1,6 +1,6 @@
 # How to test and operate Plan Review
 
-Operator guide for Talon's **Plan Review Gate** — human oversight that pauses agent execution **before the first LLM call** until an operator approves the execution plan. Supports controls aligned with EU AI Act Art. 14 (human oversight).
+Plan review is an **optional human-oversight gate** for native `talon run` agents — most Talon deployments (gateway proxying, coding agents) never enable it, and none of the four operating pillars depend on it. This operator guide covers Talon's **Plan Review Gate**: when enabled, it pauses agent execution **before the first LLM call** until an operator approves the execution plan, with every decision recorded in signed evidence. It provides supporting controls for EU AI Act Art. 14-style human oversight — not a compliance claim.
 
 **Not covered here:** per-tool approval during the agentic loop (`/v1/tool-approvals`). That is a separate mid-run gate. See [Operational control plane](../reference/operational-control-plane.md).
 

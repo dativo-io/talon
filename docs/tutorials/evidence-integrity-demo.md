@@ -10,7 +10,7 @@ This walkthrough gives you a fast auditor-ready proof:
 
 Core message:
 
-> Evidence-grade, not just logs. Talon signs every evidence record at creation time. If any signed field changes later, verification fails.
+> Signed, verifiable evidence — not just logs. Talon signs every evidence record at creation time. If any signed field changes later, verification fails.
 
 ## Prerequisites
 

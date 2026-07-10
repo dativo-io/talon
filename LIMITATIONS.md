@@ -1,6 +1,6 @@
 # Talon Security Boundaries & Limitations
 
-Talon provides policy enforcement, routing controls, PII handling, and signed evidence records for AI gateway traffic. It does not determine legal compliance for an operator, and it does not prove that a downstream model, tool, or human decision was correct.
+Talon is a control plane for AI use cases: it provides policy enforcement, cost controls, routing controls, PII handling, and signed evidence records for the AI traffic routed through it. It does not determine legal compliance for an operator, and it does not prove that a downstream model, tool, or human decision was correct.
 
 This document serves as an explicit boundaries guide so that operators and security teams can accurately evaluate Talon's trust model.
 
@@ -10,9 +10,9 @@ This document serves as an explicit boundaries guide so that operators and secur
 
 | Capability | Status | Description |
 | :--- | :--- | :--- |
-| **Available Now** | ✅ | Proxy governance, input/output PII scan, policy decision, signed evidence, audit verify. |
-| **Partial Today** | 🟡 | EU routing proof is currently deny/allow evidence, not silent rerouting. |
-| **Roadmap** | ⏳ | Runtime tool execution interception, full auditor pack, broader trust mesh/A2A. |
+| **Available Now** | ✅ | Proxy governance, input/output PII scan, policy decision, cost caps, policy-valid fallback, MCP tool-call interception, signed evidence, audit verify. |
+| **Partial Today** | 🟡 | EU routing proof is currently deny/allow evidence, not silent rerouting; session budgets are soft caps. |
+| **Roadmap** | ⏳ | Per-execution tool lifecycle evidence, same-provider retries with backoff, cost warning-threshold evidence + org webhooks, broader trust mesh/A2A. |
 
 ---
 
