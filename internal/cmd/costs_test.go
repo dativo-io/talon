@@ -232,7 +232,7 @@ func TestCostsExportCmd_JSONIncludesProviderAndDeniedRow(t *testing.T) {
 	var buf bytes.Buffer
 	costsCmd.SetOut(&buf)
 	costsCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{"costs", "export", "--tenant", "default", "--caller", "support-slack-bot", "--format", "json"})
+	rootCmd.SetArgs([]string{"costs", "export", "--tenant", "default", "--agent", "support-slack-bot", "--format", "json"})
 	require.NoError(t, rootCmd.Execute())
 
 	var rows []map[string]interface{}

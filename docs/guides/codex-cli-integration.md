@@ -137,7 +137,7 @@ talon audit list --agent codex
 Session-level views (all built on the same aggregation, `evidence.BuildSessionSummary`):
 
 ```bash
-# Per-session summary + per-agent (subagent) rollup + the session's records
+# Per-session summary + per-subagent rollup + the session's records
 talon audit list --session <session-id>
 
 # Per-session cost rollup, machine-readable
@@ -227,7 +227,7 @@ talon enforce enable
 
 ## What Talon does not see
 
-Talon governs **model API traffic**. Codex's local tool executions — file edits, shell commands, anything it does on the developer's machine — never transit the gateway. Evidence shows the model's tool-call *intentions*, not local execution results. Client-asserted session/subagent identity is attribution within an already-authenticated caller, not authentication of subagents. Both boundaries are documented in [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
+Talon governs **model API traffic**. Codex's local tool executions — file edits, shell commands, anything it does on the developer's machine — never transit the gateway. Evidence shows the model's tool-call *intentions*, not local execution results. Client-asserted session/subagent identity is attribution within an already-authenticated agent, not authentication of subagents. Both boundaries are documented in [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary).
 
 ---
 
@@ -235,16 +235,16 @@ Talon governs **model API traffic**. Codex's local tool executions — file edit
 
 | Failure mode | Talon defense | Config / control |
 |---|---|---|
-| Developer routes Codex via Talon with `requires_openai_auth = true` (subscription OAuth) | Gateway rejects the OAuth token as an unknown tenant key — ungoverned traffic cannot masquerade as governed | Tenant-key auth via `env_key`; [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) |
-| Real OpenAI key spread across developer laptops | Vault-stored key injected upstream; clients only ever hold the tenant key | `talon secrets set openai-api-key`, `providers.openai.secret_name` |
+| Developer routes Codex via Talon with `requires_openai_auth = true` (subscription OAuth) | Gateway rejects the OAuth token as an unknown agent key — ungoverned traffic cannot masquerade as governed | Agent-key auth via `env_key`; [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) |
+| Real OpenAI key spread across developer laptops | Vault-stored key injected upstream; clients only ever hold the agent key | `talon secrets set openai-api-key`, `providers.openai.secret_name` |
 | Gateway silently reverses Codex's `store: false` retention decision | Default `preserve` forwards it untouched; a `force_true` override is recorded in signed evidence (`responses_store_overridden`) | `responses_store_mode` (`TestConformanceResponses_StoreModes`) |
 | Gateway transforms mangle Codex body shapes (`client_metadata`, `prompt_cache_key`, full-transcript resend) or the SSE stream | Conformance fixtures assert unknown fields forwarded untouched and streams delivered byte-identical incl. the terminal `response.completed` | `TestConformanceResponses_Fixtures`, `internal/gateway/testdata/conformance/responses/` |
 | Streamed spend invisible (Codex always streams) | Usage parsed from the terminal `response.completed` event into signed cost evidence, incl. cached tokens | `internal/gateway/forward.go` (`TestExtractUsage_ResponsesCompleted`) |
-| Agent loop burns budget inside one session | Soft session cap denies the next request with `session_budget_exceeded` + structured `session_budget` evidence | `max_session_cost` (`TestSessionBudget_*`) |
-| Slow-burn overspend across sessions | Per-caller daily/monthly caps | `max_daily_cost`, `max_monthly_cost` |
-| Credentials pasted into prompts (AWS keys, GitHub tokens, PEM blocks, `sk-...`) | Input-side scan with high-precision recognizers; findings recorded in signed evidence | `agent.talon.yaml` `custom_recognizers`, `pii_action: warn` |
+| Agent loop burns budget inside one session | Soft session cap denies the next request with `session_budget_exceeded` + structured `session_budget` evidence | `session_limits.max_cost` (`TestSessionBudget_*`) |
+| Slow-burn overspend across sessions | Per-agent daily/monthly caps | `policies.cost_limits.daily` / `.monthly` |
+| Credentials pasted into prompts (AWS keys, GitHub tokens, PEM blocks, `sk-...`) | Input-side scan with high-precision recognizers; findings recorded in signed evidence | `agent.talon.yaml` `custom_recognizers`, input `warn` |
 | Long generation hard-cut mid-stream | Raised coding timeouts | `request_timeout: 600s` (header wait follows it by default) |
-| Subagent forges its identity | Attribution, not authentication: `provenance: "client_asserted"`, never a policy input; budgets bind to the caller | `TestPolicyInputParity_WithAssertedSession`; [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) |
+| Subagent forges its identity | Attribution, not authentication: `provenance: "client_asserted"`, never a policy input; budgets bind to the Talon agent | `TestPolicyInputParity_WithAssertedSession`; [LIMITATIONS.md §7](../../LIMITATIONS.md#7-coding-agent-and-orchestration-boundary) |
 | Hostile/oversized orchestration header values | Validated at ingestion: 128-byte cap, HTTP token charset, rejected not truncated | `internal/gateway/orchmeta.go` |
 | Enforcement flipped on blind | Shadow mode records would-have-denied violations first | `mode: "shadow"`, `talon enforce report` / `enable` |
 | Evidence tampering | HMAC-signed evidence chain, verifiable per session | `talon audit verify --session <id>` |
@@ -258,14 +258,14 @@ Talon governs **model API traffic**. Codex's local tool executions — file edit
 | Codex CLI → OpenAI directly | Codex CLI → Talon → OpenAI |
 | Real API key on every laptop | Key in Talon's encrypted vault only |
 | No central audit | Every request in `talon audit`, attributed per session and subagent |
-| No cost controls | Session, daily, and monthly caps per caller |
+| No cost controls | Session, daily, and monthly caps per agent |
 | No proof `store: false` survived the middlebox | Retention decision preserved by default; any override signed into evidence |
 
 ---
 
 ## You're done
 
-Codex CLI now sends all OpenAI traffic through Talon. Talon logs every request into signed evidence, attributes sessions and subagents, parses streamed usage into cost evidence, preserves Codex's `store: false` retention decision, scans inputs for leaked credentials, and enforces (or shadow-records) session and caller budgets.
+Codex CLI now sends all OpenAI traffic through Talon. Talon logs every request into signed evidence, attributes sessions and subagents, parses streamed usage into cost evidence, preserves Codex's `store: false` retention decision, scans inputs for leaked credentials, and enforces (or shadow-records) session and agent budgets.
 
 **Next steps:**
 

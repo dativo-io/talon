@@ -32,24 +32,28 @@ func IsAdminFromContext(ctx context.Context) bool {
 	return requestctx.IsAdmin(ctx)
 }
 
-// TenantKeyMiddleware returns a middleware that validates Authorization: Bearer <tenant_key>
-// and sets tenant_id in context. tenantKeys maps key -> tenant_id.
-func TenantKeyMiddleware(tenantKeys map[string]string) func(http.Handler) http.Handler {
+// TenantKeyMiddleware returns a middleware that validates
+// Authorization: Bearer <agent key> and sets the derived tenant_id in
+// context. tenantKeys is the identity registry's key → tenant projection.
+// Openness is governed by the admin-key dev rule ONLY: an empty agent
+// registry must never by itself open tenant APIs when an admin key is
+// configured (#266, #280).
+func TenantKeyMiddleware(tenantKeys map[string]string, adminKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Dev mode: no tenant keys configured.
-			if len(tenantKeys) == 0 {
+			// Dev mode: no auth configured at all.
+			if adminKey == "" && len(tenantKeys) == 0 {
 				next.ServeHTTP(w, r)
 				return
 			}
 			key := bearerToken(r)
 			if key == "" {
-				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing tenant key")
+				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing agent key")
 				return
 			}
 			tenantID := lookupTenantID(tenantKeys, key)
 			if tenantID == "" {
-				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing tenant key")
+				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing agent key")
 				return
 			}
 			r = r.WithContext(requestctx.SetTenantID(r.Context(), tenantID))
@@ -82,9 +86,9 @@ func AdminKeyMiddleware(adminKey string) func(http.Handler) http.Handler {
 	}
 }
 
-// TenantOrAdminMiddleware allows either an admin key or tenant key.
+// TenantOrAdminMiddleware allows either an admin key or an agent key.
 // Admin auth checks X-Talon-Admin-Key first, then Bearer fallback.
-// Tenant auth checks Authorization: Bearer <tenant_key>.
+// Agent auth checks Authorization: Bearer <agent key> (#266).
 func TenantOrAdminMiddleware(tenantKeys map[string]string, adminKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +112,7 @@ func TenantOrAdminMiddleware(tenantKeys map[string]string, adminKey string) func
 				next.ServeHTTP(w, r)
 				return
 			}
-			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing tenant/admin key. Use Authorization: Bearer <tenant_key> or ?talon_admin_key=YOUR_TALON_ADMIN_KEY for admin GET endpoints")
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing agent/admin key. Use Authorization: Bearer <agent key> or ?talon_admin_key=YOUR_TALON_ADMIN_KEY for admin GET endpoints")
 		})
 	}
 }

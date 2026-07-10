@@ -163,7 +163,7 @@ func WithToolApprovalStore(tas *agent.ToolApprovalStore) Option {
 	return func(s *Server) { s.toolApprovalStoreRef = tas }
 }
 
-// WithGateway sets the LLM API gateway handler (optional). Mounted at /v1/proxy/* with its own caller auth.
+// WithGateway sets the LLM API gateway handler (optional). Mounted at /v1/proxy/* with its own agent-key auth.
 func WithGateway(h http.Handler) Option {
 	return func(s *Server) { s.gateway = h }
 }
@@ -282,7 +282,7 @@ func (s *Server) Routes() http.Handler {
 	// Webhooks (no auth; signature validation can be added later)
 	r.Post("/v1/triggers/{name}", s.webhookHandler.HandleWebhook)
 
-	// LLM API Gateway (caller identification via API key or source IP; no Talon auth middleware)
+	// LLM API Gateway (agent-key identification via the identity registry; no Talon auth middleware)
 	if s.gateway != nil {
 		r.Route("/v1/proxy", func(r chi.Router) {
 			r.Handle("/*", s.gateway)
@@ -296,7 +296,7 @@ func (s *Server) Routes() http.Handler {
 
 	// Tenant-only API group
 	r.Group(func(r chi.Router) {
-		r.Use(TenantKeyMiddleware(s.tenantKeys))
+		r.Use(TenantKeyMiddleware(s.tenantKeys, s.adminKey))
 		r.Use(RateLimitMiddleware(s.tenantManager))
 
 		// Long-running: no request timeout so handler 30min deadline applies (middleware.Timeout would override).
@@ -306,7 +306,7 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/v1/chat/completions", s.handleChatCompletions)
 		case len(s.tenantKeys) > 0:
 			// Quickstart mode: the relocated agent chat is only mounted when the
-			// operator has configured real tenant keys (e.g. via a gateway
+			// operator has configured real agent keys (e.g. via a gateway
 			// config). This preserves the strict "host-root facade only" boundary
 			// when quickstart is used without any tenant-auth setup: the
 			// relocated path returns 404 rather than becoming a dev-mode-open
@@ -408,7 +408,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/v1/dashboard/audit-pack", s.handleAuditPack)
 		r.Get("/v1/dashboard/review-history", s.handleReviewHistory)
 
-		// CoPaw dashboard: stats and alerts for CoPaw gateway callers.
+		// CoPaw dashboard: stats and alerts for CoPaw-tagged gateway agents.
 		r.Get("/v1/copaw/stats", s.handleCoPawStats)
 		r.Get("/v1/copaw/alerts", s.handleCoPawAlerts)
 

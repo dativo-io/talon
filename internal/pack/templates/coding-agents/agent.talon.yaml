@@ -47,7 +47,7 @@ policies:
   data_classification:
     input_scan: true
     output_scan: true
-    redact_pii: false # coding output: redaction mangles code; gateway callers use warn/allow
+    redact_pii: false # coding output: redaction mangles code; gateway agents use warn/allow
     # High-precision credential recognizers (#201). Deliberately few and
     # unambiguous: prefixed key formats and PEM blocks only — no entropy
     # heuristics, no generic "looks like a secret" guessing.

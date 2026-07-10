@@ -23,7 +23,6 @@ import (
 
 var (
 	costsAgent        string
-	costsCaller       string
 	costsTenant       string
 	costsByModel      bool
 	costsByProvider   bool
@@ -35,7 +34,6 @@ var (
 	costsExportTo     string
 	costsExportTenant string
 	costsExportAgent  string
-	costsExportCaller string
 	costsExportOutput string
 	costsExportLimit  int
 )
@@ -103,12 +101,6 @@ var costsCmd = &cobra.Command{
 		tenantID := costsTenant
 		if tenantID == "" {
 			tenantID = "default"
-		}
-		if costsCaller != "" {
-			if costsAgent != "" && costsAgent != costsCaller {
-				return fmt.Errorf("--agent (%s) and --caller (%s) refer to different values", costsAgent, costsCaller)
-			}
-			costsAgent = costsCaller
 		}
 
 		if costsSession != "" {
@@ -426,12 +418,6 @@ func costsExport(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	agentID := strings.TrimSpace(costsExportAgent)
-	if caller := strings.TrimSpace(costsExportCaller); caller != "" {
-		if agentID != "" && agentID != caller {
-			return fmt.Errorf("--agent (%s) and --caller (%s) refer to different values", agentID, caller)
-		}
-		agentID = caller
-	}
 	tenantID := strings.TrimSpace(costsExportTenant)
 	if tenantID == "" {
 		tenantID = "default"
@@ -658,7 +644,6 @@ func init() {
 	rootCmd.AddCommand(costsCmd)
 	costsCmd.AddCommand(costsExportCmd)
 	costsCmd.Flags().StringVar(&costsAgent, "agent", "", "filter by agent name")
-	costsCmd.Flags().StringVar(&costsCaller, "caller", "", "filter by caller name (alias for --agent)")
 	costsCmd.Flags().StringVar(&costsTenant, "tenant", "", "tenant ID (default: default)")
 	costsCmd.Flags().BoolVar(&costsByModel, "by-model", false, "group output by model")
 	costsCmd.Flags().BoolVar(&costsByProvider, "by-provider", false, "group output by provider")
@@ -670,7 +655,6 @@ func init() {
 	costsExportCmd.Flags().StringVar(&costsExportTo, "to", "", "end date (YYYY-MM-DD)")
 	costsExportCmd.Flags().StringVar(&costsExportTenant, "tenant", "", "tenant ID (default: default)")
 	costsExportCmd.Flags().StringVar(&costsExportAgent, "agent", "", "filter by agent name")
-	costsExportCmd.Flags().StringVar(&costsExportCaller, "caller", "", "filter by caller name (alias for --agent)")
 	costsExportCmd.Flags().StringVar(&costsExportOutput, "output", "", "write to file instead of stdout")
 	costsExportCmd.Flags().IntVar(&costsExportLimit, "limit", 10000, "maximum records to export")
 }

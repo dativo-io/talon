@@ -112,7 +112,7 @@ talon audit list --agent claude-code
 Session-level views (all built on the same aggregation, `evidence.BuildSessionSummary`):
 
 ```bash
-# Per-session summary + per-agent (subagent) rollup + the session's records
+# Per-session summary + per-subagent rollup + the session's records
 talon audit list --session <session-id>
 
 # Per-session cost rollup, machine-readable

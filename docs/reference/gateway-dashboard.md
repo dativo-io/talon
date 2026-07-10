@@ -167,7 +167,7 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/me
       "tenant_id": "default",
       "session_source": "client_asserted",
       "client": "claude-code",
-      "callers": ["claude-code"],
+      "agents": ["claude-code"],
       "providers": ["anthropic", "openai"],
       "models": ["claude-opus-4-8", "gpt-5.3-codex"],
       "record_count": 14,
@@ -180,7 +180,7 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/me
       "cache_read_tokens": 31000,
       "first_seen": "2026-07-05T13:01:11Z",
       "last_seen": "2026-07-05T13:24:53Z",
-      "agents": [
+      "subagents": [
         {"agent_id": "generator", "record_count": 9, "total_cost": 0.71, "input_tokens": 40100, "output_tokens": 8000},
         {"agent_id": "judge", "parent_agent_id": "generator", "record_count": 5, "total_cost": 0.13, "input_tokens": 8110, "output_tokens": 1120}
       ]
@@ -360,13 +360,13 @@ Each entry is a session summary:
 | `tenant_id` | string | Owning tenant. |
 | `session_source` | string | `client_asserted` \| `vendor_asserted`. |
 | `client` | string | Adapter that asserted it (`claude-code`, `codex`, `generic`). |
-| `callers` | array | Every gateway agent identity observed on this session id (a cross-agent collision is visible, never merged); the JSON key predates the identity model rename (#266). |
+| `agents` | array | Every gateway agent identity (traffic identity) observed on this session id — a cross-agent collision is visible, never merged. |
 | `providers` / `models` | array | Distinct providers/models used — a mixed-provider session is ONE session. |
 | `record_count` / `allowed` / `denied` / `errors` | int | Request outcome counts. |
 | `total_cost` | float | Accumulated signed spend (EUR). |
 | `input_tokens` / `output_tokens` / `cache_read_tokens` / `cache_write_tokens` | int | Token totals. |
 | `first_seen` / `last_seen` | timestamp | Session activity window. |
-| `agents` | array | Per-subagent rollup (client-asserted `agent_id`, optional `parent_agent_id`), sorted by descending cost. |
+| `subagents` | array | Per-subagent rollup (client-asserted `agent_id`, optional `parent_agent_id`), sorted by descending cost. |
 
 ### `denials_by_reason`
 

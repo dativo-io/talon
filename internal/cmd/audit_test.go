@@ -657,7 +657,6 @@ func resetAuditCostFlags() {
 	costsSession = ""
 	costsJSON = false
 	costsAgent = ""
-	costsCaller = ""
 	costsTenant = ""
 }
 
