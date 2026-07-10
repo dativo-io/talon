@@ -1,5 +1,7 @@
 # Dativo Talon — Adoption Scenarios
 
+> ⚠️ **Outdated — pending rewrite ([#274](https://github.com/dativo-io/talon/issues/274)).** This document predates the control-plane repositioning. It contains configuration layouts that are roadmap, not shipped (multi-agent `agents/` directories, [#267](https://github.com/dativo-io/talon/issues/267)), and timeline/ROI figures that are illustrative, not verified. It is intentionally not linked from the documentation index. For evaluation, use the [documentation index](README.md) and the integration guides instead.
+
 **Three Paths to Running Your AI Use Cases on a Control Plane**
 
 ---

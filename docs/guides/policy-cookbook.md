@@ -4,30 +4,6 @@ Copy-paste snippets for common policy needs. Use in `agent.talon.yaml` (agent po
 
 ---
 
-## Enable governed semantic cache (infrastructure)
-
-**Goal:** Reduce LLM cost and latency by serving similar queries from a GDPR-safe, PII-scrubbed cache. Cache is checked before each LLM call; hits return a cached response and skip the provider.
-
-**Where:** `talon.config.yaml` (infrastructure — owned by DevOps), not in `agent.talon.yaml`.
-
-```yaml
-cache:
-  enabled: true
-  default_ttl: 3600              # 1 hour for public tier
-  ttl_by_tier:
-    public: 3600
-    internal: 900                # 15 minutes
-  similarity_threshold: 0.92      # 0–1; higher = stricter match
-  max_entries_per_tenant: 10000
-```
-
-- Cache stores **embeddings/hashes** of prompts (not raw text) and **PII-scrubbed** responses only.
-- Confidential/restricted data tier and high-severity PII requests are not cached (OPA policy).
-- Tool calls and MCP messages are never cached.
-- Use `talon cache erase --tenant <id>` for GDPR Article 17 erasure. See [Configuration reference](../reference/configuration.md) when the cache feature is available.
-
----
-
 ## Only allow specific models for tier_2
 
 **Goal:** Restrict tier_2 (e.g. PII-bearing) requests to one or more models.
@@ -505,7 +481,30 @@ memory:
 
 Use `mode: shadow` to log what would be written without persisting. See [Memory governance](../MEMORY_GOVERNANCE.md) and [How to verify memory is used](memory-verification.md).
 
-**Cache vs memory:** Memory is agent-level learning (what the agent may remember). The semantic cache is infrastructure-level: it reuses LLM responses for similar prompts to save cost; it is configured in `talon.config.yaml` under `cache`, not in agent policy. See [Memory governance — Cache vs memory](../MEMORY_GOVERNANCE.md#cache-vs-memory).
+**Cache vs memory:** Memory is agent-level learning (what the agent may remember). The semantic cache (experimental — see below) is infrastructure-level: it is configured in `talon.config.yaml` under `cache`, not in agent policy. See [Memory governance — Cache vs memory](../MEMORY_GOVERNANCE.md#cache-vs-memory).
+
+---
+
+## Experimental: governed semantic cache (not verified end-to-end)
+
+> ⚠️ **Not a shipped control.** The semantic cache is scaffolded (config, CLI, PII scrubbing design) but its end-to-end serving path is **not verified** and the work is parked on the roadmap ([#141](https://github.com/dativo-io/talon/issues/141)). Do not rely on it to reduce cost today — the shipped cost controls are the caps and cache-aware pricing above. This section documents the intended design only.
+
+**Intended goal:** reduce LLM cost and latency by serving similar queries from a PII-scrubbed cache, checked before each LLM call.
+
+**Where (when enabled):** `talon.config.yaml` (infrastructure — owned by DevOps), not in `agent.talon.yaml`.
+
+```yaml
+cache:
+  enabled: true
+  default_ttl: 3600              # 1 hour for public tier
+  ttl_by_tier:
+    public: 3600
+    internal: 900                # 15 minutes
+  similarity_threshold: 0.92      # 0–1; higher = stricter match
+  max_entries_per_tenant: 10000
+```
+
+Design intent: store **embeddings/hashes** of prompts (not raw text) and **PII-scrubbed** responses only; never cache confidential/restricted tiers, high-severity PII requests, tool calls, or MCP messages; `talon cache erase --tenant <id>` supports GDPR Article 17 erasure.
 
 ---
 
@@ -523,7 +522,7 @@ Use `mode: shadow` to log what would be written without persisting. See [Memory 
 | Tool hardening (row caps, dry-run, forbidden args) | `tool_policies` | -- |
 | Tool idempotency (dedupe retried side effects) | `tool_governance` | -- |
 | Human oversight | `compliance.human_oversight` | -- |
-| Semantic cache (TTL, enabled) | — | `talon.config.yaml` only (`cache` section, infrastructure) |
+| Semantic cache (experimental, parked #141) | — | `talon.config.yaml` only (`cache` section, infrastructure) |
 
 ---
 

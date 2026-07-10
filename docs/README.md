@@ -22,11 +22,13 @@ This documentation is organised around the [Diátaxis](https://diataxis.fr/) fra
 
 Pick the path that matches your goal. For what Talon is **not** building, read [Roadmap & focus](../ROADMAP.md) early.
 
-### Evaluator (no API key, ~15 minutes)
+### Evaluator (~15 minutes)
 
-1. [60-second demo](tutorials/quickstart-demo.md) — Docker Compose, mock provider, evidence in SQLite.
-2. [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) — verify, export, tamper, fail verification.
-3. [Sample auditor pack](../examples/auditor-pack/README.md) — browse the proof layer: a signed export, compliance report, GDPR Art. 30 RoPA, and EU AI Act Annex IV pack; regenerate with `make auditor-pack`.
+1. [60-second demo](tutorials/quickstart-demo.md) — Docker Compose, mock provider, evidence in SQLite. No API key.
+2. [Governed session demo](../examples/governed-session/README.md) — the control-plane proof: one real session under budget caps, policy, fallback routing, and session-level audit. Read the recorded walkthrough with no keys, or run it with your own keys (≈ $0.03).
+3. [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) — verify, export, tamper, fail verification. No API key.
+
+When you need the proof layer for an auditor or customer review, continue with the [sample auditor pack](../examples/auditor-pack/README.md) (`make auditor-pack`).
 
 ### Builder (native binary, cold start)
 
@@ -124,7 +126,6 @@ Choose the shortest path for your situation:
 | [Why not just a PII proxy?](explanation/why-not-a-pii-proxy.md) | Five failure scenarios: what a PII-only proxy misses, what Talon does, and how to verify. |
 | [Evidence store](explanation/evidence-store.md) | Evidence record structure, session_id, HMAC signing (TALON_SIGNING_KEY), progressive disclosure, storage, and export (CSV/JSON columns). |
 | [Roadmap & focus](../ROADMAP.md) | Shipped-vs-target status by pillar, the active MVP roadmap, and public anti-goals. |
-| [Adoption scenarios](ADOPTION_SCENARIOS.md) | Greenfield, brownfield custom, brownfield vendor; timelines and ROI. |
 | [Persona guides](PERSONA_GUIDES.md) | Who uses Talon (DevOps, Compliance, CTO, SecOps, FinOps) and what they do. |
 | [Vendor integration guide](VENDOR_INTEGRATION_GUIDE.md) | Why vendor compliance matters; MCP proxy and patterns. |
 | [Architecture: MCP proxy](ARCHITECTURE_MCP_PROXY.md) | How the MCP proxy fits in; related LLM API gateway. |

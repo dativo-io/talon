@@ -8,13 +8,13 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/dativo-io/talon)](https://goreportcard.com/report/github.com/dativo-io/talon)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Every AI use case a company ships — a support bot, a coding agent, an internal copilot — reinvents the same operational plumbing: its own cost controls, its own retry behavior, its own data policy, its own incident trail. The result is use cases you can't reliably operate, and agentic projects that stall because nobody can control them. Talon is one self-hosted Go binary in front of OpenAI, Anthropic, AWS Bedrock, Azure OpenAI, local Ollama, and any OpenAI-compatible endpoint: change one base URL and every use case gets shared budgets enforced **before** the provider is called, policy-checked failover when a provider degrades, one policy for PII, tools, and data destinations, and a per-session view of what each use case did and spent — with a signed, verifiable evidence record behind every decision. Apache 2.0.
+Every AI use case a company ships — a support bot, a coding agent, an internal copilot — reinvents the same operational plumbing: its own cost controls, its own retry behavior, its own data policy, its own incident trail. The result is use cases you can't reliably operate, and agentic projects that stall because nobody can control them. Talon is one self-hosted Go binary in front of OpenAI, Anthropic, AWS Bedrock, Azure OpenAI, local Ollama, and any OpenAI-compatible endpoint: change one base URL and every use case gets budget caps enforced **before** the provider is called, policy-checked failover when a provider degrades, central policy defaults with explicit per-use-case exceptions for PII, tools, and data destinations, and a per-session view of what each use case did and spent — with a signed, verifiable evidence record behind every decision. Apache 2.0.
 
 ![Talon hero demo — one governed AI session: allowed, tool stripped, PII blocked, US destination routed to a local model, budget enforced](docs/assets/talon_hero.gif)
 
 *One AI session, one governed boundary: good traffic flows, a dangerous tool is stripped, PII is blocked before the provider, confidential data is refused by a US model and runs on a local one instead, runaway spend is stopped — and every decision verifies.*
 
-**See it in 60 seconds, no API key →** [Try it now](#try-it-in-60-seconds-no-api-key) · **Deep proof on live providers →** [Governed session demo](#governed-session-demo-real-providers) · **Pilot on a real workload →** [Open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)
+**See it in 60 seconds, no API key →** [Try it now](#try-it-in-60-seconds-no-api-key) · **Deep proof on live providers →** [Governed session demo](#governed-session-demo-real-providers) · **Pilot on a real AI use case →** [Open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)
 
 ---
 
@@ -24,7 +24,7 @@ Talon is for teams that **already have AI use cases in production** — or block
 
 - **How much is each use case spending, and how do we stop runaway spend?** (a cap that denies the request before the provider is called, not an alert after the bill)
 - **What happens when a provider times out or rate-limits?** (one central failure behavior — policy-checked fallback — instead of N ad-hoc retry loops)
-- **Which models, tools, and data destinations are actually allowed?** (one shared policy, enforced before the model runs, not "should be")
+- **Which models, tools, and data destinations are actually allowed?** (central defaults with explicit exceptions, enforced before the model runs, not "should be")
 - **What did that agent actually do — and can we prove it later?** (per-session visibility, backed by a signed record an auditor can verify offline)
 
 If those are your questions, Talon sits in front of your existing OpenAI/Anthropic traffic and answers them at the boundary — no SDK change, same response shape.
@@ -47,7 +47,7 @@ If those are your questions, Talon sits in front of your existing OpenAI/Anthrop
 
 → [Provider fallback chains](docs/reference/configuration.md#provider-fallback-chains-error-driven-failover)
 
-### 3. Shared policy — write it once, every use case inherits it
+### 3. Shared policy — central defaults, explicit exceptions
 
 - PII scanning (regex, Presidio, HTTP, or local-LLM engines) on prompts, attachments, tool arguments, and responses; redact, block, or warn before the provider — EU identifiers (IBAN MOD-97, VAT, national IDs) plus email, phone, card, passport, IP.
 - Tool allowlists and forbidden globs (`admin_*`): dangerous tools are stripped or blocked before the model ever sees them; MCP tool calls routed through Talon are policy-checked before execution.
@@ -70,11 +70,11 @@ Every decision — allow, deny, redact, fallback, budget stop — becomes an HMA
 
 ---
 
-## Start with one workload
+## Start with one AI use case
 
 You don't have to trust Talon in blocking mode on day one.
 
-1. **Put Talon in front of one** dev or internal workload (change the base URL, add a caller key).
+1. **Put Talon in front of one** dev or internal use case (change the base URL, add a caller key).
 2. **Start in shadow mode** — Talon records what policy *would* do (PII, tools, spend, destinations) **without changing the response**.
 3. **Turn on one control** when you're ready: block PII, cap spend, keep confidential data local, or strip a dangerous tool.
 
@@ -236,7 +236,7 @@ Full table with regions and notes: [Provider registry](docs/reference/provider-r
 
 ## Where Talon fits
 
-Routers optimize a single call; observability tools tell you what already happened. Talon operates the **fleet of AI use cases**: shared budgets and policy decided *before* the request reaches the model, policy-valid fallback when providers fail, and a per-session trail of what each use case did — with every decision leaving a verifiable, signed record. One layer, every use case, instead of per-app plumbing.
+Routers optimize a single call; observability tools tell you what already happened. Talon operates the **AI use cases routed through it**: budget caps and policy decided *before* the request reaches the model, policy-valid fallback when providers fail, and a per-session trail of what each use case did — with every decision leaving a verifiable, signed record. One layer instead of per-app plumbing.
 
 What "control plane" means here — and what Talon deliberately is not: [Talon as a control plane](docs/explanation/control-plane.md). Why a PII-redaction proxy isn't enough: [Why not a PII proxy](docs/explanation/why-not-a-pii-proxy.md).
 
@@ -346,17 +346,17 @@ Artifacts a skeptical reviewer can grep in one session:
 
 ---
 
-## Pilot Talon on a real workload
+## Pilot Talon on a real AI use case
 
-The fastest way to know if Talon fits: put **one** workload behind it in shadow mode and see what it flags. Common first steps:
+The fastest way to know if Talon fits: put **one** use case behind it in shadow mode and see what it flags. Common first steps:
 
-| Workload | First control |
+| AI use case | First control |
 |----------|--------------|
 | OpenAI support bot | Block customer PII before the provider |
 | OpenClaw / coding agent | Control which tools and models are allowed; signed execution evidence |
 | Regulated app | Keep confidential data on a local/EU model |
 | Any app with a growing bill | Cap spend before the request, not after |
-| A growing number of internal AI use cases | Shared budgets and one policy across all of them, with per-session visibility |
+| A growing number of internal AI use cases | Budget caps and central policy defaults across all of them, with per-session visibility |
 
 **[Open a pilot issue →](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)** with your current stack and the one control you need first — we'll help you get it running.
 

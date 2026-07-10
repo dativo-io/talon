@@ -218,6 +218,5 @@ talon report --tenant acme
 ## See also
 
 - [QUICKSTART.md](QUICKSTART.md) — Install, init, first run, audit, secrets, memory.
-- [ADOPTION_SCENARIOS.md](ADOPTION_SCENARIOS.md) — Greenfield, brownfield custom, brownfield vendor.
 - [VENDOR_INTEGRATION_GUIDE.md](VENDOR_INTEGRATION_GUIDE.md) — MCP proxy and vendor compliance.
 - [MEMORY_GOVERNANCE.md](MEMORY_GOVERNANCE.md) — Agent memory, categories, and rollback.
