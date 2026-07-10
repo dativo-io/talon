@@ -25,10 +25,10 @@ policies:
       location: eu       # Even non-sensitive financial data stays in EU
     tier_1:
       location: eu
-      bedrock_only: true
     tier_2:
       location: eu
-      bedrock_only: true
+      # To route data only via AWS Bedrock, set bedrock_only: true on these tiers and use
+      # Bedrock model naming (e.g. anthropic.*) with a Bedrock provider configured.
 
 audit:
   # supports: dora Art. 11 — internal/evidence/store.go (ICT incident traceability with signed audit trail)

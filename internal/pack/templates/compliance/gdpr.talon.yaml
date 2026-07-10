@@ -19,8 +19,9 @@ policies:
     tier_1:
       location: eu       # Data stays in EU
     tier_2:
-      location: eu
-      bedrock_only: true # Sensitive data only via EU Bedrock
+      location: eu       # Sensitive data stays in EU (enforced via routing.rego)
+      # To route sensitive data only via AWS Bedrock, set bedrock_only: true and use
+      # Bedrock model naming (e.g. anthropic.*) with a Bedrock provider configured.
 
 audit:
   # supports: gdpr Art. 30 — internal/evidence/store.go (Processing records via signed evidence export)

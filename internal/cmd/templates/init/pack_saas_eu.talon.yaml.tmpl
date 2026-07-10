@@ -26,7 +26,9 @@ policies:
   model_routing:
     tier_0: { primary: gpt-4o-mini, location: any }
     tier_1: { primary: gpt-4o, fallback: gpt-4o-mini, location: eu-west-1 }
-    tier_2: { primary: claude-sonnet-4-20250514, location: eu-west-1, bedrock_only: true }
+    # For EU data residency, pin tier_2 to AWS Bedrock: set bedrock_only: true and use
+    # Bedrock model naming (e.g. anthropic.claude-sonnet-4-20250514-v1:0) with a Bedrock provider.
+    tier_2: { primary: claude-sonnet-4-20250514, location: eu-west-1 }
 
 audit:
   log_level: detailed
