@@ -16,7 +16,7 @@ type RecordGatewayEvidenceParams struct {
 	CorrelationID           string
 	SessionID               string
 	TenantID                string
-	CallerName              string
+	AgentName              string
 	Team                    string
 	Provider                string
 	Model                   string
@@ -116,10 +116,10 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		CandidateIndex:  params.CandidateIndex,
 		Timestamp:       time.Now(),
 		TenantID:        params.TenantID,
-		AgentID:         params.CallerName,
+		AgentID:         params.AgentName,
 		Team:            params.Team,
 		InvocationType:  invocationType,
-		RequestSourceID: params.CallerName,
+		RequestSourceID: params.AgentName,
 		PolicyDecision: evidence.PolicyDecision{
 			Allowed:       params.PolicyAllowed,
 			Action:        "allow",

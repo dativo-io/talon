@@ -41,7 +41,7 @@ func TestGatewayEngine_EvaluateGateway_DenyModelAllowlist(t *testing.T) {
 	allowed, reasons, err := eng.EvaluateGateway(ctx, map[string]interface{}{
 		"provider":              "openai",
 		"model":                 "gpt-4-turbo",
-		"caller_allowed_models": []interface{}{"gpt-4o", "gpt-4o-mini"},
+		"agent_allowed_models": []interface{}{"gpt-4o", "gpt-4o-mini"},
 		"data_tier":             0,
 		"daily_cost":            0.0,
 		"monthly_cost":          0.0,
@@ -50,7 +50,7 @@ func TestGatewayEngine_EvaluateGateway_DenyModelAllowlist(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, allowed)
 	require.NotEmpty(t, reasons)
-	require.Contains(t, reasons[0], "not in caller allowlist")
+	require.Contains(t, reasons[0], "not in agent allowlist")
 }
 
 func TestGatewayEngine_EvaluateGateway_Egress(t *testing.T) {
@@ -236,7 +236,7 @@ func TestGatewayEngine_EvaluateGateway_EgressAndAccessReasonsCombined(t *testing
 	allowed, reasons, err := eng.EvaluateGateway(ctx, map[string]interface{}{
 		"provider":              "openai",
 		"model":                 "gpt-4-turbo",
-		"caller_allowed_models": []interface{}{"gpt-4o"},
+		"agent_allowed_models": []interface{}{"gpt-4o"},
 		"data_tier":             2,
 		"destination_region":    "US",
 		"egress_rules": []interface{}{
@@ -248,7 +248,7 @@ func TestGatewayEngine_EvaluateGateway_EgressAndAccessReasonsCombined(t *testing
 	require.False(t, allowed)
 	require.Len(t, reasons, 2)
 	joined := reasons[0] + " " + reasons[1]
-	require.Contains(t, joined, "not in caller allowlist")
+	require.Contains(t, joined, "not in agent allowlist")
 	require.Contains(t, joined, "egress_tier_destination_disallowed")
 }
 
@@ -264,7 +264,7 @@ func TestGatewayEngine_EvaluateGateway_DenyDailyCost(t *testing.T) {
 		"daily_cost":            24.0,
 		"monthly_cost":          0.0,
 		"estimated_cost":        2.0,
-		"caller_max_daily_cost": 25.0,
+		"agent_max_daily_cost": 25.0,
 	})
 	require.NoError(t, err)
 	require.False(t, allowed)

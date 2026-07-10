@@ -314,7 +314,7 @@ func checkGateway(ctx context.Context, opts Options) []CheckResult {
 		Message: opts.GatewayConfigPath,
 	})
 	results = append(results, checkGatewayMode(gwCfg))
-	results = append(results, checkGatewayCallers(gwCfg))
+	results = append(results, checkGatewayAgentIdentity(ctx))
 	results = append(results, checkGatewayToolPolicy(gwCfg))
 	results = append(results, checkSovereigntyFromGateway(gwCfg, opts.GatewayConfigPath))
 	results = append(results, checkAirGapFromGateway(gwCfg, opts.GatewayConfigPath))
@@ -342,31 +342,70 @@ func checkGatewayMode(cfg *gateway.GatewayConfig) CheckResult {
 	return CheckResult{Name: "gateway_mode", Category: "gateway", Status: "pass", Message: msg}
 }
 
-func checkGatewayCallers(cfg *gateway.GatewayConfig) CheckResult {
-	if len(cfg.Callers) == 0 {
+// checkGatewayAgentIdentity preflights the agent identity model (#266): the
+// agent policy carries a key binding, the referenced vault secret exists, and
+// a dry-run registry build passes the same fail-closed validation `talon
+// serve --gateway` will run.
+func checkGatewayAgentIdentity(ctx context.Context) CheckResult {
+	cfg, err := config.Load()
+	if err != nil {
 		return CheckResult{
-			Name: "gateway_callers_defined", Category: "gateway", Status: "warn",
-			Message: "No callers configured",
-			Fix:     "Add callers to gateway config for per-caller governance",
+			Name: "gateway_agent_identity", Category: "gateway", Status: "warn",
+			Message: fmt.Sprintf("Cannot load operator config: %v", err),
+		}
+	}
+	pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
+	if err != nil {
+		return CheckResult{
+			Name: "gateway_agent_identity", Category: "gateway", Status: "warn",
+			Message: fmt.Sprintf("No agent policy loaded (%v)", err),
+			Fix:     "Create agent.talon.yaml with agent.key.secret_name — gateway mode requires at least one keyed agent",
+		}
+	}
+	if pol.Agent.Key == nil || pol.Agent.Key.SecretName == "" {
+		return CheckResult{
+			Name: "gateway_agent_identity", Category: "gateway", Status: "warn",
+			Message: fmt.Sprintf("Agent %q has no key binding — it cannot authenticate to the gateway", pol.Agent.Name),
+			Fix:     "Add agent.key.secret_name to agent.talon.yaml and run: talon secrets set <name> <key>",
+		}
+	}
+	secStore, secErr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+	if secErr != nil {
+		return CheckResult{
+			Name: "gateway_agent_identity", Category: "gateway", Status: "warn",
+			Message: fmt.Sprintf("Cannot open secrets vault: %v", secErr),
+		}
+	}
+	defer secStore.Close()
+	if _, err := gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{{
+		Path:          cfg.DefaultPolicy,
+		Name:          pol.Agent.Name,
+		TenantID:      pol.Agent.TenantID,
+		KeySecretName: pol.Agent.Key.SecretName,
+	}}, secStore); err != nil {
+		return CheckResult{
+			Name: "gateway_agent_identity", Category: "gateway", Status: "fail",
+			Message: fmt.Sprintf("Identity registry dry-run failed: %v", err),
+			Fix:     fmt.Sprintf("Run: talon secrets set %s <agent-key>", pol.Agent.Key.SecretName),
 		}
 	}
 	return CheckResult{
-		Name: "gateway_callers_defined", Category: "gateway", Status: "pass",
-		Message: fmt.Sprintf("%d caller(s)", len(cfg.Callers)),
+		Name: "gateway_agent_identity", Category: "gateway", Status: "pass",
+		Message: fmt.Sprintf("Agent %q key binding resolves (%s)", pol.Agent.Name, pol.Agent.Key.SecretName),
 	}
 }
 
 func checkGatewayToolPolicy(cfg *gateway.GatewayConfig) CheckResult {
-	if len(cfg.ServerDefaults.ForbiddenTools) == 0 {
+	if len(cfg.OrganizationPolicy.ForbiddenTools) == 0 {
 		return CheckResult{
 			Name: "gateway_forbidden_tools", Category: "gateway", Status: "warn",
 			Message: "No forbidden tools configured",
-			Fix:     "Add forbidden_tools to default_policy for tool governance",
+			Fix:     "Add forbidden_tools to organization_policy for tool governance",
 		}
 	}
 	return CheckResult{
 		Name: "gateway_forbidden_tools", Category: "gateway", Status: "pass",
-		Message: fmt.Sprintf("%d pattern(s)", len(cfg.ServerDefaults.ForbiddenTools)),
+		Message: fmt.Sprintf("%d pattern(s)", len(cfg.OrganizationPolicy.ForbiddenTools)),
 	}
 }
 

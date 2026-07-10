@@ -116,13 +116,13 @@ func ensureGatewayMetrics() {
 }
 
 // RecordGatewayRequest increments the gateway request counter.
-func RecordGatewayRequest(ctx context.Context, caller, model, provider, status string) {
+func RecordGatewayRequest(ctx context.Context, agent, model, provider, status string) {
 	ensureGatewayMetrics()
 	if !gwMetricsRegistered {
 		return
 	}
 	gatewayRequestsCounter.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("caller", caller),
+		attribute.String("agent", agent),
 		attribute.String("model", model),
 		attribute.String("gen_ai.system", provider),
 		attribute.String("status", status),
@@ -141,14 +141,14 @@ func RecordGatewayError(ctx context.Context, errorType string) {
 }
 
 // RecordDataTier increments the data tier request counter.
-func RecordDataTier(ctx context.Context, tier int, caller string) {
+func RecordDataTier(ctx context.Context, tier int, agent string) {
 	ensureGatewayMetrics()
 	if !gwMetricsRegistered {
 		return
 	}
 	dataTierCounter.Add(ctx, 1, metric.WithAttributes(
 		attribute.Int("tier", tier),
-		attribute.String("caller", caller),
+		attribute.String("agent", agent),
 	))
 }
 

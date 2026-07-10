@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -24,22 +23,23 @@ const (
 )
 
 // GatewayConfig is the top-level gateway configuration from talon.config.yaml
-// (infrastructure config, owned by DevOps/platform team).
+// (infrastructure config, owned by DevOps/platform team). Traffic identity is
+// NOT configured here: agents are defined in agent.talon.yaml files and
+// resolved through the IdentityRegistry (#266).
 //
 //revive:disable-next-line:exported
 type GatewayConfig struct {
-	Enabled             bool                       `yaml:"enabled" json:"enabled"`
-	ListenPrefix        string                     `yaml:"listen_prefix" json:"listen_prefix"`
-	Mode                Mode                       `yaml:"mode" json:"mode"`
-	Providers           map[string]ProviderConfig  `yaml:"providers" json:"providers"`
-	Callers             []CallerConfig             `yaml:"callers" json:"callers"`
-	ServerDefaults      ServerDefaults             `yaml:"default_policy" json:"default_policy"`
+	Enabled      bool                      `yaml:"enabled" json:"enabled"`
+	ListenPrefix string                    `yaml:"listen_prefix" json:"listen_prefix"`
+	Mode         Mode                      `yaml:"mode" json:"mode"`
+	Providers    map[string]ProviderConfig `yaml:"providers" json:"providers"`
+	// OrganizationPolicy is the organization baseline — the shared policy
+	// every agent inherits before its one explicit override applies.
+	OrganizationPolicy  OrganizationPolicy         `yaml:"organization_policy" json:"organization_policy"`
 	ResponseScanning    ResponseScanningConfig     `yaml:"response_scanning" json:"response_scanning"`
 	RateLimits          RateLimitsConfig           `yaml:"rate_limits" json:"rate_limits"`
 	Timeouts            TimeoutsConfig             `yaml:"timeouts" json:"timeouts"`
 	NetworkInterception *NetworkInterceptionConfig `yaml:"network_interception,omitempty" json:"network_interception,omitempty"`
-	// TrustedProxyCIDRs: when set, X-Forwarded-For is used for client IP only when the direct peer (RemoteAddr) is in one of these CIDRs. Prevents spoofing when gateway is not behind a trusted proxy. Empty = never trust X-Forwarded-For for source_ip.
-	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs,omitempty" json:"trusted_proxy_cidrs,omitempty"`
 	// DashboardListen is the optional separate bind address for the gateway
 	// dashboard (e.g. "127.0.0.1:9091"). When empty, routes are served on the
 	// main API server. Binding to localhost prevents accidental exposure.
@@ -62,7 +62,7 @@ type ProviderConfig struct {
 	SecretName string `yaml:"secret_name,omitempty" json:"secret_name,omitempty"`
 	// UpstreamAuthMode controls how Talon authenticates to the upstream provider.
 	// "secret" (default) reads provider credentials from Talon's secret store.
-	// "client_bearer" forwards the caller bearer token upstream and is intended
+	// "client_bearer" forwards the agent bearer token upstream and is intended
 	// for proxy quickstart mode only.
 	UpstreamAuthMode string `yaml:"upstream_auth_mode,omitempty" json:"upstream_auth_mode,omitempty"` // secret | client_bearer
 	BaseURL          string `yaml:"base_url" json:"base_url"`
@@ -132,53 +132,6 @@ func (c *GatewayConfig) providerAPIFamily(name string) string {
 	return "openai"
 }
 
-// CallerConfig identifies an application or team that uses the gateway.
-type CallerConfig struct {
-	Name             string                 `yaml:"name" json:"name"`
-	TenantKey        string                 `yaml:"tenant_key,omitempty" json:"tenant_key,omitempty"` // #nosec G117 -- auth identifier from config, not a hardcoded secret
-	TenantID         string                 `yaml:"tenant_id" json:"tenant_id"`
-	Team             string                 `yaml:"team,omitempty" json:"team,omitempty"`
-	Tags             []string               `yaml:"tags,omitempty" json:"tags,omitempty"`               // e.g. ["copaw"] for OTel/dashboard classification
-	IdentifyBy       string                 `yaml:"identify_by,omitempty" json:"identify_by,omitempty"` // "source_ip" for IP-based
-	SourceIPRanges   []string               `yaml:"source_ip_ranges,omitempty" json:"source_ip_ranges,omitempty"`
-	AllowedProviders []string               `yaml:"allowed_providers,omitempty" json:"allowed_providers,omitempty"`
-	PolicyOverrides  *CallerPolicyOverrides `yaml:"policy_overrides,omitempty" json:"policy_overrides,omitempty"`
-	// AcceptClientMetadata controls whether client-asserted orchestration
-	// identity (session/subagent/parent, from x-claude-code-* / Codex / generic
-	// X-Talon-* headers) is recorded in evidence for this caller. nil = true
-	// (default). It gates recording only — identity is never a policy input in
-	// v1 (evidence-only until attestation, #149). #194.
-	AcceptClientMetadata *bool `yaml:"accept_client_metadata,omitempty" json:"accept_client_metadata,omitempty"`
-}
-
-// AcceptsClientMetadata reports whether client-asserted orchestration identity
-// is recorded for this caller. Default is true when unset.
-func (c *CallerConfig) AcceptsClientMetadata() bool {
-	return c == nil || c.AcceptClientMetadata == nil || *c.AcceptClientMetadata
-}
-
-// CallerPolicyOverrides are per-caller policy overrides.
-type CallerPolicyOverrides struct {
-	MaxDailyCost   float64 `yaml:"max_daily_cost,omitempty" json:"max_daily_cost,omitempty"`
-	MaxMonthlyCost float64 `yaml:"max_monthly_cost,omitempty" json:"max_monthly_cost,omitempty"`
-	// MaxSessionCost is a soft cap on accumulated spend per coding session
-	// (#198): a new request is denied once session spend + the pre-request
-	// estimate exceeds it. In-flight requests can overshoot (atomic
-	// reservation is #144). Applies only to client/vendor-asserted sessions.
-	MaxSessionCost    float64                 `yaml:"max_session_cost,omitempty" json:"max_session_cost,omitempty"`
-	PIIAction         string                  `yaml:"pii_action,omitempty" json:"pii_action,omitempty"`                   // block | redact | warn | allow
-	ResponsePIIAction string                  `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from pii_action
-	AllowedModels     []string                `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
-	BlockedModels     []string                `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
-	MaxDataTier       *TierLevel              `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"` // 0/public, 1/internal, or 2/confidential
-	AttachmentPolicy  *AttachmentPolicyConfig `yaml:"attachment_policy,omitempty" json:"attachment_policy,omitempty"`
-	AllowedTools      []string                `yaml:"allowed_tools,omitempty" json:"allowed_tools,omitempty"`
-	ForbiddenTools    []string                `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
-	ToolPolicyAction  string                  `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"` // filter | block
-	// Egress replaces the server default egress policy for this caller when set.
-	Egress *EgressPolicyConfig `yaml:"egress,omitempty" json:"egress,omitempty"`
-}
-
 // AttachmentPolicyConfig controls scanning of base64-encoded file attachments
 // embedded in LLM API requests (PDFs, images, HTML, etc.).
 type AttachmentPolicyConfig struct {
@@ -189,16 +142,15 @@ type AttachmentPolicyConfig struct {
 	BlockedTypes    []string `yaml:"blocked_types,omitempty" json:"blocked_types,omitempty"`
 }
 
-// ServerDefaults holds server-wide gateway defaults (PII action, cost limits,
-// tool governance, attachment scanning). Lives in talon.config.yaml under
-// gateway.default_policy. Not related to config.DefaultPolicy which is the
-// agent policy filename (agent.talon.yaml).
-type ServerDefaults struct {
+// OrganizationPolicy is the organization baseline (PII action, cost limits,
+// tool governance, attachment scanning) — the shared policy every agent
+// inherits before its one explicit override applies (#266). Lives in
+// talon.config.yaml under gateway.organization_policy.
+type OrganizationPolicy struct {
 	DefaultPIIAction        string                  `yaml:"default_pii_action" json:"default_pii_action"`                       // warn | block | redact | allow
 	ResponsePIIAction       string                  `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from default_pii_action
 	MaxDailyCost            float64                 `yaml:"max_daily_cost" json:"max_daily_cost"`
 	MaxMonthlyCost          float64                 `yaml:"max_monthly_cost" json:"max_monthly_cost"`
-	RequireCallerID         *bool                   `yaml:"require_caller_id" json:"require_caller_id"` // nil = true (default)
 	LogPrompts              bool                    `yaml:"log_prompts" json:"log_prompts"`
 	LogResponses            bool                    `yaml:"log_responses" json:"log_responses"`
 	LogResponsePreviewChars int                     `yaml:"log_response_preview_chars" json:"log_response_preview_chars"`
@@ -223,14 +175,6 @@ const (
 	ScanToolContentOff          = "off"
 )
 
-// CallerIDRequired returns whether anonymous requests must be rejected. Default is true when unset.
-func (d *ServerDefaults) CallerIDRequired() bool {
-	if d == nil || d.RequireCallerID == nil {
-		return true
-	}
-	return *d.RequireCallerID
-}
-
 // ResponseScanningConfig controls scanning LLM responses for PII (Phase 2).
 type ResponseScanningConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
@@ -238,8 +182,8 @@ type ResponseScanningConfig struct {
 
 // RateLimitsConfig holds gateway rate limits.
 type RateLimitsConfig struct {
-	GlobalRequestsPerMin    int `yaml:"global_requests_per_min" json:"global_requests_per_min"`
-	PerCallerRequestsPerMin int `yaml:"per_caller_requests_per_min" json:"per_caller_requests_per_min"`
+	GlobalRequestsPerMin   int `yaml:"global_requests_per_min" json:"global_requests_per_min"`
+	PerAgentRequestsPerMin int `yaml:"per_agent_requests_per_min" json:"per_agent_requests_per_min"`
 }
 
 // TimeoutsConfig holds gateway timeouts. Values are stored as strings (e.g. "10s") and parsed to time.Duration.
@@ -285,11 +229,10 @@ type NetworkInterceptionTLS struct {
 const (
 	DefaultListenPrefix            = "/v1/proxy"
 	DefaultMode                    = ModeEnforce
-	DefaultRequireCallerID         = true
 	DefaultLogPrompts              = true
 	DefaultPIIAction               = "warn"
 	DefaultGlobalRPM               = 300
-	DefaultPerCallerRPM            = 60
+	DefaultPerAgentRPM             = 60
 	DefaultConnectTimeout          = "10s"
 	DefaultRequestTimeout          = "120s"
 	DefaultStreamIdleTimeout       = "60s"
@@ -313,16 +256,27 @@ func LoadGatewayConfig(path string) (*GatewayConfig, error) {
 		return nil, fmt.Errorf("parsing gateway config: %w", err)
 	}
 
+	gatewayRaw := raw
 	var cfg GatewayConfig
 	if g, ok := raw["gateway"]; ok {
 		sub, _ := yaml.Marshal(g)
 		if err := yaml.Unmarshal(sub, &cfg); err != nil {
 			return nil, fmt.Errorf("unmarshaling gateway block: %w", err)
 		}
+		if m, ok := g.(map[string]interface{}); ok {
+			gatewayRaw = m
+		}
 	} else {
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
 			return nil, fmt.Errorf("unmarshaling gateway config: %w", err)
 		}
+	}
+
+	// yaml.v3 silently ignores unknown keys, so removed config surfaces need
+	// an explicit check — a config written for the legacy agent model must
+	// fail loudly, not silently run ungoverned (#266).
+	if err := rejectLegacyGatewayKeys(gatewayRaw); err != nil {
+		return nil, err
 	}
 
 	if err := cfg.ApplyDefaults(); err != nil {
@@ -334,9 +288,40 @@ func LoadGatewayConfig(path string) (*GatewayConfig, error) {
 	return &cfg, nil
 }
 
+// rejectLegacyGatewayKeys fails closed on configuration written for the
+// removed agent identity model. Breaking change (#266): traffic identity
+// lives in agent.talon.yaml (agent.key.secret_name); the baseline block is
+// gateway.organization_policy.
+func rejectLegacyGatewayKeys(gatewayRaw map[string]interface{}) error {
+	if gatewayRaw == nil {
+		return nil
+	}
+	legacy := map[string]string{
+		"callers":             "define one agent.talon.yaml per AI use case with agent.key.secret_name instead",
+		"default_policy":      "the organization baseline moved to gateway.organization_policy",
+		"trusted_proxy_cidrs": "source-IP identity was removed; every request authenticates with an agent key",
+	}
+	for key, hint := range legacy {
+		if _, present := gatewayRaw[key]; present {
+			return fmt.Errorf("gateway config uses removed key %q — %s (breaking change, see #266)", key, hint)
+		}
+	}
+	if op, ok := gatewayRaw["organization_policy"].(map[string]interface{}); ok {
+		if _, present := op["require_caller_id"]; present {
+			return fmt.Errorf("gateway config uses removed key \"organization_policy.require_caller_id\" — unknown keys are always rejected; quickstart mode is the only keyless path (breaking change, see #266)")
+		}
+	}
+	if rl, ok := gatewayRaw["rate_limits"].(map[string]interface{}); ok {
+		if _, present := rl["per_caller_requests_per_min"]; present {
+			return fmt.Errorf("gateway config uses removed key \"rate_limits.per_caller_requests_per_min\" — use per_agent_requests_per_min (breaking change, see #266)")
+		}
+	}
+	return nil
+}
+
 // ApplyDefaults sets default values for missing fields.
-// applyDefaults fills zero-valued server-wide policy defaults.
-func (d *ServerDefaults) applyDefaults() {
+// applyDefaults fills zero-valued organization baseline defaults.
+func (d *OrganizationPolicy) applyDefaults() {
 	if d.DefaultPIIAction == "" {
 		d.DefaultPIIAction = DefaultPIIAction
 	}
@@ -361,15 +346,12 @@ func (c *GatewayConfig) ApplyDefaults() error {
 	if c.Providers == nil {
 		c.Providers = make(map[string]ProviderConfig)
 	}
-	if c.Callers == nil {
-		c.Callers = []CallerConfig{}
-	}
-	c.ServerDefaults.applyDefaults()
+	c.OrganizationPolicy.applyDefaults()
 	if c.RateLimits.GlobalRequestsPerMin == 0 {
 		c.RateLimits.GlobalRequestsPerMin = DefaultGlobalRPM
 	}
-	if c.RateLimits.PerCallerRequestsPerMin == 0 {
-		c.RateLimits.PerCallerRequestsPerMin = DefaultPerCallerRPM
+	if c.RateLimits.PerAgentRequestsPerMin == 0 {
+		c.RateLimits.PerAgentRequestsPerMin = DefaultPerAgentRPM
 	}
 	if c.Timeouts.ConnectTimeout == "" {
 		c.Timeouts.ConnectTimeout = DefaultConnectTimeout
@@ -385,14 +367,9 @@ func (c *GatewayConfig) ApplyDefaults() error {
 	if c.Timeouts.StreamIdleTimeout == "" {
 		c.Timeouts.StreamIdleTimeout = DefaultStreamIdleTimeout
 	}
-	c.ServerDefaults.AttachmentPolicy = applyAttachmentPolicyDefaults(c.ServerDefaults.AttachmentPolicy)
-	c.ServerDefaults.Egress.applyDefaults()
+	c.OrganizationPolicy.AttachmentPolicy = applyAttachmentPolicyDefaults(c.OrganizationPolicy.AttachmentPolicy)
+	c.OrganizationPolicy.Egress.applyDefaults()
 	normalizeProviderRegions(c.Providers)
-	for i := range c.Callers {
-		if ov := c.Callers[i].PolicyOverrides; ov != nil {
-			ov.Egress.applyDefaults()
-		}
-	}
 	return nil
 }
 
@@ -439,10 +416,10 @@ func (c *GatewayConfig) Validate() error {
 	default:
 		return fmt.Errorf("gateway mode must be enforce, shadow, or log_only")
 	}
-	switch c.ServerDefaults.ScanToolContent {
+	switch c.OrganizationPolicy.ScanToolContent {
 	case "", ScanToolContentEvidenceOnly, ScanToolContentOff:
 	default:
-		return fmt.Errorf("gateway default_policy scan_tool_content must be evidence_only or off")
+		return fmt.Errorf("gateway organization_policy scan_tool_content must be evidence_only or off")
 	}
 	for name := range c.Providers {
 		p := c.Providers[name]
@@ -488,43 +465,19 @@ func (c *GatewayConfig) Validate() error {
 			return err
 		}
 	}
-	if p := c.ServerDefaults.AttachmentPolicy; p != nil {
+	if p := c.OrganizationPolicy.AttachmentPolicy; p != nil {
 		switch p.Action {
 		case "block", "strip", "warn", "allow":
 		default:
-			return fmt.Errorf("gateway default_policy.attachment_policy.action must be block, strip, warn, or allow")
+			return fmt.Errorf("gateway organization_policy.attachment_policy.action must be block, strip, warn, or allow")
 		}
 		switch p.InjectionAction {
 		case "block", "strip", "warn", "":
 		default:
-			return fmt.Errorf("gateway default_policy.attachment_policy.injection_action must be block, strip, or warn")
+			return fmt.Errorf("gateway organization_policy.attachment_policy.injection_action must be block, strip, or warn")
 		}
 	}
-	if err := validateEgressPolicy("default_policy", c.ServerDefaults.Egress); err != nil {
-		return err
-	}
-	for i := range c.Callers {
-		caller := &c.Callers[i]
-		if caller.Name == "" {
-			return fmt.Errorf("gateway caller at index %d: name is required", i)
-		}
-		if caller.PolicyOverrides != nil {
-			if err := validateEgressPolicy("caller "+caller.Name, caller.PolicyOverrides.Egress); err != nil {
-				return err
-			}
-		}
-		if caller.TenantID == "" {
-			caller.TenantID = "default"
-		}
-		if caller.IdentifyBy == "source_ip" {
-			if len(caller.SourceIPRanges) == 0 {
-				return fmt.Errorf("gateway caller %q: source_ip_ranges required when identify_by is source_ip", caller.Name)
-			}
-		} else if caller.TenantKey == "" && c.ServerDefaults.CallerIDRequired() {
-			return fmt.Errorf("gateway caller %q: tenant_key or identify_by=source_ip with source_ip_ranges is required", caller.Name)
-		}
-	}
-	return nil
+	return validateEgressPolicy("organization_policy", c.OrganizationPolicy.Egress)
 }
 
 // validateFallbackChain checks a provider's error-driven fallback chain at
@@ -555,114 +508,6 @@ func (c *GatewayConfig) validateFallbackChain(owner string, p ProviderConfig) er
 	return nil
 }
 
-// ResolveCostCaps returns the effective daily and monthly cost caps for a
-// caller: the server default, replaced by a per-caller override when that
-// override is set (> 0). This is the single source of truth for "what cap does
-// this caller actually run against" — budget enforcement (via the policy input,
-// gateway_access.rego) and budget-utilization metrics/alerts must both read it,
-// or the dashboard disagrees with what runtime enforced (#216).
-func ResolveCostCaps(defaults *ServerDefaults, overrides *CallerPolicyOverrides) (daily, monthly float64) {
-	daily, monthly = defaults.MaxDailyCost, defaults.MaxMonthlyCost
-	if overrides == nil {
-		return daily, monthly
-	}
-	if overrides.MaxDailyCost > 0 {
-		daily = overrides.MaxDailyCost
-	}
-	if overrides.MaxMonthlyCost > 0 {
-		monthly = overrides.MaxMonthlyCost
-	}
-	return daily, monthly
-}
-
-// ResolveAttachmentPolicy returns the effective attachment policy for a caller,
-// merging caller overrides on top of the server default.
-func ResolveAttachmentPolicy(defaultPolicy *ServerDefaults, overrides *CallerPolicyOverrides) *AttachmentPolicyConfig {
-	base := defaultPolicy.AttachmentPolicy
-	if base == nil {
-		base = &AttachmentPolicyConfig{
-			Action:          DefaultAttachmentAction,
-			InjectionAction: DefaultAttachmentInjAction,
-			MaxFileSizeMB:   DefaultAttachmentMaxFileSizeMB,
-		}
-	}
-	if overrides == nil || overrides.AttachmentPolicy == nil {
-		return base
-	}
-	merged := *base
-	ov := overrides.AttachmentPolicy
-	if ov.Action != "" {
-		merged.Action = ov.Action
-	}
-	if ov.InjectionAction != "" {
-		merged.InjectionAction = ov.InjectionAction
-	}
-	if ov.MaxFileSizeMB > 0 {
-		merged.MaxFileSizeMB = ov.MaxFileSizeMB
-	}
-	if len(ov.AllowedTypes) > 0 {
-		merged.AllowedTypes = ov.AllowedTypes
-	}
-	if len(ov.BlockedTypes) > 0 {
-		merged.BlockedTypes = ov.BlockedTypes
-	}
-	return &merged
-}
-
-// ToolPolicyResolution holds the resolved tool governance parameters from the
-// three-level config hierarchy (default → provider → caller).
-type ToolPolicyResolution struct {
-	AllowedTools   []string // Most-specific non-empty list wins; empty = allow all.
-	ForbiddenTools []string // Union across all levels (additive).
-	Action         string   // "filter" (default) or "block".
-}
-
-// ResolveToolPolicy merges tool governance config from default policy, provider,
-// and caller overrides. allowed_tools: most-specific non-empty list wins.
-// forbidden_tools: union of all levels. action: most-specific wins.
-func ResolveToolPolicy(dp *ServerDefaults, prov ProviderConfig, overrides *CallerPolicyOverrides) ToolPolicyResolution {
-	res := ToolPolicyResolution{Action: DefaultToolPolicyAction}
-
-	// Action: most-specific wins (caller > provider > default).
-	if dp.ToolPolicyAction != "" {
-		res.Action = dp.ToolPolicyAction
-	}
-	if prov.ToolPolicyAction != "" {
-		res.Action = prov.ToolPolicyAction
-	}
-	if overrides != nil && overrides.ToolPolicyAction != "" {
-		res.Action = overrides.ToolPolicyAction
-	}
-
-	// Allowed tools: most-specific non-empty list wins.
-	if overrides != nil && len(overrides.AllowedTools) > 0 {
-		res.AllowedTools = overrides.AllowedTools
-	}
-
-	// Forbidden tools: union across all levels.
-	seen := make(map[string]bool)
-	for _, lists := range [][]string{
-		dp.ForbiddenTools,
-		prov.ForbiddenTools,
-	} {
-		for _, f := range lists {
-			if !seen[f] {
-				seen[f] = true
-				res.ForbiddenTools = append(res.ForbiddenTools, f)
-			}
-		}
-	}
-	if overrides != nil {
-		for _, f := range overrides.ForbiddenTools {
-			if !seen[f] {
-				seen[f] = true
-				res.ForbiddenTools = append(res.ForbiddenTools, f)
-			}
-		}
-	}
-	return res
-}
-
 // ParseTimeouts returns parsed time.Duration values for the configured timeout strings.
 func (c *GatewayConfig) ParseTimeouts() (ParsedTimeouts, error) {
 	var pt ParsedTimeouts
@@ -688,62 +533,6 @@ func (c *GatewayConfig) ParseTimeouts() (ParsedTimeouts, error) {
 		return pt, fmt.Errorf("stream_idle_timeout %q: %w", c.Timeouts.StreamIdleTimeout, err)
 	}
 	return pt, nil
-}
-
-// CallerByName returns the caller config by name.
-func (c *GatewayConfig) CallerByName(name string) *CallerConfig {
-	for i := range c.Callers {
-		if c.Callers[i].Name == name {
-			return &c.Callers[i]
-		}
-	}
-	return nil
-}
-
-// UniqueTenantIDs returns distinct tenant_id values from configured callers.
-func (c *GatewayConfig) UniqueTenantIDs() []string {
-	seen := make(map[string]struct{})
-	for i := range c.Callers {
-		id := strings.TrimSpace(c.Callers[i].TenantID)
-		if id == "" {
-			id = "default"
-		}
-		seen[id] = struct{}{}
-	}
-	out := make([]string, 0, len(seen))
-	for id := range seen {
-		out = append(out, id)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// MetricsTenantScope returns the tenant_id filter for dashboard SQL aggregates.
-// Single-tenant gateways scope to that tenant; multi-tenant gateways use "" (all tenants).
-func (c *GatewayConfig) MetricsTenantScope() string {
-	ids := c.UniqueTenantIDs()
-	if len(ids) == 1 {
-		return ids[0]
-	}
-	return ""
-}
-
-// TenantKeyMap returns a map of tenant_key -> tenant_id from configured callers.
-func (c *GatewayConfig) TenantKeyMap() map[string]string {
-	m := make(map[string]string)
-	for i := range c.Callers {
-		caller := c.Callers[i]
-		key := strings.TrimSpace(caller.TenantKey)
-		if key == "" {
-			continue
-		}
-		tenantID := caller.TenantID
-		if tenantID == "" {
-			tenantID = "default"
-		}
-		m[key] = tenantID
-	}
-	return m
 }
 
 // Provider returns the provider config for the given provider name (e.g. "openai", "anthropic", "ollama").

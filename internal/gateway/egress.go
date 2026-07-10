@@ -95,7 +95,7 @@ func normalizeEgressRegion(region string) string {
 }
 
 // validateEgressPolicy checks an egress policy block. scope identifies the
-// config location for error messages (e.g. "default_policy" or a caller name).
+// config location for error messages (e.g. "default_policy" or a agent name).
 func validateEgressPolicy(scope string, p *EgressPolicyConfig) error {
 	if p == nil {
 		return nil
@@ -117,28 +117,6 @@ func validateEgressPolicy(scope string, p *EgressPolicyConfig) error {
 		}
 	}
 	return nil
-}
-
-// ResolveEgressPolicy returns the effective egress policy for a caller:
-// the caller override replaces the server default wholesale when present
-// (most-specific wins, like allowed_tools). Returns nil when egress is not
-// configured at either level, which means egress is not evaluated.
-func ResolveEgressPolicy(defaults *ServerDefaults, overrides *CallerPolicyOverrides) *EgressPolicyConfig {
-	var p *EgressPolicyConfig
-	if defaults != nil && defaults.Egress != nil {
-		p = defaults.Egress
-	}
-	if overrides != nil && overrides.Egress != nil {
-		p = overrides.Egress
-	}
-	if p == nil {
-		return nil
-	}
-	resolved := *p
-	if resolved.DefaultAction == "" {
-		resolved.DefaultAction = EgressActionAllow
-	}
-	return &resolved
 }
 
 // EgressEvaluation is the outcome of matching a request against the resolved
@@ -214,12 +192,13 @@ func egressRuleAllows(rule *EgressRule, provider, region string) (allowed bool, 
 
 // buildEgressDecisionEvidence derives the egress_decision evidence section
 // for a gateway request. Returns nil when egress is not configured for the
-// caller, or when the request was denied by another control before/at policy
+// agent, or when the request was denied by another control before/at policy
 // evaluation (in which case claiming an egress outcome would misstate which
 // control ran). The matcher result is deterministic, so re-deriving it here
 // matches the Rego decision that was enforced.
-func (g *Gateway) buildEgressDecisionEvidence(caller *CallerConfig, provider string, tier int, allowed bool, reasons []string) *evidence.EgressDecision {
-	policy := ResolveEgressPolicy(&g.config.ServerDefaults, caller.PolicyOverrides)
+func (g *Gateway) buildEgressDecisionEvidence(agent *ResolvedIdentity, provider string, tier int, allowed bool, reasons []string) *evidence.EgressDecision {
+	prov, _ := g.config.Provider(provider)
+	policy := ResolveEffectivePolicy(g.config.OrganizationPolicy, prov, agent.Override).Egress
 	if policy == nil {
 		return nil
 	}

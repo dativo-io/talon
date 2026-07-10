@@ -67,6 +67,10 @@ type Server struct {
 	// server-side RunRequest so the agent runner applies compliance-aware
 	// routing consistently with the `talon run` CLI (#server-sovereignty).
 	sovereigntyMode string
+	// agentCapsLookup returns the effective daily/monthly caps for one agent,
+	// computed by the shared ResolveEffectivePolicy over the identity registry
+	// and injected by serve — the dashboard never re-derives caps (#266).
+	agentCapsLookup func(tenantID, agentID string) (daily, monthly float64, ok bool)
 }
 
 // SetClassifier attaches the process-wide scanner engine. Call after
@@ -167,6 +171,13 @@ func WithGateway(h http.Handler) Option {
 // WithProxyQuickstart sets the OpenAI-compatible host-root quickstart proxy facade.
 func WithProxyQuickstart(h http.Handler) Option {
 	return func(s *Server) { s.proxyQuickstart = h }
+}
+
+// WithAgentCapsLookup injects the per-agent effective-cap lookup (identity
+// registry + ResolveEffectivePolicy), keeping the dashboard budget view on the
+// same calculation path as enforcement (#266).
+func WithAgentCapsLookup(fn func(tenantID, agentID string) (daily, monthly float64, ok bool)) Option {
+	return func(s *Server) { s.agentCapsLookup = fn }
 }
 
 // WithQuickstartEnabled toggles quickstart route behavior.

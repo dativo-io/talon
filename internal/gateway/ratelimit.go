@@ -6,7 +6,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// RateLimiter enforces per-caller and global request rate limits.
+// RateLimiter enforces per-agent and global request rate limits.
 // Uses token bucket algorithm via golang.org/x/time/rate.
 type RateLimiter struct {
 	mu        sync.Mutex
@@ -18,7 +18,7 @@ type RateLimiter struct {
 
 // NewRateLimiter creates a rate limiter from the gateway config.
 // globalRPM is the total requests/minute across all callers.
-// perCallerRPM is the per-caller requests/minute.
+// perCallerRPM is the per-agent requests/minute.
 func NewRateLimiter(globalRPM, perCallerRPM int) *RateLimiter {
 	globalRate := rate.Limit(float64(globalRPM) / 60.0)
 	callerRate := rate.Limit(float64(perCallerRPM) / 60.0)
@@ -38,7 +38,7 @@ func NewRateLimiter(globalRPM, perCallerRPM int) *RateLimiter {
 	}
 }
 
-// Allow checks whether a request from the given caller is allowed.
+// Allow checks whether a request from the given agent is allowed.
 // Returns true if allowed, false if rate limited.
 func (rl *RateLimiter) Allow(callerName string) bool {
 	if !rl.global.Allow() {

@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	quickstartCallerName = "quickstart-local"
+	quickstartAgentName = "quickstart-local"
 	quickstartTenantID   = "quickstart"
 )
 
@@ -57,7 +57,9 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 		annotations = append(annotations, "quickstart_model_allowlist_disabled")
 	}
 
-	requireCallerID := false
+	// Identity in quickstart mode is the synthetic NewQuickstartIdentity(),
+	// injected per-request by the in-process facade — never a configured key.
+	// Its budget caps are this baseline; there is no override layer.
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: DefaultListenPrefix,
@@ -65,25 +67,16 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 		Providers: map[string]ProviderConfig{
 			"openai": provider,
 		},
-		Callers: []CallerConfig{
-			{
-				Name:             quickstartCallerName,
-				TenantID:         quickstartTenantID,
-				Tags:             []string{"quickstart"},
-				AllowedProviders: []string{"openai"},
-			},
-		},
-		ServerDefaults: ServerDefaults{
+		OrganizationPolicy: OrganizationPolicy{
 			DefaultPIIAction: "redact",
 			MaxDailyCost:     50,
 			MaxMonthlyCost:   500,
-			RequireCallerID:  &requireCallerID,
 			LogPrompts:       false,
 			LogResponses:     false,
 		},
 		RateLimits: RateLimitsConfig{
-			GlobalRequestsPerMin:    600,
-			PerCallerRequestsPerMin: 300,
+			GlobalRequestsPerMin:   600,
+			PerAgentRequestsPerMin: 300,
 		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    DefaultConnectTimeout,

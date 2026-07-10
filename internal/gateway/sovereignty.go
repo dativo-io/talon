@@ -22,7 +22,7 @@ const sovereigntyDenyReason = "sovereignty: provider not EU/LOCAL"
 func (g *Gateway) denySovereigntyExcluded(
 	w http.ResponseWriter,
 	ctx context.Context,
-	caller *CallerConfig,
+	agent *ResolvedIdentity,
 	route RouteResult,
 	start time.Time,
 	correlationID string,
@@ -47,7 +47,7 @@ func (g *Gateway) denySovereigntyExcluded(
 			Detail: fmt.Sprintf("provider %s region %s blocked by sovereignty.mode=eu_strict", route.Provider, region),
 			Action: "block",
 		})
-		log.Warn().Str("caller", caller.Name).Str("provider", route.Provider).Str("region", region).Str("enforcement_mode", "shadow").Msg("shadow_sovereignty_deny")
+		log.Warn().Str("agent", agent.Name).Str("provider", route.Provider).Str("region", region).Str("enforcement_mode", "shadow").Msg("shadow_sovereignty_deny")
 		RecordSovereigntyProviderDenied(ctx, route.Provider)
 		return false
 	}
@@ -56,12 +56,12 @@ func (g *Gateway) denySovereigntyExcluded(
 	msg := "provider blocked by sovereignty.mode=eu_strict (non-EU/LOCAL region)"
 	WriteProviderError(w, g.config.providerAPIFamily(route.Provider), http.StatusForbidden, msg)
 	RecordSovereigntyProviderDenied(ctx, route.Provider)
-	persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text,
+	persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text,
 		classification, nil, 0, durationMS, "", false, []string{sovereigntyDenyReason}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 	if err != nil {
 		g.handleEvidenceWriteFailure(ctx, err)
 		return true
 	}
-	g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
+	g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
 	return true
 }

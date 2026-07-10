@@ -125,7 +125,7 @@ func (id *ResolvedIdentity) HasTag(tag string) bool {
 // baseline (QuickstartConfig), not from an override.
 func NewQuickstartIdentity() *ResolvedIdentity {
 	return &ResolvedIdentity{
-		Name:             quickstartCallerName,
+		Name:             quickstartAgentName,
 		TenantID:         quickstartTenantID,
 		Tags:             []string{"quickstart"},
 		AllowedProviders: []string{"openai"},
@@ -210,7 +210,7 @@ func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *sec
 }
 
 // ResolveKey matches a presented key against the registry in constant time
-// per identity. Returns (nil, false) for unknown keys — the caller rejects.
+// per identity. Returns (nil, false) for unknown keys — the agent rejects.
 func (r *IdentityRegistry) ResolveKey(presented string) (*ResolvedIdentity, bool) {
 	if r == nil || presented == "" {
 		return nil, false

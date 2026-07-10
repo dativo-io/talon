@@ -400,6 +400,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	var gatewayHandler http.Handler
 	var gatewayCfgForMode *gateway.GatewayConfig
+	var identityRegistry *gateway.IdentityRegistry
 	tenantKeys := map[string]string{}
 	if serveGateway {
 		gatewayCfg := preloadedGatewayCfg
@@ -416,8 +417,25 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err := gatewayCfg.ApplyDefaults(); err != nil {
 			return fmt.Errorf("gateway defaults: %w", err)
 		}
-		tenantKeys = gatewayCfg.TenantKeyMap()
-		log.Info().Int("tenant_keys", len(tenantKeys)).Int("callers", len(gatewayCfg.Callers)).Msg("gateway_tenant_keys_loaded")
+		// Agent identity (#266): the loaded agent policy is bridged to the
+		// identity registry — its vault-bound key is the traffic identity.
+		// Gateway mode with zero keyed agents is a startup error: such a
+		// gateway would reject every request, which is never what an operator
+		// meant. (#267 plugs agents_dir discovery into this same slice.)
+		if pol.Agent.Key == nil || pol.Agent.Key.SecretName == "" {
+			return fmt.Errorf("gateway mode requires at least one keyed agent: add agent.key.secret_name to %s and run `talon secrets set <name> <key>` (#266)", policyPath)
+		}
+		identityRegistry, err = gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{
+			LoadedAgentFromPolicy(pol, policyPath),
+		}, secretsStore)
+		if err != nil {
+			return fmt.Errorf("building agent identity registry: %w", err)
+		}
+		// Server tenant-API auth is a projection of the SAME registry — one
+		// agent key works for /v1/proxy and the tenant-scoped APIs alike.
+		// Auth openness stays governed by the admin-key dev rule only.
+		tenantKeys = identityRegistry.AuthKeyTenantProjection()
+		log.Info().Int("agents", identityRegistry.Len()).Int("tenants", len(identityRegistry.TenantIDs())).Msg("gateway_identity_registry_loaded")
 		// --gateway flag explicitly opts in; override config's enabled field
 		if !gatewayCfg.Enabled {
 			log.Info().Msg("--gateway flag set; enabling gateway (config had enabled: false)")
@@ -429,7 +447,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("gateway policy engine: %w", err)
 			}
-			gw, err := gateway.NewGateway(gatewayCfg, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
+			gw, err := gateway.NewGateway(gatewayCfg, identityRegistry, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
 			if err != nil {
 				return fmt.Errorf("initializing gateway: %w", err)
 			}
@@ -441,6 +459,20 @@ func runServe(cmd *cobra.Command, args []string) error {
 			gatewayHandler = gw
 			gatewayCfgForMode = gatewayCfg
 			opts = append(opts, server.WithGateway(gatewayHandler))
+			// Dashboard budget view reads per-agent caps through the same
+			// effective-policy computation enforcement uses (#266). Caps are
+			// provider-independent, so the destination constraints are empty.
+			registry := identityRegistry
+			orgPolicy := gatewayCfg.OrganizationPolicy
+			opts = append(opts, server.WithAgentCapsLookup(func(tenantID, agentID string) (float64, float64, bool) {
+				for _, id := range registry.Identities() {
+					if id.Name == agentID && id.TenantID == tenantID {
+						eff := gateway.ResolveEffectivePolicy(orgPolicy, gateway.ProviderConfig{}, id.Override)
+						return eff.MaxDailyCost, eff.MaxMonthlyCost, eff.MaxDailyCost > 0 || eff.MaxMonthlyCost > 0
+					}
+				}
+				return 0, 0, false
+			}))
 		}
 	} else if serveProxyQuickstart {
 		quickstartCfg, err := gateway.QuickstartConfig(gateway.QuickstartOptions{
@@ -464,7 +496,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("gateway policy engine: %w", err)
 		}
-		gw, err := gateway.NewGateway(quickstartCfg, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
+		gw, err := gateway.NewGateway(quickstartCfg, nil, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
 		if err != nil {
 			return fmt.Errorf("initializing quickstart gateway: %w", err)
 		}
@@ -478,13 +510,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 		opts = append(opts,
 			server.WithGateway(gatewayHandler),
 			server.WithQuickstartEnabled(true),
-			server.WithProxyQuickstart(server.NewQuickstartFacade(gw, quickstartCfg.ListenPrefix, &quickstartCfg.Callers[0])),
+			server.WithProxyQuickstart(server.NewQuickstartFacade(gw, quickstartCfg.ListenPrefix, gateway.NewQuickstartIdentity())),
 		)
-		// Intentionally do NOT register a synthetic tenant key here. Quickstart is
+		// Intentionally do NOT register a synthetic agent key here. Quickstart is
 		// a host-root OpenAI-compatibility facade backed by a synthetic in-process
-		// caller; it must not silently unlock the tenant-auth surface. Tenant
+		// identity; it must not silently unlock the tenant-auth surface. Tenant
 		// endpoints (e.g. relocated /v1/agents/chat/completions) still require a
-		// real tenant key from configuration if the operator wants to use them.
+		// real agent key from configuration if the operator wants to use them.
 	}
 
 	// Gateway dashboard metrics collector
@@ -495,9 +527,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 			enforcementMode = string(gatewayCfgForMode.Mode)
 		}
 
+		// Metrics tenant scope derives from the identity registry — the same
+		// source as gateway auth and cache scoping. Quickstart mode (nil
+		// registry) scopes to its synthetic tenant.
 		metricsTenantID := "default"
-		if gatewayCfgForMode != nil {
-			metricsTenantID = gatewayCfgForMode.MetricsTenantScope()
+		if identityRegistry != nil {
+			metricsTenantID = identityRegistry.MetricsTenantScope()
+		} else if serveProxyQuickstart {
+			metricsTenantID = gateway.NewQuickstartIdentity().TenantID
 		}
 		collectorOpts := []metrics.CollectorOption{
 			metrics.WithActiveRunsFn(func() int {
@@ -526,17 +563,21 @@ func runServe(cmd *cobra.Command, args []string) error {
 			}))
 		}
 
+		// The global dashboard budget widget shows the ORGANIZATION BASELINE —
+		// deliberately not a per-agent effective cap (there is no single
+		// correct scalar across agents with different overrides). Per-agent
+		// spend vs effective caps is the fleet view's job (#270/#143).
 		budgetDaily, budgetMonthly := 0.0, 0.0
 		if pol.Policies.CostLimits != nil {
 			budgetDaily = pol.Policies.CostLimits.Daily
 			budgetMonthly = pol.Policies.CostLimits.Monthly
 		}
 		if gatewayCfgForMode != nil {
-			if budgetDaily <= 0 && gatewayCfgForMode.ServerDefaults.MaxDailyCost > 0 {
-				budgetDaily = gatewayCfgForMode.ServerDefaults.MaxDailyCost
+			if budgetDaily <= 0 && gatewayCfgForMode.OrganizationPolicy.MaxDailyCost > 0 {
+				budgetDaily = gatewayCfgForMode.OrganizationPolicy.MaxDailyCost
 			}
-			if budgetMonthly <= 0 && gatewayCfgForMode.ServerDefaults.MaxMonthlyCost > 0 {
-				budgetMonthly = gatewayCfgForMode.ServerDefaults.MaxMonthlyCost
+			if budgetMonthly <= 0 && gatewayCfgForMode.OrganizationPolicy.MaxMonthlyCost > 0 {
+				budgetMonthly = gatewayCfgForMode.OrganizationPolicy.MaxMonthlyCost
 			}
 		}
 		if budgetDaily > 0 || budgetMonthly > 0 {

@@ -123,7 +123,7 @@ type failoverOutcome struct {
 	FailedAttempts []failoverAttemptRecord
 	Skipped        []evidence.SkippedCandidate
 	// FailClosed is true when the failover machinery was engaged and the
-	// caller received an error: either no policy-valid candidate existed
+	// agent received an error: either no policy-valid candidate existed
 	// (no fallback dispatch at all) or every valid candidate failed. Under
 	// eu_strict, refusing to route outside EU/LOCAL is a successful
 	// governance outcome even though the request failed.
@@ -152,10 +152,10 @@ func (o *failoverOutcome) failedAttemptIDs() []string {
 // — evidence write failures are logged, never silently drop traffic).
 type recordAttemptFn func(ctx context.Context, rec failoverAttemptRecord) string
 
-// checkCandidateFn re-runs caller/provider authorization and gateway policy
+// checkCandidateFn re-runs agent/provider authorization and gateway policy
 // for a fallback candidate (provider, model). Failover dispatch is a
-// Talon-initiated action: it must pass the same gates the caller's own
-// request passed for the primary (allowed_providers, caller model lists,
+// Talon-initiated action: it must pass the same gates the agent's own
+// request passed for the primary (allowed_providers, agent model lists,
 // egress rules, budgets) or the chain becomes a policy bypass.
 type checkCandidateFn func(ctx context.Context, provider, model string) failover.FilterResult
 
@@ -187,8 +187,8 @@ func rewriteModelInBody(body []byte, model string) []byte {
 // fallbackAuthHeaders clones the primary attempt's upstream headers and
 // replaces credentials with the fallback target's own. Secret-mode targets
 // read from the tenant-scoped secret store; client_bearer targets keep the
-// caller's bearer token.
-func (g *Gateway) fallbackAuthHeaders(ctx context.Context, caller *CallerConfig, providerName string, prov ProviderConfig, originalAuthorization string, base map[string]string) (map[string]string, error) {
+// agent's bearer token.
+func (g *Gateway) fallbackAuthHeaders(ctx context.Context, agent *ResolvedIdentity, providerName string, prov ProviderConfig, originalAuthorization string, base map[string]string) (map[string]string, error) {
 	headers := make(map[string]string, len(base))
 	for k, v := range base {
 		switch strings.ToLower(k) {
@@ -211,7 +211,7 @@ func (g *Gateway) fallbackAuthHeaders(ctx context.Context, caller *CallerConfig,
 	}
 	anthropicFamily := g.config.providerAPIFamily(providerName) == "anthropic"
 	if prov.SecretName != "" {
-		secret, err := g.secretsStore.Get(ctx, prov.SecretName, caller.TenantID, caller.Name)
+		secret, err := g.secretsStore.Get(ctx, prov.SecretName, agent.TenantID, agent.Name)
 		if err != nil {
 			return nil, fmt.Errorf("fallback provider %s: secret retrieval: %w", providerName, err)
 		}
@@ -265,7 +265,7 @@ func modelAllowedForProvider(prov ProviderConfig, model string) bool {
 // dispatched. Failed runtime attempts are persisted as separate signed
 // evidence records via recordAttempt. When no candidate succeeds the request
 // fails closed: the buffered upstream error (or a gateway 502 when nothing
-// was dispatched) is returned to the caller and the outcome marks the
+// was dispatched) is returned to the agent and the outcome marks the
 // governance result for the final evidence record.
 //
 //nolint:gocyclo // sequential chain walk with per-candidate filtering and error classification
@@ -274,7 +274,7 @@ func (g *Gateway) forwardWithFailover(
 	dst http.ResponseWriter,
 	p ForwardParams,
 	route RouteResult,
-	caller *CallerConfig,
+	agent *ResolvedIdentity,
 	clientModel string,
 	originalAuthorization string,
 	recordAttempt recordAttemptFn,
@@ -373,7 +373,7 @@ func (g *Gateway) forwardWithFailover(
 			}
 		}
 
-		headers, hdrErr := g.fallbackAuthHeaders(ctx, caller, target.Provider, tprov, originalAuthorization, p.Headers)
+		headers, hdrErr := g.fallbackAuthHeaders(ctx, agent, target.Provider, tprov, originalAuthorization, p.Headers)
 		if hdrErr != nil {
 			out.Skipped = append(out.Skipped, evidence.SkippedCandidate{
 				Provider: target.Provider, Model: model, ChainPosition: i + 1,
@@ -469,7 +469,7 @@ func newFailoverGroupID() string {
 // failed provider attempt (evidence-by-default: the failed attempt is a fact
 // of its own, linked to the request by correlation ID). Returns the evidence
 // ID, or "" when the write failed.
-func (g *Gateway) recordFailoverAttemptEvidence(ctx context.Context, correlationID string, caller *CallerConfig, mode string, tier int, rec failoverAttemptRecord, dataFlow *evidence.DataFlow) string {
+func (g *Gateway) recordFailoverAttemptEvidence(ctx context.Context, correlationID string, agent *ResolvedIdentity, mode string, tier int, rec failoverAttemptRecord, dataFlow *evidence.DataFlow) string {
 	errMsg := rec.ErrMsg
 	if errMsg == "" && rec.UpstreamStatus != 0 {
 		errMsg = fmt.Sprintf("upstream status %d", rec.UpstreamStatus)
@@ -481,9 +481,9 @@ func (g *Gateway) recordFailoverAttemptEvidence(ctx context.Context, correlation
 	ev, err := RecordGatewayEvidence(ctx, g.evidenceStore, RecordGatewayEvidenceParams{
 		CorrelationID:  correlationID,
 		SessionID:      sessionIDFromContext(ctx),
-		TenantID:       caller.TenantID,
-		CallerName:     caller.Name,
-		Team:           caller.Team,
+		TenantID:       agent.TenantID,
+		AgentName:     agent.Name,
+		Team:           agent.Team,
 		Provider:       rec.Provider,
 		Model:          rec.Model,
 		PolicyAllowed:  true,

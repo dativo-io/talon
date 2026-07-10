@@ -90,20 +90,10 @@ const (
 	gatewaySessionSourceKey  gatewayContextKey = "session_source"
 )
 
-// hasCallerTag returns true when the caller has the given tag (e.g. "copaw" for CoPaw).
-// Classification is driven by CallerConfig.Tags, not name prefix.
-func hasCallerTag(caller *CallerConfig, tag string) bool {
-	for _, t := range caller.Tags {
-		if t == tag {
-			return true
-		}
-	}
-	return false
-}
-
 // Gateway is the LLM API gateway handler.
 type Gateway struct {
 	config        *GatewayConfig
+	registry      *IdentityRegistry
 	classifier    classifier.Facade
 	evidenceStore *evidence.Store
 	secretsStore  *secrets.SecretStore
@@ -143,14 +133,14 @@ type gatewayCacheConfig struct {
 
 // canonicalTenantIDForCache returns the tenant ID for cache key scope from the config-derived map.
 // Used so the value passed to cache.DeriveEntryKey originates from config (not from the request path), satisfying static analysis.
-func (g *Gateway) canonicalTenantIDForCache(fromCaller string) string {
+func (g *Gateway) canonicalTenantIDForCache(fromAgent string) string {
 	if g.canonicalTenantIDs == nil {
-		return fromCaller
+		return fromAgent
 	}
-	if s, ok := g.canonicalTenantIDs[fromCaller]; ok {
+	if s, ok := g.canonicalTenantIDs[fromAgent]; ok {
 		return s
 	}
-	return fromCaller
+	return fromAgent
 }
 
 // SetMetricsRecorder attaches a dashboard metrics collector. Call after NewGateway.
@@ -188,9 +178,13 @@ func (g *Gateway) SetCache(store *cache.Store, embedder *cache.BM25, scrubber *c
 	}
 }
 
-// NewGateway creates a new Gateway.
+// NewGateway creates a new Gateway. The registry is the immutable key → agent
+// identity set built by BuildIdentityRegistry; a nil/empty registry means no
+// agent can authenticate (quickstart mode injects its synthetic identity via
+// request context instead).
 func NewGateway(
 	config *GatewayConfig,
+	registry *IdentityRegistry,
 	classifier classifier.Facade,
 	evidenceStore *evidence.Store,
 	secretsStore *secrets.SecretStore,
@@ -207,11 +201,11 @@ func NewGateway(
 	client := HTTPClientForGateway(timeouts, config.UpstreamTransport)
 	rl := NewRateLimiter(
 		config.RateLimits.GlobalRequestsPerMin,
-		config.RateLimits.PerCallerRequestsPerMin,
+		config.RateLimits.PerAgentRequestsPerMin,
 	)
 
 	maxMB := DefaultAttachmentMaxFileSizeMB
-	if p := config.ServerDefaults.AttachmentPolicy; p != nil && p.MaxFileSizeMB > 0 {
+	if p := config.OrganizationPolicy.AttachmentPolicy; p != nil && p.MaxFileSizeMB > 0 {
 		maxMB = p.MaxFileSizeMB
 	}
 	ext := attachment.NewExtractor(maxMB)
@@ -220,13 +214,16 @@ func NewGateway(
 		return nil, fmt.Errorf("creating attachment injection scanner: %w", err)
 	}
 
+	// Cache tenant scope derives from the registry — agent-declared tenants
+	// included — so cache keys always originate from config, not requests.
 	canonical := make(map[string]string)
-	for i := range config.Callers {
-		tid := config.Callers[i].TenantID
+	for _, tid := range registry.TenantIDs() {
 		canonical[tid] = tid
 	}
+	canonical[quickstartTenantID] = quickstartTenantID
 	return &Gateway{
 		config:             config,
+		registry:           registry,
 		classifier:         classifier,
 		evidenceStore:      evidenceStore,
 		secretsStore:       secretsStore,
@@ -293,29 +290,26 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// budget input must be zero or signed evidence records fabricated spend.
 	isCountTokens := wire == "anthropic" && strings.HasSuffix(route.Path, "/count_tokens")
 
-	// Step 2: Identify
-	var caller *CallerConfig
-	qc := QuickstartCallerFromContext(ctx)
-	if qc != nil {
-		caller = qc
-	} else {
-		caller, err = g.config.ResolveCaller(r)
-		if err != nil {
-			if err == ErrCallerIDRequired || err == ErrCallerNotFound {
-				RecordGatewayError(ctx, "auth")
-				RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
-				WriteProviderError(w, wire, http.StatusUnauthorized, "Invalid or missing tenant key")
-				return
-			}
-			RecordGatewayError(ctx, "auth")
-			RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
-			WriteProviderError(w, wire, http.StatusInternalServerError, err.Error())
-			return
-		}
+	// Step 2: Identify — a presented key resolves to exactly one agent or the
+	// request is rejected; the quickstart synthetic identity (injected via
+	// context by the in-process facade) is the only exception (#266).
+	agent, err := g.resolveIdentity(r)
+	if err != nil {
+		RecordGatewayError(ctx, "auth")
+		RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
+		WriteProviderError(w, wire, http.StatusUnauthorized, "Invalid or missing agent key")
+		return
 	}
-	if span := trace.SpanFromContext(ctx); span.IsRecording() && hasCallerTag(caller, "copaw") {
+
+	// Effective policy for this request: organization baseline → the agent's
+	// one override → the routed provider's destination constraints. Computed
+	// once here; failover candidates recompute per candidate provider through
+	// buildPolicyInputForRequest (same function, no drift).
+	prov, _ := g.config.Provider(route.Provider)
+	eff := ResolveEffectivePolicy(g.config.OrganizationPolicy, prov, agent.Override)
+	if span := trace.SpanFromContext(ctx); span.IsRecording() && agent.HasTag("copaw") {
 		span.SetAttributes(
-			attribute.String("copaw.caller", caller.Name),
+			attribute.String("copaw.agent", agent.Name),
 			attribute.String("copaw.channel", "gateway"),
 		)
 	}
@@ -324,7 +318,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// identity from the neutral X-Talon-* headers or a vendor adapter (Claude
 	// Code, Codex). Evidence-only; never a policy input. A hygiene violation
 	// (oversized/invalid header) is rejected here so it never reaches evidence.
-	orch, resolvedSessionID, sessionSource, orchErr := resolveOrchestration(r, caller.AcceptsClientMetadata(), sessionID)
+	orch, resolvedSessionID, sessionSource, orchErr := resolveOrchestration(r, agent.AcceptsClientMetadata(), sessionID)
 	if orchErr != nil {
 		RecordGatewayError(ctx, "orchestration_header_invalid")
 		RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
@@ -345,30 +339,30 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx = context.WithValue(ctx, gatewayOrchestrationKey, orch)
 	}
 
-	// Rate limit check (after caller identification, before any work)
-	if g.rateLimiter != nil && !g.rateLimiter.Allow(caller.Name) {
+	// Rate limit check (after agent identification, before any work)
+	if g.rateLimiter != nil && !g.rateLimiter.Allow(agent.Name) {
 		if isShadow {
 			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
-				Type: "rate_limit", Detail: "Rate limit exceeded for " + caller.Name, Action: "block",
+				Type: "rate_limit", Detail: "Rate limit exceeded for " + agent.Name, Action: "block",
 			})
-			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_rate_limit_exceeded")
+			log.Warn().Str("agent", agent.Name).Str("enforcement_mode", "shadow").Msg("shadow_rate_limit_exceeded")
 		} else {
-			log.Warn().Str("caller", caller.Name).Msg("gateway_rate_limited")
+			log.Warn().Str("agent", agent.Name).Msg("gateway_rate_limited")
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, wire, http.StatusTooManyRequests, "Rate limit exceeded")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, "", start, "", &classifier.Classification{}, nil, 0, durationMS, "", false, []string{"rate limit exceeded"}, false, nil, nil, nil, nil, false, "", 0, 0, false, 0, 0, 0)
+			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, "", start, "", &classifier.Classification{}, nil, 0, durationMS, "", false, []string{"rate limit exceeded"}, false, nil, nil, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
 			}
-			g.emitMetrics(ctx, caller, route.Provider, "", nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
+			g.emitMetrics(ctx, agent, route.Provider, "", nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
 			return
 		}
 	}
 
 	// Only POST
 	if r.Method != http.MethodPost {
-		RecordGatewayRequest(ctx, caller.Name, "", route.Provider, "error")
+		RecordGatewayRequest(ctx, agent.Name, "", route.Provider, "error")
 		RecordGatewayError(ctx, "invalid_method")
 		WriteProviderError(w, wire, http.StatusMethodNotAllowed, "Method not allowed")
 		return
@@ -376,7 +370,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		RecordGatewayRequest(ctx, caller.Name, "", route.Provider, "error")
+		RecordGatewayRequest(ctx, agent.Name, "", route.Provider, "error")
 		RecordGatewayError(ctx, "read_body")
 		WriteProviderError(w, wire, http.StatusBadRequest, "Failed to read request body")
 		return
@@ -386,14 +380,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 3: Extract
 	extracted, err := ExtractForProvider(wire, body)
 	if err != nil {
-		RecordGatewayRequest(ctx, caller.Name, "", route.Provider, "error")
+		RecordGatewayRequest(ctx, agent.Name, "", route.Provider, "error")
 		RecordGatewayError(ctx, "extract_request")
 		WriteProviderError(w, wire, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	// Step 3b: Scan attachments (base64-encoded file blocks)
-	attPolicy := ResolveAttachmentPolicy(&g.config.ServerDefaults, caller.PolicyOverrides)
+	attPolicy := eff.Attachment
 	var attSummary *AttachmentsScanSummary
 	if attPolicy.Action != "allow" {
 		attSummary = ScanRequestAttachments(ctx, body, wire,
@@ -404,7 +398,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 				Type: "attachment_block", Detail: fmt.Sprintf("%d file(s) would be blocked", attSummary.FilesBlocked), Action: "block",
 			})
-			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_attachment_block")
+			log.Warn().Str("agent", agent.Name).Str("enforcement_mode", "shadow").Msg("shadow_attachment_block")
 		} else {
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, wire, http.StatusBadRequest,
@@ -412,14 +406,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// The request is blocked either way; the scan only enriches
 			// evidence, so a scanner failure degrades to nil classification.
 			attCls, _ := g.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text)
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text,
+			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text,
 				attCls, nil, 0, 0, "", false,
 				[]string{"attachment policy block"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
 			}
-			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
+			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
 			return
 		}
 	}
@@ -437,13 +431,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 				Type: "scanner_unavailable", Detail: "PII scanner failed; request would be blocked", Action: "block",
 			})
-			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Err(scanErr).Msg("shadow_scanner_unavailable")
+			log.Warn().Str("agent", agent.Name).Str("enforcement_mode", "shadow").Err(scanErr).Msg("shadow_scanner_unavailable")
 			classification = &classifier.Classification{}
 		} else {
 			durationMS := time.Since(start).Milliseconds()
 			RecordGatewayError(ctx, "scanner_unavailable")
 			WriteProviderError(w, wire, http.StatusBadGateway, "Request blocked: PII scanner unavailable (fail-closed)")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, nil, nil, 0, durationMS, "", false, []string{"scanner unavailable"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0, func(p *RecordGatewayEvidenceParams) {
+			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, nil, nil, 0, durationMS, "", false, []string{"scanner unavailable"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0, func(p *RecordGatewayEvidenceParams) {
 				if p.Scanner != nil {
 					p.Scanner.Failure = scannerFailureKind(scanErr)
 				}
@@ -452,7 +446,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
 			}
-			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
+			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
 			return
 		}
 	}
@@ -468,13 +462,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// enforcement — tool blocks cannot be redacted yet, so acting on this
 	// signal would fail-close every redact-mode deployment on agentic traffic.
 	var toolContentScan *evidence.ToolContentScan
-	if g.config.ServerDefaults.ScanToolContent != ScanToolContentOff && extracted.ToolText != "" {
+	if g.config.OrganizationPolicy.ScanToolContent != ScanToolContentOff && extracted.ToolText != "" {
 		tc, tcErr := g.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.ToolText)
 		if tcErr != nil {
 			// Evidence-only scan: a scanner error must not fail-close the
 			// request; the record says the content went out unscanned.
 			toolContentScan = &evidence.ToolContentScan{Scanned: false}
-			log.Warn().Str("caller", caller.Name).Err(tcErr).Msg("tool_content_scan_failed")
+			log.Warn().Str("agent", agent.Name).Err(tcErr).Msg("tool_content_scan_failed")
 		} else {
 			toolContentScan = &evidence.ToolContentScan{
 				Scanned:     true,
@@ -486,9 +480,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Caller allowed for this provider?
-	if len(caller.AllowedProviders) > 0 {
+	if len(agent.AllowedProviders) > 0 {
 		allowed := false
-		for _, p := range caller.AllowedProviders {
+		for _, p := range agent.AllowedProviders {
 			if p == route.Provider {
 				allowed = true
 				break
@@ -497,25 +491,22 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !allowed {
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, wire, http.StatusForbidden, "Caller not allowed for this provider")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"provider not allowed"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
+			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"provider not allowed"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
 			}
-			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
+			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
 			return
 		}
 	}
 
-	if g.denySovereigntyExcluded(w, ctx, caller, route, start, correlationID, extracted, classification, attSummary, isShadow, &shadowViolations) {
+	if g.denySovereigntyExcluded(w, ctx, agent, route, start, correlationID, extracted, classification, attSummary, isShadow, &shadowViolations) {
 		return
 	}
 
 	// Step 6: Evaluate policy
-	piiAction := g.config.ServerDefaults.DefaultPIIAction
-	if caller.PolicyOverrides != nil && caller.PolicyOverrides.PIIAction != "" {
-		piiAction = caller.PolicyOverrides.PIIAction
-	}
+	piiAction := eff.PIIAction
 	if piiAction == "block" && classification.HasPII {
 		if isShadow {
 			piiTypes := make([]string, 0, len(classification.Entities))
@@ -525,16 +516,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 				Type: "pii_block", Detail: fmt.Sprintf("PII detected: %v", piiTypes), Action: "block",
 			})
-			log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("pii", piiTypes).Msg("shadow_pii_block")
+			log.Warn().Str("agent", agent.Name).Str("enforcement_mode", "shadow").Strs("pii", piiTypes).Msg("shadow_pii_block")
 		} else {
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, wire, http.StatusBadRequest, "Request contains PII that is not allowed")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, []string{"PII block"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
+			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, []string{"PII block"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
 			}
-			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
+			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
 			return
 		}
 	}
@@ -545,25 +536,25 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isCountTokens {
 		estimatedCost = 0 // free endpoint: a nonzero estimate would leak into budget input and deny evidence (#218)
 	}
-	dailyCost, monthlyCost := g.callerCostTotals(ctx, caller)
+	dailyCost, monthlyCost := g.agentCostTotals(ctx, agent)
 	// Utilization must be measured against the same effective caps enforcement
-	// uses (default overlaid by per-caller override), or the dashboard reports a
+	// uses (default overlaid by per-agent override), or the dashboard reports a
 	// different denominator than the runtime actually gates on (#216).
-	dailyCap, monthlyCap := ResolveCostCaps(&g.config.ServerDefaults, caller.PolicyOverrides)
+	dailyCap, monthlyCap := eff.MaxDailyCost, eff.MaxMonthlyCost
 	if dailyCap > 0 {
 		pct := (dailyCost / dailyCap) * 100
-		RecordBudgetUtilization(ctx, caller.TenantID, "daily", pct)
-		g.tryBudgetAlert(ctx, caller.TenantID, "daily", pct, 80)
-		g.tryBudgetAlert(ctx, caller.TenantID, "daily", pct, 95)
+		RecordBudgetUtilization(ctx, agent.TenantID, "daily", pct)
+		g.tryBudgetAlert(ctx, agent.TenantID, "daily", pct, 80)
+		g.tryBudgetAlert(ctx, agent.TenantID, "daily", pct, 95)
 	}
 	if monthlyCap > 0 {
 		pct := (monthlyCost / monthlyCap) * 100
-		RecordBudgetUtilization(ctx, caller.TenantID, "monthly", pct)
-		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 80)
-		g.tryBudgetAlert(ctx, caller.TenantID, "monthly", pct, 95)
+		RecordBudgetUtilization(ctx, agent.TenantID, "monthly", pct)
+		g.tryBudgetAlert(ctx, agent.TenantID, "monthly", pct, 80)
+		g.tryBudgetAlert(ctx, agent.TenantID, "monthly", pct, 95)
 	}
 	destinationRegion := g.providerRegion(route.Provider)
-	policyInput, sessionBudgetUnavailable := g.buildPolicyInputForRequest(ctx, caller, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost, sessionID)
+	policyInput, sessionBudgetUnavailable := g.buildPolicyInputForRequest(ctx, agent, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost, sessionID)
 	if g.policy != nil && (g.config.Mode == ModeEnforce || isShadow) {
 		allowed, reasons, policyErr := g.policy.EvaluateGateway(ctx, policyInput)
 		if policyErr != nil {
@@ -571,16 +562,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 					Type: "policy_deny", Detail: fmt.Sprintf("policy evaluation error: %v", policyErr), Action: "block",
 				})
-				log.Warn().Err(policyErr).Str("caller", caller.Name).Str("enforcement_mode", "shadow").Msg("shadow_policy_error")
+				log.Warn().Err(policyErr).Str("agent", agent.Name).Str("enforcement_mode", "shadow").Msg("shadow_policy_error")
 			} else {
 				durationMS := time.Since(start).Milliseconds()
 				WriteProviderError(w, wire, http.StatusInternalServerError, "Policy evaluation failed")
-				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"policy evaluation error"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
+				persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"policy evaluation error"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
 				}
-				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
+				g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
 				return
 			}
 		}
@@ -597,15 +588,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// {limit, spent, estimate} as an enforce-mode deny would, so
 				// operators can dry-run caps with full numeric evidence.
 				shadowSessionBudget = sessionBudgetDetail(reasons, policyInput, estimatedCost)
-				log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("reasons", reasons).Msg("shadow_policy_deny")
+				log.Warn().Str("agent", agent.Name).Str("enforcement_mode", "shadow").Strs("reasons", reasons).Msg("shadow_policy_deny")
 			} else {
 				durationMS := time.Since(start).Milliseconds()
 				egressReason := firstEgressReason(reasons)
 				if egressReason != "" {
 					log.Warn().
 						Str("correlation_id", correlationID).
-						Str("tenant_id", caller.TenantID).
-						Str("agent_id", caller.Name).
+						Str("tenant_id", agent.TenantID).
+						Str("agent_id", agent.Name).
 						Int("data_tier", tier).
 						Str("destination", route.Provider).
 						Str("region", destinationRegion).
@@ -613,7 +604,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						Msg("gateway_egress_denied")
 				}
 				WriteProviderError(w, wire, http.StatusForbidden, preferredDenyReason(reasons))
-				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+				persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
 					p.SessionBudget = sessionBudgetDetail(reasons, policyInput, estimatedCost)
 					if sessionBudgetUnavailable {
 						p.GatewayAnnotations = append(p.GatewayAnnotations, "session_budget_unavailable")
@@ -623,65 +614,64 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
 				}
-				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
+				g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
 				return
 			}
 		}
 	}
 
 	// Step 6b: Tool governance — filter or block forbidden tools before the LLM sees them.
-	prov, _ := g.config.Provider(route.Provider)
-	toolPolicy := ResolveToolPolicy(&g.config.ServerDefaults, prov, caller.PolicyOverrides)
+	// Tool governance comes from the effective policy (baseline union provider union agent).
 	var toolResult *ToolGovernanceResult
 	forwardBody := body
-	if len(extracted.ToolNames) > 0 && (len(toolPolicy.AllowedTools) > 0 || len(toolPolicy.ForbiddenTools) > 0) {
-		tr := EvaluateToolPolicy(extracted.ToolNames, toolPolicy.AllowedTools, toolPolicy.ForbiddenTools)
+	if len(extracted.ToolNames) > 0 && (len(eff.AllowedTools) > 0 || len(eff.ForbiddenTools) > 0) {
+		tr := EvaluateToolPolicy(extracted.ToolNames, eff.AllowedTools, eff.ForbiddenTools)
 		toolResult = &tr
 		if len(tr.Removed) > 0 {
 			switch {
 			case isShadow:
 				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
-					Type: "tool_block", Detail: fmt.Sprintf("Forbidden tools: %v", tr.Removed), Action: toolPolicy.Action,
+					Type: "tool_block", Detail: fmt.Sprintf("Forbidden tools: %v", tr.Removed), Action: eff.ToolPolicyAction,
 				})
-				log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").Strs("tools", tr.Removed).Msg("shadow_tool_violation")
-			case toolPolicy.Action == "block":
+				log.Warn().Str("agent", agent.Name).Str("enforcement_mode", "shadow").Strs("tools", tr.Removed).Msg("shadow_tool_violation")
+			case eff.ToolPolicyAction == "block":
 				durationMS := time.Since(start).Milliseconds()
 				log.Warn().
-					Str("caller", caller.Name).
+					Str("agent", agent.Name).
 					Strs("forbidden", tr.Removed).
 					Msg("gateway_tool_blocked")
 				WriteProviderError(w, wire, http.StatusForbidden,
 					fmt.Sprintf("Request contains forbidden tools: %v", tr.Removed))
-				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text,
+				persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text,
 					classification, nil, 0, 0, "", false, []string{"tool governance block"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
 				}
-				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
+				g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
 				return
 			default:
 				filtered, filterErr := FilterRequestBodyTools(wire, forwardBody, tr.Kept)
 				if filterErr != nil {
 					durationMS := time.Since(start).Milliseconds()
 					log.Error().Err(filterErr).
-						Str("caller", caller.Name).
+						Str("agent", agent.Name).
 						Strs("forbidden", tr.Removed).
 						Msg("gateway_tool_filter_failed")
 					WriteProviderError(w, wire, http.StatusInternalServerError,
 						"Failed to filter forbidden tools from request")
-					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text,
+					persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text,
 						classification, nil, 0, 0, "", false, []string{"tool filter error"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 					if err != nil {
 						g.handleEvidenceWriteFailure(ctx, err)
 						return
 					}
-					g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
+					g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
 					return
 				}
 				forwardBody = filtered
 				log.Info().
-					Str("caller", caller.Name).
+					Str("agent", agent.Name).
 					Strs("removed", tr.Removed).
 					Strs("kept", tr.Kept).
 					Msg("gateway_tools_filtered")
@@ -699,7 +689,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			durationMS := time.Since(start).Milliseconds()
 			RecordGatewayError(ctx, "scanner_unavailable")
 			WriteProviderError(w, wire, http.StatusBadGateway, "Request blocked: PII redaction failed (fail-closed)")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request redaction failed"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request redaction failed"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
 				if p.Scanner != nil {
 					p.Scanner.Failure = scannerFailureKind(redactErr)
 				}
@@ -708,7 +698,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
 			}
-			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
+			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
 			return
 		}
 		forwardBody = redacted
@@ -720,12 +710,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if extractErr != nil {
 			durationMS := time.Since(start).Milliseconds()
 			WriteProviderError(w, wire, http.StatusBadRequest, "Request blocked: unable to verify redacted payload")
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request redaction verification failed"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
+			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request redaction verification failed"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
 			}
-			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
+			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
 			return
 		}
 		if verifyErr := g.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedExtracted.Text); verifyErr != nil {
@@ -743,13 +733,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				status = http.StatusBadGateway
 				reason = "request redaction verification failed: scanner unavailable"
 				RecordGatewayError(ctx, "scanner_unavailable")
-				log.Warn().Err(verifyErr).Str("caller", caller.Name).Msg("request_redaction_verification_scanner_unavailable")
+				log.Warn().Err(verifyErr).Str("agent", agent.Name).Msg("request_redaction_verification_scanner_unavailable")
 			}
 			if types != "" {
 				msg += " (types: " + types + ")"
 			}
 			WriteProviderError(w, wire, status, msg)
-			persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{reason}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{reason}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
 				if !residual && p.Scanner != nil {
 					p.Scanner.Failure = scannerFailureKind(verifyErr)
 				}
@@ -758,7 +748,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				g.handleEvidenceWriteFailure(ctx, err)
 				return
 			}
-			g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
+			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
 			return
 		}
 	}
@@ -798,7 +788,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		cin := &cache.PolicyInput{
-			TenantID: caller.TenantID, DataTier: dataTierStr, PIIDetected: classification.HasPII,
+			TenantID: agent.TenantID, DataTier: dataTierStr, PIIDetected: classification.HasPII,
 			PIISeverity: piiSev, Model: extracted.Model, RequestType: "completion", CacheEnabled: true,
 		}
 		if cres, err := g.cachePolicy.Evaluate(ctx, cin); err == nil && cres != nil {
@@ -816,18 +806,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if g.cacheConfig.MaxEntriesPerTenant > 0 && g.cacheConfig.MaxEntriesPerTenant < maxCand {
 					maxCand = g.cacheConfig.MaxEntriesPerTenant
 				}
-				lookupResult, err := g.cacheStore.Lookup(ctx, caller.TenantID, queryBlob, threshold, maxCand, g.cacheEmbedder.SimilarityFunc())
+				lookupResult, err := g.cacheStore.Lookup(ctx, agent.TenantID, queryBlob, threshold, maxCand, g.cacheEmbedder.SimilarityFunc())
 				if err == nil && lookupResult != nil {
 					hit := lookupResult.Entry
 					_ = g.cacheStore.IncrementHitCount(ctx, hit.ID)
 					costSaved := g.costEstimate(route.Provider, extracted.Model, Usage{Input: 300, Output: 300}).Amount
 					durationMS := time.Since(start).Milliseconds()
-					persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", true, nil, inputPIIRedacted, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved, false, 0, 0, estimatedCost)
+					persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", true, nil, inputPIIRedacted, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved, false, 0, 0, estimatedCost)
 					if err != nil {
 						g.handleEvidenceWriteFailure(ctx, err)
 						return
 					}
-					g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, false, false, piiAction, true, costSaved, 0, 0, persisted)
+					g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, false, false, piiAction, true, costSaved, 0, 0, persisted)
 					writeCachedCompletion(w, wire, extracted.Model, hit.ResponseText)
 					return
 				}
@@ -882,7 +872,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if clientKey == "" {
 			RecordGatewayError(ctx, "missing_upstream_key")
-			RecordGatewayRequest(ctx, caller.Name, extracted.Model, route.Provider, "error")
+			RecordGatewayRequest(ctx, agent.Name, extracted.Model, route.Provider, "error")
 			WriteProviderError(w, wire, http.StatusUnauthorized,
 				"no upstream credential: set OPENAI_API_KEY or send Authorization: Bearer ...")
 			return
@@ -893,17 +883,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx = context.WithValue(ctx, gatewayUpstreamKeyFP, fingerprintKey(clientKey))
 	default:
 		if prov.SecretName != "" {
-			secret, err := g.secretsStore.Get(ctx, prov.SecretName, caller.TenantID, caller.Name)
+			secret, err := g.secretsStore.Get(ctx, prov.SecretName, agent.TenantID, agent.Name)
 			if err != nil {
 				durationMS := time.Since(start).Milliseconds()
 				log.Warn().Err(err).Str("secret", prov.SecretName).Msg("gateway_secret_get_failed")
 				WriteProviderError(w, wire, http.StatusInternalServerError, "Service configuration error")
-				persisted, err := g.recordEvidence(ctx, correlationID, caller, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"secret retrieval error"}, false, nil, attSummary, toolResult, shadowViolations, false, "", 0, 0, false, 0, 0, estimatedCost)
+				persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"secret retrieval error"}, false, nil, attSummary, toolResult, shadowViolations, false, "", 0, 0, false, 0, 0, estimatedCost)
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
 				}
-				g.emitMetrics(ctx, caller, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
+				g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, true, true, piiAction, false, 0, 0, 0, persisted)
 				return
 			}
 			if g.config.providerAPIFamily(route.Provider) == "anthropic" {
@@ -918,7 +908,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Resolve response PII action. Shadow mode never blocks or mutates:
 	// the scan still runs for evidence, but block/redact degrade to warn and
 	// the would-be enforcement is recorded as a shadow violation below.
-	responsePIIAction := resolveResponsePIIAction(&g.config.ServerDefaults, caller.PolicyOverrides)
+	responsePIIAction := eff.ResponsePIIAction
 	enforcedResponseAction := responsePIIAction
 	if isShadow && responsePIIAction != "allow" && responsePIIAction != "" {
 		responsePIIAction = "warn"
@@ -959,8 +949,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	recordAttempt := func(aCtx context.Context, rec failoverAttemptRecord) string {
 		attemptFlow := g.buildDataFlow(dataFlowInputs{
 			CorrelationID:    correlationID,
-			TenantID:         caller.TenantID,
-			CallerName:       caller.Name,
+			TenantID:         agent.TenantID,
+			AgentName:       agent.Name,
 			Provider:         rec.Provider,
 			Model:            rec.Model,
 			Allowed:          true,
@@ -968,27 +958,27 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			InputText:        extracted.Text,
 			Classification:   classification,
 		})
-		return g.recordFailoverAttemptEvidence(aCtx, correlationID, caller, g.config.EffectiveSovereigntyMode, tier, rec, attemptFlow)
+		return g.recordFailoverAttemptEvidence(aCtx, correlationID, agent, g.config.EffectiveSovereigntyMode, tier, rec, attemptFlow)
 	}
 	// Fallback candidates must pass the same gates the primary passed.
 	// Shadow mode must never change runtime behavior: policy and tool
 	// violations are recorded as shadow violations and the dispatch
 	// proceeds, exactly like the primary path. Two gates stay hard in every
-	// mode: the caller's provider allowlist (the primary route enforces it
+	// mode: the agent's provider allowlist (the primary route enforces it
 	// unconditionally too) and the sovereignty filter inside the failover
 	// pipeline (an explicit hard invariant — under eu_strict Talon never
 	// dispatches outside EU/LOCAL, shadow or not).
 	checkCandidate := func(cCtx context.Context, candProvider, candModel string) failover.FilterResult {
-		if len(caller.AllowedProviders) > 0 {
+		if len(agent.AllowedProviders) > 0 {
 			allowed := false
-			for _, p := range caller.AllowedProviders {
+			for _, p := range agent.AllowedProviders {
 				if p == candProvider {
 					allowed = true
 					break
 				}
 			}
 			if !allowed {
-				return failover.FilterResult{Filter: "caller_allowlist", Reason: fmt.Sprintf("caller %s not allowed for provider %s", caller.Name, candProvider)}
+				return failover.FilterResult{Filter: "caller_allowlist", Reason: fmt.Sprintf("agent %s not allowed for provider %s", agent.Name, candProvider)}
 			}
 		}
 		// Provider-level tool governance of the TARGET provider: a fallback
@@ -996,13 +986,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// filtered against the primary's tool policy only.
 		if len(extracted.ToolNames) > 0 {
 			candProv, _ := g.config.Provider(candProvider)
-			candToolPolicy := ResolveToolPolicy(&g.config.ServerDefaults, candProv, caller.PolicyOverrides)
-			if len(candToolPolicy.AllowedTools) > 0 || len(candToolPolicy.ForbiddenTools) > 0 {
+			candEff := ResolveEffectivePolicy(g.config.OrganizationPolicy, candProv, agent.Override)
+			if len(candEff.AllowedTools) > 0 || len(candEff.ForbiddenTools) > 0 {
 				forwarded := extracted.ToolNames
 				if toolResult != nil {
 					forwarded = toolResult.Kept
 				}
-				if tr := EvaluateToolPolicy(forwarded, candToolPolicy.AllowedTools, candToolPolicy.ForbiddenTools); len(tr.Removed) > 0 {
+				if tr := EvaluateToolPolicy(forwarded, candEff.AllowedTools, candEff.ForbiddenTools); len(tr.Removed) > 0 {
 					if isShadow {
 						shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 							Type: "tool_block", Detail: fmt.Sprintf("failover candidate %s: forbidden tools %v", candProvider, tr.Removed), Action: "block",
@@ -1018,7 +1008,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// same function as the primary's input (session context included).
 		if g.policy != nil && (g.config.Mode == ModeEnforce || isShadow) {
 			candEstimate := g.costEstimate(candProvider, candModel, Usage{Input: estTokensIn, Output: estTokensOut}).Amount
-			candInput, _ := g.buildPolicyInputForRequest(cCtx, caller, candProvider, candModel, tier, candEstimate, dailyCost, monthlyCost, sessionID)
+			candInput, _ := g.buildPolicyInputForRequest(cCtx, agent, candProvider, candModel, tier, candEstimate, dailyCost, monthlyCost, sessionID)
 			allowed, reasons, policyErr := g.policy.EvaluateGateway(cCtx, candInput)
 			switch {
 			case policyErr != nil && isShadow:
@@ -1043,7 +1033,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case needsResponseScan && !isStreaming:
 		// Non-streaming: capture response, scan, then write
 		capture := &responseCapture{ResponseWriter: w}
-		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, agent, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
 		if forwardErr == nil {
 			scannedBody, scanResult := scanResponseForPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), wire, capture.body.Bytes(), responsePIIAction, g.classifier)
 			responsePII = scanResult
@@ -1077,13 +1067,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							cachedModel = failoverOut.SelectedModel
 						}
 						// Use canonical tenant ID from config-derived map so cache key is not tainted by request path (CodeQL go/weak-sensitive-data-hashing).
-						scopeTenantID := g.canonicalTenantIDForCache(caller.TenantID)
+						scopeTenantID := g.canonicalTenantIDForCache(agent.TenantID)
 						keyHash := cache.DeriveEntryKey(scopeTenantID, cachedModel, extracted.Text)
 						tierLabel := cache.TierLabel(tier)
 						ttl := cache.TTLForTier(tierLabel, g.cacheConfig.TTLByTier, g.cacheConfig.DefaultTTL)
 						now := time.Now().UTC()
 						entry := &cache.Entry{
-							TenantID: caller.TenantID, CacheKey: keyHash, EmbeddingData: emb, ResponseText: content,
+							TenantID: agent.TenantID, CacheKey: keyHash, EmbeddingData: emb, ResponseText: content,
 							Model: cachedModel, DataTier: tierLabel, PIIScrubbed: true,
 							CreatedAt: now, ExpiresAt: now.Add(ttl),
 						}
@@ -1102,7 +1092,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// scan for PII. If clean, forward the original buffered events. If
 		// PII found, return the redacted content wrapped in SSE format.
 		capture := &responseCapture{ResponseWriter: w}
-		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, agent, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
 		if forwardErr == nil {
 			responsePII = handleStreamingPIIScan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), w, capture, wire, responsePIIAction, g.classifier)
 		} else {
@@ -1110,7 +1100,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 	default:
-		failoverOut, forwardErr = g.forwardWithFailover(ctx, w, fwdParams, route, caller, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, w, fwdParams, route, agent, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
 	}
 
 	// Shadow mode: record what response enforcement would have done.
@@ -1121,7 +1111,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Detail: fmt.Sprintf("response PII detected: %v", responsePII.PIITypes),
 			Action: enforcedResponseAction,
 		})
-		log.Warn().Str("caller", caller.Name).Str("enforcement_mode", "shadow").
+		log.Warn().Str("agent", agent.Name).Str("enforcement_mode", "shadow").
 			Strs("pii", responsePII.PIITypes).Msg("shadow_response_pii")
 	}
 
@@ -1181,7 +1171,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Step 10: Evidence. A response blocked by the output PII scan (or by a
 	// scanner failure) is a denial: evidence must say so, never allowed=true
-	// for a request whose caller received a blocked body.
+	// for a request whose agent received a blocked body.
 	var forwardErrStr string
 	if forwardErr != nil {
 		forwardErrStr = forwardErr.Error()
@@ -1197,7 +1187,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		evReasons = []string{reason}
 		RecordGatewayError(ctx, reason)
 	}
-	persisted, recordErr := g.recordEvidence(ctx, correlationID, caller, selectedProvider, selectedModel, start, extracted.Text, classification, &tokenUsage, cost, durationMS, forwardErrStr, evAllowed, evReasons, inputPIIRedacted, responsePII, attSummary, toolResult, shadowViolations, false, "", 0, 0, cacheStored, ttftMS, tpotMS, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+	persisted, recordErr := g.recordEvidence(ctx, correlationID, agent, selectedProvider, selectedModel, start, extracted.Text, classification, &tokenUsage, cost, durationMS, forwardErrStr, evAllowed, evReasons, inputPIIRedacted, responsePII, attSummary, toolResult, shadowViolations, false, "", 0, 0, cacheStored, ttftMS, tpotMS, estimatedCost, func(p *RecordGatewayEvidenceParams) {
 		p.Failover = failoverEvCtx
 		if failoverOut != nil && failoverOut.FailClosed {
 			p.Status = "failed"
@@ -1232,11 +1222,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !isCountTokens {
 		// count_tokens neither spends nor consumes: keep session cost/token
 		// accumulation and stage counts free of count-only traffic.
-		g.trackSessionUsage(ctx, sessionID, sessionSource, caller.TenantID, caller.Name, cost, tokenUsage.Input+tokenUsage.Output)
+		g.trackSessionUsage(ctx, sessionID, sessionSource, agent.TenantID, agent.Name, cost, tokenUsage.Input+tokenUsage.Output)
 	}
 
 	// Emit OTel + dashboard metrics
-	g.emitMetrics(ctx, caller, selectedProvider, selectedModel, classification, toolResult, shadowViolations,
+	g.emitMetrics(ctx, agent, selectedProvider, selectedModel, classification, toolResult, shadowViolations,
 		&tokenUsage, cost, durationMS, forwardErr != nil, responseBlocked, piiAction, false, 0, ttftMS, tpotMS, persisted)
 	if forwardErr != nil {
 		log.Warn().Err(forwardErr).Msg("gateway_forward_error")
@@ -1244,7 +1234,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 //nolint:gocyclo // evidence assembly branches on optional subsystems (cache, egress, attachments, tools)
-func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, caller *CallerConfig, provider, model string, start time.Time, inputText string, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, executionError string, allowed bool, reasons []string, inputPIIRedacted bool, responsePII *ResponsePIIScanResult, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, cacheStored bool, ttftMS int64, tpotMS float64, estimatedCost float64, opts ...func(*RecordGatewayEvidenceParams)) (*evidence.Evidence, error) {
+func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, agent *ResolvedIdentity, provider, model string, start time.Time, inputText string, classification *classifier.Classification, usage *TokenUsage, cost float64, durationMS int64, executionError string, allowed bool, reasons []string, inputPIIRedacted bool, responsePII *ResponsePIIScanResult, attSummary *AttachmentsScanSummary, toolResult *ToolGovernanceResult, shadowViolations []evidence.ShadowViolation, cacheHit bool, cacheEntryID string, cacheSimilarity float64, costSaved float64, cacheStored bool, ttftMS int64, tpotMS float64, estimatedCost float64, opts ...func(*RecordGatewayEvidenceParams)) (*evidence.Evidence, error) {
 	if classification == nil {
 		classification = &classifier.Classification{}
 	}
@@ -1278,13 +1268,13 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	}
 	execErr := resolveExecutionError(executionError, reasons)
 
-	egressDecision := g.buildEgressDecisionEvidence(caller, provider, classification.Tier, allowed, reasons)
+	egressDecision := g.buildEgressDecisionEvidence(agent, provider, classification.Tier, allowed, reasons)
 	if egressDecision != nil {
-		RecordEgressDecision(ctx, caller.TenantID, egressDecision.Tier, egressDecision.Provider, egressDecision.Region, egressDecision.Decision)
+		RecordEgressDecision(ctx, agent.TenantID, egressDecision.Tier, egressDecision.Provider, egressDecision.Region, egressDecision.Decision)
 		if span := trace.SpanFromContext(ctx); span.IsRecording() {
 			span.SetAttributes(
-				attribute.String("tenant_id", caller.TenantID),
-				attribute.String("talon.egress.caller", caller.Name),
+				attribute.String("tenant_id", agent.TenantID),
+				attribute.String("talon.egress.agent", agent.Name),
 				attribute.String("talon.egress.correlation_id", correlationID),
 				attribute.Int("talon.egress.data_tier", egressDecision.Tier),
 				attribute.String("talon.egress.destination_provider", egressDecision.Provider),
@@ -1297,8 +1287,8 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 
 	dataFlow := g.buildDataFlow(dataFlowInputs{
 		CorrelationID:    correlationID,
-		TenantID:         caller.TenantID,
-		CallerName:       caller.Name,
+		TenantID:         agent.TenantID,
+		AgentName:       agent.Name,
 		Provider:         provider,
 		Model:            model,
 		Allowed:          allowed,
@@ -1311,7 +1301,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 		CacheEntryID:     cacheEntryID,
 		CacheStored:      cacheStored,
 	})
-	g.emitDataFlowTelemetry(ctx, correlationID, caller, dataFlow)
+	g.emitDataFlowTelemetry(ctx, correlationID, agent, dataFlow)
 
 	var attScan *evidence.AttachmentScan
 	if attSummary != nil && attSummary.FilesScanned > 0 {
@@ -1333,9 +1323,9 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	params := RecordGatewayEvidenceParams{
 		CorrelationID:           correlationID,
 		SessionID:               sessionIDFromContext(ctx),
-		TenantID:                caller.TenantID,
-		CallerName:              caller.Name,
-		Team:                    caller.Team,
+		TenantID:                agent.TenantID,
+		AgentName:              agent.Name,
+		Team:                    agent.Team,
 		Provider:                provider,
 		Model:                   model,
 		PolicyAllowed:           allowed,
@@ -1381,7 +1371,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, call
 	params.UpstreamAuthMode = upstreamAuthModeFromContext(ctx)
 	params.UpstreamKeySource = upstreamKeySourceFromContext(ctx)
 	params.UpstreamKeyFingerprint = upstreamKeyFingerprintFromContext(ctx)
-	params.GatewayAnnotations = gatewayAnnotationsForEvidence(g, caller)
+	params.GatewayAnnotations = gatewayAnnotationsForEvidence(g, agent)
 	params.TTFTMS = ttftMS
 	params.TPOTMS = tpotMS
 	params.Scanner = g.buildScannerEvidence(ctx, reasons, responsePII)
@@ -1567,8 +1557,8 @@ func fingerprintKey(raw string) string {
 	return hexSum[:12]
 }
 
-func gatewayAnnotationsForEvidence(g *Gateway, caller *CallerConfig) []string {
-	if caller == nil || !hasCallerTag(caller, "quickstart") {
+func gatewayAnnotationsForEvidence(g *Gateway, agent *ResolvedIdentity) []string {
+	if agent == nil || !agent.HasTag("quickstart") {
 		return nil
 	}
 	out := []string{"quickstart_mode"}
@@ -1586,9 +1576,9 @@ func gatewayAnnotationsForEvidence(g *Gateway, caller *CallerConfig) []string {
 	return out
 }
 
-// trackSessionUsage accumulates cost/tokens onto the caller-scoped session row
+// trackSessionUsage accumulates cost/tokens onto the agent-scoped session row
 // (#198). Only client- or vendor-asserted session ids create-if-absent under
-// the (tenant, caller, external id) tuple; synthetic ids NEVER create session
+// the (tenant, agent, external id) tuple; synthetic ids NEVER create session
 // rows — evidence keeps the synthetic id, and the pre-#198 orphan-row-per-
 // request growth (#214) is gone. Callers that reject client metadata assert
 // no session identity, so no row either.
@@ -1627,17 +1617,23 @@ func isAssertedSessionSource(source string) bool {
 // candidate MUST go through this same function so the two policy surfaces
 // cannot drift apart (see TestPolicyInputParity_PrimaryVsCandidate).
 //
-// Session state is read by the caller-scoped tuple, never the raw asserted id
+// Session state is read by the agent-scoped tuple, never the raw asserted id
 // (#215). sessionUnavailable reports a session-store read failure: the check
-// fails open (request proceeds without session budget input) and the caller
+// fails open (request proceeds without session budget input) and the agent
 // must record the "session_budget_unavailable" evidence annotation.
-func (g *Gateway) buildPolicyInputForRequest(ctx context.Context, caller *CallerConfig, provider, model string, tier int, estimatedCost, dailyCost, monthlyCost float64, sessionID string) (input map[string]interface{}, sessionUnavailable bool) {
-	input = buildGatewayPolicyInput(caller, g.config.ServerDefaults, provider, model, tier, estimatedCost, dailyCost, monthlyCost, g.providerRegion(provider))
+func (g *Gateway) buildPolicyInputForRequest(ctx context.Context, agent *ResolvedIdentity, provider, model string, tier int, estimatedCost, dailyCost, monthlyCost float64, sessionID string) (input map[string]interface{}, sessionUnavailable bool) {
+	// The effective policy is recomputed for THIS provider — organization
+	// baseline → the agent's one override → the provider's destination
+	// constraints — so a failover candidate is evaluated against its own
+	// provider's constraints through the exact same code path as the primary.
+	prov, _ := g.config.Provider(provider)
+	eff := ResolveEffectivePolicy(g.config.OrganizationPolicy, prov, agent.Override)
+	input = buildGatewayPolicyInput(agent, eff, provider, model, tier, estimatedCost, dailyCost, monthlyCost, g.providerRegion(provider))
 	if g.sessionStore == nil || sessionID == "" {
 		return input, false
 	}
 	if isAssertedSessionSource(sessionSourceFromContext(ctx)) {
-		switch sess, err := g.sessionStore.GetByExternal(ctx, caller.TenantID, caller.Name, sessionID); {
+		switch sess, err := g.sessionStore.GetByExternal(ctx, agent.TenantID, agent.Name, sessionID); {
 		case err == nil:
 			input["session_cost_total"] = sess.TotalCost
 			if sc, scErr := g.sessionStore.GetStageCounts(ctx, sess.ID); scErr == nil {
@@ -1648,11 +1644,11 @@ func (g *Gateway) buildPolicyInputForRequest(ctx context.Context, caller *Caller
 				}
 			}
 		case errors.Is(err, session.ErrSessionNotFound):
-			// First request of a session: zero spend, so a caller cap still
+			// First request of a session: zero spend, so a agent cap still
 			// bounds a single oversized request.
 			input["session_cost_total"] = 0.0
 		default:
-			// Store failure: fail open (like callerCostTotals) but surface it.
+			// Store failure: fail open (like agentCostTotals) but surface it.
 			log.Warn().Err(err).Str("session_id", sessionID).Msg("gateway_session_budget_lookup_failed")
 			sessionUnavailable = true
 		}
@@ -1661,7 +1657,7 @@ func (g *Gateway) buildPolicyInputForRequest(ctx context.Context, caller *Caller
 	return input, sessionUnavailable
 }
 
-func buildGatewayPolicyInput(caller *CallerConfig, defaults ServerDefaults, provider, model string, dataTier int, estimatedCost, dailyCost, monthlyCost float64, destinationRegion string) map[string]interface{} {
+func buildGatewayPolicyInput(agent *ResolvedIdentity, eff EffectivePolicy, provider, model string, dataTier int, estimatedCost, dailyCost, monthlyCost float64, destinationRegion string) map[string]interface{} {
 	input := map[string]interface{}{
 		"provider":           provider,
 		"model":              model,
@@ -1669,35 +1665,36 @@ func buildGatewayPolicyInput(caller *CallerConfig, defaults ServerDefaults, prov
 		"estimated_cost":     estimatedCost,
 		"daily_cost":         dailyCost,
 		"monthly_cost":       monthlyCost,
-		"caller_name":        caller.Name,
-		"tenant_id":          caller.TenantID,
+		"agent_name":         agent.Name,
+		"tenant_id":          agent.TenantID,
 		"destination_region": destinationRegion,
 	}
-	if egress := ResolveEgressPolicy(&defaults, caller.PolicyOverrides); egress != nil {
-		input["egress_rules"] = egressRulesForPolicyInput(egress)
-		input["egress_default_action"] = egress.DefaultAction
+	if eff.Egress != nil {
+		input["egress_rules"] = egressRulesForPolicyInput(eff.Egress)
+		input["egress_default_action"] = eff.Egress.DefaultAction
 	}
-	// Effective caps: server default overlaid by per-caller override. The same
-	// resolution feeds budget-utilization metrics/alerts so the dashboard and the
-	// enforcement decision agree on the denominator (#216).
-	dailyCap, monthlyCap := ResolveCostCaps(&defaults, caller.PolicyOverrides)
-	if dailyCap > 0 {
-		input["caller_max_daily_cost"] = dailyCap
+	// Effective caps: organization baseline overlaid by the agent's override.
+	// The same resolution feeds budget-utilization metrics/alerts so the
+	// dashboard and the enforcement decision agree on the denominator (#216).
+	if eff.MaxDailyCost > 0 {
+		input["agent_max_daily_cost"] = eff.MaxDailyCost
 	}
-	if monthlyCap > 0 {
-		input["caller_max_monthly_cost"] = monthlyCap
+	if eff.MaxMonthlyCost > 0 {
+		input["agent_max_monthly_cost"] = eff.MaxMonthlyCost
 	}
-	if caller.PolicyOverrides != nil {
-		input["caller_allowed_models"] = caller.PolicyOverrides.AllowedModels
-		input["caller_blocked_models"] = caller.PolicyOverrides.BlockedModels
-		if caller.PolicyOverrides.MaxSessionCost > 0 {
-			// One insertion in the shared builder covers the primary request
-			// and every fallback candidate identically (#198).
-			input["caller_max_session_cost"] = caller.PolicyOverrides.MaxSessionCost
-		}
-		if caller.PolicyOverrides.MaxDataTier != nil {
-			input["caller_max_data_tier"] = int(*caller.PolicyOverrides.MaxDataTier)
-		}
+	if len(eff.AllowedModels) > 0 {
+		input["agent_allowed_models"] = eff.AllowedModels
+	}
+	if len(eff.BlockedModels) > 0 {
+		input["agent_blocked_models"] = eff.BlockedModels
+	}
+	if eff.MaxSessionCost > 0 {
+		// One insertion in the shared builder covers the primary request
+		// and every fallback candidate identically (#198).
+		input["agent_max_session_cost"] = eff.MaxSessionCost
+	}
+	if eff.MaxDataTier != nil {
+		input["agent_max_data_tier"] = int(*eff.MaxDataTier)
 	}
 	return input
 }
@@ -1717,7 +1714,7 @@ func sessionBudgetDetail(reasons []string, policyInput map[string]interface{}, e
 	if !fired {
 		return nil
 	}
-	limit, _ := policyInput["caller_max_session_cost"].(float64)
+	limit, _ := policyInput["agent_max_session_cost"].(float64)
 	spent, _ := policyInput["session_cost_total"].(float64)
 	return &evidence.SessionBudget{Limit: limit, Spent: spent, Estimate: estimatedCost}
 }
@@ -1743,23 +1740,23 @@ func (g *Gateway) tryBudgetAlert(ctx context.Context, tenantID, period string, u
 	RecordBudgetAlert(ctx, tenantID, threshold)
 }
 
-func (g *Gateway) callerCostTotals(ctx context.Context, caller *CallerConfig) (daily, monthly float64) {
+func (g *Gateway) agentCostTotals(ctx context.Context, agent *ResolvedIdentity) (daily, monthly float64) {
 	// Day/month windows are computed in UTC so budget enforcement agrees with
 	// `talon costs` reporting, which also uses UTC. Server-local windows made the
 	// two disagree for the UTC-offset hours around midnight on non-UTC hosts (#216).
 	now := time.Now().UTC()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	byAgent, err := g.evidenceStore.CostByAgent(ctx, caller.TenantID, todayStart, now)
+	byAgent, err := g.evidenceStore.CostByAgent(ctx, agent.TenantID, todayStart, now)
 	if err != nil {
 		return 0, 0
 	}
-	daily = byAgent[caller.Name]
-	byAgent, err = g.evidenceStore.CostByAgent(ctx, caller.TenantID, monthStart, now)
+	daily = byAgent[agent.Name]
+	byAgent, err = g.evidenceStore.CostByAgent(ctx, agent.TenantID, monthStart, now)
 	if err != nil {
 		return daily, 0
 	}
-	monthly = byAgent[caller.Name]
+	monthly = byAgent[agent.Name]
 	return daily, monthly
 }
 
@@ -1789,7 +1786,7 @@ func extractContentFromOpenAIResponse(body []byte) string {
 // emitMetrics records OTel counters and optionally fires a dashboard event.
 //
 //nolint:gocyclo // sequential metric recording
-func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provider, model string,
+func (g *Gateway) emitMetrics(ctx context.Context, agent *ResolvedIdentity, provider, model string,
 	classification *classifier.Classification, toolResult *ToolGovernanceResult,
 	shadowViolations []evidence.ShadowViolation, usage *TokenUsage,
 	cost float64, durationMS int64, hasError, blocked bool, piiAction string,
@@ -1801,12 +1798,12 @@ func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provide
 	} else if blocked {
 		status = "blocked"
 	}
-	RecordGatewayRequest(ctx, caller.Name, model, provider, status)
+	RecordGatewayRequest(ctx, agent.Name, model, provider, status)
 	if hasError {
 		RecordGatewayError(ctx, "upstream_error")
 	}
 	if classification != nil {
-		RecordDataTier(ctx, classification.Tier, caller.Name)
+		RecordDataTier(ctx, classification.Tier, agent.Name)
 	}
 
 	if toolResult != nil {
@@ -1822,7 +1819,7 @@ func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provide
 		RecordShadowViolation(ctx, sv.Type)
 	}
 
-	RecordCacheResult(ctx, caller.TenantID, cacheHit)
+	RecordCacheResult(ctx, agent.TenantID, cacheHit)
 
 	// GenAI SemConv: token usage and operation duration
 	tokIn, tokOut := 0, 0
@@ -1833,7 +1830,7 @@ func (g *Gateway) emitMetrics(ctx context.Context, caller *CallerConfig, provide
 		llm.RecordTokenUsage(ctx, tokIn, tokOut, model, provider)
 	}
 	if cost > 0 {
-		llm.RecordCostMetrics(ctx, cost, caller.Name, model, false)
+		llm.RecordCostMetrics(ctx, cost, agent.Name, model, false)
 	}
 	if durationMS > 0 {
 		llm.RecordOperationDuration(ctx, float64(durationMS)/1000.0, model, provider)
