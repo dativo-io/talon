@@ -36,7 +36,7 @@ import (
 // verifies. examples/coding-agents-demo/demo.sh walks the same sequence
 // against the docker-compose stack for humans.
 
-const demoTenantKey = "talon-gw-demo-coding-0001"
+const demoAgentKey = "talon-gw-demo-coding-0001"
 
 func startMockProvider(t *testing.T) string {
 	t.Helper()
@@ -80,17 +80,9 @@ func newDemoGateway(t *testing.T, mockURL string) (*evidence.Store, http.Handler
 			"anthropic": {Enabled: true, BaseURL: mockURL, SecretName: "anthropic-api-key", APIFamily: "anthropic"},
 			"openai":    {Enabled: true, BaseURL: mockURL, SecretName: "openai-api-key"},
 		},
-		Callers: []gateway.CallerConfig{{
-			Name: "claude-code", TenantKey: demoTenantKey, TenantID: "demo",
-			PolicyOverrides: &gateway.CallerPolicyOverrides{
-				PIIAction:         "warn",
-				ResponsePIIAction: "allow",
-				MaxSessionCost:    0.02, // trips after a few mock-priced requests
-			},
-		}},
-		ServerDefaults: gateway.ServerDefaults{DefaultPIIAction: "warn", ResponsePIIAction: "allow"},
-		RateLimits:     gateway.RateLimitsConfig{GlobalRequestsPerMin: 100000, PerCallerRequestsPerMin: 100000},
-		Timeouts:       gateway.TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: gateway.OrganizationPolicy{DefaultPIIAction: "warn", ResponsePIIAction: "allow"},
+		RateLimits:         gateway.RateLimitsConfig{GlobalRequestsPerMin: 100000, PerAgentRequestsPerMin: 100000},
+		Timeouts:           gateway.TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	require.NoError(t, cfg.Validate())
 
@@ -103,6 +95,18 @@ func newDemoGateway(t *testing.T, mockURL string) (*evidence.Store, http.Handler
 	acl := secrets.ACL{Tenants: []string{"demo"}, Agents: []string{"*"}}
 	require.NoError(t, secStore.Set(context.Background(), "anthropic-api-key", []byte("sk-ant-mock-demo-000"), acl))
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key", []byte("sk-mock-demo-000"), acl))
+
+	// Agent identity (#266): vault-bound traffic key resolved via the registry.
+	require.NoError(t, secStore.Set(context.Background(), "claude-code-talon-key", []byte(demoAgentKey), secrets.ACL{}))
+	registry, err := gateway.BuildIdentityRegistry(context.Background(), []gateway.LoadedAgent{
+		{Path: "agent.talon.yaml", Name: "claude-code", TenantID: "demo", KeySecretName: "claude-code-talon-key",
+			Override: &gateway.PolicyOverride{
+				PIIAction:         "warn",
+				ResponsePIIAction: "allow",
+				MaxSessionCost:    0.02, // trips after a few mock-priced requests
+			}},
+	}, secStore)
+	require.NoError(t, err)
 
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
@@ -119,7 +123,7 @@ func newDemoGateway(t *testing.T, mockURL string) (*evidence.Store, http.Handler
 		}
 		return gateway.CostResult{Amount: 0.005, PricingKnown: true, PricingBasis: gateway.PricingBasisTable}
 	}
-	gw, err := gateway.NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, policyEngine, estimator)
+	gw, err := gateway.NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, policyEngine, estimator)
 	require.NoError(t, err)
 	gw.SetSessionStore(sessStore)
 	r := chi.NewRouter()
@@ -130,7 +134,7 @@ func newDemoGateway(t *testing.T, mockURL string) (*evidence.Store, http.Handler
 func demoRequest(t *testing.T, h http.Handler, path, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, bytes.NewBufferString(body))
-	req.Header.Set("Authorization", "Bearer "+demoTenantKey)
+	req.Header.Set("Authorization", "Bearer "+demoAgentKey)
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
 		req.Header.Set(k, v)

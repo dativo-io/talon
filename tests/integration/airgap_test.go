@@ -60,15 +60,7 @@ gateway:
       secret_name: "ollama-key"
       base_url: %q
       region: "LOCAL"
-  callers:
-    - name: airgap-e2e
-      tenant_key: "talon-gw-airgap"
-      tenant_id: "airgap-tenant"
-      policy_overrides:
-        pii_action: warn
-        max_daily_cost: 100
-        max_monthly_cost: 2000
-  default_policy:
+  organization_policy:
     default_pii_action: warn
     max_daily_cost: 100
     max_monthly_cost: 2000
@@ -113,10 +105,20 @@ gateway:
 		[]byte("local"),
 		secrets.ACL{Tenants: []string{"airgap-tenant"}, Agents: []string{"*"}}))
 
+	// Agent identity (#266): the traffic key is vault-bound and resolved
+	// through the registry, exactly like production serve wiring.
+	require.NoError(t, secStore.Set(context.Background(), "airgap-e2e-talon-key",
+		[]byte("talon-gw-airgap"), secrets.ACL{}))
+	registry, err := gateway.BuildIdentityRegistry(context.Background(), []gateway.LoadedAgent{
+		{Path: "agent.talon.yaml", Name: "airgap-e2e", TenantID: "airgap-tenant", KeySecretName: "airgap-e2e-talon-key",
+			Override: &gateway.PolicyOverride{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000}},
+	}, secStore)
+	require.NoError(t, err)
+
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := gateway.NewGateway(gwCfg, classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
+	gw, err := gateway.NewGateway(gwCfg, registry, classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
 	require.NoError(t, err)
 
 	r := chi.NewRouter()

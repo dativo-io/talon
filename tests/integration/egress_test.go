@@ -52,15 +52,7 @@ gateway:
       secret_name: "openai-api-key"
       base_url: %q
       region: "US"
-  callers:
-    - name: egress-e2e
-      tenant_key: "talon-gw-egress-e2e"
-      tenant_id: "e2e-tenant"
-      policy_overrides:
-        pii_action: warn
-        max_daily_cost: 100
-        max_monthly_cost: 2000
-  default_policy:
+  organization_policy:
     default_pii_action: warn
     max_daily_cost: 100
     max_monthly_cost: 2000
@@ -92,10 +84,19 @@ gateway:
 		[]byte("sk-test-egress-e2e"),
 		secrets.ACL{Tenants: []string{"e2e-tenant"}, Agents: []string{"*"}}))
 
+	// Agent identity (#266): vault-bound traffic key resolved via the registry.
+	require.NoError(t, secStore.Set(context.Background(), "egress-e2e-talon-key",
+		[]byte("talon-gw-egress-e2e"), secrets.ACL{}))
+	registry, err := gateway.BuildIdentityRegistry(context.Background(), []gateway.LoadedAgent{
+		{Path: "agent.talon.yaml", Name: "egress-e2e", TenantID: "e2e-tenant", KeySecretName: "egress-e2e-talon-key",
+			Override: &gateway.PolicyOverride{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000}},
+	}, secStore)
+	require.NoError(t, err)
+
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := gateway.NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
+	gw, err := gateway.NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
 	require.NoError(t, err)
 
 	r := chi.NewRouter()

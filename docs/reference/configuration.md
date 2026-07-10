@@ -10,7 +10,7 @@ Talon uses **two configuration files** with distinct ownership and purpose. Unde
 |---|---|---|
 | **Purpose** | Agent policy — what the agent is allowed to do | Infrastructure config — how Talon runs |
 | **Owner** | AI governance / compliance team | DevOps / platform team |
-| **Contains** | Agent name and description, capabilities (allowed tools, forbidden patterns), memory governance, triggers (cron + webhooks), secrets ACL, attachment handling, compliance framework declarations, cost limits, audit settings | LLM provider connections (endpoint, key env var, region, timeout), gateway settings (callers, mode, rate limits), data directory, secrets encryption key, evidence storage path, observability, multi-tenant defaults |
+| **Contains** | Agent identity (name, tenant, vault-bound traffic key), capabilities (allowed tools, forbidden patterns), memory governance, triggers (cron + webhooks), secrets ACL, attachment handling, compliance framework declarations, cost limits, audit settings | LLM provider connections (endpoint, key env var, region, timeout), gateway settings (providers, organization baseline policy, mode, rate limits), data directory, secrets encryption key, evidence storage path, observability |
 | **Schema** | `schemas/agent.talon.schema.json` | `schemas/talon.config.schema.json` |
 | **Created by** | `talon init` (wizard or `--scaffold` / `--pack`) | `talon init` (wizard or `--scaffold` / `--pack`) |
 | **Loaded by** | `policy.LoadPolicy()` | `config.Load()` (Viper) + `gateway.LoadGatewayConfig()` |
@@ -37,16 +37,62 @@ Key top-level sections:
 
 | Section | Purpose |
 |---------|---------|
-| `agent` | Name, description, version, model tier |
-| `capabilities` | Allowed tools, data sources, forbidden patterns |
-| `policies` | Cost limits, rate limits, model routing, data classification (`redact_input`, `redact_output`, `block_on_pii`), time restrictions, resource limits (`require_approval` for tool approval gates) |
+| `agent` | Identity: `name` (unique per installation), `tenant_id`, `key.secret_name` (vault-bound traffic key), description, version, model tier, `accept_client_metadata` |
+| `capabilities` | Allowed tools, forbidden tools, `tool_policy_action`, data sources, forbidden patterns |
+| `policies` | Cost limits, session limits, rate limits, model routing (runner-side), gateway model lists (`models.allowed` / `models.blocked`), `allowed_providers`, `egress`, data classification (`redact_input`, `redact_output`, `block_on_pii`, `max_data_tier`), time restrictions, resource limits (`require_approval` for tool approval gates) |
 | `memory` | Governed self-improvement (categories, retention, dedup) |
 | `triggers` | Cron schedules and webhook definitions |
 | `secrets` | Allowed/forbidden secret names for this agent |
 | `attachment_handling` | Prompt injection scanning, sandboxing mode. When the section is omitted, the runtime default is `mode: permissive` with content wrapping enabled; production templates set `strict`. |
 | `audit` | Log level, retention, prompt/response inclusion, data minimization |
 | `compliance` | Frameworks (GDPR, EU AI Act, ISO 27001, NIS2, DORA), data residency, risk level |
-| `metadata` | Department, owner, tags |
+| `metadata` | Department, owner, `team` (cost/evidence attribution), `tags` (telemetry classification) |
+
+### Agent identity and key binding
+
+**One `agent.talon.yaml` = one AI use case = one Talon traffic identity = one active vault-bound key.**
+
+```yaml
+agent:
+  name: support-triage            # unique per installation
+  tenant_id: acme                 # optional; omitted = "default"
+  key:
+    secret_name: support-triage-talon-key   # Talon vault reference — never a raw key
+```
+
+- `agent.name` — the agent's operational identity. Duplicate names (or two agents resolving to the same key) fail the identity-registry build with an error naming the offending files.
+- `agent.tenant_id` — the tenant the agent belongs to (default `"default"`). The tenant is always derived `key → agent → tenant_id`; this is the only tenant derivation, authoritative for gateway traffic **and** native runs — `talon run --tenant` errors when the flag conflicts with the file.
+- `agent.key.secret_name` — the vault secret holding the agent's one active traffic key. The schema accepts only a secret **name**, so raw inline key values are impossible and policy files stay safe to commit. Required for every agent loaded into the gateway (missing binding is a startup error); optional for native-only, non-traffic-bound runs.
+
+Mint the key that clients of this agent will present to the gateway:
+
+```bash
+talon secrets set support-triage-talon-key "$(openssl rand -hex 24)"
+```
+
+**Rotation:** write a new value to the same secret name (`talon secrets set support-triage-talon-key <new>`) and restart `talon serve` (periodic reload is #269). There is never a window with two concurrently-active keys — one agent, one key.
+
+### Gateway policy overrides (one agent, one override)
+
+The agent file is also the agent's **one** policy override on top of the gateway's organization baseline (`gateway.organization_policy`). Overrides use the file's existing vocabulary — one semantic, one field:
+
+| Agent-file field | Effective-policy semantic |
+|---|---|
+| `policies.cost_limits.daily` / `.monthly` | Replaces the baseline daily/monthly cost cap when > 0 |
+| `policies.session_limits.max_cost` | Sets the per-session soft cap (no baseline equivalent) |
+| `policies.data_classification` input booleans | Input PII action: `block_on_pii` → block; `input_scan` + `redact_input` (or `redact_pii`) → redact; `input_scan` alone → warn |
+| `policies.data_classification` output booleans | Response PII action: `output_scan` + `block_on_pii` → block; `output_scan` + `redact_output` (or `redact_pii`) → redact; `output_scan` alone → warn |
+| `policies.data_classification.max_data_tier` | Caps the request's data classification tier when present |
+| `policies.models.allowed` / `.blocked` | Flat gateway model lists; replace the baseline when non-empty (`model_routing` remains runner-side routing, not a gateway list) |
+| `policies.allowed_providers` | Restricts which gateway providers this agent may reach (empty = all) |
+| `policies.egress` | Replaces the baseline egress policy wholesale |
+| `capabilities.allowed_tools` | Most-specific non-empty list wins |
+| `capabilities.forbidden_tools` | Unioned with the baseline and provider lists |
+| `capabilities.tool_policy_action` | `filter` or `block`; most-specific wins |
+| `metadata.team` | Attributes spend and evidence to a team (`talon costs --by-team`) |
+| `metadata.tags` | Telemetry classification (e.g. `copaw` drives OTel/dashboard views) |
+
+A per-agent warn→allow downgrade is deliberately not expressible: the `data_classification` booleans can tighten the baseline (warn/redact/block), and leaving them unset inherits it. See [Identity resolution and effective policy](#identity-resolution-and-effective-policy) for the exact replace-vs-merge rules.
 
 ### PII recognizer layers and validation
 
@@ -294,12 +340,44 @@ When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml
 | Section | Purpose |
 |---------|---------|
 | `gateway.mode` | `enforce`, `shadow`, or `log_only`. Runtime default when omitted: `enforce`. Generated starter configs set `shadow` explicitly for a safe rollout. |
-| `gateway.providers` | LLM provider connections (base URL, secret name, allowed/blocked models) |
-| `gateway.callers` | Application identities (tenant key, tenant, allowed providers, policy overrides) |
-| `gateway.default_policy` | Server-wide defaults (PII action, cost caps, tool governance, attachment scanning, egress rules) |
-| `gateway.rate_limits` | Global and per-caller request rate limits |
-| `gateway.default_policy.scan_tool_content` | Observation-only PII scan of tool-related request content: `evidence_only` (default) records findings in signed evidence (`classification.tool_content`) without influencing enforcement; `off` disables it. Enforcement on tool content is not offered until per-block-type tool redaction exists (#212). |
+| `gateway.providers` | LLM provider connections (base URL, secret name, region, allowed/blocked models — destination constraints) |
+| `gateway.organization_policy` | The organization baseline every agent inherits: `default_pii_action`, `response_pii_action`, `max_daily_cost` / `max_monthly_cost`, `log_prompts` / `log_responses` / `log_response_preview_chars`, `forbidden_tools`, `tool_policy_action`, `attachment_policy`, `egress`, `scan_tool_content`. Renamed from `default_policy` (#266). |
+| `gateway.rate_limits` | `global_requests_per_min` and `per_agent_requests_per_min` |
+| `gateway.organization_policy.scan_tool_content` | Observation-only PII scan of tool-related request content: `evidence_only` (default) records findings in signed evidence (`classification.tool_content`) without influencing enforcement; `off` disables it. Enforcement on tool content is not offered until per-block-type tool redaction exists (#212). |
 | `gateway.timeouts` | Upstream timeout budgets, one per request phase (see below) |
+
+**Traffic identity is not configured in this file.** Agents are defined in `agent.talon.yaml` files (one per AI use case), each bound to a vault key via `agent.key.secret_name` — see [Agent identity and key binding](#agent-identity-and-key-binding). At startup the gateway builds an immutable identity registry from them and requires at least one keyed agent. #266 loads the single default `agent.talon.yaml`; `agents_dir` discovery for fleets is #267.
+
+**Removed keys fail validation** (breaking change, #266): `gateway.callers[]` (with `tenant_key`), `gateway.default_policy`, `organization_policy.require_caller_id`, `identify_by: source_ip`, `trusted_proxy_cidrs`, and `rate_limits.per_caller_requests_per_min` are rejected at config load with an explicit error naming the replacement — a config written for the removed model never runs silently ungoverned.
+
+#### Identity resolution and effective policy
+
+Every request to the proxy presents an agent key (`Authorization: Bearer <key>` or `x-api-key: <key>`). The gateway matches it against the identity registry in constant time; an unknown or missing key is rejected with `401 Invalid or missing agent key`. There is no source-IP identity and no anonymous fallback — the only non-key path is the explicit synthetic identity injected in-process by `talon serve --proxy-quickstart`.
+
+```
+presented key ──► known agent? ──yes──► agent identity ─► org baseline + agent override ─► effective policy
+                        │ no
+                        ▼
+                     reject      (only exception: explicit quickstart synthetic identity)
+```
+
+The effective policy for one request is: **organization baseline → the agent's one override → provider destination constraints**. Provider constraints (`allowed_models` / `blocked_models`, `forbidden_tools`, `tool_policy_action` on the provider entry) are hard constraints applied to the already-resolved policy — not a second override layer. One function (`ResolveEffectivePolicy`, `internal/gateway/effective.go`) computes this for enforcement, failover candidate checks, `talon costs`, and the dashboard budget endpoint; nothing re-derives baseline + override independently.
+
+Per-field contract (mirrors `internal/gateway/effective.go`; the code and this table are kept in sync):
+
+| Field | Contract |
+|---|---|
+| `max_daily_cost` / `max_monthly_cost` | override replaces when > 0 |
+| `max_session_cost` | override sets when > 0 (no baseline) |
+| `pii_action` | override replaces when set |
+| `response_pii_action` | baseline level: falls back to `default_pii_action`; override level: replaces only when explicitly set — the override's **input** `pii_action` does **not** cascade to the response action |
+| allowed / blocked models | override replaces when non-empty; provider lists are hard constraints |
+| `max_data_tier` | override sets when present |
+| `allowed_tools` | most-specific non-empty list wins |
+| `forbidden_tools` | union of baseline ∪ provider ∪ override |
+| `tool_policy_action` | most-specific wins (override > provider > baseline) |
+| `attachment_policy` | baseline only (#266) |
+| `egress` | override replaces baseline wholesale |
 
 Timeout phases (`gateway.timeouts`):
 
@@ -314,7 +392,7 @@ Provider auth mode:
 
 - `gateway.providers.<provider>.upstream_auth_mode`:
   - `secret` (default): read provider credential from Talon vault (`secret_name` required).
-  - `client_bearer`: forward caller bearer upstream (quickstart profile only).
+  - `client_bearer`: forward the presented bearer token upstream (quickstart profile only).
 
 Responses API store handling:
 
@@ -330,8 +408,8 @@ Quickstart note:
 
 #### Egress rules (destination × data classification)
 
-`gateway.default_policy.egress` restricts which destinations (providers and/or
-regions) each data classification tier may leave Talon for. The check runs in
+`gateway.organization_policy.egress` restricts which destinations (providers
+and/or regions) each data classification tier may leave Talon for. The check runs in
 the policy evaluation step — before secrets are retrieved and before any
 request bytes reach the upstream — and the decision is recorded in signed
 evidence (`egress_decision`, evidence integrity spec v1.2). This supports
@@ -350,7 +428,7 @@ gateway:
       base_url: "https://api.mistral.ai"
       secret_name: "mistral-api-key"
       region: "EU"
-  default_policy:
+  organization_policy:
     egress:
       default_action: allow   # applied when no rule covers the request's tier
       rules:
@@ -367,8 +445,8 @@ Behavior:
 - Tiers may be written as numbers (`0`, `1`, `2`) or named aliases (`public`,
   `internal`, `confidential`; case-insensitive) — same ascending-sensitivity
   convention as ISO 27001 practice and Microsoft Purview/AGT. The aliases also
-  work for `callers[].policy_overrides.max_data_tier`. Evidence records always
-  store the numeric tier.
+  work for `policies.data_classification.max_data_tier` in agent files.
+  Evidence records always store the numeric tier.
 
 - A request is allowed when **any** rule for its tier matches the destination,
   either by provider name (`allowed_providers`, `"*"` = any) or by the
@@ -381,10 +459,10 @@ Behavior:
   `base_url` endpoints. Known providers fall back to registry metadata.
 - `default_action: deny` turns the policy into an allowlist: tiers without a
   rule are denied.
-- Per-caller override: `callers[].policy_overrides.egress` **replaces** the
-  server default wholesale for that caller (most-specific wins). A future
-  `merge` mode may allow layering caller rules on top of server defaults;
-  until then, copy server rules into the override when you need both.
+- Per-agent override: `policies.egress` in the agent file **replaces** the
+  organization baseline wholesale for that agent (most-specific wins). A
+  future `merge` mode may allow layering agent rules on top of the baseline;
+  until then, copy baseline rules into the override when you need both.
 - When no `egress` block is configured at either level, egress is not
   evaluated and behavior is unchanged.
 - Denials return HTTP 403 with machine code
@@ -404,7 +482,7 @@ declare the posture there once.)
   when **Talon selects the provider** — agent runs (`talon run`, triggers,
   agent chat). The router filters candidates via `routing.rego` and records
   the choice in the `routing_decision` evidence section.
-- Gateway `egress` rules apply when **the caller has already chosen the
+- Gateway `egress` rules apply when **the agent has already chosen the
   provider** (it is in the proxy URL). The gateway cannot reroute; it can only
   allow or deny, recorded in the `egress_decision` evidence section.
 - Both resolve a provider's location from the same registry metadata
@@ -419,7 +497,7 @@ declare the posture there once.)
 
 ```yaml
 gateway:
-  default_policy:
+  organization_policy:
     egress:
       default_action: deny
       rules:
@@ -433,7 +511,7 @@ gateway:
 
   (`global` ≈ no egress block; `eu_preferred` has no egress equivalent — a
   preference order only makes sense when Talon picks the provider, not when
-  it admits a caller-chosen one.)
+  it admits an agent-chosen one.)
 
 #### Provider fallback chains (error-driven failover)
 
@@ -452,7 +530,7 @@ it never triggers failover. Once failover **is** engaged, only a successful
 response ends the chain: a fallback candidate that fails for any reason
 (including a permanent 401 from a misconfigured secret) is recorded as a
 failed attempt and the walk continues to the next candidate. When the chain
-is exhausted the request **fails closed**: the caller gets an error and the
+is exhausted the request **fails closed**: the client gets an error and the
 refusal is recorded as a governance outcome — a failed fallback is never
 evidenced as "the provider actually used".
 
@@ -461,8 +539,8 @@ Every candidate passes a filter pipeline before dispatch:
 - **Sovereignty (hard invariant):** under `sovereignty.mode: eu_strict` a
   non-EU/LOCAL candidate is skipped in every gateway mode, shadow included —
   Talon never dispatches outside EU/LOCAL under eu_strict.
-- **Caller provider allowlist (hard):** a candidate outside the caller's
-  `allowed_providers` is never dispatched.
+- **Agent provider allowlist (hard):** a candidate outside the agent's
+  `policies.allowed_providers` is never dispatched.
 - **Target tool policy and gateway policy (mode-aware):** each candidate
   re-runs the target provider's tool policy and the full gateway policy with
   the candidate's provider, model, recomputed cost estimate, destination
@@ -557,10 +635,10 @@ See [Gateway dashboard reference](gateway-dashboard.md) for the full API schema 
 ### Server and API
 
 - **Admin key:** Set `TALON_ADMIN_KEY` to protect admin-only and dashboard/metrics endpoints.
-- **Tenant keys:** Configure per-caller `gateway.callers[].tenant_key` values for gateway and tenant-scoped API access.
+- **Agent keys:** each agent's vault-bound traffic key (`agent.key.secret_name`) authenticates `/v1/proxy` **and** the tenant-scoped evidence/costs/status APIs, scoped to the agent's derived tenant.
 - **Gateway:** Enable with `--gateway` and `--gateway-config <path>`. See [How to choose your integration path](../guides/choosing-integration-path.md) and gateway guides.
 - **MCP proxy:** Enable with `--proxy-config <path>`. See [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md).
-- **Auth model:** See [Authentication and key scopes](authentication-and-key-scopes.md) for endpoint-to-key mapping (tenant keys vs admin key).
+- **Auth model:** See [Authentication and key scopes](authentication-and-key-scopes.md) for endpoint-to-key mapping (agent keys vs admin key).
 - **Operational control:** Run management, overrides, and tool approval gates are exposed via admin API. See [Operational control plane](operational-control-plane.md).
 
 #### Tool approval remediation hook
