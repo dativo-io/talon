@@ -42,6 +42,7 @@ test_section_30_graph_events() {
   fi
 
   run_talon init --scaffold --name smoke-graph-agent &>/dev/null; true
+  smoke_bind_agent_key "$dir" "${TALON_AGENT_KEY}"
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   smoke_tighten_limits "$dir"
 
@@ -84,14 +85,8 @@ gateway:
       enabled: true
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
-  callers:
-    - name: "graph-events-caller"
-      tenant_key: "${TALON_TENANT_KEY}"
-      tenant_id: "default"
-      allowed_providers: ["openai"]
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
-    require_caller_id: true
 GWEOF
   fi
 
@@ -107,7 +102,7 @@ GWEOF
     return 0
   fi
 
-  local tenant_hdr="Authorization: Bearer ${TALON_TENANT_KEY}"
+  local tenant_hdr="Authorization: Bearer ${TALON_AGENT_KEY}"
   local admin_hdr="X-Talon-Admin-Key: ${TALON_ADMIN_KEY}"
   local graph_url="${ge_base}/v1/graph/events"
   local graph_run_id graph_session_id

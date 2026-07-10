@@ -12,13 +12,14 @@ test_section_24_plan_dispatch() {
   local base_url="http://127.0.0.1:${serve_port}"
   local plan_id=""
   local serve_plan_id=""
-  local tenant_key="${TALON_TENANT_KEY}"
+  local agent_key="${TALON_AGENT_KEY}"
   local admin_key="${TALON_ADMIN_KEY}"
   local S_PID=""
   echo ""
   echo "=== SECTION 24 — Plan Review Dispatch ==="
   cd "$dir" || exit 1
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  smoke_bind_agent_key "$dir" "${TALON_AGENT_KEY}"
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   smoke_tighten_limits "$dir"
 
@@ -148,7 +149,7 @@ PREVIEWEOF
   local serve_session_id=""
   local plan_run_resp_file="$dir/plan_run_resp.json"
   run_code="$(curl -s -o "$plan_run_resp_file" -w '%{http_code}' -X POST "${base_url}/v1/agents/run" \
-    -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${agent_key}" -H "Content-Type: application/json" \
     -d '{"tenant_id":"default","agent_name":"default","prompt":"Create a concise compliance rollout plan for Q3"}')"
   run_json="$(cat "$plan_run_resp_file" 2>/dev/null || true)"
   # With human_oversight: "always", the server returns 202 Accepted (plan_pending).
@@ -159,7 +160,7 @@ PREVIEWEOF
     log_failure "POST /v1/agents/run should return 200 or 202 (got $run_code)"
     dump_diag_kv "section 24 agents/run" \
       "http_code=$run_code" \
-      "tenant_key=$tenant_key" \
+      "agent_key=$agent_key" \
       "base_url=$base_url" \
       "endpoint=${base_url}/v1/agents/run" \
       "resp_file=$plan_run_resp_file" \
@@ -197,12 +198,12 @@ PREVIEWEOF
   rm -f "$plan_run_resp_file" 2>/dev/null || true
   if [[ -n "$serve_plan_id" ]]; then
     local tenant_approve_code
-    tenant_approve_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${base_url}/v1/plans/${serve_plan_id}/approve" -H "Authorization: Bearer ${tenant_key}" -H "Content-Type: application/json" -d '{"reviewed_by":"smoke-test"}')"
+    tenant_approve_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${base_url}/v1/plans/${serve_plan_id}/approve" -H "Authorization: Bearer ${agent_key}" -H "Content-Type: application/json" -d '{"reviewed_by":"smoke-test"}')"
     if [[ "$tenant_approve_code" == "401" ]] || [[ "$tenant_approve_code" == "403" ]]; then
-      echo "  ✓  tenant key cannot approve pending plan via API (HTTP ${tenant_approve_code})"
+      echo "  ✓  agent key cannot approve pending plan via API (HTTP ${tenant_approve_code})"
       record_pass
     else
-      log_failure "tenant key must not approve pending plan via API" "expected 401 or 403, got ${tenant_approve_code}"
+      log_failure "agent key must not approve pending plan via API" "expected 401 or 403, got ${tenant_approve_code}"
     fi
     assert_pass "approve pending plan via API exits 200" \
       test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "${base_url}/v1/plans/${serve_plan_id}/approve" -H "X-Talon-Admin-Key: ${admin_key}" -H "Content-Type: application/json" -d '{"reviewed_by":"smoke-test"}')" = "200"

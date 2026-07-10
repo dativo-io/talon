@@ -38,6 +38,7 @@ test_section_35_failover() {
     return 0
   fi
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  smoke_bind_agent_key "$dir" "talon-gw-failover-001"
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   smoke_tighten_limits "$dir"
   if [[ ! -f "$dir/talon.config.yaml" ]]; then
@@ -74,14 +75,9 @@ gateway:
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
       region: "EU"
-  callers:
-    - name: "smoke-failover"
-      tenant_key: "talon-gw-failover-001"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
     max_daily_cost: 100.00
-    require_caller_id: true
 GWEOF
 
   # --- Scenario A: transparent failover to the backup provider ---

@@ -15,7 +15,7 @@
 #   - TALON_SECRETS_KEY set (32-byte for AES-256-GCM vault)
 #   - openai-api-key in vault: either set OPENAI_API_KEY (script sets it), or use existing vault by
 #     exporting TALON_DATA_DIR to a directory where you already ran: talon secrets set openai-api-key <key>
-# Optional: TALON_SIGNING_KEY, TALON_ADMIN_KEY, TALON_TENANT_KEY (defaults applied for smoke run). curl, jq; port 8080 free.
+# Optional: TALON_SIGNING_KEY, TALON_ADMIN_KEY, TALON_AGENT_KEY (defaults applied for smoke run). curl, jq; port 8080 free.
 #
 # Output: All sections run regardless of failures. Failures print exit code and
 # last 5 lines of stderr to the terminal; full stdout/stderr per failure is
@@ -275,7 +275,7 @@ dump_diag_env() {
   dump_diag_kv "smoke_env" \
     "TALON_DATA_DIR=$TALON_DATA_DIR" \
     "TALON_ADMIN_KEY=${TALON_ADMIN_KEY:+(set, ${#TALON_ADMIN_KEY} chars)}" \
-    "TALON_TENANT_KEY=${TALON_TENANT_KEY:+(set, ${#TALON_TENANT_KEY} chars, value=${TALON_TENANT_KEY})}" \
+    "TALON_AGENT_KEY=${TALON_AGENT_KEY:+(set, ${#TALON_AGENT_KEY} chars, value=${TALON_AGENT_KEY})}" \
     "TALON_SIGNING_KEY=${TALON_SIGNING_KEY:+(set)}" \
     "OPENAI_API_KEY=${OPENAI_API_KEY:+(set, ${#OPENAI_API_KEY} chars)}" \
     "PWD=$(pwd)" \
@@ -318,7 +318,7 @@ check_prereqs() {
   # Optional: default signing key, admin key, and tenant API keys for smoke run
   export TALON_SIGNING_KEY="${TALON_SIGNING_KEY:-$(openssl rand -hex 32 2>/dev/null || echo "smoke-signing-key-32-bytes-long")}"
   export TALON_ADMIN_KEY="${TALON_ADMIN_KEY:-smoke-admin-key}"
-  export TALON_TENANT_KEY="${TALON_TENANT_KEY:-smoke-test-key}"
+  export TALON_AGENT_KEY="${TALON_AGENT_KEY:-smoke-test-key}"
   # Keep standard port and ask user to free it if occupied (re-check every 10s).
   if ! wait_port_free 8080 180 10; then
     echo "Port 8080 is still in use; cannot run smoke tests on the standard port."
@@ -359,7 +359,7 @@ run_section() {
         echo "Exit code: $code"
         echo "TALON_DATA_DIR=$TALON_DATA_DIR"
         echo "PWD=$(pwd)"
-        echo "TALON_TENANT_KEY=${TALON_TENANT_KEY:-}"
+        echo "TALON_AGENT_KEY=${TALON_AGENT_KEY:-}"
         echo "TALON_ADMIN_KEY=${TALON_ADMIN_KEY:+(set)}"
         echo ""
       } >> "$SMOKE_LOG_FILE"
@@ -411,6 +411,20 @@ smoke_tighten_limits() {
   fi
   # Note: budgets/rate limits live in agent.talon.yaml (edited above);
   # talon.config.yaml has no runtime-consumed tenants block.
+}
+
+# Bind the scaffolded agent's traffic key (#266): the scaffold emits
+# agent.key.secret_name = "<name>-talon-key"; this stores the key VALUE the
+# smoke clients will present as Bearer. Call after 'run_talon init' in every
+# gateway section.
+smoke_bind_agent_key() {
+  local dir="${1:-.}" key_value="${2:-$TALON_AGENT_KEY}"
+  local agent_yaml="$dir/agent.talon.yaml"
+  [[ -f "$agent_yaml" ]] || return 0
+  local secret_name
+  secret_name="$(grep -oE 'secret_name:[[:space:]]*"[^"]+-talon-key"' "$agent_yaml" | head -1 | sed -E 's/secret_name:[[:space:]]*"([^"]+)"/\1/')"
+  [[ -n "$secret_name" ]] || return 0
+  run_talon secrets set "$secret_name" "$key_value" &>/dev/null || true
 }
 
 # Central request layer: canonical payloads and HTTP helpers (no duplicate URLs/bodies)
@@ -596,7 +610,7 @@ main() {
     echo ""
     echo "--- Diagnostic Environment ---"
     echo "  TALON_DATA_DIR=$TALON_DATA_DIR"
-    echo "  TALON_TENANT_KEY=${TALON_TENANT_KEY:-}"
+    echo "  TALON_AGENT_KEY=${TALON_AGENT_KEY:-}"
     echo "  TALON_ADMIN_KEY=${TALON_ADMIN_KEY:+(set, ${#TALON_ADMIN_KEY} chars)}"
     echo "  TALON_SIGNING_KEY=${TALON_SIGNING_KEY:+(set)}"
     echo "  OPENAI_API_KEY=${OPENAI_API_KEY:+(set, ${#OPENAI_API_KEY} chars)}"
@@ -612,7 +626,7 @@ main() {
       {
         echo "[SMOKE] DIAG|FINAL_ENV"
         echo "[SMOKE] DIAG_KV|TALON_DATA_DIR=$TALON_DATA_DIR"
-        echo "[SMOKE] DIAG_KV|TALON_TENANT_KEY=${TALON_TENANT_KEY:-}"
+        echo "[SMOKE] DIAG_KV|TALON_AGENT_KEY=${TALON_AGENT_KEY:-}"
         echo "[SMOKE] DIAG_KV|TALON_ADMIN_KEY=${TALON_ADMIN_KEY:+(set)}"
         echo "[SMOKE] DIAG_KV|evidence_count=$(sqlite3 "$TALON_DATA_DIR/evidence.db" 'SELECT COUNT(*) FROM evidence' 2>/dev/null || echo 'N/A')"
         echo "[SMOKE] DIAG_KV|talon_version=$(talon version 2>/dev/null || echo 'N/A')"

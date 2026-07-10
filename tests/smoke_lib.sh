@@ -5,7 +5,7 @@
 # Sourced by smoke_test.sh. Use these helpers so we don't duplicate URLs or request bodies.
 #
 # Usage: set SMOKE_BASE_URL (e.g. http://127.0.0.1:8080), then call the functions below.
-# Gateway caller auth: pass "Bearer <tenant_key>" for proxy calls.
+# Gateway agent auth: pass "Bearer <agent key value>" for proxy calls (#266).
 
 # --- Canonical paths (single source of truth) ---
 SMOKE_PATH_HEALTH="/health"

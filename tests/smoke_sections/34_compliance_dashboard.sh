@@ -21,6 +21,7 @@ test_section_34_compliance_dashboard() {
     return 0
   fi
   run_talon init --scaffold --name smoke-compliance-agent &>/dev/null; true
+  smoke_bind_agent_key "$dir" "talon-gw-compliance-001"
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   smoke_tighten_limits "$dir"
   run_talon run "One" &>/dev/null; true
@@ -48,15 +49,9 @@ gateway:
       enabled: true
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
-  callers:
-    - name: "compliance-caller"
-      tenant_key: "talon-gw-compliance-001"
-      tenant_id: "default"
-      allowed_providers: ["openai"]
-  default_policy:
+  organization_policy:
     default_pii_action: "redact"
     max_daily_cost: 100.00
-    require_caller_id: true
 GWEOF
   fi
 
@@ -73,7 +68,7 @@ GWEOF
     return 0
   fi
   local admin_key="${TALON_ADMIN_KEY}"
-  local tenant_key="talon-gw-compliance-001"
+  local agent_key="talon-gw-compliance-001"
 
   # --- 34.1: Dashboard HTML serves the compliance tab and export hooks ---
   assert_pass "GET /dashboard 200" \
@@ -124,9 +119,9 @@ GWEOF
   assert_pass "coverage without key → 401" \
     test "$(smoke_get_code "$base_url" "/v1/compliance/coverage")" = "401"
   assert_pass "coverage with tenant key → 401" \
-    test "$(smoke_get_code "$base_url" "/v1/compliance/coverage" "Bearer $tenant_key")" = "401"
+    test "$(smoke_get_code "$base_url" "/v1/compliance/coverage" "Bearer $agent_key")" = "401"
   assert_pass "ropa with tenant key → 401" \
-    test "$(smoke_get_code "$base_url" "/v1/compliance/ropa" "Bearer $tenant_key")" = "401"
+    test "$(smoke_get_code "$base_url" "/v1/compliance/ropa" "Bearer $agent_key")" = "401"
   assert_pass "annex-iv without key → 401" \
     test "$(smoke_get_code "$base_url" "/v1/compliance/annex-iv")" = "401"
   assert_pass "report with wrong admin key → 401" \

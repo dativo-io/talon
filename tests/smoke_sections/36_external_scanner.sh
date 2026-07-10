@@ -176,6 +176,7 @@ test_section_36_external_scanner() {
     return 0
   fi
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  smoke_bind_agent_key "$dir" "${scan_key}"
   smoke_tighten_limits "$dir"
   if [[ ! -f "$dir/talon.config.yaml" ]]; then
     echo "  -  (skip external-scanner: no config)"
@@ -200,16 +201,9 @@ gateway:
       upstream_auth_mode: "client_bearer"
       base_url: "http://127.0.0.1:${SMOKE36_UPSTREAM_PORT}"
       region: "EU"
-  callers:
-    - name: "smoke-scanner"
-      tenant_key: "${scan_key}"
-      tenant_id: "default"
-      policy_overrides:
-        pii_action: "redact"
-  default_policy:
+  organization_policy:
     default_pii_action: "redact"
     max_daily_cost: 100.00
-    require_caller_id: true
 GWEOF
 
   # --- Scenario A: dead engine endpoint -> serve refuses to start ---

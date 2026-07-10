@@ -32,7 +32,10 @@ test_section_27_runtime_governance() {
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   smoke_tighten_limits "$dir"
 
-  # Gateway config with 4 purpose-built callers — one per governance dimension.
+  # Gateway config: organization baseline only — identity lives in per-phase
+  # agent files (#266). Each governance dimension is its own agent; phases
+  # restart the gateway with TALON_DEFAULT_POLICY pointing at the phase agent
+  # (multi-agent single-process serving arrives with agents_dir, #267).
   if [[ -f "$dir/talon.config.yaml" ]] && ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
     cat >> "$dir/talon.config.yaml" <<'GOVEOF'
 
@@ -45,59 +48,69 @@ gateway:
       enabled: true
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
-  callers:
-    - name: "gov-allow-caller"
-      tenant_key: "talon-gw-gov-allow-001"
-      tenant_id: "default"
-      allowed_providers: ["openai"]
-    - name: "gov-block-caller"
-      tenant_key: "talon-gw-gov-block-001"
-      tenant_id: "default"
-      allowed_providers: ["openai"]
-      policy_overrides:
-        pii_action: "block"
-    - name: "gov-redact-caller"
-      tenant_key: "talon-gw-gov-redact-001"
-      tenant_id: "default"
-      allowed_providers: ["openai"]
-      policy_overrides:
-        pii_action: "redact"
-    - name: "gov-route-deny-caller"
-      tenant_key: "talon-gw-gov-route-001"
-      tenant_id: "default"
-      allowed_providers: ["anthropic"]
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
     max_daily_cost: 100.00
-    require_caller_id: true
 GOVEOF
   fi
+  mkdir -p "$dir/agents"
+  gov_write_agent() { # name, extra-policy-yaml
+    cat > "$dir/agents/$1.talon.yaml" <<AGEOF
+agent:
+  name: $1
+  version: 1.0.0
+  key:
+    secret_name: "$1-talon-key"
+policies:
+  cost_limits:
+    daily: 5.0
+$2
+AGEOF
+  }
+  gov_write_agent "gov-allow-agent" ""
+  gov_write_agent "gov-block-agent" "  data_classification:
+    input_scan: true
+    block_on_pii: true"
+  gov_write_agent "gov-redact-agent" "  data_classification:
+    input_scan: true
+    redact_input: true"
+  gov_write_agent "gov-route-deny-agent" "  allowed_providers: [\"anthropic\"]"
+  run_talon secrets set "gov-allow-agent-talon-key" "talon-gw-gov-allow-001" &>/dev/null || true
+  run_talon secrets set "gov-block-agent-talon-key" "talon-gw-gov-block-001" &>/dev/null || true
+  run_talon secrets set "gov-redact-agent-talon-key" "talon-gw-gov-redact-001" &>/dev/null || true
+  run_talon secrets set "gov-route-deny-agent-talon-key" "talon-gw-gov-route-001" &>/dev/null || true
 
   local GOV_PID=""
   local gov_log="$dir/gov_gateway_serve.log"
-  run_talon serve --port "$gov_port" --gateway --gateway-config "$dir/talon.config.yaml" >"$gov_log" 2>&1 &
-  GOV_PID=$!
-  if ! smoke_wait_health "$gov_base" 45 1; then
-    local gw_state="running"
-    if ! kill -0 "$GOV_PID" 2>/dev/null; then
-      wait "$GOV_PID" 2>/dev/null; gw_state="exited($?)"
+  gov_stop() { [[ -n "$GOV_PID" ]] && { kill "$GOV_PID" 2>/dev/null || true; wait "$GOV_PID" 2>/dev/null || true; GOV_PID=""; }; }
+  gov_start() { # phase agent file
+    gov_stop
+    env TALON_DATA_DIR="$TALON_DATA_DIR" TALON_DEFAULT_POLICY="$dir/agents/$1.talon.yaml" \
+      talon serve --port "$gov_port" --gateway --gateway-config "$dir/talon.config.yaml" >>"$gov_log" 2>&1 &
+    GOV_PID=$!
+    if ! smoke_wait_health "$gov_base" 45 1; then
+      local gw_state="running"
+      if ! kill -0 "$GOV_PID" 2>/dev/null; then
+        wait "$GOV_PID" 2>/dev/null; gw_state="exited($?)"
+      fi
+      log_failure "runtime governance gateway did not start (phase $1)" \
+        "url=${gov_base}/health pid=$GOV_PID state=$gw_state"
+      dump_diag_file "section 27 serve log" "$gov_log" 120
+      dump_diag_file "phase agent file" "$dir/agents/$1.talon.yaml"
+      dump_diag_env
+      gov_stop
+      return 1
     fi
-    log_failure "runtime governance gateway did not start on port ${gov_port}" \
-      "url=${gov_base}/health pid=$GOV_PID state=$gw_state"
-    dump_diag_file "section 27 serve log" "$gov_log" 120
-    dump_diag_file "talon.config.yaml" "$dir/talon.config.yaml"
-    dump_diag_env
-    kill "$GOV_PID" 2>/dev/null || true
-    cd "$REPO_ROOT" || true
     return 0
-  fi
+  }
+  if ! gov_start "gov-allow-agent"; then cd "$REPO_ROOT" || true; return 0; fi
 
   local admin_key="${TALON_ADMIN_KEY}"
   local gov_allow_ok=true gov_block_ok=true gov_redact_ok=true gov_route_ok=true
   local allow_ev_json="" # saved for ROUTE cross-reference
 
   # =========================================================================
-  # 27.1  ALLOW — benign request through unrestricted caller
+  # 27.1  ALLOW — benign request through unrestricted agent
   # =========================================================================
   echo ""
   echo "  -- 27.1: runtime_governance_allow --"
@@ -107,7 +120,7 @@ GOVEOF
     echo "  ✓  ALLOW: benign request returns 200"
     record_pass
   else
-    log_failure "ALLOW: expected 200 for benign request via gov-allow-caller" "got HTTP $allow_code"
+    log_failure "ALLOW: expected 200 for benign request via gov-allow-agent" "got HTTP $allow_code"
     gov_allow_ok=false
   fi
   sleep 1
@@ -143,17 +156,18 @@ GOVEOF
   fi
 
   # =========================================================================
-  # 27.2  BLOCK — PII request through block-caller
+  # 27.2  BLOCK — PII request through the block agent (phase restart, #266)
   # =========================================================================
   echo ""
   echo "  -- 27.2: runtime_governance_block --"
+  if ! gov_start "gov-block-agent"; then cd "$REPO_ROOT" || true; return 0; fi
   local block_code
   block_code="$(smoke_gw_post_chat "$gov_base" "Bearer talon-gw-gov-block-001" "$SMOKE_BODY_PII")"
   if [[ "$block_code" == "400" ]]; then
-    echo "  ✓  BLOCK: PII request via gov-block-caller returns 400"
+    echo "  ✓  BLOCK: PII request via gov-block-agent returns 400"
     record_pass
   else
-    log_failure "BLOCK: expected 400 for PII request via gov-block-caller" "got HTTP $block_code"
+    log_failure "BLOCK: expected 400 for PII request via gov-block-agent" "got HTTP $block_code"
     gov_block_ok=false
   fi
   sleep 1
@@ -197,10 +211,11 @@ GOVEOF
   fi
 
   # =========================================================================
-  # 27.3  REDACT — PII request through redact-caller (not blocked, PII redacted)
+  # 27.3  REDACT — PII request through the redact agent (phase restart, #266)
   # =========================================================================
   echo ""
   echo "  -- 27.3: runtime_governance_redact --"
+  if ! gov_start "gov-redact-agent"; then cd "$REPO_ROOT" || true; return 0; fi
   # Snapshot metrics pii_redactions BEFORE
   local redact_snap_before redact_pii_before
   redact_snap_before="$(smoke_gw_get_metrics "$gov_base" "$admin_key")"
@@ -209,10 +224,10 @@ GOVEOF
   local redact_code
   redact_code="$(smoke_gw_post_chat "$gov_base" "Bearer talon-gw-gov-redact-001" "$SMOKE_BODY_PII")"
   if [[ "$redact_code" == "200" ]]; then
-    echo "  ✓  REDACT: PII request via gov-redact-caller returns 200 (not blocked)"
+    echo "  ✓  REDACT: PII request via gov-redact-agent returns 200 (not blocked)"
     record_pass
   else
-    log_failure "REDACT: expected 200 for PII request via gov-redact-caller" "got HTTP $redact_code"
+    log_failure "REDACT: expected 200 for PII request via gov-redact-agent" "got HTTP $redact_code"
     gov_redact_ok=false
   fi
 
@@ -268,11 +283,12 @@ GOVEOF
   fi
 
   # =========================================================================
-  # 27.4  ROUTE — provider-restricted caller denied for wrong provider
+  # 27.4  ROUTE — provider-restricted agent denied for wrong provider (phase restart, #266)
   # =========================================================================
   echo ""
   echo "  -- 27.4: runtime_governance_route --"
-  # Negative: gov-route-deny-caller only allows "anthropic", but the model
+  if ! gov_start "gov-route-deny-agent"; then cd "$REPO_ROOT" || true; return 0; fi
+  # Negative: gov-route-deny-agent only allows "anthropic", but the model
   # routes to "openai" -> gateway must deny with 403.
   local route_code
   route_code="$(smoke_gw_post_chat "$gov_base" "Bearer talon-gw-gov-route-001" "$SMOKE_BODY_SIMPLE")"
@@ -280,7 +296,7 @@ GOVEOF
     echo "  ✓  ROUTE deny: openai model via anthropic-only caller returns 403"
     record_pass
   else
-    log_failure "ROUTE deny: expected 403 for openai model via gov-route-deny-caller" "got HTTP $route_code"
+    log_failure "ROUTE deny: expected 403 for openai model via gov-route-deny-agent" "got HTTP $route_code"
     gov_route_ok=false
   fi
   sleep 1

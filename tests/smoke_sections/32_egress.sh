@@ -27,15 +27,9 @@ gateway:
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
       region: "US"
-  callers:
-    - name: "egress-smoke"
-      tenant_key: "talon-gw-egress-001"
-      tenant_id: "default"
-      allowed_providers: ["openai"]
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
     max_daily_cost: 100.00
-    require_caller_id: true
     egress:
       default_action: allow
       rules:
@@ -59,6 +53,7 @@ test_section_32_egress() {
     return 0
   fi
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
+  smoke_bind_agent_key "$dir" "talon-gw-egress-001"
   smoke_tighten_limits "$dir"
 
   # --- Invalid egress config must fail fast at load (validation) ---

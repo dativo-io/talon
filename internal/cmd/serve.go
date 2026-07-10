@@ -154,6 +154,20 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	defer secretsStore.Close()
 
+	// Agent identity registry (#266): built whenever the loaded agent policy
+	// carries a key binding — independent of gateway mode, because the SAME
+	// agent key also authenticates the tenant-scoped APIs. Gateway mode
+	// additionally requires at least one keyed agent (checked below).
+	var identityRegistry *gateway.IdentityRegistry
+	if pol.Agent.Key != nil && pol.Agent.Key.SecretName != "" {
+		identityRegistry, err = gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{
+			LoadedAgentFromPolicy(pol, policyPath),
+		}, secretsStore)
+		if err != nil {
+			return fmt.Errorf("building agent identity registry: %w", err)
+		}
+	}
+
 	evidenceStore, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {
 		return fmt.Errorf("initializing evidence: %w", err)
@@ -400,8 +414,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	var gatewayHandler http.Handler
 	var gatewayCfgForMode *gateway.GatewayConfig
-	var identityRegistry *gateway.IdentityRegistry
+	// Server tenant-API auth is a projection of the identity registry — one
+	// agent key works for /v1/proxy and the tenant-scoped APIs alike. Auth
+	// openness stays governed by the admin-key dev rule only.
 	tenantKeys := map[string]string{}
+	if identityRegistry != nil {
+		tenantKeys = identityRegistry.AuthKeyTenantProjection()
+		log.Info().Int("agents", identityRegistry.Len()).Int("tenants", len(identityRegistry.TenantIDs())).Msg("agent_identity_registry_loaded")
+	}
 	if serveGateway {
 		gatewayCfg := preloadedGatewayCfg
 		if err := sovereignty.ValidateAirGap(cfg, gatewayCfg); err != nil {
@@ -417,25 +437,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err := gatewayCfg.ApplyDefaults(); err != nil {
 			return fmt.Errorf("gateway defaults: %w", err)
 		}
-		// Agent identity (#266): the loaded agent policy is bridged to the
-		// identity registry — its vault-bound key is the traffic identity.
-		// Gateway mode with zero keyed agents is a startup error: such a
-		// gateway would reject every request, which is never what an operator
-		// meant. (#267 plugs agents_dir discovery into this same slice.)
-		if pol.Agent.Key == nil || pol.Agent.Key.SecretName == "" {
+		// Agent identity (#266): gateway mode with zero keyed agents is a
+		// startup error — such a gateway would reject every request, which is
+		// never what an operator meant. (#267 plugs agents_dir discovery into
+		// the same registry slice.)
+		if identityRegistry == nil || identityRegistry.Len() == 0 {
 			return fmt.Errorf("gateway mode requires at least one keyed agent: add agent.key.secret_name to %s and run `talon secrets set <name> <key>` (#266)", policyPath)
 		}
-		identityRegistry, err = gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{
-			LoadedAgentFromPolicy(pol, policyPath),
-		}, secretsStore)
-		if err != nil {
-			return fmt.Errorf("building agent identity registry: %w", err)
-		}
-		// Server tenant-API auth is a projection of the SAME registry — one
-		// agent key works for /v1/proxy and the tenant-scoped APIs alike.
-		// Auth openness stays governed by the admin-key dev rule only.
-		tenantKeys = identityRegistry.AuthKeyTenantProjection()
-		log.Info().Int("agents", identityRegistry.Len()).Int("tenants", len(identityRegistry.TenantIDs())).Msg("gateway_identity_registry_loaded")
 		// --gateway flag explicitly opts in; override config's enabled field
 		if !gatewayCfg.Enabled {
 			log.Info().Msg("--gateway flag set; enabling gateway (config had enabled: false)")
