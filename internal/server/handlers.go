@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -559,7 +558,6 @@ func (s *Server) handleEvidenceVerify(w http.ResponseWriter, r *http.Request) {
 type evidenceExportRequest struct {
 	TenantID string `json:"tenant_id"`
 	AgentID  string `json:"agent_id"`
-	Caller   string `json:"caller,omitempty"`
 	From     string `json:"from"`
 	To       string `json:"to"`
 	Limit    int    `json:"limit"`
@@ -598,11 +596,7 @@ func (s *Server) handleEvidenceExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "format must be csv or json")
 		return
 	}
-	agentID, err := resolveAgentOrCaller(req.AgentID, req.Caller)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
+	agentID := strings.TrimSpace(req.AgentID)
 	list, err := s.evidenceStore.List(r.Context(), tenantID, agentID, from, to, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
@@ -652,11 +646,7 @@ func (s *Server) handleCostsExport(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	agentID, err := resolveAgentOrCaller(req.AgentID, req.Caller)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
+	agentID := strings.TrimSpace(req.AgentID)
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 10000
@@ -713,18 +703,6 @@ func (s *Server) handleCostsExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, records)
-}
-
-func resolveAgentOrCaller(agentID, caller string) (string, error) {
-	agent := strings.TrimSpace(agentID)
-	caller = strings.TrimSpace(caller)
-	if caller == "" {
-		return agent, nil
-	}
-	if agent != "" && agent != caller {
-		return "", fmt.Errorf("agent_id and caller must match when both are provided")
-	}
-	return caller, nil
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

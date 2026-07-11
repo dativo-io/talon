@@ -45,8 +45,10 @@ func TestQuickstartIdentityShape(t *testing.T) {
 	if !id.HasTag("quickstart") {
 		t.Fatal("expected quickstart tag")
 	}
-	if len(id.AllowedProviders) != 1 || id.AllowedProviders[0] != "openai" {
-		t.Fatalf("allowed providers = %v", id.AllowedProviders)
+	// The openai-only restriction rides the standard override channel so it
+	// flows through ResolveEffectivePolicy like every real agent's (#266).
+	if id.Override == nil || len(id.Override.AllowedProviders) != 1 || id.Override.AllowedProviders[0] != "openai" {
+		t.Fatalf("override = %+v", id.Override)
 	}
 }
 
@@ -143,6 +145,12 @@ func TestGatewayConfigValidate_UpstreamAuthMode(t *testing.T) {
 			StreamIdleTimeout: "60s",
 		},
 	}
+	// client_bearer only validates under the in-process quickstart profile
+	// (#266) — a YAML-loaded gateway config can never carry it.
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for client_bearer outside the quickstart profile")
+	}
+	cfg.EnableQuickstartProfile()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}

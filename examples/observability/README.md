@@ -66,7 +66,7 @@ Once traffic flows through Talon with OTel enabled, the following metric familie
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `talon_gateway_requests_total` | counter | Total gateway requests by caller, model, status. |
+| `talon_gateway_requests_total` | counter | Total gateway requests by agent, model, status. |
 | `talon_gateway_errors_total` | counter | Errors by type. |
 | `talon_data_tier_requests` | counter | Requests by data classification tier. |
 | `talon_tools_governance_total` | counter | Tool governance decisions. |

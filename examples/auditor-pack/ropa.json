@@ -35,7 +35,7 @@
     },
     {
       "heading": "2. Processing activities observed",
-      "body": "Each row is one governed caller (tenant, agent) observed in the signed evidence store for the selected scope.",
+      "body": "Each row is one governed agent identity (tenant, agent) observed in the signed evidence store for the selected scope.",
       "table": {
         "headers": [
           "Tenant",

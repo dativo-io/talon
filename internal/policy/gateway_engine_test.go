@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -51,6 +52,63 @@ func TestGatewayEngine_EvaluateGateway_DenyModelAllowlist(t *testing.T) {
 	require.False(t, allowed)
 	require.NotEmpty(t, reasons)
 	require.Contains(t, reasons[0], "not in agent allowlist")
+}
+
+// Organization model lists are HARD constraints (#266): they ride separate
+// input keys, so an agent allowlist containing the model cannot satisfy them.
+func TestGatewayEngine_EvaluateGateway_OrgModelConstraints(t *testing.T) {
+	ctx := context.Background()
+	eng, err := NewGatewayEngine(ctx)
+	require.NoError(t, err)
+
+	base := func(model string) map[string]interface{} {
+		return map[string]interface{}{
+			"provider":       "openai",
+			"model":          model,
+			"data_tier":      0,
+			"daily_cost":     0.0,
+			"monthly_cost":   0.0,
+			"estimated_cost": 0.01,
+		}
+	}
+
+	t.Run("org allowlist denies even when the agent list allows", func(t *testing.T) {
+		in := base("gpt-4-turbo")
+		in["org_allowed_models"] = []interface{}{"gpt-4o"}
+		in["agent_allowed_models"] = []interface{}{"gpt-4-turbo"}
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+		require.Contains(t, strings.Join(reasons, "; "), "not in organization allowlist")
+	})
+
+	t.Run("org blocklist denies even when the agent list allows", func(t *testing.T) {
+		in := base("gpt-3.5-turbo")
+		in["org_blocked_models"] = []interface{}{"gpt-3.5-turbo"}
+		in["agent_allowed_models"] = []interface{}{"gpt-3.5-turbo"}
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+		require.Contains(t, strings.Join(reasons, "; "), "blocked by organization policy")
+	})
+
+	t.Run("model inside both org and agent lists passes", func(t *testing.T) {
+		in := base("gpt-4o")
+		in["org_allowed_models"] = []interface{}{"gpt-4o", "gpt-4o-mini"}
+		in["agent_allowed_models"] = []interface{}{"gpt-4o"}
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.True(t, allowed)
+		require.Empty(t, reasons)
+	})
+
+	t.Run("org wildcard block denies every model", func(t *testing.T) {
+		in := base("gpt-4o")
+		in["org_blocked_models"] = []interface{}{"*"}
+		allowed, _, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+	})
 }
 
 func TestGatewayEngine_EvaluateGateway_Egress(t *testing.T) {

@@ -121,7 +121,7 @@ You will find one record per export you performed (`compliance_export_ropa`, `co
 
 ## 8. Optional: spend in the same place
 
-Switch to the **FinOps & Runtime** tab. With `--gateway` enabled you get budget utilization, cache statistics, and spend broken down by caller, model, and provider — empty until gateway traffic flows, populated as soon as it does. Governance and cost live on the same page because both are derived from the same signed evidence.
+Switch to the **FinOps & Runtime** tab. With `--gateway` enabled you get budget utilization, cache statistics, and spend broken down by agent, model, and provider — empty until gateway traffic flows, populated as soon as it does. Governance and cost live on the same page because both are derived from the same signed evidence.
 
 ---
 

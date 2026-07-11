@@ -8,7 +8,7 @@
 #   ALLOW  — benign request allowed, evidence confirms policy_decision.allowed=true
 #   BLOCK  — PII request denied at gateway, evidence confirms action=deny + reason
 #   REDACT — PII request redacted (not blocked), metrics delta + evidence PII fields
-#   ROUTE  — provider-restricted caller denied, evidence confirms routing reason
+#   ROUTE  — provider-restricted agent denied, evidence confirms routing reason
 # Each sub-test asserts both the HTTP outcome AND the evidence record content.
 # -----------------------------------------------------------------------------
 test_section_27_runtime_governance() {
@@ -293,7 +293,7 @@ AGEOF
   local route_code
   route_code="$(smoke_gw_post_chat "$gov_base" "Bearer talon-gw-gov-route-001" "$SMOKE_BODY_SIMPLE")"
   if [[ "$route_code" == "403" ]]; then
-    echo "  ✓  ROUTE deny: openai model via anthropic-only caller returns 403"
+    echo "  ✓  ROUTE deny: openai model via anthropic-only agent returns 403"
     record_pass
   else
     log_failure "ROUTE deny: expected 403 for openai model via gov-route-deny-agent" "got HTTP $route_code"
@@ -327,7 +327,7 @@ AGEOF
   fi
 
   # Positive contrast: the ALLOW test (27.1) used the same model through an
-  # openai-allowed caller and succeeded — verify execution.model_used confirms
+  # openai-allowed agent and succeeded — verify execution.model_used confirms
   # the openai provider was actually used, proving routing is policy-driven.
   if [[ -n "$allow_ev_json" ]] && echo "$allow_ev_json" | jq -e '.' &>/dev/null; then
     local allow_model_used

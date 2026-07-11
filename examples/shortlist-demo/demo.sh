@@ -111,7 +111,7 @@ proof_story() {
 proof_request() {
   [[ "$NARRATE" == "1" ]] || return 0
   echo "  Request"
-  kv "Caller" "$1"
+  kv "Agent" "$1"
   kv "Model" "$2"
   [[ -n "${3:-}" ]] && kv "Payload" "$3"
   echo ""

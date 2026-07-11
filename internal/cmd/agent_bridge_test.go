@@ -12,9 +12,9 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
-// TestPIIActionsFromClassification mirrors the native runner's semantics
-// exactly (#266): output_scan alone is scan-only (warn), redaction requires
-// the ShouldRedact* flags, and block_on_pii escalates both directions.
+// TestPIIActionsFromClassification (#266): scan flags alone produce NO
+// override (they must not weaken an org baseline), redaction requires the
+// ShouldRedact* flags, and block_on_pii escalates both directions.
 func TestPIIActionsFromClassification(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -25,12 +25,12 @@ func TestPIIActionsFromClassification(t *testing.T) {
 		{"nil config inherits baseline", nil, "", ""},
 		{"empty config inherits baseline", &policy.DataClassificationConfig{}, "", ""},
 		{
-			"input_scan alone is scan-only",
-			&policy.DataClassificationConfig{InputScan: true}, "warn", "",
+			"input_scan alone is scan-only — no override, baseline inherited",
+			&policy.DataClassificationConfig{InputScan: true}, "", "",
 		},
 		{
-			"output_scan alone is scan-only",
-			&policy.DataClassificationConfig{OutputScan: true}, "", "warn",
+			"output_scan alone is scan-only — no override, baseline inherited",
+			&policy.DataClassificationConfig{OutputScan: true}, "", "",
 		},
 		{
 			"input redaction requires input_scan + redact",
@@ -49,8 +49,8 @@ func TestPIIActionsFromClassification(t *testing.T) {
 			&policy.DataClassificationConfig{InputScan: true, OutputScan: true, RedactPII: true}, "redact", "redact",
 		},
 		{
-			"explicit redact_output=false overrides shorthand",
-			&policy.DataClassificationConfig{InputScan: true, OutputScan: true, RedactPII: true, RedactOutput: boolPtr(false)}, "redact", "warn",
+			"explicit redact_output=false drops the response override",
+			&policy.DataClassificationConfig{InputScan: true, OutputScan: true, RedactPII: true, RedactOutput: boolPtr(false)}, "redact", "",
 		},
 		{
 			"block_on_pii blocks input",
@@ -117,7 +117,6 @@ func TestLoadedAgentFromPolicyFullMapping(t *testing.T) {
 	assert.Equal(t, "support-key", la.KeySecretName)
 	assert.Equal(t, "support-eng", la.Team)
 	assert.Equal(t, []string{"copaw"}, la.Tags)
-	assert.Equal(t, []string{"openai", "anthropic"}, la.AllowedProviders)
 	require.NotNil(t, la.AcceptClientMetadata)
 	assert.False(t, *la.AcceptClientMetadata)
 
@@ -130,6 +129,8 @@ func TestLoadedAgentFromPolicyFullMapping(t *testing.T) {
 	assert.Equal(t, "", o.ResponsePIIAction) // no output_scan → response inherits baseline
 	assert.Equal(t, []string{"gpt-4o"}, o.AllowedModels)
 	assert.Equal(t, []string{"gpt-3.5-turbo"}, o.BlockedModels)
+	assert.Equal(t, []string{"openai", "anthropic"}, o.AllowedProviders,
+		"allowed_providers rides the override so it flows through ResolveEffectivePolicy")
 	require.NotNil(t, o.MaxDataTier)
 	assert.Equal(t, gateway.TierConfidential, *o.MaxDataTier)
 	assert.Equal(t, []string{"search"}, o.AllowedTools)

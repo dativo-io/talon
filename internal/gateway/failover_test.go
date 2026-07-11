@@ -456,7 +456,7 @@ func TestGatewayFailover_AgentAllowedProviders_SkipsCandidate(t *testing.T) {
 	backup := newFailoverUpstream(t, http.StatusOK)
 	gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
 	// Restrict the agent to the primary provider only.
-	failoverAgent(gw).AllowedProviders = []string{"openai"}
+	failoverAgent(gw).Override = &PolicyOverride{AllowedProviders: []string{"openai"}}
 
 	w := makeFailoverRequest(gw, failoverTestBody)
 
@@ -469,7 +469,7 @@ func TestGatewayFailover_AgentAllowedProviders_SkipsCandidate(t *testing.T) {
 	require.NotNil(t, final.Failover)
 	assert.Equal(t, evidence.FailoverRoleFailClosed, final.Failover.Role)
 	require.Len(t, final.Failover.SkippedCandidates, 1)
-	assert.Equal(t, "caller_allowlist", final.Failover.SkippedCandidates[0].Filter)
+	assert.Equal(t, "agent_allowlist", final.Failover.SkippedCandidates[0].Filter)
 }
 
 // Fallback candidates re-run the full gateway policy with their own provider
@@ -791,6 +791,29 @@ func TestGatewayConfig_ValidateFallbackChain(t *testing.T) {
 				c.Providers["anthropic-eu"] = ProviderConfig{Enabled: true, BaseURL: "https://eu.anthropic.example.com", APIFamily: "anthropic", UpstreamAuthMode: "client_bearer"}
 			},
 			wantErr: "client_bearer is not supported for the anthropic API family",
+		},
+		{
+			// #266 review: outside the in-process quickstart profile the
+			// presented bearer is a Talon AGENT KEY — client_bearer would
+			// forward it verbatim to the upstream provider. The profile flag
+			// is unexported, so YAML-loaded configs can never pass this.
+			name: "client_bearer outside the quickstart profile is rejected",
+			mutate: func(c *GatewayConfig) {
+				p := c.Providers["openai"]
+				p.UpstreamAuthMode = "client_bearer"
+				c.Providers["openai"] = p
+			},
+			wantErr: "client_bearer is only available in --proxy-quickstart mode",
+		},
+		{
+			name: "client_bearer inside the quickstart profile validates",
+			mutate: func(c *GatewayConfig) {
+				p := c.Providers["openai"]
+				p.UpstreamAuthMode = "client_bearer"
+				c.Providers["openai"] = p
+				c.EnableQuickstartProfile()
+			},
+			wantErr: "",
 		},
 	}
 	for _, tt := range tests {

@@ -322,7 +322,8 @@ act_tool() {
 
 act_pii() {
   block_rule "$1" "$2" "🔒" "BLOCKED" "PII stopped before the provider"
-  block_config "gateway.default_policy.default_pii_action: \"block\""
+  block_config "agents/session-demo.talon.yaml → data_classification.block_on_pii: true" \
+               "(tightens the org floor: organization_policy.default_pii_action: \"warn\")"
   post_openai "$AGENT_KEY" "$PROBE_MODEL" "Refund the customer with IBAN DE89370400440532013000."
   expect_http 400
   local id; id="$(latest_evidence_id)"

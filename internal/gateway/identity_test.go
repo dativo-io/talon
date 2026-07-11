@@ -34,7 +34,7 @@ func TestBuildIdentityRegistryResolvesAgents(t *testing.T) {
 	reg, err := BuildIdentityRegistry(context.Background(), []LoadedAgent{
 		{Path: "support/agent.talon.yaml", Name: "customer-support", TenantID: "acme", KeySecretName: "support-key", Team: "support-eng"},
 		{Path: "coding/agent.talon.yaml", Name: "coding", KeySecretName: "coding-key", Tags: []string{"copaw"}},
-	}, vault)
+	}, vault, "")
 	require.NoError(t, err)
 	assert.Equal(t, 2, reg.Len())
 
@@ -74,7 +74,7 @@ func TestBuildIdentityRegistryFailClosed(t *testing.T) {
 		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
 			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1"},
 			{Path: "b/agent.talon.yaml", Name: "support", KeySecretName: "k2"},
-		}, vault)
+		}, vault, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "duplicate agent name")
 		assert.Contains(t, err.Error(), "a/agent.talon.yaml")
@@ -85,7 +85,7 @@ func TestBuildIdentityRegistryFailClosed(t *testing.T) {
 		vault := newTestVault(t)
 		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
 			{Path: "a/agent.talon.yaml", Name: "support"},
-		}, vault)
+		}, vault, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "agent.key.secret_name is required")
 	})
@@ -94,7 +94,7 @@ func TestBuildIdentityRegistryFailClosed(t *testing.T) {
 		vault := newTestVault(t)
 		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
 			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "nope"},
-		}, vault)
+		}, vault, "")
 		require.Error(t, err)
 		assert.ErrorIs(t, err, secrets.ErrSecretNotFound)
 		assert.Contains(t, err.Error(), `"nope"`)
@@ -105,7 +105,7 @@ func TestBuildIdentityRegistryFailClosed(t *testing.T) {
 		require.NoError(t, vault.Set(ctx, "locked", []byte("v"), secrets.ACL{Agents: []string{"someone-else"}}))
 		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
 			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "locked"},
-		}, vault)
+		}, vault, "")
 		require.Error(t, err)
 		assert.ErrorIs(t, err, secrets.ErrSecretAccessDenied)
 	})
@@ -115,7 +115,7 @@ func TestBuildIdentityRegistryFailClosed(t *testing.T) {
 		setSecret(t, vault, "empty", "   ")
 		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
 			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "empty"},
-		}, vault)
+		}, vault, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "empty value")
 	})
@@ -126,7 +126,7 @@ func TestBuildIdentityRegistryFailClosed(t *testing.T) {
 		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
 			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "shared"},
 			{Path: "b/agent.talon.yaml", Name: "coding", KeySecretName: "shared"},
-		}, vault)
+		}, vault, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `both bind vault secret "shared"`)
 	})
@@ -138,7 +138,7 @@ func TestBuildIdentityRegistryFailClosed(t *testing.T) {
 		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
 			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1"},
 			{Path: "b/agent.talon.yaml", Name: "coding", KeySecretName: "k2"},
-		}, vault)
+		}, vault, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "same key material")
 	})
@@ -151,7 +151,7 @@ func TestBuildIdentityRegistryFailClosed(t *testing.T) {
 				Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1",
 				Override: &PolicyOverride{ToolPolicyAction: "explode"},
 			},
-		}, vault)
+		}, vault, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "tool_policy_action")
 	})
@@ -165,39 +165,68 @@ func TestRegistrySnapshotSafety(t *testing.T) {
 	setSecret(t, vault, "k1", "v1")
 
 	tier := TierConfidential
+	acceptMeta := false
 	agents := []LoadedAgent{{
 		Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1",
-		Tags:             []string{"copaw"},
-		AllowedProviders: []string{"openai"},
+		Tags:                 []string{"copaw"},
+		AcceptClientMetadata: &acceptMeta,
 		Override: &PolicyOverride{
-			MaxDailyCost:  25,
-			AllowedModels: []string{"gpt-4o"},
-			MaxDataTier:   &tier,
+			MaxDailyCost:     25,
+			AllowedModels:    []string{"gpt-4o"},
+			AllowedProviders: []string{"openai"},
+			MaxDataTier:      &tier,
 			Egress: &EgressPolicyConfig{Rules: []EgressRule{
 				{Tier: &tier, AllowedRegions: []string{"EU"}},
 			}},
 		},
 	}}
 
-	reg, err := BuildIdentityRegistry(context.Background(), agents, vault)
+	reg, err := BuildIdentityRegistry(context.Background(), agents, vault, "")
 	require.NoError(t, err)
 
 	// Mutate every mutable source field.
 	agents[0].Tags[0] = "mutated"
-	agents[0].AllowedProviders[0] = "mutated"
+	acceptMeta = true // flips the pointee the loader handed in
 	agents[0].Override.MaxDailyCost = 9999
 	agents[0].Override.AllowedModels[0] = "mutated"
+	agents[0].Override.AllowedProviders[0] = "mutated"
 	*agents[0].Override.MaxDataTier = TierPublic
 	agents[0].Override.Egress.Rules[0].AllowedRegions[0] = "MUTATED"
 
 	id, ok := reg.ResolveKey("v1")
 	require.True(t, ok)
 	assert.Equal(t, "copaw", id.Tags[0])
-	assert.Equal(t, "openai", id.AllowedProviders[0])
+	require.NotNil(t, id.AcceptClientMetadata)
+	assert.False(t, *id.AcceptClientMetadata, "AcceptClientMetadata must be deep-copied, not aliased")
+	assert.False(t, id.AcceptsClientMetadata())
 	assert.Equal(t, float64(25), id.Override.MaxDailyCost)
 	assert.Equal(t, "gpt-4o", id.Override.AllowedModels[0])
+	assert.Equal(t, "openai", id.Override.AllowedProviders[0])
 	assert.Equal(t, TierConfidential, *id.Override.MaxDataTier)
 	assert.Equal(t, "EU", id.Override.Egress.Rules[0].AllowedRegions[0])
+}
+
+// TestBuildIdentityRegistryAdminKeyCollision: an agent key resolving to the
+// same value as TALON_ADMIN_KEY must fail startup — the server middleware
+// checks the admin bearer first, so the collision would silently grant that
+// workload operator authority (#266 review).
+func TestBuildIdentityRegistryAdminKeyCollision(t *testing.T) {
+	vault := newTestVault(t)
+	setSecret(t, vault, "k1", "shared-secret-value")
+
+	agents := []LoadedAgent{{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1"}}
+
+	_, err := BuildIdentityRegistry(context.Background(), agents, vault, "shared-secret-value")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrAdminKeyCollision)
+	assert.Contains(t, err.Error(), "TALON_ADMIN_KEY")
+	assert.Contains(t, err.Error(), `"k1"`)
+
+	// Different admin key (or none) → fine.
+	_, err = BuildIdentityRegistry(context.Background(), agents, vault, "another-value")
+	require.NoError(t, err)
+	_, err = BuildIdentityRegistry(context.Background(), agents, vault, "")
+	require.NoError(t, err)
 }
 
 func TestQuickstartIdentityIsolated(t *testing.T) {
@@ -208,7 +237,7 @@ func TestQuickstartIdentityIsolated(t *testing.T) {
 
 	// The synthetic identity is not reachable through key resolution.
 	vault := newTestVault(t)
-	reg, err := BuildIdentityRegistry(context.Background(), nil, vault)
+	reg, err := BuildIdentityRegistry(context.Background(), nil, vault, "")
 	require.NoError(t, err)
 	assert.Equal(t, 0, reg.Len())
 	_, ok := reg.ResolveKey("quickstart")

@@ -107,7 +107,7 @@ This page did **not** yet execute tool filtering, PII blocking, model denial, so
 
 ## Now wire this to your app
 
-Point your existing app at Talon by changing only the base URL and using a Talon caller key.
+Point your existing app at Talon by changing only the base URL and using a Talon agent key.
 
 **Python (`openai` package):**
 
@@ -116,7 +116,7 @@ import openai
 
 client = openai.OpenAI(
     base_url="http://localhost:8080/v1/proxy/openai/v1",
-    api_key="<your-caller-key-from-talon-config>",
+    api_key="<your-agent-key>",
 )
 # Then use client.chat.completions.create(...) as usual.
 ```
@@ -128,7 +128,7 @@ const OpenAI = require("openai");
 
 const client = new OpenAI({
   baseURL: "http://localhost:8080/v1/proxy/openai/v1",
-  apiKey: "<your-caller-key-from-talon-config>",
+  apiKey: "<your-agent-key>",
 });
 // Then use client.chat.completions.create(...) as usual.
 ```
@@ -138,7 +138,7 @@ const client = new OpenAI({
 ```bash
 curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <your-caller-key-from-talon-config>" \
+  -H "Authorization: Bearer <your-agent-key>" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
@@ -149,7 +149,7 @@ For a full step-by-step with vault key, gateway config, first real request, and 
 When your curl request hits Talon, the gateway path runs:
 
 1. **Route** — the URL path determines the provider.
-2. **Identify** — Talon resolves the caller.
+2. **Identify** — Talon resolves the agent from the presented key.
 3. **Rate limit** — the token-bucket check runs.
 4. **Extract** — Talon parses model and message text.
 5. **PII scan** — recognizers find the email and IBAN.

@@ -147,6 +147,9 @@ func newFacadeForTest(t *testing.T, upstreamURL string) (http.Handler, *evidence
 			StreamIdleTimeout: "60s",
 		},
 	}
+	// This helper mirrors the in-process quickstart profile — the only
+	// context where client_bearer validates (#266).
+	cfg.EnableQuickstartProfile()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate cfg: %v", err)
 	}

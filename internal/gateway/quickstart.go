@@ -87,6 +87,11 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 	}
 	_ = annotations // annotations are recorded per-request by gateway evidence path.
 
+	// client_bearer is valid ONLY under this in-process profile (#266): the
+	// quickstart facade's clients present their own OpenAI key, not a Talon
+	// agent key, so forwarding the bearer upstream is the intended behavior.
+	cfg.EnableQuickstartProfile()
+
 	if err := cfg.ApplyDefaults(); err != nil {
 		return nil, fmt.Errorf("applying quickstart defaults: %w", err)
 	}

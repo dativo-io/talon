@@ -96,7 +96,7 @@ Evidence rows will show `agent_id: copaw-gateway`. The Talon dashboard (`/dashbo
 
 - **Shadow mode:** The generated config uses `gateway.mode: shadow` so violations are logged but not enforced. After 24h run `talon enforce report`, then switch to `enforce` in `talon.config.yaml` if desired.
 - **Cost limits:** Adjust `policies.cost_limits.daily` and `.monthly` in the agent file — each replaces the organization baseline cap when > 0.
-- **PII:** Set the baseline in `gateway.organization_policy.default_pii_action`; tighten per agent via the `policies.data_classification` booleans (`input_scan` + `redact_input` → redact; `block_on_pii` → block; `input_scan` alone → warn).
+- **PII:** Set the floor in `gateway.organization_policy.default_pii_action`; tighten per agent via the `policies.data_classification` booleans (`input_scan` + `redact_input` → redact; `block_on_pii` → block; `input_scan` alone scans without changing the action). The merge is monotonic — an agent can only tighten the org floor, never weaken it.
 
 ## Troubleshooting
 

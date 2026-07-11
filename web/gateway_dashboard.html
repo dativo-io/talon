@@ -211,11 +211,11 @@
     <div id="budget-content"></div>
   </div>
 
-  <!-- Caller Stats -->
+  <!-- Agent Stats -->
   <div class="panel grid-full">
-    <div class="panel-title">Caller Breakdown</div>
+    <div class="panel-title">Agent Breakdown</div>
     <table>
-      <thead><tr><th>Caller</th><th>Requests</th><th>Success</th><th>Failed</th><th>Timeout</th><th>Denied</th><th>Rate</th><th data-cost-th="Cost">Cost (USD)</th><th data-cost-th="Cost/Success">Cost/Success (USD)</th><th>Avg Latency</th><th>Trend(7d)</th><th>Evidence</th></tr></thead>
+      <thead><tr><th>Agent</th><th>Requests</th><th>Success</th><th>Failed</th><th>Timeout</th><th>Denied</th><th>Rate</th><th data-cost-th="Cost">Cost (USD)</th><th data-cost-th="Cost/Success">Cost/Success (USD)</th><th>Avg Latency</th><th>Trend(7d)</th><th>Evidence</th></tr></thead>
       <tbody id="agent-table"></tbody>
     </table>
   </div>
@@ -227,7 +227,7 @@
     <div class="panel-title">Coding Sessions (orchestration)</div>
     <div class="kpi-sub">Client-asserted coding sessions across providers &mdash; identical numbers to <code>talon audit list --session &lt;id&gt;</code>. Click a session for its per-agent breakdown.</div>
     <table>
-      <thead><tr><th></th><th>Session</th><th>Client</th><th>Caller</th><th>Requests</th><th>Denied</th><th>Models</th><th>Providers</th><th>Tokens in/out</th><th data-cost-th="Cost">Cost (USD)</th><th>Last Active</th></tr></thead>
+      <thead><tr><th></th><th>Session</th><th>Client</th><th>Agent</th><th>Requests</th><th>Denied</th><th>Models</th><th>Providers</th><th>Tokens in/out</th><th data-cost-th="Cost">Cost (USD)</th><th>Last Active</th></tr></thead>
       <tbody id="sessions-table"></tbody>
     </table>
     <div class="kpi-sub" id="sessions-denials" style="margin-top:8px;"></div>
@@ -532,7 +532,7 @@
       var cps = c.cost_per_success || 0;
       var cpsClass = (avgCostPerSuccess > 0 && cps > (2 * avgCostPerSuccess)) ? 'cost-hot' : '';
       var evidenceLink = '<a href="' + evidenceDashboardURL() + '" style="color:var(--brand-light);text-decoration:none;">Open</a>';
-      return '<tr><td>' + esc(c.agent) + '</td><td>' + fmt(c.requests) + '</td><td>' + fmt(c.successful) + '</td><td>' + fmt(c.failed) + '</td><td>' + fmt(c.timed_out) + '</td><td>' + fmt(c.denied) + '</td><td class="' + rateClass + '">' + (rate * 100).toFixed(1) + '%</td><td>' + CUR + (c.cost_eur || 0).toFixed(4) + '</td><td class="' + cpsClass + '">' + CUR + cps.toFixed(4) + '</td><td>' + c.avg_latency_ms + 'ms</td><td>' + renderCallerTrend(c.violation_trend) + '</td><td>' + evidenceLink + '</td></tr>';
+      return '<tr><td>' + esc(c.agent) + '</td><td>' + fmt(c.requests) + '</td><td>' + fmt(c.successful) + '</td><td>' + fmt(c.failed) + '</td><td>' + fmt(c.timed_out) + '</td><td>' + fmt(c.denied) + '</td><td class="' + rateClass + '">' + (rate * 100).toFixed(1) + '%</td><td>' + CUR + (c.cost_eur || 0).toFixed(4) + '</td><td class="' + cpsClass + '">' + CUR + cps.toFixed(4) + '</td><td>' + c.avg_latency_ms + 'ms</td><td>' + renderAgentTrend(c.violation_trend) + '</td><td>' + evidenceLink + '</td></tr>';
     }).join('');
   }
 
@@ -609,7 +609,7 @@
     el.classList.add(timedOut > 3 ? 'rate-bad' : 'rate-warn');
   }
 
-  function renderCallerTrend(trend) {
+  function renderAgentTrend(trend) {
     if (!trend || trend.length === 0) return '';
     var max = Math.max.apply(null, trend.map(function(d) { return d.count || 0; })) || 1;
     var barWidth = 4;

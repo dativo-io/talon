@@ -52,7 +52,7 @@ llm = ChatOpenAI(
     model="gpt-4o-mini",
     temperature=0,
     base_url="http://localhost:8080/v1/proxy/openai",
-    api_key=os.environ.get("TALON_CALLER_KEY", "your-caller-key"),
+    api_key=os.environ.get("TALON_AGENT_KEY", "your-agent-key"),
     default_headers={
         "X-Talon-Session-ID": "notebook-session-1",
     },
@@ -72,7 +72,7 @@ llm = ChatOpenAI(
     model="gpt-4o-mini",
     temperature=0,
     base_url=os.environ["TALON_URL"] + "/v1/proxy/openai",
-    api_key=os.environ["TALON_CALLER_KEY"],
+    api_key=os.environ["TALON_AGENT_KEY"],
     default_headers={
         "X-Talon-Session-ID": "worker-session-1",
         "X-Talon-Reasoning": "batch-summarization",
@@ -333,7 +333,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8080/v1/proxy/openai",
-    api_key="your-caller-key",
+    api_key="your-agent-key",
 )
 resp = client.chat.completions.create(
     model="gpt-4o-mini",

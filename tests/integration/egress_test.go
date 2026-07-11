@@ -92,7 +92,7 @@ gateway:
 			Path: "agent.talon.yaml", Name: "egress-e2e", TenantID: "e2e-tenant", KeySecretName: "egress-e2e-talon-key",
 			Override: &gateway.PolicyOverride{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000},
 		},
-	}, secStore)
+	}, secStore, "")
 	require.NoError(t, err)
 
 	policyEngine, err := policy.NewGatewayEngine(context.Background())

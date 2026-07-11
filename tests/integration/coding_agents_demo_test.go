@@ -107,7 +107,7 @@ func newDemoGateway(t *testing.T, mockURL string) (*evidence.Store, http.Handler
 				MaxSessionCost:    0.02, // trips after a few mock-priced requests
 			},
 		},
-	}, secStore)
+	}, secStore, "")
 	require.NoError(t, err)
 
 	policyEngine, err := policy.NewGatewayEngine(context.Background())

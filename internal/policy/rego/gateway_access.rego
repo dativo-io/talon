@@ -35,6 +35,31 @@ deny contains msg if {
 	msg := sprintf("Model %s is blocked for this agent", [input.model])
 }
 
+# Organization model allowlist — a HARD constraint (#266): the gateway emits
+# it on a separate input key, so no agent override can satisfy it away.
+deny contains msg if {
+	input.org_allowed_models != null
+	count(input.org_allowed_models) > 0
+	not input.model in input.org_allowed_models
+	msg := sprintf("Model %s not in organization allowlist", [input.model])
+}
+
+# Organization blocked models — same hard-constraint contract.
+deny contains msg if {
+	input.org_blocked_models != null
+	some blocked in input.org_blocked_models
+	blocked == "*"
+	input.model != ""
+	msg := sprintf("Model %s is blocked by organization policy", [input.model])
+}
+
+deny contains msg if {
+	input.org_blocked_models != null
+	some blocked in input.org_blocked_models
+	blocked == input.model
+	msg := sprintf("Model %s is blocked by organization policy", [input.model])
+}
+
 # Per-agent daily cost limit. Amounts use %v with 4-decimal rounding: real
 # per-request API costs are sub-cent (so %.2f rendered 0.00), and OPA sprintf
 # refuses %f entirely for integral JSON numbers (#255). This message is the

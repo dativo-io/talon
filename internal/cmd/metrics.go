@@ -111,11 +111,11 @@ func aggregateStandaloneSnapshot(records []evidence.Evidence, now time.Time) met
 	return metricsapi.SnapshotFromEvidenceRecords(records, now)
 }
 
-func filterAgents(in []metricsapi.AgentStat, caller string) []metricsapi.AgentStat {
+func filterAgents(in []metricsapi.AgentStat, agent string) []metricsapi.AgentStat {
 	filtered := make([]metricsapi.AgentStat, 0, len(in))
 	for i := range in {
 		c := in[i]
-		if c.Agent == caller {
+		if c.Agent == agent {
 			filtered = append(filtered, c)
 		}
 	}
@@ -149,7 +149,7 @@ func renderMetricsSummary(w io.Writer, agents []metricsapi.AgentStat, snap metri
 			c.CostEUR, c.CostPerSuccess, sparkline(values))
 	}
 	if len(agents) == 0 {
-		fmt.Fprintln(w, "(no caller data)")
+		fmt.Fprintln(w, "(no agent data)")
 	}
 
 	fmt.Fprintln(w)
@@ -226,6 +226,6 @@ func trimRightSlash(url string) string {
 func init() {
 	rootCmd.AddCommand(metricsCmd)
 	metricsCmd.Flags().StringVar(&metricsAgent, "agent", "", "show detailed metrics for a single agent")
-	metricsCmd.Flags().BoolVar(&metricsJSON, "json", false, "emit caller metrics as JSON")
+	metricsCmd.Flags().BoolVar(&metricsJSON, "json", false, "emit agent metrics as JSON")
 	metricsCmd.Flags().StringVar(&metricsURL, "url", "http://localhost:8080", "base URL for talon server")
 }

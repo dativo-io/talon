@@ -1462,7 +1462,7 @@ func TestCostsExport_IncludesDeniedRowsAndProvider(t *testing.T) {
 	r := srv.Routes()
 
 	// JSON path
-	body := `{"tenant_id":"default","caller":"support-slack-bot","format":"json","limit":10}`
+	body := `{"tenant_id":"default","agent_id":"support-slack-bot","format":"json","limit":10}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/costs/export", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer k")
@@ -1477,7 +1477,7 @@ func TestCostsExport_IncludesDeniedRowsAndProvider(t *testing.T) {
 	assert.Equal(t, "deny", rows[0]["policy_action"])
 
 	// CSV path
-	body = `{"tenant_id":"default","caller":"support-slack-bot","format":"csv","limit":10}`
+	body = `{"tenant_id":"default","agent_id":"support-slack-bot","format":"csv","limit":10}`
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/costs/export", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer k")

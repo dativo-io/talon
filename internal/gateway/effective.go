@@ -21,21 +21,34 @@ type EffectivePolicy struct {
 	// MaxSessionCost is the per-session soft cap (#198); 0 = unset.
 	MaxSessionCost float64
 
-	// PII actions: block | redact | warn | allow.
+	// PII actions: block | redact | warn | allow. The organization baseline is
+	// a FLOOR: an agent override can only tighten (block > redact > warn >
+	// allow), never weaken — see mergePIIAction.
 	PIIAction         string
 	ResponsePIIAction string
 
 	// Agent-level model lists: override replaces baseline when non-empty.
-	// (There is no baseline model list today — these come from the override.)
 	AllowedModels []string
 	BlockedModels []string
+	// Organization-wide model lists — hard constraints an agent override can
+	// never escape (enforced by their own Rego deny rules).
+	OrgAllowedModels []string
+	OrgBlockedModels []string
 	// Provider-level model lists — destination hard constraints. Enforced on
 	// fallback candidates today; primary-path parity is tracked separately
 	// (behavior-preserving, see #278).
 	ProviderAllowedModels []string
 	ProviderBlockedModels []string
 
+	// Provider reachability: the agent's own allowlist narrows within the
+	// organization hard constraint; empty = unrestricted at that level.
+	// Both are kept (not intersected) so an empty intersection stays a
+	// deny-everything, not an accidental allow-all — check via ProviderAllowed.
+	AllowedProviders    []string
+	OrgAllowedProviders []string
+
 	// MaxDataTier caps the request data classification tier; nil = no cap.
+	// The org cap is a ceiling: an agent override can only lower it.
 	MaxDataTier *TierLevel
 
 	// Tool governance (three inputs: baseline ∪ provider forbidden lists;
@@ -62,15 +75,25 @@ type EffectivePolicy struct {
 //
 //	max_daily_cost / max_monthly_cost  override replaces when > 0
 //	max_session_cost                   override sets when > 0 (no baseline)
-//	pii_action                         override replaces when set
+//	pii_action                         monotonic: the baseline is a floor and
+//	                                   the override can only TIGHTEN it
+//	                                   (block > redact > warn > allow); a
+//	                                   weaker override value is ignored
 //	response_pii_action                baseline level: falls back to
 //	                                   default_pii_action; override level:
-//	                                   replaces only when explicitly set —
-//	                                   the override's INPUT pii_action does
-//	                                   NOT cascade to the response action
+//	                                   same monotonic tighten-only rule —
+//	                                   and the override's INPUT pii_action
+//	                                   does NOT cascade to the response action
 //	allowed/blocked models             override replaces when non-empty;
-//	                                   provider lists are hard constraints
-//	max_data_tier                      override sets when present
+//	                                   organization and provider lists are
+//	                                   hard constraints the override never
+//	                                   escapes
+//	allowed_providers                  agent list narrows within the org
+//	                                   hard constraint (ProviderAllowed
+//	                                   checks both; empty = unrestricted
+//	                                   at that level)
+//	max_data_tier                      org cap is a ceiling; the override
+//	                                   applies only when LOWER (tighter)
 //	allowed_tools                      most-specific non-empty list wins
 //	forbidden_tools                    union of baseline ∪ provider ∪ override
 //	tool_policy_action                 most-specific wins (override > provider > baseline)
@@ -87,11 +110,18 @@ func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig
 		MaxMonthlyCost:        baseline.MaxMonthlyCost,
 		PIIAction:             baseline.DefaultPIIAction,
 		ResponsePIIAction:     baseline.ResponsePIIAction,
+		OrgAllowedModels:      append([]string(nil), baseline.AllowedModels...),
+		OrgBlockedModels:      append([]string(nil), baseline.BlockedModels...),
+		OrgAllowedProviders:   append([]string(nil), baseline.AllowedProviders...),
 		ProviderAllowedModels: append([]string(nil), provider.AllowedModels...),
 		ProviderBlockedModels: append([]string(nil), provider.BlockedModels...),
 		ToolPolicyAction:      DefaultToolPolicyAction,
 		Attachment:            resolveBaselineAttachment(baseline.AttachmentPolicy),
 		Egress:                cloneEgressPolicy(baseline.Egress),
+	}
+	if baseline.MaxDataTier != nil {
+		t := *baseline.MaxDataTier
+		eff.MaxDataTier = &t
 	}
 
 	// Response PII action inherits the baseline input action at the BASELINE
@@ -130,19 +160,20 @@ func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig
 		if override.MaxSessionCost > 0 {
 			eff.MaxSessionCost = override.MaxSessionCost
 		}
-		if override.PIIAction != "" {
-			eff.PIIAction = override.PIIAction
-		}
-		if override.ResponsePIIAction != "" {
-			eff.ResponsePIIAction = override.ResponsePIIAction
-		}
+		eff.PIIAction = mergePIIAction(eff.PIIAction, override.PIIAction)
+		eff.ResponsePIIAction = mergePIIAction(eff.ResponsePIIAction, override.ResponsePIIAction)
 		if len(override.AllowedModels) > 0 {
 			eff.AllowedModels = append([]string(nil), override.AllowedModels...)
 		}
 		if len(override.BlockedModels) > 0 {
 			eff.BlockedModels = append([]string(nil), override.BlockedModels...)
 		}
-		if override.MaxDataTier != nil {
+		if len(override.AllowedProviders) > 0 {
+			eff.AllowedProviders = append([]string(nil), override.AllowedProviders...)
+		}
+		// Org tier cap is a ceiling: apply the override only when it TIGHTENS
+		// (lower tier = stricter cap).
+		if override.MaxDataTier != nil && (eff.MaxDataTier == nil || *override.MaxDataTier < *eff.MaxDataTier) {
 			t := *override.MaxDataTier
 			eff.MaxDataTier = &t
 		}
@@ -170,6 +201,58 @@ func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig
 		eff.Egress.DefaultAction = EgressActionAllow
 	}
 	return eff
+}
+
+// ProviderAllowed reports whether the destination provider passes BOTH the
+// organization hard constraint and the agent's own allowlist. Keeping the two
+// lists separate (instead of intersecting at resolve time) means an empty
+// intersection denies everything rather than reading as "unrestricted".
+func (e *EffectivePolicy) ProviderAllowed(provider string) bool {
+	return providerInList(provider, e.OrgAllowedProviders) && providerInList(provider, e.AllowedProviders)
+}
+
+// providerInList: empty list = unrestricted at that level.
+func providerInList(provider string, list []string) bool {
+	if len(list) == 0 {
+		return true
+	}
+	for _, p := range list {
+		if p == provider {
+			return true
+		}
+	}
+	return false
+}
+
+// piiSeverity ranks PII actions for the monotonic merge. Empty string ranks
+// with "allow": an unset baseline provides no floor, and an unset override
+// tightens nothing.
+func piiSeverity(action string) int {
+	switch action {
+	case "block":
+		return 3
+	case "redact":
+		return 2
+	case "warn":
+		return 1
+	default: // "allow", ""
+		return 0
+	}
+}
+
+// mergePIIAction applies the monotonic PII rule (#266 review): the
+// organization baseline is a minimum guardrail, so the agent override wins
+// only when it is STRICTER (block > redact > warn > allow). An agent setting
+// input_scan: true under an org-wide block baseline keeps block — it can
+// never silently downgrade the org floor.
+func mergePIIAction(baseline, override string) string {
+	if override == "" {
+		return baseline
+	}
+	if piiSeverity(override) > piiSeverity(baseline) {
+		return override
+	}
+	return baseline
 }
 
 // resolveBaselineAttachment deep-copies the baseline attachment policy,

@@ -20,7 +20,6 @@ import os
 # Configure these for your environment:
 TALON_URL = os.environ.get("TALON_URL", "http://localhost:8080")
 TALON_AGENT_KEY = os.environ.get("TALON_AGENT_KEY", "")
-TALON_CALLER_KEY = os.environ.get("TALON_CALLER_KEY", "")
 
 
 # ============================================================
@@ -35,7 +34,7 @@ def cell_langchain_stateless():
         model="gpt-4o-mini",
         temperature=0,
         base_url=f"{TALON_URL}/v1/proxy/openai",
-        api_key=TALON_CALLER_KEY,
+        api_key=TALON_AGENT_KEY,
         default_headers={"X-Talon-Session-ID": "notebook-demo"},
     )
     response = llm.invoke("What is GDPR Article 30?")

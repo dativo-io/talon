@@ -32,7 +32,6 @@ func LoadedAgentFromPolicy(pol *policy.Policy, path string) gateway.LoadedAgent 
 		la.Team = pol.Metadata.Team
 		la.Tags = append([]string(nil), pol.Metadata.Tags...)
 	}
-	la.AllowedProviders = append([]string(nil), pol.Policies.AllowedProviders...)
 	return la
 }
 
@@ -45,6 +44,10 @@ func overrideFromPolicy(pol *policy.Policy) *gateway.PolicyOverride {
 	set = applyPIIOverrides(pol, o) || set
 	set = applyModelAndToolOverrides(pol, o) || set
 
+	if len(pol.Policies.AllowedProviders) > 0 {
+		o.AllowedProviders = append([]string(nil), pol.Policies.AllowedProviders...)
+		set = true
+	}
 	if e := egressFromPolicy(pol.Policies.Egress); e != nil {
 		o.Egress = e
 		set = true
@@ -111,18 +114,21 @@ func applyModelAndToolOverrides(pol *policy.Policy, o *gateway.PolicyOverride) b
 }
 
 // piiActionsFromClassification derives the gateway (input, response) PII
-// actions from the data_classification booleans, mirroring the native
-// runner's semantics exactly (#266):
+// actions from the data_classification booleans (#266):
 //
 //	block_on_pii                          → input block
 //	input_scan && ShouldRedactInput()     → input redact
-//	input_scan alone                      → input warn (scan/evidence only)
 //	output_scan && block_on_pii           → response block
 //	output_scan && ShouldRedactOutput()   → response redact
-//	output_scan alone                     → response warn
+//	scan flags alone                      → NO action (inherit the baseline)
 //	nothing set                           → inherit the organization baseline
 //
-// The warn→allow downgrade is deliberately not expressible per agent.
+// Scan flags alone deliberately produce no override: they say "scan and
+// record", not "act", so an agent turning on input_scan under an org-wide
+// block baseline must keep block, not synthesize warn. The merge in
+// ResolveEffectivePolicy is additionally monotonic (tighten-only), so the
+// baseline can never be weakened per agent regardless of what this adapter
+// emits.
 func piiActionsFromClassification(dc *policy.DataClassificationConfig) (input, response string) {
 	if dc == nil {
 		return "", ""
@@ -132,8 +138,6 @@ func piiActionsFromClassification(dc *policy.DataClassificationConfig) (input, r
 		input = "block"
 	case dc.InputScan && dc.ShouldRedactInput():
 		input = "redact"
-	case dc.InputScan:
-		input = "warn"
 	}
 	if dc.OutputScan {
 		switch {
@@ -141,8 +145,6 @@ func piiActionsFromClassification(dc *policy.DataClassificationConfig) (input, r
 			response = "block"
 		case dc.ShouldRedactOutput():
 			response = "redact"
-		default:
-			response = "warn"
 		}
 	}
 	return input, response

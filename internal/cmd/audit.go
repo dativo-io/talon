@@ -26,7 +26,6 @@ var (
 	auditExportFmt      string
 	auditFrom           string
 	auditTo             string
-	auditCaller         string
 	auditViolationsOnly bool
 	auditOutputFile     string
 	auditVerifyFile     string
@@ -79,7 +78,6 @@ func init() {
 	auditExportCmd.Flags().StringVar(&auditTo, "to", "", "End date (YYYY-MM-DD)")
 	auditExportCmd.Flags().StringVar(&auditTenant, "tenant", "", "Filter by tenant ID")
 	auditExportCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
-	auditExportCmd.Flags().StringVar(&auditCaller, "caller", "", "Filter by caller name (alias for --agent in gateway context)")
 	auditExportCmd.Flags().BoolVar(&auditViolationsOnly, "violations-only", false, "Only export records with policy violations or shadow violations")
 	auditExportCmd.Flags().StringVar(&auditOutputFile, "output", "", "Write to file instead of stdout")
 	auditExportCmd.Flags().IntVar(&auditExportLimit, "limit", 10000, "Maximum records to export")
@@ -312,7 +310,7 @@ func auditExport(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	agentFilter := resolveAgentFilter(auditAgent, auditCaller)
+	agentFilter := auditAgent
 
 	var list []evidence.Evidence
 	if auditSession != "" {
@@ -373,13 +371,6 @@ func parseAuditDateRange(fromStr, toStr string) (from, to time.Time, err error) 
 		}
 	}
 	return from, to, nil
-}
-
-func resolveAgentFilter(agent, caller string) string {
-	if agent != "" {
-		return agent
-	}
-	return caller
 }
 
 func filterEvidenceForExport(list []evidence.Evidence, violationsOnly bool) []evidence.Evidence {
@@ -642,7 +633,6 @@ func renderAuditExportJSONWrapped(w io.Writer, records []evidence.ExportRecord) 
 				To:     auditTo,
 				Tenant: auditTenant,
 				Agent:  auditAgent,
-				Caller: auditCaller,
 			},
 			TotalRecords: len(records),
 		},
@@ -663,7 +653,6 @@ func renderAuditExportSignedJSON(w io.Writer, records []evidence.Evidence) error
 				To:     auditTo,
 				Tenant: auditTenant,
 				Agent:  auditAgent,
-				Caller: auditCaller,
 			},
 			TotalRecords: len(records),
 			Algorithm:    evidence.SignedExportAlgorithm,

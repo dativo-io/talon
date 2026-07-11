@@ -64,7 +64,7 @@ func proxyTestServer(t *testing.T, upstreamBody string) (baseURL string, talonAP
 		[]byte("gateway-secret-key"), secrets.ACL{}))
 	registry, err := gateway.BuildIdentityRegistry(context.Background(), []gateway.LoadedAgent{
 		{Path: "agent.talon.yaml", Name: "proxy-agent", TenantID: "default", KeySecretName: "proxy-agent-talon-key"},
-	}, secStore)
+	}, secStore, "")
 	require.NoError(t, err)
 
 	cls := classifier.MustNewScanner()

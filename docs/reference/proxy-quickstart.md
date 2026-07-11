@@ -30,7 +30,7 @@ Unsupported paths return `404` with a partial-compatibility message.
 
 | Variable | Meaning |
 |---|---|
-| `OPENAI_API_KEY` | Upstream fallback when caller bearer is absent. |
+| `OPENAI_API_KEY` | Upstream fallback when the client bearer is absent. |
 | `TALON_QUICKSTART_OPENAI_BASE_URL` | Upstream OpenAI-compatible base URL. |
 | `TALON_QUICKSTART_MODE` | Set to `shadow` to opt into shadow mode; any other value uses default `enforce`. |
 | `TALON_QUICKSTART_ALLOW_ALL_MODELS` | `1/true` clears quickstart model allowlist. |
@@ -39,7 +39,7 @@ Unsupported paths return `404` with a partial-compatibility message.
 
 Quickstart uses upstream BYOK as a scoped exception:
 
-- Caller `Authorization: Bearer <key>` is forwarded to upstream.
+- The client `Authorization: Bearer <key>` is forwarded to upstream.
 - If missing, Talon tries `OPENAI_API_KEY`.
 - If neither exists, request fails with `401`.
 
@@ -83,4 +83,4 @@ The relocated tenant agent chat route `POST /v1/agents/chat/completions` is only
 - `--gateway`
 - `--gateway-config`
 
-Use `--gateway` for production-style caller mapping and vaulted provider auth.
+Use `--gateway` for production-style agent identity and vaulted provider auth.

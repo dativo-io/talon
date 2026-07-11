@@ -288,7 +288,7 @@
     </div>
     <h3>Spend by agent</h3>
     <table>
-      <thead><tr><th>Caller</th><th>Requests</th><th>Cost (€)</th><th>Blocked</th><th>Avg latency</th><th>Success rate</th></tr></thead>
+      <thead><tr><th>Agent</th><th>Requests</th><th>Cost (€)</th><th>Blocked</th><th>Avg latency</th><th>Success rate</th></tr></thead>
       <tbody id="finops-agents-tbody"></tbody>
     </table>
     <h3>Spend by model / provider</h3>
@@ -452,7 +452,7 @@
           { label: 'Model', value: ev.execution && ev.execution.model_used ? ev.execution.model_used : '—' },
           { label: 'Provider', value: provider },
           { label: 'Tenant', value: ev.tenant_id || '—' },
-          { label: 'Caller source', value: ev.request_source_id || ev.agent_id || '—' }
+          { label: 'Agent source', value: ev.request_source_id || ev.agent_id || '—' }
         ];
         writeDetailGrid('evidence-signature-grid', signatureRows);
         writeDetailGrid('evidence-spend-grid', spendRows);
@@ -1039,7 +1039,7 @@
           set('finops-cache-hits', c && c.hits != null ? c.hits : '—');
           set('finops-cache-hitrate', c && c.hit_rate != null ? (c.hit_rate * 100).toFixed(1) + '%' : '—');
           set('finops-cache-saved', c && c.cost_saved != null ? c.cost_saved.toFixed(4) : '—');
-          // Caller / model / provider breakdowns — pure data mapping from the snapshot.
+          // Agent / model / provider breakdowns — pure data mapping from the snapshot.
           var agentsBody = document.getElementById('finops-agents-tbody');
           if (agentsBody) {
             agentsBody.innerHTML = '';

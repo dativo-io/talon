@@ -54,7 +54,20 @@ type GatewayConfig struct {
 	UpstreamTransport http.RoundTripper `yaml:"-" json:"-"`
 	// EffectiveSovereigntyMode is set at runtime by serve from operator config (not YAML).
 	EffectiveSovereigntyMode string `yaml:"-" json:"-"`
+
+	// quickstartProfile marks a config built in-process for --proxy-quickstart
+	// (see QuickstartConfig / EnableQuickstartProfile). Only that profile may
+	// use upstream_auth_mode client_bearer: in a normal gateway the presented
+	// bearer is a TALON AGENT KEY, and client_bearer would forward it verbatim
+	// to the upstream provider (#266 review). Unexported and untagged —
+	// structurally impossible to set from YAML.
+	quickstartProfile bool
 }
+
+// EnableQuickstartProfile marks this config as the in-process quickstart
+// profile, unlocking upstream_auth_mode client_bearer in Validate. Callers:
+// QuickstartConfig and the quickstart facade tests — never YAML-loaded configs.
+func (c *GatewayConfig) EnableQuickstartProfile() { c.quickstartProfile = true }
 
 // ProviderConfig holds per-provider gateway settings.
 type ProviderConfig struct {
@@ -167,6 +180,21 @@ type OrganizationPolicy struct {
 	// Egress restricts which destinations (providers/regions) each data tier
 	// may egress to. When nil, egress is not evaluated.
 	Egress *EgressPolicyConfig `yaml:"egress,omitempty" json:"egress,omitempty"`
+
+	// Organization-wide HARD CONSTRAINTS (#266): unlike the baselines above,
+	// these are not replaced by an agent's override — an agent may only
+	// narrow further within them.
+	//
+	// AllowedProviders limits which gateway providers ANY agent may reach
+	// (empty = all enabled providers).
+	AllowedProviders []string `yaml:"allowed_providers,omitempty" json:"allowed_providers,omitempty"`
+	// AllowedModels / BlockedModels bound the model space for every agent
+	// (empty allowed list = no allowlist constraint).
+	AllowedModels []string `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
+	BlockedModels []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
+	// MaxDataTier caps the request data tier organization-wide; an agent's
+	// max_data_tier can only lower it further. nil = no org cap.
+	MaxDataTier *TierLevel `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"`
 }
 
 // ScanToolContent modes.
@@ -421,6 +449,9 @@ func (c *GatewayConfig) Validate() error {
 	default:
 		return fmt.Errorf("gateway organization_policy scan_tool_content must be evidence_only or off")
 	}
+	if t := c.OrganizationPolicy.MaxDataTier; t != nil && (*t < 0 || *t > 2) {
+		return fmt.Errorf("gateway organization_policy.max_data_tier must be 0, 1, or 2, got %d", int(*t))
+	}
 	for name := range c.Providers {
 		p := c.Providers[name]
 		if !p.Enabled {
@@ -442,6 +473,9 @@ func (c *GatewayConfig) Validate() error {
 		}
 		if p.UpstreamAuthMode == "client_bearer" && (p.APIFamily == "anthropic" || name == "anthropic") {
 			return fmt.Errorf("gateway provider %q: upstream_auth_mode client_bearer is not supported for the anthropic API family (Anthropic uses x-api-key, not bearer tokens)", name)
+		}
+		if p.UpstreamAuthMode == "client_bearer" && !c.quickstartProfile {
+			return fmt.Errorf("gateway provider %q: upstream_auth_mode client_bearer is only available in --proxy-quickstart mode — in a normal gateway the presented bearer is a Talon agent key and client_bearer would forward it to the upstream provider; use secret with secret_name instead (#266)", name)
 		}
 		if p.BaseURL == "" && (name == "openai" || name == "anthropic" || name == "ollama") {
 			return fmt.Errorf("gateway provider %q: base_url is required", name)

@@ -31,7 +31,7 @@ smoke_body_normal() { echo "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\
 # Tool block: request with forbidden tool delete_all (default_policy block)
 SMOKE_BODY_TOOL_BLOCK='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"delete_all","description":"x","parameters":{"type":"object"}}}]}'
 
-# Tool filter: request with read_file + exec_cmd (exec_cmd forbidden for tool-filter-caller)
+# Tool filter: request with read_file + exec_cmd (exec_cmd forbidden for the tool-filter agent)
 SMOKE_BODY_TOOL_FILTER='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"read_file","description":"x","parameters":{"type":"object"}}},{"type":"function","function":{"name":"exec_cmd","description":"x","parameters":{"type":"object"}}}]}'
 
 # Minimal (empty messages) for 401/probe

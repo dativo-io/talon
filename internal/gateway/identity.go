@@ -3,12 +3,19 @@ package gateway
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/dativo-io/talon/internal/secrets"
 )
+
+// ErrAdminKeyCollision marks an agent key resolving to the same value as the
+// admin key — a config error that must fail startup in EVERY serve mode (it
+// would grant a workload operator authority), unlike an unminted secret which
+// is tolerable for native-only runs.
+var ErrAdminKeyCollision = errors.New("agent key collides with admin key")
 
 // Agent identity model (#266): one agent.talon.yaml = one AI use case = one
 // Talon traffic identity = one active vault-bound key.
@@ -40,8 +47,6 @@ type LoadedAgent struct {
 	Team string
 	// Tags classify telemetry (e.g. "copaw" drives OTel/dashboard views).
 	Tags []string
-	// AllowedProviders restricts reachable gateway providers. Empty = all.
-	AllowedProviders []string
 	// AcceptClientMetadata gates recording of client-asserted orchestration
 	// identity (#194). nil = true.
 	AcceptClientMetadata *bool
@@ -66,9 +71,14 @@ type PolicyOverride struct {
 	PIIAction         string // block | redact | warn | allow; empty inherits
 	ResponsePIIAction string // block | redact | warn | allow; empty inherits
 
-	AllowedModels []string // replace baseline when non-empty
-	BlockedModels []string // replace baseline when non-empty
+	AllowedModels []string // replace baseline when non-empty (org lists stay hard constraints)
+	BlockedModels []string // replace baseline when non-empty (org lists stay hard constraints)
 	MaxDataTier   *TierLevel
+
+	// AllowedProviders restricts which gateway providers this agent may
+	// reach. Empty = all; the organization's allowed_providers list remains
+	// a hard constraint either way (see EffectivePolicy.ProviderAllowed).
+	AllowedProviders []string
 
 	AllowedTools     []string // most-specific non-empty list wins
 	ForbiddenTools   []string // union with baseline + provider
@@ -88,7 +98,6 @@ type ResolvedIdentity struct {
 	ConfigPath string
 	Tags       []string
 
-	AllowedProviders     []string
 	AcceptClientMetadata *bool
 	Override             *PolicyOverride
 
@@ -122,13 +131,14 @@ func (id *ResolvedIdentity) HasTag(tag string) bool {
 // request context by the quickstart facade and cannot be reached through
 // normal key resolution, so it is impossible to confuse with production
 // authentication. Its budget caps come from the quickstart organization
-// baseline (QuickstartConfig), not from an override.
+// baseline (QuickstartConfig); the openai-only restriction rides the same
+// override channel every real agent uses.
 func NewQuickstartIdentity() *ResolvedIdentity {
 	return &ResolvedIdentity{
-		Name:             quickstartAgentName,
-		TenantID:         quickstartTenantID,
-		Tags:             []string{"quickstart"},
-		AllowedProviders: []string{"openai"},
+		Name:     quickstartAgentName,
+		TenantID: quickstartTenantID,
+		Tags:     []string{"quickstart"},
+		Override: &PolicyOverride{AllowedProviders: []string{"openai"}},
 	}
 }
 
@@ -148,7 +158,11 @@ type IdentityRegistry struct {
 //   - missing / ACL-denied secret (vault access is audit-logged either way)
 //   - empty resolved key material
 //   - two agents resolving to the same key
-func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *secrets.SecretStore) (*IdentityRegistry, error) {
+//   - an agent key colliding with the admin key (adminKey; "" = none
+//     configured). The server's tenant-or-admin middleware checks the admin
+//     bearer first, so a collision would silently elevate that agent's
+//     traffic to operator authority — fail startup instead.
+func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *secrets.SecretStore, adminKey string) (*IdentityRegistry, error) {
 	reg := &IdentityRegistry{identities: make([]*ResolvedIdentity, 0, len(agents))}
 	byName := make(map[string]string, len(agents))   // name → path
 	byKey := make(map[string]string, len(agents))    // raw key → agent name (build-time dup check only)
@@ -194,19 +208,32 @@ func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *sec
 		}
 		byKey[keyMaterial] = a.Name
 
+		if adminKey != "" && subtle.ConstantTimeCompare([]byte(keyMaterial), []byte(adminKey)) == 1 {
+			return nil, fmt.Errorf("agent %q (%s): key secret %q resolves to the same value as TALON_ADMIN_KEY — an agent key must never carry admin authority; rotate one of them (`talon secrets set %s <new key>`): %w", a.Name, a.Path, a.KeySecretName, a.KeySecretName, ErrAdminKeyCollision)
+		}
+
 		reg.identities = append(reg.identities, &ResolvedIdentity{
 			Name:                 a.Name,
 			TenantID:             tenantID,
 			Team:                 a.Team,
 			ConfigPath:           a.Path,
 			Tags:                 append([]string(nil), a.Tags...),
-			AllowedProviders:     append([]string(nil), a.AllowedProviders...),
-			AcceptClientMetadata: a.AcceptClientMetadata,
+			AcceptClientMetadata: cloneBoolPtr(a.AcceptClientMetadata),
 			Override:             a.Override.clone(),
 			key:                  []byte(keyMaterial),
 		})
 	}
 	return reg, nil
+}
+
+// cloneBoolPtr deep-copies a *bool so registry identities never alias the
+// loader's structs (reload snapshot safety, #269).
+func cloneBoolPtr(b *bool) *bool {
+	if b == nil {
+		return nil
+	}
+	v := *b
+	return &v
 }
 
 // ResolveKey matches a presented key against the registry in constant time
@@ -332,6 +359,7 @@ func (o *PolicyOverride) clone() *PolicyOverride {
 	c := *o
 	c.AllowedModels = append([]string(nil), o.AllowedModels...)
 	c.BlockedModels = append([]string(nil), o.BlockedModels...)
+	c.AllowedProviders = append([]string(nil), o.AllowedProviders...)
 	c.AllowedTools = append([]string(nil), o.AllowedTools...)
 	c.ForbiddenTools = append([]string(nil), o.ForbiddenTools...)
 	if o.MaxDataTier != nil {

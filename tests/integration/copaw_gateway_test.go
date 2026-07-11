@@ -78,7 +78,7 @@ func setupCoPawGateway(t *testing.T, upstreamHandler http.HandlerFunc) (*gateway
 				AllowedModels:  []string{"gpt-4o-mini", "gpt-4o"},
 			},
 		},
-	}, secStore)
+	}, secStore, "")
 	require.NoError(t, err)
 
 	cls := classifier.MustNewScanner()

@@ -71,7 +71,7 @@ Create one session identifier for every request in this tutorial:
 export SESSION_ID="manual-proof-$(date +%s)"
 ```
 
-You will also use the two configured Talon caller keys:
+You will also use the two configured Talon agent keys:
 
 ```bash
 export TALON_KEY="talon-session-demo"
@@ -126,7 +126,7 @@ This proves that normal traffic still works through the governed path and leaves
 
 ## 3. A dangerous tool is removed before the model
 
-The `session-demo` caller forbids tool names matching `admin_*`.
+The `session-demo` agent forbids tool names matching `admin_*`.
 
 Send one allowed and one forbidden tool definition:
 
@@ -181,7 +181,7 @@ The important fact is not that Talon noticed the tool afterward. The forbidden s
 
 ## 4. PII is blocked before provider access
 
-Send an IBAN through the same gateway caller:
+Send an IBAN through the same gateway agent:
 
 ```bash
 curl -i -sS -X POST \
@@ -217,7 +217,7 @@ The record should show the PII denial with zero upstream cost and zero provider 
 
 ## 5. Model policy denies a disallowed model
 
-The `session-demo-eu` caller is allowed to use `gpt-4o-mini`, not `gpt-4o`.
+The `session-demo-eu` agent is allowed to use `gpt-4o-mini`, not `gpt-4o`.
 
 Send the disallowed model:
 
@@ -240,7 +240,7 @@ Expected result:
 ```text
 HTTP 403
 POLICY_DENIED_ROUTING
-model not in caller allowlist
+model not in agent allowlist
 ```
 
 This is a policy denial, not a silent model substitution.
@@ -437,7 +437,7 @@ The recorded GIF is only a compressed view of these same operations. This page i
 
 The longer recorded demo also shows Anthropic prompt-cache write/read economics and an OpenAI executor consuming the planner's returned output.
 
-Those details are real, but the payload is intentionally large and distracts from the core governance proof above. For the exact cache fields and pricing behavior, see [the governed-session example](../../examples/governed-session/README.md) and [cost governance by caller](../guides/cost-governance-by-agent.md).
+Those details are real, but the payload is intentionally large and distracts from the core governance proof above. For the exact cache fields and pricing behavior, see [the governed-session example](../../examples/governed-session/README.md) and [cost governance by agent](../guides/cost-governance-by-agent.md).
 
 ## Clean up
 

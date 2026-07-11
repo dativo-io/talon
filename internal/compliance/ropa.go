@@ -198,7 +198,7 @@ func activitiesSection(activities map[string]*activityAgg) DocSection {
 	}
 	return DocSection{
 		Heading: "2. Processing activities observed",
-		Body:    "Each row is one governed caller (tenant, agent) observed in the signed evidence store for the selected scope.",
+		Body:    "Each row is one governed agent identity (tenant, agent) observed in the signed evidence store for the selected scope.",
 		Table:   &DocTable{Headers: []string{"Tenant", "Agent", "Evidence records", "First seen", "Last seen"}, Rows: rows},
 	}
 }

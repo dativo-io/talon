@@ -361,7 +361,7 @@ CACHEEOF
     jq -e 'all(.agent_stats[]; has("violation_trend"))' <<< "$snap_after" &>/dev/null
   assert_pass "success_rate values are in [0,1]" \
     jq -e 'all(.agent_stats[]; (.success_rate >= 0 and .success_rate <= 1))' <<< "$snap_after" &>/dev/null
-  assert_pass "violation_trend has 7 points per caller" \
+  assert_pass "violation_trend has 7 points per agent" \
     jq -e 'all(.agent_stats[]; (.violation_trend | type=="array" and length==7))' <<< "$snap_after" &>/dev/null
   local tg_filtered; tg_filtered="$(jq '.tool_governance.total_filtered' <<< "$snap_after")"
   if [[ -n "$tg_filtered" ]] && [[ "$tg_filtered" != "null" ]] && [[ "$tg_filtered" -ge 1 ]]; then
@@ -380,24 +380,24 @@ CACHEEOF
     echo "  -  total_requests = $total_req (expected >= 15)"
   fi
   # total_requests == sum(agent_stats[].requests)
-  local caller_sum; caller_sum="$(jq '[.agent_stats[].requests] | add // 0' <<< "$snap_after")"
-  if [[ -n "$total_req" ]] && [[ -n "$caller_sum" ]] && [[ "$caller_sum" != "null" ]]; then
-    if [[ "$total_req" -eq "$caller_sum" ]]; then
-      echo "  ✓  cross-check: total_requests ($total_req) == sum(agent_stats[].requests) ($caller_sum)"
+  local agent_sum; agent_sum="$(jq '[.agent_stats[].requests] | add // 0' <<< "$snap_after")"
+  if [[ -n "$total_req" ]] && [[ -n "$agent_sum" ]] && [[ "$agent_sum" != "null" ]]; then
+    if [[ "$total_req" -eq "$agent_sum" ]]; then
+      echo "  ✓  cross-check: total_requests ($total_req) == sum(agent_stats[].requests) ($agent_sum)"
       record_pass
     else
-      log_failure "metrics cross-check: total_requests ($total_req) != sum(agent_stats[].requests) ($caller_sum)" "invariant violation"
+      log_failure "metrics cross-check: total_requests ($total_req) != sum(agent_stats[].requests) ($agent_sum)" "invariant violation"
     fi
   fi
   # blocked_requests == sum(agent_stats[].blocked)
   local blocked_req; blocked_req="$(jq '.summary.blocked_requests' <<< "$snap_after")"
-  local caller_blocked_sum; caller_blocked_sum="$(jq '[.agent_stats[].blocked] | add // 0' <<< "$snap_after")"
-  if [[ -n "$blocked_req" ]] && [[ "$blocked_req" != "null" ]] && [[ -n "$caller_blocked_sum" ]] && [[ "$caller_blocked_sum" != "null" ]]; then
-    if [[ "$blocked_req" -eq "$caller_blocked_sum" ]]; then
-      echo "  ✓  cross-check: blocked_requests ($blocked_req) == sum(agent_stats[].blocked) ($caller_blocked_sum)"
+  local agent_blocked_sum; agent_blocked_sum="$(jq '[.agent_stats[].blocked] | add // 0' <<< "$snap_after")"
+  if [[ -n "$blocked_req" ]] && [[ "$blocked_req" != "null" ]] && [[ -n "$agent_blocked_sum" ]] && [[ "$agent_blocked_sum" != "null" ]]; then
+    if [[ "$blocked_req" -eq "$agent_blocked_sum" ]]; then
+      echo "  ✓  cross-check: blocked_requests ($blocked_req) == sum(agent_stats[].blocked) ($agent_blocked_sum)"
       record_pass
     else
-      log_failure "metrics cross-check: blocked_requests ($blocked_req) != sum(agent_stats[].blocked) ($caller_blocked_sum)" "invariant violation"
+      log_failure "metrics cross-check: blocked_requests ($blocked_req) != sum(agent_stats[].blocked) ($agent_blocked_sum)" "invariant violation"
     fi
   fi
   # pii_detections == sum(pii_breakdown[].count)
@@ -549,7 +549,7 @@ CACHEEOF
     fi
   fi
 
-  # --- 23.6: Caller stats include our gateway caller ---
+  # --- 23.6: Agent stats include our gateway agent ---
   local agents_seen; agents_seen="$(jq -r '.agent_stats[].agent' <<< "$snap_after" 2>/dev/null)"
   if echo "$agents_seen" | grep -q "metrics-agent"; then
     echo "  ✓  agent_stats includes metrics-agent"
@@ -816,7 +816,7 @@ CACHEEOF
   echo "  -- 23.11: Enhanced metrics consistency checks (Prompt 16) --"
 
   # 23.11a: Per-agent outcome accounting: successful + failed + denied == requests
-  local caller_outcome_ok=true
+  local agent_outcome_ok=true
   for cname in $(jq -r '.agent_stats[].agent' <<< "$snap_after" 2>/dev/null); do
     local cs; cs="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c)' <<< "$snap_after")"
     local c_req c_succ c_fail c_deny c_tout
@@ -832,7 +832,7 @@ CACHEEOF
     else
       log_failure "outcome accounting: $cname successful+failed+denied=$c_sum != requests=$c_req" \
         "succ=$c_succ fail=$c_fail deny=$c_deny tout=$c_tout req=$c_req"
-      caller_outcome_ok=false
+      agent_outcome_ok=false
     fi
     # timed_out must be <= failed (timeouts are a subset of failures)
     if [[ "$c_tout" -le "$c_fail" ]]; then
@@ -840,10 +840,10 @@ CACHEEOF
       record_pass
     else
       log_failure "timeout subset: $cname timed_out($c_tout) > failed($c_fail)" "invariant violation"
-      caller_outcome_ok=false
+      agent_outcome_ok=false
     fi
   done
-  echo "[SMOKE] CONSISTENCY|caller_outcome_accounting|${caller_outcome_ok}"
+  echo "[SMOKE] CONSISTENCY|agent_outcome_accounting|${agent_outcome_ok}"
 
   # 23.11b: Summary outcome accounting: total_successful + total_failed + total_denied == total_requests
   local s_succ s_fail s_deny s_tout s_total
@@ -897,7 +897,7 @@ CACHEEOF
   fi
   echo "[SMOKE] CONSISTENCY|summary_outcome_accounting|succ=$s_succ fail=$s_fail deny=$s_deny tout=$s_tout total=$s_total"
 
-  # 23.11c: Cost-per-success consistency per caller: cost_per_success * successful ≈ cost attributed to successes
+  # 23.11c: Cost-per-success consistency per agent: cost_per_success * successful ≈ cost attributed to successes
   for cname in $(jq -r '.agent_stats[] | select(.successful > 0) | .agent' <<< "$snap_after" 2>/dev/null); do
     local cs; cs="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c)' <<< "$snap_after")"
     local cps c_succ c_cost
@@ -912,7 +912,7 @@ CACHEEOF
       else
         echo "  -  $cname cost_per_success ($cps) is 0 despite $c_succ successes and cost $c_cost"
       fi
-      # cost_per_success * successful <= total caller cost (successes can't cost more than total)
+      # cost_per_success * successful <= total agent cost (successes can't cost more than total)
       local success_cost; success_cost="$(echo "scale=8; $cps * $c_succ" | bc -l 2>/dev/null || echo 0)"
       if [[ "$(echo "$success_cost <= $c_cost + 0.0001" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
         echo "  ✓  $cname cost_per_success*successful ($success_cost) <= total cost ($c_cost)"
@@ -923,7 +923,7 @@ CACHEEOF
     fi
   done
 
-  # 23.11d: Violation trend: today's date must appear in at least one caller's trend
+  # 23.11d: Violation trend: today's date must appear in at least one agent's trend
   local today_key; today_key="$(date -u +%Y-%m-%d)"
   local trend_has_today; trend_has_today="$(jq --arg d "$today_key" '[.agent_stats[].violation_trend[] | select(.date == $d)] | length' <<< "$snap_after")"
   if [[ -n "$trend_has_today" ]] && [[ "$trend_has_today" -gt 0 ]]; then
@@ -950,8 +950,8 @@ CACHEEOF
   local cli_snap; cli_snap="$(run_talon metrics --json --url "$dashboard_base_url" 2>/dev/null)"; true
   local dash_snap; dash_snap="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
   if jq -e 'type=="array"' <<< "$cli_snap" &>/dev/null && jq -e '.' <<< "$dash_snap" &>/dev/null; then
-    # CLI metrics --json returns agent_stats; compare counts for each caller
-    for cname in $(jq -r '.[].caller' <<< "$cli_snap" 2>/dev/null); do
+    # CLI metrics --json returns agent_stats; compare counts for each agent
+    for cname in $(jq -r '.[].agent' <<< "$cli_snap" 2>/dev/null); do
       local cli_req dash_req cli_sr dash_sr cli_cps dash_cps cli_tout dash_tout
       cli_req="$(jq --arg c "$cname" '.[] | select(.agent == $c) | .requests' <<< "$cli_snap")"
       dash_req="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .requests' <<< "$dash_snap")"
@@ -1052,7 +1052,7 @@ CACHEEOF
       log_failure "live-traffic success_rate out of range: $live_sr" "invariant"
     fi
   fi
-  # violation_trend still 7 entries per caller after live traffic
+  # violation_trend still 7 entries per agent after live traffic
   assert_pass "violation_trend still 7 entries after live traffic" \
     jq -e 'all(.agent_stats[]; (.violation_trend | length == 7))' <<< "$snap_after_live" &>/dev/null
   # outcome accounting still holds after live traffic

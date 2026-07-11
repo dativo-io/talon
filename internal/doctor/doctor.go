@@ -377,12 +377,14 @@ func checkGatewayAgentIdentity(ctx context.Context) CheckResult {
 		}
 	}
 	defer secStore.Close()
+	// Same collision rule as serve startup: an agent key equal to
+	// TALON_ADMIN_KEY fails the dry-run (silent operator-authority elevation).
 	if _, err := gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{{
 		Path:          cfg.DefaultPolicy,
 		Name:          pol.Agent.Name,
 		TenantID:      pol.Agent.TenantID,
 		KeySecretName: pol.Agent.Key.SecretName,
-	}}, secStore); err != nil {
+	}}, secStore, os.Getenv("TALON_ADMIN_KEY")); err != nil {
 		return CheckResult{
 			Name: "gateway_agent_identity", Category: "gateway", Status: "fail",
 			Message: fmt.Sprintf("Identity registry dry-run failed: %v", err),

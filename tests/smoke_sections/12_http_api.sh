@@ -14,7 +14,7 @@ test_section_12_http_api() {
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   smoke_tighten_limits "$dir"
   # Add minimal gateway block so serve loads the agent key and "agent key can read /v1/evidence" can pass.
-  # Use unquoted heredoc so $TALON_AGENT_KEY is expanded into the caller list.
+  # The agent traffic key is vault-bound via smoke_bind_agent_key (#266).
   if [[ -f "$dir/talon.config.yaml" ]] && ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
     cat >> "$dir/talon.config.yaml" <<GWEOF
 
@@ -141,7 +141,7 @@ GWEOF
       "endpoint=${base_url}/v1/agents/run"
     dump_diag_json "run1 response body" "$(cat "$run1_body" 2>/dev/null || echo '(file missing)')"
     dump_diag_file "run1 response headers" "$run1_headers"
-    dump_diag_file "talon.config.yaml (gateway callers)" "$dir/talon.config.yaml"
+    dump_diag_file "talon.config.yaml (gateway block)" "$dir/talon.config.yaml"
     dump_diag_file "serve startup log (last 30 lines)" "$serve_log_12" 30
     dump_diag_env
   fi

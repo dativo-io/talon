@@ -667,7 +667,7 @@ Talon's MCP proxy pattern enables:
 
 ### Response-path PII scanning
 
-Both the MCP proxy and the LLM API gateway now scan **responses** from upstream for PII before returning them to the caller. This is bidirectional: request arguments are scanned on the way in, and upstream responses are scanned on the way out. The gateway applies `redact`, `block`, or `warn` modes per the caller's `pii_action` config. Evidence is recorded for every redaction.
+Both the MCP proxy and the LLM API gateway now scan **responses** from upstream for PII before returning them to the caller. This is bidirectional: request arguments are scanned on the way in, and upstream responses are scanned on the way out. The gateway applies `redact`, `block`, or `warn` modes per the effective `pii_action` of the requesting agent. Evidence is recorded for every redaction.
 
 ### `tools/list` filtering
 

@@ -1,4 +1,4 @@
-# CoPaw + Talon primer — one provider (OpenAI), one caller (copaw-main).
+# CoPaw + Talon primer — one provider (OpenAI), one agent (copaw-main).
 
 gateway:
   enabled: true

@@ -479,26 +479,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Caller allowed for this provider?
-	if len(agent.AllowedProviders) > 0 {
-		allowed := false
-		for _, p := range agent.AllowedProviders {
-			if p == route.Provider {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			durationMS := time.Since(start).Milliseconds()
-			WriteProviderError(w, wire, http.StatusForbidden, "Caller not allowed for this provider")
-			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"provider not allowed"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
-			if err != nil {
-				g.handleEvidenceWriteFailure(ctx, err)
-				return
-			}
-			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
+	// Agent allowed for this provider? One resolver-backed check covers the
+	// agent's own allowlist AND the organization hard constraint (#266).
+	if !eff.ProviderAllowed(route.Provider) {
+		durationMS := time.Since(start).Milliseconds()
+		WriteProviderError(w, wire, http.StatusForbidden, "Agent not allowed for this provider")
+		persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"provider not allowed"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
+		if err != nil {
+			g.handleEvidenceWriteFailure(ctx, err)
 			return
 		}
+		g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
+		return
 	}
 
 	if g.denySovereigntyExcluded(w, ctx, agent, route, start, correlationID, extracted, classification, attSummary, isShadow, &shadowViolations) {
@@ -969,24 +961,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// pipeline (an explicit hard invariant — under eu_strict Talon never
 	// dispatches outside EU/LOCAL, shadow or not).
 	checkCandidate := func(cCtx context.Context, candProvider, candModel string) failover.FilterResult {
-		if len(agent.AllowedProviders) > 0 {
-			allowed := false
-			for _, p := range agent.AllowedProviders {
-				if p == candProvider {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				return failover.FilterResult{Filter: "caller_allowlist", Reason: fmt.Sprintf("agent %s not allowed for provider %s", agent.Name, candProvider)}
-			}
+		candProv, _ := g.config.Provider(candProvider)
+		candEff := ResolveEffectivePolicy(g.config.OrganizationPolicy, candProv, agent.Override)
+		if !candEff.ProviderAllowed(candProvider) {
+			return failover.FilterResult{Filter: "agent_allowlist", Reason: fmt.Sprintf("agent %s not allowed for provider %s", agent.Name, candProvider)}
 		}
 		// Provider-level tool governance of the TARGET provider: a fallback
 		// must not deliver tools the target's policy forbids. The body was
 		// filtered against the primary's tool policy only.
 		if len(extracted.ToolNames) > 0 {
-			candProv, _ := g.config.Provider(candProvider)
-			candEff := ResolveEffectivePolicy(g.config.OrganizationPolicy, candProv, agent.Override)
 			if len(candEff.AllowedTools) > 0 || len(candEff.ForbiddenTools) > 0 {
 				forwarded := extracted.ToolNames
 				if toolResult != nil {
@@ -1687,6 +1670,14 @@ func buildGatewayPolicyInput(agent *ResolvedIdentity, eff EffectivePolicy, provi
 	}
 	if len(eff.BlockedModels) > 0 {
 		input["agent_blocked_models"] = eff.BlockedModels
+	}
+	// Organization model lists are HARD constraints — separate input keys so
+	// an agent override can never satisfy them away (#266).
+	if len(eff.OrgAllowedModels) > 0 {
+		input["org_allowed_models"] = eff.OrgAllowedModels
+	}
+	if len(eff.OrgBlockedModels) > 0 {
+		input["org_blocked_models"] = eff.OrgBlockedModels
 	}
 	if eff.MaxSessionCost > 0 {
 		// One insertion in the shared builder covers the primary request

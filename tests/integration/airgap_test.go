@@ -114,7 +114,7 @@ gateway:
 			Path: "agent.talon.yaml", Name: "airgap-e2e", TenantID: "airgap-tenant", KeySecretName: "airgap-e2e-talon-key",
 			Override: &gateway.PolicyOverride{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000},
 		},
-	}, secStore)
+	}, secStore, "")
 	require.NoError(t, err)
 
 	policyEngine, err := policy.NewGatewayEngine(context.Background())

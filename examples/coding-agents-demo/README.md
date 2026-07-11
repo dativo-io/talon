@@ -109,7 +109,7 @@ and evidenced (`pii_action: warn`) — the request still flows, because
 blocking a coding agent on every address in a test fixture is how governance
 tools get uninstalled.
 
-**3. The session budget trips.** The caller has `max_session_cost: 0.02`.
+**3. The session budget trips.** The agent has `max_session_cost: 0.02`.
 After a few requests the gateway denies with a **provider-native** error:
 
 ```
@@ -126,7 +126,7 @@ tracked in #144).
 
 ```
 Session sess-coding-demo
-  Caller:    claude-code
+  Agent:     claude-code
   Source:    claude-code (client_asserted)
   Requests:  N (M allowed, 1 denied, 0 error)
   Providers: anthropic, openai
@@ -161,7 +161,7 @@ pricing is visible in evidence.
 
 - `docker-compose.yml` — Talon (enforce mode) + dual-wire mock; vault seeded
   with fake keys inside the container.
-- `talon.config.yaml` — one `claude-code` caller, `max_session_cost: 0.02`,
+- `talon.config.yaml` — one `claude-code` agent, `max_session_cost: 0.02`,
   `response_pii_action: allow` (the honest streaming default — see
   `LIMITATIONS.md`).
 - `demo.sh` — the walk-through above; each step also runs standalone

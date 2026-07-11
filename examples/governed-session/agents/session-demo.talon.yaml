@@ -17,6 +17,11 @@ policies:
   cost_limits:
     # Mirrors the organization safety net; the act's real gate is the session cap.
     daily: 1.00
+  data_classification:
+    # PII act: this use case handles payment data, so it TIGHTENS the org
+    # warn floor to block (overrides are monotonic — tighten-only, #266).
+    input_scan: true
+    block_on_pii: true
   session_limits:
     # Session budget gate: the next request is denied pre-forward once session
     # spend + the fixed pre-request estimate exceeds this (#198). The long demo

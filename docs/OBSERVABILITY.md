@@ -57,9 +57,9 @@ Registered by `internal/gateway`. Emitted for every request through the LLM API 
 
 | Metric | Type | Unit | Attributes | Description |
 |--------|------|------|------------|-------------|
-| `talon.gateway.requests.total` | Int64Counter | `{request}` | `caller`, `model`, `gen_ai.system`, `status` | Total gateway proxy requests. |
+| `talon.gateway.requests.total` | Int64Counter | `{request}` | `agent`, `model`, `gen_ai.system`, `status` | Total gateway proxy requests. |
 | `talon.gateway.errors.total` | Int64Counter | `{error}` | `error_type` | Gateway errors by type (auth, policy, provider, timeout). |
-| `talon.data_tier.requests` | Int64Counter | `{request}` | `tier`, `caller` | Requests by data classification tier (0/1/2). |
+| `talon.data_tier.requests` | Int64Counter | `{request}` | `tier`, `agent` | Requests by data classification tier (0/1/2). |
 | `talon.tools.governance.total` | Int64Counter | `{decision}` | `tool`, `action` | Tool governance decisions (allow, block, filter). |
 | `talon.cache.hits` | Int64Counter | `{hit}` | `tenant_id` | Semantic cache hits (request served from cache). |
 | `talon.cache.misses` | Int64Counter | `{miss}` | `tenant_id` | Semantic cache misses (forwarded to LLM). |
@@ -69,7 +69,7 @@ Registered by `internal/gateway`. Emitted for every request through the LLM API 
 | `talon.budget.alerts.total` | Int64Counter | `{alert}` | `tenant_id`, `threshold` | Budget threshold breach alerts. |
 
 When an egress policy is configured, the gateway request span also carries
-`talon.egress.*` attributes: `caller`, `correlation_id`, `data_tier`,
+`talon.egress.*` attributes: `agent`, `correlation_id`, `data_tier`,
 `destination_provider`, `destination_region`, `decision`, and `reason`
 (machine code, empty on allow).
 

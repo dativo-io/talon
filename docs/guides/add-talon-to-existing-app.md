@@ -27,7 +27,7 @@ talon audit list --tenant quickstart --limit 5
 ```
 
 For full walk-through and troubleshooting, use [Tutorial: OpenAI proxy quickstart](../tutorials/proxy-quickstart.md).
-When you are ready for production caller separation and vaulted upstream keys, continue with Track B.
+When you are ready for production agent identities and vaulted upstream keys, continue with Track B.
 
 ### Track B: production gateway with YAML
 
@@ -87,7 +87,7 @@ Leave this running. You should see the server listening on port 8080.
 Change your app so it talks to Talon instead of OpenAI directly.
 
 **Base URL:** `http://localhost:8080/v1/proxy/openai/v1`  
-**API key:** use the caller key `talon-gw-myapp-001` (not your real OpenAI key). Talon identifies the caller by this key and uses the stored OpenAI key when forwarding.
+**API key:** use the agent key `talon-gw-myapp-001` (not your real OpenAI key). Talon identifies the agent by this key and uses the stored OpenAI key when forwarding.
 
 **Python (openai package):**
 
@@ -141,7 +141,7 @@ Run your app (or the curl command above) once. Then in another terminal, from th
 talon audit list
 ```
 
-You should see a new row: caller `my-app`, model, cost, and decision. **This is the first record from your real app.** Talon intercepted the request, forwarded it to OpenAI, and wrote a tamper-proof evidence record.
+You should see a new row: agent `my-app`, model, cost, and decision. **This is the first record from your real app.** Talon intercepted the request, forwarded it to OpenAI, and wrote a tamper-proof evidence record.
 
 ---
 

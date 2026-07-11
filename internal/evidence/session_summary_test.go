@@ -101,7 +101,7 @@ func TestBuildSessionSummary_FallsBackToCallerWhenNoOrchestration(t *testing.T) 
 		t.Fatalf("Agents = %v, want single caller-keyed row cli-user", sum.Subagents)
 	}
 	if len(sum.AgentIDs) != 1 || sum.AgentIDs[0] != "cli-user" {
-		t.Errorf("Callers = %v, want [cli-user]", sum.AgentIDs)
+		t.Errorf("AgentIDs = %v, want [cli-user]", sum.AgentIDs)
 	}
 }
 
@@ -112,7 +112,7 @@ func TestBuildSessionSummary_CrossCallerVisible(t *testing.T) {
 	}
 	sum := BuildSessionSummary("s", records)
 	if len(sum.AgentIDs) != 2 {
-		t.Errorf("Callers = %v, want two distinct callers surfaced", sum.AgentIDs)
+		t.Errorf("AgentIDs = %v, want two distinct agent identities surfaced", sum.AgentIDs)
 	}
 }
 

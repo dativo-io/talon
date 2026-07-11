@@ -98,7 +98,7 @@ gateway:
 		[]byte("talon-gw-sov-e2e"), secrets.ACL{}))
 	registry, err := gateway.BuildIdentityRegistry(context.Background(), []gateway.LoadedAgent{
 		{Path: "agent.talon.yaml", Name: "sov-e2e", TenantID: "e2e-tenant", KeySecretName: "sov-e2e-talon-key"},
-	}, secStore)
+	}, secStore, "")
 	require.NoError(t, err)
 
 	gw, err := gateway.NewGateway(gwCfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)

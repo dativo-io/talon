@@ -55,5 +55,5 @@ gateway:
 # Tool governance controls which tools the LLM is told about — before it ever
 # tries to call one. forbidden_tools patterns (glob) are merged across
 # organization_policy, provider, and per-agent overrides. allowed_tools on
-# a caller act as a strict allowlist (only those tools pass through).
+# an agent act as a strict allowlist (only those tools pass through).
 # See docs/guides/openclaw-integration.md for the full tool governance guide.

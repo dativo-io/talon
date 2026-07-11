@@ -85,6 +85,6 @@ You now have CI/CD jobs calling Talon (gateway or native) so every LLM call is l
 | I want to… | Doc |
 |------------|-----|
 | Export evidence from Talon for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
-| Cap cost for the CI caller | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
+| Cap cost for the CI agent | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
 | Add Talon in front of another app | [Add Talon to your existing app](add-talon-to-existing-app.md) |
 | Understand the request lifecycle | [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) |

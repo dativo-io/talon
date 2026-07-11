@@ -120,7 +120,7 @@ func TestBlockedPath_ProviderNotAllowed_EmitsMetrics(t *testing.T) {
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	id := testIdentity("test-agent", "default", "talon-gw-test-001", nil)
-	id.AllowedProviders = []string{"anthropic"}
+	id.Override = &PolicyOverride{AllowedProviders: []string{"anthropic"}}
 	gw, spy, evStore := setupGatewayWithSpy(t, cfg, testRegistry(id), nil)
 
 	w := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
@@ -322,7 +322,7 @@ func TestBlockedPath_EvidenceStoreFailure_DoesNotEmitMetrics(t *testing.T) {
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	id := testIdentity("test-agent", "default", "talon-gw-test-001", nil)
-	id.AllowedProviders = []string{"anthropic"}
+	id.Override = &PolicyOverride{AllowedProviders: []string{"anthropic"}}
 	gw, spy, evStore := setupGatewayWithSpy(t, cfg, testRegistry(id), nil)
 	require.NoError(t, evStore.Close())
 
@@ -352,7 +352,7 @@ func TestBlockedPath_RateLimitWritesEvidenceBeforeMetrics(t *testing.T) {
 		Timeouts: TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	id := testIdentity("test-agent", "default", "talon-gw-test-001", nil)
-	id.AllowedProviders = []string{"anthropic"}
+	id.Override = &PolicyOverride{AllowedProviders: []string{"anthropic"}}
 	gw, spy, evStore := setupGatewayWithSpy(t, cfg, testRegistry(id), nil)
 
 	first := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
@@ -405,7 +405,17 @@ func TestBlockedPath_AllBlockedPathsConsistent(t *testing.T) {
 		{
 			name: "provider_not_allowed",
 			setupOverrides: func(_ *GatewayConfig, id *ResolvedIdentity) {
-				id.AllowedProviders = []string{"anthropic"}
+				id.Override = &PolicyOverride{AllowedProviders: []string{"anthropic"}}
+			},
+			body:       `{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}`,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			// Org allowed_providers is a HARD constraint (#266): it binds an
+			// agent that carries no override at all.
+			name: "provider_not_allowed_org_constraint",
+			setupOverrides: func(c *GatewayConfig, _ *ResolvedIdentity) {
+				c.OrganizationPolicy.AllowedProviders = []string{"anthropic"}
 			},
 			body:       `{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}`,
 			wantStatus: http.StatusForbidden,
@@ -453,7 +463,7 @@ func TestGatewayMetrics_RuntimeEventMatchesEvidenceProjection(t *testing.T) {
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	id := testIdentity("test-agent", "default", "talon-gw-test-001", nil)
-	id.AllowedProviders = []string{"anthropic"}
+	id.Override = &PolicyOverride{AllowedProviders: []string{"anthropic"}}
 	gw, spy, evStore := setupGatewayWithSpy(t, cfg, testRegistry(id), nil)
 
 	w := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",

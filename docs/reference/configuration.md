@@ -80,8 +80,8 @@ The agent file is also the agent's **one** policy override on top of the gateway
 |---|---|
 | `policies.cost_limits.daily` / `.monthly` | Replaces the baseline daily/monthly cost cap when > 0 |
 | `policies.session_limits.max_cost` | Sets the per-session soft cap (no baseline equivalent) |
-| `policies.data_classification` input booleans | Input PII action: `block_on_pii` → block; `input_scan` + `redact_input` (or `redact_pii`) → redact; `input_scan` alone → warn |
-| `policies.data_classification` output booleans | Response PII action: `output_scan` + `block_on_pii` → block; `output_scan` + `redact_output` (or `redact_pii`) → redact; `output_scan` alone → warn |
+| `policies.data_classification` input booleans | Input PII action: `block_on_pii` → block; `input_scan` + `redact_input` (or `redact_pii`) → redact; `input_scan` alone → scan only, no action override (the baseline applies) |
+| `policies.data_classification` output booleans | Response PII action: `output_scan` + `block_on_pii` → block; `output_scan` + `redact_output` (or `redact_pii`) → redact; `output_scan` alone → scan only, no action override (the baseline applies) |
 | `policies.data_classification.max_data_tier` | Caps the request's data classification tier when present |
 | `policies.models.allowed` / `.blocked` | Flat gateway model lists; replace the baseline when non-empty (`model_routing` remains runner-side routing, not a gateway list) |
 | `policies.allowed_providers` | Restricts which gateway providers this agent may reach (empty = all) |
@@ -92,7 +92,7 @@ The agent file is also the agent's **one** policy override on top of the gateway
 | `metadata.team` | Attributes spend and evidence to a team (`talon costs --by-team`) |
 | `metadata.tags` | Telemetry classification (e.g. `copaw` drives OTel/dashboard views) |
 
-A per-agent warn→allow downgrade is deliberately not expressible: the `data_classification` booleans can tighten the baseline (warn/redact/block), and leaving them unset inherits it. See [Identity resolution and effective policy](#identity-resolution-and-effective-policy) for the exact replace-vs-merge rules.
+PII actions are **monotonic**: the organization baseline is a floor, and a per-agent override only takes effect when it is *stricter* (`block` > `redact` > `warn` > `allow`). An agent can tighten `warn` to `redact` or `block`, but nothing an agent file says — including turning on bare scan flags — can weaken the org floor. See [Identity resolution and effective policy](#identity-resolution-and-effective-policy) for the exact replace-vs-merge rules.
 
 ### PII recognizer layers and validation
 
@@ -341,7 +341,7 @@ When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml
 |---------|---------|
 | `gateway.mode` | `enforce`, `shadow`, or `log_only`. Runtime default when omitted: `enforce`. Generated starter configs set `shadow` explicitly for a safe rollout. |
 | `gateway.providers` | LLM provider connections (base URL, secret name, region, allowed/blocked models — destination constraints) |
-| `gateway.organization_policy` | The organization baseline every agent inherits: `default_pii_action`, `response_pii_action`, `max_daily_cost` / `max_monthly_cost`, `log_prompts` / `log_responses` / `log_response_preview_chars`, `forbidden_tools`, `tool_policy_action`, `attachment_policy`, `egress`, `scan_tool_content`. Renamed from `default_policy` (#266). |
+| `gateway.organization_policy` | The organization baseline every agent inherits: `default_pii_action`, `response_pii_action`, `max_daily_cost` / `max_monthly_cost`, `log_prompts` / `log_responses` / `log_response_preview_chars`, `forbidden_tools`, `tool_policy_action`, `attachment_policy`, `egress`, `scan_tool_content` — plus organization-wide **hard constraints** no agent override can escape: `allowed_providers`, `allowed_models` / `blocked_models`, `max_data_tier`. Renamed from `default_policy` (#266). |
 | `gateway.rate_limits` | `global_requests_per_min` and `per_agent_requests_per_min` |
 | `gateway.organization_policy.scan_tool_content` | Observation-only PII scan of tool-related request content: `evidence_only` (default) records findings in signed evidence (`classification.tool_content`) without influencing enforcement; `off` disables it. Enforcement on tool content is not offered until per-block-type tool redaction exists (#212). |
 | `gateway.timeouts` | Upstream timeout budgets, one per request phase (see below) |
@@ -361,7 +361,9 @@ presented key ──► known agent? ──yes──► agent identity ─► or
                      reject      (only exception: explicit quickstart synthetic identity)
 ```
 
-The effective policy for one request is: **organization baseline → the agent's one override → provider destination constraints**. Provider constraints (`allowed_models` / `blocked_models`, `forbidden_tools`, `tool_policy_action` on the provider entry) are hard constraints applied to the already-resolved policy — not a second override layer. One function (`ResolveEffectivePolicy`, `internal/gateway/effective.go`) computes this for enforcement, failover candidate checks, `talon costs`, and the dashboard budget endpoint; nothing re-derives baseline + override independently.
+The effective policy for one request is: **organization baseline → the agent's one override → provider destination constraints**. Provider constraints (`allowed_models` / `blocked_models`, `forbidden_tools`, `tool_policy_action` on the provider entry) are hard constraints applied to the already-resolved policy — not a second override layer. The organization baseline additionally carries its own hard constraints (`allowed_providers`, `allowed_models` / `blocked_models`, `max_data_tier`) that bind every agent regardless of its override. One function (`ResolveEffectivePolicy`, `internal/gateway/effective.go`) computes this for enforcement, failover candidate checks, `talon costs`, and the dashboard budget endpoint; nothing re-derives baseline + override independently.
+
+Deliberately **not** org-configurable yet (each is a follow-up issue, not a silent gap): an organization-wide `allowed_tools` list and organization-wide session cost limits. `forbidden_tools` and `tool_policy_action` cover the org tool-governance baseline today.
 
 Per-field contract (mirrors `internal/gateway/effective.go`; the code and this table are kept in sync):
 
@@ -369,10 +371,11 @@ Per-field contract (mirrors `internal/gateway/effective.go`; the code and this t
 |---|---|
 | `max_daily_cost` / `max_monthly_cost` | override replaces when > 0 |
 | `max_session_cost` | override sets when > 0 (no baseline) |
-| `pii_action` | override replaces when set |
-| `response_pii_action` | baseline level: falls back to `default_pii_action`; override level: replaces only when explicitly set — the override's **input** `pii_action` does **not** cascade to the response action |
-| allowed / blocked models | override replaces when non-empty; provider lists are hard constraints |
-| `max_data_tier` | override sets when present |
+| `pii_action` | monotonic: the baseline is a floor and the override applies only when **stricter** (`block` > `redact` > `warn` > `allow`); a weaker override is ignored |
+| `response_pii_action` | baseline level: falls back to `default_pii_action`; override level: same monotonic tighten-only rule — and the override's **input** `pii_action` does **not** cascade to the response action |
+| allowed / blocked models | override replaces when non-empty; organization lists (`organization_policy.allowed_models` / `.blocked_models`) and provider lists are hard constraints the override never escapes |
+| `allowed_providers` | agent list narrows within the organization hard constraint (`organization_policy.allowed_providers`); empty = unrestricted at that level; a provider must pass **both** lists |
+| `max_data_tier` | organization cap is a ceiling; the agent override applies only when **lower** (tighter) |
 | `allowed_tools` | most-specific non-empty list wins |
 | `forbidden_tools` | union of baseline ∪ provider ∪ override |
 | `tool_policy_action` | most-specific wins (override > provider > baseline) |
@@ -392,7 +395,7 @@ Provider auth mode:
 
 - `gateway.providers.<provider>.upstream_auth_mode`:
   - `secret` (default): read provider credential from Talon vault (`secret_name` required).
-  - `client_bearer`: forward the presented bearer token upstream (quickstart profile only).
+  - `client_bearer`: forward the presented bearer token upstream. **Rejected at config load outside `--proxy-quickstart`** — in a normal gateway the presented bearer is a Talon agent key, and forwarding it upstream would leak workload credentials (#266). The quickstart profile is built in-process, so no YAML config can enable this mode.
 
 Responses API store handling:
 

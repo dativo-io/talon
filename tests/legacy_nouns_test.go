@@ -32,14 +32,24 @@ func TestNoLegacyCallerNouns(t *testing.T) {
 	}
 
 	// Legacy vocabulary that must not describe the current product.
+	//
+	// Scope note (review feedback on #279): the guard bans the legacy
+	// IDENTITY-MODEL vocabulary, not the plain English word "caller" — e.g.
+	// "the caller of this function" or "returned to the caller" (generic
+	// HTTP/API prose) stays legal. Every pattern below names a removed config
+	// key, type, or identity concept.
 	patterns := []string{
 		"tenant_key",
 		"gateway.callers",
+		"callers:",
 		"require_caller_id",
 		"per_caller_requests",
 		"per-caller",
+		"per caller",
+		"by caller",
 		"trusted_proxy_cidrs",
-		"identify_by: source_ip",
+		"identify_by",
+		"source_ip_ranges",
 		"CallerConfig",
 		"CallerPolicyOverrides",
 		"caller_max_",
@@ -47,6 +57,15 @@ func TestNoLegacyCallerNouns(t *testing.T) {
 		"caller_allowed_models",
 		"caller_blocked_models",
 		"tenant key",
+		"caller key",
+		"caller-key",
+		"caller bearer",
+		"caller allowlist",
+		"caller-level",
+		"gateway caller",
+		"caller identification",
+		"caller identity",
+		"caller override",
 	}
 
 	allowlisted := func(path string) bool {

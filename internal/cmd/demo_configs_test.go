@@ -33,7 +33,8 @@ func loadDemoAgent(t *testing.T, path string) gateway.LoadedAgent {
 
 // The governed-session demo (#107 Act II) runs against REAL providers; this
 // guards the example config: both providers present, the session budget cap
-// and admin_* tool governance configured, PII blocking on, and prompt logging
+// and admin_* tool governance configured, the PII warn floor tightened per
+// act (block for the hero, redact for the redaction act), and prompt logging
 // off (real traffic).
 func TestGovernedSessionDemoConfig(t *testing.T) {
 	t.Parallel()
@@ -44,7 +45,8 @@ func TestGovernedSessionDemoConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, cfg.Enabled)
 	require.Equal(t, gateway.ModeEnforce, cfg.Mode)
-	require.Equal(t, "block", cfg.OrganizationPolicy.DefaultPIIAction)
+	require.Equal(t, "warn", cfg.OrganizationPolicy.DefaultPIIAction,
+		"org PII floor is warn — each act tightens per agent (monotonic merge, #266)")
 	require.False(t, cfg.OrganizationPolicy.LogPrompts, "real-provider demo must not store prompt bodies")
 	require.Positive(t, cfg.OrganizationPolicy.MaxDailyCost, "real-money safety net must be configured")
 
@@ -73,11 +75,15 @@ func TestGovernedSessionDemoConfig(t *testing.T) {
 	euEff := gateway.ResolveEffectivePolicy(cfg.OrganizationPolicy, openai, eu.Override)
 	require.Equal(t, []string{"gpt-4o-mini"}, euEff.AllowedModels)
 
-	// Redaction act: an email is scrubbed but the request still forwards.
+	// Redaction act: an email is scrubbed but the request still forwards —
+	// a per-agent TIGHTEN of the warn floor (warn → redact).
 	redact := loadDemoAgent(t, filepath.Join(dir, "agents", "session-demo-redact.talon.yaml"))
 	redactEff := gateway.ResolveEffectivePolicy(cfg.OrganizationPolicy, openai, redact.Override)
 	require.Equal(t, "redact", redactEff.PIIAction)
-	require.Equal(t, "block", heroEff.PIIAction, "hero act inherits the baseline block action")
+	require.Equal(t, "block", heroEff.PIIAction,
+		"hero act tightens the warn floor to block via data_classification.block_on_pii")
+	require.Equal(t, "warn", euEff.PIIAction,
+		"an agent with no PII override inherits the org floor unchanged")
 }
 
 func TestShortlistDemoConfig(t *testing.T) {

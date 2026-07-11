@@ -159,7 +159,7 @@ echo "=== Processes ===" && ps aux | grep -E 'talon|openclaw' | grep -v grep
 The agent's one policy override lives in `agent.talon.yaml`; the organization baseline lives in `talon.config.yaml` under `gateway.organization_policy`:
 
 - `policies.cost_limits.daily` / `.monthly` (agent file) — cost caps for this agent; each replaces the baseline (`organization_policy.max_daily_cost` / `max_monthly_cost`) when > 0
-- `organization_policy.default_pii_action` (baseline) — `block`, `redact`, `warn`, or `allow` when PII is detected in **requests**; per agent, tighten via `policies.data_classification` booleans (`block_on_pii` → block; `input_scan` + `redact_input` → redact; `input_scan` alone → warn)
+- `organization_policy.default_pii_action` (baseline) — `block`, `redact`, `warn`, or `allow` when PII is detected in **requests**; per agent, tighten via `policies.data_classification` booleans (`block_on_pii` → block; `input_scan` + `redact_input` → redact; `input_scan` alone scans without changing the action). The merge is monotonic: the baseline is a floor an agent can only tighten
 - `organization_policy.response_pii_action` (baseline) — same actions for PII in **LLM responses** (default: `warn`); per agent via `output_scan` (+ `redact_output` / `block_on_pii`)
 - `policies.models.allowed` / `.blocked` (agent file) — restrict which models this agent can use
 - `forbidden_tools` — strip dangerous tools before the LLM sees them (glob patterns); baseline and agent lists are unioned
@@ -250,7 +250,7 @@ The default `response_pii_action` is **`warn`** because LLM-generated content is
 | `redact` | Replace PII with `[REDACTED]` in the response (streaming and non-streaming) |
 | `block` | Reject the response with HTTP 451 |
 
-Escalation ladder when needed: `warn` → `redact` → `block`. Configure the baseline in `gateway.organization_policy.response_pii_action`; per agent, set the `data_classification` output booleans in the agent file (`output_scan` alone → warn; + `redact_output` → redact; + `block_on_pii` → block). The baseline level falls back to `default_pii_action` when unset, and an agent's input PII action never cascades to its response action.
+Escalation ladder when needed: `warn` → `redact` → `block`. Configure the baseline in `gateway.organization_policy.response_pii_action`; per agent, set the `data_classification` output booleans in the agent file (`output_scan` alone scans without changing the action; + `redact_output` → redact; + `block_on_pii` → block). The merge is monotonic — an agent may only tighten the baseline. The baseline level falls back to `default_pii_action` when unset, and an agent's input PII action never cascades to its response action.
 
 #### Attachment scanning
 

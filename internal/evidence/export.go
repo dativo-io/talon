@@ -106,7 +106,6 @@ type ExportFilter struct {
 	To     string `json:"to,omitempty"`
 	Tenant string `json:"tenant,omitempty"`
 	Agent  string `json:"agent,omitempty"`
-	Caller string `json:"caller,omitempty"`
 }
 
 // ExportEnvelope wraps records with metadata for --format json.

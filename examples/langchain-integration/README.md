@@ -14,7 +14,7 @@ from langchain_openai import ChatOpenAI
 llm = ChatOpenAI(
     model="gpt-4o-mini",
     base_url="http://localhost:8080/v1/proxy/openai",
-    api_key="your-caller-key",
+    api_key="your-agent-key",
 )
 response = llm.invoke("What is GDPR Article 30?")
 ```

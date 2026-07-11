@@ -138,7 +138,7 @@ nested fields are:
   `matched_rule` (string, optional — e.g. `tier_2:allowed_regions` or
   `default_action`), and `reason` (string, optional — machine code such as
   `egress_tier_destination_disallowed`). Present only when an egress policy
-  is configured for the caller; recorded for allowed and denied requests so
+  is configured for the agent; recorded for allowed and denied requests so
   the control's execution can be evidenced.
 - `failover` (optional): provider fallback-chain context (#191). Present when
   error-driven failover produced a failed-attempt record, a fallback decision,
@@ -153,7 +153,7 @@ nested fields are:
   never a policy input. All fields optional/omitempty.
 - `session_budget` (optional, spec 1.8, #198): the numbers a
   `session_budget_exceeded` gateway deny was decided on. Fields: `limit` (the
-  caller's `max_session_cost` at evaluation time), `spent` (accumulated
+  agent's `max_session_cost` at evaluation time), `spent` (accumulated
   session spend the deny rule saw), `estimate` (the pre-request estimate added
   to spend). Present only on session-budget deny records (and their shadow
   would-have-denied counterparts carry the reason in `shadow_violations`

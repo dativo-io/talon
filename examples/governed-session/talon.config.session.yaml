@@ -62,7 +62,11 @@ gateway:
       allowed_models: ["gpt-4o", "gpt-4o-mini"]
 
   organization_policy:
-    default_pii_action: "block"
+    # Org floor (#266): the baseline is a minimum guardrail an agent can only
+    # TIGHTEN (block > redact > warn > allow), never weaken. warn here lets
+    # the redact act demonstrate a per-agent tighten (warn → redact); the
+    # hero act tightens to block via data_classification.block_on_pii.
+    default_pii_action: "warn"
     # Hard safety net so a misbehaving loop cannot spend real money:
     max_daily_cost: 1.00
     # Real traffic: keep prompt/response bodies out of evidence storage.

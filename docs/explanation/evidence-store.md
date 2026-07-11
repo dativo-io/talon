@@ -100,7 +100,7 @@ Evidence is exposed at three levels of detail, matching different use cases:
 `talon audit list` returns lightweight summaries for scanning:
 
 ```
-ID          TIME                 CALLER        ALLOWED  COST(€)  MODEL
+ID          TIME                 AGENT         ALLOWED  COST(€)  MODEL
 req_a1b2c3  2026-03-15T10:23:45  slack-bot     true     0.003    gpt-4o-mini
 req_d4e5f6  2026-03-15T10:24:12  hr-assistant  false    0.000    gpt-4o
 ```
@@ -174,7 +174,7 @@ Response:
 }
 ```
 
-Tenant scoping applies: callers can only verify evidence in their own tenant scope.
+Tenant scoping applies: agent keys can only verify evidence in their own tenant scope.
 
 Buyer-facing wording:
 
