@@ -55,7 +55,7 @@ setup, add yourself to the `docker` group and run both `make shortlist-demo` and
 | Step | Proof | How |
 |------|--------|-----|
 | 1 | Governed OpenAI-compatible request | Allowed request through proxy → HTTP 200 |
-| 2 | Policy allow **and** deny with reasons | Allow caller vs model-allowlist deny → evidence reasons |
+| 2 | Policy allow **and** deny with reasons | Allow agent vs model-allowlist deny → evidence reasons |
 | 3 | PII handling before provider call | Server `default_pii_action: block` → HTTP 400, no upstream call |
 | 4 | EU strict egress denial | Caller egress allows only `EU`/`LOCAL`; mock provider `region: US` → HTTP 403 with `egress_tier_destination_disallowed` in evidence (denied with evidence — **not** silent reroute) |
 | 5 | Signed evidence verification | `talon audit verify` (+ optional tamper failure) |
