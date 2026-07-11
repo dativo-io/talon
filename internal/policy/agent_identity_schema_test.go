@@ -89,7 +89,7 @@ policies:
     daily: 25
   models:
     allowed: [gpt-4o]
-    alowed_typo: [gpt-3.5]
+    models_unknown_field: [gpt-3.5]
 `
 	require.Error(t, ValidateSchema([]byte(yml), false))
 }

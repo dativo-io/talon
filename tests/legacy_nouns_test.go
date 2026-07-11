@@ -83,29 +83,7 @@ func TestNoLegacyCallerNouns(t *testing.T) {
 			if allowlisted(path) || !scannableExt(path) {
 				return
 			}
-			f, err := os.Open(path) // #nosec G304 -- repo-local test walk
-			if err != nil {
-				t.Fatalf("open %s: %v", path, err)
-			}
-			defer f.Close()
-			scanner := bufio.NewScanner(f)
-			scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-			lineNo := 0
-			for scanner.Scan() {
-				lineNo++
-				line := scanner.Text()
-				lower := strings.ToLower(line)
-				if strings.Contains(line, "#266") {
-					continue // explicit breaking-change note
-				}
-				for _, p := range patterns {
-					if strings.Contains(lower, strings.ToLower(p)) {
-						rel, _ := filepath.Rel(repoRoot, path)
-						violations = append(violations, rel+":"+itoa(lineNo)+": "+strings.TrimSpace(line))
-						break
-					}
-				}
-			}
+			violations = append(violations, scanFileForLegacyNouns(t, repoRoot, path, patterns)...)
 		}
 		if info.IsDir() {
 			_ = filepath.WalkDir(abs, func(path string, d os.DirEntry, err error) error {
@@ -121,13 +99,45 @@ func TestNoLegacyCallerNouns(t *testing.T) {
 	}
 
 	if len(violations) > 0 {
-		max := len(violations)
-		if max > 40 {
-			max = 40
+		shown := len(violations)
+		if shown > 40 {
+			shown = 40
 		}
 		t.Errorf("legacy caller vocabulary leaked into %d user-facing line(s) (#266 cutover guard). Fix or annotate with an explicit #266 breaking-change note:\n%s",
-			len(violations), strings.Join(violations[:max], "\n"))
+			len(violations), strings.Join(violations[:shown], "\n"))
 	}
+}
+
+// scanFileForLegacyNouns returns "path:line: text" for every line matching a
+// legacy pattern, except lines carrying an explicit "#266" breaking-change note.
+func scanFileForLegacyNouns(t *testing.T, repoRoot, path string, patterns []string) []string {
+	t.Helper()
+	f, err := os.Open(path) // #nosec G304 -- repo-local test walk
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+
+	var out []string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Text()
+		if strings.Contains(line, "#266") {
+			continue // explicit breaking-change note
+		}
+		lower := strings.ToLower(line)
+		for _, p := range patterns {
+			if strings.Contains(lower, strings.ToLower(p)) {
+				rel, _ := filepath.Rel(repoRoot, path)
+				out = append(out, rel+":"+itoa(lineNo)+": "+strings.TrimSpace(line))
+				break
+			}
+		}
+	}
+	return out
 }
 
 func itoa(n int) string {

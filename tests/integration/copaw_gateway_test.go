@@ -68,14 +68,16 @@ func setupCoPawGateway(t *testing.T, upstreamHandler http.HandlerFunc) (*gateway
 	require.NoError(t, secStore.Set(context.Background(), "copaw-main-talon-key",
 		[]byte("talon-gw-copaw-001"), secrets.ACL{}))
 	registry, err := gateway.BuildIdentityRegistry(context.Background(), []gateway.LoadedAgent{
-		{Path: "agent.talon.yaml", Name: "copaw-main", TenantID: "test-tenant", KeySecretName: "copaw-main-talon-key",
+		{
+			Path: "agent.talon.yaml", Name: "copaw-main", TenantID: "test-tenant", KeySecretName: "copaw-main-talon-key",
 			Tags: []string{"copaw"},
 			Override: &gateway.PolicyOverride{
 				PIIAction:      "warn",
 				MaxDailyCost:   100,
 				MaxMonthlyCost: 2000,
 				AllowedModels:  []string{"gpt-4o-mini", "gpt-4o"},
-			}},
+			},
+		},
 	}, secStore)
 	require.NoError(t, err)
 

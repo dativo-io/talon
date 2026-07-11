@@ -22,12 +22,12 @@
 //
 // talon.config.yaml:
 //
-//	PackID=openclaw                    → gateway block in talon.config.yaml (enabled, callers, providers) so talon serve --gateway works
+//	PackID=openclaw                    → gateway block in talon.config.yaml (enabled, providers, organization_policy) so talon serve --gateway works
 //	ProviderID, RegionID               → llm.providers.<id> block (type, config with region/key_env, enabled)
 //	ProviderID                         → llm primary provider
 //	DataSovereignty                    → llm.routing.data_sovereignty_mode
 //	DataSovereignty="eu_strict"        → (OPA handles blocking; no blocked_providers in config)
-//	AgentName                          → gateway caller tenant_id (default tenant)
+//	AgentName                          → agent.key.secret_name binding ("<name>-talon-key", #266)
 //	(always)                           → llm.pricing_file: "pricing/models.yaml"
 package cmd
 
@@ -920,11 +920,6 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 		SimilarityThreshold: 0.92,
 		MaxEntriesPerTenant: 10000,
 	}
-	tenantID := state.AgentName
-	if tenantID == "" {
-		tenantID = "default"
-	}
-
 	// When user selected a pack that uses the gateway, enable it so "talon serve --gateway" works.
 	// Identity lives in the agent policy (agent.key.secret_name, #266) — the
 	// gateway block carries only providers and the organization baseline.

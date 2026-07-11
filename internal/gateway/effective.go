@@ -76,6 +76,11 @@ type EffectivePolicy struct {
 //	tool_policy_action                 most-specific wins (override > provider > baseline)
 //	attachment_policy                  baseline only (#266)
 //	egress                             override replaces baseline wholesale
+//
+// per-field rule of the effective-policy contract (#266); splitting it would
+// scatter the single source of truth this issue exists to establish.
+//
+//nolint:gocyclo // deliberately ONE function: each branch is an independent
 func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig, override *PolicyOverride) EffectivePolicy {
 	eff := EffectivePolicy{
 		MaxDailyCost:          baseline.MaxDailyCost,

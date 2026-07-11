@@ -41,8 +41,24 @@ func LoadedAgentFromPolicy(pol *policy.Policy, path string) gateway.LoadedAgent 
 // override (the agent then runs on the organization baseline alone).
 func overrideFromPolicy(pol *policy.Policy) *gateway.PolicyOverride {
 	o := &gateway.PolicyOverride{}
-	set := false
+	set := applyBudgetOverrides(pol, o)
+	set = applyPIIOverrides(pol, o) || set
+	set = applyModelAndToolOverrides(pol, o) || set
 
+	if e := egressFromPolicy(pol.Policies.Egress); e != nil {
+		o.Egress = e
+		set = true
+	}
+
+	if !set {
+		return nil
+	}
+	return o
+}
+
+// applyBudgetOverrides maps cost_limits / session_limits onto the override.
+func applyBudgetOverrides(pol *policy.Policy, o *gateway.PolicyOverride) bool {
+	set := false
 	if cl := pol.Policies.CostLimits; cl != nil {
 		if cl.Daily > 0 {
 			o.MaxDailyCost = cl.Daily
@@ -57,7 +73,12 @@ func overrideFromPolicy(pol *policy.Policy) *gateway.PolicyOverride {
 		o.MaxSessionCost = sl.MaxCost
 		set = true
 	}
+	return set
+}
 
+// applyPIIOverrides maps data_classification (actions + max tier) onto the override.
+func applyPIIOverrides(pol *policy.Policy, o *gateway.PolicyOverride) bool {
+	set := false
 	if in, out := piiActionsFromClassification(pol.Policies.DataClassification); in != "" || out != "" {
 		o.PIIAction = in
 		o.ResponsePIIAction = out
@@ -68,29 +89,25 @@ func overrideFromPolicy(pol *policy.Policy) *gateway.PolicyOverride {
 		o.MaxDataTier = &tier
 		set = true
 	}
+	return set
+}
 
+// applyModelAndToolOverrides maps policies.models and capabilities tool fields
+// onto the override.
+func applyModelAndToolOverrides(pol *policy.Policy, o *gateway.PolicyOverride) bool {
+	set := false
 	if m := pol.Policies.Models; m != nil {
 		o.AllowedModels = append([]string(nil), m.Allowed...)
 		o.BlockedModels = append([]string(nil), m.Blocked...)
-		set = set || len(m.Allowed) > 0 || len(m.Blocked) > 0
+		set = len(m.Allowed) > 0 || len(m.Blocked) > 0
 	}
-
 	if c := pol.Capabilities; c != nil {
 		o.AllowedTools = append([]string(nil), c.AllowedTools...)
 		o.ForbiddenTools = append([]string(nil), c.ForbiddenTools...)
 		o.ToolPolicyAction = c.ToolPolicyAction
 		set = set || len(c.AllowedTools) > 0 || len(c.ForbiddenTools) > 0 || c.ToolPolicyAction != ""
 	}
-
-	if e := egressFromPolicy(pol.Policies.Egress); e != nil {
-		o.Egress = e
-		set = true
-	}
-
-	if !set {
-		return nil
-	}
-	return o
+	return set
 }
 
 // piiActionsFromClassification derives the gateway (input, response) PII

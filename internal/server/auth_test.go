@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,7 +16,7 @@ import (
 func TestTenantKeyMiddleware_AdminKeyDevRule(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	do := func(mw func(http.Handler) http.Handler, bearer string) int {
-		req := httptest.NewRequest(http.MethodPost, "/v1/agents/run", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/agents/run", nil)
 		if bearer != "" {
 			req.Header.Set("Authorization", "Bearer "+bearer)
 		}
@@ -42,7 +43,7 @@ func TestTenantKeyMiddleware_AdminKeyDevRule(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 		mw := TenantKeyMiddleware(map[string]string{"tk-agent-1": "acme"}, "admin-secret")
-		req := httptest.NewRequest(http.MethodPost, "/v1/agents/run", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/agents/run", nil)
 		req.Header.Set("Authorization", "Bearer tk-agent-1")
 		rec := httptest.NewRecorder()
 		mw(capture).ServeHTTP(rec, req)

@@ -24,26 +24,46 @@ func TestPIIActionsFromClassification(t *testing.T) {
 	}{
 		{"nil config inherits baseline", nil, "", ""},
 		{"empty config inherits baseline", &policy.DataClassificationConfig{}, "", ""},
-		{"input_scan alone is scan-only",
-			&policy.DataClassificationConfig{InputScan: true}, "warn", ""},
-		{"output_scan alone is scan-only",
-			&policy.DataClassificationConfig{OutputScan: true}, "", "warn"},
-		{"input redaction requires input_scan + redact",
-			&policy.DataClassificationConfig{InputScan: true, RedactInput: boolPtr(true)}, "redact", ""},
-		{"redact_input without input_scan inherits baseline",
-			&policy.DataClassificationConfig{RedactInput: boolPtr(true)}, "", ""},
-		{"output_scan + redact_output redacts response",
-			&policy.DataClassificationConfig{OutputScan: true, RedactOutput: boolPtr(true)}, "", "redact"},
-		{"redact_pii shorthand covers both directions",
-			&policy.DataClassificationConfig{InputScan: true, OutputScan: true, RedactPII: true}, "redact", "redact"},
-		{"explicit redact_output=false overrides shorthand",
-			&policy.DataClassificationConfig{InputScan: true, OutputScan: true, RedactPII: true, RedactOutput: boolPtr(false)}, "redact", "warn"},
-		{"block_on_pii blocks input",
-			&policy.DataClassificationConfig{BlockOnPII: true}, "block", ""},
-		{"block_on_pii + output_scan blocks response too",
-			&policy.DataClassificationConfig{BlockOnPII: true, OutputScan: true}, "block", "block"},
-		{"block wins over redact",
-			&policy.DataClassificationConfig{BlockOnPII: true, InputScan: true, OutputScan: true, RedactPII: true}, "block", "block"},
+		{
+			"input_scan alone is scan-only",
+			&policy.DataClassificationConfig{InputScan: true}, "warn", "",
+		},
+		{
+			"output_scan alone is scan-only",
+			&policy.DataClassificationConfig{OutputScan: true}, "", "warn",
+		},
+		{
+			"input redaction requires input_scan + redact",
+			&policy.DataClassificationConfig{InputScan: true, RedactInput: boolPtr(true)}, "redact", "",
+		},
+		{
+			"redact_input without input_scan inherits baseline",
+			&policy.DataClassificationConfig{RedactInput: boolPtr(true)}, "", "",
+		},
+		{
+			"output_scan + redact_output redacts response",
+			&policy.DataClassificationConfig{OutputScan: true, RedactOutput: boolPtr(true)}, "", "redact",
+		},
+		{
+			"redact_pii shorthand covers both directions",
+			&policy.DataClassificationConfig{InputScan: true, OutputScan: true, RedactPII: true}, "redact", "redact",
+		},
+		{
+			"explicit redact_output=false overrides shorthand",
+			&policy.DataClassificationConfig{InputScan: true, OutputScan: true, RedactPII: true, RedactOutput: boolPtr(false)}, "redact", "warn",
+		},
+		{
+			"block_on_pii blocks input",
+			&policy.DataClassificationConfig{BlockOnPII: true}, "block", "",
+		},
+		{
+			"block_on_pii + output_scan blocks response too",
+			&policy.DataClassificationConfig{BlockOnPII: true, OutputScan: true}, "block", "block",
+		},
+		{
+			"block wins over redact",
+			&policy.DataClassificationConfig{BlockOnPII: true, InputScan: true, OutputScan: true, RedactPII: true}, "block", "block",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -110,8 +110,10 @@ gateway:
 	require.NoError(t, secStore.Set(context.Background(), "airgap-e2e-talon-key",
 		[]byte("talon-gw-airgap"), secrets.ACL{}))
 	registry, err := gateway.BuildIdentityRegistry(context.Background(), []gateway.LoadedAgent{
-		{Path: "agent.talon.yaml", Name: "airgap-e2e", TenantID: "airgap-tenant", KeySecretName: "airgap-e2e-talon-key",
-			Override: &gateway.PolicyOverride{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000}},
+		{
+			Path: "agent.talon.yaml", Name: "airgap-e2e", TenantID: "airgap-tenant", KeySecretName: "airgap-e2e-talon-key",
+			Override: &gateway.PolicyOverride{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		},
 	}, secStore)
 	require.NoError(t, err)
 

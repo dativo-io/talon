@@ -147,8 +147,10 @@ func TestBuildIdentityRegistryFailClosed(t *testing.T) {
 		vault := newTestVault(t)
 		setSecret(t, vault, "k1", "v1")
 		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
-			{Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1",
-				Override: &PolicyOverride{ToolPolicyAction: "explode"}},
+			{
+				Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1",
+				Override: &PolicyOverride{ToolPolicyAction: "explode"},
+			},
 		}, vault)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "tool_policy_action")

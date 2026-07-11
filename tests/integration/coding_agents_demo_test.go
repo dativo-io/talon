@@ -99,12 +99,14 @@ func newDemoGateway(t *testing.T, mockURL string) (*evidence.Store, http.Handler
 	// Agent identity (#266): vault-bound traffic key resolved via the registry.
 	require.NoError(t, secStore.Set(context.Background(), "claude-code-talon-key", []byte(demoAgentKey), secrets.ACL{}))
 	registry, err := gateway.BuildIdentityRegistry(context.Background(), []gateway.LoadedAgent{
-		{Path: "agent.talon.yaml", Name: "claude-code", TenantID: "demo", KeySecretName: "claude-code-talon-key",
+		{
+			Path: "agent.talon.yaml", Name: "claude-code", TenantID: "demo", KeySecretName: "claude-code-talon-key",
 			Override: &gateway.PolicyOverride{
 				PIIAction:         "warn",
 				ResponsePIIAction: "allow",
 				MaxSessionCost:    0.02, // trips after a few mock-priced requests
-			}},
+			},
+		},
 	}, secStore)
 	require.NoError(t, err)
 
