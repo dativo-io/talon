@@ -141,7 +141,8 @@ On the gateway, these caps are the agent's override: each replaces the organizat
 ```yaml
 # agent.talon.yaml — granular input/output control; the same booleans are the
 # agent's gateway PII override (input_scan+redact_input → redact;
-# block_on_pii → block; input_scan alone → warn)
+# block_on_pii → block; scan flags alone → no override, the org floor applies;
+# the merge is monotonic — an agent can only TIGHTEN the org baseline, #266)
 policies:
   data_classification:
     input_scan: true
@@ -433,7 +434,7 @@ policies:
   session_limits:
     max_cost: 10.00        # SOFT cap per coding session (#198); reservation is #144
   data_classification:
-    input_scan: true       # scan-only → "warn": evidence + warning, code keeps flowing
+    input_scan: true       # scan-only: evidence recorded, org floor decides the action
     redact_pii: false      # redaction mangles code
 ```
 

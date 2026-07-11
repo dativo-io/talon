@@ -4,6 +4,7 @@
 package gateway
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"os"
@@ -285,26 +286,39 @@ func LoadGatewayConfig(path string) (*GatewayConfig, error) {
 	}
 
 	gatewayRaw := raw
-	var cfg GatewayConfig
 	if g, ok := raw["gateway"]; ok {
-		sub, _ := yaml.Marshal(g)
-		if err := yaml.Unmarshal(sub, &cfg); err != nil {
-			return nil, fmt.Errorf("unmarshaling gateway block: %w", err)
-		}
 		if m, ok := g.(map[string]interface{}); ok {
 			gatewayRaw = m
 		}
+	}
+
+	// Removed config surfaces get an explicit, friendly breaking-change error
+	// BEFORE strict decoding — a config written for the legacy caller model
+	// must name its replacement, not die on a generic unknown-field error (#266).
+	if err := rejectLegacyGatewayKeys(gatewayRaw); err != nil {
+		return nil, err
+	}
+
+	var cfg GatewayConfig
+	if g, ok := raw["gateway"]; ok {
+		// Strict decoding (#266 review): organization_policy and provider
+		// entries enforce security boundaries, so a typo'd key (e.g.
+		// "allowed_provider") must fail loudly instead of silently disabling
+		// an intended hard constraint. KnownFields rejects every unknown key
+		// in the gateway subtree.
+		sub, _ := yaml.Marshal(g)
+		dec := yaml.NewDecoder(bytes.NewReader(sub))
+		dec.KnownFields(true)
+		if err := dec.Decode(&cfg); err != nil {
+			return nil, fmt.Errorf("unmarshaling gateway block (unknown keys are rejected — see schemas/talon.config.schema.json for the accepted surface): %w", err)
+		}
 	} else {
+		// Legacy top-level layout (no gateway: block): kept permissive — it
+		// yields a disabled gateway config; serve --gateway then refuses to
+		// start. The documented layout is the strict gateway: subtree above.
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
 			return nil, fmt.Errorf("unmarshaling gateway config: %w", err)
 		}
-	}
-
-	// yaml.v3 silently ignores unknown keys, so removed config surfaces need
-	// an explicit check — a config written for the legacy agent model must
-	// fail loudly, not silently run ungoverned (#266).
-	if err := rejectLegacyGatewayKeys(gatewayRaw); err != nil {
-		return nil, err
 	}
 
 	if err := cfg.ApplyDefaults(); err != nil {

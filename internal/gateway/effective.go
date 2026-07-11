@@ -48,8 +48,14 @@ type EffectivePolicy struct {
 	OrgAllowedProviders []string
 
 	// MaxDataTier caps the request data classification tier; nil = no cap.
-	// The org cap is a ceiling: an agent override can only lower it.
-	MaxDataTier *TierLevel
+	// It is the EFFECTIVE cap (the stricter of org and agent). The org cap is
+	// a ceiling: an agent override can only lower it. OrgMaxDataTier and
+	// AgentMaxDataTier keep the per-layer values so enforcement evidence can
+	// name WHICH layer's restriction fired (#279 review) — the signed record
+	// must not blame the agent when the organization rule made the decision.
+	MaxDataTier      *TierLevel
+	OrgMaxDataTier   *TierLevel
+	AgentMaxDataTier *TierLevel
 
 	// Tool governance (three inputs: baseline ∪ provider forbidden lists;
 	// most-specific allowed list and action win).
@@ -122,6 +128,8 @@ func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig
 	if baseline.MaxDataTier != nil {
 		t := *baseline.MaxDataTier
 		eff.MaxDataTier = &t
+		o := *baseline.MaxDataTier
+		eff.OrgMaxDataTier = &o
 	}
 
 	// Response PII action inherits the baseline input action at the BASELINE
@@ -172,10 +180,15 @@ func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig
 			eff.AllowedProviders = append([]string(nil), override.AllowedProviders...)
 		}
 		// Org tier cap is a ceiling: apply the override only when it TIGHTENS
-		// (lower tier = stricter cap).
-		if override.MaxDataTier != nil && (eff.MaxDataTier == nil || *override.MaxDataTier < *eff.MaxDataTier) {
-			t := *override.MaxDataTier
-			eff.MaxDataTier = &t
+		// (lower tier = stricter cap). The agent's own value is kept on its
+		// own axis so evidence can attribute the firing restriction.
+		if override.MaxDataTier != nil {
+			a := *override.MaxDataTier
+			eff.AgentMaxDataTier = &a
+			if eff.MaxDataTier == nil || a < *eff.MaxDataTier {
+				t := a
+				eff.MaxDataTier = &t
+			}
 		}
 		if len(override.AllowedTools) > 0 {
 			eff.AllowedTools = append([]string(nil), override.AllowedTools...)
@@ -203,12 +216,33 @@ func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig
 	return eff
 }
 
+// Provider-reachability denial sources, recorded in evidence and failover
+// skip filters so the signed record names WHICH layer denied (#279 review).
+const (
+	DenySourceOrgProviderAllowlist   = "organization_provider_allowlist"
+	DenySourceAgentProviderAllowlist = "agent_provider_allowlist"
+)
+
 // ProviderAllowed reports whether the destination provider passes BOTH the
 // organization hard constraint and the agent's own allowlist. Keeping the two
 // lists separate (instead of intersecting at resolve time) means an empty
 // intersection denies everything rather than reading as "unrestricted".
 func (e *EffectivePolicy) ProviderAllowed(provider string) bool {
-	return providerInList(provider, e.OrgAllowedProviders) && providerInList(provider, e.AllowedProviders)
+	return e.ProviderDenySource(provider) == ""
+}
+
+// ProviderDenySource returns which layer denies the provider: "" (allowed),
+// DenySourceOrgProviderAllowlist, or DenySourceAgentProviderAllowlist. The
+// organization constraint is checked first — when both would deny, the org
+// rule made the decision.
+func (e *EffectivePolicy) ProviderDenySource(provider string) string {
+	if !providerInList(provider, e.OrgAllowedProviders) {
+		return DenySourceOrgProviderAllowlist
+	}
+	if !providerInList(provider, e.AllowedProviders) {
+		return DenySourceAgentProviderAllowlist
+	}
+	return ""
 }
 
 // providerInList: empty list = unrestricted at that level.

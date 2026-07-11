@@ -325,6 +325,14 @@ var reasonRules = []reasonRule{
 	{markers: []string{
 		"routing",
 		"provider not allowed",
+		"not in agent allowlist",
+		"not in organization allowlist",
+		"is blocked for this agent",
+		"blocked by organization policy",
+		"exceeds agent restriction",
+		"exceeds organization restriction",
+		// Legacy caller-model reason strings (#266 cutover): kept so
+		// explanations of PRE-cutover evidence records still classify.
 		"not in caller allowlist",
 		"is blocked for this caller",
 		"exceeds caller restriction",

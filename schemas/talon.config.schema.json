@@ -511,11 +511,10 @@
               "upstream_auth_mode": {
                 "type": "string",
                 "enum": [
-                  "secret",
-                  "client_bearer"
+                  "secret"
                 ],
                 "default": "secret",
-                "description": "secret reads provider credentials from Talon's vault; client_bearer forwards the agent bearer token upstream (quickstart proxy mode only)."
+                "description": "secret reads provider credentials from Talon's vault. client_bearer exists only for the in-process --proxy-quickstart profile and is REJECTED in every YAML-loaded config (#266): a normal gateway's bearer is a Talon agent key and must never be forwarded upstream."
               },
               "base_url": {
                 "type": "string",
@@ -642,9 +641,35 @@
             },
             "egress": {
               "$ref": "#/definitions/gatewayEgressPolicy"
+            },
+            "allowed_providers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Organization-wide HARD constraint (#266): providers ANY agent may reach; an agent's own allowed_providers can only narrow further within this list. Empty/omitted = all enabled providers."
+            },
+            "allowed_models": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Organization-wide HARD constraint (#266): model allowlist binding every agent regardless of its override. Empty/omitted = no allowlist constraint."
+            },
+            "blocked_models": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Organization-wide HARD constraint (#266): model blocklist binding every agent regardless of its override ('*' blocks all models)."
+            },
+            "max_data_tier": {
+              "type": "integer",
+              "enum": [0, 1, 2],
+              "description": "Organization-wide data-tier ceiling (#266): 0 public, 1 internal, 2 confidential. An agent's max_data_tier can only LOWER it further."
             }
           },
-          "description": "Organization baseline — the shared policy every agent inherits before its one explicit override (agent.talon.yaml) applies (#266).",
+          "description": "Organization baseline — the shared policy every agent inherits before its one explicit override (agent.talon.yaml) applies — plus organization-wide hard constraints (allowed_providers, allowed_models/blocked_models, max_data_tier) no override can escape (#266).",
           "additionalProperties": false
         },
         "rate_limits": {

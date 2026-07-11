@@ -350,6 +350,8 @@ When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml
 
 **Removed keys fail validation** (breaking change, #266): `gateway.callers[]` (with `tenant_key`), `gateway.default_policy`, `organization_policy.require_caller_id`, `identify_by: source_ip`, `trusted_proxy_cidrs`, and `rate_limits.per_caller_requests_per_min` are rejected at config load with an explicit error naming the replacement — a config written for the removed model never runs silently ungoverned.
 
+**Unknown keys fail load** (strict decoding, #266): the entire `gateway:` block is decoded with unknown-field rejection, because several of its settings enforce security boundaries — a typo like `allowed_provider:` must fail loudly rather than silently disable an intended organization hard constraint. The accepted surface is published as `schemas/talon.config.schema.json` and kept in lockstep with the runtime by a parity test.
+
 #### Identity resolution and effective policy
 
 Every request to the proxy presents an agent key (`Authorization: Bearer <key>` or `x-api-key: <key>`). The gateway matches it against the identity registry in constant time; an unknown or missing key is rejected with `401 Invalid or missing agent key`. There is no source-IP identity and no anonymous fallback — the only non-key path is the explicit synthetic identity injected in-process by `talon serve --proxy-quickstart`.

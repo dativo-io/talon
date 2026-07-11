@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/secrets"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -167,6 +170,72 @@ func TestResolveRunTenant(t *testing.T) {
 	got, err = resolveRunTenant(noTenant, "default", false)
 	require.NoError(t, err)
 	assert.Equal(t, "default", got)
+}
+
+// TestBuildServeIdentityRegistryModeMatrix regression-tests the serve-time
+// registry mode matrix (#279 review): quickstart skips, gateway is
+// fail-closed, plain serve degrades to a warning EXCEPT the admin-key
+// collision, which is terminal in every mode that loads agent keys.
+func TestBuildServeIdentityRegistryModeMatrix(t *testing.T) {
+	ctx := context.Background()
+	newVault := func(t *testing.T) *secrets.SecretStore {
+		t.Helper()
+		store, err := secrets.NewSecretStore(filepath.Join(t.TempDir(), "s.db"), "0123456789abcdef0123456789abcdef")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = store.Close() })
+		return store
+	}
+	keyedPolicy := &policy.Policy{Agent: policy.AgentConfig{
+		Name: "matrix-agent", Version: "1.0.0",
+		Key: &policy.AgentKeyBinding{SecretName: "matrix-agent-talon-key"},
+	}}
+	unkeyedPolicy := &policy.Policy{Agent: policy.AgentConfig{Name: "matrix-agent", Version: "1.0.0"}}
+
+	t.Run("quickstart skips the registry even for a keyed minted agent", func(t *testing.T) {
+		vault := newVault(t)
+		require.NoError(t, vault.Set(ctx, "matrix-agent-talon-key", []byte("tk-matrix"), secrets.ACL{}))
+		reg, err := buildServeIdentityRegistry(ctx, keyedPolicy, "agent.talon.yaml", vault, "", false, true)
+		require.NoError(t, err)
+		assert.Nil(t, reg)
+	})
+
+	t.Run("unkeyed policy builds no registry in any mode", func(t *testing.T) {
+		vault := newVault(t)
+		reg, err := buildServeIdentityRegistry(ctx, unkeyedPolicy, "agent.talon.yaml", vault, "", false, false)
+		require.NoError(t, err)
+		assert.Nil(t, reg)
+	})
+
+	t.Run("gateway mode is fail-closed on an unminted key", func(t *testing.T) {
+		vault := newVault(t)
+		_, err := buildServeIdentityRegistry(ctx, keyedPolicy, "agent.talon.yaml", vault, "", true, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "building agent identity registry")
+	})
+
+	t.Run("plain serve degrades an unminted key to a nil registry", func(t *testing.T) {
+		vault := newVault(t)
+		reg, err := buildServeIdentityRegistry(ctx, keyedPolicy, "agent.talon.yaml", vault, "", false, false)
+		require.NoError(t, err)
+		assert.Nil(t, reg)
+	})
+
+	t.Run("admin-key collision is terminal even in plain serve", func(t *testing.T) {
+		vault := newVault(t)
+		require.NoError(t, vault.Set(ctx, "matrix-agent-talon-key", []byte("shared-admin-value"), secrets.ACL{}))
+		_, err := buildServeIdentityRegistry(ctx, keyedPolicy, "agent.talon.yaml", vault, "shared-admin-value", false, false)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, gateway.ErrAdminKeyCollision)
+	})
+
+	t.Run("gateway mode with a minted key resolves", func(t *testing.T) {
+		vault := newVault(t)
+		require.NoError(t, vault.Set(ctx, "matrix-agent-talon-key", []byte("tk-matrix"), secrets.ACL{}))
+		reg, err := buildServeIdentityRegistry(ctx, keyedPolicy, "agent.talon.yaml", vault, "different-admin", true, false)
+		require.NoError(t, err)
+		require.NotNil(t, reg)
+		assert.Equal(t, 1, reg.Len())
+	})
 }
 
 func TestLoadedAgentFromPolicyMinimal(t *testing.T) {

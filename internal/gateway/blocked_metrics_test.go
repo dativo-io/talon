@@ -136,7 +136,7 @@ func TestBlockedPath_ProviderNotAllowed_EmitsMetrics(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, list, 1, "provider-not-allowed should record evidence")
 	assert.False(t, list[0].PolicyDecision.Allowed)
-	assert.Contains(t, list[0].PolicyDecision.Reasons, "provider not allowed")
+	assert.Contains(t, list[0].PolicyDecision.Reasons, "provider not allowed: agent_provider_allowlist")
 }
 
 func TestBlockedPath_PolicyEvalError_EmitsMetrics(t *testing.T) {

@@ -102,3 +102,12 @@ deny contains msg if {
 	input.data_tier > input.agent_max_data_tier
 	msg := sprintf("Data tier %d exceeds agent restriction (max %d)", [input.data_tier, input.agent_max_data_tier])
 }
+
+# Organization-wide data tier ceiling (#266): separate input key + message so
+# the signed deny reason names the layer whose restriction fired — the record
+# must not blame the agent when the organization rule made the decision.
+deny contains msg if {
+	input.org_max_data_tier != null
+	input.data_tier > input.org_max_data_tier
+	msg := sprintf("Data tier %d exceeds organization restriction (max %d)", [input.data_tier, input.org_max_data_tier])
+}

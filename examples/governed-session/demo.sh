@@ -475,6 +475,12 @@ act_redact() {
   block_rule "$1" "$2" "✂️" "REDACTED" "email scrubbed, request still succeeds"
   # Act identity (#266): requires the gateway to be serving the redact agent.
   if [[ "$(post_openai_probe "talon-session-redact")" == "401" ]]; then
+    # STRICT (asset recording): a skipped headline act must never be promoted
+    # into a published cast — same rule as act_route.
+    if [[ "$STRICT" == 1 ]]; then
+      echo "STRICT: redact act skipped (gateway not serving session-demo-redact) — refusing to record" >&2
+      exit 1
+    fi
     block_result "-" "SKIPPED: gateway is serving the hero agent. Switch acts (until #267): TALON_ACT_AGENT=session-demo-redact docker compose up -d talon"
     return 0
   fi
@@ -490,6 +496,12 @@ act_routing_deny() {
   block_rule "$1" "$2" "🧭" "BLOCKED" "model not in agent allowlist"
   # Act identity (#266): requires the gateway to be serving the eu agent.
   if [[ "$(post_openai_probe "talon-session-eu")" == "401" ]]; then
+    # STRICT (asset recording): a skipped headline act must never be promoted
+    # into a published cast — same rule as act_route.
+    if [[ "$STRICT" == 1 ]]; then
+      echo "STRICT: routing-deny act skipped (gateway not serving session-demo-eu) — refusing to record" >&2
+      exit 1
+    fi
     block_result "-" "SKIPPED: gateway is serving the hero agent. Switch acts (until #267): TALON_ACT_AGENT=session-demo-eu docker compose up -d talon"
     return 0
   fi

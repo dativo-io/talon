@@ -217,16 +217,16 @@ CACHEEOF
   assert_pass "dashboard HTML contains Timeouts KPI" grep -qi "Timeouts" <<< "$dash_html"
   assert_pass "dashboard HTML contains Violation Trend (7d) panel" grep -qi "Violation Trend (7d)" <<< "$dash_html"
   # Header carries the pricing-table currency since #216 (e.g. "Cost/Success (USD)").
-  assert_pass "dashboard caller table contains Cost/Success column" grep -qi "Cost/Success" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Trend(7d) column" grep -qi "Trend(7d)" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Success column header" grep -q ">Success<" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Failed column header" grep -q ">Failed<" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Timeout column header" grep -q ">Timeout<" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Denied column header" grep -q ">Denied<" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Rate column header" grep -q ">Rate<" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Cost/Success column" grep -qi "Cost/Success" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Trend(7d) column" grep -qi "Trend(7d)" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Success column header" grep -q ">Success<" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Failed column header" grep -q ">Failed<" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Timeout column header" grep -q ">Timeout<" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Denied column header" grep -q ">Denied<" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Rate column header" grep -q ">Rate<" <<< "$dash_html"
 
   # --- 23.2b: PII and tool governance behaviour (per-agent overrides + organization baseline, #266) ---
-  # (1) PII block: caller with pii_action: "block" must get 400 on PII body
+  # (1) PII block: agent with pii_action: "block" must get 400 on PII body
   # Phase restart (#266): pii-block dimension runs as its own agent.
   if ! dm_start "pii-block-agent"; then cd "$REPO_ROOT" || true; return 0; fi
   local pii_block_code; pii_block_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-pii-block-001" "$SMOKE_BODY_PII")"
@@ -244,7 +244,7 @@ CACHEEOF
   else
     log_failure "Tool block config: expected 403 for request with forbidden tool delete_all" "got HTTP $tool_block_code"
   fi
-  # (3) Tool filter: caller with forbidden_tools exec_cmd + tool_policy_action filter → 200, tools stripped
+  # (3) Tool filter: agent with forbidden_tools exec_cmd + tool_policy_action filter → 200, tools stripped
   # Phase restart (#266): tool-filter dimension runs as its own agent.
   if ! dm_start "tool-filter-agent"; then cd "$REPO_ROOT" || true; return 0; fi
   local tool_filter_code; tool_filter_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-tool-filter-001" "$SMOKE_BODY_TOOL_FILTER")"
@@ -338,13 +338,13 @@ CACHEEOF
   fi
   local pii_blocker_blocked; pii_blocker_blocked="$(jq -r '[.agent_stats[] | select(.agent == "pii-block-agent") | .blocked] | add // 0' <<< "$snap_after")"
   if [[ -n "$pii_blocker_blocked" ]] && [[ "$pii_blocker_blocked" != "null" ]] && [[ "$pii_blocker_blocked" -ge 1 ]]; then
-    echo "  ✓  caller pii-block-agent has blocked >= 1 ($pii_blocker_blocked)"
+    echo "  ✓  agent pii-block-agent has blocked >= 1 ($pii_blocker_blocked)"
     record_pass
   else
     echo "  -  pii-block-agent blocked = ${pii_blocker_blocked:-null}"
   fi
 
-  # Prompt 16: enhanced caller fields + ranges + trend shape
+  # Prompt 16: enhanced agent fields + ranges + trend shape
   assert_pass "agent_stats entries include successful" \
     jq -e 'all(.agent_stats[]; has("successful"))' <<< "$snap_after" &>/dev/null
   assert_pass "agent_stats entries include failed" \

@@ -188,7 +188,7 @@ Two levers for constrained hosts (small VPS class):
   request scan + redact + verify + response scan that is 4+ sequential
   calls per PII request. Set `scanner.timeout: "180s"` rather than letting
   a borderline call fail closed, or set
-  `gateway.default_policy.response_pii_action: "allow"` to skip
+  `gateway.organization_policy.response_pii_action: "allow"` to skip
   response-side scanning where the demo/use-case doesn't need it.
 
 ## Model choice

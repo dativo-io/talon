@@ -128,13 +128,14 @@ func checkDataDir(cfg *config.Config) CheckResult {
 func checkPolicy(cfg *config.Config) CheckResult {
 	policyPath := cfg.DefaultPolicy
 	if _, err := os.Stat(policyPath); err != nil {
-		// A missing agent policy is advisory, not fatal: gateway-only deployments
-		// (e.g. air-gap proxy) govern requests via the gateway default_policy and
-		// need no agent.talon.yaml. It is only required for the `talon run` path.
+		// Advisory in the general pass: plain `talon serve` synthesizes a
+		// minimal default. Gateway mode REQUIRES a keyed agent — that is
+		// enforced as a FAIL by gateway_agent_identity when a gateway config
+		// is being checked (#266).
 		return CheckResult{
 			Name: "policy_valid", Category: "config", Status: "warn",
-			Message: fmt.Sprintf("%s — file not found (not required for gateway-only deployments)", policyPath),
-			Fix:     "Run 'talon init' to create an agent policy file (needed for 'talon run')",
+			Message: fmt.Sprintf("%s — file not found (required for 'talon run'; gateway mode additionally requires agent.key.secret_name)", policyPath),
+			Fix:     "Run 'talon init' to create an agent policy file",
 		}
 	}
 	pol, loadErr := policy.LoadPolicy(context.Background(), policyPath, false, ".")
@@ -342,39 +343,28 @@ func checkGatewayMode(cfg *gateway.GatewayConfig) CheckResult {
 	return CheckResult{Name: "gateway_mode", Category: "gateway", Status: "pass", Message: msg}
 }
 
-// checkGatewayAgentIdentity preflights the agent identity model (#266): the
-// agent policy carries a key binding, the referenced vault secret exists, and
-// a dry-run registry build passes the same fail-closed validation `talon
-// serve --gateway` will run.
-func checkGatewayAgentIdentity(ctx context.Context) CheckResult {
+// GatewayIdentityPreflight runs the SAME fail-closed checks `talon serve
+// --gateway` startup performs (#266): the agent policy loads, carries a key
+// binding, the vault opens, and a dry-run registry build passes (missing /
+// ACL-denied / empty secret, duplicate identity, admin-key collision). A
+// condition that would make gateway startup fail must fail here too — this
+// is the shared preflight behind `talon doctor --gateway-config` and
+// `talon enforce enable`.
+func GatewayIdentityPreflight(ctx context.Context) (agentName, secretName string, err error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return CheckResult{
-			Name: "gateway_agent_identity", Category: "gateway", Status: "warn",
-			Message: fmt.Sprintf("Cannot load operator config: %v", err),
-		}
+		return "", "", fmt.Errorf("loading operator config: %w", err)
 	}
 	pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
 	if err != nil {
-		return CheckResult{
-			Name: "gateway_agent_identity", Category: "gateway", Status: "warn",
-			Message: fmt.Sprintf("No agent policy loaded (%v)", err),
-			Fix:     "Create agent.talon.yaml with agent.key.secret_name — gateway mode requires at least one keyed agent",
-		}
+		return "", "", fmt.Errorf("no agent policy loaded (%v) — gateway mode requires at least one keyed agent: create agent.talon.yaml with agent.key.secret_name", err)
 	}
 	if pol.Agent.Key == nil || pol.Agent.Key.SecretName == "" {
-		return CheckResult{
-			Name: "gateway_agent_identity", Category: "gateway", Status: "warn",
-			Message: fmt.Sprintf("Agent %q has no key binding — it cannot authenticate to the gateway", pol.Agent.Name),
-			Fix:     "Add agent.key.secret_name to agent.talon.yaml and run: talon secrets set <name> <key>",
-		}
+		return pol.Agent.Name, "", fmt.Errorf("agent %q has no key binding — gateway startup will refuse; add agent.key.secret_name to agent.talon.yaml and run: talon secrets set <name> <key>", pol.Agent.Name)
 	}
 	secStore, secErr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
 	if secErr != nil {
-		return CheckResult{
-			Name: "gateway_agent_identity", Category: "gateway", Status: "warn",
-			Message: fmt.Sprintf("Cannot open secrets vault: %v", secErr),
-		}
+		return pol.Agent.Name, pol.Agent.Key.SecretName, fmt.Errorf("cannot open secrets vault: %w", secErr)
 	}
 	defer secStore.Close()
 	// Same collision rule as serve startup: an agent key equal to
@@ -385,15 +375,30 @@ func checkGatewayAgentIdentity(ctx context.Context) CheckResult {
 		TenantID:      pol.Agent.TenantID,
 		KeySecretName: pol.Agent.Key.SecretName,
 	}}, secStore, os.Getenv("TALON_ADMIN_KEY")); err != nil {
+		return pol.Agent.Name, pol.Agent.Key.SecretName, fmt.Errorf("identity registry dry-run failed: %w", err)
+	}
+	return pol.Agent.Name, pol.Agent.Key.SecretName, nil
+}
+
+// checkGatewayAgentIdentity preflights the agent identity model (#266). Every
+// condition that would make `talon serve --gateway` fail is a FAIL here —
+// doctor must never bless a gateway that cannot start (review on #279).
+func checkGatewayAgentIdentity(ctx context.Context) CheckResult {
+	agentName, secretName, err := GatewayIdentityPreflight(ctx)
+	if err != nil {
+		fix := "Create agent.talon.yaml with agent.key.secret_name and mint the key: talon secrets set <name> <key>"
+		if secretName != "" {
+			fix = fmt.Sprintf("Run: talon secrets set %s <agent-key>", secretName)
+		}
 		return CheckResult{
 			Name: "gateway_agent_identity", Category: "gateway", Status: "fail",
-			Message: fmt.Sprintf("Identity registry dry-run failed: %v", err),
-			Fix:     fmt.Sprintf("Run: talon secrets set %s <agent-key>", pol.Agent.Key.SecretName),
+			Message: err.Error(),
+			Fix:     fix,
 		}
 	}
 	return CheckResult{
 		Name: "gateway_agent_identity", Category: "gateway", Status: "pass",
-		Message: fmt.Sprintf("Agent %q key binding resolves (%s)", pol.Agent.Name, pol.Agent.Key.SecretName),
+		Message: fmt.Sprintf("Agent %q key binding resolves (%s)", agentName, secretName),
 	}
 }
 

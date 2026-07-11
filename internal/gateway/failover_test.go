@@ -469,7 +469,7 @@ func TestGatewayFailover_AgentAllowedProviders_SkipsCandidate(t *testing.T) {
 	require.NotNil(t, final.Failover)
 	assert.Equal(t, evidence.FailoverRoleFailClosed, final.Failover.Role)
 	require.Len(t, final.Failover.SkippedCandidates, 1)
-	assert.Equal(t, "agent_allowlist", final.Failover.SkippedCandidates[0].Filter)
+	assert.Equal(t, "agent_provider_allowlist", final.Failover.SkippedCandidates[0].Filter)
 }
 
 // Fallback candidates re-run the full gateway policy with their own provider

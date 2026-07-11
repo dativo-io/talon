@@ -1,10 +1,15 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
+
+	"github.com/rs/zerolog/log"
 
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/secrets"
 )
 
 // LoadedAgentFromPolicy maps one parsed agent.talon.yaml onto the gateway's
@@ -148,6 +153,40 @@ func piiActionsFromClassification(dc *policy.DataClassificationConfig) (input, r
 		}
 	}
 	return input, response
+}
+
+// buildServeIdentityRegistry applies the serve-time registry mode matrix
+// (#266; regression-tested since the #279 review):
+//
+//	--gateway:           registry REQUIRED — a broken binding fails startup
+//	                     (a gateway with no resolvable agent would reject
+//	                     every request; the ≥1-keyed-agent gate runs later).
+//	--proxy-quickstart:  registry SKIPPED — quickstart is zero-setup by
+//	                     design and uses only the synthetic identity; its
+//	                     tenant surface stays unmounted (see
+//	                     docs/reference/proxy-quickstart.md).
+//	plain serve:         registry BEST-EFFORT — a scaffolded-but-unminted
+//	                     key must not break `talon init && talon serve` for
+//	                     native-only use; tenant APIs simply reject agent
+//	                     keys until the secret is set. EXCEPTION: an agent
+//	                     key colliding with TALON_ADMIN_KEY is a security
+//	                     misconfiguration, not an onboarding gap — terminal
+//	                     in every mode that loads agent keys.
+func buildServeIdentityRegistry(ctx context.Context, pol *policy.Policy, policyPath string, vault *secrets.SecretStore, adminKey string, gatewayMode, quickstart bool) (*gateway.IdentityRegistry, error) {
+	if pol.Agent.Key == nil || pol.Agent.Key.SecretName == "" || quickstart {
+		return nil, nil
+	}
+	registry, err := gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{
+		LoadedAgentFromPolicy(pol, policyPath),
+	}, vault, adminKey)
+	if err != nil {
+		if gatewayMode || errors.Is(err, gateway.ErrAdminKeyCollision) {
+			return nil, fmt.Errorf("building agent identity registry: %w", err)
+		}
+		log.Warn().Err(err).Msgf("agent identity registry unavailable; tenant-scoped APIs will reject agent keys until you run: talon secrets set %s <key>", pol.Agent.Key.SecretName)
+		return nil, nil
+	}
+	return registry, nil
 }
 
 // resolveRunTenant decides the tenant a native run attributes to (#266):

@@ -136,6 +136,14 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 		eff = ResolveEffectivePolicy(b, ProviderConfig{}, &PolicyOverride{AllowedProviders: []string{"openai"}})
 		assert.False(t, eff.ProviderAllowed("openai"), "agent list cannot escape the org constraint")
 		assert.False(t, eff.ProviderAllowed("anthropic"), "provider outside the agent's own list")
+
+		// Deny source names the layer whose rule fired (#279 review) — the
+		// signed record must not blame the agent for an organization rule.
+		assert.Equal(t, DenySourceOrgProviderAllowlist, eff.ProviderDenySource("openai"),
+			"org constraint checked first: when both layers would deny, the org rule made the decision")
+		agentOnly := ResolveEffectivePolicy(baseline, ProviderConfig{}, &PolicyOverride{AllowedProviders: []string{"openai"}})
+		assert.Equal(t, DenySourceAgentProviderAllowlist, agentOnly.ProviderDenySource("anthropic"))
+		assert.Equal(t, "", agentOnly.ProviderDenySource("openai"))
 	})
 
 	t.Run("max_data_tier: org cap is a ceiling the override can only lower", func(t *testing.T) {
@@ -158,6 +166,16 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 		tighten := TierPublic
 		eff = ResolveEffectivePolicy(b, ProviderConfig{}, &PolicyOverride{MaxDataTier: &tighten})
 		assert.Equal(t, TierPublic, *eff.MaxDataTier, "override may lower the cap further")
+
+		// Per-layer axes survive the merge so evidence names WHICH layer's
+		// restriction fired (#279 review).
+		require.NotNil(t, eff.OrgMaxDataTier)
+		assert.Equal(t, TierInternal, *eff.OrgMaxDataTier)
+		require.NotNil(t, eff.AgentMaxDataTier)
+		assert.Equal(t, TierPublic, *eff.AgentMaxDataTier)
+		orgOnly := ResolveEffectivePolicy(b, ProviderConfig{}, nil)
+		assert.Nil(t, orgOnly.AgentMaxDataTier, "no override → no agent axis")
+		require.NotNil(t, orgOnly.OrgMaxDataTier)
 	})
 
 	t.Run("allowed_tools most-specific non-empty wins", func(t *testing.T) {

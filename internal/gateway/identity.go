@@ -12,9 +12,11 @@ import (
 )
 
 // ErrAdminKeyCollision marks an agent key resolving to the same value as the
-// admin key — a config error that must fail startup in EVERY serve mode (it
-// would grant a workload operator authority), unlike an unminted secret which
-// is tolerable for native-only runs.
+// admin key — a config error that must fail startup in every serve mode that
+// loads agent keys (gateway and plain serve; --proxy-quickstart never builds
+// the registry, so no agent key is loaded there at all). It would grant a
+// workload operator authority, unlike an unminted secret which is tolerable
+// for native-only runs.
 var ErrAdminKeyCollision = errors.New("agent key collides with admin key")
 
 // Agent identity model (#266): one agent.talon.yaml = one AI use case = one

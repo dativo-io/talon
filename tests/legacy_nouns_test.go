@@ -24,6 +24,7 @@ func TestNoLegacyCallerNouns(t *testing.T) {
 		"docs",
 		"examples",
 		"schemas",
+		"web",
 		filepath.Join("internal", "cmd", "templates"),
 		filepath.Join("internal", "pack", "templates"),
 		filepath.Join("tests", "smoke_lib.sh"),
@@ -85,7 +86,7 @@ func TestNoLegacyCallerNouns(t *testing.T) {
 
 	scannableExt := func(path string) bool {
 		switch strings.ToLower(filepath.Ext(path)) {
-		case ".md", ".yaml", ".yml", ".tmpl", ".sh", ".json", ".rego", ".py", ".ipynb", ".go":
+		case ".md", ".yaml", ".yml", ".tmpl", ".sh", ".json", ".rego", ".py", ".ipynb", ".go", ".html", ".js":
 			return true
 		}
 		return false

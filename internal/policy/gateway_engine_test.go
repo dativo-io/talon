@@ -109,6 +109,29 @@ func TestGatewayEngine_EvaluateGateway_OrgModelConstraints(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, allowed)
 	})
+
+	t.Run("org tier ceiling denies with an organization-attributed reason", func(t *testing.T) {
+		in := base("gpt-4o")
+		in["data_tier"] = 2
+		in["org_max_data_tier"] = 1
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+		joined := strings.Join(reasons, "; ")
+		require.Contains(t, joined, "exceeds organization restriction",
+			"the deny reason must name the organization, not the agent (#279 review)")
+		require.NotContains(t, joined, "exceeds agent restriction")
+	})
+
+	t.Run("agent tier cap keeps its agent-attributed reason", func(t *testing.T) {
+		in := base("gpt-4o")
+		in["data_tier"] = 2
+		in["agent_max_data_tier"] = 1
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+		require.Contains(t, strings.Join(reasons, "; "), "exceeds agent restriction")
+	})
 }
 
 func TestGatewayEngine_EvaluateGateway_Egress(t *testing.T) {

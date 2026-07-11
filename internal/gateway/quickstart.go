@@ -59,7 +59,8 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 
 	// Identity in quickstart mode is the synthetic NewQuickstartIdentity(),
 	// injected per-request by the in-process facade — never a configured key.
-	// Its budget caps are this baseline; there is no override layer.
+	// Its budget caps are this baseline; its only override is the openai-only
+	// provider restriction carried on the identity itself (see identity.go).
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: DefaultListenPrefix,

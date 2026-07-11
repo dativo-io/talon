@@ -28,7 +28,7 @@ SMOKE_BODY_CACHE='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"R
 # Normal: parameterised for variety (use SMOKE_BODY_NORMAL "3" for "Reply METRICS_OK 3")
 smoke_body_normal() { echo "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply METRICS_OK ${1:-1}\"}]}"; }
 
-# Tool block: request with forbidden tool delete_all (default_policy block)
+# Tool block: request with forbidden tool delete_all (organization_policy forbidden_tools)
 SMOKE_BODY_TOOL_BLOCK='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"delete_all","description":"x","parameters":{"type":"object"}}}]}'
 
 # Tool filter: request with read_file + exec_cmd (exec_cmd forbidden for the tool-filter agent)

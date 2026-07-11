@@ -154,41 +154,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	defer secretsStore.Close()
 
-	// Agent identity registry (#266): built whenever the loaded agent policy
-	// carries a key binding — independent of gateway mode, because the SAME
-	// agent key also authenticates the tenant-scoped APIs.
-	//
-	//   --gateway:           registry REQUIRED — a broken binding fails startup
-	//                        (checked below; a gateway with no resolvable agent
-	//                        would reject every request).
-	//   --proxy-quickstart:  registry SKIPPED — quickstart is zero-setup by
-	//                        design and uses only the synthetic identity; its
-	//                        tenant surface stays unmounted (see
-	//                        docs/reference/proxy-quickstart.md).
-	//   plain serve:         registry BEST-EFFORT — a scaffolded-but-unminted
-	//                        key must not break `talon init && talon serve`
-	//                        for native-only use; tenant APIs simply reject
-	//                        agent keys until the secret is set.
 	adminKey := os.Getenv("TALON_ADMIN_KEY")
 	if adminKey == "" {
 		log.Warn().Msg("TALON_ADMIN_KEY not set — admin-only endpoints will be unrestricted. Set for production.")
 	}
 
-	var identityRegistry *gateway.IdentityRegistry
-	if pol.Agent.Key != nil && pol.Agent.Key.SecretName != "" && !serveProxyQuickstart {
-		identityRegistry, err = gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{
-			LoadedAgentFromPolicy(pol, policyPath),
-		}, secretsStore, adminKey)
-		if err != nil {
-			// An agent key colliding with TALON_ADMIN_KEY is a security
-			// misconfiguration, not an onboarding gap — terminal in every
-			// serve mode.
-			if serveGateway || errors.Is(err, gateway.ErrAdminKeyCollision) {
-				return fmt.Errorf("building agent identity registry: %w", err)
-			}
-			log.Warn().Err(err).Msgf("agent identity registry unavailable; tenant-scoped APIs will reject agent keys until you run: talon secrets set %s <key>", pol.Agent.Key.SecretName)
-			identityRegistry = nil
-		}
+	identityRegistry, err := buildServeIdentityRegistry(ctx, pol, policyPath, secretsStore, adminKey, serveGateway, serveProxyQuickstart)
+	if err != nil {
+		return err
 	}
 
 	evidenceStore, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)

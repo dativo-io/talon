@@ -480,11 +480,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Agent allowed for this provider? One resolver-backed check covers the
-	// agent's own allowlist AND the organization hard constraint (#266).
-	if !eff.ProviderAllowed(route.Provider) {
+	// agent's own allowlist AND the organization hard constraint (#266). The
+	// signed record names WHICH layer denied — never blame the agent for an
+	// organization rule (#279 review).
+	if denySrc := eff.ProviderDenySource(route.Provider); denySrc != "" {
 		durationMS := time.Since(start).Milliseconds()
-		WriteProviderError(w, wire, http.StatusForbidden, "Agent not allowed for this provider")
-		persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"provider not allowed"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
+		clientMsg := "Provider not allowed for this agent (agent allowlist)"
+		if denySrc == DenySourceOrgProviderAllowlist {
+			clientMsg = "Provider not allowed by organization policy"
+		}
+		WriteProviderError(w, wire, http.StatusForbidden, clientMsg)
+		persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"provider not allowed: " + denySrc}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 		if err != nil {
 			g.handleEvidenceWriteFailure(ctx, err)
 			return
@@ -963,8 +969,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	checkCandidate := func(cCtx context.Context, candProvider, candModel string) failover.FilterResult {
 		candProv, _ := g.config.Provider(candProvider)
 		candEff := ResolveEffectivePolicy(g.config.OrganizationPolicy, candProv, agent.Override)
-		if !candEff.ProviderAllowed(candProvider) {
-			return failover.FilterResult{Filter: "agent_allowlist", Reason: fmt.Sprintf("agent %s not allowed for provider %s", agent.Name, candProvider)}
+		if denySrc := candEff.ProviderDenySource(candProvider); denySrc != "" {
+			// The filter names the layer that denied (#279 review):
+			// organization_provider_allowlist or agent_provider_allowlist.
+			return failover.FilterResult{Filter: denySrc, Reason: fmt.Sprintf("agent %s not allowed for provider %s (%s)", agent.Name, candProvider, denySrc)}
 		}
 		// Provider-level tool governance of the TARGET provider: a fallback
 		// must not deliver tools the target's policy forbids. The body was
@@ -1684,8 +1692,14 @@ func buildGatewayPolicyInput(agent *ResolvedIdentity, eff EffectivePolicy, provi
 		// and every fallback candidate identically (#198).
 		input["agent_max_session_cost"] = eff.MaxSessionCost
 	}
-	if eff.MaxDataTier != nil {
-		input["agent_max_data_tier"] = int(*eff.MaxDataTier)
+	// Tier caps ride per-layer keys so the deny reason names WHICH layer's
+	// restriction fired (#279 review) — the effective minimum still gates
+	// (each rule denies independently; the stricter one always fires).
+	if eff.AgentMaxDataTier != nil {
+		input["agent_max_data_tier"] = int(*eff.AgentMaxDataTier)
+	}
+	if eff.OrgMaxDataTier != nil {
+		input["org_max_data_tier"] = int(*eff.OrgMaxDataTier)
 	}
 	return input
 }
