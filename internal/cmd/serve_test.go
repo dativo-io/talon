@@ -13,7 +13,7 @@ func TestMapToGatewayEvent_MapsAllFields(t *testing.T) {
 	now := time.Now().Add(-time.Second).UTC()
 	event := map[string]interface{}{
 		"timestamp":          now,
-		"agent_name":          "openclaw-main",
+		"agent_name":         "openclaw-main",
 		"model":              "gpt-4o-mini",
 		"pii_action":         "warn",
 		"enforcement_mode":   "shadow",

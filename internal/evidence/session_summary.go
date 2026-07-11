@@ -73,10 +73,10 @@ func BuildSessionSummary(sessionID string, records []*Evidence) SessionSummary {
 // work across small methods keeps each below the cyclomatic-complexity budget.
 type sessionAgg struct {
 	sum       SessionSummary
-	agentIDs   map[string]struct{}
+	agentIDs  map[string]struct{}
 	providers map[string]struct{}
 	models    map[string]struct{}
-	subagents  map[string]*SessionAgentRollup
+	subagents map[string]*SessionAgentRollup
 	// orchAt is the timestamp of the record whose orchestration block
 	// currently supplies SessionSource/Client (earliest wins).
 	orchAt time.Time
@@ -85,10 +85,10 @@ type sessionAgg struct {
 func newSessionAgg(sessionID string) *sessionAgg {
 	return &sessionAgg{
 		sum:       SessionSummary{SessionID: sessionID},
-		agentIDs:   map[string]struct{}{},
+		agentIDs:  map[string]struct{}{},
 		providers: map[string]struct{}{},
 		models:    map[string]struct{}{},
-		subagents:  map[string]*SessionAgentRollup{},
+		subagents: map[string]*SessionAgentRollup{},
 	}
 }
 

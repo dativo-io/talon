@@ -150,8 +150,8 @@ type IdentityRegistry struct {
 //   - two agents resolving to the same key
 func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *secrets.SecretStore) (*IdentityRegistry, error) {
 	reg := &IdentityRegistry{identities: make([]*ResolvedIdentity, 0, len(agents))}
-	byName := make(map[string]string, len(agents))  // name → path
-	byKey := make(map[string]string, len(agents))   // raw key → agent name (build-time dup check only)
+	byName := make(map[string]string, len(agents))   // name → path
+	byKey := make(map[string]string, len(agents))    // raw key → agent name (build-time dup check only)
 	bySecret := make(map[string]string, len(agents)) // secret name → agent name
 
 	for i := range agents {

@@ -16,7 +16,7 @@ type RecordGatewayEvidenceParams struct {
 	CorrelationID           string
 	SessionID               string
 	TenantID                string
-	AgentName              string
+	AgentName               string
 	Team                    string
 	Provider                string
 	Model                   string

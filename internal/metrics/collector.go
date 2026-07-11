@@ -208,7 +208,7 @@ type PlanStats struct {
 type GatewayEvent struct {
 	EvidenceID       string
 	Timestamp        time.Time
-	AgentName         string
+	AgentName        string
 	Model            string
 	PIIDetected      []string
 	PIIAction        string
@@ -296,7 +296,7 @@ type Collector struct {
 	events              chan GatewayEvent
 	done                chan struct{}
 	buckets             map[string]*bucket
-	agentStats         map[string]*agentAccum
+	agentStats          map[string]*agentAccum
 	piiCounts           map[string]int
 	piiRedactions       int
 	toolFiltered        map[string]int
@@ -390,7 +390,7 @@ func NewCollector(enforcementMode string, querier evidence.MetricsQuerier, opts 
 		events:           make(chan GatewayEvent, 1000),
 		done:             make(chan struct{}),
 		buckets:          make(map[string]*bucket),
-		agentStats:      make(map[string]*agentAccum),
+		agentStats:       make(map[string]*agentAccum),
 		piiCounts:        make(map[string]int),
 		toolFiltered:     make(map[string]int),
 		shadowViolations: make(map[string]*shadowViolationAccum),
@@ -798,7 +798,7 @@ func (c *Collector) buildInMemorySnapshot() Snapshot {
 		RequestsTimeline: reqTimeline,
 		PIITimeline:      piiTimeline,
 		CostTimeline:     costTimeline,
-		AgentStats:      callers,
+		AgentStats:       callers,
 		PIIBreakdown:     piiBreakdown,
 		ToolGovernance:   toolGov,
 		ShadowSummary:    shadow,

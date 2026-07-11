@@ -9,7 +9,7 @@ import (
 
 const (
 	quickstartAgentName = "quickstart-local"
-	quickstartTenantID   = "quickstart"
+	quickstartTenantID  = "quickstart"
 )
 
 // QuickstartOptions configures the in-memory proxy quickstart profile.

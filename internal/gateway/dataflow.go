@@ -21,7 +21,7 @@ import (
 type dataFlowInputs struct {
 	CorrelationID    string
 	TenantID         string
-	AgentName       string
+	AgentName        string
 	Provider         string
 	Model            string
 	Allowed          bool

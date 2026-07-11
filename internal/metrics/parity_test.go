@@ -242,7 +242,7 @@ func TestDashboardCountMayLeadPersistedEvidence(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		collector.Record(GatewayEvent{
 			Timestamp:       now,
-			AgentName:        "metrics-caller",
+			AgentName:       "metrics-caller",
 			Model:           "gpt-4o-mini",
 			EnforcementMode: "enforce",
 			CostEUR:         0.0,

@@ -119,7 +119,7 @@ func TestSparkline_SingleSpike(t *testing.T) {
 func TestFetchMetricsSnapshot(t *testing.T) {
 	srv := newMetricsTestServer(t, metricsapi.Snapshot{
 		GeneratedAt: time.Now(),
-		AgentStats: []metricsapi.AgentStat{{Agent: "agent-a"}},
+		AgentStats:  []metricsapi.AgentStat{{Agent: "agent-a"}},
 	})
 	defer srv.Close()
 

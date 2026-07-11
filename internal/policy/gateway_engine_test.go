@@ -39,13 +39,13 @@ func TestGatewayEngine_EvaluateGateway_DenyModelAllowlist(t *testing.T) {
 	require.NoError(t, err)
 
 	allowed, reasons, err := eng.EvaluateGateway(ctx, map[string]interface{}{
-		"provider":              "openai",
-		"model":                 "gpt-4-turbo",
+		"provider":             "openai",
+		"model":                "gpt-4-turbo",
 		"agent_allowed_models": []interface{}{"gpt-4o", "gpt-4o-mini"},
-		"data_tier":             0,
-		"daily_cost":            0.0,
-		"monthly_cost":          0.0,
-		"estimated_cost":        0.01,
+		"data_tier":            0,
+		"daily_cost":           0.0,
+		"monthly_cost":         0.0,
+		"estimated_cost":       0.01,
 	})
 	require.NoError(t, err)
 	require.False(t, allowed)
@@ -234,11 +234,11 @@ func TestGatewayEngine_EvaluateGateway_EgressAndAccessReasonsCombined(t *testing
 	// Model allowlist deny (gateway_access) + egress deny (gateway_egress)
 	// must both surface.
 	allowed, reasons, err := eng.EvaluateGateway(ctx, map[string]interface{}{
-		"provider":              "openai",
-		"model":                 "gpt-4-turbo",
+		"provider":             "openai",
+		"model":                "gpt-4-turbo",
 		"agent_allowed_models": []interface{}{"gpt-4o"},
-		"data_tier":             2,
-		"destination_region":    "US",
+		"data_tier":            2,
+		"destination_region":   "US",
 		"egress_rules": []interface{}{
 			map[string]interface{}{"tier": 2, "allowed_regions": []interface{}{"EU"}},
 		},
@@ -258,12 +258,12 @@ func TestGatewayEngine_EvaluateGateway_DenyDailyCost(t *testing.T) {
 	require.NoError(t, err)
 
 	allowed, reasons, err := eng.EvaluateGateway(ctx, map[string]interface{}{
-		"provider":              "openai",
-		"model":                 "gpt-4o",
-		"data_tier":             0,
-		"daily_cost":            24.0,
-		"monthly_cost":          0.0,
-		"estimated_cost":        2.0,
+		"provider":             "openai",
+		"model":                "gpt-4o",
+		"data_tier":            0,
+		"daily_cost":           24.0,
+		"monthly_cost":         0.0,
+		"estimated_cost":       2.0,
 		"agent_max_daily_cost": 25.0,
 	})
 	require.NoError(t, err)

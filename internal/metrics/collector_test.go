@@ -82,7 +82,7 @@ func TestRecordSingleEvent(t *testing.T) {
 
 	c.Record(GatewayEvent{
 		Timestamp:   time.Now(),
-		AgentName:    "app-1",
+		AgentName:   "app-1",
 		CostEUR:     0.05,
 		LatencyMS:   120,
 		PIIDetected: []string{"email", "iban"},
@@ -566,7 +566,7 @@ func TestSnapshotCrossChecks(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		c.Record(GatewayEvent{
 			Timestamp:   now,
-			AgentName:    "app-a",
+			AgentName:   "app-a",
 			CostEUR:     0.01 * float64(i+1),
 			LatencyMS:   int64(50 + i*10),
 			Blocked:     i == 0,
@@ -582,7 +582,7 @@ func TestSnapshotCrossChecks(t *testing.T) {
 		}
 		c.Record(GatewayEvent{
 			Timestamp:   now,
-			AgentName:    "app-b",
+			AgentName:   "app-b",
 			CostEUR:     0.05,
 			LatencyMS:   100,
 			Blocked:     i == 1,
@@ -715,7 +715,7 @@ func TestCollector_TimeoutDetection(t *testing.T) {
 
 	c.Record(GatewayEvent{
 		Timestamp: time.Now().UTC(),
-		AgentName:  "agent-a",
+		AgentName: "agent-a",
 		TimedOut:  true,
 		HasError:  true,
 	})
@@ -736,7 +736,7 @@ func TestCollector_BackwardCompat_ExistingFields(t *testing.T) {
 
 	c.Record(GatewayEvent{
 		Timestamp:   time.Now().UTC(),
-		AgentName:    "agent-a",
+		AgentName:   "agent-a",
 		CostEUR:     0.25,
 		LatencyMS:   250,
 		PIIDetected: []string{"email", "iban"},

@@ -482,7 +482,7 @@ func (g *Gateway) recordFailoverAttemptEvidence(ctx context.Context, correlation
 		CorrelationID:  correlationID,
 		SessionID:      sessionIDFromContext(ctx),
 		TenantID:       agent.TenantID,
-		AgentName:     agent.Name,
+		AgentName:      agent.Name,
 		Team:           agent.Team,
 		Provider:       rec.Provider,
 		Model:          rec.Model,

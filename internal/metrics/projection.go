@@ -73,7 +73,7 @@ func GatewayEventFromOperationalEvent(ev events.OperationalEvent) GatewayEvent {
 	return GatewayEvent{
 		EvidenceID:    ev.EvidenceID,
 		Timestamp:     ev.Timestamp,
-		AgentName:      firstNonEmpty(ev.Agent, ev.AgentID),
+		AgentName:     firstNonEmpty(ev.Agent, ev.AgentID),
 		Model:         ev.Model,
 		Blocked:       ev.Decision == "blocked",
 		CostEUR:       ev.CostEUR,
@@ -157,7 +157,7 @@ func SnapshotFromEvidenceRecords(records []evidence.Evidence, now time.Time) Sna
 		startTime:        now,
 		enforcementMode:  "standalone",
 		buckets:          make(map[string]*bucket),
-		agentStats:      make(map[string]*agentAccum),
+		agentStats:       make(map[string]*agentAccum),
 		piiCounts:        make(map[string]int),
 		toolFiltered:     make(map[string]int),
 		shadowViolations: make(map[string]*shadowViolationAccum),

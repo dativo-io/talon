@@ -950,7 +950,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptFlow := g.buildDataFlow(dataFlowInputs{
 			CorrelationID:    correlationID,
 			TenantID:         agent.TenantID,
-			AgentName:       agent.Name,
+			AgentName:        agent.Name,
 			Provider:         rec.Provider,
 			Model:            rec.Model,
 			Allowed:          true,
@@ -1288,7 +1288,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, agen
 	dataFlow := g.buildDataFlow(dataFlowInputs{
 		CorrelationID:    correlationID,
 		TenantID:         agent.TenantID,
-		AgentName:       agent.Name,
+		AgentName:        agent.Name,
 		Provider:         provider,
 		Model:            model,
 		Allowed:          allowed,
@@ -1324,7 +1324,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, agen
 		CorrelationID:           correlationID,
 		SessionID:               sessionIDFromContext(ctx),
 		TenantID:                agent.TenantID,
-		AgentName:              agent.Name,
+		AgentName:               agent.Name,
 		Team:                    agent.Team,
 		Provider:                provider,
 		Model:                   model,

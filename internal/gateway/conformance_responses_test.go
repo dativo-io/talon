@@ -46,7 +46,7 @@ type responsesFixture struct {
 	// (warn or redact). The json tag matches the recorded fixture corpus.
 	AgentPIIAction string          `json:"caller_pii_action"`
 	RequestBody    json.RawMessage `json:"request_body"`
-	Upstream        struct {
+	Upstream       struct {
 		Status    int             `json:"status"`
 		JSON      json.RawMessage `json:"json,omitempty"`
 		SSEEvents []string        `json:"sse_events,omitempty"`

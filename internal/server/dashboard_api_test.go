@@ -64,7 +64,7 @@ func TestHandleMetricsJSON(t *testing.T) {
 	s, collector := newTestServerWithDashboard(t, "")
 	collector.Record(metrics.GatewayEvent{
 		Timestamp: time.Now(),
-		AgentName:  "app-1",
+		AgentName: "app-1",
 		CostEUR:   0.05,
 		LatencyMS: 100,
 	})
@@ -127,7 +127,7 @@ func TestHandleMetricsJSON_FullSnapshot(t *testing.T) {
 	now := time.Now()
 	collector.Record(metrics.GatewayEvent{
 		Timestamp:      now,
-		AgentName:       "sales-app",
+		AgentName:      "sales-app",
 		Model:          "gpt-4o",
 		CostEUR:        0.10,
 		LatencyMS:      200,
@@ -140,7 +140,7 @@ func TestHandleMetricsJSON_FullSnapshot(t *testing.T) {
 	})
 	collector.Record(metrics.GatewayEvent{
 		Timestamp: now.Add(1 * time.Second),
-		AgentName:  "hr-app",
+		AgentName: "hr-app",
 		Model:     "claude-3",
 		CostEUR:   0.05,
 		LatencyMS: 100,
@@ -256,7 +256,7 @@ func TestHandleMetricsJSON_MetricsCrossChecks(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		collector.Record(metrics.GatewayEvent{
 			Timestamp:   now,
-			AgentName:    "app-a",
+			AgentName:   "app-a",
 			Model:       "gpt-4o-mini",
 			CostEUR:     0.01 * float64(i+1),
 			LatencyMS:   int64(50 + i*8),
@@ -273,7 +273,7 @@ func TestHandleMetricsJSON_MetricsCrossChecks(t *testing.T) {
 		}
 		collector.Record(metrics.GatewayEvent{
 			Timestamp:   now,
-			AgentName:    "app-b",
+			AgentName:   "app-b",
 			Model:       "claude-3",
 			CostEUR:     0.05,
 			LatencyMS:   100,
