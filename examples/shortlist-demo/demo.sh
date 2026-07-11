@@ -59,8 +59,8 @@ switch_agent() {
   [[ "$CURRENT_ACT_AGENT" == "$want" ]] && return 0
   echo "  ↻  switching gateway agent: ${CURRENT_ACT_AGENT} → ${want} (#266; single-process multi-agent is #267)"
   TALON_ACT_AGENT="$want" dc up -d talon >/dev/null 2>&1
-  local i
-  for i in $(seq 1 30); do
+  local _attempt
+  for _attempt in $(seq 1 30); do
     curl -sf "${GATEWAY}/health" >/dev/null 2>&1 && break
     sleep 1
   done
