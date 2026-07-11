@@ -12,6 +12,7 @@ echo ""
 
 echo "[1/5] Simple request (no PII)..."
 curl -s -X POST "$ENDPOINT" \
+  -H "Authorization: Bearer ${TALON_AGENT_KEY:-talon-demo-key}" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"What are the key trends in European AI regulation?"}]}' \
   | python3 -m json.tool 2>/dev/null || true
@@ -19,6 +20,7 @@ echo ""
 
 echo "[2/5] Request with email PII..."
 curl -s -X POST "$ENDPOINT" \
+  -H "Authorization: Bearer ${TALON_AGENT_KEY:-talon-demo-key}" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"My email is jan@example.com, help me reset my password"}]}' \
   | python3 -m json.tool 2>/dev/null || true
@@ -26,6 +28,7 @@ echo ""
 
 echo "[3/5] Request with IBAN PII..."
 curl -s -X POST "$ENDPOINT" \
+  -H "Authorization: Bearer ${TALON_AGENT_KEY:-talon-demo-key}" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Please process payment to IBAN DE89370400440532013000 for invoice 12345"}]}' \
   | python3 -m json.tool 2>/dev/null || true
@@ -33,6 +36,7 @@ echo ""
 
 echo "[4/5] Request with multiple PII types..."
 curl -s -X POST "$ENDPOINT" \
+  -H "Authorization: Bearer ${TALON_AGENT_KEY:-talon-demo-key}" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Customer Maria Garcia, email maria@company.eu, phone +49 170 1234567, wants to update her IBAN to DE89370400440532013000"}]}' \
   | python3 -m json.tool 2>/dev/null || true
@@ -40,6 +44,7 @@ echo ""
 
 echo "[5/5] Request with a different model..."
 curl -s -X POST "$ENDPOINT" \
+  -H "Authorization: Bearer ${TALON_AGENT_KEY:-talon-demo-key}" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4-turbo","messages":[{"role":"user","content":"Summarize GDPR Article 30 requirements for processing records"}]}' \
   | python3 -m json.tool 2>/dev/null || true

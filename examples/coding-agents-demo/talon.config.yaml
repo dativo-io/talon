@@ -24,23 +24,13 @@ gateway:
       base_url: "http://mock-provider:9090"
       secret_name: "openai-api-key"
 
-  callers:
-    - name: "claude-code"
-      tenant_key: "talon-gw-demo-coding-0001"
-      tenant_id: "demo"
-      team: "coding"
-      policy_overrides:
-        pii_action: "warn"            # PII request is evidenced + warned, not blocked
-        response_pii_action: "allow"  # streaming stays interactive (see LIMITATIONS.md)
-        max_session_cost: 0.02        # SOFT cap — trips within a handful of mock requests
-        max_daily_cost: 5.00
-        max_monthly_cost: 50.00
-
-  default_policy:
+  # Identity + overrides live in agent.talon.yaml (#266): the demo runs as the
+  # claude-code agent, key seeded by the compose stack
+  # (claude-code-talon-key = talon-gw-demo-coding-0001).
+  organization_policy:
     default_pii_action: "warn"
     response_pii_action: "allow"
     max_daily_cost: 10.00
     max_monthly_cost: 100.00
-    require_caller_id: true
     log_prompts: true
     log_responses: false

@@ -1,5 +1,7 @@
 # OpenClaw + Talon primer — OpenAI only.
-# One provider (OpenAI), one caller (openclaw-main). Talon governs every request before forwarding.
+# One provider (OpenAI), one agent (openclaw-main; agent.talon.yaml carries the
+# identity + overrides, #266). Talon governs every request before forwarding.
+# Mint the agent traffic key: talon secrets set openclaw-main-talon-key "$(openssl rand -hex 24)"
 
 gateway:
   enabled: true
@@ -13,28 +15,15 @@ gateway:
       base_url: "https://api.openai.com"
       allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
 
-  callers:
-    # tenant_key below is the CALLER TOKEN (what OpenClaw sends). Not TALON_SECRETS_KEY.
-    # TALON_SECRETS_KEY encrypts the vault; this key only identifies the caller.
-    - name: "openclaw-main"
-      tenant_key: "talon-gw-openclaw-001"
-      tenant_id: "default"
-      team: "engineering"
-      allowed_providers: ["openai"]
-      policy_overrides:
-        max_daily_cost: 25.00
-        max_monthly_cost: 500.00
-        pii_action: "redact"
-        allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
-
-  default_policy:
+  # Identity + per-use-case overrides live in agent.talon.yaml (#266); this
+  # block is the organization baseline every agent inherits.
+  organization_policy:
     default_pii_action: "warn"
     # warn = audit PII in evidence (recommended for LLM-generated content).
     # Escalate to "redact" or "block" for stricter environments.
     response_pii_action: "warn"
     max_daily_cost: 100.00
     max_monthly_cost: 2000.00
-    require_caller_id: true
     log_prompts: true
     log_responses: false
     # Tool governance: strip dangerous tools from LLM requests before the model sees them.
@@ -56,7 +45,7 @@ gateway:
 
   rate_limits:
     global_requests_per_min: 300
-    per_caller_requests_per_min: 60
+    per_agent_requests_per_min: 60
 
   timeouts:
     connect_timeout: 10s
@@ -65,6 +54,6 @@ gateway:
 
 # Tool governance controls which tools the LLM is told about — before it ever
 # tries to call one. forbidden_tools patterns (glob) are merged across
-# default_policy, provider, and per-caller policy_overrides. allowed_tools on
+# organization_policy, provider, and per-agent overrides. allowed_tools on
 # a caller act as a strict allowlist (only those tools pass through).
 # See docs/guides/openclaw-integration.md for the full tool governance guide.

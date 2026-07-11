@@ -119,17 +119,17 @@ and graph-level evidence lineage.
 
 ### Authentication
 
-The `/v1/graph/events` endpoint is protected by tenant key authentication.
-When `tenant_keys` are configured in `talon.config.yaml`, requests must
-include `Authorization: Bearer <tenant_key>`. In dev mode (no tenant keys
+The `/v1/graph/events` endpoint is protected by agent-key authentication (the identity registry projection, #266).
+When agent keys are configured (the identity registry projection, #266), requests must
+include `Authorization: Bearer <agent-key-value>`. In dev mode (no keys
 configured), the endpoint is open.
 Do not send `tenant_id` in the event body when auth is enabled; Talon binds
 tenant identity from the bearer key and rejects mismatches.
 
-The Python SDK handles this automatically when you pass `tenant_key`:
+The Python SDK handles this automatically when you pass `agent_key`:
 
 ```python
-talon = TalonClient("http://localhost:8080", tenant_key="your-tenant-key")
+talon = TalonClient("http://localhost:8080", agent_key="your-agent-key-value")
 # All requests include: Authorization: Bearer your-tenant-key
 ```
 
@@ -152,7 +152,7 @@ from talon_sdk import TalonClient
 
 talon = TalonClient(
     base_url="http://localhost:8080",
-    tenant_key="your-tenant-key",
+    agent_key="your-agent-key-value",
 )
 ```
 
@@ -195,7 +195,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 from typing import TypedDict
 
-talon = TalonClient("http://localhost:8080", tenant_key="your-key")
+talon = TalonClient("http://localhost:8080", agent_key="your-key")
 session_id = "sess_notebook_graph_001"
 run_id = talon.new_run_id()
 
@@ -244,7 +244,7 @@ from talon_sdk import TalonClient
 
 talon = TalonClient(
     base_url=os.environ["TALON_URL"],
-    tenant_key=os.environ["TALON_TENANT_KEY"],
+    agent_key=os.environ["TALON_AGENT_KEY"],
 )
 
 def governed_pipeline(query: str):
@@ -402,12 +402,12 @@ compliance:
   human_oversight: on-demand
 ```
 
-### `talon.config.yaml` server settings
+### Authentication settings
 
-```yaml
-server:
-  port: 8080
-  admin_key: "your-admin-key"
-  tenant_keys:
-    default: "your-tenant-key"
+Admin authority comes from `TALON_ADMIN_KEY`; workload auth comes from the
+agent key bound in `agent.talon.yaml` (#266):
+
+```bash
+export TALON_ADMIN_KEY="your-admin-key"
+talon secrets set my-graph-agent-talon-key "$(openssl rand -hex 24)"
 ```

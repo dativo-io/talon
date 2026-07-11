@@ -216,7 +216,7 @@ PREVIEWEOF
       echo "  ✓  serve auto-dispatch removed approved plan from pending list"
       record_pass
     fi
-    # Section 24 runs without --gateway, so no tenant keys are loaded.
+    # Section 24 runs without --gateway, so no agent keys are loaded.
     # Use the admin key to verify evidence read access.
     assert_pass "admin key can read /v1/evidence → 200" \
       test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=10")" = "200"

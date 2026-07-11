@@ -191,9 +191,9 @@ http://localhost:8080/dashboard?talon_admin_key=$TALON_ADMIN_KEY
 
 | Action | Method | Auth |
 |--------|--------|------|
-| Trigger run | `POST /v1/agents/run` | Tenant key |
-| List pending | `GET /v1/plans/pending` | Tenant key or admin key |
-| Get plan | `GET /v1/plans/{id}` | Tenant key or admin key |
+| Trigger run | `POST /v1/agents/run` | Agent key |
+| List pending | `GET /v1/plans/pending` | Agent key or admin key |
+| Get plan | `GET /v1/plans/{id}` | Agent key or admin key |
 | Approve | `POST /v1/plans/{id}/approve` | Admin key only |
 | Reject | `POST /v1/plans/{id}/reject` | Admin key only |
 | Modify | `POST /v1/plans/{id}/modify` | Admin key only |
@@ -204,7 +204,7 @@ Trigger example:
 
 ```bash
 curl -s -X POST http://localhost:8080/v1/agents/run \
-  -H "Authorization: Bearer <tenant_key>" \
+  -H "Authorization: Bearer <agent-key-value>" \
   -H "Content-Type: application/json" \
   -d '{"tenant_id":"default","agent_name":"my-agent","prompt":"Your query"}' | jq .
 ```
@@ -259,7 +259,7 @@ Approval is audited even if execution never happens.
 - [ ] **Without serve:** `talon plan execute` returns LLM output + evidence
 - [ ] **With serve:** `plan_dispatch` evidence within ~2s of approve
 - [ ] Reject: plan never executes; reason in evidence
-- [ ] Tenant key cannot `POST .../approve` (401/403)
+- [ ] Agent key cannot `POST .../approve` (401/403)
 
 Smoke parity: [tests/smoke_sections/24_plan_dispatch.sh](../../tests/smoke_sections/24_plan_dispatch.sh).
 
@@ -275,7 +275,7 @@ Structured testcase inventory and phased E2E script: [Plan Review E2E test case]
 | `intent classify` true but run not gated | Tool simulator vs run gate | See sections above |
 | Approved but no LLM output | Serve not running; no `plan execute` | Run `talon plan execute <id>` |
 | PII plan fails at execute | Tier 2 → Bedrock not configured | Adjust `tier_2` routing or configure Bedrock |
-| `/v1/evidence` 401 | No gateway tenant keys on minimal serve | Use admin key |
+| `/v1/evidence` 401 | No keyed agent on minimal serve | Use admin key |
 | `plan_<id>: No such file` | Pasted placeholder literally | Use IDs from `talon plan pending` |
 | Both runs gated after "on-demand" test | `human_oversight` still `always` | `grep human_oversight agent.talon.yaml` |
 

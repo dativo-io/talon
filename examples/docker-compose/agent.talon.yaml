@@ -4,6 +4,11 @@ agent:
   description: "Demo agent for the docker-compose quick start"
   version: "0.1.0"
   model_tier: 0
+  tenant_id: demo
+  # Traffic key (#266): the compose stack seeds demo-agent-talon-key with
+  # "talon-demo-key"; the demo client presents that value as Bearer.
+  key:
+    secret_name: "demo-agent-talon-key"
 
 capabilities:
   allowed_tools: []

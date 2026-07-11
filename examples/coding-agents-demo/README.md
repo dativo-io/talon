@@ -64,18 +64,15 @@ gateway:
       enabled: true
       base_url: "http://localhost:9090"
       secret_name: "openai-api-key"
-  callers:
-    - name: "claude-code"
-      tenant_key: "talon-gw-demo-coding-0001"
-      tenant_id: "demo"
-      policy_overrides:
-        pii_action: "warn"
-        response_pii_action: "allow"
-        max_session_cost: 0.02
+  organization_policy:
+    response_pii_action: "allow"
 EOF
+# The demo runs as the claude-code agent (agent.talon.yaml in this directory
+# carries the identity + overrides, #266).
 export TALON_SECRETS_KEY=$(openssl rand -hex 16) TALON_SIGNING_KEY=$(openssl rand -hex 16) TALON_ADMIN_KEY=demo-admin-key
 talon secrets set anthropic-api-key fake   # the mock ignores auth
 talon secrets set openai-api-key fake
+talon secrets set claude-code-talon-key talon-gw-demo-coding-0001   # the agent traffic key
 talon serve --gateway --gateway-config talon.config.yaml --port 8080
 ```
 

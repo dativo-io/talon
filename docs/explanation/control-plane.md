@@ -12,7 +12,7 @@ Companies create more AI use cases than they can reliably operate. Each one — 
 |--------|---------------|---------------|
 | **Cost control** | Spend is visible and capped per use case | Daily/monthly caps deny **before** the provider call; session budgets (soft caps); cache-aware, currency-labeled attribution |
 | **Reliability** | One failure behavior instead of N | Error-driven fallback chains on transient failures, every candidate policy-checked, fail-closed on exhaustion |
-| **Shared policy** | Central policy defaults with explicit exceptions | Gateway defaults + per-caller overrides for PII, tools, models, budgets, egress/sovereignty |
+| **Shared policy** | Central policy defaults with explicit exceptions | Organization baseline + one explicit per-agent override for PII, tools, models, budgets, egress/sovereignty (#266) |
 | **Session understanding** | Know what each use case did, spent, and why it failed | Session identity, session-scoped audit and cost rollups, dashboard drill-down |
 
 Underneath all four sits the **proof layer**: every enforcement decision becomes an HMAC-signed, tamper-evident record you can verify (including offline) and export. Compliance reports (GDPR Art. 30 RoPA, EU AI Act Annex IV) are generated from that evidence — supporting controls and documentation, never a compliance determination. See [Evidence store](evidence-store.md).
@@ -24,8 +24,8 @@ The category describes where the product is going as well as where it is. To kee
 ```
 Available today
 ───────────────
-Per-caller cost caps (deny before the provider call) + session budgets (soft)
-Gateway policy defaults + per-caller overrides
+Per-agent cost caps (deny before the provider call) + session budgets (soft)
+Organization baseline + one explicit per-agent override (one effective-policy computation, #266)
 Policy-valid, error-driven provider fallback
 Session identity, session-scoped audit and cost rollups
 MCP tool-call interception; tool schema filtering
@@ -33,7 +33,7 @@ Signed evidence: verify, export, compliance reports
 
 Active MVP direction
 ────────────────────
-Organization baseline + one explicit per-agent override (one effective-policy computation)
+agents_dir discovery: one agent.talon.yaml per use case, one process serving all (#267)
 `talon agents` fleet attention queue (list/show/enable/disable)
 CLI-primary fleet operations; dashboard as a read-only projection of the same semantics
 agent.enabled + periodic safe config reload
@@ -43,8 +43,7 @@ Same-provider retries; cost warning thresholds as signed evidence + org webhook
 ## Vocabulary
 
 - **AI use case** — the public product term: one operated unit of AI usage (a bot, an agent, a copilot integration).
-- **Agent** — the CLI/config object that represents one AI use case. One `agent.talon.yaml` describes one use case; `agent.name` is its operational identity in one Talon installation. The intended model is one active Talon key per agent, so traffic separates cleanly by use case.
-- **Caller / tenant** — implementation terms in today's gateway configuration (`gateway.callers[]`, `tenant_key`); they map onto the agent/use-case identity and will converge with it over time.
+- **Agent** — the CLI/config object that represents one AI use case. One `agent.talon.yaml` describes one use case; `agent.name` is its operational identity in one Talon installation. Shipped model (#266): one active vault-bound Talon key per agent — the presented key IS the traffic identity, and `tenant_id` derives from it.
 - **Evidence** — the signed record of a decision; the proof layer, not the front door.
 
 ## Operator model: CLI primary, dashboard secondary

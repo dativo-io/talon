@@ -72,7 +72,7 @@ policies:
     max_retries_per_node: 3
 POLICYEOF
 
-  # Gateway config with tenant key so Bearer auth is exercised (matches section 12 pattern).
+  # Gateway config with agent key so Bearer auth is exercised (matches section 12 pattern).
   if [[ -f "$dir/talon.config.yaml" ]] && ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
     cat >> "$dir/talon.config.yaml" <<GWEOF
 

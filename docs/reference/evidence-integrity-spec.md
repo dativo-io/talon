@@ -149,7 +149,7 @@ nested fields are:
   (adapter-detected: `"claude-code"`, `"codex"`, or `"generic"`),
   `session_source` (`client_asserted` | `vendor_asserted` | `synthetic`), and
   `provenance` (always `"client_asserted"` in this version). Attribution
-  metadata only — as trustworthy as the caller that presented the tenant key;
+  metadata only — as trustworthy as the agent whose key was presented;
   never a policy input. All fields optional/omitempty.
 - `session_budget` (optional, spec 1.8, #198): the numbers a
   `session_budget_exceeded` gateway deny was decided on. Fields: `limit` (the

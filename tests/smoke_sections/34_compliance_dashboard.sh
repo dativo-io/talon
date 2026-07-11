@@ -35,7 +35,7 @@ compliance:
     contact: "privacy@smoke.test"
 EOF
 
-  # Gateway config so tenant keys exist (to verify tenant keys are rejected
+  # Gateway config so agent keys exist (to verify agent keys are rejected
   # on admin-only compliance endpoints).
   if ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
     cat >> "$dir/talon.config.yaml" <<'GWEOF'
@@ -115,12 +115,12 @@ GWEOF
   assert_pass "compliance exports recorded control-plane evidence" \
     jq -e '[.entries[] | select(.id != null)] | length > 0' <<< "$cp_evidence" &>/dev/null
 
-  # --- 34.5: Auth — admin-only; tenant key and anonymous rejected ---
+  # --- 34.5: Auth — admin-only; agent key and anonymous rejected ---
   assert_pass "coverage without key → 401" \
     test "$(smoke_get_code "$base_url" "/v1/compliance/coverage")" = "401"
-  assert_pass "coverage with tenant key → 401" \
+  assert_pass "coverage with agent key → 401" \
     test "$(smoke_get_code "$base_url" "/v1/compliance/coverage" "Bearer $agent_key")" = "401"
-  assert_pass "ropa with tenant key → 401" \
+  assert_pass "ropa with agent key → 401" \
     test "$(smoke_get_code "$base_url" "/v1/compliance/ropa" "Bearer $agent_key")" = "401"
   assert_pass "annex-iv without key → 401" \
     test "$(smoke_get_code "$base_url" "/v1/compliance/annex-iv")" = "401"

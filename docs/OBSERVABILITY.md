@@ -176,7 +176,7 @@ The dashboard snapshot includes:
 | `requests_timeline` | array | 5-minute bucketed request counts. |
 | `pii_timeline` | array | 5-minute bucketed PII detection counts. |
 | `cost_timeline` | array | 5-minute bucketed cost in EUR. |
-| `caller_stats` | array | Per-caller aggregates (requests, PII, blocked, cost, latency). |
+| `agent_stats` | array | Per-agent aggregates (requests, PII, blocked, cost, latency). |
 | `pii_breakdown` | array | Detections broken down by PII type (email, IBAN, phone, etc.). |
 | `model_breakdown` | array | Requests and cost broken down by LLM model. |
 | `tool_governance` | object | Tool filtering stats (total, filtered, by risk level, anomalous agents). |

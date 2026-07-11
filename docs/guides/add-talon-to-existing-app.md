@@ -48,11 +48,15 @@ gateway:
       enabled: true
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
-  callers:
-    - name: "my-app"
-      tenant_key: "talon-gw-myapp-001"
-  default_policy:
+  organization_policy:
     log_prompts: true
+```
+
+Identity lives in `agent.talon.yaml` (#266) — the scaffold binds
+`my-app-talon-key`; mint the key your app will present:
+
+```bash
+talon secrets set my-app-talon-key "$(openssl rand -hex 24)"
 ```
 
 Shadow mode means Talon logs every request and does not block. You can switch to `enforce` later.
@@ -125,7 +129,7 @@ console.log(completion.choices[0].message.content);
 ```bash
 curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer talon-gw-myapp-001" \
+  -H "Authorization: Bearer <value-of-my-app-talon-key>" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hello in one word."}],"max_tokens":10}'
 ```
 

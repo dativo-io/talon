@@ -1,0 +1,19 @@
+# Gateway example — OpenClaw use case (#266).
+# Mint: talon secrets set openclaw-main-talon-key "$(openssl rand -hex 24)"
+agent:
+  name: openclaw-main
+  version: 1.0.0
+  key:
+    secret_name: "openclaw-main-talon-key"
+policies:
+  cost_limits:
+    daily: 25.00
+    monthly: 500.00
+  models:
+    allowed: ["gpt-4o", "gpt-4o-mini"]
+  allowed_providers: ["openai", "anthropic"]
+  data_classification:
+    input_scan: true
+    redact_input: true
+metadata:
+  team: engineering

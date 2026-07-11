@@ -63,7 +63,7 @@ def run_with_governance_events():
 
     talon = TalonClient(
         base_url=os.environ.get("TALON_URL", "http://localhost:8080"),
-        tenant_key=os.environ.get("TALON_TENANT_KEY", ""),
+        agent_key=os.environ.get("TALON_AGENT_KEY", ""),
     )
 
     run_id = talon.new_run_id()

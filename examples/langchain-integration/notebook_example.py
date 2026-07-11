@@ -19,7 +19,7 @@ import os
 
 # Configure these for your environment:
 TALON_URL = os.environ.get("TALON_URL", "http://localhost:8080")
-TALON_TENANT_KEY = os.environ.get("TALON_TENANT_KEY", "")
+TALON_AGENT_KEY = os.environ.get("TALON_AGENT_KEY", "")
 TALON_CALLER_KEY = os.environ.get("TALON_CALLER_KEY", "")
 
 
@@ -56,7 +56,7 @@ def cell_langgraph_stateful():
     from langgraph.graph import END, StateGraph
     from talon_sdk import TalonClient
 
-    talon = TalonClient(TALON_URL, TALON_TENANT_KEY)
+    talon = TalonClient(TALON_URL, TALON_AGENT_KEY)
     run_id = talon.new_run_id()
     session_id = f"sess_{run_id}"
 

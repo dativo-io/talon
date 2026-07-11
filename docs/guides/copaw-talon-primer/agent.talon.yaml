@@ -1,43 +1,25 @@
-# Minimal policy for Talon server when running in gateway-only mode (CoPaw).
-agent:
-  name: gateway-copaw-primer
-  description: Talon gateway for CoPaw and other LLM API clients
-  version: 1.0.0
-  model_tier: 0
+# CoPaw + Talon primer — the CoPaw use case (#266).
+# Mint the traffic key CoPaw presents:
+#   talon secrets set copaw-main-talon-key "$(openssl rand -hex 24)"
 
-capabilities:
-  allowed_tools: []
-  forbidden_patterns: []
+agent:
+  name: copaw-main
+  description: CoPaw LLM traffic governed by Talon
+  version: 1.0.0
+  key:
+    secret_name: "copaw-main-talon-key"
 
 policies:
   cost_limits:
-    per_request: 1.0
-    daily: 10.0
-    monthly: 200.0
-  resource_limits:
-    timeout: { operation: "60s", tool_execution: "5m", agent_total: "30m" }
-  rate_limits:
-    requests_per_minute: 60
-    concurrent_executions: 10
-    per_agent_requests_per_minute: 30
-    circuit_breaker_threshold: 5
-    circuit_breaker_window: "60s"
-  data_classification: { input_scan: true, output_scan: true, redact_pii: false }
-  model_routing:
-    tier_0: { primary: gpt-4o-mini, location: any }
-
-audit:
-  log_level: minimal
-  retention_days: 90
-  include_prompts: false
-  include_responses: false
-  # include_original_prompts: false  # When true + redact_input, also stores pre-redaction prompt (forensic opt-in; see ADR-002)
-
-compliance:
-  frameworks: []
-  data_residency: eu
+    daily: 25.00
+    monthly: 500.00
+  models:
+    allowed: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+  allowed_providers: ["openai"]
+  data_classification:
+    input_scan: true
+    redact_input: true
 
 metadata:
-  department: platform
-  owner: devops@company.eu
-  tags: [gateway, copaw]
+  team: engineering
+  tags: ["copaw"]

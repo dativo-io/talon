@@ -1,0 +1,23 @@
+# Coding-agents demo — the claude-code use case (#266).
+# The compose stack seeds the traffic key:
+#   talon secrets set claude-code-talon-key talon-gw-demo-coding-0001
+
+agent:
+  name: claude-code
+  description: Coding-agents demo traffic governed by Talon
+  version: 1.0.0
+  tenant_id: demo
+  key:
+    secret_name: "claude-code-talon-key"
+
+policies:
+  cost_limits:
+    daily: 5.00
+    monthly: 50.00
+  session_limits:
+    max_cost: 0.02   # SOFT cap — trips within a handful of mock requests
+  data_classification:
+    input_scan: true # PII request is evidenced + warned, not blocked
+
+metadata:
+  team: coding

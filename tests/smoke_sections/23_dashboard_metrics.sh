@@ -815,7 +815,7 @@ CACHEEOF
   echo ""
   echo "  -- 23.11: Enhanced metrics consistency checks (Prompt 16) --"
 
-  # 23.11a: Per-caller outcome accounting: successful + failed + denied == requests
+  # 23.11a: Per-agent outcome accounting: successful + failed + denied == requests
   local caller_outcome_ok=true
   for cname in $(jq -r '.agent_stats[].agent' <<< "$snap_after" 2>/dev/null); do
     local cs; cs="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c)' <<< "$snap_after")"
@@ -881,7 +881,7 @@ CACHEEOF
     else
       log_failure "summary total_timed_out($s_tout) > total_failed($s_fail)" "invariant"
     fi
-    # summary totals == sum of per-caller fields
+    # summary totals == sum of per-agent fields
     local cs_succ_sum cs_fail_sum cs_deny_sum cs_tout_sum
     cs_succ_sum="$(jq '[.agent_stats[].successful] | add // 0' <<< "$snap_after")"
     cs_fail_sum="$(jq '[.agent_stats[].failed] | add // 0' <<< "$snap_after")"

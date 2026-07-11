@@ -30,9 +30,9 @@ allowlist denials, and dashboard metrics), open
 Send lifecycle events to `/v1/graph/events` for step-level control,
 retry governance, and evidence lineage across multi-step workflows.
 
-**Authentication:** When `tenant_keys` are configured in
-`talon.config.yaml`, requests require `Authorization: Bearer <tenant_key>`.
-The Python SDK sets this automatically when you pass `tenant_key`.
+**Authentication:** When agent keys are configured in
+`talon.config.yaml`, requests require `Authorization: Bearer <agent_key>`.
+The Python SDK sets this automatically when you pass `agent_key`.
 Do not include `tenant_id` in event payloads when auth is enabled; Talon
 derives tenant identity from the bearer key.
 
@@ -46,7 +46,7 @@ boundaries match actual node execution.
 ```python
 from talon_sdk import TalonClient
 
-talon = TalonClient("http://localhost:8080", tenant_key="your-key")
+talon = TalonClient("http://localhost:8080", agent_key="your-key")
 run_id = talon.new_run_id()
 session_id = "sess_langgraph_demo_001"
 talon.run_start(run_id, "my-agent", framework="langgraph", session_id=session_id)

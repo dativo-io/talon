@@ -14,7 +14,7 @@ A "PII proxy" here means a service that sits in front of your LLM API and scans 
 
 **What Talon does:** Talon sits in front of both the LLM and the tool layer. For the LLM API gateway, it inspects the `tools` array in the request and strips or allows per policy; for MCP, it intercepts `tools/call` and `tools/list`. Forbidden tools are denied before execution. Every allowed or denied tool call is recorded.
 
-**Proof:** Gateway: configure `default_policy.forbidden_tools` or per-caller `policy_overrides.allowed_tools` / `forbidden_tools` in your gateway config. Send a request that includes a forbidden tool; the request is denied and evidence shows the reason. MCP: use `allowed_tools` in the proxy policy; call a tool not in the list and see it blocked. CLI: `talon audit list` shows rows with `blocked:tool` when a tool was denied.
+**Proof:** Gateway: configure `organization_policy.forbidden_tools` in the gateway config or per-agent `capabilities.allowed_tools` / `forbidden_tools` in the agent file. Send a request that includes a forbidden tool; the request is denied and evidence shows the reason. MCP: use `allowed_tools` in the proxy policy; call a tool not in the list and see it blocked. CLI: `talon audit list` shows rows with `blocked:tool` when a tool was denied.
 
 ---
 
@@ -26,7 +26,7 @@ A "PII proxy" here means a service that sits in front of your LLM API and scans 
 
 **What Talon does:** The gateway keeps a running cost total per caller (daily and optionally monthly). Before every forward, it estimates the cost of the request and checks whether the caller would exceed their limit. If they would, the request is denied and no call is made to the LLM. Evidence is still written (decision: denied, reason: budget).
 
-**Proof:** Rego in `internal/policy/rego/gateway_access.rego`: `deny` when `input.daily_cost + input.estimated_cost > input.caller_max_daily_cost`. Set `policy_overrides.max_daily_cost` for a caller to a small value (e.g. 0.01), send a request that would exceed it; the response is a denial and `talon audit list` shows the denied decision and reason.
+**Proof:** Rego in `internal/policy/rego/gateway_access.rego`: `deny` when `input.daily_cost + input.estimated_cost > input.agent_max_daily_cost`. Set `policies.cost_limits.daily` in the agent file to a small value (e.g. 0.01), send a request that would exceed it; the response is a denial and `talon audit list` shows the denied decision and reason.
 
 ---
 

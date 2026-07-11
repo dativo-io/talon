@@ -6,24 +6,31 @@ Use Talon from GitHub Actions, GitLab CI, or any pipeline so every LLM call (e.g
 
 ## Option A: LLM API gateway (recommended for CI)
 
-The pipeline job has a **gateway caller tenant key**. It sends HTTP requests to your Talon server's gateway; Talon forwards to the real provider and records evidence. No Talon binary is required in the runner.
+The pipeline job has its own **agent key** — CI is one AI use case with one agent.talon.yaml (#266). It sends HTTP requests to your Talon server's gateway; Talon forwards to the real provider and records evidence. No Talon binary is required in the runner.
 
-### 1. Configure a caller for CI
+### 1. Configure an agent for CI
 
-In your gateway config, add a caller (e.g. `ci-openai`) with a dedicated tenant key and cost limits:
+Create an agent file for the pipeline (e.g. `ci-openai`) with its own cost limits, and mint its key:
 
 ```yaml
-gateway:
-  callers:
-    - name: "ci-openai"
-      tenant_key: "talon-gw-ci-secret"
-      tenant_id: "default"
-      policy_overrides:
-        max_daily_cost: 5.00
-        allowed_models: ["gpt-4o-mini"]
+# ci-openai/agent.talon.yaml
+agent:
+  name: ci-openai
+  version: 1.0.0
+  key:
+    secret_name: "ci-openai-talon-key"
+policies:
+  cost_limits:
+    daily: 5.00
+  models:
+    allowed: ["gpt-4o-mini"]
 ```
 
-Store the caller key as a secret in GitHub/GitLab (e.g. `TALON_GATEWAY_KEY`). Store the real OpenAI key in Talon’s vault on the server.
+```bash
+talon secrets set ci-openai-talon-key "$(openssl rand -hex 24)"
+```
+
+Store that key value as a secret in GitHub/GitLab (e.g. `TALON_GATEWAY_KEY`). Store the real OpenAI key in Talon’s vault on the server.
 
 ### 2. Point the job at the gateway
 
@@ -32,7 +39,7 @@ Set the base URL to Talon’s gateway. Example for OpenAI chat completions:
 ```bash
 # In GitHub Actions or GitLab CI
 export OPENAI_BASE_URL="https://talon.example.com/v1/proxy/openai/v1"
-export OPENAI_API_KEY="$TALON_GATEWAY_KEY"   # caller key, not real OpenAI key
+export OPENAI_API_KEY="$TALON_GATEWAY_KEY"   # agent key, not real OpenAI key
 ```
 
 Then run your existing script or tool that uses the OpenAI SDK; it will call Talon instead of OpenAI. Talon will use the vault-stored real key to forward requests.
@@ -54,7 +61,7 @@ Then run your existing script or tool that uses the OpenAI SDK; it will call Tal
 
 ### 3. Why this helps compliance
 
-Every LLM call gets an evidence ID and is stored with tenant, caller, cost, and policy decision. For DORA/NIS2 you can demonstrate that automated changes (e.g. PR summaries) are logged and attributable.
+Every LLM call gets an evidence ID and is stored with tenant, agent, cost, and policy decision. For DORA/NIS2 you can demonstrate that automated changes (e.g. PR summaries) are logged and attributable.
 
 ---
 

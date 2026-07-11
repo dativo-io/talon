@@ -85,11 +85,11 @@ PY
     -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}')"
   assert_pass "quickstart no-key request returns 401" test "$code_no_key" = "401"
 
-  # Quickstart must NOT inject a synthetic tenant key, and when no tenant keys
+  # Quickstart must NOT inject a synthetic agent key, and when no agent keys
   # are configured the relocated agent chat route is not mounted at all. This
   # keeps quickstart a strict host-root facade: without an operator-provided
   # tenant auth setup, there is no dev-mode-open backdoor to tenant agent chat.
-  # A 404 here proves both: the synthetic tenant key is gone AND the relocated
+  # A 404 here proves both: the synthetic agent key is gone AND the relocated
   # route is gated on real tenant-key configuration.
   local code_relocated
   code_relocated="$(curl -s -o /tmp/talon_qs_agent.json -w '%{http_code}' -X POST "${quick_base}/v1/agents/chat/completions" \

@@ -13,7 +13,7 @@ test_section_12_http_api() {
   smoke_bind_agent_key "$dir" "${TALON_AGENT_KEY}"
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   smoke_tighten_limits "$dir"
-  # Add minimal gateway block so serve loads tenant keys and "tenant key can read /v1/evidence" can pass.
+  # Add minimal gateway block so serve loads the agent key and "agent key can read /v1/evidence" can pass.
   # Use unquoted heredoc so $TALON_AGENT_KEY is expanded into the caller list.
   if [[ -f "$dir/talon.config.yaml" ]] && ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
     cat >> "$dir/talon.config.yaml" <<GWEOF
@@ -120,9 +120,9 @@ GWEOF
   assert_pass "No key → 401" test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/evidence)" = "401"
   local tenant_ev_code; tenant_ev_code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $agent_key" http://127.0.0.1:8080/v1/evidence)"
   if [[ "$tenant_ev_code" == "200" ]]; then
-    assert_pass "tenant key can read /v1/evidence (Authorization Bearer) → 200" true
+    assert_pass "agent key can read /v1/evidence (Authorization Bearer) → 200" true
   else
-    echo "  -  tenant key /v1/evidence returned $tenant_ev_code (gateway callers may not be loaded in this env)"
+    echo "  -  agent key /v1/evidence returned $tenant_ev_code (agent keys may not be loaded in this env)"
   fi
   local base_url="http://127.0.0.1:8080"
   # Session lifecycle checks: create + join via API and confirm continuity.
@@ -203,12 +203,12 @@ GWEOF
   fi
   rm -f "$run1_headers" "$run1_body" /tmp/talon_smoke_run2_body.json 2>/dev/null || true
   assert_pass "Wrong admin key → 401" test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: wrong-key" http://127.0.0.1:8080/v1/evidence)" = "401"
-  # POST /mcp is tenant-only (TenantKeyMiddleware); use tenant key when available
+  # POST /mcp is tenant-only (TenantKeyMiddleware); use agent key when available
   local mcp_resp; mcp_resp="$(curl -s -X POST -H "Authorization: Bearer $agent_key" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' http://127.0.0.1:8080/mcp)"
   if echo "$mcp_resp" | jq -e '.result' &>/dev/null; then
     assert_pass "POST /mcp tools/list 200 with result" true
   else
-    echo "  -  POST /mcp tools/list: no .result (tenant key may not be loaded or MCP returned error)"
+    echo "  -  POST /mcp tools/list: no .result (agent key may not be loaded or MCP returned error)"
   fi
   kill "$TALON_SERVE_PID" 2>/dev/null || true
   wait "$TALON_SERVE_PID" 2>/dev/null || true

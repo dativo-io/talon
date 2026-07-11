@@ -12,7 +12,7 @@ set -euo pipefail
 trap 'echo "ERROR: demo aborted at line $LINENO (see above). Stack state: docker compose ps · logs: docker compose logs talon" >&2' ERR
 
 GATEWAY="${GATEWAY:-http://localhost:8080}"
-TENANT_KEY="talon-gw-demo-coding-0001"
+AGENT_KEY="talon-gw-demo-coding-0001"
 SESSION="sess-coding-demo"
 OUT_DIR="./out"
 mkdir -p "$OUT_DIR"
@@ -55,7 +55,7 @@ anthropic_call() { # $1=agent $2=parent $3=prompt -> prints http code
   local parent=(); while IFS= read -r line; do parent+=("$line"); done < <(parent_header "$2")
   curl -s -o "$OUT_DIR/last-anthropic.json" -w '%{http_code}' \
     "$GATEWAY/v1/proxy/anthropic/v1/messages" \
-    -H "Authorization: Bearer $TENANT_KEY" -H "content-type: application/json" \
+    -H "Authorization: Bearer $AGENT_KEY" -H "content-type: application/json" \
     -H "X-Talon-Session-ID: $SESSION" -H "X-Talon-Agent-ID: $1" \
     ${parent[@]+"${parent[@]}"} -H "X-Talon-Client: claude-code" \
     -d "{\"model\":\"claude-sonnet-5\",\"max_tokens\":128,\"messages\":[{\"role\":\"user\",\"content\":\"$3\"}]}"
@@ -65,7 +65,7 @@ responses_call() { # $1=agent $2=parent $3=prompt
   local parent=(); while IFS= read -r line; do parent+=("$line"); done < <(parent_header "$2")
   curl -s -o "$OUT_DIR/last-responses.json" -w '%{http_code}' \
     "$GATEWAY/v1/proxy/openai/v1/responses" \
-    -H "Authorization: Bearer $TENANT_KEY" -H "content-type: application/json" \
+    -H "Authorization: Bearer $AGENT_KEY" -H "content-type: application/json" \
     -H "X-Talon-Session-ID: $SESSION" -H "X-Talon-Agent-ID: $1" \
     ${parent[@]+"${parent[@]}"} -H "X-Talon-Client: codex" \
     -d "{\"model\":\"gpt-5.3-codex\",\"input\":\"$3\",\"store\":false}"

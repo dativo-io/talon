@@ -66,9 +66,9 @@ Each event includes an `evidence_id` pointer to the signed evidence record.
 
 ## Tenant auth boundary
 
-Quickstart is strictly a host-root OpenAI-compatibility facade backed by a synthetic in-process caller. It does **not** register a synthetic tenant key and does **not** unlock Talon's tenant-auth surface.
+Quickstart is strictly a host-root OpenAI-compatibility facade backed by a synthetic in-process identity. It does **not** register a synthetic agent key and does **not** unlock Talon's tenant-auth surface.
 
-The relocated tenant agent chat route `POST /v1/agents/chat/completions` is only mounted when the operator has configured real tenant keys (for example through a full gateway config). In default quickstart (no tenant keys), this route is not mounted at all and returns `404 Not Found`, preserving a clean facade-only boundary and avoiding any dev-mode-open backdoor to tenant APIs. When tenant keys are configured, the relocated route sits behind standard tenant-auth middleware and returns `401 Unauthorized` without a valid key.
+The relocated tenant agent chat route `POST /v1/agents/chat/completions` is only mounted when the operator has configured real agent keys (for example through a keyed agent policy). In default quickstart (no agent keys), this route is not mounted at all and returns `404 Not Found`, preserving a clean facade-only boundary and avoiding any dev-mode-open backdoor to tenant APIs. When agent keys are configured, the relocated route sits behind standard tenant-auth middleware and returns `401 Unauthorized` without a valid key.
 
 ## Bind safety
 

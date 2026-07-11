@@ -10,9 +10,9 @@ The active roadmap lives on GitHub: the [MVP milestone](https://github.com/dativ
 
 Everything below is current, code-verified behavior — see [CHANGELOG.md](CHANGELOG.md) and [releases](https://github.com/dativo-io/talon/releases).
 
-- **Cost control** — per-caller daily/monthly caps that deny **before** the provider call; cross-provider session budgets (soft caps); cache-aware pricing with ISO currency labels; cost attribution and rollups by tenant/agent/caller/session.
+- **Cost control** — per-agent daily/monthly caps that deny **before** the provider call; cross-provider session budgets (soft caps); cache-aware pricing with ISO currency labels; cost attribution and rollups by tenant/agent/session.
 - **Reliability** — error-driven provider fallback chains triggered only by transient failures (timeout, connection, 429, 5xx), with every candidate re-checked against sovereignty, model and budget policy, failing closed on exhaustion; connect vs response-header timeout separation; provider-native error envelopes.
-- **Shared policy** — gateway-level defaults with per-caller overrides; PII scanning (regex/Presidio/HTTP/local-LLM) on prompts, attachments, tool arguments and responses; tool allowlists and forbidden globs filtered or blocked before the model; egress and sovereignty rules (`eu_strict`/`eu_preferred`/`global`), air-gap mode.
+- **Shared policy** — an organization baseline with one explicit per-agent override; PII scanning (regex/Presidio/HTTP/local-LLM) on prompts, attachments, tool arguments and responses; tool allowlists and forbidden globs filtered or blocked before the model; egress and sovereignty rules (`eu_strict`/`eu_preferred`/`global`), air-gap mode.
 - **Session understanding** — session identity (explicit `X-Talon-Session-ID` → vendor header → synthetic evidence-only); session-scoped audit, cost rollups and verification; dashboard session drill-down; metrics API, SSE stream, OTel GenAI traces.
 - **Proof layer** — HMAC-SHA256 signed evidence per decision; `talon audit list/show/verify/export` incl. offline signed-file verification; compliance report generators (GDPR Art. 30 RoPA, EU AI Act Annex IV) built on the evidence; reproducible conformance suite and benchmarks.
 - **Differentiators** — single self-hosted Go binary (SQLite default, no required SaaS); provider registry with jurisdiction/EU-region metadata across 10 providers; MCP server and MCP proxy interception; `talon init` packs (incl. coding agents).
@@ -74,7 +74,7 @@ These protect a small team from platform creep. If your primary need is below, a
 ## When to choose Talon
 
 - You have a **growing number of AI use cases** (bots, agents, copilots) and need per-use-case budget caps, one set of policy defaults, and per-session visibility across them — Talon is built for exactly this.
-- You have **one app with a growing bill** — start with [caller-level cost caps](docs/guides/cost-governance-by-agent.md) and grow from there.
+- You have **one app with a growing bill** — start with [per-agent cost caps](docs/guides/cost-governance-by-agent.md) and grow from there.
 - You need **provable records** of how AI traffic was handled (customer security reviews, DPAs, audits) — the evidence layer generates them from operations you run anyway.
 - You only need log shipping or cost dashboards, not enforcement before the provider — a plain observability stack may suffice.
 

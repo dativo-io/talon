@@ -36,7 +36,7 @@ Structured end-to-end test for all **user-facing** Plan Review workflows. Pair w
 | F21 | Dashboard | Review history tab | `GET /v1/dashboard/review-history` |
 | F22 | Metrics | `/api/v1/metrics` summary | `pending_plans`, `approved_plans`, `dispatched_plans`, `plan_dispatch_errors` |
 | F23 | FinOps | Dashboard tenant table | Per-tenant `pending_plans` column |
-| F24 | Auth | Tenant key | Can trigger runs and **read** plans; **cannot** approve |
+| F24 | Auth | Agent key | Can trigger runs and **read** plans; **cannot** approve |
 | F25 | Auth | Admin key | Approve/reject/modify; dashboard; evidence read on minimal serve |
 | F26 | Evidence | `plan_review` invocation | Records approve/reject/modify decision |
 | F27 | Evidence | `plan_dispatch` + final run | Dispatch reuses `session_id` from gated trigger |
@@ -231,7 +231,7 @@ echo "$RUN_JSON"
 PLAN_SERVE="$(echo "$RUN_JSON" | jq -r '.plan_pending // empty')"
 SESSION_SERVE="$(echo "$RUN_JSON" | jq -r '.session_id // empty')"
 
-# Tenant cannot approve (use dummy bearer if no tenant key configured — expect 401)
+# Agent key cannot approve (use dummy bearer if no agent key configured — expect 401)
 curl -s -o /dev/null -w "tenant_approve_http=%{http_code}\n" \
   -X POST "$BASE/v1/plans/$PLAN_SERVE/approve" \
   -H "Authorization: Bearer not-a-real-tenant-key" \

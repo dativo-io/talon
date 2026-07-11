@@ -8,7 +8,7 @@ retry, run_end). Works in notebooks and standalone scripts.
 Prerequisites:
     pip install langgraph langchain-openai requests
     export TALON_URL=http://localhost:8080
-    export TALON_TENANT_KEY=your-tenant-key
+    export TALON_AGENT_KEY=your-agent-key-value
     export OPENAI_API_KEY=your-key
 
     # Start Talon:
@@ -28,7 +28,7 @@ from talon_sdk import TalonClient
 # --- Talon client setup ---
 talon = TalonClient(
     base_url=os.environ.get("TALON_URL", "http://localhost:8080"),
-    tenant_key=os.environ.get("TALON_TENANT_KEY", ""),
+    agent_key=os.environ.get("TALON_AGENT_KEY", ""),
 )
 
 # --- LangGraph state ---

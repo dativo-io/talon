@@ -7,7 +7,7 @@ and production services.
 
 Usage:
     from talon_sdk import TalonClient
-    talon = TalonClient("http://localhost:8080", tenant_key="your-key")
+    talon = TalonClient("http://localhost:8080", agent_key="your-key")
     dec = talon.run_start(graph_run_id="gr_1", agent_id="my-agent", framework="langgraph")
     if not dec["allowed"]:
         raise RuntimeError(f"Talon denied: {dec['reasons']}")
@@ -26,15 +26,15 @@ class TalonClient:
     def __init__(
         self,
         base_url: str = "http://localhost:8080",
-        tenant_key: str = "",
+        agent_key: str = "",
         timeout: float = 10.0,
     ):
         self.base_url = base_url.rstrip("/")
-        self.tenant_key = tenant_key
+        self.agent_key = agent_key
         self.timeout = timeout
         self._session = requests.Session()
-        if tenant_key:
-            self._session.headers["Authorization"] = f"Bearer {tenant_key}"
+        if agent_key:
+            self._session.headers["Authorization"] = f"Bearer {agent_key}"
         self._session.headers["Content-Type"] = "application/json"
 
     def _send_event(self, event: dict[str, Any]) -> dict[str, Any]:

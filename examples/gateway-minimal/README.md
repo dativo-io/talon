@@ -51,12 +51,18 @@ gateway:
     openai:
       enabled: true
       secret_name: "openai-api-key"
-  callers:
-    - name: "my-app"
-      tenant_key: "talon-gw-myapp-001"
-  default_policy:
+  organization_policy:
     log_prompts: true
 ```
+
+Identity lives in `agent.talon.yaml` (#266) — the scaffold already binds
+`my-app-talon-key`; mint it once:
+
+```bash
+talon secrets set my-app-talon-key "$(openssl rand -hex 24)"
+```
+
+Your app presents that value as `Authorization: Bearer <value>`.
 
 That's it. No cost limits, no model restrictions, no PII blocking. Shadow mode
 means everything is logged but nothing is blocked. Start here, then add
@@ -65,5 +71,5 @@ enforcement when you've reviewed the evidence.
 ## Next Steps
 
 - Switch to `mode: "enforce"` to start blocking policy violations
-- Add `policy_overrides` to callers for per-team cost limits and model restrictions
+- Add overrides in the agent file (`policies.cost_limits`, `policies.models`) for per-use-case cost limits and model restrictions
 - See `examples/gateway/talon.config.gateway.yaml` for a full config example

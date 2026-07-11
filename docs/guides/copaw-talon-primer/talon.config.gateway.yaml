@@ -12,25 +12,14 @@ gateway:
       base_url: "https://api.openai.com"
       allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
 
-  callers:
-    - name: "copaw-main"
-      tenant_key: "talon-gw-copaw-001"
-      tenant_id: "default"
-      team: "engineering"
-      tags: ["copaw"]
-      allowed_providers: ["openai"]
-      policy_overrides:
-        max_daily_cost: 25.00
-        max_monthly_cost: 500.00
-        pii_action: "redact"
-        allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
-
-  default_policy:
+  # Identity + per-use-case overrides live in agent.talon.yaml (#266); this
+  # block is the organization baseline. Mint the agent traffic key:
+  #   talon secrets set copaw-main-talon-key "$(openssl rand -hex 24)"
+  organization_policy:
     default_pii_action: "warn"
     response_pii_action: "warn"
     max_daily_cost: 100.00
     max_monthly_cost: 2000.00
-    require_caller_id: true
     log_prompts: true
     log_responses: false
     tool_policy_action: "filter"
@@ -48,7 +37,7 @@ gateway:
 
   rate_limits:
     global_requests_per_min: 300
-    per_caller_requests_per_min: 60
+    per_agent_requests_per_min: 60
 
   timeouts:
     connect_timeout: 10s

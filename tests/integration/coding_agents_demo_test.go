@@ -190,8 +190,8 @@ func TestCodingAgentsDemo_EndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	sum := evidence.BuildSessionSummary(sessID, records)
 	assert.ElementsMatch(t, []string{"anthropic", "openai"}, sum.Providers, "one session, two providers")
-	agentIDs := make([]string, 0, len(sum.Agents))
-	for _, a := range sum.Agents {
+	agentIDs := make([]string, 0, len(sum.Subagents))
+	for _, a := range sum.Subagents {
 		agentIDs = append(agentIDs, a.AgentID)
 	}
 	assert.Contains(t, agentIDs, "generator")

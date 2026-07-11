@@ -35,10 +35,10 @@ If those are your questions, Talon sits in front of your existing OpenAI/Anthrop
 
 ### 1. Cost control — stop spend before it happens
 
-- Per-caller daily/monthly caps: the request is denied *before* the provider call, not flagged after the money is gone.
-- Session budgets across providers (soft cap — see [limitations](LIMITATIONS.md)), plus cache-aware, currency-labeled cost attribution by tenant/agent/caller from an editable pricing table.
+- Per-agent daily/monthly caps: the request is denied *before* the provider call, not flagged after the money is gone.
+- Session budgets across providers (soft cap — see [limitations](LIMITATIONS.md)), plus cache-aware, currency-labeled cost attribution by tenant/agent from an editable pricing table.
 
-→ [Cap AI spend per caller](docs/guides/cost-governance-by-agent.md)
+→ [Cap AI spend per agent](docs/guides/cost-governance-by-agent.md)
 
 ### 2. Reliability — one failure behavior, not N
 
@@ -74,7 +74,7 @@ Every decision — allow, deny, redact, fallback, budget stop — becomes an HMA
 
 You don't have to trust Talon in blocking mode on day one.
 
-1. **Put Talon in front of one** dev or internal use case (change the base URL, add a caller key).
+1. **Put Talon in front of one** dev or internal use case (change the base URL, present its agent key).
 2. **Start in shadow mode** — Talon records what policy *would* do (PII, tools, spend, destinations) **without changing the response**.
 3. **Turn on one control** when you're ready: block PII, cap spend, keep confidential data local, or strip a dangerous tool.
 
@@ -192,7 +192,7 @@ sequenceDiagram
     Talon-->>Client: GovernedResponse
 ```
 
-Identify caller → rate limit → parse model/text/tools → **PII scan** → classify data tier → **OPA policy decision** (allowlist, cost, tier, provider) → **tool governance** → redact/block → forward with the vault key → response scan → **signed evidence + cost**. Pipeline overhead is typically under 15ms excluding upstream latency (`make benchmarks`).
+Resolve agent → rate limit → parse model/text/tools → **PII scan** → classify data tier → **OPA policy decision** (allowlist, cost, tier, provider) → **tool governance** → redact/block → forward with the vault key → response scan → **signed evidence + cost**. Pipeline overhead is typically under 15ms excluding upstream latency (`make benchmarks`).
 
 Full byte-level breakdown: [What Talon does to your request](docs/explanation/what-talon-does-to-your-request.md) · [Benchmarks](docs/reference/benchmarks.md).
 
@@ -202,7 +202,7 @@ Full byte-level breakdown: [What Talon does to your request](docs/explanation/wh
 
 | Pillar | What you get | Details |
 |--------|--------------|---------|
-| **Cost control** | Per-caller daily/monthly caps evaluated before the call; session budgets (soft); cache-aware, currency-labeled per-request estimation from an editable pricing table; attribution by tenant/agent/caller. | [Cap AI spend per caller](docs/guides/cost-governance-by-agent.md) |
+| **Cost control** | Per-agent daily/monthly caps evaluated before the call; session budgets (soft); cache-aware, currency-labeled per-request estimation from an editable pricing table; attribution by tenant/agent. | [Cap AI spend per agent](docs/guides/cost-governance-by-agent.md) |
 | **Reliability** | Error-driven, policy-valid provider fallback chains; connect/response-header timeout controls; provider-native error shapes; OTel GenAI traces. | [Fallback chains](docs/reference/configuration.md#provider-fallback-chains-error-driven-failover) · [Observability](docs/OBSERVABILITY.md) |
 | **Shared policy** | Presidio-compatible input/output PII scanning (EU identifiers + email, phone, card, passport, IP) with redact/block/warn; tool allowlists/forbidden globs filtered before the model; egress and sovereignty rules. | [Policy cookbook](docs/guides/policy-cookbook.md) |
 | **Session understanding** | Session identity (explicit/vendor/synthetic), session-scoped audit + cost rollups, dashboard session drill-down, metrics API + SSE stream. | [Governing coding agents](docs/guides/governing-coding-agents.md) · [Gateway dashboard](docs/reference/gateway-dashboard.md) |
@@ -225,7 +225,7 @@ Full table with regions and notes: [Provider registry](docs/reference/provider-r
 
 | Path | When | How |
 |------|------|-----|
-| Existing app | You already call OpenAI/Anthropic | Change the base URL and use a Talon caller key. See [Add Talon to your existing app](docs/guides/add-talon-to-existing-app.md). |
+| Existing app | You already call OpenAI/Anthropic | Change the base URL and present the use case's agent key. See [Add Talon to your existing app](docs/guides/add-talon-to-existing-app.md). |
 | Slack bot | A bot calls an LLM SDK | Route the OpenAI SDK through Talon. See [Slack bot integration](docs/guides/slack-bot-integration.md). |
 | OpenClaw | You run OpenClaw | Point its provider base URL at the gateway. See [OpenClaw integration](docs/guides/openclaw-integration.md). |
 | Coding agents | You run Claude Code or Codex CLI | `talon init --pack coding-agents`, point the tool's base URL at the gateway. See [Claude Code](docs/guides/claude-code-integration.md), [Codex CLI](docs/guides/codex-cli-integration.md), [Governing coding agents](docs/guides/governing-coding-agents.md). |
@@ -307,11 +307,17 @@ gateway:
       secret_name: "openai-api-key"
       fallback:
         - provider: "mistral-eu"        # tried in order on timeout/429/5xx — policy-checked first
-  callers:
-    - name: support-bot
-      tenant_key: "tk-support-bot"
-      policy_overrides:
-        max_session_cost: 0.50          # soft cap: denies the next request once exceeded
+```
+
+```yaml
+# agent.talon.yaml — one file per AI use case; its vault-bound key is the traffic identity
+agent:
+  name: support-bot
+  key:
+    secret_name: "support-bot-talon-key"   # talon secrets set support-bot-talon-key ...
+policies:
+  session_limits:
+    max_cost: 0.50          # soft cap: denies the next request once exceeded
 ```
 
 ---

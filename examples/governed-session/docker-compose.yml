@@ -47,6 +47,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./talon.config.session.yaml:/etc/talon/talon.config.yaml:ro
+      - ./agents:/etc/talon/agents:ro
       - ./talon.config.session.yaml:/home/talon/.talon/talon.config.yaml:ro
       # Agent policy for the runner's sovereignty routing. serve resolves the
       # policy at ./agent.talon.yaml relative to its working dir (/home/talon),
@@ -72,7 +73,15 @@ services:
         fi
         talon secrets set anthropic-api-key "$${ANTHROPIC_API_KEY}" >/dev/null
         talon secrets set openai-api-key "$${OPENAI_API_KEY}" >/dev/null
-        exec talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
+        # Agent traffic keys (#266): one per demo act. The gateway serves the
+        # hero act agent; switching acts = restarting with another
+        # TALON_DEFAULT_POLICY (multi-agent single-process serving is #267).
+        talon secrets set session-demo-talon-key "talon-session-demo" >/dev/null
+        talon secrets set session-demo-redact-talon-key "talon-session-redact" >/dev/null
+        talon secrets set session-demo-eu-talon-key "talon-session-eu" >/dev/null
+        # Act switch: TALON_ACT_AGENT=session-demo-redact docker compose up -d talon
+        exec env TALON_DEFAULT_POLICY=/etc/talon/agents/$${TALON_ACT_AGENT:-session-demo}.talon.yaml \
+          talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
 
   # Local model for the sovereignty-routing act. OPT-IN via the `routing-demo`
   # profile so a normal `make governed-session` never pulls a multi-GB model.

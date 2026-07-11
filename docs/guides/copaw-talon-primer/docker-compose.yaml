@@ -48,7 +48,7 @@ services:
           if curl -sf http://talon:8080/health >/dev/null 2>&1; then break; fi
           sleep 2
         done
-        echo "Sending test request (caller: copaw-main)..."
+        echo "Sending test request (agent: copaw-main)..."
         curl -s -X POST http://talon:8080/v1/proxy/openai/v1/chat/completions \
           -H "Content-Type: application/json" \
           -H "Authorization: Bearer talon-gw-copaw-001" \
