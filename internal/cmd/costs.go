@@ -647,7 +647,7 @@ func init() {
 	costsCmd.Flags().StringVar(&costsTenant, "tenant", "", "tenant ID (default: default)")
 	costsCmd.Flags().BoolVar(&costsByModel, "by-model", false, "group output by model")
 	costsCmd.Flags().BoolVar(&costsByProvider, "by-provider", false, "group output by provider")
-	costsCmd.Flags().BoolVar(&costsByTeam, "by-team", false, "group output by caller team")
+	costsCmd.Flags().BoolVar(&costsByTeam, "by-team", false, "group output by agent team")
 	costsCmd.Flags().StringVar(&costsSession, "session", "", "show a per-session cost rollup (session_id)")
 	costsCmd.Flags().BoolVar(&costsJSON, "json", false, "output results as JSON")
 	costsExportCmd.Flags().StringVar(&costsExportFmt, "format", "csv", "output format: csv or json")
