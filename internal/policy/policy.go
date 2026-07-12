@@ -200,8 +200,10 @@ type PoliciesConfig struct {
 	// AllowedProviders restricts which gateway providers this agent may reach.
 	// Empty = all enabled providers.
 	AllowedProviders []string `yaml:"allowed_providers,omitempty" json:"allowed_providers,omitempty"`
-	// Egress replaces the organization baseline egress policy wholesale for
-	// this agent's gateway traffic when set (#266).
+	// Egress is a second boundary evaluated alongside the organization egress
+	// for this agent's gateway traffic: a destination must pass BOTH (logical
+	// intersection); the agent narrows within the org boundary, never widens
+	// or replaces it (#266).
 	Egress *EgressConfig `yaml:"egress,omitempty" json:"egress,omitempty"`
 }
 

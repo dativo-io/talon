@@ -243,9 +243,9 @@ func TestGateway_Egress_ShadowModeForwardsAndRecordsViolation(t *testing.T) {
 
 func TestGateway_Egress_AgentOverrideDefaultDeny(t *testing.T) {
 	t2 := TierConfidential
-	// Agent egress applies when the ORG sets none (#266 review round 4: org
-	// egress is a monotonic boundary, so an agent override is used only in
-	// its absence): tier_2 only to ollama, everything else denied by default.
+	// Org sets no egress, so only the agent layer binds (#266 review round 5:
+	// egress is a logical intersection of the org and agent boundaries):
+	// tier_2 only to ollama, everything else denied by default.
 	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, nil, "US", &PolicyOverride{
 		PIIAction:      "warn",
 		MaxDailyCost:   100,
@@ -267,6 +267,37 @@ func TestGateway_Egress_AgentOverrideDefaultDeny(t *testing.T) {
 	assert.Equal(t, EgressActionDeny, ev.EgressDecision.Decision)
 	assert.Equal(t, "default_action", ev.EgressDecision.MatchedRule)
 	assert.Equal(t, EgressReasonDestination, ev.EgressDecision.Reason)
+}
+
+// Egress is a logical INTERSECTION (#266 review round 5): even when the ORG
+// egress allows the destination, an agent egress that does not permit it must
+// deny — end-to-end through the rego, with the agent layer named decisive in
+// the signed egress decision.
+func TestGateway_Egress_IntersectionAgentDeniesWithinOrgAllow(t *testing.T) {
+	t1 := TierInternal
+	// Org (euOnlyEgressPolicy): tier 1 → openai/anthropic allowed. Provider
+	// region EU. Agent narrows tier 1 to anthropic only, so openai must be
+	// denied by the AGENT layer despite the org allowing it.
+	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "EU", &PolicyOverride{
+		PIIAction:      "warn",
+		MaxDailyCost:   100,
+		MaxMonthlyCost: 2000,
+		Egress: &EgressPolicyConfig{
+			Rules: []EgressRule{{Tier: &t1, AllowedProviders: []string{"anthropic"}}},
+		},
+	})
+
+	// Tier-1 payload (low-sensitivity PII: an email address) routed to openai:
+	// the org layer passes (tier 1 → openai allowed), the agent layer denies.
+	w := makeEgressRequest(gw, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Follow up with jane.doe@example.com about the roadmap"}]}`)
+	require.Equal(t, http.StatusForbidden, w.Code, "agent egress must deny within an org allow (intersection)")
+	assert.Contains(t, w.Body.String(), EgressReasonTierDestination)
+	assert.Equal(t, int64(0), upstreamCalls.Load(), "denied request must never reach the provider")
+
+	ev := latestEgressEvidence(t, evStore)
+	require.False(t, ev.PolicyDecision.Allowed)
+	require.NotNil(t, ev.EgressDecision)
+	assert.Equal(t, EgressActionDeny, ev.EgressDecision.Decision)
 }
 
 func TestGateway_Egress_CombinedDenyReasonsPreferEgressCode(t *testing.T) {

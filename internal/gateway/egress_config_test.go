@@ -53,55 +53,68 @@ func TestResolveEffectivePolicy_Egress(t *testing.T) {
 		Rules: []EgressRule{{Tier: intPtr(2), AllowedProviders: []string{"ollama"}}},
 	}
 
+	// Intersection semantics (#266 review round 5): Egress always carries the
+	// org layer, AgentEgress the agent's — BOTH are evaluated; the agent layer
+	// never replaces or displaces the org boundary.
 	tests := []struct {
-		name     string
-		baseline OrganizationPolicy
-		override *PolicyOverride
-		want     *EgressPolicyConfig
+		name      string
+		baseline  OrganizationPolicy
+		override  *PolicyOverride
+		wantOrg   *EgressPolicyConfig
+		wantAgent *EgressPolicyConfig
 	}{
 		{
-			name:     "unconfigured_returns_nil",
-			baseline: OrganizationPolicy{},
-			override: nil,
-			want:     nil,
+			name:      "unconfigured_returns_nil",
+			baseline:  OrganizationPolicy{},
+			override:  nil,
+			wantOrg:   nil,
+			wantAgent: nil,
 		},
 		{
-			name:     "organization_baseline_used",
-			baseline: OrganizationPolicy{Egress: baselinePolicy},
-			override: &PolicyOverride{},
-			want:     baselinePolicy,
+			name:      "organization_baseline_used",
+			baseline:  OrganizationPolicy{Egress: baselinePolicy},
+			override:  &PolicyOverride{},
+			wantOrg:   baselinePolicy,
+			wantAgent: nil,
 		},
 		{
-			// Monotonic boundary (#266 review round 4): a platform-owned org
-			// egress policy is authoritative — an agent override cannot
-			// replace or weaken it.
-			name:     "org_egress_wins_over_agent_override",
+			name:     "both_layers_kept_for_intersection",
 			baseline: OrganizationPolicy{Egress: baselinePolicy},
 			override: &PolicyOverride{Egress: agentPolicy},
-			want:     baselinePolicy,
+			wantOrg:  baselinePolicy,
+			wantAgent: &EgressPolicyConfig{
+				DefaultAction: EgressActionAllow,
+				Rules:         agentPolicy.Rules,
+			},
 		},
 		{
 			name:     "agent_only",
 			baseline: OrganizationPolicy{},
 			override: &PolicyOverride{Egress: agentPolicy},
-			want: &EgressPolicyConfig{
+			wantOrg:  nil,
+			wantAgent: &EgressPolicyConfig{
 				DefaultAction: EgressActionAllow,
 				Rules:         agentPolicy.Rules,
 			},
 		},
 	}
+	assertEgress := func(t *testing.T, want, got *EgressPolicyConfig, layer string) {
+		t.Helper()
+		if want == nil {
+			assert.Nilf(t, got, "%s egress layer", layer)
+			return
+		}
+		require.NotNilf(t, got, "%s egress layer", layer)
+		assert.Equalf(t, want.Rules, got.Rules, "%s egress rules", layer)
+		if want.DefaultAction != "" {
+			assert.Equalf(t, want.DefaultAction, got.DefaultAction, "%s egress default action", layer)
+		}
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ResolveEffectivePolicy(tt.baseline, ProviderConfig{}, tt.override).Egress
-			if tt.want == nil {
-				assert.Nil(t, got)
-				return
-			}
-			require.NotNil(t, got)
-			assert.Equal(t, tt.want.Rules, got.Rules)
-			if tt.want.DefaultAction != "" {
-				assert.Equal(t, tt.want.DefaultAction, got.DefaultAction)
-			}
+			eff := ResolveEffectivePolicy(tt.baseline, ProviderConfig{}, tt.override)
+			assertEgress(t, tt.wantOrg, eff.Egress, "org")
+			assertEgress(t, tt.wantAgent, eff.AgentEgress, "agent")
 		})
 	}
 }

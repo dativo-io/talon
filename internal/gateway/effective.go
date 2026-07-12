@@ -67,11 +67,14 @@ type EffectivePolicy struct {
 	// overrides are deliberately not expressible yet).
 	Attachment *AttachmentPolicyConfig
 
-	// Egress policy: a MONOTONIC boundary (#266 review round 4). When the
-	// organization sets egress it is authoritative — the agent override
-	// cannot weaken or replace it. The agent egress applies only when the
-	// org has none. nil = egress not evaluated.
-	Egress *EgressPolicyConfig
+	// Egress is a logical INTERSECTION of two independent boundaries (#266
+	// review round 5). Egress holds the ORGANIZATION policy; AgentEgress holds
+	// the agent's. A destination must be permitted by BOTH — the agent narrows
+	// within the org boundary but can never widen it, and the org boundary
+	// applies even when the agent adds its own. Either being nil means that
+	// layer is not evaluated (an absent layer permits everything).
+	Egress      *EgressPolicyConfig
+	AgentEgress *EgressPolicyConfig
 }
 
 // ResolveEffectivePolicy computes the effective policy for one request from
@@ -106,9 +109,10 @@ type EffectivePolicy struct {
 //	forbidden_tools                    union of baseline ∪ provider ∪ override
 //	tool_policy_action                 most-specific wins (override > provider > baseline)
 //	attachment_policy                  baseline only (#266)
-//	egress                             monotonic boundary: org egress wins
-//	                                   when set; override applies only when
-//	                                   the org has no egress policy
+//	egress                             logical intersection: the org egress and
+//	                                   the agent egress are BOTH evaluated and a
+//	                                   destination must pass BOTH (agent narrows
+//	                                   within the org boundary, never widens it)
 //
 // per-field rule of the effective-policy contract (#266); splitting it would
 // scatter the single source of truth this issue exists to establish.
@@ -206,15 +210,16 @@ func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig
 		if override.ToolPolicyAction != "" {
 			eff.ToolPolicyAction = override.ToolPolicyAction
 		}
-		// Egress is a MONOTONIC boundary (#266 review round 4): the
-		// organization egress policy is platform-owned and an
-		// application-owned agent file must not be able to weaken it. When the
-		// org sets egress, it is authoritative and the agent override cannot
-		// replace it; the agent egress applies only when the org has none.
-		if override.Egress != nil && baseline.Egress == nil {
-			eff.Egress = cloneEgressPolicy(override.Egress)
-			if eff.Egress.DefaultAction == "" {
-				eff.Egress.DefaultAction = EgressActionAllow
+		// Egress is a logical INTERSECTION (#266 review round 5): the agent
+		// egress is a SECOND independent boundary evaluated alongside the
+		// organization's, never a replacement for it. A destination must pass
+		// BOTH, so the org boundary is platform-owned and inescapable while the
+		// agent can only narrow within it. The agent egress is kept separate
+		// (not merged) so each layer's decision is evaluated and evidenced.
+		if override.Egress != nil {
+			eff.AgentEgress = cloneEgressPolicy(override.Egress)
+			if eff.AgentEgress.DefaultAction == "" {
+				eff.AgentEgress.DefaultAction = EgressActionAllow
 			}
 		}
 	}

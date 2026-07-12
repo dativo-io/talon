@@ -91,7 +91,9 @@ type PolicyOverride struct {
 	ForbiddenTools   []string // union with baseline + provider
 	ToolPolicyAction string   // filter | block; most-specific wins
 
-	// Egress replaces the organization baseline egress policy wholesale when set.
+	// Egress is a second boundary evaluated ALONGSIDE the organization egress:
+	// a destination must pass BOTH (logical intersection) — the agent narrows
+	// within the org boundary, never widens or replaces it (#266 review r5).
 	Egress *EgressPolicyConfig
 }
 
@@ -407,8 +409,30 @@ func (o *PolicyOverride) finalize(scope string) error {
 	if o.MaxDailyCost < 0 || o.MaxMonthlyCost < 0 || o.MaxSessionCost < 0 {
 		return fmt.Errorf("%s: cost caps must not be negative", scope)
 	}
+	// ALLOW lists match literally, so "*" would deny every concrete value
+	// rather than allow all — the same fail-closed footgun as the org/provider
+	// model lists (#266 review round 5). An empty list already means
+	// unrestricted. Blocked lists are exempt: blocked_models: ["*"] is the
+	// supported deny-all.
+	if err := rejectWildcardInAllowList(scope, "policies.models.allowed", o.AllowedModels); err != nil {
+		return err
+	}
+	if err := rejectWildcardInAllowList(scope, "policies.allowed_providers", o.AllowedProviders); err != nil {
+		return err
+	}
 	o.Egress.applyDefaults()
 	return validateEgressPolicy(scope, o.Egress)
+}
+
+// rejectWildcardInAllowList fails when an agent ALLOW list contains "*":
+// matching is literal, so the wildcard silently denies everything.
+func rejectWildcardInAllowList(scope, field string, values []string) error {
+	for _, v := range values {
+		if strings.TrimSpace(v) == "*" {
+			return fmt.Errorf("%s: %s must not contain \"*\": an allow list matches literally, so \"*\" denies every value — leave the list empty to allow all", scope, field)
+		}
+	}
+	return nil
 }
 
 // clone deep-copies the override so registry identities never alias the

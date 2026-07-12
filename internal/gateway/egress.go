@@ -198,8 +198,8 @@ func egressRuleAllows(rule *EgressRule, provider, region string) (allowed bool, 
 // matches the Rego decision that was enforced.
 func (g *Gateway) buildEgressDecisionEvidence(agent *ResolvedIdentity, provider string, tier int, allowed bool, reasons []string) *evidence.EgressDecision {
 	prov, _ := g.config.Provider(provider)
-	policy := ResolveEffectivePolicy(g.config.OrganizationPolicy, prov, agent.Override).Egress
-	if policy == nil {
+	eff := ResolveEffectivePolicy(g.config.OrganizationPolicy, prov, agent.Override)
+	if eff.Egress == nil && eff.AgentEgress == nil {
 		return nil
 	}
 	if tier > 2 {
@@ -212,9 +212,22 @@ func (g *Gateway) buildEgressDecisionEvidence(agent *ResolvedIdentity, provider 
 		return nil
 	}
 	region := g.providerRegion(provider)
-	eval := EvaluateEgress(policy, tier, provider, region)
-	if !eval.Evaluated {
+	// Egress is a logical intersection: evaluate the org and agent layers and
+	// take the DENY if either denies (a deny from either boundary is decisive),
+	// mirroring the rego's union-of-deny (#266 review round 5).
+	orgEval := EvaluateEgress(eff.Egress, tier, provider, region)
+	agentEval := EvaluateEgress(eff.AgentEgress, tier, provider, region)
+	if !orgEval.Evaluated && !agentEval.Evaluated {
 		return nil
+	}
+	eval := orgEval
+	switch {
+	case !orgEval.Evaluated:
+		// Only the agent layer is configured — its decision stands alone.
+		eval = agentEval
+	case orgEval.Allowed && agentEval.Evaluated && !agentEval.Allowed:
+		// Org allowed but the agent boundary denied: the agent layer is decisive.
+		eval = agentEval
 	}
 	decision := EgressActionAllow
 	if !eval.Allowed {

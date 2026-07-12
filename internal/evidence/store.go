@@ -78,15 +78,18 @@ type Evidence struct {
 	Signature               string            `json:"signature"`
 	RoutingDecision         *RoutingDecision  `json:"routing_decision,omitempty"` // Provider selection and rejected candidates (EU routing)
 	// Semantic cache: set when response was served from cache (Cost=0, CostSaved=estimated LLM cost).
-	CacheHit        bool               `json:"cache_hit,omitempty"`
-	CacheEntryID    string             `json:"cache_entry_id,omitempty"`
-	CacheSimilarity float64            `json:"cache_similarity,omitempty"`
-	CostSaved       float64            `json:"cost_saved,omitempty"`
-	PlanReview      *PlanReviewEvent   `json:"plan_review,omitempty"`
-	RetryAttempt    string             `json:"retry_attempt,omitempty"` // X-Talon-Retry-Attempt header from gateway callers
-	Explanations    []explanation.Item `json:"explanations,omitempty"`
-	PlanID          string             `json:"plan_id,omitempty"`      // Execution plan ID for audit lineage
-	GraphRunID      string             `json:"graph_run_id,omitempty"` // External graph runtime run ID
+	CacheHit     bool   `json:"cache_hit,omitempty"`
+	CacheEntryID string `json:"cache_entry_id,omitempty"`
+	// CacheSourceCorrelationID names the source generation's evidence record
+	// for a cache hit, so provenance traces back to the original request (#266).
+	CacheSourceCorrelationID string             `json:"cache_source_correlation_id,omitempty"`
+	CacheSimilarity          float64            `json:"cache_similarity,omitempty"`
+	CostSaved                float64            `json:"cost_saved,omitempty"`
+	PlanReview               *PlanReviewEvent   `json:"plan_review,omitempty"`
+	RetryAttempt             string             `json:"retry_attempt,omitempty"` // X-Talon-Retry-Attempt header from gateway callers
+	Explanations             []explanation.Item `json:"explanations,omitempty"`
+	PlanID                   string             `json:"plan_id,omitempty"`      // Execution plan ID for audit lineage
+	GraphRunID               string             `json:"graph_run_id,omitempty"` // External graph runtime run ID
 	// DataFlow links classified input data to its destination (digests only,
 	// never raw values). Appended last so pre-existing record signatures
 	// remain valid (see docs/reference/evidence-integrity-spec.md §2).

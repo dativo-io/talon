@@ -85,7 +85,7 @@ The agent file is also the agent's **one** policy override on top of the gateway
 | `policies.data_classification.max_data_tier` | Caps the request's data classification tier when present |
 | `policies.models.allowed` / `.blocked` | Flat gateway model lists; replace the baseline when non-empty (`model_routing` remains runner-side routing, not a gateway list) |
 | `policies.allowed_providers` | Restricts which gateway providers this agent may reach (empty = all) |
-| `policies.egress` | Replaces the baseline egress policy wholesale |
+| `policies.egress` | A second egress boundary evaluated alongside the organization's — a destination must pass **both** (logical intersection); the agent narrows within the org boundary, never widens or replaces it |
 | `capabilities.allowed_tools` | Most-specific non-empty list wins |
 | `capabilities.forbidden_tools` | Unioned with the baseline and provider lists |
 | `capabilities.tool_policy_action` | `filter` or `block`; most-specific wins |
@@ -384,7 +384,7 @@ Per-field contract (mirrors `internal/gateway/effective.go`; the code and this t
 | `forbidden_tools` | union of baseline ∪ provider ∪ override |
 | `tool_policy_action` | most-specific wins (override > provider > baseline) |
 | `attachment_policy` | baseline only (#266) |
-| `egress` | monotonic boundary: the organization egress policy is authoritative when set (an agent override cannot weaken or replace it); the override applies only when the org has no egress policy |
+| `egress` | logical intersection: the organization egress and the agent egress are both evaluated and a destination must pass **both** — the agent narrows within the org boundary, never widens or replaces it |
 
 Timeout phases (`gateway.timeouts`):
 
@@ -466,10 +466,10 @@ Behavior:
   `base_url` endpoints. Known providers fall back to registry metadata.
 - `default_action: deny` turns the policy into an allowlist: tiers without a
   rule are denied.
-- Per-agent override: `policies.egress` in the agent file **replaces** the
-  organization baseline wholesale for that agent (most-specific wins). A
-  future `merge` mode may allow layering agent rules on top of the baseline;
-  until then, copy baseline rules into the override when you need both.
+- Per-agent layer: `policies.egress` in the agent file is a **second
+  boundary evaluated alongside** the organization policy — a destination must
+  be permitted by **both** (logical intersection). The agent can only narrow
+  within the organization boundary; it can never widen or replace it.
 - When no `egress` block is configured at either level, egress is not
   evaluated and behavior is unchanged.
 - Denials return HTTP 403 with machine code

@@ -347,13 +347,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx = context.WithValue(ctx, gatewayOrchestrationKey, orch)
 	}
 
-	// Rate limit check (after agent identification, before any work)
+	// Rate limit check (after agent identification, before any work). The rate
+	// limit is an observable GOVERNANCE control, so it records but does not
+	// block in shadow OR log_only — only enforce returns 429 (#266 review r5).
 	if g.rateLimiter != nil && !g.rateLimiter.Allow(agent.Name) {
-		if isShadow {
+		if observeOnly {
 			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 				Type: "rate_limit", Detail: "Rate limit exceeded for " + agent.Name, Action: "block",
 			})
-			log.Warn().Str("agent", agent.Name).Str("enforcement_mode", "shadow").Msg("shadow_rate_limit_exceeded")
+			log.Warn().Str("agent", agent.Name).Str("enforcement_mode", string(g.config.Mode)).Msg("observe_only_rate_limit_exceeded")
 		} else {
 			log.Warn().Str("agent", agent.Name).Msg("gateway_rate_limited")
 			durationMS := time.Since(start).Milliseconds()
@@ -429,17 +431,20 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body = attSummary.ModifiedBody
 	}
 
-	// Step 4: Scan PII. A scanner failure is fail-closed in enforce mode:
-	// a request Talon cannot classify must not reach the provider.
+	// Step 4: Scan PII. A scanner failure is fail-closed in enforce mode: a
+	// request Talon cannot classify must not reach the provider. PII scanning
+	// is an observable GOVERNANCE control, so a scanner failure in shadow OR
+	// log_only records the would-be block and proceeds unclassified rather than
+	// returning 502 — only enforce fails closed (#266 review round 5).
 	scanStart := time.Now()
 	classification, scanErr := g.classifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), extracted.Text)
 	ctx = withScanDuration(ctx, time.Since(scanStart))
 	if scanErr != nil {
-		if isShadow {
+		if observeOnly {
 			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 				Type: "scanner_unavailable", Detail: "PII scanner failed; request would be blocked", Action: "block",
 			})
-			log.Warn().Str("agent", agent.Name).Str("enforcement_mode", "shadow").Err(scanErr).Msg("shadow_scanner_unavailable")
+			log.Warn().Str("agent", agent.Name).Str("enforcement_mode", string(g.config.Mode)).Err(scanErr).Msg("observe_only_scanner_unavailable")
 			classification = &classifier.Classification{}
 		} else {
 			durationMS := time.Since(start).Milliseconds()
@@ -831,19 +836,31 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if g.cacheConfig.MaxEntriesPerTenant > 0 && g.cacheConfig.MaxEntriesPerTenant < maxCand {
 					maxCand = g.cacheConfig.MaxEntriesPerTenant
 				}
-				lookupResult, err := g.cacheStore.Lookup(ctx, agent.TenantID, queryBlob, threshold, maxCand, g.cacheEmbedder.SimilarityFunc())
+				// Scope the lookup to this exact AI use case: agent, model,
+				// provider, effective policy, and data tier. An entry produced
+				// under any different scope (e.g. a failover model, a changed
+				// policy) has a different scope_key and cannot be returned, so
+				// a hit can never falsify provenance (#266 review round 5).
+				lookupScopeKey := cache.ScopeKey(agent.Name, extracted.Model, route.Provider, g.policyDigests(agent, route.Provider).Effective, dataTierStr)
+				lookupResult, err := g.cacheStore.Lookup(ctx, agent.TenantID, lookupScopeKey, queryBlob, threshold, maxCand, g.cacheEmbedder.SimilarityFunc())
 				if err == nil && lookupResult != nil {
 					hit := lookupResult.Entry
 					_ = g.cacheStore.IncrementHitCount(ctx, hit.ID)
-					costSaved := g.costEstimate(route.Provider, extracted.Model, Usage{Input: 300, Output: 300}).Amount
+					// Evidence for a cache hit describes the SOURCE entry that
+					// actually produced the response — its model and provider,
+					// not the current request's — and points back to the source
+					// generation's evidence via cache_source_correlation_id.
+					costSaved := g.costEstimate(hit.Provider, hit.Model, Usage{Input: 300, Output: 300}).Amount
 					durationMS := time.Since(start).Milliseconds()
-					persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", true, nil, inputPIIRedacted, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved, false, 0, 0, estimatedCost)
+					persisted, err := g.recordEvidence(ctx, correlationID, agent, hit.Provider, hit.Model, start, extracted.Text, classification, nil, 0, durationMS, "", true, nil, inputPIIRedacted, nil, attSummary, toolResult, shadowViolations, true, hit.ID, lookupResult.Similarity, costSaved, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
+						p.CacheSourceCorrelationID = hit.SourceCorrelationID
+					})
 					if err != nil {
 						g.handleEvidenceWriteFailure(ctx, err)
 						return
 					}
-					g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, false, false, piiAction, true, costSaved, 0, 0, persisted)
-					writeCachedCompletion(w, wire, extracted.Model, hit.ResponseText)
+					g.emitMetrics(ctx, agent, hit.Provider, hit.Model, classification, toolResult, shadowViolations, nil, 0, durationMS, false, false, piiAction, true, costSaved, 0, 0, persisted)
+					writeCachedCompletion(w, wire, hit.Model, hit.ResponseText)
 					return
 				}
 			}
@@ -1089,24 +1106,31 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if content := extractContentFromOpenAIResponse(scannedBody); content != "" {
 					emb, err := g.cacheEmbedder.Embed(extracted.Text)
 					if err == nil {
-						// The response must be cached under the model that
-						// actually produced it: a failover model rewrite
-						// makes the fallback-selected model the truth, not
-						// the model the client asked for.
+						// The response must be cached under the model AND provider
+						// that actually produced it: a failover rewrite makes the
+						// fallback-selected provider/model the truth, not what the
+						// client asked for. The scope_key binds the entry to that
+						// exact (agent, model, provider, effective policy, tier)
+						// so a future hit cannot cross the boundary (#266 r5).
 						cachedModel := extracted.Model
+						cachedProvider := route.Provider
 						if failoverOut != nil && failoverOut.SelectedProvider != "" && failoverOut.SelectedModel != "" {
 							cachedModel = failoverOut.SelectedModel
+							cachedProvider = failoverOut.SelectedProvider
 						}
 						// Use canonical tenant ID from config-derived map so cache key is not tainted by request path (CodeQL go/weak-sensitive-data-hashing).
 						scopeTenantID := g.canonicalTenantIDForCache(agent.TenantID)
 						keyHash := cache.DeriveEntryKey(scopeTenantID, cachedModel, extracted.Text)
 						tierLabel := cache.TierLabel(tier)
+						storeScopeKey := cache.ScopeKey(agent.Name, cachedModel, cachedProvider, g.policyDigests(agent, cachedProvider).Effective, tierLabel)
 						ttl := cache.TTLForTier(tierLabel, g.cacheConfig.TTLByTier, g.cacheConfig.DefaultTTL)
 						now := time.Now().UTC()
 						entry := &cache.Entry{
 							TenantID: agent.TenantID, CacheKey: keyHash, EmbeddingData: emb, ResponseText: content,
 							Model: cachedModel, DataTier: tierLabel, PIIScrubbed: true,
-							CreatedAt: now, ExpiresAt: now.Add(ttl),
+							AgentID: agent.Name, Provider: cachedProvider, ScopeKey: storeScopeKey,
+							SourceCorrelationID: correlationID,
+							CreatedAt:           now, ExpiresAt: now.Add(ttl),
 						}
 						if insertErr := g.cacheStore.Insert(ctx, entry); insertErr == nil {
 							cacheStored = true
@@ -1723,6 +1747,13 @@ func buildGatewayPolicyInput(agent *ResolvedIdentity, eff EffectivePolicy, provi
 	if eff.Egress != nil {
 		input["egress_rules"] = egressRulesForPolicyInput(eff.Egress)
 		input["egress_default_action"] = eff.Egress.DefaultAction
+	}
+	// The agent egress is a SECOND, independent boundary: the rego denies when
+	// EITHER the org OR the agent policy denies, so egress is a logical
+	// intersection, not org-wins (#266 review round 5).
+	if eff.AgentEgress != nil {
+		input["agent_egress_rules"] = egressRulesForPolicyInput(eff.AgentEgress)
+		input["agent_egress_default_action"] = eff.AgentEgress.DefaultAction
 	}
 	// Effective caps: organization baseline overlaid by the agent's override.
 	// The same resolution feeds budget-utilization metrics/alerts so the

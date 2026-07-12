@@ -559,6 +559,13 @@ func (c *GatewayConfig) Validate() error {
 	if err := validateModelList("organization_policy.allowed_models", c.OrganizationPolicy.AllowedModels); err != nil {
 		return err
 	}
+	// Same literal-membership footgun as model lists (#266 review round 5):
+	// "*" in the provider allow list would deny every provider.
+	for _, p := range c.OrganizationPolicy.AllowedProviders {
+		if strings.TrimSpace(p) == "*" {
+			return fmt.Errorf("gateway organization_policy.allowed_providers must not contain \"*\": an allow list matches providers literally, so \"*\" denies every provider — leave the list empty to allow all")
+		}
+	}
 	for name := range c.Providers {
 		p := c.Providers[name]
 		if !p.Enabled {

@@ -208,7 +208,7 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 		assert.Equal(t, "block", eff.ToolPolicyAction, "agent override wins")
 	})
 
-	t.Run("egress is a monotonic boundary — org egress wins over an override", func(t *testing.T) {
+	t.Run("egress is a logical intersection — both layers kept, org never displaced", func(t *testing.T) {
 		tier2 := TierConfidential
 		b := baseline
 		b.Egress = &EgressPolicyConfig{
@@ -218,9 +218,11 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 		eff := ResolveEffectivePolicy(b, ProviderConfig{}, nil)
 		require.NotNil(t, eff.Egress)
 		assert.Equal(t, EgressActionDeny, eff.Egress.DefaultAction)
+		assert.Nil(t, eff.AgentEgress, "no override → no agent egress layer")
 
-		// An agent override MUST NOT replace a platform-owned org egress
-		// boundary (#266 review round 4): the org policy stands.
+		// An agent override MUST NOT replace the platform-owned org egress
+		// boundary: the org layer stands untouched and the agent policy lands
+		// in its own layer — enforcement requires passing BOTH (#266 round 5).
 		tier1 := TierInternal
 		eff = ResolveEffectivePolicy(b, ProviderConfig{}, &PolicyOverride{Egress: &EgressPolicyConfig{
 			DefaultAction: EgressActionAllow,
@@ -230,16 +232,20 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 		assert.Equal(t, EgressActionDeny, eff.Egress.DefaultAction, "org egress boundary must not be weakened by an agent override")
 		require.Len(t, eff.Egress.Rules, 1)
 		assert.Equal(t, TierConfidential, *eff.Egress.Rules[0].Tier, "org rules stand, agent's do not replace them")
+		require.NotNil(t, eff.AgentEgress, "agent egress must be kept as a second boundary")
+		require.Len(t, eff.AgentEgress.Rules, 1)
+		assert.Equal(t, TierInternal, *eff.AgentEgress.Rules[0].Tier)
 
-		// When the org has NO egress policy, the agent override applies.
+		// When the org has NO egress policy, only the agent layer applies.
 		nb := baseline
 		nb.Egress = nil
 		eff = ResolveEffectivePolicy(nb, ProviderConfig{}, &PolicyOverride{Egress: &EgressPolicyConfig{
 			DefaultAction: EgressActionDeny,
 			Rules:         []EgressRule{{Tier: &tier1, AllowedRegions: []string{"EU"}}},
 		}})
-		require.NotNil(t, eff.Egress)
-		assert.Equal(t, EgressActionDeny, eff.Egress.DefaultAction, "agent egress applies when the org sets none")
+		assert.Nil(t, eff.Egress, "no org egress → no org layer")
+		require.NotNil(t, eff.AgentEgress)
+		assert.Equal(t, EgressActionDeny, eff.AgentEgress.DefaultAction, "agent egress applies as its own layer")
 	})
 }
 

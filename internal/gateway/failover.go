@@ -493,14 +493,19 @@ func (g *Gateway) recordFailoverAttemptEvidence(ctx context.Context, correlation
 		failureReason = evidence.FailureReasonProviderPermanent
 	}
 	ev, err := RecordGatewayEvidence(ctx, g.evidenceStore, RecordGatewayEvidenceParams{
-		CorrelationID:  correlationID,
-		SessionID:      sessionIDFromContext(ctx),
-		TenantID:       agent.TenantID,
-		AgentName:      agent.Name,
-		Team:           agent.Team,
-		Provider:       rec.Provider,
-		Model:          rec.Model,
-		PolicyAllowed:  true,
+		CorrelationID: correlationID,
+		SessionID:     sessionIDFromContext(ctx),
+		TenantID:      agent.TenantID,
+		AgentName:     agent.Name,
+		Team:          agent.Team,
+		Provider:      rec.Provider,
+		Model:         rec.Model,
+		PolicyAllowed: true,
+		// A failed attempt is a first-class evidence record and must carry the
+		// same signed policy-digest matrix as any other decision, keyed to the
+		// attempt's own provider so its effective policy is verifiable (#266 r5).
+		PolicyVersion:  agent.PolicyDigest,
+		PolicyDigests:  g.policyDigests(agent, rec.Provider),
 		Currency:       g.pricingCurrency,
 		InputTier:      tier,
 		DurationMS:     rec.DurationMS,

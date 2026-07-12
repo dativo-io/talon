@@ -51,19 +51,23 @@ type RecordGatewayEvidenceParams struct {
 	ToolsFiltered           []string
 	ToolsForwarded          []string
 	// Semantic cache (set when response was served from cache)
-	CacheHit               bool
-	CacheEntryID           string
-	CacheSimilarity        float64
-	CostSaved              float64
-	UpstreamAuthMode       string
-	UpstreamKeySource      string
-	UpstreamKeyFingerprint string
-	GatewayAnnotations     []string
-	AgentReasoning         string
-	RetryAttempt           string // X-Talon-Retry-Attempt header value; empty when not a retry
-	Stage                  string // "generation", "judge", or "commit"
-	CandidateIndex         int
-	ExplanationFacts       []explanation.Fact
+	CacheHit     bool
+	CacheEntryID string
+	// CacheSourceCorrelationID names the evidence record of the request that
+	// originally produced the cached response, so a cache hit's audit trail
+	// points at the true source generation (#266 review round 5).
+	CacheSourceCorrelationID string
+	CacheSimilarity          float64
+	CostSaved                float64
+	UpstreamAuthMode         string
+	UpstreamKeySource        string
+	UpstreamKeyFingerprint   string
+	GatewayAnnotations       []string
+	AgentReasoning           string
+	RetryAttempt             string // X-Talon-Retry-Attempt header value; empty when not a retry
+	Stage                    string // "generation", "judge", or "commit"
+	CandidateIndex           int
+	ExplanationFacts         []explanation.Fact
 	// DataFlow links classified data to its destination (digests only).
 	DataFlow *evidence.DataFlow
 	// EgressDecision records the egress allow/deny outcome (tier x destination).
@@ -151,23 +155,24 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			TPOTMS:        params.TPOTMS,
 			Error:         params.Error,
 		},
-		SecretsAccessed:         params.SecretsAccessed,
-		AttachmentScan:          params.AttachmentScan,
-		ToolGovernance:          toolGov,
-		ObservationModeOverride: params.ObservationModeOverride,
-		ShadowViolations:        params.ShadowViolations,
-		AuditTrail:              evidence.AuditTrail{},
-		Compliance:              evidence.Compliance{},
-		AgentReasoning:          params.AgentReasoning,
-		CacheHit:                params.CacheHit,
-		CacheEntryID:            params.CacheEntryID,
-		CacheSimilarity:         params.CacheSimilarity,
-		CostSaved:               params.CostSaved,
-		UpstreamAuthMode:        params.UpstreamAuthMode,
-		UpstreamKeySource:       params.UpstreamKeySource,
-		UpstreamKeyFingerprint:  params.UpstreamKeyFingerprint,
-		GatewayAnnotations:      sanitizeGatewayAnnotations(params.GatewayAnnotations),
-		RetryAttempt:            params.RetryAttempt,
+		SecretsAccessed:          params.SecretsAccessed,
+		AttachmentScan:           params.AttachmentScan,
+		ToolGovernance:           toolGov,
+		ObservationModeOverride:  params.ObservationModeOverride,
+		ShadowViolations:         params.ShadowViolations,
+		AuditTrail:               evidence.AuditTrail{},
+		Compliance:               evidence.Compliance{},
+		AgentReasoning:           params.AgentReasoning,
+		CacheHit:                 params.CacheHit,
+		CacheEntryID:             params.CacheEntryID,
+		CacheSourceCorrelationID: params.CacheSourceCorrelationID,
+		CacheSimilarity:          params.CacheSimilarity,
+		CostSaved:                params.CostSaved,
+		UpstreamAuthMode:         params.UpstreamAuthMode,
+		UpstreamKeySource:        params.UpstreamKeySource,
+		UpstreamKeyFingerprint:   params.UpstreamKeyFingerprint,
+		GatewayAnnotations:       sanitizeGatewayAnnotations(params.GatewayAnnotations),
+		RetryAttempt:             params.RetryAttempt,
 		RoutingDecision: &evidence.RoutingDecision{
 			SelectedProvider: params.Provider,
 			SelectedModel:    params.Model,

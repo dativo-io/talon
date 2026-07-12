@@ -350,6 +350,80 @@ func TestShadowViolation_TypeCoverage(t *testing.T) {
 // OBSERVABLE governance control (PII block) blocks only in enforce; shadow
 // and log_only forward the request (record-only). This pins the two-class
 // model so shadow/log_only can never silently block-or-not inconsistently.
+// log_only must treat rate limiting as an OBSERVABLE governance control: the
+// would-be 429 is recorded but the request forwards. Enforce still returns 429
+// (#266 review round 5 — the log_only matrix gap).
+func TestLogOnlyMode_RateLimitObservedNotBlocked(t *testing.T) {
+	gw, evStore := setupShadowGateway(t, func(c *GatewayConfig, _ *PolicyOverride) {
+		c.Mode = ModeLogOnly
+	})
+
+	rr1 := makeGatewayRequest(gw, requestClean())
+	require.Equal(t, http.StatusOK, rr1.Code)
+	// Second request exceeds the burst-1 limit; log_only forwards it.
+	rr2 := makeGatewayRequest(gw, requestClean())
+	assert.Equal(t, http.StatusOK, rr2.Code, "log_only must not block rate-limited requests")
+
+	ev := latestEvidence(t, evStore)
+	found := false
+	for _, sv := range ev.ShadowViolations {
+		if sv.Type == "rate_limit" {
+			found = true
+			assert.Equal(t, "block", sv.Action)
+		}
+	}
+	assert.True(t, found, "log_only must record the rate_limit observation")
+}
+
+// The same control under enforce still returns 429 — proving the two-class
+// split, not a blanket bypass.
+func TestEnforceMode_RateLimitStillBlocks(t *testing.T) {
+	gw, _ := setupShadowGateway(t, func(c *GatewayConfig, _ *PolicyOverride) {
+		c.Mode = ModeEnforce
+	})
+	rr1 := makeGatewayRequest(gw, requestClean())
+	require.Equal(t, http.StatusOK, rr1.Code)
+	rr2 := makeGatewayRequest(gw, requestClean())
+	assert.Equal(t, http.StatusTooManyRequests, rr2.Code, "enforce must return 429 when rate limited")
+}
+
+// log_only must treat a PII-scanner failure as observable too: it records the
+// would-be block and forwards UNCLASSIFIED rather than returning 502. Enforce
+// fails closed (covered by TestExternalScannerFailClosed_EnforceBlocksRequest).
+func TestLogOnlyMode_ScannerUnavailableObservedNotBlocked(t *testing.T) {
+	upstreamHit := false
+	gw, _, evStore := setupGatewayWithClassifier(t, "block", ModeLogOnly,
+		func(w http.ResponseWriter, _ *http.Request) {
+			upstreamHit = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"1","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`))
+		},
+		failingExternalScanner(t, testutil.ScannerFailStatus))
+
+	w := makeGatewayRequest(gw, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	assert.Equal(t, http.StatusOK, w.Code, "log_only must not fail closed on scanner unavailability")
+	assert.True(t, upstreamHit, "log_only forwards the unclassified request to the provider")
+
+	ev := latestGatewayEvidence(t, evStore)
+	found := false
+	for _, sv := range ev.ShadowViolations {
+		if sv.Type == "scanner_unavailable" {
+			found = true
+		}
+	}
+	assert.True(t, found, "log_only must record the scanner_unavailable observation")
+}
+
+// Authentication is a HARD platform boundary: an unknown key is rejected in
+// EVERY mode, including log_only — the two-class model never opens auth.
+func TestLogOnlyMode_UnknownKeyStillRejected(t *testing.T) {
+	gw, _ := setupShadowGateway(t, func(c *GatewayConfig, _ *PolicyOverride) {
+		c.Mode = ModeLogOnly
+	})
+	rr := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-not-a-real-key", requestClean())
+	assert.Equal(t, http.StatusUnauthorized, rr.Code, "unknown key must be rejected even in log_only")
+}
+
 func TestEnforcementModeMatrix_ObservableVsHard(t *testing.T) {
 	cases := []struct {
 		mode       Mode

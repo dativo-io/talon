@@ -155,6 +155,49 @@ func TestBuildIdentityRegistryFailClosed(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "tool_policy_action")
 	})
+
+	// Agent ALLOW lists match literally, so "*" would deny everything — it is
+	// rejected at registry build, fail-closed (#266 review round 5). Blocked
+	// lists keep "*" as the supported deny-all.
+	t.Run("wildcard in allowed_models rejected", func(t *testing.T) {
+		vault := newTestVault(t)
+		setSecret(t, vault, "k1", "v1")
+		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
+			{
+				Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1",
+				Override: &PolicyOverride{AllowedModels: []string{"gpt-4o", "*"}},
+			},
+		}, vault, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "policies.models.allowed")
+		assert.Contains(t, err.Error(), `must not contain "*"`)
+	})
+
+	t.Run("wildcard in allowed_providers rejected", func(t *testing.T) {
+		vault := newTestVault(t)
+		setSecret(t, vault, "k1", "v1")
+		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
+			{
+				Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1",
+				Override: &PolicyOverride{AllowedProviders: []string{"*"}},
+			},
+		}, vault, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "policies.allowed_providers")
+		assert.Contains(t, err.Error(), `must not contain "*"`)
+	})
+
+	t.Run("wildcard in blocked_models still allowed", func(t *testing.T) {
+		vault := newTestVault(t)
+		setSecret(t, vault, "k1", "v1")
+		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
+			{
+				Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1",
+				Override: &PolicyOverride{BlockedModels: []string{"*"}},
+			},
+		}, vault, "")
+		require.NoError(t, err, `blocked_models: ["*"] is the supported deny-all and must stay valid`)
+	})
 }
 
 // TestRegistrySnapshotSafety: identities must not alias the loader's structs —

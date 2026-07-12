@@ -94,6 +94,41 @@ policies:
 	require.Error(t, ValidateSchema([]byte(yml), false))
 }
 
+// Agent ALLOW lists match literally, so "*" would deny everything (#266 review
+// round 5): the schema rejects it in models.allowed and allowed_providers.
+// models.blocked keeps "*" (supported deny-all), and egress rules keep "*"
+// (egress rules define "*" as any-provider — different semantics by design).
+func TestAgentAllowListsRejectWildcard(t *testing.T) {
+	base := `
+agent:
+  name: a
+  version: 1.0.0
+policies:
+  cost_limits:
+    daily: 25
+`
+	t.Run("models.allowed star rejected", func(t *testing.T) {
+		require.Error(t, ValidateSchema([]byte(base+`  models:
+    allowed: ["*"]
+`), false))
+	})
+	t.Run("allowed_providers star rejected", func(t *testing.T) {
+		require.Error(t, ValidateSchema([]byte(base+`  allowed_providers: ["*"]
+`), false))
+	})
+	t.Run("models.blocked star still valid", func(t *testing.T) {
+		require.NoError(t, ValidateSchema([]byte(base+`  models:
+    blocked: ["*"]
+`), false))
+	})
+	t.Run("literal values still valid", func(t *testing.T) {
+		require.NoError(t, ValidateSchema([]byte(base+`  models:
+    allowed: [gpt-4o]
+  allowed_providers: [openai]
+`), false))
+	})
+}
+
 func TestEgressBlockSchema(t *testing.T) {
 	valid := `
 agent:

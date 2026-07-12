@@ -82,17 +82,20 @@ type GenerateParams struct {
 	RoutingDecision         *RoutingDecision // Provider selection and rejected candidates (EU routing)
 	DataFlow                *DataFlow        // Data movement to destinations (digests only); nil when nothing egressed
 	// Semantic cache: set on cache hit (Cost=0, CostSaved=estimated equivalent LLM cost).
-	CacheHit         bool    // True when response was served from cache
-	CacheEntryID     string  // Cache entry ID for audit correlation
-	CacheSimilarity  float64 // Similarity score that produced the hit
-	CostSaved        float64 // Estimated cost saved by not calling the LLM
-	PlanReview       *PlanReviewEvent
-	ExplanationFacts []explanation.Fact // Structured source-of-truth facts; legacy bridge used when empty.
-	Status           string             // Run lifecycle status: queued, running, completed, failed, terminated, blocked, denied
-	FailureReason    string             // Structured classification: cost_exceeded, llm_error, policy_deny, operator_kill, etc.
-	PlanID           string             // Execution plan ID for lineage (links to execution_plans.id)
-	GraphRunID       string             // Graph runtime run ID for external orchestrators (LangGraph, LangChain, etc.)
-	Failover         *FailoverContext   // Provider fallback-chain context (failed attempt / fallback decision / fail-closed)
+	CacheHit     bool   // True when response was served from cache
+	CacheEntryID string // Cache entry ID for audit correlation
+	// CacheSourceCorrelationID is the correlation ID of the request that
+	// originally produced the cached response (source-generation provenance).
+	CacheSourceCorrelationID string
+	CacheSimilarity          float64 // Similarity score that produced the hit
+	CostSaved                float64 // Estimated cost saved by not calling the LLM
+	PlanReview               *PlanReviewEvent
+	ExplanationFacts         []explanation.Fact // Structured source-of-truth facts; legacy bridge used when empty.
+	Status                   string             // Run lifecycle status: queued, running, completed, failed, terminated, blocked, denied
+	FailureReason            string             // Structured classification: cost_exceeded, llm_error, policy_deny, operator_kill, etc.
+	PlanID                   string             // Execution plan ID for lineage (links to execution_plans.id)
+	GraphRunID               string             // Graph runtime run ID for external orchestrators (LangGraph, LangChain, etc.)
+	Failover                 *FailoverContext   // Provider fallback-chain context (failed attempt / fallback decision / fail-closed)
 }
 
 // StepParams holds inputs for creating a step-level evidence record (one LLM call or one tool call within a run).
@@ -235,19 +238,20 @@ func (g *Generator) Generate(ctx context.Context, params GenerateParams) (*Evide
 			InputHash:  inputHashFromParams(params),
 			OutputHash: hashString(params.OutputResponse),
 		},
-		Compliance:      params.Compliance,
-		AgentReasoning:  params.AgentReasoning,
-		AgentVerified:   params.AgentVerified,
-		CacheHit:        params.CacheHit,
-		CacheEntryID:    params.CacheEntryID,
-		CacheSimilarity: params.CacheSimilarity,
-		CostSaved:       params.CostSaved,
-		PlanReview:      params.PlanReview,
-		Status:          params.Status,
-		FailureReason:   params.FailureReason,
-		PlanID:          params.PlanID,
-		GraphRunID:      params.GraphRunID,
-		Failover:        params.Failover,
+		Compliance:               params.Compliance,
+		AgentReasoning:           params.AgentReasoning,
+		AgentVerified:            params.AgentVerified,
+		CacheHit:                 params.CacheHit,
+		CacheEntryID:             params.CacheEntryID,
+		CacheSourceCorrelationID: params.CacheSourceCorrelationID,
+		CacheSimilarity:          params.CacheSimilarity,
+		CostSaved:                params.CostSaved,
+		PlanReview:               params.PlanReview,
+		Status:                   params.Status,
+		FailureReason:            params.FailureReason,
+		PlanID:                   params.PlanID,
+		GraphRunID:               params.GraphRunID,
+		Failover:                 params.Failover,
 	}
 	ev.Explanations = g.buildExplanations(params)
 	if len(ev.Explanations) == 0 {

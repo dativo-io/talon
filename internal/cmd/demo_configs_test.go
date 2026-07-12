@@ -111,7 +111,9 @@ func TestShortlistDemoConfig(t *testing.T) {
 
 	eu := loadDemoAgent(t, filepath.Join(dir, "agents", "shortlist-eu-strict.talon.yaml"))
 	euEff := gateway.ResolveEffectivePolicy(cfg.OrganizationPolicy, prov, eu.Override)
-	require.NotNil(t, euEff.Egress)
-	require.Equal(t, "deny", euEff.Egress.DefaultAction)
-	require.NotEmpty(t, euEff.Egress.Rules)
+	// The agent's egress is its own boundary layer (logical intersection with
+	// the org's, #266 round 5); this demo org config sets no org egress.
+	require.NotNil(t, euEff.AgentEgress)
+	require.Equal(t, "deny", euEff.AgentEgress.DefaultAction)
+	require.NotEmpty(t, euEff.AgentEgress.Rules)
 }

@@ -125,6 +125,10 @@ func setupFailoverGateway(t *testing.T, sovereigntyMode, primaryRegion, backupRe
 		Providers:          providers,
 		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000},
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		// Production applies these via ApplyDefaults(); this helper calls only
+		// Validate(), so set them explicitly or the limiter degrades to burst 1
+		// (rate 0 → exactly one request per agent, ever).
+		RateLimits: RateLimitsConfig{GlobalRequestsPerMin: DefaultGlobalRPM, PerAgentRequestsPerMin: DefaultPerAgentRPM},
 	}
 	cfg.EffectiveSovereigntyMode = sovereigntyMode
 	require.NoError(t, cfg.Validate())
@@ -647,13 +651,103 @@ func TestGatewayFailover_CacheStoresSelectedModel(t *testing.T) {
 	w := makeFailoverRequest(gw, failoverTestBody)
 	require.Equal(t, http.StatusOK, w.Code)
 
+	entries, err := cacheStore.ListByTenant(context.Background(), "test-tenant")
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "response must have been cached")
+	assert.Equal(t, "gpt-4o-mini-eu", entries[0].Model,
+		"cache entry must carry the fallback-selected model, not the requested one")
+	assert.Equal(t, "backup", entries[0].Provider,
+		"cache entry must carry the fallback-selected provider, not the requested one")
+	assert.NotEmpty(t, entries[0].ScopeKey, "cache entry must be scoped (#266 r5)")
+
+	// The stored scope binds the entry to the fallback provider/model: a lookup
+	// keyed to the PRIMARY provider/model must not return it (no cross-boundary
+	// hit, no falsified provenance).
+	agent := failoverAgent(gw)
 	queryBlob, err := embedder.Embed("Summarize our public roadmap")
 	require.NoError(t, err)
-	hit, err := cacheStore.Lookup(context.Background(), "test-tenant", queryBlob, 0.9, 100, embedder.SimilarityFunc())
+	primaryScope := cache.ScopeKey(agent.Name, "gpt-4o-mini", "openai",
+		gw.policyDigests(agent, "openai").Effective, entries[0].DataTier)
+	miss, err := cacheStore.Lookup(context.Background(), "test-tenant", primaryScope, queryBlob, 0.9, 100, embedder.SimilarityFunc())
 	require.NoError(t, err)
-	require.NotNil(t, hit, "response must have been cached")
-	assert.Equal(t, "gpt-4o-mini-eu", hit.Entry.Model,
-		"cache entry must carry the fallback-selected model, not the requested one")
+	assert.Nil(t, miss, "an entry stored under the fallback scope must not be served to a primary-scope lookup")
+}
+
+// assertSignedDigests asserts an evidence record carries the full signed
+// policy-digest matrix (organization / provider / effective) and that the
+// record verifies against its signature (#266 review round 5).
+func assertSignedDigests(t *testing.T, store *evidence.Store, ev *evidence.Evidence, label string) {
+	t.Helper()
+	pd := ev.PolicyDecision.PolicyDigests
+	require.NotNilf(t, pd, "%s: evidence must carry policy digests", label)
+	assert.NotEmptyf(t, pd.Organization, "%s: organization digest", label)
+	assert.NotEmptyf(t, pd.Provider, "%s: provider digest", label)
+	assert.NotEmptyf(t, pd.Effective, "%s: effective digest", label)
+	assert.Truef(t, store.VerifyRecord(ev), "%s: record with digests must verify", label)
+}
+
+// Every gateway evidence record type must carry the signed policy-digest matrix
+// keyed to its own provider — including the failed-attempt records that
+// previously supplied none (#266 review round 5). The matrix: a failed primary
+// attempt, the fallback-success final record, and a provenance-bearing cache
+// hit; primary success/denial digests are covered in blocked_metrics_test.go.
+func TestGatewayEvidence_PolicyDigestMatrix(t *testing.T) {
+	t.Run("failed_attempt_and_fallback_success", func(t *testing.T) {
+		primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
+		backup := newFailoverUpstream(t, http.StatusOK)
+		gw, store := setupFailoverGateway(t, config.DataSovereigntyEUStrict, "EU", "EU", primary, backup, "gpt-4o-mini-eu")
+
+		w := makeFailoverRequest(gw, failoverTestBody)
+		require.Equal(t, http.StatusOK, w.Code)
+		correlationID := correlationIDFromResponse(t, w)
+
+		attempts, final := failoverRecords(t, store, correlationID)
+		require.NotEmpty(t, attempts, "a failed primary attempt must be recorded")
+		require.NotNil(t, final, "the fallback-success final record must exist")
+		for i := range attempts {
+			assertSignedDigests(t, store, attempts[i], "failed_attempt")
+			require.NotNil(t, attempts[i].Failover)
+			assert.Equal(t, "openai", attempts[i].Failover.Provider, "attempt digests keyed to the attempt provider")
+		}
+		assertSignedDigests(t, store, final, "fallback_success")
+		require.NotNil(t, final.Failover)
+		assert.Equal(t, "backup", final.Failover.Provider, "final record names the fallback provider")
+	})
+
+	t.Run("primary_success_and_cache_hit", func(t *testing.T) {
+		primary := newFailoverUpstream(t, http.StatusOK)
+		backup := newFailoverUpstream(t, http.StatusOK)
+		gw, store := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
+
+		dir := t.TempDir()
+		cacheStore, err := cache.NewStore(filepath.Join(dir, "c.db"), testutil.TestSigningKey)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = cacheStore.Close() })
+		cachePolicy, err := cache.NewEvaluator(context.Background())
+		require.NoError(t, err)
+		gw.SetCache(cacheStore, cache.NewBM25(), nil, cachePolicy, true, 3600, nil, 0.9, 100)
+
+		// First request: primary success, response stored in cache.
+		w1 := makeFailoverRequest(gw, failoverTestBody)
+		require.Equal(t, http.StatusOK, w1.Code)
+		sourceCorrelationID := correlationIDFromResponse(t, w1)
+		_, final1 := failoverRecords(t, store, sourceCorrelationID)
+		require.NotNil(t, final1, "primary-success final record")
+		assertSignedDigests(t, store, final1, "primary_success")
+		assert.False(t, final1.CacheHit, "first request is not a cache hit")
+
+		// Second identical request: cache hit under the SAME scope, with digests
+		// and a provenance pointer back to the source generation's record.
+		w2 := makeFailoverRequest(gw, failoverTestBody)
+		require.Equal(t, http.StatusOK, w2.Code)
+		hitCorrelationID := correlationIDFromResponse(t, w2)
+		_, hit := failoverRecords(t, store, hitCorrelationID)
+		require.NotNil(t, hit, "cache-hit final record")
+		require.True(t, hit.CacheHit, "second identical request must be served from cache")
+		assertSignedDigests(t, store, hit, "cache_hit")
+		assert.Equal(t, sourceCorrelationID, hit.CacheSourceCorrelationID,
+			"cache-hit evidence must point back to the source generation's evidence")
+	})
 }
 
 // api_family lets aliased Anthropic-compatible endpoints join chains and get

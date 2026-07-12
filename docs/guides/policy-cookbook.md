@@ -49,8 +49,8 @@ Talon enforces the rule and produces the evidence — it does not make the
 compliance determination for you.
 
 **Where:** `talon.config.yaml` under `gateway.organization_policy.egress` (or
-per agent under `policies.egress` in the agent file, which replaces the
-baseline wholesale).
+per agent under `policies.egress` in the agent file — a second boundary
+evaluated alongside the organization's: a destination must pass **both**).
 
 ```yaml
 gateway:
@@ -532,7 +532,7 @@ The agent file carries the agent's one override; the gateway block carries only 
 | Output PII redaction | `policies.data_classification.redact_output` | -- |
 | Block on PII | `policies.data_classification.block_on_pii` | -- |
 | Data tier cap | `policies.data_classification.max_data_tier` | -- |
-| Egress rules | `policies.egress` (replaces the baseline wholesale) | Baseline: `gateway.organization_policy.egress` |
+| Egress rules | `policies.egress` (second boundary; a destination must pass both this AND the baseline) | Baseline: `gateway.organization_policy.egress` |
 | Tool governance (gateway) | `capabilities.allowed_tools` / `forbidden_tools` / `tool_policy_action` | Baseline: `gateway.organization_policy.forbidden_tools` / `tool_policy_action` |
 | Tool hardening (row caps, dry-run, forbidden args) | `tool_policies` | -- |
 | Tool idempotency (dedupe retried side effects) | `tool_governance` | -- |

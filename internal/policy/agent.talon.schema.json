@@ -297,18 +297,22 @@
           "description": "Flat model allow/block lists for this agent's gateway traffic. Distinct from model_routing (runner-side tier routing preference): models decides what MAY be called, model_routing what the runner PREFERS.",
           "additionalProperties": false,
           "properties": {
-            "allowed": {"type": "array", "items": {"type": "string"}},
+            "allowed": {
+              "type": "array",
+              "items": {"type": "string", "not": {"const": "*"}},
+              "description": "Allow list; matched literally, so \"*\" is rejected (it would deny every model). Empty = unrestricted."
+            },
             "blocked": {"type": "array", "items": {"type": "string"}}
           }
         },
         "allowed_providers": {
           "type": "array",
-          "items": {"type": "string"},
-          "description": "Gateway providers this agent may reach. Empty = all enabled providers."
+          "items": {"type": "string", "not": {"const": "*"}},
+          "description": "Gateway providers this agent may reach; matched literally, so \"*\" is rejected (it would deny every provider). Empty = all enabled providers."
         },
         "egress": {
           "type": "object",
-          "description": "Replaces the organization baseline egress policy wholesale for this agent's gateway traffic when set.",
+          "description": "A second egress boundary evaluated ALONGSIDE the organization policy: a destination must be permitted by BOTH (logical intersection). The agent can only narrow within the organization boundary, never widen or replace it.",
           "additionalProperties": false,
           "properties": {
             "default_action": {"type": "string", "enum": ["allow", "deny"]},
