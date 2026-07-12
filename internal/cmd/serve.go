@@ -34,6 +34,7 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/pricing"
 	talonprompt "github.com/dativo-io/talon/internal/prompt"
+	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/scanner"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/server"
@@ -406,13 +407,21 @@ func runServe(cmd *cobra.Command, args []string) error {
 	var gatewayHandler http.Handler
 	var gatewayCfgForMode *gateway.GatewayConfig
 	// Server tenant-API auth is a projection of the identity registry — one
-	// agent key works for /v1/proxy and the tenant-scoped APIs alike. Auth
-	// openness stays governed by the admin-key dev rule only.
+	// agent key works for /v1/proxy and the tenant-scoped APIs alike. The
+	// FULL identity (agent name, tenant, team) travels through so native
+	// handlers bind attribution to the authenticated agent, not a
+	// client-asserted name (#266 review). Auth openness stays governed by the
+	// admin-key dev rule only.
 	tenantKeys := map[string]string{}
+	agentKeys := map[string]requestctx.AgentIdentity{}
 	if identityRegistry != nil {
-		tenantKeys = identityRegistry.AuthKeyTenantProjection()
+		for key, p := range identityRegistry.AuthKeyIdentityProjection() {
+			agentKeys[key] = requestctx.AgentIdentity{AgentID: p.AgentID, TenantID: p.TenantID, Team: p.Team}
+			tenantKeys[key] = p.TenantID
+		}
 		log.Info().Int("agents", identityRegistry.Len()).Int("tenants", len(identityRegistry.TenantIDs())).Msg("agent_identity_registry_loaded")
 	}
+	opts = append(opts, server.WithAgentIdentities(agentKeys))
 	if serveGateway {
 		gatewayCfg := preloadedGatewayCfg
 		if err := sovereignty.ValidateAirGap(cfg, gatewayCfg); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/rs/zerolog/log"
 
@@ -49,7 +50,15 @@ func buildServeIdentityRegistry(ctx context.Context, pol *policy.Policy, policyP
 		if gatewayMode || errors.Is(err, gateway.ErrAdminKeyCollision) {
 			return nil, fmt.Errorf("building agent identity registry: %w", err)
 		}
-		log.Warn().Err(err).Msgf("agent identity registry unavailable; tenant-scoped APIs will reject agent keys until you run: talon secrets set %s <key>", pol.Agent.Key.SecretName)
+		// Registry unavailable (unminted key). With no agent keys AND no
+		// TALON_ADMIN_KEY, the tenant-scoped APIs are UNAUTHENTICATED (the
+		// dev-mode open rule, #280) — say so plainly, not merely that agent
+		// keys are rejected (#266 review round 4).
+		if os.Getenv("TALON_ADMIN_KEY") == "" {
+			log.Warn().Err(err).Msgf("agent identity registry unavailable and TALON_ADMIN_KEY unset — tenant-scoped APIs are UNAUTHENTICATED (dev mode). Set TALON_ADMIN_KEY and run `talon secrets set %s <key>` before exposing this server.", pol.Agent.Key.SecretName)
+		} else {
+			log.Warn().Err(err).Msgf("agent identity registry unavailable; tenant-scoped APIs accept the admin key only and reject agent keys until you run: talon secrets set %s <key>", pol.Agent.Key.SecretName)
+		}
 		return nil, nil
 	}
 	return registry, nil

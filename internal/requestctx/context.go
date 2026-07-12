@@ -3,12 +3,42 @@ package requestctx
 
 import "context"
 
-type contextKey struct{}
+// contextKey is an int-valued key type so each key has a DISTINCT value.
+// (A pointer-to-empty-struct key aliases: Go may place every &struct{}{} at
+// the same address, so distinct zero-size keys compare equal and clobber each
+// other in context.WithValue — which silently dropped tenant_id once a third
+// key was added, #266 review round 4.)
+type contextKey int
 
-var (
-	tenantIDKey = &contextKey{}
-	isAdminKey  = &contextKey{}
+const (
+	tenantIDKey contextKey = iota
+	isAdminKey
+	agentIdentityKey
 )
+
+// AgentIdentity is the identity an agent traffic key resolves to (#266): the
+// agent name, its derived tenant, and team. It is set on the request context
+// by the tenant-key middleware when a request authenticates with an AGENT
+// key (not the admin key), so native handlers can bind attribution to the
+// authenticated identity instead of trusting a client-asserted agent name.
+type AgentIdentity struct {
+	AgentID  string
+	TenantID string
+	Team     string
+}
+
+// SetAgentIdentity stores the resolved agent identity in the context.
+func SetAgentIdentity(ctx context.Context, id AgentIdentity) context.Context {
+	return context.WithValue(ctx, agentIdentityKey, id)
+}
+
+// AgentIdentityFrom returns the resolved agent identity and true when the
+// request authenticated with an agent key. Returns (zero, false) for admin
+// or dev-mode (unauthenticated) requests.
+func AgentIdentityFrom(ctx context.Context) (AgentIdentity, bool) {
+	id, ok := ctx.Value(agentIdentityKey).(AgentIdentity)
+	return id, ok && id.AgentID != ""
+}
 
 // SetTenantID stores tenant_id in the context.
 func SetTenantID(ctx context.Context, tenantID string) context.Context {

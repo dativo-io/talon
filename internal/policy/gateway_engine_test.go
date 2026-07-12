@@ -390,3 +390,48 @@ func TestGatewayEngine_EvaluateGateway_DenyDailyCost(t *testing.T) {
 	require.Contains(t, reasons[0], "budget_exceeded")
 	require.Contains(t, reasons[0], "daily")
 }
+
+// TestGatewayEngine_ProviderModelConstraints (#266 review round 4, #278):
+// provider (destination) model lists ride the SAME shared policy input as
+// agent/org lists, so the PRIMARY route enforces them via Rego.
+func TestGatewayEngine_ProviderModelConstraints(t *testing.T) {
+	ctx := context.Background()
+	eng, err := NewGatewayEngine(ctx)
+	require.NoError(t, err)
+	base := func(model string) map[string]interface{} {
+		return map[string]interface{}{
+			"provider": "openai", "model": model, "data_tier": 0,
+			"daily_cost": 0.0, "monthly_cost": 0.0, "estimated_cost": 0.01,
+		}
+	}
+	t.Run("provider allowlist denies a model outside it", func(t *testing.T) {
+		in := base("gpt-4-turbo")
+		in["provider_allowed_models"] = []interface{}{"gpt-4o"}
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+		require.Contains(t, strings.Join(reasons, "; "), "not allowed for provider")
+	})
+	t.Run("provider blocklist denies", func(t *testing.T) {
+		in := base("gpt-3.5-turbo")
+		in["provider_blocked_models"] = []interface{}{"gpt-3.5-turbo"}
+		allowed, _, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+	})
+	t.Run("model-less request denied under provider policy", func(t *testing.T) {
+		in := base("")
+		in["provider_allowed_models"] = []interface{}{"gpt-4o"}
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+		require.Contains(t, strings.Join(reasons, "; "), "model_required_for_policy_evaluation")
+	})
+	t.Run("allowed model passes", func(t *testing.T) {
+		in := base("gpt-4o")
+		in["provider_allowed_models"] = []interface{}{"gpt-4o"}
+		allowed, _, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.True(t, allowed)
+	})
+}

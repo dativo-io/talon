@@ -17,6 +17,7 @@ import (
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/tenant"
@@ -45,7 +46,7 @@ type Server struct {
 	gatewayDashboardHTML string
 	metricsCollector     *metrics.Collector
 	adminKey             string
-	tenantKeys           map[string]string
+	agentKeys            map[string]requestctx.AgentIdentity
 	corsOrigins          []string
 	policyPath           string
 	startTime            time.Time
@@ -180,6 +181,31 @@ func WithAgentCapsLookup(fn func(tenantID, agentID string) (daily, monthly float
 	return func(s *Server) { s.agentCapsLookup = fn }
 }
 
+// WithAgentIdentities supplies the FULL key → identity projection (agent
+// name, tenant, team) from the identity registry, so native handlers bind
+// attribution to the authenticated agent rather than a client-asserted name
+// (#266 review round 4). It replaces the tenant-only map derived from
+// NewServer's tenantKeys argument. serve passes this; tests that only exercise
+// tenant scoping can omit it.
+func WithAgentIdentities(agentKeys map[string]requestctx.AgentIdentity) Option {
+	return func(s *Server) {
+		if agentKeys != nil {
+			s.agentKeys = agentKeys
+		}
+	}
+}
+
+// tenantKeysToIdentities converts a key → tenant map into a key → identity
+// map with tenant-only entries (no agent name). Used when a caller supplies
+// only tenant scoping; WithAgentIdentities overrides with the full identity.
+func tenantKeysToIdentities(tenantKeys map[string]string) map[string]requestctx.AgentIdentity {
+	out := make(map[string]requestctx.AgentIdentity, len(tenantKeys))
+	for k, t := range tenantKeys {
+		out[k] = requestctx.AgentIdentity{TenantID: t}
+	}
+	return out
+}
+
 // WithQuickstartEnabled toggles quickstart route behavior.
 func WithQuickstartEnabled(enabled bool) Option {
 	return func(s *Server) { s.quickstartEnabled = enabled }
@@ -242,7 +268,7 @@ func NewServer(
 		policyPath:           policyPath,
 		secretsStore:         secretsStore,
 		adminKey:             adminKey,
-		tenantKeys:           tenantKeys,
+		agentKeys:            tenantKeysToIdentities(tenantKeys),
 		corsOrigins:          []string{"*"},
 		startTime:            time.Now(),
 		eventsStreamMaxConn:  256,
@@ -253,8 +279,8 @@ func NewServer(
 	for _, opt := range opts {
 		opt(s)
 	}
-	if s.tenantKeys == nil {
-		s.tenantKeys = make(map[string]string)
+	if s.agentKeys == nil {
+		s.agentKeys = make(map[string]requestctx.AgentIdentity)
 	}
 	return s
 }
@@ -296,7 +322,7 @@ func (s *Server) Routes() http.Handler {
 
 	// Tenant-only API group
 	r.Group(func(r chi.Router) {
-		r.Use(TenantKeyMiddleware(s.tenantKeys, s.adminKey))
+		r.Use(TenantKeyMiddleware(s.agentKeys, s.adminKey))
 		r.Use(RateLimitMiddleware(s.tenantManager))
 
 		// Long-running: no request timeout so handler 30min deadline applies (middleware.Timeout would override).
@@ -323,7 +349,7 @@ func (s *Server) Routes() http.Handler {
 
 	// Tenant or admin API group (mostly read paths).
 	r.Group(func(r chi.Router) {
-		r.Use(TenantOrAdminMiddleware(s.tenantKeys, s.adminKey))
+		r.Use(TenantOrAdminMiddleware(s.agentKeys, s.adminKey))
 		r.Use(RateLimitMiddleware(s.tenantManager))
 		r.Use(middleware.Timeout(defaultTimeout))
 

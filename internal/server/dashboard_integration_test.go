@@ -14,6 +14,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/metrics"
+	"github.com/dativo-io/talon/internal/requestctx"
 )
 
 // TestDashboardIntegration_EvidenceToAPI is an integration test that proves
@@ -98,7 +99,7 @@ func TestDashboardIntegration_EvidenceToAPI(t *testing.T) {
 	srv := &Server{
 		metricsCollector:     collector,
 		gatewayDashboardHTML: "<html></html>",
-		tenantKeys:           map[string]string{},
+		agentKeys:            map[string]requestctx.AgentIdentity{},
 	}
 
 	// Call dashboard API

@@ -180,19 +180,16 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error())
 		return
 	}
-	tenantID := TenantIDFromContext(r.Context())
-	if tenantID == "" {
-		tenantID = req.TenantID
-	}
-	if tenantID == "" {
-		tenantID = "default"
-	}
-	agentName := req.AgentName
-	if agentName == "" {
-		agentName = req.AgentID
-	}
-	if agentName == "" {
-		agentName = "default"
+	// Attribution is bound to the AUTHENTICATED identity, not to a
+	// client-asserted name (#266 review round 4): an agent key for Agent A
+	// must not be able to submit a run recorded under Agent B. When the
+	// request authenticated with an agent key, the agent name and tenant come
+	// from the resolved identity, and a differing body/header value is
+	// rejected. Admin and dev-mode requests keep the client-asserted name.
+	tenantID, agentName, authErr := resolveRunAttribution(r.Context(), req.TenantID, firstNonEmpty(req.AgentName, req.AgentID))
+	if authErr != nil {
+		writeError(w, http.StatusForbidden, "identity_mismatch", authErr.Error())
+		return
 	}
 	if req.Prompt == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "prompt is required")
@@ -280,22 +277,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_json", "invalid_request_error", "invalid JSON: "+err.Error())
 		return
 	}
-	tenantID := TenantIDFromContext(r.Context())
-	if tenantID == "" {
-		tenantID = req.TenantID
-	}
-	if tenantID == "" {
-		tenantID = r.Header.Get("X-Talon-Tenant")
-	}
-	if tenantID == "" {
-		tenantID = "default"
-	}
-	agentName := req.AgentID
-	if agentName == "" {
-		agentName = r.Header.Get("X-Talon-Agent")
-	}
-	if agentName == "" {
-		agentName = "default"
+	// Attribution binds to the authenticated identity, not a client-asserted
+	// name (#266 review round 4): an agent key may only act as its own agent.
+	tenantID, agentName, authErr := resolveRunAttribution(r.Context(),
+		firstNonEmpty(req.TenantID, r.Header.Get("X-Talon-Tenant")),
+		firstNonEmpty(req.AgentID, r.Header.Get("X-Talon-Agent")))
+	if authErr != nil {
+		writeOpenAIError(w, http.StatusForbidden, "identity_mismatch", "invalid_request_error", authErr.Error())
+		return
 	}
 	var prompt string
 	for i := len(req.Messages) - 1; i >= 0; i-- {

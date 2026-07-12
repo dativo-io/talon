@@ -243,3 +243,33 @@ func TestQuickstartIdentityIsolated(t *testing.T) {
 	_, ok := reg.ResolveKey("quickstart")
 	assert.False(t, ok)
 }
+
+// TestIdentitiesReturnsDeepCopies (#266 review round 4): Identities() must
+// return copies — mutating a returned identity (or its override) must not
+// change what the registry resolves.
+func TestIdentitiesReturnsDeepCopies(t *testing.T) {
+	vault := newTestVault(t)
+	setSecret(t, vault, "k1", "v1")
+	reg, err := BuildIdentityRegistry(context.Background(), []LoadedAgent{{
+		Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1", Team: "eng",
+		Tags:     []string{"copaw"},
+		Override: &PolicyOverride{MaxDailyCost: 10, AllowedTools: []string{"search"}},
+	}}, vault, "")
+	require.NoError(t, err)
+
+	got := reg.Identities()
+	require.Len(t, got, 1)
+	got[0].Name = "MUTATED"
+	got[0].Team = "MUTATED"
+	got[0].Tags[0] = "MUTATED"
+	got[0].Override.MaxDailyCost = 9999
+	got[0].Override.AllowedTools[0] = "MUTATED"
+
+	id, ok := reg.ResolveKey("v1")
+	require.True(t, ok)
+	assert.Equal(t, "support", id.Name, "registry identity must be unaffected by mutation of Identities() result")
+	assert.Equal(t, "eng", id.Team)
+	assert.Equal(t, "copaw", id.Tags[0])
+	assert.Equal(t, float64(10), id.Override.MaxDailyCost)
+	assert.Equal(t, "search", id.Override.AllowedTools[0])
+}

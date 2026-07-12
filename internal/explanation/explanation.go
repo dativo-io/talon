@@ -330,6 +330,8 @@ var reasonRules = []reasonRule{
 		"is blocked for this agent",
 		"models are blocked for this agent",
 		"blocked by organization policy",
+		"not allowed for provider",
+		"blocked for this provider",
 		"model_required_for_policy_evaluation",
 		"exceeds agent restriction",
 		"exceeds organization restriction",

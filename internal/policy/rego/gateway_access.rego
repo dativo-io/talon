@@ -62,6 +62,31 @@ deny contains msg if {
 	msg := sprintf("Model %s is blocked by organization policy", [input.model])
 }
 
+# Provider (destination) model lists — a HARD constraint enforced on the
+# PRIMARY route through this shared input, not just fallback candidates
+# (#266 review round 4, closes #278). Source-named so evidence attributes the
+# denial to the provider layer.
+deny contains msg if {
+	input.provider_allowed_models != null
+	count(input.provider_allowed_models) > 0
+	not input.model in input.provider_allowed_models
+	msg := sprintf("Model %s not allowed for provider", [input.model])
+}
+
+deny contains msg if {
+	input.provider_blocked_models != null
+	some blocked in input.provider_blocked_models
+	blocked == "*"
+	msg := "All models are blocked for this provider"
+}
+
+deny contains msg if {
+	input.provider_blocked_models != null
+	some blocked in input.provider_blocked_models
+	blocked == input.model
+	msg := sprintf("Model %s is blocked for this provider", [input.model])
+}
+
 # Fail-closed contract for model-less requests (#279 review round 3): when
 # ANY model allow/block policy is active and the request omits its model, the
 # request cannot be evaluated against that policy — deny rather than forward
@@ -98,6 +123,16 @@ model_policy_active if {
 model_policy_active if {
 	input.org_blocked_models != null
 	count(input.org_blocked_models) > 0
+}
+
+model_policy_active if {
+	input.provider_allowed_models != null
+	count(input.provider_allowed_models) > 0
+}
+
+model_policy_active if {
+	input.provider_blocked_models != null
+	count(input.provider_blocked_models) > 0
 }
 
 # Per-agent daily cost limit. Amounts use %v with 4-decimal rounding: real

@@ -294,11 +294,37 @@ func (r *IdentityRegistry) MetricsTenantScope() string {
 	return ""
 }
 
-// AuthKeyTenantProjection projects the registry into the key → tenant_id map
-// consumed by the server tenant-API middleware. The registry is the single
-// source; this is a projection, kept only because the middleware wants a
-// plain map. Auth openness is governed by the admin-key dev rule, never by
-// this map being empty.
+// AuthPrincipal is the identity a presented agent key resolves to on the
+// tenant-API surface (#266): the agent name, its derived tenant, and team.
+// It is the value type of AuthKeyIdentityProjection — an immutable snapshot,
+// never a pointer into the registry, so consumers cannot mutate an identity.
+type AuthPrincipal struct {
+	AgentID  string
+	TenantID string
+	Team     string
+}
+
+// AuthKeyIdentityProjection projects the registry into the key → AuthPrincipal
+// map consumed by the server tenant-API middleware. The registry is the
+// single source; this is a projection, kept only because the middleware wants
+// a plain map. The full identity (not just tenant) travels through so native
+// handlers can bind attribution to the AUTHENTICATED agent instead of a
+// client-asserted name (#266 review round 4). Auth openness is governed by
+// the admin-key dev rule, never by this map being empty.
+func (r *IdentityRegistry) AuthKeyIdentityProjection() map[string]AuthPrincipal {
+	m := make(map[string]AuthPrincipal)
+	if r == nil {
+		return m
+	}
+	for _, id := range r.identities {
+		m[string(id.key)] = AuthPrincipal{AgentID: id.Name, TenantID: id.TenantID, Team: id.Team}
+	}
+	return m
+}
+
+// AuthKeyTenantProjection projects the registry into the key → tenant_id map.
+// Retained for callers that need only the tenant; new code should prefer
+// AuthKeyIdentityProjection.
 func (r *IdentityRegistry) AuthKeyTenantProjection() map[string]string {
 	m := make(map[string]string)
 	if r == nil {
@@ -310,14 +336,34 @@ func (r *IdentityRegistry) AuthKeyTenantProjection() map[string]string {
 	return m
 }
 
-// Identities returns the resolved identities (for fleet views and preflight
-// checks). The slice is a copy; identities themselves are shared and must be
-// treated as immutable.
+// Identities returns DEEP COPIES of the resolved identities (for fleet views
+// and preflight checks). Copies — not shared pointers — so a consumer cannot
+// mutate an identity, its override, or nested slices out from under the
+// registry (#266 review round 4: structural immutability, not by convention).
 func (r *IdentityRegistry) Identities() []*ResolvedIdentity {
 	if r == nil {
 		return nil
 	}
-	return append([]*ResolvedIdentity(nil), r.identities...)
+	out := make([]*ResolvedIdentity, len(r.identities))
+	for i, id := range r.identities {
+		out[i] = id.clone()
+	}
+	return out
+}
+
+// clone deep-copies a resolved identity, including its override, tags, and
+// metadata pointer. The traffic key material is intentionally NOT copied out
+// (it stays unexported inside the registry).
+func (id *ResolvedIdentity) clone() *ResolvedIdentity {
+	if id == nil {
+		return nil
+	}
+	c := *id
+	c.Tags = append([]string(nil), id.Tags...)
+	c.AcceptClientMetadata = cloneBoolPtr(id.AcceptClientMetadata)
+	c.Override = id.Override.clone()
+	c.key = append([]byte(nil), id.key...)
+	return &c
 }
 
 // finalize normalizes the override in place and validates its semantic

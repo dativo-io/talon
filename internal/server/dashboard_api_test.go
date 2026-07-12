@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/metrics"
+	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/web"
 )
 
@@ -24,7 +25,7 @@ func newTestServerWithDashboard(t *testing.T, token string) (*Server, *metrics.C
 		metricsCollector:     collector,
 		gatewayDashboardHTML: "<html>test dashboard</html>",
 		adminKey:             token,
-		tenantKeys:           map[string]string{},
+		agentKeys:            map[string]requestctx.AgentIdentity{},
 	}
 	return s, collector
 }
@@ -223,7 +224,7 @@ func TestHandleMetricsJSON_IncludesPlanStats(t *testing.T) {
 	s := &Server{
 		metricsCollector:     collector,
 		gatewayDashboardHTML: "<html>test dashboard</html>",
-		tenantKeys:           map[string]string{},
+		agentKeys:            map[string]requestctx.AgentIdentity{},
 	}
 
 	req := newTestRequest("GET", "/api/v1/metrics")
@@ -492,7 +493,7 @@ func TestAdminKeyMiddleware_TalonAdminKeyQueryParamIgnoredForPost(t *testing.T) 
 }
 
 func TestTenantOrAdminMiddleware_AllowsTenantBearer(t *testing.T) {
-	mw := TenantOrAdminMiddleware(map[string]string{"tenant-key-1": "tenant-default"}, "admin-secret")
+	mw := TenantOrAdminMiddleware(map[string]requestctx.AgentIdentity{"tenant-key-1": {AgentID: "agent-td", TenantID: "tenant-default"}}, "admin-secret")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -506,7 +507,7 @@ func TestTenantOrAdminMiddleware_AllowsTenantBearer(t *testing.T) {
 }
 
 func TestTenantOrAdminMiddleware_AllowsAdminKey(t *testing.T) {
-	mw := TenantOrAdminMiddleware(map[string]string{"tenant-key-1": "tenant-default"}, "admin-secret")
+	mw := TenantOrAdminMiddleware(map[string]requestctx.AgentIdentity{"tenant-key-1": {AgentID: "agent-td", TenantID: "tenant-default"}}, "admin-secret")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -520,7 +521,7 @@ func TestTenantOrAdminMiddleware_AllowsAdminKey(t *testing.T) {
 }
 
 func TestTenantOrAdminMiddleware_SetsSessionCookieForAdmin(t *testing.T) {
-	mw := TenantOrAdminMiddleware(map[string]string{"tenant-key-1": "tenant-default"}, "admin-secret")
+	mw := TenantOrAdminMiddleware(map[string]requestctx.AgentIdentity{"tenant-key-1": {AgentID: "agent-td", TenantID: "tenant-default"}}, "admin-secret")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -543,7 +544,7 @@ func TestTenantOrAdminMiddleware_SetsSessionCookieForAdmin(t *testing.T) {
 }
 
 func TestTenantOrAdminMiddleware_RejectsMissingAuth(t *testing.T) {
-	mw := TenantOrAdminMiddleware(map[string]string{"tenant-key-1": "tenant-default"}, "admin-secret")
+	mw := TenantOrAdminMiddleware(map[string]requestctx.AgentIdentity{"tenant-key-1": {AgentID: "agent-td", TenantID: "tenant-default"}}, "admin-secret")
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

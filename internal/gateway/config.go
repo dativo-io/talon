@@ -472,6 +472,40 @@ func applyAttachmentPolicyDefaults(p *AttachmentPolicyConfig) *AttachmentPolicyC
 	return p
 }
 
+// validatePIIAction rejects an invalid PII action (#266 review round 4): an
+// unrecognized value like "blok" is not "block", so it would neither block nor
+// redact — effectively allow. Empty inherits the default and is accepted.
+func validatePIIAction(field, action string) error {
+	switch action {
+	case "", "allow", "warn", "redact", "block":
+		return nil
+	}
+	return fmt.Errorf("gateway organization_policy.%s must be allow, warn, redact, or block, got %q", field, action)
+}
+
+// validateToolPolicyAction rejects an invalid tool policy action: the runtime
+// blocks only on exact "block", so any other value silently falls into filter.
+func validateToolPolicyAction(field, action string) error {
+	switch action {
+	case "", "filter", "block":
+		return nil
+	}
+	return fmt.Errorf("gateway %s must be filter or block, got %q", field, action)
+}
+
+// validateModelList rejects "*" in an ALLOW list (#266 review round 4, #284):
+// Rego does literal membership on allowed_models, so ["*"] would deny every
+// concrete model rather than allow all — a fail-closed footgun. An empty list
+// already means unrestricted, so "*" is never the right way to express it.
+func validateModelList(field string, models []string) error {
+	for _, m := range models {
+		if strings.TrimSpace(m) == "*" {
+			return fmt.Errorf("gateway %s must not contain \"*\": an allow list matches models literally, so \"*\" denies every model — leave the list empty to allow all", field)
+		}
+	}
+	return nil
+}
+
 // Validate checks that the configuration is valid.
 //
 //nolint:gocyclo // validation branches are independent checks
@@ -491,6 +525,26 @@ func (c *GatewayConfig) Validate() error {
 	}
 	if t := c.OrganizationPolicy.MaxDataTier; t != nil && (*t < 0 || *t > 2) {
 		return fmt.Errorf("gateway organization_policy.max_data_tier must be 0, 1, or 2, got %d", int(*t))
+	}
+	// Enum + minimum validation of the org policy (#266 review round 4):
+	// LoadGatewayConfig does not run the JSON schema, and an invalid value
+	// silently degrades — e.g. default_pii_action: "blok" would neither block
+	// nor redact (effectively allow), and max_daily_cost: -1 disables the cap
+	// (only >0 is emitted). Reject these at load instead of failing open.
+	if err := validatePIIAction("default_pii_action", c.OrganizationPolicy.DefaultPIIAction); err != nil {
+		return err
+	}
+	if err := validatePIIAction("response_pii_action", c.OrganizationPolicy.ResponsePIIAction); err != nil {
+		return err
+	}
+	if err := validateToolPolicyAction("organization_policy.tool_policy_action", c.OrganizationPolicy.ToolPolicyAction); err != nil {
+		return err
+	}
+	if c.OrganizationPolicy.MaxDailyCost < 0 || c.OrganizationPolicy.MaxMonthlyCost < 0 {
+		return fmt.Errorf("gateway organization_policy cost limits must not be negative (max_daily_cost=%v max_monthly_cost=%v) — a negative value would silently disable the cap", c.OrganizationPolicy.MaxDailyCost, c.OrganizationPolicy.MaxMonthlyCost)
+	}
+	if err := validateModelList("organization_policy.allowed_models", c.OrganizationPolicy.AllowedModels); err != nil {
+		return err
 	}
 	for name := range c.Providers {
 		p := c.Providers[name]
@@ -527,6 +581,12 @@ func (c *GatewayConfig) Validate() error {
 		case "", ResponsesStorePreserve, ResponsesStoreForceIfAbsent, ResponsesStoreForceTrue:
 		default:
 			return fmt.Errorf("gateway provider %q: responses_store_mode must be preserve, force_if_absent, or force_true", name)
+		}
+		if err := validateToolPolicyAction(fmt.Sprintf("provider %q tool_policy_action", name), p.ToolPolicyAction); err != nil {
+			return err
+		}
+		if err := validateModelList(fmt.Sprintf("provider %q allowed_models", name), p.AllowedModels); err != nil {
+			return err
 		}
 		c.Providers[name] = p
 	}

@@ -369,3 +369,52 @@ data_dir: /tmp/talon
 		assert.False(t, cfg.Enabled)
 	})
 }
+
+// TestGatewayConfigValidate_RuntimeValueChecks (#266 review round 4): the
+// runtime must reject invalid enum/minimum values, not just unknown keys —
+// LoadGatewayConfig does not run the JSON schema, so a value like "blok"
+// would otherwise silently degrade to allow-all.
+func TestGatewayConfigValidate_RuntimeValueChecks(t *testing.T) {
+	load := func(t *testing.T, doc string) error {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "talon.config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte(doc), 0o600))
+		_, err := LoadGatewayConfig(path)
+		return err
+	}
+	base := `
+gateway:
+  enabled: true
+  providers:
+    openai:
+      enabled: true
+      base_url: "https://api.openai.com"
+      secret_name: "openai-api-key"
+`
+	// A provider block carrying an extra field, as a full standalone config.
+	provider := func(extra string) string {
+		return "\ngateway:\n  enabled: true\n  providers:\n    openai:\n      enabled: true\n      base_url: \"https://api.openai.com\"\n      secret_name: \"openai-api-key\"\n" + extra
+	}
+	cases := []struct {
+		name, doc, want string
+	}{
+		{"invalid default_pii_action", base + "  organization_policy:\n    default_pii_action: blok\n", "default_pii_action"},
+		{"invalid response_pii_action", base + "  organization_policy:\n    response_pii_action: nope\n", "response_pii_action"},
+		{"invalid org tool_policy_action", base + "  organization_policy:\n    tool_policy_action: blok\n", "tool_policy_action"},
+		{"negative max_daily_cost", base + "  organization_policy:\n    max_daily_cost: -1\n", "must not be negative"},
+		{"star in org allowed_models", base + "  organization_policy:\n    allowed_models: [\"*\"]\n", "must not contain"},
+		{"star in provider allowed_models", provider("      allowed_models: [\"*\"]\n"), "must not contain"},
+		{"invalid provider tool_policy_action", provider("      tool_policy_action: blok\n"), "tool_policy_action"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := load(t, tc.doc)
+			require.Error(t, err, "invalid value must fail load, not silently degrade")
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+
+	t.Run("valid values still load", func(t *testing.T) {
+		require.NoError(t, load(t, base+"  organization_policy:\n    default_pii_action: block\n    response_pii_action: redact\n    tool_policy_action: block\n    max_daily_cost: 10\n    allowed_models: [\"gpt-4o\"]\n"))
+	})
+}

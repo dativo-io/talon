@@ -1687,6 +1687,15 @@ func buildGatewayPolicyInput(agent *ResolvedIdentity, eff EffectivePolicy, provi
 	if len(eff.OrgBlockedModels) > 0 {
 		input["org_blocked_models"] = eff.OrgBlockedModels
 	}
+	// Provider (destination) model lists ride the SAME shared policy input so
+	// the PRIMARY route enforces them through Rego, not just fallback
+	// candidates via a standalone check (#266 review round 4, closes #278).
+	if len(eff.ProviderAllowedModels) > 0 {
+		input["provider_allowed_models"] = eff.ProviderAllowedModels
+	}
+	if len(eff.ProviderBlockedModels) > 0 {
+		input["provider_blocked_models"] = eff.ProviderBlockedModels
+	}
 	if eff.MaxSessionCost > 0 {
 		// One insertion in the shared builder covers the primary request
 		// and every fallback candidate identically (#198).

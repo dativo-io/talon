@@ -424,7 +424,7 @@ func TestGateway_ToolGovernance_AgentAllowlist(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.registry.Identities()[0].Override.AllowedTools = []string{"search_web", "read_file"}
+	gw.registry.identities[0].Override.AllowedTools = []string{"search_web", "read_file"}
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -465,7 +465,7 @@ func TestGateway_ToolGovernance_ThreeLevelMerge(t *testing.T) {
 		SecretName:     "openai-api-key",
 		ForbiddenTools: []string{"export_*"},
 	}
-	gw.registry.Identities()[0].Override.ForbiddenTools = []string{"bulk_*"}
+	gw.registry.identities[0].Override.ForbiddenTools = []string{"bulk_*"}
 
 	body := `{
 		"model": "gpt-4o-mini",
