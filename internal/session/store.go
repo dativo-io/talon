@@ -89,11 +89,11 @@ type Session struct {
 	TotalTokens int        `json:"total_tokens"`
 	MaxCost     float64    `json:"max_cost,omitempty"`
 	Reasoning   string     `json:"reasoning,omitempty"`
-	// ExternalSessionID/CallerID/Source identify gateway sessions created from
-	// a client-asserted session id (#198). The internal ID stays the opaque
-	// public handle; the external id is only unique per (tenant, caller).
+	// ExternalSessionID/Source identify gateway sessions created from a
+	// client-asserted session id (#198). The internal ID stays the opaque
+	// public handle; the external id is only unique per (tenant, agent) —
+	// AgentID above carries the identity for native AND gateway sessions (#266).
 	ExternalSessionID string `json:"external_session_id,omitempty"`
-	CallerID          string `json:"caller_id,omitempty"`
 	Source            string `json:"source,omitempty"` // talon | client_asserted | vendor_asserted
 }
 
@@ -237,9 +237,12 @@ func scanSession(row rowScanner) (*Session, error) {
 	var out Session
 	var status string
 	var completed sql.NullTime
-	var reasoning, external, callerID, source sql.NullString
+	// tupleAgent is the caller_id storage column — kept under its historical
+	// name for the (tenant, caller_id, external_session_id) unique index; it
+	// mirrors agent_id for gateway sessions (#266).
+	var reasoning, external, tupleAgent, source sql.NullString
 	err := row.Scan(&out.ID, &out.TenantID, &out.AgentID, &status, &out.CreatedAt, &out.UpdatedAt, &completed,
-		&out.TotalCost, &out.TotalTokens, &out.MaxCost, &reasoning, &external, &callerID, &source)
+		&out.TotalCost, &out.TotalTokens, &out.MaxCost, &reasoning, &external, &tupleAgent, &source)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +253,9 @@ func scanSession(row rowScanner) (*Session, error) {
 	}
 	out.Reasoning = reasoning.String
 	out.ExternalSessionID = external.String
-	out.CallerID = callerID.String
+	if out.AgentID == "" {
+		out.AgentID = tupleAgent.String
+	}
 	out.Source = source.String
 	return &out, nil
 }
@@ -288,14 +293,15 @@ func (s *Store) Join(ctx context.Context, id, tenantID string) (*Session, error)
 	return ss, nil
 }
 
-// GetByExternal returns the session identified by the caller-scoped tuple
-// (tenant, caller, external session id), or ErrSessionNotFound. This is the
+// GetByExternal returns the session identified by the agent-scoped tuple
+// (tenant, agent, external session id), or ErrSessionNotFound. This is the
 // ONLY gateway read path: a raw client-asserted id is never used to look up
-// another tenant's or caller's session state (#215).
-func (s *Store) GetByExternal(ctx context.Context, tenantID, callerID, externalID string) (*Session, error) {
+// another tenant's or agent's session state (#215). The tuple's storage
+// column keeps its historical caller_id name (#266).
+func (s *Store) GetByExternal(ctx context.Context, tenantID, agentID, externalID string) (*Session, error) {
 	out, err := scanSession(s.db.QueryRowContext(ctx,
 		`SELECT `+sessionColumns+` FROM sessions WHERE tenant_id = ? AND caller_id = ? AND external_session_id = ?`,
-		tenantID, callerID, externalID))
+		tenantID, agentID, externalID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSessionNotFound
 	}
@@ -310,11 +316,11 @@ func (s *Store) GetByExternal(ctx context.Context, tenantID, callerID, externalI
 // create-if-absent). source must be client_asserted or vendor_asserted —
 // synthetic session ids must never reach this method. Safe under concurrent
 // first-request races via the unique tuple index.
-func (s *Store) GetOrCreateExternal(ctx context.Context, tenantID, callerID, externalID, source string) (*Session, error) {
+func (s *Store) GetOrCreateExternal(ctx context.Context, tenantID, agentID, externalID, source string) (*Session, error) {
 	if externalID == "" {
 		return nil, fmt.Errorf("external session id is required")
 	}
-	if sess, err := s.GetByExternal(ctx, tenantID, callerID, externalID); err == nil {
+	if sess, err := s.GetByExternal(ctx, tenantID, agentID, externalID); err == nil {
 		return sess, nil
 	} else if !errors.Is(err, ErrSessionNotFound) {
 		return nil, err
@@ -323,12 +329,11 @@ func (s *Store) GetOrCreateExternal(ctx context.Context, tenantID, callerID, ext
 	out := &Session{
 		ID:                "sess_" + uuid.New().String()[:12],
 		TenantID:          tenantID,
-		AgentID:           callerID,
+		AgentID:           agentID,
 		Status:            StatusActive,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		ExternalSessionID: externalID,
-		CallerID:          callerID,
 		Source:            source,
 	}
 	_, err := s.db.ExecContext(ctx,
@@ -336,12 +341,12 @@ func (s *Store) GetOrCreateExternal(ctx context.Context, tenantID, callerID, ext
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(tenant_id, caller_id, external_session_id) WHERE external_session_id IS NOT NULL DO NOTHING`,
 		out.ID, out.TenantID, out.AgentID, string(out.Status), out.CreatedAt, out.UpdatedAt,
-		out.ExternalSessionID, out.CallerID, out.Source)
+		out.ExternalSessionID, out.AgentID, out.Source)
 	if err != nil {
 		return nil, fmt.Errorf("creating external session: %w", err)
 	}
 	// Re-read: covers both our insert and a concurrent winner's row.
-	return s.GetByExternal(ctx, tenantID, callerID, externalID)
+	return s.GetByExternal(ctx, tenantID, agentID, externalID)
 }
 
 func (s *Store) AddUsage(ctx context.Context, id string, cost float64, tokens int) error {

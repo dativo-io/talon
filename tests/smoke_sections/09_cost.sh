@@ -3,7 +3,7 @@
 # Sourced by tests/smoke_test.sh — do not run directly.
 
 # -----------------------------------------------------------------------------
-# SECTION 09 — Cost Governance (docs/guides/cost-governance-by-caller.md, PERSONA_GUIDES FinOps)
+# SECTION 09 — Cost Governance (docs/guides/cost-governance-by-agent.md, PERSONA_GUIDES FinOps)
 # -----------------------------------------------------------------------------
 test_section_09_cost() {
   local section="09_cost"

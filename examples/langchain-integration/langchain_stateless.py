@@ -13,7 +13,7 @@ Works in notebooks and standalone scripts.
 Prerequisites:
     pip install langchain-openai requests
     export TALON_URL=http://localhost:8080
-    export TALON_CALLER_KEY=your-caller-api-key
+    export TALON_AGENT_KEY=your-agent-key
     export OPENAI_API_KEY=your-openai-key  # stored in Talon vault
 
     # Start Talon with gateway:
@@ -29,7 +29,7 @@ def run_stateless_call():
     """Single governed LLM call through Talon gateway."""
 
     talon_url = os.environ.get("TALON_URL", "http://localhost:8080")
-    caller_key = os.environ.get("TALON_CALLER_KEY", "")
+    agent_key = os.environ.get("TALON_AGENT_KEY", "")
 
     # Point LangChain at Talon's OpenAI-compatible proxy.
     # Talon handles: PII detection, policy evaluation, cost tracking,
@@ -38,7 +38,7 @@ def run_stateless_call():
         model="gpt-4o-mini",
         temperature=0,
         base_url=f"{talon_url}/v1/proxy/openai",
-        api_key=caller_key,
+        api_key=agent_key,
         default_headers={
             "X-Talon-Session-ID": "notebook-session-1",
             "X-Talon-Reasoning": "stateless-langchain-example",
@@ -63,7 +63,7 @@ def run_with_governance_events():
 
     talon = TalonClient(
         base_url=os.environ.get("TALON_URL", "http://localhost:8080"),
-        tenant_key=os.environ.get("TALON_TENANT_KEY", ""),
+        agent_key=os.environ.get("TALON_AGENT_KEY", ""),
     )
 
     run_id = talon.new_run_id()

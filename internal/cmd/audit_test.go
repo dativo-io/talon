@@ -653,11 +653,9 @@ func resetAuditCostFlags() {
 	auditVerifyFailover = false
 	auditTenant = ""
 	auditAgent = ""
-	auditCaller = ""
 	costsSession = ""
 	costsJSON = false
 	costsAgent = ""
-	costsCaller = ""
 	costsTenant = ""
 }
 

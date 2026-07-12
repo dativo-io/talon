@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dativo-io/talon/internal/agentbridge"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
@@ -128,13 +129,14 @@ func checkDataDir(cfg *config.Config) CheckResult {
 func checkPolicy(cfg *config.Config) CheckResult {
 	policyPath := cfg.DefaultPolicy
 	if _, err := os.Stat(policyPath); err != nil {
-		// A missing agent policy is advisory, not fatal: gateway-only deployments
-		// (e.g. air-gap proxy) govern requests via the gateway default_policy and
-		// need no agent.talon.yaml. It is only required for the `talon run` path.
+		// Advisory in the general pass: plain `talon serve` synthesizes a
+		// minimal default. Gateway mode REQUIRES a keyed agent — that is
+		// enforced as a FAIL by gateway_agent_identity when a gateway config
+		// is being checked (#266).
 		return CheckResult{
 			Name: "policy_valid", Category: "config", Status: "warn",
-			Message: fmt.Sprintf("%s — file not found (not required for gateway-only deployments)", policyPath),
-			Fix:     "Run 'talon init' to create an agent policy file (needed for 'talon run')",
+			Message: fmt.Sprintf("%s — file not found (required for 'talon run'; gateway mode additionally requires agent.key.secret_name)", policyPath),
+			Fix:     "Run 'talon init' to create an agent policy file",
 		}
 	}
 	pol, loadErr := policy.LoadPolicy(context.Background(), policyPath, false, ".")
@@ -314,7 +316,7 @@ func checkGateway(ctx context.Context, opts Options) []CheckResult {
 		Message: opts.GatewayConfigPath,
 	})
 	results = append(results, checkGatewayMode(gwCfg))
-	results = append(results, checkGatewayCallers(gwCfg))
+	results = append(results, checkGatewayAgentIdentity(ctx))
 	results = append(results, checkGatewayToolPolicy(gwCfg))
 	results = append(results, checkSovereigntyFromGateway(gwCfg, opts.GatewayConfigPath))
 	results = append(results, checkAirGapFromGateway(gwCfg, opts.GatewayConfigPath))
@@ -342,31 +344,83 @@ func checkGatewayMode(cfg *gateway.GatewayConfig) CheckResult {
 	return CheckResult{Name: "gateway_mode", Category: "gateway", Status: "pass", Message: msg}
 }
 
-func checkGatewayCallers(cfg *gateway.GatewayConfig) CheckResult {
-	if len(cfg.Callers) == 0 {
+// GatewayIdentityPreflight runs the SAME fail-closed checks `talon serve
+// --gateway` startup performs (#266): the agent policy loads, carries a key
+// binding, the vault opens, and a dry-run registry build passes (missing /
+// ACL-denied / empty secret, duplicate identity, admin-key collision). A
+// condition that would make gateway startup fail must fail here too — this
+// is the shared preflight behind `talon doctor --gateway-config` and
+// `talon enforce enable`.
+func GatewayIdentityPreflight(ctx context.Context) (agentName, secretName string, err error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return "", "", fmt.Errorf("loading operator config: %w", err)
+	}
+	pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
+	if err != nil {
+		return "", "", fmt.Errorf("no agent policy loaded (%v) — gateway mode requires at least one keyed agent: create agent.talon.yaml with agent.key.secret_name", err)
+	}
+	if pol.Agent.Key == nil || pol.Agent.Key.SecretName == "" {
+		return pol.Agent.Name, "", fmt.Errorf("agent %q has no key binding — gateway startup will refuse; add agent.key.secret_name to agent.talon.yaml and run: talon secrets set <name> <key>", pol.Agent.Name)
+	}
+	// Same strict unknown-field check gateway startup runs (#266 review round
+	// 4): a typo that silently drops a control must fail the preflight too.
+	if unknownErr := policy.ValidateNoUnknownFields(cfg.DefaultPolicy); unknownErr != nil {
+		return pol.Agent.Name, pol.Agent.Key.SecretName, unknownErr
+	}
+	secStore, secErr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+	if secErr != nil {
+		return pol.Agent.Name, pol.Agent.Key.SecretName, fmt.Errorf("cannot open secrets vault: %w", secErr)
+	}
+	defer secStore.Close()
+	// The dry-run uses the SAME policy → agent adapter as serve startup
+	// (agentbridge.LoadedAgentFromPolicy), so the FULL identity — including
+	// the policy override, whose semantic validation (egress rule shape,
+	// action enums, tier ranges) happens at registry build — is what gets
+	// validated. A reduced identity here once blessed gateways whose real
+	// override failed startup (#279 review round 3). Same collision rule as
+	// serve: an agent key equal to TALON_ADMIN_KEY fails the dry-run.
+	if _, err := gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{
+		agentbridge.LoadedAgentFromPolicy(pol, cfg.DefaultPolicy),
+	}, secStore, os.Getenv("TALON_ADMIN_KEY")); err != nil {
+		return pol.Agent.Name, pol.Agent.Key.SecretName, fmt.Errorf("identity registry dry-run failed: %w", err)
+	}
+	return pol.Agent.Name, pol.Agent.Key.SecretName, nil
+}
+
+// checkGatewayAgentIdentity preflights the agent identity model (#266). Every
+// condition that would make `talon serve --gateway` fail is a FAIL here —
+// doctor must never bless a gateway that cannot start (review on #279).
+func checkGatewayAgentIdentity(ctx context.Context) CheckResult {
+	agentName, secretName, err := GatewayIdentityPreflight(ctx)
+	if err != nil {
+		fix := "Create agent.talon.yaml with agent.key.secret_name and mint the key: talon secrets set <name> <key>"
+		if secretName != "" {
+			fix = fmt.Sprintf("Run: talon secrets set %s <agent-key>", secretName)
+		}
 		return CheckResult{
-			Name: "gateway_callers_defined", Category: "gateway", Status: "warn",
-			Message: "No callers configured",
-			Fix:     "Add callers to gateway config for per-caller governance",
+			Name: "gateway_agent_identity", Category: "gateway", Status: "fail",
+			Message: err.Error(),
+			Fix:     fix,
 		}
 	}
 	return CheckResult{
-		Name: "gateway_callers_defined", Category: "gateway", Status: "pass",
-		Message: fmt.Sprintf("%d caller(s)", len(cfg.Callers)),
+		Name: "gateway_agent_identity", Category: "gateway", Status: "pass",
+		Message: fmt.Sprintf("Agent %q key binding resolves (%s)", agentName, secretName),
 	}
 }
 
 func checkGatewayToolPolicy(cfg *gateway.GatewayConfig) CheckResult {
-	if len(cfg.ServerDefaults.ForbiddenTools) == 0 {
+	if len(cfg.OrganizationPolicy.ForbiddenTools) == 0 {
 		return CheckResult{
 			Name: "gateway_forbidden_tools", Category: "gateway", Status: "warn",
 			Message: "No forbidden tools configured",
-			Fix:     "Add forbidden_tools to default_policy for tool governance",
+			Fix:     "Add forbidden_tools to organization_policy for tool governance",
 		}
 	}
 	return CheckResult{
 		Name: "gateway_forbidden_tools", Category: "gateway", Status: "pass",
-		Message: fmt.Sprintf("%d pattern(s)", len(cfg.ServerDefaults.ForbiddenTools)),
+		Message: fmt.Sprintf("%d pattern(s)", len(cfg.OrganizationPolicy.ForbiddenTools)),
 	}
 }
 

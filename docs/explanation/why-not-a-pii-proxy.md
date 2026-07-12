@@ -14,7 +14,7 @@ A "PII proxy" here means a service that sits in front of your LLM API and scans 
 
 **What Talon does:** Talon sits in front of both the LLM and the tool layer. For the LLM API gateway, it inspects the `tools` array in the request and strips or allows per policy; for MCP, it intercepts `tools/call` and `tools/list`. Forbidden tools are denied before execution. Every allowed or denied tool call is recorded.
 
-**Proof:** Gateway: configure `default_policy.forbidden_tools` or per-caller `policy_overrides.allowed_tools` / `forbidden_tools` in your gateway config. Send a request that includes a forbidden tool; the request is denied and evidence shows the reason. MCP: use `allowed_tools` in the proxy policy; call a tool not in the list and see it blocked. CLI: `talon audit list` shows rows with `blocked:tool` when a tool was denied.
+**Proof:** Gateway: configure `organization_policy.forbidden_tools` in the gateway config or per-agent `capabilities.allowed_tools` / `forbidden_tools` in the agent file. Send a request that includes a forbidden tool; the request is denied and evidence shows the reason. MCP: use `allowed_tools` in the proxy policy; call a tool not in the list and see it blocked. CLI: `talon audit list` shows rows with `blocked:tool` when a tool was denied.
 
 ---
 
@@ -22,11 +22,11 @@ A "PII proxy" here means a service that sits in front of your LLM API and scans 
 
 **Naive approach:** You use LiteLLM (or similar) to log usage and maybe send an alert when spend exceeds a threshold. The flow is: request → proxy → LLM → response → log cost → maybe alert. The decision to allow or deny is made before the call; the cost is known only after the call.
 
-**What it misses:** Alerts do not stop the next request. By the time you get "Team X has spent $500 today," the money is already spent. You need a *pre-call* check: "If I allow this request, will the caller exceed their budget?" If yes, deny the request and do not forward to the provider. No post-spend alert can do that.
+**What it misses:** Alerts do not stop the next request. By the time you get "Team X has spent $500 today," the money is already spent. You need a *pre-call* check: "If I allow this request, will the agent exceed its budget?" If yes, deny the request and do not forward to the provider. No post-spend alert can do that.
 
-**What Talon does:** The gateway keeps a running cost total per caller (daily and optionally monthly). Before every forward, it estimates the cost of the request and checks whether the caller would exceed their limit. If they would, the request is denied and no call is made to the LLM. Evidence is still written (decision: denied, reason: budget).
+**What Talon does:** The gateway keeps a running cost total per agent (daily and optionally monthly). Before every forward, it estimates the cost of the request and checks whether the agent would exceed its limit. If they would, the request is denied and no call is made to the LLM. Evidence is still written (decision: denied, reason: budget).
 
-**Proof:** Rego in `internal/policy/rego/gateway_access.rego`: `deny` when `input.daily_cost + input.estimated_cost > input.caller_max_daily_cost`. Set `policy_overrides.max_daily_cost` for a caller to a small value (e.g. 0.01), send a request that would exceed it; the response is a denial and `talon audit list` shows the denied decision and reason.
+**Proof:** Rego in `internal/policy/rego/gateway_access.rego`: `deny` when `input.daily_cost + input.estimated_cost > input.agent_max_daily_cost`. Set `policies.cost_limits.daily` in the agent file to a small value (e.g. 0.01), send a request that would exceed it; the response is a denial and `talon audit list` shows the denied decision and reason.
 
 ---
 
@@ -38,7 +38,7 @@ A "PII proxy" here means a service that sits in front of your LLM API and scans 
 
 **What Talon does:** Talon scans input (and optionally response) with EU-focused recognizers (IBAN, BSN, NIR, NIF, PESEL, VAT IDs, etc.). It classifies the request into a data tier. Policy can then block the request, redact, or restrict to EU-only models. The decision is made before the LLM call; if the decision is block, the request never reaches the provider.
 
-**Proof:** Set gateway `default_policy.default_pii_action: "block"` (or a caller override). Send a request with an IBAN in the message body. The request is denied; `talon audit list` shows `blocked:pii` and the evidence record includes `pii_detected`. For verification: `talon audit show <evidence-id>` shows classification and policy reasons.
+**Proof:** Set gateway `organization_policy.default_pii_action: "block"` (or tighten one agent to block via `data_classification.block_on_pii`). Send a request with an IBAN in the message body. The request is denied; `talon audit list` shows `blocked:pii` and the evidence record includes `pii_detected`. For verification: `talon audit show <evidence-id>` shows classification and policy reasons.
 
 ---
 
@@ -48,7 +48,7 @@ A "PII proxy" here means a service that sits in front of your LLM API and scans 
 
 **What it misses:** Compliance (e.g. GDPR Art. 30, NIS2) often requires that you can demonstrate what was processed, when, and by whom. If the log is mutable, the demonstration is weak. You need a record that is signed at creation time so that any later change invalidates the signature.
 
-**What Talon does:** Every evidence record is signed with HMAC-SHA256 at creation time. The signature covers all fields (timestamp, caller, model, cost, policy decision, PII flags, etc.). You can run `talon audit verify <evidence-id>` to recompute the HMAC and compare; if any field was modified, verification fails.
+**What Talon does:** Every evidence record is signed with HMAC-SHA256 at creation time. The signature covers all fields (timestamp, agent, model, cost, policy decision, PII flags, etc.). You can run `talon audit verify <evidence-id>` to recompute the HMAC and compare; if any field was modified, verification fails.
 
 **Proof:** `talon audit verify <evidence-id>` — output is either `signature VALID` or an error. Edit the SQLite row (e.g. change cost or timestamp) and run verify again; it fails. See [Evidence store](evidence-store.md) for the exact fields included in the signature.
 
@@ -70,7 +70,7 @@ A "PII proxy" here means a service that sits in front of your LLM API and scans 
 
 1. **Does it see tool calls?** If it only inspects LLM request/response bodies, it cannot block or allow specific tools before they run. Ask: "Where does it sit in the request path? Can it deny a `tools/call` or filter `tools/list`?"
 
-2. **When is cost enforced?** If the tool alerts or logs after the request is sent, you have already spent. Ask: "Does it deny the request when the caller would exceed their budget, or only notify after the fact?"
+2. **When is cost enforced?** If the tool alerts or logs after the request is sent, you have already spent. Ask: "Does it deny the request when the agent would exceed its budget, or only notify after the fact?"
 
 3. **Can you prove the log was not altered?** If the audit store is a normal database or log file, anyone with write access can change it. Ask: "Is each record cryptographically signed? Can I run a single command to verify that a given record has not been modified?"
 

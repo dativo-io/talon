@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	quickstartCallerName = "quickstart-local"
-	quickstartTenantID   = "quickstart"
+	quickstartAgentName = "quickstart-local"
+	quickstartTenantID  = "quickstart"
 )
 
 // QuickstartOptions configures the in-memory proxy quickstart profile.
@@ -57,7 +57,10 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 		annotations = append(annotations, "quickstart_model_allowlist_disabled")
 	}
 
-	requireCallerID := false
+	// Identity in quickstart mode is the synthetic NewQuickstartIdentity(),
+	// injected per-request by the in-process facade — never a configured key.
+	// Its budget caps are this baseline; its only override is the openai-only
+	// provider restriction carried on the identity itself (see identity.go).
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: DefaultListenPrefix,
@@ -65,25 +68,16 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 		Providers: map[string]ProviderConfig{
 			"openai": provider,
 		},
-		Callers: []CallerConfig{
-			{
-				Name:             quickstartCallerName,
-				TenantID:         quickstartTenantID,
-				Tags:             []string{"quickstart"},
-				AllowedProviders: []string{"openai"},
-			},
-		},
-		ServerDefaults: ServerDefaults{
+		OrganizationPolicy: OrganizationPolicy{
 			DefaultPIIAction: "redact",
 			MaxDailyCost:     50,
 			MaxMonthlyCost:   500,
-			RequireCallerID:  &requireCallerID,
 			LogPrompts:       false,
 			LogResponses:     false,
 		},
 		RateLimits: RateLimitsConfig{
-			GlobalRequestsPerMin:    600,
-			PerCallerRequestsPerMin: 300,
+			GlobalRequestsPerMin:   600,
+			PerAgentRequestsPerMin: 300,
 		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    DefaultConnectTimeout,
@@ -93,6 +87,11 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 		QuickstartUnsafeListen: opts.UnsafeListen,
 	}
 	_ = annotations // annotations are recorded per-request by gateway evidence path.
+
+	// client_bearer is valid ONLY under this in-process profile (#266): the
+	// quickstart facade's clients present their own OpenAI key, not a Talon
+	// agent key, so forwarding the bearer upstream is the intended behavior.
+	cfg.EnableQuickstartProfile()
 
 	if err := cfg.ApplyDefaults(); err != nil {
 		return nil, fmt.Errorf("applying quickstart defaults: %w", err)

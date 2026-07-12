@@ -21,25 +21,30 @@ talon init --pack copaw --name copaw-gateway
 # Or run `talon init` and choose CoPaw from the wizard.
 ```
 
-This creates `agent.talon.yaml` (gateway policy) and `talon.config.yaml` (gateway config with a `copaw-main` caller and shadow mode by default).
+This creates `agent.talon.yaml` — the **`copaw-gateway` agent**: CoPaw's Talon traffic identity (`agent.key.secret_name: copaw-gateway-talon-key`) plus its policy override (cost limits, gateway model allowlist, `metadata.tags: [copaw]` for the CoPaw dashboard views) — and `talon.config.yaml` (gateway config with providers, the organization baseline under `organization_policy`, and shadow mode by default).
 
-### 2. Set the vault key and store the real provider key
+### 2. Set the vault key, store the real provider key, mint the agent key
 
 ```bash
 export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 talon secrets set openai-api-key "sk-your-openai-key"
 # Or for DashScope: talon secrets set dashscope-api-key "sk-your-dashscope-key"
+
+# Mint the agent key CoPaw will present (bound via agent.key.secret_name)
+COPAW_KEY="$(openssl rand -hex 24)"
+talon secrets set copaw-gateway-talon-key "$COPAW_KEY"
+
 talon serve --gateway
 ```
 
-Use the **same** `TALON_SECRETS_KEY` when running `talon secrets set` and `talon serve`. The **caller tenant key** (e.g. `talon-gw-copaw-001`) is the token CoPaw sends to Talon; it is configured in `talon.config.yaml` and set in CoPaw's provider `api_key` field.
+Use the **same** `TALON_SECRETS_KEY` when running `talon secrets set` and `talon serve`. The **agent key** (`$COPAW_KEY`) is the token CoPaw sends to Talon; it resolves to the `copaw-gateway` agent (and its derived tenant) and goes into CoPaw's provider `api_key` field.
 
 ### 3. Confirm the gateway is running
 
 ```bash
 curl -s -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer talon-gw-copaw-001" \
+  -H "Authorization: Bearer $COPAW_KEY" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hi"}],"max_tokens":5}'
 ```
 
@@ -55,25 +60,26 @@ CoPaw stores provider settings in `~/.copaw.secret/providers.json` and can be co
 2. Go to **Settings → Models**.
 3. Select the provider you use (e.g. OpenAI or a custom one).
 4. Set **Base URL** to `http://localhost:8080/v1/proxy/openai/v1` (or `http://<talon-host>:8080/v1/proxy/openai/v1`).
-5. Set **API Key** to `talon-gw-copaw-001` (the caller key from your Talon gateway config).
+5. Set **API Key** to the agent key you minted in step 2 (`$COPAW_KEY`).
 6. Save. CoPaw will use this endpoint for all LLM calls.
 
 **Option B — Environment variables (when starting CoPaw):**
 
 ```bash
 export OPENAI_BASE_URL=http://localhost:8080/v1/proxy/openai/v1
-export OPENAI_API_KEY=talon-gw-copaw-001
+export OPENAI_API_KEY=$COPAW_KEY
 copaw run
 ```
 
 **Option C — CoPaw CLI / REST API:**
 
-Use `copaw providers` or the REST API to set the provider's `base_url` and `api_key` to the Talon gateway URL and caller tenant key.
+Use `copaw providers` or the REST API to set the provider's `base_url` and `api_key` to the Talon gateway URL and the agent key.
 
 **Important:**
 
-- The **API Key** in CoPaw is the Talon **caller key** (`talon-gw-copaw-001`), not your real OpenAI/DashScope key. Talon authenticates the caller by this key and injects the real key when forwarding.
+- The **API Key** in CoPaw is the Talon **agent key** (`$COPAW_KEY`), not your real OpenAI/DashScope key. Talon resolves the `copaw-gateway` agent by this key and injects the real key when forwarding.
 - Base URL must end with `/v1` so that paths like `chat/completions` become `.../v1/chat/completions`.
+- Rotation: `talon secrets set copaw-gateway-talon-key <new>` + restart Talon, then update CoPaw — one active key per agent, never two.
 
 ### 5. Verify
 
@@ -81,22 +87,22 @@ Send a message through CoPaw (Console or any connected channel), then check the 
 
 ```bash
 talon audit list
-talon audit list --agent copaw-main
+talon audit list --agent copaw-gateway
 ```
 
-Evidence rows will show `agent_id: copaw-main`. The Talon dashboard (`/dashboard`) has a **CoPaw Agents** tab with stats and alerts.
+Evidence rows will show `agent_id: copaw-gateway`. The Talon dashboard (`/dashboard`) has a **CoPaw Agents** tab with stats and alerts (driven by the `copaw` entry in the agent's `metadata.tags`).
 
 ### 6. Policy and monitoring
 
 - **Shadow mode:** The generated config uses `gateway.mode: shadow` so violations are logged but not enforced. After 24h run `talon enforce report`, then switch to `enforce` in `talon.config.yaml` if desired.
-- **Cost limits:** Adjust `gateway.callers[].policy_overrides.max_daily_cost` and `max_monthly_cost` for the CoPaw caller.
-- **PII:** Default is `pii_action: redact`. Use `block` or `warn` as needed.
+- **Cost limits:** Adjust `policies.cost_limits.daily` and `.monthly` in the agent file — each replaces the organization baseline cap when > 0.
+- **PII:** Set the floor in `gateway.organization_policy.default_pii_action`; tighten per agent via the `policies.data_classification` booleans (`input_scan` + `redact_input` → redact; `block_on_pii` → block; `input_scan` alone scans without changing the action). The merge is monotonic — an agent can only tighten the org floor, never weaken it.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |--------|--------|-----|
-| "Invalid or missing API key" | CoPaw is not sending the caller key, or key mismatch | Set CoPaw's API Key to exactly `talon-gw-copaw-001` (or the value in `talon.config.yaml`). |
+| "Invalid or missing agent key" | CoPaw is not sending the agent key, or key mismatch | Set CoPaw's API Key to exactly the value minted into `copaw-gateway-talon-key`. |
 | "Service configuration error" | Vault key mismatch | Use the same `TALON_SECRETS_KEY` for `talon secrets set` and `talon serve`. |
 | 404 on chat/completions | Base URL missing `/v1` | Use `http://talon-host:8080/v1/proxy/openai/v1` (trailing `/v1`). |
 | CoPaw uses DashScope | Provider base URL | Add a `dashscope` provider in Talon gateway config with `base_url: https://dashscope.aliyuncs.com/compatible-mode` (no trailing `/v1`; gateway appends the path) and point CoPaw at `http://talon-host:8080/v1/proxy/dashscope/v1`. |
@@ -111,13 +117,13 @@ Evidence rows will show `agent_id: copaw-main`. The Talon dashboard (`/dashboard
 
 ## You're done
 
-You now have CoPaw sending all LLM traffic through Talon. Talon is logging every request, scanning for PII, and enforcing per-caller policy and cost limits.
+You now have CoPaw sending all LLM traffic through Talon. Talon is logging every request, scanning for PII, and enforcing per-agent policy and cost limits.
 
 **Next steps:**
 
 | I want to… | Doc |
 |------------|-----|
-| Cap cost or restrict models for CoPaw | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Cap cost or restrict models for CoPaw | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
 | Run CoPaw + Talon in Docker | [CoPaw + Talon Docker primer](copaw-talon-primer/docker-copaw-talon-primer.md) |
 | Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
 | Add another app through the gateway | [Add Talon to your existing app](add-talon-to-existing-app.md) |

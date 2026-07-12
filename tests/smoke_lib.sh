@@ -5,7 +5,7 @@
 # Sourced by smoke_test.sh. Use these helpers so we don't duplicate URLs or request bodies.
 #
 # Usage: set SMOKE_BASE_URL (e.g. http://127.0.0.1:8080), then call the functions below.
-# Gateway caller auth: pass "Bearer <tenant_key>" for proxy calls.
+# Gateway agent auth: pass "Bearer <agent key value>" for proxy calls (#266).
 
 # --- Canonical paths (single source of truth) ---
 SMOKE_PATH_HEALTH="/health"
@@ -28,10 +28,10 @@ SMOKE_BODY_CACHE='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"R
 # Normal: parameterised for variety (use SMOKE_BODY_NORMAL "3" for "Reply METRICS_OK 3")
 smoke_body_normal() { echo "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply METRICS_OK ${1:-1}\"}]}"; }
 
-# Tool block: request with forbidden tool delete_all (default_policy block)
+# Tool block: request with forbidden tool delete_all (organization_policy forbidden_tools)
 SMOKE_BODY_TOOL_BLOCK='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"delete_all","description":"x","parameters":{"type":"object"}}}]}'
 
-# Tool filter: request with read_file + exec_cmd (exec_cmd forbidden for tool-filter-caller)
+# Tool filter: request with read_file + exec_cmd (exec_cmd forbidden for the tool-filter agent)
 SMOKE_BODY_TOOL_FILTER='{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":{"name":"read_file","description":"x","parameters":{"type":"object"}}},{"type":"function","function":{"name":"exec_cmd","description":"x","parameters":{"type":"object"}}}]}'
 
 # Minimal (empty messages) for 401/probe

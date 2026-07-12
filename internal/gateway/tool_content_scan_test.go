@@ -113,7 +113,7 @@ func TestRedactOpenAIBody_Instructions(t *testing.T) {
 	assert.Equal(t, "hello", m["input"], "input untouched")
 }
 
-const toolScanTenantKey = "talon-gw-toolscan-0001"
+const toolScanAgentKey = "talon-gw-toolscan-0001"
 
 func newToolScanGateway(t *testing.T, upstreamURL, scanToolContent string) (*evidence.Store, http.Handler) {
 	t.Helper()
@@ -125,15 +125,13 @@ func newToolScanGateway(t *testing.T, upstreamURL, scanToolContent string) (*evi
 		Providers: map[string]ProviderConfig{
 			"anthropic": {Enabled: true, BaseURL: upstreamURL, SecretName: "anthropic-key"},
 		},
-		Callers: []CallerConfig{{
-			Name: "toolscan-bot", TenantKey: toolScanTenantKey, TenantID: "toolscan-tenant",
-			PolicyOverrides: &CallerPolicyOverrides{PIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-		}},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "redact", ResponsePIIAction: "allow", ScanToolContent: scanToolContent, MaxDailyCost: 100, MaxMonthlyCost: 2000},
-		RateLimits:     RateLimitsConfig{GlobalRequestsPerMin: 10000, PerCallerRequestsPerMin: 10000},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "redact", ResponsePIIAction: "allow", ScanToolContent: scanToolContent, MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		RateLimits:         RateLimitsConfig{GlobalRequestsPerMin: 10000, PerAgentRequestsPerMin: 10000},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	require.NoError(t, cfg.Validate())
+	registry := testRegistry(testIdentity("toolscan-bot", "toolscan-tenant", toolScanAgentKey,
+		&PolicyOverride{PIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000}))
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = evStore.Close() })
@@ -142,7 +140,7 @@ func newToolScanGateway(t *testing.T, upstreamURL, scanToolContent string) (*evi
 	t.Cleanup(func() { _ = secStore.Close() })
 	require.NoError(t, secStore.Set(context.Background(), "anthropic-key", []byte("sk-ant-test-000-toolscan"),
 		secrets.ACL{Tenants: []string{"toolscan-tenant"}, Agents: []string{"*"}}))
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })
@@ -174,7 +172,7 @@ func TestGatewayToolContentScan_EvidenceOnly(t *testing.T) {
 	}`
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		"http://test/v1/proxy/anthropic/v1/messages", bytes.NewReader([]byte(body)))
-	req.Header.Set("Authorization", "Bearer "+toolScanTenantKey)
+	req.Header.Set("Authorization", "Bearer "+toolScanAgentKey)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -221,7 +219,7 @@ func TestGatewayToolContentScan_Off(t *testing.T) {
 		{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":"row: jane.doe@example.com"}]}]}`
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		"http://test/v1/proxy/anthropic/v1/messages", bytes.NewReader([]byte(body)))
-	req.Header.Set("Authorization", "Bearer "+toolScanTenantKey)
+	req.Header.Set("Authorization", "Bearer "+toolScanAgentKey)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)

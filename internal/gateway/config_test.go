@@ -3,14 +3,22 @@ package gateway
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
+func writeConfig(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "gateway.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestLoadGatewayConfig(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gateway.yaml")
-	content := `
+	path := writeConfig(t, `
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
@@ -23,17 +31,10 @@ gateway:
     ollama:
       enabled: true
       base_url: "http://localhost:11434"
-  callers:
-    - name: test
-      tenant_key: "talon-gw-abc"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: warn
     max_daily_cost: 100
-`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
+`)
 	cfg, err := LoadGatewayConfig(path)
 	if err != nil {
 		t.Fatal(err)
@@ -44,12 +45,65 @@ gateway:
 	if cfg.ListenPrefix != "/v1/proxy" {
 		t.Errorf("listen_prefix = %q", cfg.ListenPrefix)
 	}
-	if len(cfg.Callers) != 1 || cfg.Callers[0].Name != "test" {
-		t.Errorf("callers = %+v", cfg.Callers)
+	if cfg.OrganizationPolicy.DefaultPIIAction != "warn" || cfg.OrganizationPolicy.MaxDailyCost != 100 {
+		t.Errorf("organization_policy = %+v", cfg.OrganizationPolicy)
 	}
 	prov, ok := cfg.Provider("openai")
 	if !ok || !prov.Enabled || prov.BaseURL != "https://api.openai.com" {
 		t.Errorf("openai provider = %+v", prov)
+	}
+}
+
+// Legacy caller-model keys must fail validation with an explicit
+// breaking-change error — yaml.v3 would otherwise silently drop them and the
+// config would run ungoverned (#266).
+func TestLoadGatewayConfigRejectsLegacyKeys(t *testing.T) {
+	base := `
+gateway:
+  enabled: true
+  mode: enforce
+  providers:
+    ollama:
+      enabled: true
+      base_url: "http://localhost:11434"
+`
+	cases := []struct {
+		name    string
+		snippet string
+		wantKey string
+	}{
+		{"callers", `
+  callers:
+    - name: legacy
+      tenant_key: "talon-gw-abc"
+`, `"callers"`},
+		{"default_policy", `
+  default_policy:
+    default_pii_action: warn
+`, `"default_policy"`},
+		{"trusted_proxy_cidrs", `
+  trusted_proxy_cidrs: ["10.0.0.0/8"]
+`, `"trusted_proxy_cidrs"`},
+		{"require_caller_id", `
+  organization_policy:
+    require_caller_id: false
+`, `"organization_policy.require_caller_id"`},
+		{"per_caller_requests_per_min", `
+  rate_limits:
+    per_caller_requests_per_min: 60
+`, `"rate_limits.per_caller_requests_per_min"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, base+tc.snippet)
+			_, err := LoadGatewayConfig(path)
+			if err == nil {
+				t.Fatalf("expected legacy key %s to fail validation", tc.wantKey)
+			}
+			if !strings.Contains(err.Error(), tc.wantKey) || !strings.Contains(err.Error(), "#266") {
+				t.Errorf("error should name the removed key and the breaking change, got: %v", err)
+			}
+		})
 	}
 }
 
@@ -114,49 +168,25 @@ func TestParseTimeouts_InvalidResponseHeader(t *testing.T) {
 	}
 }
 
-func TestMetricsTenantScope(t *testing.T) {
+// Tenant scoping derives from the identity registry — agents declare tenants,
+// the config does not (#266).
+func TestRegistryMetricsTenantScope(t *testing.T) {
 	t.Run("single_tenant", func(t *testing.T) {
-		cfg := &GatewayConfig{
-			Callers: []CallerConfig{
-				{Name: "a", TenantID: "demo"},
-				{Name: "b", TenantID: "demo"},
-			},
-		}
-		if got := cfg.MetricsTenantScope(); got != "demo" {
+		reg := testRegistry(
+			testIdentity("a", "demo", "k1", nil),
+			testIdentity("b", "demo", "k2", nil),
+		)
+		if got := reg.MetricsTenantScope(); got != "demo" {
 			t.Fatalf("MetricsTenantScope() = %q, want demo", got)
 		}
 	})
 	t.Run("multi_tenant", func(t *testing.T) {
-		cfg := &GatewayConfig{
-			Callers: []CallerConfig{
-				{Name: "a", TenantID: "demo"},
-				{Name: "b", TenantID: "prod"},
-			},
-		}
-		if got := cfg.MetricsTenantScope(); got != "" {
+		reg := testRegistry(
+			testIdentity("a", "demo", "k1", nil),
+			testIdentity("b", "prod", "k2", nil),
+		)
+		if got := reg.MetricsTenantScope(); got != "" {
 			t.Fatalf("MetricsTenantScope() = %q, want empty for multi-tenant", got)
 		}
 	})
-	t.Run("default_tenant", func(t *testing.T) {
-		cfg := &GatewayConfig{Callers: []CallerConfig{{Name: "anon"}}}
-		if got := cfg.MetricsTenantScope(); got != "default" {
-			t.Fatalf("MetricsTenantScope() = %q, want default", got)
-		}
-	})
-}
-
-func TestCallerByName(t *testing.T) {
-	cfg := &GatewayConfig{
-		Callers: []CallerConfig{
-			{Name: "a", TenantID: "t1"},
-			{Name: "b", TenantID: "t2"},
-		},
-	}
-	c := cfg.CallerByName("b")
-	if c == nil || c.TenantID != "t2" {
-		t.Errorf("CallerByName(b) = %+v", c)
-	}
-	if cfg.CallerByName("missing") != nil {
-		t.Error("expected nil for missing caller")
-	}
 }

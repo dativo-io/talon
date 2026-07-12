@@ -110,7 +110,7 @@ the same unit.
 | 4 | Tool governance | `admin_purge_records` requested + filtered; `search_kb` forwarded |
 | 5 | Redaction | email scrubbed, request still forwards (redact, not block) |
 | 6 | PII stop | HTTP 400, `POLICY_DENIED_PII_INPUT`, zero upstream cost |
-| 7 | Model governance | HTTP 403, `POLICY_DENIED_ROUTING` — model not in caller allowlist |
+| 7 | Model governance | HTTP 403, `POLICY_DENIED_ROUTING` — model not in agent allowlist |
 | 8 | Sovereignty routing | runner: US model rejected (confidential → LOCAL only), local Llama selected; `RoutingDecision` shows both |
 | 9 | Session budget gate | HTTP 403, `session_budget_exceeded` with `SessionBudget{limit, spent, estimate}` evidence |
 | 10 | Money story + tamper | naïve vs corrected totals from the signed export; flipping one signed field (`policy_decision.allowed`) makes `audit verify --file` report the record INVALID |

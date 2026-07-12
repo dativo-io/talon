@@ -4,10 +4,10 @@
 package gateway
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -17,29 +17,43 @@ import (
 // Mode is the gateway operation mode.
 type Mode string
 
+// Gateway enforcement modes (#266 review round 4 — two control classes).
+// HARD PLATFORM BOUNDARIES (authentication, agent identity, data-sovereignty
+// eu_strict) block in EVERY mode. OBSERVABLE GOVERNANCE controls (PII, tools,
+// attachments, provider/model allowlists, budgets, ordinary egress) block
+// only in enforce; shadow and log_only record their would-be decision without
+// blocking.
 const (
-	ModeEnforce Mode = "enforce"  // Full pipeline with blocking
-	ModeShadow  Mode = "shadow"   // Log everything, never block
-	ModeLogOnly Mode = "log_only" // Only generate evidence, no policy evaluation
+	// ModeEnforce: hard boundaries AND observable governance controls block.
+	ModeEnforce Mode = "enforce"
+	// ModeShadow: observable controls are evaluated and recorded as shadow
+	// violations but never block; hard boundaries still block.
+	ModeShadow Mode = "shadow"
+	// ModeLogOnly: strictly lighter than shadow — OPA policy evaluation
+	// (budgets, model lists, egress) is skipped entirely and observable
+	// controls never block; only detections are recorded. Hard boundaries
+	// still block.
+	ModeLogOnly Mode = "log_only"
 )
 
 // GatewayConfig is the top-level gateway configuration from talon.config.yaml
-// (infrastructure config, owned by DevOps/platform team).
+// (infrastructure config, owned by DevOps/platform team). Traffic identity is
+// NOT configured here: agents are defined in agent.talon.yaml files and
+// resolved through the IdentityRegistry (#266).
 //
 //revive:disable-next-line:exported
 type GatewayConfig struct {
-	Enabled             bool                       `yaml:"enabled" json:"enabled"`
-	ListenPrefix        string                     `yaml:"listen_prefix" json:"listen_prefix"`
-	Mode                Mode                       `yaml:"mode" json:"mode"`
-	Providers           map[string]ProviderConfig  `yaml:"providers" json:"providers"`
-	Callers             []CallerConfig             `yaml:"callers" json:"callers"`
-	ServerDefaults      ServerDefaults             `yaml:"default_policy" json:"default_policy"`
+	Enabled      bool                      `yaml:"enabled" json:"enabled"`
+	ListenPrefix string                    `yaml:"listen_prefix" json:"listen_prefix"`
+	Mode         Mode                      `yaml:"mode" json:"mode"`
+	Providers    map[string]ProviderConfig `yaml:"providers" json:"providers"`
+	// OrganizationPolicy is the organization baseline — the shared policy
+	// every agent inherits before its one explicit override applies.
+	OrganizationPolicy  OrganizationPolicy         `yaml:"organization_policy" json:"organization_policy"`
 	ResponseScanning    ResponseScanningConfig     `yaml:"response_scanning" json:"response_scanning"`
 	RateLimits          RateLimitsConfig           `yaml:"rate_limits" json:"rate_limits"`
 	Timeouts            TimeoutsConfig             `yaml:"timeouts" json:"timeouts"`
 	NetworkInterception *NetworkInterceptionConfig `yaml:"network_interception,omitempty" json:"network_interception,omitempty"`
-	// TrustedProxyCIDRs: when set, X-Forwarded-For is used for client IP only when the direct peer (RemoteAddr) is in one of these CIDRs. Prevents spoofing when gateway is not behind a trusted proxy. Empty = never trust X-Forwarded-For for source_ip.
-	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs,omitempty" json:"trusted_proxy_cidrs,omitempty"`
 	// DashboardListen is the optional separate bind address for the gateway
 	// dashboard (e.g. "127.0.0.1:9091"). When empty, routes are served on the
 	// main API server. Binding to localhost prevents accidental exposure.
@@ -54,7 +68,20 @@ type GatewayConfig struct {
 	UpstreamTransport http.RoundTripper `yaml:"-" json:"-"`
 	// EffectiveSovereigntyMode is set at runtime by serve from operator config (not YAML).
 	EffectiveSovereigntyMode string `yaml:"-" json:"-"`
+
+	// quickstartProfile marks a config built in-process for --proxy-quickstart
+	// (see QuickstartConfig / EnableQuickstartProfile). Only that profile may
+	// use upstream_auth_mode client_bearer: in a normal gateway the presented
+	// bearer is a TALON AGENT KEY, and client_bearer would forward it verbatim
+	// to the upstream provider (#266 review). Unexported and untagged —
+	// structurally impossible to set from YAML.
+	quickstartProfile bool
 }
+
+// EnableQuickstartProfile marks this config as the in-process quickstart
+// profile, unlocking upstream_auth_mode client_bearer in Validate. Callers:
+// QuickstartConfig and the quickstart facade tests — never YAML-loaded configs.
+func (c *GatewayConfig) EnableQuickstartProfile() { c.quickstartProfile = true }
 
 // ProviderConfig holds per-provider gateway settings.
 type ProviderConfig struct {
@@ -62,7 +89,7 @@ type ProviderConfig struct {
 	SecretName string `yaml:"secret_name,omitempty" json:"secret_name,omitempty"`
 	// UpstreamAuthMode controls how Talon authenticates to the upstream provider.
 	// "secret" (default) reads provider credentials from Talon's secret store.
-	// "client_bearer" forwards the caller bearer token upstream and is intended
+	// "client_bearer" forwards the agent bearer token upstream and is intended
 	// for proxy quickstart mode only.
 	UpstreamAuthMode string `yaml:"upstream_auth_mode,omitempty" json:"upstream_auth_mode,omitempty"` // secret | client_bearer
 	BaseURL          string `yaml:"base_url" json:"base_url"`
@@ -132,53 +159,6 @@ func (c *GatewayConfig) providerAPIFamily(name string) string {
 	return "openai"
 }
 
-// CallerConfig identifies an application or team that uses the gateway.
-type CallerConfig struct {
-	Name             string                 `yaml:"name" json:"name"`
-	TenantKey        string                 `yaml:"tenant_key,omitempty" json:"tenant_key,omitempty"` // #nosec G117 -- auth identifier from config, not a hardcoded secret
-	TenantID         string                 `yaml:"tenant_id" json:"tenant_id"`
-	Team             string                 `yaml:"team,omitempty" json:"team,omitempty"`
-	Tags             []string               `yaml:"tags,omitempty" json:"tags,omitempty"`               // e.g. ["copaw"] for OTel/dashboard classification
-	IdentifyBy       string                 `yaml:"identify_by,omitempty" json:"identify_by,omitempty"` // "source_ip" for IP-based
-	SourceIPRanges   []string               `yaml:"source_ip_ranges,omitempty" json:"source_ip_ranges,omitempty"`
-	AllowedProviders []string               `yaml:"allowed_providers,omitempty" json:"allowed_providers,omitempty"`
-	PolicyOverrides  *CallerPolicyOverrides `yaml:"policy_overrides,omitempty" json:"policy_overrides,omitempty"`
-	// AcceptClientMetadata controls whether client-asserted orchestration
-	// identity (session/subagent/parent, from x-claude-code-* / Codex / generic
-	// X-Talon-* headers) is recorded in evidence for this caller. nil = true
-	// (default). It gates recording only — identity is never a policy input in
-	// v1 (evidence-only until attestation, #149). #194.
-	AcceptClientMetadata *bool `yaml:"accept_client_metadata,omitempty" json:"accept_client_metadata,omitempty"`
-}
-
-// AcceptsClientMetadata reports whether client-asserted orchestration identity
-// is recorded for this caller. Default is true when unset.
-func (c *CallerConfig) AcceptsClientMetadata() bool {
-	return c == nil || c.AcceptClientMetadata == nil || *c.AcceptClientMetadata
-}
-
-// CallerPolicyOverrides are per-caller policy overrides.
-type CallerPolicyOverrides struct {
-	MaxDailyCost   float64 `yaml:"max_daily_cost,omitempty" json:"max_daily_cost,omitempty"`
-	MaxMonthlyCost float64 `yaml:"max_monthly_cost,omitempty" json:"max_monthly_cost,omitempty"`
-	// MaxSessionCost is a soft cap on accumulated spend per coding session
-	// (#198): a new request is denied once session spend + the pre-request
-	// estimate exceeds it. In-flight requests can overshoot (atomic
-	// reservation is #144). Applies only to client/vendor-asserted sessions.
-	MaxSessionCost    float64                 `yaml:"max_session_cost,omitempty" json:"max_session_cost,omitempty"`
-	PIIAction         string                  `yaml:"pii_action,omitempty" json:"pii_action,omitempty"`                   // block | redact | warn | allow
-	ResponsePIIAction string                  `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from pii_action
-	AllowedModels     []string                `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
-	BlockedModels     []string                `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
-	MaxDataTier       *TierLevel              `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"` // 0/public, 1/internal, or 2/confidential
-	AttachmentPolicy  *AttachmentPolicyConfig `yaml:"attachment_policy,omitempty" json:"attachment_policy,omitempty"`
-	AllowedTools      []string                `yaml:"allowed_tools,omitempty" json:"allowed_tools,omitempty"`
-	ForbiddenTools    []string                `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
-	ToolPolicyAction  string                  `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"` // filter | block
-	// Egress replaces the server default egress policy for this caller when set.
-	Egress *EgressPolicyConfig `yaml:"egress,omitempty" json:"egress,omitempty"`
-}
-
 // AttachmentPolicyConfig controls scanning of base64-encoded file attachments
 // embedded in LLM API requests (PDFs, images, HTML, etc.).
 type AttachmentPolicyConfig struct {
@@ -189,16 +169,15 @@ type AttachmentPolicyConfig struct {
 	BlockedTypes    []string `yaml:"blocked_types,omitempty" json:"blocked_types,omitempty"`
 }
 
-// ServerDefaults holds server-wide gateway defaults (PII action, cost limits,
-// tool governance, attachment scanning). Lives in talon.config.yaml under
-// gateway.default_policy. Not related to config.DefaultPolicy which is the
-// agent policy filename (agent.talon.yaml).
-type ServerDefaults struct {
+// OrganizationPolicy is the organization baseline (PII action, cost limits,
+// tool governance, attachment scanning) — the shared policy every agent
+// inherits before its one explicit override applies (#266). Lives in
+// talon.config.yaml under gateway.organization_policy.
+type OrganizationPolicy struct {
 	DefaultPIIAction        string                  `yaml:"default_pii_action" json:"default_pii_action"`                       // warn | block | redact | allow
 	ResponsePIIAction       string                  `yaml:"response_pii_action,omitempty" json:"response_pii_action,omitempty"` // block | redact | warn | allow; inherits from default_pii_action
 	MaxDailyCost            float64                 `yaml:"max_daily_cost" json:"max_daily_cost"`
 	MaxMonthlyCost          float64                 `yaml:"max_monthly_cost" json:"max_monthly_cost"`
-	RequireCallerID         *bool                   `yaml:"require_caller_id" json:"require_caller_id"` // nil = true (default)
 	LogPrompts              bool                    `yaml:"log_prompts" json:"log_prompts"`
 	LogResponses            bool                    `yaml:"log_responses" json:"log_responses"`
 	LogResponsePreviewChars int                     `yaml:"log_response_preview_chars" json:"log_response_preview_chars"`
@@ -215,6 +194,21 @@ type ServerDefaults struct {
 	// Egress restricts which destinations (providers/regions) each data tier
 	// may egress to. When nil, egress is not evaluated.
 	Egress *EgressPolicyConfig `yaml:"egress,omitempty" json:"egress,omitempty"`
+
+	// Organization-wide HARD CONSTRAINTS (#266): unlike the baselines above,
+	// these are not replaced by an agent's override — an agent may only
+	// narrow further within them.
+	//
+	// AllowedProviders limits which gateway providers ANY agent may reach
+	// (empty = all enabled providers).
+	AllowedProviders []string `yaml:"allowed_providers,omitempty" json:"allowed_providers,omitempty"`
+	// AllowedModels / BlockedModels bound the model space for every agent
+	// (empty allowed list = no allowlist constraint).
+	AllowedModels []string `yaml:"allowed_models,omitempty" json:"allowed_models,omitempty"`
+	BlockedModels []string `yaml:"blocked_models,omitempty" json:"blocked_models,omitempty"`
+	// MaxDataTier caps the request data tier organization-wide; an agent's
+	// max_data_tier can only lower it further. nil = no org cap.
+	MaxDataTier *TierLevel `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"`
 }
 
 // ScanToolContent modes.
@@ -223,14 +217,6 @@ const (
 	ScanToolContentOff          = "off"
 )
 
-// CallerIDRequired returns whether anonymous requests must be rejected. Default is true when unset.
-func (d *ServerDefaults) CallerIDRequired() bool {
-	if d == nil || d.RequireCallerID == nil {
-		return true
-	}
-	return *d.RequireCallerID
-}
-
 // ResponseScanningConfig controls scanning LLM responses for PII (Phase 2).
 type ResponseScanningConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
@@ -238,8 +224,8 @@ type ResponseScanningConfig struct {
 
 // RateLimitsConfig holds gateway rate limits.
 type RateLimitsConfig struct {
-	GlobalRequestsPerMin    int `yaml:"global_requests_per_min" json:"global_requests_per_min"`
-	PerCallerRequestsPerMin int `yaml:"per_caller_requests_per_min" json:"per_caller_requests_per_min"`
+	GlobalRequestsPerMin   int `yaml:"global_requests_per_min" json:"global_requests_per_min"`
+	PerAgentRequestsPerMin int `yaml:"per_agent_requests_per_min" json:"per_agent_requests_per_min"`
 }
 
 // TimeoutsConfig holds gateway timeouts. Values are stored as strings (e.g. "10s") and parsed to time.Duration.
@@ -285,11 +271,10 @@ type NetworkInterceptionTLS struct {
 const (
 	DefaultListenPrefix            = "/v1/proxy"
 	DefaultMode                    = ModeEnforce
-	DefaultRequireCallerID         = true
 	DefaultLogPrompts              = true
 	DefaultPIIAction               = "warn"
 	DefaultGlobalRPM               = 300
-	DefaultPerCallerRPM            = 60
+	DefaultPerAgentRPM             = 60
 	DefaultConnectTimeout          = "10s"
 	DefaultRequestTimeout          = "120s"
 	DefaultStreamIdleTimeout       = "60s"
@@ -313,15 +298,47 @@ func LoadGatewayConfig(path string) (*GatewayConfig, error) {
 		return nil, fmt.Errorf("parsing gateway config: %w", err)
 	}
 
+	gatewayMap, hasGatewayBlock := rawGatewaySubtree(raw)
+
+	// Gateway vocabulary at the FILE ROOT is always an error — whether or not
+	// a gateway: block also exists (#266 review round 3, refuted once): a
+	// half-migrated legacy file or a two-space outdent must not silently drop
+	// an organization hard constraint out of an otherwise-enabled gateway.
+	// None of these keys are legitimate operator root vocabulary
+	// (schemas/talon.config.schema.json root properties).
+	for _, key := range []string{
+		"providers", "organization_policy", "listen_prefix",
+		"rate_limits", "timeouts", "network_interception",
+		"response_scanning", "dashboard_listen", "enabled", "mode",
+	} {
+		if _, present := raw[key]; present {
+			return nil, fmt.Errorf("gateway config %s places %q at the file root — wrap all gateway settings in a top-level 'gateway:' block (the root layout was removed so unknown keys inside the gateway surface always fail loudly, #266)", path, key)
+		}
+	}
+
+	// Removed config surfaces get an explicit, friendly breaking-change error
+	// BEFORE strict decoding — a config written for the legacy caller model
+	// must name its replacement, not die on a generic unknown-field error
+	// (#266). Legacy keys are checked at the file root too (old root-layout
+	// configs), but the default_policy check applies only inside a gateway
+	// block: at the root, default_policy is the OPERATOR key naming the
+	// default agent policy file.
+	if err := rejectLegacyGatewayKeys(gatewayMap, hasGatewayBlock); err != nil {
+		return nil, err
+	}
+
 	var cfg GatewayConfig
 	if g, ok := raw["gateway"]; ok {
+		// Strict decoding (#266 review): organization_policy and provider
+		// entries enforce security boundaries, so a typo'd key (e.g.
+		// "allowed_provider") must fail loudly instead of silently disabling
+		// an intended hard constraint. KnownFields rejects every unknown key
+		// in the gateway subtree.
 		sub, _ := yaml.Marshal(g)
-		if err := yaml.Unmarshal(sub, &cfg); err != nil {
-			return nil, fmt.Errorf("unmarshaling gateway block: %w", err)
-		}
-	} else {
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			return nil, fmt.Errorf("unmarshaling gateway config: %w", err)
+		dec := yaml.NewDecoder(bytes.NewReader(sub))
+		dec.KnownFields(true)
+		if err := dec.Decode(&cfg); err != nil {
+			return nil, fmt.Errorf("unmarshaling gateway block (unknown keys are rejected — see schemas/talon.config.schema.json for the accepted surface): %w", err)
 		}
 	}
 
@@ -334,9 +351,58 @@ func LoadGatewayConfig(path string) (*GatewayConfig, error) {
 	return &cfg, nil
 }
 
+// rejectLegacyGatewayKeys fails closed on configuration written for the
+// removed agent identity model. Breaking change (#266): traffic identity
+// lives in agent.talon.yaml (agent.key.secret_name); the baseline block is
+// gateway.organization_policy.
+// rawGatewaySubtree returns the gateway: mapping when present (and a flag
+// saying whether the file has a gateway block at all). A missing block falls
+// back to the root map so legacy root-layout keys still get friendly errors.
+func rawGatewaySubtree(raw map[string]interface{}) (map[string]interface{}, bool) {
+	g, ok := raw["gateway"]
+	if !ok {
+		return raw, false
+	}
+	if m, ok := g.(map[string]interface{}); ok {
+		return m, true
+	}
+	return nil, true
+}
+
+func rejectLegacyGatewayKeys(gatewayRaw map[string]interface{}, isGatewaySubtree bool) error {
+	if gatewayRaw == nil {
+		return nil
+	}
+	legacy := map[string]string{
+		"callers":             "define one agent.talon.yaml per AI use case with agent.key.secret_name instead",
+		"trusted_proxy_cidrs": "source-IP identity was removed; every request authenticates with an agent key",
+	}
+	if isGatewaySubtree {
+		// Only inside a gateway block: at the FILE ROOT, default_policy is
+		// the legitimate operator key naming the default agent policy file.
+		legacy["default_policy"] = "the organization baseline moved to gateway.organization_policy"
+	}
+	for key, hint := range legacy {
+		if _, present := gatewayRaw[key]; present {
+			return fmt.Errorf("gateway config uses removed key %q — %s (breaking change, see #266)", key, hint)
+		}
+	}
+	if op, ok := gatewayRaw["organization_policy"].(map[string]interface{}); ok {
+		if _, present := op["require_caller_id"]; present {
+			return fmt.Errorf("gateway config uses removed key \"organization_policy.require_caller_id\" — unknown keys are always rejected; quickstart mode is the only keyless path (breaking change, see #266)")
+		}
+	}
+	if rl, ok := gatewayRaw["rate_limits"].(map[string]interface{}); ok {
+		if _, present := rl["per_caller_requests_per_min"]; present {
+			return fmt.Errorf("gateway config uses removed key \"rate_limits.per_caller_requests_per_min\" — use per_agent_requests_per_min (breaking change, see #266)")
+		}
+	}
+	return nil
+}
+
 // ApplyDefaults sets default values for missing fields.
-// applyDefaults fills zero-valued server-wide policy defaults.
-func (d *ServerDefaults) applyDefaults() {
+// applyDefaults fills zero-valued organization baseline defaults.
+func (d *OrganizationPolicy) applyDefaults() {
 	if d.DefaultPIIAction == "" {
 		d.DefaultPIIAction = DefaultPIIAction
 	}
@@ -361,15 +427,12 @@ func (c *GatewayConfig) ApplyDefaults() error {
 	if c.Providers == nil {
 		c.Providers = make(map[string]ProviderConfig)
 	}
-	if c.Callers == nil {
-		c.Callers = []CallerConfig{}
-	}
-	c.ServerDefaults.applyDefaults()
+	c.OrganizationPolicy.applyDefaults()
 	if c.RateLimits.GlobalRequestsPerMin == 0 {
 		c.RateLimits.GlobalRequestsPerMin = DefaultGlobalRPM
 	}
-	if c.RateLimits.PerCallerRequestsPerMin == 0 {
-		c.RateLimits.PerCallerRequestsPerMin = DefaultPerCallerRPM
+	if c.RateLimits.PerAgentRequestsPerMin == 0 {
+		c.RateLimits.PerAgentRequestsPerMin = DefaultPerAgentRPM
 	}
 	if c.Timeouts.ConnectTimeout == "" {
 		c.Timeouts.ConnectTimeout = DefaultConnectTimeout
@@ -385,14 +448,9 @@ func (c *GatewayConfig) ApplyDefaults() error {
 	if c.Timeouts.StreamIdleTimeout == "" {
 		c.Timeouts.StreamIdleTimeout = DefaultStreamIdleTimeout
 	}
-	c.ServerDefaults.AttachmentPolicy = applyAttachmentPolicyDefaults(c.ServerDefaults.AttachmentPolicy)
-	c.ServerDefaults.Egress.applyDefaults()
+	c.OrganizationPolicy.AttachmentPolicy = applyAttachmentPolicyDefaults(c.OrganizationPolicy.AttachmentPolicy)
+	c.OrganizationPolicy.Egress.applyDefaults()
 	normalizeProviderRegions(c.Providers)
-	for i := range c.Callers {
-		if ov := c.Callers[i].PolicyOverrides; ov != nil {
-			ov.Egress.applyDefaults()
-		}
-	}
 	return nil
 }
 
@@ -427,6 +485,40 @@ func applyAttachmentPolicyDefaults(p *AttachmentPolicyConfig) *AttachmentPolicyC
 	return p
 }
 
+// validatePIIAction rejects an invalid PII action (#266 review round 4): an
+// unrecognized value like "blok" is not "block", so it would neither block nor
+// redact — effectively allow. Empty inherits the default and is accepted.
+func validatePIIAction(field, action string) error {
+	switch action {
+	case "", "allow", "warn", "redact", "block":
+		return nil
+	}
+	return fmt.Errorf("gateway organization_policy.%s must be allow, warn, redact, or block, got %q", field, action)
+}
+
+// validateToolPolicyAction rejects an invalid tool policy action: the runtime
+// blocks only on exact "block", so any other value silently falls into filter.
+func validateToolPolicyAction(field, action string) error {
+	switch action {
+	case "", "filter", "block":
+		return nil
+	}
+	return fmt.Errorf("gateway %s must be filter or block, got %q", field, action)
+}
+
+// validateModelList rejects "*" in an ALLOW list (#266 review round 4, #284):
+// Rego does literal membership on allowed_models, so ["*"] would deny every
+// concrete model rather than allow all — a fail-closed footgun. An empty list
+// already means unrestricted, so "*" is never the right way to express it.
+func validateModelList(field string, models []string) error {
+	for _, m := range models {
+		if strings.TrimSpace(m) == "*" {
+			return fmt.Errorf("gateway %s must not contain \"*\": an allow list matches models literally, so \"*\" denies every model — leave the list empty to allow all", field)
+		}
+	}
+	return nil
+}
+
 // Validate checks that the configuration is valid.
 //
 //nolint:gocyclo // validation branches are independent checks
@@ -439,10 +531,40 @@ func (c *GatewayConfig) Validate() error {
 	default:
 		return fmt.Errorf("gateway mode must be enforce, shadow, or log_only")
 	}
-	switch c.ServerDefaults.ScanToolContent {
+	switch c.OrganizationPolicy.ScanToolContent {
 	case "", ScanToolContentEvidenceOnly, ScanToolContentOff:
 	default:
-		return fmt.Errorf("gateway default_policy scan_tool_content must be evidence_only or off")
+		return fmt.Errorf("gateway organization_policy scan_tool_content must be evidence_only or off")
+	}
+	if t := c.OrganizationPolicy.MaxDataTier; t != nil && (*t < 0 || *t > 2) {
+		return fmt.Errorf("gateway organization_policy.max_data_tier must be 0, 1, or 2, got %d", int(*t))
+	}
+	// Enum + minimum validation of the org policy (#266 review round 4):
+	// LoadGatewayConfig does not run the JSON schema, and an invalid value
+	// silently degrades — e.g. default_pii_action: "blok" would neither block
+	// nor redact (effectively allow), and max_daily_cost: -1 disables the cap
+	// (only >0 is emitted). Reject these at load instead of failing open.
+	if err := validatePIIAction("default_pii_action", c.OrganizationPolicy.DefaultPIIAction); err != nil {
+		return err
+	}
+	if err := validatePIIAction("response_pii_action", c.OrganizationPolicy.ResponsePIIAction); err != nil {
+		return err
+	}
+	if err := validateToolPolicyAction("organization_policy.tool_policy_action", c.OrganizationPolicy.ToolPolicyAction); err != nil {
+		return err
+	}
+	if c.OrganizationPolicy.MaxDailyCost < 0 || c.OrganizationPolicy.MaxMonthlyCost < 0 {
+		return fmt.Errorf("gateway organization_policy cost limits must not be negative (max_daily_cost=%v max_monthly_cost=%v) — a negative value would silently disable the cap", c.OrganizationPolicy.MaxDailyCost, c.OrganizationPolicy.MaxMonthlyCost)
+	}
+	if err := validateModelList("organization_policy.allowed_models", c.OrganizationPolicy.AllowedModels); err != nil {
+		return err
+	}
+	// Same literal-membership footgun as model lists (#266 review round 5):
+	// "*" in the provider allow list would deny every provider.
+	for _, p := range c.OrganizationPolicy.AllowedProviders {
+		if strings.TrimSpace(p) == "*" {
+			return fmt.Errorf("gateway organization_policy.allowed_providers must not contain \"*\": an allow list matches providers literally, so \"*\" denies every provider — leave the list empty to allow all")
+		}
 	}
 	for name := range c.Providers {
 		p := c.Providers[name]
@@ -466,6 +588,9 @@ func (c *GatewayConfig) Validate() error {
 		if p.UpstreamAuthMode == "client_bearer" && (p.APIFamily == "anthropic" || name == "anthropic") {
 			return fmt.Errorf("gateway provider %q: upstream_auth_mode client_bearer is not supported for the anthropic API family (Anthropic uses x-api-key, not bearer tokens)", name)
 		}
+		if p.UpstreamAuthMode == "client_bearer" && !c.quickstartProfile {
+			return fmt.Errorf("gateway provider %q: upstream_auth_mode client_bearer is only available in --proxy-quickstart mode — in a normal gateway the presented bearer is a Talon agent key and client_bearer would forward it to the upstream provider; use secret with secret_name instead (#266)", name)
+		}
 		if p.BaseURL == "" && (name == "openai" || name == "anthropic" || name == "ollama") {
 			return fmt.Errorf("gateway provider %q: base_url is required", name)
 		}
@@ -476,6 +601,12 @@ func (c *GatewayConfig) Validate() error {
 		case "", ResponsesStorePreserve, ResponsesStoreForceIfAbsent, ResponsesStoreForceTrue:
 		default:
 			return fmt.Errorf("gateway provider %q: responses_store_mode must be preserve, force_if_absent, or force_true", name)
+		}
+		if err := validateToolPolicyAction(fmt.Sprintf("provider %q tool_policy_action", name), p.ToolPolicyAction); err != nil {
+			return err
+		}
+		if err := validateModelList(fmt.Sprintf("provider %q allowed_models", name), p.AllowedModels); err != nil {
+			return err
 		}
 		c.Providers[name] = p
 	}
@@ -488,43 +619,19 @@ func (c *GatewayConfig) Validate() error {
 			return err
 		}
 	}
-	if p := c.ServerDefaults.AttachmentPolicy; p != nil {
+	if p := c.OrganizationPolicy.AttachmentPolicy; p != nil {
 		switch p.Action {
 		case "block", "strip", "warn", "allow":
 		default:
-			return fmt.Errorf("gateway default_policy.attachment_policy.action must be block, strip, warn, or allow")
+			return fmt.Errorf("gateway organization_policy.attachment_policy.action must be block, strip, warn, or allow")
 		}
 		switch p.InjectionAction {
 		case "block", "strip", "warn", "":
 		default:
-			return fmt.Errorf("gateway default_policy.attachment_policy.injection_action must be block, strip, or warn")
+			return fmt.Errorf("gateway organization_policy.attachment_policy.injection_action must be block, strip, or warn")
 		}
 	}
-	if err := validateEgressPolicy("default_policy", c.ServerDefaults.Egress); err != nil {
-		return err
-	}
-	for i := range c.Callers {
-		caller := &c.Callers[i]
-		if caller.Name == "" {
-			return fmt.Errorf("gateway caller at index %d: name is required", i)
-		}
-		if caller.PolicyOverrides != nil {
-			if err := validateEgressPolicy("caller "+caller.Name, caller.PolicyOverrides.Egress); err != nil {
-				return err
-			}
-		}
-		if caller.TenantID == "" {
-			caller.TenantID = "default"
-		}
-		if caller.IdentifyBy == "source_ip" {
-			if len(caller.SourceIPRanges) == 0 {
-				return fmt.Errorf("gateway caller %q: source_ip_ranges required when identify_by is source_ip", caller.Name)
-			}
-		} else if caller.TenantKey == "" && c.ServerDefaults.CallerIDRequired() {
-			return fmt.Errorf("gateway caller %q: tenant_key or identify_by=source_ip with source_ip_ranges is required", caller.Name)
-		}
-	}
-	return nil
+	return validateEgressPolicy("organization_policy", c.OrganizationPolicy.Egress)
 }
 
 // validateFallbackChain checks a provider's error-driven fallback chain at
@@ -555,114 +662,6 @@ func (c *GatewayConfig) validateFallbackChain(owner string, p ProviderConfig) er
 	return nil
 }
 
-// ResolveCostCaps returns the effective daily and monthly cost caps for a
-// caller: the server default, replaced by a per-caller override when that
-// override is set (> 0). This is the single source of truth for "what cap does
-// this caller actually run against" — budget enforcement (via the policy input,
-// gateway_access.rego) and budget-utilization metrics/alerts must both read it,
-// or the dashboard disagrees with what runtime enforced (#216).
-func ResolveCostCaps(defaults *ServerDefaults, overrides *CallerPolicyOverrides) (daily, monthly float64) {
-	daily, monthly = defaults.MaxDailyCost, defaults.MaxMonthlyCost
-	if overrides == nil {
-		return daily, monthly
-	}
-	if overrides.MaxDailyCost > 0 {
-		daily = overrides.MaxDailyCost
-	}
-	if overrides.MaxMonthlyCost > 0 {
-		monthly = overrides.MaxMonthlyCost
-	}
-	return daily, monthly
-}
-
-// ResolveAttachmentPolicy returns the effective attachment policy for a caller,
-// merging caller overrides on top of the server default.
-func ResolveAttachmentPolicy(defaultPolicy *ServerDefaults, overrides *CallerPolicyOverrides) *AttachmentPolicyConfig {
-	base := defaultPolicy.AttachmentPolicy
-	if base == nil {
-		base = &AttachmentPolicyConfig{
-			Action:          DefaultAttachmentAction,
-			InjectionAction: DefaultAttachmentInjAction,
-			MaxFileSizeMB:   DefaultAttachmentMaxFileSizeMB,
-		}
-	}
-	if overrides == nil || overrides.AttachmentPolicy == nil {
-		return base
-	}
-	merged := *base
-	ov := overrides.AttachmentPolicy
-	if ov.Action != "" {
-		merged.Action = ov.Action
-	}
-	if ov.InjectionAction != "" {
-		merged.InjectionAction = ov.InjectionAction
-	}
-	if ov.MaxFileSizeMB > 0 {
-		merged.MaxFileSizeMB = ov.MaxFileSizeMB
-	}
-	if len(ov.AllowedTypes) > 0 {
-		merged.AllowedTypes = ov.AllowedTypes
-	}
-	if len(ov.BlockedTypes) > 0 {
-		merged.BlockedTypes = ov.BlockedTypes
-	}
-	return &merged
-}
-
-// ToolPolicyResolution holds the resolved tool governance parameters from the
-// three-level config hierarchy (default → provider → caller).
-type ToolPolicyResolution struct {
-	AllowedTools   []string // Most-specific non-empty list wins; empty = allow all.
-	ForbiddenTools []string // Union across all levels (additive).
-	Action         string   // "filter" (default) or "block".
-}
-
-// ResolveToolPolicy merges tool governance config from default policy, provider,
-// and caller overrides. allowed_tools: most-specific non-empty list wins.
-// forbidden_tools: union of all levels. action: most-specific wins.
-func ResolveToolPolicy(dp *ServerDefaults, prov ProviderConfig, overrides *CallerPolicyOverrides) ToolPolicyResolution {
-	res := ToolPolicyResolution{Action: DefaultToolPolicyAction}
-
-	// Action: most-specific wins (caller > provider > default).
-	if dp.ToolPolicyAction != "" {
-		res.Action = dp.ToolPolicyAction
-	}
-	if prov.ToolPolicyAction != "" {
-		res.Action = prov.ToolPolicyAction
-	}
-	if overrides != nil && overrides.ToolPolicyAction != "" {
-		res.Action = overrides.ToolPolicyAction
-	}
-
-	// Allowed tools: most-specific non-empty list wins.
-	if overrides != nil && len(overrides.AllowedTools) > 0 {
-		res.AllowedTools = overrides.AllowedTools
-	}
-
-	// Forbidden tools: union across all levels.
-	seen := make(map[string]bool)
-	for _, lists := range [][]string{
-		dp.ForbiddenTools,
-		prov.ForbiddenTools,
-	} {
-		for _, f := range lists {
-			if !seen[f] {
-				seen[f] = true
-				res.ForbiddenTools = append(res.ForbiddenTools, f)
-			}
-		}
-	}
-	if overrides != nil {
-		for _, f := range overrides.ForbiddenTools {
-			if !seen[f] {
-				seen[f] = true
-				res.ForbiddenTools = append(res.ForbiddenTools, f)
-			}
-		}
-	}
-	return res
-}
-
 // ParseTimeouts returns parsed time.Duration values for the configured timeout strings.
 func (c *GatewayConfig) ParseTimeouts() (ParsedTimeouts, error) {
 	var pt ParsedTimeouts
@@ -688,62 +687,6 @@ func (c *GatewayConfig) ParseTimeouts() (ParsedTimeouts, error) {
 		return pt, fmt.Errorf("stream_idle_timeout %q: %w", c.Timeouts.StreamIdleTimeout, err)
 	}
 	return pt, nil
-}
-
-// CallerByName returns the caller config by name.
-func (c *GatewayConfig) CallerByName(name string) *CallerConfig {
-	for i := range c.Callers {
-		if c.Callers[i].Name == name {
-			return &c.Callers[i]
-		}
-	}
-	return nil
-}
-
-// UniqueTenantIDs returns distinct tenant_id values from configured callers.
-func (c *GatewayConfig) UniqueTenantIDs() []string {
-	seen := make(map[string]struct{})
-	for i := range c.Callers {
-		id := strings.TrimSpace(c.Callers[i].TenantID)
-		if id == "" {
-			id = "default"
-		}
-		seen[id] = struct{}{}
-	}
-	out := make([]string, 0, len(seen))
-	for id := range seen {
-		out = append(out, id)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// MetricsTenantScope returns the tenant_id filter for dashboard SQL aggregates.
-// Single-tenant gateways scope to that tenant; multi-tenant gateways use "" (all tenants).
-func (c *GatewayConfig) MetricsTenantScope() string {
-	ids := c.UniqueTenantIDs()
-	if len(ids) == 1 {
-		return ids[0]
-	}
-	return ""
-}
-
-// TenantKeyMap returns a map of tenant_key -> tenant_id from configured callers.
-func (c *GatewayConfig) TenantKeyMap() map[string]string {
-	m := make(map[string]string)
-	for i := range c.Callers {
-		caller := c.Callers[i]
-		key := strings.TrimSpace(caller.TenantKey)
-		if key == "" {
-			continue
-		}
-		tenantID := caller.TenantID
-		if tenantID == "" {
-			tenantID = "default"
-		}
-		m[key] = tenantID
-	}
-	return m
 }
 
 // Provider returns the provider config for the given provider name (e.g. "openai", "anthropic", "ollama").

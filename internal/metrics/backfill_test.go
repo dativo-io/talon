@@ -216,8 +216,8 @@ func TestBackfillFromStore_CallerFallsBackToAgentID(t *testing.T) {
 	require.NoError(t, err)
 
 	snap := c.Snapshot(context.Background())
-	require.Len(t, snap.CallerStats, 1)
-	assert.Equal(t, "my-agent", snap.CallerStats[0].Caller)
+	require.Len(t, snap.AgentStats, 1)
+	assert.Equal(t, "my-agent", snap.AgentStats[0].Agent)
 }
 
 func TestBackfillFromStore_Error(t *testing.T) {
@@ -339,7 +339,7 @@ func TestEvidenceToEvent(t *testing.T) {
 
 	event := GatewayEventFromEvidence(ev)
 
-	assert.Equal(t, "test-caller", event.CallerID)
+	assert.Equal(t, "test-caller", event.AgentName)
 	assert.Equal(t, "gpt-4o", event.Model)
 	assert.False(t, event.Blocked)
 	assert.InDelta(t, 0.05, event.CostEUR, 0.001)

@@ -26,7 +26,6 @@ var (
 	auditExportFmt      string
 	auditFrom           string
 	auditTo             string
-	auditCaller         string
 	auditViolationsOnly bool
 	auditOutputFile     string
 	auditVerifyFile     string
@@ -79,7 +78,6 @@ func init() {
 	auditExportCmd.Flags().StringVar(&auditTo, "to", "", "End date (YYYY-MM-DD)")
 	auditExportCmd.Flags().StringVar(&auditTenant, "tenant", "", "Filter by tenant ID")
 	auditExportCmd.Flags().StringVar(&auditAgent, "agent", "", "Filter by agent ID")
-	auditExportCmd.Flags().StringVar(&auditCaller, "caller", "", "Filter by caller name (alias for --agent in gateway context)")
 	auditExportCmd.Flags().BoolVar(&auditViolationsOnly, "violations-only", false, "Only export records with policy violations or shadow violations")
 	auditExportCmd.Flags().StringVar(&auditOutputFile, "output", "", "Write to file instead of stdout")
 	auditExportCmd.Flags().IntVar(&auditExportLimit, "limit", 10000, "Maximum records to export")
@@ -312,7 +310,7 @@ func auditExport(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	agentFilter := resolveAgentFilter(auditAgent, auditCaller)
+	agentFilter := auditAgent
 
 	var list []evidence.Evidence
 	if auditSession != "" {
@@ -373,13 +371,6 @@ func parseAuditDateRange(fromStr, toStr string) (from, to time.Time, err error) 
 		}
 	}
 	return from, to, nil
-}
-
-func resolveAgentFilter(agent, caller string) string {
-	if agent != "" {
-		return agent
-	}
-	return caller
 }
 
 func filterEvidenceForExport(list []evidence.Evidence, violationsOnly bool) []evidence.Evidence {
@@ -478,8 +469,8 @@ func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
 		return
 	}
 	fmt.Fprintf(w, "  Tenant:    %s\n", sum.TenantID)
-	if len(sum.Callers) > 0 {
-		fmt.Fprintf(w, "  Caller:    %s\n", strings.Join(sum.Callers, ", "))
+	if len(sum.AgentIDs) > 0 {
+		fmt.Fprintf(w, "  Agent:     %s\n", strings.Join(sum.AgentIDs, ", "))
 	}
 	if sum.Client != "" || sum.SessionSource != "" {
 		fmt.Fprintf(w, "  Source:    %s (%s)\n", sum.Client, sum.SessionSource)
@@ -499,8 +490,8 @@ func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
 	fmt.Fprintf(w, "  Cost:      %s\n", formatMoney(sum.Currency, sum.TotalCost))
 	if sessionHasAgentBreakdown(sum) {
 		fmt.Fprintln(w, "\n  Per-agent:")
-		for i := range sum.Agents {
-			a := &sum.Agents[i]
+		for i := range sum.Subagents {
+			a := &sum.Subagents[i]
 			id := a.AgentID
 			if id == "" {
 				id = "(unattributed)"
@@ -518,11 +509,11 @@ func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
 // sessionHasAgentBreakdown reports whether the per-agent table adds information
 // beyond the session totals (more than one agent, or a single named subagent).
 func sessionHasAgentBreakdown(sum evidence.SessionSummary) bool {
-	if len(sum.Agents) > 1 {
+	if len(sum.Subagents) > 1 {
 		return true
 	}
-	return len(sum.Agents) == 1 && sum.Agents[0].AgentID != "" &&
-		(len(sum.Callers) != 1 || sum.Agents[0].AgentID != sum.Callers[0])
+	return len(sum.Subagents) == 1 && sum.Subagents[0].AgentID != "" &&
+		(len(sum.AgentIDs) != 1 || sum.Subagents[0].AgentID != sum.AgentIDs[0])
 }
 
 // renderSessionRecords prints a compact per-record line list for a session
@@ -642,7 +633,6 @@ func renderAuditExportJSONWrapped(w io.Writer, records []evidence.ExportRecord) 
 				To:     auditTo,
 				Tenant: auditTenant,
 				Agent:  auditAgent,
-				Caller: auditCaller,
 			},
 			TotalRecords: len(records),
 		},
@@ -663,7 +653,6 @@ func renderAuditExportSignedJSON(w io.Writer, records []evidence.Evidence) error
 				To:     auditTo,
 				Tenant: auditTenant,
 				Agent:  auditAgent,
-				Caller: auditCaller,
 			},
 			TotalRecords: len(records),
 			Algorithm:    evidence.SignedExportAlgorithm,

@@ -30,7 +30,7 @@ Unsupported paths return `404` with a partial-compatibility message.
 
 | Variable | Meaning |
 |---|---|
-| `OPENAI_API_KEY` | Upstream fallback when caller bearer is absent. |
+| `OPENAI_API_KEY` | Upstream fallback when the client bearer is absent. |
 | `TALON_QUICKSTART_OPENAI_BASE_URL` | Upstream OpenAI-compatible base URL. |
 | `TALON_QUICKSTART_MODE` | Set to `shadow` to opt into shadow mode; any other value uses default `enforce`. |
 | `TALON_QUICKSTART_ALLOW_ALL_MODELS` | `1/true` clears quickstart model allowlist. |
@@ -39,7 +39,7 @@ Unsupported paths return `404` with a partial-compatibility message.
 
 Quickstart uses upstream BYOK as a scoped exception:
 
-- Caller `Authorization: Bearer <key>` is forwarded to upstream.
+- The client `Authorization: Bearer <key>` is forwarded to upstream.
 - If missing, Talon tries `OPENAI_API_KEY`.
 - If neither exists, request fails with `401`.
 
@@ -66,9 +66,9 @@ Each event includes an `evidence_id` pointer to the signed evidence record.
 
 ## Tenant auth boundary
 
-Quickstart is strictly a host-root OpenAI-compatibility facade backed by a synthetic in-process caller. It does **not** register a synthetic tenant key and does **not** unlock Talon's tenant-auth surface.
+Quickstart is strictly a host-root OpenAI-compatibility facade backed by a synthetic in-process identity. It does **not** register a synthetic agent key and does **not** unlock Talon's tenant-auth surface.
 
-The relocated tenant agent chat route `POST /v1/agents/chat/completions` is only mounted when the operator has configured real tenant keys (for example through a full gateway config). In default quickstart (no tenant keys), this route is not mounted at all and returns `404 Not Found`, preserving a clean facade-only boundary and avoiding any dev-mode-open backdoor to tenant APIs. When tenant keys are configured, the relocated route sits behind standard tenant-auth middleware and returns `401 Unauthorized` without a valid key.
+Tenant agent chat is **not mounted in quickstart at all** — `POST /v1/agents/chat/completions` returns `404 Not Found` regardless of any agent keys in your config. Quickstart never builds the agent identity registry (#266), so no agent key can authenticate anything in this mode; the facade is the only surface. To govern real agents with vault-bound keys, run `talon serve --gateway` instead.
 
 ## Bind safety
 
@@ -83,4 +83,4 @@ The relocated tenant agent chat route `POST /v1/agents/chat/completions` is only
 - `--gateway`
 - `--gateway-config`
 
-Use `--gateway` for production-style caller mapping and vaulted provider auth.
+Use `--gateway` for production-style agent identity and vaulted provider auth.

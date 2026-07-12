@@ -58,11 +58,7 @@ gateway:
       secret_name: "openai-api-key"
       base_url: %q
       region: "US"
-  callers:
-    - name: sov-e2e
-      tenant_key: "talon-gw-sov-e2e"
-      tenant_id: "e2e-tenant"
-  default_policy:
+  organization_policy:
     default_pii_action: warn
   timeouts:
     connect_timeout: "5s"
@@ -97,7 +93,15 @@ gateway:
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key",
 		[]byte("sk-test"), secrets.ACL{Tenants: []string{"e2e-tenant"}, Agents: []string{"*"}}))
 
-	gw, err := gateway.NewGateway(gwCfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	// Agent identity (#266): vault-bound traffic key resolved via the registry.
+	require.NoError(t, secStore.Set(context.Background(), "sov-e2e-talon-key",
+		[]byte("talon-gw-sov-e2e"), secrets.ACL{}))
+	registry, err := gateway.BuildIdentityRegistry(context.Background(), []gateway.LoadedAgent{
+		{Path: "agent.talon.yaml", Name: "sov-e2e", TenantID: "e2e-tenant", KeySecretName: "sov-e2e-talon-key"},
+	}, secStore, "")
+	require.NoError(t, err)
+
+	gw, err := gateway.NewGateway(gwCfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	r := chi.NewRouter()

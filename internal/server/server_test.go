@@ -19,6 +19,7 @@ import (
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/secrets"
 	talonsession "github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/testutil"
@@ -251,21 +252,22 @@ func TestQuickstartRoutingEnabled(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, rec.Code)
 	assert.True(t, quickstartCalled)
 
-	// Agent chat is relocated under /v1/agents/chat/completions in quickstart mode.
+	// Tenant agent chat is NOT mounted in quickstart — not even with tenant
+	// keys configured. Quickstart never builds the identity registry (#266),
+	// so this route could never be reached in production (#285).
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/agents/chat/completions", strings.NewReader(`{`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer tenant-secret")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
-func TestQuickstartRoutingWithoutTenantKeysOmitsRelocatedPath(t *testing.T) {
-	// Quickstart without any configured tenant keys must not mount the
-	// relocated /v1/agents/chat/completions route. The host-root facade is
-	// still served, but tenant agent chat is absent (404) so quickstart stays
-	// a strict facade-only surface and does not become a dev-mode-open
-	// backdoor to tenant APIs.
+func TestQuickstartOmitsTenantChatPath(t *testing.T) {
+	// Quickstart never mounts tenant agent chat — with or without tenant
+	// keys (#285; see also TestQuickstartRoutingEnabled for the keyed case).
+	// The host-root facade is still served, but /v1/agents/chat/completions
+	// is absent (404) so quickstart stays a strict facade-only surface.
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
 	require.NoError(t, err)
@@ -396,7 +398,7 @@ func TestStatusEndpoint_IncludesMetricsDroppedEvents(t *testing.T) {
 	collector := metrics.NewCollector("enforce", store)
 	collector.Close() // stop consumer to force backpressure drops
 	for i := 0; i < 1200; i++ {
-		collector.Record(metrics.GatewayEvent{Timestamp: time.Now().UTC(), CallerID: "app"})
+		collector.Record(metrics.GatewayEvent{Timestamp: time.Now().UTC(), AgentName: "app"})
 	}
 
 	srv := NewServer(nil, store, nil, engine, pol, "", nil, "", map[string]string{"k": "default"}, WithMetricsCollector(collector))
@@ -1462,7 +1464,7 @@ func TestCostsExport_IncludesDeniedRowsAndProvider(t *testing.T) {
 	r := srv.Routes()
 
 	// JSON path
-	body := `{"tenant_id":"default","caller":"support-slack-bot","format":"json","limit":10}`
+	body := `{"tenant_id":"default","agent_id":"support-slack-bot","format":"json","limit":10}`
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/costs/export", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer k")
@@ -1477,7 +1479,7 @@ func TestCostsExport_IncludesDeniedRowsAndProvider(t *testing.T) {
 	assert.Equal(t, "deny", rows[0]["policy_action"])
 
 	// CSV path
-	body = `{"tenant_id":"default","caller":"support-slack-bot","format":"csv","limit":10}`
+	body = `{"tenant_id":"default","agent_id":"support-slack-bot","format":"csv","limit":10}`
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/costs/export", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer k")
@@ -2180,4 +2182,166 @@ func minimalPolicy() *policy.Policy {
 		Policies:   policy.PoliciesConfig{},
 		VersionTag: "test",
 	}
+}
+
+// TestEvidenceAgentScope_AgentKeySeesOnlyOwnAgent (#266 review round 4):
+// two agents in the SAME tenant are isolated — an agent key reads only its
+// own agent's evidence and cannot fetch another agent's record by id, while
+// the admin key sees both.
+func TestEvidenceAgentScope_AgentKeySeesOnlyOwnAgent(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	for _, e := range []struct{ id, agent string }{
+		{"ev_support_1", "support-bot"},
+		{"ev_finance_1", "finance-bot"},
+	} {
+		require.NoError(t, store.Store(ctx, &evidence.Evidence{
+			ID: e.id, CorrelationID: "c", Timestamp: time.Now().UTC(),
+			TenantID: "acme", AgentID: e.agent, InvocationType: "test",
+			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "v1"},
+			Execution:      evidence.Execution{},
+			AuditTrail:     evidence.AuditTrail{},
+		}))
+	}
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "admin-secret", nil,
+		WithAgentIdentities(map[string]requestctx.AgentIdentity{
+			"k_support": {AgentID: "support-bot", TenantID: "acme"},
+			"k_finance": {AgentID: "finance-bot", TenantID: "acme"},
+		}))
+	r := srv.Routes()
+
+	get := func(path, bearer, adminKey string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if adminKey != "" {
+			req.Header.Set("X-Talon-Admin-Key", adminKey)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// support-bot's list returns only its own record.
+	rec := get("/v1/evidence", "k_support", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "ev_support_1")
+	assert.NotContains(t, body, "ev_finance_1", "an agent key must not see another agent's evidence")
+
+	// support-bot cannot fetch finance-bot's record by id (404).
+	assert.Equal(t, http.StatusNotFound, get("/v1/evidence/ev_finance_1", "k_support", "").Code)
+	// ...but can fetch its own.
+	assert.Equal(t, http.StatusOK, get("/v1/evidence/ev_support_1", "k_support", "").Code)
+
+	// Admin sees both.
+	adminBody := get("/v1/evidence?tenant_id=*", "", "admin-secret").Body.String()
+	assert.Contains(t, adminBody, "ev_support_1")
+	assert.Contains(t, adminBody, "ev_finance_1")
+
+	// Timeline neighbors are agent-scoped: support-bot's timeline around its
+	// own record must not surface finance-bot's neighbor (#266 review r5).
+	tl := get("/v1/evidence/timeline?around=ev_support_1&before=5&after=5", "k_support", "").Body.String()
+	assert.NotContains(t, tl, "ev_finance_1", "timeline must not leak another agent's neighbors")
+
+	// Operational events are agent-scoped.
+	evs := get("/api/v1/events/recent", "k_support", "").Body.String()
+	assert.NotContains(t, evs, "ev_finance_1", "events must not surface another agent's records")
+}
+
+// TestNativeExecutionRoutesRequireAdminWhenGatewayServed (#266 review round
+// 5): when the gateway is serving agent traffic, native execution routes
+// (/v1/agents/run, native /v1/chat/completions) reject agent keys — an agent
+// key must use /v1/proxy so org policy + provider constraints apply. Admin
+// (operator) keeps access. Native-only deployments still accept agent keys.
+func TestNativeExecutionRoutesRequireAdminWhenGatewayServed(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+
+	agentIDs := map[string]requestctx.AgentIdentity{"k_agent": {AgentID: "bot", TenantID: "acme"}}
+	body := `{"prompt":"hi"}`
+
+	post := func(r http.Handler, path, bearer, admin string) int {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if admin != "" {
+			req.Header.Set("X-Talon-Admin-Key", admin)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	t.Run("gateway served: agent key blocked, admin allowed", func(t *testing.T) {
+		gwStub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		srv := NewServer(nil, nil, nil, engine, pol, "", nil, "admin-secret", nil,
+			WithAgentIdentities(agentIDs), WithGateway(gwStub))
+		r := srv.Routes()
+		assert.Equal(t, http.StatusUnauthorized, post(r, "/v1/agents/run", "k_agent", ""),
+			"agent key must not reach the ungoverned native runner when the gateway is served")
+		// Admin passes auth (a 4xx/5xx from the nil runner is fine; 401 is not).
+		assert.NotEqual(t, http.StatusUnauthorized, post(r, "/v1/agents/run", "", "admin-secret"))
+	})
+
+	t.Run("native-only: agent key allowed through auth", func(t *testing.T) {
+		srv := NewServer(nil, nil, nil, engine, pol, "", nil, "admin-secret", nil,
+			WithAgentIdentities(agentIDs))
+		r := srv.Routes()
+		// No gateway → agent key passes auth (the nil runner then errors, but not 401).
+		assert.NotEqual(t, http.StatusUnauthorized, post(r, "/v1/agents/run", "k_agent", ""))
+	})
+
+	// #266 review round 6: a gateway deployment WITHOUT TALON_ADMIN_KEY must
+	// fail closed on the native execution routes — the admin dev-open rule
+	// must not turn "operator did not set an admin key" into unauthenticated
+	// ungoverned execution. Full matrix on every native execution route.
+	t.Run("gateway served, NO admin key: everything denied on native exec routes", func(t *testing.T) {
+		gwStub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", nil,
+			WithAgentIdentities(agentIDs), WithGateway(gwStub))
+		r := srv.Routes()
+		for _, path := range []string{"/v1/agents/run", "/v1/chat/completions"} {
+			assert.Equalf(t, http.StatusUnauthorized, post(r, path, "", ""),
+				"%s: unauthenticated must be denied when gateway served without admin key", path)
+			assert.Equalf(t, http.StatusUnauthorized, post(r, path, "k_agent", ""),
+				"%s: agent key must be denied when gateway served without admin key", path)
+			assert.Equalf(t, http.StatusUnauthorized, post(r, path, "", "any-admin-guess"),
+				"%s: a guessed admin key must be denied when none is configured", path)
+		}
+	})
+
+	t.Run("gateway served, admin key configured: no-auth denied", func(t *testing.T) {
+		gwStub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		srv := NewServer(nil, nil, nil, engine, pol, "", nil, "admin-secret", nil,
+			WithAgentIdentities(agentIDs), WithGateway(gwStub))
+		r := srv.Routes()
+		for _, path := range []string{"/v1/agents/run", "/v1/chat/completions"} {
+			assert.Equalf(t, http.StatusUnauthorized, post(r, path, "", ""),
+				"%s: unauthenticated must be denied when gateway served with admin key", path)
+		}
+	})
+
+	t.Run("native-only, no keys at all: dev-open rule documented", func(t *testing.T) {
+		// Native-only with neither admin key nor agent keys is the existing
+		// dev-open mode (unauthenticated local development). It stays open on
+		// purpose — and flips closed the moment either key kind is configured
+		// (covered by TestTenantKeyMiddleware_AdminKeyDevRule).
+		srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", nil)
+		r := srv.Routes()
+		assert.NotEqual(t, http.StatusUnauthorized, post(r, "/v1/agents/run", "", ""),
+			"native-only dev mode (no keys anywhere) remains open by design")
+	})
 }

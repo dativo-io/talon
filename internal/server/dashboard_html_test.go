@@ -47,7 +47,7 @@ func TestDashboardHTML_ContainsUnifiedFinOpsSurface(t *testing.T) {
 	assert.True(t, strings.Contains(html, "finops-cache-hits"))
 	assert.True(t, strings.Contains(html, "finops-cache-saved"))
 	// Caller / model / provider spend breakdowns.
-	assert.True(t, strings.Contains(html, "finops-callers-tbody"))
+	assert.True(t, strings.Contains(html, "finops-agents-tbody"))
 	assert.True(t, strings.Contains(html, "finops-models-tbody"))
 	assert.True(t, strings.Contains(html, "finops-providers-tbody"))
 	// Store-wide denial breakdown wired to the dedicated endpoint.
@@ -88,7 +88,7 @@ func TestGatewayDashboardHTML_SessionFieldsEscaped(t *testing.T) {
 	for _, expr := range []string{
 		"esc(sess.session_id)",
 		"esc(sess.client || '-')",
-		"esc((sess.callers || []).join(', '))",
+		"esc((sess.agents || []).join(', '))",
 		"esc((sess.models || []).join(', '))",
 		"esc((sess.providers || []).join(', '))",
 		"esc(a.agent_id || '(unattributed)')",

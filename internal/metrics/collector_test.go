@@ -82,7 +82,7 @@ func TestRecordSingleEvent(t *testing.T) {
 
 	c.Record(GatewayEvent{
 		Timestamp:   time.Now(),
-		CallerID:    "app-1",
+		AgentName:   "app-1",
 		CostEUR:     0.05,
 		LatencyMS:   120,
 		PIIDetected: []string{"email", "iban"},
@@ -144,17 +144,17 @@ func TestCallerStats(t *testing.T) {
 	c := newTestCollector("enforce", nil)
 	defer c.Close()
 
-	c.Record(GatewayEvent{Timestamp: time.Now(), CallerID: "app-1", CostEUR: 0.1, LatencyMS: 100})
-	c.Record(GatewayEvent{Timestamp: time.Now(), CallerID: "app-1", CostEUR: 0.2, LatencyMS: 200})
-	c.Record(GatewayEvent{Timestamp: time.Now(), CallerID: "app-2", CostEUR: 0.3, LatencyMS: 50, Blocked: true})
+	c.Record(GatewayEvent{Timestamp: time.Now(), AgentName: "app-1", CostEUR: 0.1, LatencyMS: 100})
+	c.Record(GatewayEvent{Timestamp: time.Now(), AgentName: "app-1", CostEUR: 0.2, LatencyMS: 200})
+	c.Record(GatewayEvent{Timestamp: time.Now(), AgentName: "app-2", CostEUR: 0.3, LatencyMS: 50, Blocked: true})
 	waitForProcessing(c)
 
 	snap := c.Snapshot(context.Background())
-	require.Len(t, snap.CallerStats, 2)
-	assert.Equal(t, "app-1", snap.CallerStats[0].Caller)
-	assert.Equal(t, 2, snap.CallerStats[0].Requests)
-	assert.InDelta(t, 0.3, snap.CallerStats[0].CostEUR, 0.001)
-	assert.Equal(t, int64(150), snap.CallerStats[0].AvgLatencyMS)
+	require.Len(t, snap.AgentStats, 2)
+	assert.Equal(t, "app-1", snap.AgentStats[0].Agent)
+	assert.Equal(t, 2, snap.AgentStats[0].Requests)
+	assert.InDelta(t, 0.3, snap.AgentStats[0].CostEUR, 0.001)
+	assert.Equal(t, int64(150), snap.AgentStats[0].AvgLatencyMS)
 }
 
 func TestPIIBreakdown(t *testing.T) {
@@ -288,7 +288,7 @@ func TestMetricsQuerierCache(t *testing.T) {
 	c := newTestCollector("enforce", q)
 	defer c.Close()
 
-	c.Record(GatewayEvent{Timestamp: time.Now(), CallerID: "test-caller"})
+	c.Record(GatewayEvent{Timestamp: time.Now(), AgentName: "test-caller"})
 	waitForProcessing(c)
 
 	snap := c.Snapshot(context.Background())
@@ -497,8 +497,8 @@ func assertSnapshotCrossChecks(t *testing.T, snap Snapshot) {
 	t.Helper()
 	// total_requests == sum(caller_stats[].requests)
 	var callerRequests int
-	for i := range snap.CallerStats {
-		cs := snap.CallerStats[i]
+	for i := range snap.AgentStats {
+		cs := snap.AgentStats[i]
 		callerRequests += cs.Requests
 	}
 	assert.Equal(t, snap.Summary.TotalRequests, callerRequests,
@@ -506,8 +506,8 @@ func assertSnapshotCrossChecks(t *testing.T, snap Snapshot) {
 
 	// blocked_requests == sum(caller_stats[].blocked)
 	var callerBlocked int
-	for i := range snap.CallerStats {
-		cs := snap.CallerStats[i]
+	for i := range snap.AgentStats {
+		cs := snap.AgentStats[i]
 		callerBlocked += cs.Blocked
 	}
 	assert.Equal(t, snap.Summary.BlockedRequests, callerBlocked,
@@ -527,8 +527,8 @@ func assertSnapshotCrossChecks(t *testing.T, snap Snapshot) {
 
 	// total_cost_eur ≈ sum(caller_stats[].cost_eur)
 	var callerCost float64
-	for i := range snap.CallerStats {
-		cs := snap.CallerStats[i]
+	for i := range snap.AgentStats {
+		cs := snap.AgentStats[i]
 		callerCost += cs.CostEUR
 	}
 	assert.InDelta(t, snap.Summary.TotalCostEUR, callerCost, 0.0001,
@@ -566,7 +566,7 @@ func TestSnapshotCrossChecks(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		c.Record(GatewayEvent{
 			Timestamp:   now,
-			CallerID:    "app-a",
+			AgentName:   "app-a",
 			CostEUR:     0.01 * float64(i+1),
 			LatencyMS:   int64(50 + i*10),
 			Blocked:     i == 0,
@@ -582,7 +582,7 @@ func TestSnapshotCrossChecks(t *testing.T) {
 		}
 		c.Record(GatewayEvent{
 			Timestamp:   now,
-			CallerID:    "app-b",
+			AgentName:   "app-b",
 			CostEUR:     0.05,
 			LatencyMS:   100,
 			Blocked:     i == 1,
@@ -607,16 +607,16 @@ func TestCollector_TaskSuccess_Classified(t *testing.T) {
 	defer c.Close()
 
 	now := time.Now().UTC()
-	c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", CostEUR: 0.01})
-	c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", CostEUR: 0.02})
-	c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", HasError: true})
-	c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", Blocked: true})
-	c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", TimedOut: true, HasError: true})
+	c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", CostEUR: 0.01})
+	c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", CostEUR: 0.02})
+	c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", HasError: true})
+	c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", Blocked: true})
+	c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", TimedOut: true, HasError: true})
 	waitForProcessing(c)
 
 	snap := c.Snapshot(context.Background())
-	require.Len(t, snap.CallerStats, 1)
-	cs := snap.CallerStats[0]
+	require.Len(t, snap.AgentStats, 1)
+	cs := snap.AgentStats[0]
 	assert.Equal(t, 2, cs.Successful)
 	assert.Equal(t, 2, cs.Failed)
 	assert.Equal(t, 1, cs.Denied)
@@ -629,16 +629,16 @@ func TestCollector_SuccessRate_Calculated(t *testing.T) {
 
 	now := time.Now().UTC()
 	for i := 0; i < 7; i++ {
-		c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a"})
+		c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a"})
 	}
 	for i := 0; i < 3; i++ {
-		c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", Blocked: true})
+		c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", Blocked: true})
 	}
 	waitForProcessing(c)
 
 	snap := c.Snapshot(context.Background())
-	require.Len(t, snap.CallerStats, 1)
-	assert.InDelta(t, 0.7, snap.CallerStats[0].SuccessRate, 0.0001)
+	require.Len(t, snap.AgentStats, 1)
+	assert.InDelta(t, 0.7, snap.AgentStats[0].SuccessRate, 0.0001)
 }
 
 func TestCollector_CostPerSuccess_Calculated(t *testing.T) {
@@ -646,15 +646,15 @@ func TestCollector_CostPerSuccess_Calculated(t *testing.T) {
 	defer c.Close()
 
 	now := time.Now().UTC()
-	c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", CostEUR: 0.01})
-	c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", CostEUR: 0.01})
-	c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", Blocked: true})
-	c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", Blocked: true})
+	c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", CostEUR: 0.01})
+	c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", CostEUR: 0.01})
+	c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", Blocked: true})
+	c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", Blocked: true})
 	waitForProcessing(c)
 
 	snap := c.Snapshot(context.Background())
-	require.Len(t, snap.CallerStats, 1)
-	assert.InDelta(t, 0.01, snap.CallerStats[0].CostPerSuccess, 0.00001)
+	require.Len(t, snap.AgentStats, 1)
+	assert.InDelta(t, 0.01, snap.AgentStats[0].CostPerSuccess, 0.00001)
 }
 
 func TestCollector_CostPerSuccess_ZeroSuccesses(t *testing.T) {
@@ -662,14 +662,14 @@ func TestCollector_CostPerSuccess_ZeroSuccesses(t *testing.T) {
 	defer c.Close()
 
 	now := time.Now().UTC()
-	c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", Blocked: true})
-	c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", Blocked: true})
-	c.Record(GatewayEvent{Timestamp: now, CallerID: "agent-a", Blocked: true})
+	c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", Blocked: true})
+	c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", Blocked: true})
+	c.Record(GatewayEvent{Timestamp: now, AgentName: "agent-a", Blocked: true})
 	waitForProcessing(c)
 
 	snap := c.Snapshot(context.Background())
-	require.Len(t, snap.CallerStats, 1)
-	assert.Equal(t, 0.0, snap.CallerStats[0].CostPerSuccess)
+	require.Len(t, snap.AgentStats, 1)
+	assert.Equal(t, 0.0, snap.AgentStats[0].CostPerSuccess)
 }
 
 func TestCollector_ViolationTrend_SevenDays(t *testing.T) {
@@ -679,13 +679,13 @@ func TestCollector_ViolationTrend_SevenDays(t *testing.T) {
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	for i := 0; i < 10; i++ {
 		ts := today.AddDate(0, 0, -i)
-		c.Record(GatewayEvent{Timestamp: ts, CallerID: "agent-a", Blocked: true})
+		c.Record(GatewayEvent{Timestamp: ts, AgentName: "agent-a", Blocked: true})
 	}
 	waitForProcessing(c)
 
 	snap := c.Snapshot(context.Background())
-	require.Len(t, snap.CallerStats, 1)
-	trend := snap.CallerStats[0].ViolationTrend
+	require.Len(t, snap.AgentStats, 1)
+	trend := snap.AgentStats[0].ViolationTrend
 	require.Len(t, trend, 7)
 	assert.Equal(t, today.AddDate(0, 0, -6).Format("2006-01-02"), trend[0].Date)
 	assert.Equal(t, today.Format("2006-01-02"), trend[6].Date)
@@ -696,13 +696,13 @@ func TestCollector_ViolationTrend_EmptyDays(t *testing.T) {
 	defer c.Close()
 
 	today := time.Now().UTC().Truncate(24 * time.Hour)
-	c.Record(GatewayEvent{Timestamp: today.AddDate(0, 0, -6), CallerID: "agent-a", Blocked: true})
-	c.Record(GatewayEvent{Timestamp: today, CallerID: "agent-a", Blocked: true})
+	c.Record(GatewayEvent{Timestamp: today.AddDate(0, 0, -6), AgentName: "agent-a", Blocked: true})
+	c.Record(GatewayEvent{Timestamp: today, AgentName: "agent-a", Blocked: true})
 	waitForProcessing(c)
 
 	snap := c.Snapshot(context.Background())
-	require.Len(t, snap.CallerStats, 1)
-	trend := snap.CallerStats[0].ViolationTrend
+	require.Len(t, snap.AgentStats, 1)
+	trend := snap.AgentStats[0].ViolationTrend
 	require.Len(t, trend, 7)
 	for i := 1; i <= 5; i++ {
 		assert.Equal(t, 0, trend[i].Count)
@@ -715,15 +715,15 @@ func TestCollector_TimeoutDetection(t *testing.T) {
 
 	c.Record(GatewayEvent{
 		Timestamp: time.Now().UTC(),
-		CallerID:  "agent-a",
+		AgentName: "agent-a",
 		TimedOut:  true,
 		HasError:  true,
 	})
 	waitForProcessing(c)
 
 	snap := c.Snapshot(context.Background())
-	require.Len(t, snap.CallerStats, 1)
-	cs := snap.CallerStats[0]
+	require.Len(t, snap.AgentStats, 1)
+	cs := snap.AgentStats[0]
 	assert.Equal(t, 1, cs.TimedOut)
 	assert.Equal(t, 1, cs.Failed)
 	assert.Equal(t, 0, cs.Successful)
@@ -736,7 +736,7 @@ func TestCollector_BackwardCompat_ExistingFields(t *testing.T) {
 
 	c.Record(GatewayEvent{
 		Timestamp:   time.Now().UTC(),
-		CallerID:    "agent-a",
+		AgentName:   "agent-a",
 		CostEUR:     0.25,
 		LatencyMS:   250,
 		PIIDetected: []string{"email", "iban"},
@@ -745,9 +745,9 @@ func TestCollector_BackwardCompat_ExistingFields(t *testing.T) {
 	waitForProcessing(c)
 
 	snap := c.Snapshot(context.Background())
-	require.Len(t, snap.CallerStats, 1)
-	cs := snap.CallerStats[0]
-	assert.Equal(t, "agent-a", cs.Caller)
+	require.Len(t, snap.AgentStats, 1)
+	cs := snap.AgentStats[0]
+	assert.Equal(t, "agent-a", cs.Agent)
 	assert.Equal(t, 1, cs.Requests)
 	assert.Equal(t, 2, cs.PIIDetected)
 	assert.Equal(t, 1, cs.Blocked)

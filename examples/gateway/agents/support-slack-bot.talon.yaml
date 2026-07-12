@@ -1,0 +1,18 @@
+# Gateway example — support Slack bot use case (#266).
+# Mint: talon secrets set support-slack-bot-talon-key "$(openssl rand -hex 24)"
+agent:
+  name: support-slack-bot
+  version: 1.0.0
+  key:
+    secret_name: "support-slack-bot-talon-key"
+policies:
+  cost_limits:
+    daily: 10.00
+    monthly: 200.00
+  models:
+    allowed: ["gpt-4o-mini"]
+  allowed_providers: ["openai"]
+  data_classification:
+    input_scan: true
+metadata:
+  team: support

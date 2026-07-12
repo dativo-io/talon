@@ -169,7 +169,7 @@ func TestGetOrCreateExternal_CreateAndReuse(t *testing.T) {
 	require.NotEmpty(t, a.ID)
 	require.NotEqual(t, "sess-ext-1", a.ID, "internal id stays opaque, never the asserted id")
 	require.Equal(t, "sess-ext-1", a.ExternalSessionID)
-	require.Equal(t, "coder-a", a.CallerID)
+	require.Equal(t, "coder-a", a.AgentID)
 	require.Equal(t, SourceClientAsserted, a.Source)
 	require.Equal(t, StatusActive, a.Status)
 

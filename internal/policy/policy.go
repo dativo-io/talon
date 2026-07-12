@@ -5,8 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/dativo-io/talon/internal/compliance"
 )
@@ -33,12 +36,36 @@ type Policy struct {
 	VersionTag string `yaml:"-" json:"-"`
 }
 
-// AgentConfig holds the agent identity.
+// AgentConfig holds the agent identity. One agent.talon.yaml = one AI use
+// case = one Talon traffic identity (#266).
 type AgentConfig struct {
 	Name        string `yaml:"name" json:"name"`
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 	Version     string `yaml:"version" json:"version"`
 	ModelTier   int    `yaml:"model_tier,omitempty" json:"model_tier,omitempty"`
+	// TenantID is the tenant this AI use case belongs to. An agent belongs to
+	// exactly one tenant; key → agent → tenant_id is the only tenant
+	// derivation, authoritative for gateway traffic AND native runs (#266).
+	// Empty means "default".
+	TenantID string `yaml:"tenant_id,omitempty" json:"tenant_id,omitempty"`
+	// Key binds this agent's one active Talon traffic key. Required for every
+	// agent loaded into the gateway identity registry (a missing binding fails
+	// startup); optional for native-only, non-traffic-bound runs.
+	Key *AgentKeyBinding `yaml:"key,omitempty" json:"key,omitempty"`
+	// AcceptClientMetadata controls whether client-asserted orchestration
+	// identity (x-claude-code-* / Codex / generic X-Talon-* headers) is
+	// recorded in evidence for this agent's gateway traffic. nil = true
+	// (default). Recording only — never a policy input in v1 (#194).
+	AcceptClientMetadata *bool `yaml:"accept_client_metadata,omitempty" json:"accept_client_metadata,omitempty"`
+}
+
+// AgentKeyBinding references the agent's one active Talon key in the encrypted
+// vault. Policy files are committed to Git, so the binding is a vault secret
+// NAME — never raw key material (the schema rejects any other field here).
+// Rotation = `talon secrets set <secret_name> <new>` + restart; one active key
+// per agent, structurally.
+type AgentKeyBinding struct {
+	SecretName string `yaml:"secret_name" json:"secret_name"`
 }
 
 // CapabilitiesConfig defines what the agent is allowed to do.
@@ -47,6 +74,15 @@ type CapabilitiesConfig struct {
 	AllowedDataSources  []string `yaml:"allowed_data_sources,omitempty" json:"allowed_data_sources,omitempty"`
 	ForbiddenPatterns   []string `yaml:"forbidden_patterns,omitempty" json:"forbidden_patterns,omitempty"`
 	DestructivePatterns []string `yaml:"destructive_patterns,omitempty" json:"destructive_patterns,omitempty"`
+	// ForbiddenTools lists tool NAMES denied for this agent's gateway traffic
+	// (unioned with the organization baseline and provider restrictions).
+	// Distinct from ForbiddenPatterns, which are command/content patterns for
+	// the native runner (#266).
+	ForbiddenTools []string `yaml:"forbidden_tools,omitempty" json:"forbidden_tools,omitempty"`
+	// ToolPolicyAction is the gateway enforcement mode when a request declares
+	// disallowed tools: "filter" strips them from the request, "block" rejects
+	// the request. Empty inherits the organization baseline.
+	ToolPolicyAction string `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"`
 }
 
 // TriggersConfig defines automatic execution triggers.
@@ -156,6 +192,42 @@ type PoliciesConfig struct {
 	ModelRouting       *ModelRoutingConfig       `yaml:"model_routing,omitempty" json:"model_routing,omitempty"`
 	TimeRestrictions   *TimeRestrictionsConfig   `yaml:"time_restrictions,omitempty" json:"time_restrictions,omitempty"`
 	SessionLimits      *SessionLimitsConfig      `yaml:"session_limits,omitempty" json:"session_limits,omitempty"`
+	// Models are flat allow/block lists for this agent's gateway traffic.
+	// Distinct from ModelRouting, which is the runner-side tier-based routing
+	// preference — Models decides what MAY be called, ModelRouting decides
+	// what the runner PREFERS to call (#266).
+	Models *ModelsConfig `yaml:"models,omitempty" json:"models,omitempty"`
+	// AllowedProviders restricts which gateway providers this agent may reach.
+	// Empty = all enabled providers.
+	AllowedProviders []string `yaml:"allowed_providers,omitempty" json:"allowed_providers,omitempty"`
+	// Egress is a second boundary evaluated alongside the organization egress
+	// for this agent's gateway traffic: a destination must pass BOTH (logical
+	// intersection); the agent narrows within the org boundary, never widens
+	// or replaces it (#266).
+	Egress *EgressConfig `yaml:"egress,omitempty" json:"egress,omitempty"`
+}
+
+// ModelsConfig is the agent's flat model allow/block list for gateway traffic.
+type ModelsConfig struct {
+	Allowed []string `yaml:"allowed,omitempty" json:"allowed,omitempty"`
+	Blocked []string `yaml:"blocked,omitempty" json:"blocked,omitempty"`
+}
+
+// EgressConfig mirrors the gateway egress policy YAML shape (which
+// destinations each data tier may egress to). It is a pure data mirror — the
+// serve-time bridge converts it to the gateway's egress policy type, where
+// semantic validation lives. Kept here so the policy package does not import
+// the gateway package.
+type EgressConfig struct {
+	DefaultAction string             `yaml:"default_action,omitempty" json:"default_action,omitempty"` // allow (default) | deny
+	Rules         []EgressRuleConfig `yaml:"rules,omitempty" json:"rules,omitempty"`
+}
+
+// EgressRuleConfig permits destinations for a single data tier.
+type EgressRuleConfig struct {
+	Tier             *TierValue `yaml:"tier" json:"tier"`
+	AllowedProviders []string   `yaml:"allowed_providers,omitempty" json:"allowed_providers,omitempty"`
+	AllowedRegions   []string   `yaml:"allowed_regions,omitempty" json:"allowed_regions,omitempty"`
 }
 
 // SemanticEnrichmentConfig controls PII placeholder semantic attributes (e.g. gender, scope).
@@ -242,6 +314,46 @@ type DataClassificationConfig struct {
 
 	// CustomRecognizers defines per-agent PII recognizers in Presidio-compatible format.
 	CustomRecognizers []CustomRecognizerConfig `yaml:"custom_recognizers,omitempty" json:"custom_recognizers,omitempty"`
+
+	// MaxDataTier caps the data classification tier this agent's gateway
+	// traffic may carry (0/public, 1/internal, 2/confidential). nil = no cap
+	// beyond the organization baseline (#266).
+	MaxDataTier *TierValue `yaml:"max_data_tier,omitempty" json:"max_data_tier,omitempty"`
+}
+
+// TierValue is a data classification tier written either as a number (0, 1,
+// 2) or a named alias (public, internal, confidential) — the same convention
+// as the gateway config. Pure YAML mirror; range validation lives with the
+// consumer so error messages carry config context.
+type TierValue int
+
+var tierValueNames = map[string]TierValue{
+	"public":       0,
+	"internal":     1,
+	"confidential": 2,
+}
+
+// UnmarshalYAML accepts `tier: 2` and `tier: confidential` interchangeably.
+func (t *TierValue) UnmarshalYAML(value *yaml.Node) error {
+	var n int
+	if err := value.Decode(&n); err == nil {
+		*t = TierValue(n)
+		return nil
+	}
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return fmt.Errorf("invalid tier value: %w", err)
+	}
+	name := strings.ToLower(strings.TrimSpace(s))
+	if v, ok := tierValueNames[name]; ok {
+		*t = v
+		return nil
+	}
+	if n, err := strconv.Atoi(name); err == nil {
+		*t = TierValue(n)
+		return nil
+	}
+	return fmt.Errorf("invalid tier %q: must be 0-2 or one of public, internal, confidential", s)
 }
 
 // ShouldRedactInput returns true when input (prompt) PII should be redacted before the LLM.
@@ -440,6 +552,9 @@ type ComplianceConfig struct {
 
 // MetadataConfig holds optional organizational metadata.
 type MetadataConfig struct {
+	// Team attributes this agent's spend and evidence to a team
+	// (evidence.Team / cost-by-team reporting) (#266).
+	Team       string    `yaml:"team,omitempty" json:"team,omitempty"`
 	Department string    `yaml:"department,omitempty" json:"department,omitempty"`
 	Owner      string    `yaml:"owner,omitempty" json:"owner,omitempty"`
 	CreatedAt  time.Time `yaml:"created_at,omitempty" json:"created_at,omitempty"`

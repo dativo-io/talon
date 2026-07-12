@@ -1,5 +1,11 @@
 # Shortlist demo (#107) — enforce-mode gateway with mock provider (no real API key).
 # Also loaded by `talon compliance *` inside the container (~/.talon/talon.config.yaml).
+#
+# Identity (#266): each demo scenario is its own AI use case — one
+# agent.talon.yaml per scenario under agents/, each bound to a vault key:
+#   talon secrets set shortlist-allow-talon-key <key>
+#   talon secrets set shortlist-deny-talon-key  <key>
+#   talon secrets set shortlist-eu-talon-key    <key>
 
 compliance:
   controller:
@@ -21,42 +27,15 @@ gateway:
       region: "US"
       allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
 
-  callers:
-    - name: "shortlist-allow"
-      tenant_key: "talon-shortlist-allow"
-      tenant_id: "shortlist"
-      team: "shortlist-demo"
-    - name: "shortlist-policy-deny"
-      tenant_key: "talon-shortlist-deny"
-      tenant_id: "shortlist"
-      team: "shortlist-demo"
-      policy_overrides:
-        allowed_models: ["gpt-4o-mini"]
-    - name: "shortlist-eu-strict"
-      tenant_key: "talon-shortlist-eu"
-      tenant_id: "shortlist"
-      team: "shortlist-demo"
-      policy_overrides:
-        egress:
-          default_action: deny
-          rules:
-            - tier: public
-              allowed_regions: ["EU", "LOCAL"]
-            - tier: internal
-              allowed_regions: ["EU", "LOCAL"]
-            - tier: confidential
-              allowed_regions: ["EU", "LOCAL"]
-
-  default_policy:
+  organization_policy:
     default_pii_action: "block"
     max_daily_cost: 100.00
-    require_caller_id: true
     log_prompts: true
     log_responses: false
 
   rate_limits:
     global_requests_per_min: 300
-    per_caller_requests_per_min: 60
+    per_agent_requests_per_min: 60
 
   timeouts:
     connect_timeout: 10s

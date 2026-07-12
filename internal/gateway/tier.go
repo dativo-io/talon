@@ -32,7 +32,7 @@ var tierNames = map[string]TierLevel{
 // ParseTierLevel converts a config value to a TierLevel. It accepts the
 // named aliases (public, internal, confidential; case-insensitive) and
 // numeric strings. Range validation for numeric values stays with the
-// caller's config validation so error messages carry config context.
+// agent's config validation so error messages carry config context.
 func ParseTierLevel(s string) (TierLevel, error) {
 	name := strings.ToLower(strings.TrimSpace(s))
 	if t, ok := tierNames[name]; ok {

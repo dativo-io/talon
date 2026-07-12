@@ -11,16 +11,16 @@ import (
 // same function backs `talon audit --session` / `talon costs --session` and the
 // dashboard sessions panel (#199) so the CLI and the dashboard can never drift.
 //
-// Scoping is the caller's responsibility: pass only the records a caller is
-// entitled to see (filter by tenant/caller before calling). Callers lists the
-// distinct top-level agent_id (caller) values observed so a cross-caller
+// Scoping is the caller's responsibility: pass only the records a reader is
+// entitled to see (filter by tenant/agent before calling). Agents lists the
+// distinct top-level agent_id values observed so a cross-agent
 // session_id collision is visible rather than silently merged.
 type SessionSummary struct {
 	SessionID     string   `json:"session_id"`
 	TenantID      string   `json:"tenant_id"`
 	SessionSource string   `json:"session_source,omitempty"` // orchestration session_source (client_asserted|vendor_asserted|synthetic), first seen
 	Client        string   `json:"client,omitempty"`         // orchestration client adapter (claude-code|codex|generic), first seen
-	Callers       []string `json:"callers,omitempty"`
+	AgentIDs      []string `json:"agents,omitempty"`
 	Providers     []string `json:"providers,omitempty"`
 	Models        []string `json:"models,omitempty"`
 	RecordCount   int      `json:"record_count"`
@@ -38,7 +38,7 @@ type SessionSummary struct {
 	CacheWriteTokens int                  `json:"cache_write_tokens,omitempty"`
 	FirstSeen        time.Time            `json:"first_seen"`
 	LastSeen         time.Time            `json:"last_seen"`
-	Agents           []SessionAgentRollup `json:"agents,omitempty"`
+	Subagents        []SessionAgentRollup `json:"subagents,omitempty"`
 }
 
 // SessionAgentRollup is the per-subagent slice of a session. AgentID is the
@@ -73,10 +73,10 @@ func BuildSessionSummary(sessionID string, records []*Evidence) SessionSummary {
 // work across small methods keeps each below the cyclomatic-complexity budget.
 type sessionAgg struct {
 	sum       SessionSummary
-	callers   map[string]struct{}
+	agentIDs  map[string]struct{}
 	providers map[string]struct{}
 	models    map[string]struct{}
-	agents    map[string]*SessionAgentRollup
+	subagents map[string]*SessionAgentRollup
 	// orchAt is the timestamp of the record whose orchestration block
 	// currently supplies SessionSource/Client (earliest wins).
 	orchAt time.Time
@@ -85,10 +85,10 @@ type sessionAgg struct {
 func newSessionAgg(sessionID string) *sessionAgg {
 	return &sessionAgg{
 		sum:       SessionSummary{SessionID: sessionID},
-		callers:   map[string]struct{}{},
+		agentIDs:  map[string]struct{}{},
 		providers: map[string]struct{}{},
 		models:    map[string]struct{}{},
-		agents:    map[string]*SessionAgentRollup{},
+		subagents: map[string]*SessionAgentRollup{},
 	}
 }
 
@@ -98,7 +98,7 @@ func (a *sessionAgg) add(ev *Evidence) {
 	a.addOutcome(ev)
 	a.addTotals(ev)
 	a.addWindow(ev.Timestamp)
-	accumulateAgent(a.agents, ev)
+	accumulateAgent(a.subagents, ev)
 }
 
 func (a *sessionAgg) addMetadata(ev *Evidence) {
@@ -106,7 +106,7 @@ func (a *sessionAgg) addMetadata(ev *Evidence) {
 		a.sum.TenantID = ev.TenantID
 	}
 	if ev.AgentID != "" {
-		a.callers[ev.AgentID] = struct{}{}
+		a.agentIDs[ev.AgentID] = struct{}{}
 	}
 	if ev.Execution.ModelUsed != "" {
 		a.models[ev.Execution.ModelUsed] = struct{}{}
@@ -159,10 +159,10 @@ func (a *sessionAgg) addWindow(t time.Time) {
 }
 
 func (a *sessionAgg) finish() SessionSummary {
-	a.sum.Callers = sortedKeys(a.callers)
+	a.sum.AgentIDs = sortedKeys(a.agentIDs)
 	a.sum.Providers = sortedKeys(a.providers)
 	a.sum.Models = sortedKeys(a.models)
-	a.sum.Agents = sortedAgents(a.agents)
+	a.sum.Subagents = sortedAgents(a.subagents)
 	return a.sum
 }
 

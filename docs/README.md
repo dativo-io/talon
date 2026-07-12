@@ -43,7 +43,7 @@ Smoke-check the builder path: `make verify-newcomer` (from repo root).
 Choose the shortest path for your situation:
 
 1. **"I need to operate my AI use cases: budgets, reliability, one policy, session visibility."**
-   - Cost: [Cap AI spend per caller](guides/cost-governance-by-caller.md)
+   - Cost: [Cap AI spend per agent](guides/cost-governance-by-agent.md)
    - Reliability: [Provider fallback chains](reference/configuration.md#provider-fallback-chains-error-driven-failover)
    - Policy: [Policy cookbook](guides/policy-cookbook.md) · [Policy packs](guides/policy-packs.md)
    - Sessions: [Governing coding agents](guides/governing-coding-agents.md) · [Manual governed session](tutorials/manual-governed-session.md)
@@ -78,7 +78,7 @@ Choose the shortest path for your situation:
 
 | Doc | Pillar | Description |
 |-----|--------|-------------|
-| [Cap AI spend for a Slack/support bot in 10 minutes](guides/cost-governance-by-caller.md) | Cost | Fast path to caller-level daily/monthly hard caps, budget-deny proof, and evidence-backed cost attribution. |
+| [Cap AI spend for a Slack/support bot in 10 minutes](guides/cost-governance-by-agent.md) | Cost | Fast path to agent-level daily/monthly hard caps, budget-deny proof, and evidence-backed cost attribution. |
 | [How to run a first-line support agent with Talon](guides/internal-support-agent.md) | Cost | Ticket summarization with PII and cost controls. |
 | [Incident response playbook](guides/incident-response-playbook.md) | Reliability | Common operational scenarios when running AI agents. |
 | [How to govern coding agents](guides/governing-coding-agents.md) | Sessions | Govern a fleet of coding agents; orchestration metadata contract, session attribution, cost rollups. |
@@ -86,7 +86,7 @@ Choose the shortest path for your situation:
 | [Codex CLI integration](guides/codex-cli-integration.md) | Sessions | Route Codex CLI through Talon: setup, conformance notes, limits. |
 | [How to govern OpenClaw with Talon](guides/openclaw-integration.md) | Policy | Route OpenClaw LLM traffic through the gateway. |
 | [How to govern ChatGPT/Claude Desktop (enterprise)](guides/desktop-app-governance.md) | Policy | Route desktop app traffic via DNS/TLS and gateway. |
-| [How to offer Talon to multiple customers (multi-tenant/MSP)](guides/multi-tenant-msp.md) | Policy | Tenant isolation, API keys, and gateway callers. |
+| [How to offer Talon to multiple customers (multi-tenant/MSP)](guides/multi-tenant-msp.md) | Policy | Tenant isolation, agent keys, and per-tenant agents. |
 | [EU policy packs](guides/policy-packs.md) | Policy | Ready-made policy baselines with framework annotations (GDPR/NIS2/DORA/EU AI Act) as proof-layer metadata. |
 | [Air-gapped deployment](guides/air-gapped-deployment.md) | Policy | Provable in-region / offline operation: egress guard, local models, sovereignty posture. |
 | [Local scanner engines](guides/local-scanner-engines.md) | Policy | Run PII scanning on a local LLM (Ollama) or Presidio sidecar — no data leaves the host. |
@@ -177,7 +177,7 @@ Talon's evidence layer supports these control objectives; it is not a compliance
 |-----------|-----------------------|
 | GDPR Art. 30 | Evidence export and processing records |
 | NIS2 Art. 21 | Policy enforcement, incident evidence, risk visibility |
-| DORA | ICT risk evidence, caller-level cost and control telemetry |
+| DORA | ICT risk evidence, agent-level cost and control telemetry |
 | EU AI Act (9/13/14) | Risk controls, transparency logs, human-oversight gates |
 
 ### Examples

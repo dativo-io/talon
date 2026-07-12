@@ -667,7 +667,7 @@ Talon's MCP proxy pattern enables:
 
 ### Response-path PII scanning
 
-Both the MCP proxy and the LLM API gateway now scan **responses** from upstream for PII before returning them to the caller. This is bidirectional: request arguments are scanned on the way in, and upstream responses are scanned on the way out. The gateway applies `redact`, `block`, or `warn` modes per the caller's `pii_action` config. Evidence is recorded for every redaction.
+Both the MCP proxy and the LLM API gateway now scan **responses** from upstream for PII before returning them to the caller. This is bidirectional: request arguments are scanned on the way in, and upstream responses are scanned on the way out. The gateway applies `redact`, `block`, or `warn` modes per the effective `pii_action` of the requesting agent. Evidence is recorded for every redaction.
 
 ### `tools/list` filtering
 
@@ -677,4 +677,4 @@ When a vendor calls `tools/list` via the MCP proxy, Talon filters the response s
 
 ## Related: LLM API Gateway
 
-Talon also provides an **LLM API Gateway** at `POST /v1/proxy/{provider}/v1/chat/completions`. Unlike the MCP proxy (which intercepts **tool-level** MCP calls from vendors), the LLM gateway intercepts **request-level** LLM API calls from any application: desktop apps, Slack bots, scripts. Clients send OpenAI/Anthropic/Ollama requests to Talon with a caller API key; Talon enforces per-caller model and cost policy and records evidence. Enable with `talon serve --gateway --gateway-config <path>`. See [OpenClaw integration](guides/openclaw-integration.md), [Slack bot integration](guides/slack-bot-integration.md), and [Desktop app governance](guides/desktop-app-governance.md).
+Talon also provides an **LLM API Gateway** at `POST /v1/proxy/{provider}/v1/chat/completions`. Unlike the MCP proxy (which intercepts **tool-level** MCP calls from vendors), the LLM gateway intercepts **request-level** LLM API calls from any application: desktop apps, Slack bots, scripts. Clients send OpenAI/Anthropic/Ollama requests to Talon with an agent key; Talon enforces the agent's effective model and cost policy and records evidence. Enable with `talon serve --gateway --gateway-config <path>`. See [OpenClaw integration](guides/openclaw-integration.md), [Slack bot integration](guides/slack-bot-integration.md), and [Desktop app governance](guides/desktop-app-governance.md).

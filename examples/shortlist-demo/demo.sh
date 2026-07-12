@@ -49,6 +49,25 @@ require_stack() {
   fi
 }
 
+# switch_agent <name> — restart the gateway serving a different agent (#266).
+# One gateway process serves one agent until agents_dir lands (#267); proofs
+# that exercise another identity switch by restarting the talon service with
+# TALON_ACT_AGENT and waiting for health.
+CURRENT_ACT_AGENT="shortlist-allow"
+switch_agent() {
+  local want="$1"
+  [[ "$CURRENT_ACT_AGENT" == "$want" ]] && return 0
+  echo "  ↻  switching gateway agent: ${CURRENT_ACT_AGENT} → ${want} (#266; single-process multi-agent is #267)"
+  TALON_ACT_AGENT="$want" dc up -d talon >/dev/null 2>&1
+  local _attempt
+  for _attempt in $(seq 1 30); do
+    curl -sf "${GATEWAY}/health" >/dev/null 2>&1 && break
+    sleep 1
+  done
+  require_stack
+  CURRENT_ACT_AGENT="$want"
+}
+
 # ── Output helpers (narrated ./demo.sh all; mirrors talon init / audit / doctor) ──
 
 demo_intro() {
@@ -92,7 +111,7 @@ proof_story() {
 proof_request() {
   [[ "$NARRATE" == "1" ]] || return 0
   echo "  Request"
-  kv "Caller" "$1"
+  kv "Agent" "$1"
   kv "Model" "$2"
   [[ -n "${3:-}" ]] && kv "Payload" "$3"
   echo ""
@@ -271,10 +290,11 @@ post_chat() {
 
 cmd_allowed_request() {
   require_stack
+  switch_agent "shortlist-allow"
   proof_section "1" "Governed OpenAI-compatible request"
   proof_story \
     "A legitimate app sends a chat completion through Talon's gateway." \
-    "Talon identifies the caller, evaluates policy, and forwards to the mock provider."
+    "Talon resolves the agent key, evaluates the effective policy, and forwards to the mock provider."
   proof_request "shortlist-allow" "gpt-4o-mini" "benign governance question (no PII)"
   EXPECT_HTTP=200 post_chat \
     "Proof 1 — governed OpenAI-compatible request (allowed)" \
@@ -288,23 +308,25 @@ cmd_allowed_request() {
 
 cmd_policy_deny() {
   require_stack
+  switch_agent "shortlist-policy-deny"
   proof_section "2" "Policy deny with explicit reason"
   proof_story \
-    "The same gateway serves multiple callers with different policy profiles." \
-    "This caller may only use gpt-4o-mini — requesting gpt-4o must be denied."
-  proof_request "shortlist-policy-deny" "gpt-4o" "model outside caller allowlist"
+    "Each policy profile is its own agent — the demo switches which agent the gateway serves (#266)." \
+    "This agent may only use gpt-4o-mini — requesting gpt-4o must be denied."
+  proof_request "shortlist-policy-deny" "gpt-4o" "model outside agent allowlist"
   EXPECT_HTTP=403 post_chat \
-    "Proof 2a — policy deny (model not in caller allowlist)" \
+    "Proof 2a — policy deny (model not in agent allowlist)" \
     "talon-shortlist-deny" \
     "gpt-4o" \
     "Summarize key AI governance risks for a European SaaS company."
   proof_outcome "✗" "HTTP 403 — routing policy denied the request" \
-    "Error: model not in caller allowlist" \
+    "Error: model not in agent allowlist" \
     "Audited as POLICY_DENIED_ROUTING — not a silent drop"
 }
 
 cmd_pii_request() {
   require_stack
+  switch_agent "shortlist-allow"
   proof_section "3" "PII blocked before the provider call"
   proof_story \
     "Server default is default_pii_action: block." \
@@ -322,9 +344,10 @@ cmd_pii_request() {
 
 cmd_eu_strict_routing() {
   require_stack
+  switch_agent "shortlist-eu-strict"
   proof_section "4" "EU strict egress — deny non-EU destination"
   proof_story \
-    "Caller shortlist-eu-strict allows egress only to EU/LOCAL regions." \
+    "Agent shortlist-eu-strict allows egress only to EU/LOCAL regions." \
     "Mock OpenAI provider is region: US — Talon denies with evidence." \
     "Explicit deny, not a silent reroute to another region."
   proof_request "shortlist-eu-strict" "gpt-4o-mini" "clean prompt; egress rule is what fails"
@@ -340,6 +363,7 @@ cmd_eu_strict_routing() {
 
 cmd_audit() {
   require_stack
+  switch_agent "shortlist-allow"
   section_plain "Audit trail — every decision leaves a signed record"
   if [[ "$NARRATE" == "1" ]]; then
     proof_story \

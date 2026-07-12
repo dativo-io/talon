@@ -51,7 +51,7 @@ open http://localhost:8080/dashboard
 ┌─────────────┐      ┌──────────────────┐      ┌──────────────┐
 │  Your curl   │─────▶│   Talon Gateway   │─────▶│ Mock OpenAI  │
 │  request     │      │                  │      │ (port 9090)  │
-└─────────────┘      │  1. Identify caller │      └──────────────┘
+└─────────────┘      │  1. Identify agent  │      └──────────────┘
                      │  2. Parse request   │
                      │  3. Scan for PII    │
                      │  4. Evaluate policy │

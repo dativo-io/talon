@@ -333,7 +333,7 @@ func TestTimeline(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	timeline, err := store.Timeline(ctx, middleID, 2, 2)
+	timeline, err := store.Timeline(ctx, middleID, 2, 2, "")
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(timeline), 3) // at least: 2 before + target + some after
 }

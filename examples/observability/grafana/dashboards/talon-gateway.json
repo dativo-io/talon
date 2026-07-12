@@ -11,7 +11,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "targets": [{
         "expr": "rate(talon_talon_gateway_requests_total[5m]) * 60",
-        "legendFormat": "{{caller}} / {{status}}"
+        "legendFormat": "{{agent}} / {{status}}"
       }],
       "fieldConfig": { "defaults": { "unit": "reqps" } }
     },

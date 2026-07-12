@@ -24,16 +24,18 @@ documentation only — it is not enforced by the router. Region enforcement
 comes from provider registry metadata + `llm.routing.data_sovereignty_mode`
 (see [Keep PII inside the EU](#keep-pii-inside-the-eu-gateway-egress-rules)).
 
-For **gateway** callers, set per-caller allowed models in the gateway config:
+For **gateway** traffic, set the agent's flat model lists in the same `agent.talon.yaml` (they replace the organization baseline when non-empty; `model_routing` above stays runner-side routing):
 
 ```yaml
-gateway:
-  callers:
-    - name: "my-app"
-      tenant_key: "..."
-      tenant_id: "default"
-      policy_overrides:
-        allowed_models: ["gpt-4o", "gpt-4o-mini"]
+agent:
+  name: my-app
+  key:
+    secret_name: my-app-talon-key
+
+policies:
+  models:
+    allowed: ["gpt-4o", "gpt-4o-mini"]
+    # blocked: ["gpt-4.5-preview"]
 ```
 
 ---
@@ -46,9 +48,9 @@ supports data-transfer controls (e.g. GDPR Chapter V transfer policies);
 Talon enforces the rule and produces the evidence — it does not make the
 compliance determination for you.
 
-**Where:** `talon.config.yaml` under `gateway.default_policy.egress` (or
-per-caller under `callers[].policy_overrides.egress`, which replaces the
-default wholesale).
+**Where:** `talon.config.yaml` under `gateway.organization_policy.egress` (or
+per agent under `policies.egress` in the agent file — a second boundary
+evaluated alongside the organization's: a destination must pass **both**).
 
 ```yaml
 gateway:
@@ -64,7 +66,7 @@ gateway:
     ollama:
       base_url: "http://localhost:11434"
       region: "LOCAL"
-  default_policy:
+  organization_policy:
     egress:
       default_action: allow
       rules:
@@ -90,7 +92,7 @@ What happens:
   violations are recorded but requests are forwarded.
 - Running agents with `llm.routing.data_sovereignty_mode: eu_strict`? That
   control covers provider *selection* for agent runs; egress rules cover
-  caller-chosen destinations at the gateway. Mirror them — see
+  agent-chosen destinations at the gateway. Mirror them — see
   [Configuration reference](../reference/configuration.md#egress-rules-destination--data-classification)
   for the equivalent egress policy.
 
@@ -117,7 +119,7 @@ policies:
 
 **Goal:** Hard cap on daily spend.
 
-**Where (native agent):** `agent.talon.yaml`
+**Where:** `agent.talon.yaml` — one snippet governs both native runs and gateway traffic for this agent.
 
 ```yaml
 policies:
@@ -126,13 +128,7 @@ policies:
     monthly: 200.00
 ```
 
-**Where (gateway caller):** Gateway config `callers[].policy_overrides`
-
-```yaml
-policy_overrides:
-  max_daily_cost: 10.00
-  max_monthly_cost: 200.00
-```
+On the gateway, these caps are the agent's override: each replaces the organization baseline (`gateway.organization_policy.max_daily_cost` / `max_monthly_cost`) when > 0. `talon costs --agent <name>` reports the same effective caps enforcement uses.
 
 ---
 
@@ -140,11 +136,13 @@ policy_overrides:
 
 **Goal:** Redact or block PII before it reaches the LLM (input) and/or in the LLM response (output).
 
-**Where (native):** `agent.talon.yaml` — use `data_classification` with granular `redact_input` / `redact_output` fields. The legacy `redact_pii` still works as a shorthand for both.  
-**Where (gateway):** Gateway `default_policy.default_pii_action` or per-caller `policy_overrides.pii_action`.
+**Where:** `agent.talon.yaml` — `data_classification` with granular `redact_input` / `redact_output` fields (`redact_pii` still works as a shorthand for both). The organization-wide default lives in `gateway.organization_policy.default_pii_action`.
 
 ```yaml
-# Native agent — granular input/output control
+# agent.talon.yaml — granular input/output control; the same booleans are the
+# agent's gateway PII override (input_scan+redact_input → redact;
+# block_on_pii → block; scan flags alone → no override, the org floor applies;
+# the merge is monotonic — an agent can only TIGHTEN the org baseline, #266)
 policies:
   data_classification:
     input_scan: true
@@ -152,15 +150,13 @@ policies:
     redact_input: true          # redact PII from prompt before LLM sees it
     redact_output: true         # redact PII from LLM response before returning
     # redact_pii: true          # shorthand: sets both redact_input and redact_output
+```
 
-# Gateway
+```yaml
+# talon.config.yaml — organization baseline for every agent without an override
 gateway:
-  default_policy:
+  organization_policy:
     default_pii_action: "redact"   # warn | redact | block | allow
-  callers:
-    - name: "support"
-      policy_overrides:
-        pii_action: "block"
 ```
 
 `redact_input` / `redact_output` default to the value of `redact_pii` when not explicitly set. Explicit values override `redact_pii` (e.g. `redact_pii: true` + `redact_input: false` → only output is redacted).
@@ -425,21 +421,33 @@ attachment_handling:
 
 **Goal:** Per-session budgets, per-subagent audit, and credential detection for coding-agent traffic — without breaking streaming or coding UX.
 
-**Where:** `talon.config.yaml` gateway callers (or scaffold everything with `talon init --pack coding-agents`).
+**Where:** one `agent.talon.yaml` per coding tool (or scaffold everything with `talon init --pack coding-agents`, which generates `claude-code` as the primary agent plus `agents/codex.talon.yaml`).
+
+```yaml
+# agent.talon.yaml (claude-code)
+agent:
+  name: claude-code
+  key:
+    secret_name: claude-code-talon-key   # mint: talon secrets set claude-code-talon-key "$(openssl rand -hex 24)"
+
+policies:
+  session_limits:
+    max_cost: 10.00        # SOFT cap per coding session (#198); reservation is #144
+  data_classification:
+    input_scan: true       # scan-only: evidence recorded, org floor decides the action
+    redact_pii: false      # redaction mangles code
+```
+
+Streaming-honest response posture is set at the **organization baseline** — `allow` is deliberate, because any other response action buffers the entire SSE stream (LIMITATIONS.md §7), and a per-agent downgrade to `allow` is not expressible:
 
 ```yaml
 gateway:
-  callers:
-    - name: "claude-code"
-      tenant_key: "talon-gw-claude-code-001"
-      tenant_id: "default"
-      policy_overrides:
-        pii_action: "warn"           # input scan: evidence + warning, code keeps flowing
-        response_pii_action: "allow" # anything else buffers whole SSE streams (LIMITATIONS.md §7)
-        max_session_cost: 10.00      # SOFT cap per coding session (#198); reservation is #144
+  organization_policy:
+    default_pii_action: "warn"
+    response_pii_action: "allow"
 ```
 
-Credential recognizers go in `agent.talon.yaml` (high-precision only — PEM blocks, prefixed API keys; Talon is not a secret scanner, keep gitleaks/trufflehog in pre-commit):
+Credential recognizers go in the same `agent.talon.yaml` (high-precision only — PEM blocks, prefixed API keys; Talon is not a secret scanner, keep gitleaks/trufflehog in pre-commit):
 
 ```yaml
 policies:
@@ -510,18 +518,26 @@ Design intent: store **embeddings/hashes** of prompts (not raw text) and **PII-s
 
 ## Where to put snippets
 
+The agent file carries the agent's one override; the gateway block carries only the organization baseline. One semantic, one field:
+
 | Snippet type | `agent.talon.yaml` (governance team) | `talon.config.yaml` gateway block (DevOps team) |
 |--------------|--------------------------------------|--------------------------------------------------|
-| Cost limits | `policies.cost_limits` | `gateway.callers[].policy_overrides.max_daily_cost` etc. |
-| Model allow/block | `policies.model_routing` | `gateway.callers[].policy_overrides.allowed_models` / `blocked_models` |
+| Cost limits | `policies.cost_limits` (daily/monthly replace the baseline when > 0); `policies.session_limits.max_cost` | Baseline: `gateway.organization_policy.max_daily_cost` / `max_monthly_cost` |
+| Model allow/block (gateway) | `policies.models.allowed` / `policies.models.blocked` | Provider destination constraints: `gateway.providers.<name>.allowed_models` / `blocked_models` |
+| Model routing (runner) | `policies.model_routing` | -- |
+| Provider allowlist | `policies.allowed_providers` | -- |
 | Time restrictions | `policies.time_restrictions` | -- |
-| PII action | `policies.data_classification` | `gateway.default_policy.default_pii_action` or `gateway.callers[].policy_overrides.pii_action` |
+| PII action | `policies.data_classification` booleans (`input_scan`, `redact_input`, `block_on_pii`, …) | Baseline: `gateway.organization_policy.default_pii_action` / `response_pii_action` |
 | Input PII redaction | `policies.data_classification.redact_input` | -- |
 | Output PII redaction | `policies.data_classification.redact_output` | -- |
 | Block on PII | `policies.data_classification.block_on_pii` | -- |
+| Data tier cap | `policies.data_classification.max_data_tier` | -- |
+| Egress rules | `policies.egress` (second boundary; a destination must pass both this AND the baseline) | Baseline: `gateway.organization_policy.egress` |
+| Tool governance (gateway) | `capabilities.allowed_tools` / `forbidden_tools` / `tool_policy_action` | Baseline: `gateway.organization_policy.forbidden_tools` / `tool_policy_action` |
 | Tool hardening (row caps, dry-run, forbidden args) | `tool_policies` | -- |
 | Tool idempotency (dedupe retried side effects) | `tool_governance` | -- |
 | Human oversight | `compliance.human_oversight` | -- |
+| Attachment scanning (gateway) | — (baseline only in #266) | `gateway.organization_policy.attachment_policy` |
 | Semantic cache (experimental, parked #141) | — | `talon.config.yaml` only (`cache` section, infrastructure) |
 
 ---
@@ -534,7 +550,7 @@ You now have copy-paste policy snippets for models, cost, time, PII, tool harden
 
 | I want to… | Doc |
 |------------|-----|
-| Cap cost per caller in the gateway | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Cap cost per agent in the gateway | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
 | Verify memory is loaded and injected | [How to verify memory is used](memory-verification.md) |
 | Add Talon in front of my app | [Add Talon to your existing app](add-talon-to-existing-app.md) |
 | Understand the full config schema | [Configuration and environment](../reference/configuration.md) |

@@ -140,7 +140,7 @@ func readOrchHeaders(r *http.Request) (orchHeaders, error) {
 // evidence block plus the resolved session id and source. When
 // acceptClientMetadata is false, agent/parent/client identity is ignored and
 // the session id keeps its pre-epic neutral-header behavior. A hygiene
-// violation returns an error; the caller must reject the request (400) so
+// violation returns an error; the agent must reject the request (400) so
 // invalid values never reach evidence. syntheticSessionID is the
 // gateway-derived fallback ("sess_"+correlation) used when no client asserted
 // a session id.
@@ -162,7 +162,7 @@ func resolveOrchestration(r *http.Request, acceptClientMetadata bool, syntheticS
 		sessionID, sessionSource = h.vSession, orchSourceVendorAsserted
 	}
 
-	// Identity (agent/parent/client) is recorded only when the caller accepts
+	// Identity (agent/parent/client) is recorded only when the agent accepts
 	// client metadata. Generic wins over vendor per field.
 	agent, parent, client := "", "", ""
 	if acceptClientMetadata {

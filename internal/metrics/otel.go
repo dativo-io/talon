@@ -116,13 +116,13 @@ func ensureCollectorMetrics() {
 	collectorMetricsOnce.Do(initCollectorMetrics)
 }
 
-func recordTaskOutcome(callerID, modelUsed string, denied, hasError, timedOut bool) {
+func recordTaskOutcome(agentName, modelUsed string, denied, hasError, timedOut bool) {
 	ensureCollectorMetrics()
 	if !collectorMetricsRegistered {
 		return
 	}
 	attrs := metric.WithAttributes(
-		attribute.String("caller_id", callerID),
+		attribute.String("agent_name", agentName),
 		attribute.String("model_used", modelUsed),
 	)
 	switch {
@@ -138,25 +138,25 @@ func recordTaskOutcome(callerID, modelUsed string, denied, hasError, timedOut bo
 	}
 }
 
-func recordCostPerSuccess(callerID, modelUsed string, costEUR float64) {
+func recordCostPerSuccess(agentName, modelUsed string, costEUR float64) {
 	ensureCollectorMetrics()
 	if !collectorMetricsRegistered {
 		return
 	}
 	mCostPerSuccess.Record(context.Background(), costEUR, metric.WithAttributes(
-		attribute.String("caller_id", callerID),
+		attribute.String("agent_name", agentName),
 		attribute.String("model_used", modelUsed),
 	))
 }
 
-func recordViolationDaily(dayKey, callerID string) {
+func recordViolationDaily(dayKey, agentName string) {
 	ensureCollectorMetrics()
 	if !collectorMetricsRegistered {
 		return
 	}
 	mViolationsDaily.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("date", dayKey),
-		attribute.String("caller_id", callerID),
+		attribute.String("agent_name", agentName),
 	))
 }
 

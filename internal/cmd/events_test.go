@@ -17,7 +17,7 @@ func TestPrintOperationalEvent_Text(t *testing.T) {
 	printOperationalEvent(&out, events.OperationalEvent{
 		Timestamp:     time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC),
 		TenantID:      "acme",
-		Caller:        "hr-service",
+		Agent:         "hr-service",
 		Decision:      "blocked",
 		ReasonCode:    "POLICY_DENIED",
 		ReasonText:    "Request blocked by policy.",

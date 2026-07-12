@@ -39,23 +39,18 @@ gateway:
       region: "LOCAL"
       allowed_models: ["llama3", "mistral"]
 
-  callers:
-    - name: "airgap-app"
-      tenant_key: "talon-airgap"
-      tenant_id: "default"
-      team: "platform"
-
-  default_policy:
+  # Identity lives in agent.talon.yaml (#266); mint the traffic key:
+  #   talon secrets set airgap-app-talon-key "$(openssl rand -hex 24)"
+  organization_policy:
     default_pii_action: block
     max_daily_cost: 50.00
-    require_caller_id: true
     log_prompts: false
     log_responses: false
     # When omitted, air_gap mode applies deny-by-default egress to EU/LOCAL only.
 
   rate_limits:
     global_requests_per_min: 120
-    per_caller_requests_per_min: 30
+    per_agent_requests_per_min: 30
 
   timeouts:
     connect_timeout: 10s

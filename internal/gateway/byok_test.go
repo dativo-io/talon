@@ -24,10 +24,10 @@ func TestGateway_BYOKClientBearerForwarded(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	gw, evStore, caller := newBYOKGateway(t, upstream.URL)
+	gw, evStore, agent := newBYOKGateway(t, upstream.URL)
 	req := gatewayRequest(t, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
 	req.Header.Set("Authorization", "Bearer sk-client-key")
-	req = req.WithContext(WithQuickstartCaller(req.Context(), caller))
+	req = req.WithContext(WithQuickstartIdentity(req.Context(), agent))
 	rec := httptest.NewRecorder()
 	gw.ServeHTTP(rec, req)
 
@@ -37,7 +37,7 @@ func TestGateway_BYOKClientBearerForwarded(t *testing.T) {
 	if gotAuth != "Bearer sk-client-key" {
 		t.Fatalf("upstream auth = %q", gotAuth)
 	}
-	list, err := evStore.List(context.Background(), caller.TenantID, caller.Name, time.Time{}, time.Time{}, 10)
+	list, err := evStore.List(context.Background(), agent.TenantID, agent.Name, time.Time{}, time.Time{}, 10)
 	if err != nil {
 		t.Fatalf("list evidence: %v", err)
 	}
@@ -69,9 +69,9 @@ func TestGateway_BYOKEnvFallback(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	gw, _, caller := newBYOKGateway(t, upstream.URL)
+	gw, _, agent := newBYOKGateway(t, upstream.URL)
 	req := gatewayRequest(t, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
-	req = req.WithContext(WithQuickstartCaller(req.Context(), caller))
+	req = req.WithContext(WithQuickstartIdentity(req.Context(), agent))
 	rec := httptest.NewRecorder()
 	gw.ServeHTTP(rec, req)
 
@@ -81,7 +81,7 @@ func TestGateway_BYOKEnvFallback(t *testing.T) {
 	if gotAuth != "Bearer sk-env-fallback" {
 		t.Fatalf("upstream auth = %q", gotAuth)
 	}
-	evs, err := newEvidenceList(t, gw, caller)
+	evs, err := newEvidenceList(t, gw, agent)
 	if err != nil {
 		t.Fatalf("list evidence: %v", err)
 	}
@@ -99,9 +99,9 @@ func TestGateway_BYOKMissingKeyReturns401(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	gw, _, caller := newBYOKGateway(t, upstream.URL)
+	gw, _, agent := newBYOKGateway(t, upstream.URL)
 	req := gatewayRequest(t, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
-	req = req.WithContext(WithQuickstartCaller(req.Context(), caller))
+	req = req.WithContext(WithQuickstartIdentity(req.Context(), agent))
 	rec := httptest.NewRecorder()
 	gw.ServeHTTP(rec, req)
 
@@ -110,7 +110,9 @@ func TestGateway_BYOKMissingKeyReturns401(t *testing.T) {
 	}
 }
 
-func newBYOKGateway(t *testing.T, upstreamURL string) (*Gateway, *evidence.Store, *CallerConfig) {
+// newBYOKGateway mirrors the quickstart wiring: a nil registry (no keyed
+// agents) and the synthetic quickstart identity injected via request context.
+func newBYOKGateway(t *testing.T, upstreamURL string) (*Gateway, *evidence.Store, *ResolvedIdentity) {
 	t.Helper()
 	cfg := &GatewayConfig{
 		Enabled:      true,
@@ -119,16 +121,12 @@ func newBYOKGateway(t *testing.T, upstreamURL string) (*Gateway, *evidence.Store
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstreamURL, UpstreamAuthMode: "client_bearer"},
 		},
-		Callers: []CallerConfig{
-			{Name: quickstartCallerName, TenantID: quickstartTenantID, AllowedProviders: []string{"openai"}},
-		},
-		ServerDefaults: ServerDefaults{
+		OrganizationPolicy: OrganizationPolicy{
 			DefaultPIIAction: "redact",
-			RequireCallerID:  boolPtr(false),
 		},
 		RateLimits: RateLimitsConfig{
-			GlobalRequestsPerMin:    1000,
-			PerCallerRequestsPerMin: 1000,
+			GlobalRequestsPerMin:   1000,
+			PerAgentRequestsPerMin: 1000,
 		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
@@ -136,6 +134,9 @@ func newBYOKGateway(t *testing.T, upstreamURL string) (*Gateway, *evidence.Store
 			StreamIdleTimeout: "60s",
 		},
 	}
+	// This helper mirrors the in-process quickstart profile — the only
+	// context where client_bearer validates (#266).
+	cfg.EnableQuickstartProfile()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate cfg: %v", err)
 	}
@@ -150,11 +151,11 @@ func newBYOKGateway(t *testing.T, upstreamURL string) (*Gateway, *evidence.Store
 		t.Fatalf("new secrets store: %v", err)
 	}
 	t.Cleanup(func() { _ = secStore.Close() })
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, nil, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}
-	return gw, evStore, &cfg.Callers[0]
+	return gw, evStore, NewQuickstartIdentity()
 }
 
 func gatewayRequest(t *testing.T, body string) *http.Request {
@@ -168,10 +169,10 @@ func gatewayRequest(t *testing.T, body string) *http.Request {
 	return req
 }
 
-func newEvidenceList(t *testing.T, gw *Gateway, caller *CallerConfig) ([]evidence.Evidence, error) {
+func newEvidenceList(t *testing.T, gw *Gateway, agent *ResolvedIdentity) ([]evidence.Evidence, error) {
 	t.Helper()
 	if gw == nil || gw.evidenceStore == nil {
 		return nil, nil
 	}
-	return gw.evidenceStore.List(context.Background(), caller.TenantID, caller.Name, time.Time{}, time.Time{}, 10)
+	return gw.evidenceStore.List(context.Background(), agent.TenantID, agent.Name, time.Time{}, time.Time{}, 10)
 }

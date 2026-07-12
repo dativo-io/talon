@@ -16,6 +16,7 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/rs/zerolog/log"
 
 	"github.com/dativo-io/talon/internal/cryptoutil"
 	"github.com/google/uuid"
@@ -35,12 +36,33 @@ type Entry struct {
 	ResponseText  string
 	Model         string
 	DataTier      string
-	PIIScrubbed   bool
-	HitCount      int64
-	CreatedAt     time.Time
-	ExpiresAt     time.Time
-	LastAccessed  *time.Time
-	HMACSignature string
+	// AgentID, Provider, and ScopeKey scope an entry to one AI use case so a
+	// hit can never cross the agent/model/provider/effective-policy/tier
+	// boundary and falsify provenance (#266 review round 5). ScopeKey is the
+	// canonical digest of (agent|model|provider|effective_policy_digest|tier);
+	// a Lookup returns only entries with the SAME ScopeKey.
+	AgentID  string
+	Provider string
+	ScopeKey string
+	// SourceCorrelationID links back to the evidence record of the request that
+	// originally produced this response, so a cache-hit's evidence can name the
+	// true source generation instead of the current request (#266 review r5).
+	SourceCorrelationID string
+	PIIScrubbed         bool
+	HitCount            int64
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
+	LastAccessed        *time.Time
+	HMACSignature       string
+}
+
+// ScopeKey derives the cache scope digest for one AI use case (#266 review
+// round 5): two requests may share a cached response only when they match on
+// agent, model, provider, effective policy, AND data tier. A change to any of
+// these yields a different scope so no stale-provenance hit can occur.
+func ScopeKey(agentID, model, provider, effectivePolicyDigest, dataTier string) string {
+	sum := sha256.Sum256([]byte(agentID + "\x00" + model + "\x00" + provider + "\x00" + effectivePolicyDigest + "\x00" + dataTier))
+	return hex.EncodeToString(sum[:])
 }
 
 // LookupResult is the return type of Store.Lookup. It includes the matching
@@ -95,6 +117,16 @@ func (s *signer) sign(data []byte) (string, error) {
 	return "hmac-sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// cacheSchemaVersion is stamped into PRAGMA user_version. Version 2 is the
+// #266 scoped schema: uniqueness is (tenant_id, scope_key, cache_key), so the
+// same tenant/model/prompt coexists across agents, providers, policy digests,
+// and tiers — one scope can never monopolize a cache key another scope needs
+// (#266 review round 6). A DB below this version is REBUILT (SQLite cannot
+// drop a table-level UNIQUE via ALTER TABLE); pre-scope entries are discarded
+// rather than copied because their empty scope_key can never match a scoped
+// lookup — a deliberate cold cache, not data loss.
+const cacheSchemaVersion = 2
+
 const schema = `
 CREATE TABLE IF NOT EXISTS semantic_cache (
     id              TEXT PRIMARY KEY,
@@ -105,28 +137,34 @@ CREATE TABLE IF NOT EXISTS semantic_cache (
     response_text   TEXT NOT NULL,
     model           TEXT NOT NULL,
     data_tier       TEXT NOT NULL DEFAULT 'public',
+    agent_id        TEXT NOT NULL DEFAULT '',
+    provider        TEXT NOT NULL DEFAULT '',
+    scope_key       TEXT NOT NULL DEFAULT '',
+    source_correlation_id TEXT NOT NULL DEFAULT '',
     pii_scrubbed    INTEGER NOT NULL DEFAULT 0,
     hit_count       INTEGER NOT NULL DEFAULT 0,
     created_at      DATETIME NOT NULL,
     expires_at      DATETIME NOT NULL,
     last_accessed   DATETIME,
     hmac_signature  TEXT NOT NULL,
-    UNIQUE(tenant_id, cache_key)
+    UNIQUE(tenant_id, scope_key, cache_key)
 );
 CREATE INDEX IF NOT EXISTS idx_semantic_cache_tenant ON semantic_cache(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_semantic_cache_expires ON semantic_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_semantic_cache_user ON semantic_cache(tenant_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_semantic_cache_scope ON semantic_cache(tenant_id, scope_key, expires_at);
 `
 
-// NewStore opens or creates the cache SQLite DB and applies the schema.
+// NewStore opens or creates the cache SQLite DB and applies the schema,
+// rebuilding the table when it predates cacheSchemaVersion.
 func NewStore(dbPath string, signingKey string) (*Store, error) {
 	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("opening cache database: %w", err)
 	}
-	if _, err := db.ExecContext(context.Background(), schema); err != nil {
+	if err := migrateCacheSchema(db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("creating cache schema: %w", err)
+		return nil, err
 	}
 	signer, err := newSigner(signingKey)
 	if err != nil {
@@ -136,15 +174,53 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 	return &Store{db: db, signer: signer}, nil
 }
 
+// migrateCacheSchema brings the semantic_cache table to cacheSchemaVersion.
+// Below-version DBs (including v1's UNIQUE(tenant_id, cache_key), which SQLite
+// cannot alter away) are rebuilt by drop-and-recreate — see cacheSchemaVersion
+// for why discarding pre-scope entries is correct for a cache.
+func migrateCacheSchema(db *sql.DB) error {
+	ctx := context.Background()
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("reading cache schema version: %w", err)
+	}
+	if version < cacheSchemaVersion {
+		var hadTable int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'semantic_cache'`).Scan(&hadTable); err != nil {
+			return fmt.Errorf("inspecting cache schema: %w", err)
+		}
+		if hadTable > 0 {
+			log.Info().Int("from_version", version).Int("to_version", cacheSchemaVersion).
+				Msg("semantic cache schema upgraded — existing cache entries discarded (pre-scope entries are unreachable by scoped lookup; cache will warm back up)")
+			if _, err := db.ExecContext(ctx, `DROP TABLE semantic_cache`); err != nil {
+				return fmt.Errorf("rebuilding cache schema: %w", err)
+			}
+		}
+	}
+	if _, err := db.ExecContext(ctx, schema); err != nil {
+		return fmt.Errorf("creating cache schema: %w", err)
+	}
+	if version < cacheSchemaVersion {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, cacheSchemaVersion)); err != nil {
+			return fmt.Errorf("stamping cache schema version: %w", err)
+		}
+	}
+	return nil
+}
+
 // Close closes the database connection.
 func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// dataForSignature returns the canonical bytes used for HMAC (id|tenant_id|cache_key|embedding_data|response_text|model|data_tier|created_at|expires_at).
+// dataForSignature returns the canonical bytes used for HMAC. Agent, provider,
+// and scope_key are part of the signed payload (#266 review round 5) so a
+// tampered scope cannot silently repurpose a cached response.
 func (e *Entry) dataForSignature() []byte {
-	return []byte(fmt.Sprintf("%s|%s|%s|%x|%s|%s|%s|%s|%s",
+	return []byte(fmt.Sprintf("%s|%s|%s|%x|%s|%s|%s|%s|%s|%s|%s|%s|%s",
 		e.ID, e.TenantID, e.CacheKey, e.EmbeddingData, e.ResponseText, e.Model, e.DataTier,
+		e.AgentID, e.Provider, e.ScopeKey, e.SourceCorrelationID,
 		e.CreatedAt.UTC().Format(time.RFC3339), e.ExpiresAt.UTC().Format(time.RFC3339)))
 }
 
@@ -168,11 +244,13 @@ func (s *Store) Insert(ctx context.Context, e *Entry) error {
 		lastAccessed = e.LastAccessed.UTC().Format(time.RFC3339)
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO semantic_cache (
-		id, tenant_id, user_id, cache_key, embedding_data, response_text, model, data_tier, pii_scrubbed,
+		id, tenant_id, user_id, cache_key, embedding_data, response_text, model, data_tier,
+		agent_id, provider, scope_key, source_correlation_id, pii_scrubbed,
 		hit_count, created_at, expires_at, last_accessed, hmac_signature
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.ID, e.TenantID, nullStr(e.UserID), e.CacheKey, e.EmbeddingData, e.ResponseText, e.Model, e.DataTier,
-		piiScrubbed, e.HitCount, e.CreatedAt.UTC().Format(time.RFC3339), e.ExpiresAt.UTC().Format(time.RFC3339),
+		e.AgentID, e.Provider, e.ScopeKey, e.SourceCorrelationID, piiScrubbed,
+		e.HitCount, e.CreatedAt.UTC().Format(time.RFC3339), e.ExpiresAt.UTC().Format(time.RFC3339),
 		lastAccessed, e.HMACSignature,
 	)
 	if err != nil {
@@ -188,17 +266,21 @@ func nullStr(s string) interface{} {
 	return s
 }
 
-// Lookup finds the best-matching cache entry for the tenant and query embedding
-// using the provided similarity function. Returns nil if no candidate exceeds the threshold.
-// maxCandidates limits how many entries are loaded for comparison (e.g. 1000).
-// The returned LookupResult includes the actual similarity score so callers can
-// record it in evidence (audit trail) instead of the configured threshold.
-func (s *Store) Lookup(ctx context.Context, tenantID string, queryEmbedding []byte, threshold float64, maxCandidates int, sim SimilarityFunc) (*LookupResult, error) {
+// Lookup finds the best-matching cache entry for the tenant, scope, and query
+// embedding using the provided similarity function. Returns nil if no candidate
+// exceeds the threshold. scopeKey (see ScopeKey) confines the search to entries
+// produced under the SAME agent/model/provider/effective-policy/tier, so a hit
+// can never repurpose a response across that boundary or falsify provenance
+// (#266 review round 5). maxCandidates limits how many entries are loaded for
+// comparison (e.g. 1000). The returned LookupResult includes the actual
+// similarity score so callers can record it in evidence instead of the threshold.
+func (s *Store) Lookup(ctx context.Context, tenantID, scopeKey string, queryEmbedding []byte, threshold float64, maxCandidates int, sim SimilarityFunc) (*LookupResult, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, tenant_id, user_id, cache_key, embedding_data, response_text, model, data_tier, pii_scrubbed,
+		`SELECT id, tenant_id, user_id, cache_key, embedding_data, response_text, model, data_tier,
+			agent_id, provider, scope_key, source_correlation_id, pii_scrubbed,
 			hit_count, created_at, expires_at, last_accessed, hmac_signature
-		 FROM semantic_cache WHERE tenant_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT ?`,
-		tenantID, time.Now().UTC().Format(time.RFC3339), maxCandidates,
+		 FROM semantic_cache WHERE tenant_id = ? AND scope_key = ? AND expires_at > ? ORDER BY created_at DESC LIMIT ?`,
+		tenantID, scopeKey, time.Now().UTC().Format(time.RFC3339), maxCandidates,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying cache: %w", err)
@@ -215,7 +297,7 @@ func (s *Store) Lookup(ctx context.Context, tenantID string, queryEmbedding []by
 		var embeddingData []byte
 		var piiScrubbed int
 		if err := rows.Scan(&e.ID, &e.TenantID, &userID, &e.CacheKey, &embeddingData, &e.ResponseText, &e.Model, &e.DataTier,
-			&piiScrubbed, &e.HitCount, &createdAt, &expiresAt, &lastAccessed, &sig); err != nil {
+			&e.AgentID, &e.Provider, &e.ScopeKey, &e.SourceCorrelationID, &piiScrubbed, &e.HitCount, &createdAt, &expiresAt, &lastAccessed, &sig); err != nil {
 			return nil, fmt.Errorf("scanning cache row: %w", err)
 		}
 		if userID.Valid {
@@ -254,7 +336,8 @@ func (s *Store) Lookup(ctx context.Context, tenantID string, queryEmbedding []by
 // GetByID returns the cache entry by ID, or nil if not found.
 func (s *Store) GetByID(ctx context.Context, id string) (*Entry, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, tenant_id, user_id, cache_key, embedding_data, response_text, model, data_tier, pii_scrubbed,
+		`SELECT id, tenant_id, user_id, cache_key, embedding_data, response_text, model, data_tier,
+			agent_id, provider, scope_key, source_correlation_id, pii_scrubbed,
 			hit_count, created_at, expires_at, last_accessed, hmac_signature
 		 FROM semantic_cache WHERE id = ?`, id,
 	)
@@ -264,7 +347,7 @@ func (s *Store) GetByID(ctx context.Context, id string) (*Entry, error) {
 	var embeddingData []byte
 	var piiScrubbed int
 	err := row.Scan(&e.ID, &e.TenantID, &userID, &e.CacheKey, &embeddingData, &e.ResponseText, &e.Model, &e.DataTier,
-		&piiScrubbed, &e.HitCount, &createdAt, &expiresAt, &lastAccessed, &sig)
+		&e.AgentID, &e.Provider, &e.ScopeKey, &e.SourceCorrelationID, &piiScrubbed, &e.HitCount, &createdAt, &expiresAt, &lastAccessed, &sig)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -334,6 +417,53 @@ func (s *Store) CountByTenant(ctx context.Context, tenantID string) (int, error)
 		return 0, fmt.Errorf("count by tenant: %w", err)
 	}
 	return n, nil
+}
+
+// ListByTenant returns every entry for a tenant (newest first), ignoring the
+// scope filter. It is for admin/audit tooling and tests that need to inspect
+// what is cached; request-path reads MUST go through Lookup, which enforces the
+// agent/model/provider/effective-policy/tier scope (#266 review round 5).
+func (s *Store) ListByTenant(ctx context.Context, tenantID string) ([]*Entry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, tenant_id, user_id, cache_key, embedding_data, response_text, model, data_tier,
+			agent_id, provider, scope_key, source_correlation_id, pii_scrubbed,
+			hit_count, created_at, expires_at, last_accessed, hmac_signature
+		 FROM semantic_cache WHERE tenant_id = ? ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("listing cache entries: %w", err)
+	}
+	defer rows.Close()
+	var out []*Entry
+	for rows.Next() {
+		var e Entry
+		var userID, lastAccessed sql.NullString
+		var createdAt, expiresAt, sig string
+		var embeddingData []byte
+		var piiScrubbed int
+		if err := rows.Scan(&e.ID, &e.TenantID, &userID, &e.CacheKey, &embeddingData, &e.ResponseText, &e.Model, &e.DataTier,
+			&e.AgentID, &e.Provider, &e.ScopeKey, &e.SourceCorrelationID, &piiScrubbed, &e.HitCount, &createdAt, &expiresAt, &lastAccessed, &sig); err != nil {
+			return nil, fmt.Errorf("scanning cache row: %w", err)
+		}
+		if userID.Valid {
+			e.UserID = userID.String
+		}
+		e.EmbeddingData = embeddingData
+		e.PIIScrubbed = piiScrubbed != 0
+		e.HMACSignature = sig
+		if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
+			e.CreatedAt = t
+		}
+		if t, err := time.Parse(time.RFC3339, expiresAt); err == nil {
+			e.ExpiresAt = t
+		}
+		if lastAccessed.Valid && lastAccessed.String != "" {
+			if t, err := time.Parse(time.RFC3339, lastAccessed.String); err == nil {
+				e.LastAccessed = &t
+			}
+		}
+		out = append(out, &e)
+	}
+	return out, rows.Err()
 }
 
 // ListTenants returns distinct tenant IDs that have cache entries (for CLI/stats).

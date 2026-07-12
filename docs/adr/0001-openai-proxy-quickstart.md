@@ -2,7 +2,13 @@
 
 ## Status
 
-Accepted.
+Accepted. **Amended by #266/#285:** the conditionally mounted "relocated"
+tenant chat route described below (`POST /v1/agents/chat/completions` when
+tenant keys are configured) was removed — quickstart never builds the agent
+identity registry after the #266 cutover, so the condition could never hold
+in production and the route always returned 404. Quickstart is strictly the
+host-root facade; tenant agent chat requires `talon serve --gateway`. The
+original text is preserved below as a point-in-time record.
 
 ## Context
 

@@ -286,10 +286,10 @@
       <div class="card"><div class="label">Cache hit rate</div><div class="value" id="finops-cache-hitrate">—</div></div>
       <div class="card"><div class="label">Cache savings (€)</div><div class="value" id="finops-cache-saved">—</div></div>
     </div>
-    <h3>Spend by caller</h3>
+    <h3>Spend by agent</h3>
     <table>
-      <thead><tr><th>Caller</th><th>Requests</th><th>Cost (€)</th><th>Blocked</th><th>Avg latency</th><th>Success rate</th></tr></thead>
-      <tbody id="finops-callers-tbody"></tbody>
+      <thead><tr><th>Agent</th><th>Requests</th><th>Cost (€)</th><th>Blocked</th><th>Avg latency</th><th>Success rate</th></tr></thead>
+      <tbody id="finops-agents-tbody"></tbody>
     </table>
     <h3>Spend by model / provider</h3>
     <div class="split-grid">
@@ -438,7 +438,7 @@
         var signatureRows = [
           { label: 'Evidence ID', value: ev.id || '—' },
           { label: 'Tenant ID', value: ev.tenant_id || '—' },
-          { label: 'Agent / caller ID', value: ev.agent_id || '—' },
+          { label: 'Agent ID', value: ev.agent_id || '—' },
           { label: 'Timestamp', value: ev.timestamp ? new Date(ev.timestamp).toISOString() : '—' },
           { label: 'Algorithm', value: 'HMAC-SHA256' },
           { label: 'Input hash', value: (ev.audit_trail && ev.audit_trail.input_hash) ? ev.audit_trail.input_hash : '—' },
@@ -452,7 +452,7 @@
           { label: 'Model', value: ev.execution && ev.execution.model_used ? ev.execution.model_used : '—' },
           { label: 'Provider', value: provider },
           { label: 'Tenant', value: ev.tenant_id || '—' },
-          { label: 'Caller source', value: ev.request_source_id || ev.agent_id || '—' }
+          { label: 'Agent source', value: ev.request_source_id || ev.agent_id || '—' }
         ];
         writeDetailGrid('evidence-signature-grid', signatureRows);
         writeDetailGrid('evidence-spend-grid', spendRows);
@@ -705,7 +705,7 @@
         latest.forEach(function(ev) {
           var when = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '--';
           var outcome = ev.decision || (ev.allowed ? 'allow' : 'deny');
-          var actor = ev.caller || ev.agent_id || 'agent';
+          var actor = ev.agent || ev.agent_id || 'agent';
           var tenant = ev.tenant_id || '—';
           var reason = ev.reason_text || ev.reason_code || '—';
           var reasonCell = escapeHtml(reason) + renderEventSignalChips(ev);
@@ -839,7 +839,7 @@
           syncPolicyOutcomeFromEvidence(d.entries || []);
           tbody.innerHTML = '';
           if (!(d.entries || []).length) {
-            tbody.innerHTML = '<tr><td colspan="8" class="refresh">No evidence yet. Configure a gateway caller budget (max_daily_cost/max_monthly_cost), run a proxied request, then verify signed records and cost attribution from this table.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="refresh">No evidence yet. Set an agent budget (cost_limits in agent.talon.yaml), run a proxied request, then verify signed records and cost attribution from this table.</td></tr>';
             setEvidenceDetailVisible(false);
             return;
           }
@@ -1039,20 +1039,20 @@
           set('finops-cache-hits', c && c.hits != null ? c.hits : '—');
           set('finops-cache-hitrate', c && c.hit_rate != null ? (c.hit_rate * 100).toFixed(1) + '%' : '—');
           set('finops-cache-saved', c && c.cost_saved != null ? c.cost_saved.toFixed(4) : '—');
-          // Caller / model / provider breakdowns — pure data mapping from the snapshot.
-          var callersBody = document.getElementById('finops-callers-tbody');
-          if (callersBody) {
-            callersBody.innerHTML = '';
-            (d.caller_stats || []).forEach(function(cs) {
+          // Agent / model / provider breakdowns — pure data mapping from the snapshot.
+          var agentsBody = document.getElementById('finops-agents-tbody');
+          if (agentsBody) {
+            agentsBody.innerHTML = '';
+            (d.agent_stats || []).forEach(function(cs) {
               var tr = document.createElement('tr');
-              tr.innerHTML = '<td>' + escapeHtml(cs.caller || '—') + '</td><td>' + (cs.requests != null ? cs.requests : '—') +
+              tr.innerHTML = '<td>' + escapeHtml(cs.agent || '—') + '</td><td>' + (cs.requests != null ? cs.requests : '—') +
                 '</td><td>' + (cs.cost_eur != null ? cs.cost_eur.toFixed(4) : '—') +
                 '</td><td>' + (cs.blocked != null ? cs.blocked : '—') +
                 '</td><td>' + (cs.avg_latency_ms != null ? cs.avg_latency_ms + 'ms' : '—') +
                 '</td><td>' + (cs.success_rate != null ? (cs.success_rate * 100).toFixed(0) + '%' : '—') + '</td>';
-              callersBody.appendChild(tr);
+              agentsBody.appendChild(tr);
             });
-            if (!(d.caller_stats || []).length) callersBody.innerHTML = '<tr><td colspan="6" class="refresh">No gateway callers yet</td></tr>';
+            if (!(d.agent_stats || []).length) agentsBody.innerHTML = '<tr><td colspan="6" class="refresh">No gateway agents yet</td></tr>';
           }
           var fillBreakdown = function(tbodyId, rows, nameKey) {
             var tbody = document.getElementById(tbodyId);

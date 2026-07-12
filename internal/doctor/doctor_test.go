@@ -12,6 +12,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/gateway"
+	"github.com/dativo-io/talon/internal/secrets"
 )
 
 func TestRun_ConfigCategory(t *testing.T) {
@@ -66,11 +67,7 @@ func TestRun_GatewayCategory_WithConfig(t *testing.T) {
       enabled: true
       base_url: "https://api.openai.com"
       secret_name: "openai-api-key"
-  callers:
-    - name: "test"
-      tenant_key: "test-key"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
     forbidden_tools: ["rm_rf", "delete_*"]
 `
@@ -85,7 +82,7 @@ func TestRun_GatewayCategory_WithConfig(t *testing.T) {
 			gatewayChecks++
 		}
 	}
-	assert.GreaterOrEqual(t, gatewayChecks, 3, "should have gateway config, mode, and callers checks")
+	assert.GreaterOrEqual(t, gatewayChecks, 3, "should have gateway config, mode, and agent-identity checks")
 
 	found := false
 	for _, c := range report.Checks {
@@ -96,6 +93,125 @@ func TestRun_GatewayCategory_WithConfig(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "should include gateway_mode check")
+}
+
+// TestGatewayIdentityParity (#279 review): every condition that makes
+// `talon serve --gateway` refuse to start must FAIL the doctor identity
+// check — doctor must never bless a gateway that cannot start. The same
+// preflight (GatewayIdentityPreflight) backs `talon enforce enable`.
+func TestGatewayIdentityParity(t *testing.T) {
+	findIdentity := func(report *Report) *CheckResult {
+		for i := range report.Checks {
+			if report.Checks[i].Name == "gateway_agent_identity" {
+				return &report.Checks[i]
+			}
+		}
+		return nil
+	}
+	gwYAML := `gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "shadow"
+  providers:
+    openai:
+      enabled: true
+      base_url: "https://api.openai.com"
+      secret_name: "openai-api-key"
+`
+	setup := func(t *testing.T) (dir, gwCfgPath string) {
+		t.Helper()
+		dir = t.TempDir()
+		t.Setenv("TALON_DATA_DIR", dir)
+		gwCfgPath = filepath.Join(dir, "talon.config.yaml")
+		require.NoError(t, os.WriteFile(gwCfgPath, []byte(gwYAML), 0o600))
+		prevWd, _ := os.Getwd()
+		require.NoError(t, os.Chdir(dir))
+		t.Cleanup(func() { _ = os.Chdir(prevWd) })
+		return dir, gwCfgPath
+	}
+	agentYAML := func(keyed bool) string {
+		y := "agent:\n  name: parity-agent\n  description: t\n  version: \"1.0.0\"\n"
+		if keyed {
+			y += "  key:\n    secret_name: parity-agent-talon-key\n"
+		}
+		return y + "policies:\n  cost_limits: {}\n"
+	}
+	run := func(gwCfgPath string) *Report {
+		return Run(context.Background(), Options{GatewayConfigPath: gwCfgPath, SkipUpstream: true})
+	}
+
+	t.Run("missing agent policy fails", func(t *testing.T) {
+		_, gwCfgPath := setup(t)
+		c := findIdentity(run(gwCfgPath))
+		require.NotNil(t, c)
+		assert.Equal(t, "fail", c.Status, "gateway startup would refuse — doctor must too: %s", c.Message)
+	})
+
+	t.Run("missing key binding fails", func(t *testing.T) {
+		dir, gwCfgPath := setup(t)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.talon.yaml"), []byte(agentYAML(false)), 0o600))
+		c := findIdentity(run(gwCfgPath))
+		require.NotNil(t, c)
+		assert.Equal(t, "fail", c.Status, "unkeyed agent: %s", c.Message)
+		assert.Contains(t, c.Message, "key binding")
+	})
+
+	t.Run("unminted key secret fails", func(t *testing.T) {
+		dir, gwCfgPath := setup(t)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.talon.yaml"), []byte(agentYAML(true)), 0o600))
+		c := findIdentity(run(gwCfgPath))
+		require.NotNil(t, c)
+		assert.Equal(t, "fail", c.Status, "unminted secret: %s", c.Message)
+	})
+
+	// The preflight must validate the FULL identity — including the policy
+	// override, whose semantic validation happens at registry build. This
+	// egress rule is agent-SCHEMA-valid (tier is the only required field)
+	// but gateway-invalid (a rule needs allowed_providers or
+	// allowed_regions), so a reduced-identity preflight would pass while
+	// `talon serve --gateway` fails (#279 review round 3).
+	t.Run("schema-valid but gateway-invalid egress override fails", func(t *testing.T) {
+		dir, gwCfgPath := setup(t)
+		agentDoc := agentYAML(true) + "  egress:\n    rules:\n      - tier: 2\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.talon.yaml"), []byte(agentDoc), 0o600))
+
+		cfg, err := config.Load()
+		require.NoError(t, err)
+		store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+		require.NoError(t, err)
+		require.NoError(t, store.Set(context.Background(), "parity-agent-talon-key", []byte("tk-parity-eg"), secrets.ACL{}))
+		require.NoError(t, store.Close())
+
+		c := findIdentity(run(gwCfgPath))
+		require.NotNil(t, c)
+		assert.Equal(t, "fail", c.Status,
+			"gateway startup rejects this override at registry build — doctor must too: %s", c.Message)
+		assert.Contains(t, c.Message, "egress")
+	})
+
+	t.Run("minted key passes; admin collision fails", func(t *testing.T) {
+		dir, gwCfgPath := setup(t)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.talon.yaml"), []byte(agentYAML(true)), 0o600))
+
+		cfg, err := config.Load()
+		require.NoError(t, err)
+		store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+		require.NoError(t, err)
+		require.NoError(t, store.Set(context.Background(), "parity-agent-talon-key", []byte("tk-parity-1"), secrets.ACL{}))
+		require.NoError(t, store.Close())
+
+		c := findIdentity(run(gwCfgPath))
+		require.NotNil(t, c)
+		assert.Equal(t, "pass", c.Status, "minted key must pass: %s", c.Message)
+
+		t.Setenv("TALON_ADMIN_KEY", "tk-parity-1")
+		c = findIdentity(run(gwCfgPath))
+		require.NotNil(t, c)
+		assert.Equal(t, "fail", c.Status, "admin-key collision must fail: %s", c.Message)
+		assert.Contains(t, c.Message, "TALON_ADMIN_KEY")
+
+		_ = dir
+	})
 }
 
 func TestRun_GatewayCategory_SkippedWithoutConfig(t *testing.T) {
@@ -168,11 +284,7 @@ gateway:
       base_url: "https://api.openai.com"
       region: "US"
       secret_name: "openai-api-key"
-  callers:
-    - name: "test"
-      tenant_key: "test-key"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
     forbidden_tools: ["rm_rf"]
 `
@@ -225,11 +337,7 @@ gateway:
       base_url: "http://127.0.0.1:11434"
       region: "LOCAL"
       secret_name: "ollama-api-key"
-  callers:
-    - name: "test"
-      tenant_key: "test-key"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
     forbidden_tools: ["rm_rf"]
 `
@@ -281,11 +389,7 @@ gateway:
       base_url: "https://api.openai.com"
       region: "US"
       secret_name: "openai-api-key"
-  callers:
-    - name: "test"
-      tenant_key: "test-key"
-      tenant_id: "default"
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
     forbidden_tools: ["rm_rf"]
 `

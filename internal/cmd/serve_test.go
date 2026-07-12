@@ -13,7 +13,7 @@ func TestMapToGatewayEvent_MapsAllFields(t *testing.T) {
 	now := time.Now().Add(-time.Second).UTC()
 	event := map[string]interface{}{
 		"timestamp":          now,
-		"caller_id":          "openclaw-main",
+		"agent_name":         "openclaw-main",
 		"model":              "gpt-4o-mini",
 		"pii_action":         "warn",
 		"enforcement_mode":   "shadow",
@@ -38,7 +38,7 @@ func TestMapToGatewayEvent_MapsAllFields(t *testing.T) {
 	assert.True(t, ok)
 
 	assert.Equal(t, now, got.Timestamp)
-	assert.Equal(t, "openclaw-main", got.CallerID)
+	assert.Equal(t, "openclaw-main", got.AgentName)
 	assert.Equal(t, "gpt-4o-mini", got.Model)
 	assert.Equal(t, "warn", got.PIIAction)
 	assert.Equal(t, "shadow", got.EnforcementMode)
@@ -60,11 +60,11 @@ func TestMapToGatewayEvent_MapsAllFields(t *testing.T) {
 }
 
 func TestMapToGatewayEvent_DefaultTimestampWhenMissing(t *testing.T) {
-	got, ok := metrics.MapToGatewayEvent(map[string]interface{}{"caller_id": "test"})
+	got, ok := metrics.MapToGatewayEvent(map[string]interface{}{"agent_name": "test"})
 	assert.True(t, ok)
 
 	assert.False(t, got.Timestamp.IsZero(), "timestamp should be populated when absent")
-	assert.Equal(t, "test", got.CallerID)
+	assert.Equal(t, "test", got.AgentName)
 }
 
 func TestValidateServeModeFlags(t *testing.T) {

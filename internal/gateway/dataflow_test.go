@@ -161,7 +161,7 @@ func TestGatewayBuildDataFlow_CacheHit(t *testing.T) {
 	df := gw.buildDataFlow(dataFlowInputs{
 		CorrelationID:  "corr_cache",
 		TenantID:       "test-tenant",
-		CallerName:     "openclaw-main",
+		AgentName:      "openclaw-main",
 		Provider:       "openai",
 		Model:          "gpt-4o-mini",
 		Allowed:        true,
@@ -194,7 +194,7 @@ func TestGatewayBuildDataFlow_CacheStoreAfterForward(t *testing.T) {
 	df := gw.buildDataFlow(dataFlowInputs{
 		CorrelationID:  "corr_store",
 		TenantID:       "test-tenant",
-		CallerName:     "openclaw-main",
+		AgentName:      "openclaw-main",
 		Provider:       "openai",
 		Model:          "gpt-4o-mini",
 		Allowed:        true,

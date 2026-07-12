@@ -15,12 +15,9 @@ gateway:
     openai:
       enabled: true
       secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
 
-  callers:
-    - name: "my-app"
-      api_key: "talon-gw-myapp-001"
-      tenant_id: "default"
-      team: "engineering"
-
-  default_policy:
+  # Identity lives in agent.talon.yaml (#266); mint the traffic key:
+  #   talon secrets set my-app-talon-key "$(openssl rand -hex 24)"
+  organization_policy:
     log_prompts: true

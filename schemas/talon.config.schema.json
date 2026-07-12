@@ -7,31 +7,84 @@
   "definitions": {
     "dataTier": {
       "oneOf": [
-        { "type": "integer", "minimum": 0, "maximum": 2 },
-        { "type": "string", "enum": ["public", "internal", "confidential"] }
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        {
+          "type": "string",
+          "enum": [
+            "public",
+            "internal",
+            "confidential"
+          ]
+        }
       ],
       "description": "Data classification tier: 0/public, 1/internal, 2/confidential (ascending sensitivity). String aliases are matched case-insensitively by Talon; this schema lists the lowercase canonical form."
     },
     "piiAction": {
       "type": "string",
-      "enum": ["allow", "warn", "redact", "block"]
+      "enum": [
+        "allow",
+        "warn",
+        "redact",
+        "block"
+      ]
     },
     "toolPolicyAction": {
       "type": "string",
-      "enum": ["filter", "block"],
+      "enum": [
+        "filter",
+        "block"
+      ],
       "description": "filter (default) removes forbidden tools from the request; block rejects the request."
     },
     "attachmentPolicy": {
       "type": "object",
       "description": "Scanning of base64-encoded file attachments embedded in LLM API requests.",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
-        "action": { "type": "string", "enum": ["block", "strip", "warn", "allow"], "default": "warn" },
-        "injection_action": { "type": "string", "enum": ["block", "strip", "warn"], "default": "warn" },
-        "max_file_size_mb": { "type": "integer", "minimum": 1, "default": 10 },
-        "allowed_types": { "type": "array", "items": { "type": "string" } },
-        "blocked_types": { "type": "array", "items": { "type": "string" } }
-      }
+        "action": {
+          "type": "string",
+          "enum": [
+            "block",
+            "strip",
+            "warn",
+            "allow"
+          ],
+          "default": "warn"
+        },
+        "injection_action": {
+          "type": "string",
+          "enum": [
+            "block",
+            "strip",
+            "warn"
+          ],
+          "default": "warn"
+        },
+        "max_file_size_mb": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10
+        },
+        "allowed_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blocked_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "gatewayEgressPolicy": {
       "type": "object",
@@ -39,7 +92,10 @@
       "properties": {
         "default_action": {
           "type": "string",
-          "enum": ["allow", "deny"],
+          "enum": [
+            "allow",
+            "deny"
+          ],
           "default": "allow",
           "description": "Applied when no rule covers the request's data tier."
         },
@@ -47,23 +103,33 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["tier"],
+            "required": [
+              "tier"
+            ],
             "properties": {
-              "tier": { "$ref": "#/definitions/dataTier" },
+              "tier": {
+                "$ref": "#/definitions/dataTier"
+              },
               "allowed_providers": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "description": "Destination provider names; \"*\" matches any configured provider."
               },
               "allowed_regions": {
                 "type": "array",
-                "items": { "type": "string" },
+                "items": {
+                  "type": "string"
+                },
                 "description": "Destination regions (e.g. EU, US, LOCAL) matched against the provider's resolved region. An unknown region never matches (fail-closed)."
               }
-            }
+            },
+            "additionalProperties": false
           }
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
   "properties": {
@@ -98,13 +164,21 @@
     },
     "log_level": {
       "type": "string",
-      "enum": ["debug", "info", "warn", "error"],
+      "enum": [
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ],
       "default": "info",
       "description": "Log level. The --log-level flag takes precedence over this value."
     },
     "log_format": {
       "type": "string",
-      "enum": ["console", "json"],
+      "enum": [
+        "console",
+        "json"
+      ],
       "default": "console",
       "description": "Log format. The --log-format flag takes precedence over this value."
     },
@@ -116,11 +190,26 @@
           "type": "object",
           "description": "Data-controller identity for GDPR Art. 30(1)(a).",
           "properties": {
-            "name": { "type": "string", "description": "Legal name of the controller organization." },
-            "contact": { "type": "string", "description": "General contact point (email or address)." },
-            "dpo_contact": { "type": "string", "description": "Data Protection Officer contact, where designated." },
-            "address": { "type": "string", "description": "Registered address of the controller." },
-            "representative": { "type": "string", "description": "EU representative, where applicable (GDPR Art. 27)." }
+            "name": {
+              "type": "string",
+              "description": "Legal name of the controller organization."
+            },
+            "contact": {
+              "type": "string",
+              "description": "General contact point (email or address)."
+            },
+            "dpo_contact": {
+              "type": "string",
+              "description": "Data Protection Officer contact, where designated."
+            },
+            "address": {
+              "type": "string",
+              "description": "Registered address of the controller."
+            },
+            "representative": {
+              "type": "string",
+              "description": "EU representative, where applicable (GDPR Art. 27)."
+            }
           }
         }
       }
@@ -131,18 +220,27 @@
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["eu_strict", "eu_preferred", "global"],
+          "enum": [
+            "eu_strict",
+            "eu_preferred",
+            "global"
+          ],
           "description": "Single source of truth for data sovereignty. When set it supersedes llm.routing.data_sovereignty_mode and gates providers: eu_strict allows only EU/LOCAL (or EU-region-capable) providers and fails closed on any other declared provider. deployment_mode air_gap implies eu_strict."
         },
         "deployment_mode": {
           "type": "string",
-          "enum": ["standard", "air_gap"],
+          "enum": [
+            "standard",
+            "air_gap"
+          ],
           "default": "standard",
           "description": "air_gap enables eu_strict routing preset, EU/LOCAL egress defaults, and transport-level egress allowlist."
         },
         "allowed_egress_hosts": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Optional hosts/URLs added to the air-gap egress allowlist beyond ollama_base_url and gateway providers."
         }
       }
@@ -153,7 +251,12 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["regex", "presidio", "http", "llm"],
+          "enum": [
+            "regex",
+            "presidio",
+            "http",
+            "llm"
+          ],
           "default": "regex",
           "description": "regex = built-in. presidio = Presidio analyzer REST sidecar (rune offsets by default). http = custom engine speaking the Presidio wire format (byte offsets by default). llm = OpenAI-compatible chat endpoint prompted for NER (e.g. Ollama)."
         },
@@ -180,7 +283,10 @@
         },
         "offset_encoding": {
           "type": "string",
-          "enum": ["byte", "rune"],
+          "enum": [
+            "byte",
+            "rune"
+          ],
           "description": "Override for the offset encoding the engine reports. Default depends on type: presidio → rune (stock Presidio reports codepoint offsets), http → byte."
         },
         "name": {
@@ -193,7 +299,9 @@
         },
         "entities": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Optional entity-type list forwarded to the engine in each request."
         },
         "health_check": {
@@ -204,9 +312,14 @@
         "llm": {
           "type": "object",
           "description": "Settings for scanner.type llm.",
-          "required": ["model"],
+          "required": [
+            "model"
+          ],
           "properties": {
-            "model": { "type": "string", "description": "Model id at the OpenAI-compatible endpoint, e.g. llama3.1:8b." },
+            "model": {
+              "type": "string",
+              "description": "Model id at the OpenAI-compatible endpoint, e.g. llama3.1:8b."
+            },
             "confidence": {
               "type": "number",
               "exclusiveMinimum": 0,
@@ -222,20 +335,46 @@
       "type": "object",
       "description": "Governed semantic cache (optional, off by default). Validated by `talon doctor`.",
       "properties": {
-        "enabled": { "type": "boolean", "default": false },
-        "default_ttl": { "type": "integer", "minimum": 1, "default": 3600, "description": "Default entry TTL in seconds." },
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "default_ttl": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3600,
+          "description": "Default entry TTL in seconds."
+        },
         "ttl_by_tier": {
           "type": "object",
           "description": "Optional per-tier TTL overrides in seconds; falls back to default_ttl for tiers not listed.",
           "additionalProperties": false,
           "properties": {
-            "public": { "type": "integer", "minimum": 1 },
-            "internal": { "type": "integer", "minimum": 1 },
-            "confidential": { "type": "integer", "minimum": 1 }
+            "public": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "internal": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "confidential": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
-        "similarity_threshold": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.92 },
-        "max_entries_per_tenant": { "type": "integer", "minimum": 1, "default": 10000 }
+        "similarity_threshold": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "default": 0.92
+        },
+        "max_entries_per_tenant": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10000
+        }
       }
     },
     "llm": {
@@ -247,9 +386,18 @@
           "additionalProperties": {
             "type": "object",
             "properties": {
-              "type": { "type": "string", "description": "Provider type: openai, anthropic, ollama, bedrock, azure-openai, mistral, etc." },
-              "config": { "type": "object", "description": "Provider-specific config (api_key, base_url, region)." },
-              "enabled": { "type": "boolean", "default": true }
+              "type": {
+                "type": "string",
+                "description": "Provider type: openai, anthropic, ollama, bedrock, azure-openai, mistral, etc."
+              },
+              "config": {
+                "type": "object",
+                "description": "Provider-specific config (api_key, base_url, region)."
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              }
             }
           }
         },
@@ -258,7 +406,11 @@
           "properties": {
             "data_sovereignty_mode": {
               "type": "string",
-              "enum": ["eu_strict", "eu_preferred", "global"],
+              "enum": [
+                "eu_strict",
+                "eu_preferred",
+                "global"
+              ],
               "description": "EU data sovereignty: eu_strict (only EU/LOCAL), eu_preferred (prefer EU, allow fallback), global (no restriction)."
             }
           }
@@ -284,14 +436,13 @@
         },
         "mode": {
           "type": "string",
-          "enum": ["enforce", "shadow", "log_only"],
+          "enum": [
+            "enforce",
+            "shadow",
+            "log_only"
+          ],
           "default": "enforce",
           "description": "Runtime default when omitted is enforce. Generated starter configs set shadow explicitly for a safe rollout."
-        },
-        "trusted_proxy_cidrs": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "X-Forwarded-For is trusted for client IP only when the direct peer is in one of these CIDRs. Empty = never trust X-Forwarded-For."
         },
         "dashboard_listen": {
           "type": "string",
@@ -300,75 +451,122 @@
         "response_scanning": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean", "default": false }
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            }
           },
-          "description": "Scan LLM responses for PII."
+          "description": "Scan LLM responses for PII.",
+          "additionalProperties": false
         },
         "network_interception": {
           "type": "object",
           "description": "Enterprise DNS interception: route SDK traffic to the gateway without changing app code.",
           "properties": {
-            "enabled": { "type": "boolean", "default": false },
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
             "intercept_hosts": {
               "type": "array",
               "items": {
                 "type": "object",
-                "required": ["original", "provider"],
+                "required": [
+                  "original",
+                  "provider"
+                ],
                 "properties": {
-                  "original": { "type": "string" },
-                  "provider": { "type": "string" },
-                  "note": { "type": "string" }
-                }
+                  "original": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
               }
             },
             "tls": {
               "type": "object",
-              "required": ["cert_dir"],
+              "required": [
+                "cert_dir"
+              ],
               "properties": {
-                "cert_dir": { "type": "string" }
-              }
+                "cert_dir": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
             }
-          }
+          },
+          "additionalProperties": false
         },
         "providers": {
           "type": "object",
           "additionalProperties": {
             "type": "object",
             "properties": {
-              "enabled": { "type": "boolean" },
-              "secret_name": { "type": "string" },
+              "enabled": {
+                "type": "boolean"
+              },
+              "secret_name": {
+                "type": "string"
+              },
               "upstream_auth_mode": {
                 "type": "string",
-                "enum": ["secret", "client_bearer"],
+                "enum": [
+                  "secret"
+                ],
                 "default": "secret",
-                "description": "secret reads provider credentials from Talon's vault; client_bearer forwards the caller bearer token upstream (quickstart proxy mode only)."
+                "description": "secret reads provider credentials from Talon's vault. client_bearer exists only for the in-process --proxy-quickstart profile and is REJECTED in every YAML-loaded config (#266): a normal gateway's bearer is a Talon agent key and must never be forwarded upstream."
               },
-              "base_url": { "type": "string", "format": "uri" },
+              "base_url": {
+                "type": "string",
+                "format": "uri"
+              },
               "region": {
                 "type": "string",
                 "description": "Jurisdiction of the upstream endpoint (e.g. EU, US, LOCAL). Used by egress rules and data-flow evidence; required for custom base_url providers when region-based egress rules apply."
               },
               "allowed_models": {
                 "type": "array",
-                "items": { "type": "string" }
+                "items": {
+                  "type": "string"
+                }
               },
               "blocked_models": {
                 "type": "array",
-                "items": { "type": "string" }
+                "items": {
+                  "type": "string"
+                }
               },
               "forbidden_tools": {
                 "type": "array",
-                "items": { "type": "string" }
+                "items": {
+                  "type": "string"
+                }
               },
-              "tool_policy_action": { "$ref": "#/definitions/toolPolicyAction" },
+              "tool_policy_action": {
+                "$ref": "#/definitions/toolPolicyAction"
+              },
               "api_family": {
                 "type": "string",
-                "enum": ["openai", "anthropic"],
+                "enum": [
+                  "openai",
+                  "anthropic"
+                ],
                 "description": "Wire format of this provider for fallback-chain validation and upstream auth conventions. Defaults by name: 'anthropic' uses the Anthropic Messages API (x-api-key + anthropic-version); everything else is OpenAI-compatible. Set explicitly for aliased endpoints."
               },
               "responses_store_mode": {
                 "type": "string",
-                "enum": ["preserve", "force_if_absent", "force_true"],
+                "enum": [
+                  "preserve",
+                  "force_if_absent",
+                  "force_true"
+                ],
                 "default": "preserve",
                 "description": "OpenAI Responses API 'store' handling. 'preserve' (default) forwards client intent untouched — an explicit store:false is honored for every client. 'force_if_absent' sets store:true only when the client sent no store field (opt-in for previous_response_id continuity, e.g. OpenClaw). 'force_true' always stores, recording any override of an explicit client store:false in signed evidence (annotation responses_store_overridden). See #213."
               },
@@ -379,131 +577,161 @@
               },
               "fallback": {
                 "type": "array",
-                "description": "Ordered error-driven fallback chain: on a transient upstream failure (timeout/connection/429/5xx) the gateway retries these targets in order, subject to candidate filters (sovereignty under eu_strict, caller allowlists, gateway policy). All targets must share this provider's API family.",
+                "description": "Ordered error-driven fallback chain: on a transient upstream failure (timeout/connection/429/5xx) the gateway retries these targets in order, subject to candidate filters (sovereignty under eu_strict, agent provider allowlists, gateway policy). All targets must share this provider's API family.",
                 "items": {
                   "type": "object",
-                  "required": ["provider"],
+                  "required": [
+                    "provider"
+                  ],
                   "properties": {
-                    "provider": { "type": "string", "description": "Name of an enabled gateway provider to fail over to." },
-                    "model": { "type": "string", "description": "Optional: rewrite the request body's model field for this target." }
-                  }
+                    "provider": {
+                      "type": "string",
+                      "description": "Name of an enabled gateway provider to fail over to."
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "Optional: rewrite the request body's model field for this target."
+                    }
+                  },
+                  "additionalProperties": false
                 }
               }
-            }
+            },
+            "additionalProperties": false
           }
         },
-        "callers": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["name"],
-            "properties": {
-              "name": { "type": "string" },
-              "tenant_key": { "type": "string", "description": "Bearer key the caller presents; default identification method." },
-              "tenant_id": { "type": "string" },
-              "team": { "type": "string" },
-              "tags": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Free-form tags (e.g. copaw) for OTel/dashboard classification."
-              },
-              "allowed_providers": {
-                "type": "array",
-                "items": { "type": "string" }
-              },
-              "identify_by": {
-                "type": "string",
-                "enum": ["source_ip"],
-                "description": "Set to source_ip for IP-based caller identification (requires source_ip_ranges). Omit for bearer tenant_key auth (default)."
-              },
-              "source_ip_ranges": {
-                "type": "array",
-                "items": { "type": "string" }
-              },
-              "accept_client_metadata": {
-                "type": "boolean",
-                "default": true,
-                "description": "Record client-asserted orchestration identity (session/subagent/parent, from x-claude-code-*, Codex, or generic X-Talon-* headers) in evidence for this caller. Default true. Gates recording only — client-asserted identity is never a policy input (evidence-only until attestation, #149). #194."
-              },
-              "policy_overrides": {
-                "type": "object",
-                "properties": {
-                  "max_daily_cost": { "type": "number", "minimum": 0 },
-                  "max_monthly_cost": { "type": "number", "minimum": 0 },
-                  "max_session_cost": {
-                    "type": "number",
-                    "minimum": 0,
-                    "description": "Soft cap on accumulated spend per coding session (#198): a new request is denied once session spend plus the pre-request estimate exceeds this. Applies only to client/vendor-asserted session ids; a single in-flight request can overshoot (atomic reservation is #144)."
-                  },
-                  "pii_action": { "$ref": "#/definitions/piiAction" },
-                  "response_pii_action": { "$ref": "#/definitions/piiAction" },
-                  "allowed_models": {
-                    "type": "array",
-                    "items": { "type": "string" }
-                  },
-                  "blocked_models": {
-                    "type": "array",
-                    "items": { "type": "string" }
-                  },
-                  "max_data_tier": { "$ref": "#/definitions/dataTier" },
-                  "attachment_policy": { "$ref": "#/definitions/attachmentPolicy" },
-                  "allowed_tools": {
-                    "type": "array",
-                    "items": { "type": "string" }
-                  },
-                  "forbidden_tools": {
-                    "type": "array",
-                    "items": { "type": "string" }
-                  },
-                  "tool_policy_action": { "$ref": "#/definitions/toolPolicyAction" },
-                  "egress": { "$ref": "#/definitions/gatewayEgressPolicy" }
-                }
-              }
-            }
-          }
-        },
-        "default_policy": {
+        "organization_policy": {
           "type": "object",
           "properties": {
-            "default_pii_action": { "$ref": "#/definitions/piiAction" },
-            "response_pii_action": { "$ref": "#/definitions/piiAction" },
-            "max_daily_cost": { "type": "number", "minimum": 0 },
-            "max_monthly_cost": { "type": "number", "minimum": 0 },
-            "require_caller_id": { "type": "boolean", "default": true },
-            "log_prompts": { "type": "boolean" },
-            "log_responses": { "type": "boolean" },
-            "log_response_preview_chars": { "type": "integer", "minimum": 0 },
-            "attachment_policy": { "$ref": "#/definitions/attachmentPolicy" },
+            "default_pii_action": {
+              "$ref": "#/definitions/piiAction"
+            },
+            "response_pii_action": {
+              "$ref": "#/definitions/piiAction"
+            },
+            "max_daily_cost": {
+              "type": "number",
+              "minimum": 0
+            },
+            "max_monthly_cost": {
+              "type": "number",
+              "minimum": 0
+            },
+            "log_prompts": {
+              "type": "boolean"
+            },
+            "log_responses": {
+              "type": "boolean"
+            },
+            "log_response_preview_chars": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "attachment_policy": {
+              "$ref": "#/definitions/attachmentPolicy"
+            },
             "forbidden_tools": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             },
-            "tool_policy_action": { "$ref": "#/definitions/toolPolicyAction" },
+            "tool_policy_action": {
+              "$ref": "#/definitions/toolPolicyAction"
+            },
             "scan_tool_content": {
               "type": "string",
-              "enum": ["evidence_only", "off"],
+              "enum": [
+                "evidence_only",
+                "off"
+              ],
               "default": "evidence_only",
               "description": "Observation-only PII scan of tool-related request content (tool_use inputs, tool_result outputs, function-call arguments). evidence_only records findings in evidence without influencing enforcement; off disables the scan. Enforcement on tool content is not offered until per-block-type tool redaction exists (#212)."
             },
-            "egress": { "$ref": "#/definitions/gatewayEgressPolicy" }
-          }
+            "egress": {
+              "$ref": "#/definitions/gatewayEgressPolicy"
+            },
+            "allowed_providers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Organization-wide HARD constraint (#266): providers ANY agent may reach; an agent's own allowed_providers can only narrow further within this list. Empty/omitted = all enabled providers."
+            },
+            "allowed_models": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Organization-wide HARD constraint (#266): model allowlist binding every agent regardless of its override. Empty/omitted = no allowlist constraint."
+            },
+            "blocked_models": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Organization-wide HARD constraint (#266): model blocklist binding every agent regardless of its override ('*' blocks all models)."
+            },
+            "max_data_tier": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "enum": [
+                    0,
+                    1,
+                    2
+                  ]
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "public",
+                    "internal",
+                    "confidential"
+                  ]
+                }
+              ],
+              "description": "Organization-wide data-tier ceiling (#266): 0/public, 1/internal, 2/confidential (named aliases accepted, matching the runtime). An agent's max_data_tier can only LOWER it further."
+            }
+          },
+          "description": "Organization baseline — the shared policy every agent inherits before its one explicit override (agent.talon.yaml) applies — plus organization-wide hard constraints (allowed_providers, allowed_models/blocked_models, max_data_tier) no override can escape (#266).",
+          "additionalProperties": false
         },
         "rate_limits": {
           "type": "object",
           "properties": {
-            "global_requests_per_min": { "type": "integer", "minimum": 1 },
-            "per_caller_requests_per_min": { "type": "integer", "minimum": 1 }
-          }
+            "global_requests_per_min": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "per_agent_requests_per_min": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
         },
         "timeouts": {
           "type": "object",
           "properties": {
-            "connect_timeout": { "type": "string" },
-            "request_timeout": { "type": "string" },
-            "stream_idle_timeout": { "type": "string" }
-          }
+            "connect_timeout": {
+              "type": "string"
+            },
+            "request_timeout": {
+              "type": "string"
+            },
+            "stream_idle_timeout": {
+              "type": "string"
+            },
+            "response_header_timeout": {
+              "type": "string",
+              "description": "Wait for upstream response headers (time-to-first-byte). Defaults to request_timeout (#230)."
+            }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     }
   }
 }

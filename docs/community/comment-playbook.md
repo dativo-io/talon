@@ -43,9 +43,9 @@ Principles:
 
 **Why the naive approach fails:** Alerting after the fact (e.g. "you've hit $500 today") doesn't stop the next request. By the time you get the alert, the money is spent. You need a hard cap that is evaluated **before** the LLM call is made, and a single place that all traffic goes through so one team can't bypass it.
 
-**What works:** Put a gateway in front of the LLM API that identifies the caller (e.g. by API key or source IP), keeps a running cost total per caller, and denies the request if the caller would exceed their budget. The call never reaches the provider, so no spend. Logging and alerting alone are not enough — if nothing enforces before the call, you still need something that does the deny at the gateway.
+**What works:** Put a gateway in front of the LLM API that identifies the agent (by API key), keeps a running cost total per agent, and denies the request if the agent would exceed its budget. The call never reaches the provider, so no spend. Logging and alerting alone are not enough — if nothing enforces before the call, you still need something that does the deny at the gateway.
 
-**Optional link:** [Talon](https://github.com/dativo-io/talon) evaluates cost limits before forwarding: per-request, daily, and monthly caps per caller. When the limit is hit, the request is denied and logged. Demo: `git clone https://github.com/dativo-io/talon && cd talon/examples/docker-compose && docker compose up` — then `docker compose exec talon talon audit list` shows cost per request and decision.
+**Optional link:** [Talon](https://github.com/dativo-io/talon) evaluates cost limits before forwarding: per-request, daily, and monthly caps per agent. When the limit is hit, the request is denied and logged. Demo: `git clone https://github.com/dativo-io/talon && cd talon/examples/docker-compose && docker compose up` — then `docker compose exec talon talon audit list` shows cost per request and decision.
 
 ---
 
@@ -67,9 +67,9 @@ Principles:
 
 **Why the naive approach fails:** Hosted gateways put your traffic, spend data, and audit records in someone else's SaaS; you may want self-hosted, on-prem, or a single binary with no external services. Rolling your own means maintaining auth, rate limits, cost aggregation, and evidence storage — and it's easy to leave gaps (e.g. no pre-call budget check, or logs that can be altered).
 
-**What works:** An open-source proxy that: (1) sits in front of OpenAI/Anthropic/Bedrock, (2) identifies callers and enforces limits before the call, (3) scans for PII and can block/redact, (4) writes a signed record per request. Single binary and SQLite-by-default keeps deployment simple.
+**What works:** An open-source proxy that: (1) sits in front of OpenAI/Anthropic/Bedrock, (2) identifies agents and enforces limits before the call, (3) scans for PII and can block/redact, (4) writes a signed record per request. Single binary and SQLite-by-default keeps deployment simple.
 
-**Link:** [Talon](https://github.com/dativo-io/talon) is Apache 2.0, single Go binary, SQLite evidence store, OPA for policy. You change your app's base URL and use a caller key; Talon does the rest. No API key needed to run the demo: `git clone https://github.com/dativo-io/talon && cd talon/examples/docker-compose && docker compose up` — then curl a request and `docker compose exec talon talon audit list`.
+**Link:** [Talon](https://github.com/dativo-io/talon) is Apache 2.0, single Go binary, SQLite evidence store, OPA for policy. You change your app's base URL and use an agent key; Talon does the rest. No API key needed to run the demo: `git clone https://github.com/dativo-io/talon && cd talon/examples/docker-compose && docker compose up` — then curl a request and `docker compose exec talon talon audit list`.
 
 ---
 

@@ -19,7 +19,7 @@ import (
 	"github.com/dativo-io/talon/internal/testutil"
 )
 
-func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig)) (*Gateway, *evidence.Store) {
+func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig, *PolicyOverride)) (*Gateway, *evidence.Store) {
 	t.Helper()
 
 	upstream := testutil.NewOpenAICompatibleServer("shadow test response", 10, 20)
@@ -33,20 +33,7 @@ func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig)) (*Gateway, *
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
 		},
-		Callers: []CallerConfig{
-			{
-				Name:      "openclaw-main",
-				TenantKey: "talon-gw-openclaw-001",
-				TenantID:  "test-tenant",
-				PolicyOverrides: &CallerPolicyOverrides{
-					PIIAction:      "block",
-					MaxDailyCost:   100,
-					MaxMonthlyCost: 2000,
-					AllowedModels:  []string{"gpt-4o-mini", "gpt-4o"},
-				},
-			},
-		},
-		ServerDefaults: ServerDefaults{
+		OrganizationPolicy: OrganizationPolicy{
 			DefaultPIIAction: "block",
 			MaxDailyCost:     100,
 			MaxMonthlyCost:   2000,
@@ -54,8 +41,8 @@ func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig)) (*Gateway, *
 			ToolPolicyAction: "block",
 		},
 		RateLimits: RateLimitsConfig{
-			GlobalRequestsPerMin:    1,
-			PerCallerRequestsPerMin: 1,
+			GlobalRequestsPerMin:   1,
+			PerAgentRequestsPerMin: 1,
 		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
@@ -63,9 +50,16 @@ func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig)) (*Gateway, *
 			StreamIdleTimeout: "60s",
 		},
 	}
-	for _, opt := range opts {
-		opt(cfg)
+	override := &PolicyOverride{
+		PIIAction:      "block",
+		MaxDailyCost:   100,
+		MaxMonthlyCost: 2000,
+		AllowedModels:  []string{"gpt-4o-mini", "gpt-4o"},
 	}
+	for _, opt := range opts {
+		opt(cfg, override)
+	}
+	registry := testRegistry(testIdentity("openclaw-main", "test-tenant", "talon-gw-openclaw-001", override))
 
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
@@ -80,7 +74,7 @@ func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig)) (*Gateway, *
 		secrets.ACL{Tenants: []string{"test-tenant"}, Agents: []string{"*"}}))
 
 	cls := classifier.MustNewScanner()
-	gw, err := NewGateway(cfg, cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	return gw, evStore
@@ -169,12 +163,12 @@ func TestGateway_ShadowMode_ToolBlockBypassedAndLogged(t *testing.T) {
 }
 
 func TestGateway_ShadowMode_PolicyDenyBypassedAndLogged(t *testing.T) {
-	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig) {
-		cfg.ServerDefaults.ForbiddenTools = nil
-		cfg.ServerDefaults.DefaultPIIAction = "warn"
-		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
+	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig, override *PolicyOverride) {
+		cfg.OrganizationPolicy.ForbiddenTools = nil
+		cfg.OrganizationPolicy.DefaultPIIAction = "warn"
+		override.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
-		cfg.RateLimits.PerCallerRequestsPerMin = 60
+		cfg.RateLimits.PerAgentRequestsPerMin = 60
 	})
 
 	// Attach a policy evaluator that always denies
@@ -196,12 +190,12 @@ func TestGateway_ShadowMode_PolicyDenyBypassedAndLogged(t *testing.T) {
 }
 
 func TestGateway_ShadowMode_PolicyErrorBypassedAndLogged(t *testing.T) {
-	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig) {
-		cfg.ServerDefaults.ForbiddenTools = nil
-		cfg.ServerDefaults.DefaultPIIAction = "warn"
-		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
+	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig, override *PolicyOverride) {
+		cfg.OrganizationPolicy.ForbiddenTools = nil
+		cfg.OrganizationPolicy.DefaultPIIAction = "warn"
+		override.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
-		cfg.RateLimits.PerCallerRequestsPerMin = 60
+		cfg.RateLimits.PerAgentRequestsPerMin = 60
 	})
 
 	gw.policy = &errorPolicy{}
@@ -223,13 +217,13 @@ func TestGateway_ShadowMode_PolicyErrorBypassedAndLogged(t *testing.T) {
 }
 
 func TestGateway_EnforceMode_PolicyErrorStillReturns500(t *testing.T) {
-	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig) {
+	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig, override *PolicyOverride) {
 		cfg.Mode = ModeEnforce
-		cfg.ServerDefaults.ForbiddenTools = nil
-		cfg.ServerDefaults.DefaultPIIAction = "warn"
-		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
+		cfg.OrganizationPolicy.ForbiddenTools = nil
+		cfg.OrganizationPolicy.DefaultPIIAction = "warn"
+		override.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
-		cfg.RateLimits.PerCallerRequestsPerMin = 60
+		cfg.RateLimits.PerAgentRequestsPerMin = 60
 	})
 
 	gw.policy = &errorPolicy{}
@@ -258,7 +252,7 @@ func TestGateway_ShadowMode_EvidenceRecordsShadowViolations(t *testing.T) {
 }
 
 func TestGateway_EnforceMode_StillBlocks(t *testing.T) {
-	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig) {
+	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig, _ *PolicyOverride) {
 		cfg.Mode = ModeEnforce
 	})
 
@@ -268,7 +262,7 @@ func TestGateway_EnforceMode_StillBlocks(t *testing.T) {
 }
 
 func TestGateway_EnforceMode_ToolBlockStillBlocks(t *testing.T) {
-	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig) {
+	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig, _ *PolicyOverride) {
 		cfg.Mode = ModeEnforce
 	})
 
@@ -278,12 +272,12 @@ func TestGateway_EnforceMode_ToolBlockStillBlocks(t *testing.T) {
 }
 
 func TestGateway_ShadowMode_NoViolationsNoFlag(t *testing.T) {
-	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig) {
-		cfg.ServerDefaults.DefaultPIIAction = "warn"
-		cfg.ServerDefaults.ForbiddenTools = nil
-		cfg.Callers[0].PolicyOverrides.PIIAction = "warn"
+	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig, override *PolicyOverride) {
+		cfg.OrganizationPolicy.DefaultPIIAction = "warn"
+		cfg.OrganizationPolicy.ForbiddenTools = nil
+		override.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
-		cfg.RateLimits.PerCallerRequestsPerMin = 60
+		cfg.RateLimits.PerAgentRequestsPerMin = 60
 	})
 
 	rr := makeGatewayRequest(gw, requestClean())
@@ -349,5 +343,109 @@ func TestShadowViolation_TypeCoverage(t *testing.T) {
 		data, err := json.Marshal(sv)
 		require.NoError(t, err, "type %s should marshal", typ)
 		assert.True(t, strings.Contains(string(data), fmt.Sprintf(`"type":"%s"`, typ)))
+	}
+}
+
+// TestEnforcementModeMatrix_ObservableVsHard (#266 review round 4): an
+// OBSERVABLE governance control (PII block) blocks only in enforce; shadow
+// and log_only forward the request (record-only). This pins the two-class
+// model so shadow/log_only can never silently block-or-not inconsistently.
+// log_only must treat rate limiting as an OBSERVABLE governance control: the
+// would-be 429 is recorded but the request forwards. Enforce still returns 429
+// (#266 review round 5 — the log_only matrix gap).
+func TestLogOnlyMode_RateLimitObservedNotBlocked(t *testing.T) {
+	gw, evStore := setupShadowGateway(t, func(c *GatewayConfig, _ *PolicyOverride) {
+		c.Mode = ModeLogOnly
+	})
+
+	rr1 := makeGatewayRequest(gw, requestClean())
+	require.Equal(t, http.StatusOK, rr1.Code)
+	// Second request exceeds the burst-1 limit; log_only forwards it.
+	rr2 := makeGatewayRequest(gw, requestClean())
+	assert.Equal(t, http.StatusOK, rr2.Code, "log_only must not block rate-limited requests")
+
+	ev := latestEvidence(t, evStore)
+	found := false
+	for _, sv := range ev.ShadowViolations {
+		if sv.Type == "rate_limit" {
+			found = true
+			assert.Equal(t, "block", sv.Action)
+		}
+	}
+	assert.True(t, found, "log_only must record the rate_limit observation")
+}
+
+// The same control under enforce still returns 429 — proving the two-class
+// split, not a blanket bypass.
+func TestEnforceMode_RateLimitStillBlocks(t *testing.T) {
+	gw, _ := setupShadowGateway(t, func(c *GatewayConfig, _ *PolicyOverride) {
+		c.Mode = ModeEnforce
+	})
+	rr1 := makeGatewayRequest(gw, requestClean())
+	require.Equal(t, http.StatusOK, rr1.Code)
+	rr2 := makeGatewayRequest(gw, requestClean())
+	assert.Equal(t, http.StatusTooManyRequests, rr2.Code, "enforce must return 429 when rate limited")
+}
+
+// log_only must treat a PII-scanner failure as observable too: it records the
+// would-be block and forwards UNCLASSIFIED rather than returning 502. Enforce
+// fails closed (covered by TestExternalScannerFailClosed_EnforceBlocksRequest).
+func TestLogOnlyMode_ScannerUnavailableObservedNotBlocked(t *testing.T) {
+	upstreamHit := false
+	gw, _, evStore := setupGatewayWithClassifier(t, "block", ModeLogOnly,
+		func(w http.ResponseWriter, _ *http.Request) {
+			upstreamHit = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"1","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`))
+		},
+		failingExternalScanner(t, testutil.ScannerFailStatus))
+
+	w := makeGatewayRequest(gw, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	assert.Equal(t, http.StatusOK, w.Code, "log_only must not fail closed on scanner unavailability")
+	assert.True(t, upstreamHit, "log_only forwards the unclassified request to the provider")
+
+	ev := latestGatewayEvidence(t, evStore)
+	found := false
+	for _, sv := range ev.ShadowViolations {
+		if sv.Type == "scanner_unavailable" {
+			found = true
+		}
+	}
+	assert.True(t, found, "log_only must record the scanner_unavailable observation")
+}
+
+// Authentication is a HARD platform boundary: an unknown key is rejected in
+// EVERY mode, including log_only — the two-class model never opens auth.
+func TestLogOnlyMode_UnknownKeyStillRejected(t *testing.T) {
+	gw, _ := setupShadowGateway(t, func(c *GatewayConfig, _ *PolicyOverride) {
+		c.Mode = ModeLogOnly
+	})
+	rr := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-not-a-real-key", requestClean())
+	assert.Equal(t, http.StatusUnauthorized, rr.Code, "unknown key must be rejected even in log_only")
+}
+
+func TestEnforcementModeMatrix_ObservableVsHard(t *testing.T) {
+	cases := []struct {
+		mode       Mode
+		wantStatus int
+	}{
+		{ModeEnforce, http.StatusBadRequest},
+		{ModeShadow, http.StatusOK},
+		{ModeLogOnly, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			gw, store := setupShadowGateway(t, func(c *GatewayConfig, _ *PolicyOverride) {
+				c.Mode = tc.mode
+			})
+			rr := makeGatewayRequest(gw, requestWithPII())
+			assert.Equal(t, tc.wantStatus, rr.Code,
+				"PII block is observable: enforce blocks, shadow/log_only forward")
+			ev := latestEvidence(t, store)
+			require.NotNil(t, ev)
+			if tc.mode == ModeEnforce {
+				assert.False(t, ev.PolicyDecision.Allowed)
+			}
+		})
 	}
 }

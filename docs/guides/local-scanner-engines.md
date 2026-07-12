@@ -74,16 +74,12 @@ gateway:
       enabled: true
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
-  callers:
-    - name: "me"
-      tenant_key: "talon-drive-key"
-      tenant_id: "default"
-      policy_overrides:
-        pii_action: "redact"
-  default_policy:
+  organization_policy:
     default_pii_action: "redact"
-    require_caller_id: true
 CFG
+
+# Agent identity (#266): the scaffolded agent.talon.yaml binds me-talon-key
+talon secrets set me-talon-key "talon-drive-key"
 
 # --- 5. Serve (startup health-probes Ollama and the model; fail-closed) ---
 talon serve --port 8080 --gateway --gateway-config talon.config.yaml
@@ -192,7 +188,7 @@ Two levers for constrained hosts (small VPS class):
   request scan + redact + verify + response scan that is 4+ sequential
   calls per PII request. Set `scanner.timeout: "180s"` rather than letting
   a borderline call fail closed, or set
-  `gateway.default_policy.response_pii_action: "allow"` to skip
+  `gateway.organization_policy.response_pii_action: "allow"` to skip
   response-side scanning where the demo/use-case doesn't need it.
 
 ## Model choice

@@ -87,22 +87,22 @@ func TestEvaluateToolPolicy_CaseInsensitive(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Unit tests — ResolveToolPolicy (three-level merge)
+// Unit tests — effective tool policy (three-level merge via ResolveEffectivePolicy)
 // ---------------------------------------------------------------------------
 
-func TestResolveToolPolicy_DefaultOnly(t *testing.T) {
-	dp := &ServerDefaults{
+func TestEffectiveToolPolicy_BaselineOnly(t *testing.T) {
+	baseline := OrganizationPolicy{
 		ForbiddenTools:   []string{"admin_*"},
 		ToolPolicyAction: "block",
 	}
-	res := ResolveToolPolicy(dp, ProviderConfig{}, nil)
-	assert.Equal(t, "block", res.Action)
-	assert.Equal(t, []string{"admin_*"}, res.ForbiddenTools)
-	assert.Empty(t, res.AllowedTools)
+	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, nil)
+	assert.Equal(t, "block", eff.ToolPolicyAction)
+	assert.Equal(t, []string{"admin_*"}, eff.ForbiddenTools)
+	assert.Empty(t, eff.AllowedTools)
 }
 
-func TestResolveToolPolicy_ProviderMerge(t *testing.T) {
-	dp := &ServerDefaults{
+func TestEffectiveToolPolicy_ProviderMerge(t *testing.T) {
+	baseline := OrganizationPolicy{
 		ForbiddenTools:   []string{"admin_*"},
 		ToolPolicyAction: "filter",
 	}
@@ -110,41 +110,41 @@ func TestResolveToolPolicy_ProviderMerge(t *testing.T) {
 		ForbiddenTools:   []string{"export_*"},
 		ToolPolicyAction: "block",
 	}
-	res := ResolveToolPolicy(dp, prov, nil)
-	assert.Equal(t, "block", res.Action, "provider overrides default action")
-	assert.Contains(t, res.ForbiddenTools, "admin_*")
-	assert.Contains(t, res.ForbiddenTools, "export_*")
+	eff := ResolveEffectivePolicy(baseline, prov, nil)
+	assert.Equal(t, "block", eff.ToolPolicyAction, "provider overrides baseline action")
+	assert.Contains(t, eff.ForbiddenTools, "admin_*")
+	assert.Contains(t, eff.ForbiddenTools, "export_*")
 }
 
-func TestResolveToolPolicy_CallerOverride(t *testing.T) {
-	dp := &ServerDefaults{
+func TestEffectiveToolPolicy_AgentOverride(t *testing.T) {
+	baseline := OrganizationPolicy{
 		ForbiddenTools:   []string{"admin_*"},
 		ToolPolicyAction: "block",
 	}
 	prov := ProviderConfig{
 		ForbiddenTools: []string{"export_*"},
 	}
-	caller := &CallerPolicyOverrides{
+	override := &PolicyOverride{
 		AllowedTools:     []string{"search_web", "read_file"},
 		ForbiddenTools:   []string{"delete_*"},
 		ToolPolicyAction: "filter",
 	}
-	res := ResolveToolPolicy(dp, prov, caller)
-	assert.Equal(t, "filter", res.Action, "caller overrides all")
-	assert.Equal(t, []string{"search_web", "read_file"}, res.AllowedTools)
-	assert.Contains(t, res.ForbiddenTools, "admin_*")
-	assert.Contains(t, res.ForbiddenTools, "export_*")
-	assert.Contains(t, res.ForbiddenTools, "delete_*")
+	eff := ResolveEffectivePolicy(baseline, prov, override)
+	assert.Equal(t, "filter", eff.ToolPolicyAction, "agent override wins over all")
+	assert.Equal(t, []string{"search_web", "read_file"}, eff.AllowedTools)
+	assert.Contains(t, eff.ForbiddenTools, "admin_*")
+	assert.Contains(t, eff.ForbiddenTools, "export_*")
+	assert.Contains(t, eff.ForbiddenTools, "delete_*")
 }
 
-func TestResolveToolPolicy_NoDuplicateForbidden(t *testing.T) {
-	dp := &ServerDefaults{ForbiddenTools: []string{"admin_*"}}
+func TestEffectiveToolPolicy_NoDuplicateForbidden(t *testing.T) {
+	baseline := OrganizationPolicy{ForbiddenTools: []string{"admin_*"}}
 	prov := ProviderConfig{ForbiddenTools: []string{"admin_*", "export_*"}}
-	caller := &CallerPolicyOverrides{ForbiddenTools: []string{"export_*", "delete_*"}}
+	override := &PolicyOverride{ForbiddenTools: []string{"export_*", "delete_*"}}
 
-	res := ResolveToolPolicy(dp, prov, caller)
+	eff := ResolveEffectivePolicy(baseline, prov, override)
 	counts := make(map[string]int)
-	for _, f := range res.ForbiddenTools {
+	for _, f := range eff.ForbiddenTools {
 		counts[f]++
 	}
 	for pattern, c := range counts {
@@ -152,10 +152,9 @@ func TestResolveToolPolicy_NoDuplicateForbidden(t *testing.T) {
 	}
 }
 
-func TestResolveToolPolicy_DefaultAction(t *testing.T) {
-	dp := &ServerDefaults{}
-	res := ResolveToolPolicy(dp, ProviderConfig{}, nil)
-	assert.Equal(t, DefaultToolPolicyAction, res.Action, "default action should be 'filter'")
+func TestEffectiveToolPolicy_DefaultAction(t *testing.T) {
+	eff := ResolveEffectivePolicy(OrganizationPolicy{}, ProviderConfig{}, nil)
+	assert.Equal(t, DefaultToolPolicyAction, eff.ToolPolicyAction, "default action should be 'filter'")
 }
 
 // ---------------------------------------------------------------------------
@@ -367,7 +366,7 @@ func TestGateway_ToolGovernance_FilterMode(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"delete_*", "admin_*"}
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"delete_*", "admin_*"}
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -397,8 +396,8 @@ func TestGateway_ToolGovernance_BlockMode(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"delete_*"}
-	gw.config.ServerDefaults.ToolPolicyAction = "block"
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"delete_*"}
+	gw.config.OrganizationPolicy.ToolPolicyAction = "block"
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -415,7 +414,7 @@ func TestGateway_ToolGovernance_BlockMode(t *testing.T) {
 		"error message should mention forbidden tools")
 }
 
-func TestGateway_ToolGovernance_CallerAllowlist(t *testing.T) {
+func TestGateway_ToolGovernance_AgentAllowlist(t *testing.T) {
 	var capturedBody []byte
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedBody, _ = io.ReadAll(r.Body)
@@ -425,7 +424,7 @@ func TestGateway_ToolGovernance_CallerAllowlist(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.Callers[0].PolicyOverrides.AllowedTools = []string{"search_web", "read_file"}
+	gw.registry.identities[0].Override.AllowedTools = []string{"search_web", "read_file"}
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -459,14 +458,14 @@ func TestGateway_ToolGovernance_ThreeLevelMerge(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"admin_*"}
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"admin_*"}
 	gw.config.Providers["openai"] = ProviderConfig{
 		Enabled:        true,
 		BaseURL:        gw.config.Providers["openai"].BaseURL,
 		SecretName:     "openai-api-key",
 		ForbiddenTools: []string{"export_*"},
 	}
-	gw.config.Callers[0].PolicyOverrides.ForbiddenTools = []string{"bulk_*"}
+	gw.registry.identities[0].Override.ForbiddenTools = []string{"bulk_*"}
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -488,7 +487,7 @@ func TestGateway_ToolGovernance_ThreeLevelMerge(t *testing.T) {
 	tools := forwarded["tools"].([]interface{})
 	names := toolNamesFromJSON(tools)
 	assert.Equal(t, []string{"search_web", "read_file"}, names,
-		"admin_* (default), export_* (provider), bulk_* (caller) should all be filtered")
+		"admin_* (baseline), export_* (provider), bulk_* (agent) should all be filtered")
 }
 
 func TestGateway_ToolGovernance_NoToolsPassThrough(t *testing.T) {
@@ -501,7 +500,7 @@ func TestGateway_ToolGovernance_NoToolsPassThrough(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"delete_*"}
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"delete_*"}
 
 	body := `{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hello"}]}`
 	w := makeGatewayRequest(gw, body)
@@ -523,7 +522,7 @@ func TestGateway_ToolGovernance_AllToolsAllowed(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"admin_*"}
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"admin_*"}
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -553,7 +552,7 @@ func TestGateway_ToolGovernance_Evidence(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"delete_*"}
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"delete_*"}
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -678,7 +677,7 @@ func TestGateway_Evidence_NilToolGovernance(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"admin_*"}
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"admin_*"}
 
 	body := `{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hello"}]}`
 	w := makeGatewayRequest(gw, body)
@@ -702,7 +701,7 @@ func TestGateway_ToolGovernance_ResponsesAPI_Filter(t *testing.T) {
 	handler := responsesAPIUpstream(&capturedBody, new(string))
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"delete_*"}
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"delete_*"}
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -734,8 +733,8 @@ func TestGateway_ToolGovernance_BlockMode_Evidence(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"delete_*"}
-	gw.config.ServerDefaults.ToolPolicyAction = "block"
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"delete_*"}
+	gw.config.OrganizationPolicy.ToolPolicyAction = "block"
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -775,7 +774,7 @@ func TestGateway_ToolGovernance_ToolChoiceFixup(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"delete_*"}
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"delete_*"}
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -813,7 +812,7 @@ func TestGateway_ToolGovernance_AllToolsFiltered(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"admin_*"}
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"admin_*"}
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -850,7 +849,7 @@ func TestGateway_ToolGovernance_PIIRedaction_Combined(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "redact", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"delete_*"}
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"delete_*"}
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -895,7 +894,7 @@ func TestGateway_ToolGovernance_Streaming(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.ForbiddenTools = []string{"delete_*"}
+	gw.config.OrganizationPolicy.ForbiddenTools = []string{"delete_*"}
 
 	body := `{
 		"model": "gpt-4o-mini",
@@ -934,8 +933,8 @@ func TestGateway_ToolGovernance_ProviderOnlyForbidden(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	// No default forbidden tools, no caller overrides — only provider level.
-	gw.config.ServerDefaults.ForbiddenTools = nil
+	// No baseline forbidden tools, no agent overrides — only provider level.
+	gw.config.OrganizationPolicy.ForbiddenTools = nil
 	gw.config.Providers["openai"] = ProviderConfig{
 		Enabled:        true,
 		BaseURL:        gw.config.Providers["openai"].BaseURL,

@@ -78,15 +78,18 @@ type Evidence struct {
 	Signature               string            `json:"signature"`
 	RoutingDecision         *RoutingDecision  `json:"routing_decision,omitempty"` // Provider selection and rejected candidates (EU routing)
 	// Semantic cache: set when response was served from cache (Cost=0, CostSaved=estimated LLM cost).
-	CacheHit        bool               `json:"cache_hit,omitempty"`
-	CacheEntryID    string             `json:"cache_entry_id,omitempty"`
-	CacheSimilarity float64            `json:"cache_similarity,omitempty"`
-	CostSaved       float64            `json:"cost_saved,omitempty"`
-	PlanReview      *PlanReviewEvent   `json:"plan_review,omitempty"`
-	RetryAttempt    string             `json:"retry_attempt,omitempty"` // X-Talon-Retry-Attempt header from gateway callers
-	Explanations    []explanation.Item `json:"explanations,omitempty"`
-	PlanID          string             `json:"plan_id,omitempty"`      // Execution plan ID for audit lineage
-	GraphRunID      string             `json:"graph_run_id,omitempty"` // External graph runtime run ID
+	CacheHit     bool   `json:"cache_hit,omitempty"`
+	CacheEntryID string `json:"cache_entry_id,omitempty"`
+	// CacheSourceCorrelationID names the source generation's evidence record
+	// for a cache hit, so provenance traces back to the original request (#266).
+	CacheSourceCorrelationID string             `json:"cache_source_correlation_id,omitempty"`
+	CacheSimilarity          float64            `json:"cache_similarity,omitempty"`
+	CostSaved                float64            `json:"cost_saved,omitempty"`
+	PlanReview               *PlanReviewEvent   `json:"plan_review,omitempty"`
+	RetryAttempt             string             `json:"retry_attempt,omitempty"` // X-Talon-Retry-Attempt header from gateway callers
+	Explanations             []explanation.Item `json:"explanations,omitempty"`
+	PlanID                   string             `json:"plan_id,omitempty"`      // Execution plan ID for audit lineage
+	GraphRunID               string             `json:"graph_run_id,omitempty"` // External graph runtime run ID
 	// DataFlow links classified input data to its destination (digests only,
 	// never raw values). Appended last so pre-existing record signatures
 	// remain valid (see docs/reference/evidence-integrity-spec.md §2).
@@ -217,7 +220,17 @@ type EgressDecision struct {
 	Decision    string `json:"decision"`               // "allow" | "deny"
 	MatchedRule string `json:"matched_rule,omitempty"` // e.g. "tier_2:allowed_regions" or "default_action"
 	Reason      string `json:"reason,omitempty"`       // machine code, e.g. egress_tier_destination_disallowed
+	// Source names the boundary layer that made the decision — "organization"
+	// or "agent" — so the signed record states WHICH of the two intersected
+	// egress policies was decisive (#266 review round 6).
+	Source string `json:"source,omitempty"`
 }
+
+// EgressDecision.Source values: the boundary layer that was decisive.
+const (
+	EgressSourceOrganization = "organization"
+	EgressSourceAgent        = "agent"
+)
 
 // PlanReviewEvent captures human oversight actions performed on execution plans.
 type PlanReviewEvent struct {
@@ -268,6 +281,22 @@ type PolicyDecision struct {
 	Action        string   `json:"action"`
 	Reasons       []string `json:"reasons,omitempty"`
 	PolicyVersion string   `json:"policy_version"`
+	// PolicyDigests identifies the exact policy state a gateway decision was
+	// made against (#266 review round 4): the organization baseline, the
+	// agent policy, the destination provider constraints, and the resolved
+	// effective policy. An auditor can prove which configuration produced the
+	// decision, not merely that one did. Absent on native/pre-#266 records.
+	PolicyDigests *PolicyDigests `json:"policy_digests,omitempty"`
+}
+
+// PolicyDigests are SHA-256 digests of the canonical policy components that
+// produced an effective-policy decision. Each is hex-encoded; empty when the
+// component was not applicable to the request.
+type PolicyDigests struct {
+	Organization string `json:"organization,omitempty"`
+	Agent        string `json:"agent,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	Effective    string `json:"effective,omitempty"`
 }
 
 // Classification captures PII detection results.
@@ -1732,7 +1761,11 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, from, t
 
 // Timeline returns chronological context around a specific evidence record (Layer 2).
 // Critical for NIS2 Art. 23 incident response.
-func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int) ([]Index, error) {
+// Timeline returns the neighbors of aroundID. agentFilter scopes the
+// neighbors to a single agent (empty = tenant-wide, admin only): a
+// tenant-wide timeline would otherwise leak another agent's neighboring
+// records to an agent key (#266 review round 5).
+func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int, agentFilter string) ([]Index, error) {
 	ctx, span := tracer.Start(ctx, "evidence.timeline",
 		trace.WithAttributes(
 			attribute.String("around_id", aroundID),
@@ -1751,11 +1784,21 @@ func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int
 	// against the UTC-stored timestamp column is apples-to-apples (#216).
 	targetTS := target.Timestamp.UTC()
 
+	agentClause := ""
+	agentArg := []interface{}{}
+	if agentFilter != "" {
+		agentClause = " AND agent_id = ?"
+		agentArg = []interface{}{agentFilter}
+	}
+
 	// Collect entries before the target (earlier timestamps)
+	//nolint:gosec // agentClause is a fixed literal (" AND agent_id = ?"), never user input
 	beforeQuery := `SELECT evidence_json FROM evidence
-	                WHERE tenant_id = ? AND timestamp < ?
+	                WHERE tenant_id = ? AND timestamp < ?` + agentClause + `
 	                ORDER BY timestamp DESC LIMIT ?`
-	beforeRows, err := s.db.QueryContext(ctx, beforeQuery, target.TenantID, targetTS, before)
+	beforeArgs := append([]interface{}{target.TenantID, targetTS}, agentArg...)
+	beforeArgs = append(beforeArgs, before)
+	beforeRows, err := s.db.QueryContext(ctx, beforeQuery, beforeArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("querying before timeline: %w", err)
 	}
@@ -1784,10 +1827,13 @@ func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int
 	results = append(results, toIndex(target))
 
 	// Collect entries after the target (later timestamps)
+	//nolint:gosec // agentClause is a fixed literal (" AND agent_id = ?"), never user input
 	afterQuery := `SELECT evidence_json FROM evidence
-	               WHERE tenant_id = ? AND timestamp > ?
+	               WHERE tenant_id = ? AND timestamp > ?` + agentClause + `
 	               ORDER BY timestamp ASC LIMIT ?`
-	afterRows, err := s.db.QueryContext(ctx, afterQuery, target.TenantID, targetTS, after)
+	afterArgs := append([]interface{}{target.TenantID, targetTS}, agentArg...)
+	afterArgs = append(afterArgs, after)
+	afterRows, err := s.db.QueryContext(ctx, afterQuery, afterArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("querying after timeline: %w", err)
 	}

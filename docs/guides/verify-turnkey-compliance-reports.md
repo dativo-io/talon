@@ -212,7 +212,7 @@ Admin-only `/v1/compliance/*`: coverage, exports, auth, control-plane evidence.
     "localhost:8080/v1/compliance/coverage?from=12-31-2026"
   ```
 
-  **Expect:** `401`, `401`, `400`, `400` — in that order. No key and wrong key rejected; `format=pdf` and malformed date rejected. (Tenant-key rejection is covered by smoke section 34 with a gateway caller configured.)
+  **Expect:** `401`, `401`, `400`, `400` — in that order. No key and wrong key rejected; `format=pdf` and malformed date rejected. (Tenant-key rejection is covered by smoke section 34 with a gateway agent configured.)
 
 - [ ] **Exports record signed control-plane evidence**
 
@@ -270,7 +270,7 @@ Budget, cache, spend breakdowns, denials-by-reason. Requires Phase 2 server with
 
 - [ ] **FinOps & Runtime tab**
 
-  **Expect:** gateway metric cards plus **Budget & cache** and **Spend by caller** / **Spend by model / provider** tables. Without gateway traffic, empty states (`—`) are correct.
+  **Expect:** gateway metric cards plus **Budget & cache** and **Spend by agent** / **Spend by model / provider** tables. Without gateway traffic, empty states (`—`) are correct.
 
 - [ ] **Cross-check against the metrics API**
 

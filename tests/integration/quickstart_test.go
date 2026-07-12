@@ -161,13 +161,13 @@ func newQuickstartIntegrationServer(t *testing.T, upstreamURL string) (*httptest
 	require.NoError(t, err)
 	gwPolicy, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
-	gw, err := gateway.NewGateway(quickstartCfg, classifier.MustNewScanner(), evStore, secStore, gwPolicy, nil)
+	gw, err := gateway.NewGateway(quickstartCfg, nil, classifier.MustNewScanner(), evStore, secStore, gwPolicy, nil)
 	require.NoError(t, err)
 
 	opts := []server.Option{
 		server.WithGateway(gw),
 		server.WithQuickstartEnabled(true),
-		server.WithProxyQuickstart(server.NewQuickstartFacade(gw, quickstartCfg.ListenPrefix, &quickstartCfg.Callers[0])),
+		server.WithProxyQuickstart(server.NewQuickstartFacade(gw, quickstartCfg.ListenPrefix, gateway.NewQuickstartIdentity())),
 	}
 	srv := server.NewServer(nil, evStore, nil, engine, pol, "", secStore, "", map[string]string{"quickstart": "quickstart"}, opts...)
 	api := httptest.NewServer(srv.Routes())

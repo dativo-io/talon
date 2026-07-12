@@ -41,10 +41,12 @@ func (p *jurisdictionCountingProvider) Name() string { return p.name }
 func (p *jurisdictionCountingProvider) Metadata() llm.ProviderMetadata {
 	return llm.ProviderMetadata{ID: p.name, DisplayName: p.name, Jurisdiction: p.jurisdiction}
 }
+
 func (p *jurisdictionCountingProvider) Generate(_ context.Context, req *llm.Request) (*llm.Response, error) {
 	p.calls++
 	return &llm.Response{Content: "answer from " + p.name, FinishReason: "stop", InputTokens: 5, OutputTokens: 5, Model: req.Model}, nil
 }
+
 func (p *jurisdictionCountingProvider) Stream(_ context.Context, _ *llm.Request, _ chan<- llm.StreamChunk) error {
 	return llm.ErrNotImplemented
 }

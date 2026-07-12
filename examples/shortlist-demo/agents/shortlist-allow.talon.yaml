@@ -1,0 +1,16 @@
+# Shortlist demo — allow scenario: runs on the organization baseline alone
+# (no override) (#266).
+agent:
+  name: shortlist-allow
+  description: "Shortlist demo: baseline-only happy path"
+  version: 1.0.0
+  tenant_id: shortlist
+  key:
+    secret_name: shortlist-allow-talon-key
+
+policies:
+  cost_limits:
+    daily: 100.00
+
+metadata:
+  team: shortlist-demo

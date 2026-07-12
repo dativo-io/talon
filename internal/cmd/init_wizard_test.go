@@ -744,9 +744,12 @@ func TestBuildConfigs_OpenClawPack_EnablesGateway(t *testing.T) {
 	assert.True(t, infraCfg.Gateway.Enabled, "gateway must be enabled so talon serve --gateway starts")
 	assert.Equal(t, "/v1/proxy", infraCfg.Gateway.ListenPrefix)
 	assert.Equal(t, "shadow", infraCfg.Gateway.Mode)
-	require.NotEmpty(t, infraCfg.Gateway.Callers)
-	assert.Equal(t, "openclaw-main", infraCfg.Gateway.Callers[0].Name)
-	assert.Equal(t, "talon-gw-openclaw-001", infraCfg.Gateway.Callers[0].TenantKey)
+	// Identity lives in the agent policy (#266): the wizard binds the traffic
+	// key there; the gateway block carries only the organization baseline.
+	require.NotNil(t, agentCfg.Agent.Key, "wizard must bind the agent traffic key")
+	assert.Equal(t, agentKeySecretName(state.AgentName), agentCfg.Agent.Key.SecretName)
+	require.NotNil(t, infraCfg.Gateway.OrganizationPolicy)
+	assert.Equal(t, "warn", infraCfg.Gateway.OrganizationPolicy.DefaultPIIAction)
 	openai, ok := infraCfg.Gateway.Providers["openai"]
 	require.True(t, ok)
 	assert.True(t, openai.Enabled)

@@ -160,7 +160,7 @@ You now know how to export evidence for reporting and integrity, verify signatur
 
 | I want to… | Doc |
 |------------|-----|
-| Cap cost per team or app | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Cap cost per team or app | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
 | Understand what each evidence record contains | [Evidence store](../explanation/evidence-store.md) |
 | Run Talon in CI/CD with evidence | [How to run governed LLM calls in CI/CD](cicd-pipeline-governance.md) |
 | Configure retention or scope | [Configuration and environment](../reference/configuration.md) |

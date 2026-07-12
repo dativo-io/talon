@@ -130,6 +130,14 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("loading policy for scanner: %w", err)
 	}
+
+	// agent.tenant_id is authoritative across planes (#266): the same agent
+	// file must attribute to the same tenant whether traffic crosses the
+	// gateway or runs natively. The flag applies only when the file omits it.
+	effectiveTenantID, err := resolveRunTenant(polForScanner, runTenantID, cmd.Flags().Changed("tenant"))
+	if err != nil {
+		return err
+	}
 	policyEngineForScanner, err := policy.NewEngine(ctx, polForScanner)
 	if err != nil {
 		return fmt.Errorf("policy engine for scanner: %w", err)
@@ -262,7 +270,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	req := &agent.RunRequest{
-		TenantID:       runTenantID,
+		TenantID:       effectiveTenantID,
 		AgentName:      agentName,
 		Prompt:         prompt,
 		Attachments:    attachments,

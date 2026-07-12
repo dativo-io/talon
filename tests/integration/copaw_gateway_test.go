@@ -40,21 +40,7 @@ func setupCoPawGateway(t *testing.T, upstreamHandler http.HandlerFunc) (*gateway
 		Providers: map[string]gateway.ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
 		},
-		Callers: []gateway.CallerConfig{
-			{
-				Name:      "copaw-main",
-				TenantKey: "talon-gw-copaw-001",
-				TenantID:  "test-tenant",
-				Tags:      []string{"copaw"},
-				PolicyOverrides: &gateway.CallerPolicyOverrides{
-					PIIAction:      "warn",
-					MaxDailyCost:   100,
-					MaxMonthlyCost: 2000,
-					AllowedModels:  []string{"gpt-4o-mini", "gpt-4o"},
-				},
-			},
-		},
-		ServerDefaults: gateway.ServerDefaults{
+		OrganizationPolicy: gateway.OrganizationPolicy{
 			DefaultPIIAction: "warn",
 			MaxDailyCost:     100,
 			MaxMonthlyCost:   2000,
@@ -78,11 +64,28 @@ func setupCoPawGateway(t *testing.T, upstreamHandler http.HandlerFunc) (*gateway
 		[]byte("sk-test-copaw-secret"),
 		secrets.ACL{Tenants: []string{"test-tenant"}, Agents: []string{"*"}}))
 
+	// Agent identity (#266): vault-bound key; copaw tag classifies telemetry.
+	require.NoError(t, secStore.Set(context.Background(), "copaw-main-talon-key",
+		[]byte("talon-gw-copaw-001"), secrets.ACL{}))
+	registry, err := gateway.BuildIdentityRegistry(context.Background(), []gateway.LoadedAgent{
+		{
+			Path: "agent.talon.yaml", Name: "copaw-main", TenantID: "test-tenant", KeySecretName: "copaw-main-talon-key",
+			Tags: []string{"copaw"},
+			Override: &gateway.PolicyOverride{
+				PIIAction:      "warn",
+				MaxDailyCost:   100,
+				MaxMonthlyCost: 2000,
+				AllowedModels:  []string{"gpt-4o-mini", "gpt-4o"},
+			},
+		},
+	}, secStore, "")
+	require.NoError(t, err)
+
 	cls := classifier.MustNewScanner()
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := gateway.NewGateway(cfg, cls, evStore, secStore, policyEngine, nil)
+	gw, err := gateway.NewGateway(cfg, registry, cls, evStore, secStore, policyEngine, nil)
 	require.NoError(t, err)
 
 	return gw, upstream, evStore

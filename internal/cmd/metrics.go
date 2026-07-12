@@ -38,21 +38,21 @@ var metricsCmd = &cobra.Command{
 			warnIfDegraded(ctx, cmd.OutOrStdout(), metricsURL)
 		}
 
-		callers := snap.CallerStats
-		sort.Slice(callers, func(i, j int) bool { return callers[i].Requests > callers[j].Requests })
+		agents := snap.AgentStats
+		sort.Slice(agents, func(i, j int) bool { return agents[i].Requests > agents[j].Requests })
 		if metricsAgent != "" {
-			callers = filterCallers(callers, metricsAgent)
+			agents = filterAgents(agents, metricsAgent)
 		}
 
 		out := cmd.OutOrStdout()
 		if metricsJSON {
-			return json.NewEncoder(out).Encode(callers)
+			return json.NewEncoder(out).Encode(agents)
 		}
 
 		if metricsAgent != "" {
-			return renderMetricsAgentDetail(out, metricsAgent, callers, snap)
+			return renderMetricsAgentDetail(out, metricsAgent, agents, snap)
 		}
-		renderMetricsSummary(out, callers, snap)
+		renderMetricsSummary(out, agents, snap)
 		return nil
 	},
 }
@@ -111,18 +111,18 @@ func aggregateStandaloneSnapshot(records []evidence.Evidence, now time.Time) met
 	return metricsapi.SnapshotFromEvidenceRecords(records, now)
 }
 
-func filterCallers(in []metricsapi.CallerStat, caller string) []metricsapi.CallerStat {
-	filtered := make([]metricsapi.CallerStat, 0, len(in))
+func filterAgents(in []metricsapi.AgentStat, agent string) []metricsapi.AgentStat {
+	filtered := make([]metricsapi.AgentStat, 0, len(in))
 	for i := range in {
 		c := in[i]
-		if c.Caller == caller {
+		if c.Agent == agent {
 			filtered = append(filtered, c)
 		}
 	}
 	return filtered
 }
 
-func renderMetricsSummary(w io.Writer, callers []metricsapi.CallerStat, snap metricsapi.Snapshot) {
+func renderMetricsSummary(w io.Writer, agents []metricsapi.AgentStat, snap metricsapi.Snapshot) {
 	cur := exportCurrency(snap.Currency)
 	fmt.Fprintln(w, "Agent Metrics (last 24h)")
 	fmt.Fprintln(w)
@@ -131,8 +131,8 @@ func renderMetricsSummary(w io.Writer, callers []metricsapi.CallerStat, snap met
 
 	var totalReq, totalSuccess, totalFailed, totalTimeout, totalDenied int
 	var totalCost float64
-	for i := range callers {
-		c := callers[i]
+	for i := range agents {
+		c := agents[i]
 		totalReq += c.Requests
 		totalSuccess += c.Successful
 		totalFailed += c.Failed
@@ -145,11 +145,11 @@ func renderMetricsSummary(w io.Writer, callers []metricsapi.CallerStat, snap met
 			values = append(values, d.Count)
 		}
 		fmt.Fprintf(w, "%-20s %8d %8d %8d %8d %8d %7.1f%% %10.4f %11.4f %13s\n",
-			c.Caller, c.Requests, c.Successful, c.Failed, c.TimedOut, c.Denied, c.SuccessRate*100,
+			c.Agent, c.Requests, c.Successful, c.Failed, c.TimedOut, c.Denied, c.SuccessRate*100,
 			c.CostEUR, c.CostPerSuccess, sparkline(values))
 	}
-	if len(callers) == 0 {
-		fmt.Fprintln(w, "(no caller data)")
+	if len(agents) == 0 {
+		fmt.Fprintln(w, "(no agent data)")
 	}
 
 	fmt.Fprintln(w)
@@ -163,12 +163,12 @@ func renderMetricsSummary(w io.Writer, callers []metricsapi.CallerStat, snap met
 	_ = snap
 }
 
-func renderMetricsAgentDetail(w io.Writer, requested string, callers []metricsapi.CallerStat, snap metricsapi.Snapshot) error {
-	if len(callers) == 0 {
+func renderMetricsAgentDetail(w io.Writer, requested string, agents []metricsapi.AgentStat, snap metricsapi.Snapshot) error {
+	if len(agents) == 0 {
 		return fmt.Errorf("agent %q not found in metrics snapshot", requested)
 	}
-	c := callers[0]
-	fmt.Fprintf(w, "Agent Metrics: %s\n\n", c.Caller)
+	c := agents[0]
+	fmt.Fprintf(w, "Agent Metrics: %s\n\n", c.Agent)
 	fmt.Fprintf(w, "Requests: %d\n", c.Requests)
 	fmt.Fprintf(w, "Successful: %d\n", c.Successful)
 	fmt.Fprintf(w, "Failed: %d\n", c.Failed)
@@ -226,6 +226,6 @@ func trimRightSlash(url string) string {
 func init() {
 	rootCmd.AddCommand(metricsCmd)
 	metricsCmd.Flags().StringVar(&metricsAgent, "agent", "", "show detailed metrics for a single agent")
-	metricsCmd.Flags().BoolVar(&metricsJSON, "json", false, "emit caller metrics as JSON")
+	metricsCmd.Flags().BoolVar(&metricsJSON, "json", false, "emit agent metrics as JSON")
 	metricsCmd.Flags().StringVar(&metricsURL, "url", "http://localhost:8080", "base URL for talon server")
 }

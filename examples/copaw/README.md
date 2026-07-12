@@ -3,7 +3,7 @@
 This folder contains example configs for governing [CoPaw](https://github.com/agentscope-ai/CoPaw) with Talon as the LLM gateway.
 
 - **agent.talon.yaml** — Agent policy (cost limits, PII, audit).
-- **talon.config.yaml** — Gateway config with `copaw-main` caller and OpenAI provider.
+- **talon.config.yaml** — Gateway config with the OpenAI provider; the `copaw-main` agent identity lives in agent.talon.yaml (#266).
 
 Quick start:
 

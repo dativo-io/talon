@@ -22,7 +22,7 @@ import (
 // BenchmarkGatewayPipelineOverhead measures end-to-end gateway wall time for one
 // non-streaming chat completion through ServeHTTP, with a local mock upstream (no
 // WAN RTT). This approximates Talon pipeline overhead for a typical payload:
-// route, caller auth, PII scan, policy evaluation, forward, response PII scan,
+// route, agent auth, PII scan, policy evaluation, forward, response PII scan,
 // evidence write, and metrics.
 func BenchmarkGatewayPipelineOverhead(b *testing.B) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -40,19 +40,10 @@ func BenchmarkGatewayPipelineOverhead(b *testing.B) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: upstream.URL},
 		},
-		Callers: []CallerConfig{
-			{
-				Name: "bench-caller", TenantKey: "talon-gw-bench", TenantID: "default",
-				PolicyOverrides: &CallerPolicyOverrides{
-					AllowedModels: []string{"llama2"},
-					MaxDailyCost:  1000,
-				},
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
 		RateLimits: RateLimitsConfig{
-			GlobalRequestsPerMin:    1_000_000,
-			PerCallerRequestsPerMin: 1_000_000,
+			GlobalRequestsPerMin:   1_000_000,
+			PerAgentRequestsPerMin: 1_000_000,
 		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
@@ -79,7 +70,11 @@ func BenchmarkGatewayPipelineOverhead(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	gw, err := NewGateway(cfg, cls, evStore, secStore, policyEngine, nil)
+	registry := testRegistry(testIdentity("bench-agent", "default", "talon-gw-bench", &PolicyOverride{
+		AllowedModels: []string{"llama2"},
+		MaxDailyCost:  1000,
+	}))
+	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, policyEngine, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -115,7 +110,7 @@ func BenchmarkGatewayPipelineOverhead(b *testing.B) {
 // Anthropic wire format (/v1/messages) with a deterministic ~50KB system
 // prompt. The prompt repeats a fixed sentence containing a corpus email
 // (jane.doe@example.com) so the PII scanner does real work at large-prompt
-// scale: route, caller auth, request extract, PII scan, policy evaluation,
+// scale: route, agent auth, request extract, PII scan, policy evaluation,
 // forward, response PII scan, evidence write, and metrics.
 //
 // Informational only: this benchmark does not participate in the benchmark
@@ -136,19 +131,10 @@ func BenchmarkGatewayPipelineOverheadLargePrompt(b *testing.B) {
 		Providers: map[string]ProviderConfig{
 			"anthropic": {Enabled: true, BaseURL: upstream.URL},
 		},
-		Callers: []CallerConfig{
-			{
-				Name: "bench-caller-large", TenantKey: "talon-gw-bench-large", TenantID: "default",
-				PolicyOverrides: &CallerPolicyOverrides{
-					AllowedModels: []string{"claude-sonnet-4-20250514"},
-					MaxDailyCost:  1000,
-				},
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
 		RateLimits: RateLimitsConfig{
-			GlobalRequestsPerMin:    1_000_000,
-			PerCallerRequestsPerMin: 1_000_000,
+			GlobalRequestsPerMin:   1_000_000,
+			PerAgentRequestsPerMin: 1_000_000,
 		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
@@ -175,7 +161,11 @@ func BenchmarkGatewayPipelineOverheadLargePrompt(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	gw, err := NewGateway(cfg, cls, evStore, secStore, policyEngine, nil)
+	registry := testRegistry(testIdentity("bench-agent-large", "default", "talon-gw-bench-large", &PolicyOverride{
+		AllowedModels: []string{"claude-sonnet-4-20250514"},
+		MaxDailyCost:  1000,
+	}))
+	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, policyEngine, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -213,7 +203,7 @@ func BenchmarkGatewayPipelineOverheadLargePrompt(b *testing.B) {
 }
 
 // BenchmarkSessionBudgetLookup isolates the per-request cost the session
-// budget check (#198) adds to the hot path: one caller-scoped tuple read plus
+// budget check (#198) adds to the hot path: one agent-scoped tuple read plus
 // the stage-count read on a populated session store. Budget: well under 1 ms
 // per op (see docs/reference/benchmarks.md).
 func BenchmarkSessionBudgetLookup(b *testing.B) {
@@ -224,10 +214,10 @@ func BenchmarkSessionBudgetLookup(b *testing.B) {
 	}
 	defer ss.Close()
 	ctx := context.Background()
-	// Populate a realistic store: 200 sessions across callers.
+	// Populate a realistic store: 200 sessions across agents.
 	for i := 0; i < 200; i++ {
-		caller := "coder-" + strconv.Itoa(i%4)
-		if _, err := ss.GetOrCreateExternal(ctx, "default", caller, "sess-"+strconv.Itoa(i), talonsession.SourceClientAsserted); err != nil {
+		agent := "coder-" + strconv.Itoa(i%4)
+		if _, err := ss.GetOrCreateExternal(ctx, "default", agent, "sess-"+strconv.Itoa(i), talonsession.SourceClientAsserted); err != nil {
 			b.Fatal(err)
 		}
 	}

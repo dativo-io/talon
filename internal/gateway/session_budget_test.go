@@ -74,25 +74,16 @@ func newSessionBudgetGateway(t *testing.T, mode Mode, maxSessionCost float64) (e
 			"anthropic": {Enabled: true, BaseURL: anthropicURL, SecretName: "anthropic-key"},
 			"openai":    {Enabled: true, BaseURL: openaiURL, SecretName: "openai-key"},
 		},
-		Callers: []CallerConfig{
-			{
-				Name: "coder-a", TenantKey: sbTenantKeyA, TenantID: "tenant-a",
-				PolicyOverrides: &CallerPolicyOverrides{PIIAction: "warn", MaxSessionCost: maxSessionCost},
-			},
-			{
-				Name: "coder-b", TenantKey: sbTenantKeyB, TenantID: "tenant-a",
-				PolicyOverrides: &CallerPolicyOverrides{PIIAction: "warn", MaxSessionCost: maxSessionCost},
-			},
-			{
-				Name: "coder-x", TenantKey: sbTenantKeyX, TenantID: "tenant-b",
-				PolicyOverrides: &CallerPolicyOverrides{PIIAction: "warn", MaxSessionCost: maxSessionCost},
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn", ResponsePIIAction: "allow"},
-		RateLimits:     RateLimitsConfig{GlobalRequestsPerMin: 100000, PerCallerRequestsPerMin: 100000},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn", ResponsePIIAction: "allow"},
+		RateLimits:         RateLimitsConfig{GlobalRequestsPerMin: 100000, PerAgentRequestsPerMin: 100000},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	require.NoError(t, cfg.Validate())
+	registry := testRegistry(
+		testIdentity("coder-a", "tenant-a", sbTenantKeyA, &PolicyOverride{PIIAction: "warn", MaxSessionCost: maxSessionCost}),
+		testIdentity("coder-b", "tenant-a", sbTenantKeyB, &PolicyOverride{PIIAction: "warn", MaxSessionCost: maxSessionCost}),
+		testIdentity("coder-x", "tenant-b", sbTenantKeyX, &PolicyOverride{PIIAction: "warn", MaxSessionCost: maxSessionCost}),
+	)
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = evStore.Close() })
@@ -107,7 +98,7 @@ func newSessionBudgetGateway(t *testing.T, mode Mode, maxSessionCost float64) (e
 	sessStore, err = session.NewStore(filepath.Join(dir, "sess.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sessStore.Close() })
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, policyEngine, sbEstimator)
+	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, policyEngine, sbEstimator)
 	require.NoError(t, err)
 	gw.SetSessionStore(sessStore)
 	gw.SetPricingCurrency("USD")
@@ -153,7 +144,7 @@ func lastGatewayEvidence(t *testing.T, evStore *evidence.Store, tenant string) *
 
 // TestSessionBudget_CrossProviderDeny: €6 spent on anthropic against a €10
 // cap → the next request is denied on the OTHER provider route, because the
-// session accumulates per (tenant, caller, external id), not per provider.
+// session accumulates per (tenant, agent, external id), not per provider.
 func TestSessionBudget_CrossProviderDeny(t *testing.T) {
 	evStore, sessStore, h := newSessionBudgetGateway(t, ModeEnforce, 10)
 
@@ -187,10 +178,10 @@ func TestSessionBudget_CrossProviderDeny(t *testing.T) {
 	assert.False(t, ev.PolicyDecision.Allowed)
 }
 
-// TestSessionBudget_CallerAndTenantIsolation: the same external session id
-// under a different caller (same tenant) or different tenant is a separate
+// TestSessionBudget_AgentAndTenantIsolation: the same external session id
+// under a different agent (same tenant) or different tenant is a separate
 // session with a separate budget (#214, #215).
-func TestSessionBudget_CallerAndTenantIsolation(t *testing.T) {
+func TestSessionBudget_AgentAndTenantIsolation(t *testing.T) {
 	_, sessStore, h := newSessionBudgetGateway(t, ModeEnforce, 10)
 
 	// coder-a exhausts its cap under sess-shared.
@@ -206,7 +197,7 @@ func TestSessionBudget_CallerAndTenantIsolation(t *testing.T) {
 	recX := sbDo(t, h, "anthropic", sbTenantKeyX, "sess-shared")
 	require.Equal(t, http.StatusOK, recX.Code, recX.Body.String())
 
-	// Three distinct rows, one per (tenant, caller) tuple.
+	// Three distinct rows, one per (tenant, agent) tuple.
 	a, err := sessStore.GetByExternal(context.Background(), "tenant-a", "coder-a", "sess-shared")
 	require.NoError(t, err)
 	b, err := sessStore.GetByExternal(context.Background(), "tenant-a", "coder-b", "sess-shared")
@@ -215,7 +206,7 @@ func TestSessionBudget_CallerAndTenantIsolation(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, a.ID, b.ID)
 	assert.NotEqual(t, a.ID, x.ID)
-	assert.InDelta(t, sbActual, b.TotalCost, 1e-9, "caller-b budget untouched by caller-a spend")
+	assert.InDelta(t, sbActual, b.TotalCost, 1e-9, "agent-b budget untouched by agent-a spend")
 }
 
 // TestSessionBudget_SyntheticSessionsCreateNoRows: header-less traffic gets a
@@ -327,7 +318,7 @@ func TestSessionBudgetDetail_OnlyOnSessionDeny(t *testing.T) {
 	assert.Nil(t, sessionBudgetDetail([]string{"budget_exceeded: daily"}, map[string]interface{}{}, 1))
 	d := sessionBudgetDetail(
 		[]string{"session_budget_exceeded: session spend 6.00 + estimate 1.00 exceeds limit 5.00"},
-		map[string]interface{}{"caller_max_session_cost": 5.0, "session_cost_total": 6.0}, 1.0)
+		map[string]interface{}{"agent_max_session_cost": 5.0, "session_cost_total": 6.0}, 1.0)
 	require.NotNil(t, d)
 	assert.Equal(t, 5.0, d.Limit)
 	assert.Equal(t, 6.0, d.Spent)
@@ -359,26 +350,22 @@ func TestPolicyInputParity_WithAssertedSession(t *testing.T) {
 	require.NoError(t, sessStore.AddUsage(ctx, sess.ID, 4.5, 100))
 	require.NoError(t, sessStore.IncrementStageCount(ctx, sess.ID, "judge"))
 
+	agent := testIdentity("coder-a", "tenant-a", sbTenantKeyA, &PolicyOverride{MaxSessionCost: 10})
 	gw, err := NewGateway(&GatewayConfig{
 		Enabled: true, ListenPrefix: "/v1/proxy", Mode: ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "http://unused", SecretName: "k"},
 			"backup": {Enabled: true, BaseURL: "http://unused", SecretName: "k"},
 		},
-		Callers: []CallerConfig{{
-			Name: "coder-a", TenantKey: sbTenantKeyA, TenantID: "tenant-a",
-			PolicyOverrides: &CallerPolicyOverrides{MaxSessionCost: 10},
-		}},
 		Timeouts: TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
-	}, classifier.MustNewScanner(), nil, nil, nil, sbEstimator)
+	}, testRegistry(agent), classifier.MustNewScanner(), nil, nil, nil, sbEstimator)
 	require.NoError(t, err)
 	gw.SetSessionStore(sessStore)
 
-	caller := &gw.config.Callers[0]
 	assertedCtx := context.WithValue(ctx, gatewaySessionSourceKey, orchSourceClientAsserted)
 
-	primary, primaryUnavail := gw.buildPolicyInputForRequest(assertedCtx, caller, "openai", "gpt-4o-mini", 1, 0.01, 1, 2, "sess-parity")
-	candidate, candUnavail := gw.buildPolicyInputForRequest(assertedCtx, caller, "backup", "gpt-4o", 1, 0.02, 1, 2, "sess-parity")
+	primary, primaryUnavail := gw.buildPolicyInputForRequest(assertedCtx, agent, "openai", "gpt-4o-mini", 1, 0.01, 1, 2, "sess-parity")
+	candidate, candUnavail := gw.buildPolicyInputForRequest(assertedCtx, agent, "backup", "gpt-4o", 1, 0.02, 1, 2, "sess-parity")
 
 	require.False(t, primaryUnavail)
 	require.False(t, candUnavail)
@@ -387,8 +374,8 @@ func TestPolicyInputParity_WithAssertedSession(t *testing.T) {
 		"candidate must see the same session spend as the primary")
 	assert.Equal(t, primary["session_stage_counts"], candidate["session_stage_counts"],
 		"candidate must see the same stage counts as the primary")
-	assert.Equal(t, 10.0, primary["caller_max_session_cost"])
-	assert.Equal(t, primary["caller_max_session_cost"], candidate["caller_max_session_cost"])
+	assert.Equal(t, 10.0, primary["agent_max_session_cost"])
+	assert.Equal(t, primary["agent_max_session_cost"], candidate["agent_max_session_cost"])
 
 	primaryKeys := make([]string, 0, len(primary))
 	for k := range primary {

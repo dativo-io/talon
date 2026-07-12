@@ -3,8 +3,10 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -32,30 +34,110 @@ func IsAdminFromContext(ctx context.Context) bool {
 	return requestctx.IsAdmin(ctx)
 }
 
-// TenantKeyMiddleware returns a middleware that validates Authorization: Bearer <tenant_key>
-// and sets tenant_id in context. tenantKeys maps key -> tenant_id.
-func TenantKeyMiddleware(tenantKeys map[string]string) func(http.Handler) http.Handler {
+// AgentIdentityFromContext returns the resolved agent identity and true when
+// the request authenticated with an agent key (#266).
+func AgentIdentityFromContext(ctx context.Context) (requestctx.AgentIdentity, bool) {
+	return requestctx.AgentIdentityFrom(ctx)
+}
+
+// resolveRunAttribution decides the (tenant, agent) a native run/chat records
+// under (#266 review round 4). When the request authenticated with an agent
+// key, that resolved identity is AUTHORITATIVE: a body/header agent name or
+// tenant that differs is rejected (spoofing), and neither ever defaults to
+// "default". Admin and dev-mode requests keep the client-asserted values,
+// defaulting to "default", so operator tooling can still attribute a run to
+// any agent.
+func resolveRunAttribution(ctx context.Context, requestedTenant, requestedAgent string) (tenant, agent string, err error) {
+	if id, ok := requestctx.AgentIdentityFrom(ctx); ok {
+		if requestedAgent != "" && requestedAgent != id.AgentID {
+			return "", "", fmt.Errorf("agent %q does not match the authenticated agent key (bound to %q) — an agent key may only act as its own agent", requestedAgent, id.AgentID)
+		}
+		if requestedTenant != "" && requestedTenant != id.TenantID {
+			return "", "", fmt.Errorf("tenant %q does not match the authenticated agent's tenant %q", requestedTenant, id.TenantID)
+		}
+		return id.TenantID, id.AgentID, nil
+	}
+	tenant = requestctx.TenantID(ctx)
+	if tenant == "" {
+		tenant = requestedTenant
+	}
+	if tenant == "" {
+		tenant = "default"
+	}
+	agent = requestedAgent
+	if agent == "" {
+		agent = "default"
+	}
+	return tenant, agent, nil
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// agentReadScope returns the agent_id a tenant-API READ must be confined to
+// (#266 review round 4 — agent-scoped reads). An agent key may read only its
+// OWN agent's records: the returned filter is the authenticated agent name,
+// overriding any client-supplied agent_id. Admin and dev-mode requests use
+// the caller-supplied filter (tenant-wide operator visibility). The bool is
+// true when the request is agent-scoped.
+func agentReadScope(ctx context.Context, requestedAgentID string) (string, bool) {
+	if id, ok := requestctx.AgentIdentityFrom(ctx); ok {
+		return id.AgentID, true
+	}
+	return requestedAgentID, false
+}
+
+// recordVisibleToCaller reports whether a fetched-by-id record may be returned
+// to the caller: an agent key sees only records for its own agent (#266). The
+// tenant check is applied separately by each handler.
+func recordVisibleToCaller(ctx context.Context, recordAgentID string) bool {
+	if id, ok := requestctx.AgentIdentityFrom(ctx); ok {
+		return recordAgentID == id.AgentID
+	}
+	return true
+}
+
+// TenantKeyMiddleware returns a middleware that validates
+// Authorization: Bearer <agent key> and sets the resolved agent identity
+// (agent name, tenant, team) in context. agentKeys is the identity
+// registry's key → AuthPrincipal projection. Openness is governed by the
+// admin-key dev rule ONLY: an empty agent registry must never by itself open
+// tenant APIs when an admin key is configured (#266, #280).
+func TenantKeyMiddleware(agentKeys map[string]requestctx.AgentIdentity, adminKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Dev mode: no tenant keys configured.
-			if len(tenantKeys) == 0 {
+			// Dev mode: no auth configured at all.
+			if adminKey == "" && len(agentKeys) == 0 {
 				next.ServeHTTP(w, r)
 				return
 			}
 			key := bearerToken(r)
 			if key == "" {
-				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing tenant key")
+				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing agent key")
 				return
 			}
-			tenantID := lookupTenantID(tenantKeys, key)
-			if tenantID == "" {
-				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing tenant key")
+			id, ok := lookupAgentIdentity(agentKeys, key)
+			if !ok {
+				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing agent key")
 				return
 			}
-			r = r.WithContext(requestctx.SetTenantID(r.Context(), tenantID))
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(withAgentAuth(r.Context(), id)))
 		})
 	}
+}
+
+// withAgentAuth records both the derived tenant and the full resolved agent
+// identity so native handlers can bind attribution to the authenticated
+// agent, not a client-asserted name (#266 review round 4).
+func withAgentAuth(ctx context.Context, id requestctx.AgentIdentity) context.Context {
+	ctx = requestctx.SetTenantID(ctx, id.TenantID)
+	return requestctx.SetAgentIdentity(ctx, id)
 }
 
 // AdminKeyMiddleware returns a middleware that validates X-Talon-Admin-Key
@@ -82,14 +164,36 @@ func AdminKeyMiddleware(adminKey string) func(http.Handler) http.Handler {
 	}
 }
 
-// TenantOrAdminMiddleware allows either an admin key or tenant key.
+// RequireAdminKeyMiddleware is AdminKeyMiddleware WITHOUT the dev-open rule:
+// an absent admin key denies every request instead of enabling dev mode. Used
+// for the native execution routes when a gateway is served — those routes run
+// outside gateway.organization_policy and the resolved effective policy, so
+// leaving them unauthenticated just because the operator did not set
+// TALON_ADMIN_KEY would be a fail-open governance bypass (#266 review round 6:
+// gateway mode + no admin key must deny, not open).
+func RequireAdminKeyMiddleware(adminKey string) func(http.Handler) http.Handler {
+	inner := AdminKeyMiddleware(adminKey)
+	return func(next http.Handler) http.Handler {
+		guarded := inner(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if adminKey == "" {
+				writeError(w, http.StatusUnauthorized, "unauthorized",
+					"Native execution routes require TALON_ADMIN_KEY when a gateway is served (agent traffic must use /v1/proxy). Set TALON_ADMIN_KEY to enable them.")
+				return
+			}
+			guarded.ServeHTTP(w, r)
+		})
+	}
+}
+
+// TenantOrAdminMiddleware allows either an admin key or an agent key.
 // Admin auth checks X-Talon-Admin-Key first, then Bearer fallback.
-// Tenant auth checks Authorization: Bearer <tenant_key>.
-func TenantOrAdminMiddleware(tenantKeys map[string]string, adminKey string) func(http.Handler) http.Handler {
+// Agent auth checks Authorization: Bearer <agent key> (#266).
+func TenantOrAdminMiddleware(agentKeys map[string]requestctx.AgentIdentity, adminKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Dev mode: no auth configured.
-			if adminKey == "" && len(tenantKeys) == 0 {
+			if adminKey == "" && len(agentKeys) == 0 {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -101,14 +205,11 @@ func TenantOrAdminMiddleware(tenantKeys map[string]string, adminKey string) func
 				next.ServeHTTP(w, r)
 				return
 			}
-			tenantToken := bearerToken(r)
-			tenantID := lookupTenantID(tenantKeys, tenantToken)
-			if tenantID != "" {
-				r = r.WithContext(requestctx.SetTenantID(r.Context(), tenantID))
-				next.ServeHTTP(w, r)
+			if id, ok := lookupAgentIdentity(agentKeys, bearerToken(r)); ok {
+				next.ServeHTTP(w, r.WithContext(withAgentAuth(r.Context(), id)))
 				return
 			}
-			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing tenant/admin key. Use Authorization: Bearer <tenant_key> or ?talon_admin_key=YOUR_TALON_ADMIN_KEY for admin GET endpoints")
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing agent/admin key. Use Authorization: Bearer <agent key> or ?talon_admin_key=YOUR_TALON_ADMIN_KEY for admin GET endpoints")
 		})
 	}
 }
@@ -198,16 +299,25 @@ func bearerToken(r *http.Request) string {
 	return ""
 }
 
-func lookupTenantID(tenantKeys map[string]string, key string) string {
+// lookupAgentIdentity resolves a presented key to its authenticated identity.
+// Both sides are SHA-256 digested to a fixed length before the constant-time
+// compare, so timing does not vary with key length (#266 review round 4).
+// Returns (zero, false) for unknown keys.
+func lookupAgentIdentity(agentKeys map[string]requestctx.AgentIdentity, key string) (requestctx.AgentIdentity, bool) {
 	if key == "" {
-		return ""
+		return requestctx.AgentIdentity{}, false
 	}
-	for configuredKey, tenantID := range tenantKeys {
-		if subtle.ConstantTimeCompare([]byte(configuredKey), []byte(key)) == 1 {
-			return tenantID
+	presentedDigest := sha256.Sum256([]byte(key))
+	var match requestctx.AgentIdentity
+	found := false
+	for configuredKey, id := range agentKeys {
+		cfgDigest := sha256.Sum256([]byte(configuredKey))
+		if subtle.ConstantTimeCompare(cfgDigest[:], presentedDigest[:]) == 1 {
+			match = id
+			found = true
 		}
 	}
-	return ""
+	return match, found
 }
 
 func isValidAdminKeyValue(provided, adminKey string) bool {

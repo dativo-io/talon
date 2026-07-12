@@ -17,6 +17,7 @@ import (
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/tenant"
@@ -45,7 +46,7 @@ type Server struct {
 	gatewayDashboardHTML string
 	metricsCollector     *metrics.Collector
 	adminKey             string
-	tenantKeys           map[string]string
+	agentKeys            map[string]requestctx.AgentIdentity
 	corsOrigins          []string
 	policyPath           string
 	startTime            time.Time
@@ -67,6 +68,10 @@ type Server struct {
 	// server-side RunRequest so the agent runner applies compliance-aware
 	// routing consistently with the `talon run` CLI (#server-sovereignty).
 	sovereigntyMode string
+	// agentCapsLookup returns the effective daily/monthly caps for one agent,
+	// computed by the shared ResolveEffectivePolicy over the identity registry
+	// and injected by serve — the dashboard never re-derives caps (#266).
+	agentCapsLookup func(tenantID, agentID string) (daily, monthly float64, ok bool)
 }
 
 // SetClassifier attaches the process-wide scanner engine. Call after
@@ -159,7 +164,7 @@ func WithToolApprovalStore(tas *agent.ToolApprovalStore) Option {
 	return func(s *Server) { s.toolApprovalStoreRef = tas }
 }
 
-// WithGateway sets the LLM API gateway handler (optional). Mounted at /v1/proxy/* with its own caller auth.
+// WithGateway sets the LLM API gateway handler (optional). Mounted at /v1/proxy/* with its own agent-key auth.
 func WithGateway(h http.Handler) Option {
 	return func(s *Server) { s.gateway = h }
 }
@@ -167,6 +172,38 @@ func WithGateway(h http.Handler) Option {
 // WithProxyQuickstart sets the OpenAI-compatible host-root quickstart proxy facade.
 func WithProxyQuickstart(h http.Handler) Option {
 	return func(s *Server) { s.proxyQuickstart = h }
+}
+
+// WithAgentCapsLookup injects the per-agent effective-cap lookup (identity
+// registry + ResolveEffectivePolicy), keeping the dashboard budget view on the
+// same calculation path as enforcement (#266).
+func WithAgentCapsLookup(fn func(tenantID, agentID string) (daily, monthly float64, ok bool)) Option {
+	return func(s *Server) { s.agentCapsLookup = fn }
+}
+
+// WithAgentIdentities supplies the FULL key → identity projection (agent
+// name, tenant, team) from the identity registry, so native handlers bind
+// attribution to the authenticated agent rather than a client-asserted name
+// (#266 review round 4). It replaces the tenant-only map derived from
+// NewServer's tenantKeys argument. serve passes this; tests that only exercise
+// tenant scoping can omit it.
+func WithAgentIdentities(agentKeys map[string]requestctx.AgentIdentity) Option {
+	return func(s *Server) {
+		if agentKeys != nil {
+			s.agentKeys = agentKeys
+		}
+	}
+}
+
+// tenantKeysToIdentities converts a key → tenant map into a key → identity
+// map with tenant-only entries (no agent name). Used when a caller supplies
+// only tenant scoping; WithAgentIdentities overrides with the full identity.
+func tenantKeysToIdentities(tenantKeys map[string]string) map[string]requestctx.AgentIdentity {
+	out := make(map[string]requestctx.AgentIdentity, len(tenantKeys))
+	for k, t := range tenantKeys {
+		out[k] = requestctx.AgentIdentity{TenantID: t}
+	}
+	return out
 }
 
 // WithQuickstartEnabled toggles quickstart route behavior.
@@ -231,7 +268,7 @@ func NewServer(
 		policyPath:           policyPath,
 		secretsStore:         secretsStore,
 		adminKey:             adminKey,
-		tenantKeys:           tenantKeys,
+		agentKeys:            tenantKeysToIdentities(tenantKeys),
 		corsOrigins:          []string{"*"},
 		startTime:            time.Now(),
 		eventsStreamMaxConn:  256,
@@ -242,8 +279,8 @@ func NewServer(
 	for _, opt := range opts {
 		opt(s)
 	}
-	if s.tenantKeys == nil {
-		s.tenantKeys = make(map[string]string)
+	if s.agentKeys == nil {
+		s.agentKeys = make(map[string]requestctx.AgentIdentity)
 	}
 	return s
 }
@@ -271,7 +308,7 @@ func (s *Server) Routes() http.Handler {
 	// Webhooks (no auth; signature validation can be added later)
 	r.Post("/v1/triggers/{name}", s.webhookHandler.HandleWebhook)
 
-	// LLM API Gateway (caller identification via API key or source IP; no Talon auth middleware)
+	// LLM API Gateway (agent-key identification via the identity registry; no Talon auth middleware)
 	if s.gateway != nil {
 		r.Route("/v1/proxy", func(r chi.Router) {
 			r.Handle("/*", s.gateway)
@@ -283,24 +320,33 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/v1/responses", s.proxyQuickstart.ServeHTTP)
 	}
 
-	// Tenant-only API group
+	// Native EXECUTION routes. In a native-only deployment the agent key IS
+	// the governed path — the runner applies the agent's policy. But when the
+	// gateway is ALSO serving traffic, these routes run the agent's policy
+	// WITHOUT gateway.organization_policy, provider constraints, or the
+	// resolved effective policy — so an agent key could pick a native route
+	// to bypass org governance it cannot bypass through /v1/proxy. Require
+	// operator (admin) authority in that case; agent keys must use /v1/proxy
+	// (#266 review round 5). The requirement is STRICT: with no admin key
+	// configured these routes deny rather than falling into the dev-open rule,
+	// otherwise a gateway deployment without TALON_ADMIN_KEY would expose
+	// ungoverned execution to unauthenticated clients (#266 review round 6).
+	// Session completion is accounting, not LLM execution, so it stays
+	// agent-key in both configurations.
+	execAuth := TenantKeyMiddleware(s.agentKeys, s.adminKey)
+	if s.gateway != nil {
+		execAuth = RequireAdminKeyMiddleware(s.adminKey)
+	}
 	r.Group(func(r chi.Router) {
-		r.Use(TenantKeyMiddleware(s.tenantKeys))
+		r.Use(execAuth)
 		r.Use(RateLimitMiddleware(s.tenantManager))
 
 		// Long-running: no request timeout so handler 30min deadline applies (middleware.Timeout would override).
 		r.Post("/v1/agents/run", s.handleAgentRun)
-		switch {
-		case !s.quickstartEnabled:
+		// Quickstart serves ONLY the host-root facade — tenant agent chat is
+		// not mounted at all (#285).
+		if !s.quickstartEnabled {
 			r.Post("/v1/chat/completions", s.handleChatCompletions)
-		case len(s.tenantKeys) > 0:
-			// Quickstart mode: the relocated agent chat is only mounted when the
-			// operator has configured real tenant keys (e.g. via a gateway
-			// config). This preserves the strict "host-root facade only" boundary
-			// when quickstart is used without any tenant-auth setup: the
-			// relocated path returns 404 rather than becoming a dev-mode-open
-			// backdoor to tenant agent chat.
-			r.Post("/v1/agents/chat/completions", s.handleChatCompletions)
 		}
 		if s.mcpServer != nil {
 			r.Post("/mcp", s.mcpServer.ServeHTTP)
@@ -308,15 +354,19 @@ func (s *Server) Routes() http.Handler {
 		if s.mcpProxy != nil {
 			r.Post("/mcp/proxy", s.mcpProxy.ServeHTTP)
 		}
-		r.Post("/v1/sessions/{id}/complete", s.handleSessionComplete)
 		if s.graphEventsHandler != nil {
 			r.Post("/v1/graph/events", s.graphEventsHandler.ServeHTTP)
 		}
 	})
+	r.Group(func(r chi.Router) {
+		r.Use(TenantKeyMiddleware(s.agentKeys, s.adminKey))
+		r.Use(RateLimitMiddleware(s.tenantManager))
+		r.Post("/v1/sessions/{id}/complete", s.handleSessionComplete)
+	})
 
 	// Tenant or admin API group (mostly read paths).
 	r.Group(func(r chi.Router) {
-		r.Use(TenantOrAdminMiddleware(s.tenantKeys, s.adminKey))
+		r.Use(TenantOrAdminMiddleware(s.agentKeys, s.adminKey))
 		r.Use(RateLimitMiddleware(s.tenantManager))
 		r.Use(middleware.Timeout(defaultTimeout))
 
@@ -397,7 +447,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/v1/dashboard/audit-pack", s.handleAuditPack)
 		r.Get("/v1/dashboard/review-history", s.handleReviewHistory)
 
-		// CoPaw dashboard: stats and alerts for CoPaw gateway callers.
+		// CoPaw dashboard: stats and alerts for CoPaw-tagged gateway agents.
 		r.Get("/v1/copaw/stats", s.handleCoPawStats)
 		r.Get("/v1/copaw/alerts", s.handleCoPawAlerts)
 

@@ -145,11 +145,13 @@ var builtinPacks = []PackDescriptor{
 	{
 		ID:          "crewai",
 		DisplayName: "CrewAI",
-		Description: "Multi-agent crews — per-agent governance via separate caller keys",
+		Description: "Multi-agent crews — one agent per role, each with its own vault-bound key",
 		Order:       45,
 		Framework:   "CrewAI",
 		Files: []PackFile{
-			{TemplatePath: "templates/crewai/agent.talon.yaml", OutputPath: "agent.talon.yaml", Description: "Agent policy"},
+			{TemplatePath: "templates/crewai/agent.talon.yaml", OutputPath: "agent.talon.yaml", Description: "Agent policy (crew-researcher, primary)"},
+			{TemplatePath: "templates/crewai/agents/crew-writer.talon.yaml", OutputPath: "agents/crew-writer.talon.yaml", Description: "Agent policy (crew-writer)"},
+			{TemplatePath: "templates/crewai/agents/crew-reviewer.talon.yaml", OutputPath: "agents/crew-reviewer.talon.yaml", Description: "Agent policy (crew-reviewer)"},
 			{TemplatePath: "templates/crewai/talon.config.yaml", OutputPath: "talon.config.yaml", Description: "Infrastructure config"},
 		},
 		PostMessage: crewaiPostInit,
@@ -161,8 +163,9 @@ var builtinPacks = []PackDescriptor{
 		Order:       47,
 		Framework:   "Claude Code / Codex CLI",
 		Files: []PackFile{
-			{TemplatePath: "templates/coding-agents/agent.talon.yaml", OutputPath: "agent.talon.yaml", Description: "Agent policy (credential recognizers)"},
-			{TemplatePath: "templates/coding-agents/talon.config.yaml", OutputPath: "talon.config.yaml", Description: "Gateway config (claude-code + codex callers)"},
+			{TemplatePath: "templates/coding-agents/agent.talon.yaml", OutputPath: "agent.talon.yaml", Description: "Agent policy (claude-code, primary; credential recognizers)"},
+			{TemplatePath: "templates/coding-agents/agents/codex.talon.yaml", OutputPath: "agents/codex.talon.yaml", Description: "Agent policy (codex)"},
+			{TemplatePath: "templates/coding-agents/talon.config.yaml", OutputPath: "talon.config.yaml", Description: "Gateway config (organization baseline + providers)"},
 		},
 		PostMessage: codingAgentsPostInit,
 	},

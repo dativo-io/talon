@@ -176,11 +176,11 @@ func TestNormalizeStage(t *testing.T) {
 }
 
 // End-to-end: orchestration identity is recorded in signed evidence, groups by
-// session across provider routes, is caller-isolated, and rejected on hygiene
+// session across provider routes, is agent-isolated, and rejected on hygiene
 // violation before reaching evidence.
 const (
-	orchTenantKeyA = "talon-gw-orch-a-0001"
-	orchTenantKeyB = "talon-gw-orch-b-0001"
+	orchAgentKeyA = "talon-gw-orch-a-0001"
+	orchAgentKeyB = "talon-gw-orch-b-0001"
 )
 
 func newOrchGateway(t *testing.T, anthropicURL, openaiURL string, acceptA *bool) (*evidence.Store, http.Handler) {
@@ -194,21 +194,17 @@ func newOrchGateway(t *testing.T, anthropicURL, openaiURL string, acceptA *bool)
 			"anthropic": {Enabled: true, BaseURL: anthropicURL, SecretName: "anthropic-key"},
 			"openai":    {Enabled: true, BaseURL: openaiURL, SecretName: "openai-key"},
 		},
-		Callers: []CallerConfig{
-			{
-				Name: "orch-a", TenantKey: orchTenantKeyA, TenantID: "tenant-a", AcceptClientMetadata: acceptA,
-				PolicyOverrides: &CallerPolicyOverrides{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-			},
-			{
-				Name: "orch-b", TenantKey: orchTenantKeyB, TenantID: "tenant-b",
-				PolicyOverrides: &CallerPolicyOverrides{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-			},
-		},
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn", ResponsePIIAction: "allow", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-		RateLimits:     RateLimitsConfig{GlobalRequestsPerMin: 10000, PerCallerRequestsPerMin: 10000},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn", ResponsePIIAction: "allow", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		RateLimits:         RateLimitsConfig{GlobalRequestsPerMin: 10000, PerAgentRequestsPerMin: 10000},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	require.NoError(t, cfg.Validate())
+	idA := testIdentity("orch-a", "tenant-a", orchAgentKeyA,
+		&PolicyOverride{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000})
+	idA.AcceptClientMetadata = acceptA
+	idB := testIdentity("orch-b", "tenant-b", orchAgentKeyB,
+		&PolicyOverride{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000})
+	registry := testRegistry(idA, idB)
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = evStore.Close() })
@@ -218,7 +214,7 @@ func newOrchGateway(t *testing.T, anthropicURL, openaiURL string, acceptA *bool)
 	acl := secrets.ACL{Tenants: []string{"tenant-a", "tenant-b"}, Agents: []string{"*"}}
 	require.NoError(t, secStore.Set(context.Background(), "anthropic-key", []byte("sk-ant-test-000-orch"), acl))
 	require.NoError(t, secStore.Set(context.Background(), "openai-key", []byte("sk-test-000-orch"), acl))
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })
@@ -251,14 +247,14 @@ func lastEvidence(t *testing.T, evStore *evidence.Store, w *httptest.ResponseRec
 	return records[len(records)-1]
 }
 
-func postOrch(t *testing.T, router http.Handler, path, tenantKey string, headers map[string]string) *httptest.ResponseRecorder {
+func postOrch(t *testing.T, router http.Handler, path, agentKey string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
 	if strings.Contains(path, "anthropic") {
 		body = `{"model":"claude-sonnet-5","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}`
 	}
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://test"+path, bytes.NewReader([]byte(body)))
-	req.Header.Set("Authorization", "Bearer "+tenantKey)
+	req.Header.Set("Authorization", "Bearer "+agentKey)
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -272,7 +268,7 @@ func TestGatewayOrchestration_RecordedInEvidence(t *testing.T) {
 	up := orchUpstream(t, "openai")
 	evStore, router := newOrchGateway(t, up.URL, up.URL, nil)
 
-	w := postOrch(t, router, "/v1/proxy/openai/v1/chat/completions", orchTenantKeyA, map[string]string{
+	w := postOrch(t, router, "/v1/proxy/openai/v1/chat/completions", orchAgentKeyA, map[string]string{
 		"X-Claude-Code-Session-Id":      "session-xyz",
 		"X-Claude-Code-Agent-Id":        "opus-reviewer",
 		"X-Claude-Code-Parent-Agent-Id": "fable-main",
@@ -288,7 +284,7 @@ func TestGatewayOrchestration_RecordedInEvidence(t *testing.T) {
 	assert.Equal(t, orchSourceVendorAsserted, rec.Orchestration.SessionSource)
 	assert.Equal(t, orchProvenanceClientAsserted, rec.Orchestration.Provenance)
 	assert.Equal(t, "session-xyz", rec.SessionID, "orchestration session mirrors the session_id column")
-	// agent_id column stays the caller name (budgets depend on it).
+	// agent_id column stays the agent identity name (budgets depend on it).
 	assert.Equal(t, "orch-a", rec.AgentID)
 	assert.True(t, evStore.VerifyRecord(rec), "signature must verify with orchestration block")
 
@@ -304,22 +300,22 @@ func TestGatewayOrchestration_CrossProviderAndIsolation(t *testing.T) {
 	openaiUp := orchUpstream(t, "openai")
 	evStore, router := newOrchGateway(t, anthropicUp.URL, openaiUp.URL, nil)
 
-	// Same generic session id across two provider routes, same caller → group.
+	// Same generic session id across two provider routes, same agent → group.
 	sess := "shared-coding-session"
-	wA := postOrch(t, router, "/v1/proxy/anthropic/v1/messages", orchTenantKeyA, map[string]string{"X-Talon-Session-ID": sess, "X-Talon-Agent-ID": "sub1"})
+	wA := postOrch(t, router, "/v1/proxy/anthropic/v1/messages", orchAgentKeyA, map[string]string{"X-Talon-Session-ID": sess, "X-Talon-Agent-ID": "sub1"})
 	require.Equal(t, http.StatusOK, wA.Code, wA.Body.String())
-	wO := postOrch(t, router, "/v1/proxy/openai/v1/chat/completions", orchTenantKeyA, map[string]string{"X-Talon-Session-ID": sess, "X-Talon-Agent-ID": "sub2"})
+	wO := postOrch(t, router, "/v1/proxy/openai/v1/chat/completions", orchAgentKeyA, map[string]string{"X-Talon-Session-ID": sess, "X-Talon-Agent-ID": "sub2"})
 	require.Equal(t, http.StatusOK, wO.Code, wO.Body.String())
 
 	grouped, err := evStore.ListBySessionID(context.Background(), sess)
 	require.NoError(t, err)
-	assert.Len(t, grouped, 2, "both provider routes group under one caller-asserted session")
+	assert.Len(t, grouped, 2, "both provider routes group under one agent-asserted session")
 
-	// A DIFFERENT caller asserting the SAME session id is attributed to itself,
-	// not folded into caller A's session. Grouping stays caller-scoped: the raw
-	// session string is never a global key that one caller can join another's
-	// session with. (#194 caller-scoping.)
-	wB := postOrch(t, router, "/v1/proxy/openai/v1/chat/completions", orchTenantKeyB, map[string]string{"X-Talon-Session-ID": sess, "X-Talon-Agent-ID": "sub3"})
+	// A DIFFERENT agent asserting the SAME session id is attributed to itself,
+	// not folded into agent A's session. Grouping stays agent-scoped: the raw
+	// session string is never a global key that one agent can join another's
+	// session with. (#194 agent-scoping.)
+	wB := postOrch(t, router, "/v1/proxy/openai/v1/chat/completions", orchAgentKeyB, map[string]string{"X-Talon-Session-ID": sess, "X-Talon-Agent-ID": "sub3"})
 	require.Equal(t, http.StatusOK, wB.Code, wB.Body.String())
 
 	all, err := evStore.ListBySessionID(context.Background(), sess)
@@ -333,15 +329,15 @@ func TestGatewayOrchestration_CrossProviderAndIsolation(t *testing.T) {
 			bRecords++
 		}
 	}
-	assert.Equal(t, 2, aRecords, "both of caller A's provider routes")
-	assert.Equal(t, 1, bRecords, "caller B's record is attributed to caller B, not A")
+	assert.Equal(t, 2, aRecords, "both of agent A's provider routes")
+	assert.Equal(t, 1, bRecords, "agent B's record is attributed to agent B, not A")
 }
 
 func TestGatewayOrchestration_HygieneRejectedAtGateway(t *testing.T) {
 	up := orchUpstream(t, "openai")
 	_, router := newOrchGateway(t, up.URL, up.URL, nil)
 
-	w := postOrch(t, router, "/v1/proxy/openai/v1/chat/completions", orchTenantKeyA, map[string]string{
+	w := postOrch(t, router, "/v1/proxy/openai/v1/chat/completions", orchAgentKeyA, map[string]string{
 		"X-Talon-Agent-ID": `<script>alert(1)</script>`,
 	})
 	require.Equal(t, http.StatusBadRequest, w.Code)
@@ -354,10 +350,10 @@ func TestGatewayOrchestration_HygieneRejectedAtGateway(t *testing.T) {
 func TestGatewayOrchestration_FlagOff(t *testing.T) {
 	up := orchUpstream(t, "openai")
 	off := false
-	// caller orch-a with AcceptClientMetadata=false
+	// agent orch-a with AcceptClientMetadata=false
 	evStore, router := newOrchGateway(t, up.URL, up.URL, &off)
 
-	w := postOrch(t, router, "/v1/proxy/openai/v1/chat/completions", orchTenantKeyA, map[string]string{
+	w := postOrch(t, router, "/v1/proxy/openai/v1/chat/completions", orchAgentKeyA, map[string]string{
 		"X-Claude-Code-Session-Id": "cc-sess",
 		"X-Claude-Code-Agent-Id":   "cc-agent",
 	})

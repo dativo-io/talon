@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dativo-io/talon/internal/config"
+	"github.com/dativo-io/talon/internal/doctor"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
 )
@@ -372,6 +373,13 @@ func runQuickDoctorChecks() error {
 
 	if _, gwErr := gateway.LoadGatewayConfig(enforceGatewayConfig); gwErr != nil {
 		return fmt.Errorf("gateway config: %w", gwErr)
+	}
+	// Same identity preflight as `talon doctor` and gateway startup (#266
+	// review): enforcement must never be enabled for a gateway that cannot
+	// start — a missing agent policy, key binding, or unresolvable/colliding
+	// key fails here exactly like `talon serve --gateway` would.
+	if _, _, err := doctor.GatewayIdentityPreflight(context.Background()); err != nil {
+		return fmt.Errorf("agent identity preflight: %w", err)
 	}
 	return nil
 }

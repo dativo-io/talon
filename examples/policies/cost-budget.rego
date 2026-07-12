@@ -2,8 +2,8 @@
 #
 # Input shape:
 #   input.cost_estimate     float   Estimated cost in EUR for this request
-#   input.daily_cost_total  float   Accumulated daily cost for this caller
-#   input.monthly_cost_total float  Accumulated monthly cost for this caller
+#   input.daily_cost_total  float   Accumulated daily cost for this agent
+#   input.monthly_cost_total float  Accumulated monthly cost for this agent
 #   input.max_daily_cost    float   Configured daily limit
 #   input.max_monthly_cost  float   Configured monthly limit
 package talon.gateway

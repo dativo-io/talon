@@ -36,15 +36,17 @@ import (
 // Fixtures are sanitized: synthetic keys, example.com corpus emails only.
 
 const (
-	respConfTenantKeyWarn   = "talon-gw-respconf-warn-01"
-	respConfTenantKeyRedact = "talon-gw-respconf-redact-01"
+	respConfAgentKeyWarn   = "talon-gw-respconf-warn-01"
+	respConfAgentKeyRedact = "talon-gw-respconf-redact-01"
 )
 
 type responsesFixture struct {
-	Name            string          `json:"name"`
-	CallerPIIAction string          `json:"caller_pii_action"`
-	RequestBody     json.RawMessage `json:"request_body"`
-	Upstream        struct {
+	Name string `json:"name"`
+	// AgentPIIAction selects which registered agent replays the fixture
+	// (warn or redact). The json tag matches the recorded fixture corpus.
+	AgentPIIAction string          `json:"caller_pii_action"`
+	RequestBody    json.RawMessage `json:"request_body"`
+	Upstream       struct {
 		Status    int             `json:"status"`
 		JSON      json.RawMessage `json:"json,omitempty"`
 		SSEEvents []string        `json:"sse_events,omitempty"`
@@ -110,23 +112,19 @@ func newResponsesConformanceGateway(t *testing.T, upstreamURL, storeMode string)
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstreamURL, SecretName: "openai-key", ResponsesStoreMode: storeMode},
 		},
-		Callers: []CallerConfig{
-			{
-				Name: "respconf-warn", TenantKey: respConfTenantKeyWarn, TenantID: "respconf-tenant",
-				PolicyOverrides: &CallerPolicyOverrides{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-			},
-			{
-				Name: "respconf-redact", TenantKey: respConfTenantKeyRedact, TenantID: "respconf-tenant",
-				PolicyOverrides: &CallerPolicyOverrides{PIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-			},
-		},
 		// Response-side scanning stays out of request-path conformance:
 		// "allow" keeps SSE streams passing through byte-identically.
-		ServerDefaults: ServerDefaults{DefaultPIIAction: "warn", ResponsePIIAction: "allow", MaxDailyCost: 100, MaxMonthlyCost: 2000},
-		RateLimits:     RateLimitsConfig{GlobalRequestsPerMin: 10000, PerCallerRequestsPerMin: 10000},
-		Timeouts:       TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn", ResponsePIIAction: "allow", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		RateLimits:         RateLimitsConfig{GlobalRequestsPerMin: 10000, PerAgentRequestsPerMin: 10000},
+		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	require.NoError(t, cfg.Validate())
+	registry := testRegistry(
+		testIdentity("respconf-warn", "respconf-tenant", respConfAgentKeyWarn,
+			&PolicyOverride{PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000}),
+		testIdentity("respconf-redact", "respconf-tenant", respConfAgentKeyRedact,
+			&PolicyOverride{PIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000}),
+	)
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = evStore.Close() })
@@ -135,18 +133,18 @@ func newResponsesConformanceGateway(t *testing.T, upstreamURL, storeMode string)
 	t.Cleanup(func() { _ = secStore.Close() })
 	require.NoError(t, secStore.Set(context.Background(), "openai-key", []byte("sk-test-000-respconf"),
 		secrets.ACL{Tenants: []string{"respconf-tenant"}, Agents: []string{"*"}}))
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })
 	return evStore, r
 }
 
-func sendResponsesRequest(t *testing.T, router http.Handler, body []byte, tenantKey string) *httptest.ResponseRecorder {
+func sendResponsesRequest(t *testing.T, router http.Handler, body []byte, agentKey string) *httptest.ResponseRecorder {
 	t.Helper()
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		"http://test/v1/proxy/openai/v1/responses", bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+tenantKey)
+	req.Header.Set("Authorization", "Bearer "+agentKey)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -172,9 +170,9 @@ func TestConformanceResponses_Fixtures(t *testing.T) {
 		ran++
 		t.Run(fx.Name, func(t *testing.T) {
 			upstream.fixture.Store(&fx)
-			key := respConfTenantKeyWarn
-			if fx.CallerPIIAction == "redact" {
-				key = respConfTenantKeyRedact
+			key := respConfAgentKeyWarn
+			if fx.AgentPIIAction == "redact" {
+				key = respConfAgentKeyRedact
 			}
 			w := sendResponsesRequest(t, router, fx.RequestBody, key)
 
@@ -233,12 +231,12 @@ func TestConformanceResponses_StoreModes(t *testing.T) {
 		u := newUpstream(t)
 		_, router := newResponsesConformanceGateway(t, u.server.URL, ResponsesStorePreserve)
 
-		w := sendResponsesRequest(t, router, storeFalseBody, respConfTenantKeyWarn)
+		w := sendResponsesRequest(t, router, storeFalseBody, respConfAgentKeyWarn)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		forwarded, _ := u.lastBody.Load().(string)
 		assert.Contains(t, forwarded, `"store":false`, "explicit client store:false is a retention decision the gateway must not reverse")
 
-		w = sendResponsesRequest(t, router, storeAbsentBody, respConfTenantKeyWarn)
+		w = sendResponsesRequest(t, router, storeAbsentBody, respConfAgentKeyWarn)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		forwarded, _ = u.lastBody.Load().(string)
 		assert.NotContains(t, forwarded, `"store"`, "preserve must not invent a store field")
@@ -248,12 +246,12 @@ func TestConformanceResponses_StoreModes(t *testing.T) {
 		u := newUpstream(t)
 		_, router := newResponsesConformanceGateway(t, u.server.URL, ResponsesStoreForceIfAbsent)
 
-		w := sendResponsesRequest(t, router, storeAbsentBody, respConfTenantKeyWarn)
+		w := sendResponsesRequest(t, router, storeAbsentBody, respConfAgentKeyWarn)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		forwarded, _ := u.lastBody.Load().(string)
 		assert.Contains(t, forwarded, `"store":true`)
 
-		w = sendResponsesRequest(t, router, storeFalseBody, respConfTenantKeyWarn)
+		w = sendResponsesRequest(t, router, storeFalseBody, respConfAgentKeyWarn)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		forwarded, _ = u.lastBody.Load().(string)
 		assert.Contains(t, forwarded, `"store":false`, "explicit client intent is still honored")
@@ -263,7 +261,7 @@ func TestConformanceResponses_StoreModes(t *testing.T) {
 		u := newUpstream(t)
 		evStore, router := newResponsesConformanceGateway(t, u.server.URL, ResponsesStoreForceTrue)
 
-		w := sendResponsesRequest(t, router, storeFalseBody, respConfTenantKeyWarn)
+		w := sendResponsesRequest(t, router, storeFalseBody, respConfAgentKeyWarn)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		forwarded, _ := u.lastBody.Load().(string)
 		assert.Contains(t, forwarded, `"store":true`)
@@ -279,7 +277,7 @@ func TestConformanceResponses_StoreModes(t *testing.T) {
 		assert.True(t, evStore.VerifyRecord(rec))
 
 		// No override annotation when the client sent nothing to reverse.
-		w = sendResponsesRequest(t, router, storeAbsentBody, respConfTenantKeyWarn)
+		w = sendResponsesRequest(t, router, storeAbsentBody, respConfAgentKeyWarn)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		sid = w.Header().Get("X-Talon-Session-ID")
 		records, err = evStore.ListByCorrelationID(context.Background(), strings.TrimPrefix(sid, "sess_"))

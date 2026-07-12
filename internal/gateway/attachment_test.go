@@ -469,14 +469,14 @@ func TestScanRequestAttachments_FileSizeExceeded_BlockMode(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Regression: per-caller override allows a larger file than the extractor default.
+// Regression: the resolved policy allows a larger file than the extractor default.
 // Before the fix, ExtractBytes enforced the extractor's default limit, silently
 // skipping PII/injection scanning for files between the two limits.
 // ---------------------------------------------------------------------------
 
-func TestScanRequestAttachments_CallerOverrideLargerThanExtractorDefault(t *testing.T) {
+func TestScanRequestAttachments_PolicyLargerThanExtractorDefault(t *testing.T) {
 	defaultMaxMB := 1
-	callerMaxMB := 3
+	policyMaxMB := 3
 	fileSizeMB := 2
 
 	extractor := attachment.NewExtractor(defaultMaxMB)
@@ -490,7 +490,7 @@ func TestScanRequestAttachments_CallerOverrideLargerThanExtractorDefault(t *test
 	policy := &AttachmentPolicyConfig{
 		Action:          "warn",
 		InjectionAction: "warn",
-		MaxFileSizeMB:   callerMaxMB,
+		MaxFileSizeMB:   policyMaxMB,
 	}
 
 	result := ScanRequestAttachments(
@@ -502,7 +502,7 @@ func TestScanRequestAttachments_CallerOverrideLargerThanExtractorDefault(t *test
 	require.Len(t, result.Results, 1)
 
 	r := result.Results[0]
-	assert.True(t, r.TextExtracted, "text must be extracted using the caller's larger limit")
+	assert.True(t, r.TextExtracted, "text must be extracted using the policy's larger limit")
 	assert.True(t, r.PIIFound, "PII in the file must be detected, not silently skipped")
 	assert.NotEmpty(t, r.PIITypes)
 	assert.Equal(t, "allowed", r.ActionTaken, "warn mode does not block")
@@ -831,42 +831,42 @@ func TestIsTypeAllowed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Unit tests — ResolveAttachmentPolicy
+// Unit tests — effective attachment policy (baseline-only, #266)
 // ---------------------------------------------------------------------------
 
-func TestResolveAttachmentPolicy_DefaultsOnly(t *testing.T) {
-	def := &ServerDefaults{
+func TestEffectiveAttachmentPolicy_Baseline(t *testing.T) {
+	baseline := OrganizationPolicy{
 		AttachmentPolicy: &AttachmentPolicyConfig{
 			Action:          "warn",
 			InjectionAction: "warn",
 			MaxFileSizeMB:   10,
 		},
 	}
-	result := ResolveAttachmentPolicy(def, nil)
-	assert.Equal(t, "warn", result.Action)
-	assert.Equal(t, "warn", result.InjectionAction)
-	assert.Equal(t, 10, result.MaxFileSizeMB)
+	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, nil)
+	require.NotNil(t, eff.Attachment)
+	assert.Equal(t, "warn", eff.Attachment.Action)
+	assert.Equal(t, "warn", eff.Attachment.InjectionAction)
+	assert.Equal(t, 10, eff.Attachment.MaxFileSizeMB)
 }
 
-func TestResolveAttachmentPolicy_CallerOverride(t *testing.T) {
-	def := &ServerDefaults{
+func TestEffectiveAttachmentPolicy_AgentOverrideCannotChangeIt(t *testing.T) {
+	// Per-agent attachment overrides are deliberately not expressible (#266):
+	// the organization baseline applies unchanged even when the agent carries
+	// an override for other policy axes.
+	baseline := OrganizationPolicy{
 		AttachmentPolicy: &AttachmentPolicyConfig{
-			Action:          "warn",
+			Action:          "block",
 			InjectionAction: "warn",
 			MaxFileSizeMB:   10,
+			AllowedTypes:    []string{"pdf"},
 		},
 	}
-	overrides := &CallerPolicyOverrides{
-		AttachmentPolicy: &AttachmentPolicyConfig{
-			Action:       "block",
-			AllowedTypes: []string{"pdf"},
-		},
-	}
-	result := ResolveAttachmentPolicy(def, overrides)
-	assert.Equal(t, "block", result.Action, "caller override takes precedence")
-	assert.Equal(t, "warn", result.InjectionAction, "non-overridden fields inherit")
-	assert.Equal(t, 10, result.MaxFileSizeMB)
-	assert.Equal(t, []string{"pdf"}, result.AllowedTypes)
+	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, &PolicyOverride{PIIAction: "block"})
+	require.NotNil(t, eff.Attachment)
+	assert.Equal(t, "block", eff.Attachment.Action, "attachment policy comes from the organization baseline")
+	assert.Equal(t, "warn", eff.Attachment.InjectionAction)
+	assert.Equal(t, 10, eff.Attachment.MaxFileSizeMB)
+	assert.Equal(t, []string{"pdf"}, eff.Attachment.AllowedTypes)
 }
 
 // ---------------------------------------------------------------------------
@@ -883,7 +883,7 @@ func TestGateway_Attachment_WarnMode_PIIDetected(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.OrganizationPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "warn",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -910,7 +910,7 @@ func TestGateway_Attachment_BlockMode_PIIDetected(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.OrganizationPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "block",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -934,7 +934,7 @@ func TestGateway_Attachment_StripMode_PIIDetected(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.OrganizationPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "strip",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -968,7 +968,7 @@ func TestGateway_Attachment_NoFiles_NoOverhead(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.OrganizationPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "block",
 		InjectionAction: "block",
 		MaxFileSizeMB:   10,
@@ -991,7 +991,7 @@ func TestGateway_Attachment_InjectionBlock(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.OrganizationPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "warn",
 		InjectionAction: "block",
 		MaxFileSizeMB:   10,
@@ -1015,7 +1015,7 @@ func TestGateway_Attachment_HTMLSanitization(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.OrganizationPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "warn",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -1046,7 +1046,7 @@ func TestGateway_Attachment_CSVWithPII(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.AttachmentPolicy = defaultAttPolicy()
+	gw.config.OrganizationPolicy.AttachmentPolicy = defaultAttPolicy()
 
 	w := makeGatewayRequest(gw, body)
 	require.Equal(t, http.StatusOK, w.Code)
@@ -1072,7 +1072,7 @@ func TestGateway_Attachment_MixedTextAndFilePII(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.ServerDefaults.AttachmentPolicy = defaultAttPolicy()
+	gw.config.OrganizationPolicy.AttachmentPolicy = defaultAttPolicy()
 
 	fileContent := []byte("IBAN: DE89370400440532013000")
 	fileBlock := map[string]interface{}{

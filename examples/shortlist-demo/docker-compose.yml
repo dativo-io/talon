@@ -25,10 +25,15 @@ services:
       - TALON_SIGNING_KEY=demo-signing-key-not-for-production
       - TALON_LOG_LEVEL=info
       - TALON_LOG_FORMAT=json
+      # Which agent this gateway serves (#266): shortlist-allow (default),
+      # shortlist-policy-deny, or shortlist-eu-strict. The demo driver
+      # restarts the service with this set to switch proofs.
+      - TALON_ACT_AGENT=${TALON_ACT_AGENT:-shortlist-allow}
     volumes:
       - ./talon.config.shortlist.yaml:/etc/talon/talon.config.yaml:ro
       - ./talon.config.shortlist.yaml:/home/talon/.talon/talon.config.yaml:ro
       - ./agent.talon.yaml:/home/talon/agent.talon.yaml:ro
+      - ./agents:/home/talon/agents:ro
       - ./out:/home/talon/shortlist-out
       - talon-data:/home/talon/.talon
     depends_on:
@@ -44,7 +49,15 @@ services:
       - |
         set -e
         talon secrets set openai-api-key mock-demo-not-a-real-key >/dev/null 2>&1 || true
-        exec talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
+        # Agent traffic keys (#266): one per demo proof identity. The gateway
+        # serves ONE agent at a time; the demo driver switches proofs by
+        # restarting this service with TALON_ACT_AGENT (agents_dir single-
+        # process serving is #267).
+        talon secrets set shortlist-allow-talon-key talon-shortlist-allow >/dev/null 2>&1 || true
+        talon secrets set shortlist-deny-talon-key talon-shortlist-deny >/dev/null 2>&1 || true
+        talon secrets set shortlist-eu-talon-key talon-shortlist-eu >/dev/null 2>&1 || true
+        exec env TALON_DEFAULT_POLICY=/home/talon/agents/$${TALON_ACT_AGENT:-shortlist-allow}.talon.yaml \
+          talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
 
 volumes:
   talon-data:

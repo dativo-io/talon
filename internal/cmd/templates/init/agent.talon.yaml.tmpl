@@ -15,6 +15,13 @@ agent:
   description: AI agent with policy enforcement
   version: 1.0.0
   model_tier: 1
+  # tenant_id: acme   # omitted = "default"; one agent belongs to exactly one tenant (#266)
+  # One agent = one AI use case = one Talon traffic identity. The binding is a
+  # vault secret NAME (policy files are committed to Git — never raw keys).
+  # Mint the key clients will present to the gateway:
+  #   talon secrets set {{ .Name }}-talon-key "$(openssl rand -hex 24)"
+  key:
+    secret_name: "{{ .Name }}-talon-key"
 
 capabilities:
   allowed_tools:

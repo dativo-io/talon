@@ -14,6 +14,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/metrics"
+	"github.com/dativo-io/talon/internal/requestctx"
 )
 
 // TestDashboardIntegration_EvidenceToAPI is an integration test that proves
@@ -98,7 +99,7 @@ func TestDashboardIntegration_EvidenceToAPI(t *testing.T) {
 	srv := &Server{
 		metricsCollector:     collector,
 		gatewayDashboardHTML: "<html></html>",
-		tenantKeys:           map[string]string{},
+		agentKeys:            map[string]requestctx.AgentIdentity{},
 	}
 
 	// Call dashboard API
@@ -127,10 +128,10 @@ func TestDashboardIntegration_EvidenceToAPI(t *testing.T) {
 	assert.InDelta(t, 1.0/3.0, snap.Summary.ErrorRate, 0.01)
 
 	// Caller stats
-	require.GreaterOrEqual(t, len(snap.CallerStats), 2)
-	callerMap := map[string]metrics.CallerStat{}
-	for _, cs := range snap.CallerStats {
-		callerMap[cs.Caller] = cs
+	require.GreaterOrEqual(t, len(snap.AgentStats), 2)
+	callerMap := map[string]metrics.AgentStat{}
+	for _, cs := range snap.AgentStats {
+		callerMap[cs.Agent] = cs
 	}
 	assert.Equal(t, 2, callerMap["app-sales"].Requests)
 	assert.InDelta(t, 0.17, callerMap["app-sales"].CostEUR, 0.001)

@@ -21,7 +21,7 @@ import (
 type dataFlowInputs struct {
 	CorrelationID    string
 	TenantID         string
-	CallerName       string
+	AgentName        string
 	Provider         string
 	Model            string
 	Allowed          bool
@@ -130,7 +130,7 @@ func responseFlowItems(in dataFlowInputs) []evidence.DataFlowItem {
 		in.ResponsePII.Tier, in.ResponsePII.Entities,
 		disposition, evidence.FlowDestination{
 			Kind: evidence.FlowDestClient,
-			Name: in.CallerName,
+			Name: in.AgentName,
 		})}
 	if in.CacheStored {
 		items = append(items, evidence.NewDataFlowItem(
@@ -147,7 +147,7 @@ func responseFlowItems(in dataFlowInputs) []evidence.DataFlowItem {
 // emitDataFlowTelemetry attaches data-flow attributes to the current span and
 // emits a structured log line. Types, counts, and destinations only — never
 // raw values or digests.
-func (g *Gateway) emitDataFlowTelemetry(ctx context.Context, correlationID string, caller *CallerConfig, df *evidence.DataFlow) {
+func (g *Gateway) emitDataFlowTelemetry(ctx context.Context, correlationID string, agent *ResolvedIdentity, df *evidence.DataFlow) {
 	if df == nil || len(df.Items) == 0 {
 		return
 	}
@@ -175,8 +175,8 @@ func (g *Gateway) emitDataFlowTelemetry(ctx context.Context, correlationID strin
 	}
 	log.Info().
 		Str("correlation_id", correlationID).
-		Str("tenant_id", caller.TenantID).
-		Str("agent_id", caller.Name).
+		Str("tenant_id", agent.TenantID).
+		Str("agent_id", agent.Name).
 		Str("flow_destinations", destinations).
 		Str("flow_regions", regions).
 		Int("flow_items", len(df.Items)).

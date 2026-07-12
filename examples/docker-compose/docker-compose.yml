@@ -27,7 +27,11 @@ services:
   talon:
     build:
       context: ../../
-    command: serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        talon secrets set demo-agent-talon-key "talon-demo-key" >/dev/null 2>&1 || true
+        exec talon serve --port 8080 --gateway --gateway-config /etc/talon/talon.config.yaml
     ports:
       - "8080:8080"
     environment:

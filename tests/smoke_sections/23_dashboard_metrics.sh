@@ -25,6 +25,36 @@ test_section_23_dashboard_metrics() {
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   smoke_tighten_limits "$dir"
+  # Per-dimension agents (#266): metrics (baseline), pii-block, tool-filter.
+  # Phases restart the gateway with TALON_DEFAULT_POLICY; the dashboard
+  # collector backfills from evidence at startup, so cross-phase agent_stats
+  # survive restarts (multi-agent single-process serving is #267).
+  mkdir -p "$dir/agents"
+  dm_write_agent() { cat > "$dir/agents/$1.talon.yaml" <<AGEOF
+agent:
+  name: $1
+  version: 1.0.0
+  key:
+    secret_name: "$1-talon-key"
+policies:
+  cost_limits:
+    daily: 5.0
+$2
+AGEOF
+  }
+  dm_write_agent "metrics-agent" ""
+  dm_write_agent "pii-block-agent" "  data_classification:
+    input_scan: true
+    block_on_pii: true"
+  dm_write_agent "tool-filter-agent" ""
+  cat >> "$dir/agents/tool-filter-agent.talon.yaml" <<AGEOF
+capabilities:
+  forbidden_tools: ["exec_cmd"]
+  tool_policy_action: "filter"
+AGEOF
+  run_talon secrets set "metrics-agent-talon-key" "talon-gw-metrics-001" &>/dev/null || true
+  run_talon secrets set "pii-block-agent-talon-key" "talon-gw-pii-block-001" &>/dev/null || true
+  run_talon secrets set "tool-filter-agent-talon-key" "talon-gw-tool-filter-001" &>/dev/null || true
   # Add gateway config with dashboard token
   if [[ -f "$dir/talon.config.yaml" ]]; then
     if ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
@@ -39,31 +69,12 @@ gateway:
       enabled: true
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
-  callers:
-    - name: "metrics-caller"
-      tenant_key: "talon-gw-metrics-001"
-      tenant_id: "default"
-      allowed_providers: ["openai"]
-    - name: "pii-block-caller"
-      tenant_key: "talon-gw-pii-block-001"
-      tenant_id: "default"
-      allowed_providers: ["openai"]
-      policy_overrides:
-        pii_action: "block"
-    - name: "tool-filter-caller"
-      tenant_key: "talon-gw-tool-filter-001"
-      tenant_id: "default"
-      allowed_providers: ["openai"]
-      policy_overrides:
-        forbidden_tools: ["exec_cmd"]
-        tool_policy_action: "filter"
-  default_policy:
+  organization_policy:
     default_pii_action: "redact"
     forbidden_tools: ["delete_*"]
     tool_policy_action: "block"
     max_daily_cost: 100.00
     max_monthly_cost: 500.00
-    require_caller_id: true
 GWEOF
     fi
     # Enable semantic cache so dashboard cache_stats and CLI cache metrics can be tested.
@@ -87,29 +98,29 @@ CACHEEOF
   fi
   local GW_PID=""
   local gw_log_file="$dir/dashboard_gateway_serve.log"
-  run_talon serve --port "$dashboard_port" --gateway --gateway-config "$dir/talon.config.yaml" >"$gw_log_file" 2>&1 &
-  GW_PID=$!
-  if ! smoke_wait_health "$dashboard_base_url" 45 1; then
-    local gw_pid_state="running"
-    if ! kill -0 "$GW_PID" 2>/dev/null; then
-      wait "$GW_PID" 2>/dev/null
-      local gw_exit_code=$?
-      gw_pid_state="exited(${gw_exit_code})"
+  dm_stop() { [[ -n "$GW_PID" ]] && { kill "$GW_PID" 2>/dev/null || true; wait "$GW_PID" 2>/dev/null || true; GW_PID=""; }; }
+  dm_start() { # phase agent file; collector backfills prior evidence at startup
+    dm_stop
+    env TALON_DATA_DIR="$TALON_DATA_DIR" TALON_DEFAULT_POLICY="$dir/agents/$1.talon.yaml" \
+      talon serve --port "$dashboard_port" --gateway --gateway-config "$dir/talon.config.yaml" >>"$gw_log_file" 2>&1 &
+    GW_PID=$!
+    if ! smoke_wait_health "$dashboard_base_url" 45 1; then
+      local gw_pid_state="running"
+      if ! kill -0 "$GW_PID" 2>/dev/null; then
+        wait "$GW_PID" 2>/dev/null
+        gw_pid_state="exited($?)"
+      fi
+      log_failure "dashboard gateway server did not start (phase $1)" \
+        "url=${dashboard_base_url}/health pid=${GW_PID} state=${gw_pid_state}"
+      dump_diag_file "section 23 serve log" "$gw_log_file" 120
+      dump_diag_file "phase agent file" "$dir/agents/$1.talon.yaml"
+      dump_diag_env
+      dm_stop
+      return 1
     fi
-    log_failure "dashboard gateway server did not start on port ${dashboard_port}" \
-      "url=${dashboard_base_url}/health pid=${GW_PID} state=${gw_pid_state}"
-    dump_diag_file "section 23 serve log" "$gw_log_file" 120
-    dump_diag_file "talon.config.yaml" "$dir/talon.config.yaml"
-    dump_diag_env
-    if [[ -f "$gw_log_file" ]]; then
-      echo "    Last gateway log lines:"
-      tail -10 "$gw_log_file" | sed 's/^/    | /'
-    fi
-    kill "$GW_PID" 2>/dev/null || true
-    wait "$GW_PID" 2>/dev/null || true
-    cd "$REPO_ROOT" || true
     return 0
-  fi
+  }
+  if ! dm_start "metrics-agent"; then cd "$REPO_ROOT" || true; return 0; fi
   local admin_key="${TALON_ADMIN_KEY}"
   local gw_key="talon-gw-metrics-001"
 
@@ -186,8 +197,7 @@ CACHEEOF
   local gw_probe; gw_probe="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-metrics-001" "$SMOKE_BODY_EMPTY")"
   if [[ "$gw_probe" == "404" ]]; then
     log_failure "gateway routes not registered for dashboard metrics section" "proxy=${dashboard_base_url}${SMOKE_PATH_GW_PROXY} got=404"
-    kill "$GW_PID" 2>/dev/null || true
-    wait "$GW_PID" 2>/dev/null || true
+    dm_stop
     cd "$REPO_ROOT" || true
     return 0
   fi
@@ -207,32 +217,39 @@ CACHEEOF
   assert_pass "dashboard HTML contains Timeouts KPI" grep -qi "Timeouts" <<< "$dash_html"
   assert_pass "dashboard HTML contains Violation Trend (7d) panel" grep -qi "Violation Trend (7d)" <<< "$dash_html"
   # Header carries the pricing-table currency since #216 (e.g. "Cost/Success (USD)").
-  assert_pass "dashboard caller table contains Cost/Success column" grep -qi "Cost/Success" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Trend(7d) column" grep -qi "Trend(7d)" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Success column header" grep -q ">Success<" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Failed column header" grep -q ">Failed<" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Timeout column header" grep -q ">Timeout<" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Denied column header" grep -q ">Denied<" <<< "$dash_html"
-  assert_pass "dashboard caller table contains Rate column header" grep -q ">Rate<" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Cost/Success column" grep -qi "Cost/Success" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Trend(7d) column" grep -qi "Trend(7d)" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Success column header" grep -q ">Success<" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Failed column header" grep -q ">Failed<" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Timeout column header" grep -q ">Timeout<" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Denied column header" grep -q ">Denied<" <<< "$dash_html"
+  assert_pass "dashboard agent table contains Rate column header" grep -q ">Rate<" <<< "$dash_html"
 
-  # --- 23.2b: PII and tool governance config behaviour (different callers / default_policy) ---
-  # (1) PII block: caller with pii_action: "block" must get 400 on PII body
+  # --- 23.2b: PII and tool governance behaviour (per-agent overrides + organization baseline, #266) ---
+  # (1) PII block: agent with pii_action: "block" must get 400 on PII body
+  # Phase restart (#266): pii-block dimension runs as its own agent.
+  if ! dm_start "pii-block-agent"; then cd "$REPO_ROOT" || true; return 0; fi
   local pii_block_code; pii_block_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-pii-block-001" "$SMOKE_BODY_PII")"
   if [[ "$pii_block_code" == "400" ]]; then
-    echo "  ✓  PII block config: request with pii-block-caller returns 400"
+    echo "  ✓  PII block config: request with pii-block-agent returns 400"
     record_pass
   else
-    log_failure "PII block config: expected 400 for pii-block-caller + PII body" "got HTTP $pii_block_code"
+    log_failure "PII block config: expected 400 for pii-block-agent + PII body" "got HTTP $pii_block_code"
   fi
-  # (2) Tool block: default_policy forbidden_tools delete_* + tool_policy_action block → 403
-  local tool_block_code; tool_block_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer $gw_key" "$SMOKE_BODY_TOOL_BLOCK")"
+  # (2) Tool block: organization_policy forbidden_tools delete_* + tool_policy_action block → 403.
+  # The gateway serves the pii-block agent in this phase (#266: one agent per
+  # phase restart), so present THAT agent's key — the org tool baseline binds
+  # every agent, which is exactly what this probe demonstrates.
+  local tool_block_code; tool_block_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-pii-block-001" "$SMOKE_BODY_TOOL_BLOCK")"
   if [[ "$tool_block_code" == "403" ]]; then
     echo "  ✓  Tool block config: request with forbidden tool delete_all returns 403"
     record_pass
   else
     log_failure "Tool block config: expected 403 for request with forbidden tool delete_all" "got HTTP $tool_block_code"
   fi
-  # (3) Tool filter: caller with forbidden_tools exec_cmd + tool_policy_action filter → 200, tools stripped
+  # (3) Tool filter: agent with forbidden_tools exec_cmd + tool_policy_action filter → 200, tools stripped
+  # Phase restart (#266): tool-filter dimension runs as its own agent.
+  if ! dm_start "tool-filter-agent"; then cd "$REPO_ROOT" || true; return 0; fi
   local tool_filter_code; tool_filter_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-tool-filter-001" "$SMOKE_BODY_TOOL_FILTER")"
   if [[ "$tool_filter_code" == "200" ]]; then
     echo "  ✓  Tool filter config: request with allowed+forbidden tools returns 200 (forbidden stripped)"
@@ -240,9 +257,13 @@ CACHEEOF
   elif [[ "$tool_filter_code" == "400" ]]; then
     echo "  -  Tool filter config: got 400 (gateway may reject invalid tool payload or filter path returns 400)"
   else
-    log_failure "Tool filter config: expected 200 for tool-filter-caller with read_file+exec_cmd" "got HTTP $tool_filter_code"
+    log_failure "Tool filter config: expected 200 for tool-filter-agent with read_file+exec_cmd" "got HTTP $tool_filter_code"
   fi
 
+  # Phase restart (#266): back to the metrics agent; the fresh collector
+  # backfills ALL prior phases from evidence, so agent_stats rows for the
+  # pii-block and tool-filter agents survive.
+  if ! dm_start "metrics-agent"; then cd "$REPO_ROOT" || true; return 0; fi
   # --- 23.3: Make 20 gateway requests so metrics accumulate (cross-checks need volume) ---
   # Requests 1–2: cache (identical body); 3–12: normal (varied); 13–20: PII (canonical body)
   local req_num
@@ -318,33 +339,33 @@ CACHEEOF
   else
     log_failure "tool filter config: expected tools_filtered >= 1" "got $tools_filt"
   fi
-  local pii_blocker_blocked; pii_blocker_blocked="$(jq -r '[.caller_stats[] | select(.caller == "pii-block-caller") | .blocked] | add // 0' <<< "$snap_after")"
+  local pii_blocker_blocked; pii_blocker_blocked="$(jq -r '[.agent_stats[] | select(.agent == "pii-block-agent") | .blocked] | add // 0' <<< "$snap_after")"
   if [[ -n "$pii_blocker_blocked" ]] && [[ "$pii_blocker_blocked" != "null" ]] && [[ "$pii_blocker_blocked" -ge 1 ]]; then
-    echo "  ✓  caller pii-block-caller has blocked >= 1 ($pii_blocker_blocked)"
+    echo "  ✓  agent pii-block-agent has blocked >= 1 ($pii_blocker_blocked)"
     record_pass
   else
-    echo "  -  pii-block-caller blocked = ${pii_blocker_blocked:-null}"
+    echo "  -  pii-block-agent blocked = ${pii_blocker_blocked:-null}"
   fi
 
-  # Prompt 16: enhanced caller fields + ranges + trend shape
-  assert_pass "caller_stats entries include successful" \
-    jq -e 'all(.caller_stats[]; has("successful"))' <<< "$snap_after" &>/dev/null
-  assert_pass "caller_stats entries include failed" \
-    jq -e 'all(.caller_stats[]; has("failed"))' <<< "$snap_after" &>/dev/null
-  assert_pass "caller_stats entries include timed_out" \
-    jq -e 'all(.caller_stats[]; has("timed_out"))' <<< "$snap_after" &>/dev/null
-  assert_pass "caller_stats entries include denied" \
-    jq -e 'all(.caller_stats[]; has("denied"))' <<< "$snap_after" &>/dev/null
-  assert_pass "caller_stats entries include success_rate" \
-    jq -e 'all(.caller_stats[]; has("success_rate"))' <<< "$snap_after" &>/dev/null
-  assert_pass "caller_stats entries include cost_per_success" \
-    jq -e 'all(.caller_stats[]; has("cost_per_success"))' <<< "$snap_after" &>/dev/null
-  assert_pass "caller_stats entries include violation_trend" \
-    jq -e 'all(.caller_stats[]; has("violation_trend"))' <<< "$snap_after" &>/dev/null
+  # Prompt 16: enhanced agent fields + ranges + trend shape
+  assert_pass "agent_stats entries include successful" \
+    jq -e 'all(.agent_stats[]; has("successful"))' <<< "$snap_after" &>/dev/null
+  assert_pass "agent_stats entries include failed" \
+    jq -e 'all(.agent_stats[]; has("failed"))' <<< "$snap_after" &>/dev/null
+  assert_pass "agent_stats entries include timed_out" \
+    jq -e 'all(.agent_stats[]; has("timed_out"))' <<< "$snap_after" &>/dev/null
+  assert_pass "agent_stats entries include denied" \
+    jq -e 'all(.agent_stats[]; has("denied"))' <<< "$snap_after" &>/dev/null
+  assert_pass "agent_stats entries include success_rate" \
+    jq -e 'all(.agent_stats[]; has("success_rate"))' <<< "$snap_after" &>/dev/null
+  assert_pass "agent_stats entries include cost_per_success" \
+    jq -e 'all(.agent_stats[]; has("cost_per_success"))' <<< "$snap_after" &>/dev/null
+  assert_pass "agent_stats entries include violation_trend" \
+    jq -e 'all(.agent_stats[]; has("violation_trend"))' <<< "$snap_after" &>/dev/null
   assert_pass "success_rate values are in [0,1]" \
-    jq -e 'all(.caller_stats[]; (.success_rate >= 0 and .success_rate <= 1))' <<< "$snap_after" &>/dev/null
-  assert_pass "violation_trend has 7 points per caller" \
-    jq -e 'all(.caller_stats[]; (.violation_trend | type=="array" and length==7))' <<< "$snap_after" &>/dev/null
+    jq -e 'all(.agent_stats[]; (.success_rate >= 0 and .success_rate <= 1))' <<< "$snap_after" &>/dev/null
+  assert_pass "violation_trend has 7 points per agent" \
+    jq -e 'all(.agent_stats[]; (.violation_trend | type=="array" and length==7))' <<< "$snap_after" &>/dev/null
   local tg_filtered; tg_filtered="$(jq '.tool_governance.total_filtered' <<< "$snap_after")"
   if [[ -n "$tg_filtered" ]] && [[ "$tg_filtered" != "null" ]] && [[ "$tg_filtered" -ge 1 ]]; then
     echo "  ✓  tool_governance.total_filtered >= 1 ($tg_filtered)"
@@ -361,25 +382,25 @@ CACHEEOF
   else
     echo "  -  total_requests = $total_req (expected >= 15)"
   fi
-  # total_requests == sum(caller_stats[].requests)
-  local caller_sum; caller_sum="$(jq '[.caller_stats[].requests] | add // 0' <<< "$snap_after")"
-  if [[ -n "$total_req" ]] && [[ -n "$caller_sum" ]] && [[ "$caller_sum" != "null" ]]; then
-    if [[ "$total_req" -eq "$caller_sum" ]]; then
-      echo "  ✓  cross-check: total_requests ($total_req) == sum(caller_stats[].requests) ($caller_sum)"
+  # total_requests == sum(agent_stats[].requests)
+  local agent_sum; agent_sum="$(jq '[.agent_stats[].requests] | add // 0' <<< "$snap_after")"
+  if [[ -n "$total_req" ]] && [[ -n "$agent_sum" ]] && [[ "$agent_sum" != "null" ]]; then
+    if [[ "$total_req" -eq "$agent_sum" ]]; then
+      echo "  ✓  cross-check: total_requests ($total_req) == sum(agent_stats[].requests) ($agent_sum)"
       record_pass
     else
-      log_failure "metrics cross-check: total_requests ($total_req) != sum(caller_stats[].requests) ($caller_sum)" "invariant violation"
+      log_failure "metrics cross-check: total_requests ($total_req) != sum(agent_stats[].requests) ($agent_sum)" "invariant violation"
     fi
   fi
-  # blocked_requests == sum(caller_stats[].blocked)
+  # blocked_requests == sum(agent_stats[].blocked)
   local blocked_req; blocked_req="$(jq '.summary.blocked_requests' <<< "$snap_after")"
-  local caller_blocked_sum; caller_blocked_sum="$(jq '[.caller_stats[].blocked] | add // 0' <<< "$snap_after")"
-  if [[ -n "$blocked_req" ]] && [[ "$blocked_req" != "null" ]] && [[ -n "$caller_blocked_sum" ]] && [[ "$caller_blocked_sum" != "null" ]]; then
-    if [[ "$blocked_req" -eq "$caller_blocked_sum" ]]; then
-      echo "  ✓  cross-check: blocked_requests ($blocked_req) == sum(caller_stats[].blocked) ($caller_blocked_sum)"
+  local agent_blocked_sum; agent_blocked_sum="$(jq '[.agent_stats[].blocked] | add // 0' <<< "$snap_after")"
+  if [[ -n "$blocked_req" ]] && [[ "$blocked_req" != "null" ]] && [[ -n "$agent_blocked_sum" ]] && [[ "$agent_blocked_sum" != "null" ]]; then
+    if [[ "$blocked_req" -eq "$agent_blocked_sum" ]]; then
+      echo "  ✓  cross-check: blocked_requests ($blocked_req) == sum(agent_stats[].blocked) ($agent_blocked_sum)"
       record_pass
     else
-      log_failure "metrics cross-check: blocked_requests ($blocked_req) != sum(caller_stats[].blocked) ($caller_blocked_sum)" "invariant violation"
+      log_failure "metrics cross-check: blocked_requests ($blocked_req) != sum(agent_stats[].blocked) ($agent_blocked_sum)" "invariant violation"
     fi
   fi
   # pii_detections == sum(pii_breakdown[].count)
@@ -429,8 +450,8 @@ CACHEEOF
     jq -e '.pii_timeline | type == "array"' <<< "$snap_after" &>/dev/null
   assert_pass "snapshot has cost_timeline array" \
     jq -e '.cost_timeline | type == "array"' <<< "$snap_after" &>/dev/null
-  assert_pass "snapshot has caller_stats array" \
-    jq -e '.caller_stats | type == "array"' <<< "$snap_after" &>/dev/null
+  assert_pass "snapshot has agent_stats array" \
+    jq -e '.agent_stats | type == "array"' <<< "$snap_after" &>/dev/null
   assert_pass "snapshot has pii_breakdown array" \
     jq -e '.pii_breakdown | type == "array"' <<< "$snap_after" &>/dev/null
   assert_pass "snapshot has tool_governance object" \
@@ -531,24 +552,24 @@ CACHEEOF
     fi
   fi
 
-  # --- 23.6: Caller stats include our gateway caller ---
-  local callers; callers="$(jq -r '.caller_stats[].caller' <<< "$snap_after" 2>/dev/null)"
-  if echo "$callers" | grep -q "metrics-caller"; then
-    echo "  ✓  caller_stats includes metrics-caller"
+  # --- 23.6: Agent stats include our gateway agent ---
+  local agents_seen; agents_seen="$(jq -r '.agent_stats[].agent' <<< "$snap_after" 2>/dev/null)"
+  if echo "$agents_seen" | grep -q "metrics-agent"; then
+    echo "  ✓  agent_stats includes metrics-agent"
     record_pass
-    # Verify caller_stats sub-fields
-    assert_pass "caller_stats entry has requests field" \
-      jq -e '.caller_stats[] | select(.caller == "metrics-caller") | has("requests")' <<< "$snap_after" &>/dev/null
-    assert_pass "caller_stats entry has cost_eur field" \
-      jq -e '.caller_stats[] | select(.caller == "metrics-caller") | has("cost_eur")' <<< "$snap_after" &>/dev/null
-    assert_pass "caller_stats entry has avg_latency_ms field" \
-      jq -e '.caller_stats[] | select(.caller == "metrics-caller") | has("avg_latency_ms")' <<< "$snap_after" &>/dev/null
-    assert_pass "caller_stats entry has pii_detected field" \
-      jq -e '.caller_stats[] | select(.caller == "metrics-caller") | has("pii_detected")' <<< "$snap_after" &>/dev/null
-    assert_pass "caller_stats entry has blocked field" \
-      jq -e '.caller_stats[] | select(.caller == "metrics-caller") | has("blocked")' <<< "$snap_after" &>/dev/null
+    # Verify agent_stats sub-fields
+    assert_pass "agent_stats entry has requests field" \
+      jq -e '.agent_stats[] | select(.agent == "metrics-agent") | has("requests")' <<< "$snap_after" &>/dev/null
+    assert_pass "agent_stats entry has cost_eur field" \
+      jq -e '.agent_stats[] | select(.agent == "metrics-agent") | has("cost_eur")' <<< "$snap_after" &>/dev/null
+    assert_pass "agent_stats entry has avg_latency_ms field" \
+      jq -e '.agent_stats[] | select(.agent == "metrics-agent") | has("avg_latency_ms")' <<< "$snap_after" &>/dev/null
+    assert_pass "agent_stats entry has pii_detected field" \
+      jq -e '.agent_stats[] | select(.agent == "metrics-agent") | has("pii_detected")' <<< "$snap_after" &>/dev/null
+    assert_pass "agent_stats entry has blocked field" \
+      jq -e '.agent_stats[] | select(.agent == "metrics-agent") | has("blocked")' <<< "$snap_after" &>/dev/null
   else
-    echo "  -  caller_stats does not include metrics-caller (may use different name)"
+    echo "  -  agent_stats does not include metrics-agent (may use different name)"
   fi
 
   # --- 23.7: CLI costs ↔ dashboard cost parity ---
@@ -651,8 +672,8 @@ CACHEEOF
   assert_pass "talon metrics --json includes cost_per_success field" jq -e 'all(.[]; has("cost_per_success"))' <<< "$cli_metrics_json" &>/dev/null
   assert_pass "talon metrics --json includes timed_out field" jq -e 'all(.[]; has("timed_out"))' <<< "$cli_metrics_json" &>/dev/null
   assert_pass "talon metrics --json includes violation_trend field" jq -e 'all(.[]; has("violation_trend"))' <<< "$cli_metrics_json" &>/dev/null
-  local cli_metrics_agent; cli_metrics_agent="$(run_talon metrics --agent metrics-caller --url "$dashboard_base_url" 2>/dev/null)"; true
-  assert_pass "talon metrics --agent shows single-agent heading" grep -q "Agent Metrics: metrics-caller" <<< "$cli_metrics_agent"
+  local cli_metrics_agent; cli_metrics_agent="$(run_talon metrics --agent metrics-agent --url "$dashboard_base_url" 2>/dev/null)"; true
+  assert_pass "talon metrics --agent shows single-agent heading" grep -q "Agent Metrics: metrics-agent" <<< "$cli_metrics_agent"
   assert_pass "talon metrics --agent includes Violation trend (7d)" grep -q "Violation trend (7d)" <<< "$cli_metrics_agent"
 
   # --- 23.7b: CLI report ↔ dashboard evidence count + PII parity ---
@@ -797,10 +818,10 @@ CACHEEOF
   echo ""
   echo "  -- 23.11: Enhanced metrics consistency checks (Prompt 16) --"
 
-  # 23.11a: Per-caller outcome accounting: successful + failed + denied == requests
-  local caller_outcome_ok=true
-  for cname in $(jq -r '.caller_stats[].caller' <<< "$snap_after" 2>/dev/null); do
-    local cs; cs="$(jq --arg c "$cname" '.caller_stats[] | select(.caller == $c)' <<< "$snap_after")"
+  # 23.11a: Per-agent outcome accounting: successful + failed + denied == requests
+  local agent_outcome_ok=true
+  for cname in $(jq -r '.agent_stats[].agent' <<< "$snap_after" 2>/dev/null); do
+    local cs; cs="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c)' <<< "$snap_after")"
     local c_req c_succ c_fail c_deny c_tout
     c_req="$(jq '.requests' <<< "$cs")"
     c_succ="$(jq '.successful' <<< "$cs")"
@@ -814,7 +835,7 @@ CACHEEOF
     else
       log_failure "outcome accounting: $cname successful+failed+denied=$c_sum != requests=$c_req" \
         "succ=$c_succ fail=$c_fail deny=$c_deny tout=$c_tout req=$c_req"
-      caller_outcome_ok=false
+      agent_outcome_ok=false
     fi
     # timed_out must be <= failed (timeouts are a subset of failures)
     if [[ "$c_tout" -le "$c_fail" ]]; then
@@ -822,10 +843,10 @@ CACHEEOF
       record_pass
     else
       log_failure "timeout subset: $cname timed_out($c_tout) > failed($c_fail)" "invariant violation"
-      caller_outcome_ok=false
+      agent_outcome_ok=false
     fi
   done
-  echo "[SMOKE] CONSISTENCY|caller_outcome_accounting|${caller_outcome_ok}"
+  echo "[SMOKE] CONSISTENCY|agent_outcome_accounting|${agent_outcome_ok}"
 
   # 23.11b: Summary outcome accounting: total_successful + total_failed + total_denied == total_requests
   local s_succ s_fail s_deny s_tout s_total
@@ -863,25 +884,25 @@ CACHEEOF
     else
       log_failure "summary total_timed_out($s_tout) > total_failed($s_fail)" "invariant"
     fi
-    # summary totals == sum of per-caller fields
+    # summary totals == sum of per-agent fields
     local cs_succ_sum cs_fail_sum cs_deny_sum cs_tout_sum
-    cs_succ_sum="$(jq '[.caller_stats[].successful] | add // 0' <<< "$snap_after")"
-    cs_fail_sum="$(jq '[.caller_stats[].failed] | add // 0' <<< "$snap_after")"
-    cs_deny_sum="$(jq '[.caller_stats[].denied] | add // 0' <<< "$snap_after")"
-    cs_tout_sum="$(jq '[.caller_stats[].timed_out] | add // 0' <<< "$snap_after")"
+    cs_succ_sum="$(jq '[.agent_stats[].successful] | add // 0' <<< "$snap_after")"
+    cs_fail_sum="$(jq '[.agent_stats[].failed] | add // 0' <<< "$snap_after")"
+    cs_deny_sum="$(jq '[.agent_stats[].denied] | add // 0' <<< "$snap_after")"
+    cs_tout_sum="$(jq '[.agent_stats[].timed_out] | add // 0' <<< "$snap_after")"
     if [[ "$s_succ" -eq "$cs_succ_sum" ]] && [[ "$s_fail" -eq "$cs_fail_sum" ]] && [[ "$s_deny" -eq "$cs_deny_sum" ]] && [[ "$s_tout" -eq "$cs_tout_sum" ]]; then
-      echo "  ✓  summary totals == sum(caller_stats): succ=$s_succ fail=$s_fail deny=$s_deny tout=$s_tout"
+      echo "  ✓  summary totals == sum(agent_stats): succ=$s_succ fail=$s_fail deny=$s_deny tout=$s_tout"
       record_pass
     else
-      log_failure "summary vs caller_stats sum mismatch" \
-        "summary: succ=$s_succ fail=$s_fail deny=$s_deny tout=$s_tout | callers: succ=$cs_succ_sum fail=$cs_fail_sum deny=$cs_deny_sum tout=$cs_tout_sum"
+      log_failure "summary vs agent_stats sum mismatch" \
+        "summary: succ=$s_succ fail=$s_fail deny=$s_deny tout=$s_tout | agents: succ=$cs_succ_sum fail=$cs_fail_sum deny=$cs_deny_sum tout=$cs_tout_sum"
     fi
   fi
   echo "[SMOKE] CONSISTENCY|summary_outcome_accounting|succ=$s_succ fail=$s_fail deny=$s_deny tout=$s_tout total=$s_total"
 
-  # 23.11c: Cost-per-success consistency per caller: cost_per_success * successful ≈ cost attributed to successes
-  for cname in $(jq -r '.caller_stats[] | select(.successful > 0) | .caller' <<< "$snap_after" 2>/dev/null); do
-    local cs; cs="$(jq --arg c "$cname" '.caller_stats[] | select(.caller == $c)' <<< "$snap_after")"
+  # 23.11c: Cost-per-success consistency per agent: cost_per_success * successful ≈ cost attributed to successes
+  for cname in $(jq -r '.agent_stats[] | select(.successful > 0) | .agent' <<< "$snap_after" 2>/dev/null); do
+    local cs; cs="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c)' <<< "$snap_after")"
     local cps c_succ c_cost
     cps="$(jq '.cost_per_success' <<< "$cs")"
     c_succ="$(jq '.successful' <<< "$cs")"
@@ -894,7 +915,7 @@ CACHEEOF
       else
         echo "  -  $cname cost_per_success ($cps) is 0 despite $c_succ successes and cost $c_cost"
       fi
-      # cost_per_success * successful <= total caller cost (successes can't cost more than total)
+      # cost_per_success * successful <= total agent cost (successes can't cost more than total)
       local success_cost; success_cost="$(echo "scale=8; $cps * $c_succ" | bc -l 2>/dev/null || echo 0)"
       if [[ "$(echo "$success_cost <= $c_cost + 0.0001" | bc -l 2>/dev/null || echo 0)" == "1" ]]; then
         echo "  ✓  $cname cost_per_success*successful ($success_cost) <= total cost ($c_cost)"
@@ -905,11 +926,11 @@ CACHEEOF
     fi
   done
 
-  # 23.11d: Violation trend: today's date must appear in at least one caller's trend
+  # 23.11d: Violation trend: today's date must appear in at least one agent's trend
   local today_key; today_key="$(date -u +%Y-%m-%d)"
-  local trend_has_today; trend_has_today="$(jq --arg d "$today_key" '[.caller_stats[].violation_trend[] | select(.date == $d)] | length' <<< "$snap_after")"
+  local trend_has_today; trend_has_today="$(jq --arg d "$today_key" '[.agent_stats[].violation_trend[] | select(.date == $d)] | length' <<< "$snap_after")"
   if [[ -n "$trend_has_today" ]] && [[ "$trend_has_today" -gt 0 ]]; then
-    echo "  ✓  violation_trend contains today's date ($today_key) across callers"
+    echo "  ✓  violation_trend contains today's date ($today_key) across agents"
     record_pass
   else
     echo "  -  violation_trend does not contain today's date ($today_key) — may be UTC vs local"
@@ -917,7 +938,7 @@ CACHEEOF
   # All trend dates must be valid YYYY-MM-DD and ordered oldest→newest
   assert_pass "violation_trend dates are valid and ordered" \
     jq -e '
-      all(.caller_stats[];
+      all(.agent_stats[];
         (.violation_trend | length == 7)
         and all(.violation_trend[]; .date | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))
         and (
@@ -932,17 +953,17 @@ CACHEEOF
   local cli_snap; cli_snap="$(run_talon metrics --json --url "$dashboard_base_url" 2>/dev/null)"; true
   local dash_snap; dash_snap="$(smoke_gw_get_metrics "$dashboard_base_url" "$admin_key")"
   if jq -e 'type=="array"' <<< "$cli_snap" &>/dev/null && jq -e '.' <<< "$dash_snap" &>/dev/null; then
-    # CLI metrics --json returns caller_stats; compare counts for each caller
-    for cname in $(jq -r '.[].caller' <<< "$cli_snap" 2>/dev/null); do
+    # CLI metrics --json returns agent_stats; compare counts for each agent
+    for cname in $(jq -r '.[].agent' <<< "$cli_snap" 2>/dev/null); do
       local cli_req dash_req cli_sr dash_sr cli_cps dash_cps cli_tout dash_tout
-      cli_req="$(jq --arg c "$cname" '.[] | select(.caller == $c) | .requests' <<< "$cli_snap")"
-      dash_req="$(jq --arg c "$cname" '.caller_stats[] | select(.caller == $c) | .requests' <<< "$dash_snap")"
-      cli_sr="$(jq --arg c "$cname" '.[] | select(.caller == $c) | .success_rate' <<< "$cli_snap")"
-      dash_sr="$(jq --arg c "$cname" '.caller_stats[] | select(.caller == $c) | .success_rate' <<< "$dash_snap")"
-      cli_cps="$(jq --arg c "$cname" '.[] | select(.caller == $c) | .cost_per_success' <<< "$cli_snap")"
-      dash_cps="$(jq --arg c "$cname" '.caller_stats[] | select(.caller == $c) | .cost_per_success' <<< "$dash_snap")"
-      cli_tout="$(jq --arg c "$cname" '.[] | select(.caller == $c) | .timed_out' <<< "$cli_snap")"
-      dash_tout="$(jq --arg c "$cname" '.caller_stats[] | select(.caller == $c) | .timed_out' <<< "$dash_snap")"
+      cli_req="$(jq --arg c "$cname" '.[] | select(.agent == $c) | .requests' <<< "$cli_snap")"
+      dash_req="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .requests' <<< "$dash_snap")"
+      cli_sr="$(jq --arg c "$cname" '.[] | select(.agent == $c) | .success_rate' <<< "$cli_snap")"
+      dash_sr="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .success_rate' <<< "$dash_snap")"
+      cli_cps="$(jq --arg c "$cname" '.[] | select(.agent == $c) | .cost_per_success' <<< "$cli_snap")"
+      dash_cps="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .cost_per_success' <<< "$dash_snap")"
+      cli_tout="$(jq --arg c "$cname" '.[] | select(.agent == $c) | .timed_out' <<< "$cli_snap")"
+      dash_tout="$(jq --arg c "$cname" '.agent_stats[] | select(.agent == $c) | .timed_out' <<< "$dash_snap")"
       # Requests: CLI may lag by 1-2 if a request lands between the two fetches
       if [[ -n "$cli_req" ]] && [[ -n "$dash_req" ]] && [[ "$cli_req" != "null" ]] && [[ "$dash_req" != "null" ]]; then
         local req_diff=$(( dash_req - cli_req ))
@@ -1034,9 +1055,9 @@ CACHEEOF
       log_failure "live-traffic success_rate out of range: $live_sr" "invariant"
     fi
   fi
-  # violation_trend still 7 entries per caller after live traffic
+  # violation_trend still 7 entries per agent after live traffic
   assert_pass "violation_trend still 7 entries after live traffic" \
-    jq -e 'all(.caller_stats[]; (.violation_trend | length == 7))' <<< "$snap_after_live" &>/dev/null
+    jq -e 'all(.agent_stats[]; (.violation_trend | length == 7))' <<< "$snap_after_live" &>/dev/null
   # outcome accounting still holds after live traffic
   local live_s_succ live_s_fail live_s_deny live_s_total
   live_s_succ="$(jq '.summary.total_successful' <<< "$snap_after_live")"
@@ -1199,8 +1220,7 @@ CACHEEOF
 
   echo "[SMOKE] CONSISTENCY|ssot_evidence_first_block|complete"
 
-  kill "$GW_PID" 2>/dev/null || true
-  wait "$GW_PID" 2>/dev/null || true
+  dm_stop
   sleep 2
   cd "$REPO_ROOT" || true
 }

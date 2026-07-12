@@ -402,7 +402,7 @@ func parseUsageFromJSON(body []byte, _ string, usage *TokenUsage) {
 	}
 	// Anthropic /v1/messages/count_tokens responds {"input_tokens": N} with no
 	// usage wrapper; record the count so evidence carries a meaningful token
-	// figure (the request itself is free — cost is zeroed by the caller).
+	// figure (the request itself is free — cost is zeroed by the agent).
 	if n, _ := m["input_tokens"].(float64); n > 0 {
 		usage.Input = int(n)
 	}

@@ -23,7 +23,6 @@ import (
 
 var (
 	costsAgent        string
-	costsCaller       string
 	costsTenant       string
 	costsByModel      bool
 	costsByProvider   bool
@@ -35,7 +34,6 @@ var (
 	costsExportTo     string
 	costsExportTenant string
 	costsExportAgent  string
-	costsExportCaller string
 	costsExportOutput string
 	costsExportLimit  int
 )
@@ -103,12 +101,6 @@ var costsCmd = &cobra.Command{
 		tenantID := costsTenant
 		if tenantID == "" {
 			tenantID = "default"
-		}
-		if costsCaller != "" {
-			if costsAgent != "" && costsAgent != costsCaller {
-				return fmt.Errorf("--agent (%s) and --caller (%s) refer to different values", costsAgent, costsCaller)
-			}
-			costsAgent = costsCaller
 		}
 
 		if costsSession != "" {
@@ -301,8 +293,8 @@ func resolveBudgetUsage(
 	daily, monthly float64,
 ) (dailyBudget *budgetUsage, monthlyBudget *budgetUsage) {
 	if agentID != "" {
-		if dailyLimit, monthlyLimit, ok := loadGatewayCallerBudgetCaps(tenantID, agentID); ok {
-			return toBudgetUsage(daily, dailyLimit, "gateway_caller_cap"), toBudgetUsage(monthly, monthlyLimit, "gateway_caller_cap")
+		if dailyLimit, monthlyLimit, ok := loadAgentEffectiveCaps(ctx, cfg, tenantID, agentID); ok {
+			return toBudgetUsage(daily, dailyLimit, "agent_effective_cap"), toBudgetUsage(monthly, monthlyLimit, "agent_effective_cap")
 		}
 	}
 	pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
@@ -313,33 +305,34 @@ func resolveBudgetUsage(
 	return toBudgetUsage(daily, cl.Daily, "policy_cost_limits"), toBudgetUsage(monthly, cl.Monthly, "policy_cost_limits")
 }
 
-func loadGatewayCallerBudgetCaps(tenantID, callerID string) (dailyLimit float64, monthlyLimit float64, ok bool) {
+// loadAgentEffectiveCaps reports the agent's effective daily/monthly caps via
+// the SAME computation enforcement uses: organization baseline → the agent's
+// one override (ResolveEffectivePolicy). `talon costs` must never disagree
+// with what runtime gated on (#216, #266). Caps are provider-independent, so
+// the destination constraints are empty.
+func loadAgentEffectiveCaps(ctx context.Context, cfg *config.Config, tenantID, agentID string) (dailyLimit float64, monthlyLimit float64, ok bool) {
 	path := strings.TrimSpace(os.Getenv("TALON_GATEWAY_CONFIG"))
 	if path == "" {
 		path = "talon.config.yaml"
 	}
-	cfg, err := gateway.LoadGatewayConfig(path)
+	gwCfg, err := gateway.LoadGatewayConfig(path)
 	if err != nil {
 		return 0, 0, false
 	}
-	for i := range cfg.Callers {
-		caller := cfg.Callers[i]
-		if caller.Name != callerID || caller.TenantID != tenantID {
-			continue
-		}
-		daily := cfg.ServerDefaults.MaxDailyCost
-		monthly := cfg.ServerDefaults.MaxMonthlyCost
-		if caller.PolicyOverrides != nil {
-			if caller.PolicyOverrides.MaxDailyCost > 0 {
-				daily = caller.PolicyOverrides.MaxDailyCost
-			}
-			if caller.PolicyOverrides.MaxMonthlyCost > 0 {
-				monthly = caller.PolicyOverrides.MaxMonthlyCost
-			}
-		}
-		return daily, monthly, daily > 0 || monthly > 0
+	pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
+	if err != nil || pol == nil {
+		return 0, 0, false
 	}
-	return 0, 0, false
+	la := LoadedAgentFromPolicy(pol, cfg.DefaultPolicy)
+	agentTenant := la.TenantID
+	if agentTenant == "" {
+		agentTenant = "default"
+	}
+	if la.Name != agentID || agentTenant != tenantID {
+		return 0, 0, false
+	}
+	eff := gateway.ResolveEffectivePolicy(gwCfg.OrganizationPolicy, gateway.ProviderConfig{}, la.Override)
+	return eff.MaxDailyCost, eff.MaxMonthlyCost, eff.MaxDailyCost > 0 || eff.MaxMonthlyCost > 0
 }
 
 func toBudgetUsage(used, limit float64, source string) *budgetUsage {
@@ -425,12 +418,6 @@ func costsExport(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	agentID := strings.TrimSpace(costsExportAgent)
-	if caller := strings.TrimSpace(costsExportCaller); caller != "" {
-		if agentID != "" && agentID != caller {
-			return fmt.Errorf("--agent (%s) and --caller (%s) refer to different values", agentID, caller)
-		}
-		agentID = caller
-	}
 	tenantID := strings.TrimSpace(costsExportTenant)
 	if tenantID == "" {
 		tenantID = "default"
@@ -657,7 +644,6 @@ func init() {
 	rootCmd.AddCommand(costsCmd)
 	costsCmd.AddCommand(costsExportCmd)
 	costsCmd.Flags().StringVar(&costsAgent, "agent", "", "filter by agent name")
-	costsCmd.Flags().StringVar(&costsCaller, "caller", "", "filter by caller name (alias for --agent)")
 	costsCmd.Flags().StringVar(&costsTenant, "tenant", "", "tenant ID (default: default)")
 	costsCmd.Flags().BoolVar(&costsByModel, "by-model", false, "group output by model")
 	costsCmd.Flags().BoolVar(&costsByProvider, "by-provider", false, "group output by provider")
@@ -669,7 +655,6 @@ func init() {
 	costsExportCmd.Flags().StringVar(&costsExportTo, "to", "", "end date (YYYY-MM-DD)")
 	costsExportCmd.Flags().StringVar(&costsExportTenant, "tenant", "", "tenant ID (default: default)")
 	costsExportCmd.Flags().StringVar(&costsExportAgent, "agent", "", "filter by agent name")
-	costsExportCmd.Flags().StringVar(&costsExportCaller, "caller", "", "filter by caller name (alias for --agent)")
 	costsExportCmd.Flags().StringVar(&costsExportOutput, "output", "", "write to file instead of stdout")
 	costsExportCmd.Flags().IntVar(&costsExportLimit, "limit", 10000, "maximum records to export")
 }

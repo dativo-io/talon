@@ -17,7 +17,7 @@ type OperationalEvent struct {
 	CorrelationID  string    `json:"correlation_id,omitempty"`
 	Timestamp      time.Time `json:"timestamp"`
 	TenantID       string    `json:"tenant_id"`
-	Caller         string    `json:"caller,omitempty"`
+	Agent          string    `json:"agent,omitempty"`
 	AgentID        string    `json:"agent_id,omitempty"`
 	InvocationType string    `json:"invocation_type,omitempty"`
 	Decision       string    `json:"decision"`
@@ -51,7 +51,7 @@ func FromEvidence(ev *evidence.Evidence) OperationalEvent {
 		CorrelationID:  ev.CorrelationID,
 		Timestamp:      ev.Timestamp.UTC(),
 		TenantID:       ev.TenantID,
-		Caller:         firstNonEmpty(ev.RequestSourceID, ev.AgentID),
+		Agent:          firstNonEmpty(ev.RequestSourceID, ev.AgentID),
 		AgentID:        ev.AgentID,
 		InvocationType: ev.InvocationType,
 		Allowed:        ev.PolicyDecision.Allowed,

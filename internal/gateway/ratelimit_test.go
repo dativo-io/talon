@@ -11,7 +11,7 @@ func TestRateLimiter_GlobalLimit(t *testing.T) {
 
 	allowed := 0
 	for i := 0; i < 20; i++ {
-		if rl.Allow("caller-a") {
+		if rl.Allow("agent-a") {
 			allowed++
 		}
 	}
@@ -25,24 +25,24 @@ func TestRateLimiter_PerCallerLimit(t *testing.T) {
 
 	allowed := 0
 	for i := 0; i < 20; i++ {
-		if rl.Allow("caller-a") {
+		if rl.Allow("agent-a") {
 			allowed++
 		}
 	}
-	assert.LessOrEqual(t, allowed, 4, "per-caller limit should cap requests")
+	assert.LessOrEqual(t, allowed, 4, "per-agent limit should cap requests")
 
-	// A different caller gets its own bucket
-	assert.True(t, rl.Allow("caller-b"), "different caller should have separate bucket")
+	// A different agent gets its own bucket
+	assert.True(t, rl.Allow("agent-b"), "different agent should have separate bucket")
 }
 
 func TestRateLimiter_CallerIsolation(t *testing.T) {
 	rl := NewRateLimiter(1000, 2)
 
-	// Exhaust caller-a's bucket
-	rl.Allow("caller-a")
-	rl.Allow("caller-a")
-	rl.Allow("caller-a")
+	// Exhaust agent-a's bucket
+	rl.Allow("agent-a")
+	rl.Allow("agent-a")
+	rl.Allow("agent-a")
 
-	// caller-b should still be allowed
-	assert.True(t, rl.Allow("caller-b"), "caller-b should not be affected by caller-a")
+	// agent-b should still be allowed
+	assert.True(t, rl.Allow("agent-b"), "agent-b should not be affected by agent-a")
 }

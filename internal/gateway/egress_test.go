@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	egressTestTenantKey = "talon-gw-egress-001"
+	egressTestAgentKey = "talon-gw-egress-001"
 	// German IBAN classifies as tier 2 (see internal/classifier/pii_test.go).
 	egressTier2Body = `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Customer IBAN is DE89370400440532013000"}]}`
 	egressCleanBody = `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Summarize our public roadmap"}]}`
@@ -47,8 +47,10 @@ func euOnlyEgressPolicy() *EgressPolicyConfig {
 
 // setupEgressGateway wires a gateway with a real policy engine, a mock
 // upstream that counts invocations, and the given egress policy / provider
-// region. Returns the gateway, the upstream call counter, and the evidence store.
-func setupEgressGateway(t *testing.T, mode Mode, egress *EgressPolicyConfig, providerRegion string) (*Gateway, *atomic.Int64, *evidence.Store) {
+// region. override customizes the agent's policy override (nil = the standard
+// warn/caps override). Returns the gateway, the upstream call counter, and the
+// evidence store.
+func setupEgressGateway(t *testing.T, mode Mode, egress *EgressPolicyConfig, providerRegion string, override *PolicyOverride) (*Gateway, *atomic.Int64, *evidence.Store) {
 	t.Helper()
 
 	var upstreamCalls atomic.Int64
@@ -68,19 +70,7 @@ func setupEgressGateway(t *testing.T, mode Mode, egress *EgressPolicyConfig, pro
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key", Region: providerRegion},
 		},
-		Callers: []CallerConfig{
-			{
-				Name:      "egress-bot",
-				TenantKey: egressTestTenantKey,
-				TenantID:  "test-tenant",
-				PolicyOverrides: &CallerPolicyOverrides{
-					PIIAction:      "warn",
-					MaxDailyCost:   100,
-					MaxMonthlyCost: 2000,
-				},
-			},
-		},
-		ServerDefaults: ServerDefaults{
+		OrganizationPolicy: OrganizationPolicy{
 			DefaultPIIAction: "warn",
 			MaxDailyCost:     100,
 			MaxMonthlyCost:   2000,
@@ -92,6 +82,14 @@ func setupEgressGateway(t *testing.T, mode Mode, egress *EgressPolicyConfig, pro
 			StreamIdleTimeout: "60s",
 		},
 	}
+	if override == nil {
+		override = &PolicyOverride{
+			PIIAction:      "warn",
+			MaxDailyCost:   100,
+			MaxMonthlyCost: 2000,
+		}
+	}
+	registry := testRegistry(testIdentity("egress-bot", "test-tenant", egressTestAgentKey, override))
 
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
@@ -107,7 +105,7 @@ func setupEgressGateway(t *testing.T, mode Mode, egress *EgressPolicyConfig, pro
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := NewGateway(cfg, classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
+	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
 	require.NoError(t, err)
 	return gw, &upstreamCalls, evStore
 }
@@ -119,7 +117,7 @@ func makeEgressRequest(gw *Gateway, body string) *httptest.ResponseRecorder {
 	})
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		"http://test/v1/proxy/openai/v1/chat/completions", bytes.NewReader([]byte(body)))
-	req.Header.Set("Authorization", "Bearer "+egressTestTenantKey)
+	req.Header.Set("Authorization", "Bearer "+egressTestAgentKey)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -135,7 +133,7 @@ func latestEgressEvidence(t *testing.T, evStore *evidence.Store) *evidence.Evide
 }
 
 func TestGateway_Egress_Tier2DeniedAndEvidenced(t *testing.T) {
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "US")
+	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "US", nil)
 
 	w := makeEgressRequest(gw, egressTier2Body)
 
@@ -161,6 +159,8 @@ func TestGateway_Egress_Tier2DeniedAndEvidenced(t *testing.T) {
 	assert.Equal(t, EgressActionDeny, ev.EgressDecision.Decision)
 	assert.Equal(t, "tier_2", ev.EgressDecision.MatchedRule)
 	assert.Equal(t, EgressReasonTierDestination, ev.EgressDecision.Reason)
+	assert.Equal(t, evidence.EgressSourceOrganization, ev.EgressDecision.Source,
+		"org-policy deny: the organization layer is the decisive source (#266 r6)")
 
 	assert.True(t, evStore.VerifyRecord(ev), "denied egress evidence must be signature-verifiable")
 
@@ -175,7 +175,7 @@ func TestGateway_Egress_Tier2DeniedAndEvidenced(t *testing.T) {
 }
 
 func TestGateway_Egress_Tier2AllowedToEURegion(t *testing.T) {
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "EU")
+	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "EU", nil)
 
 	w := makeEgressRequest(gw, egressTier2Body)
 
@@ -192,7 +192,7 @@ func TestGateway_Egress_Tier2AllowedToEURegion(t *testing.T) {
 }
 
 func TestGateway_Egress_Tier0AllowedToGlobalProvider(t *testing.T) {
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "US")
+	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "US", nil)
 
 	w := makeEgressRequest(gw, egressCleanBody)
 
@@ -207,7 +207,7 @@ func TestGateway_Egress_Tier0AllowedToGlobalProvider(t *testing.T) {
 }
 
 func TestGateway_Egress_UnconfiguredKeepsCurrentBehavior(t *testing.T) {
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, nil, "US")
+	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, nil, "US", nil)
 
 	w := makeEgressRequest(gw, egressTier2Body)
 
@@ -219,7 +219,7 @@ func TestGateway_Egress_UnconfiguredKeepsCurrentBehavior(t *testing.T) {
 }
 
 func TestGateway_Egress_ShadowModeForwardsAndRecordsViolation(t *testing.T) {
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeShadow, euOnlyEgressPolicy(), "US")
+	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeShadow, euOnlyEgressPolicy(), "US", nil)
 
 	w := makeEgressRequest(gw, egressTier2Body)
 
@@ -243,15 +243,20 @@ func TestGateway_Egress_ShadowModeForwardsAndRecordsViolation(t *testing.T) {
 	assert.True(t, evStore.VerifyRecord(ev))
 }
 
-func TestGateway_Egress_CallerOverrideDefaultDeny(t *testing.T) {
+func TestGateway_Egress_AgentOverrideDefaultDeny(t *testing.T) {
 	t2 := TierConfidential
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "US")
-	// Caller override replaces the server default wholesale: tier_2 only to
-	// ollama, everything else denied by default_action.
-	gw.config.Callers[0].PolicyOverrides.Egress = &EgressPolicyConfig{
-		DefaultAction: EgressActionDeny,
-		Rules:         []EgressRule{{Tier: &t2, AllowedProviders: []string{"ollama"}}},
-	}
+	// Org sets no egress, so only the agent layer binds (#266 review round 5:
+	// egress is a logical intersection of the org and agent boundaries):
+	// tier_2 only to ollama, everything else denied by default.
+	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, nil, "US", &PolicyOverride{
+		PIIAction:      "warn",
+		MaxDailyCost:   100,
+		MaxMonthlyCost: 2000,
+		Egress: &EgressPolicyConfig{
+			DefaultAction: EgressActionDeny,
+			Rules:         []EgressRule{{Tier: &t2, AllowedProviders: []string{"ollama"}}},
+		},
+	})
 
 	// Tier 0 payload: no rule for tier 0 in the override, default_action deny.
 	w := makeEgressRequest(gw, egressCleanBody)
@@ -264,12 +269,51 @@ func TestGateway_Egress_CallerOverrideDefaultDeny(t *testing.T) {
 	assert.Equal(t, EgressActionDeny, ev.EgressDecision.Decision)
 	assert.Equal(t, "default_action", ev.EgressDecision.MatchedRule)
 	assert.Equal(t, EgressReasonDestination, ev.EgressDecision.Reason)
+	assert.Equal(t, evidence.EgressSourceAgent, ev.EgressDecision.Source,
+		"agent-only egress: the agent layer is the decisive source")
+}
+
+// Egress is a logical INTERSECTION (#266 review round 5): even when the ORG
+// egress allows the destination, an agent egress that does not permit it must
+// deny — end-to-end through the rego, with the agent layer named decisive in
+// the signed egress decision.
+func TestGateway_Egress_IntersectionAgentDeniesWithinOrgAllow(t *testing.T) {
+	t1 := TierInternal
+	// Org (euOnlyEgressPolicy): tier 1 → openai/anthropic allowed. Provider
+	// region EU. Agent narrows tier 1 to anthropic only, so openai must be
+	// denied by the AGENT layer despite the org allowing it.
+	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "EU", &PolicyOverride{
+		PIIAction:      "warn",
+		MaxDailyCost:   100,
+		MaxMonthlyCost: 2000,
+		Egress: &EgressPolicyConfig{
+			Rules: []EgressRule{{Tier: &t1, AllowedProviders: []string{"anthropic"}}},
+		},
+	})
+
+	// Tier-1 payload (low-sensitivity PII: an email address) routed to openai:
+	// the org layer passes (tier 1 → openai allowed), the agent layer denies.
+	w := makeEgressRequest(gw, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Follow up with jane.doe@example.com about the roadmap"}]}`)
+	require.Equal(t, http.StatusForbidden, w.Code, "agent egress must deny within an org allow (intersection)")
+	assert.Contains(t, w.Body.String(), EgressReasonTierDestination)
+	assert.Equal(t, int64(0), upstreamCalls.Load(), "denied request must never reach the provider")
+
+	ev := latestEgressEvidence(t, evStore)
+	require.False(t, ev.PolicyDecision.Allowed)
+	require.NotNil(t, ev.EgressDecision)
+	assert.Equal(t, EgressActionDeny, ev.EgressDecision.Decision)
+	assert.Equal(t, evidence.EgressSourceAgent, ev.EgressDecision.Source,
+		"signed evidence must name the AGENT layer as decisive when it denies within an org allow (#266 r6)")
 }
 
 func TestGateway_Egress_CombinedDenyReasonsPreferEgressCode(t *testing.T) {
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "US")
 	// gateway_access runs before gateway_egress; both deny for tier-2 IBAN → US + model not in allowlist.
-	gw.config.Callers[0].PolicyOverrides.AllowedModels = []string{"gpt-4o"}
+	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "US", &PolicyOverride{
+		PIIAction:      "warn",
+		MaxDailyCost:   100,
+		MaxMonthlyCost: 2000,
+		AllowedModels:  []string{"gpt-4o"},
+	})
 
 	w := makeEgressRequest(gw, egressTier2Body)
 

@@ -16,7 +16,7 @@ Client                         Talon Gateway                    LLM Provider
   │  POST /v1/proxy/openai/v1/...   │                               │
   │─────────────────────────────────▶│                               │
   │                                  │  1. Route request             │
-  │                                  │  2. Identify caller (<1ms)    │
+  │                                  │  2. Resolve agent (<1ms)      │
   │                                  │  3. Rate limit check (<1ms)   │
   │                                  │  4. Extract model + text      │
   │                                  │  5. PII scan input (2-5ms)    │
@@ -56,25 +56,31 @@ base URL (e.g., `https://api.openai.com`).
 - **Latency:** <1ms (string match)
 - **On failure:** 404 if provider not configured
 
-### Step 2: Identify Caller
+### Step 2: Resolve Agent
 
-Talon looks up the caller using the `Authorization: Bearer <key>` header.
-The key is matched against the `callers` list in the gateway config. If
-matched, the caller's name, tenant ID, team, and policy overrides are loaded.
+Talon reads the presented agent key (`Authorization: Bearer <key>` or
+`x-api-key: <key>`) and matches it against the identity registry — one entry
+per `agent.talon.yaml`, each key resolved from the vault at startup. A match
+yields the agent identity: its name, derived tenant (`key → agent →
+tenant_id`), team, tags, and its one policy override.
 
-- **Bytes read:** `Authorization` header
+There is no source-IP identification and no anonymous fallback. The only
+non-key path is the explicit synthetic identity injected in-process by
+`--proxy-quickstart`.
+
+- **Bytes read:** `Authorization` / `x-api-key` header
 - **Bytes modified:** None
-- **Latency:** <1ms (in-memory map lookup, timing-safe comparison)
-- **On failure:** In enforce mode with `require_caller_id: true`, returns
-  401. In shadow mode, continues with a `"default"` caller.
+- **Latency:** <1ms (constant-time comparison per registered agent)
+- **On failure:** 401 `Invalid or missing agent key` — in every mode; an
+  unknown or missing key is never forwarded, shadow mode included.
 
 ### Step 3: Rate Limit Check
 
-A token-bucket rate limiter checks both global and per-caller request rates.
+A token-bucket rate limiter checks both global and per-agent request rates.
 Configured via `rate_limits.global_requests_per_min` and
-`rate_limits.per_caller_requests_per_min`.
+`rate_limits.per_agent_requests_per_min`.
 
-- **Bytes read:** None (uses caller identity from step 2)
+- **Bytes read:** None (uses the agent identity from step 2)
 - **Bytes modified:** None
 - **Latency:** <1ms
 - **On failure:** 429 Too Many Requests (with `Retry-After` header)
@@ -117,15 +123,18 @@ the tier.
 ### Step 7: Policy Evaluation (OPA)
 
 The policy engine (embedded OPA/Rego, no sidecar) evaluates the request against
-the caller's policy. Inputs include: model name, data tier, estimated cost,
-daily cost accumulator, allowed models list, destination provider and region,
-and the resolved egress rules.
+the agent's **effective policy** — organization baseline → the agent's one
+override → provider destination constraints, resolved by a single shared
+function (`ResolveEffectivePolicy`). Inputs include: model name, data tier,
+estimated cost, daily cost accumulator, allowed models list, destination
+provider and region, and the resolved egress rules (Rego inputs use `agent_*`
+names).
 
 Checks performed:
-- Is the requested model in the caller's allowlist?
-- Does the estimated cost exceed per-request/daily/monthly limits?
+- Is the requested model in the agent's effective allowlist?
+- Does the estimated cost exceed the effective per-request/daily/monthly limits?
 - Does the data tier exceed the model's allowed tier?
-- Is the caller authorized for this provider?
+- Is the agent authorized for this provider (`policies.allowed_providers`)?
 - May this data tier egress to this destination (provider/region), per the
   configured egress rules? Denials carry the
   `egress_tier_destination_disallowed` or `egress_destination_disallowed`
@@ -143,7 +152,8 @@ Checks performed:
 ### Step 8: Tool Governance
 
 If the request includes function/tool calls, Talon checks them against the
-caller's allowed/forbidden tool lists. Tools matching `forbidden_tools` patterns
+effective allowed/forbidden tool lists (baseline ∪ provider ∪ agent for
+forbidden; most-specific list for allowed). Tools matching `forbidden_tools` patterns
 (including glob patterns like `admin_*`) are filtered out.
 
 - **Bytes read:** Tool/function names from the parsed request
@@ -212,9 +222,9 @@ An evidence record is created and signed with HMAC-SHA256. The record includes:
 | `id` | Generated (`req_` + UUID prefix) |
 | `correlation_id` | From `X-Request-Id` or generated |
 | `timestamp` | `time.Now()` |
-| `tenant_id` | From caller config |
-| `agent_id` | Caller name |
-| `request_source_id` | Caller API key prefix |
+| `tenant_id` | Derived from the agent (`key → agent → tenant_id`) |
+| `agent_id` | The resolved agent's name |
+| `request_source_id` | The resolved agent's name |
 | `policy_decision` | Allow/deny + reasons from step 7 |
 | `classification.input_tier` | Data tier from step 6 |
 | `classification.pii_detected` | PII types from step 5 |
@@ -228,14 +238,14 @@ An evidence record is created and signed with HMAC-SHA256. The record includes:
 | `signature` | HMAC-SHA256 over all other fields |
 
 The record is written to SQLite asynchronously (<1-2ms). Cost is added to the
-caller's daily/monthly accumulator (in-memory counter, periodically flushed).
+agent's daily/monthly accumulator (in-memory counter, periodically flushed).
 
 ## Latency Budget
 
 | Step | Operation | Typical Latency | Notes |
 |------|-----------|----------------|-------|
 | 1 | Route request | <1ms | String match on URL path |
-| 2 | Identify caller | <1ms | In-memory map lookup |
+| 2 | Resolve agent | <1ms | Constant-time registry match |
 | 3 | Rate limit check | <1ms | Token bucket |
 | 4 | Extract model + text | 1-2ms | JSON unmarshal |
 | 5 | PII scan (input) | 2-5ms | Regex over message content |
@@ -336,7 +346,9 @@ The gateway pipeline implementation lives in these files:
 |------|---------------|
 | `internal/gateway/gateway.go` | Main `ServeHTTP` handler — 10-step pipeline |
 | `internal/gateway/router.go` | Provider routing from URL path |
-| `internal/gateway/caller.go` | Caller identification from API key |
+| `internal/gateway/identity.go` | Agent identity registry (key → agent) |
+| `internal/gateway/resolve.go` | Agent key resolution per request |
+| `internal/gateway/effective.go` | Effective policy (baseline → override → provider constraints) |
 | `internal/gateway/forward.go` | HTTP forwarding + SSE streaming |
 | `internal/gateway/response_pii.go` | Response PII scanning |
 | `internal/gateway/tool_filter.go` | Tool governance / filtering |

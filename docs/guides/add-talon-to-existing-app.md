@@ -27,7 +27,7 @@ talon audit list --tenant quickstart --limit 5
 ```
 
 For full walk-through and troubleshooting, use [Tutorial: OpenAI proxy quickstart](../tutorials/proxy-quickstart.md).
-When you are ready for production caller separation and vaulted upstream keys, continue with Track B.
+When you are ready for production agent identities and vaulted upstream keys, continue with Track B.
 
 ### Track B: production gateway with YAML
 
@@ -48,11 +48,15 @@ gateway:
       enabled: true
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
-  callers:
-    - name: "my-app"
-      tenant_key: "talon-gw-myapp-001"
-  default_policy:
+  organization_policy:
     log_prompts: true
+```
+
+Identity lives in `agent.talon.yaml` (#266) — the scaffold binds
+`my-app-talon-key`; mint the key your app will present:
+
+```bash
+talon secrets set my-app-talon-key "$(openssl rand -hex 24)"
 ```
 
 Shadow mode means Talon logs every request and does not block. You can switch to `enforce` later.
@@ -83,7 +87,7 @@ Leave this running. You should see the server listening on port 8080.
 Change your app so it talks to Talon instead of OpenAI directly.
 
 **Base URL:** `http://localhost:8080/v1/proxy/openai/v1`  
-**API key:** use the caller key `talon-gw-myapp-001` (not your real OpenAI key). Talon identifies the caller by this key and uses the stored OpenAI key when forwarding.
+**API key:** use the agent key `talon-gw-myapp-001` (not your real OpenAI key). Talon identifies the agent by this key and uses the stored OpenAI key when forwarding.
 
 **Python (openai package):**
 
@@ -125,7 +129,7 @@ console.log(completion.choices[0].message.content);
 ```bash
 curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer talon-gw-myapp-001" \
+  -H "Authorization: Bearer <value-of-my-app-talon-key>" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hello in one word."}],"max_tokens":10}'
 ```
 
@@ -137,7 +141,7 @@ Run your app (or the curl command above) once. Then in another terminal, from th
 talon audit list
 ```
 
-You should see a new row: caller `my-app`, model, cost, and decision. **This is the first record from your real app.** Talon intercepted the request, forwarded it to OpenAI, and wrote a tamper-proof evidence record.
+You should see a new row: agent `my-app`, model, cost, and decision. **This is the first record from your real app.** Talon intercepted the request, forwarded it to OpenAI, and wrote a tamper-proof evidence record.
 
 ---
 
@@ -149,7 +153,7 @@ You now have Talon in front of your app. Every LLM call is logged, PII is scanne
 
 | I want to… | Doc |
 |------------|-----|
-| Cap cost or restrict models for this app | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
-| Switch from shadow to block/redact when PII is found | [Configuration and environment](../reference/configuration.md) (gateway `mode`, `default_policy`) |
+| Cap cost or restrict models for this app | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
+| Switch from shadow to block/redact when PII is found | [Configuration and environment](../reference/configuration.md) (gateway `mode`, `organization_policy`) |
 | Route another app (e.g. Slack bot) through Talon | [How to add compliance to your Slack bot](slack-bot-integration.md) |
 | Understand what happens to each request | [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) |

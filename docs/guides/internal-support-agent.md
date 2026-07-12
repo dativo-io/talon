@@ -57,18 +57,18 @@ Evidence is stored per run. Use `talon audit list` or `GET /v1/evidence` filtere
 
 If you already have a Python/Node/etc. bot that calls the OpenAI (or other) API:
 
-1. **Add a gateway caller** for the support bot (e.g. `support-bot`) with `policy_overrides.max_daily_cost` and `pii_action: "block"` or `"redact"`.
-2. **Point the bot** at the Talon gateway base URL and use the caller API key instead of the real provider key. Same pattern as [How to add compliance to your Slack bot](slack-bot-integration.md).
+1. **Create an agent file** for the support bot (e.g. `support-bot.talon.yaml`) with `policies.cost_limits.daily` and `data_classification.block_on_pii` (or `input_scan` + `redact_input`), bound to a vault key via `agent.key.secret_name`.
+2. **Point the bot** at the Talon gateway base URL and use the agent key instead of the real provider key. Same pattern as [How to add compliance to your Slack bot](slack-bot-integration.md).
 3. Ticket content (often containing PII) is scanned by Talon; policy can block or redact before the request reaches the LLM.
 
-Evidence is recorded per request; costs appear in `GET /v1/costs` for the tenant. Filter evidence by caller name to see support-bot usage.
+Evidence is recorded per request; costs appear in `GET /v1/costs` for the tenant. Filter evidence by agent name to see support-bot usage.
 
 ---
 
 ## Evidence and “what did the agent see?”
 
 - **Native:** `talon audit list`, `talon audit show <evidence-id>`, or API `GET /v1/evidence` with optional filters. Evidence includes correlation_id, tenant_id, agent_id, timestamp, policy decision, cost.
-- **Gateway:** Same evidence store; gateway requests are recorded with caller identity. Use tenant and date (and caller if exposed in evidence) to scope exports for auditors. See [How to export evidence for auditors](compliance-export-runbook.md).
+- **Gateway:** Same evidence store; gateway requests are recorded with the agent identity. Use tenant and date (and agent if exposed in evidence) to scope exports for auditors. See [How to export evidence for auditors](compliance-export-runbook.md).
 
 ---
 
@@ -83,4 +83,4 @@ You now have a first-line support agent (native or via gateway) with PII and cos
 | Route another bot through the gateway | [Add Talon to your existing app](add-talon-to-existing-app.md), [Slack bot](slack-bot-integration.md) |
 | Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
 | Add plan review for high-risk suggestions | [Agent planning](../AGENT_PLANNING.md), [Policy cookbook](policy-cookbook.md) |
-| Cap cost for this agent or caller | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Cap cost for this agent | [How to cap daily spend per team or application](cost-governance-by-agent.md) |

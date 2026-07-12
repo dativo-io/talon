@@ -23,6 +23,7 @@ test_section_13_gateway() {
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   smoke_tighten_limits "$dir"
+  smoke_bind_agent_key "$dir" "talon-gw-smoke-001"
   # Gateway config: inject minimal gateway block if scaffold did not provide one
   if [[ ! -f "$dir/talon.config.yaml" ]]; then
     echo "  -  (skip gateway: no config)"
@@ -41,15 +42,9 @@ gateway:
       enabled: true
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
-  callers:
-    - name: "smoke-caller"
-      tenant_key: "talon-gw-smoke-001"
-      tenant_id: "default"
-      allowed_providers: ["openai"]
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
     max_daily_cost: 100.00
-    require_caller_id: true
 GWEOF
   fi
   TALON_GATEWAY_PID=""
@@ -72,7 +67,6 @@ GWEOF
     return 0
   fi
   local gw_key="talon-gw-smoke-001"
-  grep -q "talon-gw-smoke-001" "$dir/talon.config.yaml" 2>/dev/null || gw_key="$(grep -oE 'tenant_key:\s*[^[:space:]]+' "$dir/talon.config.yaml" | head -1 | sed 's/tenant_key:\s*//')"
   local gw_headers="/tmp/talon_gw_headers.txt"
   local gw_body="/tmp/talon_gw_resp.json"
   local code; code="$(smoke_gw_post_chat_capture "$gateway_base_url" "Bearer $gw_key" "$SMOKE_BODY_SIMPLE" "$gw_headers" "$gw_body")"

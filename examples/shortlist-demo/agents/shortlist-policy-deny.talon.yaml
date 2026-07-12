@@ -1,0 +1,18 @@
+# Shortlist demo — policy-deny scenario: this use case may only call
+# gpt-4o-mini; anything else is denied at the gateway (#266).
+agent:
+  name: shortlist-policy-deny
+  description: "Shortlist demo: model allowlist denial"
+  version: 1.0.0
+  tenant_id: shortlist
+  key:
+    secret_name: shortlist-deny-talon-key
+
+policies:
+  cost_limits:
+    daily: 100.00
+  models:
+    allowed: ["gpt-4o-mini"]
+
+metadata:
+  team: shortlist-demo

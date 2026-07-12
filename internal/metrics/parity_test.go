@@ -168,7 +168,7 @@ func TestCLIDashboardParity(t *testing.T) {
 	// 6. Cross-checks between summary and breakdowns (same invariants as smoke tests)
 	var callerRequests, callerBlocked int
 	var callerCost float64
-	for _, cs := range snap.CallerStats {
+	for _, cs := range snap.AgentStats {
 		callerRequests += cs.Requests
 		callerBlocked += cs.Blocked
 		callerCost += cs.CostEUR
@@ -242,7 +242,7 @@ func TestDashboardCountMayLeadPersistedEvidence(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		collector.Record(GatewayEvent{
 			Timestamp:       now,
-			CallerID:        "metrics-caller",
+			AgentName:       "metrics-caller",
 			Model:           "gpt-4o-mini",
 			EnforcementMode: "enforce",
 			CostEUR:         0.0,
@@ -297,7 +297,7 @@ func TestParity_EvidenceWriteMatchesMappedEventProjection(t *testing.T) {
 	fromMap, ok := MapToGatewayEvent(&records[0])
 	require.True(t, ok)
 
-	assert.Equal(t, fromEvidence.CallerID, fromMap.CallerID)
+	assert.Equal(t, fromEvidence.AgentName, fromMap.AgentName)
 	assert.Equal(t, fromEvidence.Model, fromMap.Model)
 	assert.Equal(t, fromEvidence.Blocked, fromMap.Blocked)
 	assert.Equal(t, fromEvidence.CostEUR, fromMap.CostEUR)
@@ -329,7 +329,7 @@ func TestParity_OperationalEventConversionMatchesEvidenceConversion(t *testing.T
 	fromOpEvent := GatewayEventFromOperationalEvent(events.FromEvidence(&ev))
 
 	assert.Equal(t, fromEvidence.Timestamp, fromOpEvent.Timestamp)
-	assert.Equal(t, fromEvidence.CallerID, fromOpEvent.CallerID)
+	assert.Equal(t, fromEvidence.AgentName, fromOpEvent.AgentName)
 	assert.Equal(t, fromEvidence.Model, fromOpEvent.Model)
 	assert.Equal(t, fromEvidence.Blocked, fromOpEvent.Blocked)
 	assert.Equal(t, fromEvidence.CostEUR, fromOpEvent.CostEUR)

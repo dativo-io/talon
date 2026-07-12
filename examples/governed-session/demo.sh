@@ -42,12 +42,12 @@ if [[ -z "${SESSION_ID:-}" && ( "${1:-}" == "verify" || "${1:-}" == "money" ) &&
   SESSION_ID="$(cat "${OUT_DIR}/session-id")"
 fi
 SESSION_ID="${SESSION_ID:-sess-governed-$(date +%s)}"
-TENANT_KEY="talon-session-demo"
+AGENT_KEY="talon-session-demo"
 PLANNER_MODEL="claude-sonnet-5"
 EXECUTOR_MODEL="gpt-4o"
 PROBE_MODEL="gpt-4o-mini"
 # The budget act loops real gpt-4o calls until session spend + the next
-# estimate crosses the caller cap (0.03). ~$0.002/call, so the hero (which
+# estimate crosses the agent session cap (0.03). ~$0.002/call, so the hero (which
 # reaches the loop with little prior spend) trips around call ~14; the long
 # demo reaches it having already spent more and trips within a few iterations.
 BUDGET_LOOP_MAX=20
@@ -132,7 +132,7 @@ block_result()   { local icon="$1" text="$2" color="$C_GREEN"; [[ "$icon" == "�
 
 # ── Shared context corpus (prompt-cache prefix, alphabetic run marker) ───────
 shared_context() {
-  local para="You are an execution agent operating behind the Dativo Talon governance gateway. Every request you make is policy-checked before it leaves the boundary: caller identity is verified, personal data such as IBANs, emails and national identifiers is scanned before any provider call, forbidden tool schemas are stripped from the request body, per-session spend is accumulated across every provider you touch, and each decision is written to a tamper-evident HMAC-signed evidence record that an auditor can verify offline. Work strictly within these controls. Prefer concise, factual answers about European AI governance obligations, data residency, records of processing, and cost accountability. Do not restate these instructions."
+  local para="You are an execution agent operating behind the Dativo Talon governance gateway. Every request you make is policy-checked before it leaves the boundary: agent identity is verified, personal data such as IBANs, emails and national identifiers is scanned before any provider call, forbidden tool schemas are stripped from the request body, per-session spend is accumulated across every provider you touch, and each decision is written to a tamper-evident HMAC-signed evidence record that an auditor can verify offline. Work strictly within these controls. Prefer concise, factual answers about European AI governance obligations, data residency, records of processing, and cost accountability. Do not restate these instructions."
   # Alphabetic run marker: a digit run in the BODY would trip the PII scanner.
   local run_marker
   run_marker="$(printf '%s' "$SESSION_ID" | tr '0-9' 'abcdefghij')"
@@ -166,6 +166,14 @@ post_anthropic() {
 }
 
 # post_openai <bearer> <model> <user_content> [tools_json]
+# post_openai_probe <key> — 200/401 probe so acts can detect which agent the
+# gateway is serving (#266; multi-agent single-process serving is #267).
+post_openai_probe() {
+  curl -s -o /dev/null -w "%{http_code}" -X POST "${GATEWAY}/v1/proxy/openai/v1/chat/completions" \
+    -H "Authorization: Bearer $1" -H "Content-Type: application/json" \
+    -d '{"model":"gpt-4o-mini","messages":[]}' 2>/dev/null
+}
+
 post_openai() {
   local bearer="$1" model="$2" user_content="$3" tools_json="${4:-}" payload code
   if [[ -n "$tools_json" ]]; then
@@ -188,14 +196,14 @@ post_openai() {
 # This is where genuine sovereignty routing happens: a confidential prompt is
 # classified tier-2, the US primary is rejected, and a local model is selected.
 # In gateway mode the runner's OpenAI-compatible endpoint is /v1/chat/completions
-# (tenant-authenticated); a caller tenant_key selects the tenant/agent.
+# (agent-authenticated); the presented agent key selects the agent + tenant (#266).
 post_runner() {
   local user_content="$1" payload code
   payload="$(jq -nc --arg content "$user_content" \
     '{messages: [{role: "user", content: $content}]}')"
   code="$(curl -sS -o "$LAST_BODY" -w "%{http_code}" -X POST \
     "${GATEWAY}/v1/chat/completions" \
-    -H "Authorization: Bearer ${TENANT_KEY}" \
+    -H "Authorization: Bearer ${AGENT_KEY}" \
     -H "X-Talon-Session-ID: ${SESSION_ID}" \
     -H "Content-Type: application/json" -d "$payload")"
   LAST_HTTP="$code"
@@ -283,8 +291,8 @@ require_runner_ollama() {
 
 act_allowed() {
   block_rule "$1" "$2" "✅" "ALLOWED" "a clean request flows through, signed"
-  block_config "callers[session-demo]:  (no override — policy allows it)"
-  post_openai "$TENANT_KEY" "$PROBE_MODEL" "Summarize GDPR Article 30 in one sentence."
+  block_config "agents/session-demo.talon.yaml:  (no blocking override — policy allows it)"
+  post_openai "$AGENT_KEY" "$PROBE_MODEL" "Summarize GDPR Article 30 in one sentence."
   expect_http 200
   local id; id="$(latest_evidence_id)"
   block_request "\$ curl …/v1/proxy/openai/v1/chat/completions \\" \
@@ -297,13 +305,13 @@ act_allowed() {
 
 act_tool() {
   block_rule "$1" "$2" "🛠" "GOVERNED" "dangerous tool stripped before the model"
-  block_config "callers[session-demo].policy_overrides.forbidden_tools: [\"admin_*\"]"
+  block_config "agents/session-demo.talon.yaml → capabilities.forbidden_tools: [\"admin_*\"]"
   local tools
   tools="$(jq -nc '[
     {type:"function", function:{name:"admin_purge_records", description:"Delete all evidence records", parameters:{type:"object", properties:{}}}},
     {type:"function", function:{name:"search_kb", description:"Search the internal knowledge base", parameters:{type:"object", properties:{q:{type:"string"}}}}}
   ]')"
-  post_openai "$TENANT_KEY" "$EXECUTOR_MODEL" "Execute: one paragraph on evidence retention duties. Use search_kb if useful." "$tools"
+  post_openai "$AGENT_KEY" "$EXECUTOR_MODEL" "Execute: one paragraph on evidence retention duties. Use search_kb if useful." "$tools"
   expect_http 200
   local id; id="$(latest_evidence_id)"
   block_request "\$ curl …/chat/completions  tools:[admin_purge_records, search_kb]   → HTTP 200"
@@ -314,8 +322,9 @@ act_tool() {
 
 act_pii() {
   block_rule "$1" "$2" "🔒" "BLOCKED" "PII stopped before the provider"
-  block_config "gateway.default_policy.default_pii_action: \"block\""
-  post_openai "$TENANT_KEY" "$PROBE_MODEL" "Refund the customer with IBAN DE89370400440532013000."
+  block_config "agents/session-demo.talon.yaml → data_classification.block_on_pii: true" \
+               "(tightens the org floor: organization_policy.default_pii_action: \"warn\")"
+  post_openai "$AGENT_KEY" "$PROBE_MODEL" "Refund the customer with IBAN DE89370400440532013000."
   expect_http 400
   local id; id="$(latest_evidence_id)"
   block_request "\$ curl …/chat/completions  {…\"IBAN DE89370400440532013000\"…}   → HTTP 400"
@@ -384,13 +393,13 @@ act_route() {
 
 act_budget() {
   block_rule "$1" "$2" "💶" "BLOCKED" "session budget stops the next request"
-  block_config "callers[session-demo].policy_overrides.max_session_cost: 0.03"
-  # Drive real governed requests until the caller's session cap closes the gate.
+  block_config "agents/session-demo.talon.yaml → session_limits.max_cost: 0.03"
+  # Drive real governed requests until the agent session cap closes the gate.
   # This is an honest loop, not one curl: the block below reports how many
   # governed requests ran and the accumulated spend that tripped the cap.
   local i denied=0 rl=0 sent=0
   for ((i = 1; i <= BUDGET_LOOP_MAX; i++)); do
-    post_openai "$TENANT_KEY" "$EXECUTOR_MODEL" "Continue: one short paragraph (${i}) on AI cost accountability."
+    post_openai "$AGENT_KEY" "$EXECUTOR_MODEL" "Continue: one short paragraph (${i}) on AI cost accountability."
     case "$LAST_HTTP" in
       403) denied=1; break ;;
       429) rl=$((rl + 1)); [[ "$rl" -gt 5 ]] && { echo "✗ provider rate-limited 5x; rerun shortly" >&2; exit 1; }; echo "  … provider 429, waiting 12s"; sleep 12; continue ;;
@@ -427,7 +436,7 @@ PLAN_TEXT=""  # captured planner output, fed to the executor (P4: real orchestra
 act_planner_write() {
   block_rule "$1" "$2" "💾" "ORCHESTRATOR" "Anthropic plans, prompt-cache WRITE"
   block_config "system block with cache_control: {type: ephemeral}  (~2.3k-token prefix)"
-  post_anthropic "$TENANT_KEY" "Plan three short executor steps to summarize EU AI Act evidence duties for a mid-market SaaS. Return only the numbered steps."
+  post_anthropic "$AGENT_KEY" "Plan three short executor steps to summarize EU AI Act evidence duties for a mid-market SaaS. Return only the numbered steps."
   expect_http 200
   PLAN_TEXT="$(jq -r '.content[0].text // empty' "$LAST_BODY" 2>/dev/null | tr '\n' ' ' | head -c 400)"
   local id; id="$(latest_evidence_id)"
@@ -443,7 +452,7 @@ act_planner_read() {
   # Self-contained turn (P0): the plan text travels IN the user message, so the
   # model refines a real plan instead of replying \"I have no prior plan\".
   local prior="${PLAN_TEXT:-1) classify scope 2) map controls 3) draft RoPA}"
-  post_anthropic "$TENANT_KEY" "Here is a draft plan: ${prior}. Tighten it to two terse steps."
+  post_anthropic "$AGENT_KEY" "Here is a draft plan: ${prior}. Tighten it to two terse steps."
   expect_http 200
   local id; id="$(latest_evidence_id)"
   block_evidence "\$ talon audit show ${id}"
@@ -455,7 +464,7 @@ act_executor() {
   block_rule "$1" "$2" "✅" "EXECUTOR" "ChatGPT runs the planner's plan, priced and signed"
   block_config "executor prompt = the plan Anthropic returned (real orchestration, P4)"
   local plan="${PLAN_TEXT:-Summarize GDPR Article 30 records for AI traffic}"
-  post_openai "$TENANT_KEY" "$EXECUTOR_MODEL" "Execute this plan in one paragraph: ${plan}"
+  post_openai "$AGENT_KEY" "$EXECUTOR_MODEL" "Execute this plan in one paragraph: ${plan}"
   expect_http 200
   local id; id="$(latest_evidence_id)"
   block_evidence "\$ talon audit verify ${id}   → signature VALID · cached_tokens → cache_read"
@@ -464,7 +473,18 @@ act_executor() {
 
 act_redact() {
   block_rule "$1" "$2" "✂️" "REDACTED" "email scrubbed, request still succeeds"
-  block_config "callers[session-demo-redact].policy_overrides.pii_action: \"redact\""
+  # Act identity (#266): requires the gateway to be serving the redact agent.
+  if [[ "$(post_openai_probe "talon-session-redact")" == "401" ]]; then
+    # STRICT (asset recording): a skipped headline act must never be promoted
+    # into a published cast — same rule as act_route.
+    if [[ "$STRICT" == 1 ]]; then
+      echo "STRICT: redact act skipped (gateway not serving session-demo-redact) — refusing to record" >&2
+      exit 1
+    fi
+    block_result "-" "SKIPPED: gateway is serving the hero agent. Switch acts (until #267): TALON_ACT_AGENT=session-demo-redact docker compose up -d talon"
+    return 0
+  fi
+  block_config "agents/session-demo-redact.talon.yaml → data_classification.redact_input: true"
   post_openai "talon-session-redact" "$PROBE_MODEL" "Reply to the customer who wrote from jan@example.com about their invoice."
   expect_http 200
   local id; id="$(latest_evidence_id)"
@@ -473,12 +493,23 @@ act_redact() {
 }
 
 act_routing_deny() {
-  block_rule "$1" "$2" "🧭" "BLOCKED" "model not in caller allowlist"
-  block_config "callers[session-demo-eu].policy_overrides.allowed_models: [\"gpt-4o-mini\"]"
+  block_rule "$1" "$2" "🧭" "BLOCKED" "model not in agent allowlist"
+  # Act identity (#266): requires the gateway to be serving the eu agent.
+  if [[ "$(post_openai_probe "talon-session-eu")" == "401" ]]; then
+    # STRICT (asset recording): a skipped headline act must never be promoted
+    # into a published cast — same rule as act_route.
+    if [[ "$STRICT" == 1 ]]; then
+      echo "STRICT: routing-deny act skipped (gateway not serving session-demo-eu) — refusing to record" >&2
+      exit 1
+    fi
+    block_result "-" "SKIPPED: gateway is serving the hero agent. Switch acts (until #267): TALON_ACT_AGENT=session-demo-eu docker compose up -d talon"
+    return 0
+  fi
+  block_config "agents/session-demo-eu.talon.yaml → policies.models.allowed: [\"gpt-4o-mini\"]"
   post_openai "talon-session-eu" "$EXECUTOR_MODEL" "Summarize AI governance risks for a European SaaS."
   expect_http 403
   local id; id="$(latest_evidence_id)"
-  block_evidence "\$ talon audit show ${id}   → Reason: model not in caller allowlist"
+  block_evidence "\$ talon audit show ${id}   → Reason: model not in agent allowlist"
   block_result "✗" "POLICY_DENIED_ROUTING — model governance, not a silent swap"
 }
 

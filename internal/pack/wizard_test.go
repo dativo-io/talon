@@ -50,7 +50,7 @@ func TestFindByID_CrewAIHasFilesAndPostMessage(t *testing.T) {
 	assert.Equal(t, "CrewAI", p.Framework)
 	assert.NotEmpty(t, p.Files, "crewai pack should have template files")
 	assert.NotEmpty(t, p.PostMessage, "crewai pack should have post-init message")
-	assert.Len(t, p.Files, 2, "crewai should have agent and config templates")
+	assert.Len(t, p.Files, 4, "crewai: primary agent + two role agents + config")
 }
 
 func TestReadComplianceOverlay(t *testing.T) {
@@ -132,7 +132,7 @@ func TestFindByID_CodingAgentsHasFilesAndPostMessage(t *testing.T) {
 	assert.Equal(t, "Coding Agents", p.DisplayName)
 	assert.NotEmpty(t, p.Files, "coding-agents pack should have template files")
 	assert.NotEmpty(t, p.PostMessage, "coding-agents pack should have post-init message")
-	assert.Len(t, p.Files, 2, "coding-agents should have agent and config templates")
+	assert.Len(t, p.Files, 3, "coding-agents: primary agent + codex agent + config")
 	assert.Contains(t, p.PostMessage, "ANTHROPIC_BASE_URL")
 	assert.Contains(t, p.PostMessage, "wire_api")
 }

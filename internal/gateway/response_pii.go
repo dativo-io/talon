@@ -69,24 +69,6 @@ func (rc *responseCapture) flushTo(w http.ResponseWriter) {
 	_, _ = w.Write(rc.body.Bytes())
 }
 
-// resolveResponsePIIAction determines the response PII action for a caller.
-func resolveResponsePIIAction(defaultPolicy *ServerDefaults, callerOverrides *CallerPolicyOverrides) string {
-	action := ""
-	if defaultPolicy != nil {
-		action = defaultPolicy.ResponsePIIAction
-		if action == "" {
-			action = defaultPolicy.DefaultPIIAction
-		}
-	}
-	if callerOverrides != nil && callerOverrides.ResponsePIIAction != "" {
-		action = callerOverrides.ResponsePIIAction
-	}
-	if action == "" {
-		action = "allow"
-	}
-	return action
-}
-
 // scanResponseForPII scans only the LLM-generated content fields in a non-streaming
 // response body for PII and applies the action. API envelope fields (id, created,
 // usage, model, etc.) are never scanned, preventing false positives on timestamps
@@ -331,7 +313,7 @@ func contentFieldToText(c interface{}) string {
 // redactResponseContentFields redacts PII only within the LLM content fields
 // of the JSON response, leaving the API envelope (id, created, usage, etc.)
 // untouched. Falls back to returning the original body on parse errors; a
-// scan-engine failure is returned as an error (fail-closed at the caller).
+// scan-engine failure is returned as an error (fail-closed at the agent).
 func redactResponseContentFields(ctx context.Context, body []byte, scanner classifier.Facade) ([]byte, error) {
 	var m map[string]interface{}
 	if err := json.Unmarshal(body, &m); err != nil {

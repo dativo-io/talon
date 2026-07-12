@@ -46,12 +46,17 @@ test_section_30_graph_events() {
   smoke_tighten_limits "$dir"
 
   # Policy with resource limits for graph governance testing.
-  # Serve loads agent.talon.yaml by default, so overwrite that file.
+  # Serve loads agent.talon.yaml by default, so overwrite that file. The
+  # custom policy must keep a key binding — gateway mode refuses to start
+  # without a keyed agent (#266) — so the traffic key is bound AFTER the
+  # overwrite (smoke_bind_agent_key reads secret_name from the file).
   cat > "$dir/agent.talon.yaml" <<'POLICYEOF'
 agent:
   name: "smoke-graph-agent"
   version: "1.0.0"
   model_tier: 1
+  key:
+    secret_name: "smoke-graph-agent-talon-key"
 capabilities:
   allowed_tools:
     - google_search
@@ -70,8 +75,9 @@ policies:
     max_tool_calls_per_run: 1
     max_retries_per_node: 3
 POLICYEOF
+  smoke_bind_agent_key "$dir" "${TALON_AGENT_KEY}"
 
-  # Gateway config with tenant key so Bearer auth is exercised (matches section 12 pattern).
+  # Gateway config with agent key so Bearer auth is exercised (matches section 12 pattern).
   if [[ -f "$dir/talon.config.yaml" ]] && ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
     cat >> "$dir/talon.config.yaml" <<GWEOF
 
@@ -84,14 +90,8 @@ gateway:
       enabled: true
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
-  callers:
-    - name: "graph-events-caller"
-      tenant_key: "${TALON_TENANT_KEY}"
-      tenant_id: "default"
-      allowed_providers: ["openai"]
-  default_policy:
+  organization_policy:
     default_pii_action: "warn"
-    require_caller_id: true
 GWEOF
   fi
 
@@ -107,7 +107,7 @@ GWEOF
     return 0
   fi
 
-  local tenant_hdr="Authorization: Bearer ${TALON_TENANT_KEY}"
+  local tenant_hdr="Authorization: Bearer ${TALON_AGENT_KEY}"
   local admin_hdr="X-Talon-Admin-Key: ${TALON_ADMIN_KEY}"
   local graph_url="${ge_base}/v1/graph/events"
   local graph_run_id graph_session_id

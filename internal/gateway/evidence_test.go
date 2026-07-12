@@ -23,7 +23,7 @@ func TestRecordGatewayEvidence(t *testing.T) {
 	_, err = RecordGatewayEvidence(ctx, store, RecordGatewayEvidenceParams{
 		CorrelationID:          "corr-1",
 		TenantID:               "default",
-		CallerName:             "test-caller",
+		AgentName:              "test-caller",
 		Team:                   "eng",
 		Provider:               "openai",
 		Model:                  "gpt-4o",
@@ -71,7 +71,7 @@ func TestRecordGatewayEvidence_ToolGovernanceRoundTrip(t *testing.T) {
 	_, err = RecordGatewayEvidence(ctx, store, RecordGatewayEvidenceParams{
 		CorrelationID:  "corr-tools",
 		TenantID:       "default",
-		CallerName:     "openclaw-main",
+		AgentName:      "openclaw-main",
 		Provider:       "openai",
 		Model:          "gpt-4o-mini",
 		PolicyAllowed:  true,

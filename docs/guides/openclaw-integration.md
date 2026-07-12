@@ -25,7 +25,7 @@ talon init --pack openclaw --name openclaw-gateway
 # In a terminal you can also run bare `talon init` and choose OpenClaw from the wizard.
 ```
 
-This creates `agent.talon.yaml` (agent policy with PII scanning, cost limits, circuit breaker) and `talon.config.yaml` (gateway config with OpenAI provider, pre-configured `openclaw-main` caller, shadow mode). You can also create these files manually — see the [Docker-based primer](openclaw-talon-primer/docker-openclaw-talon-primer.md) for a full example config.
+This creates `agent.talon.yaml` — the **`openclaw-gateway` agent**: OpenClaw's Talon traffic identity (`agent.key.secret_name: openclaw-gateway-talon-key`) plus its policy (PII scanning, cost limits, circuit breaker, credential recognizers) — and `talon.config.yaml` (gateway config with the OpenAI provider, the organization baseline under `organization_policy`, shadow mode). You can also create these files manually — see the [Docker-based primer](openclaw-talon-primer/docker-openclaw-talon-primer.md) for a full example config.
 
 ### 2. Set the vault key and store the real OpenAI key
 
@@ -34,38 +34,44 @@ Talon encrypts secrets (including your OpenAI key) with `TALON_SECRETS_KEY`. You
 **Recommended sequence (run in the same shell, or ensure the same env is active):**
 
 ```bash
-# 1. Set the vault encryption key once; keep it for steps 2 and 3 (save it somewhere safe)
+# 1. Set the vault encryption key once; keep it for the next steps (save it somewhere safe)
 export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 
 # 2. Store your real OpenAI key in the vault (secret name must match gateway config's secret_name)
 talon secrets set openai-api-key "sk-your-openai-key"
 # Or: talon secrets set openai-api-key "$OPENAI_API_KEY"
 
-# 3. Start Talon with the gateway — same shell so TALON_SECRETS_KEY is still set
+# 3. Mint the openclaw agent's traffic key (bound via agent.key.secret_name in agent.talon.yaml);
+#    keep $OPENCLAW_KEY — it goes into openclaw.json as the apiKey
+OPENCLAW_KEY="$(openssl rand -hex 24)"
+talon secrets set openclaw-gateway-talon-key "$OPENCLAW_KEY"
+
+# 4. Start Talon with the gateway — same shell so TALON_SECRETS_KEY is still set
 talon serve --gateway
 ```
 
 If you use a different shell or process to start Talon, set `TALON_SECRETS_KEY` there too (e.g. in `~/.bashrc` or the systemd unit). If the key at serve time differs from the key used when you ran `talon secrets set`, decryption fails and the gateway cannot forward requests.
 
-**Two different keys (do not confuse):**
+**Three different keys (do not confuse):**
 
 | Key | Purpose | Where it lives |
 |-----|---------|----------------|
-| **TALON_SECRETS_KEY** | Encrypts/decrypts the vault. Must be the **same** when running `talon secrets set` and `talon serve`. | Environment. Set before step 2 and 3 above. |
-| **Caller tenant_key** (e.g. `talon-gw-openclaw-001`) | Token OpenClaw sends in `Authorization: Bearer ...`. Not used for encryption. | `talon.config.yaml` → `gateway.callers[].tenant_key`, and the same value in OpenClaw's `openclaw.json` as `models.providers.openai.apiKey`. |
+| **TALON_SECRETS_KEY** | Encrypts/decrypts the vault. Must be the **same** when running `talon secrets set` and `talon serve`. | Environment. Set before the steps above. |
+| **Agent key** (`$OPENCLAW_KEY`) | Workload identity OpenClaw sends in `Authorization: Bearer ...`; resolves to the `openclaw-gateway` agent and its derived tenant. Not used for encryption. | Vault secret `openclaw-gateway-talon-key` (referenced by `agent.key.secret_name` in `agent.talon.yaml`), and the same value in OpenClaw's `openclaw.json` as `models.providers.openai.apiKey`. Rotate with `talon secrets set openclaw-gateway-talon-key <new>` + restart — one active key, never two. |
+| **Provider key** (`sk-...`) | Talon's upstream credential. | Vault secret `openai-api-key` only. |
 
 ### 3. Confirm the gateway is running
 
-Leave the terminal where `talon serve --gateway` is running open (or run it in the background). The generated `talon.config.yaml` already includes the gateway block. Optional: test with curl (use the caller key from your config):
+Leave the terminal where `talon serve --gateway` is running open (or run it in the background). The generated `talon.config.yaml` already includes the gateway block. Optional: test with curl (use the agent key you minted):
 
 ```bash
 curl -s -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer talon-gw-openclaw-001" \
+  -H "Authorization: Bearer $OPENCLAW_KEY" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hi"}],"max_tokens":5}'
 ```
 
-You should get a JSON completion, not "Invalid or missing API key" (wrong caller key), "Service configuration error" (vault key mismatch), or 404 (use `baseUrl` with trailing `/v1` as above).
+You should get a JSON completion, not "Invalid or missing agent key" (unknown key), "Service configuration error" (vault key mismatch), or 404 (use `baseUrl` with trailing `/v1` as above).
 
 ### 4. Point OpenClaw at the gateway
 
@@ -77,7 +83,7 @@ Edit `~/.openclaw/openclaw.json` and add a **top-level** `models` block (sibling
     "providers": {
       "openai": {
         "baseUrl": "http://localhost:8080/v1/proxy/openai/v1",
-        "apiKey": "talon-gw-openclaw-001",
+        "apiKey": "<your-openclaw-agent-key>",
         "api": "openai-responses",
         "models": [
           { "id": "gpt-5.1-codex", "name": "gpt-5.1-codex" },
@@ -102,12 +108,12 @@ openclaw gateway start
 On SSH or headless servers, `openclaw gateway stop` may report "systemctl --user unavailable: Failed to connect to bus". In that case, stop the gateway process directly (e.g. `pkill openclaw-gateway`), then start it again however you normally run OpenClaw.
 
 **Important:**
-- The `apiKey` here is the Talon **caller key** from your gateway config (`talon.config.yaml` → `gateway.callers[].tenant_key`), **not** your real OpenAI key. Talon identifies the caller by this key and injects the real OpenAI key when forwarding.
+- The `apiKey` here is the Talon **agent key** (the `$OPENCLAW_KEY` value you minted into the vault secret named by `agent.key.secret_name`), **not** your real OpenAI key. Talon resolves the agent by this key and injects the real OpenAI key when forwarding.
 - The `api: "openai-responses"` field is required for OpenAI-compatible proxy endpoints.
 - Each model must be an object with both `id` and `name` (OpenClaw's schema requires both).
 - Your real OpenAI key stays only in Talon's encrypted vault — OpenClaw never sees it.
 
-OpenClaw will send all chat completion requests to Talon; Talon will authenticate the caller, forward to OpenAI with the real key, and log evidence.
+OpenClaw will send all chat completion requests to Talon; Talon will resolve the agent from the presented key, forward to OpenAI with the real key, and log evidence.
 
 ### 5. Verify
 
@@ -117,7 +123,7 @@ Send any message through OpenClaw, then check the audit trail:
 talon audit list
 ```
 
-You should see new evidence rows; the caller name (e.g. `openclaw-main`) appears as `agent_id`. To list only this caller's traffic: `talon audit list --agent openclaw-main`.
+You should see new evidence rows; the agent name (e.g. `openclaw-gateway`) appears as `agent_id`. To list only this agent's traffic: `talon audit list --agent openclaw-gateway`.
 
 **Troubleshooting**
 
@@ -150,14 +156,14 @@ echo "=== Processes ===" && ps aux | grep -E 'talon|openclaw' | grep -v grep
 
 ### 6. Add policy (optional)
 
-Edit your gateway config and add or adjust `callers` and `policy_overrides`:
+The agent's one policy override lives in `agent.talon.yaml`; the organization baseline lives in `talon.config.yaml` under `gateway.organization_policy`:
 
-- `max_daily_cost` / `max_monthly_cost` — cost caps per caller
-- `pii_action` — `block`, `redact`, `warn`, or `allow` when PII is detected in **requests**
-- `response_pii_action` — same actions for PII in **LLM responses** (default: `warn`)
-- `allowed_models` — restrict which models this caller can use
-- `forbidden_tools` — strip dangerous tools before the LLM sees them (glob patterns)
-- `allowed_tools` — strict allowlist of tools (per-caller only)
+- `policies.cost_limits.daily` / `.monthly` (agent file) — cost caps for this agent; each replaces the baseline (`organization_policy.max_daily_cost` / `max_monthly_cost`) when > 0
+- `organization_policy.default_pii_action` (baseline) — `block`, `redact`, `warn`, or `allow` when PII is detected in **requests**; per agent, tighten via `policies.data_classification` booleans (`block_on_pii` → block; `input_scan` + `redact_input` → redact; `input_scan` alone scans without changing the action). The merge is monotonic: the baseline is a floor an agent can only tighten
+- `organization_policy.response_pii_action` (baseline) — same actions for PII in **LLM responses** (default: `warn`); per agent via `output_scan` (+ `redact_output` / `block_on_pii`)
+- `policies.models.allowed` / `.blocked` (agent file) — restrict which models this agent can use
+- `forbidden_tools` — strip dangerous tools before the LLM sees them (glob patterns); baseline and agent lists are unioned
+- `capabilities.allowed_tools` (agent file) — strict allowlist of tools
 - `tool_policy_action` — `"filter"` (default, removes forbidden tools) or `"block"` (rejects the request)
 
 Restart `talon serve --gateway` after config changes.
@@ -170,11 +176,11 @@ Tool governance is configured at three levels (most specific wins):
 
 | Level | Config key | Behaviour |
 |-------|-----------|-----------|
-| Server-wide | `default_policy.forbidden_tools` | Applies to all callers |
-| Per-provider | `providers.<name>.forbidden_tools` | Applies to one provider |
-| Per-caller | `policy_overrides.forbidden_tools` / `allowed_tools` | Applies to one caller |
+| Organization baseline | `gateway.organization_policy.forbidden_tools` | Applies to every agent |
+| Per-provider | `providers.<name>.forbidden_tools` | Destination constraint for one provider |
+| Per-agent | `capabilities.forbidden_tools` / `allowed_tools` in the agent file | Applies to one agent |
 
-`forbidden_tools` is **additive** across all levels (union). `allowed_tools` is a strict allowlist — if set, only those tools pass. `forbidden_tools` overrides `allowed_tools`.
+`forbidden_tools` is **additive** across all levels (union). `allowed_tools` is a strict allowlist — if set, only those tools pass (most-specific non-empty list wins). `forbidden_tools` overrides `allowed_tools`. `tool_policy_action` follows most-specific wins (agent > provider > baseline).
 
 Patterns use glob syntax (e.g. `delete_*`, `admin_*`, `bulk_*`). Case-insensitive matching.
 
@@ -183,24 +189,27 @@ Patterns use glob syntax (e.g. `delete_*`, `admin_*`, `bulk_*`). Case-insensitiv
 | `filter` | Remove forbidden tools from the request, forward the rest **(default)** |
 | `block` | Reject the entire request with HTTP 403 if any tool violates policy |
 
-Example config:
+Example — baseline in `talon.config.yaml`:
 
 ```yaml
-default_policy:
-  tool_policy_action: "filter"
-  forbidden_tools:
-    - "delete_*"
-    - "admin_*"
-    - "export_all_*"
-    - "bulk_*"
-    - "rm_*"
-    - "drop_*"
+gateway:
+  organization_policy:
+    tool_policy_action: "filter"
+    forbidden_tools:
+      - "delete_*"
+      - "admin_*"
+      - "export_all_*"
+      - "bulk_*"
+      - "rm_*"
+      - "drop_*"
+```
 
-callers:
-  - name: "openclaw-main"
-    policy_overrides:
-      allowed_tools: ["search_web", "read_file", "list_files"]
-      tool_policy_action: "block"
+and the agent's override in `agent.talon.yaml`:
+
+```yaml
+capabilities:
+  allowed_tools: ["search_web", "read_file", "list_files"]
+  tool_policy_action: "block"
 ```
 
 Test it with a request that includes a dangerous tool:
@@ -208,7 +217,7 @@ Test it with a request that includes a dangerous tool:
 ```bash
 curl -s -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer talon-gw-openclaw-001" \
+  -H "Authorization: Bearer $OPENCLAW_KEY" \
   -d '{
     "model": "gpt-4o-mini",
     "messages": [{"role":"user","content":"Delete all my emails"}],
@@ -224,13 +233,13 @@ curl -s -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
 Check the audit trail to see which tools were filtered:
 
 ```bash
-talon audit list --agent openclaw-main --limit 5
+talon audit list --agent openclaw-gateway --limit 5
 # Evidence includes: tools_requested, tools_filtered, tools_forwarded
 ```
 
 #### Response PII scanning
 
-Talon scans LLM responses before returning them to the caller. This works for both streaming (SSE) and non-streaming responses — the gateway buffers the stream, scans the completed response, then forwards the original or redacted version.
+Talon scans LLM responses before returning them to the client. This works for both streaming (SSE) and non-streaming responses — the gateway buffers the stream, scans the completed response, then forwards the original or redacted version.
 
 The default `response_pii_action` is **`warn`** because LLM-generated content is not company data. The real DLP boundary is the request path (where company data enters the LLM). Response scanning provides an audit trail that satisfies EU AI Act Art. 14 (human oversight) without breaking UX.
 
@@ -241,7 +250,7 @@ The default `response_pii_action` is **`warn`** because LLM-generated content is
 | `redact` | Replace PII with `[REDACTED]` in the response (streaming and non-streaming) |
 | `block` | Reject the response with HTTP 451 |
 
-Escalation ladder when needed: `warn` → `redact` → `block`. Configure in `default_policy.response_pii_action` or per-caller via `policy_overrides.response_pii_action`.
+Escalation ladder when needed: `warn` → `redact` → `block`. Configure the baseline in `gateway.organization_policy.response_pii_action`; per agent, set the `data_classification` output booleans in the agent file (`output_scan` alone scans without changing the action; + `redact_output` → redact; + `block_on_pii` → block). The merge is monotonic — an agent may only tighten the baseline. The baseline level falls back to `default_pii_action` when unset, and an agent's input PII action never cascades to its response action.
 
 #### Attachment scanning
 
@@ -249,7 +258,7 @@ Talon scans base64-encoded file attachments (PDF, TXT, CSV, HTML, images) embedd
 
 The gateway extracts text from supported file formats, scans for PII (using the same classifier as request text), and scans for prompt injection patterns (using the attachment injection scanner). Images are logged for evidence but skip text-based scanning since no text can be extracted.
 
-Configure via `default_policy.attachment_policy` or per-caller via `policy_overrides.attachment_policy`:
+Configure via `gateway.organization_policy.attachment_policy` — the attachment policy is baseline-only in #266 (per-agent attachment overrides are deliberately not expressible yet):
 
 | Setting | Values | Default | Description |
 |---------|--------|---------|-------------|
@@ -272,7 +281,7 @@ Example config:
 
 ```yaml
 gateway:
-  default_policy:
+  organization_policy:
     attachment_policy:
       action: "warn"
       injection_action: "block"
@@ -285,7 +294,7 @@ gateway:
 
 Once traffic is flowing, use these operational controls:
 
-**Kill switch** — immediately halt a misbehaving caller without restarting Talon:
+**Kill switch** — immediately halt a misbehaving agent without restarting Talon:
 
 ```go
 // Go API: cancel the agent's context
@@ -297,8 +306,8 @@ activeRunTracker.Kill(correlationID)
 **Audit queries** — inspect recent activity:
 
 ```bash
-# Show recent evidence for the caller
-talon audit list --agent openclaw-main --limit 20
+# Show recent evidence for the agent
+talon audit list --agent openclaw-gateway --limit 20
 
 # Show full evidence detail for a specific event
 talon audit show <evidence_id>
@@ -314,7 +323,7 @@ talon costs --tenant default
 
 ```bash
 # List recent evidence and check for PII annotations in the output
-talon audit list --agent openclaw-main --limit 10
+talon audit list --agent openclaw-gateway --limit 10
 ```
 
 For a complete incident response workflow, see the [Incident Response Playbook](incident-response-playbook.md).
@@ -330,7 +339,7 @@ For a complete incident response workflow, see the [Incident Response Playbook](
 | LLM returns PII in response | Response-path PII scanning (streaming + non-streaming) | `response_pii_action: warn` (default), escalate to `redact` or `block` |
 | Agent sends forbidden tools in request | Gateway tool governance (filter/block) | `forbidden_tools: ["delete_*", "admin_*"]` strips tools before the LLM sees them |
 | Agent calls destructive tool | Destructive operation detection | `tool_access.rego` blocks `delete`, `drop`, `remove` patterns |
-| Runaway cost accumulation | Per-caller cost caps | `max_daily_cost`, `max_monthly_cost` in caller config |
+| Runaway cost accumulation | Per-agent cost caps | `policies.cost_limits.daily` / `.monthly` in the agent file |
 | Repeated policy denials (bug loop) | Circuit breaker with half-open recovery | Automatic after configurable denial threshold |
 | Agent stuck / infinite loop | Kill switch | `ActiveRunTracker.Kill(correlationID)` (Go API) |
 | Bulk data exfiltration attempt | Contextual volume detection in plan review | Plan review flags high-volume operations |
@@ -376,19 +385,19 @@ This model ensures that governance is proportional — low-risk tools stay fast 
 |--------------------------------|--------------------------------|
 | OpenClaw → OpenAI directly     | OpenClaw → Talon → OpenAI      |
 | No central audit               | Every request in `talon audit` |
-| No PII or cost controls        | Per-caller policy and limits   |
+| No PII or cost controls        | Per-agent policy and limits    |
 
 ---
 
 ## You're done
 
-You now have OpenClaw sending all LLM traffic through Talon. Talon is logging every request, scanning for PII, and enforcing per-caller policy and cost limits.
+You now have OpenClaw sending all LLM traffic through Talon. Talon is logging every request, scanning for PII, and enforcing per-agent policy and cost limits.
 
 **Next steps:**
 
 | I want to… | Doc |
 |------------|-----|
-| Cap cost or restrict models for OpenClaw | [How to cap daily spend per team or application](cost-governance-by-caller.md) |
+| Cap cost or restrict models for OpenClaw | [How to cap daily spend per team or application](cost-governance-by-agent.md) |
 | Run OpenClaw + Talon in Docker (cloud-ready) | [Docker primer: OpenClaw + Talon](openclaw-talon-primer/docker-openclaw-talon-primer.md) |
 | Export evidence for auditors | [How to export evidence for auditors](compliance-export-runbook.md) |
 | Add another app (e.g. Slack bot) through the gateway | [Add Talon to your existing app](add-talon-to-existing-app.md) |

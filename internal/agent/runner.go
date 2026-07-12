@@ -1262,7 +1262,12 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 				if r.cacheConfig.MaxEntriesPerTenant > 0 && r.cacheConfig.MaxEntriesPerTenant < maxCand {
 					maxCand = r.cacheConfig.MaxEntriesPerTenant
 				}
-				lookupResult, err := r.cacheStore.Lookup(ctx, req.TenantID, queryBlob, threshold, maxCand, r.cacheEmbedder.SimilarityFunc())
+				// Scope the native cache the same way the gateway does
+				// (#266 review round 5): a hit may only come from an entry
+				// produced under the same agent, model, provider, policy
+				// version, and data tier — never across that boundary.
+				lookupScopeKey := cache.ScopeKey(req.AgentName, model, provider.Name(), pol.VersionTag, dataTierStr)
+				lookupResult, err := r.cacheStore.Lookup(ctx, req.TenantID, lookupScopeKey, queryBlob, threshold, maxCand, r.cacheEmbedder.SimilarityFunc())
 				if err == nil && lookupResult != nil {
 					hit := lookupResult.Entry
 					_ = r.cacheStore.IncrementHitCount(ctx, hit.ID)
@@ -1297,7 +1302,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 										PolicyVersion: pol.VersionTag,
 									},
 									Classification: evidence.Classification{InputTier: tier, PIIDetected: append(piiNames, cacheOutputPIINames...)},
-									CacheHit:       true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity,
+									CacheHit:       true, CacheEntryID: hit.ID, CacheSourceCorrelationID: hit.SourceCorrelationID, CacheSimilarity: lookupResult.Similarity,
 									Compliance: compliance, InputPrompt: req.Prompt, OutputResponse: hit.ResponseText,
 									DataFlow: buildRunDataFlow(runFlowInputs{
 										TenantID: req.TenantID, InvocationType: req.InvocationType,
@@ -1354,7 +1359,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 											PIIDetected: append(piiNames, cacheOutputPIINames...),
 											Scanner:     scannerInfo,
 										},
-										CacheHit: true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity,
+										CacheHit: true, CacheEntryID: hit.ID, CacheSourceCorrelationID: hit.SourceCorrelationID, CacheSimilarity: lookupResult.Similarity,
 										Compliance: compliance, InputPrompt: req.Prompt,
 										DataFlow: buildRunDataFlow(runFlowInputs{
 											TenantID: req.TenantID, InvocationType: req.InvocationType,
@@ -1400,7 +1405,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 							ModelRoutingRationale: modelRationale + " (cache hit)", DurationMS: duration.Milliseconds(),
 							SecretsAccessed: secretsAccessed, InputPrompt: req.Prompt, AgentReasoning: req.AgentReasoning, AgentVerified: req.AgentVerified, Compliance: compliance,
 							ObservationModeOverride: observationOverride, RoutingDecision: evRouting,
-							CacheHit: true, CacheEntryID: hit.ID, CacheSimilarity: lookupResult.Similarity, CostSaved: costSaved,
+							CacheHit: true, CacheEntryID: hit.ID, CacheSourceCorrelationID: hit.SourceCorrelationID, CacheSimilarity: lookupResult.Similarity, CostSaved: costSaved,
 							Cost: 0, Tokens: evidence.TokenUsage{}, OutputResponse: cacheResponseText,
 							DataFlow: buildRunDataFlow(runFlowInputs{
 								TenantID: req.TenantID, InvocationType: req.InvocationType,
@@ -1915,14 +1920,20 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			} else if err == nil {
 				cacheKey := cache.DeriveEntryKey(req.TenantID, model, prompt)
 				tierLabel := cache.TierLabel(tier)
+				storeScopeKey := cache.ScopeKey(req.AgentName, model, provider.Name(), pol.VersionTag, tierLabel)
 				ttl := cache.TTLForTier(tierLabel, r.cacheConfig.TTLByTier, r.cacheConfig.DefaultTTL)
 				now := time.Now().UTC()
 				entry := &cache.Entry{
 					TenantID: req.TenantID, CacheKey: cacheKey, EmbeddingData: emb, ResponseText: scrubbed,
 					Model: model, DataTier: tierLabel, PIIScrubbed: scrubbed != resp.Content,
-					CreatedAt: now, ExpiresAt: now.Add(ttl),
+					AgentID: req.AgentName, Provider: provider.Name(), ScopeKey: storeScopeKey,
+					SourceCorrelationID: correlationID,
+					CreatedAt:           now, ExpiresAt: now.Add(ttl),
 				}
-				_ = r.cacheStore.Insert(ctx, entry)
+				if insertErr := r.cacheStore.Insert(ctx, entry); insertErr != nil {
+					log.Warn().Err(insertErr).Str("correlation_id", correlationID).
+						Str("agent_id", req.AgentName).Msg("cache_store_failed")
+				}
 			}
 		}
 		// Step 7.5: Pre-specified tool invocations (legacy path)

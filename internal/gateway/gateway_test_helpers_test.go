@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,18 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 )
+
+// testIdentity builds a ResolvedIdentity with a direct key binding. Pipeline
+// tests construct registry entries without a vault — the vault-backed build
+// path has its own tests in identity_test.go.
+func testIdentity(name, tenant, key string, override *PolicyOverride) *ResolvedIdentity {
+	return &ResolvedIdentity{Name: name, TenantID: tenant, Override: override, key: []byte(key), keyDigest: sha256.Sum256([]byte(key))}
+}
+
+// testRegistry assembles an immutable registry from prebuilt identities.
+func testRegistry(ids ...*ResolvedIdentity) *IdentityRegistry {
+	return &IdentityRegistry{identities: ids}
+}
 
 // setupOpenClawGateway creates a Gateway wired to a mock upstream that captures
 // the forwarded request for inspection.
@@ -44,20 +57,7 @@ func setupGatewayWithClassifier(t *testing.T, piiAction string, mode Mode, upstr
 			// opt-in; the gateway default is preserve).
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key", ResponsesStoreMode: ResponsesStoreForceIfAbsent},
 		},
-		Callers: []CallerConfig{
-			{
-				Name:      "openclaw-main",
-				TenantKey: "talon-gw-openclaw-001",
-				TenantID:  "test-tenant",
-				PolicyOverrides: &CallerPolicyOverrides{
-					PIIAction:      piiAction,
-					MaxDailyCost:   100,
-					MaxMonthlyCost: 2000,
-					AllowedModels:  []string{"gpt-4o-mini", "gpt-4o"},
-				},
-			},
-		},
-		ServerDefaults: ServerDefaults{
+		OrganizationPolicy: OrganizationPolicy{
 			DefaultPIIAction: piiAction,
 			MaxDailyCost:     100,
 			MaxMonthlyCost:   2000,
@@ -68,6 +68,12 @@ func setupGatewayWithClassifier(t *testing.T, piiAction string, mode Mode, upstr
 			StreamIdleTimeout: "60s",
 		},
 	}
+	registry := testRegistry(testIdentity("openclaw-main", "test-tenant", "talon-gw-openclaw-001", &PolicyOverride{
+		PIIAction:      piiAction,
+		MaxDailyCost:   100,
+		MaxMonthlyCost: 2000,
+		AllowedModels:  []string{"gpt-4o-mini", "gpt-4o"},
+	}))
 
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
@@ -85,7 +91,7 @@ func setupGatewayWithClassifier(t *testing.T, piiAction string, mode Mode, upstr
 		cls = classifier.MustNewScanner()
 	}
 
-	gw, err := NewGateway(cfg, cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	return gw, upstream, evStore

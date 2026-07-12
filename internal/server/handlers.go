@@ -8,9 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -23,7 +21,6 @@ import (
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/drift"
 	"github.com/dativo-io/talon/internal/evidence"
-	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/health"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/session"
@@ -183,19 +180,16 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error())
 		return
 	}
-	tenantID := TenantIDFromContext(r.Context())
-	if tenantID == "" {
-		tenantID = req.TenantID
-	}
-	if tenantID == "" {
-		tenantID = "default"
-	}
-	agentName := req.AgentName
-	if agentName == "" {
-		agentName = req.AgentID
-	}
-	if agentName == "" {
-		agentName = "default"
+	// Attribution is bound to the AUTHENTICATED identity, not to a
+	// client-asserted name (#266 review round 4): an agent key for Agent A
+	// must not be able to submit a run recorded under Agent B. When the
+	// request authenticated with an agent key, the agent name and tenant come
+	// from the resolved identity, and a differing body/header value is
+	// rejected. Admin and dev-mode requests keep the client-asserted name.
+	tenantID, agentName, authErr := resolveRunAttribution(r.Context(), req.TenantID, firstNonEmpty(req.AgentName, req.AgentID))
+	if authErr != nil {
+		writeError(w, http.StatusForbidden, "identity_mismatch", authErr.Error())
+		return
 	}
 	if req.Prompt == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "prompt is required")
@@ -283,22 +277,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_json", "invalid_request_error", "invalid JSON: "+err.Error())
 		return
 	}
-	tenantID := TenantIDFromContext(r.Context())
-	if tenantID == "" {
-		tenantID = req.TenantID
-	}
-	if tenantID == "" {
-		tenantID = r.Header.Get("X-Talon-Tenant")
-	}
-	if tenantID == "" {
-		tenantID = "default"
-	}
-	agentName := req.AgentID
-	if agentName == "" {
-		agentName = r.Header.Get("X-Talon-Agent")
-	}
-	if agentName == "" {
-		agentName = "default"
+	// Attribution binds to the authenticated identity, not a client-asserted
+	// name (#266 review round 4): an agent key may only act as its own agent.
+	tenantID, agentName, authErr := resolveRunAttribution(r.Context(),
+		firstNonEmpty(req.TenantID, r.Header.Get("X-Talon-Tenant")),
+		firstNonEmpty(req.AgentID, r.Header.Get("X-Talon-Agent")))
+	if authErr != nil {
+		writeOpenAIError(w, http.StatusForbidden, "identity_mismatch", "invalid_request_error", authErr.Error())
+		return
 	}
 	var prompt string
 	for i := len(req.Messages) - 1; i >= 0; i-- {
@@ -401,7 +387,8 @@ func (s *Server) handleEvidenceList(w http.ResponseWriter, r *http.Request) {
 	} else if tenantID == "" && !r.URL.Query().Has("tenant_id") {
 		tenantID = "default"
 	}
-	agentID := r.URL.Query().Get("agent_id")
+	// An agent key is confined to its own agent's records (#266 review r4).
+	agentID, _ := agentReadScope(r.Context(), r.URL.Query().Get("agent_id"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
 		limit = 50
@@ -447,7 +434,7 @@ func (s *Server) handleEvidenceTimeline(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
-	if target.TenantID != tenantID {
+	if target.TenantID != tenantID || !recordVisibleToCaller(r.Context(), target.AgentID) {
 		writeError(w, http.StatusNotFound, "not_found", "evidence not found")
 		return
 	}
@@ -459,7 +446,10 @@ func (s *Server) handleEvidenceTimeline(w http.ResponseWriter, r *http.Request) 
 	if after <= 0 {
 		after = 3
 	}
-	entries, err := s.evidenceStore.Timeline(r.Context(), around, before, after)
+	// Scope neighbors to the authenticated agent (#266 review r5): a
+	// tenant-wide timeline would leak another agent's records to an agent key.
+	timelineAgent, _ := agentReadScope(r.Context(), "")
+	entries, err := s.evidenceStore.Timeline(r.Context(), around, before, after, timelineAgent)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -492,7 +482,7 @@ func (s *Server) handleEvidenceGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
-	if ev.TenantID != tenantID {
+	if ev.TenantID != tenantID || !recordVisibleToCaller(r.Context(), ev.AgentID) {
 		writeError(w, http.StatusNotFound, "not_found", "evidence not found")
 		return
 	}
@@ -518,13 +508,20 @@ func (s *Server) handleEvidenceTrace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
-	if ev.TenantID != tenantID {
+	if ev.TenantID != tenantID || !recordVisibleToCaller(r.Context(), ev.AgentID) {
 		writeError(w, http.StatusNotFound, "not_found", "evidence not found")
 		return
 	}
-	steps, _ := s.evidenceStore.ListStepsByCorrelationID(r.Context(), ev.CorrelationID)
-	if steps == nil {
-		steps = []evidence.StepEvidence{}
+	rawSteps, _ := s.evidenceStore.ListStepsByCorrelationID(r.Context(), ev.CorrelationID)
+	// Steps are joined by client-suppliable correlation_id, so a colliding
+	// id could surface another agent's step summaries; keep only steps of the
+	// same tenant AND agent as the (already agent-checked) parent record
+	// (#266 review r5).
+	steps := make([]evidence.StepEvidence, 0, len(rawSteps))
+	for i := range rawSteps {
+		if rawSteps[i].TenantID == ev.TenantID && rawSteps[i].AgentID == ev.AgentID {
+			steps = append(steps, rawSteps[i])
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"evidence": ev,
@@ -550,7 +547,7 @@ func (s *Server) handleEvidenceVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
-	if ev.TenantID != tenantID {
+	if ev.TenantID != tenantID || !recordVisibleToCaller(r.Context(), ev.AgentID) {
 		writeError(w, http.StatusNotFound, "not_found", "evidence not found")
 		return
 	}
@@ -561,7 +558,6 @@ func (s *Server) handleEvidenceVerify(w http.ResponseWriter, r *http.Request) {
 type evidenceExportRequest struct {
 	TenantID string `json:"tenant_id"`
 	AgentID  string `json:"agent_id"`
-	Caller   string `json:"caller,omitempty"`
 	From     string `json:"from"`
 	To       string `json:"to"`
 	Limit    int    `json:"limit"`
@@ -600,11 +596,7 @@ func (s *Server) handleEvidenceExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "format must be csv or json")
 		return
 	}
-	agentID, err := resolveAgentOrCaller(req.AgentID, req.Caller)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
+	agentID, _ := agentReadScope(r.Context(), strings.TrimSpace(req.AgentID))
 	list, err := s.evidenceStore.List(r.Context(), tenantID, agentID, from, to, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
@@ -654,11 +646,7 @@ func (s *Server) handleCostsExport(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	agentID, err := resolveAgentOrCaller(req.AgentID, req.Caller)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
+	agentID, _ := agentReadScope(r.Context(), strings.TrimSpace(req.AgentID))
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 10000
@@ -717,18 +705,6 @@ func (s *Server) handleCostsExport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, records)
 }
 
-func resolveAgentOrCaller(agentID, caller string) (string, error) {
-	agent := strings.TrimSpace(agentID)
-	caller = strings.TrimSpace(caller)
-	if caller == "" {
-		return agent, nil
-	}
-	if agent != "" && agent != caller {
-		return "", fmt.Errorf("agent_id and caller must match when both are provided")
-	}
-	return caller, nil
-}
-
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	tenantID := TenantIDFromContext(r.Context())
 	if tenantID == "" {
@@ -746,12 +722,17 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"status": "ok", "evidence_count_today": 0, "cost_today": 0.0, "monthly": 0.0, "active_runs": 0,
 		"pending_memory_reviews": 0, "blocked_count": 0, "error_rate": 0.0, "enforcement_mode": "", "tenant_id": tenantID,
 	}
+	// An agent key sees only its OWN agent's aggregates (#266 review r5);
+	// admin sees the tenant-wide rollup.
+	statusAgent, _ := agentReadScope(r.Context(), "")
 	applyEvidenceHealthStatus(resp)
 	applyEventStreamStatus(resp)
-	s.applyEvidenceStoreStatus(r.Context(), resp, tenantID, dayStart, dayEnd, monthStart, monthEnd)
-	s.applyMemoryStoreStatus(r.Context(), resp, tenantID)
+	s.applyEvidenceStoreStatus(r.Context(), resp, tenantID, statusAgent, dayStart, dayEnd, monthStart, monthEnd)
+	s.applyMemoryStoreStatus(r.Context(), resp, tenantID, statusAgent)
 	s.applyMetricsCollectorStatus(r.Context(), resp)
 	if s.activeRunTracker != nil {
+		// active_runs is a coarse per-tenant operational count (the tracker
+		// does not index by agent); it discloses no record content.
 		resp["active_runs"] = s.activeRunTracker.Count(tenantID)
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -784,6 +765,7 @@ func (s *Server) applyEvidenceStoreStatus(
 	ctx context.Context,
 	resp map[string]interface{},
 	tenantID string,
+	agentID string,
 	dayStart time.Time,
 	dayEnd time.Time,
 	monthStart time.Time,
@@ -792,22 +774,29 @@ func (s *Server) applyEvidenceStoreStatus(
 	if s.evidenceStore == nil {
 		return
 	}
-	if n, err := s.evidenceStore.CountInRange(ctx, tenantID, "", dayStart, dayEnd); err == nil {
+	if n, err := s.evidenceStore.CountInRange(ctx, tenantID, agentID, dayStart, dayEnd); err == nil {
 		resp["evidence_count_today"] = n
 	}
-	if cost, err := s.evidenceStore.CostTotal(ctx, tenantID, "", dayStart, dayEnd); err == nil {
+	if cost, err := s.evidenceStore.CostTotal(ctx, tenantID, agentID, dayStart, dayEnd); err == nil {
 		resp["cost_today"] = cost
 	}
-	if cost, err := s.evidenceStore.CostTotal(ctx, tenantID, "", monthStart, monthEnd); err == nil {
+	if cost, err := s.evidenceStore.CostTotal(ctx, tenantID, agentID, monthStart, monthEnd); err == nil {
 		resp["monthly"] = cost
 	}
-	if blocked, err := s.evidenceStore.CountDeniedInRange(ctx, tenantID, "", dayStart, dayEnd); err == nil {
+	if blocked, err := s.evidenceStore.CountDeniedInRange(ctx, tenantID, agentID, dayStart, dayEnd); err == nil {
 		resp["blocked_count"] = blocked
 	}
 }
 
-func (s *Server) applyMemoryStoreStatus(ctx context.Context, resp map[string]interface{}, tenantID string) {
+func (s *Server) applyMemoryStoreStatus(ctx context.Context, resp map[string]interface{}, tenantID, agentID string) {
 	if s.memoryStore == nil {
+		return
+	}
+	// An agent key sees only its own agent's pending reviews (#266 review r5).
+	if agentID != "" {
+		if entries, err := s.memoryStore.ListPendingReview(ctx, tenantID, agentID, 1000); err == nil {
+			resp["pending_memory_reviews"] = len(entries)
+		}
 		return
 	}
 	if n, err := s.memoryStore.CountPendingReviewForTenant(ctx, tenantID); err == nil {
@@ -844,15 +833,19 @@ func (s *Server) handleCosts(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
+	// An agent key sees only its own agent's spend (#266 review r4); admin
+	// sees the tenant-wide total (empty agent filter).
+	agentID, _ := agentReadScope(r.Context(), "")
 	now := time.Now().UTC()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	dayEnd := dayStart.Add(24 * time.Hour)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	monthEnd := monthStart.AddDate(0, 1, 0)
-	daily, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, "", dayStart, dayEnd)
-	monthly, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, "", monthStart, monthEnd)
+	daily, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, agentID, dayStart, dayEnd)
+	monthly, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, agentID, monthStart, monthEnd)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"tenant_id": tenantID,
+		"agent_id":  agentID,
 		"daily":     daily,
 		"monthly":   monthly,
 	})
@@ -866,31 +859,30 @@ func (s *Server) handleCostsBudget(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	callerID := r.URL.Query().Get("caller")
-	if callerID == "" {
-		callerID = r.URL.Query().Get("agent_id")
-	}
+	agentID, _ := agentReadScope(r.Context(), r.URL.Query().Get("agent_id"))
 	now := time.Now().UTC()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	dayEnd := dayStart.Add(24 * time.Hour)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	monthEnd := monthStart.AddDate(0, 1, 0)
-	dailyUsed, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, callerID, dayStart, dayEnd)
-	monthlyUsed, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, callerID, monthStart, monthEnd)
+	dailyUsed, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, agentID, dayStart, dayEnd)
+	monthlyUsed, _ := s.evidenceStore.CostTotal(r.Context(), tenantID, agentID, monthStart, monthEnd)
 	out := map[string]interface{}{
 		"tenant_id":    tenantID,
 		"daily_used":   dailyUsed,
 		"monthly_used": monthlyUsed,
 	}
-	if callerID != "" {
-		if dailyLimit, monthlyLimit, ok := lookupGatewayCallerCaps(tenantID, callerID); ok {
+	// Per-agent caps come from the shared effective-policy computation over
+	// the identity registry (injected by serve) — never re-derived here (#266).
+	if agentID != "" && s.agentCapsLookup != nil {
+		if dailyLimit, monthlyLimit, ok := s.agentCapsLookup(tenantID, agentID); ok {
 			if dailyLimit > 0 {
 				out["daily_limit"] = dailyLimit
 			}
 			if monthlyLimit > 0 {
 				out["monthly_limit"] = monthlyLimit
 			}
-			out["budget_source"] = "gateway_caller_cap"
+			out["budget_source"] = "agent_effective_cap"
 			writeJSON(w, http.StatusOK, out)
 			return
 		}
@@ -903,35 +895,6 @@ func (s *Server) handleCostsBudget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func lookupGatewayCallerCaps(tenantID, callerID string) (dailyLimit float64, monthlyLimit float64, ok bool) {
-	path := strings.TrimSpace(os.Getenv("TALON_GATEWAY_CONFIG"))
-	if path == "" {
-		path = "talon.config.yaml"
-	}
-	cfg, err := gateway.LoadGatewayConfig(path)
-	if err != nil {
-		return 0, 0, false
-	}
-	for i := range cfg.Callers {
-		caller := cfg.Callers[i]
-		if caller.Name != callerID || caller.TenantID != tenantID {
-			continue
-		}
-		daily := cfg.ServerDefaults.MaxDailyCost
-		monthly := cfg.ServerDefaults.MaxMonthlyCost
-		if caller.PolicyOverrides != nil {
-			if caller.PolicyOverrides.MaxDailyCost > 0 {
-				daily = caller.PolicyOverrides.MaxDailyCost
-			}
-			if caller.PolicyOverrides.MaxMonthlyCost > 0 {
-				monthly = caller.PolicyOverrides.MaxMonthlyCost
-			}
-		}
-		return daily, monthly, daily > 0 || monthly > 0
-	}
-	return 0, 0, false
-}
-
 // handleCostsReport returns aggregate spend for a time range (for trends/summary). Query params: from, to (RFC3339), tenant_id, agent_id.
 func (s *Server) handleCostsReport(w http.ResponseWriter, r *http.Request) {
 	tenantID := TenantIDFromContext(r.Context())
@@ -941,7 +904,7 @@ func (s *Server) handleCostsReport(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	agentID := r.URL.Query().Get("agent_id")
+	agentID, _ := agentReadScope(r.Context(), r.URL.Query().Get("agent_id"))
 	var from, to time.Time
 	if f := r.URL.Query().Get("from"); f != "" {
 		from, _ = time.Parse(time.RFC3339, f)
@@ -1014,7 +977,7 @@ func (s *Server) handleMemoryList(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	agentID := r.URL.Query().Get("agent_id")
+	agentID, _ := agentReadScope(r.Context(), r.URL.Query().Get("agent_id"))
 	if agentID == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "agent_id query is required")
 		return
@@ -1040,7 +1003,7 @@ func (s *Server) handleMemoryAsOf(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	agentID := r.URL.Query().Get("agent_id")
+	agentID, _ := agentReadScope(r.Context(), r.URL.Query().Get("agent_id"))
 	asOfStr := r.URL.Query().Get("as_of")
 	if agentID == "" || asOfStr == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "agent_id and as_of (RFC3339) are required")
@@ -1072,7 +1035,7 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	agentID := r.URL.Query().Get("agent_id")
+	agentID, _ := agentReadScope(r.Context(), r.URL.Query().Get("agent_id"))
 	q := r.URL.Query().Get("q")
 	if agentID == "" || q == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "agent_id and q are required")
@@ -1109,6 +1072,11 @@ func (s *Server) handleMemoryGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	// An agent key sees only its own agent's memory (#266 review r5).
+	if !recordVisibleToCaller(r.Context(), entry.AgentID) {
+		writeError(w, http.StatusNotFound, "not_found", "memory entry not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, entry)
 }
 
@@ -1121,8 +1089,10 @@ func (s *Server) handleMemoryReview(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	agentID := chi.URLParam(r, "agent_id")
-	if agentID == "" {
+	// An agent key may only review its OWN agent's memory; the path agent_id
+	// cannot widen the scope (#266 review r5).
+	agentID, scoped := agentReadScope(r.Context(), chi.URLParam(r, "agent_id"))
+	if !scoped && agentID == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "agent_id is required")
 		return
 	}
