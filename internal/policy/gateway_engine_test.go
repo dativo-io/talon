@@ -110,6 +110,43 @@ func TestGatewayEngine_EvaluateGateway_OrgModelConstraints(t *testing.T) {
 		require.False(t, allowed)
 	})
 
+	// #279 review round 3: a request that OMITS its model must not bypass an
+	// active model policy — the extractor does not require a model, and some
+	// OpenAI-compatible endpoints apply a server-side default.
+	t.Run("model-less request denied under org wildcard block", func(t *testing.T) {
+		in := base("")
+		in["org_blocked_models"] = []interface{}{"*"}
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed, "empty model must not bypass blocked_models: [\"*\"]")
+		joined := strings.Join(reasons, "; ")
+		require.Contains(t, joined, "model_required_for_policy_evaluation")
+	})
+
+	t.Run("model-less request denied under agent wildcard block", func(t *testing.T) {
+		in := base("")
+		in["agent_blocked_models"] = []interface{}{"*"}
+		allowed, _, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+	})
+
+	t.Run("model-less request denied when any allowlist is active", func(t *testing.T) {
+		in := base("")
+		in["org_allowed_models"] = []interface{}{"gpt-4o"}
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+		require.Contains(t, strings.Join(reasons, "; "), "model_required_for_policy_evaluation")
+	})
+
+	t.Run("model-less request allowed when no model policy is active", func(t *testing.T) {
+		in := base("")
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.True(t, allowed, "no model policy active → a model-less request passes: %v", reasons)
+	})
+
 	t.Run("org tier ceiling denies with an organization-attributed reason", func(t *testing.T) {
 		in := base("gpt-4o")
 		in["data_tier"] = 2

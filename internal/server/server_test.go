@@ -251,21 +251,22 @@ func TestQuickstartRoutingEnabled(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, rec.Code)
 	assert.True(t, quickstartCalled)
 
-	// Agent chat is relocated under /v1/agents/chat/completions in quickstart mode.
+	// Tenant agent chat is NOT mounted in quickstart — not even with tenant
+	// keys configured. Quickstart never builds the identity registry (#266),
+	// so this route could never be reached in production (#285).
 	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/agents/chat/completions", strings.NewReader(`{`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer tenant-secret")
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
-func TestQuickstartRoutingWithoutTenantKeysOmitsRelocatedPath(t *testing.T) {
-	// Quickstart without any configured tenant keys must not mount the
-	// relocated /v1/agents/chat/completions route. The host-root facade is
-	// still served, but tenant agent chat is absent (404) so quickstart stays
-	// a strict facade-only surface and does not become a dev-mode-open
-	// backdoor to tenant APIs.
+func TestQuickstartOmitsTenantChatPath(t *testing.T) {
+	// Quickstart never mounts tenant agent chat — with or without tenant
+	// keys (#285; see also TestQuickstartRoutingEnabled for the keyed case).
+	// The host-root facade is still served, but /v1/agents/chat/completions
+	// is absent (404) so quickstart stays a strict facade-only surface.
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
 	require.NoError(t, err)

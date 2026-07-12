@@ -164,6 +164,31 @@ func TestGatewayIdentityParity(t *testing.T) {
 		assert.Equal(t, "fail", c.Status, "unminted secret: %s", c.Message)
 	})
 
+	// The preflight must validate the FULL identity — including the policy
+	// override, whose semantic validation happens at registry build. This
+	// egress rule is agent-SCHEMA-valid (tier is the only required field)
+	// but gateway-invalid (a rule needs allowed_providers or
+	// allowed_regions), so a reduced-identity preflight would pass while
+	// `talon serve --gateway` fails (#279 review round 3).
+	t.Run("schema-valid but gateway-invalid egress override fails", func(t *testing.T) {
+		dir, gwCfgPath := setup(t)
+		agentDoc := agentYAML(true) + "  egress:\n    rules:\n      - tier: 2\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.talon.yaml"), []byte(agentDoc), 0o600))
+
+		cfg, err := config.Load()
+		require.NoError(t, err)
+		store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+		require.NoError(t, err)
+		require.NoError(t, store.Set(context.Background(), "parity-agent-talon-key", []byte("tk-parity-eg"), secrets.ACL{}))
+		require.NoError(t, store.Close())
+
+		c := findIdentity(run(gwCfgPath))
+		require.NotNil(t, c)
+		assert.Equal(t, "fail", c.Status,
+			"gateway startup rejects this override at registry build — doctor must too: %s", c.Message)
+		assert.Contains(t, c.Message, "egress")
+	})
+
 	t.Run("minted key passes; admin collision fails", func(t *testing.T) {
 		dir, gwCfgPath := setup(t)
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.talon.yaml"), []byte(agentYAML(true)), 0o600))

@@ -65,3 +65,5 @@ internal_docs/
 
 # Node (if we add JS tooling later)
 node_modules/
+smoke_test_*.log
+smoke_test_logs.out.txt

@@ -83,7 +83,8 @@
             "type": "string"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "gatewayEgressPolicy": {
       "type": "object",
@@ -123,10 +124,12 @@
                 },
                 "description": "Destination regions (e.g. EU, US, LOCAL) matched against the provider's resolved region. An unknown region never matches (fail-closed)."
               }
-            }
+            },
+            "additionalProperties": false
           }
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
   "properties": {
@@ -453,7 +456,8 @@
               "default": false
             }
           },
-          "description": "Scan LLM responses for PII."
+          "description": "Scan LLM responses for PII.",
+          "additionalProperties": false
         },
         "network_interception": {
           "type": "object",
@@ -481,7 +485,8 @@
                   "note": {
                     "type": "string"
                   }
-                }
+                },
+                "additionalProperties": false
               }
             },
             "tls": {
@@ -493,9 +498,11 @@
                 "cert_dir": {
                   "type": "string"
                 }
-              }
+              },
+              "additionalProperties": false
             }
-          }
+          },
+          "additionalProperties": false
         },
         "providers": {
           "type": "object",
@@ -585,10 +592,12 @@
                       "type": "string",
                       "description": "Optional: rewrite the request body's model field for this target."
                     }
-                  }
+                  },
+                  "additionalProperties": false
                 }
               }
-            }
+            },
+            "additionalProperties": false
           }
         },
         "organization_policy": {
@@ -664,9 +673,25 @@
               "description": "Organization-wide HARD constraint (#266): model blocklist binding every agent regardless of its override ('*' blocks all models)."
             },
             "max_data_tier": {
-              "type": "integer",
-              "enum": [0, 1, 2],
-              "description": "Organization-wide data-tier ceiling (#266): 0 public, 1 internal, 2 confidential. An agent's max_data_tier can only LOWER it further."
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "enum": [
+                    0,
+                    1,
+                    2
+                  ]
+                },
+                {
+                  "type": "string",
+                  "enum": [
+                    "public",
+                    "internal",
+                    "confidential"
+                  ]
+                }
+              ],
+              "description": "Organization-wide data-tier ceiling (#266): 0/public, 1/internal, 2/confidential (named aliases accepted, matching the runtime). An agent's max_data_tier can only LOWER it further."
             }
           },
           "description": "Organization baseline — the shared policy every agent inherits before its one explicit override (agent.talon.yaml) applies — plus organization-wide hard constraints (allowed_providers, allowed_models/blocked_models, max_data_tier) no override can escape (#266).",
@@ -697,8 +722,13 @@
             },
             "stream_idle_timeout": {
               "type": "string"
+            },
+            "response_header_timeout": {
+              "type": "string",
+              "description": "Wait for upstream response headers (time-to-first-byte). Defaults to request_timeout (#230)."
             }
-          }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

@@ -285,17 +285,32 @@ func LoadGatewayConfig(path string) (*GatewayConfig, error) {
 		return nil, fmt.Errorf("parsing gateway config: %w", err)
 	}
 
-	gatewayRaw := raw
-	if g, ok := raw["gateway"]; ok {
-		if m, ok := g.(map[string]interface{}); ok {
-			gatewayRaw = m
+	gatewayMap, hasGatewayBlock := rawGatewaySubtree(raw)
+
+	// Gateway vocabulary at the FILE ROOT is always an error — whether or not
+	// a gateway: block also exists (#266 review round 3, refuted once): a
+	// half-migrated legacy file or a two-space outdent must not silently drop
+	// an organization hard constraint out of an otherwise-enabled gateway.
+	// None of these keys are legitimate operator root vocabulary
+	// (schemas/talon.config.schema.json root properties).
+	for _, key := range []string{
+		"providers", "organization_policy", "listen_prefix",
+		"rate_limits", "timeouts", "network_interception",
+		"response_scanning", "dashboard_listen", "enabled", "mode",
+	} {
+		if _, present := raw[key]; present {
+			return nil, fmt.Errorf("gateway config %s places %q at the file root — wrap all gateway settings in a top-level 'gateway:' block (the root layout was removed so unknown keys inside the gateway surface always fail loudly, #266)", path, key)
 		}
 	}
 
 	// Removed config surfaces get an explicit, friendly breaking-change error
 	// BEFORE strict decoding — a config written for the legacy caller model
-	// must name its replacement, not die on a generic unknown-field error (#266).
-	if err := rejectLegacyGatewayKeys(gatewayRaw); err != nil {
+	// must name its replacement, not die on a generic unknown-field error
+	// (#266). Legacy keys are checked at the file root too (old root-layout
+	// configs), but the default_policy check applies only inside a gateway
+	// block: at the root, default_policy is the OPERATOR key naming the
+	// default agent policy file.
+	if err := rejectLegacyGatewayKeys(gatewayMap, hasGatewayBlock); err != nil {
 		return nil, err
 	}
 
@@ -312,13 +327,6 @@ func LoadGatewayConfig(path string) (*GatewayConfig, error) {
 		if err := dec.Decode(&cfg); err != nil {
 			return nil, fmt.Errorf("unmarshaling gateway block (unknown keys are rejected — see schemas/talon.config.schema.json for the accepted surface): %w", err)
 		}
-	} else {
-		// Legacy top-level layout (no gateway: block): kept permissive — it
-		// yields a disabled gateway config; serve --gateway then refuses to
-		// start. The documented layout is the strict gateway: subtree above.
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			return nil, fmt.Errorf("unmarshaling gateway config: %w", err)
-		}
 	}
 
 	if err := cfg.ApplyDefaults(); err != nil {
@@ -334,14 +342,32 @@ func LoadGatewayConfig(path string) (*GatewayConfig, error) {
 // removed agent identity model. Breaking change (#266): traffic identity
 // lives in agent.talon.yaml (agent.key.secret_name); the baseline block is
 // gateway.organization_policy.
-func rejectLegacyGatewayKeys(gatewayRaw map[string]interface{}) error {
+// rawGatewaySubtree returns the gateway: mapping when present (and a flag
+// saying whether the file has a gateway block at all). A missing block falls
+// back to the root map so legacy root-layout keys still get friendly errors.
+func rawGatewaySubtree(raw map[string]interface{}) (map[string]interface{}, bool) {
+	g, ok := raw["gateway"]
+	if !ok {
+		return raw, false
+	}
+	if m, ok := g.(map[string]interface{}); ok {
+		return m, true
+	}
+	return nil, true
+}
+
+func rejectLegacyGatewayKeys(gatewayRaw map[string]interface{}, isGatewaySubtree bool) error {
 	if gatewayRaw == nil {
 		return nil
 	}
 	legacy := map[string]string{
 		"callers":             "define one agent.talon.yaml per AI use case with agent.key.secret_name instead",
-		"default_policy":      "the organization baseline moved to gateway.organization_policy",
 		"trusted_proxy_cidrs": "source-IP identity was removed; every request authenticates with an agent key",
+	}
+	if isGatewaySubtree {
+		// Only inside a gateway block: at the FILE ROOT, default_policy is
+		// the legitimate operator key naming the default agent policy file.
+		legacy["default_policy"] = "the organization baseline moved to gateway.organization_policy"
 	}
 	for key, hint := range legacy {
 		if _, present := gatewayRaw[key]; present {

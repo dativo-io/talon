@@ -27,7 +27,7 @@ test_section_02_init() {
   assert_pass "talon init --pack crewai --name smoke-crew --force exits 0" run_talon init --pack crewai --name smoke-crew --force
   assert_pass "crewai init creates agent.talon.yaml" test -f "$crewai_dir/agent.talon.yaml"
   assert_pass "crewai init creates talon.config.yaml" test -f "$crewai_dir/talon.config.yaml"
-  assert_pass "crewai agent.talon.yaml contains crewai-crew" grep -q crewai-crew "$crewai_dir/agent.talon.yaml"
+  assert_pass "crewai agent.talon.yaml names the researcher agent" grep -q crew-researcher "$crewai_dir/agent.talon.yaml"
   assert_pass "crewai agent binds vault traffic key" grep -q "crew-researcher-talon-key" "$crewai_dir/agent.talon.yaml"
   # Compliance overlay: --compliance gdpr merges into generated policy
   local gdpr_dir; gdpr_dir="$(setup_section_dir "02_init_compliance")"

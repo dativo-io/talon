@@ -188,7 +188,11 @@ test_section_36_external_scanner() {
   local reqlog="$dir/upstream_requests.log"
   smoke36_write_mock "$dir"
 
-  # Upstream provider mock uses client_bearer so no vault credential is needed.
+  # client_bearer is rejected for YAML-loaded gateways (#266): a normal
+  # gateway's bearer is a Talon agent key and must never go upstream. The
+  # mock upstream ignores auth, so a section-scoped vaulted dummy credential
+  # suffices (own name — never clobbers a real openai-api-key in the vault).
+  run_talon secrets set smoke36-upstream-key "sk-smoke-mock-upstream" &>/dev/null || true
   local gw_cfg="$dir/talon.gateway.scanner.yaml"
   cat > "$gw_cfg" <<GWEOF
 gateway:
@@ -198,7 +202,7 @@ gateway:
   providers:
     openai:
       enabled: true
-      upstream_auth_mode: "client_bearer"
+      secret_name: "smoke36-upstream-key"
       base_url: "http://127.0.0.1:${SMOKE36_UPSTREAM_PORT}"
       region: "EU"
   organization_policy:

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/health"
 	"github.com/dativo-io/talon/internal/metrics"
+	policyengine "github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 	"github.com/go-chi/chi/v5"
@@ -137,6 +139,56 @@ func TestBlockedPath_ProviderNotAllowed_EmitsMetrics(t *testing.T) {
 	require.Len(t, list, 1, "provider-not-allowed should record evidence")
 	assert.False(t, list[0].PolicyDecision.Allowed)
 	assert.Contains(t, list[0].PolicyDecision.Reasons, "provider not allowed: agent_provider_allowlist")
+}
+
+// TestBlockedPath_ModellessWildcardBlock_NeverReachesUpstream (#279 review
+// round 3): a request that OMITS its model must not bypass an org-wide
+// blocked_models: ["*"] — the prompt must never cross the provider boundary.
+func TestBlockedPath_ModellessWildcardBlock_NeverReachesUpstream(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"1","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	cfg := &GatewayConfig{
+		Enabled:      true,
+		ListenPrefix: "/v1/proxy",
+		Mode:         ModeEnforce,
+		Providers: map[string]ProviderConfig{
+			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
+		},
+		OrganizationPolicy: OrganizationPolicy{
+			DefaultPIIAction: "warn",
+			BlockedModels:    []string{"*"},
+		},
+		Timeouts: TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
+	}
+	engine, err := policyengine.NewGatewayEngine(context.Background())
+	require.NoError(t, err)
+	registry := testRegistry(testIdentity("test-agent", "default", "talon-gw-test-001", nil))
+	gw, spy, evStore := setupGatewayWithSpy(t, cfg, registry, engine)
+
+	// No "model" field at all — the extractor tolerates that, so only the
+	// policy layer stands between this prompt and the provider.
+	w := postGateway(gw, "/v1/proxy/openai/v1/chat/completions", "talon-gw-test-001",
+		`{"messages":[{"role":"user","content":"summarize our quarterly numbers"}]}`)
+
+	require.Equal(t, http.StatusForbidden, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, int64(0), upstreamCalls.Load(),
+		"the prompt must never cross the provider boundary when blocked_models [\"*\"] is active")
+
+	require.Equal(t, 1, spy.count())
+	assert.True(t, spy.lastEvent()["blocked"].(bool))
+
+	list, err := evStore.List(context.Background(), "default", "test-agent", time.Time{}, time.Time{}, 5)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.False(t, list[0].PolicyDecision.Allowed)
+	joined := strings.Join(list[0].PolicyDecision.Reasons, "; ")
+	assert.Contains(t, joined, "model_required_for_policy_evaluation")
 }
 
 func TestBlockedPath_PolicyEvalError_EmitsMetrics(t *testing.T) {

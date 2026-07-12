@@ -26,12 +26,15 @@ test_section_24_plan_dispatch() {
   # Ensure plan review gate is enabled for this section.
   # The scaffold already has a compliance: block, so we must insert into it
   # rather than appending a duplicate key (which produces invalid YAML).
-  if command -v yq >/dev/null 2>&1; then
-    yq -i '.compliance.human_oversight = "always"' "$dir/agent.talon.yaml" 2>/dev/null || true
-  elif grep -q "human_oversight:" "$dir/agent.talon.yaml" 2>/dev/null; then
-    sed -i.bak 's/human_oversight:.*/human_oversight: "always"/' "$dir/agent.talon.yaml" 2>/dev/null || true
+  # awk, not sed: BSD sed silently rejects the one-line `a\ text` form (the
+  # 2>/dev/null || true swallowed it, so macOS runs never set the gate) and
+  # GNU sed strips the leading indent, hoisting the key to the file root.
+  if grep -q "human_oversight:" "$dir/agent.talon.yaml" 2>/dev/null; then
+    awk '{ if ($0 ~ /human_oversight:/) { sub(/human_oversight:.*/, "human_oversight: \"always\"") } print }' \
+      "$dir/agent.talon.yaml" > "$dir/agent.talon.yaml.new" && mv "$dir/agent.talon.yaml.new" "$dir/agent.talon.yaml"
   elif grep -q "^compliance:" "$dir/agent.talon.yaml" 2>/dev/null; then
-    sed -i.bak '/^compliance:/a\  human_oversight: "always"' "$dir/agent.talon.yaml" 2>/dev/null || true
+    awk '{ print; if ($0 ~ /^compliance:/) print "  human_oversight: \"always\"" }' \
+      "$dir/agent.talon.yaml" > "$dir/agent.talon.yaml.new" && mv "$dir/agent.talon.yaml.new" "$dir/agent.talon.yaml"
   else
     cat >> "$dir/agent.talon.yaml" <<'PREVIEWEOF'
 

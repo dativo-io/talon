@@ -19,13 +19,15 @@ deny contains msg if {
 	msg := sprintf("Model %s not in agent allowlist", [input.model])
 }
 
-# Per-agent blocked models: if model matches any pattern, deny.
+# Per-agent blocked models: if model matches any pattern, deny. The wildcard
+# fires for EVERY request — including one that omits its model (#279 review
+# round 3: the old `input.model != ""` guard let a model-less request bypass
+# "block all models" and reach the provider).
 deny contains msg if {
 	input.agent_blocked_models != null
 	some blocked in input.agent_blocked_models
 	blocked == "*"
-	input.model != ""
-	msg := sprintf("Model %s is blocked for this agent", [input.model])
+	msg := "All models are blocked for this agent"
 }
 
 deny contains msg if {
@@ -44,13 +46,13 @@ deny contains msg if {
 	msg := sprintf("Model %s not in organization allowlist", [input.model])
 }
 
-# Organization blocked models — same hard-constraint contract.
+# Organization blocked models — same hard-constraint contract. Wildcard fires
+# regardless of whether the request names a model (see the agent rule above).
 deny contains msg if {
 	input.org_blocked_models != null
 	some blocked in input.org_blocked_models
 	blocked == "*"
-	input.model != ""
-	msg := sprintf("Model %s is blocked by organization policy", [input.model])
+	msg := "All models are blocked by organization policy"
 }
 
 deny contains msg if {
@@ -58,6 +60,44 @@ deny contains msg if {
 	some blocked in input.org_blocked_models
 	blocked == input.model
 	msg := sprintf("Model %s is blocked by organization policy", [input.model])
+}
+
+# Fail-closed contract for model-less requests (#279 review round 3): when
+# ANY model allow/block policy is active and the request omits its model, the
+# request cannot be evaluated against that policy — deny rather than forward
+# a prompt the policy might have blocked. (The request extractor does not
+# require a model; some OpenAI-compatible endpoints apply a server-side
+# default, so the prompt would otherwise cross the provider boundary
+# unevaluated.)
+deny contains msg if {
+	model_policy_active
+	model_missing
+	msg := "model_required_for_policy_evaluation: request omits model but a model allow/block policy is active"
+}
+
+# Missing, empty, or JSON-null — all three read as "no model to evaluate".
+model_missing if object.get(input, "model", "") == ""
+
+model_missing if object.get(input, "model", "") == null
+
+model_policy_active if {
+	input.agent_allowed_models != null
+	count(input.agent_allowed_models) > 0
+}
+
+model_policy_active if {
+	input.agent_blocked_models != null
+	count(input.agent_blocked_models) > 0
+}
+
+model_policy_active if {
+	input.org_allowed_models != null
+	count(input.org_allowed_models) > 0
+}
+
+model_policy_active if {
+	input.org_blocked_models != null
+	count(input.org_blocked_models) > 0
 }
 
 # Per-agent daily cost limit. Amounts use %v with 4-decimal rounding: real

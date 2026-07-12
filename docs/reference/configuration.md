@@ -350,7 +350,9 @@ When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml
 
 **Removed keys fail validation** (breaking change, #266): `gateway.callers[]` (with `tenant_key`), `gateway.default_policy`, `organization_policy.require_caller_id`, `identify_by: source_ip`, `trusted_proxy_cidrs`, and `rate_limits.per_caller_requests_per_min` are rejected at config load with an explicit error naming the replacement — a config written for the removed model never runs silently ungoverned.
 
-**Unknown keys fail load** (strict decoding, #266): the entire `gateway:` block is decoded with unknown-field rejection, because several of its settings enforce security boundaries — a typo like `allowed_provider:` must fail loudly rather than silently disable an intended organization hard constraint. The accepted surface is published as `schemas/talon.config.schema.json` and kept in lockstep with the runtime by a parity test.
+**Unknown keys fail load** (strict decoding, #266): the entire `gateway:` block is decoded with unknown-field rejection, because several of its settings enforce security boundaries — a typo like `allowed_provider:` must fail loudly rather than silently disable an intended organization hard constraint. Gateway settings must live under a top-level `gateway:` block: the old root-layout form (gateway fields at the file root) is removed and fails load with a migration error, because it could only ever be decoded permissively. The accepted surface is published as `schemas/talon.config.schema.json` and kept in lockstep with the runtime by a parity test (`TestConfigSchema_RuntimeParity`).
+
+**Model-less requests fail closed under model policies**: the OpenAI-compatible extractor does not require a `model` field, and some compatible endpoints apply a server-side default. When any model allowlist/blocklist (agent or organization) is active, a request that omits its model is denied with `model_required_for_policy_evaluation` — the prompt never crosses the provider boundary unevaluated, and `blocked_models: ["*"]` genuinely blocks every request.
 
 #### Identity resolution and effective policy
 

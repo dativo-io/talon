@@ -301,17 +301,13 @@ func (s *Server) Routes() http.Handler {
 
 		// Long-running: no request timeout so handler 30min deadline applies (middleware.Timeout would override).
 		r.Post("/v1/agents/run", s.handleAgentRun)
-		switch {
-		case !s.quickstartEnabled:
+		// Quickstart serves ONLY the host-root facade — tenant agent chat is
+		// not mounted at all. Quickstart never builds the identity registry
+		// (#266), so the previously "relocated" tenant chat path could never
+		// be reached in production; the conditional mount was dead code whose
+		// documentation advertised a route that always 404'd (#285).
+		if !s.quickstartEnabled {
 			r.Post("/v1/chat/completions", s.handleChatCompletions)
-		case len(s.tenantKeys) > 0:
-			// Quickstart mode: the relocated agent chat is only mounted when the
-			// operator has configured real agent keys (e.g. via a gateway
-			// config). This preserves the strict "host-root facade only" boundary
-			// when quickstart is used without any tenant-auth setup: the
-			// relocated path returns 404 rather than becoming a dev-mode-open
-			// backdoor to tenant agent chat.
-			r.Post("/v1/agents/chat/completions", s.handleChatCompletions)
 		}
 		if s.mcpServer != nil {
 			r.Post("/mcp", s.mcpServer.ServeHTTP)

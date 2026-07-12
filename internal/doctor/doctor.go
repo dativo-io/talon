@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dativo-io/talon/internal/agentbridge"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
@@ -367,14 +368,16 @@ func GatewayIdentityPreflight(ctx context.Context) (agentName, secretName string
 		return pol.Agent.Name, pol.Agent.Key.SecretName, fmt.Errorf("cannot open secrets vault: %w", secErr)
 	}
 	defer secStore.Close()
-	// Same collision rule as serve startup: an agent key equal to
-	// TALON_ADMIN_KEY fails the dry-run (silent operator-authority elevation).
-	if _, err := gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{{
-		Path:          cfg.DefaultPolicy,
-		Name:          pol.Agent.Name,
-		TenantID:      pol.Agent.TenantID,
-		KeySecretName: pol.Agent.Key.SecretName,
-	}}, secStore, os.Getenv("TALON_ADMIN_KEY")); err != nil {
+	// The dry-run uses the SAME policy → agent adapter as serve startup
+	// (agentbridge.LoadedAgentFromPolicy), so the FULL identity — including
+	// the policy override, whose semantic validation (egress rule shape,
+	// action enums, tier ranges) happens at registry build — is what gets
+	// validated. A reduced identity here once blessed gateways whose real
+	// override failed startup (#279 review round 3). Same collision rule as
+	// serve: an agent key equal to TALON_ADMIN_KEY fails the dry-run.
+	if _, err := gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{
+		agentbridge.LoadedAgentFromPolicy(pol, cfg.DefaultPolicy),
+	}, secStore, os.Getenv("TALON_ADMIN_KEY")); err != nil {
 		return pol.Agent.Name, pol.Agent.Key.SecretName, fmt.Errorf("identity registry dry-run failed: %w", err)
 	}
 	return pol.Agent.Name, pol.Agent.Key.SecretName, nil

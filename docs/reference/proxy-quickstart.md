@@ -68,7 +68,7 @@ Each event includes an `evidence_id` pointer to the signed evidence record.
 
 Quickstart is strictly a host-root OpenAI-compatibility facade backed by a synthetic in-process identity. It does **not** register a synthetic agent key and does **not** unlock Talon's tenant-auth surface.
 
-The relocated tenant agent chat route `POST /v1/agents/chat/completions` is only mounted when the operator has configured real agent keys (for example through a keyed agent policy). In default quickstart (no agent keys), this route is not mounted at all and returns `404 Not Found`, preserving a clean facade-only boundary and avoiding any dev-mode-open backdoor to tenant APIs. When agent keys are configured, the relocated route sits behind standard tenant-auth middleware and returns `401 Unauthorized` without a valid key.
+Tenant agent chat is **not mounted in quickstart at all** — `POST /v1/agents/chat/completions` returns `404 Not Found` regardless of any agent keys in your config. Quickstart never builds the agent identity registry (#266), so no agent key can authenticate anything in this mode; the facade is the only surface. To govern real agents with vault-bound keys, run `talon serve --gateway` instead.
 
 ## Bind safety
 

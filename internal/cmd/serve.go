@@ -514,8 +514,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		// Intentionally do NOT register a synthetic agent key here. Quickstart is
 		// a host-root OpenAI-compatibility facade backed by a synthetic in-process
 		// identity; it must not silently unlock the tenant-auth surface. Tenant
-		// endpoints (e.g. relocated /v1/agents/chat/completions) still require a
-		// real agent key from configuration if the operator wants to use them.
+		// agent chat is not mounted in quickstart at all — govern real agents
+		// with `talon serve --gateway` (#285).
 	}
 
 	// Gateway dashboard metrics collector
@@ -640,7 +640,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 		log.Info().
 			Str("openai_base_url", "http://"+addr).
-			Str("agent_chat_path", "/v1/agents/chat/completions").
 			Str("mode", string(gatewayCfgForMode.Mode)).
 			Str("pii_default", "redact").
 			Str("auth_precedence", "client bearer > OPENAI_API_KEY > 401").

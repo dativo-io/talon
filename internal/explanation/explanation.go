@@ -328,7 +328,9 @@ var reasonRules = []reasonRule{
 		"not in agent allowlist",
 		"not in organization allowlist",
 		"is blocked for this agent",
+		"models are blocked for this agent",
 		"blocked by organization policy",
+		"model_required_for_policy_evaluation",
 		"exceeds agent restriction",
 		"exceeds organization restriction",
 		// Legacy caller-model reason strings (#266 cutover): kept so

@@ -242,4 +242,130 @@ gateway:
 		require.Error(t, err, "a typo'd security-boundary key must fail loudly, not silently disable the constraint")
 		assert.Contains(t, err.Error(), "allowed_provider")
 	})
+
+	t.Run("named tier alias accepted by both", func(t *testing.T) {
+		doc := base + `  organization_policy:
+    max_data_tier: internal
+`
+		result := validateAgainstConfigSchema(t, doc)
+		assert.True(t, result.Valid(), "runtime accepts named tiers — the schema must too, errors: %v", result.Errors())
+		path := filepath.Join(t.TempDir(), "talon.config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte(doc), 0o600))
+		cfg, err := LoadGatewayConfig(path)
+		require.NoError(t, err)
+		require.NotNil(t, cfg.OrganizationPolicy.MaxDataTier)
+		assert.Equal(t, TierInternal, *cfg.OrganizationPolicy.MaxDataTier)
+	})
+
+	t.Run("unknown provider key rejected by both", func(t *testing.T) {
+		doc := `
+gateway:
+  enabled: true
+  providers:
+    openai:
+      enabled: true
+      base_url: "https://api.openai.com"
+      secret_name: "openai-api-key"
+      model_allowlist: ["gpt-4o"]
+`
+		result := validateAgainstConfigSchema(t, doc)
+		assert.False(t, result.Valid(), "provider objects carry additionalProperties: false")
+		err := loadRuntime(t, doc)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "model_allowlist")
+	})
+
+	t.Run("response_header_timeout accepted by both", func(t *testing.T) {
+		doc := base + `  timeouts:
+    response_header_timeout: "45s"
+`
+		result := validateAgainstConfigSchema(t, doc)
+		assert.True(t, result.Valid(), "runtime accepts response_header_timeout (#230) — the schema must too, errors: %v", result.Errors())
+		require.NoError(t, loadRuntime(t, doc))
+	})
+
+	// Root-layout gateway configs are removed (#266 review round 3): the only
+	// permissive decode path left would have silently ignored a typo'd
+	// security key, so gateway vocabulary at the file root is a load error.
+	t.Run("root-layout gateway config rejected with a migration error", func(t *testing.T) {
+		doc := `
+enabled: true
+providers:
+  openai:
+    enabled: true
+    base_url: "https://api.openai.com"
+    secret_name: "openai-api-key"
+organization_policy:
+  allowed_provider: ["openai"]
+`
+		err := loadRuntime(t, doc)
+		require.Error(t, err, "root-layout gateway vocabulary must not be permissively decoded")
+		assert.Contains(t, err.Error(), "gateway:")
+	})
+
+	t.Run("root-layout organization_policy alone rejected", func(t *testing.T) {
+		err := loadRuntime(t, `
+organization_policy:
+  default_pii_action: block
+`)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "organization_policy")
+	})
+
+	// Adversarial-verifier refutation of the first root-layout fix: the root
+	// check must run even when a gateway: block EXISTS — a half-migrated file
+	// (or two-space outdent) must not silently drop an org hard constraint
+	// out of an otherwise-enabled gateway.
+	t.Run("root gateway vocabulary rejected even alongside a gateway block", func(t *testing.T) {
+		err := loadRuntime(t, base+`
+organization_policy:
+  allowed_providers: ["anthropic"]
+`)
+		require.Error(t, err, "root organization_policy next to a gateway block must fail, not silently vanish")
+		assert.Contains(t, err.Error(), "organization_policy")
+		assert.Contains(t, err.Error(), "gateway:")
+	})
+
+	t.Run("null gateway block with outdented children rejected", func(t *testing.T) {
+		err := loadRuntime(t, `
+gateway:
+providers:
+  openai:
+    enabled: true
+    base_url: "https://api.openai.com"
+`)
+		require.Error(t, err, "gateway: null with children left at the root must fail loudly")
+		assert.Contains(t, err.Error(), "providers")
+	})
+
+	t.Run("root enabled/mode alone rejected (no silent ignore)", func(t *testing.T) {
+		err := loadRuntime(t, "enabled: true\nmode: shadow\n")
+		require.Error(t, err)
+	})
+
+	t.Run("operator default_policy at the root stays legal", func(t *testing.T) {
+		// At the FILE ROOT, default_policy is the operator key naming the
+		// default agent policy file — only gateway.default_policy is the
+		// removed legacy key.
+		path := filepath.Join(t.TempDir(), "talon.config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte(`
+data_dir: /tmp/talon
+default_policy: my-agent.talon.yaml
+`), 0o600))
+		cfg, err := LoadGatewayConfig(path)
+		require.NoError(t, err, "operator-only config with root default_policy must load")
+		assert.False(t, cfg.Enabled)
+	})
+
+	t.Run("operator-only config (no gateway vocabulary) loads a disabled gateway", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "talon.config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte(`
+sovereignty:
+  mode: eu_preferred
+data_dir: /tmp/talon
+`), 0o600))
+		cfg, err := LoadGatewayConfig(path)
+		require.NoError(t, err, "operator-only configs must keep loading (enforce/doctor read them)")
+		assert.False(t, cfg.Enabled)
+	})
 }

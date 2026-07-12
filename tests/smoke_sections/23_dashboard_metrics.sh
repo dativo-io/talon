@@ -236,8 +236,11 @@ CACHEEOF
   else
     log_failure "PII block config: expected 400 for pii-block-agent + PII body" "got HTTP $pii_block_code"
   fi
-  # (2) Tool block: default_policy forbidden_tools delete_* + tool_policy_action block → 403
-  local tool_block_code; tool_block_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer $gw_key" "$SMOKE_BODY_TOOL_BLOCK")"
+  # (2) Tool block: organization_policy forbidden_tools delete_* + tool_policy_action block → 403.
+  # The gateway serves the pii-block agent in this phase (#266: one agent per
+  # phase restart), so present THAT agent's key — the org tool baseline binds
+  # every agent, which is exactly what this probe demonstrates.
+  local tool_block_code; tool_block_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-pii-block-001" "$SMOKE_BODY_TOOL_BLOCK")"
   if [[ "$tool_block_code" == "403" ]]; then
     echo "  ✓  Tool block config: request with forbidden tool delete_all returns 403"
     record_pass
