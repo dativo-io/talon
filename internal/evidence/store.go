@@ -268,6 +268,22 @@ type PolicyDecision struct {
 	Action        string   `json:"action"`
 	Reasons       []string `json:"reasons,omitempty"`
 	PolicyVersion string   `json:"policy_version"`
+	// PolicyDigests identifies the exact policy state a gateway decision was
+	// made against (#266 review round 4): the organization baseline, the
+	// agent policy, the destination provider constraints, and the resolved
+	// effective policy. An auditor can prove which configuration produced the
+	// decision, not merely that one did. Absent on native/pre-#266 records.
+	PolicyDigests *PolicyDigests `json:"policy_digests,omitempty"`
+}
+
+// PolicyDigests are SHA-256 digests of the canonical policy components that
+// produced an effective-policy decision. Each is hex-encoded; empty when the
+// component was not applicable to the request.
+type PolicyDigests struct {
+	Organization string `json:"organization,omitempty"`
+	Agent        string `json:"agent,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	Effective    string `json:"effective,omitempty"`
 }
 
 // Classification captures PII detection results.

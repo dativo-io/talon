@@ -139,6 +139,15 @@ func TestBlockedPath_ProviderNotAllowed_EmitsMetrics(t *testing.T) {
 	require.Len(t, list, 1, "provider-not-allowed should record evidence")
 	assert.False(t, list[0].PolicyDecision.Allowed)
 	assert.Contains(t, list[0].PolicyDecision.Reasons, "provider not allowed: agent_provider_allowlist")
+
+	// Signed evidence names the exact policy state the decision was made
+	// against (#266 review round 4): org / provider / effective digests.
+	pd := list[0].PolicyDecision.PolicyDigests
+	require.NotNil(t, pd, "gateway evidence must carry policy digests")
+	assert.NotEmpty(t, pd.Organization)
+	assert.NotEmpty(t, pd.Provider)
+	assert.NotEmpty(t, pd.Effective)
+	assert.True(t, evStore.VerifyRecord(&list[0]), "record with digests must verify")
 }
 
 // TestBlockedPath_ModellessWildcardBlock_NeverReachesUpstream (#279 review

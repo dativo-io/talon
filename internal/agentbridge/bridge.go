@@ -37,6 +37,10 @@ func LoadedAgentFromPolicy(pol *policy.Policy, path string) gateway.LoadedAgent 
 		la.Team = pol.Metadata.Team
 		la.Tags = append([]string(nil), pol.Metadata.Tags...)
 	}
+	// The agent policy's canonical content hash travels into signed evidence
+	// so a gateway decision names the exact agent-policy version (#266 review
+	// round 4). policy.LoadPolicy computes it via ComputeCanonicalIdentity.
+	la.PolicyDigest = pol.Hash
 	return la
 }
 

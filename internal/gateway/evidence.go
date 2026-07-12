@@ -23,6 +23,7 @@ type RecordGatewayEvidenceParams struct {
 	PolicyAllowed           bool
 	PolicyReasons           []string
 	PolicyVersion           string
+	PolicyDigests           *evidence.PolicyDigests
 	ObservationModeOverride bool
 	ShadowViolations        []evidence.ShadowViolation
 	InputTier               int
@@ -125,6 +126,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 			Action:        "allow",
 			Reasons:       params.PolicyReasons,
 			PolicyVersion: params.PolicyVersion,
+			PolicyDigests: params.PolicyDigests,
 		},
 		Classification: evidence.Classification{
 			InputTier:         params.InputTier,

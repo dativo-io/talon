@@ -1341,7 +1341,8 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, agen
 		Model:                   model,
 		PolicyAllowed:           allowed,
 		PolicyReasons:           reasons,
-		PolicyVersion:           "",
+		PolicyVersion:           agent.PolicyDigest,
+		PolicyDigests:           g.policyDigests(agent, provider),
 		ObservationModeOverride: len(shadowViolations) > 0,
 		ShadowViolations:        shadowViolations,
 		InputTier:               classification.Tier,
@@ -1770,6 +1771,40 @@ func sessionBudgetDetail(reasons []string, policyInput map[string]interface{}, e
 	limit, _ := policyInput["agent_max_session_cost"].(float64)
 	spent, _ := policyInput["session_cost_total"].(float64)
 	return &evidence.SessionBudget{Limit: limit, Spent: spent, Estimate: estimatedCost}
+}
+
+// policyDigests computes the component + effective policy digests recorded in
+// signed evidence (#266 review round 4), so a decision names the exact policy
+// state it was made against. The effective digest is over the RESOLVED
+// snapshot, not file paths or timestamps.
+func (g *Gateway) policyDigests(agent *ResolvedIdentity, provider string) *evidence.PolicyDigests {
+	prov, _ := g.config.Provider(provider)
+	eff := ResolveEffectivePolicy(g.config.OrganizationPolicy, prov, agent.Override)
+	d := &evidence.PolicyDigests{
+		Organization: hashJSONDigest(g.config.OrganizationPolicy),
+		Provider:     hashJSONDigest(prov),
+		Effective:    hashJSONDigest(eff),
+		Agent:        agent.PolicyDigest,
+	}
+	if d.Agent == "" && agent.Override != nil {
+		// Test/registry-built identities may lack the loader's policy hash;
+		// fall back to a digest of the override so the field is never blank
+		// when an override exists.
+		d.Agent = hashJSONDigest(agent.Override)
+	}
+	return d
+}
+
+// hashJSONDigest returns the hex SHA-256 of a value's JSON encoding. Go's
+// json.Marshal is deterministic for these structs (fields in declaration
+// order, map keys sorted), so the digest is stable across runs.
+func hashJSONDigest(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // tryBudgetAlert emits RecordBudgetAlert when utilization >= threshold, with a

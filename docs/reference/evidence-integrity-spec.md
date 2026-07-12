@@ -101,7 +101,10 @@ field order and `omitempty` behavior are defined by their Go structs in
 nested fields are:
 
 - `policy_decision`: `allowed` (bool), `action` (string), `reasons` (array, optional),
-  `policy_version` (string).
+  `policy_version` (string), and `policy_digests` (object, optional; gateway
+  decisions) — SHA-256 digests of the `organization`, `agent`, `provider`, and
+  `effective` policy components, so an auditor can prove which exact policy
+  state produced the decision (#266). Part of the signed payload.
 - `classification`: `input_tier`, `output_tier` (numbers), `pii_detected` (array,
   optional), `pii_redacted` (bool), and optional output-scan fields. The optional
   `scanner` object identifies the scan engine behind the verdict: `engine`

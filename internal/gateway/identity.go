@@ -48,6 +48,10 @@ type LoadedAgent struct {
 	KeySecretName string
 	// Team attributes spend/evidence to a team (evidence.Team, CostByTeam).
 	Team string
+	// PolicyDigest is the agent policy's canonical content hash (policy.Hash),
+	// recorded in signed evidence so a decision names the exact agent-policy
+	// version it was made against (#266 review round 4).
+	PolicyDigest string
 	// Tags classify telemetry (e.g. "copaw" drives OTel/dashboard views).
 	Tags []string
 	// AcceptClientMetadata gates recording of client-asserted orchestration
@@ -95,11 +99,12 @@ type PolicyOverride struct {
 // the registry from a presented key (or synthesized for quickstart mode).
 // #268 adds Enabled; the struct is the seam for the fleet issues (#267–#270).
 type ResolvedIdentity struct {
-	Name       string
-	TenantID   string
-	Team       string
-	ConfigPath string
-	Tags       []string
+	Name         string
+	TenantID     string
+	Team         string
+	ConfigPath   string
+	PolicyDigest string // agent policy canonical content hash (#266 review r4)
+	Tags         []string
 
 	AcceptClientMetadata *bool
 	Override             *PolicyOverride
@@ -222,6 +227,7 @@ func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *sec
 			TenantID:             tenantID,
 			Team:                 a.Team,
 			ConfigPath:           a.Path,
+			PolicyDigest:         a.PolicyDigest,
 			Tags:                 append([]string(nil), a.Tags...),
 			AcceptClientMetadata: cloneBoolPtr(a.AcceptClientMetadata),
 			Override:             a.Override.clone(),
