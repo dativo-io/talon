@@ -384,7 +384,7 @@ Per-field contract (mirrors `internal/gateway/effective.go`; the code and this t
 | `forbidden_tools` | union of baseline ∪ provider ∪ override |
 | `tool_policy_action` | most-specific wins (override > provider > baseline) |
 | `attachment_policy` | baseline only (#266) |
-| `egress` | override replaces baseline wholesale |
+| `egress` | monotonic boundary: the organization egress policy is authoritative when set (an agent override cannot weaken or replace it); the override applies only when the org has no egress policy |
 
 Timeout phases (`gateway.timeouts`):
 

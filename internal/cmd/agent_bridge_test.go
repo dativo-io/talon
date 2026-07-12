@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -122,4 +123,35 @@ func TestBuildServeIdentityRegistryModeMatrix(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "egress")
 	})
+}
+
+// TestBuildServeIdentityRegistry_StrictUnknownFields (#266 review round 4): a
+// gateway-bound agent policy with an unknown key (typo that would silently
+// drop a control) fails startup in gateway mode.
+func TestBuildServeIdentityRegistry_StrictUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	polPath := filepath.Join(dir, "agent.talon.yaml")
+	require.NoError(t, os.WriteFile(polPath, []byte(`
+agent:
+  name: typo-agent
+  version: "1.0.0"
+  key:
+    secret_name: typo-agent-talon-key
+policies:
+  cost_limits:
+    montly: 25
+`), 0o600))
+
+	vault, err := secrets.NewSecretStore(filepath.Join(dir, "s.db"), "0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vault.Close() })
+	require.NoError(t, vault.Set(context.Background(), "typo-agent-talon-key", []byte("tk-typo"), secrets.ACL{}))
+
+	pol := &policy.Policy{Agent: policy.AgentConfig{
+		Name: "typo-agent", Version: "1.0.0",
+		Key: &policy.AgentKeyBinding{SecretName: "typo-agent-talon-key"},
+	}}
+	_, err = buildServeIdentityRegistry(context.Background(), pol, polPath, vault, "", true, false)
+	require.Error(t, err, "gateway mode must reject a policy with unknown keys")
+	assert.Contains(t, err.Error(), "montly")
 }

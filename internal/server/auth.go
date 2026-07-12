@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -253,16 +254,20 @@ func bearerToken(r *http.Request) string {
 	return ""
 }
 
-// lookupAgentIdentity resolves a presented key to its authenticated identity
-// in constant time per entry. Returns (zero, false) for unknown keys.
+// lookupAgentIdentity resolves a presented key to its authenticated identity.
+// Both sides are SHA-256 digested to a fixed length before the constant-time
+// compare, so timing does not vary with key length (#266 review round 4).
+// Returns (zero, false) for unknown keys.
 func lookupAgentIdentity(agentKeys map[string]requestctx.AgentIdentity, key string) (requestctx.AgentIdentity, bool) {
 	if key == "" {
 		return requestctx.AgentIdentity{}, false
 	}
+	presentedDigest := sha256.Sum256([]byte(key))
 	var match requestctx.AgentIdentity
 	found := false
 	for configuredKey, id := range agentKeys {
-		if subtle.ConstantTimeCompare([]byte(configuredKey), []byte(key)) == 1 {
+		cfgDigest := sha256.Sum256([]byte(configuredKey))
+		if subtle.ConstantTimeCompare(cfgDigest[:], presentedDigest[:]) == 1 {
 			match = id
 			found = true
 		}

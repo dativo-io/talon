@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -104,9 +105,11 @@ type ResolvedIdentity struct {
 	Override             *PolicyOverride
 
 	// key is the resolved traffic key material. Unexported: it exists only
-	// for constant-time matching inside the registry and is never persisted
-	// or logged.
-	key []byte
+	// so projections can hand the server middleware a key → identity map; it
+	// is never persisted or logged. keyDigest is the SHA-256 of key, used for
+	// fixed-length constant-time matching (#266 review round 4).
+	key       []byte
+	keyDigest [sha256.Size]byte
 }
 
 // AcceptsClientMetadata reports whether client-asserted orchestration
@@ -223,6 +226,7 @@ func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *sec
 			AcceptClientMetadata: cloneBoolPtr(a.AcceptClientMetadata),
 			Override:             a.Override.clone(),
 			key:                  []byte(keyMaterial),
+			keyDigest:            sha256.Sum256([]byte(keyMaterial)),
 		})
 	}
 	return reg, nil
@@ -238,16 +242,19 @@ func cloneBoolPtr(b *bool) *bool {
 	return &v
 }
 
-// ResolveKey matches a presented key against the registry in constant time
-// per identity. Returns (nil, false) for unknown keys — the agent rejects.
+// ResolveKey matches a presented key against the registry. Both sides are
+// SHA-256 digested to a fixed 32-byte length before the constant-time
+// compare, so the comparison time does not vary with key length
+// (subtle.ConstantTimeCompare short-circuits on a length mismatch, #266
+// review round 4). Returns (nil, false) for unknown keys.
 func (r *IdentityRegistry) ResolveKey(presented string) (*ResolvedIdentity, bool) {
 	if r == nil || presented == "" {
 		return nil, false
 	}
-	presentedBytes := []byte(presented)
+	presentedDigest := sha256.Sum256([]byte(presented))
 	var match *ResolvedIdentity
 	for _, id := range r.identities {
-		if subtle.ConstantTimeCompare(id.key, presentedBytes) == 1 {
+		if subtle.ConstantTimeCompare(id.keyDigest[:], presentedDigest[:]) == 1 {
 			match = id
 		}
 	}

@@ -1,6 +1,9 @@
 package gateway
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestQuickstartConfig_Defaults(t *testing.T) {
 	cfg, err := QuickstartConfig(QuickstartOptions{})
@@ -107,7 +110,7 @@ func TestGatewayAnnotations_UnsafeListenFromConfigNotEnv(t *testing.T) {
 		t.Fatalf("QuickstartConfig() error = %v", err)
 	}
 	gw := &Gateway{config: cfg}
-	ann := gatewayAnnotationsForEvidence(gw, NewQuickstartIdentity())
+	ann := gatewayAnnotationsForEvidence(context.Background(), gw, NewQuickstartIdentity())
 	for _, a := range ann {
 		if a == "quickstart_unsafe_listen" {
 			t.Fatalf("annotation should not be set from env var, got %v", ann)
@@ -119,7 +122,7 @@ func TestGatewayAnnotations_UnsafeListenFromConfigNotEnv(t *testing.T) {
 		t.Fatalf("QuickstartConfig(UnsafeListen) error = %v", err)
 	}
 	gw2 := &Gateway{config: cfg2}
-	ann2 := gatewayAnnotationsForEvidence(gw2, NewQuickstartIdentity())
+	ann2 := gatewayAnnotationsForEvidence(context.Background(), gw2, NewQuickstartIdentity())
 	found := false
 	for _, a := range ann2 {
 		if a == "quickstart_unsafe_listen" {

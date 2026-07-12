@@ -534,22 +534,29 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isCountTokens {
 		estimatedCost = 0 // free endpoint: a nonzero estimate would leak into budget input and deny evidence (#218)
 	}
-	dailyCost, monthlyCost := g.agentCostTotals(ctx, agent)
+	dailyCost, monthlyCost, budgetUnavailable := g.agentCostTotals(ctx, agent)
+	if budgetUnavailable {
+		// Every evidence record for this request carries the governance-gap
+		// annotation (read via ctx by recordEvidence).
+		ctx = withBudgetUnavailable(ctx)
+	}
 	// Utilization must be measured against the same effective caps enforcement
 	// uses (default overlaid by per-agent override), or the dashboard reports a
-	// different denominator than the runtime actually gates on (#216).
+	// different denominator than the runtime actually gates on (#216). Skip
+	// utilization/alerts when the spend read failed — a "0%" reading would be
+	// a lie; the request carries an agent_budget_unavailable annotation instead.
 	dailyCap, monthlyCap := eff.MaxDailyCost, eff.MaxMonthlyCost
-	if dailyCap > 0 {
+	if dailyCap > 0 && !budgetUnavailable {
 		pct := (dailyCost / dailyCap) * 100
 		RecordBudgetUtilization(ctx, agent.TenantID, "daily", pct)
-		g.tryBudgetAlert(ctx, agent.TenantID, "daily", pct, 80)
-		g.tryBudgetAlert(ctx, agent.TenantID, "daily", pct, 95)
+		g.tryBudgetAlert(ctx, agent.Name, agent.TenantID, "daily", pct, 80)
+		g.tryBudgetAlert(ctx, agent.Name, agent.TenantID, "daily", pct, 95)
 	}
-	if monthlyCap > 0 {
+	if monthlyCap > 0 && !budgetUnavailable {
 		pct := (monthlyCost / monthlyCap) * 100
 		RecordBudgetUtilization(ctx, agent.TenantID, "monthly", pct)
-		g.tryBudgetAlert(ctx, agent.TenantID, "monthly", pct, 80)
-		g.tryBudgetAlert(ctx, agent.TenantID, "monthly", pct, 95)
+		g.tryBudgetAlert(ctx, agent.Name, agent.TenantID, "monthly", pct, 80)
+		g.tryBudgetAlert(ctx, agent.Name, agent.TenantID, "monthly", pct, 95)
 	}
 	destinationRegion := g.providerRegion(route.Provider)
 	policyInput, sessionBudgetUnavailable := g.buildPolicyInputForRequest(ctx, agent, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost, sessionID)
@@ -966,17 +973,20 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// unconditionally too) and the sovereignty filter inside the failover
 	// pipeline (an explicit hard invariant — under eu_strict Talon never
 	// dispatches outside EU/LOCAL, shadow or not).
-	checkCandidate := func(cCtx context.Context, candProvider, candModel string) failover.FilterResult {
+	checkCandidate := func(cCtx context.Context, candProvider, candModel string) (failover.FilterResult, []byte) {
 		candProv, _ := g.config.Provider(candProvider)
 		candEff := ResolveEffectivePolicy(g.config.OrganizationPolicy, candProv, agent.Override)
 		if denySrc := candEff.ProviderDenySource(candProvider); denySrc != "" {
 			// The filter names the layer that denied (#279 review):
 			// organization_provider_allowlist or agent_provider_allowlist.
-			return failover.FilterResult{Filter: denySrc, Reason: fmt.Sprintf("agent %s not allowed for provider %s (%s)", agent.Name, candProvider, denySrc)}
+			return failover.FilterResult{Filter: denySrc, Reason: fmt.Sprintf("agent %s not allowed for provider %s (%s)", agent.Name, candProvider, denySrc)}, nil
 		}
+		var candBody []byte
 		// Provider-level tool governance of the TARGET provider: a fallback
 		// must not deliver tools the target's policy forbids. The body was
-		// filtered against the primary's tool policy only.
+		// filtered against the primary's tool policy only. When the target
+		// action is `filter`, strip the forbidden tools and PROCEED (matching
+		// the primary path); only `block` skips the candidate (#266 review r4).
 		if len(extracted.ToolNames) > 0 {
 			if len(candEff.AllowedTools) > 0 || len(candEff.ForbiddenTools) > 0 {
 				forwarded := extracted.ToolNames
@@ -984,12 +994,22 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					forwarded = toolResult.Kept
 				}
 				if tr := EvaluateToolPolicy(forwarded, candEff.AllowedTools, candEff.ForbiddenTools); len(tr.Removed) > 0 {
-					if isShadow {
+					switch {
+					case isShadow:
 						shadowViolations = append(shadowViolations, evidence.ShadowViolation{
-							Type: "tool_block", Detail: fmt.Sprintf("failover candidate %s: forbidden tools %v", candProvider, tr.Removed), Action: "block",
+							Type: "tool_block", Detail: fmt.Sprintf("failover candidate %s: forbidden tools %v", candProvider, tr.Removed), Action: candEff.ToolPolicyAction,
 						})
-					} else {
-						return failover.FilterResult{Filter: "tool_policy", Reason: fmt.Sprintf("target provider %s forbids tools %v", candProvider, tr.Removed)}
+					case candEff.ToolPolicyAction == "block":
+						return failover.FilterResult{Filter: "tool_policy", Reason: fmt.Sprintf("target provider %s blocks tools %v", candProvider, tr.Removed)}, nil
+					default:
+						// filter: re-filter the body for this candidate's wire
+						// format and dispatch, rather than exhausting the chain.
+						candWire := g.config.providerAPIFamily(candProvider)
+						filtered, filterErr := FilterRequestBodyTools(candWire, forwardBody, tr.Kept)
+						if filterErr != nil {
+							return failover.FilterResult{Filter: "tool_policy", Reason: fmt.Sprintf("target provider %s tool re-filter failed: %v", candProvider, filterErr)}, nil
+						}
+						candBody = filtered
 					}
 				}
 			}
@@ -1007,16 +1027,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					Type: "policy_deny", Detail: fmt.Sprintf("failover candidate %s/%s: policy evaluation error: %v", candProvider, candModel, policyErr), Action: "block",
 				})
 			case policyErr != nil:
-				return failover.FilterResult{Filter: "gateway_policy", Reason: "policy evaluation error: " + policyErr.Error()}
+				return failover.FilterResult{Filter: "gateway_policy", Reason: "policy evaluation error: " + policyErr.Error()}, nil
 			case !allowed && isShadow:
 				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 					Type: "policy_deny", Detail: fmt.Sprintf("failover candidate %s/%s: %s", candProvider, candModel, preferredDenyReason(reasons)), Action: "block",
 				})
 			case !allowed:
-				return failover.FilterResult{Filter: "gateway_policy", Reason: preferredDenyReason(reasons)}
+				return failover.FilterResult{Filter: "gateway_policy", Reason: preferredDenyReason(reasons)}, nil
 			}
 		}
-		return failover.FilterResult{Allowed: true}
+		return failover.FilterResult{Allowed: true}, candBody
 	}
 	var failoverOut *failoverOutcome
 
@@ -1362,7 +1382,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, agen
 	params.UpstreamAuthMode = upstreamAuthModeFromContext(ctx)
 	params.UpstreamKeySource = upstreamKeySourceFromContext(ctx)
 	params.UpstreamKeyFingerprint = upstreamKeyFingerprintFromContext(ctx)
-	params.GatewayAnnotations = gatewayAnnotationsForEvidence(g, agent)
+	params.GatewayAnnotations = gatewayAnnotationsForEvidence(ctx, g, agent)
 	params.TTFTMS = ttftMS
 	params.TPOTMS = tpotMS
 	params.Scanner = g.buildScannerEvidence(ctx, reasons, responsePII)
@@ -1548,11 +1568,30 @@ func fingerprintKey(raw string) string {
 	return hexSum[:12]
 }
 
-func gatewayAnnotationsForEvidence(g *Gateway, agent *ResolvedIdentity) []string {
-	if agent == nil || !agent.HasTag("quickstart") {
-		return nil
+// ctxKeyBudgetUnavailable marks a request whose agent spend read failed, so
+// the signed evidence carries an agent_budget_unavailable annotation instead
+// of silently gating on a false zero (#266 review round 4). Named-type key —
+// distinct from every other context key.
+type ctxKeyBudgetUnavailable struct{}
+
+func withBudgetUnavailable(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyBudgetUnavailable{}, true)
+}
+
+func budgetUnavailableFromCtx(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyBudgetUnavailable{}).(bool)
+	return v
+}
+
+func gatewayAnnotationsForEvidence(ctx context.Context, g *Gateway, agent *ResolvedIdentity) []string {
+	var out []string
+	if budgetUnavailableFromCtx(ctx) {
+		out = append(out, "agent_budget_unavailable")
 	}
-	out := []string{"quickstart_mode"}
+	if agent == nil || !agent.HasTag("quickstart") {
+		return out
+	}
+	out = append(out, "quickstart_mode")
 	if g != nil && g.config != nil && g.config.Mode == ModeShadow {
 		out = append(out, "quickstart_shadow_mode")
 	}
@@ -1733,12 +1772,16 @@ func sessionBudgetDetail(reasons []string, policyInput map[string]interface{}, e
 	return &evidence.SessionBudget{Limit: limit, Spent: spent, Estimate: estimatedCost}
 }
 
-// tryBudgetAlert emits RecordBudgetAlert when utilization >= threshold, with a 1-hour cooldown per tenant+period+threshold.
-func (g *Gateway) tryBudgetAlert(ctx context.Context, tenantID, period string, utilizationPct float64, threshold float64) {
+// tryBudgetAlert emits RecordBudgetAlert when utilization >= threshold, with a
+// 1-hour cooldown keyed per AGENT+tenant+period+threshold. Enforcement caps
+// and utilization are per-agent, so the cooldown must be too — a tenant-only
+// key let one agent's 80% alert suppress every other agent's for an hour
+// (#266 review round 4).
+func (g *Gateway) tryBudgetAlert(ctx context.Context, agentName, tenantID, period string, utilizationPct float64, threshold float64) {
 	if utilizationPct < threshold {
 		return
 	}
-	key := tenantID + ":" + period + ":" + fmt.Sprintf("%.0f", threshold)
+	key := agentName + ":" + tenantID + ":" + period + ":" + fmt.Sprintf("%.0f", threshold)
 	g.budgetAlertMu.Lock()
 	if g.budgetAlertLast == nil {
 		g.budgetAlertLast = make(map[string]time.Time)
@@ -1754,7 +1797,12 @@ func (g *Gateway) tryBudgetAlert(ctx context.Context, tenantID, period string, u
 	RecordBudgetAlert(ctx, tenantID, threshold)
 }
 
-func (g *Gateway) agentCostTotals(ctx context.Context, agent *ResolvedIdentity) (daily, monthly float64) {
+// agentCostTotals returns the agent's accumulated daily/monthly spend. The
+// third return is true when an evidence-store read FAILED: the caller then
+// treats the caps as unenforceable-this-request and records an
+// "agent_budget_unavailable" annotation on the signed record, so a silent
+// zero (fail-open) never looks like genuine zero spend (#266 review round 4).
+func (g *Gateway) agentCostTotals(ctx context.Context, agent *ResolvedIdentity) (daily, monthly float64, unavailable bool) {
 	// Day/month windows are computed in UTC so budget enforcement agrees with
 	// `talon costs` reporting, which also uses UTC. Server-local windows made the
 	// two disagree for the UTC-offset hours around midnight on non-UTC hosts (#216).
@@ -1763,15 +1811,17 @@ func (g *Gateway) agentCostTotals(ctx context.Context, agent *ResolvedIdentity) 
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	byAgent, err := g.evidenceStore.CostByAgent(ctx, agent.TenantID, todayStart, now)
 	if err != nil {
-		return 0, 0
+		log.Warn().Err(err).Str("agent", agent.Name).Msg("gateway_agent_budget_read_failed")
+		return 0, 0, true
 	}
 	daily = byAgent[agent.Name]
 	byAgent, err = g.evidenceStore.CostByAgent(ctx, agent.TenantID, monthStart, now)
 	if err != nil {
-		return daily, 0
+		log.Warn().Err(err).Str("agent", agent.Name).Msg("gateway_agent_budget_read_failed")
+		return daily, 0, true
 	}
 	monthly = byAgent[agent.Name]
-	return daily, monthly
+	return daily, monthly, false
 }
 
 func defaultCostEstimator(_, _ string, usage Usage) CostResult {

@@ -72,13 +72,13 @@ func TestResolveEffectivePolicy_Egress(t *testing.T) {
 			want:     baselinePolicy,
 		},
 		{
-			name:     "agent_override_replaces_baseline",
+			// Monotonic boundary (#266 review round 4): a platform-owned org
+			// egress policy is authoritative — an agent override cannot
+			// replace or weaken it.
+			name:     "org_egress_wins_over_agent_override",
 			baseline: OrganizationPolicy{Egress: baselinePolicy},
 			override: &PolicyOverride{Egress: agentPolicy},
-			want: &EgressPolicyConfig{
-				DefaultAction: EgressActionAllow, // normalized
-				Rules:         agentPolicy.Rules,
-			},
+			want:     baselinePolicy,
 		},
 		{
 			name:     "agent_only",

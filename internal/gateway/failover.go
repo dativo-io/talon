@@ -157,7 +157,12 @@ type recordAttemptFn func(ctx context.Context, rec failoverAttemptRecord) string
 // Talon-initiated action: it must pass the same gates the agent's own
 // request passed for the primary (allowed_providers, agent model lists,
 // egress rules, budgets) or the chain becomes a policy bypass.
-type checkCandidateFn func(ctx context.Context, provider, model string) failover.FilterResult
+// checkCandidateFn gates a fallback candidate. The optional bodyOverride is a
+// re-filtered request body for THIS candidate: when the target provider's tool
+// policy is `filter` (not block), forbidden tools are stripped from the body
+// and the candidate proceeds, instead of being skipped — matching the primary
+// path's filter semantics (#266 review round 4). nil = forward the body as-is.
+type checkCandidateFn func(ctx context.Context, provider, model string) (failover.FilterResult, []byte)
 
 // classifyAttempt classifies a Forward outcome from its transport error
 // and/or buffered upstream status.
@@ -362,8 +367,10 @@ func (g *Gateway) forwardWithFailover(
 			})
 			continue
 		}
+		var candBodyOverride []byte
 		if checkCandidate != nil {
-			if res := checkCandidate(ctx, target.Provider, model); !res.Allowed {
+			res, bodyOverride := checkCandidate(ctx, target.Provider, model)
+			if !res.Allowed {
 				out.Skipped = append(out.Skipped, evidence.SkippedCandidate{
 					Provider: target.Provider, Model: model, ChainPosition: i + 1,
 					Filter: res.Filter, Reason: res.Reason,
@@ -371,6 +378,7 @@ func (g *Gateway) forwardWithFailover(
 				log.Warn().Str("provider", target.Provider).Str("filter", res.Filter).Str("reason", res.Reason).Msg("gateway_failover_candidate_skipped")
 				continue
 			}
+			candBodyOverride = bodyOverride
 		}
 
 		headers, hdrErr := g.fallbackAuthHeaders(ctx, agent, target.Provider, tprov, originalAuthorization, p.Headers)
@@ -386,8 +394,14 @@ func (g *Gateway) forwardWithFailover(
 		ap := p
 		ap.UpstreamURL = strings.TrimSuffix(tprov.BaseURL, "/") + route.Path
 		ap.Headers = headers
+		// A candidate whose tool policy is `filter` gets a body with the
+		// target-forbidden tools stripped (#266 review round 4); otherwise the
+		// primary-filtered body is forwarded unchanged.
+		if candBodyOverride != nil {
+			ap.Body = candBodyOverride
+		}
 		if target.Model != "" {
-			ap.Body = rewriteModelInBody(p.Body, target.Model)
+			ap.Body = rewriteModelInBody(ap.Body, target.Model)
 		}
 
 		log.Info().

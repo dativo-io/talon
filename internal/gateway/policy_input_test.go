@@ -73,7 +73,9 @@ func TestBuildGatewayPolicyInput_EgressFromBaseline(t *testing.T) {
 	assert.Equal(t, []interface{}{"EU"}, rules[0]["allowed_regions"])
 }
 
-func TestBuildGatewayPolicyInput_EgressAgentOverrideWins(t *testing.T) {
+// Egress is a monotonic boundary (#266 review round 4): a platform-owned org
+// egress policy is authoritative and an agent override cannot replace it.
+func TestBuildGatewayPolicyInput_OrgEgressWins(t *testing.T) {
 	tier2 := TierConfidential
 	agent := testIdentity("bot", "default", "tk-bot", &PolicyOverride{
 		Egress: &EgressPolicyConfig{
@@ -90,8 +92,8 @@ func TestBuildGatewayPolicyInput_EgressAgentOverrideWins(t *testing.T) {
 
 	input := buildGatewayPolicyInput(agent, eff, "ollama", "llama3", 2, 0.5, 0, 0, "LOCAL")
 
-	assert.Equal(t, EgressActionAllow, input["egress_default_action"], "agent override replaces the baseline wholesale")
+	assert.Equal(t, EgressActionDeny, input["egress_default_action"], "org egress boundary stands; agent override cannot weaken it")
 	rules := input["egress_rules"].([]map[string]interface{})
 	assert.Len(t, rules, 1)
-	assert.Equal(t, []interface{}{"ollama"}, rules[0]["allowed_providers"])
+	assert.Equal(t, []interface{}{"EU"}, rules[0]["allowed_regions"], "org rules apply, not the agent's")
 }

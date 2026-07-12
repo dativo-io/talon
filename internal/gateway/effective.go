@@ -67,8 +67,10 @@ type EffectivePolicy struct {
 	// overrides are deliberately not expressible yet).
 	Attachment *AttachmentPolicyConfig
 
-	// Egress policy: the agent override replaces the baseline wholesale when
-	// set; nil = egress not evaluated.
+	// Egress policy: a MONOTONIC boundary (#266 review round 4). When the
+	// organization sets egress it is authoritative — the agent override
+	// cannot weaken or replace it. The agent egress applies only when the
+	// org has none. nil = egress not evaluated.
 	Egress *EgressPolicyConfig
 }
 
@@ -104,7 +106,9 @@ type EffectivePolicy struct {
 //	forbidden_tools                    union of baseline ∪ provider ∪ override
 //	tool_policy_action                 most-specific wins (override > provider > baseline)
 //	attachment_policy                  baseline only (#266)
-//	egress                             override replaces baseline wholesale
+//	egress                             monotonic boundary: org egress wins
+//	                                   when set; override applies only when
+//	                                   the org has no egress policy
 //
 // per-field rule of the effective-policy contract (#266); splitting it would
 // scatter the single source of truth this issue exists to establish.
@@ -202,7 +206,12 @@ func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig
 		if override.ToolPolicyAction != "" {
 			eff.ToolPolicyAction = override.ToolPolicyAction
 		}
-		if override.Egress != nil {
+		// Egress is a MONOTONIC boundary (#266 review round 4): the
+		// organization egress policy is platform-owned and an
+		// application-owned agent file must not be able to weaken it. When the
+		// org sets egress, it is authoritative and the agent override cannot
+		// replace it; the agent egress applies only when the org has none.
+		if override.Egress != nil && baseline.Egress == nil {
 			eff.Egress = cloneEgressPolicy(override.Egress)
 			if eff.Egress.DefaultAction == "" {
 				eff.Egress.DefaultAction = EgressActionAllow

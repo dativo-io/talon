@@ -128,6 +128,28 @@ func LoadPolicy(ctx context.Context, path string, strict bool, baseDir string) (
 	return &pol, nil
 }
 
+// ValidateNoUnknownFields fails when the agent policy at path contains keys
+// the loader would silently ignore (#266 review round 4). Gateway startup
+// calls this so a typo like `montly:` (dropping a budget), `allowed_provider:`
+// (dropping a provider restriction), or `tool_policy_acton:` fails LOUDLY
+// instead of silently removing a security control. Native-only `talon run`
+// keeps the advisory warning to avoid breaking pre-cutover local files.
+func ValidateNoUnknownFields(path string) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		// No file to scan (e.g. an in-memory/synthetic policy): the loader
+		// path already validated any real file, so there is nothing to check.
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading policy file %s: %w", path, err)
+	}
+	if err := detectUnknownFields(content); err != nil {
+		return fmt.Errorf("agent policy %s contains unknown keys (typo or misplaced section — every key must be recognized for a gateway agent, #266): %w", path, err)
+	}
+	return nil
+}
+
 // detectUnknownFields re-decodes the YAML with strict field matching and
 // returns the decode error when the document contains keys that do not exist
 // on the Policy struct (typos, wrong nesting). Returns nil when all keys are

@@ -43,6 +43,16 @@ func buildServeIdentityRegistry(ctx context.Context, pol *policy.Policy, policyP
 	if pol.Agent.Key == nil || pol.Agent.Key.SecretName == "" || quickstart {
 		return nil, nil
 	}
+	// A gateway-bound agent's policy must not contain silently-ignored keys:
+	// a typo like `montly:` or `allowed_provider:` would drop a budget or a
+	// restriction. Fail startup instead (#266 review round 4). Gateway mode is
+	// terminal; plain serve degrades like other registry-build problems.
+	if unknownErr := policy.ValidateNoUnknownFields(policyPath); unknownErr != nil {
+		if gatewayMode {
+			return nil, unknownErr
+		}
+		log.Warn().Err(unknownErr).Msg("agent policy has unknown keys; tenant-scoped APIs may enforce less than intended")
+	}
 	registry, err := gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{
 		agentbridge.LoadedAgentFromPolicy(pol, policyPath),
 	}, vault, adminKey)

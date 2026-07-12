@@ -243,9 +243,10 @@ func TestGateway_Egress_ShadowModeForwardsAndRecordsViolation(t *testing.T) {
 
 func TestGateway_Egress_AgentOverrideDefaultDeny(t *testing.T) {
 	t2 := TierConfidential
-	// Agent override replaces the organization baseline wholesale: tier_2 only
-	// to ollama, everything else denied by default_action.
-	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, euOnlyEgressPolicy(), "US", &PolicyOverride{
+	// Agent egress applies when the ORG sets none (#266 review round 4: org
+	// egress is a monotonic boundary, so an agent override is used only in
+	// its absence): tier_2 only to ollama, everything else denied by default.
+	gw, upstreamCalls, evStore := setupEgressGateway(t, ModeEnforce, nil, "US", &PolicyOverride{
 		PIIAction:      "warn",
 		MaxDailyCost:   100,
 		MaxMonthlyCost: 2000,

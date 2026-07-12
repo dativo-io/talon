@@ -363,6 +363,11 @@ func GatewayIdentityPreflight(ctx context.Context) (agentName, secretName string
 	if pol.Agent.Key == nil || pol.Agent.Key.SecretName == "" {
 		return pol.Agent.Name, "", fmt.Errorf("agent %q has no key binding — gateway startup will refuse; add agent.key.secret_name to agent.talon.yaml and run: talon secrets set <name> <key>", pol.Agent.Name)
 	}
+	// Same strict unknown-field check gateway startup runs (#266 review round
+	// 4): a typo that silently drops a control must fail the preflight too.
+	if unknownErr := policy.ValidateNoUnknownFields(cfg.DefaultPolicy); unknownErr != nil {
+		return pol.Agent.Name, pol.Agent.Key.SecretName, unknownErr
+	}
 	secStore, secErr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
 	if secErr != nil {
 		return pol.Agent.Name, pol.Agent.Key.SecretName, fmt.Errorf("cannot open secrets vault: %w", secErr)

@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +22,7 @@ import (
 // tests construct registry entries without a vault — the vault-backed build
 // path has its own tests in identity_test.go.
 func testIdentity(name, tenant, key string, override *PolicyOverride) *ResolvedIdentity {
-	return &ResolvedIdentity{Name: name, TenantID: tenant, Override: override, key: []byte(key)}
+	return &ResolvedIdentity{Name: name, TenantID: tenant, Override: override, key: []byte(key), keyDigest: sha256.Sum256([]byte(key))}
 }
 
 // testRegistry assembles an immutable registry from prebuilt identities.

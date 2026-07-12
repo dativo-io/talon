@@ -870,3 +870,28 @@ func TestFailoverWriter(t *testing.T) {
 		assert.Equal(t, `{"error":"down"}`, rec.Body.String())
 	})
 }
+
+// TestGatewayFailover_ToolFilter_RefiltersBodyNotSkip (#266 review round 4):
+// when the target provider's tool policy is `filter` (not block), a fallback
+// candidate re-filters the forwarded body (stripping forbidden tools) and
+// dispatches — it is NOT skipped, which would needlessly exhaust the chain.
+func TestGatewayFailover_ToolFilter_RefiltersBodyNotSkip(t *testing.T) {
+	primary := newFailoverUpstream(t, http.StatusServiceUnavailable)
+	backup := newFailoverUpstream(t, http.StatusOK)
+	gw, _ := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
+	failoverAgent(gw).Override = &PolicyOverride{
+		PIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000,
+		ForbiddenTools: []string{"exec_cmd"}, ToolPolicyAction: "filter",
+	}
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"tools":[` +
+		`{"type":"function","function":{"name":"read_file","parameters":{}}},` +
+		`{"type":"function","function":{"name":"exec_cmd","parameters":{}}}]}`
+	w := makeFailoverRequest(gw, body)
+
+	require.Equal(t, http.StatusOK, w.Code, "candidate must be dispatched, not skipped")
+	assert.Equal(t, int64(1), backup.calls.Load(), "backup received the re-filtered request")
+	raw, _ := backup.lastBody.Load().(string)
+	assert.Contains(t, raw, "read_file", "allowed tool forwarded")
+	assert.NotContains(t, raw, "exec_cmd", "forbidden tool stripped from the fallback body")
+}
