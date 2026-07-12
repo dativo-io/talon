@@ -17,10 +17,23 @@ import (
 // Mode is the gateway operation mode.
 type Mode string
 
+// Gateway enforcement modes (#266 review round 4 — two control classes).
+// HARD PLATFORM BOUNDARIES (authentication, agent identity, data-sovereignty
+// eu_strict) block in EVERY mode. OBSERVABLE GOVERNANCE controls (PII, tools,
+// attachments, provider/model allowlists, budgets, ordinary egress) block
+// only in enforce; shadow and log_only record their would-be decision without
+// blocking.
 const (
-	ModeEnforce Mode = "enforce"  // Full pipeline with blocking
-	ModeShadow  Mode = "shadow"   // Log everything, never block
-	ModeLogOnly Mode = "log_only" // Only generate evidence, no policy evaluation
+	// ModeEnforce: hard boundaries AND observable governance controls block.
+	ModeEnforce Mode = "enforce"
+	// ModeShadow: observable controls are evaluated and recorded as shadow
+	// violations but never block; hard boundaries still block.
+	ModeShadow Mode = "shadow"
+	// ModeLogOnly: strictly lighter than shadow — OPA policy evaluation
+	// (budgets, model lists, egress) is skipped entirely and observable
+	// controls never block; only detections are recorded. Hard boundaries
+	// still block.
+	ModeLogOnly Mode = "log_only"
 )
 
 // GatewayConfig is the top-level gateway configuration from talon.config.yaml

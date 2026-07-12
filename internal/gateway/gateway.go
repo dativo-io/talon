@@ -266,6 +266,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isShadow := g.config.Mode == ModeShadow
+	// observeOnly: observable GOVERNANCE controls (PII, tools, attachments,
+	// provider/model allowlists) record their would-be decision but never
+	// block in shadow OR log_only (#266 review round 4 — the two-class model).
+	// Hard PLATFORM boundaries — data-sovereignty eu_strict and authentication
+	// — still block in every mode. log_only additionally skips OPA policy
+	// evaluation entirely (budgets/model lists/egress are not evaluated), so
+	// it is strictly lighter than shadow.
+	observeOnly := isShadow || g.config.Mode == ModeLogOnly
 	var shadowViolations []evidence.ShadowViolation
 	var shadowSessionBudget *evidence.SessionBudget
 
@@ -394,7 +402,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			g.attExtractor, g.classifier, g.attInjScanner, attPolicy)
 	}
 	if attSummary != nil && attSummary.BlockRequest {
-		if isShadow {
+		if observeOnly {
 			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 				Type: "attachment_block", Detail: fmt.Sprintf("%d file(s) would be blocked", attSummary.FilesBlocked), Action: "block",
 			})
@@ -417,7 +425,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !isShadow && attSummary != nil && attSummary.ModifiedBody != nil {
+	if !observeOnly && attSummary != nil && attSummary.ModifiedBody != nil {
 		body = attSummary.ModifiedBody
 	}
 
@@ -484,19 +492,29 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// signed record names WHICH layer denied — never blame the agent for an
 	// organization rule (#279 review).
 	if denySrc := eff.ProviderDenySource(route.Provider); denySrc != "" {
-		durationMS := time.Since(start).Milliseconds()
-		clientMsg := "Provider not allowed for this agent (agent allowlist)"
-		if denySrc == DenySourceOrgProviderAllowlist {
-			clientMsg = "Provider not allowed by organization policy"
-		}
-		WriteProviderError(w, wire, http.StatusForbidden, clientMsg)
-		persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"provider not allowed: " + denySrc}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
-		if err != nil {
-			g.handleEvidenceWriteFailure(ctx, err)
+		if observeOnly {
+			// The provider allowlist is an observable governance control:
+			// record the would-be denial but do not block in shadow/log_only
+			// (#266 review round 4 — it must not block unconditionally).
+			shadowViolations = append(shadowViolations, evidence.ShadowViolation{
+				Type: "provider_not_allowed", Detail: "provider not allowed: " + denySrc, Action: "block",
+			})
+			log.Warn().Str("agent", agent.Name).Str("enforcement_mode", string(g.config.Mode)).Str("provider", route.Provider).Msg("observe_provider_not_allowed")
+		} else {
+			durationMS := time.Since(start).Milliseconds()
+			clientMsg := "Provider not allowed for this agent (agent allowlist)"
+			if denySrc == DenySourceOrgProviderAllowlist {
+				clientMsg = "Provider not allowed by organization policy"
+			}
+			WriteProviderError(w, wire, http.StatusForbidden, clientMsg)
+			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"provider not allowed: " + denySrc}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
+			if err != nil {
+				g.handleEvidenceWriteFailure(ctx, err)
+				return
+			}
+			g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
 			return
 		}
-		g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
-		return
 	}
 
 	if g.denySovereigntyExcluded(w, ctx, agent, route, start, correlationID, extracted, classification, attSummary, isShadow, &shadowViolations) {
@@ -506,7 +524,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 6: Evaluate policy
 	piiAction := eff.PIIAction
 	if piiAction == "block" && classification.HasPII {
-		if isShadow {
+		if observeOnly {
 			piiTypes := make([]string, 0, len(classification.Entities))
 			for _, e := range classification.Entities {
 				piiTypes = append(piiTypes, e.Type)
@@ -634,11 +652,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		toolResult = &tr
 		if len(tr.Removed) > 0 {
 			switch {
-			case isShadow:
+			case observeOnly:
+				// Observe: record the would-be tool decision without blocking
+				// OR stripping the body (shadow + log_only, #266 review r4).
 				shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 					Type: "tool_block", Detail: fmt.Sprintf("Forbidden tools: %v", tr.Removed), Action: eff.ToolPolicyAction,
 				})
-				log.Warn().Str("agent", agent.Name).Str("enforcement_mode", "shadow").Strs("tools", tr.Removed).Msg("shadow_tool_violation")
+				log.Warn().Str("agent", agent.Name).Str("enforcement_mode", string(g.config.Mode)).Strs("tools", tr.Removed).Msg("observe_tool_violation")
 			case eff.ToolPolicyAction == "block":
 				durationMS := time.Since(start).Milliseconds()
 				log.Warn().
@@ -688,7 +708,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 7: Redact (if policy says redact and PII found, skip in shadow mode).
 	// Redaction failure is fail-closed: the request is known to contain PII,
 	// so forwarding it unredacted is never acceptable.
-	if !isShadow && piiAction == "redact" && classification.HasPII {
+	if !observeOnly && piiAction == "redact" && classification.HasPII {
 		redacted, redactErr := RedactRequestBody(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), wire, forwardBody, g.classifier)
 		if redactErr != nil {
 			durationMS := time.Since(start).Milliseconds()
@@ -710,7 +730,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		inputPIIRedacted = true
 	}
 	// Fail closed if redacted request text still contains recognized PII.
-	if !isShadow && inputPIIRedacted && g.classifier != nil {
+	if !observeOnly && inputPIIRedacted && g.classifier != nil {
 		redactedExtracted, extractErr := ExtractForProvider(wire, forwardBody)
 		if extractErr != nil {
 			durationMS := time.Since(start).Milliseconds()
@@ -915,7 +935,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// the would-be enforcement is recorded as a shadow violation below.
 	responsePIIAction := eff.ResponsePIIAction
 	enforcedResponseAction := responsePIIAction
-	if isShadow && responsePIIAction != "allow" && responsePIIAction != "" {
+	if observeOnly && responsePIIAction != "allow" && responsePIIAction != "" {
 		responsePIIAction = "warn"
 	}
 	isStreaming := isStreamingRequest(forwardBody)
@@ -1115,7 +1135,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Shadow mode: record what response enforcement would have done.
-	if isShadow && responsePII != nil && responsePII.PIIDetected &&
+	if observeOnly && responsePII != nil && responsePII.PIIDetected &&
 		(enforcedResponseAction == "block" || enforcedResponseAction == "redact") {
 		shadowViolations = append(shadowViolations, evidence.ShadowViolation{
 			Type:   "response_pii",

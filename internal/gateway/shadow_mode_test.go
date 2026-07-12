@@ -345,3 +345,33 @@ func TestShadowViolation_TypeCoverage(t *testing.T) {
 		assert.True(t, strings.Contains(string(data), fmt.Sprintf(`"type":"%s"`, typ)))
 	}
 }
+
+// TestEnforcementModeMatrix_ObservableVsHard (#266 review round 4): an
+// OBSERVABLE governance control (PII block) blocks only in enforce; shadow
+// and log_only forward the request (record-only). This pins the two-class
+// model so shadow/log_only can never silently block-or-not inconsistently.
+func TestEnforcementModeMatrix_ObservableVsHard(t *testing.T) {
+	cases := []struct {
+		mode       Mode
+		wantStatus int
+	}{
+		{ModeEnforce, http.StatusBadRequest},
+		{ModeShadow, http.StatusOK},
+		{ModeLogOnly, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			gw, store := setupShadowGateway(t, func(c *GatewayConfig, _ *PolicyOverride) {
+				c.Mode = tc.mode
+			})
+			rr := makeGatewayRequest(gw, requestWithPII())
+			assert.Equal(t, tc.wantStatus, rr.Code,
+				"PII block is observable: enforce blocks, shadow/log_only forward")
+			ev := latestEvidence(t, store)
+			require.NotNil(t, ev)
+			if tc.mode == ModeEnforce {
+				assert.False(t, ev.PolicyDecision.Allowed)
+			}
+		})
+	}
+}

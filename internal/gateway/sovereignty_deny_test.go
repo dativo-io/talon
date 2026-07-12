@@ -127,7 +127,11 @@ func TestGateway_SovereigntyAllow_EUProvider(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-func TestGateway_SovereigntyDeny_ShadowModeForwardsAndRecords(t *testing.T) {
+// Data residency is a HARD platform boundary (#266 review round 4): eu_strict
+// blocks a non-EU provider in EVERY mode, including shadow — forwarding
+// EU-resident data to a US provider merely to "observe" would itself breach
+// residency.
+func TestGateway_SovereigntyDeny_ShadowModeStillBlocks(t *testing.T) {
 	var upstreamCalls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls.Add(1)
@@ -176,22 +180,13 @@ func TestGateway_SovereigntyDeny_ShadowModeForwardsAndRecords(t *testing.T) {
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
 	w := makeGatewayRequestWithKey(gw, "/v1/proxy/openai/v1/chat/completions", body, "talon-gw-sov-shadow")
 
-	assert.Equal(t, http.StatusOK, w.Code, "shadow mode should forward sovereignty-denied requests")
-	assert.Equal(t, int64(1), upstreamCalls.Load(), "shadow mode must reach upstream")
+	assert.Equal(t, http.StatusForbidden, w.Code, "eu_strict is a hard boundary — blocks even in shadow")
+	assert.Equal(t, int64(0), upstreamCalls.Load(), "EU-resident data must never egress to a non-EU provider")
 
 	records, err := evStore.List(context.Background(), "default", "", time.Time{}, time.Now(), 5)
 	require.NoError(t, err)
 	require.NotEmpty(t, records)
-
-	ev := records[0]
-	assert.True(t, ev.ObservationModeOverride, "shadow violation should flag observation mode override")
-	hasSovereigntyViolation := false
-	for _, sv := range ev.ShadowViolations {
-		if sv.Type == "sovereignty_deny" {
-			hasSovereigntyViolation = true
-		}
-	}
-	assert.True(t, hasSovereigntyViolation, "should record sovereignty_deny shadow violation, got %+v", ev.ShadowViolations)
+	assert.False(t, records[0].PolicyDecision.Allowed, "sovereignty denial is recorded as a real block")
 }
 
 func makeGatewayRequestWithKey(gw *Gateway, path, body, agentKey string) *httptest.ResponseRecorder {
