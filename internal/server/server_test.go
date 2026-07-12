@@ -19,6 +19,7 @@ import (
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/secrets"
 	talonsession "github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/testutil"
@@ -2181,4 +2182,69 @@ func minimalPolicy() *policy.Policy {
 		Policies:   policy.PoliciesConfig{},
 		VersionTag: "test",
 	}
+}
+
+// TestEvidenceAgentScope_AgentKeySeesOnlyOwnAgent (#266 review round 4):
+// two agents in the SAME tenant are isolated — an agent key reads only its
+// own agent's evidence and cannot fetch another agent's record by id, while
+// the admin key sees both.
+func TestEvidenceAgentScope_AgentKeySeesOnlyOwnAgent(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	for _, e := range []struct{ id, agent string }{
+		{"ev_support_1", "support-bot"},
+		{"ev_finance_1", "finance-bot"},
+	} {
+		require.NoError(t, store.Store(ctx, &evidence.Evidence{
+			ID: e.id, CorrelationID: "c", Timestamp: time.Now().UTC(),
+			TenantID: "acme", AgentID: e.agent, InvocationType: "test",
+			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "v1"},
+			Execution:      evidence.Execution{},
+			AuditTrail:     evidence.AuditTrail{},
+		}))
+	}
+
+	srv := NewServer(nil, store, nil, engine, pol, "", nil, "admin-secret", nil,
+		WithAgentIdentities(map[string]requestctx.AgentIdentity{
+			"k_support": {AgentID: "support-bot", TenantID: "acme"},
+			"k_finance": {AgentID: "finance-bot", TenantID: "acme"},
+		}))
+	r := srv.Routes()
+
+	get := func(path, bearer, adminKey string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if adminKey != "" {
+			req.Header.Set("X-Talon-Admin-Key", adminKey)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// support-bot's list returns only its own record.
+	rec := get("/v1/evidence", "k_support", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, "ev_support_1")
+	assert.NotContains(t, body, "ev_finance_1", "an agent key must not see another agent's evidence")
+
+	// support-bot cannot fetch finance-bot's record by id (404).
+	assert.Equal(t, http.StatusNotFound, get("/v1/evidence/ev_finance_1", "k_support", "").Code)
+	// ...but can fetch its own.
+	assert.Equal(t, http.StatusOK, get("/v1/evidence/ev_support_1", "k_support", "").Code)
+
+	// Admin sees both.
+	adminBody := get("/v1/evidence?tenant_id=*", "", "admin-secret").Body.String()
+	assert.Contains(t, adminBody, "ev_support_1")
+	assert.Contains(t, adminBody, "ev_finance_1")
 }

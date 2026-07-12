@@ -80,6 +80,29 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// agentReadScope returns the agent_id a tenant-API READ must be confined to
+// (#266 review round 4 — agent-scoped reads). An agent key may read only its
+// OWN agent's records: the returned filter is the authenticated agent name,
+// overriding any client-supplied agent_id. Admin and dev-mode requests use
+// the caller-supplied filter (tenant-wide operator visibility). The bool is
+// true when the request is agent-scoped.
+func agentReadScope(ctx context.Context, requestedAgentID string) (string, bool) {
+	if id, ok := requestctx.AgentIdentityFrom(ctx); ok {
+		return id.AgentID, true
+	}
+	return requestedAgentID, false
+}
+
+// recordVisibleToCaller reports whether a fetched-by-id record may be returned
+// to the caller: an agent key sees only records for its own agent (#266). The
+// tenant check is applied separately by each handler.
+func recordVisibleToCaller(ctx context.Context, recordAgentID string) bool {
+	if id, ok := requestctx.AgentIdentityFrom(ctx); ok {
+		return recordAgentID == id.AgentID
+	}
+	return true
+}
+
 // TenantKeyMiddleware returns a middleware that validates
 // Authorization: Bearer <agent key> and sets the resolved agent identity
 // (agent name, tenant, team) in context. agentKeys is the identity
