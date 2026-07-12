@@ -1748,7 +1748,11 @@ func (s *Store) ListIndex(ctx context.Context, tenantID, agentID string, from, t
 
 // Timeline returns chronological context around a specific evidence record (Layer 2).
 // Critical for NIS2 Art. 23 incident response.
-func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int) ([]Index, error) {
+// Timeline returns the neighbors of aroundID. agentFilter scopes the
+// neighbors to a single agent (empty = tenant-wide, admin only): a
+// tenant-wide timeline would otherwise leak another agent's neighboring
+// records to an agent key (#266 review round 5).
+func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int, agentFilter string) ([]Index, error) {
 	ctx, span := tracer.Start(ctx, "evidence.timeline",
 		trace.WithAttributes(
 			attribute.String("around_id", aroundID),
@@ -1767,11 +1771,21 @@ func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int
 	// against the UTC-stored timestamp column is apples-to-apples (#216).
 	targetTS := target.Timestamp.UTC()
 
+	agentClause := ""
+	agentArg := []interface{}{}
+	if agentFilter != "" {
+		agentClause = " AND agent_id = ?"
+		agentArg = []interface{}{agentFilter}
+	}
+
 	// Collect entries before the target (earlier timestamps)
+	//nolint:gosec // agentClause is a fixed literal (" AND agent_id = ?"), never user input
 	beforeQuery := `SELECT evidence_json FROM evidence
-	                WHERE tenant_id = ? AND timestamp < ?
+	                WHERE tenant_id = ? AND timestamp < ?` + agentClause + `
 	                ORDER BY timestamp DESC LIMIT ?`
-	beforeRows, err := s.db.QueryContext(ctx, beforeQuery, target.TenantID, targetTS, before)
+	beforeArgs := append([]interface{}{target.TenantID, targetTS}, agentArg...)
+	beforeArgs = append(beforeArgs, before)
+	beforeRows, err := s.db.QueryContext(ctx, beforeQuery, beforeArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("querying before timeline: %w", err)
 	}
@@ -1800,10 +1814,13 @@ func (s *Store) Timeline(ctx context.Context, aroundID string, before, after int
 	results = append(results, toIndex(target))
 
 	// Collect entries after the target (later timestamps)
+	//nolint:gosec // agentClause is a fixed literal (" AND agent_id = ?"), never user input
 	afterQuery := `SELECT evidence_json FROM evidence
-	               WHERE tenant_id = ? AND timestamp > ?
+	               WHERE tenant_id = ? AND timestamp > ?` + agentClause + `
 	               ORDER BY timestamp ASC LIMIT ?`
-	afterRows, err := s.db.QueryContext(ctx, afterQuery, target.TenantID, targetTS, after)
+	afterArgs := append([]interface{}{target.TenantID, targetTS}, agentArg...)
+	afterArgs = append(afterArgs, after)
+	afterRows, err := s.db.QueryContext(ctx, afterQuery, afterArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("querying after timeline: %w", err)
 	}

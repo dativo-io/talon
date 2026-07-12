@@ -320,18 +320,27 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/v1/responses", s.proxyQuickstart.ServeHTTP)
 	}
 
-	// Tenant-only API group
+	// Native EXECUTION routes. In a native-only deployment the agent key IS
+	// the governed path — the runner applies the agent's policy. But when the
+	// gateway is ALSO serving traffic, these routes run the agent's policy
+	// WITHOUT gateway.organization_policy, provider constraints, or the
+	// resolved effective policy — so an agent key could pick a native route
+	// to bypass org governance it cannot bypass through /v1/proxy. Require
+	// operator (admin) authority in that case; agent keys must use /v1/proxy
+	// (#266 review round 5). Session completion is accounting, not LLM
+	// execution, so it stays agent-key in both configurations.
+	execAuth := TenantKeyMiddleware(s.agentKeys, s.adminKey)
+	if s.gateway != nil {
+		execAuth = AdminKeyMiddleware(s.adminKey)
+	}
 	r.Group(func(r chi.Router) {
-		r.Use(TenantKeyMiddleware(s.agentKeys, s.adminKey))
+		r.Use(execAuth)
 		r.Use(RateLimitMiddleware(s.tenantManager))
 
 		// Long-running: no request timeout so handler 30min deadline applies (middleware.Timeout would override).
 		r.Post("/v1/agents/run", s.handleAgentRun)
 		// Quickstart serves ONLY the host-root facade — tenant agent chat is
-		// not mounted at all. Quickstart never builds the identity registry
-		// (#266), so the previously "relocated" tenant chat path could never
-		// be reached in production; the conditional mount was dead code whose
-		// documentation advertised a route that always 404'd (#285).
+		// not mounted at all (#285).
 		if !s.quickstartEnabled {
 			r.Post("/v1/chat/completions", s.handleChatCompletions)
 		}
@@ -341,10 +350,14 @@ func (s *Server) Routes() http.Handler {
 		if s.mcpProxy != nil {
 			r.Post("/mcp/proxy", s.mcpProxy.ServeHTTP)
 		}
-		r.Post("/v1/sessions/{id}/complete", s.handleSessionComplete)
 		if s.graphEventsHandler != nil {
 			r.Post("/v1/graph/events", s.graphEventsHandler.ServeHTTP)
 		}
+	})
+	r.Group(func(r chi.Router) {
+		r.Use(TenantKeyMiddleware(s.agentKeys, s.adminKey))
+		r.Use(RateLimitMiddleware(s.tenantManager))
+		r.Post("/v1/sessions/{id}/complete", s.handleSessionComplete)
 	})
 
 	// Tenant or admin API group (mostly read paths).

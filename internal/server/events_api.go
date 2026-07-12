@@ -129,7 +129,8 @@ func (s *Server) listOperationalEvents(r *http.Request, tenantID string, limit i
 		from = sinceTS
 	}
 
-	records, err := s.evidenceStore.List(r.Context(), tenantID, "", from, now, max(limit*4, s.eventsReplayBacklog))
+	eventsAgent, _ := agentReadScope(r.Context(), "")
+	records, err := s.evidenceStore.List(r.Context(), tenantID, eventsAgent, from, now, max(limit*4, s.eventsReplayBacklog))
 	if err != nil {
 		return nil, fmt.Errorf("listing evidence events: %w", err)
 	}
@@ -153,7 +154,8 @@ func (s *Server) listOperationalEvents(r *http.Request, tenantID string, limit i
 
 func (s *Server) listEventsForStream(r *http.Request, tenantID, sinceID string) ([]events.OperationalEvent, bool, error) {
 	now := time.Now().UTC()
-	records, err := s.evidenceStore.List(r.Context(), tenantID, "", time.Time{}, now, s.eventsReplayBacklog)
+	eventsAgent, _ := agentReadScope(r.Context(), "")
+	records, err := s.evidenceStore.List(r.Context(), tenantID, eventsAgent, time.Time{}, now, s.eventsReplayBacklog)
 	if err != nil {
 		return nil, false, fmt.Errorf("listing stream evidence events: %w", err)
 	}

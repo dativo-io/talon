@@ -2247,4 +2247,60 @@ func TestEvidenceAgentScope_AgentKeySeesOnlyOwnAgent(t *testing.T) {
 	adminBody := get("/v1/evidence?tenant_id=*", "", "admin-secret").Body.String()
 	assert.Contains(t, adminBody, "ev_support_1")
 	assert.Contains(t, adminBody, "ev_finance_1")
+
+	// Timeline neighbors are agent-scoped: support-bot's timeline around its
+	// own record must not surface finance-bot's neighbor (#266 review r5).
+	tl := get("/v1/evidence/timeline?around=ev_support_1&before=5&after=5", "k_support", "").Body.String()
+	assert.NotContains(t, tl, "ev_finance_1", "timeline must not leak another agent's neighbors")
+
+	// Operational events are agent-scoped.
+	evs := get("/api/v1/events/recent", "k_support", "").Body.String()
+	assert.NotContains(t, evs, "ev_finance_1", "events must not surface another agent's records")
+}
+
+// TestNativeExecutionRoutesRequireAdminWhenGatewayServed (#266 review round
+// 5): when the gateway is serving agent traffic, native execution routes
+// (/v1/agents/run, native /v1/chat/completions) reject agent keys — an agent
+// key must use /v1/proxy so org policy + provider constraints apply. Admin
+// (operator) keeps access. Native-only deployments still accept agent keys.
+func TestNativeExecutionRoutesRequireAdminWhenGatewayServed(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+
+	agentIDs := map[string]requestctx.AgentIdentity{"k_agent": {AgentID: "bot", TenantID: "acme"}}
+	body := `{"prompt":"hi"}`
+
+	post := func(r http.Handler, path, bearer, admin string) int {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if admin != "" {
+			req.Header.Set("X-Talon-Admin-Key", admin)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	t.Run("gateway served: agent key blocked, admin allowed", func(t *testing.T) {
+		gwStub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		srv := NewServer(nil, nil, nil, engine, pol, "", nil, "admin-secret", nil,
+			WithAgentIdentities(agentIDs), WithGateway(gwStub))
+		r := srv.Routes()
+		assert.Equal(t, http.StatusUnauthorized, post(r, "/v1/agents/run", "k_agent", ""),
+			"agent key must not reach the ungoverned native runner when the gateway is served")
+		// Admin passes auth (a 4xx/5xx from the nil runner is fine; 401 is not).
+		assert.NotEqual(t, http.StatusUnauthorized, post(r, "/v1/agents/run", "", "admin-secret"))
+	})
+
+	t.Run("native-only: agent key allowed through auth", func(t *testing.T) {
+		srv := NewServer(nil, nil, nil, engine, pol, "", nil, "admin-secret", nil,
+			WithAgentIdentities(agentIDs))
+		r := srv.Routes()
+		// No gateway → agent key passes auth (the nil runner then errors, but not 401).
+		assert.NotEqual(t, http.StatusUnauthorized, post(r, "/v1/agents/run", "k_agent", ""))
+	})
 }

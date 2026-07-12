@@ -446,7 +446,10 @@ func (s *Server) handleEvidenceTimeline(w http.ResponseWriter, r *http.Request) 
 	if after <= 0 {
 		after = 3
 	}
-	entries, err := s.evidenceStore.Timeline(r.Context(), around, before, after)
+	// Scope neighbors to the authenticated agent (#266 review r5): a
+	// tenant-wide timeline would leak another agent's records to an agent key.
+	timelineAgent, _ := agentReadScope(r.Context(), "")
+	entries, err := s.evidenceStore.Timeline(r.Context(), around, before, after, timelineAgent)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -509,9 +512,16 @@ func (s *Server) handleEvidenceTrace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "evidence not found")
 		return
 	}
-	steps, _ := s.evidenceStore.ListStepsByCorrelationID(r.Context(), ev.CorrelationID)
-	if steps == nil {
-		steps = []evidence.StepEvidence{}
+	rawSteps, _ := s.evidenceStore.ListStepsByCorrelationID(r.Context(), ev.CorrelationID)
+	// Steps are joined by client-suppliable correlation_id, so a colliding
+	// id could surface another agent's step summaries; keep only steps of the
+	// same tenant AND agent as the (already agent-checked) parent record
+	// (#266 review r5).
+	steps := make([]evidence.StepEvidence, 0, len(rawSteps))
+	for i := range rawSteps {
+		if rawSteps[i].TenantID == ev.TenantID && rawSteps[i].AgentID == ev.AgentID {
+			steps = append(steps, rawSteps[i])
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"evidence": ev,
@@ -712,12 +722,17 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"status": "ok", "evidence_count_today": 0, "cost_today": 0.0, "monthly": 0.0, "active_runs": 0,
 		"pending_memory_reviews": 0, "blocked_count": 0, "error_rate": 0.0, "enforcement_mode": "", "tenant_id": tenantID,
 	}
+	// An agent key sees only its OWN agent's aggregates (#266 review r5);
+	// admin sees the tenant-wide rollup.
+	statusAgent, _ := agentReadScope(r.Context(), "")
 	applyEvidenceHealthStatus(resp)
 	applyEventStreamStatus(resp)
-	s.applyEvidenceStoreStatus(r.Context(), resp, tenantID, dayStart, dayEnd, monthStart, monthEnd)
-	s.applyMemoryStoreStatus(r.Context(), resp, tenantID)
+	s.applyEvidenceStoreStatus(r.Context(), resp, tenantID, statusAgent, dayStart, dayEnd, monthStart, monthEnd)
+	s.applyMemoryStoreStatus(r.Context(), resp, tenantID, statusAgent)
 	s.applyMetricsCollectorStatus(r.Context(), resp)
 	if s.activeRunTracker != nil {
+		// active_runs is a coarse per-tenant operational count (the tracker
+		// does not index by agent); it discloses no record content.
 		resp["active_runs"] = s.activeRunTracker.Count(tenantID)
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -750,6 +765,7 @@ func (s *Server) applyEvidenceStoreStatus(
 	ctx context.Context,
 	resp map[string]interface{},
 	tenantID string,
+	agentID string,
 	dayStart time.Time,
 	dayEnd time.Time,
 	monthStart time.Time,
@@ -758,22 +774,29 @@ func (s *Server) applyEvidenceStoreStatus(
 	if s.evidenceStore == nil {
 		return
 	}
-	if n, err := s.evidenceStore.CountInRange(ctx, tenantID, "", dayStart, dayEnd); err == nil {
+	if n, err := s.evidenceStore.CountInRange(ctx, tenantID, agentID, dayStart, dayEnd); err == nil {
 		resp["evidence_count_today"] = n
 	}
-	if cost, err := s.evidenceStore.CostTotal(ctx, tenantID, "", dayStart, dayEnd); err == nil {
+	if cost, err := s.evidenceStore.CostTotal(ctx, tenantID, agentID, dayStart, dayEnd); err == nil {
 		resp["cost_today"] = cost
 	}
-	if cost, err := s.evidenceStore.CostTotal(ctx, tenantID, "", monthStart, monthEnd); err == nil {
+	if cost, err := s.evidenceStore.CostTotal(ctx, tenantID, agentID, monthStart, monthEnd); err == nil {
 		resp["monthly"] = cost
 	}
-	if blocked, err := s.evidenceStore.CountDeniedInRange(ctx, tenantID, "", dayStart, dayEnd); err == nil {
+	if blocked, err := s.evidenceStore.CountDeniedInRange(ctx, tenantID, agentID, dayStart, dayEnd); err == nil {
 		resp["blocked_count"] = blocked
 	}
 }
 
-func (s *Server) applyMemoryStoreStatus(ctx context.Context, resp map[string]interface{}, tenantID string) {
+func (s *Server) applyMemoryStoreStatus(ctx context.Context, resp map[string]interface{}, tenantID, agentID string) {
 	if s.memoryStore == nil {
+		return
+	}
+	// An agent key sees only its own agent's pending reviews (#266 review r5).
+	if agentID != "" {
+		if entries, err := s.memoryStore.ListPendingReview(ctx, tenantID, agentID, 1000); err == nil {
+			resp["pending_memory_reviews"] = len(entries)
+		}
 		return
 	}
 	if n, err := s.memoryStore.CountPendingReviewForTenant(ctx, tenantID); err == nil {
@@ -1049,6 +1072,11 @@ func (s *Server) handleMemoryGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	// An agent key sees only its own agent's memory (#266 review r5).
+	if !recordVisibleToCaller(r.Context(), entry.AgentID) {
+		writeError(w, http.StatusNotFound, "not_found", "memory entry not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, entry)
 }
 
@@ -1061,8 +1089,10 @@ func (s *Server) handleMemoryReview(w http.ResponseWriter, r *http.Request) {
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	agentID := chi.URLParam(r, "agent_id")
-	if agentID == "" {
+	// An agent key may only review its OWN agent's memory; the path agent_id
+	// cannot widen the scope (#266 review r5).
+	agentID, scoped := agentReadScope(r.Context(), chi.URLParam(r, "agent_id"))
+	if !scoped && agentID == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "agent_id is required")
 		return
 	}

@@ -92,7 +92,7 @@ func TestTimeline_TargetWithLocalOffsetBucketsInUTC(t *testing.T) {
 		"tl-target", "corr", target.In(west), "default", "a1", "gateway", targetJSON, "sig")
 	require.NoError(t, err)
 
-	timeline, err := store.Timeline(ctx, "tl-target", 1, 1)
+	timeline, err := store.Timeline(ctx, "tl-target", 1, 1, "")
 	require.NoError(t, err)
 
 	var ids []string
