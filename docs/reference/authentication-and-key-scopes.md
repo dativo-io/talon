@@ -24,8 +24,8 @@ Notes:
 | Endpoint family | Accepted auth | Scope |
 |---|---|---|
 | `/v1/proxy/...` | Agent key (bearer or `x-api-key`) | Gateway data plane — the key selects the agent and its effective policy; unknown or missing key gets `401 Invalid or missing agent key` |
-| Tenant-only write paths (`/v1/agents/run`, `/v1/chat/completions`, `/mcp`, `/mcp/proxy`) | Agent key (bearer) | Tenant-scoped execution under the agent's derived tenant |
-| Tenant-or-admin read paths (`/v1/evidence*`, `/v1/status`, `/v1/costs*`, `/v1/memory*`, `/v1/triggers*`, `/v1/plans/pending`, `/v1/plans/{id}`) | Agent key (bearer) **or** admin key | Derived-tenant visibility for agent keys; cross-tenant admin visibility for the admin key |
+| Native execution paths (`/v1/agents/run`, `/v1/chat/completions`, `/mcp`, `/mcp/proxy`, `/v1/graph/events`) | Native-only serve: agent key (bearer). Gateway serve: **admin key required — strictly** | Native execution runs the agent's own policy WITHOUT `gateway.organization_policy` / provider constraints, so when a gateway is served these routes need operator authority. Fail-closed: with a gateway and **no** `TALON_ADMIN_KEY` configured they return 401 for everyone (the dev-open rule never applies here) — agent traffic goes through `/v1/proxy` |
+| Tenant-or-admin read paths (`/v1/evidence*`, `/v1/status`, `/v1/costs*`, `/v1/memory*`, `/v1/triggers*`, `/v1/plans/pending`, `/v1/plans/{id}`) | Agent key (bearer) **or** admin key | Agent keys see only their OWN agent's records (evidence, costs, memory); cross-tenant admin visibility for the admin key. `/v1/status` also reports coarse installation-level operational counters (event-stream totals, metrics summary, active-run count) — operator telemetry, not record contents, and not agent-private state |
 | Admin-only paths (`/v1/plans/{id}/approve`, `/v1/plans/{id}/reject`, `/v1/plans/{id}/modify`, `/v1/memory/{agent_id}/approve`, `/v1/secrets*`, `/v1/policies*`, `/v1/dashboard/*`, `/v1/compliance/*`, `/v1/copaw/*`) | Admin key | Control-plane actions |
 | Operational control plane (`/v1/runs*`, `/v1/overrides*`, `/v1/tool-approvals*`) | Admin key | Run management, tenant overrides, tool approval gates |
 | Gateway dashboard + metrics (`/gateway/dashboard`, `/api/v1/metrics`, `/api/v1/metrics/stream`) | Admin key | Operational dashboards and telemetry streams |
@@ -34,10 +34,10 @@ Notes:
 
 ## Practical rules
 
-- Use the workload's **agent key** for normal tenant traffic: the same key authenticates `/v1/proxy` and tenant APIs like `POST /v1/agents/run`, always scoped to the derived tenant.
-- Use **`TALON_ADMIN_KEY`** for admin/reviewer/operator actions and all dashboard/metrics endpoints. Agent keys never grant admin authority, and the admin key never impersonates an agent.
+- Use the workload's **agent key** for normal tenant traffic: the same key authenticates `/v1/proxy` and the tenant-scoped read APIs, always scoped to the derived tenant. In a **native-only** serve it also authenticates `POST /v1/agents/run`.
+- Use **`TALON_ADMIN_KEY`** for admin/reviewer/operator actions and all dashboard/metrics endpoints — and for the native execution routes whenever a gateway is served. Agent keys never grant admin authority, and the admin key never impersonates an agent.
 - Prefer `X-Talon-Admin-Key` for admin calls; bearer fallback is accepted.
-- Auth openness is governed only by the admin-key dev rule (running with no `TALON_ADMIN_KEY` configured is dev mode) — never by how many agents happen to be configured.
+- Auth openness is governed only by the admin-key dev rule (running with no `TALON_ADMIN_KEY` configured is dev mode) — never by how many agents happen to be configured. **Exception (fail-closed):** the native execution routes in gateway mode never dev-open — no admin key means they deny.
 
 ### Quickstart exception and BYOK (dev-only)
 

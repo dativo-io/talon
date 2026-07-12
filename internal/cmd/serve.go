@@ -158,6 +158,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	adminKey := os.Getenv("TALON_ADMIN_KEY")
 	if adminKey == "" {
 		log.Warn().Msg("TALON_ADMIN_KEY not set — admin-only endpoints will be unrestricted. Set for production.")
+		if serveGateway || serveProxyQuickstart {
+			// Native execution routes fail CLOSED in gateway mode without an
+			// admin key (they bypass gateway.organization_policy, #266 round 6).
+			log.Warn().Msg("gateway mode without TALON_ADMIN_KEY: native execution routes (/v1/agents/run, native /v1/chat/completions, /mcp, /mcp/proxy, /v1/graph/events) are DISABLED (401) — agent traffic goes through /v1/proxy; set TALON_ADMIN_KEY to enable operator-native execution")
+		}
 	}
 
 	identityRegistry, err := buildServeIdentityRegistry(ctx, pol, policyPath, secretsStore, adminKey, serveGateway, serveProxyQuickstart)

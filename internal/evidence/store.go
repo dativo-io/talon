@@ -220,7 +220,17 @@ type EgressDecision struct {
 	Decision    string `json:"decision"`               // "allow" | "deny"
 	MatchedRule string `json:"matched_rule,omitempty"` // e.g. "tier_2:allowed_regions" or "default_action"
 	Reason      string `json:"reason,omitempty"`       // machine code, e.g. egress_tier_destination_disallowed
+	// Source names the boundary layer that made the decision — "organization"
+	// or "agent" — so the signed record states WHICH of the two intersected
+	// egress policies was decisive (#266 review round 6).
+	Source string `json:"source,omitempty"`
 }
+
+// EgressDecision.Source values: the boundary layer that was decisive.
+const (
+	EgressSourceOrganization = "organization"
+	EgressSourceAgent        = "agent"
+)
 
 // PlanReviewEvent captures human oversight actions performed on execution plans.
 type PlanReviewEvent struct {

@@ -164,6 +164,28 @@ func AdminKeyMiddleware(adminKey string) func(http.Handler) http.Handler {
 	}
 }
 
+// RequireAdminKeyMiddleware is AdminKeyMiddleware WITHOUT the dev-open rule:
+// an absent admin key denies every request instead of enabling dev mode. Used
+// for the native execution routes when a gateway is served — those routes run
+// outside gateway.organization_policy and the resolved effective policy, so
+// leaving them unauthenticated just because the operator did not set
+// TALON_ADMIN_KEY would be a fail-open governance bypass (#266 review round 6:
+// gateway mode + no admin key must deny, not open).
+func RequireAdminKeyMiddleware(adminKey string) func(http.Handler) http.Handler {
+	inner := AdminKeyMiddleware(adminKey)
+	return func(next http.Handler) http.Handler {
+		guarded := inner(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if adminKey == "" {
+				writeError(w, http.StatusUnauthorized, "unauthorized",
+					"Native execution routes require TALON_ADMIN_KEY when a gateway is served (agent traffic must use /v1/proxy). Set TALON_ADMIN_KEY to enable them.")
+				return
+			}
+			guarded.ServeHTTP(w, r)
+		})
+	}
+}
+
 // TenantOrAdminMiddleware allows either an admin key or an agent key.
 // Admin auth checks X-Talon-Admin-Key first, then Bearer fallback.
 // Agent auth checks Authorization: Bearer <agent key> (#266).

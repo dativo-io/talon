@@ -159,6 +159,8 @@ func TestGateway_Egress_Tier2DeniedAndEvidenced(t *testing.T) {
 	assert.Equal(t, EgressActionDeny, ev.EgressDecision.Decision)
 	assert.Equal(t, "tier_2", ev.EgressDecision.MatchedRule)
 	assert.Equal(t, EgressReasonTierDestination, ev.EgressDecision.Reason)
+	assert.Equal(t, evidence.EgressSourceOrganization, ev.EgressDecision.Source,
+		"org-policy deny: the organization layer is the decisive source (#266 r6)")
 
 	assert.True(t, evStore.VerifyRecord(ev), "denied egress evidence must be signature-verifiable")
 
@@ -267,6 +269,8 @@ func TestGateway_Egress_AgentOverrideDefaultDeny(t *testing.T) {
 	assert.Equal(t, EgressActionDeny, ev.EgressDecision.Decision)
 	assert.Equal(t, "default_action", ev.EgressDecision.MatchedRule)
 	assert.Equal(t, EgressReasonDestination, ev.EgressDecision.Reason)
+	assert.Equal(t, evidence.EgressSourceAgent, ev.EgressDecision.Source,
+		"agent-only egress: the agent layer is the decisive source")
 }
 
 // Egress is a logical INTERSECTION (#266 review round 5): even when the ORG
@@ -298,6 +302,8 @@ func TestGateway_Egress_IntersectionAgentDeniesWithinOrgAllow(t *testing.T) {
 	require.False(t, ev.PolicyDecision.Allowed)
 	require.NotNil(t, ev.EgressDecision)
 	assert.Equal(t, EgressActionDeny, ev.EgressDecision.Decision)
+	assert.Equal(t, evidence.EgressSourceAgent, ev.EgressDecision.Source,
+		"signed evidence must name the AGENT layer as decisive when it denies within an org allow (#266 r6)")
 }
 
 func TestGateway_Egress_CombinedDenyReasonsPreferEgressCode(t *testing.T) {

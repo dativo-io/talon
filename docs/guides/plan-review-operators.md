@@ -191,7 +191,7 @@ http://localhost:8080/dashboard?talon_admin_key=$TALON_ADMIN_KEY
 
 | Action | Method | Auth |
 |--------|--------|------|
-| Trigger run | `POST /v1/agents/run` | Agent key |
+| Trigger run | `POST /v1/agents/run` | Agent key (native-only serve); admin key when a gateway is served |
 | List pending | `GET /v1/plans/pending` | Agent key or admin key |
 | Get plan | `GET /v1/plans/{id}` | Agent key or admin key |
 | Approve | `POST /v1/plans/{id}/approve` | Admin key only |

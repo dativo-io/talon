@@ -1930,7 +1930,10 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 					SourceCorrelationID: correlationID,
 					CreatedAt:           now, ExpiresAt: now.Add(ttl),
 				}
-				_ = r.cacheStore.Insert(ctx, entry)
+				if insertErr := r.cacheStore.Insert(ctx, entry); insertErr != nil {
+					log.Warn().Err(insertErr).Str("correlation_id", correlationID).
+						Str("agent_id", req.AgentName).Msg("cache_store_failed")
+				}
 			}
 		}
 		// Step 7.5: Pre-specified tool invocations (legacy path)

@@ -220,14 +220,15 @@ func (g *Gateway) buildEgressDecisionEvidence(agent *ResolvedIdentity, provider 
 	if !orgEval.Evaluated && !agentEval.Evaluated {
 		return nil
 	}
-	eval := orgEval
+	// Source names the decisive layer in the signed record (#266 round 6).
+	eval, source := orgEval, evidence.EgressSourceOrganization
 	switch {
 	case !orgEval.Evaluated:
 		// Only the agent layer is configured — its decision stands alone.
-		eval = agentEval
+		eval, source = agentEval, evidence.EgressSourceAgent
 	case orgEval.Allowed && agentEval.Evaluated && !agentEval.Allowed:
 		// Org allowed but the agent boundary denied: the agent layer is decisive.
-		eval = agentEval
+		eval, source = agentEval, evidence.EgressSourceAgent
 	}
 	decision := EgressActionAllow
 	if !eval.Allowed {
@@ -240,6 +241,7 @@ func (g *Gateway) buildEgressDecisionEvidence(agent *ResolvedIdentity, provider 
 		Decision:    decision,
 		MatchedRule: eval.MatchedRule,
 		Reason:      eval.Reason,
+		Source:      source,
 	}
 }
 

@@ -327,11 +327,15 @@ func (s *Server) Routes() http.Handler {
 	// resolved effective policy — so an agent key could pick a native route
 	// to bypass org governance it cannot bypass through /v1/proxy. Require
 	// operator (admin) authority in that case; agent keys must use /v1/proxy
-	// (#266 review round 5). Session completion is accounting, not LLM
-	// execution, so it stays agent-key in both configurations.
+	// (#266 review round 5). The requirement is STRICT: with no admin key
+	// configured these routes deny rather than falling into the dev-open rule,
+	// otherwise a gateway deployment without TALON_ADMIN_KEY would expose
+	// ungoverned execution to unauthenticated clients (#266 review round 6).
+	// Session completion is accounting, not LLM execution, so it stays
+	// agent-key in both configurations.
 	execAuth := TenantKeyMiddleware(s.agentKeys, s.adminKey)
 	if s.gateway != nil {
-		execAuth = AdminKeyMiddleware(s.adminKey)
+		execAuth = RequireAdminKeyMiddleware(s.adminKey)
 	}
 	r.Group(func(r chi.Router) {
 		r.Use(execAuth)

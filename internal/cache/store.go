@@ -13,10 +13,10 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/rs/zerolog/log"
 
 	"github.com/dativo-io/talon/internal/cryptoutil"
 	"github.com/google/uuid"
@@ -117,6 +117,16 @@ func (s *signer) sign(data []byte) (string, error) {
 	return "hmac-sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// cacheSchemaVersion is stamped into PRAGMA user_version. Version 2 is the
+// #266 scoped schema: uniqueness is (tenant_id, scope_key, cache_key), so the
+// same tenant/model/prompt coexists across agents, providers, policy digests,
+// and tiers — one scope can never monopolize a cache key another scope needs
+// (#266 review round 6). A DB below this version is REBUILT (SQLite cannot
+// drop a table-level UNIQUE via ALTER TABLE); pre-scope entries are discarded
+// rather than copied because their empty scope_key can never match a scoped
+// lookup — a deliberate cold cache, not data loss.
+const cacheSchemaVersion = 2
+
 const schema = `
 CREATE TABLE IF NOT EXISTS semantic_cache (
     id              TEXT PRIMARY KEY,
@@ -137,7 +147,7 @@ CREATE TABLE IF NOT EXISTS semantic_cache (
     expires_at      DATETIME NOT NULL,
     last_accessed   DATETIME,
     hmac_signature  TEXT NOT NULL,
-    UNIQUE(tenant_id, cache_key)
+    UNIQUE(tenant_id, scope_key, cache_key)
 );
 CREATE INDEX IF NOT EXISTS idx_semantic_cache_tenant ON semantic_cache(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_semantic_cache_expires ON semantic_cache(expires_at);
@@ -145,32 +155,16 @@ CREATE INDEX IF NOT EXISTS idx_semantic_cache_user ON semantic_cache(tenant_id, 
 CREATE INDEX IF NOT EXISTS idx_semantic_cache_scope ON semantic_cache(tenant_id, scope_key, expires_at);
 `
 
-// migrations add the #266-review columns to a cache DB created before them.
-// Each is idempotent — a "duplicate column" error means it is already applied.
-var migrations = []string{
-	`ALTER TABLE semantic_cache ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE semantic_cache ADD COLUMN provider TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE semantic_cache ADD COLUMN scope_key TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE semantic_cache ADD COLUMN source_correlation_id TEXT NOT NULL DEFAULT ''`,
-}
-
-// NewStore opens or creates the cache SQLite DB and applies the schema.
+// NewStore opens or creates the cache SQLite DB and applies the schema,
+// rebuilding the table when it predates cacheSchemaVersion.
 func NewStore(dbPath string, signingKey string) (*Store, error) {
 	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("opening cache database: %w", err)
 	}
-	if _, err := db.ExecContext(context.Background(), schema); err != nil {
+	if err := migrateCacheSchema(db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("creating cache schema: %w", err)
-	}
-	// Apply additive column migrations for DBs created before the #266 scope
-	// columns existed. "duplicate column name" means already applied — skip it.
-	for _, stmt := range migrations {
-		if _, err := db.ExecContext(context.Background(), stmt); err != nil && !isDuplicateColumnErr(err) {
-			_ = db.Close()
-			return nil, fmt.Errorf("cache migration %q: %w", stmt, err)
-		}
+		return nil, err
 	}
 	signer, err := newSigner(signingKey)
 	if err != nil {
@@ -180,15 +174,44 @@ func NewStore(dbPath string, signingKey string) (*Store, error) {
 	return &Store{db: db, signer: signer}, nil
 }
 
+// migrateCacheSchema brings the semantic_cache table to cacheSchemaVersion.
+// Below-version DBs (including v1's UNIQUE(tenant_id, cache_key), which SQLite
+// cannot alter away) are rebuilt by drop-and-recreate — see cacheSchemaVersion
+// for why discarding pre-scope entries is correct for a cache.
+func migrateCacheSchema(db *sql.DB) error {
+	ctx := context.Background()
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("reading cache schema version: %w", err)
+	}
+	if version < cacheSchemaVersion {
+		var hadTable int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'semantic_cache'`).Scan(&hadTable); err != nil {
+			return fmt.Errorf("inspecting cache schema: %w", err)
+		}
+		if hadTable > 0 {
+			log.Info().Int("from_version", version).Int("to_version", cacheSchemaVersion).
+				Msg("semantic cache schema upgraded — existing cache entries discarded (pre-scope entries are unreachable by scoped lookup; cache will warm back up)")
+			if _, err := db.ExecContext(ctx, `DROP TABLE semantic_cache`); err != nil {
+				return fmt.Errorf("rebuilding cache schema: %w", err)
+			}
+		}
+	}
+	if _, err := db.ExecContext(ctx, schema); err != nil {
+		return fmt.Errorf("creating cache schema: %w", err)
+	}
+	if version < cacheSchemaVersion {
+		if _, err := db.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, cacheSchemaVersion)); err != nil {
+			return fmt.Errorf("stamping cache schema version: %w", err)
+		}
+	}
+	return nil
+}
+
 // Close closes the database connection.
 func (s *Store) Close() error {
 	return s.db.Close()
-}
-
-// isDuplicateColumnErr reports whether err is SQLite's "duplicate column name"
-// from an ADD COLUMN that was already applied on a prior boot.
-func isDuplicateColumnErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }
 
 // dataForSignature returns the canonical bytes used for HMAC. Agent, provider,

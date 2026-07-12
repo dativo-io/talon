@@ -1134,6 +1134,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						}
 						if insertErr := g.cacheStore.Insert(ctx, entry); insertErr == nil {
 							cacheStored = true
+						} else {
+							// Never silent (#266 review round 6): a persistent
+							// insert failure would otherwise read as an
+							// eternally cold cache with no operator signal.
+							log.Warn().Err(insertErr).Str("correlation_id", correlationID).
+								Str("agent", agent.Name).Str("provider", cachedProvider).Str("model", cachedModel).
+								Msg("cache_store_failed")
 						}
 					}
 				}

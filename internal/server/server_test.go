@@ -2303,4 +2303,45 @@ func TestNativeExecutionRoutesRequireAdminWhenGatewayServed(t *testing.T) {
 		// No gateway → agent key passes auth (the nil runner then errors, but not 401).
 		assert.NotEqual(t, http.StatusUnauthorized, post(r, "/v1/agents/run", "k_agent", ""))
 	})
+
+	// #266 review round 6: a gateway deployment WITHOUT TALON_ADMIN_KEY must
+	// fail closed on the native execution routes — the admin dev-open rule
+	// must not turn "operator did not set an admin key" into unauthenticated
+	// ungoverned execution. Full matrix on every native execution route.
+	t.Run("gateway served, NO admin key: everything denied on native exec routes", func(t *testing.T) {
+		gwStub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", nil,
+			WithAgentIdentities(agentIDs), WithGateway(gwStub))
+		r := srv.Routes()
+		for _, path := range []string{"/v1/agents/run", "/v1/chat/completions"} {
+			assert.Equalf(t, http.StatusUnauthorized, post(r, path, "", ""),
+				"%s: unauthenticated must be denied when gateway served without admin key", path)
+			assert.Equalf(t, http.StatusUnauthorized, post(r, path, "k_agent", ""),
+				"%s: agent key must be denied when gateway served without admin key", path)
+			assert.Equalf(t, http.StatusUnauthorized, post(r, path, "", "any-admin-guess"),
+				"%s: a guessed admin key must be denied when none is configured", path)
+		}
+	})
+
+	t.Run("gateway served, admin key configured: no-auth denied", func(t *testing.T) {
+		gwStub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+		srv := NewServer(nil, nil, nil, engine, pol, "", nil, "admin-secret", nil,
+			WithAgentIdentities(agentIDs), WithGateway(gwStub))
+		r := srv.Routes()
+		for _, path := range []string{"/v1/agents/run", "/v1/chat/completions"} {
+			assert.Equalf(t, http.StatusUnauthorized, post(r, path, "", ""),
+				"%s: unauthenticated must be denied when gateway served with admin key", path)
+		}
+	})
+
+	t.Run("native-only, no keys at all: dev-open rule documented", func(t *testing.T) {
+		// Native-only with neither admin key nor agent keys is the existing
+		// dev-open mode (unauthenticated local development). It stays open on
+		// purpose — and flips closed the moment either key kind is configured
+		// (covered by TestTenantKeyMiddleware_AdminKeyDevRule).
+		srv := NewServer(nil, nil, nil, engine, pol, "", nil, "", nil)
+		r := srv.Routes()
+		assert.NotEqual(t, http.StatusUnauthorized, post(r, "/v1/agents/run", "", ""),
+			"native-only dev mode (no keys anywhere) remains open by design")
+	})
 }
