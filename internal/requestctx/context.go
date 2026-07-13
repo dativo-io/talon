@@ -25,6 +25,12 @@ type AgentIdentity struct {
 	AgentID  string
 	TenantID string
 	Team     string
+	// Generation is the runtime-catalog generation the key authenticated
+	// against (#267): execution fails closed when the generation changed
+	// between authentication and run resolution — a key rotated or a policy
+	// replaced in a newer generation can never be exercised by a request
+	// authenticated under the older one.
+	Generation string
 }
 
 // SetAgentIdentity stores the resolved agent identity in the context.

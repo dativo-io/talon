@@ -147,7 +147,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	sovereignty.ApplySovereigntyGate(cfg, preloadedGatewayCfg)
 
 	providers := buildProviders(cfg)
-	pricingTable := loadPricingTable(cfg, policyBaseDir)
+	// Pricing is SHARED process infrastructure (#267 review round 2): the
+	// SAME root-resolution helper the CLI uses — fleet mode resolves from the
+	// project root, never from the default_policy directory, so `talon run`
+	// and `talon serve` can never sign different cost estimates for one fleet.
+	pricingTable := loadPricingTable(cfg, cliPricingBaseDir(cfg, "", safePath))
 	injectPricingInProviders(providers, pricingTable)
 	gatewayEstimator := gatewayCostEstimator(pricingTable)
 	// Reuse the policy already loaded above; re-loading here would parse and
@@ -512,7 +516,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if identityRegistry != nil {
 		log.Info().Int("agents", identityRegistry.Len()).Int("tenants", len(identityRegistry.TenantIDs())).Msg("agent_identity_registry_loaded")
 	}
-	opts = append(opts, server.WithAgentKeyResolver(holderKeyResolver{holder: registrySource}))
+	opts = append(opts, server.WithAgentKeyResolver(holderKeyResolver{holder: runtimeHolder}))
 	if serveGateway {
 		gatewayCfg := preloadedGatewayCfg
 		if err := sovereignty.ValidateAirGap(cfg, gatewayCfg); err != nil {

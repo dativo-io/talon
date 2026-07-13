@@ -51,15 +51,17 @@ func AgentIdentityFromContext(ctx context.Context) (requestctx.AgentIdentity, bo
 // literally named "default" matches either way. Admin and dev-mode requests
 // keep the client-asserted values, defaulting to "default", so operator
 // tooling can still attribute a run to any agent.
-func resolveRunAttribution(ctx context.Context, requestedTenant, requestedAgent string) (tenant, agent string, err error) {
+func resolveRunAttribution(ctx context.Context, requestedTenant, requestedAgent string) (tenant, agent, generation string, err error) {
 	if id, ok := requestctx.AgentIdentityFrom(ctx); ok {
 		if requestedAgent != "" && requestedAgent != "default" && requestedAgent != id.AgentID {
-			return "", "", fmt.Errorf("agent %q does not match the authenticated agent key (bound to %q) — an agent key may only act as its own agent", requestedAgent, id.AgentID)
+			return "", "", "", fmt.Errorf("agent %q does not match the authenticated agent key (bound to %q) — an agent key may only act as its own agent", requestedAgent, id.AgentID)
 		}
 		if requestedTenant != "" && requestedTenant != id.TenantID {
-			return "", "", fmt.Errorf("tenant %q does not match the authenticated agent's tenant %q", requestedTenant, id.TenantID)
+			return "", "", "", fmt.Errorf("tenant %q does not match the authenticated agent's tenant %q", requestedTenant, id.TenantID)
 		}
-		return id.TenantID, id.AgentID, nil
+		// The generation the key authenticated against travels into the run
+		// (#267): execution fails closed if the fleet changed in between.
+		return id.TenantID, id.AgentID, id.Generation, nil
 	}
 	tenant = requestctx.TenantID(ctx)
 	if tenant == "" {
@@ -72,7 +74,7 @@ func resolveRunAttribution(ctx context.Context, requestedTenant, requestedAgent 
 	if agent == "" {
 		agent = "default"
 	}
-	return tenant, agent, nil
+	return tenant, agent, "", nil
 }
 
 func firstNonEmpty(vals ...string) string {

@@ -350,6 +350,15 @@ func (r *Runner) resolveRunBundle(ctx context.Context, req *RunRequest, correlat
 }
 
 func (r *Runner) resolveCatalogBundle(ctx context.Context, snap *agentcatalog.RuntimeSnapshot, req *RunRequest, correlationID string, startTime time.Time) (*runBundle, error) {
+	// One request, ONE generation (#267): a request authenticated under an
+	// earlier generation must not execute under a later one — the later
+	// generation may have rotated the key or replaced the policy that
+	// authorized this request. Fail closed; the client re-authenticates.
+	if req.ExpectedGeneration != "" && snap.Generation != req.ExpectedGeneration {
+		err := fmt.Errorf("runtime generation changed between authentication and execution (authenticated %s, current %s) — re-authenticate", shortGen(req.ExpectedGeneration), shortGen(snap.Generation))
+		r.recordEarlyTermination(ctx, correlationID, req, "generation_changed: "+err.Error(), startTime)
+		return nil, err
+	}
 	name := req.AgentName
 	if name == "" || name == "default" {
 		switch snap.Len() {
@@ -396,6 +405,14 @@ func (r *Runner) resolveCatalogBundle(ctx context.Context, snap *agentcatalog.Ru
 		pol: ra.Policy, engine: ra.Engine, classifier: ra.Classifier, router: ra.Router,
 		baseDir: filepath.Dir(ra.Path),
 	}, nil
+}
+
+// shortGen abbreviates a generation digest for error messages.
+func shortGen(g string) string {
+	if len(g) > 12 {
+		return g[:12]
+	}
+	return g
 }
 
 func catalogAgentNames(snap *agentcatalog.RuntimeSnapshot) string {
@@ -575,6 +592,11 @@ type RunRequest struct {
 	SkipMemory       bool             // if true, do not write memory observation for this run (e.g. --no-memory)
 	SovereigntyMode  string           // optional: eu_strict | eu_preferred | global; when set, router uses OPA routing and records RouteDecision for evidence
 	BypassPlanReview bool             // internal: when true, skip plan-review gate (used by approved-plan dispatcher)
+	// ExpectedGeneration, when set, is the runtime-catalog generation the
+	// request AUTHENTICATED against (#267): run resolution fails closed if a
+	// different generation is current — one request captures one generation
+	// from authentication through evidence, never two.
+	ExpectedGeneration string
 }
 
 // ToolInvocation represents a single tool call (e.g. from MCP or a future agent loop).

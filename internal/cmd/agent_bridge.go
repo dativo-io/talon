@@ -106,27 +106,37 @@ func shortGeneration(digest string) string {
 	return digest
 }
 
-// holderKeyResolver adapts the shared registry holder into the server's
-// AgentKeyResolver (#289): every auth check resolves against the CURRENT
-// registry snapshot, so a reload swap (#269) propagates to the tenant-API
+// holderKeyResolver adapts the ONE runtime holder into the server's
+// AgentKeyResolver (#289/#267): every auth check resolves against the
+// CURRENT generation, so a reload swap (#269) propagates to the tenant-API
 // surface without middleware rebuilds. Resolution reuses the registry's own
 // constant-time key matching.
 //
 // Current() is read EXACTLY ONCE per authentication (#291 review, P1): the
-// key-count fact (dev-open signal) and the resolution must come from the
-// same snapshot — two separate reads could straddle an empty → non-empty
-// swap and let the dev-open branch pass an unauthenticated request against
-// a registry that already has keys.
+// key-count fact (dev-open signal), the resolution, AND the generation token
+// must come from the same snapshot — two separate reads could straddle a
+// swap. The generation travels into the request identity so execution can
+// fail closed when the fleet changed between authentication and run
+// resolution (#267 review round 2).
 type holderKeyResolver struct {
-	holder gateway.RegistrySource
+	holder *agentcatalog.RuntimeHolder
 }
 
 func (r holderKeyResolver) AuthenticateAgentKey(key string) server.AgentKeyAuth {
-	reg := r.holder.Current() // the ONE snapshot this decision is made on
+	snap := r.holder.Current() // the ONE generation this decision is made on
+	var reg *gateway.IdentityRegistry
+	var generation string
+	if snap != nil {
+		reg = snap.Registry
+		generation = snap.Generation
+	}
 	auth := server.AgentKeyAuth{KeysConfigured: reg.Len() > 0}
 	if id, ok := reg.ResolveKey(key); ok {
 		auth.Found = true
-		auth.Identity = requestctx.AgentIdentity{AgentID: id.Name, TenantID: id.TenantID, Team: id.Team}
+		auth.Identity = requestctx.AgentIdentity{
+			AgentID: id.Name, TenantID: id.TenantID, Team: id.Team,
+			Generation: generation,
+		}
 	}
 	return auth
 }

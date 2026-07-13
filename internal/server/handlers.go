@@ -193,7 +193,7 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 	// request authenticated with an agent key, the agent name and tenant come
 	// from the resolved identity, and a differing body/header value is
 	// rejected. Admin and dev-mode requests keep the client-asserted name.
-	tenantID, agentName, authErr := resolveRunAttribution(r.Context(), req.TenantID, firstNonEmpty(req.AgentName, req.AgentID))
+	tenantID, agentName, authGeneration, authErr := resolveRunAttribution(r.Context(), req.TenantID, firstNonEmpty(req.AgentName, req.AgentID))
 	if authErr != nil {
 		writeError(w, http.StatusForbidden, "identity_mismatch", authErr.Error())
 		return
@@ -218,9 +218,11 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		SessionSource:  sessionSource, // client_asserted only when an id was actually supplied; empty → internal (auto-create)
 		InvocationType: "api",
 		// No PolicyPath: the runner resolves the authenticated agent's
-		// compiled bundle from the current catalog generation (#267).
-		SovereigntyMode: s.sovereigntyMode,
-		DryRun:          req.DryRun,
+		// compiled bundle — and fails closed if the generation the key
+		// authenticated against is no longer current (#267).
+		ExpectedGeneration: authGeneration,
+		SovereigntyMode:    s.sovereigntyMode,
+		DryRun:             req.DryRun,
 	}
 	if verified, err := s.verifyAgentRequestSignature(r.Context(), r, tenantID, agentName, req.Prompt); err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid_signature", err.Error())
@@ -287,7 +289,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	// Attribution binds to the authenticated identity, not a client-asserted
 	// name (#266 review round 4): an agent key may only act as its own agent.
-	tenantID, agentName, authErr := resolveRunAttribution(r.Context(),
+	tenantID, agentName, authGeneration, authErr := resolveRunAttribution(r.Context(),
 		firstNonEmpty(req.TenantID, r.Header.Get("X-Talon-Tenant")),
 		firstNonEmpty(req.AgentID, r.Header.Get("X-Talon-Agent")))
 	if authErr != nil {
@@ -327,8 +329,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		SessionSource:  clientAssertedSourceFor(assertedSession), // client_asserted only when an id was supplied; empty → internal (auto-create)
 		InvocationType: "http",
 		// No PolicyPath: the runner resolves the authenticated agent's
-		// compiled bundle from the current catalog generation (#267).
-		SovereigntyMode: s.sovereigntyMode,
+		// compiled bundle — and fails closed if the generation the key
+		// authenticated against is no longer current (#267).
+		ExpectedGeneration: authGeneration,
+		SovereigntyMode:    s.sovereigntyMode,
 	}
 	if verified, err := s.verifyAgentRequestSignature(r.Context(), r, tenantID, agentName, prompt); err != nil {
 		writeOpenAIError(w, http.StatusUnauthorized, "invalid_signature", "invalid_request_error", err.Error())

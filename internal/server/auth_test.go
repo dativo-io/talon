@@ -21,42 +21,42 @@ func TestResolveRunAttribution(t *testing.T) {
 		requestctx.AgentIdentity{AgentID: "support-bot", TenantID: "acme"})
 
 	t.Run("agent key: identity is authoritative", func(t *testing.T) {
-		ten, ag, err := resolveRunAttribution(agentCtx, "", "")
+		ten, ag, _, err := resolveRunAttribution(agentCtx, "", "")
 		require.NoError(t, err)
 		assert.Equal(t, "acme", ten)
 		assert.Equal(t, "support-bot", ag)
 	})
 	t.Run("agent key: matching assertions accepted", func(t *testing.T) {
-		ten, ag, err := resolveRunAttribution(agentCtx, "acme", "support-bot")
+		ten, ag, _, err := resolveRunAttribution(agentCtx, "acme", "support-bot")
 		require.NoError(t, err)
 		assert.Equal(t, "acme", ten)
 		assert.Equal(t, "support-bot", ag)
 	})
 	t.Run("agent key: spoofed agent rejected", func(t *testing.T) {
-		_, _, err := resolveRunAttribution(agentCtx, "", "finance-bot")
+		_, _, _, err := resolveRunAttribution(agentCtx, "", "finance-bot")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "may only act as its own agent")
 	})
 	t.Run("agent key: 'default' is the unset sentinel, not a spoof (#290)", func(t *testing.T) {
 		// The conventional placeholder resolves to the authenticated agent —
 		// the same rule the runner and `talon run --agent default` apply.
-		ten, ag, err := resolveRunAttribution(agentCtx, "", "default")
+		ten, ag, _, err := resolveRunAttribution(agentCtx, "", "default")
 		require.NoError(t, err)
 		assert.Equal(t, "acme", ten)
 		assert.Equal(t, "support-bot", ag)
 	})
 	t.Run("agent key: spoofed tenant rejected", func(t *testing.T) {
-		_, _, err := resolveRunAttribution(agentCtx, "globex", "")
+		_, _, _, err := resolveRunAttribution(agentCtx, "globex", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "does not match the authenticated agent's tenant")
 	})
 	t.Run("admin/dev: client-asserted, defaults apply", func(t *testing.T) {
-		ten, ag, err := resolveRunAttribution(context.Background(), "", "")
+		ten, ag, _, err := resolveRunAttribution(context.Background(), "", "")
 		require.NoError(t, err)
 		assert.Equal(t, "default", ten)
 		assert.Equal(t, "default", ag)
 
-		ten, ag, err = resolveRunAttribution(context.Background(), "globex", "any-agent")
+		ten, ag, _, err = resolveRunAttribution(context.Background(), "globex", "any-agent")
 		require.NoError(t, err)
 		assert.Equal(t, "globex", ten)
 		assert.Equal(t, "any-agent", ag)
