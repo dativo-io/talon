@@ -154,6 +154,10 @@
       "type": "string",
       "description": "Directory scanned recursively for agent.talon.yaml files — one file per AI use case (#267). When set it is authoritative for fleet membership (default_policy no longer defines an agent). Empty/absent keeps single-file mode."
     },
+    "agents_reload_interval": {
+      "type": "string",
+      "description": "Cadence of the periodic safe config reload (#269), e.g. \"30s\". Agent files (single-file or agents_dir) are re-scanned on this interval; valid changes activate atomically, invalid edits keep the last-known-good generation serving. \"0\" disables reload. Default: 30s."
+    },
     "max_attachment_mb": {
       "type": "integer",
       "minimum": 1,

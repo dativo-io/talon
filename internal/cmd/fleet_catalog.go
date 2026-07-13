@@ -117,6 +117,15 @@ func cliPricingBaseDir(cfg *config.Config, explicitPolicyPath, agentPath string)
 	return filepath.Dir(agentPath)
 }
 
+// normalizedTenant maps the empty tenant declaration to "default" — the same
+// normalization the registry applies.
+func normalizedTenant(t string) string {
+	if t == "" {
+		return "default"
+	}
+	return t
+}
+
 // buildCLICatalog compiles the scanned set into the ONE runtime catalog the
 // CLI runner resolves against (no gateway registry — native execution only).
 func buildCLICatalog(ctx context.Context, cfg *config.Config, scan *agentcatalog.ScanResult, providers map[string]llm.Provider) (*agentcatalog.RuntimeHolder, error) {

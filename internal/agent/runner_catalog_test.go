@@ -111,6 +111,58 @@ func TestRun_CatalogResolvesPerAgentBundle(t *testing.T) {
 	assert.Contains(t, err.Error(), "tenant mismatch")
 }
 
+// TestRun_DisabledAgentRefused (#268): enabled: false denies NEW native work
+// — direct runs AND trigger dispatch — before any lifecycle state, leaving
+// only signed early-termination evidence; the enabled sibling keeps running.
+func TestRun_DisabledAgentRefused(t *testing.T) {
+	ctx := context.Background()
+	agentsDir := t.TempDir()
+	writeCatalogTestAgent(t, agentsDir, "running", "acme", "gpt-4o")
+	// The stopped agent: same shape plus enabled: false.
+	d := filepath.Join(agentsDir, "stopped")
+	require.NoError(t, os.MkdirAll(d, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(d, "agent.talon.yaml"), []byte(`agent:
+  name: stopped
+  version: "1.0.0"
+  tenant_id: acme
+  enabled: false
+policies:
+  cost_limits:
+    per_request: 100.0
+    daily: 1000.0
+    monthly: 10000.0
+  model_routing:
+    tier_0:
+      primary: "gpt-4o"
+`), 0o600))
+
+	openai := &flakyProvider{name: "openai", jurisdiction: "US"}
+	holder := agentcatalog.NewRuntimeHolder(catalogTestSnapshot(t, agentsDir, map[string]llm.Provider{"openai": openai}))
+	r, store := newCatalogTestRunner(t, holder)
+
+	// Direct run refused with the kill-switch reason; no provider call.
+	_, err := r.Run(ctx, &RunRequest{AgentName: "stopped", Prompt: "x", InvocationType: "manual"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent_disabled")
+	assert.Contains(t, err.Error(), "talon agents enable stopped")
+	assert.Equal(t, 0, openai.calls, "a disabled agent never reaches a provider")
+
+	// Trigger dispatch refused the same way.
+	require.Error(t, r.RunFromTrigger(ctx, "stopped", "scheduled work", "scheduled"))
+	assert.Equal(t, 0, openai.calls)
+
+	// The refusals left signed early-termination evidence, attributed.
+	records, err := store.List(ctx, "acme", "stopped", time.Time{}, time.Time{}, 5)
+	require.NoError(t, err)
+	require.Len(t, records, 2)
+	assert.Contains(t, records[0].PolicyDecision.Reasons[0], "agent_disabled")
+
+	// The enabled sibling runs untouched.
+	resp, err := r.Run(ctx, &RunRequest{AgentName: "running", Prompt: "hello", InvocationType: "manual"})
+	require.NoError(t, err)
+	assert.Equal(t, "ok from openai", resp.Response)
+}
+
 // blockingProvider holds Generate until released — the seam for proving a
 // run finishes on the generation it started with (#267).
 type blockingProvider struct {

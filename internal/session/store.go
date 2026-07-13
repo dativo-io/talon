@@ -425,6 +425,26 @@ func (s *Store) PurgeOlderThan(ctx context.Context, cutoff time.Time) (int64, er
 	return n, nil
 }
 
+// DistinctAgents lists every (tenant_id, agent_id) pair present in the
+// session store — the seam the retention sweep uses to find ORPHANED rows
+// whose agent left the catalog (#269): removed agents must still age out.
+func (s *Store) DistinctAgents(ctx context.Context) ([][2]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT tenant_id, agent_id FROM sessions`)
+	if err != nil {
+		return nil, fmt.Errorf("listing session agents: %w", err)
+	}
+	defer rows.Close()
+	var out [][2]string
+	for rows.Next() {
+		var tenant, agent string
+		if err := rows.Scan(&tenant, &agent); err != nil {
+			return nil, fmt.Errorf("scanning session agent: %w", err)
+		}
+		out = append(out, [2]string{tenant, agent})
+	}
+	return out, rows.Err()
+}
+
 // PurgeOlderThanForAgent deletes ONE (tenant, agent)'s sessions idle past the
 // cutoff (#267 review): in a fleet, each agent's own audit.retention_days
 // governs its rows — a store-wide sweep under one policy would either delete

@@ -382,16 +382,6 @@ func (r *Runner) resolveCatalogBundle(ctx context.Context, snap *agentcatalog.Ru
 	}
 	req.AgentName = ra.Name
 
-	// Operational kill switch (#268): enabled: false denies NEW work on every
-	// native surface (runs, run API, trigger dispatch) BEFORE any lifecycle
-	// state exists — only signed early-termination evidence records the
-	// refused attempt. In-flight runs finish on the bundle they captured.
-	if !ra.Enabled {
-		err := fmt.Errorf("agent_disabled: agent %q is disabled by its Talon agent config (enabled: false) — new work is denied; re-enable it with `talon agents enable %s`", ra.Name, ra.Name)
-		r.recordEarlyTermination(ctx, correlationID, req, "agent_disabled: agent disabled (enabled: false in agent config)", startTime)
-		return nil, err
-	}
-
 	// Tenant attribution mirrors resolveRunTenant (#266): when the agent
 	// file DECLARES agent.tenant_id it is authoritative and a differing
 	// explicit request tenant errors; when the file omits it, the request's
@@ -408,6 +398,17 @@ func (r *Runner) resolveCatalogBundle(ctx context.Context, snap *agentcatalog.Ru
 	default:
 		err := fmt.Errorf("tenant mismatch: agent %q declares agent.tenant_id %q, request says %q — the agent file is authoritative", ra.Name, ra.TenantID, req.TenantID)
 		r.recordEarlyTermination(ctx, correlationID, req, "agent_resolution_failed: "+err.Error(), startTime)
+		return nil, err
+	}
+
+	// Operational kill switch (#268): enabled: false denies NEW work on every
+	// native surface (runs, run API, trigger dispatch) BEFORE any lifecycle
+	// state exists — only signed early-termination evidence records the
+	// refused attempt, attributed to the settled identity and tenant.
+	// In-flight runs finish on the bundle they captured.
+	if !ra.Enabled {
+		err := fmt.Errorf("agent_disabled: agent %q is disabled by its Talon agent config (enabled: false) — new work is denied; re-enable it with `talon agents enable %s`", ra.Name, ra.Name)
+		r.recordEarlyTermination(ctx, correlationID, req, "agent_disabled: agent disabled (enabled: false in agent config)", startTime)
 		return nil, err
 	}
 

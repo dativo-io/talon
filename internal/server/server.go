@@ -10,6 +10,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/agent/graphadapter"
+	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/compliance"
 	"github.com/dativo-io/talon/internal/evidence"
@@ -76,6 +77,10 @@ type Server struct {
 	// computed by the shared ResolveEffectivePolicy over the identity registry
 	// and injected by serve — the dashboard never re-derives caps (#266).
 	agentCapsLookup func(tenantID, agentID string) (daily, monthly float64, ok bool)
+	// fleetHolder + fleetReloadState back GET /v1/agents/fleet (#269): the
+	// active runtime generation and the reloader's accept/reject state.
+	fleetHolder      *agentcatalog.RuntimeHolder
+	fleetReloadState func() agentcatalog.ReloadState
 }
 
 // SetClassifier attaches the process-wide scanner engine. Call after
@@ -453,6 +458,10 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/v1/tool-approvals", s.handleToolApprovalsList)
 		r.Get("/v1/tool-approvals/{id}", s.handleToolApprovalGet)
 		r.Post("/v1/tool-approvals/{id}/decide", s.handleToolApprovalDecide)
+
+		// Fleet runtime state (#269): the running server is the operational
+		// source of truth — generation, membership, reload accept/reject.
+		r.Get("/v1/agents/fleet", s.handleAgentsFleet)
 
 		r.Get("/v1/dashboard/tenants-summary", s.handleTenantsSummary)
 		r.Get("/v1/dashboard/agent-health", s.handleAgentHealth)
