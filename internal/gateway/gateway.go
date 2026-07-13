@@ -137,11 +137,11 @@ type gatewayCacheConfig struct {
 // re-scopes cache keys without gateway reconstruction. Used so the value
 // passed to cache.DeriveEntryKey originates from config (not from the
 // request path), satisfying static analysis.
-func (g *Gateway) canonicalTenantIDForCache(fromAgent string) string {
+func (g *Gateway) canonicalTenantIDForCache(reg *IdentityRegistry, fromAgent string) string {
 	if fromAgent == quickstartTenantID {
 		return quickstartTenantID
 	}
-	if canonical, ok := g.registry.Current().CanonicalTenantID(fromAgent); ok {
+	if canonical, ok := reg.CanonicalTenantID(fromAgent); ok {
 		return canonical
 	}
 	return fromAgent
@@ -304,7 +304,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 2: Identify — a presented key resolves to exactly one agent or the
 	// request is rejected; the quickstart synthetic identity (injected via
 	// context by the in-process facade) is the only exception (#266).
-	agent, err := g.resolveIdentity(r)
+	// ONE registry generation is captured here and used through the whole
+	// request (#267): a reload swap mid-flight never splits this request
+	// across two generations (auth from gen A, cache scope from gen B).
+	requestRegistry := g.registry.Current()
+	agent, err := resolveIdentityFrom(requestRegistry, r)
 	if err != nil {
 		RecordGatewayError(ctx, "auth")
 		RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
@@ -1123,7 +1127,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							cachedProvider = failoverOut.SelectedProvider
 						}
 						// Use canonical tenant ID from config-derived map so cache key is not tainted by request path (CodeQL go/weak-sensitive-data-hashing).
-						scopeTenantID := g.canonicalTenantIDForCache(agent.TenantID)
+						scopeTenantID := g.canonicalTenantIDForCache(requestRegistry, agent.TenantID)
 						keyHash := cache.DeriveEntryKey(scopeTenantID, cachedModel, extracted.Text)
 						tierLabel := cache.TierLabel(tier)
 						storeScopeKey := cache.ScopeKey(agent.Name, cachedModel, cachedProvider, g.policyDigests(agent, cachedProvider).Effective, tierLabel)

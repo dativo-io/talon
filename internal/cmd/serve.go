@@ -103,8 +103,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		gatewayOnly := serveGateway || serveProxyQuickstart
 		// agents_dir mode (#267): fleet membership comes from the directory
 		// scan, so the default single file is optional — the minimal default
-		// only backs the native runtime baseline until PR-2 of Fleet
-		// Operations v1 resolves native runs from the catalog.
+		// only backs the process-wide surfaces that remain single-policy
+		// (MCP/graph interception, #114); native runs resolve the catalog.
 		if (gatewayOnly || cfg.AgentsDir != "") && errors.Is(err, os.ErrNotExist) {
 			pol = &policy.Policy{
 				Agent: policy.AgentConfig{Name: "gateway", Version: "0.0.0"},
@@ -170,12 +170,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	var identityRegistry *gateway.IdentityRegistry
+	var fleetScan *agentcatalog.ScanResult
 	if cfg.AgentsDir != "" && !serveProxyQuickstart {
 		// agents_dir discovery (#267): the directory is authoritative for
 		// fleet membership — every agent.talon.yaml found is one AI use case
 		// with its own key. Scan or registry failures are terminal in every
 		// serve mode (deliberate fleet configuration, no degrade affordance).
-		var fleetScan *agentcatalog.ScanResult
 		identityRegistry, fleetScan, err = buildServeIdentityRegistryFromDir(ctx, cfg.AgentsDir, secretsStore, adminKey)
 		if err != nil {
 			return err
@@ -196,6 +196,34 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// all read the CURRENT registry through it, so the reload seam (#269) is
 	// a single Swap — no consumer keeps its own startup copy.
 	registryHolder := gateway.NewRegistryHolder(identityRegistry)
+
+	// ONE fleet generation (#267): catalog + compiled per-agent bundles +
+	// identity registry, published together. Every native execution surface
+	// (runner, run API, trigger dispatch) resolves agents from this holder.
+	// Dir mode compiles a bundle per discovered agent; single-file mode wraps
+	// the already-built engine/scanner/router (identical objects — no second
+	// Rego compile or scanner probe).
+	var runtimeSnapshot *agentcatalog.RuntimeSnapshot
+	if fleetScan != nil {
+		bundles, bundleErr := agentcatalog.BuildRuntimeAgents(ctx, fleetScan, agentcatalog.BundleDeps{Config: cfg, Providers: providers})
+		if bundleErr != nil {
+			return fmt.Errorf("compiling agent runtime bundles: %w", bundleErr)
+		}
+		runtimeSnapshot = agentcatalog.NewRuntimeSnapshot(fleetScan, bundles, identityRegistry, time.Now().UTC())
+	} else {
+		ca := agentcatalog.CatalogAgent{
+			Name:         pol.Agent.Name,
+			TenantID:     pol.Agent.TenantID,
+			Path:         policyPath,
+			PolicyDigest: pol.Hash,
+			Enabled:      true,
+			Policy:       pol,
+		}
+		singleScan := &agentcatalog.ScanResult{Source: policyPath, Digest: "file:" + pol.Hash, Agents: []agentcatalog.CatalogAgent{ca}}
+		single := &agentcatalog.RuntimeAgent{CatalogAgent: ca, Engine: policyEngine, Classifier: cls, Router: router}
+		runtimeSnapshot = agentcatalog.NewRuntimeSnapshot(singleScan, []*agentcatalog.RuntimeAgent{single}, identityRegistry, time.Now().UTC())
+	}
+	runtimeHolder := agentcatalog.NewRuntimeHolder(runtimeSnapshot)
 
 	evidenceStore, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {
@@ -303,32 +331,32 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 	runnerCfg := agent.RunnerConfig{
-		PolicyDir:         ".",
-		DefaultPolicyPath: policyPath,
-		Classifier:        cls,
-		AttScanner:        attScanner,
-		Extractor:         extractor,
-		Router:            router,
-		Secrets:           secretsStore,
-		Evidence:          evidenceStore,
-		SessionStore:      sessionStore,
-		PromptStore:       promptStore,
-		PlanReview:        planReviewStore,
-		ToolRegistry:      toolRegistry,
-		ActiveRunTracker:  activeRunTracker,
-		RunRegistry:       runRegistry,
-		Overrides:         overrideStore,
-		ToolApprovals:     toolApprovalStore,
-		CircuitBreaker:    circuitBreaker,
-		ToolFailures:      toolFailureTracker,
-		Memory:            memStore,
-		Pricing:           pricingTable,
-		Idempotency:       idempotencyStore,
+		// The catalog is the ONE resolution source (#267): every run resolves
+		// its agent's compiled bundle (policy + engine + scanner + router)
+		// from the current generation — no per-process classifier/router.
+		Catalog:          runtimeHolder,
+		PolicyDir:        ".",
+		AttScanner:       attScanner,
+		Extractor:        extractor,
+		Secrets:          secretsStore,
+		Evidence:         evidenceStore,
+		SessionStore:     sessionStore,
+		PromptStore:      promptStore,
+		PlanReview:       planReviewStore,
+		ToolRegistry:     toolRegistry,
+		ActiveRunTracker: activeRunTracker,
+		RunRegistry:      runRegistry,
+		Overrides:        overrideStore,
+		ToolApprovals:    toolApprovalStore,
+		CircuitBreaker:   circuitBreaker,
+		ToolFailures:     toolFailureTracker,
+		Memory:           memStore,
+		Pricing:          pricingTable,
+		Idempotency:      idempotencyStore,
 	}
 	if serveCacheStore != nil && serveCachePolicy != nil {
 		runnerCfg.CacheStore = serveCacheStore
 		runnerCfg.CacheEmbedder = serveCacheEmbedder
-		runnerCfg.CacheScrubber = serveCacheScrubber
 		runnerCfg.CachePolicy = serveCachePolicy
 		runnerCfg.CacheConfig = &agent.RunnerCacheConfig{
 			Enabled:             cfg.Cache.Enabled,
@@ -354,27 +382,28 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	if memStore != nil && pol.Memory != nil && pol.Memory.Enabled {
-		stopRetention := memory.StartRetentionLoop(ctx, memStore, pol, 24*time.Hour)
-		defer stopRetention()
-	}
-
-	// Session rows follow audit.retention_days (#198, #214): a minimal daily
-	// sweep so asserted-session rows cannot accumulate forever. Not a
-	// lifecycle framework; evidence retention is governed separately.
-	if pol.Audit != nil && pol.Audit.RetentionDays > 0 {
-		retention := time.Duration(pol.Audit.RetentionDays) * 24 * time.Hour
+	// Memory retention is PER AGENT under THAT agent's policy (#267): in a
+	// fleet, agent A's retention_days must never purge agent B's rows. The
+	// loop re-reads the current generation each tick, so a reload's policy
+	// edits govern the next sweep.
+	if memStore != nil {
 		go func() {
 			ticker := time.NewTicker(24 * time.Hour)
 			defer ticker.Stop()
+			sweep := func() {
+				for _, ra := range runtimeHolder.Current().List() {
+					tenant := ra.TenantID
+					if tenant == "" {
+						tenant = "default"
+					}
+					memory.RunRetentionForAgent(ctx, memStore, tenant, ra.Name, ra.Policy)
+				}
+			}
+			sweep()
 			for {
 				select {
 				case <-ticker.C:
-					if n, err := sessionStore.PurgeOlderThan(ctx, time.Now().UTC().Add(-retention)); err != nil {
-						log.Warn().Err(err).Msg("session_retention_sweep_failed")
-					} else if n > 0 {
-						log.Info().Int64("purged", n).Msg("session_retention_sweep")
-					}
+					sweep()
 				case <-ctx.Done():
 					return
 				}
@@ -382,14 +411,54 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
+	// Session rows follow audit.retention_days (#198, #214): a minimal daily
+	// sweep so asserted-session rows cannot accumulate forever. The sweep is
+	// store-wide, so the cutoff is the MAXIMUM retention declared across the
+	// fleet — a global purge must never delete rows an agent's policy still
+	// retains. Re-read per tick (reload-aware).
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				maxDays := 0
+				for _, ra := range runtimeHolder.Current().List() {
+					if ra.Policy.Audit != nil && ra.Policy.Audit.RetentionDays > maxDays {
+						maxDays = ra.Policy.Audit.RetentionDays
+					}
+				}
+				if maxDays <= 0 {
+					continue
+				}
+				cutoff := time.Now().UTC().Add(-time.Duration(maxDays) * 24 * time.Hour)
+				if n, err := sessionStore.PurgeOlderThan(ctx, cutoff); err != nil {
+					log.Warn().Err(err).Msg("session_retention_sweep_failed")
+				} else if n > 0 {
+					log.Info().Int64("purged", n).Int("retention_days", maxDays).Msg("session_retention_sweep")
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Schedules and webhook routes register at startup for EVERY discovered
+	// agent (#267); dispatch re-resolves the agent from the CURRENT
+	// generation, so a reload's policy edits and enabled state govern the
+	// next firing. Trigger DEFINITION changes stay restart-required (#297).
 	scheduler := trigger.NewScheduler(runner)
-	if err := scheduler.RegisterSchedules(pol); err != nil {
-		return fmt.Errorf("registering schedules: %w", err)
+	webhookHandler := trigger.NewWebhookHandler(runner)
+	for _, ra := range runtimeHolder.Current().List() {
+		if err := scheduler.RegisterSchedules(ra.Policy); err != nil {
+			return fmt.Errorf("registering schedules for agent %q: %w", ra.Name, err)
+		}
+		if err := webhookHandler.Register(ra.Policy); err != nil {
+			return fmt.Errorf("registering webhooks for agent %q: %w", ra.Name, err)
+		}
 	}
 	scheduler.Start()
 	defer scheduler.Stop()
-
-	webhookHandler := trigger.NewWebhookHandler(runner, pol)
 
 	evidenceGen := evidence.NewGenerator(evidenceStore)
 

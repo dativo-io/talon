@@ -30,7 +30,7 @@ func TestResolveIdentityByBearerKey(t *testing.T) {
 		testIdentity("coding", "default", "tk-coding-1", nil),
 	))}
 
-	id, err := g.resolveIdentity(resolveReq(t, func(r *http.Request) {
+	id, err := resolveIdentityFrom(g.registry.Current(), resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer tk-support-1")
 	}))
 	require.NoError(t, err)
@@ -38,7 +38,7 @@ func TestResolveIdentityByBearerKey(t *testing.T) {
 	assert.Equal(t, "acme", id.TenantID, "tenant is derived key → agent → tenant_id")
 
 	// Whitespace around the bearer token is tolerated.
-	id, err = g.resolveIdentity(resolveReq(t, func(r *http.Request) {
+	id, err = resolveIdentityFrom(g.registry.Current(), resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer   tk-coding-1  ")
 	}))
 	require.NoError(t, err)
@@ -47,7 +47,7 @@ func TestResolveIdentityByBearerKey(t *testing.T) {
 
 func TestResolveIdentityByXAPIKey(t *testing.T) {
 	g := &Gateway{registry: NewRegistryHolder(testRegistry(testIdentity("customer-support", "acme", "tk-support-1", nil)))}
-	id, err := g.resolveIdentity(resolveReq(t, func(r *http.Request) {
+	id, err := resolveIdentityFrom(g.registry.Current(), resolveReq(t, func(r *http.Request) {
 		r.Header.Set("x-api-key", "tk-support-1")
 	}))
 	require.NoError(t, err)
@@ -56,7 +56,7 @@ func TestResolveIdentityByXAPIKey(t *testing.T) {
 
 func TestResolveIdentityUnknownKeyRejected(t *testing.T) {
 	g := &Gateway{registry: NewRegistryHolder(testRegistry(testIdentity("customer-support", "acme", "tk-support-1", nil)))}
-	_, err := g.resolveIdentity(resolveReq(t, func(r *http.Request) {
+	_, err := resolveIdentityFrom(g.registry.Current(), resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer tk-wrong")
 	}))
 	assert.ErrorIs(t, err, ErrUnknownKey)
@@ -64,11 +64,11 @@ func TestResolveIdentityUnknownKeyRejected(t *testing.T) {
 
 func TestResolveIdentityMissingKeyRejected(t *testing.T) {
 	g := &Gateway{registry: NewRegistryHolder(testRegistry(testIdentity("customer-support", "acme", "tk-support-1", nil)))}
-	_, err := g.resolveIdentity(resolveReq(t, nil))
+	_, err := resolveIdentityFrom(g.registry.Current(), resolveReq(t, nil))
 	assert.ErrorIs(t, err, ErrKeyRequired)
 
 	// A non-bearer Authorization scheme is not a key.
-	_, err = g.resolveIdentity(resolveReq(t, func(r *http.Request) {
+	_, err = resolveIdentityFrom(g.registry.Current(), resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
 	}))
 	assert.ErrorIs(t, err, ErrKeyRequired)
@@ -76,14 +76,14 @@ func TestResolveIdentityMissingKeyRejected(t *testing.T) {
 
 func TestResolveIdentityEmptyRegistryRejectsEverything(t *testing.T) {
 	g := &Gateway{registry: NewRegistryHolder(testRegistry())}
-	_, err := g.resolveIdentity(resolveReq(t, func(r *http.Request) {
+	_, err := resolveIdentityFrom(g.registry.Current(), resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer any-key")
 	}))
 	assert.ErrorIs(t, err, ErrUnknownKey)
 
 	// Nil registry (quickstart-mode gateway) behaves the same for keyed requests.
 	g = &Gateway{}
-	_, err = g.resolveIdentity(resolveReq(t, func(r *http.Request) {
+	_, err = resolveIdentityFrom(g.registry.Current(), resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer any-key")
 	}))
 	assert.ErrorIs(t, err, ErrUnknownKey)
@@ -95,7 +95,7 @@ func TestResolveIdentityQuickstartContext(t *testing.T) {
 	g := &Gateway{}
 	req := resolveReq(t, nil)
 	req = req.WithContext(WithQuickstartIdentity(req.Context(), NewQuickstartIdentity()))
-	id, err := g.resolveIdentity(req)
+	id, err := resolveIdentityFrom(g.registry.Current(), req)
 	require.NoError(t, err)
 	assert.Equal(t, "quickstart", id.TenantID)
 	assert.True(t, id.HasTag("quickstart"))
@@ -104,7 +104,7 @@ func TestResolveIdentityQuickstartContext(t *testing.T) {
 	// synthetic identity (the facade owns the context; headers are irrelevant).
 	req = resolveReq(t, func(r *http.Request) { r.Header.Set("Authorization", "Bearer junk") })
 	req = req.WithContext(WithQuickstartIdentity(req.Context(), NewQuickstartIdentity()))
-	id, err = g.resolveIdentity(req)
+	id, err = resolveIdentityFrom(g.registry.Current(), req)
 	require.NoError(t, err)
 	assert.Equal(t, "quickstart-local", id.Name)
 }

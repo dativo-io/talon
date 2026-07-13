@@ -841,7 +841,7 @@ func renderCostReportAllAgents(w io.Writer, currency, tenantID string, byAgentDa
 func init() {
 	rootCmd.AddCommand(costsCmd)
 	costsCmd.AddCommand(costsExportCmd)
-	costsCmd.Flags().StringVar(&costsAgent, "agent", "", "filter by agent name (budget caps resolve via the running server when reachable; until agents_dir #267 the local fallback knows only the default agent policy)")
+	costsCmd.Flags().StringVar(&costsAgent, "agent", "", "filter by agent name (budget caps resolve via the running server when reachable; the local fallback resolves the default agent policy file only)")
 	costsCmd.Flags().StringVar(&costsServerURL, "url", "http://localhost:8080", "base URL of the running talon server for runtime-resolved budget caps (#288); unreachable = local resolution, empty (\"\") = skip the server entirely")
 	costsCmd.Flags().StringVar(&costsTenant, "tenant", "", "tenant ID (default: default)")
 	costsCmd.Flags().BoolVar(&costsByModel, "by-model", false, "group output by model")

@@ -144,67 +144,64 @@ func TestValidatePolicyFile_InvalidYAML(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestLoadRoutingAndCostLimits_Valid(t *testing.T) {
-	dir := t.TempDir()
-	policyPath := testutil.WriteTestPolicyFile(t, dir, "routing-agent")
+// TestCLIAgentScanAndResolve (#267): the CLI resolves its agent from the
+// scanned fleet source — an explicit policy file yields a one-agent catalog
+// whose name the "default" sentinel resolves to; explicit names must exist.
+func TestCLIAgentScanAndResolve(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, dir)
-	require.NotNil(t, routing)
-	require.NotNil(t, costLimits)
-	assert.NotNil(t, routing.Tier0)
-	assert.Equal(t, "gpt-4", routing.Tier0.Primary)
-	assert.Equal(t, 100.0, costLimits.PerRequest)
-}
+	t.Run("explicit file: default sentinel resolves to the file's agent", func(t *testing.T) {
+		dir := t.TempDir()
+		policyPath := testutil.WriteTestPolicyFile(t, dir, "custom-name")
+		scan, err := cliAgentScan(ctx, &config.Config{DefaultPolicy: "unused"}, policyPath)
+		require.NoError(t, err)
+		ra, err := resolveCatalogAgent(scan, "default")
+		require.NoError(t, err)
+		assert.Equal(t, "custom-name", ra.Name)
+		require.NotNil(t, ra.Policy)
+		require.NotNil(t, ra.Policy.Policies.ModelRouting, "routing config travels in the catalog agent")
+		assert.Equal(t, "gpt-4", ra.Policy.Policies.ModelRouting.Tier0.Primary)
+	})
 
-func TestLoadRoutingAndCostLimits_MissingFile(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Run("explicit other name errors listing discovered agents", func(t *testing.T) {
+		dir := t.TempDir()
+		policyPath := testutil.WriteTestPolicyFile(t, dir, "policy-agent")
+		scan, err := cliAgentScan(ctx, &config.Config{}, policyPath)
+		require.NoError(t, err)
+		_, err = resolveCatalogAgent(scan, "my-agent")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "policy-agent")
+	})
 
-	tmp := t.TempDir()
-	routing, costLimits := loadRoutingAndCostLimits(ctx, filepath.Join(tmp, "nonexistent.talon.yaml"), tmp)
-	assert.Nil(t, routing)
-	assert.Nil(t, costLimits)
-}
+	t.Run("missing file gets the friendly init hint", func(t *testing.T) {
+		tmp := t.TempDir()
+		_, err := cliAgentScan(ctx, &config.Config{}, filepath.Join(tmp, "nonexistent.talon.yaml"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "talon init")
+	})
 
-func TestResolveRunAgentName_Default_UsesPolicyAgentName(t *testing.T) {
-	dir := t.TempDir()
-	policyPath := testutil.WriteTestPolicyFile(t, dir, "custom-name")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Run("agents_dir mode discovers the fleet; ambiguous default errors", func(t *testing.T) {
+		dir := t.TempDir()
+		agentsDir := filepath.Join(dir, "agents")
+		for _, name := range []string{"support", "coding"} {
+			sub := filepath.Join(agentsDir, name)
+			require.NoError(t, os.MkdirAll(sub, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(sub, "agent.talon.yaml"),
+				[]byte("agent:\n  name: "+name+"\n  version: \"1.0.0\"\npolicies:\n  cost_limits:\n    daily: 5\n"), 0o600))
+		}
+		scan, err := cliAgentScan(ctx, &config.Config{AgentsDir: agentsDir}, "")
+		require.NoError(t, err)
+		require.Len(t, scan.Agents, 2)
 
-	got := resolveRunAgentName(ctx, policyPath, dir, "default")
-	assert.Equal(t, "custom-name", got, "when --agent omitted, agent name should come from policy")
-}
+		_, err = resolveCatalogAgent(scan, "default")
+		require.Error(t, err, "two agents cannot resolve the default sentinel")
+		assert.Contains(t, err.Error(), "--agent")
 
-func TestResolveRunAgentName_ExplicitFlag_Unchanged(t *testing.T) {
-	dir := t.TempDir()
-	policyPath := testutil.WriteTestPolicyFile(t, dir, "policy-agent")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	got := resolveRunAgentName(ctx, policyPath, dir, "my-agent")
-	assert.Equal(t, "my-agent", got)
-}
-
-func TestResolveRunAgentName_Default_PolicyMissing_FallbackToDefault(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	tmp := t.TempDir()
-	got := resolveRunAgentName(ctx, filepath.Join(tmp, "nonexistent.talon.yaml"), tmp, "default")
-	assert.Equal(t, "default", got)
-}
-
-func TestResolveRunAgentName_Default_PolicySaysDefault_ReturnsDefault(t *testing.T) {
-	dir := t.TempDir()
-	policyPath := testutil.WriteTestPolicyFile(t, dir, "default")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	got := resolveRunAgentName(ctx, policyPath, dir, "default")
-	assert.Equal(t, "default", got)
+		ra, err := resolveCatalogAgent(scan, "coding")
+		require.NoError(t, err)
+		assert.Equal(t, "coding", ra.Name)
+	})
 }
 
 // TestLoadPricingTable_ResolvesRelativeToBaseDir ensures the pricing file path

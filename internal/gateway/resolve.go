@@ -13,7 +13,11 @@ var (
 	ErrKeyRequired = errors.New("agent key required")
 )
 
-// resolveIdentity authenticates a gateway request (#266):
+// resolveIdentityFrom authenticates a gateway request (#266) against ONE
+// registry generation, captured by the caller at request entry (#267): every
+// identity fact this request uses — authentication, tenant canonicalization,
+// cache scoping — derives from the SAME snapshot, so a reload swap mid-flight
+// can never split a request across two generations.
 //
 //	presented key ──► known agent? ──yes──► *ResolvedIdentity
 //	                        │ no
@@ -24,7 +28,7 @@ var (
 // via request context by the in-process facade. There is no source-IP
 // identification and no anonymous fallback — a request either presents a key
 // bound to an agent or it is rejected.
-func (g *Gateway) resolveIdentity(r *http.Request) (*ResolvedIdentity, error) {
+func resolveIdentityFrom(reg *IdentityRegistry, r *http.Request) (*ResolvedIdentity, error) {
 	if id := QuickstartIdentityFromContext(r.Context()); id != nil {
 		return id, nil
 	}
@@ -32,10 +36,7 @@ func (g *Gateway) resolveIdentity(r *http.Request) (*ResolvedIdentity, error) {
 	if key == "" {
 		return nil, ErrKeyRequired
 	}
-	// Resolve against the CURRENT registry snapshot (#289): a reload swap
-	// takes effect on the next request, with in-flight requests finishing on
-	// the snapshot they started with.
-	if id, ok := g.registry.Current().ResolveKey(key); ok {
+	if id, ok := reg.ResolveKey(key); ok {
 		return id, nil
 	}
 	return nil, ErrUnknownKey

@@ -15,26 +15,44 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 )
 
-// WebhookHandler handles incoming webhook triggers.
-type WebhookHandler struct {
-	runner   AgentRunner
-	webhooks map[string]policy.WebhookTrigger
-	agent    string
+// webhookRoute binds one webhook trigger to the agent whose policy declared
+// it — dispatch always names THAT agent, resolved from the current catalog
+// generation at fire time (#267).
+type webhookRoute struct {
+	trigger policy.WebhookTrigger
+	agent   string
 }
 
-// NewWebhookHandler creates a handler from the policy's webhook configuration.
-func NewWebhookHandler(runner AgentRunner, pol *policy.Policy) *WebhookHandler {
-	wh := &WebhookHandler{
+// WebhookHandler handles incoming webhook triggers for the whole fleet:
+// webhook names are one shared route namespace, registered per agent policy.
+type WebhookHandler struct {
+	runner   AgentRunner
+	webhooks map[string]webhookRoute
+}
+
+// NewWebhookHandler creates an empty handler; register each discovered
+// agent's policy with Register.
+func NewWebhookHandler(runner AgentRunner) *WebhookHandler {
+	return &WebhookHandler{
 		runner:   runner,
-		webhooks: make(map[string]policy.WebhookTrigger),
-		agent:    pol.Agent.Name,
+		webhooks: make(map[string]webhookRoute),
 	}
-	if pol.Triggers != nil {
-		for _, w := range pol.Triggers.Webhooks {
-			wh.webhooks[w.Name] = w
+}
+
+// Register adds one agent policy's webhook triggers. Webhook names are
+// unique across the fleet — two agents claiming the same name fail closed
+// (the route would silently dispatch to whichever registered last).
+func (wh *WebhookHandler) Register(pol *policy.Policy) error {
+	if pol.Triggers == nil {
+		return nil
+	}
+	for _, w := range pol.Triggers.Webhooks {
+		if prev, dup := wh.webhooks[w.Name]; dup {
+			return fmt.Errorf("webhook %q declared by both agent %q and agent %q — webhook names are unique per installation", w.Name, prev.agent, pol.Agent.Name)
 		}
+		wh.webhooks[w.Name] = webhookRoute{trigger: w, agent: pol.Agent.Name}
 	}
-	return wh
+	return nil
 }
 
 // webhookResponse is the JSON response for a webhook execution.
@@ -48,12 +66,13 @@ type webhookResponse struct {
 func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
-	trigger, ok := wh.webhooks[name]
+	route, ok := wh.webhooks[name]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(webhookResponse{Status: "error", Error: fmt.Sprintf("trigger %q not found", name)})
 		return
 	}
+	trigger := route.trigger
 
 	var payload interface{}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -76,7 +95,7 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 	// received but no run was started until an operator approves.
 	if trigger.RequireApproval {
 		log.Info().
-			Str("agent_id", wh.agent).
+			Str("agent_id", route.agent).
 			Str("trigger", name).
 			Msg("webhook_received_pending_approval")
 		w.Header().Set("Content-Type", "application/json")
@@ -94,13 +113,13 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 	invocationType := "webhook:" + name
 
 	log.Info().
-		Str("agent_id", wh.agent).
+		Str("agent_id", route.agent).
 		Str("trigger", name).
 		Msg("webhook_trigger_fired")
 
-	if err := wh.runner.RunFromTrigger(ctx, wh.agent, prompt, invocationType); err != nil {
+	if err := wh.runner.RunFromTrigger(ctx, route.agent, prompt, invocationType); err != nil {
 		log.Error().Err(err).
-			Str("agent_id", wh.agent).
+			Str("agent_id", route.agent).
 			Str("trigger", name).
 			Msg("webhook_trigger_failed")
 		w.WriteHeader(http.StatusInternalServerError)

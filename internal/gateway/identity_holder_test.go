@@ -14,23 +14,24 @@ import (
 func TestRegistryHolder_SwapPropagatesToResolution(t *testing.T) {
 	oldReg := testRegistry(testIdentity("support", "acme", "tk-old", nil))
 	holder := NewRegistryHolder(oldReg)
-	g := &Gateway{registry: holder}
 
-	id, err := g.resolveIdentity(resolveReq(t, func(r *http.Request) {
+	id, err := resolveIdentityFrom(holder.Current(), resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer tk-old")
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, "support", id.Name)
 
-	// Reload: a NEW registry replaces the old one atomically.
+	// Reload: a NEW registry replaces the old one atomically. Each request
+	// captures the generation once at entry (#267) — the next capture sees
+	// the swap.
 	holder.Swap(testRegistry(testIdentity("support", "acme", "tk-new", nil)))
 
-	_, err = g.resolveIdentity(resolveReq(t, func(r *http.Request) {
+	_, err = resolveIdentityFrom(holder.Current(), resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer tk-old")
 	}))
 	assert.ErrorIs(t, err, ErrUnknownKey, "rotated-out key must stop resolving after the swap")
 
-	id, err = g.resolveIdentity(resolveReq(t, func(r *http.Request) {
+	id, err = resolveIdentityFrom(holder.Current(), resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer tk-new")
 	}))
 	require.NoError(t, err)
@@ -48,6 +49,11 @@ func TestRegistryHolder_NilSafety(t *testing.T) {
 	assert.Equal(t, 0, empty.Current().Len())
 	_, ok := empty.Current().ResolveKey("tk-anything")
 	assert.False(t, ok, "nil registry resolves nothing (fail closed)")
+
+	_, err := resolveIdentityFrom(nil, resolveReq(t, func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer tk-anything")
+	}))
+	assert.ErrorIs(t, err, ErrUnknownKey, "a nil generation resolves nothing (fail closed)")
 }
 
 // TestRegistryHolder_CacheTenantScopeFollowsSwap (#289): cache-key tenant
@@ -56,12 +62,12 @@ func TestRegistryHolder_CacheTenantScopeFollowsSwap(t *testing.T) {
 	holder := NewRegistryHolder(testRegistry(testIdentity("a", "acme", "k1", nil)))
 	g := &Gateway{registry: holder}
 
-	canonical := g.canonicalTenantIDForCache("acme")
+	canonical := g.canonicalTenantIDForCache(holder.Current(), "acme")
 	assert.Equal(t, "acme", canonical)
-	assert.Equal(t, quickstartTenantID, g.canonicalTenantIDForCache(quickstartTenantID))
+	assert.Equal(t, quickstartTenantID, g.canonicalTenantIDForCache(holder.Current(), quickstartTenantID))
 
 	holder.Swap(testRegistry(testIdentity("b", "globex", "k2", nil)))
-	assert.Equal(t, "globex", g.canonicalTenantIDForCache("globex"), "new tenant known after swap")
+	assert.Equal(t, "globex", g.canonicalTenantIDForCache(holder.Current(), "globex"), "new tenant known after swap")
 
 	// MetricsTenantScope through the same holder (what serve's live scope
 	// function reads) follows too.
