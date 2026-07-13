@@ -48,6 +48,12 @@ type AgentConfig struct {
 	// derivation, authoritative for gateway traffic AND native runs (#266).
 	// Empty means "default".
 	TenantID string `yaml:"tenant_id,omitempty" json:"tenant_id,omitempty"`
+	// Enabled is the operational on/off switch (#268): false denies NEW work
+	// for this agent (gateway requests, native runs, scheduled triggers) with
+	// an explicit reason; in-flight work finishes. Pointer so absence is
+	// distinguishable (nil = true, mirroring AcceptClientMetadata) and the
+	// canonical digest only changes when an operator actually sets it.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	// Key binds this agent's one active Talon traffic key. Required for every
 	// agent loaded into the gateway identity registry (a missing binding fails
 	// startup); optional for native-only, non-traffic-bound runs.
@@ -57,6 +63,11 @@ type AgentConfig struct {
 	// recorded in evidence for this agent's gateway traffic. nil = true
 	// (default). Recording only — never a policy input in v1 (#194).
 	AcceptClientMetadata *bool `yaml:"accept_client_metadata,omitempty" json:"accept_client_metadata,omitempty"`
+}
+
+// IsEnabled reports the agent's operational state (#268). nil (unset) = true.
+func (a *AgentConfig) IsEnabled() bool {
+	return a == nil || a.Enabled == nil || *a.Enabled
 }
 
 // AgentKeyBinding references the agent's one active Talon key in the encrypted

@@ -28,6 +28,7 @@ func LoadedAgentFromPolicy(pol *policy.Policy, path string) gateway.LoadedAgent 
 		Name:                 pol.Agent.Name,
 		TenantID:             pol.Agent.TenantID,
 		AcceptClientMetadata: pol.Agent.AcceptClientMetadata,
+		Enabled:              pol.Agent.Enabled,
 		Override:             overrideFromPolicy(pol),
 	}
 	if pol.Agent.Key != nil {

@@ -158,7 +158,7 @@ func loadCatalogAgent(ctx context.Context, path string) (*CatalogAgent, error) {
 		TenantID:     pol.Agent.TenantID,
 		Path:         path,
 		PolicyDigest: pol.Hash,
-		Enabled:      true, // #268 lands agent.enabled; until then every agent is on
+		Enabled:      pol.Agent.IsEnabled(), // agent.enabled (#268); unset = true
 		Policy:       pol,
 	}, nil
 }

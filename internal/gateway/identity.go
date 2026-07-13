@@ -58,6 +58,11 @@ type LoadedAgent struct {
 	// AcceptClientMetadata gates recording of client-asserted orchestration
 	// identity (#194). nil = true.
 	AcceptClientMetadata *bool
+	// Enabled is the operational on/off switch (#268). nil = true. Disabled
+	// agents still pass every registry build check and still RESOLVE — the
+	// deny happens after resolution (attributed 403 + signed evidence), never
+	// as an unattributable unknown-key 401.
+	Enabled *bool
 	// Override is the agent's explicit policy override — exactly one override
 	// layer over the organization baseline.
 	Override *PolicyOverride
@@ -100,7 +105,6 @@ type PolicyOverride struct {
 
 // ResolvedIdentity is the runtime identity of one AI use case, produced by
 // the registry from a presented key (or synthesized for quickstart mode).
-// #268 adds Enabled; the struct is the seam for the fleet issues (#267–#270).
 type ResolvedIdentity struct {
 	Name         string
 	TenantID     string
@@ -108,6 +112,10 @@ type ResolvedIdentity struct {
 	ConfigPath   string
 	PolicyDigest string // agent policy canonical content hash (#266 review r4)
 	Tags         []string
+	// Enabled is the operational on/off switch (#268): false denies NEW work
+	// after resolution — a hard platform boundary in EVERY gateway mode
+	// (shadow/log_only do not bypass an operator kill switch).
+	Enabled bool
 
 	AcceptClientMetadata *bool
 	Override             *PolicyOverride
@@ -151,6 +159,7 @@ func NewQuickstartIdentity() *ResolvedIdentity {
 		Name:     quickstartAgentName,
 		TenantID: quickstartTenantID,
 		Tags:     []string{"quickstart"},
+		Enabled:  true,
 		Override: &PolicyOverride{AllowedProviders: []string{"openai"}},
 	}
 }
@@ -232,6 +241,7 @@ func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *sec
 			ConfigPath:           a.Path,
 			PolicyDigest:         a.PolicyDigest,
 			Tags:                 append([]string(nil), a.Tags...),
+			Enabled:              a.Enabled == nil || *a.Enabled,
 			AcceptClientMetadata: cloneBoolPtr(a.AcceptClientMetadata),
 			Override:             a.Override.clone(),
 			key:                  []byte(keyMaterial),
