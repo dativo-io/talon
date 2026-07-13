@@ -315,6 +315,35 @@ func TestBudgetLimitsFn_FollowsLiveSource(t *testing.T) {
 	assert.Nil(t, snap.BudgetStatus)
 }
 
+// TestScopeFn_OneCallPerSnapshot (#291 review round 2): the combined scope
+// function is consulted EXACTLY once per Snapshot(), so the tenant filter
+// and budget denominators of one snapshot always come from the same source
+// read — a registry reload between aggregate queries cannot mix generations.
+func TestScopeFn_OneCallPerSnapshot(t *testing.T) {
+	q := &mockQuerier{costTotal: 5.0}
+	calls := 0
+	scope := Scope{TenantID: "acme", BudgetDaily: 10, BudgetMonthly: 100}
+	c := newTestCollector("enforce", q, WithScopeFn(func() Scope {
+		calls++
+		return scope
+	}))
+	defer c.Close()
+
+	snap := c.Snapshot(context.Background())
+	assert.Equal(t, 1, calls, "one snapshot = one scope read")
+	require.NotNil(t, snap.BudgetStatus)
+	assert.InDelta(t, 10.0, snap.BudgetStatus.DailyLimit, 0.01)
+
+	// The next snapshot re-reads: a swapped registry moves tenant AND
+	// limits together.
+	scope = Scope{TenantID: "globex", BudgetDaily: 20, BudgetMonthly: 200}
+	snap = c.Snapshot(context.Background())
+	assert.Equal(t, 2, calls)
+	require.NotNil(t, snap.BudgetStatus)
+	assert.InDelta(t, 20.0, snap.BudgetStatus.DailyLimit, 0.01)
+	assert.InDelta(t, 25.0, snap.BudgetStatus.DailyPercent, 0.1)
+}
+
 func TestMetricsQuerierCache(t *testing.T) {
 	q := &mockQuerier{cacheHits: 15, cacheSaved: 0.75}
 	c := newTestCollector("enforce", q)

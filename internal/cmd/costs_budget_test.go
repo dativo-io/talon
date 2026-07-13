@@ -4,12 +4,14 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/secrets"
 )
@@ -135,10 +137,10 @@ func TestFetchServerBudget(t *testing.T) {
 		assert.Nil(t, res.daily)
 	})
 
-	t.Run("unreachable: offline fallback permitted", func(t *testing.T) {
+	t.Run("unreachable: classified unavailable WITH the network error preserved", func(t *testing.T) {
 		_, outcome, err := fetchServerBudget(ctx, "http://127.0.0.1:1", "acme", "support")
-		require.NoError(t, err)
 		assert.Equal(t, serverBudgetUnavailable, outcome)
+		require.Error(t, err, "the connection error must be preserved so an explicit --url can say WHY (#291 r2)")
 	})
 
 	t.Run("reachable but 401: explicit failure, never a silent local answer", func(t *testing.T) {
@@ -166,5 +168,91 @@ func TestFetchServerBudget(t *testing.T) {
 		_, outcome, err := fetchServerBudget(ctx, "", "acme", "support")
 		require.NoError(t, err)
 		assert.Equal(t, serverBudgetUnavailable, outcome)
+	})
+}
+
+// TestResolveBudgetUsage_ServerAuthority (#291 review round 2, P1): the
+// resolution-level contract, not just the fetch classification. An operator
+// who EXPLICITLY named a server gets that runtime's answer or an error —
+// never local files; the implicit localhost probe keeps offline fallback.
+func TestResolveBudgetUsage_ServerAuthority(t *testing.T) {
+	ctx := context.Background()
+
+	// Local resolution fixture: a default policy with cost_limits so the
+	// fallback path is DISTINGUISHABLE (it yields policy_cost_limits
+	// budgets; refusing to fall back yields nil budgets or an error).
+	dir := t.TempDir()
+	policyYAML := `
+agent:
+  name: budget-agent
+  description: test
+  version: "1.0.0"
+  model_tier: 0
+policies:
+  cost_limits:
+    per_request: 1.0
+    daily: 100.0
+    monthly: 500.0
+  model_routing:
+    tier_0: { primary: gpt-4o-mini, location: any }
+    tier_1: { primary: gpt-4o-mini, location: any }
+    tier_2: { primary: gpt-4o-mini, location: any }
+audit: { log_level: detailed, retention_days: 2555 }
+compliance: { frameworks: [gdpr], data_residency: eu }
+metadata: { owner: "", tags: [] }
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.talon.yaml"), []byte(policyYAML), 0o600))
+	prevWd, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(prevWd) })
+	cfg := &config.Config{DefaultPolicy: "agent.talon.yaml"}
+
+	setServer := func(t *testing.T, url string, explicit bool) {
+		t.Helper()
+		prevURL, prevExplicit := costsServerURL, costsServerURLExplicit
+		costsServerURL, costsServerURLExplicit = url, explicit
+		t.Cleanup(func() { costsServerURL, costsServerURLExplicit = prevURL, prevExplicit })
+	}
+
+	t.Run("explicit --url unreachable → error, never local numbers", func(t *testing.T) {
+		setServer(t, "http://127.0.0.1:1", true)
+		_, _, err := resolveBudgetUsage(ctx, cfg, "default", "", 1, 2)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unreachable")
+		assert.Contains(t, err.Error(), "--url was explicitly supplied")
+	})
+
+	t.Run("implicit default unreachable → local fallback", func(t *testing.T) {
+		setServer(t, "http://127.0.0.1:1", false)
+		daily, monthly, err := resolveBudgetUsage(ctx, cfg, "default", "", 1, 2)
+		require.NoError(t, err)
+		require.NotNil(t, daily, "offline default probe must fall back to local resolution")
+		assert.Equal(t, "policy_cost_limits", daily.Source)
+		assert.Equal(t, 100.0, daily.LimitEUR)
+		require.NotNil(t, monthly)
+	})
+
+	t.Run("explicit --url returning 401 → error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer srv.Close()
+		setServer(t, srv.URL, true)
+		_, _, err := resolveBudgetUsage(ctx, cfg, "default", "", 1, 2)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "401")
+	})
+
+	t.Run("authoritative no-cap answer → no local fallback", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"tenant_id":"default","daily_used":1,"monthly_used":2,"budget_source":"unresolved_multi_agent","note":"multiple agents in this tenant"}`))
+		}))
+		defer srv.Close()
+		setServer(t, srv.URL, false) // even the implicit probe must honor an answer
+		daily, monthly, err := resolveBudgetUsage(ctx, cfg, "default", "", 1, 2)
+		require.NoError(t, err)
+		assert.Nil(t, daily, "an authoritative no-cap answer must not be replaced by local policy numbers")
+		assert.Nil(t, monthly)
 	})
 }

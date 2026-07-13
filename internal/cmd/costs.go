@@ -344,6 +344,16 @@ func resolveBudgetUsage(
 		// one that rejected us — but do not brick offline use over a port
 		// squatter the operator never pointed us at.
 		fmt.Fprintf(os.Stderr, "warning: budget query to %s failed (%v); falling back to LOCAL resolution, which may disagree with the running server — set --url and TALON_ADMIN_KEY for the authoritative caps\n", costsServerURL, err)
+	case serverBudgetUnavailable:
+		// An operator who EXPLICITLY named a server asked for THAT runtime's
+		// caps — a wrong hostname, TLS failure, or an outage must surface as
+		// an error, never as local development-policy numbers dressed up as
+		// an answer (#291 review round 2, P1). Only the implicit localhost
+		// probe may fall back (offline use is supported). The preserved
+		// network error distinguishes DNS / refused / timeout / TLS.
+		if costsServerURLExplicit && trimRightSlash(costsServerURL) != "" {
+			return nil, nil, fmt.Errorf("budget server %s is unreachable: %w — refusing local fallback because --url was explicitly supplied (the running server is authoritative for budget caps, #288); fix the URL or drop --url for local resolution", costsServerURL, err)
+		}
 	}
 	// serverBudgetUnavailable: offline — resolve locally.
 	if agentID != "" {
@@ -418,7 +428,10 @@ func fetchServerBudget(ctx context.Context, baseURL, tenantID, agentID string) (
 	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
 	if err != nil {
 		// Connection-level failure: server not running / not reachable.
-		return nil, serverBudgetUnavailable, nil
+		// The error is PRESERVED (not discarded) so an explicit --url can
+		// report WHY — DNS, connection refused, timeout, TLS — instead of a
+		// bare "unreachable" (#291 review round 2).
+		return nil, serverBudgetUnavailable, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
