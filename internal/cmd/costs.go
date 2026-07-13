@@ -335,15 +335,9 @@ func resolveBudgetUsage(
 		}
 		return res.daily, res.monthly, nil
 	case serverBudgetFailed:
-		if costsServerURLExplicit {
-			return nil, nil, fmt.Errorf("budget query to %s failed: %w — the running server is authoritative for budget caps; fix the URL/TALON_ADMIN_KEY or stop the server to use local resolution", costsServerURL, err)
+		if haltErr := budgetProbeFailure(ctx, err); haltErr != nil {
+			return nil, nil, haltErr
 		}
-		// The DEFAULT url is a best-effort probe: something answered on
-		// :8080 but not usefully (auth, or not Talon at all). Warn loudly —
-		// a local denominator may describe a different deployment than the
-		// one that rejected us — but do not brick offline use over a port
-		// squatter the operator never pointed us at.
-		fmt.Fprintf(os.Stderr, "warning: budget query to %s failed (%v); falling back to LOCAL resolution, which may disagree with the running server — set --url and TALON_ADMIN_KEY for the authoritative caps\n", costsServerURL, err)
 	case serverBudgetUnavailable:
 		// An operator who EXPLICITLY named a server asked for THAT runtime's
 		// caps — a wrong hostname, TLS failure, or an outage must surface as
@@ -460,6 +454,50 @@ func fetchServerBudget(ctx context.Context, baseURL, tenantID, agentID string) (
 		res.monthly = toBudgetUsage(body.MonthlyUsed, body.MonthlyLimit, label)
 	}
 	return res, serverBudgetAnswered, nil
+}
+
+// budgetProbeFailure decides what a reachable-but-failing budget query means.
+// A non-nil return halts resolution with that error; nil permits the warned
+// local fallback. An explicit --url is always authoritative. For the DEFAULT
+// probe, identify WHAT answered before deciding (#293): a real Talon server
+// rejecting us (auth, incompatible shape) is authoritative — its refusal must
+// not end in local numbers that may describe a different deployment. Only a
+// non-Talon port squatter permits the fallback, so offline `talon costs`
+// keeps working.
+func budgetProbeFailure(ctx context.Context, err error) error {
+	if costsServerURLExplicit {
+		return fmt.Errorf("budget query to %s failed: %w — the running server is authoritative for budget caps; fix the URL/TALON_ADMIN_KEY or stop the server to use local resolution", costsServerURL, err)
+	}
+	if isTalonServer(ctx, costsServerURL) {
+		return fmt.Errorf("budget query to %s failed: %w — the server identifies itself as Talon (/health marker), so the running server is authoritative for budget caps (#288); set TALON_ADMIN_KEY for the runtime-resolved caps, or pass --url \"\" for local resolution", costsServerURL, err)
+	}
+	fmt.Fprintf(os.Stderr, "warning: budget query to %s failed (%v) and the responder does not identify as Talon; falling back to LOCAL resolution, which may disagree with any running server — set --url and TALON_ADMIN_KEY for the authoritative caps\n", costsServerURL, err)
+	return nil
+}
+
+// isTalonServer reports whether the responder at baseURL identifies itself as
+// a Talon server via the /health product marker (#293). Used ONLY to classify
+// a reachable-but-failing DEFAULT budget probe: Talon rejected us → its
+// refusal is authoritative (hard error); anything else on the port → local
+// fallback is safe. Any probe failure (unreachable, non-200, no marker)
+// counts as "not Talon" so this can never brick offline use.
+func isTalonServer(ctx context.Context, baseURL string) bool {
+	trimmed := trimRightSlash(baseURL)
+	if trimmed == "" {
+		return false
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, trimmed+"/health", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK && resp.Header.Get("X-Talon-Service") == "talon"
 }
 
 // loadAgentEffectiveCaps reports the agent's effective daily/monthly caps via
@@ -804,7 +842,7 @@ func init() {
 	rootCmd.AddCommand(costsCmd)
 	costsCmd.AddCommand(costsExportCmd)
 	costsCmd.Flags().StringVar(&costsAgent, "agent", "", "filter by agent name (budget caps resolve via the running server when reachable; until agents_dir #267 the local fallback knows only the default agent policy)")
-	costsCmd.Flags().StringVar(&costsServerURL, "url", "http://localhost:8080", "base URL of the running talon server for runtime-resolved budget caps (#288); unreachable = local resolution")
+	costsCmd.Flags().StringVar(&costsServerURL, "url", "http://localhost:8080", "base URL of the running talon server for runtime-resolved budget caps (#288); unreachable = local resolution, empty (\"\") = skip the server entirely")
 	costsCmd.Flags().StringVar(&costsTenant, "tenant", "", "tenant ID (default: default)")
 	costsCmd.Flags().BoolVar(&costsByModel, "by-model", false, "group output by model")
 	costsCmd.Flags().BoolVar(&costsByProvider, "by-provider", false, "group output by provider")

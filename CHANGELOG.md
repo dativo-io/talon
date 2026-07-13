@@ -17,6 +17,11 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+### Fixed
+
+- **Plan review store timestamps are UTC-normalized (#292), closing the store's exemption from the #264 invariant.** mattn/go-sqlite3 serializes a `time.Time` keeping its offset and SQLite compares those strings lexicographically, so the plan store's local-time writes (`timeout_at`, `reviewed_at`, `dispatched_at`) and local-time binds (`GetPending`, `GetApprovedUndispatched`) mis-compared across host timezone changes and DST transitions — a pending plan could appear expired (or an expired one dispatchable) by up to the offset delta, and the dashboard review history could mis-order. Every write and query bind now normalizes to UTC (`Save` also normalizes the plan struct in place so `plan_json` agrees with the DATETIME columns). Existing rows keep their stored offset; comparisons against them behave as before on an unchanged host. Who cares: anyone running plan review (`human_oversight`) on a non-UTC host or moving the SQLite file between hosts. Verify: `go test ./internal/agent/ -run TestPlanReviewStore_ -count=1` (new timezone regression tests mirror `internal/evidence/timezone_test.go`).
+- **`talon costs` identifies Talon before trusting the default `:8080` probe (#293).** `/health` now carries a product marker (`X-Talon-Service: talon` header + `"service":"talon"` body), and the implicit localhost budget probe uses it to classify a reachable-but-failing answer: a responder that identifies as Talon and still rejects the query (e.g. 401 without `TALON_ADMIN_KEY`) is now a hard error — a real runtime's refusal can no longer end in local numbers that may describe a different deployment — while a non-Talon port squatter keeps the loudly-warned local fallback, so offline `talon costs` still works. An explicit `--url` was already authoritative and is unchanged; `--url ""` skips the server path entirely for forced local resolution. This completes the #288 authority model end-to-end. Who cares: FinOps/operators reading budget denominators next to a running gateway. Verify: `go test ./internal/cmd/ -run TestResolveBudgetUsage_ServerAuthority ./internal/server/ -run TestHealth`.
+
 ## [1.8.1] - 2026-07-13
 
 ### Security

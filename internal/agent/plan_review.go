@@ -120,6 +120,13 @@ func (s *PlanReviewStore) Save(ctx context.Context, plan *ExecutionPlan) error {
 		))
 	defer span.End()
 
+	// UTC invariant (#292, cf. #264): go-sqlite3 serializes a time.Time with
+	// its original offset and SQLite compares those strings lexicographically.
+	// Normalize in place before marshaling so plan_json and the DATETIME
+	// columns carry the same UTC instant regardless of the caller's zone.
+	plan.CreatedAt = plan.CreatedAt.UTC()
+	plan.TimeoutAt = plan.TimeoutAt.UTC()
+
 	planJSON, err := json.Marshal(plan)
 	if err != nil {
 		return fmt.Errorf("marshaling plan: %w", err)
@@ -137,10 +144,11 @@ func (s *PlanReviewStore) Save(ctx context.Context, plan *ExecutionPlan) error {
 // GetPending returns all plans awaiting review, optionally filtered by tenant
 // and by the agent the plan belongs to (#286: an agent key reads only its own
 // plans; empty agentID is the tenant-wide admin view).
-// Uses a bound time parameter (time.Now()) so the comparison matches go-sqlite3's
-// serialization of timeout_at; datetime('now') would differ in format and break in non-UTC.
+// Uses a bound UTC time parameter so the comparison matches go-sqlite3's
+// serialization of the UTC-normalized timeout_at (#292); datetime('now') would
+// differ in format, and a local-time bind mis-compares lexicographically.
 func (s *PlanReviewStore) GetPending(ctx context.Context, tenantID, agentID string) ([]*ExecutionPlan, error) {
-	now := time.Now()
+	now := time.Now().UTC()
 	query := `SELECT plan_json FROM execution_plans WHERE status = 'pending' AND timeout_at > ?`
 	args := []interface{}{now}
 	if tenantID != "" {
@@ -271,7 +279,7 @@ func (s *PlanReviewStore) Reject(ctx context.Context, planID, tenantID, reviewed
 // Modify marks a plan as approved-with-modifications and stores reviewer annotations, scoped to tenantID.
 func (s *PlanReviewStore) Modify(ctx context.Context, planID, tenantID, reviewedBy string, annotations []Annotation) error {
 	annotJSON, _ := json.Marshal(annotations)
-	now := time.Now()
+	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE execution_plans SET status = ?, reviewed_by = ?, reviewed_at = ?, annotations_json = ?
 		WHERE id = ? AND tenant_id = ? AND status = 'pending'`,
@@ -298,7 +306,7 @@ func (s *PlanReviewStore) Modify(ctx context.Context, planID, tenantID, reviewed
 }
 
 func (s *PlanReviewStore) updateStatus(ctx context.Context, planID, tenantID string, status PlanStatus, reviewedBy, reason string) error {
-	now := time.Now()
+	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE execution_plans SET status = ?, reviewed_by = ?, reviewed_at = ?, review_reason = ?
 		WHERE id = ? AND tenant_id = ? AND status = 'pending'`,
@@ -327,7 +335,7 @@ func (s *PlanReviewStore) updateStatus(ctx context.Context, planID, tenantID str
 // GetApprovedUndispatched returns approved plans that have not been auto-dispatched yet.
 // If tenantID is empty, all tenants are included.
 func (s *PlanReviewStore) GetApprovedUndispatched(ctx context.Context, tenantID string) ([]*ExecutionPlan, error) {
-	now := time.Now()
+	now := time.Now().UTC()
 	query := `SELECT plan_json FROM execution_plans WHERE status = 'approved' AND timeout_at > ? AND dispatched_at IS NULL`
 	args := []interface{}{now}
 	if tenantID != "" {
@@ -358,7 +366,7 @@ func (s *PlanReviewStore) GetApprovedUndispatched(ctx context.Context, tenantID 
 // MarkDispatched marks an approved plan as dispatched so it won't be executed again.
 // dispatchErr is persisted for diagnostics (empty string means success).
 func (s *PlanReviewStore) MarkDispatched(ctx context.Context, planID, tenantID, dispatchErr string) error {
-	now := time.Now()
+	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE execution_plans SET dispatched_at = ?, dispatch_error = ?
 		WHERE id = ? AND tenant_id = ? AND status = 'approved' AND dispatched_at IS NULL`,
