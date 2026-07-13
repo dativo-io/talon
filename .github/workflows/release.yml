@@ -35,5 +35,5 @@ jobs:
             -v $HOME/.docker:/root/.docker \
             -e GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
             -e CGO_ENABLED=1 \
-            ghcr.io/goreleaser/goreleaser-cross:v1.25.7 \
+            ghcr.io/goreleaser/goreleaser-cross:v1.26.4 \
             release --clean
