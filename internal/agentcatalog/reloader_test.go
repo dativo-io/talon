@@ -24,9 +24,10 @@ type flakyEvidence struct {
 	mu      sync.Mutex
 	failFor int
 	stored  int
+	digests map[string]bool
 }
 
-func (f *flakyEvidence) Store(_ context.Context, _ *evidence.Evidence) error {
+func (f *flakyEvidence) Store(_ context.Context, ev *evidence.Evidence) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failFor > 0 {
@@ -34,6 +35,10 @@ func (f *flakyEvidence) Store(_ context.Context, _ *evidence.Evidence) error {
 		return fmt.Errorf("evidence store temporarily unavailable")
 	}
 	f.stored++
+	if f.digests == nil {
+		f.digests = map[string]bool{}
+	}
+	f.digests[ev.PolicyDecision.PolicyVersion] = true
 	return nil
 }
 
@@ -41,6 +46,12 @@ func (f *flakyEvidence) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.stored
+}
+
+func (f *flakyEvidence) distinctDigests() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.digests)
 }
 
 // blockingEvidence blocks the FIRST Store call until released — used to hold
@@ -107,6 +118,21 @@ func (f *reloadFixture) writeAgent(t *testing.T, name, secret string, enabled bo
 	d := filepath.Join(f.agentsDir, name)
 	require.NoError(t, os.MkdirAll(d, 0o755))
 	y := "agent:\n  name: " + name + "\n  version: \"1.0.0\"\n"
+	if !enabled {
+		y += "  enabled: false\n"
+	}
+	if secret != "" {
+		y += "  key:\n    secret_name: " + secret + "\n"
+	}
+	y += "policies:\n  cost_limits:\n    daily: 10\n"
+	require.NoError(t, os.WriteFile(filepath.Join(d, "agent.talon.yaml"), []byte(y), 0o600))
+}
+
+func (f *reloadFixture) writeAgentVersion(t *testing.T, name, secret string, enabled bool, version string) {
+	t.Helper()
+	d := filepath.Join(f.agentsDir, name)
+	require.NoError(t, os.MkdirAll(d, 0o755))
+	y := "agent:\n  name: " + name + "\n  version: \"" + version + "\"\n"
 	if !enabled {
 		y += "  enabled: false\n"
 	}
@@ -397,13 +423,65 @@ func TestReloader_RejectionEvidenceRetriedAfterFailure(t *testing.T) {
 	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
 	assert.Equal(t, 0, sink.count(), "the failed write recorded nothing")
 
-	// Same broken state next tick: RETRY the write (not a silent duplicate).
-	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	// Next tick: the write is RETRIED and now lands — the record is not lost.
+	f.reloader.ReloadOnce(ctx)
 	assert.Equal(t, 1, sink.count(), "the rejection evidence is retried after recovery")
 
-	// Now it is durably recorded — further ticks are true duplicates.
+	// It is durably recorded now — further ticks are true duplicates that
+	// never write again.
 	require.Equal(t, ReloadRejectedDuplicate, f.reloader.ReloadOnce(ctx))
 	assert.Equal(t, 1, sink.count(), "no further writes once recorded")
+}
+
+// TestReloader_DistinctBrokenStatesDuringOutageEachRecorded (#269 review round
+// 4, P1): if a SECOND distinct broken edit replaces the first while the
+// evidence store is down, BOTH broken states must eventually get their own
+// signed record — the earlier one is not dropped when it is replaced.
+func TestReloader_DistinctBrokenStatesDuringOutageEachRecorded(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, true)
+	// Evidence down long enough to cover: tick1 write A, tick2 retry-A + write B.
+	sink := &flakyEvidence{failFor: 3}
+	f.reloader.cfg.Evidence = sink
+	broken := filepath.Join(f.agentsDir, "support", "agent.talon.yaml")
+
+	// Broken state A (write fails, queued).
+	require.NoError(t, os.WriteFile(broken, []byte("agent:\n  version: \"1.0.0\"\npolicies:\n  cost_limits: {}\n"), 0o600))
+	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+
+	// A DIFFERENT broken state B replaces A while evidence is still down.
+	require.NoError(t, os.WriteFile(broken, []byte("agent:\n  version: \"2.0.0\"\npolicies:\n  cost_limits: {}\n"), 0o600))
+	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	assert.Equal(t, 0, sink.count(), "both writes failed during the outage")
+
+	// Evidence recovers: the next tick flushes BOTH A and B — neither lost.
+	f.reloader.ReloadOnce(ctx)
+	assert.Equal(t, 2, sink.count(), "both distinct broken states get their own record after recovery")
+	assert.Equal(t, 2, sink.distinctDigests(), "two DISTINCT rejected generations recorded, not just the latest")
+}
+
+// TestReloader_RejectionEvidenceSurvivesQuickRecovery (#269 review round 5):
+// a broken state whose evidence write failed is still recorded even if the
+// operator reverts the file to last-known-good before the write is retried.
+func TestReloader_RejectionEvidenceSurvivesQuickRecovery(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, true)
+	sink := &flakyEvidence{failFor: 1} // the initial rejection write fails
+	f.reloader.cfg.Evidence = sink
+
+	broken := filepath.Join(f.agentsDir, "support", "agent.talon.yaml")
+	original, err := os.ReadFile(broken)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(broken, []byte("agent:\n  version: \"1.0.0\"\npolicies:\n  cost_limits: {}\n"), 0o600))
+	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	assert.Equal(t, 0, sink.count(), "the rejection write failed")
+
+	// Operator reverts to last-known-good before the retry.
+	require.NoError(t, os.WriteFile(broken, original, 0o600))
+	require.Equal(t, ReloadRecovered, f.reloader.ReloadOnce(ctx))
+	assert.Equal(t, 1, sink.count(), "the pending rejection is flushed on recovery — its record is not lost")
+	assert.False(t, f.reloader.State().Rejected, "the fleet is healthy again")
 }
 
 // TestReloader_ViewNeverReportsRolledBackGeneration (#269 review, P1): while
@@ -440,4 +518,63 @@ func TestReloader_ViewNeverReportsRolledBackGeneration(t *testing.T) {
 	require.NotNil(t, view.Snapshot)
 	assert.Equal(t, genA, view.Snapshot.Generation, "the view never reports the rolled-back generation as active")
 	assert.Equal(t, genA, view.Reload.ActiveGeneration, "snapshot and reload state agree — one coherent read")
+}
+
+// TestReloader_KeyReuseNeverBypassesTenantACLorReEnable (#269 review round 5,
+// P1 security): the narrow prior-key reuse must NOT (a) carry a key across a
+// tenant move without a fresh ACL-checked vault read, nor (b) reactivate a
+// revoked key on re-enable. Only the enabled→disabled emergency transition
+// with an unchanged tenant may reuse.
+func TestReloader_KeyReuseNeverBypassesTenantACLorReEnable(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("tenant move never reuses the prior key, even for a disable", func(t *testing.T) {
+		f := newReloadFixture(t, true) // support boots under tenant acme, enabled
+		// The vault becomes unavailable, then support is MOVED to a new tenant
+		// AND disabled — the enabled→disabled path that WOULD reuse if the
+		// tenant were unchanged.
+		require.NoError(t, f.vault.Close())
+		d := filepath.Join(f.agentsDir, "support")
+		require.NoError(t, os.WriteFile(filepath.Join(d, "agent.talon.yaml"),
+			[]byte("agent:\n  name: support\n  version: \"1.0.0\"\n  tenant_id: globex\n  enabled: false\n  key:\n    secret_name: support-key\npolicies:\n  cost_limits:\n    daily: 10\n"), 0o600))
+
+		// Must REJECT: reuse is gated on an UNCHANGED tenant, so a move to
+		// globex requires a fresh, ACL-checked vault read (impossible here).
+		out := f.reloader.ReloadOnce(ctx)
+		require.Equal(t, ReloadRejected, out, "a tenant move must ACL-recheck via the vault, never reuse the prior tenant's key")
+		id, _ := f.holder.Current().Registry.ResolveKey("tk-support")
+		require.NotNil(t, id)
+		assert.Equal(t, "default", id.TenantID, "last-known-good (original tenant) keeps serving; globex was never published")
+	})
+
+	t.Run("a revoked key cannot be re-enabled", func(t *testing.T) {
+		f := newReloadFixture(t, true)
+		// Disable first (allowed emergency transition), then the vault goes
+		// away (secret revoked / store unavailable).
+		f.writeAgent(t, "support", "support-key", false)
+		require.Equal(t, ReloadActivated, f.reloader.ReloadOnce(ctx))
+		require.NoError(t, f.vault.Close())
+
+		// Attempt to RE-ENABLE with the vault gone.
+		f.writeAgent(t, "support", "support-key", true)
+		out := f.reloader.ReloadOnce(ctx)
+		require.Equal(t, ReloadRejected, out, "re-enabling a revoked key must be rejected — reuse is disable-only")
+		id, _ := f.holder.Current().Registry.ResolveKey("tk-support")
+		require.NotNil(t, id)
+		assert.False(t, id.Enabled, "the agent stays DISABLED (last-known-good); the revoked key is not reactivated")
+	})
+
+	t.Run("in-place rotation is picked up on a file-touch rebuild", func(t *testing.T) {
+		f := newReloadFixture(t, true)
+		// Rotate the secret value in place (same name), then edit the file to
+		// force a rebuild (rotation alone is digest-unchanged / restart-only).
+		require.NoError(t, f.vault.Set(ctx, "support-key", []byte("tk-support-ROTATED"), secrets.ACL{}))
+		f.writeAgentVersion(t, "support", "support-key", true, "1.0.1")
+
+		require.Equal(t, ReloadActivated, f.reloader.ReloadOnce(ctx))
+		_, oldResolves := f.holder.Current().Registry.ResolveKey("tk-support")
+		assert.False(t, oldResolves, "the rotated-OUT key stops resolving")
+		_, newResolves := f.holder.Current().Registry.ResolveKey("tk-support-ROTATED")
+		assert.True(t, newResolves, "the fresh vault value is picked up on the rebuild")
+	})
 }

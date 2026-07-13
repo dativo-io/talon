@@ -78,12 +78,17 @@ func (s *Server) handleAgentsFleet(w http.ResponseWriter, r *http.Request) {
 	}
 	// The reload state was captured atomically with the snapshot above.
 	// active_generation / rejected there always describe the SAME instant as
-	// the snapshot, so a rolled-back generation is never reported active.
-	rl := view.Reload
-	resp.Reload = &rl
-	// A rejected scan's per-path issues surface here too: the ACTIVE
-	// generation is clean by construction, but the operator must see what the
-	// last scan refused.
-	resp.FleetIssues = append(resp.FleetIssues, rl.Issues...)
+	// the snapshot, so a rolled-back generation is never reported active. The
+	// reload object is present ONLY when the periodic reload loop is running
+	// (an active reloader always has a non-empty ActiveGeneration); with
+	// reload disabled the field is omitted rather than reported zero-valued.
+	if view.Reload.ActiveGeneration != "" {
+		rl := view.Reload
+		resp.Reload = &rl
+		// A rejected scan's per-path issues surface here too: the ACTIVE
+		// generation is clean by construction, but the operator must see what
+		// the last scan refused.
+		resp.FleetIssues = append(resp.FleetIssues, rl.Issues...)
+	}
 	writeJSON(w, http.StatusOK, resp)
 }

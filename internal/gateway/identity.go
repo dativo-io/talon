@@ -177,12 +177,20 @@ type IdentityRegistry struct {
 	identities []*ResolvedIdentity
 }
 
-// PriorKeyLookup returns previously-resolved key material for an agent whose
-// (name, secretName) is unchanged since the last generation. Reload uses it
-// so an unchanged binding need not be re-read from the vault — an emergency
-// disable (or any policy edit) must not depend on the vault binding it is
-// changing (#269 review).
-type PriorKeyLookup func(name, secretName string) (key []byte, ok bool)
+// PriorKey is a previously-resolved identity's key material plus the context
+// needed to decide whether reusing it is SAFE (#269 review round 5): reuse
+// must not bypass a vault ACL check on a tenant move, nor reactivate a
+// revoked key on re-enable.
+type PriorKey struct {
+	Key      []byte
+	TenantID string
+	Enabled  bool
+}
+
+// PriorKeyLookup returns the previous generation's resolved key for an agent
+// whose (name, secretName) is unchanged. The caller decides whether reuse is
+// permitted (see resolveAgentKey).
+type PriorKeyLookup func(name, secretName string) (PriorKey, bool)
 
 // BuildOptions tunes registry construction for the reload path.
 type BuildOptions struct {
@@ -251,7 +259,8 @@ func BuildIdentityRegistryWith(ctx context.Context, agents []LoadedAgent, vault 
 			return nil, fmt.Errorf("agent %q (%s): %w", a.Name, a.Path, err)
 		}
 
-		keyMaterial, err := resolveAgentKey(ctx, a, tenantID, vault, opts.PriorKeys)
+		newEnabled := a.Enabled == nil || *a.Enabled
+		keyMaterial, err := resolveAgentKey(ctx, a, tenantID, newEnabled, vault, opts.PriorKeys)
 		if err != nil {
 			return nil, err
 		}
@@ -282,44 +291,61 @@ func BuildIdentityRegistryWith(ctx context.Context, agents []LoadedAgent, vault 
 	return reg, nil
 }
 
-// resolveAgentKey resolves one agent's key material: reused from the previous
-// generation for an unchanged (name, secretName) binding (so a reload does
-// not depend on the vault), otherwise read from the vault. Empty material is
-// an error.
-func resolveAgentKey(ctx context.Context, a *LoadedAgent, tenantID string, vault *secrets.SecretStore, priorKeys PriorKeyLookup) (string, error) {
-	if priorKeys != nil {
+// resolveAgentKey resolves one agent's key material. The CURRENT vault value
+// is ALWAYS preferred, so an in-place rotation (`talon secrets set <same-name>
+// <new>`) is picked up on the next rebuild and every ACL check runs against
+// the CURRENT tenant (#269 review rounds 4–5).
+//
+// The previous generation's key is reused ONLY for the narrow emergency
+// enabled→disabled transition — every other case must revalidate through the
+// vault. Reuse requires ALL of: the vault is unavailable/empty; an unchanged
+// (name, secretName) prior identity exists; its tenant is UNCHANGED (a tenant
+// move must ACL-recheck, never reuse); the prior state was enabled; the new
+// state is disabled. This means a revoked key can be used to serve an
+// attributed 403 while stopping the agent, but can never be re-enabled or
+// carried across a tenant move without a fresh, ACL-checked vault read.
+func resolveAgentKey(ctx context.Context, a *LoadedAgent, tenantID string, newEnabled bool, vault *secrets.SecretStore, priorKeys PriorKeyLookup) (string, error) {
+	var vaultErr error
+	if vault != nil {
+		if secret, err := vault.Get(ctx, a.KeySecretName, tenantID, a.Name); err == nil {
+			if km := strings.TrimSpace(string(secret.Value)); km != "" {
+				return km, nil // fresh, ACL-checked value — rotation & tenant moves land here
+			}
+			vaultErr = fmt.Errorf("key secret %q resolved to an empty value", a.KeySecretName)
+		} else {
+			vaultErr = err
+		}
+	} else {
+		vaultErr = fmt.Errorf("no vault configured")
+	}
+	// Narrow emergency fallback: reuse the prior key ONLY to STOP an agent
+	// (enabled→disabled) whose tenant and binding are unchanged.
+	if !newEnabled && priorKeys != nil {
 		if prior, ok := priorKeys(a.Name, a.KeySecretName); ok {
-			if km := strings.TrimSpace(string(prior)); km != "" {
-				return km, nil
+			if prior.Enabled && prior.TenantID == tenantID && len(prior.Key) > 0 {
+				return string(prior.Key), nil
 			}
 		}
 	}
-	secret, err := vault.Get(ctx, a.KeySecretName, tenantID, a.Name)
-	if err != nil {
-		return "", fmt.Errorf("agent %q (%s): resolving key secret %q: %w", a.Name, a.Path, a.KeySecretName, err)
-	}
-	keyMaterial := strings.TrimSpace(string(secret.Value))
-	if keyMaterial == "" {
-		return "", fmt.Errorf("agent %q (%s): key secret %q resolved to an empty value — set it via `talon secrets set %s <key>`", a.Name, a.Path, a.KeySecretName, a.KeySecretName)
-	}
-	return keyMaterial, nil
+	return "", fmt.Errorf("agent %q (%s): resolving key secret %q: %w — set it via `talon secrets set %s <key>`", a.Name, a.Path, a.KeySecretName, vaultErr, a.KeySecretName)
 }
 
 // PriorKeys returns a lookup over this registry's resolved key material,
-// matched by (agent name, key secret name). A nil registry yields a lookup
-// that never matches. The returned closure hands back the live key bytes;
-// callers must not mutate them.
+// matched by (agent name, key secret name), carrying the tenant and enabled
+// state so the caller can gate reuse. A nil registry yields a lookup that
+// never matches. The returned closure hands back the live key bytes; callers
+// must not mutate them.
 func (r *IdentityRegistry) PriorKeys() PriorKeyLookup {
-	return func(name, secretName string) ([]byte, bool) {
+	return func(name, secretName string) (PriorKey, bool) {
 		if r == nil {
-			return nil, false
+			return PriorKey{}, false
 		}
 		for _, id := range r.identities {
 			if id.Name == name && id.keySecretName == secretName && len(id.key) > 0 {
-				return id.key, true
+				return PriorKey{Key: id.key, TenantID: id.TenantID, Enabled: id.Enabled}, true
 			}
 		}
-		return nil, false
+		return PriorKey{}, false
 	}
 }
 

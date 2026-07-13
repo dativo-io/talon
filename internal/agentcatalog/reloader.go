@@ -96,13 +96,26 @@ type ReloadState struct {
 // valid changes as ONE atomic generation swap. Invalid edits never take a
 // working fleet offline: last-known-good keeps serving and the rejection is
 // loudly visible (log + signed evidence + ReloadState).
+// maxRecordedDigests caps the dedup set of already-recorded rejection
+// digests. Distinct broken states are operator-driven and rare, so this is
+// generous; on overflow the set is cleared (a harmless re-record at worst).
+const maxRecordedDigests = 256
+
 type Reloader struct {
 	cfg ReloadConfig
 
 	mu          sync.Mutex // serializes ReloadOnce: one activation at a time
 	lastGood    string
 	activatedAt time.Time
-	rejection   *rejectionState
+	rejection   *rejectionState // CURRENT observed broken state (for View); nil when healthy
+	// unrecorded holds every DISTINCT broken state observed whose signed
+	// rejection could not yet be persisted (#269 review round 4): each is
+	// retried on every tick until it lands, so a temporary evidence-store
+	// outage never permanently loses a record — even when a second broken
+	// edit replaces the first during the outage window.
+	unrecorded map[string]*rejectionState
+	// recorded is the dedup set of digests whose rejection evidence persisted.
+	recorded map[string]struct{}
 }
 
 type rejectionState struct {
@@ -110,12 +123,6 @@ type rejectionState struct {
 	at     time.Time
 	causes []string
 	issues []FleetIssue
-	// evidenceRecorded distinguishes "this broken state was observed" from
-	// "its signed rejection was persisted" (#269 review): a rejection whose
-	// evidence write failed is RETRIED on the next tick with the same digest,
-	// so a temporary evidence-store outage never permanently loses the one
-	// required record for a distinct broken state.
-	evidenceRecorded bool
 }
 
 // NewReloader seeds the last-known-good generation from the holder's current
@@ -133,7 +140,11 @@ func NewReloader(cfg ReloadConfig) *Reloader {
 			return gateway.BuildIdentityRegistryWith(ctx, scan.LoadedAgents(), vault, adminKey, gateway.BuildOptions{PriorKeys: prior})
 		}
 	}
-	r := &Reloader{cfg: cfg}
+	r := &Reloader{
+		cfg:        cfg,
+		unrecorded: make(map[string]*rejectionState),
+		recorded:   make(map[string]struct{}),
+	}
 	if snap := cfg.Holder.Current(); snap != nil {
 		r.lastGood = snap.Generation
 		r.activatedAt = snap.BuiltAt
@@ -199,6 +210,11 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Retry any previously-observed broken states whose evidence never
+	// persisted — including ones already replaced by a newer edit, so no
+	// distinct broken state loses its record after an evidence outage.
+	r.flushUnrecorded(ctx)
+
 	scan, scanErr := r.cfg.Source.Scan(ctx)
 
 	// Fast path: unchanged bytes. Clears an active rejection when the
@@ -234,8 +250,11 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	// together, THEN the signed activation record is written. If the record
 	// cannot be written, the pointer rolls back — a signed activation must
 	// describe an activation that actually occurred (#267 review). A crash
-	// between swap and record leaves an UNRECORDED activation, which the next
-	// tick self-heals (digest != lastGood bookkeeping → re-activation).
+	// between swap and record leaves an UNRECORDED activation; the next tick
+	// IN THE SAME PROCESS self-heals (digest != lastGood → re-activation).
+	// Across a process RESTART the on-disk generation becomes the boot
+	// generation, seeded directly as lastGood, so no config_reload record is
+	// emitted for it — boot generations are not reload events by design.
 	next := NewRuntimeSnapshot(scan, bundles, registry, time.Now().UTC())
 	old := r.cfg.Holder.Current()
 	r.cfg.Holder.Swap(next)
@@ -254,26 +273,53 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	return ReloadActivated
 }
 
-// reject records ONE signed rejection per distinct broken state and keeps
-// last-known-good serving. A repeat of the SAME broken state is a duplicate
-// ONLY once its evidence has actually been persisted — a prior failed write
-// is retried (#269 review).
+// reject keeps last-known-good serving and ensures ONE signed rejection per
+// DISTINCT broken state. The current broken state is always tracked for the
+// fleet View; a state whose evidence has already persisted is a duplicate,
+// and a state whose write fails is queued (unrecorded) for retry on every
+// later tick — so no distinct broken state loses its record, even one
+// replaced by a newer edit during an evidence outage (#269 review round 4).
 func (r *Reloader) reject(ctx context.Context, scan *ScanResult, causes []string) ReloadOutcome {
-	sameState := r.rejection != nil && r.rejection.digest == scan.Digest
-	if sameState && r.rejection.evidenceRecorded {
-		log.Debug().Str("rejected_digest", shortDigest(scan.Digest)).Msg("agent_config_reload_still_rejected")
+	digest := scan.Digest
+	rej := &rejectionState{digest: digest, at: time.Now().UTC(), causes: causes, issues: append([]FleetIssue(nil), scan.Issues...)}
+	r.rejection = rej // current observed state (for View)
+
+	if _, done := r.recorded[digest]; done {
+		log.Debug().Str("rejected_digest", shortDigest(digest)).Msg("agent_config_reload_still_rejected")
 		return ReloadRejectedDuplicate
 	}
-	if !sameState {
-		log.Warn().Strs("causes", causes).Str("generation", shortDigest(r.lastGood)).Msg("agent_config_reload_rejected_keeping_last_known_good")
-		r.rejection = &rejectionState{digest: scan.Digest, at: time.Now().UTC(), causes: causes, issues: append([]FleetIssue(nil), scan.Issues...)}
-	}
-	if err := r.writeReloadEvidence(ctx, scan.Digest, false, causes); err != nil {
-		log.Error().Err(err).Msg("config_reload_rejection_evidence_failed_will_retry")
+	if _, pending := r.unrecorded[digest]; pending {
+		// Observed before; its retry ran in flushUnrecorded at tick start.
 		return ReloadRejected
 	}
-	r.rejection.evidenceRecorded = true
+	// A newly-observed distinct broken state.
+	log.Warn().Strs("causes", causes).Str("generation", shortDigest(r.lastGood)).Msg("agent_config_reload_rejected_keeping_last_known_good")
+	if err := r.writeReloadEvidence(ctx, digest, false, causes); err != nil {
+		log.Error().Err(err).Msg("config_reload_rejection_evidence_failed_will_retry")
+		r.unrecorded[digest] = rej
+		return ReloadRejected
+	}
+	r.markRecorded(digest)
 	return ReloadRejected
+}
+
+// flushUnrecorded retries the signed rejection write for every distinct
+// broken state still awaiting persistence; successes move to the recorded
+// set. Called at the start of every ReloadOnce.
+func (r *Reloader) flushUnrecorded(ctx context.Context) {
+	for digest, rej := range r.unrecorded {
+		if err := r.writeReloadEvidence(ctx, digest, false, rej.causes); err == nil {
+			delete(r.unrecorded, digest)
+			r.markRecorded(digest)
+		}
+	}
+}
+
+func (r *Reloader) markRecorded(digest string) {
+	if len(r.recorded) >= maxRecordedDigests {
+		r.recorded = make(map[string]struct{})
+	}
+	r.recorded[digest] = struct{}{}
 }
 
 // writeReloadEvidence records one config_reload fact. PolicyVersion names the

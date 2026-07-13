@@ -236,7 +236,7 @@ func TestAtomicReplaceFile_ConcurrencyGuard(t *testing.T) {
 
 	err := atomicReplaceFile(path, []byte("mine\n"), []byte("original\n"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "modified by another process")
+	assert.Contains(t, err.Error(), "modified by another writer")
 	current, _ := os.ReadFile(path)
 	assert.Equal(t, "someone-else\n", string(current), "the concurrent edit is preserved, not clobbered")
 

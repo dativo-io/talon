@@ -86,3 +86,16 @@ func TestHandleAgentsFleet_NoFleet(t *testing.T) {
 	s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
+
+// TestHandleAgentsFleet_ReloadOmittedWhenDisabled: with the reload loop off,
+// the response omits the reload object rather than reporting it zero-valued.
+func TestHandleAgentsFleet_ReloadOmittedWhenDisabled(t *testing.T) {
+	snap := fleetTestSnapshot(t)
+	s := &Server{fleetView: func() agentcatalog.FleetView {
+		return agentcatalog.FleetView{Snapshot: snap} // zero Reload = disabled
+	}}
+	rec := httptest.NewRecorder()
+	s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "\"reload\"", "reload is omitted when the loop is disabled")
+}

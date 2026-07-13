@@ -48,35 +48,35 @@ func init() {
 	agentsCmd.AddCommand(agentsDisableCmd)
 }
 
+// toggleTarget is the validated, locked edit target for one enable/disable.
+type toggleTarget struct {
+	path     string
+	original []byte
+	edited   []byte
+	tenant   string
+	prior    bool
+	unlock   func()
+}
+
 func runAgentToggle(cmd *cobra.Command, name string, enable bool) error {
 	ctx := cmd.Context()
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+	verb := map[bool]string{true: "enabled", false: "disabled"}[enable]
 
-	ra, scanIssues, err := locateToggleAgent(ctx, cfg, name)
+	// Locate the target's config PATH (unambiguous name) from a first scan.
+	located, scanIssues, err := locateToggleAgent(ctx, cfg, name)
 	if err != nil {
 		return err
 	}
 
-	verb := "disabled"
-	if enable {
-		verb = "enabled"
+	tgt, noop, err := prepareToggle(ctx, cmd, located.Path, name, enable)
+	if err != nil || noop {
+		return err
 	}
-	if ra.Policy.Agent.IsEnabled() == enable {
-		fmt.Fprintf(cmd.OutOrStdout(), "agent %q is already %s (no change; config: %s)\n", ra.Name, verb, ra.Path)
-		return nil
-	}
-
-	original, err := os.ReadFile(ra.Path)
-	if err != nil {
-		return fmt.Errorf("reading agent config: %w", err)
-	}
-	edited, err := setAgentEnabledYAML(original, ra.Name, enable)
-	if err != nil {
-		return fmt.Errorf("could not safely rewrite %s: %w — set agent.enabled manually", ra.Path, err)
-	}
+	defer tgt.unlock()
 
 	evStore, err := openEvidenceStore()
 	if err != nil {
@@ -84,53 +84,98 @@ func runAgentToggle(cmd *cobra.Command, name string, enable bool) error {
 	}
 	defer evStore.Close()
 
-	tenant := ra.TenantID
-	if tenant == "" {
-		tenant = "default"
-	}
-	prior := ra.Policy.Agent.IsEnabled()
-
-	// ONE correlation ID ties intent, completion, and any rollback of this
-	// operation together in the audit trail (#268 review).
-	correlationID := "al_" + uuid.New().String()[:12]
-
-	// Intent → atomic rename → completion (#268): the signed trail records
-	// the operator's decision before AND after the state change; a failed
-	// completion record rolls the FILE back so recorded state and actual
-	// state can never silently diverge.
-	if _, err := recordAgentLifecycle(ctx, evStore, correlationID, tenant, ra.Name, ra.Path, intentType(enable), prior, enable); err != nil {
-		return fmt.Errorf("recording intent evidence: %w (no change was made)", err)
-	}
-	// Concurrency guard (#268 review): fail rather than clobber a change
-	// another process made to the file between our read and the rewrite.
-	if err := atomicReplaceFile(ra.Path, edited, original); err != nil {
-		return fmt.Errorf("writing agent config: %w", err)
-	}
-	completionID, err := recordAgentLifecycle(ctx, evStore, correlationID, tenant, ra.Name, ra.Path, completionType(enable), prior, enable)
+	completionID, err := applyToggle(ctx, evStore, tgt, name, verb, enable)
 	if err != nil {
-		// Roll the file back: an unrecorded state change is worse than no
-		// change — the operator retries with a working evidence store. The
-		// rollback attempt is itself recorded under the same correlation ID.
-		if restoreErr := atomicReplaceFile(ra.Path, original, edited); restoreErr != nil {
-			return fmt.Errorf("CRITICAL: completion evidence failed (%v) AND restoring %s failed (%v) — the agent is %s on disk but the change is NOT recorded; fix the evidence store and re-run", err, ra.Path, restoreErr, verb)
-		}
-		_, _ = recordAgentLifecycle(ctx, evStore, correlationID, tenant, ra.Name, ra.Path, "agent_toggle_rolled_back", prior, prior)
-		return fmt.Errorf("completion evidence failed: %w — the config change was rolled back; fix the evidence store and re-run", err)
+		return err
 	}
 
 	out := cmd.OutOrStdout()
-	was := "enabled"
-	if !prior {
-		was = "disabled"
-	}
-	fmt.Fprintf(out, "agent %q %s (was %s)\n", ra.Name, verb, was)
-	fmt.Fprintf(out, "config:   %s\n", ra.Path)
+	was := map[bool]string{true: "enabled", false: "disabled"}[tgt.prior]
+	fmt.Fprintf(out, "agent %q %s (was %s)\n", name, verb, was)
+	fmt.Fprintf(out, "config:   %s\n", tgt.path)
 	fmt.Fprintf(out, "evidence: %s (signed)\n", completionID)
 	fmt.Fprintf(out, "note: a running `talon serve` applies this within its reload interval (agents_reload_interval, default %s), or on restart.\n", config.DefaultAgentsReloadInterval)
 	if len(scanIssues) > 0 {
 		fmt.Fprintf(out, "warning: %d other config file(s) under the fleet source are invalid — the running fleet keeps last-known-good until they are fixed.\n", len(scanIssues))
 	}
 	return nil
+}
+
+// prepareToggle takes the advisory lock, re-reads and strictly validates the
+// EXACT current bytes, derives tenant + prior state from them, and computes
+// the edited bytes. Returns noop=true (and prints) when already in the target
+// state. The caller owns tgt.unlock on success.
+func prepareToggle(ctx context.Context, cmd *cobra.Command, path, name string, enable bool) (toggleTarget, bool, error) {
+	// Hold an advisory lock for the whole operation so a concurrent `talon
+	// agents` command cannot interleave between the read and the write (#268
+	// review). Everything below re-reads and re-validates the EXACT current
+	// bytes — the earlier scan only resolved the path and rejected ambiguity.
+	unlock, err := lockAgentFile(path)
+	if err != nil {
+		return toggleTarget{}, false, err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			unlock()
+		}
+	}()
+
+	original, err := os.ReadFile(path)
+	if err != nil {
+		return toggleTarget{}, false, fmt.Errorf("reading agent config: %w", err)
+	}
+	pol, err := policy.LoadPolicy(ctx, filepath.Base(path), false, filepath.Dir(path))
+	if err != nil {
+		return toggleTarget{}, false, fmt.Errorf("agent config %s failed validation, not toggling: %w", path, err)
+	}
+	if err := policy.ValidateNoUnknownFields(path); err != nil {
+		return toggleTarget{}, false, fmt.Errorf("agent config %s has unknown keys, not toggling: %w", path, err)
+	}
+	if pol.Agent.Name != name {
+		return toggleTarget{}, false, fmt.Errorf("agent config %s now declares agent %q, not %q — another process changed it; re-run", path, pol.Agent.Name, name)
+	}
+
+	prior := pol.Agent.IsEnabled()
+	if prior == enable {
+		verb := map[bool]string{true: "enabled", false: "disabled"}[enable]
+		fmt.Fprintf(cmd.OutOrStdout(), "agent %q is already %s (no change; config: %s)\n", name, verb, path)
+		return toggleTarget{}, true, nil
+	}
+	edited, err := setAgentEnabledYAML(original, name, enable)
+	if err != nil {
+		return toggleTarget{}, false, fmt.Errorf("could not safely rewrite %s: %w — set agent.enabled manually", path, err)
+	}
+
+	tenant := pol.Agent.TenantID
+	if tenant == "" {
+		tenant = "default"
+	}
+	ok = true
+	return toggleTarget{path: path, original: original, edited: edited, tenant: tenant, prior: prior, unlock: unlock}, false, nil
+}
+
+// applyToggle records intent, atomically replaces the file, and records
+// completion under ONE correlation ID. A completion-evidence failure rolls
+// the file back and records the aborted outcome, so recorded state and actual
+// state can never silently diverge (#268 review).
+func applyToggle(ctx context.Context, evStore *evidence.Store, tgt toggleTarget, name, verb string, enable bool) (string, error) {
+	correlationID := "al_" + uuid.New().String()[:12]
+	if _, err := recordAgentLifecycle(ctx, evStore, correlationID, tgt.tenant, name, tgt.path, intentType(enable), tgt.prior, enable); err != nil {
+		return "", fmt.Errorf("recording intent evidence: %w (no change was made)", err)
+	}
+	if err := atomicReplaceFile(tgt.path, tgt.edited, tgt.original); err != nil {
+		return "", fmt.Errorf("writing agent config: %w", err)
+	}
+	completionID, err := recordAgentLifecycle(ctx, evStore, correlationID, tgt.tenant, name, tgt.path, completionType(enable), tgt.prior, enable)
+	if err != nil {
+		if restoreErr := atomicReplaceFile(tgt.path, tgt.original, tgt.edited); restoreErr != nil {
+			return "", fmt.Errorf("CRITICAL: completion evidence failed (%v) AND restoring %s failed (%v) — the agent is %s on disk but the change is NOT recorded; fix the evidence store and re-run", err, tgt.path, restoreErr, verb)
+		}
+		_, _ = recordAgentLifecycle(ctx, evStore, correlationID, tgt.tenant, name, tgt.path, "agent_toggle_rolled_back", tgt.prior, tgt.prior)
+		return "", fmt.Errorf("completion evidence failed: %w — the config change was rolled back; fix the evidence store and re-run", err)
+	}
+	return completionID, nil
 }
 
 func intentType(enable bool) string {
@@ -284,16 +329,11 @@ func atomicReplaceFile(path string, data, expectCurrent []byte) error {
 	if err != nil {
 		return err
 	}
-	if expectCurrent != nil {
-		current, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if !bytes.Equal(current, expectCurrent) {
-			return fmt.Errorf("%s was modified by another process since it was read — not overwriting; re-run", path)
-		}
-	}
 	dir := filepath.Dir(path)
+
+	// Prepare the temp file FIRST (write, fsync, chmod) so the target is
+	// touched only by the final rename — the concurrency recheck then happens
+	// as close to the rename as possible.
 	tmp, err := os.CreateTemp(dir, ".talon-agent-*")
 	if err != nil {
 		return err
@@ -318,14 +358,39 @@ func atomicReplaceFile(path string, data, expectCurrent []byte) error {
 		cleanup()
 		return err
 	}
+
+	// Recheck the target IMMEDIATELY before the rename: fail rather than
+	// clobber a change made since expectCurrent was read. Under the advisory
+	// lock this is airtight against other Talon processes; it also narrows
+	// the window against an external editor to microseconds.
+	if expectCurrent != nil {
+		current, err := os.ReadFile(path)
+		if err != nil {
+			cleanup()
+			return err
+		}
+		if !bytes.Equal(current, expectCurrent) {
+			cleanup()
+			return fmt.Errorf("%s was modified by another writer — not overwriting; re-run", path)
+		}
+	}
 	if err := os.Rename(tmpName, path); err != nil {
 		cleanup()
 		return err
 	}
-	// fsync the directory so the rename itself is durable across a crash.
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
+	// fsync the directory so the rename itself is durable across a crash;
+	// surface a failure rather than silently ignoring it.
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("rewrote %s but could not open its directory to fsync (change may not survive a crash): %w", path, err)
+	}
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	if syncErr != nil {
+		return fmt.Errorf("rewrote %s but directory fsync failed (change may not survive a crash): %w", path, syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("rewrote %s but directory close failed: %w", path, closeErr)
 	}
 	return nil
 }
