@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -117,7 +116,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 	policyPath = safePath
-	policyBaseDir = filepath.Dir(safePath) // so pricing and other project paths resolve relative to policy directory
 
 	policyEngine, err := policy.NewEngine(ctx, pol)
 	if err != nil {
