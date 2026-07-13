@@ -29,7 +29,13 @@ type SharedContext struct {
 }
 
 // LoadSharedContext reads all configured shared mounts from the policy.
-func LoadSharedContext(pol *policy.Policy) (*SharedContext, error) {
+// baseDir anchors RELATIVE mount paths to the DECLARING agent's directory
+// (#267 review): in a fleet, two agents declaring `path: ./context` must
+// each read their own directory — never the process CWD, where one agent
+// could consume another's context source. Absolute paths stay operator-
+// trusted as before; an empty baseDir keeps the legacy CWD resolution for
+// single-file callers.
+func LoadSharedContext(pol *policy.Policy, baseDir string) (*SharedContext, error) {
 	if pol.Context == nil || len(pol.Context.SharedMounts) == 0 {
 		return &SharedContext{}, nil
 	}
@@ -43,6 +49,13 @@ func LoadSharedContext(pol *policy.Policy) (*SharedContext, error) {
 		clean := filepath.Clean(mount.Path)
 		if strings.Contains(clean, "..") {
 			return nil, fmt.Errorf("mount %q has suspicious path traversal: %s", mount.Name, mount.Path)
+		}
+		if !filepath.IsAbs(clean) && baseDir != "" {
+			resolved, err := resolveUnderBase(baseDir, clean)
+			if err != nil {
+				return nil, fmt.Errorf("mount %q: %w", mount.Name, err)
+			}
+			clean = resolved
 		}
 
 		info, err := os.Stat(clean)
@@ -80,6 +93,21 @@ func LoadSharedContext(pol *policy.Policy) (*SharedContext, error) {
 	}
 
 	return sc, nil
+}
+
+// resolveUnderBase joins a relative mount path under the agent's directory
+// and guarantees the result stays beneath it (traversal protection).
+func resolveUnderBase(baseDir, rel string) (string, error) {
+	absBase, err := filepath.Abs(filepath.Clean(baseDir))
+	if err != nil {
+		return "", fmt.Errorf("mount base directory: %w", err)
+	}
+	resolved := filepath.Clean(filepath.Join(absBase, rel))
+	relCheck, err := filepath.Rel(absBase, resolved)
+	if err != nil || relCheck == ".." || strings.HasPrefix(relCheck, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %s escapes the agent directory %s", rel, baseDir)
+	}
+	return resolved, nil
 }
 
 // FormatForPrompt formats all mounts for inclusion in the LLM prompt.

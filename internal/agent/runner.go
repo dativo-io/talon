@@ -319,6 +319,10 @@ type runBundle struct {
 	engine     *policy.Engine
 	classifier classifier.Facade
 	router     *llm.Router
+	// baseDir is the DECLARING agent's directory: relative filesystem
+	// references in the policy (shared context mounts) resolve beneath it,
+	// never the process CWD (#267 review — cross-agent data-governance).
+	baseDir string
 }
 
 // resolveRunBundle settles the run's agent identity and compiled bundle
@@ -388,7 +392,10 @@ func (r *Runner) resolveCatalogBundle(ctx context.Context, snap *agentcatalog.Ru
 		return nil, err
 	}
 
-	return &runBundle{pol: ra.Policy, engine: ra.Engine, classifier: ra.Classifier, router: ra.Router}, nil
+	return &runBundle{
+		pol: ra.Policy, engine: ra.Engine, classifier: ra.Classifier, router: ra.Router,
+		baseDir: filepath.Dir(ra.Path),
+	}, nil
 }
 
 func catalogAgentNames(snap *agentcatalog.RuntimeSnapshot) string {
@@ -399,36 +406,43 @@ func catalogAgentNames(snap *agentcatalog.RuntimeSnapshot) string {
 	return strings.Join(names, ", ")
 }
 
-// resolveFileBundle is the explicit-file path: load, validate, and compile
-// per run. Operator-provided absolute paths (--policy, cfg.DefaultPolicy) are
-// trusted so paths outside CWD work (e.g. Docker volumes); relative paths
-// (including when derived from AgentName) resolve under policyDir to prevent
-// traversal. AgentName-derived paths must be a single path segment.
-func (r *Runner) resolveFileBundle(ctx context.Context, req *RunRequest, correlationID string, startTime time.Time) (*runBundle, error) {
-	policyPath := req.PolicyPath
+// resolveRunPolicyPath applies the explicit-file path contract:
+// operator-provided absolute paths (--policy, cfg.DefaultPolicy) are trusted
+// so paths outside CWD work (e.g. Docker volumes); relative paths (including
+// when derived from AgentName) resolve under policyDir to prevent traversal.
+// AgentName-derived paths must be a single path segment.
+func (r *Runner) resolveRunPolicyPath(req *RunRequest) (policyPath, loadBaseDir string, err error) {
+	policyPath = req.PolicyPath
 	pathDerivedFromAgent := false
 	if policyPath == "" {
 		if err := validateAgentNameForPolicyPath(req.AgentName); err != nil {
-			return nil, fmt.Errorf("policy path: %w", err)
+			return "", "", fmt.Errorf("policy path: %w", err)
 		}
 		policyPath = req.AgentName + ".talon.yaml"
 		pathDerivedFromAgent = true
 	}
-	var loadBaseDir string
 	if filepath.IsAbs(policyPath) {
 		if pathDerivedFromAgent {
-			return nil, fmt.Errorf("policy path: agent name must not be an absolute path or start with path separator (got %q)", req.AgentName)
+			return "", "", fmt.Errorf("policy path: agent name must not be an absolute path or start with path separator (got %q)", req.AgentName)
 		}
 		safePath, err := filepath.Abs(filepath.Clean(policyPath))
 		if err != nil {
-			return nil, fmt.Errorf("policy path: %w", err)
+			return "", "", fmt.Errorf("policy path: %w", err)
 		}
-		loadBaseDir = filepath.Dir(safePath)
-	} else {
-		if _, err := safePolicyPathUnder(r.policyDir, policyPath); err != nil {
-			return nil, fmt.Errorf("policy path: %w", err)
-		}
-		loadBaseDir = r.policyDir
+		return policyPath, filepath.Dir(safePath), nil
+	}
+	if _, err := safePolicyPathUnder(r.policyDir, policyPath); err != nil {
+		return "", "", fmt.Errorf("policy path: %w", err)
+	}
+	return policyPath, r.policyDir, nil
+}
+
+// resolveFileBundle is the explicit-file path: load, validate, and compile
+// per run (bespoke/test runners and explicit RunRequest.PolicyPath).
+func (r *Runner) resolveFileBundle(ctx context.Context, req *RunRequest, correlationID string, startTime time.Time) (*runBundle, error) {
+	policyPath, loadBaseDir, err := r.resolveRunPolicyPath(req)
+	if err != nil {
+		return nil, err
 	}
 
 	pol, err := policy.LoadPolicy(ctx, policyPath, false, loadBaseDir)
@@ -460,30 +474,78 @@ func (r *Runner) resolveFileBundle(ctx context.Context, req *RunRequest, correla
 		r.recordEarlyTermination(ctx, correlationID, req, "policy_engine_failed: "+err.Error(), startTime)
 		return nil, fmt.Errorf("creating policy engine: %w", err)
 	}
-	runClassifier := r.classifier
-	if runClassifier == nil {
-		// A catalog-less runner without a configured classifier still runs
-		// fail-closed: build the policy-aware scanner from the loaded policy
-		// (never a nil classifier downstream).
-		s, scanErr := policy.NewPIIScannerForPolicyWithEnrichment(ctx, pol, "", engine)
-		if scanErr != nil {
-			r.recordEarlyTermination(ctx, correlationID, req, "scanner_unavailable: "+scanErr.Error(), startTime)
-			return nil, fmt.Errorf("building PII scanner for policy: %w", scanErr)
+	runClassifier, err := r.fileBundleClassifier(ctx, pol, engine)
+	if err != nil {
+		r.recordEarlyTermination(ctx, correlationID, req, "scanner_unavailable: "+err.Error(), startTime)
+		return nil, err
+	}
+	fileDir := filepath.Dir(policyPath)
+	if !filepath.IsAbs(policyPath) {
+		fileDir = filepath.Dir(filepath.Join(loadBaseDir, policyPath))
+	}
+	return &runBundle{
+		pol: pol, engine: engine, classifier: runClassifier, router: r.router,
+		baseDir: fileDir,
+	}, nil
+}
+
+// circuitThresholds derives the agent's circuit-breaker thresholds from ITS
+// policy (#267). Zero fields fall back to the tracker defaults.
+func circuitThresholds(pol *policy.Policy) Thresholds {
+	var t Thresholds
+	if pol == nil || pol.Policies.RateLimits == nil {
+		return t
+	}
+	rl := pol.Policies.RateLimits
+	t.Threshold = rl.CircuitBreakerThreshold
+	if rl.CircuitBreakerWindow != "" {
+		if d, err := time.ParseDuration(rl.CircuitBreakerWindow); err == nil {
+			t.Window = d
 		}
-		runClassifier = s
-	} else if pol.Policies.SemanticEnrichment != nil && pol.Policies.SemanticEnrichment.Enabled {
-		// Semantic enrichment is a built-in regex-engine feature. When an
-		// external scanner engine is configured it stays authoritative:
-		// silently swapping in a per-run regex scanner would bypass the
-		// operator's engine choice (enrichment is skipped, documented in
-		// LIMITATIONS.md). Catalog bundles get enrichment at build time.
+	}
+	return t
+}
+
+// toolFailureThresholds derives the agent's tool-failure alert thresholds
+// from ITS policy (#267). Zero fields fall back to the tracker defaults.
+func toolFailureThresholds(pol *policy.Policy) Thresholds {
+	var t Thresholds
+	if pol == nil || pol.Policies.RateLimits == nil {
+		return t
+	}
+	rl := pol.Policies.RateLimits
+	t.Threshold = rl.ToolFailureThreshold
+	if rl.ToolFailureWindow != "" {
+		if d, err := time.ParseDuration(rl.ToolFailureWindow); err == nil {
+			t.Window = d
+		}
+	}
+	return t
+}
+
+// fileBundleClassifier picks the run's scanner on the explicit-file path: the
+// configured classifier (with the per-policy enrichment swap when the policy
+// enables it and the built-in engine is active — an external engine stays
+// authoritative, see LIMITATIONS.md), or, for a catalog-less runner with no
+// classifier configured, a policy-aware scanner built fail-closed from the
+// loaded policy (never a nil classifier downstream). Catalog bundles get all
+// of this at build time.
+func (r *Runner) fileBundleClassifier(ctx context.Context, pol *policy.Policy, engine *policy.Engine) (classifier.Facade, error) {
+	if r.classifier == nil {
+		s, err := policy.NewPIIScannerForPolicyWithEnrichment(ctx, pol, "", engine)
+		if err != nil {
+			return nil, fmt.Errorf("building PII scanner for policy: %w", err)
+		}
+		return s, nil
+	}
+	if pol.Policies.SemanticEnrichment != nil && pol.Policies.SemanticEnrichment.Enabled {
 		if _, isBuiltin := r.classifier.(*classifier.Scanner); isBuiltin {
 			if s, err := policy.NewPIIScannerForPolicyWithEnrichment(ctx, pol, "", engine); err == nil {
-				runClassifier = s
+				return s, nil
 			}
 		}
 	}
-	return &runBundle{pol: pol, engine: engine, classifier: runClassifier, router: r.router}, nil
+	return r.classifier, nil
 }
 
 // OverrideStoreRef returns the runner's OverrideStore (may be nil).
@@ -821,8 +883,10 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 
 	// Circuit breaker: check before policy evaluation. An open circuit means the
 	// agent has accumulated too many policy denials and should be suspended.
+	// Thresholds come from THIS run's bundle policy (#267): in a fleet each
+	// agent's own rate_limits govern its circuit, never another policy's.
 	if r.circuitBreaker != nil {
-		if cbErr := r.circuitBreaker.Check(req.TenantID, req.AgentName); cbErr != nil {
+		if cbErr := r.circuitBreaker.CheckAgent(req.TenantID, req.AgentName, circuitThresholds(pol)); cbErr != nil {
 			span.SetAttributes(attribute.String("circuit_breaker.state", "open"))
 			r.setRunState(correlationID, RunStatusBlocked, FailureCircuitBreaker)
 			r.recordEarlyTermination(ctx, correlationID, req, "circuit_breaker_open: "+cbErr.Error(), startTime)
@@ -867,7 +931,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	var originalDecision *policy.Decision
 	if !decision.Allowed {
 		if r.circuitBreaker != nil {
-			r.circuitBreaker.RecordPolicyDenial(req.TenantID, req.AgentName)
+			r.circuitBreaker.RecordPolicyDenialAgent(req.TenantID, req.AgentName, circuitThresholds(pol))
 		}
 		if pol.Audit != nil && pol.Audit.ObservationOnly {
 			observationOverride = true
@@ -1022,7 +1086,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	}
 
 	if pol.Context != nil && len(pol.Context.SharedMounts) > 0 {
-		sharedCtx, ctxErr := talonctx.LoadSharedContext(pol)
+		sharedCtx, ctxErr := talonctx.LoadSharedContext(pol, b.baseDir)
 		if ctxErr != nil {
 			log.Warn().Err(ctxErr).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("failed to load shared context")
 		} else if len(sharedCtx.Mounts) > 0 {
@@ -1840,9 +1904,10 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						toolsCalled = append(toolsCalled, toolName)
 					}
 
-					// Track tool execution failures separately from policy denials (Gap T4).
+					// Track tool execution failures separately from policy denials
+					// (Gap T4), under THIS agent's thresholds (#267).
 					if tcResult.ExecutionError != "" && r.toolFailures != nil {
-						r.toolFailures.RecordToolFailure(req.TenantID, req.AgentName, toolName, tcResult.ExecutionError)
+						r.toolFailures.RecordToolFailureAgent(req.TenantID, req.AgentName, toolName, tcResult.ExecutionError, toolFailureThresholds(pol))
 					}
 
 					// Per-run tool failure escalation: auto-disable after N consecutive failures.

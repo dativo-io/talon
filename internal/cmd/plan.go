@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -301,8 +300,15 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 	}
 
 	// The plan executes under the CURRENT catalog resolution of its agent
-	// (#267): the plan's recorded policy path (when set) or the fleet source.
-	scan, err := cliAgentScan(ctx, cfg, plan.PolicyPath)
+	// (#267 review): in fleet mode the path recorded at plan creation is
+	// IGNORED — an approved plan must never bypass later policy tightening by
+	// executing under a historic file. Only non-fleet single-file mode may
+	// use the stored path.
+	planPolicyPath := plan.PolicyPath
+	if cfg.AgentsDir != "" {
+		planPolicyPath = ""
+	}
+	scan, err := cliAgentScan(ctx, cfg, planPolicyPath)
 	if err != nil {
 		return err
 	}
@@ -310,7 +316,7 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	baseDir := filepath.Dir(ra.Path)
+	pricingBaseDir := cliPricingBaseDir(cfg, planPolicyPath, ra.Path)
 
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
@@ -318,7 +324,7 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 	sovereignty.ApplySovereigntyGate(cfg, nil)
 
 	providers := buildProviders(cfg)
-	pricingTable := loadPricingTable(cfg, baseDir)
+	pricingTable := loadPricingTable(cfg, pricingBaseDir)
 	injectPricingInProviders(providers, pricingTable)
 	catalog, err := buildCLICatalog(ctx, cfg, scan, providers)
 	if err != nil {

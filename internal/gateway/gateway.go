@@ -93,10 +93,11 @@ const (
 // Gateway is the LLM API gateway handler.
 type Gateway struct {
 	config *GatewayConfig
-	// registry is the shared atomic snapshot holder (#289): identity is
-	// resolved against Current() per request, so a reload swap (#269)
-	// propagates here without reconstructing the gateway.
-	registry      *RegistryHolder
+	// registry yields the CURRENT identity registry per request (#289/#267):
+	// in production it is the view over the ONE runtime holder, so a reload
+	// swap propagates here without reconstructing the gateway and can never
+	// split a request across generations.
+	registry      RegistrySource
 	classifier    classifier.Facade
 	evidenceStore *evidence.Store
 	secretsStore  *secrets.SecretStore
@@ -190,7 +191,7 @@ func (g *Gateway) SetCache(store *cache.Store, embedder *cache.BM25, scrubber *c
 // request context instead).
 func NewGateway(
 	config *GatewayConfig,
-	registry *RegistryHolder,
+	registry RegistrySource,
 	classifier classifier.Facade,
 	evidenceStore *evidence.Store,
 	secretsStore *secrets.SecretStore,

@@ -124,6 +124,7 @@ func (p *blockingProvider) Name() string { return p.name }
 func (p *blockingProvider) Metadata() llm.ProviderMetadata {
 	return llm.ProviderMetadata{ID: p.name, DisplayName: p.name, Jurisdiction: "US"}
 }
+
 func (p *blockingProvider) Generate(_ context.Context, req *llm.Request) (*llm.Response, error) {
 	p.mu.Lock()
 	p.calls++
@@ -131,6 +132,7 @@ func (p *blockingProvider) Generate(_ context.Context, req *llm.Request) (*llm.R
 	<-p.release
 	return &llm.Response{Content: "ok from " + p.name, Model: req.Model, InputTokens: 1, OutputTokens: 1}, nil
 }
+
 func (p *blockingProvider) Stream(_ context.Context, _ *llm.Request, ch chan<- llm.StreamChunk) error {
 	close(ch)
 	return nil

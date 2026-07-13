@@ -425,6 +425,26 @@ func (s *Store) PurgeOlderThan(ctx context.Context, cutoff time.Time) (int64, er
 	return n, nil
 }
 
+// PurgeOlderThanForAgent deletes ONE (tenant, agent)'s sessions idle past the
+// cutoff (#267 review): in a fleet, each agent's own audit.retention_days
+// governs its rows — a store-wide sweep under one policy would either delete
+// rows another agent still retains or retain rows past an agent's declared
+// data-minimisation window. Same expiry semantics as PurgeOlderThan.
+func (s *Store) PurgeOlderThanForAgent(ctx context.Context, tenantID, agentID string, cutoff time.Time) (int64, error) {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM session_stage_counts WHERE session_id IN (SELECT id FROM sessions WHERE tenant_id = ? AND agent_id = ? AND updated_at < ?)`,
+		tenantID, agentID, cutoff); err != nil {
+		return 0, fmt.Errorf("purging stage counts: %w", err)
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE tenant_id = ? AND agent_id = ? AND updated_at < ?`,
+		tenantID, agentID, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("purging sessions: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 func (s *Store) IncrementStageCount(ctx context.Context, sessionID, stage string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO session_stage_counts (session_id, stage, count) VALUES (?, ?, 1)

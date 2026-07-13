@@ -81,9 +81,9 @@ func TestResolveIdentityEmptyRegistryRejectsEverything(t *testing.T) {
 	}))
 	assert.ErrorIs(t, err, ErrUnknownKey)
 
-	// Nil registry (quickstart-mode gateway) behaves the same for keyed requests.
-	g = &Gateway{}
-	_, err = resolveIdentityFrom(g.registry.Current(), resolveReq(t, func(r *http.Request) {
+	// Nil registry generation (quickstart-mode gateway) behaves the same for
+	// keyed requests — fail closed.
+	_, err = resolveIdentityFrom(nil, resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer any-key")
 	}))
 	assert.ErrorIs(t, err, ErrUnknownKey)
@@ -92,10 +92,9 @@ func TestResolveIdentityEmptyRegistryRejectsEverything(t *testing.T) {
 func TestResolveIdentityQuickstartContext(t *testing.T) {
 	// The synthetic identity short-circuits resolution — and only via the
 	// request context, which only the in-process facade can set.
-	g := &Gateway{}
 	req := resolveReq(t, nil)
 	req = req.WithContext(WithQuickstartIdentity(req.Context(), NewQuickstartIdentity()))
-	id, err := resolveIdentityFrom(g.registry.Current(), req)
+	id, err := resolveIdentityFrom(nil, req)
 	require.NoError(t, err)
 	assert.Equal(t, "quickstart", id.TenantID)
 	assert.True(t, id.HasTag("quickstart"))
@@ -104,7 +103,7 @@ func TestResolveIdentityQuickstartContext(t *testing.T) {
 	// synthetic identity (the facade owns the context; headers are irrelevant).
 	req = resolveReq(t, func(r *http.Request) { r.Header.Set("Authorization", "Bearer junk") })
 	req = req.WithContext(WithQuickstartIdentity(req.Context(), NewQuickstartIdentity()))
-	id, err = resolveIdentityFrom(g.registry.Current(), req)
+	id, err = resolveIdentityFrom(nil, req)
 	require.NoError(t, err)
 	assert.Equal(t, "quickstart-local", id.Name)
 }

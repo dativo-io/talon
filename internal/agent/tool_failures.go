@@ -40,12 +40,28 @@ func NewToolFailureTracker(threshold int, window time.Duration) *ToolFailureTrac
 	}
 }
 
-// RecordToolFailure records a tool execution failure for the agent.
-// If the threshold is exceeded within the window, an operator alert is logged.
-// Returns true if the alert threshold was just crossed.
+// RecordToolFailure records a tool execution failure under the tracker
+// defaults. Fleet runs use RecordToolFailureAgent with the agent's own
+// thresholds.
 func (t *ToolFailureTracker) RecordToolFailure(tenantID, agentID, toolName, errMsg string) bool {
+	return t.RecordToolFailureAgent(tenantID, agentID, toolName, errMsg, Thresholds{})
+}
+
+// RecordToolFailureAgent records a tool execution failure for the agent under
+// THAT agent's thresholds (#267). If the threshold is exceeded within the
+// window, an operator alert is logged. Returns true if the alert threshold
+// was just crossed.
+func (t *ToolFailureTracker) RecordToolFailureAgent(tenantID, agentID, toolName, errMsg string, cfg Thresholds) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	threshold, window := t.threshold, t.window
+	if cfg.Threshold > 0 {
+		threshold = cfg.Threshold
+	}
+	if cfg.Window > 0 {
+		window = cfg.Window
+	}
 
 	key := tenantID + ":" + agentID
 	rec, ok := t.agents[key]
@@ -55,11 +71,11 @@ func (t *ToolFailureTracker) RecordToolFailure(tenantID, agentID, toolName, errM
 	}
 
 	now := time.Now()
-	cutoff := now.Add(-t.window)
+	cutoff := now.Add(-window)
 	rec.failures = append(rec.failures[:0], filterAfter(rec.failures, cutoff)...)
 	rec.failures = append(rec.failures, now)
 
-	if len(rec.failures) >= t.threshold && !rec.alerted {
+	if len(rec.failures) >= threshold && !rec.alerted {
 		rec.alerted = true
 		log.Warn().
 			Str("tenant_id", tenantID).
@@ -67,13 +83,13 @@ func (t *ToolFailureTracker) RecordToolFailure(tenantID, agentID, toolName, errM
 			Str("last_tool", toolName).
 			Str("last_error", errMsg).
 			Int("failure_count", len(rec.failures)).
-			Dur("window", t.window).
+			Dur("window", window).
 			Msg("tool_failure_threshold_exceeded: agent has repeated tool execution failures (not policy denials)")
 		return true
 	}
 
 	// Reset alert flag when failures drop below threshold (window slides)
-	if len(rec.failures) < t.threshold {
+	if len(rec.failures) < threshold {
 		rec.alerted = false
 	}
 

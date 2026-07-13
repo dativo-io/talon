@@ -141,3 +141,26 @@ func (h *RuntimeHolder) Swap(next *RuntimeSnapshot) {
 	}
 	h.p.Store(next)
 }
+
+// registryView adapts the runtime holder into the gateway's RegistrySource:
+// gateway and server authentication read the registry of the CURRENT
+// generation — the same snapshot native execution resolves bundles from.
+// There is no independently swappable registry pointer (#267 review): one
+// Swap on the runtime holder moves authentication, caps, metrics scope, and
+// execution together.
+type registryView struct {
+	h *RuntimeHolder
+}
+
+func (v registryView) Current() *gateway.IdentityRegistry {
+	if snap := v.h.Current(); snap != nil {
+		return snap.Registry
+	}
+	return nil
+}
+
+// RegistrySource returns the gateway-facing view over this holder's current
+// generation.
+func (h *RuntimeHolder) RegistrySource() gateway.RegistrySource {
+	return registryView{h: h}
+}

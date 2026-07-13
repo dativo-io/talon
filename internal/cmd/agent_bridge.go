@@ -118,7 +118,7 @@ func shortGeneration(digest string) string {
 // swap and let the dev-open branch pass an unauthenticated request against
 // a registry that already has keys.
 type holderKeyResolver struct {
-	holder *gateway.RegistryHolder
+	holder gateway.RegistrySource
 }
 
 func (r holderKeyResolver) AuthenticateAgentKey(key string) server.AgentKeyAuth {

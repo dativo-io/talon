@@ -314,3 +314,37 @@ func TestValidateExternalID(t *testing.T) {
 	require.Error(t, ValidateExternalID(strings.Repeat("a", 129)))
 	require.NoError(t, ValidateExternalID(strings.Repeat("a", 128)))
 }
+
+// TestPurgeOlderThanForAgent (#267 review): in a fleet each agent's own
+// retention governs ITS rows — the scoped purge deletes exactly one
+// (tenant, agent)'s expired sessions and never touches a sibling's.
+func TestPurgeOlderThanForAgent(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	shortRetention, err := s.Create(ctx, "acme", "support", "", 0)
+	require.NoError(t, err)
+	longRetention, err := s.Create(ctx, "acme", "coding", "", 0)
+	require.NoError(t, err)
+	otherTenant, err := s.Create(ctx, "globex", "support", "", 0)
+	require.NoError(t, err)
+
+	// Age every row past the cutoff.
+	old := time.Now().UTC().Add(-48 * time.Hour)
+	for _, id := range []string{shortRetention.ID, longRetention.ID, otherTenant.ID} {
+		_, err := s.db.ExecContext(ctx, `UPDATE sessions SET updated_at = ? WHERE id = ?`, old, id)
+		require.NoError(t, err)
+	}
+
+	// Purge ONLY acme/support with a 24h retention cutoff.
+	n, err := s.PurgeOlderThanForAgent(ctx, "acme", "support", time.Now().UTC().Add(-24*time.Hour))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), n)
+
+	_, err = s.Get(ctx, shortRetention.ID, "acme")
+	require.Error(t, err, "the scoped agent's expired session is purged")
+	_, err = s.Get(ctx, longRetention.ID, "acme")
+	require.NoError(t, err, "a sibling agent's rows survive — its own retention governs them")
+	_, err = s.Get(ctx, otherTenant.ID, "globex")
+	require.NoError(t, err, "another tenant's same-named agent survives")
+}

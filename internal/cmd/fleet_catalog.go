@@ -104,6 +104,19 @@ func scanAgentNames(scan *agentcatalog.ScanResult) string {
 	return strings.Join(names, ", ")
 }
 
+// cliPricingBaseDir decides where the pricing table resolves from (#267
+// review): pricing is SHARED process infrastructure — in fleet mode it
+// resolves from the operator/project root, NEVER the selected agent's
+// directory (CLI and server must sign identical cost estimates). Explicit
+// --policy and single-file mode keep the pre-fleet contract: pricing next to
+// the policy file.
+func cliPricingBaseDir(cfg *config.Config, explicitPolicyPath, agentPath string) string {
+	if explicitPolicyPath == "" && cfg.AgentsDir != "" {
+		return "."
+	}
+	return filepath.Dir(agentPath)
+}
+
 // buildCLICatalog compiles the scanned set into the ONE runtime catalog the
 // CLI runner resolves against (no gateway registry — native execution only).
 func buildCLICatalog(ctx context.Context, cfg *config.Config, scan *agentcatalog.ScanResult, providers map[string]llm.Provider) (*agentcatalog.RuntimeHolder, error) {

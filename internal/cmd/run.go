@@ -96,10 +96,10 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	agentName := ra.Name
-	baseDir := filepath.Dir(ra.Path) // pricing and other project paths resolve relative to the agent's directory
+	pricingBaseDir := cliPricingBaseDir(cfg, runPolicyPath, ra.Path)
 
 	if runValidate {
-		if err := validatePolicyFile(ctx, filepath.Base(ra.Path), baseDir); err != nil {
+		if err := validatePolicyFile(ctx, filepath.Base(ra.Path), filepath.Dir(ra.Path)); err != nil {
 			return fmt.Errorf("pre-flight validation failed: %w", err)
 		}
 		if verbose {
@@ -120,7 +120,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	sovereignty.ApplySovereigntyGate(cfg, nil)
 
 	providers := buildProviders(cfg)
-	pricingTable := loadPricingTable(cfg, baseDir)
+	pricingTable := loadPricingTable(cfg, pricingBaseDir)
 	injectPricingInProviders(providers, pricingTable)
 	catalog, err := buildCLICatalog(ctx, cfg, scan, providers)
 	if err != nil {
