@@ -62,7 +62,7 @@ func TestHandleAgentsFleet_CoherentView(t *testing.T) {
 	s := &Server{fleetView: func() agentcatalog.FleetView { return view }}
 
 	rec := httptest.NewRecorder()
-	s.handleAgentsFleet(rec, httptest.NewRequest(http.MethodGet, "/v1/agents/fleet", nil))
+	s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var resp fleetStatusResponse
@@ -83,6 +83,6 @@ func TestHandleAgentsFleet_CoherentView(t *testing.T) {
 func TestHandleAgentsFleet_NoFleet(t *testing.T) {
 	s := &Server{fleetView: func() agentcatalog.FleetView { return agentcatalog.FleetView{Snapshot: nil} }}
 	rec := httptest.NewRecorder()
-	s.handleAgentsFleet(rec, httptest.NewRequest(http.MethodGet, "/v1/agents/fleet", nil))
+	s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
