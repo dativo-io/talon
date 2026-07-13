@@ -68,10 +68,11 @@ Third-Party AI Agent → Talon MCP Server → Your Zendesk/CRM
 
 #### Step 1: Install Talon
 ```bash
-# On your infrastructure (VM, EC2, on-prem server)
-wget https://github.com/dativo-io/talon/releases/download/v1.0.0/talon-linux-amd64
-chmod +x talon-linux-amd64
-sudo mv talon-linux-amd64 /usr/local/bin/talon
+# On your infrastructure (VM, EC2, on-prem server) — check
+# https://github.com/dativo-io/talon/releases/latest for the newest version
+wget https://github.com/dativo-io/talon/releases/download/v1.8.0/talon_1.8.0_linux_amd64.tar.gz
+tar -xzf talon_1.8.0_linux_amd64.tar.gz
+sudo mv talon /usr/local/bin/talon
 ```
 
 #### Step 2: Configure MCP Proxy for Zendesk
