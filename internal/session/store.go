@@ -450,16 +450,25 @@ func (s *Store) GetStageCounts(ctx context.Context, sessionID string) (*StageCou
 	return counts, rows.Err()
 }
 
-func (s *Store) ListByTenant(ctx context.Context, tenantID string, status Status) ([]*Session, error) {
-	var rows *sql.Rows
-	var err error
-	if status == "" {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT `+sessionColumns+` FROM sessions WHERE tenant_id = ? ORDER BY created_at DESC`, tenantID)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT `+sessionColumns+` FROM sessions WHERE tenant_id = ? AND status = ? ORDER BY created_at DESC`, tenantID, string(status))
+// ListByTenant lists a tenant's sessions, newest first. A non-empty agentID
+// additionally scopes to sessions OWNED by that agent (#286): ownership is
+// the one agent that created the row — external session ids are unique per
+// (tenant, agent) tuple, so two agents asserting the same external id hold
+// separate rows and owner filtering IS participation filtering here. Empty
+// agentID is the tenant-wide (admin) view.
+func (s *Store) ListByTenant(ctx context.Context, tenantID, agentID string, status Status) ([]*Session, error) {
+	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE tenant_id = ?`
+	args := []any{tenantID}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
 	}
+	if status != "" {
+		query += ` AND status = ?`
+		args = append(args, string(status))
+	}
+	query += ` ORDER BY created_at DESC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing sessions for tenant %s: %w", tenantID, err)
 	}

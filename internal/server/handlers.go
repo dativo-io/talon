@@ -1162,12 +1162,21 @@ func (s *Server) handleTriggerHistory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "name is required")
 		return
 	}
+	// Tenant scope: authenticated tenant first; the query parameter serves
+	// the admin view (same pattern as the dashboard aggregates), then the
+	// default tenant.
 	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
+	// Agent keys see only their own trigger invocations (#286); admin keeps
+	// the tenant-wide history.
+	agentID, _ := agentReadScope(r.Context(), r.URL.Query().Get("agent_id"))
 	invocationType := "webhook:" + name
-	entries, err := s.evidenceStore.ListIndex(r.Context(), tenantID, "", time.Time{}, time.Time{}, 50, invocationType, "", "")
+	entries, err := s.evidenceStore.ListIndex(r.Context(), tenantID, agentID, time.Time{}, time.Time{}, 50, invocationType, "", "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -1183,11 +1192,19 @@ func (s *Server) handlePlansPending(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "disabled", "plan review is disabled")
 		return
 	}
+	// Tenant scope: authenticated tenant first; the query parameter serves
+	// the admin view (same pattern as the dashboard aggregates).
 	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
-	plans, err := s.planReviewStore.GetPending(r.Context(), tenantID)
+	// Agent keys read only their own plans (#286); admin keeps the
+	// tenant-wide view (same contract as evidence/costs/memory).
+	agentID, _ := agentReadScope(r.Context(), r.URL.Query().Get("agent_id"))
+	plans, err := s.planReviewStore.GetPending(r.Context(), tenantID, agentID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -1286,7 +1303,7 @@ func (s *Server) handleAuditPack(w http.ResponseWriter, r *http.Request) {
 		out["cost_eur"] = cost
 	}
 	if s.planReviewStore != nil {
-		pending, _ := s.planReviewStore.GetPending(r.Context(), tenantID)
+		pending, _ := s.planReviewStore.GetPending(r.Context(), tenantID, "")
 		out["pending_plans"] = len(pending)
 	}
 	if s.memoryStore != nil {
@@ -1350,7 +1367,7 @@ func (s *Server) handleTenantsSummary(w http.ResponseWriter, r *http.Request) {
 
 	pendingByTenant := make(map[string]int)
 	if s.planReviewStore != nil {
-		pending, err := s.planReviewStore.GetPending(r.Context(), "")
+		pending, err := s.planReviewStore.GetPending(r.Context(), "", "")
 		if err == nil {
 			for _, p := range pending {
 				if p != nil {
@@ -1446,7 +1463,12 @@ func (s *Server) handlePlanGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "id is required")
 		return
 	}
+	// Tenant scope mirrors handlePlansPending: context tenant, then the
+	// admin query parameter, then the default tenant.
 	tenantID := TenantIDFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = r.URL.Query().Get("tenant_id")
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
@@ -1457,6 +1479,12 @@ func (s *Server) handlePlanGet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	// Another agent's plan is indistinguishable from a missing one (#286) —
+	// same fetch-by-id contract as evidence and memory records.
+	if !recordVisibleToCaller(r.Context(), plan.AgentID) {
+		writeError(w, http.StatusNotFound, "not_found", "plan not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, plan)
@@ -1721,6 +1749,13 @@ func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
+	// Another agent's session is indistinguishable from a missing one (#286):
+	// sessions are owned by the one agent that created the row (external ids
+	// are unique per tenant+agent tuple, #215).
+	if !recordVisibleToCaller(r.Context(), sess.AgentID) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
 	writeJSON(w, http.StatusOK, sess)
 }
 
@@ -1735,11 +1770,15 @@ func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
 	// requests keep the parameter (default tenant when absent).
 	if auth := sessionTenantScope(r); auth != "" {
 		tenantID = auth
-	} else if tenantID == "" {
+	}
+	if tenantID == "" {
 		tenantID = "default"
 	}
+	// Agent keys list only sessions they own (#286); admin may filter by any
+	// agent via the query parameter.
+	agentID, _ := agentReadScope(r.Context(), r.URL.Query().Get("agent_id"))
 	status := session.Status(r.URL.Query().Get("status"))
-	sessions, err := s.sessionStore.ListByTenant(r.Context(), tenantID, status)
+	sessions, err := s.sessionStore.ListByTenant(r.Context(), tenantID, agentID, status)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

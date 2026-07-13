@@ -2258,6 +2258,131 @@ func TestEvidenceAgentScope_AgentKeySeesOnlyOwnAgent(t *testing.T) {
 	assert.NotContains(t, evs, "ev_finance_1", "events must not surface another agent's records")
 }
 
+// TestSessionsPlansTriggersAgentScope (#286): sessions, plans, and trigger
+// history are agent-scoped for agent keys — two agents in one tenant cannot
+// read each other's records; the admin key keeps the tenant-wide view. This
+// extends the evidence/costs/memory isolation from #279 (finding 2) to the
+// remaining read surfaces.
+func TestSessionsPlansTriggersAgentScope(t *testing.T) {
+	pol := minimalPolicy()
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	dir := t.TempDir()
+
+	evStore, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evStore.Close() })
+
+	sessStore, err := talonsession.NewStore(dir + "/s.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sessStore.Close() })
+
+	dbPlan, err := sql.Open("sqlite3", dir+"/p.db?_journal_mode=WAL")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = dbPlan.Close() })
+	planStore, err := agent.NewPlanReviewStore(dbPlan)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// One session per agent, same tenant; a third in another tenant.
+	sessSupport, err := sessStore.Create(ctx, "acme", "support-bot", "", 0)
+	require.NoError(t, err)
+	sessFinance, err := sessStore.Create(ctx, "acme", "finance-bot", "", 0)
+	require.NoError(t, err)
+	_, err = sessStore.Create(ctx, "globex", "other-bot", "", 0)
+	require.NoError(t, err)
+
+	// One pending plan per agent in the shared tenant.
+	planSupport := agent.GenerateExecutionPlan("c1", "acme", "support-bot", "gpt-4", 0, nil, 0, "allow", "", "", 30)
+	planFinance := agent.GenerateExecutionPlan("c2", "acme", "finance-bot", "gpt-4", 0, nil, 0, "allow", "", "", 30)
+	require.NoError(t, planStore.Save(ctx, planSupport))
+	require.NoError(t, planStore.Save(ctx, planFinance))
+
+	// One webhook-trigger evidence record per agent.
+	for _, e := range []struct{ id, agent string }{
+		{"ev_trig_support", "support-bot"},
+		{"ev_trig_finance", "finance-bot"},
+	} {
+		require.NoError(t, evStore.Store(ctx, &evidence.Evidence{
+			ID: e.id, CorrelationID: "c", Timestamp: time.Now().UTC(),
+			TenantID: "acme", AgentID: e.agent, InvocationType: "webhook:deploy",
+			PolicyDecision: evidence.PolicyDecision{Allowed: true, Action: "allow", PolicyVersion: "v1"},
+			Execution:      evidence.Execution{},
+			AuditTrail:     evidence.AuditTrail{},
+		}))
+	}
+
+	srv := NewServer(nil, evStore, nil, engine, pol, "", nil, "admin-secret", nil,
+		WithSessionStore(sessStore),
+		WithPlanReviewStore(planStore),
+		WithAgentIdentities(map[string]requestctx.AgentIdentity{
+			"k_support": {AgentID: "support-bot", TenantID: "acme"},
+			"k_finance": {AgentID: "finance-bot", TenantID: "acme"},
+		}))
+	r := srv.Routes()
+
+	get := func(path, bearer, adminKey string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if adminKey != "" {
+			req.Header.Set("X-Talon-Admin-Key", adminKey)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec
+	}
+
+	t.Run("session list is agent-scoped", func(t *testing.T) {
+		body := get("/v1/sessions", "k_support", "").Body.String()
+		assert.Contains(t, body, sessSupport.ID)
+		assert.NotContains(t, body, sessFinance.ID, "an agent key must not list another agent's sessions")
+
+		// The query parameter cannot widen an agent key's scope.
+		widened := get("/v1/sessions?agent_id=finance-bot", "k_support", "").Body.String()
+		assert.NotContains(t, widened, sessFinance.ID, "agent_id parameter must not override the key's scope")
+
+		adminBody := get("/v1/sessions?tenant_id=acme", "", "admin-secret").Body.String()
+		assert.Contains(t, adminBody, sessSupport.ID)
+		assert.Contains(t, adminBody, sessFinance.ID, "admin keeps the tenant-wide view")
+	})
+
+	t.Run("session get hides another agent's session", func(t *testing.T) {
+		assert.Equal(t, http.StatusOK, get("/v1/sessions/"+sessSupport.ID, "k_support", "").Code)
+		assert.Equal(t, http.StatusNotFound, get("/v1/sessions/"+sessFinance.ID, "k_support", "").Code,
+			"another agent's session must be indistinguishable from a missing one")
+		assert.Equal(t, http.StatusOK, get("/v1/sessions/"+sessFinance.ID, "", "admin-secret").Code)
+	})
+
+	t.Run("pending plans are agent-scoped", func(t *testing.T) {
+		body := get("/v1/plans/pending", "k_support", "").Body.String()
+		assert.Contains(t, body, planSupport.ID)
+		assert.NotContains(t, body, planFinance.ID, "an agent key must not list another agent's plans")
+
+		adminBody := get("/v1/plans/pending?tenant_id=acme", "", "admin-secret").Body.String()
+		assert.Contains(t, adminBody, planSupport.ID)
+		assert.Contains(t, adminBody, planFinance.ID)
+	})
+
+	t.Run("plan get hides another agent's plan", func(t *testing.T) {
+		assert.Equal(t, http.StatusOK, get("/v1/plans/"+planSupport.ID, "k_support", "").Code)
+		assert.Equal(t, http.StatusNotFound, get("/v1/plans/"+planFinance.ID, "k_support", "").Code)
+		assert.Equal(t, http.StatusOK, get("/v1/plans/"+planFinance.ID+"?tenant_id=acme", "", "admin-secret").Code)
+	})
+
+	t.Run("trigger history is agent-scoped", func(t *testing.T) {
+		body := get("/v1/triggers/deploy/history", "k_support", "").Body.String()
+		assert.Contains(t, body, "ev_trig_support")
+		assert.NotContains(t, body, "ev_trig_finance", "an agent key must not see another agent's trigger invocations")
+
+		adminBody := get("/v1/triggers/deploy/history?tenant_id=acme", "", "admin-secret").Body.String()
+		assert.Contains(t, adminBody, "ev_trig_support")
+		assert.Contains(t, adminBody, "ev_trig_finance")
+	})
+}
+
 // TestNativeExecutionRoutesRequireAdminWhenGatewayServed (#266 review round
 // 5): when the gateway is serving agent traffic, native execution routes
 // (/v1/agents/run, native /v1/chat/completions) reject agent keys — an agent

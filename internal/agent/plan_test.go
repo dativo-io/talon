@@ -144,7 +144,7 @@ func TestPlanReviewStore_CRUD(t *testing.T) {
 	assert.Equal(t, PlanPending, got.Status)
 
 	// GetPending
-	pending, err := store.GetPending(ctx, "acme")
+	pending, err := store.GetPending(ctx, "acme", "")
 	require.NoError(t, err)
 	assert.Len(t, pending, 1)
 
@@ -157,7 +157,7 @@ func TestPlanReviewStore_CRUD(t *testing.T) {
 	assert.Equal(t, PlanApproved, approved.Status)
 
 	// Pending list should be empty now
-	pending, err = store.GetPending(ctx, "acme")
+	pending, err = store.GetPending(ctx, "acme", "")
 	require.NoError(t, err)
 	assert.Len(t, pending, 0)
 }
@@ -332,14 +332,42 @@ func TestPlanReviewStore_TenantIsolation(t *testing.T) {
 	require.NoError(t, store.Save(ctx, plan1))
 	require.NoError(t, store.Save(ctx, plan2))
 
-	acmePlans, err := store.GetPending(ctx, "acme")
+	acmePlans, err := store.GetPending(ctx, "acme", "")
 	require.NoError(t, err)
 	assert.Len(t, acmePlans, 1)
 	assert.Equal(t, "acme", acmePlans[0].TenantID)
 
-	allPlans, err := store.GetPending(ctx, "")
+	allPlans, err := store.GetPending(ctx, "", "")
 	require.NoError(t, err)
 	assert.Len(t, allPlans, 2)
+}
+
+// TestPlanReviewStore_AgentScope (#286): an agent filter isolates two agents
+// sharing one tenant; empty agent keeps the tenant-wide view.
+func TestPlanReviewStore_AgentScope(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	store, err := NewPlanReviewStore(db)
+	require.NoError(t, err)
+
+	planA := GenerateExecutionPlan("c1", "acme", "agent-a", "gpt-4", 0, nil, 0, "allow", "", "", 30)
+	planB := GenerateExecutionPlan("c2", "acme", "agent-b", "gpt-4", 0, nil, 0, "allow", "", "", 30)
+	require.NoError(t, store.Save(ctx, planA))
+	require.NoError(t, store.Save(ctx, planB))
+
+	aPlans, err := store.GetPending(ctx, "acme", "agent-a")
+	require.NoError(t, err)
+	require.Len(t, aPlans, 1)
+	assert.Equal(t, "agent-a", aPlans[0].AgentID)
+
+	nonePlans, err := store.GetPending(ctx, "acme", "agent-c")
+	require.NoError(t, err)
+	assert.Empty(t, nonePlans, "unknown agent sees nothing, not everything")
+
+	tenantWide, err := store.GetPending(ctx, "acme", "")
+	require.NoError(t, err)
+	assert.Len(t, tenantWide, 2)
 }
 
 // TestPlanReviewStore_CrossTenantAccess verifies that Get/Approve/Reject/Modify scoped by tenant_id

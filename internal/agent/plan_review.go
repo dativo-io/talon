@@ -134,16 +134,22 @@ func (s *PlanReviewStore) Save(ctx context.Context, plan *ExecutionPlan) error {
 	return err
 }
 
-// GetPending returns all plans awaiting review, optionally filtered by tenant.
+// GetPending returns all plans awaiting review, optionally filtered by tenant
+// and by the agent the plan belongs to (#286: an agent key reads only its own
+// plans; empty agentID is the tenant-wide admin view).
 // Uses a bound time parameter (time.Now()) so the comparison matches go-sqlite3's
 // serialization of timeout_at; datetime('now') would differ in format and break in non-UTC.
-func (s *PlanReviewStore) GetPending(ctx context.Context, tenantID string) ([]*ExecutionPlan, error) {
+func (s *PlanReviewStore) GetPending(ctx context.Context, tenantID, agentID string) ([]*ExecutionPlan, error) {
 	now := time.Now()
 	query := `SELECT plan_json FROM execution_plans WHERE status = 'pending' AND timeout_at > ?`
 	args := []interface{}{now}
 	if tenantID != "" {
 		query += ` AND tenant_id = ?`
 		args = append(args, tenantID)
+	}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
 	}
 	query += ` ORDER BY created_at ASC`
 

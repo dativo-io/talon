@@ -32,7 +32,7 @@ func TestMaybeGateForPlanReview_BypassSkipsPendingPlan(t *testing.T) {
 	assert.False(t, gated)
 	assert.Nil(t, resp)
 
-	pending, err := store.GetPending(context.Background(), "acme")
+	pending, err := store.GetPending(context.Background(), "acme", "")
 	require.NoError(t, err)
 	assert.Len(t, pending, 0)
 }
