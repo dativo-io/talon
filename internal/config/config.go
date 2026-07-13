@@ -44,6 +44,7 @@ const (
 	KeySecretsKey          = "secrets_key"
 	KeySigningKey          = "signing_key"
 	KeyDefaultPolicy       = "default_policy"
+	KeyAgentsDir           = "agents_dir"
 	KeyMaxAttachmentMB     = "max_attachment_mb"
 	KeyOllamaBaseURL       = "ollama_base_url"
 	KeyOllamaMaxNumPredict = "ollama_max_num_predict"
@@ -257,10 +258,15 @@ type CacheConfig struct {
 // For tenant-level secrets (LLM API keys, webhook tokens), use the
 // secrets vault (internal/secrets.SecretStore).
 type Config struct {
-	DataDir         string // Base directory for all state (~/.talon)
-	SecretsKey      string // AES-256 encryption key for the vault (exactly 32 bytes)
-	SigningKey      string // HMAC-SHA256 key for evidence signing (≥32 bytes)
-	DefaultPolicy   string // Filename of the agent policy file (agent.talon.yaml by default)
+	DataDir       string // Base directory for all state (~/.talon)
+	SecretsKey    string // AES-256 encryption key for the vault (exactly 32 bytes)
+	SigningKey    string // HMAC-SHA256 key for evidence signing (≥32 bytes)
+	DefaultPolicy string // Filename of the agent policy file (agent.talon.yaml by default)
+	// AgentsDir, when set, is scanned recursively for agent.talon.yaml files —
+	// one file per AI use case (#267). It is then authoritative for fleet
+	// membership: DefaultPolicy no longer defines an agent (no mode merging).
+	// Empty (the default) keeps single-file mode unchanged.
+	AgentsDir       string
 	MaxAttachmentMB int    // Maximum attachment size in MB
 	OllamaBaseURL   string // Ollama API endpoint (operator infrastructure)
 	// OllamaMaxNumPredict, when > 0, caps num_predict (output tokens) on every
@@ -354,6 +360,7 @@ func Load() (*Config, error) {
 		SecretsKey:          viper.GetString(KeySecretsKey),
 		SigningKey:          viper.GetString(KeySigningKey),
 		DefaultPolicy:       viper.GetString(KeyDefaultPolicy),
+		AgentsDir:           viper.GetString(KeyAgentsDir),
 		MaxAttachmentMB:     viper.GetInt(KeyMaxAttachmentMB),
 		OllamaBaseURL:       viper.GetString(KeyOllamaBaseURL),
 		OllamaMaxNumPredict: viper.GetInt(KeyOllamaMaxNumPredict),

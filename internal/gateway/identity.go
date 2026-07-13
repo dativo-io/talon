@@ -33,8 +33,9 @@ var ErrAdminKeyCollision = errors.New("agent key collides with admin key")
 
 // LoadedAgent is one agent config as loaded from an agent.talon.yaml, mapped
 // to gateway-native types by the serve-time bridge (the gateway package stays
-// free of the policy loader). #266 loads the single default agent policy;
-// #267 plugs agents_dir discovery into the same slice.
+// free of the policy loader). Single-file mode loads the one default agent
+// policy; agents_dir discovery (#267, internal/agentcatalog) feeds the same
+// slice with every agent found under the directory.
 type LoadedAgent struct {
 	// Path is the config file the agent was loaded from (surfaced by the
 	// fleet view, #270).

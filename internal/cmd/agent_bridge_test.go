@@ -197,6 +197,83 @@ func TestBuildServeIdentityRegistryModeMatrix(t *testing.T) {
 	})
 }
 
+// TestBuildServeIdentityRegistryFromDir (#267): agents_dir mode builds the
+// registry from the recursive scan, and errors are terminal in EVERY serve
+// mode — deliberate fleet configuration gets no single-file degrade
+// affordance.
+func TestBuildServeIdentityRegistryFromDir(t *testing.T) {
+	ctx := context.Background()
+	writeAgent := func(t *testing.T, agentsDir, sub, name, secret string) {
+		t.Helper()
+		d := filepath.Join(agentsDir, sub)
+		require.NoError(t, os.MkdirAll(d, 0o755))
+		y := "agent:\n  name: " + name + "\n  version: \"1.0.0\"\n"
+		if secret != "" {
+			y += "  key:\n    secret_name: " + secret + "\n"
+		}
+		y += "policies:\n  cost_limits: {}\n"
+		require.NoError(t, os.WriteFile(filepath.Join(d, "agent.talon.yaml"), []byte(y), 0o600))
+	}
+	newVault := func(t *testing.T) *secrets.SecretStore {
+		t.Helper()
+		store, err := secrets.NewSecretStore(filepath.Join(t.TempDir(), "s.db"), "0123456789abcdef0123456789abcdef")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = store.Close() })
+		return store
+	}
+
+	t.Run("two keyed agents resolve into one registry", func(t *testing.T) {
+		agentsDir := t.TempDir()
+		writeAgent(t, agentsDir, "support", "support", "support-key")
+		writeAgent(t, agentsDir, "coding", "coding", "coding-key")
+		vault := newVault(t)
+		require.NoError(t, vault.Set(ctx, "support-key", []byte("tk-support"), secrets.ACL{}))
+		require.NoError(t, vault.Set(ctx, "coding-key", []byte("tk-coding"), secrets.ACL{}))
+
+		reg, scan, err := buildServeIdentityRegistryFromDir(ctx, agentsDir, vault, "")
+		require.NoError(t, err)
+		require.NotNil(t, reg)
+		assert.Equal(t, 2, reg.Len())
+		require.NotNil(t, scan)
+		assert.NotEmpty(t, scan.Digest, "the scan travels back so serve can log the generation")
+	})
+
+	t.Run("a broken file is terminal — no plain-serve degrade", func(t *testing.T) {
+		agentsDir := t.TempDir()
+		writeAgent(t, agentsDir, "support", "support", "support-key")
+		require.NoError(t, os.MkdirAll(filepath.Join(agentsDir, "bad"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "bad", "agent.talon.yaml"), []byte("agent:\n  version: \"1.0.0\"\npolicies:\n  cost_limits: {}\n"), 0o600))
+		vault := newVault(t)
+		require.NoError(t, vault.Set(ctx, "support-key", []byte("tk-support"), secrets.ACL{}))
+
+		_, scan, err := buildServeIdentityRegistryFromDir(ctx, agentsDir, vault, "")
+		require.Error(t, err)
+		require.NotNil(t, scan, "per-file causes travel back even on rejection")
+		assert.NotEmpty(t, scan.Issues)
+	})
+
+	t.Run("admin-key collision across the set is terminal", func(t *testing.T) {
+		agentsDir := t.TempDir()
+		writeAgent(t, agentsDir, "support", "support", "support-key")
+		vault := newVault(t)
+		require.NoError(t, vault.Set(ctx, "support-key", []byte("shared-admin-value"), secrets.ACL{}))
+
+		_, _, err := buildServeIdentityRegistryFromDir(ctx, agentsDir, vault, "shared-admin-value")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, gateway.ErrAdminKeyCollision)
+	})
+
+	t.Run("an unminted key in the set is terminal", func(t *testing.T) {
+		agentsDir := t.TempDir()
+		writeAgent(t, agentsDir, "support", "support", "unminted-key")
+		vault := newVault(t)
+
+		_, _, err := buildServeIdentityRegistryFromDir(ctx, agentsDir, vault, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unminted-key")
+	})
+}
+
 // TestBuildServeIdentityRegistry_StrictUnknownFields (#266 review round 4): a
 // gateway-bound agent policy with an unknown key (typo that would silently
 // drop a control) fails startup in gateway mode.

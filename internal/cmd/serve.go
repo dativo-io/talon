@@ -21,6 +21,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/agent"
 	"github.com/dativo-io/talon/internal/agent/tools"
+	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/compliance"
@@ -100,11 +101,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 	pol, err := policy.LoadPolicy(ctx, policyPath, false, policyBaseDir)
 	if err != nil {
 		gatewayOnly := serveGateway || serveProxyQuickstart
-		if gatewayOnly && errors.Is(err, os.ErrNotExist) {
+		// agents_dir mode (#267): fleet membership comes from the directory
+		// scan, so the default single file is optional — the minimal default
+		// only backs the native runtime baseline until PR-2 of Fleet
+		// Operations v1 resolves native runs from the catalog.
+		if (gatewayOnly || cfg.AgentsDir != "") && errors.Is(err, os.ErrNotExist) {
 			pol = &policy.Policy{
 				Agent: policy.AgentConfig{Name: "gateway", Version: "0.0.0"},
 			}
-			log.Warn().Str("path", policyPath).Msg("agent policy not found; using minimal default for gateway-only mode")
+			log.Warn().Str("path", policyPath).Msg("agent policy not found; using minimal default (gateway-only or agents_dir mode)")
 		} else {
 			return fmt.Errorf("loading policy: %w", err)
 		}
@@ -164,9 +169,27 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	identityRegistry, err := buildServeIdentityRegistry(ctx, pol, policyPath, secretsStore, adminKey, serveGateway, serveProxyQuickstart)
-	if err != nil {
-		return err
+	var identityRegistry *gateway.IdentityRegistry
+	if cfg.AgentsDir != "" && !serveProxyQuickstart {
+		// agents_dir discovery (#267): the directory is authoritative for
+		// fleet membership — every agent.talon.yaml found is one AI use case
+		// with its own key. Scan or registry failures are terminal in every
+		// serve mode (deliberate fleet configuration, no degrade affordance).
+		var fleetScan *agentcatalog.ScanResult
+		identityRegistry, fleetScan, err = buildServeIdentityRegistryFromDir(ctx, cfg.AgentsDir, secretsStore, adminKey)
+		if err != nil {
+			return err
+		}
+		log.Info().
+			Int("agents", len(fleetScan.Agents)).
+			Str("generation", shortGeneration(fleetScan.Digest)).
+			Str("agents_dir", cfg.AgentsDir).
+			Msg("agents_dir_discovered")
+	} else {
+		identityRegistry, err = buildServeIdentityRegistry(ctx, pol, policyPath, secretsStore, adminKey, serveGateway, serveProxyQuickstart)
+		if err != nil {
+			return err
+		}
 	}
 	// ONE shared atomic snapshot holder (#289): the gateway data plane,
 	// server agent-key auth, dashboard caps lookup, and metrics tenant scope
@@ -443,9 +466,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 		// Agent identity (#266): gateway mode with zero keyed agents is a
 		// startup error — such a gateway would reject every request, which is
-		// never what an operator meant. (#267 plugs agents_dir discovery into
-		// the same registry slice.)
+		// never what an operator meant.
 		if identityRegistry == nil || identityRegistry.Len() == 0 {
+			if cfg.AgentsDir != "" {
+				return fmt.Errorf("gateway mode requires at least one keyed agent: no agent.talon.yaml found under agents_dir %s (#267)", cfg.AgentsDir)
+			}
 			return fmt.Errorf("gateway mode requires at least one keyed agent: add agent.key.secret_name to %s and run `talon secrets set <name> <key>` (#266)", policyPath)
 		}
 		// --gateway flag explicitly opts in; override config's enabled field

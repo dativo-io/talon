@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dativo-io/talon/internal/agentbridge"
+	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
@@ -358,6 +359,12 @@ func GatewayIdentityPreflight(ctx context.Context) (agentName, secretName string
 	if err != nil {
 		return "", "", fmt.Errorf("loading operator config: %w", err)
 	}
+	// agents_dir mode (#267): preflight the FULL directory scan + registry
+	// dry-run — identical inputs to serve startup, never a reduced identity
+	// (the #279 lesson applies to the fleet exactly as to the single agent).
+	if cfg.AgentsDir != "" {
+		return gatewayIdentityPreflightDir(ctx, cfg)
+	}
 	pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
 	if err != nil {
 		return "", "", fmt.Errorf("no agent policy loaded (%v) — gateway mode requires at least one keyed agent: create agent.talon.yaml with agent.key.secret_name", err)
@@ -390,15 +397,47 @@ func GatewayIdentityPreflight(ctx context.Context) (agentName, secretName string
 	return pol.Agent.Name, pol.Agent.Key.SecretName, nil
 }
 
+// gatewayIdentityPreflightDir preflights agents_dir mode (#267): the same
+// recursive scan serve startup runs, then a registry dry-run over the FULL
+// discovered set (every key binding, duplicate check, admin-key collision).
+// agentName carries the fleet summary; secretName stays empty (there is no
+// single secret to name — the error names the failing file and secret).
+func gatewayIdentityPreflightDir(ctx context.Context, cfg *config.Config) (agentName, secretName string, err error) {
+	scan, err := agentcatalog.DiscoverAgents(ctx, cfg.AgentsDir)
+	if err != nil {
+		return "", "", fmt.Errorf("agents_dir preflight: %w", err)
+	}
+	if len(scan.Agents) == 0 {
+		return "", "", fmt.Errorf("no %s found under agents_dir %s — gateway mode requires at least one keyed agent (#267)", agentcatalog.AgentConfigFilename, cfg.AgentsDir)
+	}
+	fleet := fmt.Sprintf("%d agent(s) under %s", len(scan.Agents), cfg.AgentsDir)
+	secStore, secErr := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+	if secErr != nil {
+		return fleet, "", fmt.Errorf("cannot open secrets vault: %w", secErr)
+	}
+	defer secStore.Close()
+	if _, err := gateway.BuildIdentityRegistry(ctx, scan.LoadedAgents(), secStore, os.Getenv("TALON_ADMIN_KEY")); err != nil {
+		return fleet, "", fmt.Errorf("identity registry dry-run failed: %w", err)
+	}
+	return fleet, "", nil
+}
+
 // checkGatewayAgentIdentity preflights the agent identity model (#266). Every
 // condition that would make `talon serve --gateway` fail is a FAIL here —
 // doctor must never bless a gateway that cannot start (review on #279).
 func checkGatewayAgentIdentity(ctx context.Context) CheckResult {
 	agentName, secretName, err := GatewayIdentityPreflight(ctx)
+	dirMode := false
+	if cfg, cfgErr := config.Load(); cfgErr == nil && cfg.AgentsDir != "" {
+		dirMode = true
+	}
 	if err != nil {
 		fix := "Create agent.talon.yaml with agent.key.secret_name and mint the key: talon secrets set <name> <key>"
-		if secretName != "" {
+		switch {
+		case secretName != "":
 			fix = fmt.Sprintf("Run: talon secrets set %s <agent-key>", secretName)
+		case dirMode:
+			fix = "Fix the file named in the error: every agent.talon.yaml under agents_dir must validate, carry a unique agent.name, and bind a minted key (talon secrets set <name> <key>)"
 		}
 		return CheckResult{
 			Name: "gateway_agent_identity", Category: "gateway", Status: "fail",
@@ -406,9 +445,13 @@ func checkGatewayAgentIdentity(ctx context.Context) CheckResult {
 			Fix:     fix,
 		}
 	}
+	message := fmt.Sprintf("Agent %q key binding resolves (%s)", agentName, secretName)
+	if secretName == "" {
+		message = fmt.Sprintf("%s — identity registry dry-run passes", agentName)
+	}
 	return CheckResult{
 		Name: "gateway_agent_identity", Category: "gateway", Status: "pass",
-		Message: fmt.Sprintf("Agent %q key binding resolves (%s)", agentName, secretName),
+		Message: message,
 	}
 }
 

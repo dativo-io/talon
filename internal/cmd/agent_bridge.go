@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/dativo-io/talon/internal/agentbridge"
+	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
@@ -74,6 +75,35 @@ func buildServeIdentityRegistry(ctx context.Context, pol *policy.Policy, policyP
 		return nil, nil
 	}
 	return registry, nil
+}
+
+// buildServeIdentityRegistryFromDir builds the registry from an agents_dir
+// scan (#267): every agent.talon.yaml under the directory is one AI use case,
+// and every one must validate and bind a minted key. Errors are ALWAYS
+// terminal at startup, in gateway AND plain serve: agents_dir is deliberate
+// fleet configuration, so the single-file "unminted key degrades to a nil
+// registry" onboarding affordance does not apply. (During reload, #269, a
+// failed scan keeps last-known-good instead.) The ScanResult travels back so
+// the caller can log the generation and seed the reloader.
+func buildServeIdentityRegistryFromDir(ctx context.Context, dir string, vault *secrets.SecretStore, adminKey string) (*gateway.IdentityRegistry, *agentcatalog.ScanResult, error) {
+	scan, err := agentcatalog.DiscoverAgents(ctx, dir)
+	if err != nil {
+		return nil, scan, err
+	}
+	registry, err := gateway.BuildIdentityRegistry(ctx, scan.LoadedAgents(), vault, adminKey)
+	if err != nil {
+		return nil, scan, fmt.Errorf("building agent identity registry from agents_dir %s: %w", dir, err)
+	}
+	return registry, scan, nil
+}
+
+// shortGeneration abbreviates a scan digest for logs (full digests live in
+// evidence, #269).
+func shortGeneration(digest string) string {
+	if len(digest) > 12 {
+		return digest[:12]
+	}
+	return digest
 }
 
 // holderKeyResolver adapts the shared registry holder into the server's

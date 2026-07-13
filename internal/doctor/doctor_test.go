@@ -475,3 +475,95 @@ func TestReport_SummaryCalculation(t *testing.T) {
 	assert.Equal(t, 1, report.Summary.Warn)
 	assert.Equal(t, 1, report.Summary.Fail)
 }
+
+// TestGatewayIdentityPreflight_AgentsDir (#267): in agents_dir mode the
+// preflight runs the SAME recursive scan + full-set registry dry-run serve
+// startup runs — a condition that would refuse startup must fail here too.
+func TestGatewayIdentityPreflight_AgentsDir(t *testing.T) {
+	writeAgent := func(t *testing.T, agentsDir, sub, name, secret string) string {
+		t.Helper()
+		d := filepath.Join(agentsDir, sub)
+		require.NoError(t, os.MkdirAll(d, 0o755))
+		y := "agent:\n  name: " + name + "\n  version: \"1.0.0\"\n"
+		if secret != "" {
+			y += "  key:\n    secret_name: " + secret + "\n"
+		}
+		y += "policies:\n  cost_limits: {}\n"
+		p := filepath.Join(d, "agent.talon.yaml")
+		require.NoError(t, os.WriteFile(p, []byte(y), 0o600))
+		return p
+	}
+	setup := func(t *testing.T) (dataDir, agentsDir string) {
+		t.Helper()
+		dataDir = t.TempDir()
+		agentsDir = filepath.Join(dataDir, "agents")
+		require.NoError(t, os.MkdirAll(agentsDir, 0o755))
+		t.Setenv("TALON_DATA_DIR", dataDir)
+		t.Setenv("TALON_AGENTS_DIR", agentsDir)
+		return dataDir, agentsDir
+	}
+	mint := func(t *testing.T, names ...string) {
+		t.Helper()
+		cfg, err := config.Load()
+		require.NoError(t, err)
+		store, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
+		require.NoError(t, err)
+		defer store.Close()
+		for _, n := range names {
+			require.NoError(t, store.Set(context.Background(), n, []byte("tk-"+n), secrets.ACL{}))
+		}
+	}
+
+	t.Run("two keyed agents pass the full dry-run", func(t *testing.T) {
+		_, agentsDir := setup(t)
+		writeAgent(t, agentsDir, "support", "support", "support-key")
+		writeAgent(t, agentsDir, "coding", "coding", "coding-key")
+		mint(t, "support-key", "coding-key")
+
+		summary, secretName, err := GatewayIdentityPreflight(context.Background())
+		require.NoError(t, err)
+		assert.Contains(t, summary, "2 agent(s)")
+		assert.Empty(t, secretName)
+	})
+
+	t.Run("one broken file fails the whole preflight", func(t *testing.T) {
+		_, agentsDir := setup(t)
+		writeAgent(t, agentsDir, "support", "support", "support-key")
+		mint(t, "support-key")
+		broken := filepath.Join(agentsDir, "bad")
+		require.NoError(t, os.MkdirAll(broken, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(broken, "agent.talon.yaml"), []byte("agent:\n  version: \"1.0.0\"\npolicies:\n  cost_limits: {}\n"), 0o600))
+
+		_, _, err := GatewayIdentityPreflight(context.Background())
+		require.Error(t, err, "serve startup would refuse this directory — doctor must too")
+	})
+
+	t.Run("duplicate names fail", func(t *testing.T) {
+		_, agentsDir := setup(t)
+		writeAgent(t, agentsDir, "a", "support", "key-a")
+		writeAgent(t, agentsDir, "b", "support", "key-b")
+		mint(t, "key-a", "key-b")
+
+		_, _, err := GatewayIdentityPreflight(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate agent name")
+	})
+
+	t.Run("empty directory fails gateway preflight", func(t *testing.T) {
+		setup(t)
+		_, _, err := GatewayIdentityPreflight(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at least one keyed agent")
+	})
+
+	t.Run("unminted key in the set fails", func(t *testing.T) {
+		_, agentsDir := setup(t)
+		writeAgent(t, agentsDir, "support", "support", "support-key")
+		writeAgent(t, agentsDir, "coding", "coding", "coding-key")
+		mint(t, "support-key") // coding-key never minted
+
+		_, _, err := GatewayIdentityPreflight(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "coding")
+	})
+}

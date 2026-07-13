@@ -150,6 +150,10 @@
       "default": "agent.talon.yaml",
       "description": "Filename of the agent policy file loaded by default."
     },
+    "agents_dir": {
+      "type": "string",
+      "description": "Directory scanned recursively for agent.talon.yaml files — one file per AI use case (#267). When set it is authoritative for fleet membership (default_policy no longer defines an agent). Empty/absent keeps single-file mode."
+    },
     "max_attachment_mb": {
       "type": "integer",
       "minimum": 1,

@@ -320,7 +320,7 @@ The global budget widget denominates against what enforcement actually gates on 
 Query params: `tenant_id` (or derived from the presenting agent key), `agent_id`. Returns `daily_used` / `monthly_used`, the applicable `daily_limit` / `monthly_limit`, and `budget_source`:
 
 - `"agent_effective_cap"` — the limits are the agent's **binding effective** caps, resolved for `agent_id` by the same shared computation enforcement uses (organization defaults → the agent's one override, bounded by the organization ceilings, #287/#288). With no `agent_id`, the tenant's **single** registered agent resolves this way when exactly one exists.
-- `"unknown_agent"` — a running gateway did not find `agent_id` in the identity registry: no limits are reported (never the default agent file's caps), and `note` says so explicitly — until `agents_dir` (#267) exactly one agent policy is loaded per gateway (#290).
+- `"unknown_agent"` — a running gateway did not find `agent_id` in the identity registry: no limits are reported (never another agent file's caps), and `note` says so explicitly (#290). The registry holds the single `default_policy` agent, or the full discovered fleet when `agents_dir` is set (#267).
 - `"unresolved_multi_agent"` — no `agent_id` was given and the tenant has several registered agents; query a specific `agent_id`.
 - `"policy_cost_limits"` — native mode (no gateway): the limits come from the loaded agent policy file's `policies.cost_limits`, which is what the native runner enforces.
 
