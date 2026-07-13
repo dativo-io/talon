@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -873,8 +874,11 @@ func (s *Server) handleCostsBudget(w http.ResponseWriter, r *http.Request) {
 		"monthly_used": monthlyUsed,
 	}
 	// Per-agent caps come from the shared effective-policy computation over
-	// the identity registry (injected by serve) — never re-derived here (#266).
-	if agentID != "" && s.agentCapsLookup != nil {
+	// the identity registry (injected by serve) — never re-derived here
+	// (#266). With no agent_id, the lookup resolves the tenant's SINGLE
+	// registered agent when exactly one exists (#288) — the tenant-wide
+	// question has one honest answer in that case.
+	if s.agentCapsLookup != nil {
 		if dailyLimit, monthlyLimit, ok := s.agentCapsLookup(tenantID, agentID); ok {
 			if dailyLimit > 0 {
 				out["daily_limit"] = dailyLimit
@@ -886,7 +890,22 @@ func (s *Server) handleCostsBudget(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, out)
 			return
 		}
+		// A running gateway is authoritative for agent identity: never fall
+		// back to the default agent FILE's caps here — that number is not
+		// what enforcement gates the requested agent on (#288). A named but
+		// unregistered agent gets an explicit unknown-agent answer (#290).
+		if agentID != "" {
+			out["budget_source"] = "unknown_agent"
+			out["note"] = fmt.Sprintf("agent %q is not in the identity registry — until agents_dir (#267) exactly one agent policy is loaded per gateway; no caps reported", agentID)
+		} else {
+			out["budget_source"] = "unresolved_multi_agent"
+			out["note"] = "multiple agents in this tenant; query a specific agent_id for its effective caps"
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
 	}
+	// Native mode (no gateway): the agent policy's own cost_limits ARE what
+	// the runner enforces — an honest denominator, not a guess.
 	if s.policy != nil && s.policy.Policies.CostLimits != nil {
 		out["daily_limit"] = s.policy.Policies.CostLimits.Daily
 		out["monthly_limit"] = s.policy.Policies.CostLimits.Monthly

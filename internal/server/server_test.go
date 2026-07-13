@@ -2258,6 +2258,73 @@ func TestEvidenceAgentScope_AgentKeySeesOnlyOwnAgent(t *testing.T) {
 	assert.NotContains(t, evs, "ev_finance_1", "events must not surface another agent's records")
 }
 
+// TestCostsBudget_RuntimeResolvedContract (#288): with a running gateway (a
+// caps lookup is injected), /v1/costs/budget answers from the runtime
+// resolution ONLY — a named-but-unknown agent gets an explicit unknown_agent
+// answer instead of the default agent file's caps, and the no-agent question
+// resolves the tenant's single agent. Native mode (no lookup) keeps the
+// policy_cost_limits fallback: those ARE what the runner enforces.
+func TestCostsBudget_RuntimeResolvedContract(t *testing.T) {
+	pol := minimalPolicy()
+	pol.Policies.CostLimits = &policy.CostLimitsConfig{Daily: 11, Monthly: 111}
+	engine, err := policy.NewEngine(context.Background(), pol)
+	require.NoError(t, err)
+	store, err := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	lookup := func(tenantID, agentID string) (float64, float64, bool) {
+		if tenantID == "acme" && (agentID == "support-bot" || agentID == "") {
+			return 50, 400, true // the runtime-resolved binding caps
+		}
+		return 0, 0, false
+	}
+
+	get := func(r http.Handler, path string) map[string]interface{} {
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+		req.Header.Set("X-Talon-Admin-Key", "admin-secret")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var out map[string]interface{}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+		return out
+	}
+
+	t.Run("gateway mode", func(t *testing.T) {
+		srv := NewServer(nil, store, nil, engine, pol, "", nil, "admin-secret", nil,
+			WithAgentCapsLookup(lookup))
+		r := srv.Routes()
+
+		known := get(r, "/v1/costs/budget?tenant_id=acme&agent_id=support-bot")
+		assert.Equal(t, "agent_effective_cap", known["budget_source"])
+		assert.Equal(t, 50.0, known["daily_limit"])
+		assert.Equal(t, 400.0, known["monthly_limit"])
+
+		single := get(r, "/v1/costs/budget?tenant_id=acme")
+		assert.Equal(t, "agent_effective_cap", single["budget_source"], "no agent_id resolves the tenant's single agent")
+		assert.Equal(t, 50.0, single["daily_limit"])
+
+		unknown := get(r, "/v1/costs/budget?tenant_id=acme&agent_id=rogue")
+		assert.Equal(t, "unknown_agent", unknown["budget_source"],
+			"an unregistered agent must get an explicit answer, never the default file's caps")
+		assert.NotContains(t, unknown, "daily_limit")
+		assert.Contains(t, unknown["note"], "#267")
+
+		ambiguous := get(r, "/v1/costs/budget?tenant_id=globex")
+		assert.Equal(t, "unresolved_multi_agent", ambiguous["budget_source"])
+		assert.NotContains(t, ambiguous, "daily_limit")
+	})
+
+	t.Run("native mode keeps policy_cost_limits", func(t *testing.T) {
+		srv := NewServer(nil, store, nil, engine, pol, "", nil, "admin-secret", nil)
+		r := srv.Routes()
+		out := get(r, "/v1/costs/budget?tenant_id=acme")
+		assert.Equal(t, "policy_cost_limits", out["budget_source"])
+		assert.Equal(t, 11.0, out["daily_limit"])
+	})
+}
+
 // TestSessionsPlansTriggersAgentScope (#286): sessions, plans, and trigger
 // history are agent-scoped for agent keys — two agents in one tenant cannot
 // read each other's records; the admin key keeps the tenant-wide view. This

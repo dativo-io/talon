@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -23,6 +25,7 @@ import (
 
 var (
 	costsAgent        string
+	costsServerURL    string
 	costsTenant       string
 	costsByModel      bool
 	costsByProvider   bool
@@ -292,6 +295,14 @@ func resolveBudgetUsage(
 	tenantID, agentID string,
 	daily, monthly float64,
 ) (dailyBudget *budgetUsage, monthlyBudget *budgetUsage) {
+	// The RUNNING server is authoritative when reachable (#288): its
+	// /v1/costs/budget answers with the caps the gateway actually enforces
+	// (registry + ResolveEffectivePolicy + org ceilings), so the CLI cannot
+	// disagree with enforcement by re-loading guessed files. Offline, fall
+	// through to the local resolution below.
+	if d, m, ok := fetchServerBudget(ctx, costsServerURL, tenantID, agentID); ok {
+		return d, m
+	}
 	if agentID != "" {
 		if dailyLimit, monthlyLimit, ok := loadAgentEffectiveCaps(ctx, cfg, tenantID, agentID); ok {
 			return toBudgetUsage(daily, dailyLimit, "agent_effective_cap"), toBudgetUsage(monthly, monthlyLimit, "agent_effective_cap")
@@ -301,8 +312,67 @@ func resolveBudgetUsage(
 	if err != nil || pol == nil || pol.Policies.CostLimits == nil {
 		return nil, nil
 	}
+	// The default agent FILE's cost_limits apply only to THAT agent (or the
+	// tenant-wide view). Reporting them as another agent's budget was the
+	// #288 defect: `talon costs --agent other` silently showed the default
+	// agent's caps. Until agents_dir (#267), an unknown agent gets NO
+	// denominator rather than a wrong one.
+	if agentID != "" && agentID != pol.Agent.Name {
+		fmt.Fprintf(os.Stderr, "note: agent %q is not the loaded default agent policy (%q) — no budget caps reported; start `talon serve` and use --url for the runtime-resolved caps, or wait for agents_dir discovery (#267)\n", agentID, pol.Agent.Name)
+		return nil, nil
+	}
 	cl := pol.Policies.CostLimits
 	return toBudgetUsage(daily, cl.Daily, "policy_cost_limits"), toBudgetUsage(monthly, cl.Monthly, "policy_cost_limits")
+}
+
+// fetchServerBudget queries the running server's /v1/costs/budget (#288). It
+// mirrors `talon metrics`: TALON_ADMIN_KEY authenticates when set, and ANY
+// failure (server down, auth, unexpected shape) falls back to local
+// resolution — the CLI must work offline. Only a definitive answer with a
+// positive cap short-circuits; unknown_agent / unresolved answers fall
+// through so the local path can report its own diagnosis.
+func fetchServerBudget(ctx context.Context, baseURL, tenantID, agentID string) (dailyBudget, monthlyBudget *budgetUsage, ok bool) {
+	trimmed := trimRightSlash(baseURL)
+	if trimmed == "" {
+		return nil, nil, false
+	}
+	u := trimmed + "/v1/costs/budget?tenant_id=" + url.QueryEscape(tenantID)
+	if agentID != "" {
+		u += "&agent_id=" + url.QueryEscape(agentID)
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, nil, false
+	}
+	if adminKey := os.Getenv("TALON_ADMIN_KEY"); adminKey != "" {
+		req.Header.Set("X-Talon-Admin-Key", adminKey)
+	}
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+	if err != nil {
+		return nil, nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, false
+	}
+	var body struct {
+		DailyUsed    float64 `json:"daily_used"`
+		MonthlyUsed  float64 `json:"monthly_used"`
+		DailyLimit   float64 `json:"daily_limit"`
+		MonthlyLimit float64 `json:"monthly_limit"`
+		BudgetSource string  `json:"budget_source"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return nil, nil, false
+	}
+	if body.BudgetSource == "" || (body.DailyLimit <= 0 && body.MonthlyLimit <= 0) {
+		return nil, nil, false
+	}
+	source := "server_" + body.BudgetSource
+	return toBudgetUsage(body.DailyUsed, body.DailyLimit, source),
+		toBudgetUsage(body.MonthlyUsed, body.MonthlyLimit, source), true
 }
 
 // loadAgentEffectiveCaps reports the agent's effective daily/monthly caps via
@@ -646,7 +716,8 @@ func renderCostReportAllAgents(w io.Writer, currency, tenantID string, byAgentDa
 func init() {
 	rootCmd.AddCommand(costsCmd)
 	costsCmd.AddCommand(costsExportCmd)
-	costsCmd.Flags().StringVar(&costsAgent, "agent", "", "filter by agent name")
+	costsCmd.Flags().StringVar(&costsAgent, "agent", "", "filter by agent name (budget caps resolve via the running server when reachable; until agents_dir #267 the local fallback knows only the default agent policy)")
+	costsCmd.Flags().StringVar(&costsServerURL, "url", "http://localhost:8080", "base URL of the running talon server for runtime-resolved budget caps (#288); unreachable = local resolution")
 	costsCmd.Flags().StringVar(&costsTenant, "tenant", "", "tenant ID (default: default)")
 	costsCmd.Flags().BoolVar(&costsByModel, "by-model", false, "group output by model")
 	costsCmd.Flags().BoolVar(&costsByProvider, "by-provider", false, "group output by provider")
