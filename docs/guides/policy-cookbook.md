@@ -48,7 +48,7 @@ supports data-transfer controls (e.g. GDPR Chapter V transfer policies);
 Talon enforces the rule and produces the evidence — it does not make the
 compliance determination for you.
 
-**Where:** `talon.config.yaml` under `gateway.organization_policy.egress` (or
+**Where:** `talon.config.yaml` under `gateway.organization_policy.constraints.egress` (or
 per agent under `policies.egress` in the agent file — a second boundary
 evaluated alongside the organization's: a destination must pass **both**).
 
@@ -67,15 +67,16 @@ gateway:
       base_url: "http://localhost:11434"
       region: "LOCAL"
   organization_policy:
-    egress:
-      default_action: allow
-      rules:
-        - tier: public                      # or 0
-          allowed_providers: ["*"]          # public data: any destination
-        - tier: internal                    # or 1
-          allowed_providers: ["openai", "mistral-eu"]
-        - tier: confidential                # or 2
-          allowed_regions: ["EU", "LOCAL"]  # PII never leaves EU/local
+    constraints:
+      egress:
+        default_action: allow
+        rules:
+          - tier: public                      # or 0
+            allowed_providers: ["*"]          # public data: any destination
+          - tier: internal                    # or 1
+            allowed_providers: ["openai", "mistral-eu"]
+          - tier: confidential                # or 2
+            allowed_regions: ["EU", "LOCAL"]  # PII never leaves EU/local
 ```
 
 What happens:
@@ -128,7 +129,7 @@ policies:
     monthly: 200.00
 ```
 
-On the gateway, these caps are the agent's override: each replaces the organization baseline (`gateway.organization_policy.max_daily_cost` / `max_monthly_cost`) when > 0. `talon costs --agent <name>` reports the same effective caps enforcement uses.
+On the gateway, these caps are the agent's override: each replaces the organization baseline (`gateway.organization_policy.defaults.daily_cost` / `monthly_cost`) when > 0. Org budget ceilings (`organization_policy.constraints.max_daily_cost` / `max_monthly_cost`, #287) are enforced in addition — an override can never raise them, and a ceiling denial names the organization in the deny reason. `talon costs --agent <name>` reports the same effective caps enforcement uses.
 
 ---
 
@@ -136,7 +137,7 @@ On the gateway, these caps are the agent's override: each replaces the organizat
 
 **Goal:** Redact or block PII before it reaches the LLM (input) and/or in the LLM response (output).
 
-**Where:** `agent.talon.yaml` — `data_classification` with granular `redact_input` / `redact_output` fields (`redact_pii` still works as a shorthand for both). The organization-wide default lives in `gateway.organization_policy.default_pii_action`.
+**Where:** `agent.talon.yaml` — `data_classification` with granular `redact_input` / `redact_output` fields (`redact_pii` still works as a shorthand for both). The organization-wide default lives in `gateway.organization_policy.defaults.pii_action`.
 
 ```yaml
 # agent.talon.yaml — granular input/output control; the same booleans are the
@@ -156,7 +157,8 @@ policies:
 # talon.config.yaml — organization baseline for every agent without an override
 gateway:
   organization_policy:
-    default_pii_action: "redact"   # warn | redact | block | allow
+    defaults:
+      pii_action: "redact"   # warn | redact | block | allow
 ```
 
 `redact_input` / `redact_output` default to the value of `redact_pii` when not explicitly set. Explicit values override `redact_pii` (e.g. `redact_pii: true` + `redact_input: false` → only output is redacted).
@@ -443,8 +445,9 @@ Streaming-honest response posture is set at the **organization baseline** — `a
 ```yaml
 gateway:
   organization_policy:
-    default_pii_action: "warn"
-    response_pii_action: "allow"
+    defaults:
+      pii_action: "warn"
+      response_pii_action: "allow"
 ```
 
 Credential recognizers go in the same `agent.talon.yaml` (high-precision only — PEM blocks, prefixed API keys; Talon is not a secret scanner, keep gitleaks/trufflehog in pre-commit):
@@ -522,22 +525,22 @@ The agent file carries the agent's one override; the gateway block carries only 
 
 | Snippet type | `agent.talon.yaml` (governance team) | `talon.config.yaml` gateway block (DevOps team) |
 |--------------|--------------------------------------|--------------------------------------------------|
-| Cost limits | `policies.cost_limits` (daily/monthly replace the baseline when > 0); `policies.session_limits.max_cost` | Baseline: `gateway.organization_policy.max_daily_cost` / `max_monthly_cost` |
-| Model allow/block (gateway) | `policies.models.allowed` / `policies.models.blocked` | Provider destination constraints: `gateway.providers.<name>.allowed_models` / `blocked_models` |
+| Cost limits | `policies.cost_limits` (daily/monthly replace the baseline when > 0); `policies.session_limits.max_cost` (replaces `defaults.session_cost` when > 0, #283) | Baselines: `gateway.organization_policy.defaults.daily_cost` / `monthly_cost` / `session_cost`; org ceilings enforced in addition: `constraints.max_daily_cost` / `max_monthly_cost` / `max_session_cost` (#287/#283) |
+| Model allow/block (gateway) | `policies.models.allowed` / `policies.models.blocked` | Org hard constraint: `gateway.organization_policy.constraints.allowed_models` / `blocked_models`; provider destination constraints: `gateway.providers.<name>.allowed_models` / `blocked_models` |
 | Model routing (runner) | `policies.model_routing` | -- |
-| Provider allowlist | `policies.allowed_providers` | -- |
+| Provider allowlist | `policies.allowed_providers` (narrows within the org constraint) | Org hard constraint: `gateway.organization_policy.constraints.allowed_providers` |
 | Time restrictions | `policies.time_restrictions` | -- |
-| PII action | `policies.data_classification` booleans (`input_scan`, `redact_input`, `block_on_pii`, …) | Baseline: `gateway.organization_policy.default_pii_action` / `response_pii_action` |
+| PII action | `policies.data_classification` booleans (`input_scan`, `redact_input`, `block_on_pii`, …) | Baseline: `gateway.organization_policy.defaults.pii_action` / `defaults.response_pii_action` |
 | Input PII redaction | `policies.data_classification.redact_input` | -- |
 | Output PII redaction | `policies.data_classification.redact_output` | -- |
 | Block on PII | `policies.data_classification.block_on_pii` | -- |
-| Data tier cap | `policies.data_classification.max_data_tier` | -- |
-| Egress rules | `policies.egress` (second boundary; a destination must pass both this AND the baseline) | Baseline: `gateway.organization_policy.egress` |
-| Tool governance (gateway) | `capabilities.allowed_tools` / `forbidden_tools` / `tool_policy_action` | Baseline: `gateway.organization_policy.forbidden_tools` / `tool_policy_action` |
+| Data tier cap | `policies.data_classification.max_data_tier` (applies only when lower) | Org ceiling: `gateway.organization_policy.constraints.max_data_tier` |
+| Egress rules | `policies.egress` (second boundary; a destination must pass both this AND the org constraint) | Org constraint: `gateway.organization_policy.constraints.egress` |
+| Tool governance (gateway) | `capabilities.allowed_tools` / `forbidden_tools` / `tool_policy_action` | Org: `constraints.forbidden_tools`, hard allowlist `constraints.allowed_tools` (#282), default `defaults.tool_policy_action` (agent may tighten `filter` → `block` only, #287) |
 | Tool hardening (row caps, dry-run, forbidden args) | `tool_policies` | -- |
 | Tool idempotency (dedupe retried side effects) | `tool_governance` | -- |
 | Human oversight | `compliance.human_oversight` | -- |
-| Attachment scanning (gateway) | — (baseline only in #266) | `gateway.organization_policy.attachment_policy` |
+| Attachment scanning (gateway) | — (baseline only in #266) | `gateway.organization_policy.defaults.attachment_policy` |
 | Semantic cache (experimental, parked #141) | — | `talon.config.yaml` only (`cache` section, infrastructure) |
 
 ---

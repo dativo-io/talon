@@ -126,7 +126,7 @@ func runPlanPending(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	plans, err := store.GetPending(ctx, planTenantID)
+	plans, err := store.GetPending(ctx, planTenantID, "")
 	if err != nil {
 		return fmt.Errorf("listing pending plans: %w", err)
 	}

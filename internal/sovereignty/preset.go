@@ -56,8 +56,8 @@ func ApplyAirGapPreset(op *config.Config, gw *gateway.GatewayConfig) (*EgressGua
 		op.LLM.Routing.DataSovereigntyMode = config.DataSovereigntyEUStrict
 	}
 
-	if gw != nil && isEgressUnconfigured(gw.OrganizationPolicy.Egress) {
-		gw.OrganizationPolicy.Egress = DefaultAirGapEgress()
+	if gw != nil && isEgressUnconfigured(gw.OrganizationPolicy.Constraints.Egress) {
+		gw.OrganizationPolicy.Constraints.Egress = DefaultAirGapEgress()
 	}
 
 	allow, err := BuildAllowlist(op, gw)

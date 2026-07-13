@@ -92,8 +92,11 @@ const (
 
 // Gateway is the LLM API gateway handler.
 type Gateway struct {
-	config        *GatewayConfig
-	registry      *IdentityRegistry
+	config *GatewayConfig
+	// registry is the shared atomic snapshot holder (#289): identity is
+	// resolved against Current() per request, so a reload swap (#269)
+	// propagates here without reconstructing the gateway.
+	registry      *RegistryHolder
 	classifier    classifier.Facade
 	evidenceStore *evidence.Store
 	secretsStore  *secrets.SecretStore
@@ -105,15 +108,13 @@ type Gateway struct {
 	attExtractor  *attachment.Extractor
 	attInjScanner *attachment.Scanner
 	// Optional semantic cache (when nil or disabled, cache is skipped)
-	cacheStore    *cache.Store
-	cacheEmbedder *cache.BM25
-	cacheScrubber *cache.PIIScrubber
-	cachePolicy   *cache.Evaluator
-	cacheConfig   *gatewayCacheConfig
-	// canonicalTenantIDs maps tenant ID -> same ID from config (populated at init); used for cache key scope so static analysis sees value from config, not from request.
-	canonicalTenantIDs map[string]string
-	metricsRecorder    MetricsRecorder
-	sessionStore       *session.Store
+	cacheStore      *cache.Store
+	cacheEmbedder   *cache.BM25
+	cacheScrubber   *cache.PIIScrubber
+	cachePolicy     *cache.Evaluator
+	cacheConfig     *gatewayCacheConfig
+	metricsRecorder MetricsRecorder
+	sessionStore    *session.Store
 	// pricingCurrency is the ISO-4217 code of the pricing table backing
 	// costEstimate; stamped into evidence so records stay self-describing
 	// if the operator later changes the table (#216).
@@ -131,14 +132,17 @@ type gatewayCacheConfig struct {
 	MaxEntriesPerTenant int
 }
 
-// canonicalTenantIDForCache returns the tenant ID for cache key scope from the config-derived map.
-// Used so the value passed to cache.DeriveEntryKey originates from config (not from the request path), satisfying static analysis.
+// canonicalTenantIDForCache returns the tenant ID for cache key scope from
+// config-derived values — the CURRENT registry snapshot (#289), so a reload
+// re-scopes cache keys without gateway reconstruction. Used so the value
+// passed to cache.DeriveEntryKey originates from config (not from the
+// request path), satisfying static analysis.
 func (g *Gateway) canonicalTenantIDForCache(fromAgent string) string {
-	if g.canonicalTenantIDs == nil {
-		return fromAgent
+	if fromAgent == quickstartTenantID {
+		return quickstartTenantID
 	}
-	if s, ok := g.canonicalTenantIDs[fromAgent]; ok {
-		return s
+	if canonical, ok := g.registry.Current().CanonicalTenantID(fromAgent); ok {
+		return canonical
 	}
 	return fromAgent
 }
@@ -178,13 +182,15 @@ func (g *Gateway) SetCache(store *cache.Store, embedder *cache.BM25, scrubber *c
 	}
 }
 
-// NewGateway creates a new Gateway. The registry is the immutable key → agent
-// identity set built by BuildIdentityRegistry; a nil/empty registry means no
+// NewGateway creates a new Gateway. The registry holder is the shared atomic
+// snapshot holder (#289): its Current() registry is the immutable key → agent
+// identity set built by BuildIdentityRegistry, and a reload (#269) swaps it
+// for every consumer at once. A holder over a nil/empty registry means no
 // agent can authenticate (quickstart mode injects its synthetic identity via
 // request context instead).
 func NewGateway(
 	config *GatewayConfig,
-	registry *IdentityRegistry,
+	registry *RegistryHolder,
 	classifier classifier.Facade,
 	evidenceStore *evidence.Store,
 	secretsStore *secrets.SecretStore,
@@ -205,7 +211,7 @@ func NewGateway(
 	)
 
 	maxMB := DefaultAttachmentMaxFileSizeMB
-	if p := config.OrganizationPolicy.AttachmentPolicy; p != nil && p.MaxFileSizeMB > 0 {
+	if p := config.OrganizationPolicy.Defaults.AttachmentPolicy; p != nil && p.MaxFileSizeMB > 0 {
 		maxMB = p.MaxFileSizeMB
 	}
 	ext := attachment.NewExtractor(maxMB)
@@ -214,27 +220,24 @@ func NewGateway(
 		return nil, fmt.Errorf("creating attachment injection scanner: %w", err)
 	}
 
-	// Cache tenant scope derives from the registry — agent-declared tenants
-	// included — so cache keys always originate from config, not requests.
-	canonical := make(map[string]string)
-	for _, tid := range registry.TenantIDs() {
-		canonical[tid] = tid
+	if registry == nil {
+		// Normalize so every read goes through one nil-safe holder — a
+		// keyless gateway (quickstart) is a holder over a nil registry.
+		registry = NewRegistryHolder(nil)
 	}
-	canonical[quickstartTenantID] = quickstartTenantID
 	return &Gateway{
-		config:             config,
-		registry:           registry,
-		classifier:         classifier,
-		evidenceStore:      evidenceStore,
-		secretsStore:       secretsStore,
-		policy:             policy,
-		costEstimate:       costEstimate,
-		timeouts:           timeouts,
-		client:             client,
-		rateLimiter:        rl,
-		attExtractor:       ext,
-		attInjScanner:      injScan,
-		canonicalTenantIDs: canonical,
+		config:        config,
+		registry:      registry,
+		classifier:    classifier,
+		evidenceStore: evidenceStore,
+		secretsStore:  secretsStore,
+		policy:        policy,
+		costEstimate:  costEstimate,
+		timeouts:      timeouts,
+		client:        client,
+		rateLimiter:   rl,
+		attExtractor:  ext,
+		attInjScanner: injScan,
 	}, nil
 }
 
@@ -564,11 +567,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx = withBudgetUnavailable(ctx)
 	}
 	// Utilization must be measured against the same effective caps enforcement
-	// uses (default overlaid by per-agent override), or the dashboard reports a
-	// different denominator than the runtime actually gates on (#216). Skip
-	// utilization/alerts when the spend read failed — a "0%" reading would be
-	// a lie; the request carries an agent_budget_unavailable annotation instead.
-	dailyCap, monthlyCap := eff.MaxDailyCost, eff.MaxMonthlyCost
+	// uses (default overlaid by per-agent override, bounded by the org ceiling
+	// #287), or the dashboard reports a different denominator than the runtime
+	// actually gates on (#216). Skip utilization/alerts when the spend read
+	// failed — a "0%" reading would be a lie; the request carries an
+	// agent_budget_unavailable annotation instead.
+	dailyCap, monthlyCap := eff.BindingDailyCap(), eff.BindingMonthlyCap()
 	if dailyCap > 0 && !budgetUnavailable {
 		pct := (dailyCost / dailyCap) * 100
 		RecordBudgetUtilization(ctx, agent.TenantID, "daily", pct)
@@ -652,8 +656,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Tool governance comes from the effective policy (baseline union provider union agent).
 	var toolResult *ToolGovernanceResult
 	forwardBody := body
-	if len(extracted.ToolNames) > 0 && (len(eff.AllowedTools) > 0 || len(eff.ForbiddenTools) > 0) {
-		tr := EvaluateToolPolicy(extracted.ToolNames, eff.AllowedTools, eff.ForbiddenTools)
+	if len(extracted.ToolNames) > 0 && hasToolGovernance(&eff) {
+		tr := evaluateToolPolicyFor(extracted.ToolNames, &eff)
 		toolResult = &tr
 		if len(tr.Removed) > 0 {
 			switch {
@@ -1025,12 +1029,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// action is `filter`, strip the forbidden tools and PROCEED (matching
 		// the primary path); only `block` skips the candidate (#266 review r4).
 		if len(extracted.ToolNames) > 0 {
-			if len(candEff.AllowedTools) > 0 || len(candEff.ForbiddenTools) > 0 {
+			if hasToolGovernance(&candEff) {
 				forwarded := extracted.ToolNames
 				if toolResult != nil {
 					forwarded = toolResult.Kept
 				}
-				if tr := EvaluateToolPolicy(forwarded, candEff.AllowedTools, candEff.ForbiddenTools); len(tr.Removed) > 0 {
+				if tr := evaluateToolPolicyFor(forwarded, &candEff); len(tr.Removed) > 0 {
 					switch {
 					case isShadow:
 						shadowViolations = append(shadowViolations, evidence.ShadowViolation{
@@ -1762,15 +1766,7 @@ func buildGatewayPolicyInput(agent *ResolvedIdentity, eff EffectivePolicy, provi
 		input["agent_egress_rules"] = egressRulesForPolicyInput(eff.AgentEgress)
 		input["agent_egress_default_action"] = eff.AgentEgress.DefaultAction
 	}
-	// Effective caps: organization baseline overlaid by the agent's override.
-	// The same resolution feeds budget-utilization metrics/alerts so the
-	// dashboard and the enforcement decision agree on the denominator (#216).
-	if eff.MaxDailyCost > 0 {
-		input["agent_max_daily_cost"] = eff.MaxDailyCost
-	}
-	if eff.MaxMonthlyCost > 0 {
-		input["agent_max_monthly_cost"] = eff.MaxMonthlyCost
-	}
+	emitBudgetPolicyInput(input, &eff)
 	if len(eff.AllowedModels) > 0 {
 		input["agent_allowed_models"] = eff.AllowedModels
 	}
@@ -1794,11 +1790,6 @@ func buildGatewayPolicyInput(agent *ResolvedIdentity, eff EffectivePolicy, provi
 	if len(eff.ProviderBlockedModels) > 0 {
 		input["provider_blocked_models"] = eff.ProviderBlockedModels
 	}
-	if eff.MaxSessionCost > 0 {
-		// One insertion in the shared builder covers the primary request
-		// and every fallback candidate identically (#198).
-		input["agent_max_session_cost"] = eff.MaxSessionCost
-	}
 	// Tier caps ride per-layer keys so the deny reason names WHICH layer's
 	// restriction fired (#279 review) — the effective minimum still gates
 	// (each rule denies independently; the stricter one always fires).
@@ -1809,6 +1800,37 @@ func buildGatewayPolicyInput(agent *ResolvedIdentity, eff EffectivePolicy, provi
 		input["org_max_data_tier"] = int(*eff.OrgMaxDataTier)
 	}
 	return input
+}
+
+// emitBudgetPolicyInput adds the budget keys to the shared policy input.
+// Effective caps: organization baseline overlaid by the agent's override —
+// the same resolution feeds budget-utilization metrics/alerts so the
+// dashboard and the enforcement decision agree on the denominator (#216).
+// The session cap rides the same builder so the primary request and every
+// fallback candidate see it identically (#198). Org budget ceilings
+// (constraints.max_*, #287/#283) ride separate keys with their own deny
+// rules, so an agent-declared budget above the org line still denies at the
+// ceiling — and the signed deny reason names the ORGANIZATION, not the agent
+// (same layer-attribution contract as the data-tier rules).
+func emitBudgetPolicyInput(input map[string]interface{}, eff *EffectivePolicy) {
+	if eff.MaxDailyCost > 0 {
+		input["agent_max_daily_cost"] = eff.MaxDailyCost
+	}
+	if eff.MaxMonthlyCost > 0 {
+		input["agent_max_monthly_cost"] = eff.MaxMonthlyCost
+	}
+	if eff.MaxSessionCost > 0 {
+		input["agent_max_session_cost"] = eff.MaxSessionCost
+	}
+	if eff.OrgMaxDailyCost > 0 {
+		input["org_max_daily_cost"] = eff.OrgMaxDailyCost
+	}
+	if eff.OrgMaxMonthlyCost > 0 {
+		input["org_max_monthly_cost"] = eff.OrgMaxMonthlyCost
+	}
+	if eff.OrgMaxSessionCost > 0 {
+		input["org_max_session_cost"] = eff.OrgMaxSessionCost
+	}
 }
 
 // sessionBudgetDetail extracts the structured {limit, spent, estimate} session
@@ -1826,7 +1848,12 @@ func sessionBudgetDetail(reasons []string, policyInput map[string]interface{}, e
 	if !fired {
 		return nil
 	}
-	limit, _ := policyInput["agent_max_session_cost"].(float64)
+	// Two session rules can fire (agent cap #198, org ceiling #283) — the
+	// recorded limit is the BINDING one: the tightest positive bound is the
+	// first to be exceeded, so it is the number the decision was made on.
+	agentLimit, _ := policyInput["agent_max_session_cost"].(float64)
+	orgLimit, _ := policyInput["org_max_session_cost"].(float64)
+	limit := tightestPositive(agentLimit, orgLimit)
 	spent, _ := policyInput["session_cost_total"].(float64)
 	return &evidence.SessionBudget{Limit: limit, Spent: spent, Estimate: estimatedCost}
 }

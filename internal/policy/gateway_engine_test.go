@@ -391,6 +391,77 @@ func TestGatewayEngine_EvaluateGateway_DenyDailyCost(t *testing.T) {
 	require.Contains(t, reasons[0], "daily")
 }
 
+// TestGatewayEngine_OrgBudgetCeilings (#287/#283): the org constraints ride
+// their own input keys and deny with ORG-attributed messages — an agent cap
+// looser than the ceiling cannot save the request, and the signed reason
+// names the organization, never the agent.
+func TestGatewayEngine_OrgBudgetCeilings(t *testing.T) {
+	ctx := context.Background()
+	eng, err := NewGatewayEngine(ctx)
+	require.NoError(t, err)
+	base := func() map[string]interface{} {
+		return map[string]interface{}{
+			"provider":       "openai",
+			"model":          "gpt-4o",
+			"data_tier":      0,
+			"daily_cost":     40.0,
+			"monthly_cost":   100.0,
+			"estimated_cost": 15.0,
+		}
+	}
+
+	t.Run("org daily ceiling denies although the agent cap allows", func(t *testing.T) {
+		in := base()
+		in["agent_max_daily_cost"] = 100.0 // agent thinks it has headroom
+		in["org_max_daily_cost"] = 50.0    // org ceiling is exceeded (40+15 > 50)
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+		require.Len(t, reasons, 1)
+		require.Contains(t, reasons[0], "organization daily cost limit")
+	})
+
+	t.Run("org monthly ceiling denies with org-attributed reason", func(t *testing.T) {
+		in := base()
+		in["org_max_monthly_cost"] = 110.0 // 100+15 > 110
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+		require.Contains(t, reasons[0], "organization monthly cost limit")
+	})
+
+	t.Run("under both bounds allows", func(t *testing.T) {
+		in := base()
+		in["agent_max_daily_cost"] = 100.0
+		in["org_max_daily_cost"] = 60.0 // 40+15 <= 60
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.True(t, allowed, "reasons: %v", reasons)
+	})
+
+	t.Run("org session ceiling denies asserted sessions (#283)", func(t *testing.T) {
+		in := base()
+		in["session_cost_total"] = 9.0
+		in["org_max_session_cost"] = 20.0 // 9+15 > 20
+		allowed, reasons, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.False(t, allowed)
+		require.Contains(t, reasons[0], "session_budget_exceeded")
+		require.Contains(t, reasons[0], "organization limit")
+	})
+
+	t.Run("org session ceiling fails open without session_cost_total", func(t *testing.T) {
+		// Synthetic sessions / store failures omit session_cost_total: the
+		// rule cannot evaluate and the request proceeds — same contract as
+		// the agent session rule (#198).
+		in := base()
+		in["org_max_session_cost"] = 1.0
+		allowed, _, err := eng.EvaluateGateway(ctx, in)
+		require.NoError(t, err)
+		require.True(t, allowed)
+	})
+}
+
 // TestGatewayEngine_ProviderModelConstraints (#266 review round 4, #278):
 // provider (destination) model lists ride the SAME shared policy input as
 // agent/org lists, so the PRIMARY route enforces them via Rego.

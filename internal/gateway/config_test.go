@@ -32,8 +32,9 @@ gateway:
       enabled: true
       base_url: "http://localhost:11434"
   organization_policy:
-    default_pii_action: warn
-    max_daily_cost: 100
+    defaults:
+      pii_action: warn
+      daily_cost: 100
 `)
 	cfg, err := LoadGatewayConfig(path)
 	if err != nil {
@@ -45,7 +46,7 @@ gateway:
 	if cfg.ListenPrefix != "/v1/proxy" {
 		t.Errorf("listen_prefix = %q", cfg.ListenPrefix)
 	}
-	if cfg.OrganizationPolicy.DefaultPIIAction != "warn" || cfg.OrganizationPolicy.MaxDailyCost != 100 {
+	if cfg.OrganizationPolicy.Defaults.PIIAction != "warn" || cfg.OrganizationPolicy.Defaults.DailyCost != 100 {
 		t.Errorf("organization_policy = %+v", cfg.OrganizationPolicy)
 	}
 	prov, ok := cfg.Provider("openai")
@@ -105,6 +106,164 @@ gateway:
 			}
 		})
 	}
+}
+
+// Pre-split flat organization_policy keys must fail load with a migration
+// error naming the new defaults/constraints location — strict decoding would
+// reject them anyway, but with a generic unknown-field message (#287).
+func TestLoadGatewayConfigRejectsPreSplitOrgKeys(t *testing.T) {
+	base := `
+gateway:
+  enabled: true
+  mode: enforce
+  providers:
+    ollama:
+      enabled: true
+      base_url: "http://localhost:11434"
+`
+	cases := []struct {
+		name     string
+		snippet  string
+		wantKey  string
+		wantHint string
+	}{
+		{"default_pii_action", "  organization_policy:\n    default_pii_action: warn\n", `"organization_policy.default_pii_action"`, "defaults.pii_action"},
+		{"max_daily_cost", "  organization_policy:\n    max_daily_cost: 100\n", `"organization_policy.max_daily_cost"`, "defaults.daily_cost"},
+		{"max_monthly_cost", "  organization_policy:\n    max_monthly_cost: 500\n", `"organization_policy.max_monthly_cost"`, "constraints.max_monthly_cost"},
+		{"allowed_models", "  organization_policy:\n    allowed_models: [\"gpt-4o\"]\n", `"organization_policy.allowed_models"`, "constraints.allowed_models"},
+		{"forbidden_tools", "  organization_policy:\n    forbidden_tools: [\"delete_*\"]\n", `"organization_policy.forbidden_tools"`, "constraints.forbidden_tools"},
+		{"tool_policy_action", "  organization_policy:\n    tool_policy_action: block\n", `"organization_policy.tool_policy_action"`, "defaults.tool_policy_action"},
+		{"egress", "  organization_policy:\n    egress:\n      default_action: allow\n", `"organization_policy.egress"`, "constraints.egress"},
+		{"attachment_policy", "  organization_policy:\n    attachment_policy:\n      action: warn\n", `"organization_policy.attachment_policy"`, "defaults.attachment_policy"},
+		{"max_data_tier", "  organization_policy:\n    max_data_tier: 1\n", `"organization_policy.max_data_tier"`, "constraints.max_data_tier"},
+		{"allowed_providers", "  organization_policy:\n    allowed_providers: [\"ollama\"]\n", `"organization_policy.allowed_providers"`, "constraints.allowed_providers"},
+		{"response_pii_action", "  organization_policy:\n    response_pii_action: redact\n", `"organization_policy.response_pii_action"`, "defaults.response_pii_action"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, base+tc.snippet)
+			_, err := LoadGatewayConfig(path)
+			if err == nil {
+				t.Fatalf("expected pre-split key %s to fail load", tc.wantKey)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.wantKey) || !strings.Contains(msg, tc.wantHint) || !strings.Contains(msg, "#287") {
+				t.Errorf("error should name the removed key, its new location, and #287, got: %v", err)
+			}
+		})
+	}
+	// Operational scalars did NOT move — they must still load at the top level.
+	path := writeConfig(t, base+"  organization_policy:\n    log_prompts: true\n    scan_tool_content: off\n")
+	cfg, err := LoadGatewayConfig(path)
+	if err != nil {
+		t.Fatalf("top-level operational keys must still load: %v", err)
+	}
+	if !cfg.OrganizationPolicy.LogPrompts || cfg.OrganizationPolicy.ScanToolContent != ScanToolContentOff {
+		t.Errorf("operational keys mis-parsed: %+v", cfg.OrganizationPolicy)
+	}
+}
+
+// Org budget bounds are validated as a set (#287): defaults must fit under
+// the org's own ceilings, and nothing may be negative.
+func TestValidateBudgetBounds(t *testing.T) {
+	base := `
+gateway:
+  enabled: true
+  mode: enforce
+  providers:
+    ollama:
+      enabled: true
+      base_url: "http://localhost:11434"
+  organization_policy:
+`
+	t.Run("default above ceiling rejected", func(t *testing.T) {
+		path := writeConfig(t, base+"    defaults:\n      daily_cost: 100\n    constraints:\n      max_daily_cost: 50\n")
+		_, err := LoadGatewayConfig(path)
+		if err == nil || !strings.Contains(err.Error(), "exceeds organization_policy.constraints.max_daily_cost") {
+			t.Fatalf("want default-above-ceiling error, got: %v", err)
+		}
+	})
+	t.Run("negative ceiling rejected", func(t *testing.T) {
+		path := writeConfig(t, base+"    constraints:\n      max_monthly_cost: -1\n")
+		_, err := LoadGatewayConfig(path)
+		if err == nil || !strings.Contains(err.Error(), "must not be negative") {
+			t.Fatalf("want negative-ceiling error, got: %v", err)
+		}
+	})
+	t.Run("consistent bounds accepted", func(t *testing.T) {
+		path := writeConfig(t, base+"    defaults:\n      daily_cost: 10\n      monthly_cost: 100\n    constraints:\n      max_daily_cost: 50\n      max_monthly_cost: 500\n")
+		cfg, err := LoadGatewayConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.OrganizationPolicy.Constraints.MaxDailyCost != 50 || cfg.OrganizationPolicy.Defaults.DailyCost != 10 {
+			t.Errorf("bounds mis-parsed: %+v", cfg.OrganizationPolicy)
+		}
+	})
+	// The implicit baseline (100/2000 when unset) is ceiling-aware: an
+	// operator setting only constraints.max_daily_cost must not trip
+	// validation over a built-in default they never wrote — the implicit
+	// baseline clamps to the ceiling instead (#287).
+	t.Run("implicit default clamps to explicit ceiling", func(t *testing.T) {
+		path := writeConfig(t, base+"    constraints:\n      max_daily_cost: 20\n")
+		cfg, err := LoadGatewayConfig(path)
+		if err != nil {
+			t.Fatalf("ceiling-only config must load: %v", err)
+		}
+		if cfg.OrganizationPolicy.Defaults.DailyCost != 20 {
+			t.Errorf("implicit daily baseline = %v, want clamped to ceiling 20", cfg.OrganizationPolicy.Defaults.DailyCost)
+		}
+	})
+}
+
+// Org allowed_providers entries must name configured providers (#284):
+// matching is exact and case-sensitive, so a typo would silently deny every
+// request at runtime instead of failing at load.
+func TestValidateOrgAllowedProvidersAgainstConfigured(t *testing.T) {
+	base := `
+gateway:
+  enabled: true
+  mode: enforce
+  providers:
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+    ollama:
+      enabled: true
+      base_url: "http://localhost:11434"
+  organization_policy:
+    constraints:
+`
+	t.Run("case typo rejected at load", func(t *testing.T) {
+		path := writeConfig(t, base+"      allowed_providers: [\"OpenAI\"]\n")
+		_, err := LoadGatewayConfig(path)
+		if err == nil || !strings.Contains(err.Error(), `"OpenAI" does not match any configured provider`) {
+			t.Fatalf("want configured-provider mismatch error, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "ollama, openai") {
+			t.Errorf("error should list configured providers sorted, got: %v", err)
+		}
+	})
+	t.Run("unknown name rejected at load", func(t *testing.T) {
+		path := writeConfig(t, base+"      allowed_providers: [\"mistral-eu\"]\n")
+		_, err := LoadGatewayConfig(path)
+		if err == nil || !strings.Contains(err.Error(), "#284") {
+			t.Fatalf("want mismatch error referencing #284, got: %v", err)
+		}
+	})
+	t.Run("configured names accepted", func(t *testing.T) {
+		path := writeConfig(t, base+"      allowed_providers: [\"openai\", \"ollama\"]\n")
+		if _, err := LoadGatewayConfig(path); err != nil {
+			t.Fatalf("configured provider names must validate: %v", err)
+		}
+	})
+	t.Run("empty list stays unrestricted", func(t *testing.T) {
+		path := writeConfig(t, base+"      allowed_providers: []\n")
+		if _, err := LoadGatewayConfig(path); err != nil {
+			t.Fatalf("empty list must load: %v", err)
+		}
+	})
 }
 
 func TestParseTimeouts(t *testing.T) {

@@ -158,9 +158,9 @@ echo "=== Processes ===" && ps aux | grep -E 'talon|openclaw' | grep -v grep
 
 The agent's one policy override lives in `agent.talon.yaml`; the organization baseline lives in `talon.config.yaml` under `gateway.organization_policy`:
 
-- `policies.cost_limits.daily` / `.monthly` (agent file) — cost caps for this agent; each replaces the baseline (`organization_policy.max_daily_cost` / `max_monthly_cost`) when > 0
-- `organization_policy.default_pii_action` (baseline) — `block`, `redact`, `warn`, or `allow` when PII is detected in **requests**; per agent, tighten via `policies.data_classification` booleans (`block_on_pii` → block; `input_scan` + `redact_input` → redact; `input_scan` alone scans without changing the action). The merge is monotonic: the baseline is a floor an agent can only tighten
-- `organization_policy.response_pii_action` (baseline) — same actions for PII in **LLM responses** (default: `warn`); per agent via `output_scan` (+ `redact_output` / `block_on_pii`)
+- `policies.cost_limits.daily` / `.monthly` (agent file) — cost caps for this agent; each replaces the baseline (`organization_policy.defaults.daily_cost` / `monthly_cost`) when > 0 (org ceilings in `organization_policy.constraints.max_daily_cost` / `max_monthly_cost` are enforced in addition and can never be raised, #287)
+- `organization_policy.defaults.pii_action` (baseline) — `block`, `redact`, `warn`, or `allow` when PII is detected in **requests**; per agent, tighten via `policies.data_classification` booleans (`block_on_pii` → block; `input_scan` + `redact_input` → redact; `input_scan` alone scans without changing the action). The merge is monotonic: the baseline is a floor an agent can only tighten
+- `organization_policy.defaults.response_pii_action` (baseline) — same actions for PII in **LLM responses** (default: `warn`); per agent via `output_scan` (+ `redact_output` / `block_on_pii`)
 - `policies.models.allowed` / `.blocked` (agent file) — restrict which models this agent can use
 - `forbidden_tools` — strip dangerous tools before the LLM sees them (glob patterns); baseline and agent lists are unioned
 - `capabilities.allowed_tools` (agent file) — strict allowlist of tools
@@ -176,11 +176,11 @@ Tool governance is configured at three levels (most specific wins):
 
 | Level | Config key | Behaviour |
 |-------|-----------|-----------|
-| Organization baseline | `gateway.organization_policy.forbidden_tools` | Applies to every agent |
+| Organization constraint | `gateway.organization_policy.constraints.forbidden_tools` (and optional hard allowlist `constraints.allowed_tools`, #282) | Applies to every agent |
 | Per-provider | `providers.<name>.forbidden_tools` | Destination constraint for one provider |
 | Per-agent | `capabilities.forbidden_tools` / `allowed_tools` in the agent file | Applies to one agent |
 
-`forbidden_tools` is **additive** across all levels (union). `allowed_tools` is a strict allowlist — if set, only those tools pass (most-specific non-empty list wins). `forbidden_tools` overrides `allowed_tools`. `tool_policy_action` follows most-specific wins (agent > provider > baseline).
+`forbidden_tools` is **additive** across all levels (union). `allowed_tools` is a strict allowlist — if set, only those tools pass (most-specific non-empty list wins; when the org sets `constraints.allowed_tools`, that is a hard allowlist checked **in addition** — a tool must pass both, #282). `forbidden_tools` overrides `allowed_tools`. `tool_policy_action` merges most-specific across the operator layers (provider > org default); the agent layer is monotonic — an agent can tighten `filter` → `block` but never loosen `block` → `filter` (#287).
 
 Patterns use glob syntax (e.g. `delete_*`, `admin_*`, `bulk_*`). Case-insensitive matching.
 
@@ -194,14 +194,16 @@ Example — baseline in `talon.config.yaml`:
 ```yaml
 gateway:
   organization_policy:
-    tool_policy_action: "filter"
-    forbidden_tools:
-      - "delete_*"
-      - "admin_*"
-      - "export_all_*"
-      - "bulk_*"
-      - "rm_*"
-      - "drop_*"
+    defaults:
+      tool_policy_action: "filter"
+    constraints:
+      forbidden_tools:
+        - "delete_*"
+        - "admin_*"
+        - "export_all_*"
+        - "bulk_*"
+        - "rm_*"
+        - "drop_*"
 ```
 
 and the agent's override in `agent.talon.yaml`:
@@ -250,7 +252,7 @@ The default `response_pii_action` is **`warn`** because LLM-generated content is
 | `redact` | Replace PII with `[REDACTED]` in the response (streaming and non-streaming) |
 | `block` | Reject the response with HTTP 451 |
 
-Escalation ladder when needed: `warn` → `redact` → `block`. Configure the baseline in `gateway.organization_policy.response_pii_action`; per agent, set the `data_classification` output booleans in the agent file (`output_scan` alone scans without changing the action; + `redact_output` → redact; + `block_on_pii` → block). The merge is monotonic — an agent may only tighten the baseline. The baseline level falls back to `default_pii_action` when unset, and an agent's input PII action never cascades to its response action.
+Escalation ladder when needed: `warn` → `redact` → `block`. Configure the baseline in `gateway.organization_policy.defaults.response_pii_action`; per agent, set the `data_classification` output booleans in the agent file (`output_scan` alone scans without changing the action; + `redact_output` → redact; + `block_on_pii` → block). The merge is monotonic — an agent may only tighten the baseline. The baseline level falls back to `defaults.pii_action` when unset, and an agent's input PII action never cascades to its response action.
 
 #### Attachment scanning
 
@@ -258,7 +260,7 @@ Talon scans base64-encoded file attachments (PDF, TXT, CSV, HTML, images) embedd
 
 The gateway extracts text from supported file formats, scans for PII (using the same classifier as request text), and scans for prompt injection patterns (using the attachment injection scanner). Images are logged for evidence but skip text-based scanning since no text can be extracted.
 
-Configure via `gateway.organization_policy.attachment_policy` — the attachment policy is baseline-only in #266 (per-agent attachment overrides are deliberately not expressible yet):
+Configure via `gateway.organization_policy.defaults.attachment_policy` — the attachment policy is baseline-only in #266 (per-agent attachment overrides are deliberately not expressible yet):
 
 | Setting | Values | Default | Description |
 |---------|--------|---------|-------------|
@@ -282,11 +284,12 @@ Example config:
 ```yaml
 gateway:
   organization_policy:
-    attachment_policy:
-      action: "warn"
-      injection_action: "block"
-      max_file_size_mb: 10
-      blocked_types: ["exe", "bat", "sh"]
+    defaults:
+      attachment_policy:
+        action: "warn"
+        injection_action: "block"
+        max_file_size_mb: 10
+        blocked_types: ["exe", "bat", "sh"]
 ```
 
 

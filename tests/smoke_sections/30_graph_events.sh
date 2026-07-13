@@ -47,9 +47,9 @@ test_section_30_graph_events() {
 
   # Policy with resource limits for graph governance testing.
   # Serve loads agent.talon.yaml by default, so overwrite that file. The
-  # custom policy must keep a key binding — gateway mode refuses to start
-  # without a keyed agent (#266) — so the traffic key is bound AFTER the
-  # overwrite (smoke_bind_agent_key reads secret_name from the file).
+  # custom policy keeps a key binding so the agent key authenticates the
+  # tenant-scoped surface — the traffic key is bound AFTER the overwrite
+  # (smoke_bind_agent_key reads secret_name from the file).
   cat > "$dir/agent.talon.yaml" <<'POLICYEOF'
 agent:
   name: "smoke-graph-agent"
@@ -91,13 +91,19 @@ gateway:
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
   organization_policy:
-    default_pii_action: "warn"
+    defaults:
+      pii_action: "warn"
 GWEOF
   fi
 
   local GE_PID=""
   local ge_log="$dir/ge_serve.log"
-  run_talon serve --config "$dir/talon.config.yaml" --port "$ge_port" --gateway --gateway-config "$dir/talon.config.yaml" >"$ge_log" 2>&1 &
+  # PLAIN serve, no --gateway: /v1/graph/events is a NATIVE route, and when a
+  # gateway is served the native execution routes require the ADMIN key
+  # (#266 round 6 — agent traffic must use /v1/proxy). This section tests
+  # agent-key semantics on graph events (incl. the tenant-mismatch 403), so
+  # it must run in the native-only mode where agent keys reach that route.
+  run_talon serve --config "$dir/talon.config.yaml" --port "$ge_port" >"$ge_log" 2>&1 &
   GE_PID=$!
   if ! smoke_wait_health "$ge_base" 45 1; then
     log_failure "graph events server did not start on port ${ge_port}"

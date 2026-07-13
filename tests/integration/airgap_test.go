@@ -61,9 +61,10 @@ gateway:
       base_url: %q
       region: "LOCAL"
   organization_policy:
-    default_pii_action: warn
-    max_daily_cost: 100
-    max_monthly_cost: 2000
+    defaults:
+      pii_action: warn
+      daily_cost: 100
+      monthly_cost: 2000
   timeouts:
     connect_timeout: "5s"
     request_timeout: "30s"
@@ -120,7 +121,7 @@ gateway:
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := gateway.NewGateway(gwCfg, registry, classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
+	gw, err := gateway.NewGateway(gwCfg, gateway.NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
 	require.NoError(t, err)
 
 	r := chi.NewRouter()

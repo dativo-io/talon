@@ -54,7 +54,8 @@ func sessionList(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	sessions, err := store.ListByTenant(context.Background(), sessTenant, talonsession.Status(sessStatus))
+	// Operator CLI on the local DB: tenant-wide view (no agent scope).
+	sessions, err := store.ListByTenant(context.Background(), sessTenant, "", talonsession.Status(sessStatus))
 	if err != nil {
 		return fmt.Errorf("listing sessions: %w", err)
 	}

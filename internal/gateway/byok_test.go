@@ -122,7 +122,7 @@ func newBYOKGateway(t *testing.T, upstreamURL string) (*Gateway, *evidence.Store
 			"openai": {Enabled: true, BaseURL: upstreamURL, UpstreamAuthMode: "client_bearer"},
 		},
 		OrganizationPolicy: OrganizationPolicy{
-			DefaultPIIAction: "redact",
+			Defaults: OrgDefaults{PIIAction: "redact"},
 		},
 		RateLimits: RateLimitsConfig{
 			GlobalRequestsPerMin:   1000,
@@ -151,7 +151,7 @@ func newBYOKGateway(t *testing.T, upstreamURL string) (*Gateway, *evidence.Store
 		t.Fatalf("new secrets store: %v", err)
 	}
 	t.Cleanup(func() { _ = secStore.Close() })
-	gw, err := NewGateway(cfg, nil, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(nil), classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}

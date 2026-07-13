@@ -359,13 +359,24 @@ func (s *Store) AddUsage(ctx context.Context, id string, cost float64, tokens in
 // Complete marks a session completed. A non-empty tenantID scopes the
 // mutation: another tenant's session is ErrSessionNotFound, never completed
 // cross-tenant (#215).
-func (s *Store) Complete(ctx context.Context, id, tenantID string, cost float64, tokens int) error {
+// Complete marks a session completed. A non-empty tenantID scopes the
+// mutation to that tenant (#215) and a non-empty agentID to the session's
+// OWNING agent (#286 review, P1): reads were agent-scoped but completion was
+// not, so agent A could close agent B's session by id. The scope lives in
+// the UPDATE's WHERE clause — a non-owned session is ErrSessionNotFound,
+// indistinguishable from a missing one. Empty agentID is the admin/internal
+// (runner lifecycle) path.
+func (s *Store) Complete(ctx context.Context, id, tenantID, agentID string, cost float64, tokens int) error {
 	now := time.Now().UTC()
 	query := `UPDATE sessions SET status = ?, updated_at = ?, completed_at = ?, total_cost = total_cost + ?, total_tokens = total_tokens + ? WHERE id = ?`
 	args := []any{string(StatusCompleted), now, now, cost, tokens, id}
 	if tenantID != "" {
 		query += ` AND tenant_id = ?`
 		args = append(args, tenantID)
+	}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
 	}
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -450,16 +461,25 @@ func (s *Store) GetStageCounts(ctx context.Context, sessionID string) (*StageCou
 	return counts, rows.Err()
 }
 
-func (s *Store) ListByTenant(ctx context.Context, tenantID string, status Status) ([]*Session, error) {
-	var rows *sql.Rows
-	var err error
-	if status == "" {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT `+sessionColumns+` FROM sessions WHERE tenant_id = ? ORDER BY created_at DESC`, tenantID)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT `+sessionColumns+` FROM sessions WHERE tenant_id = ? AND status = ? ORDER BY created_at DESC`, tenantID, string(status))
+// ListByTenant lists a tenant's sessions, newest first. A non-empty agentID
+// additionally scopes to sessions OWNED by that agent (#286): ownership is
+// the one agent that created the row — external session ids are unique per
+// (tenant, agent) tuple, so two agents asserting the same external id hold
+// separate rows and owner filtering IS participation filtering here. Empty
+// agentID is the tenant-wide (admin) view.
+func (s *Store) ListByTenant(ctx context.Context, tenantID, agentID string, status Status) ([]*Session, error) {
+	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE tenant_id = ?`
+	args := []any{tenantID}
+	if agentID != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentID)
 	}
+	if status != "" {
+		query += ` AND status = ?`
+		args = append(args, string(status))
+	}
+	query += ` ORDER BY created_at DESC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing sessions for tenant %s: %w", tenantID, err)
 	}

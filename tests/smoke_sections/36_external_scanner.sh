@@ -175,6 +175,11 @@ test_section_36_external_scanner() {
     cd "$REPO_ROOT" || true
     return 0
   fi
+  # scan_key must be declared BEFORE the bind: it used to be declared below,
+  # so smoke_bind_agent_key received an empty $2, bound the agent secret to
+  # TALON_AGENT_KEY instead, and every ${scan_key} request 401'd (the whole
+  # section failed with "Invalid or missing agent key").
+  local scan_key="talon-gw-scanner-001"
   run_talon init --scaffold --name smoke-agent &>/dev/null; true
   smoke_bind_agent_key "$dir" "${scan_key}"
   smoke_tighten_limits "$dir"
@@ -184,7 +189,6 @@ test_section_36_external_scanner() {
     return 0
   fi
 
-  local scan_key="talon-gw-scanner-001"
   local reqlog="$dir/upstream_requests.log"
   smoke36_write_mock "$dir"
 
@@ -206,8 +210,9 @@ gateway:
       base_url: "http://127.0.0.1:${SMOKE36_UPSTREAM_PORT}"
       region: "EU"
   organization_policy:
-    default_pii_action: "redact"
-    max_daily_cost: 100.00
+    defaults:
+      pii_action: "redact"
+      daily_cost: 100.00
 GWEOF
 
   # --- Scenario A: dead engine endpoint -> serve refuses to start ---

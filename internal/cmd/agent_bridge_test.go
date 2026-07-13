@@ -39,6 +39,78 @@ func TestResolveRunTenant(t *testing.T) {
 	assert.Equal(t, "default", got)
 }
 
+// TestHolderKeyResolver_SwapPropagatesToServerAuth (#289): server tenant-API
+// auth resolves through the shared registry holder, so one reload Swap
+// changes which keys authenticate — including the HasAgentKeys dev-open
+// signal — without middleware rebuilds.
+func TestHolderKeyResolver_SwapPropagatesToServerAuth(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	vault, err := secrets.NewSecretStore(filepath.Join(dir, "s.db"), "0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vault.Close() })
+	require.NoError(t, vault.Set(ctx, "old-key", []byte("tk-old"), secrets.ACL{}))
+	require.NoError(t, vault.Set(ctx, "new-key", []byte("tk-new"), secrets.ACL{}))
+
+	buildReg := func(secretName string) *gateway.IdentityRegistry {
+		reg, err := gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{
+			{Path: "a.yaml", Name: "support", TenantID: "acme", Team: "cx", KeySecretName: secretName},
+		}, vault, "")
+		require.NoError(t, err)
+		return reg
+	}
+
+	holder := gateway.NewRegistryHolder(nil)
+	resolver := holderKeyResolver{holder: holder}
+
+	auth := resolver.AuthenticateAgentKey("tk-old")
+	assert.False(t, auth.KeysConfigured, "nil registry = no keys configured")
+	assert.False(t, auth.Found)
+
+	holder.Swap(buildReg("old-key"))
+	auth = resolver.AuthenticateAgentKey("tk-old")
+	assert.True(t, auth.KeysConfigured, "keys appear after the swap")
+	require.True(t, auth.Found)
+	assert.Equal(t, "support", auth.Identity.AgentID)
+	assert.Equal(t, "acme", auth.Identity.TenantID)
+	assert.Equal(t, "cx", auth.Identity.Team, "full identity travels through, not just the tenant")
+
+	// Key rotation: the old key stops authenticating, the new one starts.
+	holder.Swap(buildReg("new-key"))
+	auth = resolver.AuthenticateAgentKey("tk-old")
+	assert.False(t, auth.Found, "rotated-out key must stop authenticating")
+	assert.True(t, auth.KeysConfigured)
+	assert.True(t, resolver.AuthenticateAgentKey("tk-new").Found)
+
+	// Single-snapshot consistency under concurrent swaps (#291 review, P1):
+	// hammer empty ↔ non-empty swaps while authenticating a key valid in the
+	// non-empty registry. The dev-open fact (KeysConfigured) and the key
+	// resolution MUST come from the same snapshot, so exactly two outcomes
+	// are legal — {no keys configured, not found} (empty snapshot) or
+	// {keys configured, found} (keyed snapshot). The mixed outcome
+	// {no keys configured, found} — and the dangerous inverse
+	// {keys configured on resolve but dev-open already decided} that the old
+	// two-read API allowed — must never appear.
+	keyed := buildReg("new-key")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			holder.Swap(nil)
+			holder.Swap(keyed)
+		}
+	}()
+	for i := 0; i < 2000; i++ {
+		a := resolver.AuthenticateAgentKey("tk-new")
+		if a.KeysConfigured {
+			assert.True(t, a.Found, "keyed snapshot must resolve the key valid in it")
+		} else {
+			assert.False(t, a.Found, "empty snapshot cannot resolve anything")
+		}
+	}
+	<-done
+}
+
 // TestBuildServeIdentityRegistryModeMatrix regression-tests the serve-time
 // registry mode matrix (#279 review): quickstart skips, gateway is
 // fail-closed, plain serve degrades to a warning EXCEPT the admin-key

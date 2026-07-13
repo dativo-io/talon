@@ -331,9 +331,63 @@ type Collector struct {
 	budgetDaily    float64
 	budgetMonthly  float64
 	tenantID       string
+	// tenantScopeFn, when set, is consulted on EVERY aggregate query instead
+	// of the static tenantID (#289): serve wires it to the identity-registry
+	// holder so a reload re-scopes dashboard SQL without a new collector.
+	tenantScopeFn func() string
+	// budgetLimitsFn, when set, is consulted on every snapshot instead of
+	// the static budgetDaily/budgetMonthly (#291 review, P2) — the budget
+	// denominators follow a registry reload like the tenant scope does.
+	budgetLimitsFn func() (float64, float64)
+	// scopeFn, when set, supplies tenant AND budget limits from ONE source
+	// read per snapshot (#291 review round 2) and takes precedence over
+	// tenantScopeFn/budgetLimitsFn for the aggregate fills.
+	scopeFn        func() Scope
 	planStatsFn    func(context.Context, string) (PlanStats, error)
 	droppedEvents  uint64
 	reconcileStats ReconcileStats
+}
+
+// Scope is the per-snapshot aggregate scope: the tenant filter and
+// the budget denominators, derived TOGETHER from one registry snapshot
+// (#291 review round 2). fillAggregateMetrics captures exactly one
+// Scope per Snapshot(), so a registry reload (#269) mid-snapshot can
+// never combine limits from one registry generation with spend scoped by
+// another.
+type Scope struct {
+	TenantID      string
+	BudgetDaily   float64
+	BudgetMonthly float64
+}
+
+// tenantScope returns the tenant filter for aggregate queries: the live scope
+// function when configured (#289), else the static tenantID.
+func (c *Collector) tenantScope() string {
+	if c.tenantScopeFn != nil {
+		return c.tenantScopeFn()
+	}
+	return c.tenantID
+}
+
+// budgetLimits returns the dashboard budget denominators: the live function
+// when configured (#291 review, P2), else the static values.
+func (c *Collector) budgetLimits() (daily, monthly float64) {
+	if c.budgetLimitsFn != nil {
+		return c.budgetLimitsFn()
+	}
+	return c.budgetDaily, c.budgetMonthly
+}
+
+// currentScope resolves the snapshot scope ONCE: the combined scope function
+// when configured (one registry read for tenant AND limits — the atomic
+// path serve wires, #291 review round 2), else the individual tenant/limits
+// sources. Called exactly once per Snapshot by fillAggregateMetrics.
+func (c *Collector) currentScope() Scope {
+	if c.scopeFn != nil {
+		return c.scopeFn()
+	}
+	daily, monthly := c.budgetLimits()
+	return Scope{TenantID: c.tenantScope(), BudgetDaily: daily, BudgetMonthly: monthly}
 }
 
 // ReconcileStats tracks collector reconciliation health and outcomes.
@@ -361,6 +415,34 @@ func WithActiveRunsFn(fn func() int) CollectorOption {
 // WithTenantID scopes aggregate queries to a specific tenant.
 func WithTenantID(tenantID string) CollectorOption {
 	return func(c *Collector) { c.tenantID = tenantID }
+}
+
+// WithTenantScope scopes aggregate queries through a live function read on
+// every snapshot (#289): serve derives it from the identity-registry holder
+// so a registry reload (#269) re-scopes the dashboard without collector
+// reconstruction. Takes precedence over WithTenantID.
+func WithTenantScope(fn func() string) CollectorOption {
+	return func(c *Collector) { c.tenantScopeFn = fn }
+}
+
+// WithBudgetLimitsFn supplies the budget denominators through a live
+// function read on every snapshot (#291 review, P2). Takes precedence over
+// WithBudgetLimits. Prefer WithScopeFn, which additionally guarantees the
+// limits and the tenant filter come from the SAME source read.
+func WithBudgetLimitsFn(fn func() (daily, monthly float64)) CollectorOption {
+	return func(c *Collector) { c.budgetLimitsFn = fn }
+}
+
+// WithScopeFn supplies the whole per-snapshot aggregate scope — tenant
+// filter AND budget denominators — through ONE function called exactly once
+// per Snapshot() (#291 review round 2). serve derives it from a single
+// identity-registry holder read, so a reload (#269) moves the tenant scope
+// and the budget limits together: a snapshot can never denominate one
+// registry generation's spend against another's caps. Takes precedence over
+// WithTenantScope/WithTenantID and WithBudgetLimitsFn/WithBudgetLimits for
+// the aggregate fills.
+func WithScopeFn(fn func() Scope) CollectorOption {
+	return func(c *Collector) { c.scopeFn = fn }
 }
 
 // WithCurrency records the ISO-4217 code of the pricing table backing the
@@ -925,7 +1007,13 @@ func (c *Collector) buildShadowSummary() *ShadowSummary {
 }
 
 func (c *Collector) fillAggregateMetrics(ctx context.Context, snap *Snapshot) {
-	c.applyPlanStats(ctx, snap)
+	// ONE scope for the whole snapshot (#291 review round 2): the tenant
+	// filter and the budget denominators are captured together, from one
+	// scope-fn call, before any aggregate query runs — a registry reload
+	// (#269) between the fills below can therefore never mix limits from
+	// one registry generation with spend scoped by another.
+	scope := c.currentScope()
+	c.applyPlanStats(ctx, snap, scope)
 	// Sessions depend on the session querier only — fill before the
 	// metricsQuerier gate so a collector without cost aggregates still
 	// serves the sessions panel (#199).
@@ -941,10 +1029,10 @@ func (c *Collector) fillAggregateMetrics(ctx context.Context, snap *Snapshot) {
 	monthEnd := monthStart.AddDate(0, 1, 0)
 	last24h := now.Add(-24 * time.Hour)
 
-	c.fillModelBreakdown(ctx, snap, dayStart, dayEnd)
-	c.fillProviderBreakdown(ctx, snap, dayStart, dayEnd)
-	c.fillBudgetStatus(ctx, snap, dayStart, dayEnd, monthStart, monthEnd)
-	c.fillCacheStats(ctx, snap, last24h, now)
+	c.fillModelBreakdown(ctx, snap, scope, dayStart, dayEnd)
+	c.fillProviderBreakdown(ctx, snap, scope, dayStart, dayEnd)
+	c.fillBudgetStatus(ctx, snap, scope, dayStart, dayEnd, monthStart, monthEnd)
+	c.fillCacheStats(ctx, snap, scope, last24h, now)
 }
 
 // maxDashboardSessions bounds the sessions panel to the most recently active
@@ -986,11 +1074,11 @@ func (c *Collector) fillSessions(ctx context.Context, snap *Snapshot) {
 	snap.Sessions = sessions
 }
 
-func (c *Collector) applyPlanStats(ctx context.Context, snap *Snapshot) {
+func (c *Collector) applyPlanStats(ctx context.Context, snap *Snapshot, scope Scope) {
 	if c.planStatsFn == nil {
 		return
 	}
-	planStats, err := c.planStatsFn(ctx, c.tenantID)
+	planStats, err := c.planStatsFn(ctx, scope.TenantID)
 	if err != nil {
 		return
 	}
@@ -1003,8 +1091,8 @@ func (c *Collector) applyPlanStats(ctx context.Context, snap *Snapshot) {
 	snap.Summary.PlanDispatchErr = planStats.DispatchFailures
 }
 
-func (c *Collector) fillModelBreakdown(ctx context.Context, snap *Snapshot, dayStart, dayEnd time.Time) {
-	byModel, err := c.metricsQuerier.CostByModel(ctx, c.tenantID, "", dayStart, dayEnd)
+func (c *Collector) fillModelBreakdown(ctx context.Context, snap *Snapshot, scope Scope, dayStart, dayEnd time.Time) {
+	byModel, err := c.metricsQuerier.CostByModel(ctx, scope.TenantID, "", dayStart, dayEnd)
 	if err != nil || len(byModel) == 0 {
 		return
 	}
@@ -1016,8 +1104,8 @@ func (c *Collector) fillModelBreakdown(ctx context.Context, snap *Snapshot, dayS
 	snap.ModelBreakdown = models
 }
 
-func (c *Collector) fillProviderBreakdown(ctx context.Context, snap *Snapshot, dayStart, dayEnd time.Time) {
-	byProvider, err := c.metricsQuerier.CostByProvider(ctx, c.tenantID, "", dayStart, dayEnd)
+func (c *Collector) fillProviderBreakdown(ctx context.Context, snap *Snapshot, scope Scope, dayStart, dayEnd time.Time) {
+	byProvider, err := c.metricsQuerier.CostByProvider(ctx, scope.TenantID, "", dayStart, dayEnd)
 	if err != nil || len(byProvider) == 0 {
 		return
 	}
@@ -1029,28 +1117,29 @@ func (c *Collector) fillProviderBreakdown(ctx context.Context, snap *Snapshot, d
 	snap.ProviderBreakdown = providers
 }
 
-func (c *Collector) fillBudgetStatus(ctx context.Context, snap *Snapshot, dayStart, dayEnd, monthStart, monthEnd time.Time) {
-	if c.budgetDaily <= 0 && c.budgetMonthly <= 0 {
+func (c *Collector) fillBudgetStatus(ctx context.Context, snap *Snapshot, scope Scope, dayStart, dayEnd, monthStart, monthEnd time.Time) {
+	daily, monthly := scope.BudgetDaily, scope.BudgetMonthly
+	if daily <= 0 && monthly <= 0 {
 		return
 	}
-	bs := &BudgetStatus{DailyLimit: c.budgetDaily, MonthlyLimit: c.budgetMonthly}
-	if dailyUsed, err := c.metricsQuerier.CostTotal(ctx, c.tenantID, "", dayStart, dayEnd); err == nil {
+	bs := &BudgetStatus{DailyLimit: daily, MonthlyLimit: monthly}
+	if dailyUsed, err := c.metricsQuerier.CostTotal(ctx, scope.TenantID, "", dayStart, dayEnd); err == nil {
 		bs.DailyUsed = dailyUsed
-		if c.budgetDaily > 0 {
-			bs.DailyPercent = (dailyUsed / c.budgetDaily) * 100
+		if daily > 0 {
+			bs.DailyPercent = (dailyUsed / daily) * 100
 		}
 	}
-	if monthlyUsed, err := c.metricsQuerier.CostTotal(ctx, c.tenantID, "", monthStart, monthEnd); err == nil {
+	if monthlyUsed, err := c.metricsQuerier.CostTotal(ctx, scope.TenantID, "", monthStart, monthEnd); err == nil {
 		bs.MonthlyUsed = monthlyUsed
-		if c.budgetMonthly > 0 {
-			bs.MonthlyPercent = (monthlyUsed / c.budgetMonthly) * 100
+		if monthly > 0 {
+			bs.MonthlyPercent = (monthlyUsed / monthly) * 100
 		}
 	}
 	snap.BudgetStatus = bs
 }
 
-func (c *Collector) fillCacheStats(ctx context.Context, snap *Snapshot, from, to time.Time) {
-	hits, costSaved, err := c.metricsQuerier.CacheSavings(ctx, c.tenantID, from, to)
+func (c *Collector) fillCacheStats(ctx context.Context, snap *Snapshot, scope Scope, from, to time.Time) {
+	hits, costSaved, err := c.metricsQuerier.CacheSavings(ctx, scope.TenantID, from, to)
 	if err != nil || hits <= 0 {
 		return
 	}

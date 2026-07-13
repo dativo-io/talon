@@ -28,9 +28,10 @@ gateway:
   # claude-code agent, key seeded by the compose stack
   # (claude-code-talon-key = talon-gw-demo-coding-0001).
   organization_policy:
-    default_pii_action: "warn"
-    response_pii_action: "allow"
-    max_daily_cost: 10.00
-    max_monthly_cost: 100.00
+    defaults:
+      pii_action: "warn"
+      response_pii_action: "allow"
+      daily_cost: 10.00
+      monthly_cost: 100.00
     log_prompts: true
     log_responses: false

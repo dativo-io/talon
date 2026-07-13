@@ -309,6 +309,22 @@ func (r *IdentityRegistry) MetricsTenantScope() string {
 	return ""
 }
 
+// CanonicalTenantID returns the registry's own string for a tenant it knows
+// (so cache-key scope always originates from config, never from request
+// data) and reports whether the tenant is registered. Allocation-free — it
+// runs on the per-request cache path (#289).
+func (r *IdentityRegistry) CanonicalTenantID(tenantID string) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	for _, id := range r.identities {
+		if id.TenantID == tenantID {
+			return id.TenantID, true
+		}
+	}
+	return "", false
+}
+
 // AuthPrincipal is the identity a presented agent key resolves to on the
 // tenant-API surface (#266): the agent name, its derived tenant, and team.
 // It is the value type of AuthKeyIdentityProjection — an immutable snapshot,
@@ -418,6 +434,12 @@ func (o *PolicyOverride) finalize(scope string) error {
 		return err
 	}
 	if err := rejectWildcardInAllowList(scope, "policies.allowed_providers", o.AllowedProviders); err != nil {
+		return err
+	}
+	// Agent tool allowlists match by exact name in EvaluateToolPolicy —
+	// the same literal-membership footgun (#291 review). Forbidden lists
+	// stay exempt: they are glob patterns and "*" is the supported deny-all.
+	if err := rejectWildcardInAllowList(scope, "capabilities.allowed_tools", o.AllowedTools); err != nil {
 		return err
 	}
 	o.Egress.applyDefaults()

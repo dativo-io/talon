@@ -58,9 +58,11 @@ func setupGatewayWithClassifier(t *testing.T, piiAction string, mode Mode, upstr
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key", ResponsesStoreMode: ResponsesStoreForceIfAbsent},
 		},
 		OrganizationPolicy: OrganizationPolicy{
-			DefaultPIIAction: piiAction,
-			MaxDailyCost:     100,
-			MaxMonthlyCost:   2000,
+			Defaults: OrgDefaults{
+				PIIAction:   piiAction,
+				DailyCost:   100,
+				MonthlyCost: 2000,
+			},
 		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
@@ -91,7 +93,7 @@ func setupGatewayWithClassifier(t *testing.T, piiAction string, mode Mode, upstr
 		cls = classifier.MustNewScanner()
 	}
 
-	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	return gw, upstream, evStore

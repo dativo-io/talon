@@ -121,7 +121,7 @@ func newConformanceGateway(t *testing.T, upstreamURL string) (*Gateway, *evidenc
 		},
 		// Response-side scanning is out of scope for request-path conformance:
 		// "allow" keeps streams passing through byte-identically.
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn", ResponsePIIAction: "allow", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn", ResponsePIIAction: "allow", DailyCost: 100, MonthlyCost: 2000}},
 		// The whole corpus runs through one gateway; default per-agent RPM
 		// would 429 everything after the first fixture.
 		RateLimits: RateLimitsConfig{GlobalRequestsPerMin: 10000, PerAgentRequestsPerMin: 10000},
@@ -142,7 +142,7 @@ func newConformanceGateway(t *testing.T, upstreamURL string) (*Gateway, *evidenc
 	t.Cleanup(func() { _ = secStore.Close() })
 	require.NoError(t, secStore.Set(context.Background(), "anthropic-key", []byte("sk-ant-test-000-conformance"),
 		secrets.ACL{Tenants: []string{"conf-tenant"}, Agents: []string{"*"}}))
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })

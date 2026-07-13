@@ -74,7 +74,7 @@ func newSessionBudgetGateway(t *testing.T, mode Mode, maxSessionCost float64) (e
 			"anthropic": {Enabled: true, BaseURL: anthropicURL, SecretName: "anthropic-key"},
 			"openai":    {Enabled: true, BaseURL: openaiURL, SecretName: "openai-key"},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn", ResponsePIIAction: "allow"},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn", ResponsePIIAction: "allow"}},
 		RateLimits:         RateLimitsConfig{GlobalRequestsPerMin: 100000, PerAgentRequestsPerMin: 100000},
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
@@ -98,7 +98,7 @@ func newSessionBudgetGateway(t *testing.T, mode Mode, maxSessionCost float64) (e
 	sessStore, err = session.NewStore(filepath.Join(dir, "sess.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sessStore.Close() })
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, policyEngine, sbEstimator)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, sbEstimator)
 	require.NoError(t, err)
 	gw.SetSessionStore(sessStore)
 	gw.SetPricingCurrency("USD")
@@ -217,7 +217,7 @@ func TestSessionBudget_SyntheticSessionsCreateNoRows(t *testing.T) {
 		require.Equal(t, http.StatusOK, sbDo(t, h, "openai", sbTenantKeyA, "").Code)
 	}
 	for _, tenant := range []string{"tenant-a", "tenant-b"} {
-		rows, err := sessStore.ListByTenant(context.Background(), tenant, "")
+		rows, err := sessStore.ListByTenant(context.Background(), tenant, "", "")
 		require.NoError(t, err)
 		assert.Empty(t, rows, "synthetic sessions must not materialize session rows")
 	}
@@ -268,7 +268,7 @@ func TestSessionBudget_ConcurrentBurstBound(t *testing.T) {
 	for i, c := range codes {
 		assert.Contains(t, []int{http.StatusOK, http.StatusForbidden}, c, "request %d", i)
 	}
-	rows, err := sessStore.ListByTenant(context.Background(), "tenant-a", "")
+	rows, err := sessStore.ListByTenant(context.Background(), "tenant-a", "", "")
 	require.NoError(t, err)
 	require.Len(t, rows, 1, "concurrent create-if-absent must collapse to one row")
 	assert.LessOrEqual(t, rows[0].TotalCost, float64(n)*sbActual+1e-9,
@@ -358,7 +358,7 @@ func TestPolicyInputParity_WithAssertedSession(t *testing.T) {
 			"backup": {Enabled: true, BaseURL: "http://unused", SecretName: "k"},
 		},
 		Timeouts: TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
-	}, testRegistry(agent), classifier.MustNewScanner(), nil, nil, nil, sbEstimator)
+	}, NewRegistryHolder(testRegistry(agent)), classifier.MustNewScanner(), nil, nil, nil, sbEstimator)
 	require.NoError(t, err)
 	gw.SetSessionStore(sessStore)
 

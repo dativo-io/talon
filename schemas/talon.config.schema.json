@@ -603,19 +603,119 @@
         "organization_policy": {
           "type": "object",
           "properties": {
-            "default_pii_action": {
-              "$ref": "#/definitions/piiAction"
+            "defaults": {
+              "type": "object",
+              "properties": {
+                "pii_action": {
+                  "$ref": "#/definitions/piiAction"
+                },
+                "response_pii_action": {
+                  "$ref": "#/definitions/piiAction"
+                },
+                "daily_cost": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Per-agent daily budget baseline (EUR): the cap an agent runs under unless its own cost_limits replace it. The tighten-only bound is constraints.max_daily_cost."
+                },
+                "monthly_cost": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "session_cost": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Per-session budget baseline (#283): the session soft cap (#198) every agent inherits unless its session_limits.max_cost replaces it. 0/omitted = no default session budget."
+                },
+                "tool_policy_action": {
+                  "$ref": "#/definitions/toolPolicyAction"
+                },
+                "attachment_policy": {
+                  "$ref": "#/definitions/attachmentPolicy"
+                }
+              },
+              "description": "Per-agent starting values an agent override may REPLACE (#287). Exceptions keeping their monotonic floor merge: pii_action/response_pii_action (block > redact > warn > allow) and tool_policy_action at the agent layer (an agent cannot loosen block to filter).",
+              "additionalProperties": false
             },
-            "response_pii_action": {
-              "$ref": "#/definitions/piiAction"
-            },
-            "max_daily_cost": {
-              "type": "number",
-              "minimum": 0
-            },
-            "max_monthly_cost": {
-              "type": "number",
-              "minimum": 0
+            "constraints": {
+              "type": "object",
+              "properties": {
+                "allowed_providers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Organization-wide HARD constraint (#266): providers ANY agent may reach; an agent's own allowed_providers can only narrow further within this list. Entries must name configured gateway.providers. Empty/omitted = all enabled providers."
+                },
+                "allowed_models": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Organization-wide HARD constraint (#266): model allowlist binding every agent regardless of its override. Empty/omitted = no allowlist constraint."
+                },
+                "blocked_models": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Organization-wide HARD constraint (#266): model blocklist binding every agent regardless of its override ('*' blocks all models)."
+                },
+                "allowed_tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Organization-wide HARD tool allowlist (#282): when non-empty, a tool must pass this list AND the most-specific allowed list AND every forbidden list. An agent allowlisting a tool the organization never sanctioned does not make it reachable. Empty/omitted = no org allowlist."
+                },
+                "forbidden_tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Union with provider and agent forbidden lists — an agent can only add entries, never remove them. Glob patterns supported (e.g. delete_*)."
+                },
+                "max_daily_cost": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Organization daily budget CEILING (#287): enforced alongside the resolved per-agent cap, so an agent declaring a bigger budget still denies at the org line (deny reason names the organization). 0/omitted = no ceiling."
+                },
+                "max_monthly_cost": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Organization monthly budget CEILING (#287). 0/omitted = no ceiling."
+                },
+                "max_session_cost": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Organization per-session budget CEILING (#283): an agent session_limits.max_cost above it still denies at the org line. 0/omitted = no ceiling."
+                },
+                "max_data_tier": {
+                  "oneOf": [
+                    {
+                      "type": "integer",
+                      "enum": [
+                        0,
+                        1,
+                        2
+                      ]
+                    },
+                    {
+                      "type": "string",
+                      "enum": [
+                        "public",
+                        "internal",
+                        "confidential"
+                      ]
+                    }
+                  ],
+                  "description": "Organization-wide data-tier ceiling (#266): 0/public, 1/internal, 2/confidential (named aliases accepted, matching the runtime). An agent's max_data_tier can only LOWER it further."
+                },
+                "egress": {
+                  "$ref": "#/definitions/gatewayEgressPolicy"
+                }
+              },
+              "description": "Organization-wide HARD bounds an agent override can only TIGHTEN within (#287) — none of these are replaced by anything an agent file declares.",
+              "additionalProperties": false
             },
             "log_prompts": {
               "type": "boolean"
@@ -627,18 +727,6 @@
               "type": "integer",
               "minimum": 0
             },
-            "attachment_policy": {
-              "$ref": "#/definitions/attachmentPolicy"
-            },
-            "forbidden_tools": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "tool_policy_action": {
-              "$ref": "#/definitions/toolPolicyAction"
-            },
             "scan_tool_content": {
               "type": "string",
               "enum": [
@@ -647,54 +735,9 @@
               ],
               "default": "evidence_only",
               "description": "Observation-only PII scan of tool-related request content (tool_use inputs, tool_result outputs, function-call arguments). evidence_only records findings in evidence without influencing enforcement; off disables the scan. Enforcement on tool content is not offered until per-block-type tool redaction exists (#212)."
-            },
-            "egress": {
-              "$ref": "#/definitions/gatewayEgressPolicy"
-            },
-            "allowed_providers": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Organization-wide HARD constraint (#266): providers ANY agent may reach; an agent's own allowed_providers can only narrow further within this list. Empty/omitted = all enabled providers."
-            },
-            "allowed_models": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Organization-wide HARD constraint (#266): model allowlist binding every agent regardless of its override. Empty/omitted = no allowlist constraint."
-            },
-            "blocked_models": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Organization-wide HARD constraint (#266): model blocklist binding every agent regardless of its override ('*' blocks all models)."
-            },
-            "max_data_tier": {
-              "oneOf": [
-                {
-                  "type": "integer",
-                  "enum": [
-                    0,
-                    1,
-                    2
-                  ]
-                },
-                {
-                  "type": "string",
-                  "enum": [
-                    "public",
-                    "internal",
-                    "confidential"
-                  ]
-                }
-              ],
-              "description": "Organization-wide data-tier ceiling (#266): 0/public, 1/internal, 2/confidential (named aliases accepted, matching the runtime). An agent's max_data_tier can only LOWER it further."
             }
           },
-          "description": "Organization baseline — the shared policy every agent inherits before its one explicit override (agent.talon.yaml) applies — plus organization-wide hard constraints (allowed_providers, allowed_models/blocked_models, max_data_tier) no override can escape (#266).",
+          "description": "Organization policy in two explicit classes (#287): defaults — per-agent baselines an agent override may replace (PII and tool actions keep their monotonic floor merge) — and constraints — organization-wide hard bounds an override can only tighten within. Operational logging/scanning scalars stay at the top level. The pre-split flat keys (default_pii_action, max_daily_cost, allowed_models, ...) are rejected at load with a migration error naming the new location.",
           "additionalProperties": false
         },
         "rate_limits": {

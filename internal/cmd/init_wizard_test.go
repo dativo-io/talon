@@ -749,7 +749,7 @@ func TestBuildConfigs_OpenClawPack_EnablesGateway(t *testing.T) {
 	require.NotNil(t, agentCfg.Agent.Key, "wizard must bind the agent traffic key")
 	assert.Equal(t, agentKeySecretName(state.AgentName), agentCfg.Agent.Key.SecretName)
 	require.NotNil(t, infraCfg.Gateway.OrganizationPolicy)
-	assert.Equal(t, "warn", infraCfg.Gateway.OrganizationPolicy.DefaultPIIAction)
+	assert.Equal(t, "warn", infraCfg.Gateway.OrganizationPolicy.Defaults.PIIAction)
 	openai, ok := infraCfg.Gateway.Providers["openai"]
 	require.True(t, ok)
 	assert.True(t, openai.Enabled)

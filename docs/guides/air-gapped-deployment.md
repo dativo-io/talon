@@ -32,7 +32,7 @@ preference under `eu_preferred`).
 `sovereignty.deployment_mode: air_gap` is a **stricter sub-mode**. It implies
 `sovereignty.mode: eu_strict` (setting a looser `mode` is rejected) and adds:
 
-1. **Gateway egress** — applies deny-by-default egress rules allowing only `EU` and `LOCAL` regions when no custom `gateway.organization_policy.egress` block is present.
+1. **Gateway egress** — applies deny-by-default egress rules allowing only `EU` and `LOCAL` regions when no custom `gateway.organization_policy.constraints.egress` block is present.
 2. **Transport guard** — wraps the gateway upstream HTTP client with an allowlist derived from:
    - `ollama_base_url`
    - enabled gateway provider `base_url` values

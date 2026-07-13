@@ -163,7 +163,7 @@ Rate limits are enforced per agent identity. The `per_agent_requests_per_min` fi
 
 ### Response PII scanning
 
-Talon scans LLM responses **before** returning them to the client, including streaming (SSE) responses. Configure the baseline via `response_pii_action` in `gateway.organization_policy`; per agent, use the `data_classification` output booleans in the agent file (`output_scan` alone → warn; + `redact_output` → redact; + `block_on_pii` → block):
+Talon scans LLM responses **before** returning them to the client, including streaming (SSE) responses. Configure the baseline via `defaults.response_pii_action` in `gateway.organization_policy`; per agent, use the `data_classification` output booleans in the agent file (`output_scan` alone → warn; + `redact_output` → redact; + `block_on_pii` → block):
 
 | Action | Behaviour |
 |--------|-----------|

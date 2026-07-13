@@ -49,21 +49,23 @@ gateway:
   # Traffic identity lives in the agent files (agent.key.secret_name, #266);
   # this block is the organization baseline every role inherits.
   organization_policy:
-    default_pii_action: "warn"
-    response_pii_action: "warn"
-    max_daily_cost: 50.00
-    max_monthly_cost: 1000.00
+    defaults:
+      pii_action: "warn"
+      response_pii_action: "warn"
+      daily_cost: 50.00
+      monthly_cost: 1000.00
+      tool_policy_action: "filter"
+      attachment_policy:
+        action: "warn"
+        injection_action: "warn"
+        max_file_size_mb: 10
+    constraints:
+      forbidden_tools:
+        - "shell_command"
+        - "file_system_delete"
+        - "database_drop"
     log_prompts: true
     log_responses: false
-    tool_policy_action: "filter"
-    forbidden_tools:
-      - "shell_command"
-      - "file_system_delete"
-      - "database_drop"
-    attachment_policy:
-      action: "warn"
-      injection_action: "warn"
-      max_file_size_mb: 10
 
   rate_limits:
     global_requests_per_min: 200

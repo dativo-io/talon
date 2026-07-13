@@ -23,7 +23,7 @@ This creates three files:
 
 - `agent.talon.yaml` — the **`claude-code` agent**: Claude Code's Talon traffic identity (`agent.key.secret_name: claude-code-talon-key`) plus its policy override with coding-tuned defaults — `session_limits.max_cost: 10.00`, `cost_limits.daily: 50.00` / `monthly: 500.00`, `input_scan: true` (input PII action `warn`), `allowed_providers: ["anthropic"]` — and high-precision credential recognizers (PEM private-key blocks, AWS `AKIA...` key IDs, GitHub `ghp_`/`github_pat_` tokens, Anthropic/OpenAI `sk-ant-...`/`sk-proj-...` keys) so leaked credentials in prompt traffic land in evidence.
 - `agents/codex.talon.yaml` — the `codex` agent for Codex CLI (see the [Codex guide](codex-cli-integration.md)). #266 loads the single default `agent.talon.yaml` per gateway process; `agents_dir` discovery for serving both from one process is #267.
-- `talon.config.yaml` — gateway config with the Anthropic provider, the **organization baseline** (`organization_policy`: `default_pii_action: warn`, `response_pii_action: allow`), **shadow mode**, and a raised `request_timeout: 600s` (the response-header wait follows it by default).
+- `talon.config.yaml` — gateway config with the Anthropic provider, the **organization baseline** (`organization_policy.defaults`: `pii_action: warn`, `response_pii_action: allow`), **shadow mode**, and a raised `request_timeout: 600s` (the response-header wait follows it by default).
 
 These defaults are deliberate — see [Why the pack defaults look like this](#why-the-pack-defaults-look-like-this) below before changing them.
 

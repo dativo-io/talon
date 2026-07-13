@@ -41,9 +41,11 @@ func setupCoPawGateway(t *testing.T, upstreamHandler http.HandlerFunc) (*gateway
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
 		},
 		OrganizationPolicy: gateway.OrganizationPolicy{
-			DefaultPIIAction: "warn",
-			MaxDailyCost:     100,
-			MaxMonthlyCost:   2000,
+			Defaults: gateway.OrgDefaults{
+				PIIAction:   "warn",
+				DailyCost:   100,
+				MonthlyCost: 2000,
+			},
 		},
 		Timeouts: gateway.TimeoutsConfig{
 			ConnectTimeout:    "5s",
@@ -85,7 +87,7 @@ func setupCoPawGateway(t *testing.T, upstreamHandler http.HandlerFunc) (*gateway
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := gateway.NewGateway(cfg, registry, cls, evStore, secStore, policyEngine, nil)
+	gw, err := gateway.NewGateway(cfg, gateway.NewRegistryHolder(registry), cls, evStore, secStore, policyEngine, nil)
 	require.NoError(t, err)
 
 	return gw, upstream, evStore

@@ -25,10 +25,10 @@ func resolveReq(t *testing.T, mutate func(*http.Request)) *http.Request {
 }
 
 func TestResolveIdentityByBearerKey(t *testing.T) {
-	g := &Gateway{registry: testRegistry(
+	g := &Gateway{registry: NewRegistryHolder(testRegistry(
 		testIdentity("customer-support", "acme", "tk-support-1", nil),
 		testIdentity("coding", "default", "tk-coding-1", nil),
-	)}
+	))}
 
 	id, err := g.resolveIdentity(resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer tk-support-1")
@@ -46,7 +46,7 @@ func TestResolveIdentityByBearerKey(t *testing.T) {
 }
 
 func TestResolveIdentityByXAPIKey(t *testing.T) {
-	g := &Gateway{registry: testRegistry(testIdentity("customer-support", "acme", "tk-support-1", nil))}
+	g := &Gateway{registry: NewRegistryHolder(testRegistry(testIdentity("customer-support", "acme", "tk-support-1", nil)))}
 	id, err := g.resolveIdentity(resolveReq(t, func(r *http.Request) {
 		r.Header.Set("x-api-key", "tk-support-1")
 	}))
@@ -55,7 +55,7 @@ func TestResolveIdentityByXAPIKey(t *testing.T) {
 }
 
 func TestResolveIdentityUnknownKeyRejected(t *testing.T) {
-	g := &Gateway{registry: testRegistry(testIdentity("customer-support", "acme", "tk-support-1", nil))}
+	g := &Gateway{registry: NewRegistryHolder(testRegistry(testIdentity("customer-support", "acme", "tk-support-1", nil)))}
 	_, err := g.resolveIdentity(resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer tk-wrong")
 	}))
@@ -63,7 +63,7 @@ func TestResolveIdentityUnknownKeyRejected(t *testing.T) {
 }
 
 func TestResolveIdentityMissingKeyRejected(t *testing.T) {
-	g := &Gateway{registry: testRegistry(testIdentity("customer-support", "acme", "tk-support-1", nil))}
+	g := &Gateway{registry: NewRegistryHolder(testRegistry(testIdentity("customer-support", "acme", "tk-support-1", nil)))}
 	_, err := g.resolveIdentity(resolveReq(t, nil))
 	assert.ErrorIs(t, err, ErrKeyRequired)
 
@@ -75,7 +75,7 @@ func TestResolveIdentityMissingKeyRejected(t *testing.T) {
 }
 
 func TestResolveIdentityEmptyRegistryRejectsEverything(t *testing.T) {
-	g := &Gateway{registry: testRegistry()}
+	g := &Gateway{registry: NewRegistryHolder(testRegistry())}
 	_, err := g.resolveIdentity(resolveReq(t, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer any-key")
 	}))

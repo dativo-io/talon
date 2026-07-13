@@ -428,6 +428,78 @@ func safePolicyPathUnder(policyDir, path string) (string, error) {
 func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error) {
 	startTime := time.Now()
 	correlationID := "corr_" + uuid.New().String()[:12]
+
+	// Step 1: Load policy and settle the run's agent identity BEFORE any
+	// lifecycle side effect (#291 review, P1): the session row, trace
+	// attributes, active-run counters, run-registry entry, and started log
+	// must all carry the agent whose policy GOVERNS this run — and an
+	// invalid agent must be rejected before any of that state exists, not
+	// after.
+	//
+	// Operator-provided absolute paths (--policy, cfg.DefaultPolicy, serve default) are trusted so that
+	// paths outside CWD work (e.g. Docker volumes at /etc/talon/policies). Relative paths (including
+	// when derived from AgentName) are resolved under policyDir to prevent path traversal.
+	// When PolicyPath is empty we derive from AgentName; that derived path must never be treated as
+	// a trusted absolute path. Enforce contract: AgentName must be a single path segment (no path
+	// separators, not empty) so the derived path stays under policyDir via safePolicyPathUnder.
+	policyPath := req.PolicyPath
+	pathDerivedFromAgent := false
+	if policyPath == "" {
+		if err := validateAgentNameForPolicyPath(req.AgentName); err != nil {
+			return nil, fmt.Errorf("policy path: %w", err)
+		}
+		policyPath = req.AgentName + ".talon.yaml"
+		pathDerivedFromAgent = true
+	}
+	var safePath string
+	var loadBaseDir string
+	if filepath.IsAbs(policyPath) {
+		if pathDerivedFromAgent {
+			return nil, fmt.Errorf("policy path: agent name must not be an absolute path or start with path separator (got %q)", req.AgentName)
+		}
+		var err error
+		safePath, err = filepath.Abs(filepath.Clean(policyPath))
+		if err != nil {
+			return nil, fmt.Errorf("policy path: %w", err)
+		}
+		loadBaseDir = filepath.Dir(safePath)
+	} else {
+		if _, err := safePolicyPathUnder(r.policyDir, policyPath); err != nil {
+			return nil, fmt.Errorf("policy path: %w", err)
+		}
+		loadBaseDir = r.policyDir
+	}
+
+	pol, err := policy.LoadPolicy(ctx, policyPath, false, loadBaseDir)
+	if err != nil {
+		r.recordEarlyTermination(ctx, correlationID, req, "policy_load_failed: "+err.Error(), startTime)
+		return nil, fmt.Errorf("loading policy: %w", err)
+	}
+	// Attribution must match governance (#290): a run for agent X governed
+	// by agent Y's policy would look agent-first while silently applying the
+	// wrong budgets/tools — the pre-agents_dir single-policy limitation made
+	// this easy to hit via triggers and the serve default path. "default"
+	// (and empty) is the UNSET sentinel across the CLI and server paths and
+	// resolves to the loaded policy's own agent name — the same rule `talon
+	// run` applies — so unnamed runs attribute to the agent whose policy
+	// governed them. An EXPLICIT other name fails loudly until #267
+	// discovers per-agent policies. Rejection happens here, before the
+	// session/trace/registry exist — the failed attempt leaves signed
+	// early-termination evidence and nothing else.
+	if pol.Agent.Name != "" {
+		switch req.AgentName {
+		case "", "default":
+			req.AgentName = pol.Agent.Name
+		case pol.Agent.Name:
+			// explicit and matching — nothing to do
+		default:
+			err := fmt.Errorf("unknown agent %q: the loaded policy %s declares agent %q — until agents_dir discovery (#267) exactly one agent policy is loaded per process (select it via TALON_DEFAULT_POLICY or --policy)", req.AgentName, policyPath, pol.Agent.Name)
+			r.recordEarlyTermination(ctx, correlationID, req, "agent_policy_mismatch: "+err.Error(), startTime)
+			return nil, err
+		}
+	}
+
+	// Lifecycle state begins here, on the SETTLED identity.
 	sessionID, err := r.resolveSession(ctx, req)
 	if err != nil {
 		return nil, err
@@ -476,54 +548,6 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		Func(talonotel.LogTraceFields(ctx)).
 		Msg("agent_run_started")
 
-	// Step 1: Load policy
-	// Operator-provided absolute paths (--policy, cfg.DefaultPolicy, serve default) are trusted so that
-	// paths outside CWD work (e.g. Docker volumes at /etc/talon/policies). Relative paths (including
-	// when derived from AgentName) are resolved under policyDir to prevent path traversal.
-	// When PolicyPath is empty we derive from AgentName; that derived path must never be treated as
-	// a trusted absolute path. Enforce contract: AgentName must be a single path segment (no path
-	// separators, not empty) so the derived path stays under policyDir via safePolicyPathUnder.
-	policyPath := req.PolicyPath
-	pathDerivedFromAgent := false
-	if policyPath == "" {
-		if err := validateAgentNameForPolicyPath(req.AgentName); err != nil {
-			span.RecordError(err)
-			return nil, fmt.Errorf("policy path: %w", err)
-		}
-		policyPath = req.AgentName + ".talon.yaml"
-		pathDerivedFromAgent = true
-	}
-	var safePath string
-	var loadBaseDir string
-	if filepath.IsAbs(policyPath) {
-		if pathDerivedFromAgent {
-			err := fmt.Errorf("agent name must not be an absolute path or start with path separator (got %q)", req.AgentName)
-			span.RecordError(err)
-			return nil, fmt.Errorf("policy path: %w", err)
-		}
-		var err error
-		safePath, err = filepath.Abs(filepath.Clean(policyPath))
-		if err != nil {
-			span.RecordError(err)
-			return nil, fmt.Errorf("policy path: %w", err)
-		}
-		loadBaseDir = filepath.Dir(safePath)
-	} else {
-		var err error
-		_, err = safePolicyPathUnder(r.policyDir, policyPath)
-		if err != nil {
-			span.RecordError(err)
-			return nil, fmt.Errorf("policy path: %w", err)
-		}
-		loadBaseDir = r.policyDir
-	}
-
-	pol, err := policy.LoadPolicy(ctx, policyPath, false, loadBaseDir)
-	if err != nil {
-		span.RecordError(err)
-		r.recordEarlyTermination(ctx, correlationID, req, "policy_load_failed: "+err.Error(), startTime)
-		return nil, fmt.Errorf("loading policy: %w", err)
-	}
 	engine, err := policy.NewEngine(ctx, pol)
 	if err != nil {
 		span.RecordError(err)

@@ -836,10 +836,12 @@ func TestIsTypeAllowed(t *testing.T) {
 
 func TestEffectiveAttachmentPolicy_Baseline(t *testing.T) {
 	baseline := OrganizationPolicy{
-		AttachmentPolicy: &AttachmentPolicyConfig{
-			Action:          "warn",
-			InjectionAction: "warn",
-			MaxFileSizeMB:   10,
+		Defaults: OrgDefaults{
+			AttachmentPolicy: &AttachmentPolicyConfig{
+				Action:          "warn",
+				InjectionAction: "warn",
+				MaxFileSizeMB:   10,
+			},
 		},
 	}
 	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, nil)
@@ -854,11 +856,13 @@ func TestEffectiveAttachmentPolicy_AgentOverrideCannotChangeIt(t *testing.T) {
 	// the organization baseline applies unchanged even when the agent carries
 	// an override for other policy axes.
 	baseline := OrganizationPolicy{
-		AttachmentPolicy: &AttachmentPolicyConfig{
-			Action:          "block",
-			InjectionAction: "warn",
-			MaxFileSizeMB:   10,
-			AllowedTypes:    []string{"pdf"},
+		Defaults: OrgDefaults{
+			AttachmentPolicy: &AttachmentPolicyConfig{
+				Action:          "block",
+				InjectionAction: "warn",
+				MaxFileSizeMB:   10,
+				AllowedTypes:    []string{"pdf"},
+			},
 		},
 	}
 	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, &PolicyOverride{PIIAction: "block"})
@@ -883,7 +887,7 @@ func TestGateway_Attachment_WarnMode_PIIDetected(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.OrganizationPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.OrganizationPolicy.Defaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "warn",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -910,7 +914,7 @@ func TestGateway_Attachment_BlockMode_PIIDetected(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.OrganizationPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.OrganizationPolicy.Defaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "block",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -934,7 +938,7 @@ func TestGateway_Attachment_StripMode_PIIDetected(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.OrganizationPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.OrganizationPolicy.Defaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "strip",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -968,7 +972,7 @@ func TestGateway_Attachment_NoFiles_NoOverhead(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.OrganizationPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.OrganizationPolicy.Defaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "block",
 		InjectionAction: "block",
 		MaxFileSizeMB:   10,
@@ -991,7 +995,7 @@ func TestGateway_Attachment_InjectionBlock(t *testing.T) {
 	})
 
 	gw, _, _ := setupOpenClawGateway(t, "warn", handler)
-	gw.config.OrganizationPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.OrganizationPolicy.Defaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "warn",
 		InjectionAction: "block",
 		MaxFileSizeMB:   10,
@@ -1015,7 +1019,7 @@ func TestGateway_Attachment_HTMLSanitization(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.OrganizationPolicy.AttachmentPolicy = &AttachmentPolicyConfig{
+	gw.config.OrganizationPolicy.Defaults.AttachmentPolicy = &AttachmentPolicyConfig{
 		Action:          "warn",
 		InjectionAction: "warn",
 		MaxFileSizeMB:   10,
@@ -1046,7 +1050,7 @@ func TestGateway_Attachment_CSVWithPII(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.OrganizationPolicy.AttachmentPolicy = defaultAttPolicy()
+	gw.config.OrganizationPolicy.Defaults.AttachmentPolicy = defaultAttPolicy()
 
 	w := makeGatewayRequest(gw, body)
 	require.Equal(t, http.StatusOK, w.Code)
@@ -1072,7 +1076,7 @@ func TestGateway_Attachment_MixedTextAndFilePII(t *testing.T) {
 	})
 
 	gw, _, evStore := setupOpenClawGateway(t, "warn", handler)
-	gw.config.OrganizationPolicy.AttachmentPolicy = defaultAttPolicy()
+	gw.config.OrganizationPolicy.Defaults.AttachmentPolicy = defaultAttPolicy()
 
 	fileContent := []byte("IBAN: DE89370400440532013000")
 	fileBlock := map[string]interface{}{

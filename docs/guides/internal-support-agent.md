@@ -22,8 +22,9 @@ policies:
     daily: 20.00
     monthly: 400.00
 
-# PII: block or redact before LLM sees it
-# (exact key depends on your policy schema; often default_pii_action or capabilities)
+# PII: block or redact before LLM sees it via the policies.data_classification
+# booleans (block_on_pii → block; input_scan + redact_input → redact); the
+# org-wide baseline is gateway.organization_policy.defaults.pii_action
 ```
 
 Optional: enable plan review for high-risk suggestions (`compliance.human_oversight: "on-demand"`). See [Policy cookbook](policy-cookbook.md) and [Agent planning](../AGENT_PLANNING.md).

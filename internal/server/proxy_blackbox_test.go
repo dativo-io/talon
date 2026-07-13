@@ -71,7 +71,7 @@ func proxyTestServer(t *testing.T, upstreamBody string) (baseURL string, talonAP
 	gwEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := gateway.NewGateway(gwCfg, registry, cls, evStore, secStore, gwEngine, nil)
+	gw, err := gateway.NewGateway(gwCfg, gateway.NewRegistryHolder(registry), cls, evStore, secStore, gwEngine, nil)
 	require.NoError(t, err)
 
 	pol := minimalPolicy()

@@ -80,7 +80,7 @@ func newDemoGateway(t *testing.T, mockURL string) (*evidence.Store, http.Handler
 			"anthropic": {Enabled: true, BaseURL: mockURL, SecretName: "anthropic-api-key", APIFamily: "anthropic"},
 			"openai":    {Enabled: true, BaseURL: mockURL, SecretName: "openai-api-key"},
 		},
-		OrganizationPolicy: gateway.OrganizationPolicy{DefaultPIIAction: "warn", ResponsePIIAction: "allow"},
+		OrganizationPolicy: gateway.OrganizationPolicy{Defaults: gateway.OrgDefaults{PIIAction: "warn", ResponsePIIAction: "allow"}},
 		RateLimits:         gateway.RateLimitsConfig{GlobalRequestsPerMin: 100000, PerAgentRequestsPerMin: 100000},
 		Timeouts:           gateway.TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
@@ -125,7 +125,7 @@ func newDemoGateway(t *testing.T, mockURL string) (*evidence.Store, http.Handler
 		}
 		return gateway.CostResult{Amount: 0.005, PricingKnown: true, PricingBasis: gateway.PricingBasisTable}
 	}
-	gw, err := gateway.NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, policyEngine, estimator)
+	gw, err := gateway.NewGateway(cfg, gateway.NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, estimator)
 	require.NoError(t, err)
 	gw.SetSessionStore(sessStore)
 	r := chi.NewRouter()

@@ -43,7 +43,7 @@ func TestNewGateway(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 	cls := classifier.MustNewScanner()
 
-	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, gw)
 }
@@ -65,7 +65,7 @@ func TestGateway_ServeHTTP_Integration(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: upstream.URL},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn"}},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",
@@ -86,7 +86,7 @@ func TestGateway_ServeHTTP_Integration(t *testing.T) {
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, policyEngine, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, policyEngine, nil)
 	require.NoError(t, err)
 
 	// Mount like real server
@@ -128,7 +128,7 @@ func TestGateway_ServeHTTP_Unauthorized(t *testing.T) {
 	secStore, _ := secrets.NewSecretStore(filepath.Join(dir, "s.db"), "12345678901234567890123456789012")
 	defer secStore.Close()
 
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://test/v1/proxy/ollama/v1/chat/completions", bytes.NewReader([]byte(`{"model":"x","messages":[]}`)))
@@ -151,7 +151,7 @@ func TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://localhost:11434"},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "block"},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "block"}},
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	registry := testRegistry(testIdentity("test", "default", "talon-gw-pii-test", nil))
@@ -163,7 +163,7 @@ func TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 	cls := classifier.MustNewScanner()
 
-	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	// Request body containing PII (email) so classifier detects it

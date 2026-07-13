@@ -15,11 +15,22 @@ package gateway
 // override, or provider structs, so an atomically swapped config reload
 // (#269) can never expose a half-updated policy.
 type EffectivePolicy struct {
-	// Cost caps (EUR). Baseline replaced by the agent override when > 0.
+	// Cost caps (EUR): the per-agent budget the request runs under —
+	// organization defaults (defaults.daily_cost/monthly_cost) replaced by
+	// the agent override when > 0.
 	MaxDailyCost   float64
 	MaxMonthlyCost float64
-	// MaxSessionCost is the per-session soft cap (#198); 0 = unset.
+	// MaxSessionCost is the per-session soft cap (#198); baseline from
+	// defaults.session_cost (#283), replaced by the agent override when > 0.
 	MaxSessionCost float64
+	// Org budget CEILINGS (constraints.max_*, #287/#283) — hard constraints
+	// enforced by their own Rego rules alongside the per-agent cap, so an
+	// agent declaring a bigger budget than the org allows still denies at
+	// the org line and evidence attributes the denial to the organization.
+	// 0 = no ceiling. Kept separate (not min-merged) for that attribution.
+	OrgMaxDailyCost   float64
+	OrgMaxMonthlyCost float64
+	OrgMaxSessionCost float64
 
 	// PII actions: block | redact | warn | allow. The organization baseline is
 	// a FLOOR: an agent override can only tighten (block > redact > warn >
@@ -57,9 +68,16 @@ type EffectivePolicy struct {
 	OrgMaxDataTier   *TierLevel
 	AgentMaxDataTier *TierLevel
 
-	// Tool governance (three inputs: baseline ∪ provider forbidden lists;
-	// most-specific allowed list and action win).
+	// Tool governance. ForbiddenTools is the union of org ∪ provider ∪ agent
+	// lists; AllowedTools is the most-specific non-empty allowed list;
+	// OrgAllowedTools (constraints.allowed_tools, #282) is the org-wide HARD
+	// allowlist a tool must additionally pass — an agent allowlisting a tool
+	// the org never sanctioned does not make it reachable. ToolPolicyAction
+	// merges most-specific across the operator layers (provider > org
+	// default) and monotonically at the agent layer (#287): an agent can
+	// tighten filter → block but never loosen block → filter.
 	AllowedTools     []string
+	OrgAllowedTools  []string
 	ForbiddenTools   []string
 	ToolPolicyAction string
 
@@ -82,37 +100,48 @@ type EffectivePolicy struct {
 // the requesting agent's single override (nil = baseline only).
 //
 // Per-field contract (the reference table in docs/reference/configuration.md
-// mirrors this function; keep them in sync):
+// mirrors this function; keep them in sync). Baseline fields live under
+// organization_policy.defaults, hard bounds under .constraints (#287):
 //
-//	max_daily_cost / max_monthly_cost  override replaces when > 0
-//	max_session_cost                   override sets when > 0 (no baseline)
-//	pii_action                         monotonic: the baseline is a floor and
-//	                                   the override can only TIGHTEN it
-//	                                   (block > redact > warn > allow); a
-//	                                   weaker override value is ignored
-//	response_pii_action                baseline level: falls back to
-//	                                   default_pii_action; override level:
-//	                                   same monotonic tighten-only rule —
-//	                                   and the override's INPUT pii_action
-//	                                   does NOT cascade to the response action
-//	allowed/blocked models             override replaces when non-empty;
-//	                                   organization and provider lists are
-//	                                   hard constraints the override never
-//	                                   escapes
-//	allowed_providers                  agent list narrows within the org
-//	                                   hard constraint (ProviderAllowed
-//	                                   checks both; empty = unrestricted
-//	                                   at that level)
-//	max_data_tier                      org cap is a ceiling; the override
-//	                                   applies only when LOWER (tighter)
-//	allowed_tools                      most-specific non-empty list wins
-//	forbidden_tools                    union of baseline ∪ provider ∪ override
-//	tool_policy_action                 most-specific wins (override > provider > baseline)
-//	attachment_policy                  baseline only (#266)
-//	egress                             logical intersection: the org egress and
-//	                                   the agent egress are BOTH evaluated and a
-//	                                   destination must pass BOTH (agent narrows
-//	                                   within the org boundary, never widens it)
+//	defaults.daily_cost / monthly_cost   override replaces when > 0
+//	defaults.session_cost                override replaces when > 0 (#283)
+//	constraints.max_daily_cost /         org budget CEILINGS: enforced by their
+//	  max_monthly_cost /                 own Rego rules alongside the resolved
+//	  max_session_cost                   per-agent cap; an override can never
+//	                                     raise them (#287/#283); 0 = none
+//	defaults.pii_action                  monotonic: the baseline is a floor and
+//	                                     the override can only TIGHTEN it
+//	                                     (block > redact > warn > allow); a
+//	                                     weaker override value is ignored
+//	defaults.response_pii_action         baseline level: falls back to
+//	                                     defaults.pii_action; override level:
+//	                                     same monotonic tighten-only rule —
+//	                                     and the override's INPUT pii_action
+//	                                     does NOT cascade to the response action
+//	allowed/blocked models               override replaces when non-empty;
+//	                                     organization (constraints.*) and
+//	                                     provider lists are hard constraints
+//	                                     the override never escapes
+//	constraints.allowed_providers        agent list narrows within the org
+//	                                     hard constraint (ProviderAllowed
+//	                                     checks both; empty = unrestricted
+//	                                     at that level)
+//	constraints.max_data_tier            org cap is a ceiling; the override
+//	                                     applies only when LOWER (tighter)
+//	allowed_tools                        most-specific non-empty list wins;
+//	                                     constraints.allowed_tools is a HARD
+//	                                     allowlist checked IN ADDITION (#282)
+//	constraints.forbidden_tools          union of org ∪ provider ∪ override
+//	defaults.tool_policy_action          operator layers merge most-specific
+//	                                     (provider > org default); the agent
+//	                                     layer is monotonic — it can tighten
+//	                                     filter → block, never loosen
+//	                                     block → filter (#287)
+//	defaults.attachment_policy           baseline only (#266)
+//	constraints.egress                   logical intersection: the org egress and
+//	                                     the agent egress are BOTH evaluated and a
+//	                                     destination must pass BOTH (agent narrows
+//	                                     within the org boundary, never widens it)
 //
 // per-field rule of the effective-policy contract (#266); splitting it would
 // scatter the single source of truth this issue exists to establish.
@@ -120,23 +149,28 @@ type EffectivePolicy struct {
 //nolint:gocyclo // deliberately ONE function: each branch is an independent
 func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig, override *PolicyOverride) EffectivePolicy {
 	eff := EffectivePolicy{
-		MaxDailyCost:          baseline.MaxDailyCost,
-		MaxMonthlyCost:        baseline.MaxMonthlyCost,
-		PIIAction:             baseline.DefaultPIIAction,
-		ResponsePIIAction:     baseline.ResponsePIIAction,
-		OrgAllowedModels:      append([]string(nil), baseline.AllowedModels...),
-		OrgBlockedModels:      append([]string(nil), baseline.BlockedModels...),
-		OrgAllowedProviders:   append([]string(nil), baseline.AllowedProviders...),
+		MaxDailyCost:          baseline.Defaults.DailyCost,
+		MaxMonthlyCost:        baseline.Defaults.MonthlyCost,
+		MaxSessionCost:        baseline.Defaults.SessionCost,
+		OrgMaxDailyCost:       baseline.Constraints.MaxDailyCost,
+		OrgMaxMonthlyCost:     baseline.Constraints.MaxMonthlyCost,
+		OrgMaxSessionCost:     baseline.Constraints.MaxSessionCost,
+		PIIAction:             baseline.Defaults.PIIAction,
+		ResponsePIIAction:     baseline.Defaults.ResponsePIIAction,
+		OrgAllowedModels:      append([]string(nil), baseline.Constraints.AllowedModels...),
+		OrgBlockedModels:      append([]string(nil), baseline.Constraints.BlockedModels...),
+		OrgAllowedProviders:   append([]string(nil), baseline.Constraints.AllowedProviders...),
+		OrgAllowedTools:       append([]string(nil), baseline.Constraints.AllowedTools...),
 		ProviderAllowedModels: append([]string(nil), provider.AllowedModels...),
 		ProviderBlockedModels: append([]string(nil), provider.BlockedModels...),
 		ToolPolicyAction:      DefaultToolPolicyAction,
-		Attachment:            resolveBaselineAttachment(baseline.AttachmentPolicy),
-		Egress:                cloneEgressPolicy(baseline.Egress),
+		Attachment:            resolveBaselineAttachment(baseline.Defaults.AttachmentPolicy),
+		Egress:                cloneEgressPolicy(baseline.Constraints.Egress),
 	}
-	if baseline.MaxDataTier != nil {
-		t := *baseline.MaxDataTier
+	if baseline.Constraints.MaxDataTier != nil {
+		t := *baseline.Constraints.MaxDataTier
 		eff.MaxDataTier = &t
-		o := *baseline.MaxDataTier
+		o := *baseline.Constraints.MaxDataTier
 		eff.OrgMaxDataTier = &o
 	}
 
@@ -144,20 +178,22 @@ func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig
 	// level only — an agent's input pii_action never cascades to its response
 	// action (documented runtime semantics, #266).
 	if eff.ResponsePIIAction == "" {
-		eff.ResponsePIIAction = baseline.DefaultPIIAction
+		eff.ResponsePIIAction = baseline.Defaults.PIIAction
 	}
 
-	// Tool action: most-specific wins (override > provider > baseline).
-	if baseline.ToolPolicyAction != "" {
-		eff.ToolPolicyAction = baseline.ToolPolicyAction
+	// Tool action, operator layers: most-specific wins (provider > org
+	// default). Both live in talon.config.yaml under the same owner; the
+	// AGENT layer below is monotonic instead (#287).
+	if baseline.Defaults.ToolPolicyAction != "" {
+		eff.ToolPolicyAction = baseline.Defaults.ToolPolicyAction
 	}
 	if provider.ToolPolicyAction != "" {
 		eff.ToolPolicyAction = provider.ToolPolicyAction
 	}
 
-	// Forbidden tools: union of baseline ∪ provider (∪ override below).
+	// Forbidden tools: union of org ∪ provider (∪ override below).
 	seen := make(map[string]bool)
-	for _, list := range [][]string{baseline.ForbiddenTools, provider.ForbiddenTools} {
+	for _, list := range [][]string{baseline.Constraints.ForbiddenTools, provider.ForbiddenTools} {
 		for _, f := range list {
 			if !seen[f] {
 				seen[f] = true
@@ -207,9 +243,10 @@ func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig
 				eff.ForbiddenTools = append(eff.ForbiddenTools, f)
 			}
 		}
-		if override.ToolPolicyAction != "" {
-			eff.ToolPolicyAction = override.ToolPolicyAction
-		}
+		// Agent layer is monotonic (#287): the operator-resolved action is a
+		// floor — an agent may tighten filter → block but a block set by the
+		// organization (or provider) can never be loosened back to filter.
+		eff.ToolPolicyAction = mergeToolPolicyAction(eff.ToolPolicyAction, override.ToolPolicyAction)
 		// Egress is a logical INTERSECTION (#266 review round 5): the agent
 		// egress is a SECOND independent boundary evaluated alongside the
 		// organization's, never a replacement for it. A destination must pass
@@ -270,6 +307,63 @@ func providerInList(provider string, list []string) bool {
 		}
 	}
 	return false
+}
+
+// BindingDailyCap returns the tightest positive daily cap across the
+// per-agent resolved cap and the org ceiling — the number a budget display
+// must denominate against so the dashboard/CLI can never show more headroom
+// than enforcement grants (#287/#288). 0 = uncapped.
+func (e *EffectivePolicy) BindingDailyCap() float64 {
+	return tightestPositive(e.MaxDailyCost, e.OrgMaxDailyCost)
+}
+
+// BindingMonthlyCap is BindingDailyCap for the monthly window.
+func (e *EffectivePolicy) BindingMonthlyCap() float64 {
+	return tightestPositive(e.MaxMonthlyCost, e.OrgMaxMonthlyCost)
+}
+
+// BindingSessionCap is BindingDailyCap for the per-session budget (#283).
+func (e *EffectivePolicy) BindingSessionCap() float64 {
+	return tightestPositive(e.MaxSessionCost, e.OrgMaxSessionCost)
+}
+
+// tightestPositive treats 0 as "no cap at this layer".
+func tightestPositive(a, b float64) float64 {
+	switch {
+	case a <= 0:
+		return b
+	case b <= 0:
+		return a
+	case a < b:
+		return a
+	default:
+		return b
+	}
+}
+
+// toolActionSeverity ranks tool policy actions for the monotonic agent-layer
+// merge (#287): block rejects the request outright, filter strips and
+// forwards. Empty ranks lowest — an unset override tightens nothing.
+func toolActionSeverity(action string) int {
+	switch action {
+	case "block":
+		return 2
+	case "filter":
+		return 1
+	default: // ""
+		return 0
+	}
+}
+
+// mergeToolPolicyAction applies the monotonic tool-action rule (#287): the
+// operator-resolved action is a floor and the agent override wins only when
+// STRICTER (block > filter). An agent under an org-wide block keeps block —
+// it can never silently downgrade the org decision to filter.
+func mergeToolPolicyAction(operator, override string) string {
+	if toolActionSeverity(override) > toolActionSeverity(operator) {
+		return override
+	}
+	return operator
 }
 
 // piiSeverity ranks PII actions for the monotonic merge. Empty string ranks

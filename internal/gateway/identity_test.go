@@ -187,6 +187,23 @@ func TestBuildIdentityRegistryFailClosed(t *testing.T) {
 		assert.Contains(t, err.Error(), `must not contain "*"`)
 	})
 
+	t.Run("wildcard in allowed_tools rejected", func(t *testing.T) {
+		// Tool allowlists match by exact name in EvaluateToolPolicy — the
+		// same literal-membership footgun (#291 review). Forbidden tool
+		// lists stay glob-based and keep "*" as deny-all.
+		vault := newTestVault(t)
+		setSecret(t, vault, "k1", "v1")
+		_, err := BuildIdentityRegistry(ctx, []LoadedAgent{
+			{
+				Path: "a/agent.talon.yaml", Name: "support", KeySecretName: "k1",
+				Override: &PolicyOverride{AllowedTools: []string{"search_web", "*"}},
+			},
+		}, vault, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "capabilities.allowed_tools")
+		assert.Contains(t, err.Error(), `must not contain "*"`)
+	})
+
 	t.Run("wildcard in blocked_models still allowed", func(t *testing.T) {
 		vault := newTestVault(t)
 		setSecret(t, vault, "k1", "v1")

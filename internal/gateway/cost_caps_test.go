@@ -12,7 +12,7 @@ import (
 // and the enforced cap can never drift: a per-agent override replaces the
 // organization baseline only when set (> 0).
 func TestResolveEffectivePolicy_CostCaps(t *testing.T) {
-	baseline := OrganizationPolicy{MaxDailyCost: 100, MaxMonthlyCost: 2000}
+	baseline := OrganizationPolicy{Defaults: OrgDefaults{DailyCost: 100, MonthlyCost: 2000}}
 
 	costCaps := func(override *PolicyOverride) (daily, monthly float64) {
 		eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, override)

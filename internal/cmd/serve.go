@@ -34,7 +34,6 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/pricing"
 	talonprompt "github.com/dativo-io/talon/internal/prompt"
-	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/scanner"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/server"
@@ -169,6 +168,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// ONE shared atomic snapshot holder (#289): the gateway data plane,
+	// server agent-key auth, dashboard caps lookup, and metrics tenant scope
+	// all read the CURRENT registry through it, so the reload seam (#269) is
+	// a single Swap — no consumer keeps its own startup copy.
+	registryHolder := gateway.NewRegistryHolder(identityRegistry)
 
 	evidenceStore, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {
@@ -411,22 +415,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	var gatewayHandler http.Handler
 	var gatewayCfgForMode *gateway.GatewayConfig
-	// Server tenant-API auth is a projection of the identity registry — one
-	// agent key works for /v1/proxy and the tenant-scoped APIs alike. The
-	// FULL identity (agent name, tenant, team) travels through so native
-	// handlers bind attribution to the authenticated agent, not a
-	// client-asserted name (#266 review). Auth openness stays governed by the
-	// admin-key dev rule only.
-	tenantKeys := map[string]string{}
-	agentKeys := map[string]requestctx.AgentIdentity{}
+	// Server tenant-API auth resolves against the registry HOLDER — one
+	// agent key works for /v1/proxy and the tenant-scoped APIs alike, and a
+	// reload swap propagates to server auth without middleware rebuilds
+	// (#289). The FULL identity (agent name, tenant, team) travels through
+	// so native handlers bind attribution to the authenticated agent, not a
+	// client-asserted name (#266 review). Auth openness stays governed by
+	// the admin-key dev rule only.
 	if identityRegistry != nil {
-		for key, p := range identityRegistry.AuthKeyIdentityProjection() {
-			agentKeys[key] = requestctx.AgentIdentity{AgentID: p.AgentID, TenantID: p.TenantID, Team: p.Team}
-			tenantKeys[key] = p.TenantID
-		}
 		log.Info().Int("agents", identityRegistry.Len()).Int("tenants", len(identityRegistry.TenantIDs())).Msg("agent_identity_registry_loaded")
 	}
-	opts = append(opts, server.WithAgentIdentities(agentKeys))
+	opts = append(opts, server.WithAgentKeyResolver(holderKeyResolver{holder: registryHolder}))
 	if serveGateway {
 		gatewayCfg := preloadedGatewayCfg
 		if err := sovereignty.ValidateAirGap(cfg, gatewayCfg); err != nil {
@@ -460,7 +459,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("gateway policy engine: %w", err)
 			}
-			gw, err := gateway.NewGateway(gatewayCfg, identityRegistry, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
+			gw, err := gateway.NewGateway(gatewayCfg, registryHolder, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
 			if err != nil {
 				return fmt.Errorf("initializing gateway: %w", err)
 			}
@@ -473,19 +472,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 			gatewayCfgForMode = gatewayCfg
 			opts = append(opts, server.WithGateway(gatewayHandler))
 			// Dashboard budget view reads per-agent caps through the same
-			// effective-policy computation enforcement uses (#266). Caps are
-			// provider-independent, so the destination constraints are empty.
-			registry := identityRegistry
-			orgPolicy := gatewayCfg.OrganizationPolicy
-			opts = append(opts, server.WithAgentCapsLookup(func(tenantID, agentID string) (float64, float64, bool) {
-				for _, id := range registry.Identities() {
-					if id.Name == agentID && id.TenantID == tenantID {
-						eff := gateway.ResolveEffectivePolicy(orgPolicy, gateway.ProviderConfig{}, id.Override)
-						return eff.MaxDailyCost, eff.MaxMonthlyCost, eff.MaxDailyCost > 0 || eff.MaxMonthlyCost > 0
-					}
-				}
-				return 0, 0, false
-			}))
+			// effective-policy computation enforcement uses (#266), against
+			// the CURRENT registry snapshot (#289).
+			opts = append(opts, server.WithAgentCapsLookup(agentCapsLookupFor(registryHolder, gatewayCfg.OrganizationPolicy)))
 		}
 	} else if serveProxyQuickstart {
 		quickstartCfg, err := gateway.QuickstartConfig(gateway.QuickstartOptions{
@@ -509,7 +498,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("gateway policy engine: %w", err)
 		}
-		gw, err := gateway.NewGateway(quickstartCfg, nil, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
+		gw, err := gateway.NewGateway(quickstartCfg, registryHolder, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
 		if err != nil {
 			return fmt.Errorf("initializing quickstart gateway: %w", err)
 		}
@@ -540,20 +529,58 @@ func runServe(cmd *cobra.Command, args []string) error {
 			enforcementMode = string(gatewayCfgForMode.Mode)
 		}
 
-		// Metrics tenant scope derives from the identity registry — the same
-		// source as gateway auth and cache scoping. Quickstart mode (nil
-		// registry) scopes to its synthetic tenant.
-		metricsTenantID := "default"
-		if identityRegistry != nil {
-			metricsTenantID = identityRegistry.MetricsTenantScope()
-		} else if serveProxyQuickstart {
-			metricsTenantID = gateway.NewQuickstartIdentity().TenantID
+		// Metrics scope derives from the identity registry — the same source
+		// as gateway auth and cache scoping — read through the holder on
+		// every snapshot so a reload re-scopes the dashboard (#289).
+		// Quickstart mode (nil registry) scopes to its synthetic tenant.
+		// ONE scope function for the aggregate fills (#291 review round 2):
+		// tenant filter AND budget denominators derive from a SINGLE
+		// registry-holder read per snapshot, so a reload (#269) can never
+		// mix one registry generation's limits with another's spend scope.
+		// The budget half: what enforcement actually gates on (#288) — in
+		// gateway mode, the SUM of per-agent BINDING effective caps
+		// (registry + ResolveEffectivePolicy, the enforcement path; with
+		// #266's single loaded agent, exactly that agent's cap; agents with
+		// no positive cap contribute nothing — per-agent refinement is the
+		// fleet view #270). Quickstart resolves its synthetic identity the
+		// same way. Native mode uses the agent policy's own cost_limits —
+		// what the runner enforces. The default agent FILE is never
+		// consulted first anymore. The org policy is captured by value:
+		// config has no reload seam yet (#269).
+		var orgPolForScope gateway.OrganizationPolicy
+		if gatewayCfgForMode != nil {
+			orgPolForScope = gatewayCfgForMode.OrganizationPolicy
+		}
+		metricsScope := func() metrics.Scope {
+			reg := registryHolder.Current() // the ONE snapshot this scope derives from
+			scope := metrics.Scope{TenantID: "default"}
+			idents := reg.Identities()
+			if len(idents) > 0 {
+				scope.TenantID = reg.MetricsTenantScope()
+			} else if serveProxyQuickstart {
+				scope.TenantID = gateway.NewQuickstartIdentity().TenantID
+			}
+			switch {
+			case gatewayCfgForMode != nil:
+				if len(idents) == 0 && serveProxyQuickstart {
+					idents = []*gateway.ResolvedIdentity{gateway.NewQuickstartIdentity()}
+				}
+				for _, id := range idents {
+					eff := gateway.ResolveEffectivePolicy(orgPolForScope, gateway.ProviderConfig{}, id.Override)
+					scope.BudgetDaily += eff.BindingDailyCap()
+					scope.BudgetMonthly += eff.BindingMonthlyCap()
+				}
+			case pol.Policies.CostLimits != nil:
+				scope.BudgetDaily = pol.Policies.CostLimits.Daily
+				scope.BudgetMonthly = pol.Policies.CostLimits.Monthly
+			}
+			return scope
 		}
 		collectorOpts := []metrics.CollectorOption{
 			metrics.WithActiveRunsFn(func() int {
-				return activeRunTracker.Count(metricsTenantID)
+				return activeRunTracker.Count(metricsScope().TenantID)
 			}),
-			metrics.WithTenantID(metricsTenantID),
+			metrics.WithScopeFn(metricsScope),
 			metrics.WithCurrency(pricingTable.CurrencyCode()),
 			// Sessions panel (#199): re-derived from evidence at snapshot
 			// time via the same aggregation as `talon audit --session`.
@@ -574,27 +601,6 @@ func runServe(cmd *cobra.Command, args []string) error {
 					DispatchFailures: stats.DispatchFailures,
 				}, nil
 			}))
-		}
-
-		// The global dashboard budget widget shows the ORGANIZATION BASELINE —
-		// deliberately not a per-agent effective cap (there is no single
-		// correct scalar across agents with different overrides). Per-agent
-		// spend vs effective caps is the fleet view's job (#270/#143).
-		budgetDaily, budgetMonthly := 0.0, 0.0
-		if pol.Policies.CostLimits != nil {
-			budgetDaily = pol.Policies.CostLimits.Daily
-			budgetMonthly = pol.Policies.CostLimits.Monthly
-		}
-		if gatewayCfgForMode != nil {
-			if budgetDaily <= 0 && gatewayCfgForMode.OrganizationPolicy.MaxDailyCost > 0 {
-				budgetDaily = gatewayCfgForMode.OrganizationPolicy.MaxDailyCost
-			}
-			if budgetMonthly <= 0 && gatewayCfgForMode.OrganizationPolicy.MaxMonthlyCost > 0 {
-				budgetMonthly = gatewayCfgForMode.OrganizationPolicy.MaxMonthlyCost
-			}
-		}
-		if budgetDaily > 0 || budgetMonthly > 0 {
-			collectorOpts = append(collectorOpts, metrics.WithBudgetLimits(budgetDaily, budgetMonthly))
 		}
 
 		metricsCollector = metrics.NewCollector(enforcementMode, evidenceStore, collectorOpts...)
@@ -639,7 +645,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		policyPath,
 		secretsStore,
 		adminKey,
-		tenantKeys,
+		nil, // agent-key auth resolves through the registry holder (#289)
 		opts...,
 	)
 	srv.SetClassifier(cls)
@@ -698,6 +704,46 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	log.Info().Msg("server_stopped")
 	return nil
+}
+
+// agentCapsLookupFor builds the per-agent effective-cap lookup the dashboard
+// budget endpoint consumes: registry (through the shared holder, #289) +
+// ResolveEffectivePolicy — the same path enforcement uses, so the displayed
+// denominator can never disagree with the cap the runtime gated on (#288).
+// Caps are provider-independent, so the destination constraints are empty.
+// The org policy is captured by value: config (unlike identity) has no
+// reload seam yet — #269 revisits. An empty agentID resolves the tenant's
+// SINGLE registered agent when exactly one exists; ambiguity reports false
+// rather than guessing.
+func agentCapsLookupFor(holder *gateway.RegistryHolder, orgPolicy gateway.OrganizationPolicy) func(tenantID, agentID string) (float64, float64, bool) {
+	return func(tenantID, agentID string) (float64, float64, bool) {
+		var match *gateway.ResolvedIdentity
+		for _, id := range holder.Current().Identities() {
+			if id.TenantID != tenantID {
+				continue
+			}
+			if agentID != "" {
+				if id.Name == agentID {
+					match = id
+					break
+				}
+				continue
+			}
+			if match != nil {
+				return 0, 0, false // ambiguous: two agents, no name
+			}
+			match = id
+		}
+		if match == nil {
+			return 0, 0, false
+		}
+		eff := gateway.ResolveEffectivePolicy(orgPolicy, gateway.ProviderConfig{}, match.Override)
+		// Binding caps, not the agent-resolved values: an org ceiling
+		// (constraints.max_*) tighter than the agent's own cap is what
+		// enforcement gates on (#287).
+		daily, monthly := eff.BindingDailyCap(), eff.BindingMonthlyCap()
+		return daily, monthly, daily > 0 || monthly > 0
+	}
 }
 
 func resolveServeAddress(host string, port int, quickstartEnabled, unsafeListen bool) (string, error) {

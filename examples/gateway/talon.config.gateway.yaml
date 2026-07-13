@@ -33,9 +33,10 @@ gateway:
   # Serving several agents from one process arrives with agents_dir (#267);
   # until then activate one file per gateway via the default_policy setting.
   organization_policy:
-    default_pii_action: "warn"
-    max_daily_cost: 100.00
-    max_monthly_cost: 2000.00
+    defaults:
+      pii_action: "warn"
+      daily_cost: 100.00
+      monthly_cost: 2000.00
     log_prompts: true
     log_responses: false
     log_response_preview_chars: 0

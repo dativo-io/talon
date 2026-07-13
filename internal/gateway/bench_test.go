@@ -40,7 +40,7 @@ func BenchmarkGatewayPipelineOverhead(b *testing.B) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: upstream.URL},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn"}},
 		RateLimits: RateLimitsConfig{
 			GlobalRequestsPerMin:   1_000_000,
 			PerAgentRequestsPerMin: 1_000_000,
@@ -74,7 +74,7 @@ func BenchmarkGatewayPipelineOverhead(b *testing.B) {
 		AllowedModels: []string{"llama2"},
 		MaxDailyCost:  1000,
 	}))
-	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, policyEngine, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, policyEngine, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func BenchmarkGatewayPipelineOverheadLargePrompt(b *testing.B) {
 		Providers: map[string]ProviderConfig{
 			"anthropic": {Enabled: true, BaseURL: upstream.URL},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn"}},
 		RateLimits: RateLimitsConfig{
 			GlobalRequestsPerMin:   1_000_000,
 			PerAgentRequestsPerMin: 1_000_000,
@@ -165,7 +165,7 @@ func BenchmarkGatewayPipelineOverheadLargePrompt(b *testing.B) {
 		AllowedModels: []string{"claude-sonnet-4-20250514"},
 		MaxDailyCost:  1000,
 	}))
-	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, policyEngine, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, policyEngine, nil)
 	if err != nil {
 		b.Fatal(err)
 	}

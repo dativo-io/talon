@@ -72,12 +72,13 @@ gateway:
   # Traffic identity lives in the agent files (agent.key.secret_name, #266);
   # this block is the organization baseline every agent inherits.
   organization_policy:
-    default_pii_action: "warn" # input scan: evidence + warning, code keeps flowing
-    # allow is the honest streaming default: any other value buffers the
-    # ENTIRE SSE stream (no visible tokens until generation completes).
-    # When streaming-safe warn ships, move to it (see LIMITATIONS.md).
-    response_pii_action: "allow"
-    max_daily_cost: 100.00
-    max_monthly_cost: 1000.00
+    defaults:
+      pii_action: "warn" # input scan: evidence + warning, code keeps flowing
+      # allow is the honest streaming default: any other value buffers the
+      # ENTIRE SSE stream (no visible tokens until generation completes).
+      # When streaming-safe warn ships, move to it (see LIMITATIONS.md).
+      response_pii_action: "allow"
+      daily_cost: 100.00
+      monthly_cost: 1000.00
     log_prompts: true
     log_responses: false

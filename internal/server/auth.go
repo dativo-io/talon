@@ -44,12 +44,16 @@ func AgentIdentityFromContext(ctx context.Context) (requestctx.AgentIdentity, bo
 // under (#266 review round 4). When the request authenticated with an agent
 // key, that resolved identity is AUTHORITATIVE: a body/header agent name or
 // tenant that differs is rejected (spoofing), and neither ever defaults to
-// "default". Admin and dev-mode requests keep the client-asserted values,
-// defaulting to "default", so operator tooling can still attribute a run to
-// any agent.
+// "default". "default" (like empty) is the UNSET sentinel — the same rule
+// `talon run --agent default` and the runner apply (#290) — so a client
+// sending the conventional placeholder attributes to the authenticated
+// agent instead of being rejected for "spoofing" the placeholder. An agent
+// literally named "default" matches either way. Admin and dev-mode requests
+// keep the client-asserted values, defaulting to "default", so operator
+// tooling can still attribute a run to any agent.
 func resolveRunAttribution(ctx context.Context, requestedTenant, requestedAgent string) (tenant, agent string, err error) {
 	if id, ok := requestctx.AgentIdentityFrom(ctx); ok {
-		if requestedAgent != "" && requestedAgent != id.AgentID {
+		if requestedAgent != "" && requestedAgent != "default" && requestedAgent != id.AgentID {
 			return "", "", fmt.Errorf("agent %q does not match the authenticated agent key (bound to %q) — an agent key may only act as its own agent", requestedAgent, id.AgentID)
 		}
 		if requestedTenant != "" && requestedTenant != id.TenantID {
@@ -103,31 +107,73 @@ func recordVisibleToCaller(ctx context.Context, recordAgentID string) bool {
 	return true
 }
 
+// AgentKeyAuth is the outcome of authenticating one presented key against
+// ONE identity snapshot. Both facts a middleware needs — did the key resolve,
+// and are any keys configured at all (the dev-open signal, #280) — come from
+// the same snapshot, so an authentication decision can never straddle a
+// registry reload swap (#289 review: HasAgentKeys reading the old registry
+// while resolution read the new one would let the dev-open branch pass an
+// unauthenticated request during an empty → non-empty swap).
+type AgentKeyAuth struct {
+	Identity       requestctx.AgentIdentity
+	Found          bool
+	KeysConfigured bool
+}
+
+// AgentKeyResolver authenticates presented agent keys. Implementations read
+// the CURRENT identity snapshot exactly once per call (#289): the middleware
+// holds the resolver, never a copied key map, so a registry reload (#269)
+// propagates to server auth without middleware rebuilds.
+type AgentKeyResolver interface {
+	AuthenticateAgentKey(key string) AgentKeyAuth
+}
+
+// StaticAgentKeys adapts a fixed key → identity map into an AgentKeyResolver:
+// the native-serve path without a live registry, and tests. nil is valid (no
+// keys configured).
+func StaticAgentKeys(m map[string]requestctx.AgentIdentity) AgentKeyResolver {
+	return staticAgentKeys(m)
+}
+
+type staticAgentKeys map[string]requestctx.AgentIdentity
+
+func (m staticAgentKeys) AuthenticateAgentKey(key string) AgentKeyAuth {
+	id, found := lookupAgentIdentity(m, key)
+	return AgentKeyAuth{Identity: id, Found: found, KeysConfigured: len(m) > 0}
+}
+
+// normalizeResolver makes a nil resolver read as "no keys configured" so
+// every middleware path is nil-safe.
+func normalizeResolver(r AgentKeyResolver) AgentKeyResolver {
+	if r == nil {
+		return staticAgentKeys(nil)
+	}
+	return r
+}
+
 // TenantKeyMiddleware returns a middleware that validates
 // Authorization: Bearer <agent key> and sets the resolved agent identity
-// (agent name, tenant, team) in context. agentKeys is the identity
-// registry's key → AuthPrincipal projection. Openness is governed by the
+// (agent name, tenant, team) in context. agentKeys resolves against the
+// identity registry's CURRENT snapshot (#289). Openness is governed by the
 // admin-key dev rule ONLY: an empty agent registry must never by itself open
 // tenant APIs when an admin key is configured (#266, #280).
-func TenantKeyMiddleware(agentKeys map[string]requestctx.AgentIdentity, adminKey string) func(http.Handler) http.Handler {
+func TenantKeyMiddleware(agentKeys AgentKeyResolver, adminKey string) func(http.Handler) http.Handler {
+	agentKeys = normalizeResolver(agentKeys)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// ONE resolver call per request: the dev-open decision and the
+			// key check come from the same registry snapshot (#289 review).
+			auth := agentKeys.AuthenticateAgentKey(bearerToken(r))
 			// Dev mode: no auth configured at all.
-			if adminKey == "" && len(agentKeys) == 0 {
+			if adminKey == "" && !auth.KeysConfigured {
 				next.ServeHTTP(w, r)
 				return
 			}
-			key := bearerToken(r)
-			if key == "" {
+			if !auth.Found {
 				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing agent key")
 				return
 			}
-			id, ok := lookupAgentIdentity(agentKeys, key)
-			if !ok {
-				writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing agent key")
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(withAgentAuth(r.Context(), id)))
+			next.ServeHTTP(w, r.WithContext(withAgentAuth(r.Context(), auth.Identity)))
 		})
 	}
 }
@@ -188,12 +234,17 @@ func RequireAdminKeyMiddleware(adminKey string) func(http.Handler) http.Handler 
 
 // TenantOrAdminMiddleware allows either an admin key or an agent key.
 // Admin auth checks X-Talon-Admin-Key first, then Bearer fallback.
-// Agent auth checks Authorization: Bearer <agent key> (#266).
-func TenantOrAdminMiddleware(agentKeys map[string]requestctx.AgentIdentity, adminKey string) func(http.Handler) http.Handler {
+// Agent auth checks Authorization: Bearer <agent key> (#266), resolved
+// against the identity registry's CURRENT snapshot (#289).
+func TenantOrAdminMiddleware(agentKeys AgentKeyResolver, adminKey string) func(http.Handler) http.Handler {
+	agentKeys = normalizeResolver(agentKeys)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// ONE resolver call per request (#289 review) — see
+			// TenantKeyMiddleware.
+			auth := agentKeys.AuthenticateAgentKey(bearerToken(r))
 			// Dev mode: no auth configured.
-			if adminKey == "" && len(agentKeys) == 0 {
+			if adminKey == "" && !auth.KeysConfigured {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -205,8 +256,8 @@ func TenantOrAdminMiddleware(agentKeys map[string]requestctx.AgentIdentity, admi
 				next.ServeHTTP(w, r)
 				return
 			}
-			if id, ok := lookupAgentIdentity(agentKeys, bearerToken(r)); ok {
-				next.ServeHTTP(w, r.WithContext(withAgentAuth(r.Context(), id)))
+			if auth.Found {
+				next.ServeHTTP(w, r.WithContext(withAgentAuth(r.Context(), auth.Identity)))
 				return
 			}
 			writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or missing agent/admin key. Use Authorization: Bearer <agent key> or ?talon_admin_key=YOUR_TALON_ADMIN_KEY for admin GET endpoints")

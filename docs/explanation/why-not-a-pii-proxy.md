@@ -14,7 +14,7 @@ A "PII proxy" here means a service that sits in front of your LLM API and scans 
 
 **What Talon does:** Talon sits in front of both the LLM and the tool layer. For the LLM API gateway, it inspects the `tools` array in the request and strips or allows per policy; for MCP, it intercepts `tools/call` and `tools/list`. Forbidden tools are denied before execution. Every allowed or denied tool call is recorded.
 
-**Proof:** Gateway: configure `organization_policy.forbidden_tools` in the gateway config or per-agent `capabilities.allowed_tools` / `forbidden_tools` in the agent file. Send a request that includes a forbidden tool; the request is denied and evidence shows the reason. MCP: use `allowed_tools` in the proxy policy; call a tool not in the list and see it blocked. CLI: `talon audit list` shows rows with `blocked:tool` when a tool was denied.
+**Proof:** Gateway: configure `organization_policy.constraints.forbidden_tools` (or the org-wide hard allowlist `constraints.allowed_tools`) in the gateway config, or per-agent `capabilities.allowed_tools` / `forbidden_tools` in the agent file. Send a request that includes a forbidden tool; the request is denied and evidence shows the reason. MCP: use `allowed_tools` in the proxy policy; call a tool not in the list and see it blocked. CLI: `talon audit list` shows rows with `blocked:tool` when a tool was denied.
 
 ---
 
@@ -38,7 +38,7 @@ A "PII proxy" here means a service that sits in front of your LLM API and scans 
 
 **What Talon does:** Talon scans input (and optionally response) with EU-focused recognizers (IBAN, BSN, NIR, NIF, PESEL, VAT IDs, etc.). It classifies the request into a data tier. Policy can then block the request, redact, or restrict to EU-only models. The decision is made before the LLM call; if the decision is block, the request never reaches the provider.
 
-**Proof:** Set gateway `organization_policy.default_pii_action: "block"` (or tighten one agent to block via `data_classification.block_on_pii`). Send a request with an IBAN in the message body. The request is denied; `talon audit list` shows `blocked:pii` and the evidence record includes `pii_detected`. For verification: `talon audit show <evidence-id>` shows classification and policy reasons.
+**Proof:** Set gateway `organization_policy.defaults.pii_action: "block"` (or tighten one agent to block via `data_classification.block_on_pii`). Send a request with an IBAN in the message body. The request is denied; `talon audit list` shows `blocked:pii` and the evidence record includes `pii_detected`. For verification: `talon audit show <evidence-id>` shows classification and policy reasons.
 
 ---
 

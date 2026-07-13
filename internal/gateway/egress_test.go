@@ -71,10 +71,14 @@ func setupEgressGateway(t *testing.T, mode Mode, egress *EgressPolicyConfig, pro
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key", Region: providerRegion},
 		},
 		OrganizationPolicy: OrganizationPolicy{
-			DefaultPIIAction: "warn",
-			MaxDailyCost:     100,
-			MaxMonthlyCost:   2000,
-			Egress:           egress,
+			Defaults: OrgDefaults{
+				PIIAction:   "warn",
+				DailyCost:   100,
+				MonthlyCost: 2000,
+			},
+			Constraints: OrgConstraints{
+				Egress: egress,
+			},
 		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
@@ -105,7 +109,7 @@ func setupEgressGateway(t *testing.T, mode Mode, egress *EgressPolicyConfig, pro
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
 	require.NoError(t, err)
 	return gw, &upstreamCalls, evStore
 }

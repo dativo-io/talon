@@ -37,6 +37,14 @@ func TestResolveRunAttribution(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "may only act as its own agent")
 	})
+	t.Run("agent key: 'default' is the unset sentinel, not a spoof (#290)", func(t *testing.T) {
+		// The conventional placeholder resolves to the authenticated agent —
+		// the same rule the runner and `talon run --agent default` apply.
+		ten, ag, err := resolveRunAttribution(agentCtx, "", "default")
+		require.NoError(t, err)
+		assert.Equal(t, "acme", ten)
+		assert.Equal(t, "support-bot", ag)
+	})
 	t.Run("agent key: spoofed tenant rejected", func(t *testing.T) {
 		_, _, err := resolveRunAttribution(agentCtx, "globex", "")
 		require.Error(t, err)
@@ -71,13 +79,13 @@ func TestTenantKeyMiddleware_AdminKeyDevRule(t *testing.T) {
 	}
 
 	t.Run("empty registry + configured admin key: tenant APIs stay closed", func(t *testing.T) {
-		mw := TenantKeyMiddleware(map[string]requestctx.AgentIdentity{}, "admin-secret")
+		mw := TenantKeyMiddleware(StaticAgentKeys(map[string]requestctx.AgentIdentity{}), "admin-secret")
 		assert.Equal(t, http.StatusUnauthorized, do(mw, ""), "no key must not pass")
 		assert.Equal(t, http.StatusUnauthorized, do(mw, "anything"), "unknown key must not pass")
 	})
 
 	t.Run("no auth configured at all: dev-mode open", func(t *testing.T) {
-		mw := TenantKeyMiddleware(map[string]requestctx.AgentIdentity{}, "")
+		mw := TenantKeyMiddleware(StaticAgentKeys(map[string]requestctx.AgentIdentity{}), "")
 		assert.Equal(t, http.StatusOK, do(mw, ""))
 	})
 
@@ -87,7 +95,7 @@ func TestTenantKeyMiddleware_AdminKeyDevRule(t *testing.T) {
 			gotTenant = TenantIDFromContext(r.Context())
 			w.WriteHeader(http.StatusOK)
 		})
-		mw := TenantKeyMiddleware(map[string]requestctx.AgentIdentity{"tk-agent-1": {AgentID: "agent-a", TenantID: "acme"}}, "admin-secret")
+		mw := TenantKeyMiddleware(StaticAgentKeys(map[string]requestctx.AgentIdentity{"tk-agent-1": {AgentID: "agent-a", TenantID: "acme"}}), "admin-secret")
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/agents/run", nil)
 		req.Header.Set("Authorization", "Bearer tk-agent-1")
 		rec := httptest.NewRecorder()

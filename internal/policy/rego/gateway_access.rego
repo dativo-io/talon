@@ -154,6 +154,26 @@ deny contains msg if {
 	msg := sprintf("budget_exceeded: request would exceed agent monthly cost limit (%v)", [round(input.agent_max_monthly_cost * 10000) / 10000])
 }
 
+# Organization budget ceilings (#287): constraints.max_daily_cost /
+# max_monthly_cost are HARD bounds with their own input keys and messages, so
+# an agent-declared budget above the org line still denies at the ceiling and
+# the signed deny reason names the ORGANIZATION layer — the record must not
+# blame the agent when the organization rule made the decision (same
+# attribution contract as the data-tier rules).
+deny contains msg if {
+	input.org_max_daily_cost != null
+	input.org_max_daily_cost > 0
+	input.daily_cost + input.estimated_cost > input.org_max_daily_cost
+	msg := sprintf("budget_exceeded: request would exceed organization daily cost limit (%v)", [round(input.org_max_daily_cost * 10000) / 10000])
+}
+
+deny contains msg if {
+	input.org_max_monthly_cost != null
+	input.org_max_monthly_cost > 0
+	input.monthly_cost + input.estimated_cost > input.org_max_monthly_cost
+	msg := sprintf("budget_exceeded: request would exceed organization monthly cost limit (%v)", [round(input.org_max_monthly_cost * 10000) / 10000])
+}
+
 # Per-agent session cost limit (#198): soft cap over one coding session.
 # session_cost_total is present only for client/vendor-asserted sessions
 # (agent-scoped tuple lookup), so this rule cannot fire for synthetic ids.
@@ -169,6 +189,19 @@ deny contains msg if {
 	# %v (with 4-decimal rounding), not %f: OPA sprintf refuses %f for
 	# integral JSON numbers — a zero spend rendered "%!f(int=0000)" (#255).
 	msg := sprintf("session_budget_exceeded: session spend %v + estimate %v exceeds limit %v", [round(input.session_cost_total * 10000) / 10000, round(input.estimated_cost * 10000) / 10000, round(input.agent_max_session_cost * 10000) / 10000])
+}
+
+# Organization per-session budget ceiling (#283): constraints.max_session_cost
+# binds every agent alongside whatever session cap the agent resolved to —
+# same fail-open contract as the agent rule (session_cost_total present only
+# for client/vendor-asserted sessions; a store read failure omits it and the
+# request proceeds, evidenced by session_budget_unavailable). Org-attributed
+# message, same layer contract as the org cost/tier rules.
+deny contains msg if {
+	input.org_max_session_cost != null
+	input.org_max_session_cost > 0
+	input.session_cost_total + input.estimated_cost > input.org_max_session_cost
+	msg := sprintf("session_budget_exceeded: session spend %v + estimate %v exceeds organization limit %v", [round(input.session_cost_total * 10000) / 10000, round(input.estimated_cost * 10000) / 10000, round(input.org_max_session_cost * 10000) / 10000])
 }
 
 # Per-agent data tier restriction: request tier must not exceed agent's max.
