@@ -148,7 +148,9 @@ func checkPolicy(cfg *config.Config) CheckResult {
 	}
 	return CheckResult{
 		Name: "policy_valid", Category: "config", Status: "pass",
-		Message: fmt.Sprintf("%s (agent %s)", policyPath, pol.Agent.Name),
+		// State the pre-#267 scope plainly (#290): doctor validates the ONE
+		// loaded agent policy, not a fleet — multi-agent discovery is #267.
+		Message: fmt.Sprintf("%s (agent %s — the single loaded agent policy; select another via TALON_DEFAULT_POLICY, agents_dir discovery is #267)", policyPath, pol.Agent.Name),
 	}
 }
 

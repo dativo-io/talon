@@ -857,6 +857,14 @@ func TestRunFromTrigger_usesDefaultPolicyPath(t *testing.T) {
 
 	err = runner.RunFromTrigger(ctx, "test-agent", "Say hello", "scheduled")
 	require.NoError(t, err)
+
+	// #290 guardrail: a trigger naming an agent OTHER than the one the
+	// loaded (single, pre-#267) policy declares must fail loudly instead of
+	// silently running the wrong agent's name under this policy's budgets.
+	err = runner.RunFromTrigger(ctx, "other-agent", "Say hello", "scheduled")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown agent "other-agent"`)
+	assert.Contains(t, err.Error(), "#267")
 }
 
 func TestRun_PolicyDeny(t *testing.T) {

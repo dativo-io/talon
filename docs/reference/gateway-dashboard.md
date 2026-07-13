@@ -313,14 +313,18 @@ Per-provider request counts and cost. One entry per selected provider in evidenc
 | `monthly_limit` | float | Monthly cost cap (see note below). |
 | `monthly_percent` | float | Monthly utilization percentage. |
 
-The global budget widget shows the **organization baseline** caps — deliberately not a per-agent effective cap, because there is no single correct scalar across agents with different overrides. Per-agent spend against effective caps is the fleet view's job (#270/#143); until then use the budget endpoint below or `talon costs --agent <name>`.
+The global budget widget denominates against what enforcement actually gates on (#288): in gateway mode, the **sum of per-agent binding effective caps** over the identity registry — registry + `ResolveEffectivePolicy`, the same path enforcement uses, where the binding cap is the tightest of the agent's resolved cap and the organization ceiling (`constraints.max_daily_cost`/`max_monthly_cost`, #287). With #266's single loaded agent this is exactly that agent's cap; per-agent drill-down is the fleet view's job (#270/#143). Native mode (no gateway) uses the agent policy's own `cost_limits` — what the runner enforces.
 
 #### `GET /v1/costs/budget` (per-agent budget endpoint)
 
 Query params: `tenant_id` (or derived from the presenting agent key), `agent_id`. Returns `daily_used` / `monthly_used`, the applicable `daily_limit` / `monthly_limit`, and `budget_source`:
 
-- `"agent_effective_cap"` — the limits are the agent's **effective** caps, resolved for `agent_id` by the same shared computation enforcement uses (organization baseline → the agent's one override).
-- `"policy_cost_limits"` — no registered agent matched `agent_id` (or none was given); the limits come from the loaded agent policy file's `policies.cost_limits`.
+- `"agent_effective_cap"` — the limits are the agent's **binding effective** caps, resolved for `agent_id` by the same shared computation enforcement uses (organization defaults → the agent's one override, bounded by the organization ceilings, #287/#288). With no `agent_id`, the tenant's **single** registered agent resolves this way when exactly one exists.
+- `"unknown_agent"` — a running gateway did not find `agent_id` in the identity registry: no limits are reported (never the default agent file's caps), and `note` says so explicitly — until `agents_dir` (#267) exactly one agent policy is loaded per gateway (#290).
+- `"unresolved_multi_agent"` — no `agent_id` was given and the tenant has several registered agents; query a specific `agent_id`.
+- `"policy_cost_limits"` — native mode (no gateway): the limits come from the loaded agent policy file's `policies.cost_limits`, which is what the native runner enforces.
+
+`talon costs` consumes this endpoint when the server is reachable (`--url`, default `http://localhost:8080`; `TALON_ADMIN_KEY` authenticates) and labels the source `server_*`; offline it resolves locally and reports **no** denominator for an agent other than the loaded default (#288/#290).
 
 ### `cache_stats`
 

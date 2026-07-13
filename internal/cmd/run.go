@@ -51,7 +51,7 @@ var runCmd = &cobra.Command{
 }
 
 func init() {
-	runCmd.Flags().StringVar(&runAgentName, "agent", "default", "Agent name (when omitted, taken from the loaded policy file)")
+	runCmd.Flags().StringVar(&runAgentName, "agent", "default", "Agent name (when omitted, taken from the loaded policy file). An explicit name must match the loaded policy's agent.name: until agents_dir (#267) exactly one agent policy is loaded per process (TALON_DEFAULT_POLICY/--policy selects it), and a mismatch errors instead of running under the wrong policy")
 	runCmd.Flags().StringVar(&runTenantID, "tenant", "default", "Tenant ID")
 	runCmd.Flags().BoolVar(&runDryRun, "dry-run", false, "Show policy decision without LLM call")
 	runCmd.Flags().BoolVar(&runValidate, "validate", false, "Validate policy before running (same as talon validate)")

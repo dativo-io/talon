@@ -524,6 +524,28 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		r.recordEarlyTermination(ctx, correlationID, req, "policy_load_failed: "+err.Error(), startTime)
 		return nil, fmt.Errorf("loading policy: %w", err)
 	}
+	// Attribution must match governance (#290): a run for agent X governed
+	// by agent Y's policy would look agent-first while silently applying the
+	// wrong budgets/tools — the pre-agents_dir single-policy limitation made
+	// this easy to hit via triggers and the serve default path. "default"
+	// (and empty) is the UNSET sentinel across the CLI and server paths and
+	// resolves to the loaded policy's own agent name — the same rule `talon
+	// run` applies — so unnamed runs attribute to the agent whose policy
+	// governed them. An EXPLICIT other name fails loudly until #267
+	// discovers per-agent policies.
+	if pol.Agent.Name != "" {
+		switch req.AgentName {
+		case "", "default":
+			req.AgentName = pol.Agent.Name
+		case pol.Agent.Name:
+			// explicit and matching — nothing to do
+		default:
+			err := fmt.Errorf("unknown agent %q: the loaded policy %s declares agent %q — until agents_dir discovery (#267) exactly one agent policy is loaded per process (select it via TALON_DEFAULT_POLICY or --policy)", req.AgentName, policyPath, pol.Agent.Name)
+			span.RecordError(err)
+			r.recordEarlyTermination(ctx, correlationID, req, "agent_policy_mismatch: "+err.Error(), startTime)
+			return nil, err
+		}
+	}
 	engine, err := policy.NewEngine(ctx, pol)
 	if err != nil {
 		span.RecordError(err)
