@@ -72,6 +72,10 @@ func GenerateExecutionPlan(
 	promptHash := sha256.Sum256([]byte(systemPrompt))
 	inputHash := sha256.Sum256([]byte(inputPrompt))
 
+	// UTC invariant (#292, cf. #264): go-sqlite3 serializes a time.Time with
+	// its original offset and SQLite compares those strings lexicographically,
+	// so every persisted timestamp must be UTC.
+	now := time.Now().UTC()
 	return &ExecutionPlan{
 		ID:               "plan_" + uuid.New().String()[:12],
 		CorrelationID:    correlationID,
@@ -85,7 +89,7 @@ func GenerateExecutionPlan(
 		PolicyDecision:   policyDecision,
 		SystemPromptHash: hex.EncodeToString(promptHash[:]),
 		InputHash:        hex.EncodeToString(inputHash[:]),
-		CreatedAt:        time.Now(),
-		TimeoutAt:        time.Now().Add(time.Duration(timeoutMinutes) * time.Minute),
+		CreatedAt:        now,
+		TimeoutAt:        now.Add(time.Duration(timeoutMinutes) * time.Minute),
 	}
 }
