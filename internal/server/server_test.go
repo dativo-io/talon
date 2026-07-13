@@ -48,6 +48,10 @@ func TestHealthEndpoint(t *testing.T) {
 	var out map[string]interface{}
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
 	assert.Equal(t, "ok", out["status"])
+	// Product marker (#293): `talon costs` identifies Talon via this header
+	// before trusting a failed budget probe on the default localhost URL.
+	assert.Equal(t, "talon", rec.Header().Get("X-Talon-Service"))
+	assert.Equal(t, "talon", out["service"])
 
 	// HEAD must answer 200 too: `wget --spider` (the compose healthchecks)
 	// probes with HEAD, and chi's Get-only registration answered 405 —

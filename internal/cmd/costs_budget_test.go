@@ -243,6 +243,39 @@ metadata: { owner: "", tags: [] }
 		assert.Contains(t, err.Error(), "401")
 	})
 
+	// #293: the implicit probe identifies WHAT rejected it before falling
+	// back. A real Talon server (proven by the /health marker) returning 401
+	// is authoritative — hard error, never local numbers; a non-Talon port
+	// squatter keeps the warned local fallback so offline use survives.
+	t.Run("implicit probe, 401 from a server with the Talon /health marker → error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/health" {
+				w.Header().Set("X-Talon-Service", "talon")
+				_, _ = w.Write([]byte(`{"service":"talon","status":"ok"}`))
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer srv.Close()
+		setServer(t, srv.URL, false)
+		_, _, err := resolveBudgetUsage(ctx, cfg, "default", "", 1, 2)
+		require.Error(t, err, "a real Talon's rejection must not end in local numbers even on the implicit probe (#293)")
+		assert.Contains(t, err.Error(), "401")
+		assert.Contains(t, err.Error(), "identifies itself as Talon")
+	})
+
+	t.Run("implicit probe, 401 from a non-Talon squatter → local fallback", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized) // rejects everything, no Talon marker on /health
+		}))
+		defer srv.Close()
+		setServer(t, srv.URL, false)
+		daily, _, err := resolveBudgetUsage(ctx, cfg, "default", "", 1, 2)
+		require.NoError(t, err)
+		require.NotNil(t, daily, "a port squatter must not brick the default probe's local fallback")
+		assert.Equal(t, "policy_cost_limits", daily.Source)
+	})
+
 	t.Run("authoritative no-cap answer → no local fallback", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")

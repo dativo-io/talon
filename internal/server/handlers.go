@@ -132,9 +132,15 @@ func writeOpenAIError(w http.ResponseWriter, status int, code, typeStr, message 
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	// Product marker (#293): lets clients (e.g. `talon costs`' default
+	// localhost probe) distinguish a real Talon server from an unrelated
+	// service squatting on the port BEFORE deciding whether a failed API
+	// call is authoritative. Sent as a header so HEAD probes see it too.
+	w.Header().Set("X-Talon-Service", "talon")
 	resp := map[string]interface{}{
-		"status": "ok",
-		"uptime": time.Since(s.startTime).String(),
+		"service": "talon",
+		"status":  "ok",
+		"uptime":  time.Since(s.startTime).String(),
 	}
 	if r.URL.Query().Get("detail") == "true" {
 		components := map[string]string{
