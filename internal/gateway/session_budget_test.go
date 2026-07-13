@@ -98,7 +98,7 @@ func newSessionBudgetGateway(t *testing.T, mode Mode, maxSessionCost float64) (e
 	sessStore, err = session.NewStore(filepath.Join(dir, "sess.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sessStore.Close() })
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, policyEngine, sbEstimator)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, sbEstimator)
 	require.NoError(t, err)
 	gw.SetSessionStore(sessStore)
 	gw.SetPricingCurrency("USD")
@@ -358,7 +358,7 @@ func TestPolicyInputParity_WithAssertedSession(t *testing.T) {
 			"backup": {Enabled: true, BaseURL: "http://unused", SecretName: "k"},
 		},
 		Timeouts: TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
-	}, testRegistry(agent), classifier.MustNewScanner(), nil, nil, nil, sbEstimator)
+	}, NewRegistryHolder(testRegistry(agent)), classifier.MustNewScanner(), nil, nil, nil, sbEstimator)
 	require.NoError(t, err)
 	gw.SetSessionStore(sessStore)
 

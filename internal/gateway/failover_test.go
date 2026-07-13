@@ -146,7 +146,7 @@ func setupFailoverGateway(t *testing.T, sovereigntyMode, primaryRegion, backupRe
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key", []byte("sk-primary-key-1234567890"), acl))
 	require.NoError(t, secStore.Set(context.Background(), "backup-api-key", []byte("sk-backup-key-1234567890"), acl))
 
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 	return gw, evStore
 }
@@ -154,7 +154,7 @@ func setupFailoverGateway(t *testing.T, sovereigntyMode, primaryRegion, backupRe
 // failoverAgent returns the single registered agent identity for post-setup
 // policy tweaks (the identity pointer is shared with the gateway's registry).
 func failoverAgent(gw *Gateway) *ResolvedIdentity {
-	return gw.registry.identities[0]
+	return gw.registry.Current().identities[0]
 }
 
 func makeFailoverRequest(gw *Gateway, body string) *httptest.ResponseRecorder {
@@ -531,7 +531,7 @@ func TestGatewayAlias_AnthropicFamilyGovernance(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 	require.NoError(t, secStore.Set(context.Background(), "anthropic-eu-key", []byte("sk-ant-alias-key-123456"),
 		secrets.ACL{Tenants: []string{"test-tenant"}, Agents: []string{"*"}}))
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	anthropicBody := `{"model":"claude-sonnet-4-20250514","max_tokens":100,"messages":[{"role":"user","content":"Contact jan.kowalski@example.com about the invoice"}]}`

@@ -178,7 +178,7 @@ func TestGatewayCacheCost_EndToEnd(t *testing.T) {
 		}
 		return CostResult{Amount: cost, PricingKnown: known, PricingBasis: basis}
 	}
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, estimator)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, estimator)
 	require.NoError(t, err)
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })

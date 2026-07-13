@@ -32,7 +32,10 @@ func (g *Gateway) resolveIdentity(r *http.Request) (*ResolvedIdentity, error) {
 	if key == "" {
 		return nil, ErrKeyRequired
 	}
-	if id, ok := g.registry.ResolveKey(key); ok {
+	// Resolve against the CURRENT registry snapshot (#289): a reload swap
+	// takes effect on the next request, with in-flight requests finishing on
+	// the snapshot they started with.
+	if id, ok := g.registry.Current().ResolveKey(key); ok {
 		return id, nil
 	}
 	return nil, ErrUnknownKey

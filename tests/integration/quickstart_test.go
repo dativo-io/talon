@@ -161,7 +161,7 @@ func newQuickstartIntegrationServer(t *testing.T, upstreamURL string) (*httptest
 	require.NoError(t, err)
 	gwPolicy, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
-	gw, err := gateway.NewGateway(quickstartCfg, nil, classifier.MustNewScanner(), evStore, secStore, gwPolicy, nil)
+	gw, err := gateway.NewGateway(quickstartCfg, gateway.NewRegistryHolder(nil), classifier.MustNewScanner(), evStore, secStore, gwPolicy, nil)
 	require.NoError(t, err)
 
 	opts := []server.Option{

@@ -46,7 +46,11 @@ type Server struct {
 	gatewayDashboardHTML string
 	metricsCollector     *metrics.Collector
 	adminKey             string
-	agentKeys            map[string]requestctx.AgentIdentity
+	// agentKeys resolves presented agent keys against the CURRENT identity
+	// snapshot (#289) — serve injects a registry-holder-backed resolver so a
+	// reload propagates to server auth; static maps serve tests and the
+	// native-only path.
+	agentKeys            AgentKeyResolver
 	corsOrigins          []string
 	policyPath           string
 	startTime            time.Time
@@ -190,7 +194,18 @@ func WithAgentCapsLookup(fn func(tenantID, agentID string) (daily, monthly float
 func WithAgentIdentities(agentKeys map[string]requestctx.AgentIdentity) Option {
 	return func(s *Server) {
 		if agentKeys != nil {
-			s.agentKeys = agentKeys
+			s.agentKeys = StaticAgentKeys(agentKeys)
+		}
+	}
+}
+
+// WithAgentKeyResolver sets a LIVE agent-key resolver (#289): serve wires a
+// registry-holder-backed implementation so one reload swap (#269) propagates
+// to server auth, unlike the static snapshot maps above.
+func WithAgentKeyResolver(r AgentKeyResolver) Option {
+	return func(s *Server) {
+		if r != nil {
+			s.agentKeys = r
 		}
 	}
 }
@@ -268,7 +283,7 @@ func NewServer(
 		policyPath:           policyPath,
 		secretsStore:         secretsStore,
 		adminKey:             adminKey,
-		agentKeys:            tenantKeysToIdentities(tenantKeys),
+		agentKeys:            StaticAgentKeys(tenantKeysToIdentities(tenantKeys)),
 		corsOrigins:          []string{"*"},
 		startTime:            time.Now(),
 		eventsStreamMaxConn:  256,
@@ -280,7 +295,7 @@ func NewServer(
 		opt(s)
 	}
 	if s.agentKeys == nil {
-		s.agentKeys = make(map[string]requestctx.AgentIdentity)
+		s.agentKeys = StaticAgentKeys(nil)
 	}
 	return s
 }

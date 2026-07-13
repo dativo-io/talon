@@ -102,7 +102,7 @@ gateway:
 	}, secStore, "")
 	require.NoError(t, err)
 
-	gw, err := gateway.NewGateway(gwCfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := gateway.NewGateway(gwCfg, gateway.NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	r := chi.NewRouter()

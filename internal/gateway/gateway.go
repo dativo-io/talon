@@ -92,8 +92,11 @@ const (
 
 // Gateway is the LLM API gateway handler.
 type Gateway struct {
-	config        *GatewayConfig
-	registry      *IdentityRegistry
+	config *GatewayConfig
+	// registry is the shared atomic snapshot holder (#289): identity is
+	// resolved against Current() per request, so a reload swap (#269)
+	// propagates here without reconstructing the gateway.
+	registry      *RegistryHolder
 	classifier    classifier.Facade
 	evidenceStore *evidence.Store
 	secretsStore  *secrets.SecretStore
@@ -105,15 +108,13 @@ type Gateway struct {
 	attExtractor  *attachment.Extractor
 	attInjScanner *attachment.Scanner
 	// Optional semantic cache (when nil or disabled, cache is skipped)
-	cacheStore    *cache.Store
-	cacheEmbedder *cache.BM25
-	cacheScrubber *cache.PIIScrubber
-	cachePolicy   *cache.Evaluator
-	cacheConfig   *gatewayCacheConfig
-	// canonicalTenantIDs maps tenant ID -> same ID from config (populated at init); used for cache key scope so static analysis sees value from config, not from request.
-	canonicalTenantIDs map[string]string
-	metricsRecorder    MetricsRecorder
-	sessionStore       *session.Store
+	cacheStore      *cache.Store
+	cacheEmbedder   *cache.BM25
+	cacheScrubber   *cache.PIIScrubber
+	cachePolicy     *cache.Evaluator
+	cacheConfig     *gatewayCacheConfig
+	metricsRecorder MetricsRecorder
+	sessionStore    *session.Store
 	// pricingCurrency is the ISO-4217 code of the pricing table backing
 	// costEstimate; stamped into evidence so records stay self-describing
 	// if the operator later changes the table (#216).
@@ -131,14 +132,17 @@ type gatewayCacheConfig struct {
 	MaxEntriesPerTenant int
 }
 
-// canonicalTenantIDForCache returns the tenant ID for cache key scope from the config-derived map.
-// Used so the value passed to cache.DeriveEntryKey originates from config (not from the request path), satisfying static analysis.
+// canonicalTenantIDForCache returns the tenant ID for cache key scope from
+// config-derived values — the CURRENT registry snapshot (#289), so a reload
+// re-scopes cache keys without gateway reconstruction. Used so the value
+// passed to cache.DeriveEntryKey originates from config (not from the
+// request path), satisfying static analysis.
 func (g *Gateway) canonicalTenantIDForCache(fromAgent string) string {
-	if g.canonicalTenantIDs == nil {
-		return fromAgent
+	if fromAgent == quickstartTenantID {
+		return quickstartTenantID
 	}
-	if s, ok := g.canonicalTenantIDs[fromAgent]; ok {
-		return s
+	if canonical, ok := g.registry.Current().CanonicalTenantID(fromAgent); ok {
+		return canonical
 	}
 	return fromAgent
 }
@@ -178,13 +182,15 @@ func (g *Gateway) SetCache(store *cache.Store, embedder *cache.BM25, scrubber *c
 	}
 }
 
-// NewGateway creates a new Gateway. The registry is the immutable key → agent
-// identity set built by BuildIdentityRegistry; a nil/empty registry means no
+// NewGateway creates a new Gateway. The registry holder is the shared atomic
+// snapshot holder (#289): its Current() registry is the immutable key → agent
+// identity set built by BuildIdentityRegistry, and a reload (#269) swaps it
+// for every consumer at once. A holder over a nil/empty registry means no
 // agent can authenticate (quickstart mode injects its synthetic identity via
 // request context instead).
 func NewGateway(
 	config *GatewayConfig,
-	registry *IdentityRegistry,
+	registry *RegistryHolder,
 	classifier classifier.Facade,
 	evidenceStore *evidence.Store,
 	secretsStore *secrets.SecretStore,
@@ -214,27 +220,24 @@ func NewGateway(
 		return nil, fmt.Errorf("creating attachment injection scanner: %w", err)
 	}
 
-	// Cache tenant scope derives from the registry — agent-declared tenants
-	// included — so cache keys always originate from config, not requests.
-	canonical := make(map[string]string)
-	for _, tid := range registry.TenantIDs() {
-		canonical[tid] = tid
+	if registry == nil {
+		// Normalize so every read goes through one nil-safe holder — a
+		// keyless gateway (quickstart) is a holder over a nil registry.
+		registry = NewRegistryHolder(nil)
 	}
-	canonical[quickstartTenantID] = quickstartTenantID
 	return &Gateway{
-		config:             config,
-		registry:           registry,
-		classifier:         classifier,
-		evidenceStore:      evidenceStore,
-		secretsStore:       secretsStore,
-		policy:             policy,
-		costEstimate:       costEstimate,
-		timeouts:           timeouts,
-		client:             client,
-		rateLimiter:        rl,
-		attExtractor:       ext,
-		attInjScanner:      injScan,
-		canonicalTenantIDs: canonical,
+		config:        config,
+		registry:      registry,
+		classifier:    classifier,
+		evidenceStore: evidenceStore,
+		secretsStore:  secretsStore,
+		policy:        policy,
+		costEstimate:  costEstimate,
+		timeouts:      timeouts,
+		client:        client,
+		rateLimiter:   rl,
+		attExtractor:  ext,
+		attInjScanner: injScan,
 	}, nil
 }
 

@@ -61,7 +61,7 @@ func TestGateway_SovereigntyDeny_USProvider(t *testing.T) {
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key",
 		[]byte("sk-test"), secrets.ACL{Tenants: []string{"default"}, Agents: []string{"*"}}))
 
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
@@ -118,7 +118,7 @@ func TestGateway_SovereigntyAllow_EUProvider(t *testing.T) {
 	require.NoError(t, secStore.Set(context.Background(), "ollama-api-key",
 		[]byte("local"), secrets.ACL{Tenants: []string{"default"}, Agents: []string{"*"}}))
 
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	body := `{"model":"llama3.2:1b","messages":[{"role":"user","content":"hi"}]}`
@@ -174,7 +174,7 @@ func TestGateway_SovereigntyDeny_ShadowModeStillBlocks(t *testing.T) {
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key",
 		[]byte("sk-test"), secrets.ACL{Tenants: []string{"default"}, Agents: []string{"*"}}))
 
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`

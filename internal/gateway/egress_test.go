@@ -109,7 +109,7 @@ func setupEgressGateway(t *testing.T, mode Mode, egress *EgressPolicyConfig, pro
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, nil)
 	require.NoError(t, err)
 	return gw, &upstreamCalls, evStore
 }

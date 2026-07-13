@@ -87,7 +87,7 @@ func setupCoPawGateway(t *testing.T, upstreamHandler http.HandlerFunc) (*gateway
 	policyEngine, err := policy.NewGatewayEngine(context.Background())
 	require.NoError(t, err)
 
-	gw, err := gateway.NewGateway(cfg, registry, cls, evStore, secStore, policyEngine, nil)
+	gw, err := gateway.NewGateway(cfg, gateway.NewRegistryHolder(registry), cls, evStore, secStore, policyEngine, nil)
 	require.NoError(t, err)
 
 	return gw, upstream, evStore

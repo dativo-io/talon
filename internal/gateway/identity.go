@@ -309,6 +309,22 @@ func (r *IdentityRegistry) MetricsTenantScope() string {
 	return ""
 }
 
+// CanonicalTenantID returns the registry's own string for a tenant it knows
+// (so cache-key scope always originates from config, never from request
+// data) and reports whether the tenant is registered. Allocation-free — it
+// runs on the per-request cache path (#289).
+func (r *IdentityRegistry) CanonicalTenantID(tenantID string) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	for _, id := range r.identities {
+		if id.TenantID == tenantID {
+			return id.TenantID, true
+		}
+	}
+	return "", false
+}
+
 // AuthPrincipal is the identity a presented agent key resolves to on the
 // tenant-API surface (#266): the agent name, its derived tenant, and team.
 // It is the value type of AuthKeyIdentityProjection — an immutable snapshot,

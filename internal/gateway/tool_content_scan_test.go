@@ -140,7 +140,7 @@ func newToolScanGateway(t *testing.T, upstreamURL, scanToolContent string) (*evi
 	t.Cleanup(func() { _ = secStore.Close() })
 	require.NoError(t, secStore.Set(context.Background(), "anthropic-key", []byte("sk-ant-test-000-toolscan"),
 		secrets.ACL{Tenants: []string{"toolscan-tenant"}, Agents: []string{"*"}}))
-	gw, err := NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	require.NoError(t, err)
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })

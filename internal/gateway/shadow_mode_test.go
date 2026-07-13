@@ -78,7 +78,7 @@ func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig, *PolicyOverri
 		secrets.ACL{Tenants: []string{"test-tenant"}, Agents: []string{"*"}}))
 
 	cls := classifier.MustNewScanner()
-	gw, err := NewGateway(cfg, registry, cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, nil, nil)
 	require.NoError(t, err)
 
 	return gw, evStore

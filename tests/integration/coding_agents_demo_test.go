@@ -125,7 +125,7 @@ func newDemoGateway(t *testing.T, mockURL string) (*evidence.Store, http.Handler
 		}
 		return gateway.CostResult{Amount: 0.005, PricingKnown: true, PricingBasis: gateway.PricingBasisTable}
 	}
-	gw, err := gateway.NewGateway(cfg, registry, classifier.MustNewScanner(), evStore, secStore, policyEngine, estimator)
+	gw, err := gateway.NewGateway(cfg, gateway.NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, estimator)
 	require.NoError(t, err)
 	gw.SetSessionStore(sessStore)
 	r := chi.NewRouter()

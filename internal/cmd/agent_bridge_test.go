@@ -39,6 +39,50 @@ func TestResolveRunTenant(t *testing.T) {
 	assert.Equal(t, "default", got)
 }
 
+// TestHolderKeyResolver_SwapPropagatesToServerAuth (#289): server tenant-API
+// auth resolves through the shared registry holder, so one reload Swap
+// changes which keys authenticate — including the HasAgentKeys dev-open
+// signal — without middleware rebuilds.
+func TestHolderKeyResolver_SwapPropagatesToServerAuth(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	vault, err := secrets.NewSecretStore(filepath.Join(dir, "s.db"), "0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vault.Close() })
+	require.NoError(t, vault.Set(ctx, "old-key", []byte("tk-old"), secrets.ACL{}))
+	require.NoError(t, vault.Set(ctx, "new-key", []byte("tk-new"), secrets.ACL{}))
+
+	buildReg := func(secretName string) *gateway.IdentityRegistry {
+		reg, err := gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{
+			{Path: "a.yaml", Name: "support", TenantID: "acme", Team: "cx", KeySecretName: secretName},
+		}, vault, "")
+		require.NoError(t, err)
+		return reg
+	}
+
+	holder := gateway.NewRegistryHolder(nil)
+	resolver := holderKeyResolver{holder: holder}
+
+	assert.False(t, resolver.HasAgentKeys(), "nil registry = no keys configured")
+	_, ok := resolver.ResolveAgentKey("tk-old")
+	assert.False(t, ok)
+
+	holder.Swap(buildReg("old-key"))
+	assert.True(t, resolver.HasAgentKeys(), "keys appear after the swap")
+	id, ok := resolver.ResolveAgentKey("tk-old")
+	require.True(t, ok)
+	assert.Equal(t, "support", id.AgentID)
+	assert.Equal(t, "acme", id.TenantID)
+	assert.Equal(t, "cx", id.Team, "full identity travels through, not just the tenant")
+
+	// Key rotation: the old key stops authenticating, the new one starts.
+	holder.Swap(buildReg("new-key"))
+	_, ok = resolver.ResolveAgentKey("tk-old")
+	assert.False(t, ok, "rotated-out key must stop authenticating")
+	_, ok = resolver.ResolveAgentKey("tk-new")
+	assert.True(t, ok)
+}
+
 // TestBuildServeIdentityRegistryModeMatrix regression-tests the serve-time
 // registry mode matrix (#279 review): quickstart skips, gateway is
 // fail-closed, plain serve degrades to a warning EXCEPT the admin-key

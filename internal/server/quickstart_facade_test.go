@@ -166,7 +166,7 @@ func newFacadeForTest(t *testing.T, upstreamURL string) (http.Handler, *evidence
 	t.Cleanup(func() { _ = secStore.Close() })
 	// Quickstart runs with a nil registry: the synthetic identity is injected
 	// per request by the facade and is the ONLY non-key identity (#266).
-	gw, err := gateway.NewGateway(cfg, nil, classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := gateway.NewGateway(cfg, gateway.NewRegistryHolder(nil), classifier.MustNewScanner(), evStore, secStore, nil, nil)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/dativo-io/talon/internal/agentbridge"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
+	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/secrets"
 )
 
@@ -72,6 +73,27 @@ func buildServeIdentityRegistry(ctx context.Context, pol *policy.Policy, policyP
 		return nil, nil
 	}
 	return registry, nil
+}
+
+// holderKeyResolver adapts the shared registry holder into the server's
+// AgentKeyResolver (#289): every auth check resolves against the CURRENT
+// registry snapshot, so a reload swap (#269) propagates to the tenant-API
+// surface without middleware rebuilds. Resolution reuses the registry's own
+// constant-time key matching.
+type holderKeyResolver struct {
+	holder *gateway.RegistryHolder
+}
+
+func (r holderKeyResolver) ResolveAgentKey(key string) (requestctx.AgentIdentity, bool) {
+	id, ok := r.holder.Current().ResolveKey(key)
+	if !ok {
+		return requestctx.AgentIdentity{}, false
+	}
+	return requestctx.AgentIdentity{AgentID: id.Name, TenantID: id.TenantID, Team: id.Team}, true
+}
+
+func (r holderKeyResolver) HasAgentKeys() bool {
+	return r.holder.Current().Len() > 0
 }
 
 // resolveRunTenant decides the tenant a native run attributes to (#266):

@@ -71,13 +71,13 @@ func TestTenantKeyMiddleware_AdminKeyDevRule(t *testing.T) {
 	}
 
 	t.Run("empty registry + configured admin key: tenant APIs stay closed", func(t *testing.T) {
-		mw := TenantKeyMiddleware(map[string]requestctx.AgentIdentity{}, "admin-secret")
+		mw := TenantKeyMiddleware(StaticAgentKeys(map[string]requestctx.AgentIdentity{}), "admin-secret")
 		assert.Equal(t, http.StatusUnauthorized, do(mw, ""), "no key must not pass")
 		assert.Equal(t, http.StatusUnauthorized, do(mw, "anything"), "unknown key must not pass")
 	})
 
 	t.Run("no auth configured at all: dev-mode open", func(t *testing.T) {
-		mw := TenantKeyMiddleware(map[string]requestctx.AgentIdentity{}, "")
+		mw := TenantKeyMiddleware(StaticAgentKeys(map[string]requestctx.AgentIdentity{}), "")
 		assert.Equal(t, http.StatusOK, do(mw, ""))
 	})
 
@@ -87,7 +87,7 @@ func TestTenantKeyMiddleware_AdminKeyDevRule(t *testing.T) {
 			gotTenant = TenantIDFromContext(r.Context())
 			w.WriteHeader(http.StatusOK)
 		})
-		mw := TenantKeyMiddleware(map[string]requestctx.AgentIdentity{"tk-agent-1": {AgentID: "agent-a", TenantID: "acme"}}, "admin-secret")
+		mw := TenantKeyMiddleware(StaticAgentKeys(map[string]requestctx.AgentIdentity{"tk-agent-1": {AgentID: "agent-a", TenantID: "acme"}}), "admin-secret")
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/agents/run", nil)
 		req.Header.Set("Authorization", "Bearer tk-agent-1")
 		rec := httptest.NewRecorder()
