@@ -40,7 +40,7 @@ func BenchmarkGatewayPipelineOverhead(b *testing.B) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: upstream.URL},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn"}},
 		RateLimits: RateLimitsConfig{
 			GlobalRequestsPerMin:   1_000_000,
 			PerAgentRequestsPerMin: 1_000_000,
@@ -131,7 +131,7 @@ func BenchmarkGatewayPipelineOverheadLargePrompt(b *testing.B) {
 		Providers: map[string]ProviderConfig{
 			"anthropic": {Enabled: true, BaseURL: upstream.URL},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn"}},
 		RateLimits: RateLimitsConfig{
 			GlobalRequestsPerMin:   1_000_000,
 			PerAgentRequestsPerMin: 1_000_000,

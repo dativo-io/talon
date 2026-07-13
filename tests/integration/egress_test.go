@@ -53,15 +53,17 @@ gateway:
       base_url: %q
       region: "US"
   organization_policy:
-    default_pii_action: warn
-    max_daily_cost: 100
-    max_monthly_cost: 2000
-    egress:
-      rules:
-        - tier: 0
-          allowed_providers: ["*"]
-        - tier: 2
-          allowed_regions: ["EU", "LOCAL"]
+    defaults:
+      pii_action: warn
+      daily_cost: 100
+      monthly_cost: 2000
+    constraints:
+      egress:
+        rules:
+          - tier: 0
+            allowed_providers: ["*"]
+          - tier: 2
+            allowed_regions: ["EU", "LOCAL"]
   timeouts:
     connect_timeout: "5s"
     request_timeout: "30s"

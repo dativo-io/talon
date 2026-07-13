@@ -28,8 +28,9 @@ gateway:
       allowed_models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
 
   organization_policy:
-    default_pii_action: "block"
-    max_daily_cost: 100.00
+    defaults:
+      pii_action: "block"
+      daily_cost: 100.00
     log_prompts: true
     log_responses: false
 

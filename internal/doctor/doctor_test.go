@@ -68,8 +68,10 @@ func TestRun_GatewayCategory_WithConfig(t *testing.T) {
       base_url: "https://api.openai.com"
       secret_name: "openai-api-key"
   organization_policy:
-    default_pii_action: "warn"
-    forbidden_tools: ["rm_rf", "delete_*"]
+    defaults:
+      pii_action: "warn"
+    constraints:
+      forbidden_tools: ["rm_rf", "delete_*"]
 `
 	require.NoError(t, os.WriteFile(gwCfgPath, []byte(gwYAML), 0o600))
 
@@ -285,8 +287,10 @@ gateway:
       region: "US"
       secret_name: "openai-api-key"
   organization_policy:
-    default_pii_action: "warn"
-    forbidden_tools: ["rm_rf"]
+    defaults:
+      pii_action: "warn"
+    constraints:
+      forbidden_tools: ["rm_rf"]
 `
 	require.NoError(t, os.WriteFile(gwCfgPath, []byte(gwYAML), 0o600))
 
@@ -338,8 +342,10 @@ gateway:
       region: "LOCAL"
       secret_name: "ollama-api-key"
   organization_policy:
-    default_pii_action: "warn"
-    forbidden_tools: ["rm_rf"]
+    defaults:
+      pii_action: "warn"
+    constraints:
+      forbidden_tools: ["rm_rf"]
 `
 	require.NoError(t, os.WriteFile(gwCfgPath, []byte(gwYAML), 0o600))
 
@@ -390,8 +396,10 @@ gateway:
       region: "US"
       secret_name: "openai-api-key"
   organization_policy:
-    default_pii_action: "warn"
-    forbidden_tools: ["rm_rf"]
+    defaults:
+      pii_action: "warn"
+    constraints:
+      forbidden_tools: ["rm_rf"]
 `
 	require.NoError(t, os.WriteFile(gwCfgPath, []byte(gwYAML), 0o600))
 

@@ -121,7 +121,7 @@ func newConformanceGateway(t *testing.T, upstreamURL string) (*Gateway, *evidenc
 		},
 		// Response-side scanning is out of scope for request-path conformance:
 		// "allow" keeps streams passing through byte-identically.
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn", ResponsePIIAction: "allow", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn", ResponsePIIAction: "allow", DailyCost: 100, MonthlyCost: 2000}},
 		// The whole corpus runs through one gateway; default per-agent RPM
 		// would 429 everything after the first fixture.
 		RateLimits: RateLimitsConfig{GlobalRequestsPerMin: 10000, PerAgentRequestsPerMin: 10000},

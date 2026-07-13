@@ -76,8 +76,9 @@ gateway:
       base_url: "https://api.openai.com"
       region: "EU"
   organization_policy:
-    default_pii_action: "warn"
-    max_daily_cost: 100.00
+    defaults:
+      pii_action: "warn"
+      daily_cost: 100.00
 GWEOF
 
   # --- Scenario A: transparent failover to the backup provider ---

@@ -69,11 +69,13 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 			"openai": provider,
 		},
 		OrganizationPolicy: OrganizationPolicy{
-			DefaultPIIAction: "redact",
-			MaxDailyCost:     50,
-			MaxMonthlyCost:   500,
-			LogPrompts:       false,
-			LogResponses:     false,
+			Defaults: OrgDefaults{
+				PIIAction:   "redact",
+				DailyCost:   50,
+				MonthlyCost: 500,
+			},
+			LogPrompts:   false,
+			LogResponses: false,
 		},
 		RateLimits: RateLimitsConfig{
 			GlobalRequestsPerMin:   600,

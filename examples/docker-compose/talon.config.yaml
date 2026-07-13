@@ -15,8 +15,9 @@ gateway:
   # Identity lives in agent.talon.yaml (#266); the compose stack seeds
   # demo-user-talon-key with the demo key value at startup.
   organization_policy:
-    default_pii_action: "warn"
-    max_daily_cost: 100.00
+    defaults:
+      pii_action: "warn"
+      daily_cost: 100.00
     log_prompts: true
     log_responses: false
 

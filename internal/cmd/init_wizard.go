@@ -104,14 +104,21 @@ type GatewayProvider struct {
 	AllowedModels []string `yaml:"allowed_models,omitempty"`
 }
 
-// GatewayOrganizationPolicy is the organization baseline every agent inherits (#266).
+// GatewayOrganizationPolicy is the organization policy block every agent
+// inherits (#266), split into defaults vs constraints (#287). The wizard
+// emits only defaults; constraints are opt-in hard bounds the operator adds.
 type GatewayOrganizationPolicy struct {
-	DefaultPIIAction  string  `yaml:"default_pii_action"`
+	Defaults     GatewayOrgDefaults `yaml:"defaults"`
+	LogPrompts   bool               `yaml:"log_prompts"`
+	LogResponses bool               `yaml:"log_responses"`
+}
+
+// GatewayOrgDefaults mirrors gateway.OrgDefaults for the wizard-written YAML.
+type GatewayOrgDefaults struct {
+	PIIAction         string  `yaml:"pii_action"`
 	ResponsePIIAction string  `yaml:"response_pii_action,omitempty"`
-	MaxDailyCost      float64 `yaml:"max_daily_cost"`
-	MaxMonthlyCost    float64 `yaml:"max_monthly_cost"`
-	LogPrompts        bool    `yaml:"log_prompts"`
-	LogResponses      bool    `yaml:"log_responses"`
+	DailyCost         float64 `yaml:"daily_cost"`
+	MonthlyCost       float64 `yaml:"monthly_cost"`
 }
 
 type GatewayRateLimits struct {
@@ -942,12 +949,14 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 				},
 			},
 			OrganizationPolicy: &GatewayOrganizationPolicy{
-				DefaultPIIAction:  "warn",
-				ResponsePIIAction: "warn",
-				MaxDailyCost:      100.00,
-				MaxMonthlyCost:    2000.00,
-				LogPrompts:        true,
-				LogResponses:      false,
+				Defaults: GatewayOrgDefaults{
+					PIIAction:         "warn",
+					ResponsePIIAction: "warn",
+					DailyCost:         100.00,
+					MonthlyCost:       2000.00,
+				},
+				LogPrompts:   true,
+				LogResponses: false,
 			},
 			RateLimits: &GatewayRateLimits{
 				GlobalRequestsPerMin:   300,

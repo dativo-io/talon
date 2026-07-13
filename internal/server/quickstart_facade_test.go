@@ -138,7 +138,7 @@ func newFacadeForTest(t *testing.T, upstreamURL string) (http.Handler, *evidence
 			"openai": {Enabled: true, BaseURL: upstreamURL, UpstreamAuthMode: "client_bearer", ResponsesStoreMode: gateway.ResponsesStoreForceIfAbsent},
 		},
 		OrganizationPolicy: gateway.OrganizationPolicy{
-			DefaultPIIAction: "redact",
+			Defaults: gateway.OrgDefaults{PIIAction: "redact"},
 		},
 		RateLimits: gateway.RateLimitsConfig{GlobalRequestsPerMin: 1000, PerAgentRequestsPerMin: 1000},
 		Timeouts: gateway.TimeoutsConfig{

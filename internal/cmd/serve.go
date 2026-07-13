@@ -481,7 +481,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 				for _, id := range registry.Identities() {
 					if id.Name == agentID && id.TenantID == tenantID {
 						eff := gateway.ResolveEffectivePolicy(orgPolicy, gateway.ProviderConfig{}, id.Override)
-						return eff.MaxDailyCost, eff.MaxMonthlyCost, eff.MaxDailyCost > 0 || eff.MaxMonthlyCost > 0
+						// Binding caps, not the agent-resolved values: an org
+						// ceiling (constraints.max_*) tighter than the agent's
+						// own cap is what enforcement gates on (#287).
+						daily, monthly := eff.BindingDailyCap(), eff.BindingMonthlyCap()
+						return daily, monthly, daily > 0 || monthly > 0
 					}
 				}
 				return 0, 0, false
@@ -586,11 +590,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 			budgetMonthly = pol.Policies.CostLimits.Monthly
 		}
 		if gatewayCfgForMode != nil {
-			if budgetDaily <= 0 && gatewayCfgForMode.OrganizationPolicy.MaxDailyCost > 0 {
-				budgetDaily = gatewayCfgForMode.OrganizationPolicy.MaxDailyCost
+			if budgetDaily <= 0 && gatewayCfgForMode.OrganizationPolicy.Defaults.DailyCost > 0 {
+				budgetDaily = gatewayCfgForMode.OrganizationPolicy.Defaults.DailyCost
 			}
-			if budgetMonthly <= 0 && gatewayCfgForMode.OrganizationPolicy.MaxMonthlyCost > 0 {
-				budgetMonthly = gatewayCfgForMode.OrganizationPolicy.MaxMonthlyCost
+			if budgetMonthly <= 0 && gatewayCfgForMode.OrganizationPolicy.Defaults.MonthlyCost > 0 {
+				budgetMonthly = gatewayCfgForMode.OrganizationPolicy.Defaults.MonthlyCost
 			}
 		}
 		if budgetDaily > 0 || budgetMonthly > 0 {

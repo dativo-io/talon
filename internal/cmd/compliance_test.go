@@ -263,7 +263,8 @@ gateway:
       region: "LOCAL"
       secret_name: "ollama-api-key"
   organization_policy:
-    default_pii_action: "warn"
+    defaults:
+      pii_action: "warn"
 `
 	require.NoError(t, os.WriteFile(gwPath, []byte(gwYAML), 0o600))
 
@@ -323,7 +324,8 @@ gateway:
       region: "LOCAL"
       secret_name: "ollama-api-key"
   organization_policy:
-    default_pii_action: "warn"
+    defaults:
+      pii_action: "warn"
 `
 	require.NoError(t, os.WriteFile(gwPath, []byte(gwYAML), 0o600))
 

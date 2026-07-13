@@ -59,7 +59,8 @@ gateway:
       base_url: %q
       region: "US"
   organization_policy:
-    default_pii_action: warn
+    defaults:
+      pii_action: warn
   timeouts:
     connect_timeout: "5s"
     request_timeout: "30s"

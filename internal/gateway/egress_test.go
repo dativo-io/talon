@@ -71,10 +71,14 @@ func setupEgressGateway(t *testing.T, mode Mode, egress *EgressPolicyConfig, pro
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key", Region: providerRegion},
 		},
 		OrganizationPolicy: OrganizationPolicy{
-			DefaultPIIAction: "warn",
-			MaxDailyCost:     100,
-			MaxMonthlyCost:   2000,
-			Egress:           egress,
+			Defaults: OrgDefaults{
+				PIIAction:   "warn",
+				DailyCost:   100,
+				MonthlyCost: 2000,
+			},
+			Constraints: OrgConstraints{
+				Egress: egress,
+			},
 		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",

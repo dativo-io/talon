@@ -11,8 +11,10 @@ func TestBuildGatewayPolicyInput_UsesBaselineWhenAgentCapsUnset(t *testing.T) {
 		PIIAction: "warn",
 	})
 	baseline := OrganizationPolicy{
-		MaxDailyCost:   10.0,
-		MaxMonthlyCost: 200.0,
+		Defaults: OrgDefaults{
+			DailyCost:   10.0,
+			MonthlyCost: 200.0,
+		},
 	}
 	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, agent.Override)
 
@@ -28,8 +30,10 @@ func TestBuildGatewayPolicyInput_AgentCapsOverrideBaseline(t *testing.T) {
 		MaxMonthlyCost: 120.0,
 	})
 	baseline := OrganizationPolicy{
-		MaxDailyCost:   10.0,
-		MaxMonthlyCost: 200.0,
+		Defaults: OrgDefaults{
+			DailyCost:   10.0,
+			MonthlyCost: 200.0,
+		},
 	}
 	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, agent.Override)
 
@@ -55,9 +59,11 @@ func TestBuildGatewayPolicyInput_EgressFromBaseline(t *testing.T) {
 	tier2 := TierConfidential
 	agent := testIdentity("bot", "default", "tk-bot", nil)
 	baseline := OrganizationPolicy{
-		Egress: &EgressPolicyConfig{
-			DefaultAction: EgressActionDeny,
-			Rules:         []EgressRule{{Tier: &tier2, AllowedRegions: []string{"EU"}}},
+		Constraints: OrgConstraints{
+			Egress: &EgressPolicyConfig{
+				DefaultAction: EgressActionDeny,
+				Rules:         []EgressRule{{Tier: &tier2, AllowedRegions: []string{"EU"}}},
+			},
 		},
 	}
 	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, agent.Override)
@@ -84,9 +90,11 @@ func TestBuildGatewayPolicyInput_EgressIntersection(t *testing.T) {
 		},
 	})
 	baseline := OrganizationPolicy{
-		Egress: &EgressPolicyConfig{
-			DefaultAction: EgressActionDeny,
-			Rules:         []EgressRule{{Tier: &tier2, AllowedRegions: []string{"EU"}}},
+		Constraints: OrgConstraints{
+			Egress: &EgressPolicyConfig{
+				DefaultAction: EgressActionDeny,
+				Rules:         []EgressRule{{Tier: &tier2, AllowedRegions: []string{"EU"}}},
+			},
 		},
 	}
 	eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, agent.Override)

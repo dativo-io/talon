@@ -125,7 +125,7 @@ func newToolScanGateway(t *testing.T, upstreamURL, scanToolContent string) (*evi
 		Providers: map[string]ProviderConfig{
 			"anthropic": {Enabled: true, BaseURL: upstreamURL, SecretName: "anthropic-key"},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "redact", ResponsePIIAction: "allow", ScanToolContent: scanToolContent, MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "redact", ResponsePIIAction: "allow", DailyCost: 100, MonthlyCost: 2000}, ScanToolContent: scanToolContent},
 		RateLimits:         RateLimitsConfig{GlobalRequestsPerMin: 10000, PerAgentRequestsPerMin: 10000},
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}

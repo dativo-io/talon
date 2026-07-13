@@ -13,10 +13,8 @@ import (
 
 func TestResolveEffectivePolicyContract(t *testing.T) {
 	baseline := OrganizationPolicy{
-		DefaultPIIAction: "warn",
-		MaxDailyCost:     100,
-		MaxMonthlyCost:   2000,
-		ForbiddenTools:   []string{"base_forbidden"},
+		Defaults:    OrgDefaults{PIIAction: "warn", DailyCost: 100, MonthlyCost: 2000},
+		Constraints: OrgConstraints{ForbiddenTools: []string{"base_forbidden"}},
 	}
 
 	t.Run("baseline only", func(t *testing.T) {
@@ -25,7 +23,7 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 		assert.Equal(t, 2000.0, eff.MaxMonthlyCost)
 		assert.Zero(t, eff.MaxSessionCost)
 		assert.Equal(t, "warn", eff.PIIAction)
-		assert.Equal(t, "warn", eff.ResponsePIIAction, "response action falls back to default_pii_action at the baseline level")
+		assert.Equal(t, "warn", eff.ResponsePIIAction, "response action falls back to defaults.pii_action at the baseline level")
 		assert.Empty(t, eff.AllowedModels)
 		assert.Nil(t, eff.MaxDataTier)
 		assert.Equal(t, []string{"base_forbidden"}, eff.ForbiddenTools)
@@ -53,7 +51,7 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 
 		// Weaken attempts are ignored — the baseline is a floor.
 		blockBaseline := baseline
-		blockBaseline.DefaultPIIAction = "block"
+		blockBaseline.Defaults.PIIAction = "block"
 		for _, weaker := range []string{"redact", "warn", "allow"} {
 			eff = ResolveEffectivePolicy(blockBaseline, ProviderConfig{}, &PolicyOverride{PIIAction: weaker})
 			assert.Equal(t, "block", eff.PIIAction, "override %q must not weaken block baseline", weaker)
@@ -62,7 +60,7 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 		}
 
 		redactBaseline := baseline
-		redactBaseline.DefaultPIIAction = "redact"
+		redactBaseline.Defaults.PIIAction = "redact"
 		eff = ResolveEffectivePolicy(redactBaseline, ProviderConfig{}, &PolicyOverride{PIIAction: "warn"})
 		assert.Equal(t, "redact", eff.PIIAction, "warn must not weaken redact baseline")
 		eff = ResolveEffectivePolicy(redactBaseline, ProviderConfig{}, &PolicyOverride{PIIAction: "block"})
@@ -91,7 +89,7 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 		assert.Equal(t, "redact", eff.ResponsePIIAction, "explicit override replaces")
 
 		withExplicitResponse := baseline
-		withExplicitResponse.ResponsePIIAction = "block"
+		withExplicitResponse.Defaults.ResponsePIIAction = "block"
 		eff = ResolveEffectivePolicy(withExplicitResponse, ProviderConfig{}, nil)
 		assert.Equal(t, "block", eff.ResponsePIIAction, "explicit baseline response action wins over the default_pii_action fallback")
 	})
@@ -107,8 +105,8 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 
 	t.Run("org model lists are hard constraints on their own axis", func(t *testing.T) {
 		b := baseline
-		b.AllowedModels = []string{"gpt-4o"}
-		b.BlockedModels = []string{"gpt-3.5-turbo"}
+		b.Constraints.AllowedModels = []string{"gpt-4o"}
+		b.Constraints.BlockedModels = []string{"gpt-3.5-turbo"}
 		eff := ResolveEffectivePolicy(b, ProviderConfig{}, &PolicyOverride{AllowedModels: []string{"gpt-4-turbo"}})
 		assert.Equal(t, []string{"gpt-4-turbo"}, eff.AllowedModels, "agent list")
 		assert.Equal(t, []string{"gpt-4o"}, eff.OrgAllowedModels, "org hard constraint survives the override untouched")
@@ -127,7 +125,7 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 
 		// Org-only list binds agents with no override.
 		b := baseline
-		b.AllowedProviders = []string{"anthropic"}
+		b.Constraints.AllowedProviders = []string{"anthropic"}
 		eff = ResolveEffectivePolicy(b, ProviderConfig{}, nil)
 		assert.False(t, eff.ProviderAllowed("openai"), "org hard constraint applies without any agent override")
 		assert.True(t, eff.ProviderAllowed("anthropic"))
@@ -154,7 +152,7 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 
 		orgCap := TierInternal
 		b := baseline
-		b.MaxDataTier = &orgCap
+		b.Constraints.MaxDataTier = &orgCap
 		eff = ResolveEffectivePolicy(b, ProviderConfig{}, nil)
 		require.NotNil(t, eff.MaxDataTier)
 		assert.Equal(t, TierInternal, *eff.MaxDataTier, "org cap applies without override")
@@ -192,26 +190,83 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 			"union preserves first-seen order and dedupes")
 	})
 
-	t.Run("tool_policy_action most-specific wins", func(t *testing.T) {
+	t.Run("tool_policy_action: operator layers most-specific, agent layer monotonic", func(t *testing.T) {
 		eff := ResolveEffectivePolicy(baseline, ProviderConfig{}, nil)
 		assert.Equal(t, "filter", eff.ToolPolicyAction, "built-in default")
 
 		b := baseline
-		b.ToolPolicyAction = "block"
+		b.Defaults.ToolPolicyAction = "block"
 		eff = ResolveEffectivePolicy(b, ProviderConfig{}, nil)
-		assert.Equal(t, "block", eff.ToolPolicyAction, "baseline sets")
+		assert.Equal(t, "block", eff.ToolPolicyAction, "org default sets")
 
+		// Operator layers merge most-specific: provider (same config file,
+		// same owner) still replaces the org default in either direction.
 		eff = ResolveEffectivePolicy(b, ProviderConfig{ToolPolicyAction: "filter"}, nil)
-		assert.Equal(t, "filter", eff.ToolPolicyAction, "provider sits between baseline and agent")
+		assert.Equal(t, "filter", eff.ToolPolicyAction, "provider replaces the org default (operator-owned layer)")
 
+		// The AGENT layer is monotonic (#287): tighten filter → block is
+		// honored; loosening block → filter is ignored.
 		eff = ResolveEffectivePolicy(b, ProviderConfig{ToolPolicyAction: "filter"}, &PolicyOverride{ToolPolicyAction: "block"})
-		assert.Equal(t, "block", eff.ToolPolicyAction, "agent override wins")
+		assert.Equal(t, "block", eff.ToolPolicyAction, "agent tightens filter → block")
+		eff = ResolveEffectivePolicy(b, ProviderConfig{}, &PolicyOverride{ToolPolicyAction: "filter"})
+		assert.Equal(t, "block", eff.ToolPolicyAction, "agent must not loosen the org block to filter")
+		eff = ResolveEffectivePolicy(baseline, ProviderConfig{ToolPolicyAction: "block"}, &PolicyOverride{ToolPolicyAction: "filter"})
+		assert.Equal(t, "block", eff.ToolPolicyAction, "agent must not loosen a provider block either")
+		eff = ResolveEffectivePolicy(b, ProviderConfig{}, &PolicyOverride{})
+		assert.Equal(t, "block", eff.ToolPolicyAction, "unset override inherits")
+	})
+
+	t.Run("org budget ceilings ride their own axis (#287)", func(t *testing.T) {
+		b := baseline
+		b.Constraints.MaxDailyCost = 50
+		b.Constraints.MaxMonthlyCost = 800
+
+		// The per-agent resolved cap is unchanged by the ceiling — the ceiling
+		// is enforced ALONGSIDE it (own Rego rule, org-attributed deny).
+		eff := ResolveEffectivePolicy(b, ProviderConfig{}, &PolicyOverride{MaxDailyCost: 80})
+		assert.Equal(t, 80.0, eff.MaxDailyCost, "agent-resolved cap keeps the override value")
+		assert.Equal(t, 50.0, eff.OrgMaxDailyCost, "org ceiling on its own axis")
+		assert.Equal(t, 800.0, eff.OrgMaxMonthlyCost)
+
+		// Displays denominate against the BINDING cap — the tightest positive.
+		assert.Equal(t, 50.0, eff.BindingDailyCap(), "ceiling below the agent cap binds")
+		assert.Equal(t, 800.0, eff.BindingMonthlyCap(), "monthly: baseline 2000 above ceiling 800 → ceiling binds")
+
+		tighter := ResolveEffectivePolicy(b, ProviderConfig{}, &PolicyOverride{MaxDailyCost: 20})
+		assert.Equal(t, 20.0, tighter.BindingDailyCap(), "agent cap below the ceiling binds")
+
+		uncapped := ResolveEffectivePolicy(baseline, ProviderConfig{}, nil)
+		assert.Zero(t, uncapped.OrgMaxDailyCost, "no ceiling configured")
+		assert.Equal(t, 100.0, uncapped.BindingDailyCap(), "baseline alone binds")
+	})
+
+	t.Run("org session budget: baseline replaced, ceiling never (#283)", func(t *testing.T) {
+		b := baseline
+		b.Defaults.SessionCost = 3
+		b.Constraints.MaxSessionCost = 10
+
+		eff := ResolveEffectivePolicy(b, ProviderConfig{}, nil)
+		assert.Equal(t, 3.0, eff.MaxSessionCost, "org default applies without override")
+		assert.Equal(t, 10.0, eff.OrgMaxSessionCost)
+
+		eff = ResolveEffectivePolicy(b, ProviderConfig{}, &PolicyOverride{MaxSessionCost: 25})
+		assert.Equal(t, 25.0, eff.MaxSessionCost, "agent replaces the session default")
+		assert.Equal(t, 10.0, eff.OrgMaxSessionCost, "ceiling survives the override untouched")
+		assert.Equal(t, 10.0, eff.BindingSessionCap())
+	})
+
+	t.Run("org allowed_tools is a hard constraint on its own axis (#282)", func(t *testing.T) {
+		b := baseline
+		b.Constraints.AllowedTools = []string{"search"}
+		eff := ResolveEffectivePolicy(b, ProviderConfig{}, &PolicyOverride{AllowedTools: []string{"search", "shell"}})
+		assert.Equal(t, []string{"search", "shell"}, eff.AllowedTools, "agent list on its own axis")
+		assert.Equal(t, []string{"search"}, eff.OrgAllowedTools, "org allowlist survives the override untouched")
 	})
 
 	t.Run("egress is a logical intersection — both layers kept, org never displaced", func(t *testing.T) {
 		tier2 := TierConfidential
 		b := baseline
-		b.Egress = &EgressPolicyConfig{
+		b.Constraints.Egress = &EgressPolicyConfig{
 			DefaultAction: EgressActionDeny,
 			Rules:         []EgressRule{{Tier: &tier2, AllowedRegions: []string{"EU"}}},
 		}
@@ -238,7 +293,7 @@ func TestResolveEffectivePolicyContract(t *testing.T) {
 
 		// When the org has NO egress policy, only the agent layer applies.
 		nb := baseline
-		nb.Egress = nil
+		nb.Constraints.Egress = nil
 		eff = ResolveEffectivePolicy(nb, ProviderConfig{}, &PolicyOverride{Egress: &EgressPolicyConfig{
 			DefaultAction: EgressActionDeny,
 			Rules:         []EgressRule{{Tier: &tier1, AllowedRegions: []string{"EU"}}},
@@ -256,17 +311,22 @@ func TestResolveEffectivePolicySnapshotSafety(t *testing.T) {
 	tier := TierConfidential
 	orgTier := TierConfidential
 	baseline := OrganizationPolicy{
-		DefaultPIIAction: "warn",
-		MaxDailyCost:     100,
-		ForbiddenTools:   []string{"base"},
-		AllowedModels:    []string{"gpt-4o", "gpt-4o-mini"},
-		BlockedModels:    []string{"gpt-3.5-turbo"},
-		AllowedProviders: []string{"openai"},
-		MaxDataTier:      &orgTier,
-		AttachmentPolicy: &AttachmentPolicyConfig{Action: "warn", InjectionAction: "warn", MaxFileSizeMB: 10, AllowedTypes: []string{"pdf"}},
-		Egress: &EgressPolicyConfig{Rules: []EgressRule{
-			{Tier: &tier, AllowedRegions: []string{"EU"}},
-		}},
+		Defaults: OrgDefaults{
+			PIIAction:        "warn",
+			DailyCost:        100,
+			AttachmentPolicy: &AttachmentPolicyConfig{Action: "warn", InjectionAction: "warn", MaxFileSizeMB: 10, AllowedTypes: []string{"pdf"}},
+		},
+		Constraints: OrgConstraints{
+			ForbiddenTools:   []string{"base"},
+			AllowedModels:    []string{"gpt-4o", "gpt-4o-mini"},
+			BlockedModels:    []string{"gpt-3.5-turbo"},
+			AllowedProviders: []string{"openai"},
+			AllowedTools:     []string{"search", "fetch"},
+			MaxDataTier:      &orgTier,
+			Egress: &EgressPolicyConfig{Rules: []EgressRule{
+				{Tier: &tier, AllowedRegions: []string{"EU"}},
+			}},
+		},
 	}
 	prov := ProviderConfig{AllowedModels: []string{"gpt-4o"}, ForbiddenTools: []string{"prov"}}
 	override := &PolicyOverride{
@@ -279,14 +339,15 @@ func TestResolveEffectivePolicySnapshotSafety(t *testing.T) {
 	eff := ResolveEffectivePolicy(baseline, prov, override)
 
 	// Mutate every source after resolution.
-	baseline.ForbiddenTools[0] = "MUTATED"
-	baseline.AllowedModels[0] = "MUTATED"
-	baseline.BlockedModels[0] = "MUTATED"
-	baseline.AllowedProviders[0] = "MUTATED"
-	*baseline.MaxDataTier = TierPublic
-	baseline.AttachmentPolicy.AllowedTypes[0] = "MUTATED"
-	baseline.Egress.Rules[0].AllowedRegions[0] = "MUTATED"
-	*baseline.Egress.Rules[0].Tier = TierPublic
+	baseline.Constraints.ForbiddenTools[0] = "MUTATED"
+	baseline.Constraints.AllowedModels[0] = "MUTATED"
+	baseline.Constraints.BlockedModels[0] = "MUTATED"
+	baseline.Constraints.AllowedProviders[0] = "MUTATED"
+	baseline.Constraints.AllowedTools[0] = "MUTATED"
+	*baseline.Constraints.MaxDataTier = TierPublic
+	baseline.Defaults.AttachmentPolicy.AllowedTypes[0] = "MUTATED"
+	baseline.Constraints.Egress.Rules[0].AllowedRegions[0] = "MUTATED"
+	*baseline.Constraints.Egress.Rules[0].Tier = TierPublic
 	prov.AllowedModels[0] = "MUTATED"
 	prov.ForbiddenTools[0] = "MUTATED"
 	override.AllowedModels[0] = "MUTATED"
@@ -306,4 +367,5 @@ func TestResolveEffectivePolicySnapshotSafety(t *testing.T) {
 	assert.Equal(t, []string{"openai"}, eff.AllowedProviders)
 	assert.Equal(t, TierConfidential, *eff.MaxDataTier)
 	assert.Equal(t, []string{"search"}, eff.AllowedTools)
+	assert.Equal(t, []string{"search", "fetch"}, eff.OrgAllowedTools, "org tool allowlist is snapshot-copied (#282)")
 }

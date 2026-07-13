@@ -60,14 +60,17 @@ gateway:
       base_url: "https://api.openai.com"
 
   organization_policy:
-    default_pii_action: "warn"
-    max_daily_cost: 100.00      # organization baseline; the agent override above wins for this agent
-    max_monthly_cost: 2000.00
+    defaults:
+      pii_action: "warn"
+      daily_cost: 100.00        # organization baseline; the agent override above wins for this agent
+      monthly_cost: 2000.00
+    constraints:
+      max_daily_cost: 500.00    # optional org ceiling no agent override can exceed (#287)
 ```
 
 For a demo, temporarily lower the agent's `cost_limits.daily` (for example `0.01`) so you can trigger a denial quickly.
 
-**Effective caps = one calculation path.** The caps enforcement applies are resolved by the same function that feeds `talon costs` and the dashboard budget endpoint: organization baseline → the agent's one override (an agent cap replaces the baseline when > 0). What you see reported is exactly what is enforced.
+**Effective caps = one calculation path.** The caps enforcement applies are resolved by the same function that feeds `talon costs` and the dashboard budget endpoint: organization baseline (`organization_policy.defaults.daily_cost` / `monthly_cost`) → the agent's one override (an agent cap replaces the baseline when > 0). Org budget ceilings (`organization_policy.constraints.max_daily_cost` / `max_monthly_cost`, #287) are enforced **in addition** to the resolved per-agent cap — an agent override can never raise them, and a ceiling denial names the organization in the deny reason (`budget_exceeded: request would exceed organization daily cost limit`). What you see reported is exactly what is enforced.
 
 ---
 

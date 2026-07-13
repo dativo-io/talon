@@ -70,11 +70,13 @@ gateway:
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
   organization_policy:
-    default_pii_action: "redact"
-    forbidden_tools: ["delete_*"]
-    tool_policy_action: "block"
-    max_daily_cost: 100.00
-    max_monthly_cost: 500.00
+    defaults:
+      pii_action: "redact"
+      tool_policy_action: "block"
+      daily_cost: 100.00
+      monthly_cost: 500.00
+    constraints:
+      forbidden_tools: ["delete_*"]
 GWEOF
     fi
     # Enable semantic cache so dashboard cache_stats and CLI cache metrics can be tested.
@@ -236,7 +238,7 @@ CACHEEOF
   else
     log_failure "PII block config: expected 400 for pii-block-agent + PII body" "got HTTP $pii_block_code"
   fi
-  # (2) Tool block: organization_policy forbidden_tools delete_* + tool_policy_action block → 403.
+  # (2) Tool block: organization_policy constraints.forbidden_tools delete_* + defaults.tool_policy_action block → 403.
   # The gateway serves the pii-block agent in this phase (#266: one agent per
   # phase restart), so present THAT agent's key — the org tool baseline binds
   # every agent, which is exactly what this probe demonstrates.

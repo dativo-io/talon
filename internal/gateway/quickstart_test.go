@@ -20,8 +20,8 @@ func TestQuickstartConfig_Defaults(t *testing.T) {
 	if cfg.ListenPrefix != "/v1/proxy" {
 		t.Fatalf("listen prefix = %q", cfg.ListenPrefix)
 	}
-	if cfg.OrganizationPolicy.DefaultPIIAction != "redact" {
-		t.Fatalf("default pii action = %q", cfg.OrganizationPolicy.DefaultPIIAction)
+	if cfg.OrganizationPolicy.Defaults.PIIAction != "redact" {
+		t.Fatalf("default pii action = %q", cfg.OrganizationPolicy.Defaults.PIIAction)
 	}
 	prov, ok := cfg.Provider("openai")
 	if !ok {

@@ -29,7 +29,8 @@ func writeTestGatewayConfig(t *testing.T, dir, mode string) string {
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
   organization_policy:
-    default_pii_action: "warn"
+    defaults:
+      pii_action: "warn"
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 	return path

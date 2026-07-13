@@ -122,7 +122,7 @@ func newBYOKGateway(t *testing.T, upstreamURL string) (*Gateway, *evidence.Store
 			"openai": {Enabled: true, BaseURL: upstreamURL, UpstreamAuthMode: "client_bearer"},
 		},
 		OrganizationPolicy: OrganizationPolicy{
-			DefaultPIIAction: "redact",
+			Defaults: OrgDefaults{PIIAction: "redact"},
 		},
 		RateLimits: RateLimitsConfig{
 			GlobalRequestsPerMin:   1000,

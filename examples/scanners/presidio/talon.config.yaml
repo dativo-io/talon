@@ -28,7 +28,8 @@ gateway:
   # Identity lives in agent.talon.yaml (#266); the baseline already redacts.
   # Mint the traffic key: talon secrets set demo-user-talon-key "$(openssl rand -hex 24)"
   organization_policy:
-    default_pii_action: "redact"
+    defaults:
+      pii_action: "redact"
 
   response_scanning:
     enabled: true

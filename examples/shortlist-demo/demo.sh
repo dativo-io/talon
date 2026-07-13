@@ -329,7 +329,7 @@ cmd_pii_request() {
   switch_agent "shortlist-allow"
   proof_section "3" "PII blocked before the provider call"
   proof_story \
-    "Server default is default_pii_action: block." \
+    "Server default is organization_policy.defaults.pii_action: block." \
     "Email and IBAN in the user message are detected before any upstream LLM call."
   proof_request "shortlist-allow" "gpt-4o-mini" "message contains email + German IBAN"
   EXPECT_HTTP=400 post_chat \

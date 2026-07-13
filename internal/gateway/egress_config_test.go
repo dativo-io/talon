@@ -72,14 +72,14 @@ func TestResolveEffectivePolicy_Egress(t *testing.T) {
 		},
 		{
 			name:      "organization_baseline_used",
-			baseline:  OrganizationPolicy{Egress: baselinePolicy},
+			baseline:  OrganizationPolicy{Constraints: OrgConstraints{Egress: baselinePolicy}},
 			override:  &PolicyOverride{},
 			wantOrg:   baselinePolicy,
 			wantAgent: nil,
 		},
 		{
 			name:     "both_layers_kept_for_intersection",
-			baseline: OrganizationPolicy{Egress: baselinePolicy},
+			baseline: OrganizationPolicy{Constraints: OrgConstraints{Egress: baselinePolicy}},
 			override: &PolicyOverride{Egress: agentPolicy},
 			wantOrg:  baselinePolicy,
 			wantAgent: &EgressPolicyConfig{
@@ -282,22 +282,24 @@ gateway:
       base_url: "https://api.openai.com"
       region: "US"
   organization_policy:
-    default_pii_action: warn
-    egress:
-      rules:
-        - tier: 0
-          allowed_providers: ["*"]
-        - tier: 2
-          allowed_regions: ["EU", "LOCAL"]
+    defaults:
+      pii_action: warn
+    constraints:
+      egress:
+        rules:
+          - tier: 0
+            allowed_providers: ["*"]
+          - tier: 2
+            allowed_regions: ["EU", "LOCAL"]
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 	cfg, err := LoadGatewayConfig(path)
 	require.NoError(t, err)
 
-	require.NotNil(t, cfg.OrganizationPolicy.Egress)
-	assert.Equal(t, EgressActionAllow, cfg.OrganizationPolicy.Egress.DefaultAction, "default_action defaults to allow")
-	require.Len(t, cfg.OrganizationPolicy.Egress.Rules, 2)
-	assert.Equal(t, []string{"EU", "LOCAL"}, cfg.OrganizationPolicy.Egress.Rules[1].AllowedRegions)
+	require.NotNil(t, cfg.OrganizationPolicy.Constraints.Egress)
+	assert.Equal(t, EgressActionAllow, cfg.OrganizationPolicy.Constraints.Egress.DefaultAction, "default_action defaults to allow")
+	require.Len(t, cfg.OrganizationPolicy.Constraints.Egress.Rules, 2)
+	assert.Equal(t, []string{"EU", "LOCAL"}, cfg.OrganizationPolicy.Constraints.Egress.Rules[1].AllowedRegions)
 
 	prov, ok := cfg.Provider("openai")
 	require.True(t, ok)
@@ -312,20 +314,21 @@ gateway:
   enabled: true
   mode: enforce
   organization_policy:
-    egress:
-      rules:
-        - tier: public
-          allowed_providers: ["*"]
-        - tier: 1
-          allowed_providers: ["openai"]
-        - tier: confidential
-          allowed_regions: ["EU"]
+    constraints:
+      egress:
+        rules:
+          - tier: public
+            allowed_providers: ["*"]
+          - tier: 1
+            allowed_providers: ["openai"]
+          - tier: confidential
+            allowed_regions: ["EU"]
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 	cfg, err := LoadGatewayConfig(path)
 	require.NoError(t, err)
 
-	rules := cfg.OrganizationPolicy.Egress.Rules
+	rules := cfg.OrganizationPolicy.Constraints.Egress.Rules
 	require.Len(t, rules, 3)
 	assert.Equal(t, TierPublic, *rules[0].Tier, "named alias public")
 	assert.Equal(t, TierInternal, *rules[1].Tier, "numeric tier still accepted")
@@ -340,10 +343,11 @@ gateway:
   enabled: true
   mode: enforce
   organization_policy:
-    egress:
-      rules:
-        - tier: restricted
-          allowed_regions: ["EU"]
+    constraints:
+      egress:
+        rules:
+          - tier: restricted
+            allowed_regions: ["EU"]
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 	_, err := LoadGatewayConfig(path)
@@ -365,11 +369,12 @@ gateway:
       base_url: "https://api.openai.com"
       region: "us"
   organization_policy:
-    egress:
-      rules:
-        - tier: 2
-          allowed_providers: ["OpenAI"]
-          allowed_regions: ["eu"]
+    constraints:
+      egress:
+        rules:
+          - tier: 2
+            allowed_providers: ["OpenAI"]
+            allowed_regions: ["eu"]
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 	cfg, err := LoadGatewayConfig(path)
@@ -379,7 +384,7 @@ gateway:
 	require.True(t, ok)
 	assert.Equal(t, "US", prov.Region)
 
-	rules := cfg.OrganizationPolicy.Egress.Rules
+	rules := cfg.OrganizationPolicy.Constraints.Egress.Rules
 	require.Len(t, rules, 1)
 	assert.Equal(t, []string{"openai"}, rules[0].AllowedProviders)
 	assert.Equal(t, []string{"EU"}, rules[0].AllowedRegions)
@@ -393,8 +398,9 @@ gateway:
   enabled: true
   mode: enforce
   organization_policy:
-    egress:
-      default_action: maybe
+    constraints:
+      egress:
+        default_action: maybe
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 	_, err := LoadGatewayConfig(path)

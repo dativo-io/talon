@@ -42,7 +42,7 @@ func TestGateway_SovereigntyDeny_USProvider(t *testing.T) {
 				Region:     "US",
 			},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn"}},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",
@@ -99,7 +99,7 @@ func TestGateway_SovereigntyAllow_EUProvider(t *testing.T) {
 				Region:     "LOCAL",
 			},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn"}},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",
@@ -155,7 +155,7 @@ func TestGateway_SovereigntyDeny_ShadowModeStillBlocks(t *testing.T) {
 				Region:     "US",
 			},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn"}},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",

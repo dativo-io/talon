@@ -123,7 +123,7 @@ func setupFailoverGateway(t *testing.T, sovereigntyMode, primaryRegion, backupRe
 		ListenPrefix:       "/v1/proxy",
 		Mode:               ModeEnforce,
 		Providers:          providers,
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn", DailyCost: 100, MonthlyCost: 2000}},
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 		// Production applies these via ApplyDefaults(); this helper calls only
 		// Validate(), so set them explicitly or the limiter degrades to burst 1
@@ -517,7 +517,7 @@ func TestGatewayAlias_AnthropicFamilyGovernance(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"anthropic-eu": {Enabled: true, BaseURL: upstream.server.URL, SecretName: "anthropic-eu-key", Region: "EU", APIFamily: "anthropic"},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "redact", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "redact", DailyCost: 100, MonthlyCost: 2000}},
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	require.NoError(t, cfg.Validate())

@@ -14,24 +14,38 @@ type ToolGovernanceResult struct {
 	Removed   []string // Tool names stripped by policy.
 }
 
-// EvaluateToolPolicy checks each tool name against the resolved allowed/forbidden
-// lists. Returns which tools to keep and which to remove.
+// EvaluateToolPolicy checks each tool name against the resolved tool
+// governance lists. Returns which tools to keep and which to remove.
 //
 // Rules:
-//   - If allowed is non-empty, only tools in allowed pass (allowlist mode).
-//   - Any tool matching a forbidden pattern is removed (forbidden overrides allowed).
-//   - Forbidden patterns use path.Match glob syntax (e.g. "delete_*", "admin_*").
-func EvaluateToolPolicy(toolNames, allowed, forbidden []string) ToolGovernanceResult {
+//   - Any tool matching a forbidden pattern is removed (forbidden overrides
+//     every allow list). Forbidden patterns use path.Match glob syntax
+//     (e.g. "delete_*", "admin_*").
+//   - If orgAllowed is non-empty, a tool must be in it — the organization
+//     HARD allowlist (constraints.allowed_tools, #282). An agent allowlisting
+//     a tool the org never sanctioned does not make it reachable.
+//   - If allowed (the most-specific allowed list: agent > provider > none)
+//     is non-empty, the tool must ALSO be in it.
+func EvaluateToolPolicy(toolNames, orgAllowed, allowed, forbidden []string) ToolGovernanceResult {
 	res := ToolGovernanceResult{Requested: toolNames}
 
+	orgSet := make(map[string]bool, len(orgAllowed))
+	for _, a := range orgAllowed {
+		orgSet[a] = true
+	}
 	allowSet := make(map[string]bool, len(allowed))
 	for _, a := range allowed {
 		allowSet[a] = true
 	}
+	hasOrgAllowlist := len(orgAllowed) > 0
 	hasAllowlist := len(allowed) > 0
 
 	for _, name := range toolNames {
 		if isForbiddenTool(name, forbidden) {
+			res.Removed = append(res.Removed, name)
+			continue
+		}
+		if hasOrgAllowlist && !orgSet[name] {
 			res.Removed = append(res.Removed, name)
 			continue
 		}
@@ -42,6 +56,20 @@ func EvaluateToolPolicy(toolNames, allowed, forbidden []string) ToolGovernanceRe
 		res.Kept = append(res.Kept, name)
 	}
 	return res
+}
+
+// evaluateToolPolicyFor unpacks an EffectivePolicy's tool-governance lists
+// for EvaluateToolPolicy — one call shape for the primary route and every
+// failover candidate, so the org allowlist can never be enforced on one and
+// skipped on the other (#282).
+func evaluateToolPolicyFor(toolNames []string, eff *EffectivePolicy) ToolGovernanceResult {
+	return EvaluateToolPolicy(toolNames, eff.OrgAllowedTools, eff.AllowedTools, eff.ForbiddenTools)
+}
+
+// hasToolGovernance reports whether any tool-governance list is active on the
+// effective policy — the gate both call sites use before evaluating.
+func hasToolGovernance(eff *EffectivePolicy) bool {
+	return len(eff.OrgAllowedTools) > 0 || len(eff.AllowedTools) > 0 || len(eff.ForbiddenTools) > 0
 }
 
 // isForbiddenTool checks if a tool name matches any forbidden pattern.

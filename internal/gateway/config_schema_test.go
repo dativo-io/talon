@@ -109,14 +109,25 @@ gateway:
       base_url: "https://api.openai.com"
       secret_name: "openai-api-key"
   organization_policy:
-    default_pii_action: warn
-    max_daily_cost: 100
-    max_monthly_cost: 2000
+    defaults:
+      pii_action: warn
+      daily_cost: 100
+      monthly_cost: 2000
   rate_limits:
     global_requests_per_min: 300
     per_agent_requests_per_min: 60
 `)
 		assert.True(t, result.Valid(), "errors: %v", result.Errors())
+	})
+
+	t.Run("pre-split flat organization_policy keys rejected by schema", func(t *testing.T) {
+		result := validateAgainstConfigSchema(t, `
+gateway:
+  organization_policy:
+    default_pii_action: warn
+    max_daily_cost: 100
+`)
+		assert.False(t, result.Valid(), "flat pre-split keys were removed (#287) and must fail schema validation")
 	})
 
 	t.Run("legacy callers block rejected", func(t *testing.T) {
@@ -182,11 +193,14 @@ gateway:
 
 	t.Run("organization hard constraints validate in both contracts", func(t *testing.T) {
 		doc := base + `  organization_policy:
-    default_pii_action: warn
-    allowed_providers: ["openai"]
-    allowed_models: ["gpt-4o", "gpt-4o-mini"]
-    blocked_models: ["gpt-3.5-turbo"]
-    max_data_tier: 1
+    defaults:
+      pii_action: warn
+    constraints:
+      allowed_providers: ["openai"]
+      allowed_models: ["gpt-4o", "gpt-4o-mini"]
+      blocked_models: ["gpt-3.5-turbo"]
+      max_data_tier: 1
+      max_daily_cost: 500
 `
 		result := validateAgainstConfigSchema(t, doc)
 		assert.True(t, result.Valid(), "schema must accept the documented org hard constraints, errors: %v", result.Errors())
@@ -197,22 +211,36 @@ gateway:
 		require.NoError(t, os.WriteFile(path, []byte(doc), 0o600))
 		cfg, err := LoadGatewayConfig(path)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"openai"}, cfg.OrganizationPolicy.AllowedProviders)
-		assert.Equal(t, []string{"gpt-4o", "gpt-4o-mini"}, cfg.OrganizationPolicy.AllowedModels)
-		assert.Equal(t, []string{"gpt-3.5-turbo"}, cfg.OrganizationPolicy.BlockedModels)
-		require.NotNil(t, cfg.OrganizationPolicy.MaxDataTier)
-		assert.Equal(t, TierInternal, *cfg.OrganizationPolicy.MaxDataTier)
+		assert.Equal(t, []string{"openai"}, cfg.OrganizationPolicy.Constraints.AllowedProviders)
+		assert.Equal(t, []string{"gpt-4o", "gpt-4o-mini"}, cfg.OrganizationPolicy.Constraints.AllowedModels)
+		assert.Equal(t, []string{"gpt-3.5-turbo"}, cfg.OrganizationPolicy.Constraints.BlockedModels)
+		assert.Equal(t, 500.0, cfg.OrganizationPolicy.Constraints.MaxDailyCost)
+		require.NotNil(t, cfg.OrganizationPolicy.Constraints.MaxDataTier)
+		assert.Equal(t, TierInternal, *cfg.OrganizationPolicy.Constraints.MaxDataTier)
 	})
 
 	t.Run("invalid max_data_tier rejected by both", func(t *testing.T) {
 		doc := base + `  organization_policy:
-    max_data_tier: 3
+    constraints:
+      max_data_tier: 3
 `
 		result := validateAgainstConfigSchema(t, doc)
 		assert.False(t, result.Valid(), "schema must reject tier 3")
 		err := loadRuntime(t, doc)
 		require.Error(t, err, "runtime must reject tier 3")
 		assert.Contains(t, err.Error(), "max_data_tier")
+	})
+
+	t.Run("pre-split flat key rejected by both with migration hint", func(t *testing.T) {
+		doc := base + `  organization_policy:
+    max_daily_cost: 100
+`
+		result := validateAgainstConfigSchema(t, doc)
+		assert.False(t, result.Valid(), "schema must reject the flat pre-split key (#287)")
+		err := loadRuntime(t, doc)
+		require.Error(t, err, "runtime must reject the flat pre-split key")
+		assert.Contains(t, err.Error(), "defaults.daily_cost")
+		assert.Contains(t, err.Error(), "#287")
 	})
 
 	t.Run("client_bearer in YAML rejected by both", func(t *testing.T) {
@@ -234,7 +262,8 @@ gateway:
 
 	t.Run("unknown organization_policy key rejected by both (strict decoding)", func(t *testing.T) {
 		doc := base + `  organization_policy:
-    allowed_provider: ["mistral-eu"]
+    constraints:
+      allowed_provider: ["mistral-eu"]
 `
 		result := validateAgainstConfigSchema(t, doc)
 		assert.False(t, result.Valid(), "schema must reject the typo'd key")
@@ -245,7 +274,8 @@ gateway:
 
 	t.Run("named tier alias accepted by both", func(t *testing.T) {
 		doc := base + `  organization_policy:
-    max_data_tier: internal
+    constraints:
+      max_data_tier: internal
 `
 		result := validateAgainstConfigSchema(t, doc)
 		assert.True(t, result.Valid(), "runtime accepts named tiers — the schema must too, errors: %v", result.Errors())
@@ -253,8 +283,8 @@ gateway:
 		require.NoError(t, os.WriteFile(path, []byte(doc), 0o600))
 		cfg, err := LoadGatewayConfig(path)
 		require.NoError(t, err)
-		require.NotNil(t, cfg.OrganizationPolicy.MaxDataTier)
-		assert.Equal(t, TierInternal, *cfg.OrganizationPolicy.MaxDataTier)
+		require.NotNil(t, cfg.OrganizationPolicy.Constraints.MaxDataTier)
+		assert.Equal(t, TierInternal, *cfg.OrganizationPolicy.Constraints.MaxDataTier)
 	})
 
 	t.Run("unknown provider key rejected by both", func(t *testing.T) {
@@ -398,12 +428,13 @@ gateway:
 	cases := []struct {
 		name, doc, want string
 	}{
-		{"invalid default_pii_action", base + "  organization_policy:\n    default_pii_action: blok\n", "default_pii_action"},
-		{"invalid response_pii_action", base + "  organization_policy:\n    response_pii_action: nope\n", "response_pii_action"},
-		{"invalid org tool_policy_action", base + "  organization_policy:\n    tool_policy_action: blok\n", "tool_policy_action"},
-		{"negative max_daily_cost", base + "  organization_policy:\n    max_daily_cost: -1\n", "must not be negative"},
-		{"star in org allowed_models", base + "  organization_policy:\n    allowed_models: [\"*\"]\n", "must not contain"},
-		{"star in org allowed_providers", base + "  organization_policy:\n    allowed_providers: [\"*\"]\n", "must not contain"},
+		{"invalid pii_action", base + "  organization_policy:\n    defaults:\n      pii_action: blok\n", "pii_action"},
+		{"invalid response_pii_action", base + "  organization_policy:\n    defaults:\n      response_pii_action: nope\n", "response_pii_action"},
+		{"invalid org tool_policy_action", base + "  organization_policy:\n    defaults:\n      tool_policy_action: blok\n", "tool_policy_action"},
+		{"negative daily_cost baseline", base + "  organization_policy:\n    defaults:\n      daily_cost: -1\n", "must not be negative"},
+		{"negative max_daily_cost ceiling", base + "  organization_policy:\n    constraints:\n      max_daily_cost: -1\n", "must not be negative"},
+		{"star in org allowed_models", base + "  organization_policy:\n    constraints:\n      allowed_models: [\"*\"]\n", "must not contain"},
+		{"star in org allowed_providers", base + "  organization_policy:\n    constraints:\n      allowed_providers: [\"*\"]\n", "must not contain"},
 		{"star in provider allowed_models", provider("      allowed_models: [\"*\"]\n"), "must not contain"},
 		{"invalid provider tool_policy_action", provider("      tool_policy_action: blok\n"), "tool_policy_action"},
 	}
@@ -416,6 +447,6 @@ gateway:
 	}
 
 	t.Run("valid values still load", func(t *testing.T) {
-		require.NoError(t, load(t, base+"  organization_policy:\n    default_pii_action: block\n    response_pii_action: redact\n    tool_policy_action: block\n    max_daily_cost: 10\n    allowed_models: [\"gpt-4o\"]\n"))
+		require.NoError(t, load(t, base+"  organization_policy:\n    defaults:\n      pii_action: block\n      response_pii_action: redact\n      tool_policy_action: block\n      daily_cost: 10\n    constraints:\n      allowed_models: [\"gpt-4o\"]\n"))
 	})
 }

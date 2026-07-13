@@ -28,15 +28,17 @@ gateway:
       base_url: "https://api.openai.com"
       region: "US"
   organization_policy:
-    default_pii_action: "warn"
-    max_daily_cost: 100.00
-    egress:
-      default_action: allow
-      rules:
-        - tier: public          # named alias for 0
-          allowed_providers: ["*"]
-        - tier: confidential    # named alias for 2
-          allowed_regions: ["EU", "LOCAL"]
+    defaults:
+      pii_action: "warn"
+      daily_cost: 100.00
+    constraints:
+      egress:
+        default_action: allow
+        rules:
+          - tier: public          # named alias for 0
+            allowed_providers: ["*"]
+          - tier: confidential    # named alias for 2
+            allowed_regions: ["EU", "LOCAL"]
 EGEOF
 }
 

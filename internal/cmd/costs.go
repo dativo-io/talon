@@ -332,7 +332,10 @@ func loadAgentEffectiveCaps(ctx context.Context, cfg *config.Config, tenantID, a
 		return 0, 0, false
 	}
 	eff := gateway.ResolveEffectivePolicy(gwCfg.OrganizationPolicy, gateway.ProviderConfig{}, la.Override)
-	return eff.MaxDailyCost, eff.MaxMonthlyCost, eff.MaxDailyCost > 0 || eff.MaxMonthlyCost > 0
+	// Binding caps: an org ceiling (constraints.max_*) tighter than the
+	// agent's own cap is what enforcement gates on (#287).
+	daily, monthly := eff.BindingDailyCap(), eff.BindingMonthlyCap()
+	return daily, monthly, daily > 0 || monthly > 0
 }
 
 func toBudgetUsage(used, limit float64, source string) *budgetUsage {

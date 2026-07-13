@@ -91,7 +91,8 @@ gateway:
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
   organization_policy:
-    default_pii_action: "warn"
+    defaults:
+      pii_action: "warn"
 GWEOF
   fi
 

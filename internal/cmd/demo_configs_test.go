@@ -45,10 +45,10 @@ func TestGovernedSessionDemoConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, cfg.Enabled)
 	require.Equal(t, gateway.ModeEnforce, cfg.Mode)
-	require.Equal(t, "warn", cfg.OrganizationPolicy.DefaultPIIAction,
+	require.Equal(t, "warn", cfg.OrganizationPolicy.Defaults.PIIAction,
 		"org PII floor is warn — each act tightens per agent (monotonic merge, #266)")
 	require.False(t, cfg.OrganizationPolicy.LogPrompts, "real-provider demo must not store prompt bodies")
-	require.Positive(t, cfg.OrganizationPolicy.MaxDailyCost, "real-money safety net must be configured")
+	require.Positive(t, cfg.OrganizationPolicy.Defaults.DailyCost, "real-money safety net must be configured")
 
 	anthropic, ok := cfg.Provider("anthropic")
 	require.True(t, ok)
@@ -95,7 +95,7 @@ func TestShortlistDemoConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, cfg.Enabled)
 	require.Equal(t, gateway.ModeEnforce, cfg.Mode)
-	require.Equal(t, "block", cfg.OrganizationPolicy.DefaultPIIAction)
+	require.Equal(t, "block", cfg.OrganizationPolicy.Defaults.PIIAction)
 
 	prov, ok := cfg.Provider("openai")
 	require.True(t, ok)

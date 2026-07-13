@@ -50,8 +50,9 @@ gateway:
       secret_name: "openai-api-key"
       base_url: "https://api.openai.com"
   organization_policy:
-    default_pii_action: "redact"
-    max_daily_cost: 100.00
+    defaults:
+      pii_action: "redact"
+      daily_cost: 100.00
 GWEOF
   fi
 

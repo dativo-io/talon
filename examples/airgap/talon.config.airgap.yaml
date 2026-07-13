@@ -42,11 +42,12 @@ gateway:
   # Identity lives in agent.talon.yaml (#266); mint the traffic key:
   #   talon secrets set airgap-app-talon-key "$(openssl rand -hex 24)"
   organization_policy:
-    default_pii_action: block
-    max_daily_cost: 50.00
+    defaults:
+      pii_action: block
+      daily_cost: 50.00
     log_prompts: false
     log_responses: false
-    # When omitted, air_gap mode applies deny-by-default egress to EU/LOCAL only.
+    # When constraints.egress is omitted, air_gap mode applies deny-by-default egress to EU/LOCAL only.
 
   rate_limits:
     global_requests_per_min: 120

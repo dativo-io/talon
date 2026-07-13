@@ -205,7 +205,7 @@ func NewGateway(
 	)
 
 	maxMB := DefaultAttachmentMaxFileSizeMB
-	if p := config.OrganizationPolicy.AttachmentPolicy; p != nil && p.MaxFileSizeMB > 0 {
+	if p := config.OrganizationPolicy.Defaults.AttachmentPolicy; p != nil && p.MaxFileSizeMB > 0 {
 		maxMB = p.MaxFileSizeMB
 	}
 	ext := attachment.NewExtractor(maxMB)
@@ -564,11 +564,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx = withBudgetUnavailable(ctx)
 	}
 	// Utilization must be measured against the same effective caps enforcement
-	// uses (default overlaid by per-agent override), or the dashboard reports a
-	// different denominator than the runtime actually gates on (#216). Skip
-	// utilization/alerts when the spend read failed — a "0%" reading would be
-	// a lie; the request carries an agent_budget_unavailable annotation instead.
-	dailyCap, monthlyCap := eff.MaxDailyCost, eff.MaxMonthlyCost
+	// uses (default overlaid by per-agent override, bounded by the org ceiling
+	// #287), or the dashboard reports a different denominator than the runtime
+	// actually gates on (#216). Skip utilization/alerts when the spend read
+	// failed — a "0%" reading would be a lie; the request carries an
+	// agent_budget_unavailable annotation instead.
+	dailyCap, monthlyCap := eff.BindingDailyCap(), eff.BindingMonthlyCap()
 	if dailyCap > 0 && !budgetUnavailable {
 		pct := (dailyCost / dailyCap) * 100
 		RecordBudgetUtilization(ctx, agent.TenantID, "daily", pct)
@@ -652,8 +653,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Tool governance comes from the effective policy (baseline union provider union agent).
 	var toolResult *ToolGovernanceResult
 	forwardBody := body
-	if len(extracted.ToolNames) > 0 && (len(eff.AllowedTools) > 0 || len(eff.ForbiddenTools) > 0) {
-		tr := EvaluateToolPolicy(extracted.ToolNames, eff.AllowedTools, eff.ForbiddenTools)
+	if len(extracted.ToolNames) > 0 && hasToolGovernance(&eff) {
+		tr := evaluateToolPolicyFor(extracted.ToolNames, &eff)
 		toolResult = &tr
 		if len(tr.Removed) > 0 {
 			switch {
@@ -1025,12 +1026,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// action is `filter`, strip the forbidden tools and PROCEED (matching
 		// the primary path); only `block` skips the candidate (#266 review r4).
 		if len(extracted.ToolNames) > 0 {
-			if len(candEff.AllowedTools) > 0 || len(candEff.ForbiddenTools) > 0 {
+			if hasToolGovernance(&candEff) {
 				forwarded := extracted.ToolNames
 				if toolResult != nil {
 					forwarded = toolResult.Kept
 				}
-				if tr := EvaluateToolPolicy(forwarded, candEff.AllowedTools, candEff.ForbiddenTools); len(tr.Removed) > 0 {
+				if tr := evaluateToolPolicyFor(forwarded, &candEff); len(tr.Removed) > 0 {
 					switch {
 					case isShadow:
 						shadowViolations = append(shadowViolations, evidence.ShadowViolation{
@@ -1762,15 +1763,7 @@ func buildGatewayPolicyInput(agent *ResolvedIdentity, eff EffectivePolicy, provi
 		input["agent_egress_rules"] = egressRulesForPolicyInput(eff.AgentEgress)
 		input["agent_egress_default_action"] = eff.AgentEgress.DefaultAction
 	}
-	// Effective caps: organization baseline overlaid by the agent's override.
-	// The same resolution feeds budget-utilization metrics/alerts so the
-	// dashboard and the enforcement decision agree on the denominator (#216).
-	if eff.MaxDailyCost > 0 {
-		input["agent_max_daily_cost"] = eff.MaxDailyCost
-	}
-	if eff.MaxMonthlyCost > 0 {
-		input["agent_max_monthly_cost"] = eff.MaxMonthlyCost
-	}
+	emitBudgetPolicyInput(input, &eff)
 	if len(eff.AllowedModels) > 0 {
 		input["agent_allowed_models"] = eff.AllowedModels
 	}
@@ -1794,11 +1787,6 @@ func buildGatewayPolicyInput(agent *ResolvedIdentity, eff EffectivePolicy, provi
 	if len(eff.ProviderBlockedModels) > 0 {
 		input["provider_blocked_models"] = eff.ProviderBlockedModels
 	}
-	if eff.MaxSessionCost > 0 {
-		// One insertion in the shared builder covers the primary request
-		// and every fallback candidate identically (#198).
-		input["agent_max_session_cost"] = eff.MaxSessionCost
-	}
 	// Tier caps ride per-layer keys so the deny reason names WHICH layer's
 	// restriction fired (#279 review) — the effective minimum still gates
 	// (each rule denies independently; the stricter one always fires).
@@ -1809,6 +1797,37 @@ func buildGatewayPolicyInput(agent *ResolvedIdentity, eff EffectivePolicy, provi
 		input["org_max_data_tier"] = int(*eff.OrgMaxDataTier)
 	}
 	return input
+}
+
+// emitBudgetPolicyInput adds the budget keys to the shared policy input.
+// Effective caps: organization baseline overlaid by the agent's override —
+// the same resolution feeds budget-utilization metrics/alerts so the
+// dashboard and the enforcement decision agree on the denominator (#216).
+// The session cap rides the same builder so the primary request and every
+// fallback candidate see it identically (#198). Org budget ceilings
+// (constraints.max_*, #287/#283) ride separate keys with their own deny
+// rules, so an agent-declared budget above the org line still denies at the
+// ceiling — and the signed deny reason names the ORGANIZATION, not the agent
+// (same layer-attribution contract as the data-tier rules).
+func emitBudgetPolicyInput(input map[string]interface{}, eff *EffectivePolicy) {
+	if eff.MaxDailyCost > 0 {
+		input["agent_max_daily_cost"] = eff.MaxDailyCost
+	}
+	if eff.MaxMonthlyCost > 0 {
+		input["agent_max_monthly_cost"] = eff.MaxMonthlyCost
+	}
+	if eff.MaxSessionCost > 0 {
+		input["agent_max_session_cost"] = eff.MaxSessionCost
+	}
+	if eff.OrgMaxDailyCost > 0 {
+		input["org_max_daily_cost"] = eff.OrgMaxDailyCost
+	}
+	if eff.OrgMaxMonthlyCost > 0 {
+		input["org_max_monthly_cost"] = eff.OrgMaxMonthlyCost
+	}
+	if eff.OrgMaxSessionCost > 0 {
+		input["org_max_session_cost"] = eff.OrgMaxSessionCost
+	}
 }
 
 // sessionBudgetDetail extracts the structured {limit, spent, estimate} session
@@ -1826,7 +1845,12 @@ func sessionBudgetDetail(reasons []string, policyInput map[string]interface{}, e
 	if !fired {
 		return nil
 	}
-	limit, _ := policyInput["agent_max_session_cost"].(float64)
+	// Two session rules can fire (agent cap #198, org ceiling #283) — the
+	// recorded limit is the BINDING one: the tightest positive bound is the
+	// first to be exceeded, so it is the number the decision was made on.
+	agentLimit, _ := policyInput["agent_max_session_cost"].(float64)
+	orgLimit, _ := policyInput["org_max_session_cost"].(float64)
+	limit := tightestPositive(agentLimit, orgLimit)
 	spent, _ := policyInput["session_cost_total"].(float64)
 	return &evidence.SessionBudget{Limit: limit, Spent: spent, Estimate: estimatedCost}
 }

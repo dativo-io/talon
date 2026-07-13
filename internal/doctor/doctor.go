@@ -411,16 +411,17 @@ func checkGatewayAgentIdentity(ctx context.Context) CheckResult {
 }
 
 func checkGatewayToolPolicy(cfg *gateway.GatewayConfig) CheckResult {
-	if len(cfg.OrganizationPolicy.ForbiddenTools) == 0 {
+	forbidden := cfg.OrganizationPolicy.Constraints.ForbiddenTools
+	if len(forbidden) == 0 {
 		return CheckResult{
 			Name: "gateway_forbidden_tools", Category: "gateway", Status: "warn",
 			Message: "No forbidden tools configured",
-			Fix:     "Add forbidden_tools to organization_policy for tool governance",
+			Fix:     "Add forbidden_tools to organization_policy.constraints for tool governance",
 		}
 	}
 	return CheckResult{
 		Name: "gateway_forbidden_tools", Category: "gateway", Status: "pass",
-		Message: fmt.Sprintf("%d pattern(s)", len(cfg.OrganizationPolicy.ForbiddenTools)),
+		Message: fmt.Sprintf("%d pattern(s)", len(forbidden)),
 	}
 }
 

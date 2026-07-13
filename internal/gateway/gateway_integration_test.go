@@ -65,7 +65,7 @@ func TestGateway_ServeHTTP_Integration(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: upstream.URL},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn"},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn"}},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",
 			RequestTimeout:    "30s",
@@ -151,7 +151,7 @@ func TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied(t *testing.T) {
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://localhost:11434"},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "block"},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "block"}},
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
 	registry := testRegistry(testIdentity("test", "default", "talon-gw-pii-test", nil))

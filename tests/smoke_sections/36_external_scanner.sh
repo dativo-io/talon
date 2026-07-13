@@ -206,8 +206,9 @@ gateway:
       base_url: "http://127.0.0.1:${SMOKE36_UPSTREAM_PORT}"
       region: "EU"
   organization_policy:
-    default_pii_action: "redact"
-    max_daily_cost: 100.00
+    defaults:
+      pii_action: "redact"
+      daily_cost: 100.00
 GWEOF
 
   # --- Scenario A: dead engine endpoint -> serve refuses to start ---

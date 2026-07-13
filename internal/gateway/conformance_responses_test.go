@@ -114,7 +114,7 @@ func newResponsesConformanceGateway(t *testing.T, upstreamURL, storeMode string)
 		},
 		// Response-side scanning stays out of request-path conformance:
 		// "allow" keeps SSE streams passing through byte-identically.
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn", ResponsePIIAction: "allow", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn", ResponsePIIAction: "allow", DailyCost: 100, MonthlyCost: 2000}},
 		RateLimits:         RateLimitsConfig{GlobalRequestsPerMin: 10000, PerAgentRequestsPerMin: 10000},
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}

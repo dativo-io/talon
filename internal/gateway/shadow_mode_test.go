@@ -34,11 +34,15 @@ func setupShadowGateway(t *testing.T, opts ...func(*GatewayConfig, *PolicyOverri
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
 		},
 		OrganizationPolicy: OrganizationPolicy{
-			DefaultPIIAction: "block",
-			MaxDailyCost:     100,
-			MaxMonthlyCost:   2000,
-			ForbiddenTools:   []string{"delete_*"},
-			ToolPolicyAction: "block",
+			Defaults: OrgDefaults{
+				PIIAction:        "block",
+				DailyCost:        100,
+				MonthlyCost:      2000,
+				ToolPolicyAction: "block",
+			},
+			Constraints: OrgConstraints{
+				ForbiddenTools: []string{"delete_*"},
+			},
 		},
 		RateLimits: RateLimitsConfig{
 			GlobalRequestsPerMin:   1,
@@ -164,8 +168,8 @@ func TestGateway_ShadowMode_ToolBlockBypassedAndLogged(t *testing.T) {
 
 func TestGateway_ShadowMode_PolicyDenyBypassedAndLogged(t *testing.T) {
 	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig, override *PolicyOverride) {
-		cfg.OrganizationPolicy.ForbiddenTools = nil
-		cfg.OrganizationPolicy.DefaultPIIAction = "warn"
+		cfg.OrganizationPolicy.Constraints.ForbiddenTools = nil
+		cfg.OrganizationPolicy.Defaults.PIIAction = "warn"
 		override.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
 		cfg.RateLimits.PerAgentRequestsPerMin = 60
@@ -191,8 +195,8 @@ func TestGateway_ShadowMode_PolicyDenyBypassedAndLogged(t *testing.T) {
 
 func TestGateway_ShadowMode_PolicyErrorBypassedAndLogged(t *testing.T) {
 	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig, override *PolicyOverride) {
-		cfg.OrganizationPolicy.ForbiddenTools = nil
-		cfg.OrganizationPolicy.DefaultPIIAction = "warn"
+		cfg.OrganizationPolicy.Constraints.ForbiddenTools = nil
+		cfg.OrganizationPolicy.Defaults.PIIAction = "warn"
 		override.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
 		cfg.RateLimits.PerAgentRequestsPerMin = 60
@@ -219,8 +223,8 @@ func TestGateway_ShadowMode_PolicyErrorBypassedAndLogged(t *testing.T) {
 func TestGateway_EnforceMode_PolicyErrorStillReturns500(t *testing.T) {
 	gw, _ := setupShadowGateway(t, func(cfg *GatewayConfig, override *PolicyOverride) {
 		cfg.Mode = ModeEnforce
-		cfg.OrganizationPolicy.ForbiddenTools = nil
-		cfg.OrganizationPolicy.DefaultPIIAction = "warn"
+		cfg.OrganizationPolicy.Constraints.ForbiddenTools = nil
+		cfg.OrganizationPolicy.Defaults.PIIAction = "warn"
 		override.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
 		cfg.RateLimits.PerAgentRequestsPerMin = 60
@@ -273,8 +277,8 @@ func TestGateway_EnforceMode_ToolBlockStillBlocks(t *testing.T) {
 
 func TestGateway_ShadowMode_NoViolationsNoFlag(t *testing.T) {
 	gw, evStore := setupShadowGateway(t, func(cfg *GatewayConfig, override *PolicyOverride) {
-		cfg.OrganizationPolicy.DefaultPIIAction = "warn"
-		cfg.OrganizationPolicy.ForbiddenTools = nil
+		cfg.OrganizationPolicy.Defaults.PIIAction = "warn"
+		cfg.OrganizationPolicy.Constraints.ForbiddenTools = nil
 		override.PIIAction = "warn"
 		cfg.RateLimits.GlobalRequestsPerMin = 300
 		cfg.RateLimits.PerAgentRequestsPerMin = 60

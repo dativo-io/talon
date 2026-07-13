@@ -58,9 +58,11 @@ func setupGatewayWithClassifier(t *testing.T, piiAction string, mode Mode, upstr
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key", ResponsesStoreMode: ResponsesStoreForceIfAbsent},
 		},
 		OrganizationPolicy: OrganizationPolicy{
-			DefaultPIIAction: piiAction,
-			MaxDailyCost:     100,
-			MaxMonthlyCost:   2000,
+			Defaults: OrgDefaults{
+				PIIAction:   piiAction,
+				DailyCost:   100,
+				MonthlyCost: 2000,
+			},
 		},
 		Timeouts: TimeoutsConfig{
 			ConnectTimeout:    "5s",

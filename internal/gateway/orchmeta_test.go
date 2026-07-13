@@ -194,7 +194,7 @@ func newOrchGateway(t *testing.T, anthropicURL, openaiURL string, acceptA *bool)
 			"anthropic": {Enabled: true, BaseURL: anthropicURL, SecretName: "anthropic-key"},
 			"openai":    {Enabled: true, BaseURL: openaiURL, SecretName: "openai-key"},
 		},
-		OrganizationPolicy: OrganizationPolicy{DefaultPIIAction: "warn", ResponsePIIAction: "allow", MaxDailyCost: 100, MaxMonthlyCost: 2000},
+		OrganizationPolicy: OrganizationPolicy{Defaults: OrgDefaults{PIIAction: "warn", ResponsePIIAction: "allow", DailyCost: 100, MonthlyCost: 2000}},
 		RateLimits:         RateLimitsConfig{GlobalRequestsPerMin: 10000, PerAgentRequestsPerMin: 10000},
 		Timeouts:           TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
 	}
