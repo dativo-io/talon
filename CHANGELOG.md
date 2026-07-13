@@ -17,6 +17,12 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.8.1] - 2026-07-13
+
+### Security
+
+- **govulncheck reports zero reachable vulnerabilities again (GO-2026-5856, GO-2026-5764).** Two findings were reachable from Talon code: the crypto/tls Encrypted Client Hello privacy leak (hit by every TLS dial — gateway upstreams, the egress guard, external scanner health checks) and a panic-DoS in the AWS SDK's EventStream decoder on the Bedrock path. Fixes: Go toolchain `1.25.12` (go.mod directive + CI/security workflows), `aws-sdk-go-v2/service/bedrockruntime` v1.50.4 with `aws/protocol/eventstream` v1.7.8, and release builds move to goreleaser-cross **v1.26.4** (Go 1.26.4) because no 1.25.12 cross image exists — which also means release binaries stop being built with Go 1.25.7, several stdlib patches behind the tested toolchain. Who cares: anyone running `talon serve` with TLS upstreams (everyone) or routing to Bedrock; v1.8.0 binaries carry both vulnerabilities — upgrade. Verify: `govulncheck ./...` (0 reachable), `talon version` on a release binary shows Go ≥ 1.26.4.
+
 ## [1.8.0] - 2026-07-13
 
 ### BREAKING — organization policy split into defaults vs constraints (#287, #282, #283)
@@ -652,7 +658,8 @@ For user-facing entries, include:
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.8.1...HEAD
+[1.8.1]: https://github.com/dativo-io/talon/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/dativo-io/talon/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/dativo-io/talon/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/dativo-io/talon/compare/v1.6.8...v1.7.0
