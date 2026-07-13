@@ -168,3 +168,102 @@ func TestAgentsToggle_UnknownAndBrokenAgents(t *testing.T) {
 	assert.Contains(t, err.Error(), "can only be fixed by path")
 	assert.Contains(t, err.Error(), filepath.Join("broken", "agent.talon.yaml"))
 }
+
+// TestAgentsToggle_DuplicateNameRejected (#267 review, P1): a name declared by
+// two files is ambiguous — the toggle refuses it and modifies NEITHER file
+// and writes NO lifecycle evidence.
+func TestAgentsToggle_DuplicateNameRejected(t *testing.T) {
+	agentsDir := setupToggleFleet(t) // one "support" agent
+	// A second file also names "support".
+	dup := filepath.Join(agentsDir, "support-dup")
+	require.NoError(t, os.MkdirAll(dup, 0o755))
+	dupPath := filepath.Join(dup, "agent.talon.yaml")
+	require.NoError(t, os.WriteFile(dupPath, []byte("agent:\n  name: support\n  version: \"2.0.0\"\npolicies:\n  cost_limits:\n    daily: 1\n"), 0o600))
+
+	before1, _ := os.ReadFile(filepath.Join(agentsDir, "support", "agent.talon.yaml"))
+	before2, _ := os.ReadFile(dupPath)
+
+	agentsDisableCmd.SetContext(context.Background())
+	err := runAgentToggle(agentsDisableCmd, "support", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ambiguous")
+
+	after1, _ := os.ReadFile(filepath.Join(agentsDir, "support", "agent.talon.yaml"))
+	after2, _ := os.ReadFile(dupPath)
+	assert.Equal(t, before1, after1, "neither duplicate file is modified")
+	assert.Equal(t, before2, after2)
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	require.NoError(t, cfg.EnsureDataDir())
+	store, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	require.NoError(t, err)
+	defer store.Close()
+	rows, err := store.List(context.Background(), "acme", "support", time.Time{}, time.Time{}, 10)
+	require.NoError(t, err)
+	assert.Empty(t, rows, "an ambiguous toggle writes no lifecycle evidence")
+}
+
+// TestAgentsToggle_SharedCorrelationID (#268 review, P2): intent and
+// completion of one operation share a correlation ID.
+func TestAgentsToggle_SharedCorrelationID(t *testing.T) {
+	setupToggleFleet(t)
+	agentsDisableCmd.SetOut(&bytes.Buffer{})
+	agentsDisableCmd.SetContext(context.Background())
+	require.NoError(t, runAgentToggle(agentsDisableCmd, "support", false))
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	store, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
+	require.NoError(t, err)
+	defer store.Close()
+	rows, err := store.List(context.Background(), "acme", "support", time.Time{}, time.Time{}, 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, rows[0].CorrelationID, rows[1].CorrelationID, "intent and completion share one correlation ID")
+	assert.NotEqual(t, rows[0].ID, rows[1].ID, "…but are distinct records")
+}
+
+// TestAtomicReplaceFile_ConcurrencyGuard (#268 review, P2): the rewrite fails
+// rather than clobbering a change another process made since the read.
+func TestAtomicReplaceFile_ConcurrencyGuard(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.talon.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("original\n"), 0o600))
+
+	// Another process changed the file since we read "original".
+	require.NoError(t, os.WriteFile(path, []byte("someone-else\n"), 0o600))
+
+	err := atomicReplaceFile(path, []byte("mine\n"), []byte("original\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "modified by another process")
+	current, _ := os.ReadFile(path)
+	assert.Equal(t, "someone-else\n", string(current), "the concurrent edit is preserved, not clobbered")
+
+	// With the correct expected bytes, the replace succeeds.
+	require.NoError(t, atomicReplaceFile(path, []byte("mine\n"), []byte("someone-else\n")))
+	current, _ = os.ReadFile(path)
+	assert.Equal(t, "mine\n", string(current))
+}
+
+// TestParseReloadInterval (#269 review, P2): "0" disables, negative is a hard
+// error (not silently disabled), sub-second is floored.
+func TestParseReloadInterval(t *testing.T) {
+	d, err := parseReloadInterval("0")
+	require.NoError(t, err)
+	assert.Equal(t, time.Duration(0), d, "\"0\" disables")
+
+	d, err = parseReloadInterval("30s")
+	require.NoError(t, err)
+	assert.Equal(t, 30*time.Second, d)
+
+	d, err = parseReloadInterval("100ms")
+	require.NoError(t, err)
+	assert.Equal(t, minReloadInterval, d, "sub-second is floored, never a hot loop")
+
+	_, err = parseReloadInterval("-1s")
+	require.Error(t, err, "a negative interval is a config error, not a silent disable")
+
+	_, err = parseReloadInterval("garbage")
+	require.Error(t, err)
+}

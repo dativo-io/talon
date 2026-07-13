@@ -151,11 +151,16 @@ policies:
 	require.Error(t, r.RunFromTrigger(ctx, "stopped", "scheduled work", "scheduled"))
 	assert.Equal(t, 0, openai.calls)
 
-	// The refusals left signed early-termination evidence, attributed.
+	// The refusals left signed early-termination evidence, attributed — and
+	// classified as a deliberate BLOCK, never an internal failure (#268
+	// review), so the health projection reads it as a stop.
 	records, err := store.List(ctx, "acme", "stopped", time.Time{}, time.Time{}, 5)
 	require.NoError(t, err)
 	require.Len(t, records, 2)
 	assert.Contains(t, records[0].PolicyDecision.Reasons[0], "agent_disabled")
+	assert.Equal(t, "agent_disabled", records[0].PolicyDecision.Action, "action is agent_disabled, not early_termination")
+	assert.Equal(t, "blocked", records[0].Status, "status is blocked, not failed")
+	assert.Equal(t, "agent_disabled", records[0].FailureReason, "failure_reason is agent_disabled, not internal_error")
 
 	// The enabled sibling runs untouched.
 	resp, err := r.Run(ctx, &RunRequest{AgentName: "running", Prompt: "hello", InvocationType: "manual"})

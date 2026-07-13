@@ -54,6 +54,7 @@ const (
 	FailurePIIBlock             FailureReason = "pii_block"
 	FailureToolEscalation       FailureReason = "tool_escalation"
 	FailureHookDeny             FailureReason = "hook_deny"
+	FailureAgentDisabled        FailureReason = "agent_disabled"
 	FailureInternalError        FailureReason = "internal_error"
 	FailureMaxStepsExceeded     FailureReason = "max_steps_exceeded"
 	FailureMaxToolCallsExceeded FailureReason = "max_tool_calls_exceeded"

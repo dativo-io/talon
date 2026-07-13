@@ -1350,10 +1350,18 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 func (r *Runner) recordEarlyTerminationScanner(ctx context.Context, correlationID string, req *RunRequest, reason string, startTime time.Time, cls classifier.Facade) {
 	status := string(RunStatusFailed)
 	failureReason := string(FailureInternalError)
+	action := "early_termination"
 	switch {
 	case strings.HasPrefix(reason, "circuit_breaker"):
 		status = string(RunStatusBlocked)
 		failureReason = string(FailureCircuitBreaker)
+	case strings.HasPrefix(reason, "agent_disabled"):
+		// An operator kill switch is a deliberate BLOCK, not an internal
+		// failure (#268 review) — so the health projection (#270) reads it as
+		// a stop, never an error.
+		status = string(RunStatusBlocked)
+		failureReason = string(FailureAgentDisabled)
+		action = "agent_disabled"
 	case strings.HasPrefix(reason, "hook_"):
 		status = string(RunStatusDenied)
 		failureReason = string(FailureHookDeny)
@@ -1376,13 +1384,13 @@ func (r *Runner) recordEarlyTerminationScanner(ctx context.Context, correlationI
 		RequestSourceID: req.InvocationType,
 		PolicyDecision: evidence.PolicyDecision{
 			Allowed: false,
-			Action:  "early_termination",
+			Action:  action,
 			Reasons: []string{reason},
 		},
 		Classification:   evidence.Classification{Scanner: scannerInfo},
 		DurationMS:       time.Since(startTime).Milliseconds(),
 		InputPrompt:      req.Prompt,
-		ExplanationFacts: explanation.BuildLegacyFacts(false, "early_termination", []string{reason}, explanation.StagePreExecution, "", ""),
+		ExplanationFacts: explanation.BuildLegacyFacts(false, action, []string{reason}, explanation.StagePreExecution, "", ""),
 		Status:           status,
 		FailureReason:    failureReason,
 	}); err != nil {

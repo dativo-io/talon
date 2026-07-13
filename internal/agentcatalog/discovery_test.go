@@ -68,11 +68,16 @@ func TestDiscoverAgents_DuplicateNamesFailClosed(t *testing.T) {
 	scan, err := DiscoverAgents(context.Background(), dir)
 	require.Error(t, err, "duplicate agent.name rejects the scan")
 	assert.Contains(t, err.Error(), "fail closed")
-	require.Len(t, scan.Issues, 1)
-	assert.Equal(t, IssueDuplicateName, scan.Issues[0].Status)
-	assert.Contains(t, scan.Issues[0].Reason, first, "the rejection names the first path")
-	assert.Contains(t, scan.Issues[0].Reason, second, "…and the second path")
-	assert.Equal(t, second, scan.Issues[0].Path)
+	// BOTH files fail closed (#267 review): neither produces a valid agent, so
+	// nothing silently resolves the ambiguous name to whichever sorted first.
+	require.Len(t, scan.Issues, 2)
+	require.Empty(t, scan.Agents, "no valid CatalogAgent for a duplicated name")
+	issuePaths := []string{scan.Issues[0].Path, scan.Issues[1].Path}
+	assert.ElementsMatch(t, []string{first, second}, issuePaths)
+	for _, iss := range scan.Issues {
+		assert.Equal(t, IssueDuplicateName, iss.Status)
+		assert.Contains(t, iss.Reason, "support", "the reason names the ambiguous agent")
+	}
 }
 
 func TestDiscoverAgents_InvalidFileRejectsScanButSiblingsListed(t *testing.T) {

@@ -39,20 +39,43 @@ const (
 	ReloadRolledBack
 )
 
+// EvidenceSink persists one signed reload record. *evidence.Store satisfies
+// it; the reloader depends only on this narrow surface so tests can inject
+// failures (#269 review — rollback and rejection-retry paths).
+type EvidenceSink interface {
+	Store(ctx context.Context, ev *evidence.Evidence) error
+}
+
+// RegistryBuilder constructs the identity registry for a reloaded generation,
+// given the scan and the PREVIOUS generation (for key reuse). It is
+// mode-aware — plain (native-only) serve allows a nil/keyless registry while
+// gateway mode requires keyed agents — and reuses unchanged key material so a
+// reload never depends on re-reading the vault binding it is changing (#269
+// review). May return (nil, nil) for a keyless native-only generation.
+type RegistryBuilder func(ctx context.Context, scan *ScanResult, previous *RuntimeSnapshot) (*gateway.IdentityRegistry, error)
+
 // ReloadConfig wires the periodic safe reload (#269).
 type ReloadConfig struct {
 	Source Source
 	// Deps are the SHARED process dependencies bundles compile over — the
 	// same providers/config serve built at startup, so a reloaded generation
 	// is constructed exactly like the boot generation.
-	Deps     BundleDeps
-	Vault    *secrets.SecretStore
-	AdminKey string
-	Holder   *RuntimeHolder
-	Evidence *evidence.Store
-	// RequireNonEmpty mirrors gateway startup: a scan yielding zero agents is
-	// a REJECTION (keep last-known-good), never an activation of an empty
-	// registry that would deny everything by accident.
+	Deps BundleDeps
+	// BuildRegistry constructs the generation's identity registry. serve
+	// injects a mode-aware builder; when nil, a vault-backed gateway builder
+	// is derived from Vault/AdminKey below (tests and simple callers).
+	BuildRegistry RegistryBuilder
+	Vault         *secrets.SecretStore
+	AdminKey      string
+	Holder        *RuntimeHolder
+	// Evidence sinks the signed config_reload records. *evidence.Store
+	// satisfies it; tests inject failing/blocking writers to exercise the
+	// rollback and retry paths.
+	Evidence EvidenceSink
+	// RequireNonEmpty mirrors gateway startup: a scan yielding zero KEYED
+	// agents is a REJECTION (keep last-known-good), never an activation of an
+	// empty registry that would deny everything by accident. Native-only
+	// serve leaves this false (a keyless generation is legitimate).
 	RequireNonEmpty bool
 }
 
@@ -87,11 +110,29 @@ type rejectionState struct {
 	at     time.Time
 	causes []string
 	issues []FleetIssue
+	// evidenceRecorded distinguishes "this broken state was observed" from
+	// "its signed rejection was persisted" (#269 review): a rejection whose
+	// evidence write failed is RETRIED on the next tick with the same digest,
+	// so a temporary evidence-store outage never permanently loses the one
+	// required record for a distinct broken state.
+	evidenceRecorded bool
 }
 
 // NewReloader seeds the last-known-good generation from the holder's current
 // snapshot (the boot generation).
 func NewReloader(cfg ReloadConfig) *Reloader {
+	if cfg.BuildRegistry == nil {
+		// Default: vault-backed gateway builder with key reuse (keeps simple
+		// callers and tests working; serve injects a mode-aware builder).
+		vault, adminKey := cfg.Vault, cfg.AdminKey
+		cfg.BuildRegistry = func(ctx context.Context, scan *ScanResult, previous *RuntimeSnapshot) (*gateway.IdentityRegistry, error) {
+			var prior gateway.PriorKeyLookup
+			if previous != nil {
+				prior = previous.Registry.PriorKeys()
+			}
+			return gateway.BuildIdentityRegistryWith(ctx, scan.LoadedAgents(), vault, adminKey, gateway.BuildOptions{PriorKeys: prior})
+		}
+	}
 	r := &Reloader{cfg: cfg}
 	if snap := cfg.Holder.Current(); snap != nil {
 		r.lastGood = snap.Generation
@@ -118,6 +159,10 @@ func (r *Reloader) Run(ctx context.Context, interval time.Duration) {
 func (r *Reloader) State() ReloadState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.stateLocked()
+}
+
+func (r *Reloader) stateLocked() ReloadState {
 	s := ReloadState{ActiveGeneration: r.lastGood, ActivatedAt: r.activatedAt}
 	if r.rejection != nil {
 		s.Rejected = true
@@ -127,6 +172,24 @@ func (r *Reloader) State() ReloadState {
 		s.Issues = append([]FleetIssue(nil), r.rejection.issues...)
 	}
 	return s
+}
+
+// FleetView is a single COHERENT read of the runtime status: the active
+// snapshot and the reload state captured under the SAME lock, so the fleet
+// endpoint can never report a generation that was rolled back mid-read
+// (#269 review). Snapshot is nil in keyless/quickstart mode.
+type FleetView struct {
+	Snapshot *RuntimeSnapshot
+	Reload   ReloadState
+}
+
+// View returns the active snapshot and reload state atomically — the holder
+// is read under the reloader mutex, so an in-progress activation/rollback
+// cannot interleave between the two reads.
+func (r *Reloader) View() FleetView {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return FleetView{Snapshot: r.cfg.Holder.Current(), Reload: r.stateLocked()}
 }
 
 // ReloadOnce runs one pass: scan → validate → activate-or-keep-last-known-good.
@@ -162,7 +225,7 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	if err != nil {
 		return r.reject(ctx, scan, []string{err.Error()})
 	}
-	registry, err := gateway.BuildIdentityRegistry(ctx, scan.LoadedAgents(), r.cfg.Vault, r.cfg.AdminKey)
+	registry, err := r.cfg.BuildRegistry(ctx, scan, r.cfg.Holder.Current())
 	if err != nil {
 		return r.reject(ctx, scan, []string{err.Error()})
 	}
@@ -192,17 +255,24 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 }
 
 // reject records ONE signed rejection per distinct broken state and keeps
-// last-known-good serving.
+// last-known-good serving. A repeat of the SAME broken state is a duplicate
+// ONLY once its evidence has actually been persisted — a prior failed write
+// is retried (#269 review).
 func (r *Reloader) reject(ctx context.Context, scan *ScanResult, causes []string) ReloadOutcome {
-	if r.rejection != nil && r.rejection.digest == scan.Digest {
+	sameState := r.rejection != nil && r.rejection.digest == scan.Digest
+	if sameState && r.rejection.evidenceRecorded {
 		log.Debug().Str("rejected_digest", shortDigest(scan.Digest)).Msg("agent_config_reload_still_rejected")
 		return ReloadRejectedDuplicate
 	}
-	log.Warn().Strs("causes", causes).Str("generation", shortDigest(r.lastGood)).Msg("agent_config_reload_rejected_keeping_last_known_good")
-	if err := r.writeReloadEvidence(ctx, scan.Digest, false, causes); err != nil {
-		log.Error().Err(err).Msg("config_reload_rejection_evidence_failed")
+	if !sameState {
+		log.Warn().Strs("causes", causes).Str("generation", shortDigest(r.lastGood)).Msg("agent_config_reload_rejected_keeping_last_known_good")
+		r.rejection = &rejectionState{digest: scan.Digest, at: time.Now().UTC(), causes: causes, issues: append([]FleetIssue(nil), scan.Issues...)}
 	}
-	r.rejection = &rejectionState{digest: scan.Digest, at: time.Now().UTC(), causes: causes, issues: append([]FleetIssue(nil), scan.Issues...)}
+	if err := r.writeReloadEvidence(ctx, scan.Digest, false, causes); err != nil {
+		log.Error().Err(err).Msg("config_reload_rejection_evidence_failed_will_retry")
+		return ReloadRejected
+	}
+	r.rejection.evidenceRecorded = true
 	return ReloadRejected
 }
 

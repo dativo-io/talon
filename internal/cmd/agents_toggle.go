@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -88,23 +90,31 @@ func runAgentToggle(cmd *cobra.Command, name string, enable bool) error {
 	}
 	prior := ra.Policy.Agent.IsEnabled()
 
+	// ONE correlation ID ties intent, completion, and any rollback of this
+	// operation together in the audit trail (#268 review).
+	correlationID := "al_" + uuid.New().String()[:12]
+
 	// Intent → atomic rename → completion (#268): the signed trail records
 	// the operator's decision before AND after the state change; a failed
 	// completion record rolls the FILE back so recorded state and actual
 	// state can never silently diverge.
-	if _, err := recordAgentLifecycle(ctx, evStore, tenant, ra.Name, ra.Path, intentType(enable), prior, enable); err != nil {
+	if _, err := recordAgentLifecycle(ctx, evStore, correlationID, tenant, ra.Name, ra.Path, intentType(enable), prior, enable); err != nil {
 		return fmt.Errorf("recording intent evidence: %w (no change was made)", err)
 	}
-	if err := atomicWriteFile(ra.Path, edited); err != nil {
+	// Concurrency guard (#268 review): fail rather than clobber a change
+	// another process made to the file between our read and the rewrite.
+	if err := atomicReplaceFile(ra.Path, edited, original); err != nil {
 		return fmt.Errorf("writing agent config: %w", err)
 	}
-	completionID, err := recordAgentLifecycle(ctx, evStore, tenant, ra.Name, ra.Path, completionType(enable), prior, enable)
+	completionID, err := recordAgentLifecycle(ctx, evStore, correlationID, tenant, ra.Name, ra.Path, completionType(enable), prior, enable)
 	if err != nil {
 		// Roll the file back: an unrecorded state change is worse than no
-		// change — the operator retries with a working evidence store.
-		if restoreErr := atomicWriteFile(ra.Path, original); restoreErr != nil {
+		// change — the operator retries with a working evidence store. The
+		// rollback attempt is itself recorded under the same correlation ID.
+		if restoreErr := atomicReplaceFile(ra.Path, original, edited); restoreErr != nil {
 			return fmt.Errorf("CRITICAL: completion evidence failed (%v) AND restoring %s failed (%v) — the agent is %s on disk but the change is NOT recorded; fix the evidence store and re-run", err, ra.Path, restoreErr, verb)
 		}
+		_, _ = recordAgentLifecycle(ctx, evStore, correlationID, tenant, ra.Name, ra.Path, "agent_toggle_rolled_back", prior, prior)
 		return fmt.Errorf("completion evidence failed: %w — the config change was rolled back; fix the evidence store and re-run", err)
 	}
 
@@ -154,6 +164,15 @@ func locateToggleAgent(ctx context.Context, cfg *config.Config, name string) (*a
 	for i := range scan.Agents {
 		if scan.Agents[i].Name == name {
 			return &scan.Agents[i], scan.Issues, nil
+		}
+	}
+	// A name involved in a duplicate-name issue is AMBIGUOUS (fail closed):
+	// it is not a valid identity and must not be toggled to whichever file
+	// sorted first — the operator resolves the conflict by path (#267 review).
+	for _, issue := range scan.Issues {
+		if issue.Status == agentcatalog.IssueDuplicateName && issue.Reason != "" &&
+			strings.Contains(issue.Reason, "\""+name+"\"") {
+			return nil, nil, fmt.Errorf("agent %q is ambiguous: multiple config files declare it — %s. Resolve the duplicate by path before toggling; no change was made", name, issue.Reason)
 		}
 	}
 	if scanErr != nil && len(scan.Issues) > 0 {
@@ -252,15 +271,30 @@ func (b *yamlBuf) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// atomicWriteFile writes via temp file + fsync + rename in the same
+// atomicReplaceFile writes data via temp file + fsync + rename in the same
 // directory (atomic on POSIX): the reload loop (#269) sees old bytes or new
-// bytes, never a torn file. The original file's mode is preserved.
-func atomicWriteFile(path string, data []byte) error {
+// bytes, never a torn file. The original file's mode is preserved. Crash
+// durability: both the temp file AND the parent directory are fsynced, so the
+// rename survives a power loss. Concurrency: if expectCurrent is non-nil, the
+// on-disk bytes are re-read immediately before the rename and MUST still equal
+// expectCurrent — otherwise another process changed the file since our read
+// and we fail rather than clobber that edit (#268 review).
+func atomicReplaceFile(path string, data, expectCurrent []byte) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".talon-agent-*")
+	if expectCurrent != nil {
+		current, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(current, expectCurrent) {
+			return fmt.Errorf("%s was modified by another process since it was read — not overwriting; re-run", path)
+		}
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".talon-agent-*")
 	if err != nil {
 		return err
 	}
@@ -288,17 +322,23 @@ func atomicWriteFile(path string, data []byte) error {
 		cleanup()
 		return err
 	}
+	// fsync the directory so the rename itself is durable across a crash.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
 	return nil
 }
 
 // recordAgentLifecycle writes one signed operational record for an
-// enable/disable step, attributed to the AGENT's tenant so it appears in
-// that tenant's audit trail.
-func recordAgentLifecycle(ctx context.Context, store *evidence.Store, tenantID, agentName, path, invocationType string, prior, target bool) (string, error) {
+// enable/disable step, attributed to the AGENT's tenant so it appears in that
+// tenant's audit trail. correlationID ties the intent, completion, and any
+// rollback of one operation together.
+func recordAgentLifecycle(ctx context.Context, store *evidence.Store, correlationID, tenantID, agentName, path, invocationType string, prior, target bool) (string, error) {
 	id := "al_" + uuid.New().String()[:12]
 	ev := &evidence.Evidence{
 		ID:              id,
-		CorrelationID:   id,
+		CorrelationID:   correlationID,
 		Timestamp:       time.Now().UTC(),
 		TenantID:        tenantID,
 		AgentID:         agentName,

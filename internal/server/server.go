@@ -77,10 +77,9 @@ type Server struct {
 	// computed by the shared ResolveEffectivePolicy over the identity registry
 	// and injected by serve — the dashboard never re-derives caps (#266).
 	agentCapsLookup func(tenantID, agentID string) (daily, monthly float64, ok bool)
-	// fleetHolder + fleetReloadState back GET /v1/agents/fleet (#269): the
+	// fleetView backs GET /v1/agents/fleet (#269): ONE coherent read of the
 	// active runtime generation and the reloader's accept/reject state.
-	fleetHolder      *agentcatalog.RuntimeHolder
-	fleetReloadState func() agentcatalog.ReloadState
+	fleetView func() agentcatalog.FleetView
 }
 
 // SetClassifier attaches the process-wide scanner engine. Call after

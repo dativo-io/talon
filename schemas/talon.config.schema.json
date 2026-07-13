@@ -158,6 +158,11 @@
       "type": "string",
       "description": "Cadence of the periodic safe config reload (#269), e.g. \"30s\". Agent files (single-file or agents_dir) are re-scanned on this interval; valid changes activate atomically, invalid edits keep the last-known-good generation serving. \"0\" disables reload. Default: 30s."
     },
+    "orphan_retention_days": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Fixed floor (days) for cleaning up memory/session rows whose agent has left the catalog after a reload (#269), independent of any live agent policy so orphaned data never persists indefinitely. Default: 90."
+    },
     "max_attachment_mb": {
       "type": "integer",
       "minimum": 1,

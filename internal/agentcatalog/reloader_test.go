@@ -2,8 +2,10 @@ package agentcatalog
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +17,54 @@ import (
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 )
+
+// flakyEvidence fails the first failFor Store calls, then succeeds — the seam
+// for the rejection-evidence retry test (#269 review).
+type flakyEvidence struct {
+	mu      sync.Mutex
+	failFor int
+	stored  int
+}
+
+func (f *flakyEvidence) Store(_ context.Context, _ *evidence.Evidence) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failFor > 0 {
+		f.failFor--
+		return fmt.Errorf("evidence store temporarily unavailable")
+	}
+	f.stored++
+	return nil
+}
+
+func (f *flakyEvidence) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stored
+}
+
+// blockingEvidence blocks the FIRST Store call until released — used to hold
+// an activation mid-write while another goroutine queries the fleet view. The
+// subsequent rollback record write returns immediately.
+type blockingEvidence struct {
+	entered chan struct{}
+	release chan struct{}
+	err     error
+	once    sync.Once
+}
+
+func (b *blockingEvidence) Store(_ context.Context, _ *evidence.Evidence) error {
+	first := false
+	b.once.Do(func() {
+		first = true
+		close(b.entered)
+		<-b.release
+	})
+	if first {
+		return b.err
+	}
+	return nil
+}
 
 type reloadFixture struct {
 	agentsDir string
@@ -261,4 +311,133 @@ func TestReloader_SwapStormConsistency(t *testing.T) {
 		}
 	}
 	<-done
+}
+
+// TestReloader_VaultIndependentDisable (#269 review, P1): an emergency
+// disable must NOT depend on re-reading the vault binding it is disabling.
+// After boot, the vault becomes unavailable; flipping enabled: false on disk
+// still activates (key material reused from the previous generation), and the
+// old key resolves to a DISABLED identity — not continued access, not 401.
+func TestReloader_VaultIndependentDisable(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, true)
+
+	// Vault goes away after boot.
+	require.NoError(t, f.vault.Close())
+
+	// Disable the running agent on disk.
+	f.writeAgent(t, "support", "support-key", false)
+	require.Equal(t, ReloadActivated, f.reloader.ReloadOnce(ctx),
+		"disable activates via key reuse, without the vault")
+
+	id, resolved := f.holder.Current().Registry.ResolveKey("tk-support")
+	require.True(t, resolved, "the old key still RESOLVES (resolve-then-deny), not a 401")
+	assert.False(t, id.Enabled, "…to a DISABLED identity — new work is denied, not allowed")
+}
+
+// TestReloader_KeylessNativeReload (#269 review, P1): a plain single-file
+// native-only agent (no key binding) must still hot-reload — the reload
+// registry builder allows a keyless/nil registry instead of rejecting.
+func TestReloader_KeylessNativeReload(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "agent.talon.yaml")
+	writeKeyless := func(version string) {
+		require.NoError(t, os.WriteFile(policyPath,
+			[]byte("agent:\n  name: local-worker\n  version: \""+version+"\"\npolicies:\n  cost_limits:\n    daily: 10\n"), 0o600))
+	}
+	writeKeyless("1.0.0")
+
+	src := Source{File: policyPath}
+	boot, err := src.Scan(ctx)
+	require.NoError(t, err)
+	bundles, err := BuildRuntimeAgents(ctx, boot, BundleDeps{})
+	require.NoError(t, err)
+	holder := NewRuntimeHolder(NewRuntimeSnapshot(boot, bundles, nil, time.Now().UTC()))
+
+	// Native-only builder: keyless agents are allowed, registry stays nil.
+	nativeBuilder := func(bctx context.Context, scan *ScanResult, previous *RuntimeSnapshot) (*gateway.IdentityRegistry, error) {
+		return gateway.BuildIdentityRegistryWith(bctx, scan.LoadedAgents(), nil, "", gateway.BuildOptions{AllowUnkeyed: true})
+	}
+	reloader := NewReloader(ReloadConfig{
+		Source: src, Deps: BundleDeps{}, BuildRegistry: nativeBuilder,
+		Holder: holder, Evidence: nil, RequireNonEmpty: false,
+	})
+
+	// Edit the keyless native policy → it reloads (would have been rejected by
+	// the vault-only builder for the missing key binding).
+	writeKeyless("2.0.0")
+	require.Equal(t, ReloadActivated, reloader.ReloadOnce(ctx))
+	ra, ok := holder.Current().Get("local-worker")
+	require.True(t, ok, "the keyless native agent reloaded")
+	assert.Equal(t, "2.0.0", ra.Policy.Agent.Version)
+
+	// Disable the keyless native agent → also reloads.
+	require.NoError(t, os.WriteFile(policyPath,
+		[]byte("agent:\n  name: local-worker\n  version: \"2.0.0\"\n  enabled: false\npolicies:\n  cost_limits:\n    daily: 10\n"), 0o600))
+	require.Equal(t, ReloadActivated, reloader.ReloadOnce(ctx))
+	ra, _ = holder.Current().Get("local-worker")
+	assert.False(t, ra.Enabled, "keyless single-file disable works")
+}
+
+// TestReloader_RejectionEvidenceRetriedAfterFailure (#269 review, P1): a
+// rejection whose signed evidence write FAILS is retried on the next tick —
+// a temporary evidence-store outage never permanently loses the one required
+// record for a distinct broken state.
+func TestReloader_RejectionEvidenceRetriedAfterFailure(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, true)
+	sink := &flakyEvidence{failFor: 1} // fail the first write, then succeed
+	f.reloader.cfg.Evidence = sink
+
+	broken := filepath.Join(f.agentsDir, "support", "agent.talon.yaml")
+	require.NoError(t, os.WriteFile(broken, []byte("agent:\n  version: \"1.0.0\"\npolicies:\n  cost_limits: {}\n"), 0o600))
+
+	// First tick: rejected, but the evidence write failed → NOT recorded.
+	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	assert.Equal(t, 0, sink.count(), "the failed write recorded nothing")
+
+	// Same broken state next tick: RETRY the write (not a silent duplicate).
+	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	assert.Equal(t, 1, sink.count(), "the rejection evidence is retried after recovery")
+
+	// Now it is durably recorded — further ticks are true duplicates.
+	require.Equal(t, ReloadRejectedDuplicate, f.reloader.ReloadOnce(ctx))
+	assert.Equal(t, 1, sink.count(), "no further writes once recorded")
+}
+
+// TestReloader_ViewNeverReportsRolledBackGeneration (#269 review, P1): while
+// an activation is mid-flight and its evidence write is about to fail (→
+// rollback), a concurrent View() must observe ONE coherent state — never the
+// new (soon-rolled-back) generation as active.
+func TestReloader_ViewNeverReportsRolledBackGeneration(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, true)
+	genA := f.holder.Current().Generation
+	block := &blockingEvidence{entered: make(chan struct{}), release: make(chan struct{}), err: fmt.Errorf("evidence down")}
+	f.reloader.cfg.Evidence = block
+
+	// A valid edit that will try to activate.
+	f.writeAgent(t, "coding", "coding-key", true)
+	require.NoError(t, f.vault.Set(ctx, "coding-key", []byte("tk-coding"), secrets.ACL{}))
+
+	outcome := make(chan ReloadOutcome, 1)
+	go func() { outcome <- f.reloader.ReloadOnce(ctx) }()
+
+	<-block.entered // activation swapped the holder and is now writing evidence
+
+	// View() blocks on the reloader mutex until ReloadOnce returns, so by the
+	// time it reads, the rollback has completed — it can only ever observe the
+	// coherent pre-activation state, never the rolled-back generation active.
+	viewDone := make(chan FleetView, 1)
+	go func() { viewDone <- f.reloader.View() }()
+
+	// Let the evidence write fail → rollback.
+	close(block.release)
+	require.Equal(t, ReloadRolledBack, <-outcome)
+
+	view := <-viewDone
+	require.NotNil(t, view.Snapshot)
+	assert.Equal(t, genA, view.Snapshot.Generation, "the view never reports the rolled-back generation as active")
+	assert.Equal(t, genA, view.Reload.ActiveGeneration, "snapshot and reload state agree — one coherent read")
 }

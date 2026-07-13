@@ -254,9 +254,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// (catalog + bundles + registry together), an invalid edit keeps the
 	// last-known-good generation serving with a loud, signed rejection.
 	// Quickstart is keyless-by-design and has nothing to reload.
-	reloadInterval, err := time.ParseDuration(cfg.AgentsReloadInterval)
+	reloadInterval, err := parseReloadInterval(cfg.AgentsReloadInterval)
 	if err != nil {
-		return fmt.Errorf("invalid agents_reload_interval %q: %w", cfg.AgentsReloadInterval, err)
+		return err
 	}
 	var reloader *agentcatalog.Reloader
 	if reloadInterval > 0 && !serveProxyQuickstart {
@@ -264,8 +264,23 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if cfg.AgentsDir != "" {
 			src = agentcatalog.Source{Dir: cfg.AgentsDir}
 		}
+		// The reload registry builder mirrors serve's BOOT mode (#269
+		// review): single-file plain serve allows keyless native-only agents
+		// (nil/degraded registry), gateway and agents_dir require keyed
+		// agents. It reuses unchanged key material from the previous
+		// generation, so an emergency disable never re-reads the vault
+		// binding it is disabling.
+		allowUnkeyed := cfg.AgentsDir == "" && !serveGateway
+		buildRegistry := func(bctx context.Context, scan *agentcatalog.ScanResult, previous *agentcatalog.RuntimeSnapshot) (*gateway.IdentityRegistry, error) {
+			var prior gateway.PriorKeyLookup
+			if previous != nil {
+				prior = previous.Registry.PriorKeys()
+			}
+			return gateway.BuildIdentityRegistryWith(bctx, scan.LoadedAgents(), secretsStore, adminKey,
+				gateway.BuildOptions{AllowUnkeyed: allowUnkeyed, PriorKeys: prior})
+		}
 		reloader = agentcatalog.NewReloader(agentcatalog.ReloadConfig{
-			Source: src, Deps: deps, Vault: secretsStore, AdminKey: adminKey,
+			Source: src, Deps: deps, BuildRegistry: buildRegistry,
 			Holder: runtimeHolder, Evidence: evidenceStore, RequireNonEmpty: serveGateway,
 		})
 		go reloader.Run(ctx, reloadInterval)
@@ -404,12 +419,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
+	// orphanRetentionDays is the FIXED org-level floor for cleaning up rows
+	// whose agent has left the catalog (#269 review) — independent of any
+	// live policy, so orphaned data always ages out.
+	orphanRetentionDays := cfg.OrphanRetentionDays
+	if orphanRetentionDays <= 0 {
+		orphanRetentionDays = config.DefaultOrphanRetentionDays
+	}
+
 	// Memory retention is PER AGENT under THAT agent's policy (#267): in a
 	// fleet, agent A's retention_days must never purge agent B's rows. The
-	// loop re-reads the current generation each tick (reload-aware), and
-	// ORPHANED rows — agents removed from the catalog by a reload — age out
-	// under the fleet's MAXIMUM retention (a conservative fallback: never
-	// sooner than any live policy, never indefinite; #269 review).
+	// loop re-reads the current generation each tick (reload-aware); ORPHANED
+	// rows — agents removed from the catalog by a reload — age out under the
+	// fixed orphanRetentionDays floor (never indefinite, #269 review).
 	if memStore != nil {
 		go func() {
 			ticker := time.NewTicker(24 * time.Hour)
@@ -417,23 +439,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 			sweep := func() {
 				snap := runtimeHolder.Current()
 				inCatalog := make(map[string]bool, snap.Len())
-				maxMemDays, maxEntries := 0, 0
 				for _, ra := range snap.List() {
 					tenant := normalizedTenant(ra.TenantID)
 					inCatalog[tenant+":"+ra.Name] = true
 					memory.RunRetentionForAgent(ctx, memStore, tenant, ra.Name, ra.Policy)
-					if m := ra.Policy.Memory; m != nil && m.Enabled {
-						if m.RetentionDays > maxMemDays {
-							maxMemDays = m.RetentionDays
-						}
-						if m.MaxEntries > maxEntries {
-							maxEntries = m.MaxEntries
-						}
-					}
 				}
-				if maxMemDays <= 0 {
-					return // no live memory policy to anchor the orphan fallback
-				}
+				// Orphaned rows age out under a FIXED org-level floor
+				// (orphanRetentionDays), independent of the live fleet — so
+				// removed-agent data can never persist indefinitely even when
+				// no live agent declares retention (#269 review).
 				pairs, err := memStore.DistinctAgents(ctx)
 				if err != nil {
 					log.Warn().Err(err).Msg("memory_orphan_sweep_list_failed")
@@ -443,13 +457,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 					if inCatalog[pair[0]+":"+pair[1]] {
 						continue
 					}
-					if n, err := memStore.PurgeExpired(ctx, pair[0], pair[1], maxMemDays); err != nil {
+					if n, err := memStore.PurgeExpired(ctx, pair[0], pair[1], orphanRetentionDays); err != nil {
 						log.Warn().Err(err).Str("agent_id", pair[1]).Msg("memory_orphan_purge_failed")
 					} else if n > 0 {
-						log.Info().Int64("purged", n).Str("tenant_id", pair[0]).Str("agent_id", pair[1]).Int("fallback_retention_days", maxMemDays).Msg("memory_orphan_retention_sweep")
-					}
-					if maxEntries > 0 {
-						_, _ = memStore.EnforceMaxEntries(ctx, pair[0], pair[1], maxEntries)
+						log.Info().Int64("purged", n).Str("tenant_id", pair[0]).Str("agent_id", pair[1]).Int("orphan_retention_days", orphanRetentionDays).Msg("memory_orphan_retention_sweep")
 					}
 				}
 			}
@@ -478,15 +489,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 			case <-ticker.C:
 				snap := runtimeHolder.Current()
 				inCatalog := make(map[string]bool, snap.Len())
-				maxDays := 0
 				for _, ra := range snap.List() {
 					tenant := normalizedTenant(ra.TenantID)
 					inCatalog[tenant+":"+ra.Name] = true
 					if ra.Policy.Audit == nil || ra.Policy.Audit.RetentionDays <= 0 {
 						continue
-					}
-					if ra.Policy.Audit.RetentionDays > maxDays {
-						maxDays = ra.Policy.Audit.RetentionDays
 					}
 					cutoff := time.Now().UTC().Add(-time.Duration(ra.Policy.Audit.RetentionDays) * 24 * time.Hour)
 					if n, err := sessionStore.PurgeOlderThanForAgent(ctx, tenant, ra.Name, cutoff); err != nil {
@@ -495,15 +502,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 						log.Info().Int64("purged", n).Str("agent_id", ra.Name).Int("retention_days", ra.Policy.Audit.RetentionDays).Msg("session_retention_sweep")
 					}
 				}
-				if maxDays <= 0 {
-					continue
-				}
+				// Orphaned rows age out under a FIXED org-level floor,
+				// independent of the live fleet (#269 review).
 				pairs, err := sessionStore.DistinctAgents(ctx)
 				if err != nil {
 					log.Warn().Err(err).Msg("session_orphan_sweep_list_failed")
 					continue
 				}
-				cutoff := time.Now().UTC().Add(-time.Duration(maxDays) * 24 * time.Hour)
+				cutoff := time.Now().UTC().Add(-time.Duration(orphanRetentionDays) * 24 * time.Hour)
 				for _, pair := range pairs {
 					if inCatalog[pair[0]+":"+pair[1]] {
 						continue
@@ -511,7 +517,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 					if n, err := sessionStore.PurgeOlderThanForAgent(ctx, pair[0], pair[1], cutoff); err != nil {
 						log.Warn().Err(err).Str("agent_id", pair[1]).Msg("session_orphan_purge_failed")
 					} else if n > 0 {
-						log.Info().Int64("purged", n).Str("tenant_id", pair[0]).Str("agent_id", pair[1]).Int("fallback_retention_days", maxDays).Msg("session_orphan_retention_sweep")
+						log.Info().Int64("purged", n).Str("tenant_id", pair[0]).Str("agent_id", pair[1]).Int("orphan_retention_days", orphanRetentionDays).Msg("session_orphan_retention_sweep")
 					}
 				}
 			case <-ctx.Done():
@@ -596,13 +602,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	opts = append(opts, server.WithAgentKeyResolver(holderKeyResolver{holder: runtimeHolder}))
 	// Fleet runtime state (#269): GET /v1/agents/fleet reports the ACTIVE
-	// generation and the reloader's accept/reject state — the running server
-	// is the operational source of truth for fleet membership.
-	var reloadStateFn func() agentcatalog.ReloadState
+	// generation and the reloader's accept/reject state from ONE coherent
+	// read — the running server is the operational source of truth. When the
+	// reload loop is off, the holder is read directly (no rejection info).
+	fleetHolder := runtimeHolder
+	var fleetView func() agentcatalog.FleetView
 	if reloader != nil {
-		reloadStateFn = reloader.State
+		fleetView = reloader.View
+	} else {
+		fleetView = func() agentcatalog.FleetView {
+			return agentcatalog.FleetView{Snapshot: fleetHolder.Current()}
+		}
 	}
-	opts = append(opts, server.WithFleetStatus(runtimeHolder, reloadStateFn))
+	opts = append(opts, server.WithFleetStatus(fleetView))
 	if serveGateway {
 		gatewayCfg := preloadedGatewayCfg
 		if err := sovereignty.ValidateAirGap(cfg, gatewayCfg); err != nil {

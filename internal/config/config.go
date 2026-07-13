@@ -46,6 +46,7 @@ const (
 	KeyDefaultPolicy       = "default_policy"
 	KeyAgentsDir           = "agents_dir"
 	KeyAgentsReloadEvery   = "agents_reload_interval"
+	KeyOrphanRetentionDays = "orphan_retention_days"
 	KeyMaxAttachmentMB     = "max_attachment_mb"
 	KeyOllamaBaseURL       = "ollama_base_url"
 	KeyOllamaMaxNumPredict = "ollama_max_num_predict"
@@ -62,6 +63,11 @@ const (
 	// (#269). An unchanged scan is digest-compare only (no vault I/O, no
 	// evidence), so 30s is effectively free.
 	DefaultAgentsReloadInterval = "30s"
+	// DefaultOrphanRetentionDays bounds cleanup of memory/session rows whose
+	// agent has left the catalog (removed by a reload, #269 review): a fixed
+	// org-level floor independent of the live fleet, so orphaned data can
+	// never persist indefinitely even when no live agent declares retention.
+	DefaultOrphanRetentionDays = 90
 )
 
 // LLMProviderConfig is per-provider config from talon.config.yaml llm.providers.
@@ -278,8 +284,12 @@ type Config struct {
 	// last-known-good generation serving. "0" disables reload. Parsed with
 	// time.ParseDuration; default 30s.
 	AgentsReloadInterval string
-	MaxAttachmentMB      int    // Maximum attachment size in MB
-	OllamaBaseURL        string // Ollama API endpoint (operator infrastructure)
+	// OrphanRetentionDays bounds cleanup of memory/session rows whose agent
+	// has left the catalog (#269). A fixed org-level floor independent of the
+	// live fleet; default DefaultOrphanRetentionDays.
+	OrphanRetentionDays int
+	MaxAttachmentMB     int    // Maximum attachment size in MB
+	OllamaBaseURL       string // Ollama API endpoint (operator infrastructure)
 	// OllamaMaxNumPredict, when > 0, caps num_predict (output tokens) on every
 	// Ollama request — an opt-in ceiling for slow local hosts. 0 (default) means
 	// honor the caller's requested output length verbatim.
@@ -360,6 +370,7 @@ func init() {
 	viper.AutomaticEnv()
 	viper.SetDefault(KeyDefaultPolicy, DefaultPolicy)
 	viper.SetDefault(KeyAgentsReloadEvery, DefaultAgentsReloadInterval)
+	viper.SetDefault(KeyOrphanRetentionDays, DefaultOrphanRetentionDays)
 	viper.SetDefault(KeyMaxAttachmentMB, DefaultMaxAttachMB)
 	viper.SetDefault(KeyOllamaBaseURL, DefaultOllamaURL)
 }
@@ -374,6 +385,7 @@ func Load() (*Config, error) {
 		DefaultPolicy:        viper.GetString(KeyDefaultPolicy),
 		AgentsDir:            viper.GetString(KeyAgentsDir),
 		AgentsReloadInterval: viper.GetString(KeyAgentsReloadEvery),
+		OrphanRetentionDays:  viper.GetInt(KeyOrphanRetentionDays),
 		MaxAttachmentMB:      viper.GetInt(KeyMaxAttachmentMB),
 		OllamaBaseURL:        viper.GetString(KeyOllamaBaseURL),
 		OllamaMaxNumPredict:  viper.GetInt(KeyOllamaMaxNumPredict),
