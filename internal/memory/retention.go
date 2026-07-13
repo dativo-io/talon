@@ -63,6 +63,31 @@ func RunRetention(ctx context.Context, store *Store, pol *policy.Policy) {
 	}
 }
 
+// RunRetentionForAgent purges expired entries and enforces max_entries for
+// ONE (tenant, agent) pair under THAT agent's policy (#267): in a fleet,
+// agent A's retention_days must never purge agent B's rows — the fleet loop
+// in serve calls this per catalog agent instead of RunRetention's
+// store-wide sweep under a single policy.
+func RunRetentionForAgent(ctx context.Context, store *Store, tenantID, agentID string, pol *policy.Policy) {
+	if store == nil || pol == nil || pol.Memory == nil || !pol.Memory.Enabled {
+		return
+	}
+	if pol.Memory.RetentionDays > 0 {
+		if purged, err := store.PurgeExpired(ctx, tenantID, agentID, pol.Memory.RetentionDays); err != nil {
+			log.Error().Err(err).Str("tenant_id", tenantID).Str("agent_id", agentID).Msg("retention: purge failed")
+		} else if purged > 0 {
+			log.Info().Int64("purged", purged).Str("tenant_id", tenantID).Str("agent_id", agentID).Msg("memory_retention_agent_purged")
+		}
+	}
+	if pol.Memory.MaxEntries > 0 {
+		if evicted, err := store.EnforceMaxEntries(ctx, tenantID, agentID, pol.Memory.MaxEntries); err != nil {
+			log.Error().Err(err).Str("tenant_id", tenantID).Str("agent_id", agentID).Msg("retention: max_entries enforcement failed")
+		} else if evicted > 0 {
+			log.Info().Int64("evicted", evicted).Str("tenant_id", tenantID).Str("agent_id", agentID).Msg("memory_retention_agent_evicted")
+		}
+	}
+}
+
 // StartRetentionLoop runs retention every interval in a goroutine.
 // Returns a cancel function to stop the loop.
 func StartRetentionLoop(ctx context.Context, store *Store, pol *policy.Policy, interval time.Duration) func() {

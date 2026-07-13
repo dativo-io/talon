@@ -2,15 +2,24 @@ package gateway
 
 import "sync/atomic"
 
-// RegistryHolder is the shared atomic snapshot holder for the identity
-// registry (#289, the seam for #269 reload). Every consumer — gateway data
-// plane, server tenant-API auth, dashboard caps lookup, metrics tenant
-// scoping — reads the CURRENT registry through the holder instead of
-// capturing its own copy at startup, so one reload swap propagates
-// everywhere at once. Registries themselves are immutable (built once,
-// deep-copied projections), which is what makes the single pointer swap
-// safe: a reader holds either the old snapshot or the new one, never a
-// half-updated mix.
+// RegistrySource yields the CURRENT identity registry for one operation.
+// In fleet mode (#267) the ONE implementation that matters is the view over
+// the agentcatalog RuntimeHolder: catalog, compiled bundles, and registry
+// publish as ONE generation behind ONE pointer, so gateway auth, server
+// agent-key auth, dashboard caps, and metrics scope can never observe a
+// different generation than native execution. RegistryHolder below is the
+// standalone implementation for gateway-internal tests.
+type RegistrySource interface {
+	Current() *IdentityRegistry
+}
+
+// RegistryHolder is a standalone atomic holder for the identity registry
+// (#289). Production serve publishes the registry inside the runtime
+// snapshot instead (one generation, one pointer, #267); this holder remains
+// for gateway-scoped tests and keyless defaults. Registries are immutable
+// (built once, deep-copied projections), which is what makes a single
+// pointer swap safe: a reader holds either the old snapshot or the new one,
+// never a half-updated mix.
 type RegistryHolder struct {
 	p atomic.Pointer[IdentityRegistry]
 }

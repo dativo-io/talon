@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -98,24 +97,25 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("policy path: %w", err)
 	}
+	polIsSynthetic := false
 	pol, err := policy.LoadPolicy(ctx, policyPath, false, policyBaseDir)
 	if err != nil {
 		gatewayOnly := serveGateway || serveProxyQuickstart
 		// agents_dir mode (#267): fleet membership comes from the directory
 		// scan, so the default single file is optional — the minimal default
-		// only backs the native runtime baseline until PR-2 of Fleet
-		// Operations v1 resolves native runs from the catalog.
+		// only backs the process-wide surfaces that remain single-policy
+		// (MCP/graph interception, #114); native runs resolve the catalog.
 		if (gatewayOnly || cfg.AgentsDir != "") && errors.Is(err, os.ErrNotExist) {
 			pol = &policy.Policy{
 				Agent: policy.AgentConfig{Name: "gateway", Version: "0.0.0"},
 			}
+			polIsSynthetic = true
 			log.Warn().Str("path", policyPath).Msg("agent policy not found; using minimal default (gateway-only or agents_dir mode)")
 		} else {
 			return fmt.Errorf("loading policy: %w", err)
 		}
 	}
 	policyPath = safePath
-	policyBaseDir = filepath.Dir(safePath) // so pricing and other project paths resolve relative to policy directory
 
 	policyEngine, err := policy.NewEngine(ctx, pol)
 	if err != nil {
@@ -145,7 +145,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	sovereignty.ApplySovereigntyGate(cfg, preloadedGatewayCfg)
 
 	providers := buildProviders(cfg)
-	pricingTable := loadPricingTable(cfg, policyBaseDir)
+	// Pricing is SHARED process infrastructure (#267 review round 2): the
+	// SAME root-resolution helper the CLI uses — fleet mode resolves from the
+	// project root, never from the default_policy directory, so `talon run`
+	// and `talon serve` can never sign different cost estimates for one fleet.
+	pricingTable := loadPricingTable(cfg, cliPricingBaseDir(cfg, "", safePath))
 	injectPricingInProviders(providers, pricingTable)
 	gatewayEstimator := gatewayCostEstimator(pricingTable)
 	// Reuse the policy already loaded above; re-loading here would parse and
@@ -170,12 +174,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	var identityRegistry *gateway.IdentityRegistry
+	var fleetScan *agentcatalog.ScanResult
 	if cfg.AgentsDir != "" && !serveProxyQuickstart {
 		// agents_dir discovery (#267): the directory is authoritative for
 		// fleet membership — every agent.talon.yaml found is one AI use case
 		// with its own key. Scan or registry failures are terminal in every
 		// serve mode (deliberate fleet configuration, no degrade affordance).
-		var fleetScan *agentcatalog.ScanResult
 		identityRegistry, fleetScan, err = buildServeIdentityRegistryFromDir(ctx, cfg.AgentsDir, secretsStore, adminKey)
 		if err != nil {
 			return err
@@ -191,11 +195,53 @@ func runServe(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
-	// ONE shared atomic snapshot holder (#289): the gateway data plane,
-	// server agent-key auth, dashboard caps lookup, and metrics tenant scope
-	// all read the CURRENT registry through it, so the reload seam (#269) is
-	// a single Swap — no consumer keeps its own startup copy.
-	registryHolder := gateway.NewRegistryHolder(identityRegistry)
+	// ONE fleet generation (#267): catalog + compiled per-agent bundles +
+	// identity registry, published together behind ONE atomic pointer.
+	// Every consumer — native execution, gateway auth, server agent-key
+	// auth, dashboard caps, metrics scope — derives its view from this
+	// holder, so a reload swap can never split authentication and execution
+	// across two generations. Both membership modes run the IDENTICAL
+	// catalog pipeline (same Source scanner, same digest algorithm — a
+	// reload re-scan of unchanged files must reproduce the generation).
+	// Bundles recompile the engine/scanner serve built above for its
+	// process-wide surfaces — one extra Rego compile (and, for external
+	// scanner engines, one extra health probe) at startup, in exchange for
+	// one pipeline with no drift.
+	deps := agentcatalog.BundleDeps{Config: cfg, Providers: providers}
+	var runtimeSnapshot *agentcatalog.RuntimeSnapshot
+	switch {
+	case fleetScan != nil:
+		bundles, bundleErr := agentcatalog.BuildRuntimeAgents(ctx, fleetScan, deps)
+		if bundleErr != nil {
+			return fmt.Errorf("compiling agent runtime bundles: %w", bundleErr)
+		}
+		runtimeSnapshot = agentcatalog.NewRuntimeSnapshot(fleetScan, bundles, identityRegistry, time.Now().UTC())
+	case polIsSynthetic:
+		// Gateway-only mode with no agent file at all: a minimal synthetic
+		// one-agent snapshot backs the process-wide surfaces. Its digest can
+		// never match a real scan, so the first real file is a new generation.
+		ca := agentcatalog.CatalogAgent{
+			Name: pol.Agent.Name, TenantID: pol.Agent.TenantID, Path: policyPath,
+			PolicyDigest: pol.Hash, Enabled: true, Policy: pol,
+		}
+		singleScan := &agentcatalog.ScanResult{Source: policyPath, Digest: "synthetic:" + pol.Hash, Agents: []agentcatalog.CatalogAgent{ca}}
+		single := &agentcatalog.RuntimeAgent{CatalogAgent: ca, Engine: policyEngine, Classifier: cls, Router: router}
+		runtimeSnapshot = agentcatalog.NewRuntimeSnapshot(singleScan, []*agentcatalog.RuntimeAgent{single}, identityRegistry, time.Now().UTC())
+	default:
+		singleScan, scanErr := agentcatalog.Source{File: policyPath}.Scan(ctx)
+		if scanErr != nil {
+			return fmt.Errorf("scanning agent policy for the runtime catalog: %w", scanErr)
+		}
+		bundles, bundleErr := agentcatalog.BuildRuntimeAgents(ctx, singleScan, deps)
+		if bundleErr != nil {
+			return fmt.Errorf("compiling agent runtime bundle: %w", bundleErr)
+		}
+		runtimeSnapshot = agentcatalog.NewRuntimeSnapshot(singleScan, bundles, identityRegistry, time.Now().UTC())
+	}
+	runtimeHolder := agentcatalog.NewRuntimeHolder(runtimeSnapshot)
+	// The gateway-facing registry view over the SAME holder (#267 review):
+	// there is no independently swappable registry pointer.
+	registrySource := runtimeHolder.RegistrySource()
 
 	evidenceStore, err := evidence.NewStore(cfg.EvidenceDBPath(), cfg.SigningKey)
 	if err != nil {
@@ -252,33 +298,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	overrideStore := agent.NewOverrideStore()
 	toolApprovalStore := agent.NewToolApprovalStore(5 * time.Minute)
 
-	cbThreshold := 5
-	cbWindow := 60 * time.Second
-	if pol.Policies.RateLimits != nil {
-		if pol.Policies.RateLimits.CircuitBreakerThreshold > 0 {
-			cbThreshold = pol.Policies.RateLimits.CircuitBreakerThreshold
-		}
-		if pol.Policies.RateLimits.CircuitBreakerWindow != "" {
-			if d, err := time.ParseDuration(pol.Policies.RateLimits.CircuitBreakerWindow); err == nil {
-				cbWindow = d
-			}
-		}
-	}
-	circuitBreaker := agent.NewCircuitBreaker(cbThreshold, cbWindow)
+	// Trackers carry process defaults only (#267 review): each run evaluates
+	// under ITS agent's rate_limits thresholds, derived from the resolved
+	// bundle policy — one agent's circuit-breaker config never governs
+	// another's.
+	circuitBreaker := agent.NewCircuitBreaker(0, 0)
 
-	tfThreshold := 10
-	tfWindow := 5 * time.Minute
-	if pol.Policies.RateLimits != nil {
-		if pol.Policies.RateLimits.ToolFailureThreshold > 0 {
-			tfThreshold = pol.Policies.RateLimits.ToolFailureThreshold
-		}
-		if pol.Policies.RateLimits.ToolFailureWindow != "" {
-			if d, err := time.ParseDuration(pol.Policies.RateLimits.ToolFailureWindow); err == nil {
-				tfWindow = d
-			}
-		}
-	}
-	toolFailureTracker := agent.NewToolFailureTracker(tfThreshold, tfWindow)
+	toolFailureTracker := agent.NewToolFailureTracker(0, 0)
 
 	toolRegistry := tools.NewRegistry()
 	var serveCacheStore *cache.Store
@@ -303,32 +329,32 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 	runnerCfg := agent.RunnerConfig{
-		PolicyDir:         ".",
-		DefaultPolicyPath: policyPath,
-		Classifier:        cls,
-		AttScanner:        attScanner,
-		Extractor:         extractor,
-		Router:            router,
-		Secrets:           secretsStore,
-		Evidence:          evidenceStore,
-		SessionStore:      sessionStore,
-		PromptStore:       promptStore,
-		PlanReview:        planReviewStore,
-		ToolRegistry:      toolRegistry,
-		ActiveRunTracker:  activeRunTracker,
-		RunRegistry:       runRegistry,
-		Overrides:         overrideStore,
-		ToolApprovals:     toolApprovalStore,
-		CircuitBreaker:    circuitBreaker,
-		ToolFailures:      toolFailureTracker,
-		Memory:            memStore,
-		Pricing:           pricingTable,
-		Idempotency:       idempotencyStore,
+		// The catalog is the ONE resolution source (#267): every run resolves
+		// its agent's compiled bundle (policy + engine + scanner + router)
+		// from the current generation — no per-process classifier/router.
+		Catalog:          runtimeHolder,
+		PolicyDir:        ".",
+		AttScanner:       attScanner,
+		Extractor:        extractor,
+		Secrets:          secretsStore,
+		Evidence:         evidenceStore,
+		SessionStore:     sessionStore,
+		PromptStore:      promptStore,
+		PlanReview:       planReviewStore,
+		ToolRegistry:     toolRegistry,
+		ActiveRunTracker: activeRunTracker,
+		RunRegistry:      runRegistry,
+		Overrides:        overrideStore,
+		ToolApprovals:    toolApprovalStore,
+		CircuitBreaker:   circuitBreaker,
+		ToolFailures:     toolFailureTracker,
+		Memory:           memStore,
+		Pricing:          pricingTable,
+		Idempotency:      idempotencyStore,
 	}
 	if serveCacheStore != nil && serveCachePolicy != nil {
 		runnerCfg.CacheStore = serveCacheStore
 		runnerCfg.CacheEmbedder = serveCacheEmbedder
-		runnerCfg.CacheScrubber = serveCacheScrubber
 		runnerCfg.CachePolicy = serveCachePolicy
 		runnerCfg.CacheConfig = &agent.RunnerCacheConfig{
 			Enabled:             cfg.Cache.Enabled,
@@ -354,27 +380,28 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	if memStore != nil && pol.Memory != nil && pol.Memory.Enabled {
-		stopRetention := memory.StartRetentionLoop(ctx, memStore, pol, 24*time.Hour)
-		defer stopRetention()
-	}
-
-	// Session rows follow audit.retention_days (#198, #214): a minimal daily
-	// sweep so asserted-session rows cannot accumulate forever. Not a
-	// lifecycle framework; evidence retention is governed separately.
-	if pol.Audit != nil && pol.Audit.RetentionDays > 0 {
-		retention := time.Duration(pol.Audit.RetentionDays) * 24 * time.Hour
+	// Memory retention is PER AGENT under THAT agent's policy (#267): in a
+	// fleet, agent A's retention_days must never purge agent B's rows. The
+	// loop re-reads the current generation each tick, so a reload's policy
+	// edits govern the next sweep.
+	if memStore != nil {
 		go func() {
 			ticker := time.NewTicker(24 * time.Hour)
 			defer ticker.Stop()
+			sweep := func() {
+				for _, ra := range runtimeHolder.Current().List() {
+					tenant := ra.TenantID
+					if tenant == "" {
+						tenant = "default"
+					}
+					memory.RunRetentionForAgent(ctx, memStore, tenant, ra.Name, ra.Policy)
+				}
+			}
+			sweep()
 			for {
 				select {
 				case <-ticker.C:
-					if n, err := sessionStore.PurgeOlderThan(ctx, time.Now().UTC().Add(-retention)); err != nil {
-						log.Warn().Err(err).Msg("session_retention_sweep_failed")
-					} else if n > 0 {
-						log.Info().Int64("purged", n).Msg("session_retention_sweep")
-					}
+					sweep()
 				case <-ctx.Done():
 					return
 				}
@@ -382,14 +409,53 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
+	// Session rows follow audit.retention_days (#198, #214) PER AGENT (#267
+	// review): each agent's own policy governs its rows — one agent's 30-day
+	// data-minimisation window must be honored even while another retains for
+	// a year. Re-read per tick (reload-aware).
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				for _, ra := range runtimeHolder.Current().List() {
+					if ra.Policy.Audit == nil || ra.Policy.Audit.RetentionDays <= 0 {
+						continue
+					}
+					tenant := ra.TenantID
+					if tenant == "" {
+						tenant = "default"
+					}
+					cutoff := time.Now().UTC().Add(-time.Duration(ra.Policy.Audit.RetentionDays) * 24 * time.Hour)
+					if n, err := sessionStore.PurgeOlderThanForAgent(ctx, tenant, ra.Name, cutoff); err != nil {
+						log.Warn().Err(err).Str("agent_id", ra.Name).Msg("session_retention_sweep_failed")
+					} else if n > 0 {
+						log.Info().Int64("purged", n).Str("agent_id", ra.Name).Int("retention_days", ra.Policy.Audit.RetentionDays).Msg("session_retention_sweep")
+					}
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Schedules and webhook routes register at startup for EVERY discovered
+	// agent (#267); dispatch re-resolves the agent from the CURRENT
+	// generation, so a reload's policy edits and enabled state govern the
+	// next firing. Trigger DEFINITION changes stay restart-required (#297).
 	scheduler := trigger.NewScheduler(runner)
-	if err := scheduler.RegisterSchedules(pol); err != nil {
-		return fmt.Errorf("registering schedules: %w", err)
+	webhookHandler := trigger.NewWebhookHandler(runner)
+	for _, ra := range runtimeHolder.Current().List() {
+		if err := scheduler.RegisterSchedules(ra.Policy); err != nil {
+			return fmt.Errorf("registering schedules for agent %q: %w", ra.Name, err)
+		}
+		if err := webhookHandler.Register(ra.Policy); err != nil {
+			return fmt.Errorf("registering webhooks for agent %q: %w", ra.Name, err)
+		}
 	}
 	scheduler.Start()
 	defer scheduler.Stop()
-
-	webhookHandler := trigger.NewWebhookHandler(runner, pol)
 
 	evidenceGen := evidence.NewGenerator(evidenceStore)
 
@@ -448,7 +514,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if identityRegistry != nil {
 		log.Info().Int("agents", identityRegistry.Len()).Int("tenants", len(identityRegistry.TenantIDs())).Msg("agent_identity_registry_loaded")
 	}
-	opts = append(opts, server.WithAgentKeyResolver(holderKeyResolver{holder: registryHolder}))
+	opts = append(opts, server.WithAgentKeyResolver(holderKeyResolver{holder: runtimeHolder}))
 	if serveGateway {
 		gatewayCfg := preloadedGatewayCfg
 		if err := sovereignty.ValidateAirGap(cfg, gatewayCfg); err != nil {
@@ -484,7 +550,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("gateway policy engine: %w", err)
 			}
-			gw, err := gateway.NewGateway(gatewayCfg, registryHolder, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
+			gw, err := gateway.NewGateway(gatewayCfg, registrySource, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
 			if err != nil {
 				return fmt.Errorf("initializing gateway: %w", err)
 			}
@@ -499,7 +565,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			// Dashboard budget view reads per-agent caps through the same
 			// effective-policy computation enforcement uses (#266), against
 			// the CURRENT registry snapshot (#289).
-			opts = append(opts, server.WithAgentCapsLookup(agentCapsLookupFor(registryHolder, gatewayCfg.OrganizationPolicy)))
+			opts = append(opts, server.WithAgentCapsLookup(agentCapsLookupFor(registrySource, gatewayCfg.OrganizationPolicy)))
 		}
 	} else if serveProxyQuickstart {
 		quickstartCfg, err := gateway.QuickstartConfig(gateway.QuickstartOptions{
@@ -523,7 +589,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("gateway policy engine: %w", err)
 		}
-		gw, err := gateway.NewGateway(quickstartCfg, registryHolder, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
+		gw, err := gateway.NewGateway(quickstartCfg, registrySource, cls, evidenceStore, secretsStore, gatewayPolicy, gatewayEstimator)
 		if err != nil {
 			return fmt.Errorf("initializing quickstart gateway: %w", err)
 		}
@@ -577,7 +643,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 			orgPolForScope = gatewayCfgForMode.OrganizationPolicy
 		}
 		metricsScope := func() metrics.Scope {
-			reg := registryHolder.Current() // the ONE snapshot this scope derives from
+			reg := registrySource.Current() // the ONE snapshot this scope derives from
 			scope := metrics.Scope{TenantID: "default"}
 			idents := reg.Identities()
 			if len(idents) > 0 {
@@ -740,7 +806,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 // reload seam yet — #269 revisits. An empty agentID resolves the tenant's
 // SINGLE registered agent when exactly one exists; ambiguity reports false
 // rather than guessing.
-func agentCapsLookupFor(holder *gateway.RegistryHolder, orgPolicy gateway.OrganizationPolicy) func(tenantID, agentID string) (float64, float64, bool) {
+func agentCapsLookupFor(holder gateway.RegistrySource, orgPolicy gateway.OrganizationPolicy) func(tenantID, agentID string) (float64, float64, bool) {
 	return func(tenantID, agentID string) (float64, float64, bool) {
 		var match *gateway.ResolvedIdentity
 		for _, id := range holder.Current().Identities() {

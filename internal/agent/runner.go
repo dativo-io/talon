@@ -35,6 +35,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/dativo-io/talon/internal/agent/tools"
+	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/attachment"
 	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/classifier"
@@ -165,8 +166,14 @@ func (t *ActiveRunTracker) ActiveRunCount() int {
 
 // Runner executes the full agent orchestration pipeline.
 type Runner struct {
+	// catalog is the fleet resolution source (#267): when set, every run
+	// resolves its agent's COMPILED bundle (policy + engine + scanner +
+	// router) from the current generation — production always sets it. The
+	// path-based fields below serve the explicit-PolicyPath contract and
+	// bespoke test runners only.
+	catalog           *agentcatalog.RuntimeHolder
 	policyDir         string
-	defaultPolicyPath string // used by RunFromTrigger when PolicyPath is not set (e.g. serve uses cfg.DefaultPolicy)
+	defaultPolicyPath string // used by RunFromTrigger when PolicyPath is not set AND no catalog is configured
 	classifier        classifier.Facade
 	attScanner        *attachment.Scanner
 	extractor         *attachment.Extractor
@@ -184,13 +191,11 @@ type Runner struct {
 	toolFailures      *ToolFailureTracker // optional; tracks tool execution failures separately from policy denials
 	hooks             *HookRegistry
 	memory            *memory.Store
-	governance        *memory.Governance
 	consolidator      *memory.Consolidator  // optional; when set, memory writes go through AUDN consolidation
 	pricing           *pricing.PricingTable // optional; when set, evidence gets pre/post cost estimates
 	// Semantic cache (optional; when nil or cacheConfig.Enabled false, cache is skipped)
 	cacheStore    *cache.Store
 	cacheEmbedder *cache.BM25
-	cacheScrubber *cache.PIIScrubber
 	cachePolicy   *cache.Evaluator
 	cacheConfig   *cacheConfig
 	sessionStore  *talonsession.Store
@@ -209,8 +214,14 @@ type cacheConfig struct {
 
 // RunnerConfig holds the dependencies for constructing a Runner.
 type RunnerConfig struct {
+	// Catalog is the fleet resolution source (#267). When set, a run with no
+	// explicit PolicyPath resolves its agent's compiled bundle (policy +
+	// engine + scanner + router) from the CURRENT generation by AgentName —
+	// serve, `talon run`, and `talon plan` all set it. Classifier/Router
+	// below then serve only the explicit-PolicyPath path.
+	Catalog           *agentcatalog.RuntimeHolder
 	PolicyDir         string // base directory for policy path resolution
-	DefaultPolicyPath string // path to default .talon.yaml (e.g. agent.talon.yaml); used by RunFromTrigger when request has no PolicyPath
+	DefaultPolicyPath string // path to default .talon.yaml; used by RunFromTrigger when request has no PolicyPath and no Catalog is set
 	Classifier        classifier.Facade
 	AttScanner        *attachment.Scanner
 	Extractor         *attachment.Extractor
@@ -231,7 +242,6 @@ type RunnerConfig struct {
 	// Semantic cache (all optional; when nil or CacheConfig.Enabled false, cache is skipped)
 	CacheStore    *cache.Store
 	CacheEmbedder *cache.BM25
-	CacheScrubber *cache.PIIScrubber
 	CachePolicy   *cache.Evaluator
 	CacheConfig   *RunnerCacheConfig
 	SessionStore  *talonsession.Store
@@ -251,6 +261,7 @@ type RunnerCacheConfig struct {
 // NewRunner creates an agent runner with the given dependencies.
 func NewRunner(cfg RunnerConfig) *Runner {
 	r := &Runner{
+		catalog:           cfg.Catalog,
 		policyDir:         cfg.PolicyDir,
 		defaultPolicyPath: cfg.DefaultPolicyPath,
 		classifier:        cfg.Classifier,
@@ -275,16 +286,12 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		promptStore:       cfg.PromptStore,
 		idempotency:       cfg.Idempotency,
 	}
-	if cfg.Memory != nil && cfg.Classifier != nil {
-		r.governance = memory.NewGovernance(cfg.Memory, cfg.Classifier)
-	}
 	if cfg.Memory != nil {
 		r.consolidator = memory.NewConsolidator(cfg.Memory)
 	}
 	if cfg.CacheStore != nil && cfg.CacheEmbedder != nil && cfg.CachePolicy != nil && cfg.CacheConfig != nil && cfg.CacheConfig.Enabled {
 		r.cacheStore = cfg.CacheStore
 		r.cacheEmbedder = cfg.CacheEmbedder
-		r.cacheScrubber = cfg.CacheScrubber
 		r.cachePolicy = cfg.CachePolicy
 		r.cacheConfig = &cacheConfig{
 			Enabled:             cfg.CacheConfig.Enabled,
@@ -300,6 +307,262 @@ func NewRunner(cfg RunnerConfig) *Runner {
 // RunRegistryRef returns the runner's RunRegistry (may be nil).
 func (r *Runner) RunRegistryRef() *RunRegistry {
 	return r.runRegistry
+}
+
+// runBundle is the per-agent compiled state ONE run executes under (#267).
+// It is captured once at run entry — from the current catalog generation, or
+// built from an explicit policy file — and used through completion, never
+// re-resolved mid-run: a reload activating a new generation must not change
+// the engine, scanner, or routing of an in-flight run.
+type runBundle struct {
+	pol        *policy.Policy
+	engine     *policy.Engine
+	classifier classifier.Facade
+	router     *llm.Router
+	// baseDir is the DECLARING agent's directory: relative filesystem
+	// references in the policy (shared context mounts) resolve beneath it,
+	// never the process CWD (#267 review — cross-agent data-governance).
+	baseDir string
+}
+
+// resolveRunBundle settles the run's agent identity and compiled bundle
+// BEFORE any lifecycle side effect (#290/#291 review): the session row,
+// trace attributes, and registry entries must all carry the agent whose
+// policy GOVERNS the run, and an invalid agent is rejected before any of
+// that state exists. On success req.AgentName (and, on the catalog path,
+// req.TenantID) are settled in place.
+//
+// Two sources:
+//   - Catalog (production, #267): req.PolicyPath empty and a catalog
+//     generation is current — resolve by AgentName; ""/"default" is the
+//     UNSET sentinel and resolves to the single discovered agent (ambiguous
+//     with several); the bundle was compiled at generation build, so no
+//     per-run policy load or Rego compile happens at all.
+//   - Explicit file (tests, bespoke runners): the pre-#267 path-based load;
+//     kept for RunRequest.PolicyPath and catalog-less runners.
+func (r *Runner) resolveRunBundle(ctx context.Context, req *RunRequest, correlationID string, startTime time.Time) (*runBundle, error) {
+	if req.PolicyPath == "" {
+		if snap := r.catalog.Current(); snap != nil {
+			return r.resolveCatalogBundle(ctx, snap, req, correlationID, startTime)
+		}
+	}
+	return r.resolveFileBundle(ctx, req, correlationID, startTime)
+}
+
+func (r *Runner) resolveCatalogBundle(ctx context.Context, snap *agentcatalog.RuntimeSnapshot, req *RunRequest, correlationID string, startTime time.Time) (*runBundle, error) {
+	// One request, ONE generation (#267): a request authenticated under an
+	// earlier generation must not execute under a later one — the later
+	// generation may have rotated the key or replaced the policy that
+	// authorized this request. Fail closed; the client re-authenticates.
+	if req.ExpectedGeneration != "" && snap.Generation != req.ExpectedGeneration {
+		err := fmt.Errorf("runtime generation changed between authentication and execution (authenticated %s, current %s) — re-authenticate", shortGen(req.ExpectedGeneration), shortGen(snap.Generation))
+		r.recordEarlyTermination(ctx, correlationID, req, "generation_changed: "+err.Error(), startTime)
+		return nil, err
+	}
+	name := req.AgentName
+	if name == "" || name == "default" {
+		switch snap.Len() {
+		case 1:
+			name = snap.List()[0].Name
+		case 0:
+			err := fmt.Errorf("no agents in the active catalog generation (source %s)", snap.Scan.Source)
+			r.recordEarlyTermination(ctx, correlationID, req, "agent_resolution_failed: "+err.Error(), startTime)
+			return nil, err
+		default:
+			err := fmt.Errorf("ambiguous agent: the catalog has %d agents (%s) — name one explicitly", snap.Len(), catalogAgentNames(snap))
+			r.recordEarlyTermination(ctx, correlationID, req, "agent_resolution_failed: "+err.Error(), startTime)
+			return nil, err
+		}
+	}
+	ra, ok := snap.Get(name)
+	if !ok {
+		err := fmt.Errorf("unknown agent %q: discovered agents: %s", name, catalogAgentNames(snap))
+		r.recordEarlyTermination(ctx, correlationID, req, "agent_resolution_failed: "+err.Error(), startTime)
+		return nil, err
+	}
+	req.AgentName = ra.Name
+
+	// Tenant attribution mirrors resolveRunTenant (#266): when the agent
+	// file DECLARES agent.tenant_id it is authoritative and a differing
+	// explicit request tenant errors; when the file omits it, the request's
+	// tenant applies ("default" when unset).
+	switch {
+	case ra.TenantID == "":
+		if req.TenantID == "" {
+			req.TenantID = "default"
+		}
+	case req.TenantID == "", req.TenantID == "default":
+		req.TenantID = ra.TenantID
+	case req.TenantID == ra.TenantID:
+		// explicit and matching
+	default:
+		err := fmt.Errorf("tenant mismatch: agent %q declares agent.tenant_id %q, request says %q — the agent file is authoritative", ra.Name, ra.TenantID, req.TenantID)
+		r.recordEarlyTermination(ctx, correlationID, req, "agent_resolution_failed: "+err.Error(), startTime)
+		return nil, err
+	}
+
+	return &runBundle{
+		pol: ra.Policy, engine: ra.Engine, classifier: ra.Classifier, router: ra.Router,
+		baseDir: filepath.Dir(ra.Path),
+	}, nil
+}
+
+// shortGen abbreviates a generation digest for error messages.
+func shortGen(g string) string {
+	if len(g) > 12 {
+		return g[:12]
+	}
+	return g
+}
+
+func catalogAgentNames(snap *agentcatalog.RuntimeSnapshot) string {
+	names := make([]string, 0, snap.Len())
+	for _, ra := range snap.List() {
+		names = append(names, ra.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
+// resolveRunPolicyPath applies the explicit-file path contract:
+// operator-provided absolute paths (--policy, cfg.DefaultPolicy) are trusted
+// so paths outside CWD work (e.g. Docker volumes); relative paths (including
+// when derived from AgentName) resolve under policyDir to prevent traversal.
+// AgentName-derived paths must be a single path segment.
+func (r *Runner) resolveRunPolicyPath(req *RunRequest) (policyPath, loadBaseDir string, err error) {
+	policyPath = req.PolicyPath
+	pathDerivedFromAgent := false
+	if policyPath == "" {
+		if err := validateAgentNameForPolicyPath(req.AgentName); err != nil {
+			return "", "", fmt.Errorf("policy path: %w", err)
+		}
+		policyPath = req.AgentName + ".talon.yaml"
+		pathDerivedFromAgent = true
+	}
+	if filepath.IsAbs(policyPath) {
+		if pathDerivedFromAgent {
+			return "", "", fmt.Errorf("policy path: agent name must not be an absolute path or start with path separator (got %q)", req.AgentName)
+		}
+		safePath, err := filepath.Abs(filepath.Clean(policyPath))
+		if err != nil {
+			return "", "", fmt.Errorf("policy path: %w", err)
+		}
+		return policyPath, filepath.Dir(safePath), nil
+	}
+	if _, err := safePolicyPathUnder(r.policyDir, policyPath); err != nil {
+		return "", "", fmt.Errorf("policy path: %w", err)
+	}
+	return policyPath, r.policyDir, nil
+}
+
+// resolveFileBundle is the explicit-file path: load, validate, and compile
+// per run (bespoke/test runners and explicit RunRequest.PolicyPath).
+func (r *Runner) resolveFileBundle(ctx context.Context, req *RunRequest, correlationID string, startTime time.Time) (*runBundle, error) {
+	policyPath, loadBaseDir, err := r.resolveRunPolicyPath(req)
+	if err != nil {
+		return nil, err
+	}
+
+	pol, err := policy.LoadPolicy(ctx, policyPath, false, loadBaseDir)
+	if err != nil {
+		r.recordEarlyTermination(ctx, correlationID, req, "policy_load_failed: "+err.Error(), startTime)
+		return nil, fmt.Errorf("loading policy: %w", err)
+	}
+	// Attribution must match governance (#290): a run for agent X governed
+	// by agent Y's policy would look agent-first while silently applying the
+	// wrong budgets/tools. ""/"default" is the UNSET sentinel and resolves to
+	// the loaded policy's own agent name; an EXPLICIT other name fails loudly
+	// (on this path there is exactly one policy — the catalog path resolves
+	// multi-agent fleets).
+	if pol.Agent.Name != "" {
+		switch req.AgentName {
+		case "", "default":
+			req.AgentName = pol.Agent.Name
+		case pol.Agent.Name:
+			// explicit and matching — nothing to do
+		default:
+			err := fmt.Errorf("unknown agent %q: the loaded policy %s declares agent %q — this run resolves one explicit policy file (fleet runs resolve via the agent catalog, #267)", req.AgentName, policyPath, pol.Agent.Name)
+			r.recordEarlyTermination(ctx, correlationID, req, "agent_policy_mismatch: "+err.Error(), startTime)
+			return nil, err
+		}
+	}
+
+	engine, err := policy.NewEngine(ctx, pol)
+	if err != nil {
+		r.recordEarlyTermination(ctx, correlationID, req, "policy_engine_failed: "+err.Error(), startTime)
+		return nil, fmt.Errorf("creating policy engine: %w", err)
+	}
+	runClassifier, err := r.fileBundleClassifier(ctx, pol, engine)
+	if err != nil {
+		r.recordEarlyTermination(ctx, correlationID, req, "scanner_unavailable: "+err.Error(), startTime)
+		return nil, err
+	}
+	fileDir := filepath.Dir(policyPath)
+	if !filepath.IsAbs(policyPath) {
+		fileDir = filepath.Dir(filepath.Join(loadBaseDir, policyPath))
+	}
+	return &runBundle{
+		pol: pol, engine: engine, classifier: runClassifier, router: r.router,
+		baseDir: fileDir,
+	}, nil
+}
+
+// circuitThresholds derives the agent's circuit-breaker thresholds from ITS
+// policy (#267). Zero fields fall back to the tracker defaults.
+func circuitThresholds(pol *policy.Policy) Thresholds {
+	var t Thresholds
+	if pol == nil || pol.Policies.RateLimits == nil {
+		return t
+	}
+	rl := pol.Policies.RateLimits
+	t.Threshold = rl.CircuitBreakerThreshold
+	if rl.CircuitBreakerWindow != "" {
+		if d, err := time.ParseDuration(rl.CircuitBreakerWindow); err == nil {
+			t.Window = d
+		}
+	}
+	return t
+}
+
+// toolFailureThresholds derives the agent's tool-failure alert thresholds
+// from ITS policy (#267). Zero fields fall back to the tracker defaults.
+func toolFailureThresholds(pol *policy.Policy) Thresholds {
+	var t Thresholds
+	if pol == nil || pol.Policies.RateLimits == nil {
+		return t
+	}
+	rl := pol.Policies.RateLimits
+	t.Threshold = rl.ToolFailureThreshold
+	if rl.ToolFailureWindow != "" {
+		if d, err := time.ParseDuration(rl.ToolFailureWindow); err == nil {
+			t.Window = d
+		}
+	}
+	return t
+}
+
+// fileBundleClassifier picks the run's scanner on the explicit-file path: the
+// configured classifier (with the per-policy enrichment swap when the policy
+// enables it and the built-in engine is active — an external engine stays
+// authoritative, see LIMITATIONS.md), or, for a catalog-less runner with no
+// classifier configured, a policy-aware scanner built fail-closed from the
+// loaded policy (never a nil classifier downstream). Catalog bundles get all
+// of this at build time.
+func (r *Runner) fileBundleClassifier(ctx context.Context, pol *policy.Policy, engine *policy.Engine) (classifier.Facade, error) {
+	if r.classifier == nil {
+		s, err := policy.NewPIIScannerForPolicyWithEnrichment(ctx, pol, "", engine)
+		if err != nil {
+			return nil, fmt.Errorf("building PII scanner for policy: %w", err)
+		}
+		return s, nil
+	}
+	if pol.Policies.SemanticEnrichment != nil && pol.Policies.SemanticEnrichment.Enabled {
+		if _, isBuiltin := r.classifier.(*classifier.Scanner); isBuiltin {
+			if s, err := policy.NewPIIScannerForPolicyWithEnrichment(ctx, pol, "", engine); err == nil {
+				return s, nil
+			}
+		}
+	}
+	return r.classifier, nil
 }
 
 // OverrideStoreRef returns the runner's OverrideStore (may be nil).
@@ -329,6 +592,11 @@ type RunRequest struct {
 	SkipMemory       bool             // if true, do not write memory observation for this run (e.g. --no-memory)
 	SovereigntyMode  string           // optional: eu_strict | eu_preferred | global; when set, router uses OPA routing and records RouteDecision for evidence
 	BypassPlanReview bool             // internal: when true, skip plan-review gate (used by approved-plan dispatcher)
+	// ExpectedGeneration, when set, is the runtime-catalog generation the
+	// request AUTHENTICATED against (#267): run resolution fails closed if a
+	// different generation is current — one request captures one generation
+	// from authentication through evidence, never two.
+	ExpectedGeneration string
 }
 
 // ToolInvocation represents a single tool call (e.g. from MCP or a future agent loop).
@@ -429,75 +697,19 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	startTime := time.Now()
 	correlationID := "corr_" + uuid.New().String()[:12]
 
-	// Step 1: Load policy and settle the run's agent identity BEFORE any
-	// lifecycle side effect (#291 review, P1): the session row, trace
-	// attributes, active-run counters, run-registry entry, and started log
-	// must all carry the agent whose policy GOVERNS this run — and an
-	// invalid agent must be rejected before any of that state exists, not
-	// after.
-	//
-	// Operator-provided absolute paths (--policy, cfg.DefaultPolicy, serve default) are trusted so that
-	// paths outside CWD work (e.g. Docker volumes at /etc/talon/policies). Relative paths (including
-	// when derived from AgentName) are resolved under policyDir to prevent path traversal.
-	// When PolicyPath is empty we derive from AgentName; that derived path must never be treated as
-	// a trusted absolute path. Enforce contract: AgentName must be a single path segment (no path
-	// separators, not empty) so the derived path stays under policyDir via safePolicyPathUnder.
-	policyPath := req.PolicyPath
-	pathDerivedFromAgent := false
-	if policyPath == "" {
-		if err := validateAgentNameForPolicyPath(req.AgentName); err != nil {
-			return nil, fmt.Errorf("policy path: %w", err)
-		}
-		policyPath = req.AgentName + ".talon.yaml"
-		pathDerivedFromAgent = true
-	}
-	var safePath string
-	var loadBaseDir string
-	if filepath.IsAbs(policyPath) {
-		if pathDerivedFromAgent {
-			return nil, fmt.Errorf("policy path: agent name must not be an absolute path or start with path separator (got %q)", req.AgentName)
-		}
-		var err error
-		safePath, err = filepath.Abs(filepath.Clean(policyPath))
-		if err != nil {
-			return nil, fmt.Errorf("policy path: %w", err)
-		}
-		loadBaseDir = filepath.Dir(safePath)
-	} else {
-		if _, err := safePolicyPathUnder(r.policyDir, policyPath); err != nil {
-			return nil, fmt.Errorf("policy path: %w", err)
-		}
-		loadBaseDir = r.policyDir
-	}
-
-	pol, err := policy.LoadPolicy(ctx, policyPath, false, loadBaseDir)
+	// Step 1: Resolve the run's compiled bundle and settle the agent
+	// identity BEFORE any lifecycle side effect (#291 review, P1): the
+	// session row, trace attributes, active-run counters, run-registry
+	// entry, and started log must all carry the agent whose policy GOVERNS
+	// this run — and an invalid agent must be rejected before any of that
+	// state exists, not after. The bundle is captured ONCE here (#267): a
+	// catalog reload activating a new generation never changes the engine,
+	// scanner, or routing of this in-flight run.
+	b, err := r.resolveRunBundle(ctx, req, correlationID, startTime)
 	if err != nil {
-		r.recordEarlyTermination(ctx, correlationID, req, "policy_load_failed: "+err.Error(), startTime)
-		return nil, fmt.Errorf("loading policy: %w", err)
+		return nil, err
 	}
-	// Attribution must match governance (#290): a run for agent X governed
-	// by agent Y's policy would look agent-first while silently applying the
-	// wrong budgets/tools — the pre-agents_dir single-policy limitation made
-	// this easy to hit via triggers and the serve default path. "default"
-	// (and empty) is the UNSET sentinel across the CLI and server paths and
-	// resolves to the loaded policy's own agent name — the same rule `talon
-	// run` applies — so unnamed runs attribute to the agent whose policy
-	// governed them. An EXPLICIT other name fails loudly until #267
-	// discovers per-agent policies. Rejection happens here, before the
-	// session/trace/registry exist — the failed attempt leaves signed
-	// early-termination evidence and nothing else.
-	if pol.Agent.Name != "" {
-		switch req.AgentName {
-		case "", "default":
-			req.AgentName = pol.Agent.Name
-		case pol.Agent.Name:
-			// explicit and matching — nothing to do
-		default:
-			err := fmt.Errorf("unknown agent %q: the loaded policy %s declares agent %q — until agents_dir discovery (#267) exactly one agent policy is loaded per process (select it via TALON_DEFAULT_POLICY or --policy)", req.AgentName, policyPath, pol.Agent.Name)
-			r.recordEarlyTermination(ctx, correlationID, req, "agent_policy_mismatch: "+err.Error(), startTime)
-			return nil, err
-		}
-	}
+	pol := b.pol
 
 	// Lifecycle state begins here, on the SETTLED identity.
 	sessionID, err := r.resolveSession(ctx, req)
@@ -548,25 +760,10 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 		Func(talonotel.LogTraceFields(ctx)).
 		Msg("agent_run_started")
 
-	engine, err := policy.NewEngine(ctx, pol)
-	if err != nil {
-		span.RecordError(err)
-		r.recordEarlyTermination(ctx, correlationID, req, "policy_engine_failed: "+err.Error(), startTime)
-		return nil, fmt.Errorf("creating policy engine: %w", err)
-	}
-	runClassifier := r.classifier
-	if pol.Policies.SemanticEnrichment != nil && pol.Policies.SemanticEnrichment.Enabled {
-		// Semantic enrichment is a built-in regex-engine feature. When an
-		// external scanner engine is configured it stays authoritative:
-		// silently swapping in a per-run regex scanner would bypass the
-		// operator's engine choice (enrichment is skipped, documented in
-		// LIMITATIONS.md).
-		if _, isBuiltin := r.classifier.(*classifier.Scanner); isBuiltin {
-			if s, err := policy.NewPIIScannerForPolicyWithEnrichment(ctx, pol, "", engine); err == nil {
-				runClassifier = s
-			}
-		}
-	}
+	// The engine was compiled at bundle build (catalog: once per generation;
+	// file path: once per run) — never a second Rego compile here.
+	engine := b.engine
+	runClassifier := b.classifier
 	// Prompt version store is populated after input redaction (see below)
 	// so the stored text reflects what the LLM actually received (GDPR Art. 5(1)(c) data minimization).
 
@@ -575,7 +772,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	inputClass, scanErr := runClassifier.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), req.Prompt)
 	if scanErr != nil {
 		span.RecordError(scanErr)
-		r.recordEarlyTermination(ctx, correlationID, req, "scanner_unavailable: "+scanErr.Error(), startTime)
+		r.recordEarlyTerminationScanner(ctx, correlationID, req, "scanner_unavailable: "+scanErr.Error(), startTime, runClassifier)
 		return nil, fmt.Errorf("PII scanner unavailable (fail-closed): %w", scanErr)
 	}
 	inputEntityNames := entityNames(inputClass.Entities)
@@ -677,8 +874,8 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 
 	// Use conservative default when pricing unknown so cost-based deny policies still apply (e2e, no pricing file).
 	estimatedCost := 0.01
-	if r.router != nil {
-		if c, err := r.router.PreRunEstimate(effectiveTier); err == nil && c > 0 {
+	if b.router != nil {
+		if c, err := b.router.PreRunEstimate(effectiveTier); err == nil && c > 0 {
 			estimatedCost = c
 		}
 	}
@@ -708,8 +905,10 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 
 	// Circuit breaker: check before policy evaluation. An open circuit means the
 	// agent has accumulated too many policy denials and should be suspended.
+	// Thresholds come from THIS run's bundle policy (#267): in a fleet each
+	// agent's own rate_limits govern its circuit, never another policy's.
 	if r.circuitBreaker != nil {
-		if cbErr := r.circuitBreaker.Check(req.TenantID, req.AgentName); cbErr != nil {
+		if cbErr := r.circuitBreaker.CheckAgent(req.TenantID, req.AgentName, circuitThresholds(pol)); cbErr != nil {
 			span.SetAttributes(attribute.String("circuit_breaker.state", "open"))
 			r.setRunState(correlationID, RunStatusBlocked, FailureCircuitBreaker)
 			r.recordEarlyTermination(ctx, correlationID, req, "circuit_breaker_open: "+cbErr.Error(), startTime)
@@ -754,7 +953,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	var originalDecision *policy.Decision
 	if !decision.Allowed {
 		if r.circuitBreaker != nil {
-			r.circuitBreaker.RecordPolicyDenial(req.TenantID, req.AgentName)
+			r.circuitBreaker.RecordPolicyDenialAgent(req.TenantID, req.AgentName, circuitThresholds(pol))
 		}
 		if pol.Audit != nil && pol.Audit.ObservationOnly {
 			observationOverride = true
@@ -909,7 +1108,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	}
 
 	if pol.Context != nil && len(pol.Context.SharedMounts) > 0 {
-		sharedCtx, ctxErr := talonctx.LoadSharedContext(pol)
+		sharedCtx, ctxErr := talonctx.LoadSharedContext(pol, b.baseDir)
 		if ctxErr != nil {
 			log.Warn().Err(ctxErr).Str("tenant_id", req.TenantID).Str("agent_id", req.AgentName).Msg("failed to load shared context")
 		} else if len(sharedCtx.Mounts) > 0 {
@@ -937,7 +1136,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 			// The prompt is known to contain PII; forwarding it unredacted is
 			// never acceptable (fail-closed).
 			span.RecordError(redactErr)
-			r.recordEarlyTermination(ctx, correlationID, req, "scanner_unavailable: "+redactErr.Error(), startTime)
+			r.recordEarlyTerminationScanner(ctx, correlationID, req, "scanner_unavailable: "+redactErr.Error(), startTime, runClassifier)
 			return nil, fmt.Errorf("PII redaction failed (fail-closed): %w", redactErr)
 		}
 		// Redaction is best-effort until verified: re-scan the redacted prompt
@@ -979,7 +1178,7 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (*RunResponse, error)
 	r.setRunState(correlationID, RunStatusRunning, FailureNone)
 	resp, err = r.executeLLMPipeline(ctx, span, startTime, correlationID, req, pol, engine, engine,
 		effectiveTier, effectivePIINames, finalPrompt, attachmentScan, complianceInfo, costCtx, memoryReads, memoryTokens,
-		observationOverride, originalDecision, estimatedCost, runClassifier, sandboxToken, inputPIIRedacted)
+		observationOverride, originalDecision, estimatedCost, b.router, runClassifier, sandboxToken, inputPIIRedacted)
 	if err != nil {
 		return nil, err
 	}
@@ -1124,7 +1323,13 @@ func (r *Runner) updateRunMetrics(correlationID string, steps, toolCalls int, co
 
 // recordEarlyTermination records evidence for early termination paths (circuit breaker,
 // hook deny, policy load error, etc.) that would otherwise leave no audit trail.
+// Scanner-failure paths use recordEarlyTerminationScanner so the evidence
+// names the RESOLVED agent's engine (#267), not a process-wide default.
 func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID string, req *RunRequest, reason string, startTime time.Time) {
+	r.recordEarlyTerminationScanner(ctx, correlationID, req, reason, startTime, r.classifier)
+}
+
+func (r *Runner) recordEarlyTerminationScanner(ctx context.Context, correlationID string, req *RunRequest, reason string, startTime time.Time, cls classifier.Facade) {
 	status := string(RunStatusFailed)
 	failureReason := string(FailureInternalError)
 	switch {
@@ -1140,7 +1345,7 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 	}
 	var scannerInfo *evidence.ScannerInfo
 	if strings.HasPrefix(reason, "scanner_unavailable") || strings.HasPrefix(reason, "output_scanner_unavailable") {
-		scannerInfo = evidence.NewScannerInfo(r.classifier)
+		scannerInfo = evidence.NewScannerInfo(cls)
 		if scannerInfo != nil {
 			scannerInfo.Failure = "scanner_unavailable"
 		}
@@ -1177,16 +1382,16 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 // costEstimate is the pre-run cost estimate from Run() (same value used for policy input and plan-review gate).
 //
 //nolint:gocyclo // orchestration flow is inherently branched; splitting would obscure the pipeline
-func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64, piiScanner classifier.Facade, sandboxToken string, inputPIIRedacted bool) (*RunResponse, error) {
+func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startTime time.Time, correlationID string, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, routingEngine llm.RoutingPolicyEvaluator, tier int, piiNames []string, prompt string, attScan *evidence.AttachmentScan, compliance evidence.Compliance, costCtx *llm.CostContext, memReads []evidence.MemoryRead, memTokens int, observationOverride bool, originalDecision *policy.Decision, costEstimate float64, runRouter *llm.Router, piiScanner classifier.Facade, sandboxToken string, inputPIIRedacted bool) (*RunResponse, error) {
 	// Step 5+6: Route LLM (with optional graceful degradation) and resolve tenant-scoped API key
-	provider, model, degraded, originalModel, routeDecision, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx, routingEngine, req.SovereigntyMode)
+	provider, model, degraded, originalModel, routeDecision, secretsAccessed, err := r.resolveProvider(ctx, req, tier, costCtx, routingEngine, req.SovereigntyMode, runRouter)
 	if err != nil {
 		span.RecordError(err)
 		r.recordEarlyTermination(ctx, correlationID, req, "provider_resolution_failed: "+err.Error(), startTime)
 		return nil, err
 	}
 	// Error-driven provider failover across the tier's fallback_chain (#138).
-	fo := r.newRunFailover(ctx, req, correlationID, tier, routingEngine, req.SovereigntyMode, &secretsAccessed)
+	fo := r.newRunFailover(ctx, req, correlationID, tier, routingEngine, req.SovereigntyMode, runRouter, &secretsAccessed)
 	fo.dataFlow = func(providerName, m string) *evidence.DataFlow {
 		return buildRunDataFlow(runFlowInputs{
 			TenantID: req.TenantID, InvocationType: req.InvocationType,
@@ -1721,9 +1926,10 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 						toolsCalled = append(toolsCalled, toolName)
 					}
 
-					// Track tool execution failures separately from policy denials (Gap T4).
+					// Track tool execution failures separately from policy denials
+					// (Gap T4), under THIS agent's thresholds (#267).
 					if tcResult.ExecutionError != "" && r.toolFailures != nil {
-						r.toolFailures.RecordToolFailure(req.TenantID, req.AgentName, toolName, tcResult.ExecutionError)
+						r.toolFailures.RecordToolFailureAgent(req.TenantID, req.AgentName, toolName, tcResult.ExecutionError, toolFailureThresholds(pol))
 					}
 
 					// Per-run tool failure escalation: auto-disable after N consecutive failures.
@@ -1935,9 +2141,11 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 		}
 		// Store in semantic cache when allowed (PII-scrubbed response).
 		// A scrub failure skips the store (fail-closed: never cache
-		// content that could not be verified).
-		if cacheAllowStore && r.cacheStore != nil && r.cacheScrubber != nil && r.cacheEmbedder != nil && r.cacheConfig != nil {
-			scrubbed, scrubErr := r.cacheScrubber.Scrub(ctx, resp.Content)
+		// content that could not be verified). The scrubber wraps the
+		// RESOLVED agent's scanner (#267) so cached content is scrubbed by
+		// the same entity set that governs this agent.
+		if cacheAllowStore && r.cacheStore != nil && piiScanner != nil && r.cacheEmbedder != nil && r.cacheConfig != nil {
+			scrubbed, scrubErr := cache.NewPIIScrubber(piiScanner).Scrub(ctx, resp.Content)
 			emb, err := r.cacheEmbedder.Embed(prompt)
 			if scrubErr != nil {
 				log.Warn().Err(scrubErr).Str("correlation_id", correlationID).Msg("cache_store_skipped_scrubber_unavailable")
@@ -1970,7 +2178,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	outputClass, outputScanErr := piiScanner.Analyze(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), llmResp.Content)
 	if outputScanErr != nil {
 		span.RecordError(outputScanErr)
-		r.recordEarlyTermination(ctx, correlationID, req, "output_scanner_unavailable: "+outputScanErr.Error(), startTime)
+		r.recordEarlyTerminationScanner(ctx, correlationID, req, "output_scanner_unavailable: "+outputScanErr.Error(), startTime, piiScanner)
 		return &RunResponse{PolicyAllow: false, DenyReason: "Output blocked: PII scanner unavailable (fail-closed)", SessionID: req.SessionID}, nil
 	}
 	outputEntityNames := entityNames(outputClass.Entities)
@@ -2039,7 +2247,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 			if redactErr != nil {
 				// The output is known to contain PII; fail closed.
 				span.RecordError(redactErr)
-				r.recordEarlyTermination(ctx, correlationID, req, "output_scanner_unavailable: "+redactErr.Error(), startTime)
+				r.recordEarlyTerminationScanner(ctx, correlationID, req, "output_scanner_unavailable: "+redactErr.Error(), startTime, piiScanner)
 				return &RunResponse{PolicyAllow: false, DenyReason: "Output redaction failed: PII scanner unavailable (fail-closed)", SessionID: req.SessionID}, nil
 			}
 			// Verify the redacted output before it is surfaced: residual PII
@@ -2173,7 +2381,7 @@ func (r *Runner) executeLLMPipeline(ctx context.Context, span trace.Span, startT
 	}
 
 	// Post-LLM: governed memory write
-	r.writeMemoryObservation(ctx, req, pol, policyEval, resp, ev)
+	r.writeMemoryObservation(ctx, req, pol, policyEval, piiScanner, resp, ev)
 	if r.sessionStore != nil && req.SessionID != "" {
 		_ = r.sessionStore.AddUsage(ctx, req.SessionID, cost, totalInputTokens+totalOutputTokens)
 	}
@@ -2733,7 +2941,12 @@ func (r *Runner) processAttachments(ctx context.Context, req *RunRequest, pol *p
 // resolveProvider routes to an LLM provider (with optional cost degradation) and resolves
 // a tenant-scoped API key from the vault. When policyEngine and sovereigntyMode are set,
 // compliance-aware routing is used and routeDecision is populated for evidence.
-func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int, costCtx *llm.CostContext, policyEngine llm.RoutingPolicyEvaluator, sovereigntyMode string) (provider llm.Provider, model string, degraded bool, originalModel string, routeDecision *llm.RouteDecision, secretsAccessed []string, err error) {
+// runRouter is the RESOLVED agent's router (#267) — routing rules and cost
+// limits always come from the bundle the run was resolved to.
+func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int, costCtx *llm.CostContext, policyEngine llm.RoutingPolicyEvaluator, sovereigntyMode string, runRouter *llm.Router) (provider llm.Provider, model string, degraded bool, originalModel string, routeDecision *llm.RouteDecision, secretsAccessed []string, err error) {
+	if runRouter == nil {
+		return nil, "", false, "", nil, nil, fmt.Errorf("routing LLM: no router configured for agent %q", req.AgentName)
+	}
 	opts := (*llm.RouteOptions)(nil)
 	if policyEngine != nil && sovereigntyMode != "" {
 		opts = &llm.RouteOptions{
@@ -2744,12 +2957,12 @@ func (r *Runner) resolveProvider(ctx context.Context, req *RunRequest, tier int,
 	}
 	if costCtx != nil {
 		var routeErr error
-		provider, model, degraded, originalModel, routeDecision, routeErr = r.router.GracefulRoute(ctx, tier, costCtx, opts)
+		provider, model, degraded, originalModel, routeDecision, routeErr = runRouter.GracefulRoute(ctx, tier, costCtx, opts)
 		if routeErr != nil {
 			return nil, "", false, "", nil, nil, fmt.Errorf("routing LLM: %w", routeErr)
 		}
 	} else {
-		provider, model, routeDecision, err = r.router.Route(ctx, tier, opts)
+		provider, model, routeDecision, err = runRouter.Route(ctx, tier, opts)
 		if err != nil {
 			return nil, "", false, "", nil, nil, fmt.Errorf("routing LLM: %w", err)
 		}
@@ -2980,10 +3193,12 @@ func memoryMode(pol *policy.Policy) string {
 // and writes it through the governance pipeline.
 // In shadow mode, all checks run and results are logged, but no entry is persisted.
 // policyEval is the per-run OPA engine for this invocation (avoids data race on shared Governance).
+// cls is the RESOLVED agent's scanner (#267): memory content is sanitized and
+// governance-scanned by the same entity set that governs the agent.
 //
 //nolint:gocyclo // orchestration flow is inherently branched
-func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, resp *RunResponse, ev *evidence.Evidence) {
-	if r.memory == nil || r.governance == nil || pol.Memory == nil || !pol.Memory.Enabled {
+func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, pol *policy.Policy, policyEval memory.PolicyEvaluator, cls classifier.Facade, resp *RunResponse, ev *evidence.Evidence) {
+	if r.memory == nil || cls == nil || pol.Memory == nil || !pol.Memory.Enabled {
 		return
 	}
 	if ev == nil {
@@ -3043,10 +3258,10 @@ func (r *Runner) writeMemoryObservation(ctx context.Context, req *RunRequest, po
 	// Governance rejects memory entries containing any PII. Sanitize only low-risk
 	// entities (person/location) so general observations can be stored while
 	// sensitive PII (email/iban/phone/etc.) still fails closed in governance.
-	observation.Title = sanitizeMemoryObservationText(ctx, r.classifier, observation.Title)
-	observation.Content = sanitizeMemoryObservationText(ctx, r.classifier, observation.Content)
+	observation.Title = sanitizeMemoryObservationText(ctx, cls, observation.Title)
+	observation.Content = sanitizeMemoryObservationText(ctx, cls, observation.Content)
 
-	if err := r.governance.ValidateWrite(ctx, &observation, pol, policyEval); err != nil {
+	if err := memory.NewGovernance(r.memory, cls).ValidateWrite(ctx, &observation, pol, policyEval); err != nil {
 		log.Warn().Err(err).
 			Str("tenant_id", req.TenantID).
 			Str("agent_id", req.AgentName).
@@ -3407,8 +3622,10 @@ func isLowRiskMemoryEntityType(entityType string) bool {
 }
 
 // RunFromTrigger implements the trigger.AgentRunner interface for cron/webhook execution.
-// It uses the runner's default policy path so cron/webhook runs load the same .talon.yaml
-// as the process (e.g. agent.talon.yaml), instead of deriving agentName+".talon.yaml".
+// With a catalog (#267) the agent name alone selects the CURRENT generation's
+// bundle at dispatch time — a fleet's schedules each fire under their own
+// agent's policy, and a reload's policy edits apply to the next firing.
+// Without a catalog it falls back to the runner's default policy path.
 func (r *Runner) RunFromTrigger(ctx context.Context, agentName, prompt, invocationType string) error {
 	req := &RunRequest{
 		TenantID:       "default",
@@ -3416,7 +3633,7 @@ func (r *Runner) RunFromTrigger(ctx context.Context, agentName, prompt, invocati
 		Prompt:         prompt,
 		InvocationType: invocationType,
 	}
-	if r.defaultPolicyPath != "" {
+	if r.catalog.Current() == nil && r.defaultPolicyPath != "" {
 		req.PolicyPath = r.defaultPolicyPath
 	}
 	_, err := r.Run(ctx, req)

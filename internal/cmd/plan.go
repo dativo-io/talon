@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -19,12 +18,9 @@ import (
 	"github.com/dativo-io/talon/internal/cache"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/evidence"
-	"github.com/dativo-io/talon/internal/llm"
 	_ "github.com/dativo-io/talon/internal/llm/providers"
 	"github.com/dativo-io/talon/internal/memory"
-	"github.com/dativo-io/talon/internal/policy"
 	talonprompt "github.com/dativo-io/talon/internal/prompt"
-	"github.com/dativo-io/talon/internal/scanner"
 	"github.com/dativo-io/talon/internal/secrets"
 	talonsession "github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/sovereignty"
@@ -303,43 +299,37 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("plan %s cannot be executed: prompt is empty", plan.ID)
 	}
 
-	baseDir := "."
-	policyPath := plan.PolicyPath
-	if policyPath == "" {
-		policyPath = cfg.DefaultPolicy
+	// The plan executes under the CURRENT catalog resolution of its agent
+	// (#267 review): in fleet mode the path recorded at plan creation is
+	// IGNORED — an approved plan must never bypass later policy tightening by
+	// executing under a historic file. Only non-fleet single-file mode may
+	// use the stored path.
+	planPolicyPath := plan.PolicyPath
+	if cfg.AgentsDir != "" {
+		planPolicyPath = ""
 	}
-	safePath, err := policy.ResolvePathUnderBase(baseDir, policyPath)
+	scan, err := cliAgentScan(ctx, cfg, planPolicyPath)
 	if err != nil {
-		if filepath.IsAbs(filepath.Clean(policyPath)) {
-			safePath, err = filepath.Abs(filepath.Clean(policyPath))
-			if err != nil {
-				return fmt.Errorf("policy path: %w", err)
-			}
-			baseDir = filepath.Dir(safePath)
-			if _, err := policy.ResolvePathUnderBase(baseDir, safePath); err != nil {
-				return fmt.Errorf("policy path: %w", err)
-			}
-		} else {
-			return fmt.Errorf("policy path: %w", err)
-		}
+		return err
 	}
-	policyPath = safePath
-	baseDir = filepath.Dir(safePath)
+	ra, err := resolveCatalogAgent(scan, plan.AgentID)
+	if err != nil {
+		return err
+	}
+	pricingBaseDir := cliPricingBaseDir(cfg, planPolicyPath, ra.Path)
 
-	cls, err := scanner.Build(ctx, cfg, nil, nil)
-	if err != nil {
-		return fmt.Errorf("initializing PII scanner: %w", err)
-	}
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
 
 	sovereignty.ApplySovereigntyGate(cfg, nil)
 
 	providers := buildProviders(cfg)
-	pricingTable := loadPricingTable(cfg, baseDir)
+	pricingTable := loadPricingTable(cfg, pricingBaseDir)
 	injectPricingInProviders(providers, pricingTable)
-	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, baseDir)
-	router := llm.NewRouter(routing, providers, costLimits)
+	catalog, err := buildCLICatalog(ctx, cfg, scan, providers)
+	if err != nil {
+		return err
+	}
 
 	secretsStore, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
 	if err != nil {
@@ -356,11 +346,10 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 	}
 
 	runnerCfg := agent.RunnerConfig{
+		Catalog:          catalog,
 		PolicyDir:        ".",
-		Classifier:       cls,
 		AttScanner:       attScanner,
 		Extractor:        extractor,
-		Router:           router,
 		Secrets:          secretsStore,
 		Evidence:         evidenceStore,
 		SessionStore:     sessionStore,
@@ -383,7 +372,6 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 			} else {
 				runnerCfg.CacheStore = cacheStore
 				runnerCfg.CacheEmbedder = cache.NewBM25()
-				runnerCfg.CacheScrubber = cache.NewPIIScrubber(cls)
 				runnerCfg.CachePolicy = cachePolicy
 				runnerCfg.CacheConfig = &agent.RunnerCacheConfig{
 					Enabled:             cfg.Cache.Enabled,
@@ -399,11 +387,10 @@ func runPlanExecute(cmd *cobra.Command, args []string) error {
 
 	resp, err := runner.Run(ctx, &agent.RunRequest{
 		TenantID:         plan.TenantID,
-		AgentName:        plan.AgentID,
+		AgentName:        ra.Name,
 		Prompt:           plan.Prompt,
 		SessionID:        plan.SessionID,
 		InvocationType:   "plan_dispatch_manual",
-		PolicyPath:       policyPath,
 		BypassPlanReview: true,
 	})
 	if err != nil {

@@ -42,10 +42,12 @@ type runFailover struct {
 	dataFlow func(providerName, model string) *evidence.DataFlow
 }
 
-// newRunFailover resolves the tier's fallback candidates (positions >= 1).
+// newRunFailover resolves the tier's fallback candidates (positions >= 1)
+// from the RESOLVED agent's router (#267) — the same bundle the primary route
+// used, so failover can never consult another agent's fallback chain.
 // Resolution failures disable failover for the run but never fail it — the
 // primary path continues exactly as before.
-func (r *Runner) newRunFailover(ctx context.Context, req *RunRequest, correlationID string, tier int, routingEngine llm.RoutingPolicyEvaluator, sovereigntyMode string, secrets *[]string) *runFailover {
+func (r *Runner) newRunFailover(ctx context.Context, req *RunRequest, correlationID string, tier int, routingEngine llm.RoutingPolicyEvaluator, sovereigntyMode string, runRouter *llm.Router, secrets *[]string) *runFailover {
 	fo := &runFailover{
 		r:               r,
 		req:             req,
@@ -55,14 +57,14 @@ func (r *Runner) newRunFailover(ctx context.Context, req *RunRequest, correlatio
 		complianceMode:  routingEngine != nil && sovereigntyMode != "",
 		secrets:         secrets,
 	}
-	if r.router == nil {
+	if runRouter == nil {
 		return fo
 	}
 	var opts *llm.RouteOptions
 	if fo.complianceMode {
 		opts = &llm.RouteOptions{PolicyEngine: routingEngine, SovereigntyMode: sovereigntyMode, DataTier: tier}
 	}
-	resolved, rejected, err := r.router.ResolveCandidates(ctx, tier, opts)
+	resolved, rejected, err := runRouter.ResolveCandidates(ctx, tier, opts)
 	if err != nil {
 		log.Warn().Err(err).Str("correlation_id", correlationID).Msg("failover_candidates_unavailable")
 		return fo

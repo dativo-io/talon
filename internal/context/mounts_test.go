@@ -22,7 +22,7 @@ func TestLoadSharedContext_ReadsDirectory(t *testing.T) {
 			},
 		},
 	}
-	sc, err := LoadSharedContext(pol)
+	sc, err := LoadSharedContext(pol, "")
 	require.NoError(t, err)
 	require.Len(t, sc.Mounts, 1)
 	assert.Contains(t, sc.Mounts[0].Content, "Acme Corp")
@@ -40,7 +40,7 @@ func TestLoadSharedContext_StripsPrivateTags(t *testing.T) {
 			},
 		},
 	}
-	sc, err := LoadSharedContext(pol)
+	sc, err := LoadSharedContext(pol, "")
 	require.NoError(t, err)
 	require.Len(t, sc.Mounts, 1)
 	assert.NotContains(t, sc.Mounts[0].Content, "secret salary data")
@@ -60,7 +60,7 @@ func TestLoadSharedContext_ExtractsClassifiedTier(t *testing.T) {
 			},
 		},
 	}
-	sc, err := LoadSharedContext(pol)
+	sc, err := LoadSharedContext(pol, "")
 	require.NoError(t, err)
 	require.Len(t, sc.Mounts, 1)
 	assert.Equal(t, 1, sc.Mounts[0].Classification)
@@ -78,7 +78,7 @@ func TestLoadSharedContext_TierPropagation(t *testing.T) {
 			},
 		},
 	}
-	sc, err := LoadSharedContext(pol)
+	sc, err := LoadSharedContext(pol, "")
 	require.NoError(t, err)
 	assert.Equal(t, 2, sc.Mounts[0].Classification)
 }
@@ -95,7 +95,7 @@ func TestLoadSharedContext_SkipsNonTextFiles(t *testing.T) {
 			},
 		},
 	}
-	sc, err := LoadSharedContext(pol)
+	sc, err := LoadSharedContext(pol, "")
 	require.NoError(t, err)
 	require.Len(t, sc.Mounts, 1)
 	assert.Contains(t, sc.Mounts[0].Content, "Document")
@@ -110,7 +110,7 @@ func TestLoadSharedContext_MissingPath(t *testing.T) {
 			},
 		},
 	}
-	_, err := LoadSharedContext(pol)
+	_, err := LoadSharedContext(pol, "")
 	assert.Error(t, err)
 }
 
@@ -139,4 +139,49 @@ func TestGetMaxTier(t *testing.T) {
 		},
 	}
 	assert.Equal(t, 2, sc.GetMaxTier())
+}
+
+// TestLoadSharedContext_AgentScopedRelativePaths (#267 review, P1): in a
+// fleet, two agents declaring the SAME relative mount path each read their
+// OWN directory — never the process CWD, where one agent could consume
+// another's context source.
+func TestLoadSharedContext_AgentScopedRelativePaths(t *testing.T) {
+	root := t.TempDir()
+	dirA := filepath.Join(root, "agents", "support")
+	dirB := filepath.Join(root, "agents", "coding")
+	require.NoError(t, os.MkdirAll(filepath.Join(dirA, "context"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dirB, "context"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dirA, "context", "notes.md"), []byte("SUPPORT-ONLY"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dirB, "context", "notes.md"), []byte("CODING-ONLY"), 0o644))
+
+	pol := &policy.Policy{Context: &policy.ContextConfig{SharedMounts: []policy.SharedMount{
+		{Name: "ctx", Path: "./context", Classification: "tier_0"},
+	}}}
+
+	scA, err := LoadSharedContext(pol, dirA)
+	require.NoError(t, err)
+	require.Len(t, scA.Mounts, 1)
+	assert.Contains(t, scA.Mounts[0].Content, "SUPPORT-ONLY")
+	assert.NotContains(t, scA.Mounts[0].Content, "CODING-ONLY", "agent A must never read agent B's context")
+
+	scB, err := LoadSharedContext(pol, dirB)
+	require.NoError(t, err)
+	require.Len(t, scB.Mounts, 1)
+	assert.Contains(t, scB.Mounts[0].Content, "CODING-ONLY")
+	assert.NotContains(t, scB.Mounts[0].Content, "SUPPORT-ONLY")
+}
+
+// TestLoadSharedContext_TraversalStaysUnderAgentDir (#267 review, P1): a
+// relative mount can never escape the declaring agent's directory.
+func TestLoadSharedContext_TraversalStaysUnderAgentDir(t *testing.T) {
+	root := t.TempDir()
+	agentDir := filepath.Join(root, "agents", "support")
+	require.NoError(t, os.MkdirAll(agentDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "secret.md"), []byte("ROOT-SECRET"), 0o644))
+
+	pol := &policy.Policy{Context: &policy.ContextConfig{SharedMounts: []policy.SharedMount{
+		{Name: "escape", Path: "../../secret.md", Classification: "tier_0"},
+	}}}
+	_, err := LoadSharedContext(pol, agentDir)
+	require.Error(t, err, "a relative mount escaping the agent directory must be rejected")
 }

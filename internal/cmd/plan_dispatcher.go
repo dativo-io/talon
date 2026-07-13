@@ -77,13 +77,16 @@ func dispatchApprovedPlan(ctx context.Context, store *agent.PlanReviewStore, run
 	runCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
+	// The approved plan dispatches under the CURRENT catalog resolution of
+	// its agent (#267) — the policy governing dispatch is the one governing
+	// the agent NOW, not a path captured at plan creation. A plan whose agent
+	// is no longer in the catalog fails dispatch cleanly (recorded below).
 	resp, err := runPlanDispatch(runCtx, runner, &agent.RunRequest{
 		TenantID:         plan.TenantID,
 		AgentName:        plan.AgentID,
 		Prompt:           plan.Prompt,
 		SessionID:        plan.SessionID,
 		InvocationType:   "plan_dispatch",
-		PolicyPath:       plan.PolicyPath,
 		BypassPlanReview: true,
 	})
 	if err != nil {

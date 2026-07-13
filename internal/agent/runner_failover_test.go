@@ -92,7 +92,7 @@ func TestResolveProvider_SovereigntyRoutes_USRejectedLocalSelected(t *testing.T)
 
 	req := &RunRequest{TenantID: "t1", AgentName: "a1", InvocationType: "manual", SovereigntyMode: "eu_strict"}
 	provider, model, _, _, routeDecision, _, err := r.resolveProvider(
-		context.Background(), req, 2, nil, euOnlyRoutingEvaluator{}, req.SovereigntyMode)
+		context.Background(), req, 2, nil, euOnlyRoutingEvaluator{}, req.SovereigntyMode, r.router)
 	require.NoError(t, err)
 
 	// LOCAL candidate selected; US primary never dispatched.
@@ -124,7 +124,7 @@ func TestRunFailover_TransientErrorFailsOverToChainCandidate(t *testing.T) {
 	r, store := newFailoverTestRunner(t, map[string]llm.Provider{"openai": primary, "ollama": backup}, routing)
 
 	req := &RunRequest{TenantID: "t1", AgentName: "a1", InvocationType: "manual"}
-	fo := r.newRunFailover(context.Background(), req, "corr-fo-1", 1, nil, "", nil)
+	fo := r.newRunFailover(context.Background(), req, "corr-fo-1", 1, nil, "", r.router, nil)
 
 	resp, usedProvider, usedModel, err := fo.generate(context.Background(),
 		primary, "gpt-4o", &llm.Request{Model: "gpt-4o", Messages: []llm.Message{{Role: "user", Content: "hi"}}})
@@ -168,7 +168,7 @@ func TestRunFailover_PermanentErrorDoesNotFailOver(t *testing.T) {
 	r, store := newFailoverTestRunner(t, map[string]llm.Provider{"openai": primary, "ollama": backup}, routing)
 
 	req := &RunRequest{TenantID: "t1", AgentName: "a1", InvocationType: "manual"}
-	fo := r.newRunFailover(context.Background(), req, "corr-fo-2", 1, nil, "", nil)
+	fo := r.newRunFailover(context.Background(), req, "corr-fo-2", 1, nil, "", r.router, nil)
 
 	_, _, _, err := fo.generate(context.Background(),
 		primary, "gpt-4o", &llm.Request{Model: "gpt-4o"})
@@ -189,7 +189,7 @@ func TestRunFailover_AllCandidatesFail_FailsClosed(t *testing.T) {
 	r, store := newFailoverTestRunner(t, map[string]llm.Provider{"openai": primary, "ollama": backup}, routing)
 
 	req := &RunRequest{TenantID: "t1", AgentName: "a1", InvocationType: "manual"}
-	fo := r.newRunFailover(context.Background(), req, "corr-fo-3", 1, nil, "", nil)
+	fo := r.newRunFailover(context.Background(), req, "corr-fo-3", 1, nil, "", r.router, nil)
 
 	_, _, _, err := fo.generate(context.Background(), primary, "gpt-4o", &llm.Request{Model: "gpt-4o"})
 	require.Error(t, err)
@@ -219,7 +219,7 @@ func TestRunFailover_ChainContinuesPastPermanentFallback(t *testing.T) {
 	r, store := newFailoverTestRunner(t, map[string]llm.Provider{"openai": primary, "anthropic": badBackup, "ollama": goodBackup}, routing)
 
 	req := &RunRequest{TenantID: "t1", AgentName: "a1", InvocationType: "manual"}
-	fo := r.newRunFailover(context.Background(), req, "corr-fo-5", 1, nil, "", nil)
+	fo := r.newRunFailover(context.Background(), req, "corr-fo-5", 1, nil, "", r.router, nil)
 
 	resp, usedProvider, usedModel, err := fo.generate(context.Background(), primary, "gpt-4o", &llm.Request{Model: "gpt-4o"})
 	require.NoError(t, err)
@@ -249,7 +249,7 @@ func TestRunFailover_ComplianceModeExcludesSovereigntyRejectedCandidates(t *test
 	r, store := newFailoverTestRunner(t, map[string]llm.Provider{"ollama": primary, "openai": usBackup}, routing)
 
 	req := &RunRequest{TenantID: "t1", AgentName: "a1", InvocationType: "manual"}
-	fo := r.newRunFailover(context.Background(), req, "corr-fo-4", 2, euOnlyRoutingEvaluator{}, "eu_strict", nil)
+	fo := r.newRunFailover(context.Background(), req, "corr-fo-4", 2, euOnlyRoutingEvaluator{}, "eu_strict", r.router, nil)
 
 	_, _, _, err := fo.generate(context.Background(), primary, "llama3:70b", &llm.Request{Model: "llama3:70b"})
 	require.Error(t, err)
@@ -279,7 +279,7 @@ func TestRunFailover_MultipleEngagementsPerRun_GetSeparateGroups(t *testing.T) {
 	r, store := newFailoverTestRunner(t, map[string]llm.Provider{"openai": primary, "ollama": backup}, routing)
 
 	req := &RunRequest{TenantID: "t1", AgentName: "a1", InvocationType: "manual"}
-	fo := r.newRunFailover(context.Background(), req, "corr-fo-6", 1, nil, "", nil)
+	fo := r.newRunFailover(context.Background(), req, "corr-fo-6", 1, nil, "", r.router, nil)
 
 	// Call 1: primary fails, fallback succeeds.
 	_, p1, m1, err := fo.generate(context.Background(), primary, "gpt-4o", &llm.Request{Model: "gpt-4o"})

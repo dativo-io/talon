@@ -31,7 +31,8 @@ func TestHandleWebhook_RendersTemplate(t *testing.T) {
 			},
 		},
 	}
-	handler := NewWebhookHandler(runner, pol)
+	handler := NewWebhookHandler(runner)
+	require.NoError(t, handler.Register(pol))
 	router := webhookRouter(handler)
 
 	body, _ := json.Marshal(map[string]string{"action": "completed"})
@@ -50,7 +51,8 @@ func TestHandleWebhook_RendersTemplate(t *testing.T) {
 func TestHandleWebhook_UnknownTrigger(t *testing.T) {
 	runner := &mockRunner{}
 	pol := &policy.Policy{Agent: policy.AgentConfig{Name: "bot"}}
-	handler := NewWebhookHandler(runner, pol)
+	handler := NewWebhookHandler(runner)
+	require.NoError(t, handler.Register(pol))
 	router := webhookRouter(handler)
 
 	body, _ := json.Marshal(map[string]string{"action": "test"})
@@ -71,7 +73,8 @@ func TestHandleWebhook_InvalidJSON(t *testing.T) {
 			},
 		},
 	}
-	handler := NewWebhookHandler(runner, pol)
+	handler := NewWebhookHandler(runner)
+	require.NoError(t, handler.Register(pol))
 	router := webhookRouter(handler)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/triggers/test", bytes.NewReader([]byte("not json")))
@@ -91,7 +94,8 @@ func TestHandleWebhook_ReturnsSuccess(t *testing.T) {
 			},
 		},
 	}
-	handler := NewWebhookHandler(runner, pol)
+	handler := NewWebhookHandler(runner)
+	require.NoError(t, handler.Register(pol))
 	router := webhookRouter(handler)
 
 	body, _ := json.Marshal(map[string]string{"msg": "server down"})
@@ -121,7 +125,8 @@ func TestHandleWebhook_RequireApproval_GatesExecution(t *testing.T) {
 			},
 		},
 	}
-	handler := NewWebhookHandler(runner, pol)
+	handler := NewWebhookHandler(runner)
+	require.NoError(t, handler.Register(pol))
 	router := webhookRouter(handler)
 
 	body, _ := json.Marshal(map[string]interface{}{"issue": map[string]string{"key": "PROJ-123"}})
@@ -137,6 +142,48 @@ func TestHandleWebhook_RequireApproval_GatesExecution(t *testing.T) {
 	assert.Equal(t, "pending_approval", resp.Status)
 	assert.Contains(t, resp.Message, "human approval")
 	assert.Empty(t, runner.calls, "agent must not run when require_approval is true")
+}
+
+// TestWebhookHandler_FleetRegistration (#267): webhook names are ONE route
+// namespace across the fleet — each route dispatches to the agent whose
+// policy declared it, and a name claimed twice fails closed naming both.
+func TestWebhookHandler_FleetRegistration(t *testing.T) {
+	runner := &mockRunner{}
+	handler := NewWebhookHandler(runner)
+	require.NoError(t, handler.Register(&policy.Policy{
+		Agent: policy.AgentConfig{Name: "support"},
+		Triggers: &policy.TriggersConfig{Webhooks: []policy.WebhookTrigger{
+			{Name: "ticket", Source: "zendesk", PromptTemplate: "Ticket: {{.payload.id}}"},
+		}},
+	}))
+	require.NoError(t, handler.Register(&policy.Policy{
+		Agent: policy.AgentConfig{Name: "coding"},
+		Triggers: &policy.TriggersConfig{Webhooks: []policy.WebhookTrigger{
+			{Name: "push", Source: "github", PromptTemplate: "Push: {{.payload.ref}}"},
+		}},
+	}))
+
+	// Each route dispatches to ITS declaring agent.
+	router := webhookRouter(handler)
+	body, _ := json.Marshal(map[string]string{"ref": "main"})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/triggers/push", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, runner.calls, 1)
+	assert.Contains(t, runner.calls[0], "coding", "the push webhook dispatches to the agent that declared it")
+
+	// A duplicate name across agents fails closed, naming both agents.
+	err := handler.Register(&policy.Policy{
+		Agent: policy.AgentConfig{Name: "summarizer"},
+		Triggers: &policy.TriggersConfig{Webhooks: []policy.WebhookTrigger{
+			{Name: "ticket", Source: "jira", PromptTemplate: "T: {{.payload.id}}"},
+		}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "support")
+	assert.Contains(t, err.Error(), "summarizer")
 }
 
 func TestRenderTemplate_UntrustedPayload_Sanitized(t *testing.T) {

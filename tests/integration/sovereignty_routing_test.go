@@ -17,8 +17,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/dativo-io/talon/internal/agent"
+	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/attachment"
-	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/llm"
 	"github.com/dativo-io/talon/internal/policy"
@@ -27,6 +27,21 @@ import (
 	talonsession "github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/testutil"
 )
+
+// CatalogForPolicyFile builds a one-agent runtime catalog from a policy file
+// over the given providers — the production resolution shape (#267): the
+// runner resolves the agent's compiled bundle (policy + engine + scanner +
+// router) from this holder.
+func CatalogForPolicyFile(t *testing.T, policyPath string, providers map[string]llm.Provider) *agentcatalog.RuntimeHolder {
+	t.Helper()
+	ctx := context.Background()
+	scan, err := agentcatalog.Source{File: policyPath}.Scan(ctx)
+	require.NoError(t, err)
+	bundles, err := agentcatalog.BuildRuntimeAgents(ctx, scan, agentcatalog.BundleDeps{Providers: providers})
+	require.NoError(t, err)
+	snap := agentcatalog.NewRuntimeSnapshot(scan, bundles, nil, time.Now().UTC())
+	return agentcatalog.NewRuntimeHolder(snap)
+}
 
 // jurisdictionCountingProvider is a mock LLM provider with a configurable
 // jurisdiction (US/LOCAL) that counts how many times it is dispatched — enough
@@ -108,12 +123,12 @@ compliance:
 	require.NoError(t, err)
 	t.Cleanup(func() { secStore.Close() })
 
+	_ = routingCfg // the catalog bundle carries the routing config from the policy file (#267)
 	runner := agent.NewRunner(agent.RunnerConfig{
+		Catalog:    CatalogForPolicyFile(t, policyPath, map[string]llm.Provider{"openai": openaiUS, "ollama": ollamaLocal}),
 		PolicyDir:  dir,
-		Classifier: classifier.MustNewScanner(),
 		AttScanner: attachment.MustNewScanner(),
 		Extractor:  attachment.NewExtractor(10),
-		Router:     llm.NewRouter(routingCfg, map[string]llm.Provider{"openai": openaiUS, "ollama": ollamaLocal}, nil),
 		Secrets:    secStore,
 		Evidence:   evStore,
 	})
@@ -203,15 +218,15 @@ compliance: { human_oversight: "none" }
 	sessStore, err := talonsession.NewStore(filepath.Join(dir, "sessions.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sessStore.Close() })
+	_ = routingCfg // the catalog bundle carries the routing config from the policy file (#267)
 	runner := agent.NewRunner(agent.RunnerConfig{
-		PolicyDir:  dir,
-		Classifier: classifier.MustNewScanner(),
-		AttScanner: attachment.MustNewScanner(),
-		Extractor:  attachment.NewExtractor(10),
-		Router: llm.NewRouter(routingCfg, map[string]llm.Provider{
+		Catalog: CatalogForPolicyFile(t, policyPath, map[string]llm.Provider{
 			"openai": &jurisdictionCountingProvider{name: "openai", jurisdiction: "US"},
 			"ollama": &jurisdictionCountingProvider{name: "ollama", jurisdiction: "LOCAL"},
-		}, nil),
+		}),
+		PolicyDir:    dir,
+		AttScanner:   attachment.MustNewScanner(),
+		Extractor:    attachment.NewExtractor(10),
 		Secrets:      secStore,
 		Evidence:     evStore,
 		SessionStore: sessStore,

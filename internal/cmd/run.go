@@ -26,7 +26,6 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/pricing"
 	talonprompt "github.com/dativo-io/talon/internal/prompt"
-	"github.com/dativo-io/talon/internal/scanner"
 	"github.com/dativo-io/talon/internal/secrets"
 	talonsession "github.com/dativo-io/talon/internal/session"
 	"github.com/dativo-io/talon/internal/sovereignty"
@@ -51,7 +50,7 @@ var runCmd = &cobra.Command{
 }
 
 func init() {
-	runCmd.Flags().StringVar(&runAgentName, "agent", "default", "Agent name (when omitted, taken from the loaded policy file). An explicit name must match the loaded policy's agent.name: until agents_dir (#267) exactly one agent policy is loaded per process (TALON_DEFAULT_POLICY/--policy selects it), and a mismatch errors instead of running under the wrong policy")
+	runCmd.Flags().StringVar(&runAgentName, "agent", "default", "Agent name. With agents_dir configured, any discovered agent runs under its OWN policy (#267); \"default\" resolves when exactly one agent is discovered. With --policy or a single default file, the name must match that file's agent.name")
 	runCmd.Flags().StringVar(&runTenantID, "tenant", "default", "Tenant ID")
 	runCmd.Flags().BoolVar(&runDryRun, "dry-run", false, "Show policy decision without LLM call")
 	runCmd.Flags().BoolVar(&runValidate, "validate", false, "Validate policy before running (same as talon validate)")
@@ -84,67 +83,36 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		log.Info().Msg("Initializing agent pipeline...")
 	}
 
-	policyPath := runPolicyPath
-	if policyPath == "" {
-		policyPath = cfg.DefaultPolicy
-	}
-
-	baseDir := "."
-	safePath, err := policy.ResolvePathUnderBase(baseDir, policyPath)
+	// Fleet source (#267): explicit --policy wins; otherwise agents_dir when
+	// configured; otherwise the default single file. Every discovered agent
+	// gets its own compiled bundle — `talon run --agent <name>` executes any
+	// fleet agent under THAT agent's policy, engine, scanner, and routing.
+	scan, err := cliAgentScan(ctx, cfg, runPolicyPath)
 	if err != nil {
-		// Allow absolute paths (e.g. e2e or Docker): constrain to the path's directory.
-		if filepath.IsAbs(filepath.Clean(policyPath)) {
-			safePath, err = filepath.Abs(filepath.Clean(policyPath))
-			if err != nil {
-				return fmt.Errorf("policy path: %w", err)
-			}
-			baseDir = filepath.Dir(safePath)
-			if _, err := policy.ResolvePathUnderBase(baseDir, safePath); err != nil {
-				return fmt.Errorf("policy path: %w", err)
-			}
-		} else {
-			return fmt.Errorf("policy path: %w", err)
-		}
+		return err
 	}
-	if _, err := os.Stat(safePath); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("policy file not found: %s — create a project first with: talon init", safePath)
-		}
-		return fmt.Errorf("policy file: %w", err)
+	ra, err := resolveCatalogAgent(scan, runAgentName)
+	if err != nil {
+		return err
 	}
-	policyPath = safePath
-	baseDir = filepath.Dir(safePath) // so pricing and other project paths resolve relative to policy directory
-
-	agentName := resolveRunAgentName(ctx, policyPath, baseDir, runAgentName)
+	agentName := ra.Name
+	pricingBaseDir := cliPricingBaseDir(cfg, runPolicyPath, ra.Path)
 
 	if runValidate {
-		if err := validatePolicyFile(ctx, policyPath, baseDir); err != nil {
+		if err := validatePolicyFile(ctx, filepath.Base(ra.Path), filepath.Dir(ra.Path)); err != nil {
 			return fmt.Errorf("pre-flight validation failed: %w", err)
 		}
 		if verbose {
-			log.Info().Str("policy", policyPath).Msg("policy validated")
+			log.Info().Str("policy", ra.Path).Msg("policy validated")
 		}
-	}
-
-	polForScanner, err := policy.LoadPolicy(ctx, policyPath, false, baseDir)
-	if err != nil {
-		return fmt.Errorf("loading policy for scanner: %w", err)
 	}
 
 	// agent.tenant_id is authoritative across planes (#266): the same agent
 	// file must attribute to the same tenant whether traffic crosses the
 	// gateway or runs natively. The flag applies only when the file omits it.
-	effectiveTenantID, err := resolveRunTenant(polForScanner, runTenantID, cmd.Flags().Changed("tenant"))
+	effectiveTenantID, err := resolveRunTenant(ra.Policy, runTenantID, cmd.Flags().Changed("tenant"))
 	if err != nil {
 		return err
-	}
-	policyEngineForScanner, err := policy.NewEngine(ctx, polForScanner)
-	if err != nil {
-		return fmt.Errorf("policy engine for scanner: %w", err)
-	}
-	cls, err := scanner.Build(ctx, cfg, polForScanner, policyEngineForScanner)
-	if err != nil {
-		return fmt.Errorf("initializing PII scanner: %w", err)
 	}
 	attScanner := attachment.MustNewScanner()
 	extractor := attachment.NewExtractor(cfg.MaxAttachmentMB)
@@ -152,10 +120,12 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	sovereignty.ApplySovereigntyGate(cfg, nil)
 
 	providers := buildProviders(cfg)
-	pricingTable := loadPricingTable(cfg, baseDir)
+	pricingTable := loadPricingTable(cfg, pricingBaseDir)
 	injectPricingInProviders(providers, pricingTable)
-	routing, costLimits := loadRoutingAndCostLimits(ctx, policyPath, baseDir)
-	router := llm.NewRouter(routing, providers, costLimits)
+	catalog, err := buildCLICatalog(ctx, cfg, scan, providers)
+	if err != nil {
+		return err
+	}
 
 	secretsStore, err := secrets.NewSecretStore(cfg.SecretsDBPath(), cfg.SecretsKey)
 	if err != nil {
@@ -214,11 +184,10 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 
 	runnerCfg := agent.RunnerConfig{
+		Catalog:          catalog,
 		PolicyDir:        ".",
-		Classifier:       cls,
 		AttScanner:       attScanner,
 		Extractor:        extractor,
-		Router:           router,
 		Secrets:          secretsStore,
 		Evidence:         evidenceStore,
 		PlanReview:       planReviewStore,
@@ -242,7 +211,6 @@ func runAgent(cmd *cobra.Command, args []string) error {
 			} else {
 				runnerCfg.CacheStore = cacheStore
 				runnerCfg.CacheEmbedder = cache.NewBM25()
-				runnerCfg.CacheScrubber = cache.NewPIIScrubber(cls)
 				runnerCfg.CachePolicy = cachePolicy
 				runnerCfg.CacheConfig = &agent.RunnerCacheConfig{
 					Enabled:             cfg.Cache.Enabled,
@@ -276,7 +244,6 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		Attachments:    attachments,
 		InvocationType: "manual",
 		DryRun:         runDryRun,
-		PolicyPath:     policyPath,
 		SkipMemory:     runNoMemory,
 	}
 	if cfg.LLM != nil && cfg.LLM.Routing != nil && cfg.LLM.Routing.DataSovereigntyMode != "" {
@@ -429,32 +396,4 @@ func validatePolicyFile(ctx context.Context, policyPath, baseDir string) error {
 		return fmt.Errorf("PII scanner: %w", err)
 	}
 	return nil
-}
-
-// resolveRunAgentName returns the agent name to use for the run. When runAgentName is the
-// default "default", the name is read from the loaded policy file so that config and identity
-// come from the same source; otherwise the flag value is used.
-func resolveRunAgentName(ctx context.Context, policyPath, baseDir, runAgentName string) string {
-	if runAgentName != "default" {
-		return runAgentName
-	}
-	pol, err := policy.LoadPolicy(ctx, policyPath, false, baseDir)
-	if err != nil {
-		return "default"
-	}
-	if pol.Agent.Name == "" {
-		return "default"
-	}
-	return pol.Agent.Name
-}
-
-// loadRoutingAndCostLimits loads the policy file and returns model routing and cost limits
-// for the router (cost limits enable graceful degradation when budget threshold is hit).
-func loadRoutingAndCostLimits(ctx context.Context, policyPath, baseDir string) (*policy.ModelRoutingConfig, *policy.CostLimitsConfig) {
-	pol, err := policy.LoadPolicy(ctx, policyPath, false, baseDir)
-	if err != nil {
-		log.Debug().Err(err).Msg("could not pre-load policy for routing/cost config")
-		return nil, nil
-	}
-	return pol.Policies.ModelRouting, pol.Policies.CostLimits
 }

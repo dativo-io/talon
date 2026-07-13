@@ -9,6 +9,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// catalogOnly wraps scanned agents without compiled bundles — snapshot
+// mechanics under test, not bundle building (that is bundle_test.go's job).
+func catalogOnly(scan *ScanResult) []*RuntimeAgent {
+	out := make([]*RuntimeAgent, 0, len(scan.Agents))
+	for i := range scan.Agents {
+		out = append(out, &RuntimeAgent{CatalogAgent: scan.Agents[i]})
+	}
+	return out
+}
+
 func TestRuntimeSnapshot_GetListLen(t *testing.T) {
 	dir := t.TempDir()
 	writeAgentFile(t, dir, "a", "agent-a", "key-a")
@@ -17,7 +27,7 @@ func TestRuntimeSnapshot_GetListLen(t *testing.T) {
 	require.NoError(t, err)
 
 	built := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
-	snap := NewRuntimeSnapshot(scan, nil, built)
+	snap := NewRuntimeSnapshot(scan, catalogOnly(scan), nil, built)
 	assert.Equal(t, scan.Digest, snap.Generation)
 	assert.Equal(t, built, snap.BuiltAt)
 	assert.Equal(t, 2, snap.Len())
@@ -58,7 +68,7 @@ func TestRuntimeHolder_CurrentSwapNilSafety(t *testing.T) {
 	writeAgentFile(t, dir, "a", "agent-a", "")
 	scan, err := DiscoverAgents(context.Background(), dir)
 	require.NoError(t, err)
-	gen1 := NewRuntimeSnapshot(scan, nil, time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC))
+	gen1 := NewRuntimeSnapshot(scan, catalogOnly(scan), nil, time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC))
 
 	holder.Swap(gen1)
 	assert.Same(t, gen1, holder.Current())

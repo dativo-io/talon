@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
@@ -39,10 +41,11 @@ func TestResolveRunTenant(t *testing.T) {
 	assert.Equal(t, "default", got)
 }
 
-// TestHolderKeyResolver_SwapPropagatesToServerAuth (#289): server tenant-API
-// auth resolves through the shared registry holder, so one reload Swap
-// changes which keys authenticate — including the HasAgentKeys dev-open
-// signal — without middleware rebuilds.
+// TestHolderKeyResolver_SwapPropagatesToServerAuth (#289/#267): server
+// tenant-API auth resolves through the ONE runtime holder, so one reload
+// Swap changes which keys authenticate — including the HasAgentKeys dev-open
+// signal — without middleware rebuilds, and every authentication carries the
+// generation token it resolved against.
 func TestHolderKeyResolver_SwapPropagatesToServerAuth(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -52,46 +55,49 @@ func TestHolderKeyResolver_SwapPropagatesToServerAuth(t *testing.T) {
 	require.NoError(t, vault.Set(ctx, "old-key", []byte("tk-old"), secrets.ACL{}))
 	require.NoError(t, vault.Set(ctx, "new-key", []byte("tk-new"), secrets.ACL{}))
 
-	buildReg := func(secretName string) *gateway.IdentityRegistry {
+	buildSnap := func(secretName string) *agentcatalog.RuntimeSnapshot {
 		reg, err := gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{
 			{Path: "a.yaml", Name: "support", TenantID: "acme", Team: "cx", KeySecretName: secretName},
 		}, vault, "")
 		require.NoError(t, err)
-		return reg
+		scan := &agentcatalog.ScanResult{Source: "test", Digest: "gen-" + secretName}
+		return agentcatalog.NewRuntimeSnapshot(scan, nil, reg, time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC))
 	}
 
-	holder := gateway.NewRegistryHolder(nil)
+	holder := agentcatalog.NewRuntimeHolder(nil)
 	resolver := holderKeyResolver{holder: holder}
 
 	auth := resolver.AuthenticateAgentKey("tk-old")
-	assert.False(t, auth.KeysConfigured, "nil registry = no keys configured")
+	assert.False(t, auth.KeysConfigured, "nil generation = no keys configured")
 	assert.False(t, auth.Found)
 
-	holder.Swap(buildReg("old-key"))
+	holder.Swap(buildSnap("old-key"))
 	auth = resolver.AuthenticateAgentKey("tk-old")
 	assert.True(t, auth.KeysConfigured, "keys appear after the swap")
 	require.True(t, auth.Found)
 	assert.Equal(t, "support", auth.Identity.AgentID)
 	assert.Equal(t, "acme", auth.Identity.TenantID)
 	assert.Equal(t, "cx", auth.Identity.Team, "full identity travels through, not just the tenant")
+	assert.Equal(t, "gen-old-key", auth.Identity.Generation, "authentication carries its generation token (#267)")
 
-	// Key rotation: the old key stops authenticating, the new one starts.
-	holder.Swap(buildReg("new-key"))
+	// Key rotation: the old key stops authenticating, the new one starts —
+	// under the NEW generation token.
+	holder.Swap(buildSnap("new-key"))
 	auth = resolver.AuthenticateAgentKey("tk-old")
 	assert.False(t, auth.Found, "rotated-out key must stop authenticating")
 	assert.True(t, auth.KeysConfigured)
-	assert.True(t, resolver.AuthenticateAgentKey("tk-new").Found)
+	auth = resolver.AuthenticateAgentKey("tk-new")
+	assert.True(t, auth.Found)
+	assert.Equal(t, "gen-new-key", auth.Identity.Generation)
 
 	// Single-snapshot consistency under concurrent swaps (#291 review, P1):
 	// hammer empty ↔ non-empty swaps while authenticating a key valid in the
-	// non-empty registry. The dev-open fact (KeysConfigured) and the key
-	// resolution MUST come from the same snapshot, so exactly two outcomes
-	// are legal — {no keys configured, not found} (empty snapshot) or
-	// {keys configured, found} (keyed snapshot). The mixed outcome
-	// {no keys configured, found} — and the dangerous inverse
-	// {keys configured on resolve but dev-open already decided} that the old
-	// two-read API allowed — must never appear.
-	keyed := buildReg("new-key")
+	// non-empty generation. The dev-open fact (KeysConfigured), the key
+	// resolution, AND the generation token MUST come from the same snapshot,
+	// so exactly two outcomes are legal — {no keys, not found} (empty) or
+	// {keys, found, gen-new-key} (keyed). Any mixed outcome means two reads
+	// straddled a swap.
+	keyed := buildSnap("new-key")
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -104,6 +110,7 @@ func TestHolderKeyResolver_SwapPropagatesToServerAuth(t *testing.T) {
 		a := resolver.AuthenticateAgentKey("tk-new")
 		if a.KeysConfigured {
 			assert.True(t, a.Found, "keyed snapshot must resolve the key valid in it")
+			assert.Equal(t, "gen-new-key", a.Identity.Generation, "generation from the SAME snapshot as the resolution")
 		} else {
 			assert.False(t, a.Found, "empty snapshot cannot resolve anything")
 		}

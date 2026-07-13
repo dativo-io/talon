@@ -554,10 +554,8 @@ func TestWriteMemoryObservation_RedactsPIIBeforeGovernance(t *testing.T) {
 	defer memStore.Close()
 
 	cls := classifier.MustNewScanner()
-	gov := memory.NewGovernance(memStore, cls)
 	r := &Runner{
 		memory:     memStore,
-		governance: gov,
 		classifier: cls,
 	}
 
@@ -587,7 +585,7 @@ func TestWriteMemoryObservation_RedactsPIIBeforeGovernance(t *testing.T) {
 		},
 	}
 
-	r.writeMemoryObservation(ctx, req, pol, nil, resp, ev)
+	r.writeMemoryObservation(ctx, req, pol, nil, cls, resp, ev)
 
 	entries, err := memStore.List(ctx, "default", "agent-1", "", 10)
 	require.NoError(t, err)

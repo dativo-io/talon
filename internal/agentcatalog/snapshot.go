@@ -4,16 +4,30 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/gateway"
+	"github.com/dativo-io/talon/internal/llm"
+	"github.com/dativo-io/talon/internal/policy"
 )
 
-// RuntimeAgent is one agent as every execution surface resolves it. PR-2 of
-// Fleet Operations v1 (#267) adds the compiled per-agent runtime bundle
-// (policy engine, scanner, router) so a native run can never execute agent
-// A's config under agent B's engine or routing; until then it carries the
-// catalog identity.
+// RuntimeAgent is one agent as every execution surface resolves it (#267):
+// the catalog identity plus the compiled runtime bundle. A native run
+// captures ONE RuntimeAgent at entry and uses its Engine/Classifier/Router
+// through completion, so agent A's config can never execute under agent B's
+// engine, scanner, or routing. Bundles are immutable after build; shared
+// process infrastructure (provider clients, vault, stores) lives outside.
 type RuntimeAgent struct {
 	CatalogAgent
+
+	// Engine is this agent's compiled OPA engine (built once per generation
+	// by BuildBundle — never per run).
+	Engine *policy.Engine
+	// Classifier is this agent's policy-aware PII scanner, including
+	// semantic enrichment when the policy enables it.
+	Classifier classifier.Facade
+	// Router carries this agent's routing rules + cost limits over the
+	// SHARED provider clients.
+	Router *llm.Router
 }
 
 // ScanMeta is the discovery provenance a snapshot carries for the fleet
@@ -46,19 +60,19 @@ type RuntimeSnapshot struct {
 	ordered []*RuntimeAgent
 }
 
-// NewRuntimeSnapshot builds one generation from a valid scan and the registry
-// constructed from the same agents. The scan must be the one the registry was
-// built from — the snapshot is the invariant that keeps them paired.
-func NewRuntimeSnapshot(scan *ScanResult, registry *gateway.IdentityRegistry, builtAt time.Time) *RuntimeSnapshot {
+// NewRuntimeSnapshot builds one generation from a valid scan, the compiled
+// bundles, and the registry — all constructed from the SAME agents. The
+// snapshot is the invariant that keeps catalog, bundles, and registry paired:
+// one atomic pointer publishes them together, never separately.
+func NewRuntimeSnapshot(scan *ScanResult, agents []*RuntimeAgent, registry *gateway.IdentityRegistry, builtAt time.Time) *RuntimeSnapshot {
 	s := &RuntimeSnapshot{
 		Generation: scan.Digest,
 		BuiltAt:    builtAt,
 		Registry:   registry,
 		Scan:       ScanMeta{Source: scan.Source, Issues: append([]FleetIssue(nil), scan.Issues...)},
-		agents:     make(map[string]*RuntimeAgent, len(scan.Agents)),
+		agents:     make(map[string]*RuntimeAgent, len(agents)),
 	}
-	for i := range scan.Agents {
-		ra := &RuntimeAgent{CatalogAgent: scan.Agents[i]}
+	for _, ra := range agents {
 		s.agents[ra.Name] = ra
 		s.ordered = append(s.ordered, ra)
 	}
@@ -126,4 +140,27 @@ func (h *RuntimeHolder) Swap(next *RuntimeSnapshot) {
 		return
 	}
 	h.p.Store(next)
+}
+
+// registryView adapts the runtime holder into the gateway's RegistrySource:
+// gateway and server authentication read the registry of the CURRENT
+// generation — the same snapshot native execution resolves bundles from.
+// There is no independently swappable registry pointer (#267 review): one
+// Swap on the runtime holder moves authentication, caps, metrics scope, and
+// execution together.
+type registryView struct {
+	h *RuntimeHolder
+}
+
+func (v registryView) Current() *gateway.IdentityRegistry {
+	if snap := v.h.Current(); snap != nil {
+		return snap.Registry
+	}
+	return nil
+}
+
+// RegistrySource returns the gateway-facing view over this holder's current
+// generation.
+func (h *RuntimeHolder) RegistrySource() gateway.RegistrySource {
+	return registryView{h: h}
 }
