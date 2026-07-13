@@ -35,7 +35,7 @@ func TestSessionLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ss.ID, got.ID)
 
-	err = s.Complete(ctx, ss.ID, "acme", 0.12, 123)
+	err = s.Complete(ctx, ss.ID, "acme", "", 0.12, 123)
 	require.NoError(t, err)
 
 	_, err = s.Join(ctx, ss.ID, "acme")
@@ -102,7 +102,7 @@ func TestListByTenant(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, listNone, "unknown agent sees nothing, not everything")
 
-	require.NoError(t, store.Complete(ctx, s2.ID, "acme", 0, 0))
+	require.NoError(t, store.Complete(ctx, s2.ID, "acme", "", 0, 0))
 	listAfter, err := store.ListByTenant(ctx, "acme", "", StatusCompleted)
 	require.NoError(t, err)
 	require.Len(t, listAfter, 1)
@@ -253,13 +253,22 @@ func TestComplete_TenantScoped(t *testing.T) {
 	ss, err := s.Create(ctx, "acme", "agent-a", "r", 0)
 	require.NoError(t, err)
 
-	err = s.Complete(ctx, ss.ID, "other-tenant", 0, 0)
+	err = s.Complete(ctx, ss.ID, "other-tenant", "", 0, 0)
 	require.ErrorIs(t, err, ErrSessionNotFound, "cross-tenant complete must not mutate (#215)")
 	got, err := s.Get(ctx, ss.ID, "acme")
 	require.NoError(t, err)
 	require.Equal(t, StatusActive, got.Status, "session must remain active after cross-tenant attempt")
 
-	require.NoError(t, s.Complete(ctx, ss.ID, "acme", 0, 0))
+	// Agent scope is enforced in the UPDATE itself (#286 review, P1): a
+	// non-owning agent cannot complete the session, and the failed attempt
+	// is indistinguishable from a missing session.
+	err = s.Complete(ctx, ss.ID, "acme", "agent-b", 0, 0)
+	require.ErrorIs(t, err, ErrSessionNotFound, "cross-agent complete must not mutate")
+	got, err = s.Get(ctx, ss.ID, "acme")
+	require.NoError(t, err)
+	require.Equal(t, StatusActive, got.Status, "session must remain active after cross-agent attempt")
+
+	require.NoError(t, s.Complete(ctx, ss.ID, "acme", "agent-a", 0, 0))
 	got, err = s.Get(ctx, ss.ID, "acme")
 	require.NoError(t, err)
 	require.Equal(t, StatusCompleted, got.Status)

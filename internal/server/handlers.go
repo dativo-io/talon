@@ -1811,7 +1811,11 @@ func (s *Server) handleSessionComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := s.sessionStore.Complete(r.Context(), id, sessionTenantScope(r), 0, 0); err != nil {
+	// Completion is a MUTATION on the session and follows the same agent
+	// ownership rule as reads (#286 review, P1): an agent key may complete
+	// only its own sessions; admin/dev keeps the tenant-wide scope.
+	agentScope, _ := agentReadScope(r.Context(), "")
+	if err := s.sessionStore.Complete(r.Context(), id, sessionTenantScope(r), agentScope, 0, 0); err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
 			// Missing and other-tenant sessions are indistinguishable (#215).
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})

@@ -283,6 +283,38 @@ func TestMetricsQuerierBudget(t *testing.T) {
 	assert.InDelta(t, 10.0, snap.BudgetStatus.DailyLimit, 0.01)
 }
 
+// TestBudgetLimitsFn_FollowsLiveSource (#291 review, P2): with a live
+// limits function the snapshot denominators track the source per snapshot —
+// serve wires this to the identity-registry holder so a reload (#269) moves
+// the budget denominators together with the tenant scope.
+func TestBudgetLimitsFn_FollowsLiveSource(t *testing.T) {
+	q := &mockQuerier{costTotal: 5.0}
+	daily, monthly := 10.0, 100.0
+	c := newTestCollector("enforce", q, WithBudgetLimitsFn(func() (float64, float64) {
+		return daily, monthly
+	}))
+	defer c.Close()
+
+	snap := c.Snapshot(context.Background())
+	require.NotNil(t, snap.BudgetStatus)
+	assert.InDelta(t, 10.0, snap.BudgetStatus.DailyLimit, 0.01)
+	assert.InDelta(t, 50.0, snap.BudgetStatus.DailyPercent, 0.1)
+
+	// The source changes (e.g. a registry reload resolves new caps): the
+	// next snapshot must denominate against the NEW limits.
+	daily, monthly = 20.0, 200.0
+	snap = c.Snapshot(context.Background())
+	require.NotNil(t, snap.BudgetStatus)
+	assert.InDelta(t, 20.0, snap.BudgetStatus.DailyLimit, 0.01)
+	assert.InDelta(t, 25.0, snap.BudgetStatus.DailyPercent, 0.1)
+
+	// A source reporting no caps hides the panel — same contract as the
+	// static zero-limits case.
+	daily, monthly = 0, 0
+	snap = c.Snapshot(context.Background())
+	assert.Nil(t, snap.BudgetStatus)
+}
+
 func TestMetricsQuerierCache(t *testing.T) {
 	q := &mockQuerier{cacheHits: 15, cacheSaved: 0.75}
 	c := newTestCollector("enforce", q)

@@ -576,28 +576,32 @@ func runServe(cmd *cobra.Command, args []string) error {
 		// which with #266's single loaded agent is exactly that agent's cap.
 		// (Agents with no positive cap contribute nothing; sum-of-caps is an
 		// aggregate, refined per-agent by the fleet view #270.) Quickstart
-		// resolves its synthetic identity the same way. Native mode keeps
-		// the agent policy's own cost_limits — the runner enforces those.
-		// The default agent FILE is never consulted first anymore.
-		budgetDaily, budgetMonthly := 0.0, 0.0
+		// resolves its synthetic identity the same way. The limits are a
+		// LIVE function over the holder (#291 review, P2): a registry reload
+		// (#269) moves the denominators together with the tenant scope.
+		// Native mode keeps the agent policy's own static cost_limits — the
+		// runner enforces those. The default agent FILE is never consulted
+		// first anymore.
 		switch {
 		case gatewayCfgForMode != nil:
 			orgPol := gatewayCfgForMode.OrganizationPolicy
-			idents := registryHolder.Current().Identities()
-			if len(idents) == 0 && serveProxyQuickstart {
-				idents = []*gateway.ResolvedIdentity{gateway.NewQuickstartIdentity()}
-			}
-			for _, id := range idents {
-				eff := gateway.ResolveEffectivePolicy(orgPol, gateway.ProviderConfig{}, id.Override)
-				budgetDaily += eff.BindingDailyCap()
-				budgetMonthly += eff.BindingMonthlyCap()
-			}
+			collectorOpts = append(collectorOpts, metrics.WithBudgetLimitsFn(func() (float64, float64) {
+				idents := registryHolder.Current().Identities()
+				if len(idents) == 0 && serveProxyQuickstart {
+					idents = []*gateway.ResolvedIdentity{gateway.NewQuickstartIdentity()}
+				}
+				daily, monthly := 0.0, 0.0
+				for _, id := range idents {
+					eff := gateway.ResolveEffectivePolicy(orgPol, gateway.ProviderConfig{}, id.Override)
+					daily += eff.BindingDailyCap()
+					monthly += eff.BindingMonthlyCap()
+				}
+				return daily, monthly
+			}))
 		case pol.Policies.CostLimits != nil:
-			budgetDaily = pol.Policies.CostLimits.Daily
-			budgetMonthly = pol.Policies.CostLimits.Monthly
-		}
-		if budgetDaily > 0 || budgetMonthly > 0 {
-			collectorOpts = append(collectorOpts, metrics.WithBudgetLimits(budgetDaily, budgetMonthly))
+			if pol.Policies.CostLimits.Daily > 0 || pol.Policies.CostLimits.Monthly > 0 {
+				collectorOpts = append(collectorOpts, metrics.WithBudgetLimits(pol.Policies.CostLimits.Daily, pol.Policies.CostLimits.Monthly))
+			}
 		}
 
 		metricsCollector = metrics.NewCollector(enforcementMode, evidenceStore, collectorOpts...)

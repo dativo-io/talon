@@ -435,6 +435,7 @@ gateway:
 		{"negative max_daily_cost ceiling", base + "  organization_policy:\n    constraints:\n      max_daily_cost: -1\n", "must not be negative"},
 		{"star in org allowed_models", base + "  organization_policy:\n    constraints:\n      allowed_models: [\"*\"]\n", "must not contain"},
 		{"star in org allowed_providers", base + "  organization_policy:\n    constraints:\n      allowed_providers: [\"*\"]\n", "must not contain"},
+		{"star in org allowed_tools", base + "  organization_policy:\n    constraints:\n      allowed_tools: [\"*\"]\n", "must not contain"},
 		{"star in provider allowed_models", provider("      allowed_models: [\"*\"]\n"), "must not contain"},
 		{"invalid provider tool_policy_action", provider("      tool_policy_action: blok\n"), "tool_policy_action"},
 	}

@@ -24,21 +24,26 @@ import (
 )
 
 var (
-	costsAgent        string
-	costsServerURL    string
-	costsTenant       string
-	costsByModel      bool
-	costsByProvider   bool
-	costsByTeam       bool
-	costsSession      string
-	costsJSON         bool
-	costsExportFmt    string
-	costsExportFrom   string
-	costsExportTo     string
-	costsExportTenant string
-	costsExportAgent  string
-	costsExportOutput string
-	costsExportLimit  int
+	costsAgent string
+	// costsServerURL is the running server queried for authoritative budget
+	// caps (#288). costsServerURLExplicit records whether the operator set
+	// --url themselves — that decides whether a reachable-but-failing server
+	// is a terminal error or a loud warning (#291 review tri-state).
+	costsServerURL         string
+	costsServerURLExplicit bool
+	costsTenant            string
+	costsByModel           bool
+	costsByProvider        bool
+	costsByTeam            bool
+	costsSession           string
+	costsJSON              bool
+	costsExportFmt         string
+	costsExportFrom        string
+	costsExportTo          string
+	costsExportTenant      string
+	costsExportAgent       string
+	costsExportOutput      string
+	costsExportLimit       int
 )
 
 var costsExportCmd = &cobra.Command{
@@ -87,6 +92,12 @@ var costsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, span := tracer.Start(cmd.Context(), "costs")
 		defer span.End()
+
+		// An explicit --url is a statement of intent: failures against it
+		// are terminal. The DEFAULT url is a best-effort probe — an
+		// unrelated service on :8080 must not brick offline `talon costs`
+		// (see resolveBudgetUsage).
+		costsServerURLExplicit = cmd.Flags().Changed("url")
 
 		cfg, err := config.Load()
 		if err != nil {
@@ -217,7 +228,10 @@ var costsCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("cost total monthly: %w", err)
 			}
-			dailyBudget, monthlyBudget := resolveBudgetUsage(ctx, cfg, tenantID, costsAgent, daily, monthly)
+			dailyBudget, monthlyBudget, err := resolveBudgetUsage(ctx, cfg, tenantID, costsAgent, daily, monthly)
+			if err != nil {
+				return err
+			}
 			if costsJSON {
 				weekTotal, _ := store.CostTotal(ctx, tenantID, costsAgent, weekStart, dayEnd)
 				return writeCostsJSON(out, costCurrency, costsPayload{
@@ -248,7 +262,10 @@ var costsCmd = &cobra.Command{
 		dailyTotal, _ := store.CostTotal(ctx, tenantID, "", dayStart, dayEnd)
 		monthlyTotal, _ := store.CostTotal(ctx, tenantID, "", monthStart, monthEnd)
 		weekTotal, _ := store.CostTotal(ctx, tenantID, "", weekStart, dayEnd)
-		dailyBudget, monthlyBudget := resolveBudgetUsage(ctx, cfg, tenantID, "", dailyTotal, monthlyTotal)
+		dailyBudget, monthlyBudget, err := resolveBudgetUsage(ctx, cfg, tenantID, "", dailyTotal, monthlyTotal)
+		if err != nil {
+			return err
+		}
 		cache7d, cache30d := getCacheUsage(ctx, store, tenantID, weekStart, dayEnd, monthStart, monthEnd)
 		if costsJSON {
 			return writeCostsJSON(out, costCurrency, costsPayload{
@@ -281,11 +298,14 @@ func printCacheSavings(w io.Writer, currency string, cache7d, cache30d *cacheUsa
 }
 
 func printBudgetUtilization(w io.Writer, currency string, dailyBudget, monthlyBudget *budgetUsage) {
+	// The source is part of the human output (#291 review): an operator must
+	// see WHERE a denominator came from — the running server's effective
+	// caps (server_*) or a local file — without reaching for --json.
 	if dailyBudget != nil && dailyBudget.LimitEUR > 0 {
-		fmt.Fprintf(w, "  Daily budget:   %.1f%% (%s / %s)\n", dailyBudget.Percent, formatMoney(currency, dailyBudget.UsedEUR), pricing.FormatAmount(currency, fmt.Sprintf("%.2f", dailyBudget.LimitEUR)))
+		fmt.Fprintf(w, "  Daily budget:   %.1f%% (%s / %s) [%s]\n", dailyBudget.Percent, formatMoney(currency, dailyBudget.UsedEUR), pricing.FormatAmount(currency, fmt.Sprintf("%.2f", dailyBudget.LimitEUR)), dailyBudget.Source)
 	}
 	if monthlyBudget != nil && monthlyBudget.LimitEUR > 0 {
-		fmt.Fprintf(w, "  Monthly budget: %.1f%% (%s / %s)\n", monthlyBudget.Percent, formatMoney(currency, monthlyBudget.UsedEUR), pricing.FormatAmount(currency, fmt.Sprintf("%.2f", monthlyBudget.LimitEUR)))
+		fmt.Fprintf(w, "  Monthly budget: %.1f%% (%s / %s) [%s]\n", monthlyBudget.Percent, formatMoney(currency, monthlyBudget.UsedEUR), pricing.FormatAmount(currency, fmt.Sprintf("%.2f", monthlyBudget.LimitEUR)), monthlyBudget.Source)
 	}
 }
 
@@ -294,23 +314,46 @@ func resolveBudgetUsage(
 	cfg *config.Config,
 	tenantID, agentID string,
 	daily, monthly float64,
-) (dailyBudget *budgetUsage, monthlyBudget *budgetUsage) {
+) (dailyBudget, monthlyBudget *budgetUsage, err error) {
 	// The RUNNING server is authoritative when reachable (#288): its
 	// /v1/costs/budget answers with the caps the gateway actually enforces
-	// (registry + ResolveEffectivePolicy + org ceilings), so the CLI cannot
-	// disagree with enforcement by re-loading guessed files. Offline, fall
-	// through to the local resolution below.
-	if d, m, ok := fetchServerBudget(ctx, costsServerURL, tenantID, agentID); ok {
-		return d, m
+	// (registry + ResolveEffectivePolicy + org ceilings). Tri-state (#291
+	// review, P1):
+	//   - answered: return the answer as-is — INCLUDING answers without
+	//     caps (unknown_agent, unresolved_multi_agent, uncapped). Falling
+	//     back to local files after an authoritative "no caps for that
+	//     agent" would reintroduce the guessed-denominator defect.
+	//   - unreachable: the CLI must work offline — local resolution below.
+	//   - reachable but failed (auth, unexpected shape): an explicit error,
+	//     never a silent local answer that may describe a different
+	//     deployment than the one that rejected us.
+	res, outcome, err := fetchServerBudget(ctx, costsServerURL, tenantID, agentID)
+	switch outcome {
+	case serverBudgetAnswered:
+		if res.note != "" {
+			fmt.Fprintf(os.Stderr, "note (server %s): %s\n", res.source, res.note)
+		}
+		return res.daily, res.monthly, nil
+	case serverBudgetFailed:
+		if costsServerURLExplicit {
+			return nil, nil, fmt.Errorf("budget query to %s failed: %w — the running server is authoritative for budget caps; fix the URL/TALON_ADMIN_KEY or stop the server to use local resolution", costsServerURL, err)
+		}
+		// The DEFAULT url is a best-effort probe: something answered on
+		// :8080 but not usefully (auth, or not Talon at all). Warn loudly —
+		// a local denominator may describe a different deployment than the
+		// one that rejected us — but do not brick offline use over a port
+		// squatter the operator never pointed us at.
+		fmt.Fprintf(os.Stderr, "warning: budget query to %s failed (%v); falling back to LOCAL resolution, which may disagree with the running server — set --url and TALON_ADMIN_KEY for the authoritative caps\n", costsServerURL, err)
 	}
+	// serverBudgetUnavailable: offline — resolve locally.
 	if agentID != "" {
 		if dailyLimit, monthlyLimit, ok := loadAgentEffectiveCaps(ctx, cfg, tenantID, agentID); ok {
-			return toBudgetUsage(daily, dailyLimit, "agent_effective_cap"), toBudgetUsage(monthly, monthlyLimit, "agent_effective_cap")
+			return toBudgetUsage(daily, dailyLimit, "agent_effective_cap"), toBudgetUsage(monthly, monthlyLimit, "agent_effective_cap"), nil
 		}
 	}
-	pol, err := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
-	if err != nil || pol == nil || pol.Policies.CostLimits == nil {
-		return nil, nil
+	pol, polErr := policy.LoadPolicy(ctx, cfg.DefaultPolicy, false, ".")
+	if polErr != nil || pol == nil || pol.Policies.CostLimits == nil {
+		return nil, nil, nil
 	}
 	// The default agent FILE's cost_limits apply only to THAT agent (or the
 	// tenant-wide view). Reporting them as another agent's budget was the
@@ -319,22 +362,45 @@ func resolveBudgetUsage(
 	// denominator rather than a wrong one.
 	if agentID != "" && agentID != pol.Agent.Name {
 		fmt.Fprintf(os.Stderr, "note: agent %q is not the loaded default agent policy (%q) — no budget caps reported; start `talon serve` and use --url for the runtime-resolved caps, or wait for agents_dir discovery (#267)\n", agentID, pol.Agent.Name)
-		return nil, nil
+		return nil, nil, nil
 	}
 	cl := pol.Policies.CostLimits
-	return toBudgetUsage(daily, cl.Daily, "policy_cost_limits"), toBudgetUsage(monthly, cl.Monthly, "policy_cost_limits")
+	return toBudgetUsage(daily, cl.Daily, "policy_cost_limits"), toBudgetUsage(monthly, cl.Monthly, "policy_cost_limits"), nil
 }
 
-// fetchServerBudget queries the running server's /v1/costs/budget (#288). It
-// mirrors `talon metrics`: TALON_ADMIN_KEY authenticates when set, and ANY
-// failure (server down, auth, unexpected shape) falls back to local
-// resolution — the CLI must work offline. Only a definitive answer with a
-// positive cap short-circuits; unknown_agent / unresolved answers fall
-// through so the local path can report its own diagnosis.
-func fetchServerBudget(ctx context.Context, baseURL, tenantID, agentID string) (dailyBudget, monthlyBudget *budgetUsage, ok bool) {
+// serverBudgetOutcome classifies one /v1/costs/budget attempt (#291 review):
+// the three states demand three different behaviors — trust, offline
+// fallback, or explicit failure.
+type serverBudgetOutcome int
+
+const (
+	// serverBudgetUnavailable: could not reach the server at all — the CLI
+	// may fall back to local resolution (offline use is supported).
+	serverBudgetUnavailable serverBudgetOutcome = iota
+	// serverBudgetAnswered: the server gave an authoritative answer (with
+	// or without caps) — use it verbatim, never fall back.
+	serverBudgetAnswered
+	// serverBudgetFailed: the server is up but rejected or garbled the
+	// request (auth, wrong deployment, incompatible shape) — surface an
+	// error instead of silently answering from local guesses.
+	serverBudgetFailed
+)
+
+// serverBudget is one authoritative /v1/costs/budget answer. daily/monthly
+// are nil when the answer carries no cap (unknown agent, uncapped, ...).
+type serverBudget struct {
+	daily, monthly *budgetUsage
+	source         string // budget_source verbatim, or "no_caps" when absent
+	note           string // server-provided diagnosis, if any
+}
+
+// fetchServerBudget queries the running server's /v1/costs/budget (#288),
+// mirroring `talon metrics` conventions: TALON_ADMIN_KEY authenticates when
+// set; an empty base URL disables the server path entirely.
+func fetchServerBudget(ctx context.Context, baseURL, tenantID, agentID string) (*serverBudget, serverBudgetOutcome, error) {
 	trimmed := trimRightSlash(baseURL)
 	if trimmed == "" {
-		return nil, nil, false
+		return nil, serverBudgetUnavailable, nil
 	}
 	u := trimmed + "/v1/costs/budget?tenant_id=" + url.QueryEscape(tenantID)
 	if agentID != "" {
@@ -344,18 +410,19 @@ func fetchServerBudget(ctx context.Context, baseURL, tenantID, agentID string) (
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, nil, false
+		return nil, serverBudgetFailed, err
 	}
 	if adminKey := os.Getenv("TALON_ADMIN_KEY"); adminKey != "" {
 		req.Header.Set("X-Talon-Admin-Key", adminKey)
 	}
 	resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
 	if err != nil {
-		return nil, nil, false
+		// Connection-level failure: server not running / not reachable.
+		return nil, serverBudgetUnavailable, nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, false
+		return nil, serverBudgetFailed, fmt.Errorf("HTTP %d from /v1/costs/budget", resp.StatusCode)
 	}
 	var body struct {
 		DailyUsed    float64 `json:"daily_used"`
@@ -363,16 +430,23 @@ func fetchServerBudget(ctx context.Context, baseURL, tenantID, agentID string) (
 		DailyLimit   float64 `json:"daily_limit"`
 		MonthlyLimit float64 `json:"monthly_limit"`
 		BudgetSource string  `json:"budget_source"`
+		Note         string  `json:"note"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
-		return nil, nil, false
+		return nil, serverBudgetFailed, fmt.Errorf("unexpected /v1/costs/budget response shape: %w", err)
 	}
-	if body.BudgetSource == "" || (body.DailyLimit <= 0 && body.MonthlyLimit <= 0) {
-		return nil, nil, false
+	res := &serverBudget{source: body.BudgetSource, note: body.Note}
+	if res.source == "" {
+		res.source = "no_caps"
 	}
-	source := "server_" + body.BudgetSource
-	return toBudgetUsage(body.DailyUsed, body.DailyLimit, source),
-		toBudgetUsage(body.MonthlyUsed, body.MonthlyLimit, source), true
+	label := "server_" + res.source
+	if body.DailyLimit > 0 {
+		res.daily = toBudgetUsage(body.DailyUsed, body.DailyLimit, label)
+	}
+	if body.MonthlyLimit > 0 {
+		res.monthly = toBudgetUsage(body.MonthlyUsed, body.MonthlyLimit, label)
+	}
+	return res, serverBudgetAnswered, nil
 }
 
 // loadAgentEffectiveCaps reports the agent's effective daily/monthly caps via

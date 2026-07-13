@@ -2423,6 +2423,35 @@ func TestSessionsPlansTriggersAgentScope(t *testing.T) {
 		assert.Equal(t, http.StatusOK, get("/v1/sessions/"+sessFinance.ID, "", "admin-secret").Code)
 	})
 
+	t.Run("session complete is agent-scoped too (mutation, #291 review P1)", func(t *testing.T) {
+		post := func(path, bearer, adminKey string) *httptest.ResponseRecorder {
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, nil)
+			if bearer != "" {
+				req.Header.Set("Authorization", "Bearer "+bearer)
+			}
+			if adminKey != "" {
+				req.Header.Set("X-Talon-Admin-Key", adminKey)
+			}
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			return rec
+		}
+		// Agent A cannot complete agent B's session — and the session stays active.
+		assert.Equal(t, http.StatusNotFound, post("/v1/sessions/"+sessFinance.ID+"/complete", "k_support", "").Code,
+			"an agent key must not mutate another agent's session")
+		still, err := sessStore.Get(ctx, sessFinance.ID, "acme")
+		require.NoError(t, err)
+		assert.Equal(t, talonsession.StatusActive, still.Status, "cross-agent completion attempt must not mutate")
+
+		// The owner can complete its own session. (The route is agent-key
+		// only by design — session completion is accounting, not execution —
+		// so there is no admin case here.)
+		assert.Equal(t, http.StatusOK, post("/v1/sessions/"+sessSupport.ID+"/complete", "k_support", "").Code)
+		done, err := sessStore.Get(ctx, sessSupport.ID, "acme")
+		require.NoError(t, err)
+		assert.Equal(t, talonsession.StatusCompleted, done.Status)
+	})
+
 	t.Run("pending plans are agent-scoped", func(t *testing.T) {
 		body := get("/v1/plans/pending", "k_support", "").Body.String()
 		assert.Contains(t, body, planSupport.ID)

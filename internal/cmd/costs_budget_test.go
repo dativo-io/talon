@@ -14,6 +14,16 @@ import (
 	"github.com/dativo-io/talon/internal/secrets"
 )
 
+// disableServerBudgetProbe makes a costs-command test hermetic: the default
+// --url probes localhost:8080, and whatever happens to listen there on the
+// test host must not change LOCAL-resolution test outcomes.
+func disableServerBudgetProbe(t *testing.T) {
+	t.Helper()
+	prev := costsServerURL
+	costsServerURL = ""
+	t.Cleanup(func() { costsServerURL = prev })
+}
+
 // TestAgentCapsLookupFor_ParityWithEnforcement (#288): the dashboard budget
 // denominator is EXACTLY the cap enforcement gates on for a per-agent
 // override — the same ResolveEffectivePolicy call, including the org budget
@@ -68,14 +78,15 @@ func testRegistryWithOverride(t *testing.T, name, tenant string, override *gatew
 	return reg
 }
 
-// TestFetchServerBudget (#288): the CLI consumes the RUNNING server's budget
-// answer when reachable, labels the source as server-resolved, and falls
-// back cleanly on unreachable servers, non-200s, and non-definitive answers
-// (unknown_agent) so the local path can report its own diagnosis.
+// TestFetchServerBudget (#288, tri-state per the #291 review): a reachable
+// server's answer is AUTHORITATIVE — including answers without caps
+// (unknown_agent, unresolved_multi_agent, uncapped) — an unreachable server
+// permits offline fallback, and a reachable-but-failing server (auth,
+// unexpected shape) is an explicit error, never a silent local guess.
 func TestFetchServerBudget(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("server answer wins with server-labeled source", func(t *testing.T) {
+	t.Run("answered: caps with server-labeled source", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "/v1/costs/budget", r.URL.Path)
 			assert.Equal(t, "acme", r.URL.Query().Get("tenant_id"))
@@ -85,40 +96,75 @@ func TestFetchServerBudget(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		daily, monthly, ok := fetchServerBudget(ctx, srv.URL, "acme", "support")
-		require.True(t, ok)
-		assert.Equal(t, 50.0, daily.LimitEUR)
-		assert.Equal(t, 12.5, daily.UsedEUR)
-		assert.Equal(t, "server_agent_effective_cap", daily.Source)
-		assert.Equal(t, 400.0, monthly.LimitEUR)
+		res, outcome, err := fetchServerBudget(ctx, srv.URL, "acme", "support")
+		require.NoError(t, err)
+		require.Equal(t, serverBudgetAnswered, outcome)
+		require.NotNil(t, res.daily)
+		assert.Equal(t, 50.0, res.daily.LimitEUR)
+		assert.Equal(t, 12.5, res.daily.UsedEUR)
+		assert.Equal(t, "server_agent_effective_cap", res.daily.Source)
+		require.NotNil(t, res.monthly)
+		assert.Equal(t, 400.0, res.monthly.LimitEUR)
 	})
 
-	t.Run("unknown_agent answer falls through to local diagnosis", func(t *testing.T) {
+	t.Run("answered: unknown_agent is authoritative — no caps, no fallback", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"tenant_id":"acme","daily_used":1,"monthly_used":2,"budget_source":"unknown_agent","note":"agent \"x\" is not in the identity registry"}`))
 		}))
 		defer srv.Close()
-		_, _, ok := fetchServerBudget(ctx, srv.URL, "acme", "x")
-		assert.False(t, ok, "an answer without positive caps must not short-circuit")
+		res, outcome, err := fetchServerBudget(ctx, srv.URL, "acme", "x")
+		require.NoError(t, err)
+		require.Equal(t, serverBudgetAnswered, outcome,
+			"a definitive no-caps answer must be trusted, not treated as a failure to fall back from")
+		assert.Nil(t, res.daily)
+		assert.Nil(t, res.monthly)
+		assert.Equal(t, "unknown_agent", res.source)
+		assert.Contains(t, res.note, "identity registry")
 	})
 
-	t.Run("unreachable server falls back", func(t *testing.T) {
-		_, _, ok := fetchServerBudget(ctx, "http://127.0.0.1:1", "acme", "support")
-		assert.False(t, ok)
+	t.Run("answered: unresolved_multi_agent is authoritative too", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"tenant_id":"acme","daily_used":1,"monthly_used":2,"budget_source":"unresolved_multi_agent","note":"multiple agents in this tenant"}`))
+		}))
+		defer srv.Close()
+		res, outcome, err := fetchServerBudget(ctx, srv.URL, "acme", "")
+		require.NoError(t, err)
+		assert.Equal(t, serverBudgetAnswered, outcome)
+		assert.Nil(t, res.daily)
 	})
 
-	t.Run("non-200 falls back", func(t *testing.T) {
+	t.Run("unreachable: offline fallback permitted", func(t *testing.T) {
+		_, outcome, err := fetchServerBudget(ctx, "http://127.0.0.1:1", "acme", "support")
+		require.NoError(t, err)
+		assert.Equal(t, serverBudgetUnavailable, outcome)
+	})
+
+	t.Run("reachable but 401: explicit failure, never a silent local answer", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
 		defer srv.Close()
-		_, _, ok := fetchServerBudget(ctx, srv.URL, "acme", "support")
-		assert.False(t, ok)
+		_, outcome, err := fetchServerBudget(ctx, srv.URL, "acme", "support")
+		assert.Equal(t, serverBudgetFailed, outcome)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "401")
+	})
+
+	t.Run("reachable but malformed: explicit failure", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`not json`))
+		}))
+		defer srv.Close()
+		_, outcome, err := fetchServerBudget(ctx, srv.URL, "acme", "support")
+		assert.Equal(t, serverBudgetFailed, outcome)
+		require.Error(t, err)
 	})
 
 	t.Run("empty URL disables the server path", func(t *testing.T) {
-		_, _, ok := fetchServerBudget(ctx, "", "acme", "support")
-		assert.False(t, ok)
+		_, outcome, err := fetchServerBudget(ctx, "", "acme", "support")
+		require.NoError(t, err)
+		assert.Equal(t, serverBudgetUnavailable, outcome)
 	})
 }

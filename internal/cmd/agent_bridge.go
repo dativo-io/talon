@@ -13,6 +13,7 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
 	"github.com/dativo-io/talon/internal/secrets"
+	"github.com/dativo-io/talon/internal/server"
 )
 
 // LoadedAgentFromPolicy is the shared policy → gateway adapter (#266). It
@@ -80,20 +81,24 @@ func buildServeIdentityRegistry(ctx context.Context, pol *policy.Policy, policyP
 // registry snapshot, so a reload swap (#269) propagates to the tenant-API
 // surface without middleware rebuilds. Resolution reuses the registry's own
 // constant-time key matching.
+//
+// Current() is read EXACTLY ONCE per authentication (#291 review, P1): the
+// key-count fact (dev-open signal) and the resolution must come from the
+// same snapshot — two separate reads could straddle an empty → non-empty
+// swap and let the dev-open branch pass an unauthenticated request against
+// a registry that already has keys.
 type holderKeyResolver struct {
 	holder *gateway.RegistryHolder
 }
 
-func (r holderKeyResolver) ResolveAgentKey(key string) (requestctx.AgentIdentity, bool) {
-	id, ok := r.holder.Current().ResolveKey(key)
-	if !ok {
-		return requestctx.AgentIdentity{}, false
+func (r holderKeyResolver) AuthenticateAgentKey(key string) server.AgentKeyAuth {
+	reg := r.holder.Current() // the ONE snapshot this decision is made on
+	auth := server.AgentKeyAuth{KeysConfigured: reg.Len() > 0}
+	if id, ok := reg.ResolveKey(key); ok {
+		auth.Found = true
+		auth.Identity = requestctx.AgentIdentity{AgentID: id.Name, TenantID: id.TenantID, Team: id.Team}
 	}
-	return requestctx.AgentIdentity{AgentID: id.Name, TenantID: id.TenantID, Team: id.Team}, true
-}
-
-func (r holderKeyResolver) HasAgentKeys() bool {
-	return r.holder.Current().Len() > 0
+	return auth
 }
 
 // resolveRunTenant decides the tenant a native run attributes to (#266):

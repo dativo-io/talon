@@ -867,6 +867,77 @@ func TestRunFromTrigger_usesDefaultPolicyPath(t *testing.T) {
 	assert.Contains(t, err.Error(), "#267")
 }
 
+// TestRun_AgentIdentitySettledBeforeLifecycle (#291 review, P1): the agent
+// guard/normalization runs BEFORE any lifecycle side effect — a rejected
+// agent leaves no session row, and an unnamed run's session is owned by the
+// agent whose policy governs it, never the "default" placeholder.
+func TestRun_AgentIdentitySettledBeforeLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := testutil.WriteTestPolicyFile(t, dir, "test-agent")
+
+	providers := map[string]llm.Provider{
+		"openai": &testutil.MockProvider{ProviderName: "openai", Content: "ok"},
+	}
+	routing := &policy.ModelRoutingConfig{
+		Tier0: &policy.TierConfig{Primary: "gpt-4"},
+		Tier1: &policy.TierConfig{Primary: "gpt-4"},
+		Tier2: &policy.TierConfig{Primary: "gpt-4"},
+	}
+	secretsStore, err := secrets.NewSecretStore(filepath.Join(dir, "secrets.db"), testutil.TestEncryptionKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = secretsStore.Close() })
+	evidenceStore, err := evidence.NewStore(filepath.Join(dir, "evidence.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = evidenceStore.Close() })
+	sessStore, err := talonsession.NewStore(filepath.Join(dir, "sessions.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sessStore.Close() })
+
+	runner := NewRunner(RunnerConfig{
+		PolicyDir:         dir,
+		DefaultPolicyPath: policyPath,
+		Classifier:        classifier.MustNewScanner(),
+		AttScanner:        attachment.MustNewScanner(),
+		Extractor:         attachment.NewExtractor(10),
+		Router:            llm.NewRouter(routing, providers, nil),
+		Secrets:           secretsStore,
+		Evidence:          evidenceStore,
+		SessionStore:      sessStore,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	t.Run("rejected agent leaves no session row", func(t *testing.T) {
+		_, err := runner.Run(ctx, &RunRequest{
+			TenantID:   "acme",
+			AgentName:  "imposter",
+			Prompt:     "hello",
+			PolicyPath: policyPath,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `unknown agent "imposter"`)
+		sessions, err := sessStore.ListByTenant(ctx, "acme", "", "")
+		require.NoError(t, err)
+		assert.Empty(t, sessions, "a rejected run must not create lifecycle state")
+	})
+
+	t.Run("unnamed run's session is owned by the policy agent", func(t *testing.T) {
+		resp, err := runner.Run(ctx, &RunRequest{
+			TenantID:   "acme",
+			AgentName:  "default", // the unset sentinel (server path default)
+			Prompt:     "hello",
+			PolicyPath: policyPath,
+		})
+		require.NoError(t, err)
+		require.NotEmpty(t, resp.SessionID)
+		sess, err := sessStore.Get(ctx, resp.SessionID, "acme")
+		require.NoError(t, err)
+		assert.Equal(t, "test-agent", sess.AgentID,
+			"the session row must carry the governing policy's agent, not the placeholder")
+	})
+}
+
 func TestRun_PolicyDeny(t *testing.T) {
 	dir := t.TempDir()
 	policyPath := testutil.WriteStrictPolicyFile(t, dir, "deny-agent")
@@ -2177,7 +2248,7 @@ func TestResolveSession_Internal_ClosedSessionFailsClosed(t *testing.T) {
 
 	ss, err := s.Create(ctx, "acme", "agent-a", "reasoning", 0)
 	require.NoError(t, err)
-	require.NoError(t, s.Complete(ctx, ss.ID, "acme", 0, 0))
+	require.NoError(t, s.Complete(ctx, ss.ID, "acme", "", 0, 0))
 
 	r := NewRunner(RunnerConfig{SessionStore: s})
 	_, err = r.resolveSession(ctx, &RunRequest{

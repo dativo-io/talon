@@ -63,24 +63,52 @@ func TestHolderKeyResolver_SwapPropagatesToServerAuth(t *testing.T) {
 	holder := gateway.NewRegistryHolder(nil)
 	resolver := holderKeyResolver{holder: holder}
 
-	assert.False(t, resolver.HasAgentKeys(), "nil registry = no keys configured")
-	_, ok := resolver.ResolveAgentKey("tk-old")
-	assert.False(t, ok)
+	auth := resolver.AuthenticateAgentKey("tk-old")
+	assert.False(t, auth.KeysConfigured, "nil registry = no keys configured")
+	assert.False(t, auth.Found)
 
 	holder.Swap(buildReg("old-key"))
-	assert.True(t, resolver.HasAgentKeys(), "keys appear after the swap")
-	id, ok := resolver.ResolveAgentKey("tk-old")
-	require.True(t, ok)
-	assert.Equal(t, "support", id.AgentID)
-	assert.Equal(t, "acme", id.TenantID)
-	assert.Equal(t, "cx", id.Team, "full identity travels through, not just the tenant")
+	auth = resolver.AuthenticateAgentKey("tk-old")
+	assert.True(t, auth.KeysConfigured, "keys appear after the swap")
+	require.True(t, auth.Found)
+	assert.Equal(t, "support", auth.Identity.AgentID)
+	assert.Equal(t, "acme", auth.Identity.TenantID)
+	assert.Equal(t, "cx", auth.Identity.Team, "full identity travels through, not just the tenant")
 
 	// Key rotation: the old key stops authenticating, the new one starts.
 	holder.Swap(buildReg("new-key"))
-	_, ok = resolver.ResolveAgentKey("tk-old")
-	assert.False(t, ok, "rotated-out key must stop authenticating")
-	_, ok = resolver.ResolveAgentKey("tk-new")
-	assert.True(t, ok)
+	auth = resolver.AuthenticateAgentKey("tk-old")
+	assert.False(t, auth.Found, "rotated-out key must stop authenticating")
+	assert.True(t, auth.KeysConfigured)
+	assert.True(t, resolver.AuthenticateAgentKey("tk-new").Found)
+
+	// Single-snapshot consistency under concurrent swaps (#291 review, P1):
+	// hammer empty ↔ non-empty swaps while authenticating a key valid in the
+	// non-empty registry. The dev-open fact (KeysConfigured) and the key
+	// resolution MUST come from the same snapshot, so exactly two outcomes
+	// are legal — {no keys configured, not found} (empty snapshot) or
+	// {keys configured, found} (keyed snapshot). The mixed outcome
+	// {no keys configured, found} — and the dangerous inverse
+	// {keys configured on resolve but dev-open already decided} that the old
+	// two-read API allowed — must never appear.
+	keyed := buildReg("new-key")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			holder.Swap(nil)
+			holder.Swap(keyed)
+		}
+	}()
+	for i := 0; i < 2000; i++ {
+		a := resolver.AuthenticateAgentKey("tk-new")
+		if a.KeysConfigured {
+			assert.True(t, a.Found, "keyed snapshot must resolve the key valid in it")
+		} else {
+			assert.False(t, a.Found, "empty snapshot cannot resolve anything")
+		}
+	}
+	<-done
 }
 
 // TestBuildServeIdentityRegistryModeMatrix regression-tests the serve-time

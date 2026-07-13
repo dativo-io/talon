@@ -324,7 +324,7 @@ Query params: `tenant_id` (or derived from the presenting agent key), `agent_id`
 - `"unresolved_multi_agent"` — no `agent_id` was given and the tenant has several registered agents; query a specific `agent_id`.
 - `"policy_cost_limits"` — native mode (no gateway): the limits come from the loaded agent policy file's `policies.cost_limits`, which is what the native runner enforces.
 
-`talon costs` consumes this endpoint when the server is reachable (`--url`, default `http://localhost:8080`; `TALON_ADMIN_KEY` authenticates) and labels the source `server_*`; offline it resolves locally and reports **no** denominator for an agent other than the loaded default (#288/#290).
+`talon costs` consumes this endpoint when the server is reachable (`--url`, default `http://localhost:8080`; `TALON_ADMIN_KEY` authenticates) and labels the source `server_*` in both the JSON payload and the human-readable budget lines. A server ANSWER is final — including `unknown_agent` / `unresolved_multi_agent` (the CLI then reports no denominator; it never "falls back" past an authoritative no). Only an **unreachable** server permits offline local resolution, which reports **no** denominator for an agent other than the loaded default (#288/#290). A server that is up but rejects the query (auth, wrong deployment) is a hard error when `--url` was set explicitly, and a loud warning + local fallback for the default probe (something unrelated on `:8080` must not break offline use).
 
 ### `cache_stats`
 

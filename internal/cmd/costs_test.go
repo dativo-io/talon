@@ -118,6 +118,7 @@ func TestRenderCostByModel_WithAgent(t *testing.T) {
 func TestCostsCmd_ShowsBudgetUtilization(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("TALON_DATA_DIR", dir)
+	disableServerBudgetProbe(t) // hermetic: this test exercises LOCAL resolution
 
 	policyPath := filepath.Join(dir, "agent.talon.yaml")
 	policyYAML := `

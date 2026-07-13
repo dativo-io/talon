@@ -436,6 +436,12 @@ func (o *PolicyOverride) finalize(scope string) error {
 	if err := rejectWildcardInAllowList(scope, "policies.allowed_providers", o.AllowedProviders); err != nil {
 		return err
 	}
+	// Agent tool allowlists match by exact name in EvaluateToolPolicy —
+	// the same literal-membership footgun (#291 review). Forbidden lists
+	// stay exempt: they are glob patterns and "*" is the supported deny-all.
+	if err := rejectWildcardInAllowList(scope, "capabilities.allowed_tools", o.AllowedTools); err != nil {
+		return err
+	}
 	o.Egress.applyDefaults()
 	return validateEgressPolicy(scope, o.Egress)
 }

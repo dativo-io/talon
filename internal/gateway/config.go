@@ -618,17 +618,25 @@ func (d *OrganizationPolicy) validateBudgetBounds() error {
 	return nil
 }
 
-// validateModelList rejects "*" in an ALLOW list (#266 review round 4, #284):
-// Rego does literal membership on allowed_models, so ["*"] would deny every
-// concrete model rather than allow all — a fail-closed footgun. An empty list
-// already means unrestricted, so "*" is never the right way to express it.
-func validateModelList(field string, models []string) error {
-	for _, m := range models {
-		if strings.TrimSpace(m) == "*" {
-			return fmt.Errorf("gateway %s must not contain \"*\": an allow list matches models literally, so \"*\" denies every model — leave the list empty to allow all", field)
+// validateLiteralAllowList rejects "*" in any ALLOW list that matches
+// literally (#266 review round 4, #284; extended to tools by the #291
+// review): Rego model rules use plain membership and EvaluateToolPolicy uses
+// exact map lookup, so ["*"] would deny every concrete value rather than
+// allow all — a fail-closed footgun. An empty list already means
+// unrestricted, so "*" is never the right way to express it. kind names the
+// value class in the error ("models", "providers", "tools").
+func validateLiteralAllowList(field, kind string, values []string) error {
+	for _, v := range values {
+		if strings.TrimSpace(v) == "*" {
+			return fmt.Errorf("gateway %s must not contain \"*\": an allow list matches %s literally, so \"*\" denies every %s — leave the list empty to allow all", field, kind, strings.TrimSuffix(kind, "s"))
 		}
 	}
 	return nil
+}
+
+// validateModelList keeps the model-specific call shape.
+func validateModelList(field string, models []string) error {
+	return validateLiteralAllowList(field, "models", models)
 }
 
 // Validate checks that the configuration is valid.
@@ -669,6 +677,11 @@ func (c *GatewayConfig) Validate() error {
 		return err
 	}
 	if err := validateModelList("organization_policy.constraints.allowed_models", c.OrganizationPolicy.Constraints.AllowedModels); err != nil {
+		return err
+	}
+	// The org tool allowlist (#282) uses exact map membership in
+	// EvaluateToolPolicy — same "*" footgun as the model lists (#291 review).
+	if err := validateLiteralAllowList("organization_policy.constraints.allowed_tools", "tools", c.OrganizationPolicy.Constraints.AllowedTools); err != nil {
 		return err
 	}
 	// Same literal-membership footgun as model lists (#266 review round 5):

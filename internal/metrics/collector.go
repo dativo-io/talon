@@ -334,7 +334,11 @@ type Collector struct {
 	// tenantScopeFn, when set, is consulted on EVERY aggregate query instead
 	// of the static tenantID (#289): serve wires it to the identity-registry
 	// holder so a reload re-scopes dashboard SQL without a new collector.
-	tenantScopeFn  func() string
+	tenantScopeFn func() string
+	// budgetLimitsFn, when set, is consulted on every snapshot instead of
+	// the static budgetDaily/budgetMonthly (#291 review, P2) — the budget
+	// denominators follow a registry reload like the tenant scope does.
+	budgetLimitsFn func() (float64, float64)
 	planStatsFn    func(context.Context, string) (PlanStats, error)
 	droppedEvents  uint64
 	reconcileStats ReconcileStats
@@ -347,6 +351,15 @@ func (c *Collector) tenantScope() string {
 		return c.tenantScopeFn()
 	}
 	return c.tenantID
+}
+
+// budgetLimits returns the dashboard budget denominators: the live function
+// when configured (#291 review, P2), else the static values.
+func (c *Collector) budgetLimits() (daily, monthly float64) {
+	if c.budgetLimitsFn != nil {
+		return c.budgetLimitsFn()
+	}
+	return c.budgetDaily, c.budgetMonthly
 }
 
 // ReconcileStats tracks collector reconciliation health and outcomes.
@@ -382,6 +395,16 @@ func WithTenantID(tenantID string) CollectorOption {
 // reconstruction. Takes precedence over WithTenantID.
 func WithTenantScope(fn func() string) CollectorOption {
 	return func(c *Collector) { c.tenantScopeFn = fn }
+}
+
+// WithBudgetLimitsFn supplies the budget denominators through a live
+// function read on every snapshot (#291 review, P2): serve derives them from
+// the identity-registry holder (sum of binding effective caps), so a
+// registry reload (#269) updates the dashboard's limits together with its
+// tenant scope — never spend from the new registry against denominators
+// from the old one. Takes precedence over WithBudgetLimits.
+func WithBudgetLimitsFn(fn func() (daily, monthly float64)) CollectorOption {
+	return func(c *Collector) { c.budgetLimitsFn = fn }
 }
 
 // WithCurrency records the ISO-4217 code of the pricing table backing the
@@ -1051,20 +1074,21 @@ func (c *Collector) fillProviderBreakdown(ctx context.Context, snap *Snapshot, d
 }
 
 func (c *Collector) fillBudgetStatus(ctx context.Context, snap *Snapshot, dayStart, dayEnd, monthStart, monthEnd time.Time) {
-	if c.budgetDaily <= 0 && c.budgetMonthly <= 0 {
+	daily, monthly := c.budgetLimits()
+	if daily <= 0 && monthly <= 0 {
 		return
 	}
-	bs := &BudgetStatus{DailyLimit: c.budgetDaily, MonthlyLimit: c.budgetMonthly}
+	bs := &BudgetStatus{DailyLimit: daily, MonthlyLimit: monthly}
 	if dailyUsed, err := c.metricsQuerier.CostTotal(ctx, c.tenantScope(), "", dayStart, dayEnd); err == nil {
 		bs.DailyUsed = dailyUsed
-		if c.budgetDaily > 0 {
-			bs.DailyPercent = (dailyUsed / c.budgetDaily) * 100
+		if daily > 0 {
+			bs.DailyPercent = (dailyUsed / daily) * 100
 		}
 	}
 	if monthlyUsed, err := c.metricsQuerier.CostTotal(ctx, c.tenantScope(), "", monthStart, monthEnd); err == nil {
 		bs.MonthlyUsed = monthlyUsed
-		if c.budgetMonthly > 0 {
-			bs.MonthlyPercent = (monthlyUsed / c.budgetMonthly) * 100
+		if monthly > 0 {
+			bs.MonthlyPercent = (monthlyUsed / monthly) * 100
 		}
 	}
 	snap.BudgetStatus = bs
