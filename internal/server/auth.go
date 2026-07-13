@@ -44,12 +44,16 @@ func AgentIdentityFromContext(ctx context.Context) (requestctx.AgentIdentity, bo
 // under (#266 review round 4). When the request authenticated with an agent
 // key, that resolved identity is AUTHORITATIVE: a body/header agent name or
 // tenant that differs is rejected (spoofing), and neither ever defaults to
-// "default". Admin and dev-mode requests keep the client-asserted values,
-// defaulting to "default", so operator tooling can still attribute a run to
-// any agent.
+// "default". "default" (like empty) is the UNSET sentinel — the same rule
+// `talon run --agent default` and the runner apply (#290) — so a client
+// sending the conventional placeholder attributes to the authenticated
+// agent instead of being rejected for "spoofing" the placeholder. An agent
+// literally named "default" matches either way. Admin and dev-mode requests
+// keep the client-asserted values, defaulting to "default", so operator
+// tooling can still attribute a run to any agent.
 func resolveRunAttribution(ctx context.Context, requestedTenant, requestedAgent string) (tenant, agent string, err error) {
 	if id, ok := requestctx.AgentIdentityFrom(ctx); ok {
-		if requestedAgent != "" && requestedAgent != id.AgentID {
+		if requestedAgent != "" && requestedAgent != "default" && requestedAgent != id.AgentID {
 			return "", "", fmt.Errorf("agent %q does not match the authenticated agent key (bound to %q) — an agent key may only act as its own agent", requestedAgent, id.AgentID)
 		}
 		if requestedTenant != "" && requestedTenant != id.TenantID {

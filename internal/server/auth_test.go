@@ -37,6 +37,14 @@ func TestResolveRunAttribution(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "may only act as its own agent")
 	})
+	t.Run("agent key: 'default' is the unset sentinel, not a spoof (#290)", func(t *testing.T) {
+		// The conventional placeholder resolves to the authenticated agent —
+		// the same rule the runner and `talon run --agent default` apply.
+		ten, ag, err := resolveRunAttribution(agentCtx, "", "default")
+		require.NoError(t, err)
+		assert.Equal(t, "acme", ten)
+		assert.Equal(t, "support-bot", ag)
+	})
 	t.Run("agent key: spoofed tenant rejected", func(t *testing.T) {
 		_, _, err := resolveRunAttribution(agentCtx, "globex", "")
 		require.Error(t, err)

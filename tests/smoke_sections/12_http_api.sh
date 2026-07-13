@@ -127,11 +127,16 @@ GWEOF
   fi
   local base_url="http://127.0.0.1:8080"
   # Session lifecycle checks: create + join via API and confirm continuity.
+  # ADMIN key, not the agent key: this serve instance runs the GATEWAY, and
+  # native execution routes (/v1/agents/run, native chat, /mcp, graph events)
+  # require the admin key in that configuration — agent traffic must use
+  # /v1/proxy (#266 round 6). agent_name "default" is the unset sentinel and
+  # attributes the run to the loaded policy's agent (#290).
   local run1_headers="/tmp/talon_smoke_run1_headers.txt"
   local run1_body="/tmp/talon_smoke_run1_body.json"
   local run1_code run1_session run2_code run2_session run1_ev run2_ev
   run1_code="$(curl -s -D "$run1_headers" -o "$run1_body" -w '%{http_code}' -X POST "${base_url}/v1/agents/run" \
-    -H "Authorization: Bearer ${agent_key}" -H "Content-Type: application/json" \
+    -H "X-Talon-Admin-Key: ${admin_key}" -H "Content-Type: application/json" \
     -H "X-Talon-Reasoning: smoke-http-session-create" \
     -d '{"tenant_id":"default","agent_name":"default","prompt":"Session smoke create (HTTP API)","_talon_reasoning":"smoke-fallback-reasoning"}')"
   if ! assert_pass "POST /v1/agents/run returns 200 for session create" test "$run1_code" = "200"; then
@@ -160,7 +165,7 @@ GWEOF
   fi
   run1_ev="$(jq -r '.evidence_id // empty' < "$run1_body" 2>/dev/null || true)"
   run2_code="$(curl -s -o /tmp/talon_smoke_run2_body.json -w '%{http_code}' -X POST "${base_url}/v1/agents/run" \
-    -H "Authorization: Bearer ${agent_key}" -H "Content-Type: application/json" \
+    -H "X-Talon-Admin-Key: ${admin_key}" -H "Content-Type: application/json" \
     -H "X-Talon-Session-ID: ${run1_session}" \
     -d "{\"tenant_id\":\"default\",\"agent_name\":\"default\",\"prompt\":\"Session smoke join (HTTP API)\",\"_talon_session_id\":\"${run1_session}\"}")"
   if ! assert_pass "POST /v1/agents/run with session join returns 200" test "$run2_code" = "200"; then

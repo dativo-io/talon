@@ -46,6 +46,15 @@ AGEOF
   dm_write_agent "pii-block-agent" "  data_classification:
     input_scan: true
     block_on_pii: true"
+  # The org default tool action is FILTER; this agent TIGHTENS it to block
+  # for the tool-block scenario. tool_policy_action is monotonic at the
+  # agent layer (#287): tighten filter → block is honored, but an agent can
+  # no longer loosen an org-wide block back to filter — which is why the
+  # block action lives here and not in organization_policy.defaults.
+  cat >> "$dir/agents/pii-block-agent.talon.yaml" <<AGEOF
+capabilities:
+  tool_policy_action: "block"
+AGEOF
   dm_write_agent "tool-filter-agent" ""
   cat >> "$dir/agents/tool-filter-agent.talon.yaml" <<AGEOF
 capabilities:
@@ -72,7 +81,11 @@ gateway:
   organization_policy:
     defaults:
       pii_action: "redact"
-      tool_policy_action: "block"
+      # filter, not block: the org default is a FLOOR the agents may only
+      # tighten (#287) — pii-block-agent tightens to block for the tool-block
+      # scenario, and tool-filter-agent's filter must stay reachable (an agent
+      # can no longer loosen an org-wide block).
+      tool_policy_action: "filter"
       daily_cost: 100.00
       monthly_cost: 500.00
     constraints:
@@ -238,9 +251,11 @@ CACHEEOF
   else
     log_failure "PII block config: expected 400 for pii-block-agent + PII body" "got HTTP $pii_block_code"
   fi
-  # (2) Tool block: organization_policy constraints.forbidden_tools delete_* + defaults.tool_policy_action block → 403.
+  # (2) Tool block: organization_policy constraints.forbidden_tools delete_*
+  # + the pii-block agent's own tool_policy_action block (tightening the org
+  # filter default — the monotonic direction #287 allows) → 403.
   # The gateway serves the pii-block agent in this phase (#266: one agent per
-  # phase restart), so present THAT agent's key — the org tool baseline binds
+  # phase restart), so present THAT agent's key — the org forbidden list binds
   # every agent, which is exactly what this probe demonstrates.
   local tool_block_code; tool_block_code="$(smoke_gw_post_chat "$dashboard_base_url" "Bearer talon-gw-pii-block-001" "$SMOKE_BODY_TOOL_BLOCK")"
   if [[ "$tool_block_code" == "403" ]]; then
