@@ -623,12 +623,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// with no org baseline here; gateway mode overrides it below to also tighten
 	// with the organization constraints.
 	if runtimeHolder != nil {
+		// /v1/costs/budget keeps the holder-backed lookup (it does not label its
+		// response with a fleet generation). The fleet endpoint resolves caps AND
+		// deny-all from its captured snapshot instead (#270 review round 3), so it
+		// only needs the org baseline + providers — native passes a zero org and
+		// no providers; gateway mode overrides both below.
 		opts = append(opts, server.WithAgentCapsLookup(agentCapsLookupFor(runtimeHolder, gateway.OrganizationPolicy{})))
-		// BLOCKED (#270): whether an agent's effective policy denies ALL new work.
-		// Native serve has no gateway provider table, so only a categorical model
-		// block (blocked_models: ["*"]) is detectable here; gateway mode overrides
-		// this below with the org baseline AND the configured providers.
-		opts = append(opts, server.WithFleetDenyAll(fleetDenyAllFor(runtimeHolder, gateway.OrganizationPolicy{}, nil)))
+		opts = append(opts, server.WithFleetPolicyContext(gateway.OrganizationPolicy{}, nil))
 	}
 	if serveGateway {
 		gatewayCfg := preloadedGatewayCfg
@@ -681,10 +682,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 			// effective-policy computation enforcement uses (#266), against
 			// the CURRENT registry snapshot (#289).
 			opts = append(opts, server.WithAgentCapsLookup(agentCapsLookupFor(runtimeHolder, gatewayCfg.OrganizationPolicy)))
-			// BLOCKED (#270) with the FULL gateway context: org baseline + the
-			// configured providers, so an empty provider-allowlist intersection is
+			// The fleet endpoint resolves caps + deny-all from its captured
+			// snapshot against this org baseline + configured providers (#270
+			// review round 3), so an empty provider-allowlist intersection is
 			// detectable in addition to a categorical model block.
-			opts = append(opts, server.WithFleetDenyAll(fleetDenyAllFor(runtimeHolder, gatewayCfg.OrganizationPolicy, gatewayCfg.Providers)))
+			opts = append(opts, server.WithFleetPolicyContext(gatewayCfg.OrganizationPolicy, gatewayCfg.Providers))
 			// BLOCKED is enforce-only (#270 review round 2): observable governance
 			// controls (budgets, model/provider allowlists) don't block in
 			// shadow/log_only, so the queue must not render BLOCKED there. Native
@@ -944,22 +946,6 @@ func agentCapsLookupFor(holder *agentcatalog.RuntimeHolder, orgPolicy gateway.Or
 		eff := gateway.ResolveEffectivePolicy(orgPolicy, gateway.ProviderConfig{}, override)
 		daily, monthly := eff.BindingDailyCap(), eff.BindingMonthlyCap()
 		return daily, monthly, daily > 0 || monthly > 0
-	}
-}
-
-// fleetDenyAllFor builds the attention queue's deny-all predicate (#270): whether
-// an agent's ACTIVE effective policy denies ALL new work — the persistent,
-// agent-wide condition that renders BLOCKED, distinct from a single
-// request-specific denial. It reads the same runtime BUNDLES + org baseline the
-// caps resolver does, plus the configured providers (empty in native serve, so
-// only a categorical model block is detectable there).
-func fleetDenyAllFor(holder *agentcatalog.RuntimeHolder, orgPolicy gateway.OrganizationPolicy, providers map[string]gateway.ProviderConfig) func(tenantID, agentID string) bool {
-	return func(tenantID, agentID string) bool {
-		override, ok := runtimeAgentOverride(holder.Current(), tenantID, agentID)
-		if !ok {
-			return false
-		}
-		return !gateway.AgentCanAcceptWork(orgPolicy, override, providers)
 	}
 }
 

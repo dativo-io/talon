@@ -14,6 +14,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/compliance"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/otel"
@@ -84,11 +85,12 @@ type Server struct {
 	// budget caps are denominated in (#270), resolved once from the pricing
 	// table at serve time.
 	fleetCurrency string
-	// fleetDenyAll reports whether an agent's ACTIVE effective policy denies ALL
-	// new work (a persistent, agent-wide condition → BLOCKED, #270), evaluated
-	// from the effective policy + configured destinations. nil → never blocked
-	// on this axis.
-	fleetDenyAll func(tenantID, agentID string) bool
+	// fleetOrg and fleetProviders are the organization baseline and configured
+	// providers the fleet endpoint resolves caps and deny-all against, BOUND to
+	// the captured snapshot per request (#270 review round 3) — not a live-holder
+	// lookup. Captured by value from serve (config has no reload seam yet).
+	fleetOrg       gateway.OrganizationPolicy
+	fleetProviders map[string]gateway.ProviderConfig
 	// fleetEnforcing gates the attention queue's BLOCKED state (#270 review
 	// round 2): budget exhaustion and agent-wide policy invalidity only prevent
 	// new work in enforce mode (or native execution). Defaults to true — the

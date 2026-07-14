@@ -1,7 +1,5 @@
 package gateway
 
-import "strings"
-
 // AgentCanAcceptWork reports whether an agent's ACTIVE effective policy leaves at
 // least one usable (provider, model) destination — i.e. the agent can do SOME
 // normal work. It is the deterministic signal behind the attention queue's
@@ -85,6 +83,12 @@ func (e *EffectivePolicy) CanServeAnyModel() bool {
 // is "unrestricted at that layer" and does not constrain. When EVERY list is
 // empty the model space is unconstrained (unrestricted=true); otherwise the
 // returned set is the intersection of the non-empty lists (possibly empty).
+//
+// Model names are compared as EXACT literals — never trimmed — because the Rego
+// enforcement rules use literal membership/equality (`input.model in
+// input.*_allowed_models`, `blocked == input.model`). Trimming here would make
+// the queue call `[" gpt-4o "]` and `["gpt-4o"]` satisfiable while enforcement
+// denies every request (#270 review round 3, P2).
 func allowedModelIntersection(lists ...[]string) (set []string, unrestricted bool) {
 	var acc map[string]bool
 	any := false
@@ -96,14 +100,14 @@ func allowedModelIntersection(lists ...[]string) (set []string, unrestricted boo
 		if acc == nil {
 			acc = make(map[string]bool, len(list))
 			for _, m := range list {
-				acc[strings.TrimSpace(m)] = true
+				acc[m] = true
 			}
 			continue
 		}
 		next := make(map[string]bool)
 		for _, m := range list {
-			if acc[strings.TrimSpace(m)] {
-				next[strings.TrimSpace(m)] = true
+			if acc[m] {
+				next[m] = true
 			}
 		}
 		acc = next
@@ -117,9 +121,12 @@ func allowedModelIntersection(lists ...[]string) (set []string, unrestricted boo
 	return set, false
 }
 
+// hasWildcard matches the Rego deny-all literal exactly: only "*" (no
+// surrounding whitespace) is the wildcard, since enforcement compares
+// `blocked == "*"` (#270 review round 3, P2).
 func hasWildcard(list []string) bool {
 	for _, s := range list {
-		if strings.TrimSpace(s) == "*" {
+		if s == "*" {
 			return true
 		}
 	}

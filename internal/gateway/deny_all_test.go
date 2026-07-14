@@ -71,6 +71,9 @@ func TestEffectivePolicy_CanServeAnyModel(t *testing.T) {
 		{"one common allowed model", EffectivePolicy{OrgAllowedModels: []string{"gpt-4o", "x"}, AllowedModels: []string{"gpt-4o"}}, true},
 		{"last common model blocked", EffectivePolicy{OrgAllowedModels: []string{"gpt-4o"}, AllowedModels: []string{"gpt-4o"}, BlockedModels: []string{"gpt-4o"}}, false},
 		{"common model not blocked, another is", EffectivePolicy{AllowedModels: []string{"gpt-4o", "gpt-4o-mini"}, BlockedModels: []string{"gpt-4o"}}, true},
+		// Literal model semantics — must match Rego (no trimming) (#270 review r3, P2).
+		{"whitespace-different literals are disjoint", EffectivePolicy{OrgAllowedModels: []string{" gpt-4o "}, AllowedModels: []string{"gpt-4o"}}, false},
+		{"spaced wildcard is not a deny-all wildcard", EffectivePolicy{BlockedModels: []string{" * "}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

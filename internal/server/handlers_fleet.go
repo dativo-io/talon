@@ -7,6 +7,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/fleet"
+	"github.com/dativo-io/talon/internal/gateway"
 )
 
 // WithFleetStatus wires ONE coherent runtime-status read into GET
@@ -31,12 +32,14 @@ func WithFleetCurrency(code string) Option {
 	}
 }
 
-// WithFleetDenyAll injects the deny-all predicate: whether an agent's ACTIVE
-// effective policy denies ALL new work (agent-wide, persistent → BLOCKED, #270),
-// evaluated from the effective policy + configured destinations by serve.
-func WithFleetDenyAll(fn func(tenantID, agentID string) bool) Option {
+// WithFleetPolicyContext injects the organization baseline and configured
+// providers the fleet endpoint resolves caps and deny-all against — bound to the
+// captured snapshot per request (#270 review round 3), so those fields never
+// straddle a reload swap. Native serve passes a zero org and nil providers.
+func WithFleetPolicyContext(org gateway.OrganizationPolicy, providers map[string]gateway.ProviderConfig) Option {
 	return func(s *Server) {
-		s.fleetDenyAll = fn
+		s.fleetOrg = org
+		s.fleetProviders = providers
 	}
 }
 
@@ -90,8 +93,13 @@ func (s *Server) handleAgentsFleet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	members := membershipFromView(view, s.fleetDenyAll)
-	statuses := fleet.AssembleStatuses(members, s.agentCapsLookup, s.fleetCurrency)
+	// Caps and deny-all resolve from the CAPTURED snapshot (view.Snapshot), NOT
+	// a fresh holder read, so every field below describes ONE generation (#270
+	// review round 3).
+	caps := fleetCapsFor(snap, s.fleetOrg)
+	denyAll := fleetDenyAllForSnapshot(snap, s.fleetOrg, s.fleetProviders)
+	members := membershipFromView(view, denyAll)
+	statuses := fleet.AssembleStatuses(members, caps, s.fleetCurrency)
 
 	var sessions fleet.SessionSource = emptySessionSource{}
 	if s.sessionStore != nil {
