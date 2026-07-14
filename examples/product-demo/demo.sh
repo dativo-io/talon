@@ -235,8 +235,21 @@ closing() {
          "cost control · reliability · shared policy · session understanding"
 }
 
+# hero — the tight product-story cut recorded for the README GIF.
 cmd_hero() { setup; opening; beat_reliability; beat_capability; beat_cost; beat_sessions; evidence_close; closing; }
-cmd_all()  { setup; opening; beat_reliability; beat_capability; beat_cost; beat_sessions; evidence_close; closing; }
+
+# all — the fuller narrated cut: the same four pillars, plus a per-use-case
+# drill-down and the failover chain's own semantic verification.
+cmd_all() {
+  setup; opening; beat_reliability; beat_capability; beat_cost; beat_sessions
+  banner "Inspect one use case: layered policy + recent activity"
+  runcmd "talon agents show document-summary --url '$GATEWAY'"
+  evidence_close
+  pause
+  printf ' %sVerify the failover chain itself — that the recorded fallback was policy-valid:%s\n' "$DIM" "$R"
+  runcmd "talon audit verify --failover"
+  closing
+}
 
 case "$CUT" in
   hero) cmd_hero ;;

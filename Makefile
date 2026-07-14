@@ -143,7 +143,7 @@ verify-shortlist-demo: ## Run full #107 shortlist demo verification (Docker)
 coding-agents-demo: ## Run #203 coding-agents demo (multi-model orchestration, offline mock, Docker)
 	@cd examples/coding-agents-demo && docker compose up -d --build --wait && ./demo.sh all
 
-product-demo: ## Run the product demo — 3 AI use cases through one Talon (offline, no keys, no Docker)
+product-demo: ## Run the product demo — 3 AI use cases through one Talon (real providers; needs OPENAI_API_KEY + ANTHROPIC_API_KEY, Ollama down)
 	@bash examples/product-demo/demo.sh all
 
 governed-session: ## Start #107 governed-session demo stack (REAL providers; needs ANTHROPIC_API_KEY + OPENAI_API_KEY)
