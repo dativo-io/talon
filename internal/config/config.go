@@ -45,6 +45,8 @@ const (
 	KeySigningKey          = "signing_key"
 	KeyDefaultPolicy       = "default_policy"
 	KeyAgentsDir           = "agents_dir"
+	KeyAgentsReloadEvery   = "agents_reload_interval"
+	KeyOrphanRetentionDays = "orphan_retention_days"
 	KeyMaxAttachmentMB     = "max_attachment_mb"
 	KeyOllamaBaseURL       = "ollama_base_url"
 	KeyOllamaMaxNumPredict = "ollama_max_num_predict"
@@ -57,6 +59,15 @@ const (
 	DefaultPolicy      = "agent.talon.yaml"
 	DefaultMaxAttachMB = 10
 	DefaultOllamaURL   = "http://localhost:11434"
+	// DefaultAgentsReloadInterval paces the periodic safe config reload
+	// (#269). An unchanged scan is digest-compare only (no vault I/O, no
+	// evidence), so 30s is effectively free.
+	DefaultAgentsReloadInterval = "30s"
+	// DefaultOrphanRetentionDays bounds cleanup of memory/session rows whose
+	// agent has left the catalog (removed by a reload, #269 review): a fixed
+	// org-level floor independent of the live fleet, so orphaned data can
+	// never persist indefinitely even when no live agent declares retention.
+	DefaultOrphanRetentionDays = 90
 )
 
 // LLMProviderConfig is per-provider config from talon.config.yaml llm.providers.
@@ -266,9 +277,19 @@ type Config struct {
 	// one file per AI use case (#267). It is then authoritative for fleet
 	// membership: DefaultPolicy no longer defines an agent (no mode merging).
 	// Empty (the default) keeps single-file mode unchanged.
-	AgentsDir       string
-	MaxAttachmentMB int    // Maximum attachment size in MB
-	OllamaBaseURL   string // Ollama API endpoint (operator infrastructure)
+	AgentsDir string
+	// AgentsReloadInterval paces the periodic safe config reload (#269):
+	// agent files (single-file or agents_dir) are re-scanned on this cadence
+	// and valid changes activate atomically; invalid edits keep the
+	// last-known-good generation serving. "0" disables reload. Parsed with
+	// time.ParseDuration; default 30s.
+	AgentsReloadInterval string
+	// OrphanRetentionDays bounds cleanup of memory/session rows whose agent
+	// has left the catalog (#269). A fixed org-level floor independent of the
+	// live fleet; default DefaultOrphanRetentionDays.
+	OrphanRetentionDays int
+	MaxAttachmentMB     int    // Maximum attachment size in MB
+	OllamaBaseURL       string // Ollama API endpoint (operator infrastructure)
 	// OllamaMaxNumPredict, when > 0, caps num_predict (output tokens) on every
 	// Ollama request — an opt-in ceiling for slow local hosts. 0 (default) means
 	// honor the caller's requested output length verbatim.
@@ -348,6 +369,8 @@ func init() {
 	viper.SetEnvPrefix("TALON")
 	viper.AutomaticEnv()
 	viper.SetDefault(KeyDefaultPolicy, DefaultPolicy)
+	viper.SetDefault(KeyAgentsReloadEvery, DefaultAgentsReloadInterval)
+	viper.SetDefault(KeyOrphanRetentionDays, DefaultOrphanRetentionDays)
 	viper.SetDefault(KeyMaxAttachmentMB, DefaultMaxAttachMB)
 	viper.SetDefault(KeyOllamaBaseURL, DefaultOllamaURL)
 }
@@ -356,18 +379,20 @@ func init() {
 // file, and defaults) and returns a validated Config.
 func Load() (*Config, error) {
 	cfg := &Config{
-		DataDir:             resolveDataDir(),
-		SecretsKey:          viper.GetString(KeySecretsKey),
-		SigningKey:          viper.GetString(KeySigningKey),
-		DefaultPolicy:       viper.GetString(KeyDefaultPolicy),
-		AgentsDir:           viper.GetString(KeyAgentsDir),
-		MaxAttachmentMB:     viper.GetInt(KeyMaxAttachmentMB),
-		OllamaBaseURL:       viper.GetString(KeyOllamaBaseURL),
-		OllamaMaxNumPredict: viper.GetInt(KeyOllamaMaxNumPredict),
-		LLM:                 loadLLMConfig(),
-		Cache:               loadCacheConfig(),
-		Compliance:          loadComplianceConfig(),
-		Sovereignty:         loadSovereigntyConfig(),
+		DataDir:              resolveDataDir(),
+		SecretsKey:           viper.GetString(KeySecretsKey),
+		SigningKey:           viper.GetString(KeySigningKey),
+		DefaultPolicy:        viper.GetString(KeyDefaultPolicy),
+		AgentsDir:            viper.GetString(KeyAgentsDir),
+		AgentsReloadInterval: viper.GetString(KeyAgentsReloadEvery),
+		OrphanRetentionDays:  viper.GetInt(KeyOrphanRetentionDays),
+		MaxAttachmentMB:      viper.GetInt(KeyMaxAttachmentMB),
+		OllamaBaseURL:        viper.GetString(KeyOllamaBaseURL),
+		OllamaMaxNumPredict:  viper.GetInt(KeyOllamaMaxNumPredict),
+		LLM:                  loadLLMConfig(),
+		Cache:                loadCacheConfig(),
+		Compliance:           loadComplianceConfig(),
+		Sovereignty:          loadSovereigntyConfig(),
 	}
 
 	scanner, err := loadScannerConfig()

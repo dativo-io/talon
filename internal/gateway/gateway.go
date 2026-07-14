@@ -317,6 +317,28 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Operational kill switch (#268): enabled: false denies NEW work in
+	// EVERY mode. Like authentication and eu_strict, this is a hard PLATFORM
+	// boundary — an explicit operator decision, not an observable governance
+	// control being trialed — so shadow/log_only do NOT bypass it. The key
+	// resolved first (resolve-then-deny) so the denial is attributed to the
+	// agent in signed evidence; in-flight requests already past this gate
+	// finish untouched. The config path stays in logs/evidence, never the
+	// client body.
+	if !agent.Enabled {
+		RecordGatewayError(ctx, "agent_disabled")
+		log.Warn().Str("agent", agent.Name).Str("config_path", agent.ConfigPath).Msg("gateway_agent_disabled_denied")
+		durationMS := time.Since(start).Milliseconds()
+		WriteProviderError(w, wire, http.StatusForbidden, "agent_disabled: agent \""+agent.Name+"\" is disabled by its Talon agent config (enabled: false) — new work is denied; ask your Talon operator to re-enable it")
+		persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, "", start, "", &classifier.Classification{}, nil, 0, durationMS, "", false, []string{"agent disabled (enabled: false in agent config)"}, false, nil, nil, nil, nil, false, "", 0, 0, false, 0, 0, 0)
+		if err != nil {
+			g.handleEvidenceWriteFailure(ctx, err)
+			return
+		}
+		g.emitMetrics(ctx, agent, route.Provider, "", nil, nil, nil, nil, 0, durationMS, false, true, "", false, 0, 0, 0, persisted)
+		return
+	}
+
 	// Effective policy for this request: organization baseline → the agent's
 	// one override → the routed provider's destination constraints. Computed
 	// once here; failover candidates recompute per candidate provider through

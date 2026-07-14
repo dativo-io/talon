@@ -117,6 +117,40 @@ func cliPricingBaseDir(cfg *config.Config, explicitPolicyPath, agentPath string)
 	return filepath.Dir(agentPath)
 }
 
+// minReloadInterval floors the reload cadence (#269 review): a sub-second
+// interval would continuously rescan the source with no benefit.
+const minReloadInterval = time.Second
+
+// parseReloadInterval validates agents_reload_interval: exactly "0" (or a
+// zero duration) disables reload; a NEGATIVE value is a configuration error
+// (time.ParseDuration accepts "-1s", which the old `> 0` check silently
+// treated as disabled); anything positive is floored to one second.
+func parseReloadInterval(raw string) (time.Duration, error) {
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid agents_reload_interval %q: %w", raw, err)
+	}
+	if d == 0 {
+		return 0, nil // explicitly disabled
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid agents_reload_interval %q: must be \"0\" (disabled) or a positive duration", raw)
+	}
+	if d < minReloadInterval {
+		return minReloadInterval, nil
+	}
+	return d, nil
+}
+
+// normalizedTenant maps the empty tenant declaration to "default" — the same
+// normalization the registry applies.
+func normalizedTenant(t string) string {
+	if t == "" {
+		return "default"
+	}
+	return t
+}
+
 // buildCLICatalog compiles the scanned set into the ONE runtime catalog the
 // CLI runner resolves against (no gateway registry — native execution only).
 func buildCLICatalog(ctx context.Context, cfg *config.Config, scan *agentcatalog.ScanResult, providers map[string]llm.Provider) (*agentcatalog.RuntimeHolder, error) {

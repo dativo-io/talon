@@ -103,18 +103,32 @@ func DiscoverAgents(ctx context.Context, dir string) (*ScanResult, error) {
 // assembles the ScanResult (per-file outcomes, duplicate detection, digest).
 // relBase anchors digest entries so the generation identity does not depend
 // on where the tree is mounted.
+//
+// Duplicate agent names FAIL CLOSED for the whole name (#267 review): if two
+// files declare the same agent.name, BOTH are recorded as duplicate issues
+// and NEITHER produces a valid CatalogAgent — an ambiguous identity must
+// never be silently resolved to whichever file sorted first (the CLI toggle
+// and the gateway registry both depend on this).
 func scanFiles(ctx context.Context, relBase string, paths []string) *ScanResult {
 	result := &ScanResult{Source: relBase}
 	digest := sha256.New()
 	fmt.Fprintf(digest, "src\x00%d\n", len(paths))
-	byName := make(map[string]string, len(paths)) // agent name → first path
+
+	type loaded struct {
+		path  string
+		agent *CatalogAgent
+		err   error
+	}
+	var records []loaded
+	nameCount := make(map[string]int, len(paths))
+	namePaths := make(map[string][]string, len(paths))
 
 	for _, path := range paths {
 		entry := digestEntryName(relBase, path)
 		raw, readErr := os.ReadFile(path)
 		if readErr != nil {
 			fmt.Fprintf(digest, "%s\x00!unreadable\n", entry)
-			result.addFailure(path, IssueInvalidConfig, fmt.Errorf("reading agent config: %w", readErr))
+			records = append(records, loaded{path: path, err: fmt.Errorf("reading agent config: %w", readErr)})
 			continue
 		}
 		sum := sha256.Sum256(raw)
@@ -122,21 +136,41 @@ func scanFiles(ctx context.Context, relBase string, paths []string) *ScanResult 
 
 		agent, loadErr := loadCatalogAgent(ctx, path)
 		if loadErr != nil {
-			result.addFailure(path, IssueInvalidConfig, loadErr)
+			records = append(records, loaded{path: path, err: loadErr})
 			continue
 		}
-		if prev, dup := byName[agent.Name]; dup {
-			err := fmt.Errorf("duplicate agent name %q: defined in both %s and %s — agent names are unique per installation", agent.Name, prev, path)
-			result.addFailure(path, IssueDuplicateName, err)
-			continue
-		}
-		byName[agent.Name] = path
-		result.Files = append(result.Files, FileResult{Path: path, Agent: agent})
-		result.Agents = append(result.Agents, *agent)
+		records = append(records, loaded{path: path, agent: agent})
+		nameCount[agent.Name]++
+		namePaths[agent.Name] = append(namePaths[agent.Name], path)
 	}
-
 	result.Digest = hex.EncodeToString(digest.Sum(nil))
+
+	for _, rec := range records {
+		switch {
+		case rec.err != nil:
+			result.addFailure(rec.path, IssueInvalidConfig, rec.err)
+		case nameCount[rec.agent.Name] > 1:
+			// Fail closed for EVERY file sharing this name — no valid agent.
+			others := otherPaths(namePaths[rec.agent.Name], rec.path)
+			result.addFailure(rec.path, IssueDuplicateName,
+				fmt.Errorf("duplicate agent name %q: also defined in %s — agent names are unique per installation", rec.agent.Name, others))
+		default:
+			result.Files = append(result.Files, FileResult{Path: rec.path, Agent: rec.agent})
+			result.Agents = append(result.Agents, *rec.agent)
+		}
+	}
 	return result
+}
+
+// otherPaths joins the paths sharing a name, excluding self.
+func otherPaths(paths []string, self string) string {
+	var others []string
+	for _, p := range paths {
+		if p != self {
+			others = append(others, p)
+		}
+	}
+	return strings.Join(others, ", ")
 }
 
 // loadCatalogAgent runs one file through the SAME strict pipeline gateway
@@ -158,7 +192,7 @@ func loadCatalogAgent(ctx context.Context, path string) (*CatalogAgent, error) {
 		TenantID:     pol.Agent.TenantID,
 		Path:         path,
 		PolicyDigest: pol.Hash,
-		Enabled:      true, // #268 lands agent.enabled; until then every agent is on
+		Enabled:      pol.Agent.IsEnabled(), // agent.enabled (#268); unset = true
 		Policy:       pol,
 	}, nil
 }

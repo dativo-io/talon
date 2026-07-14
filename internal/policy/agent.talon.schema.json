@@ -15,6 +15,7 @@
         "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
         "model_tier": {"type": "integer", "minimum": 0, "maximum": 2},
         "tenant_id": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9_-]+$", "description": "Tenant this AI use case belongs to. One agent = one tenant; key → agent → tenant_id is the only tenant derivation. Omitted = \"default\"."},
+        "enabled": {"type": "boolean", "description": "Operational on/off switch (#268). false denies NEW work for this agent (gateway requests, native runs, scheduled triggers) with an explicit reason; in-flight work finishes. Default: true. Toggle with `talon agents enable/disable <name>` — YAML stays the source of truth."},
         "key": {
           "type": "object",
           "description": "The agent's one active Talon traffic key, referenced by vault secret name. Policy files are committed to Git, so raw key material is impossible here by schema. Required for gateway-loaded agents.",

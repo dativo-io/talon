@@ -58,6 +58,11 @@ type LoadedAgent struct {
 	// AcceptClientMetadata gates recording of client-asserted orchestration
 	// identity (#194). nil = true.
 	AcceptClientMetadata *bool
+	// Enabled is the operational on/off switch (#268). nil = true. Disabled
+	// agents still pass every registry build check and still RESOLVE — the
+	// deny happens after resolution (attributed 403 + signed evidence), never
+	// as an unattributable unknown-key 401.
+	Enabled *bool
 	// Override is the agent's explicit policy override — exactly one override
 	// layer over the organization baseline.
 	Override *PolicyOverride
@@ -100,7 +105,6 @@ type PolicyOverride struct {
 
 // ResolvedIdentity is the runtime identity of one AI use case, produced by
 // the registry from a presented key (or synthesized for quickstart mode).
-// #268 adds Enabled; the struct is the seam for the fleet issues (#267–#270).
 type ResolvedIdentity struct {
 	Name         string
 	TenantID     string
@@ -108,6 +112,10 @@ type ResolvedIdentity struct {
 	ConfigPath   string
 	PolicyDigest string // agent policy canonical content hash (#266 review r4)
 	Tags         []string
+	// Enabled is the operational on/off switch (#268): false denies NEW work
+	// after resolution — a hard platform boundary in EVERY gateway mode
+	// (shadow/log_only do not bypass an operator kill switch).
+	Enabled bool
 
 	AcceptClientMetadata *bool
 	Override             *PolicyOverride
@@ -118,6 +126,11 @@ type ResolvedIdentity struct {
 	// fixed-length constant-time matching (#266 review round 4).
 	key       []byte
 	keyDigest [sha256.Size]byte
+	// keySecretName is the vault secret this key resolved from. Reload reuses
+	// already-resolved key material for an agent whose (name, keySecretName)
+	// is unchanged, so an emergency disable never depends on re-reading the
+	// vault binding it is disabling (#269 review).
+	keySecretName string
 }
 
 // AcceptsClientMetadata reports whether client-asserted orchestration
@@ -151,6 +164,7 @@ func NewQuickstartIdentity() *ResolvedIdentity {
 		Name:     quickstartAgentName,
 		TenantID: quickstartTenantID,
 		Tags:     []string{"quickstart"},
+		Enabled:  true,
 		Override: &PolicyOverride{AllowedProviders: []string{"openai"}},
 	}
 }
@@ -163,11 +177,49 @@ type IdentityRegistry struct {
 	identities []*ResolvedIdentity
 }
 
+// PriorKey is a previously-resolved identity's key material plus the context
+// needed to decide whether reusing it is SAFE (#269 review round 5): reuse
+// must not bypass a vault ACL check on a tenant move, nor reactivate a
+// revoked key on re-enable.
+type PriorKey struct {
+	Key      []byte
+	TenantID string
+	Enabled  bool
+}
+
+// PriorKeyLookup returns the previous generation's resolved key for an agent
+// whose (name, secretName) is unchanged. The caller decides whether reuse is
+// permitted (see resolveAgentKey).
+type PriorKeyLookup func(name, secretName string) (PriorKey, bool)
+
+// BuildOptions tunes registry construction for the reload path.
+type BuildOptions struct {
+	// AllowUnkeyed skips agents that cannot be gateway-keyed — no key binding,
+	// OR a configured binding whose secret is unminted or momentarily
+	// unresolvable — instead of failing the build. Plain (native-only) serve
+	// sets this so such agents run natively while never entering the gateway
+	// registry; gateway mode leaves it false (a keyless or unminted agent is a
+	// startup/reload error). Covering the unminted case keeps a single-file
+	// plain boot and its reloads consistent: startup degrades an unminted
+	// configured key to a keyless boot, so a reload must not REJECT the same
+	// config (#300 review round 5, blocker 5).
+	AllowUnkeyed bool
+	// PriorKeys reuses unchanged key material without vault access.
+	PriorKeys PriorKeyLookup
+}
+
 // BuildIdentityRegistry resolves every agent's key binding through the vault
-// and validates the set fail-closed. Errors name the offending agents so an
-// operator can fix config without guessing:
+// and validates the set fail-closed (see BuildIdentityRegistryWith).
+func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *secrets.SecretStore, adminKey string) (*IdentityRegistry, error) {
+	return BuildIdentityRegistryWith(ctx, agents, vault, adminKey, BuildOptions{})
+}
+
+// BuildIdentityRegistryWith resolves every keyed agent and validates the set
+// fail-closed. Errors name the offending agents so an operator can fix config
+// without guessing:
 //   - duplicate agent name
-//   - missing key binding (gateway-loaded agents must be keyed)
+//   - missing key binding (gateway-loaded agents must be keyed; AllowUnkeyed
+//     relaxes this for native-only serve)
 //   - missing / ACL-denied secret (vault access is audit-logged either way)
 //   - empty resolved key material
 //   - two agents resolving to the same key
@@ -175,7 +227,7 @@ type IdentityRegistry struct {
 //     configured). The server's tenant-or-admin middleware checks the admin
 //     bearer first, so a collision would silently elevate that agent's
 //     traffic to operator authority — fail startup instead.
-func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *secrets.SecretStore, adminKey string) (*IdentityRegistry, error) {
+func BuildIdentityRegistryWith(ctx context.Context, agents []LoadedAgent, vault *secrets.SecretStore, adminKey string, opts BuildOptions) (*IdentityRegistry, error) {
 	reg := &IdentityRegistry{identities: make([]*ResolvedIdentity, 0, len(agents))}
 	byName := make(map[string]string, len(agents))   // name → path
 	byKey := make(map[string]string, len(agents))    // raw key → agent name (build-time dup check only)
@@ -192,6 +244,10 @@ func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *sec
 		byName[a.Name] = a.Path
 
 		if a.KeySecretName == "" {
+			if opts.AllowUnkeyed {
+				// Native-only agent: never enters the gateway registry.
+				continue
+			}
 			return nil, fmt.Errorf("agent %q (%s): agent.key.secret_name is required for gateway-loaded agents — bind the traffic key via `talon secrets set <name> <key>` and reference it, or run the agent natively only", a.Name, a.Path)
 		}
 		if prev, dup := bySecret[a.KeySecretName]; dup {
@@ -208,22 +264,24 @@ func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *sec
 			return nil, fmt.Errorf("agent %q (%s): %w", a.Name, a.Path, err)
 		}
 
-		secret, err := vault.Get(ctx, a.KeySecretName, tenantID, a.Name)
+		newEnabled := a.Enabled == nil || *a.Enabled
+		keyMaterial, err := resolveAgentKey(ctx, a, tenantID, newEnabled, vault, opts.PriorKeys)
 		if err != nil {
-			return nil, fmt.Errorf("agent %q (%s): resolving key secret %q: %w", a.Name, a.Path, a.KeySecretName, err)
+			if opts.AllowUnkeyed {
+				// Native-only serve: a configured key that is unminted or
+				// momentarily unresolvable is not fatal — the agent simply never
+				// enters the gateway registry and runs natively, exactly as
+				// single-file boot degrades an unminted key. Without this, reload
+				// would reject a config startup accepted (#300 review round 5,
+				// blocker 5).
+				continue
+			}
+			return nil, err
 		}
-		keyMaterial := strings.TrimSpace(string(secret.Value))
-		if keyMaterial == "" {
-			return nil, fmt.Errorf("agent %q (%s): key secret %q resolved to an empty value — set it via `talon secrets set %s <key>`", a.Name, a.Path, a.KeySecretName, a.KeySecretName)
-		}
-		if prev, dup := byKey[keyMaterial]; dup {
-			return nil, fmt.Errorf("agents %q and %q resolve to the same key material — a key identifies exactly one AI use case", prev, a.Name)
+		if err := checkKeyCollisions(a, keyMaterial, adminKey, byKey); err != nil {
+			return nil, err
 		}
 		byKey[keyMaterial] = a.Name
-
-		if adminKey != "" && subtle.ConstantTimeCompare([]byte(keyMaterial), []byte(adminKey)) == 1 {
-			return nil, fmt.Errorf("agent %q (%s): key secret %q resolves to the same value as TALON_ADMIN_KEY — an agent key must never carry admin authority; rotate one of them (`talon secrets set %s <new key>`): %w", a.Name, a.Path, a.KeySecretName, a.KeySecretName, ErrAdminKeyCollision)
-		}
 
 		reg.identities = append(reg.identities, &ResolvedIdentity{
 			Name:                 a.Name,
@@ -232,13 +290,120 @@ func BuildIdentityRegistry(ctx context.Context, agents []LoadedAgent, vault *sec
 			ConfigPath:           a.Path,
 			PolicyDigest:         a.PolicyDigest,
 			Tags:                 append([]string(nil), a.Tags...),
+			Enabled:              a.Enabled == nil || *a.Enabled,
 			AcceptClientMetadata: cloneBoolPtr(a.AcceptClientMetadata),
 			Override:             a.Override.clone(),
 			key:                  []byte(keyMaterial),
 			keyDigest:            sha256.Sum256([]byte(keyMaterial)),
+			keySecretName:        a.KeySecretName,
 		})
 	}
 	return reg, nil
+}
+
+// checkKeyCollisions fails closed when a resolved key duplicates another agent's
+// key (a key identifies exactly one agent) or collides with the admin key (which
+// the tenant-or-admin middleware checks first, so a collision would silently
+// elevate that agent's traffic to operator authority).
+func checkKeyCollisions(a *LoadedAgent, keyMaterial, adminKey string, byKey map[string]string) error {
+	if prev, dup := byKey[keyMaterial]; dup {
+		return fmt.Errorf("agents %q and %q resolve to the same key material — a key identifies exactly one AI use case", prev, a.Name)
+	}
+	if adminKey != "" && subtle.ConstantTimeCompare([]byte(keyMaterial), []byte(adminKey)) == 1 {
+		return fmt.Errorf("agent %q (%s): key secret %q resolves to the same value as TALON_ADMIN_KEY — an agent key must never carry admin authority; rotate one of them (`talon secrets set %s <new key>`): %w", a.Name, a.Path, a.KeySecretName, a.KeySecretName, ErrAdminKeyCollision)
+	}
+	return nil
+}
+
+// resolveAgentKey resolves one agent's key material. The CURRENT vault value
+// is ALWAYS preferred, so an in-place rotation (`talon secrets set <same-name>
+// <new>`) is picked up on the next rebuild and every ACL check runs against
+// the CURRENT tenant (#269 review rounds 4–5).
+//
+// Prior-key reuse falls into two cases, distinguished by the NEW state and by
+// whether the vault answer is a transient outage or an authoritative absence
+// (ErrSecretNotFound / ErrSecretAccessDenied / empty value):
+//
+//   - DISABLING (newEnabled == false): reuse the prior key as a DENIAL-ONLY
+//     identity even when the secret is authoritatively absent (#300 review round
+//     6, P1). This lets an operator actually STOP an agent whose key was deleted
+//     or revoked: the disabled generation activates, the gateway returns an
+//     attributed 403, and the tenant-API surface rejects the disabled key (see
+//     holderKeyResolver) — so the old credential authorizes nothing. Without
+//     this the registry build would fail, the reload would reject the disabled
+//     generation, and last-known-good would keep the enabled agent + old key
+//     alive — the opposite of a stop.
+//
+//   - STAYING ENABLED (newEnabled == true): reuse ONLY on a TRANSIENT outage,
+//     never on authoritative absence — a revoked key must stop serving. This
+//     also covers unchanged enabled SIBLINGS during a transient outage, so
+//     rebuilding the registry to disable ONE agent does not fail on a sibling's
+//     vault read (round 5, blocker 1). NOTE: for an enabled agent whose secret
+//     is authoritatively deleted, this refuses reuse → the build fails → the
+//     reload rejects → last-known-good keeps the OLD key active. Secret deletion
+//     alone is therefore NOT a hot revocation for an enabled agent: to revoke
+//     it, DISABLE the agent (hot, via the case above) or restart.
+//
+// Every case additionally requires an unchanged (name, secretName) prior
+// identity with key material and an UNCHANGED tenant (a tenant move must
+// ACL-recheck), and refuses a RE-ENABLE (prior disabled → new enabled): granting
+// NEW access always needs a fresh, ACL-checked vault read.
+func resolveAgentKey(ctx context.Context, a *LoadedAgent, tenantID string, newEnabled bool, vault *secrets.SecretStore, priorKeys PriorKeyLookup) (string, error) {
+	var vaultErr error
+	authoritativeAbsent := false
+	if vault != nil {
+		secret, err := vault.Get(ctx, a.KeySecretName, tenantID, a.Name)
+		switch {
+		case err == nil:
+			if km := strings.TrimSpace(string(secret.Value)); km != "" {
+				return km, nil // fresh, ACL-checked value — rotation & tenant moves land here
+			}
+			// An empty value is an authoritative revocation, not an outage.
+			vaultErr = fmt.Errorf("key secret %q resolved to an empty value", a.KeySecretName)
+			authoritativeAbsent = true
+		case errors.Is(err, secrets.ErrSecretNotFound), errors.Is(err, secrets.ErrSecretAccessDenied):
+			// The secret is gone or this tenant/agent is no longer authorized.
+			vaultErr = err
+			authoritativeAbsent = true
+		default:
+			// Transient/unknown failure: the key may still exist, so an unchanged
+			// binding is eligible for reuse below.
+			vaultErr = err
+		}
+	} else {
+		vaultErr = fmt.Errorf("no vault configured")
+	}
+	if priorKeys != nil {
+		if prior, ok := priorKeys(a.Name, a.KeySecretName); ok {
+			reEnabling := !prior.Enabled && newEnabled
+			unchanged := prior.TenantID == tenantID && len(prior.Key) > 0
+			// Disabling reuses regardless of the vault outcome (denial-only);
+			// staying enabled reuses only on a transient outage.
+			if !reEnabling && unchanged && (!newEnabled || !authoritativeAbsent) {
+				return string(prior.Key), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("agent %q (%s): resolving key secret %q: %w — set it via `talon secrets set %s <key>`", a.Name, a.Path, a.KeySecretName, vaultErr, a.KeySecretName)
+}
+
+// PriorKeys returns a lookup over this registry's resolved key material,
+// matched by (agent name, key secret name), carrying the tenant and enabled
+// state so the caller can gate reuse. A nil registry yields a lookup that
+// never matches. The returned closure hands back the live key bytes; callers
+// must not mutate them.
+func (r *IdentityRegistry) PriorKeys() PriorKeyLookup {
+	return func(name, secretName string) (PriorKey, bool) {
+		if r == nil {
+			return PriorKey{}, false
+		}
+		for _, id := range r.identities {
+			if id.Name == name && id.keySecretName == secretName && len(id.key) > 0 {
+				return PriorKey{Key: id.key, TenantID: id.TenantID, Enabled: id.Enabled}, true
+			}
+		}
+		return PriorKey{}, false
+	}
 }
 
 // cloneBoolPtr deep-copies a *bool so registry identities never alias the

@@ -401,6 +401,17 @@ func (r *Runner) resolveCatalogBundle(ctx context.Context, snap *agentcatalog.Ru
 		return nil, err
 	}
 
+	// Operational kill switch (#268): enabled: false denies NEW work on every
+	// native surface (runs, run API, trigger dispatch) BEFORE any lifecycle
+	// state exists — only signed early-termination evidence records the
+	// refused attempt, attributed to the settled identity and tenant.
+	// In-flight runs finish on the bundle they captured.
+	if !ra.Enabled {
+		err := fmt.Errorf("agent_disabled: agent %q is disabled by its Talon agent config (enabled: false) — new work is denied; re-enable it with `talon agents enable %s`", ra.Name, ra.Name)
+		r.recordEarlyTermination(ctx, correlationID, req, "agent_disabled: agent disabled (enabled: false in agent config)", startTime)
+		return nil, err
+	}
+
 	return &runBundle{
 		pol: ra.Policy, engine: ra.Engine, classifier: ra.Classifier, router: ra.Router,
 		baseDir: filepath.Dir(ra.Path),
@@ -484,6 +495,13 @@ func (r *Runner) resolveFileBundle(ctx context.Context, req *RunRequest, correla
 			r.recordEarlyTermination(ctx, correlationID, req, "agent_policy_mismatch: "+err.Error(), startTime)
 			return nil, err
 		}
+	}
+
+	// Operational kill switch (#268) applies on the explicit-file path too.
+	if !pol.Agent.IsEnabled() {
+		err := fmt.Errorf("agent_disabled: agent %q is disabled by its Talon agent config (enabled: false) — new work is denied", pol.Agent.Name)
+		r.recordEarlyTermination(ctx, correlationID, req, "agent_disabled: agent disabled (enabled: false in agent config)", startTime)
+		return nil, err
 	}
 
 	engine, err := policy.NewEngine(ctx, pol)
@@ -1332,10 +1350,18 @@ func (r *Runner) recordEarlyTermination(ctx context.Context, correlationID strin
 func (r *Runner) recordEarlyTerminationScanner(ctx context.Context, correlationID string, req *RunRequest, reason string, startTime time.Time, cls classifier.Facade) {
 	status := string(RunStatusFailed)
 	failureReason := string(FailureInternalError)
+	action := "early_termination"
 	switch {
 	case strings.HasPrefix(reason, "circuit_breaker"):
 		status = string(RunStatusBlocked)
 		failureReason = string(FailureCircuitBreaker)
+	case strings.HasPrefix(reason, "agent_disabled"):
+		// An operator kill switch is a deliberate BLOCK, not an internal
+		// failure (#268 review) — so the health projection (#270) reads it as
+		// a stop, never an error.
+		status = string(RunStatusBlocked)
+		failureReason = string(FailureAgentDisabled)
+		action = "agent_disabled"
 	case strings.HasPrefix(reason, "hook_"):
 		status = string(RunStatusDenied)
 		failureReason = string(FailureHookDeny)
@@ -1358,13 +1384,13 @@ func (r *Runner) recordEarlyTerminationScanner(ctx context.Context, correlationI
 		RequestSourceID: req.InvocationType,
 		PolicyDecision: evidence.PolicyDecision{
 			Allowed: false,
-			Action:  "early_termination",
+			Action:  action,
 			Reasons: []string{reason},
 		},
 		Classification:   evidence.Classification{Scanner: scannerInfo},
 		DurationMS:       time.Since(startTime).Milliseconds(),
 		InputPrompt:      req.Prompt,
-		ExplanationFacts: explanation.BuildLegacyFacts(false, "early_termination", []string{reason}, explanation.StagePreExecution, "", ""),
+		ExplanationFacts: explanation.BuildLegacyFacts(false, action, []string{reason}, explanation.StagePreExecution, "", ""),
 		Status:           status,
 		FailureReason:    failureReason,
 	}); err != nil {
