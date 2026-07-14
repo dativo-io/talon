@@ -89,6 +89,12 @@ type Server struct {
 	// from the effective policy + configured destinations. nil → never blocked
 	// on this axis.
 	fleetDenyAll func(tenantID, agentID string) bool
+	// fleetEnforcing gates the attention queue's BLOCKED state (#270 review
+	// round 2): budget exhaustion and agent-wide policy invalidity only prevent
+	// new work in enforce mode (or native execution). Defaults to true — the
+	// safe default is to surface BLOCKED unless serve knows the gateway is in
+	// shadow/log_only.
+	fleetEnforcing bool
 }
 
 // SetClassifier attaches the process-wide scanner engine. Call after
@@ -303,6 +309,9 @@ func NewServer(
 		eventsReplayBacklog:  1000,
 		eventsRecentMaxLimit: 500,
 		eventsPollInterval:   1 * time.Second,
+		// Safe default: surface BLOCKED unless serve tells us the gateway runs in
+		// shadow/log_only (WithFleetEnforcing(false)).
+		fleetEnforcing: true,
 	}
 	for _, opt := range opts {
 		opt(s)

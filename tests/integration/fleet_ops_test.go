@@ -141,7 +141,7 @@ func TestFleetOps_Walkthrough(t *testing.T) {
 			})
 		}
 		statuses := fleet.AssembleStatuses(members, orgCaps, "USD")
-		rows, err := fleet.Project(ctx, evStore, sessStore, statuses, fleet.DefaultThresholds(), time.Now().UTC())
+		rows, err := fleet.Project(ctx, evStore, sessStore, statuses, fleet.DefaultThresholds(), time.Now().UTC(), true)
 		require.NoError(t, err)
 		byName := map[string]fleet.AgentRow{}
 		for i := range rows {

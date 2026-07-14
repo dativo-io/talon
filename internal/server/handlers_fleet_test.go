@@ -30,9 +30,10 @@ func fleetTestServer(t *testing.T, view agentcatalog.FleetView) *Server {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ev.Close() })
 	return &Server{
-		fleetView:     func() agentcatalog.FleetView { return view },
-		evidenceStore: ev,
-		fleetCurrency: "EUR",
+		fleetView:      func() agentcatalog.FleetView { return view },
+		evidenceStore:  ev,
+		fleetCurrency:  "EUR",
+		fleetEnforcing: true,
 	}
 }
 
@@ -142,7 +143,7 @@ func TestHandleAgentsFleet_ParityWithDirectProjection(t *testing.T) {
 		return 0, 0, false
 	})
 	view := agentcatalog.FleetView{Snapshot: snap}
-	s := &Server{fleetView: func() agentcatalog.FleetView { return view }, evidenceStore: ev, fleetCurrency: "EUR", agentCapsLookup: caps}
+	s := &Server{fleetView: func() agentcatalog.FleetView { return view }, evidenceStore: ev, fleetCurrency: "EUR", agentCapsLookup: caps, fleetEnforcing: true}
 
 	rec := httptest.NewRecorder()
 	s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
@@ -152,7 +153,7 @@ func TestHandleAgentsFleet_ParityWithDirectProjection(t *testing.T) {
 
 	// Direct projection over the SAME inputs (the assembler + Project the handler runs).
 	statuses := fleet.AssembleStatuses(membershipFromView(view, nil), caps, "EUR")
-	direct, err := fleet.Project(context.Background(), ev, emptySessionSource{}, statuses, fleet.DefaultThresholds(), now)
+	direct, err := fleet.Project(context.Background(), ev, emptySessionSource{}, statuses, fleet.DefaultThresholds(), now, true)
 	require.NoError(t, err)
 
 	// Compare the serialized form (robust to time.Time representation quirks).
@@ -202,6 +203,7 @@ func TestHandleAgentsFleet_CapProjectedAtThresholds(t *testing.T) {
 				evidenceStore:   ev,
 				fleetCurrency:   "EUR",
 				agentCapsLookup: caps,
+				fleetEnforcing:  true,
 			}
 			rec := httptest.NewRecorder()
 			s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
@@ -228,10 +230,11 @@ func TestHandleAgentsFleet_PolicyDenyAllIsBlocked(t *testing.T) {
 	t.Cleanup(func() { _ = ev.Close() })
 
 	s := &Server{
-		fleetView:     func() agentcatalog.FleetView { return agentcatalog.FleetView{Snapshot: snap} },
-		evidenceStore: ev,
-		fleetCurrency: "EUR",
-		fleetDenyAll:  func(_, agent string) bool { return agent == "support" },
+		fleetView:      func() agentcatalog.FleetView { return agentcatalog.FleetView{Snapshot: snap} },
+		evidenceStore:  ev,
+		fleetCurrency:  "EUR",
+		fleetDenyAll:   func(_, agent string) bool { return agent == "support" },
+		fleetEnforcing: true,
 	}
 	rec := httptest.NewRecorder()
 	s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
@@ -242,6 +245,31 @@ func TestHandleAgentsFleet_PolicyDenyAllIsBlocked(t *testing.T) {
 	assert.Equal(t, fleet.HealthBlocked, resp.Agents[0].Health)
 	require.NotEmpty(t, resp.Agents[0].Causes)
 	assert.Equal(t, fleet.CausePolicyDenyAll, resp.Agents[0].Causes[0].Kind)
+}
+
+// TestHandleAgentsFleet_ShadowModeNotBlocked covers #270 review round 2: in
+// shadow/log_only the gateway observes but forwards, so a deny-all policy does
+// NOT render BLOCKED — the agent is still serving.
+func TestHandleAgentsFleet_ShadowModeNotBlocked(t *testing.T) {
+	snap := fleetTestSnapshot(t)
+	ev, err := evidence.NewStore(filepath.Join(t.TempDir(), "e.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ev.Close() })
+
+	s := &Server{
+		fleetView:      func() agentcatalog.FleetView { return agentcatalog.FleetView{Snapshot: snap} },
+		evidenceStore:  ev,
+		fleetCurrency:  "EUR",
+		fleetDenyAll:   func(_, agent string) bool { return agent == "support" },
+		fleetEnforcing: false, // shadow/log_only
+	}
+	rec := httptest.NewRecorder()
+	s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp fleetStatusResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Agents, 1)
+	assert.NotEqual(t, fleet.HealthBlocked, resp.Agents[0].Health, "shadow mode observes but does not block")
 }
 
 // TestHandleAgentsFleet_NoFleet: keyless/quickstart mode returns 503.

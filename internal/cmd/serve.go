@@ -685,6 +685,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 			// configured providers, so an empty provider-allowlist intersection is
 			// detectable in addition to a categorical model block.
 			opts = append(opts, server.WithFleetDenyAll(fleetDenyAllFor(runtimeHolder, gatewayCfg.OrganizationPolicy, gatewayCfg.Providers)))
+			// BLOCKED is enforce-only (#270 review round 2): observable governance
+			// controls (budgets, model/provider allowlists) don't block in
+			// shadow/log_only, so the queue must not render BLOCKED there. Native
+			// serve always enforces and keeps the default (true).
+			opts = append(opts, server.WithFleetEnforcing(gatewayCfg.Mode == gateway.ModeEnforce))
 		}
 	} else if serveProxyQuickstart {
 		quickstartCfg, err := gateway.QuickstartConfig(gateway.QuickstartOptions{

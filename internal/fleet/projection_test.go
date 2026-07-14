@@ -68,7 +68,7 @@ func TestProject_MapsSignalsSortsAndRenders(t *testing.T) {
 		{Name: "broken", TenantID: "acme", Enabled: true, ConfigRejected: true, ConfigError: "unknown field", Currency: "EUR"},
 	}
 
-	rows, err := Project(context.Background(), ev, ss, agents, DefaultThresholds(), now)
+	rows, err := Project(context.Background(), ev, ss, agents, DefaultThresholds(), now, true)
 	require.NoError(t, err)
 	require.Len(t, rows, 3)
 
@@ -106,7 +106,7 @@ func TestProject_MixedTenantsQueryUnscoped(t *testing.T) {
 		{Name: "a", TenantID: "acme", Enabled: true},
 		{Name: "b", TenantID: "globex", Enabled: true},
 	}
-	_, err := Project(context.Background(), ev, ss, agents, DefaultThresholds(), now)
+	_, err := Project(context.Background(), ev, ss, agents, DefaultThresholds(), now, true)
 	require.NoError(t, err)
 	require.Equal(t, []string{""}, ev.seenTenants, "agents spanning tenants query all tenants")
 }

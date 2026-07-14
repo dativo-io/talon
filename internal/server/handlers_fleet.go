@@ -40,6 +40,15 @@ func WithFleetDenyAll(fn func(tenantID, agentID string) bool) Option {
 	}
 }
 
+// WithFleetEnforcing sets whether the runtime actually blocks on policy/budget
+// (#270 review round 2): false in gateway shadow/log_only mode so the attention
+// queue never renders BLOCKED for observe-only conditions. Defaults to true.
+func WithFleetEnforcing(enforcing bool) Option {
+	return func(s *Server) {
+		s.fleetEnforcing = enforcing
+	}
+}
+
 // fleetStatusResponse is the runtime-state contract for GET /v1/agents/fleet.
 // The Agents field is the projected attention-queue view (STATE/HEALTH/COST/WHY,
 // #270), computed by fleet.Project — the SAME code path the `talon agents` CLI
@@ -88,7 +97,7 @@ func (s *Server) handleAgentsFleet(w http.ResponseWriter, r *http.Request) {
 	if s.sessionStore != nil {
 		sessions = s.sessionStore
 	}
-	rows, err := fleet.Project(r.Context(), s.evidenceStore, sessions, statuses, fleet.DefaultThresholds(), time.Now().UTC())
+	rows, err := fleet.Project(r.Context(), s.evidenceStore, sessions, statuses, fleet.DefaultThresholds(), time.Now().UTC(), s.fleetEnforcing)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "fleet_projection_failed", err.Error())
 		return

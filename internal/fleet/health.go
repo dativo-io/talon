@@ -38,8 +38,14 @@ func Evaluate(state State, s Signals, th Thresholds, currency string) (Health, [
 }
 
 // blockedCauses returns the persistent, agent-wide reasons the agent cannot do
-// normal new work. Order: budget exhaustion before policy invalidity.
+// normal new work. Order: budget exhaustion before policy invalidity. Both are
+// enforcement conditions: in shadow/log_only the runtime observes but forwards,
+// so neither prevents new work — BLOCKED only applies when Enforcing (#270
+// review round 2).
 func blockedCauses(s Signals, currency string) []Cause {
+	if !s.Enforcing {
+		return nil
+	}
 	var causes []Cause
 	if b, ok := exhaustedBudget(s.Budgets); ok {
 		causes = append(causes, Cause{

@@ -151,6 +151,13 @@ type Signals struct {
 	// PolicyDenyAll — the agent's ACTIVE policy denies all new work agent-wide:
 	// BLOCKED. This is persistent, never a single request-specific denial.
 	PolicyDenyAll bool
+	// Enforcing is true when the runtime actually blocks on policy/budget: the
+	// gateway is in enforce mode, or native execution (which always enforces).
+	// In shadow/log_only the gateway OBSERVES violations but forwards traffic,
+	// so budget exhaustion and agent-wide policy invalidity do NOT prevent new
+	// work and must not render BLOCKED (#270 review round 2). The STOPPED kill
+	// switch and the attention causes are unaffected — they hold in every mode.
+	Enforcing bool
 }
 
 // AgentStatus is the per-agent identity + config-validity + effective-cap input

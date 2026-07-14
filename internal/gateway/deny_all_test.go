@@ -43,4 +43,38 @@ func TestAgentCanAcceptWork(t *testing.T) {
 	// detectable; a normal agent still reads as workable.
 	assert.True(t, AgentCanAcceptWork(org, &PolicyOverride{}, nil))
 	assert.False(t, AgentCanAcceptWork(org, &PolicyOverride{BlockedModels: []string{"*"}}, nil))
+
+	// DISJOINT org + agent model allowlists → no model satisfies both → deny-all,
+	// even though each list is individually non-empty (#270 review round 2).
+	assert.False(t, AgentCanAcceptWork(
+		OrganizationPolicy{Constraints: OrgConstraints{AllowedModels: []string{"gpt-4o"}}},
+		&PolicyOverride{AllowedModels: []string{"claude-sonnet-4"}}, providers),
+		"org allows gpt-4o, agent allows claude-sonnet-4 → empty intersection → deny-all")
+	// A common allowed, non-blocked model → workable.
+	assert.True(t, AgentCanAcceptWork(
+		OrganizationPolicy{Constraints: OrgConstraints{AllowedModels: []string{"gpt-4o", "claude-sonnet-4"}}},
+		&PolicyOverride{AllowedModels: []string{"claude-sonnet-4"}}, providers))
+}
+
+// TestEffectivePolicy_CanServeAnyModel exercises model satisfiability directly.
+func TestEffectivePolicy_CanServeAnyModel(t *testing.T) {
+	cases := []struct {
+		name string
+		eff  EffectivePolicy
+		want bool
+	}{
+		{"unrestricted", EffectivePolicy{}, true},
+		{"wildcard blocked", EffectivePolicy{BlockedModels: []string{"*"}}, false},
+		{"org wildcard blocked", EffectivePolicy{OrgBlockedModels: []string{"*"}}, false},
+		{"disjoint org+agent allow", EffectivePolicy{OrgAllowedModels: []string{"gpt-4o"}, AllowedModels: []string{"claude-sonnet-4"}}, false},
+		{"disjoint org+provider allow", EffectivePolicy{OrgAllowedModels: []string{"gpt-4o"}, ProviderAllowedModels: []string{"claude-sonnet-4"}}, false},
+		{"one common allowed model", EffectivePolicy{OrgAllowedModels: []string{"gpt-4o", "x"}, AllowedModels: []string{"gpt-4o"}}, true},
+		{"last common model blocked", EffectivePolicy{OrgAllowedModels: []string{"gpt-4o"}, AllowedModels: []string{"gpt-4o"}, BlockedModels: []string{"gpt-4o"}}, false},
+		{"common model not blocked, another is", EffectivePolicy{AllowedModels: []string{"gpt-4o", "gpt-4o-mini"}, BlockedModels: []string{"gpt-4o"}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.eff.CanServeAnyModel())
+		})
+	}
 }

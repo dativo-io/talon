@@ -210,7 +210,7 @@ func offlineFleet(ctx context.Context, cfg *config.Config, tenant string) ([]fle
 	// The org baseline + configured providers come from the gateway config when
 	// present; an EXISTING-but-invalid config is surfaced, never silently
 	// replaced with an empty policy (#270 review round 1, P2).
-	org, providers, err := loadOfflineGatewayContext()
+	org, providers, enforcing, err := loadOfflineGatewayContext()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -257,7 +257,7 @@ func offlineFleet(ctx context.Context, cfg *config.Config, tenant string) ([]fle
 	}
 	defer ss.Close()
 
-	rows, err := fleet.Project(ctx, ev, ss, statuses, fleet.DefaultThresholds(), time.Now().UTC())
+	rows, err := fleet.Project(ctx, ev, ss, statuses, fleet.DefaultThresholds(), time.Now().UTC(), enforcing)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -271,19 +271,22 @@ func offlineFleet(ctx context.Context, cfg *config.Config, tenant string) ([]fle
 // silently replaced with an empty policy — which would make offline `talon
 // agents` report agent-only caps and an unrestricted policy where the intended
 // organization baseline failed to load (#270 review round 1, P2).
-func loadOfflineGatewayContext() (gateway.OrganizationPolicy, map[string]gateway.ProviderConfig, error) {
+func loadOfflineGatewayContext() (org gateway.OrganizationPolicy, providers map[string]gateway.ProviderConfig, enforcing bool, err error) {
 	path := strings.TrimSpace(os.Getenv("TALON_GATEWAY_CONFIG"))
 	if path == "" {
 		path = "talon.config.yaml"
 	}
-	gwCfg, err := gateway.LoadGatewayConfig(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return gateway.OrganizationPolicy{}, nil, nil // no baseline: native-only
+	gwCfg, loadErr := gateway.LoadGatewayConfig(path)
+	if loadErr != nil {
+		if errors.Is(loadErr, os.ErrNotExist) {
+			return gateway.OrganizationPolicy{}, nil, true, nil // no gateway: native, enforce
 		}
-		return gateway.OrganizationPolicy{}, nil, fmt.Errorf("gateway config %s is present but invalid: %w — fix it, or unset TALON_GATEWAY_CONFIG for a config-only view without an org baseline", path, err)
+		return gateway.OrganizationPolicy{}, nil, true, fmt.Errorf("gateway config %s is present but invalid: %w — fix it, or unset TALON_GATEWAY_CONFIG for a config-only view without an org baseline", path, loadErr)
 	}
-	return gwCfg.OrganizationPolicy, gwCfg.Providers, nil
+	// BLOCKED is enforce-only (#270 review round 2): shadow/log_only observe but
+	// forward. An unset mode defaults to enforce.
+	enforcing = gwCfg.Mode != gateway.ModeShadow && gwCfg.Mode != gateway.ModeLogOnly
+	return gwCfg.OrganizationPolicy, gwCfg.Providers, enforcing, nil
 }
 
 func filterRowsByTenant(rows []fleet.AgentRow, tenant string) []fleet.AgentRow {

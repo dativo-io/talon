@@ -89,30 +89,57 @@ func TestOfflineFleet_DenyAllPolicyIsBlocked(t *testing.T) {
 	assert.Equal(t, fleet.CausePolicyDenyAll, rows[0].Causes[0].Kind)
 }
 
+// TestOfflineFleet_DenyAllInShadowNotBlocked covers #270 review round 2: the
+// same org deny-all under gateway mode: shadow is observed, not blocked.
+func TestOfflineFleet_DenyAllInShadowNotBlocked(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	writeQueueAgent(t, agentsDir, "coding", true)
+	gwPath := filepath.Join(dir, "talon.config.yaml")
+	gw := "gateway:\n  mode: shadow\n  organization_policy:\n    constraints:\n      blocked_models:\n        - \"*\"\n"
+	require.NoError(t, os.WriteFile(gwPath, []byte(gw), 0o600))
+	t.Setenv("TALON_GATEWAY_CONFIG", gwPath)
+
+	rows, _, err := offlineFleet(context.Background(), offlineTestConfig(t, agentsDir), "")
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.NotEqual(t, fleet.HealthBlocked, rows[0].Health, "shadow mode observes but does not block")
+}
+
 // TestLoadOfflineGatewayContext covers #270 review round 1, P2: a missing gateway
 // config is no baseline (no error), a native config without a gateway block is
 // valid, but a config that EXISTS and fails to load is surfaced — never silently
 // replaced with an empty org policy.
 func TestLoadOfflineGatewayContext(t *testing.T) {
-	t.Run("missing → empty, no error", func(t *testing.T) {
+	t.Run("missing → empty, enforcing, no error", func(t *testing.T) {
 		t.Setenv("TALON_GATEWAY_CONFIG", filepath.Join(t.TempDir(), "nope.yaml"))
-		_, providers, err := loadOfflineGatewayContext()
+		_, providers, enforcing, err := loadOfflineGatewayContext()
 		require.NoError(t, err)
 		assert.Empty(t, providers)
+		assert.True(t, enforcing, "no gateway config → native → enforce")
 	})
-	t.Run("native config without gateway block → valid", func(t *testing.T) {
+	t.Run("native config without gateway block → valid, enforcing", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "talon.config.yaml")
 		require.NoError(t, os.WriteFile(p, []byte("agents_dir: agents\nsigning_key: \"x\"\n"), 0o600))
 		t.Setenv("TALON_GATEWAY_CONFIG", p)
-		_, _, err := loadOfflineGatewayContext()
+		_, _, enforcing, err := loadOfflineGatewayContext()
 		require.NoError(t, err)
+		assert.True(t, enforcing)
+	})
+	t.Run("shadow mode → not enforcing", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "talon.config.yaml")
+		require.NoError(t, os.WriteFile(p, []byte("gateway:\n  mode: shadow\n"), 0o600))
+		t.Setenv("TALON_GATEWAY_CONFIG", p)
+		_, _, enforcing, err := loadOfflineGatewayContext()
+		require.NoError(t, err)
+		assert.False(t, enforcing, "shadow mode observes but does not block")
 	})
 	t.Run("present but invalid → error", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "talon.config.yaml")
 		// Gateway vocabulary at the file root is a hard LoadGatewayConfig error.
 		require.NoError(t, os.WriteFile(p, []byte("providers:\n  openai: {}\n"), 0o600))
 		t.Setenv("TALON_GATEWAY_CONFIG", p)
-		_, _, err := loadOfflineGatewayContext()
+		_, _, _, err := loadOfflineGatewayContext()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "present but invalid")
 	})

@@ -49,13 +49,19 @@ func TestEvaluate_Boundaries(t *testing.T) {
 		{"disabled agent is stopped", StateStopped, Signals{}, HealthStopped, "", 1},
 		{"disabled agent with attention signal still stopped", StateStopped, Signals{Fallbacks: 9}, HealthStopped, "", 1},
 
-		// BLOCKED: persistent conditions, outrank everything including STOPPED.
-		{"cap exhausted is blocked", StateEnabled, Signals{Budgets: monthly(1000, 1000)}, HealthBlocked, CauseBudgetExhausted, 1},
-		{"cap over-exhausted is blocked", StateEnabled, Signals{Budgets: monthly(1500, 1000)}, HealthBlocked, CauseBudgetExhausted, 1},
-		{"policy deny-all is blocked", StateEnabled, Signals{PolicyDenyAll: true}, HealthBlocked, CausePolicyDenyAll, 1},
-		{"blocked outranks stopped", StateStopped, Signals{Budgets: monthly(100, 100)}, HealthBlocked, CauseBudgetExhausted, 1},
+		// BLOCKED (enforce mode): persistent conditions, outrank even STOPPED.
+		{"cap exhausted is blocked", StateEnabled, Signals{Enforcing: true, Budgets: monthly(1000, 1000)}, HealthBlocked, CauseBudgetExhausted, 1},
+		{"cap over-exhausted is blocked", StateEnabled, Signals{Enforcing: true, Budgets: monthly(1500, 1000)}, HealthBlocked, CauseBudgetExhausted, 1},
+		{"policy deny-all is blocked", StateEnabled, Signals{Enforcing: true, PolicyDenyAll: true}, HealthBlocked, CausePolicyDenyAll, 1},
+		{"blocked outranks stopped", StateStopped, Signals{Enforcing: true, Budgets: monthly(100, 100)}, HealthBlocked, CauseBudgetExhausted, 1},
 		// daily cap exhausted blocks even when monthly is fine (#283).
-		{"daily cap exhausted blocks", StateEnabled, Signals{Budgets: []BudgetPeriod{{Name: "daily", Spend: 50, Cap: 50}, {Name: "monthly", Spend: 50, Cap: 1000}}}, HealthBlocked, CauseBudgetExhausted, 1},
+		{"daily cap exhausted blocks", StateEnabled, Signals{Enforcing: true, Budgets: []BudgetPeriod{{Name: "daily", Spend: 50, Cap: 50}, {Name: "monthly", Spend: 50, Cap: 1000}}}, HealthBlocked, CauseBudgetExhausted, 1},
+
+		// SHADOW / log_only (Enforcing:false): budget/policy conditions are
+		// observed but do not prevent work, so they never render BLOCKED (#270
+		// review round 2). Exhausted budget surfaces as a budget WARNING instead.
+		{"exhausted cap in shadow is not blocked", StateEnabled, Signals{Enforcing: false, Budgets: monthly(1000, 1000)}, HealthNeedsAttention, CauseBudgetWarning, 1},
+		{"policy deny-all in shadow is not blocked", StateEnabled, Signals{Enforcing: false, PolicyDenyAll: true}, HealthHealthy, "", 0},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
