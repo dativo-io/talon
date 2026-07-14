@@ -25,6 +25,44 @@ func LoadedAgentFromPolicy(pol *policy.Policy, path string) gateway.LoadedAgent 
 	return agentbridge.LoadedAgentFromPolicy(pol, path)
 }
 
+// runtimeAgentOverride finds an agent among the ACTIVE runtime bundles (by
+// tenant+name, or the sole agent when agentID is empty) and returns its policy
+// override, derived from the agent's OWN policy. Iterating the bundles — not the
+// identity registry — means it resolves keyless native agents that never enter
+// the registry, so native serve projects caps too (#270 review round 1, P1).
+// Ambiguity (empty name, more than one agent) reports false rather than
+// guessing.
+func runtimeAgentOverride(snap *agentcatalog.RuntimeSnapshot, tenantID, agentID string) (*gateway.PolicyOverride, bool) {
+	if snap == nil {
+		return nil, false
+	}
+	var match *agentcatalog.RuntimeAgent
+	for _, ra := range snap.List() {
+		t := ra.TenantID
+		if t == "" {
+			t = "default"
+		}
+		if t != tenantID {
+			continue
+		}
+		if agentID != "" {
+			if ra.Name == agentID {
+				match = ra
+				break
+			}
+			continue
+		}
+		if match != nil {
+			return nil, false // ambiguous: two agents, no name
+		}
+		match = ra
+	}
+	if match == nil {
+		return nil, false
+	}
+	return agentbridge.LoadedAgentFromPolicy(match.Policy, match.Path).Override, true
+}
+
 // buildServeIdentityRegistry applies the serve-time registry mode matrix
 // (#266; regression-tested since the #279 review):
 //

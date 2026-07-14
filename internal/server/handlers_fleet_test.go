@@ -168,6 +168,55 @@ func TestHandleAgentsFleet_ParityWithDirectProjection(t *testing.T) {
 	assert.Equal(t, fleet.CauseElevatedDenialRate, resp.Agents[0].Causes[1].Kind)
 }
 
+// TestHandleAgentsFleet_CapProjectedAtThresholds covers #270 review round 1,
+// P1: an agent's effective cap is projected (not zero), so spend at 80% of it
+// surfaces a budget warning and spend at 100% surfaces BLOCKED — the same
+// numbers the runner enforces on.
+func TestHandleAgentsFleet_CapProjectedAtThresholds(t *testing.T) {
+	cases := []struct {
+		name       string
+		spend      float64
+		wantHealth fleet.Health
+		wantCause  fleet.CauseKind
+	}{
+		{"80% of cap → budget warning", 80, fleet.HealthNeedsAttention, fleet.CauseBudgetWarning},
+		{"100% of cap → budget exhausted (blocked)", 100, fleet.HealthBlocked, fleet.CauseBudgetExhausted},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := fleetTestSnapshot(t)
+			now := time.Now().UTC()
+			ev, err := evidence.NewStore(filepath.Join(t.TempDir(), "e.db"), testutil.TestSigningKey)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = ev.Close() })
+			seedFleetEvidence(t, ev, "s1", "acme", "support", "gateway", true, tc.spend, now.Add(-5*time.Minute))
+
+			caps := fleet.CapLookup(func(_, a string) (float64, float64, bool) {
+				if a == "support" {
+					return 0, 100, true
+				}
+				return 0, 0, false
+			})
+			s := &Server{
+				fleetView:       func() agentcatalog.FleetView { return agentcatalog.FleetView{Snapshot: snap} },
+				evidenceStore:   ev,
+				fleetCurrency:   "EUR",
+				agentCapsLookup: caps,
+			}
+			rec := httptest.NewRecorder()
+			s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
+			require.Equal(t, http.StatusOK, rec.Code)
+			var resp fleetStatusResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			require.Len(t, resp.Agents, 1)
+			assert.Equal(t, float64(100), resp.Agents[0].MonthlyCap, "the cap is projected, not zero")
+			assert.Equal(t, tc.wantHealth, resp.Agents[0].Health)
+			require.NotEmpty(t, resp.Agents[0].Causes)
+			assert.Equal(t, tc.wantCause, resp.Agents[0].Causes[0].Kind)
+		})
+	}
+}
+
 // TestHandleAgentsFleet_NoFleet: keyless/quickstart mode returns 503.
 func TestHandleAgentsFleet_NoFleet(t *testing.T) {
 	s := fleetTestServer(t, agentcatalog.FleetView{Snapshot: nil})
