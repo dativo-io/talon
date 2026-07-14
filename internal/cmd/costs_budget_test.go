@@ -2,18 +2,20 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/gateway"
-	"github.com/dativo-io/talon/internal/secrets"
 )
 
 // disableServerBudgetProbe makes a costs-command test hermetic: the default
@@ -26,29 +28,31 @@ func disableServerBudgetProbe(t *testing.T) {
 	t.Cleanup(func() { costsServerURL = prev })
 }
 
-// TestAgentCapsLookupFor_ParityWithEnforcement (#288): the dashboard budget
-// denominator is EXACTLY the cap enforcement gates on for a per-agent
-// override — the same ResolveEffectivePolicy call, including the org budget
-// ceilings (#287) via the binding-cap rule.
+// TestAgentCapsLookupFor_ParityWithEnforcement (#288): the dashboard/attention-
+// queue budget denominator is EXACTLY the cap enforcement gates on — the same
+// ResolveEffectivePolicy over the agent's own policy override, including the org
+// budget ceilings (#287) via the binding-cap rule. The resolver now reads the
+// active runtime BUNDLES, so it covers keyless native agents too (#270 review).
 func TestAgentCapsLookupFor_ParityWithEnforcement(t *testing.T) {
 	orgPolicy := gateway.OrganizationPolicy{
 		Defaults:    gateway.OrgDefaults{DailyCost: 100, MonthlyCost: 2000},
 		Constraints: gateway.OrgConstraints{MaxDailyCost: 50},
 	}
-	override := &gateway.PolicyOverride{MaxDailyCost: 80, MaxMonthlyCost: 400}
-	holder := gateway.NewRegistryHolder(nil)
-	lookup := agentCapsLookupFor(holder, orgPolicy)
 
-	// Empty registry: nothing resolves.
-	_, _, ok := lookup("acme", "support")
+	// Empty holder: nothing resolves.
+	empty := agentCapsLookupFor(agentcatalog.NewRuntimeHolder(nil), orgPolicy)
+	_, _, ok := empty("acme", "support")
 	assert.False(t, ok)
 
-	holder.Swap(testRegistryWithOverride(t, "support", "acme", override))
+	// One agent whose own policy carries daily 80 / monthly 400.
+	holder := capsTestHolder(t, "support", "acme", 80, 400)
+	lookup := agentCapsLookupFor(holder, orgPolicy)
 
 	daily, monthly, ok := lookup("acme", "support")
 	require.True(t, ok)
+	override := LoadedAgentFromPolicy(holder.Current().List()[0].Policy, holder.Current().List()[0].Path).Override
 	eff := gateway.ResolveEffectivePolicy(orgPolicy, gateway.ProviderConfig{}, override)
-	assert.Equal(t, eff.BindingDailyCap(), daily, "dashboard denominator == enforcement's binding daily cap")
+	assert.Equal(t, eff.BindingDailyCap(), daily, "denominator == enforcement's binding daily cap")
 	assert.Equal(t, eff.BindingMonthlyCap(), monthly)
 	assert.Equal(t, 50.0, daily, "org ceiling (50) binds below the agent override (80)")
 	assert.Equal(t, 400.0, monthly, "agent override (400) binds below the org default (2000)")
@@ -65,19 +69,23 @@ func TestAgentCapsLookupFor_ParityWithEnforcement(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// testRegistryWithOverride builds a one-agent registry through the real
-// vault-backed constructor so the test exercises production wiring.
-func testRegistryWithOverride(t *testing.T, name, tenant string, override *gateway.PolicyOverride) *gateway.IdentityRegistry {
+// capsTestHolder builds a one-agent runtime holder through the real discovery →
+// bundle path so the test exercises production wiring (the agent's own policy
+// cost_limits become the override the resolver reads).
+func capsTestHolder(t *testing.T, name, tenant string, daily, monthly float64) *agentcatalog.RuntimeHolder {
 	t.Helper()
-	vault, err := secrets.NewSecretStore(filepath.Join(t.TempDir(), "s.db"), "0123456789abcdef0123456789abcdef")
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "agents", name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	y := fmt.Sprintf("agent:\n  name: %s\n  version: \"1.0.0\"\n  tenant_id: %s\npolicies:\n  cost_limits:\n    daily: %g\n    monthly: %g\n", name, tenant, daily, monthly)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent.talon.yaml"), []byte(y), 0o600))
+	scan, err := agentcatalog.DiscoverAgents(ctx, filepath.Dir(dir))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = vault.Close() })
-	require.NoError(t, vault.Set(context.Background(), name+"-key", []byte("tk-"+name), secrets.ACL{}))
-	reg, err := gateway.BuildIdentityRegistry(context.Background(), []gateway.LoadedAgent{
-		{Path: "a.yaml", Name: name, TenantID: tenant, KeySecretName: name + "-key", Override: override},
-	}, vault, "")
+	bundles, err := agentcatalog.BuildRuntimeAgents(ctx, scan, agentcatalog.BundleDeps{})
 	require.NoError(t, err)
-	return reg
+	reg, err := gateway.BuildIdentityRegistryWith(ctx, scan.LoadedAgents(), nil, "", gateway.BuildOptions{AllowUnkeyed: true})
+	require.NoError(t, err)
+	return agentcatalog.NewRuntimeHolder(agentcatalog.NewRuntimeSnapshot(scan, bundles, reg, time.Now().UTC()))
 }
 
 // TestFetchServerBudget (#288, tri-state per the #291 review): a reachable

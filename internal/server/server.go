@@ -14,6 +14,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/compliance"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/memory"
 	"github.com/dativo-io/talon/internal/metrics"
 	"github.com/dativo-io/talon/internal/otel"
@@ -80,6 +81,22 @@ type Server struct {
 	// fleetView backs GET /v1/agents/fleet (#269): ONE coherent read of the
 	// active runtime generation and the reloader's accept/reject state.
 	fleetView func() agentcatalog.FleetView
+	// fleetCurrency is the ISO-4217 unit the attention-queue COST column and
+	// budget caps are denominated in (#270), resolved once from the pricing
+	// table at serve time.
+	fleetCurrency string
+	// fleetOrg and fleetProviders are the organization baseline and configured
+	// providers the fleet endpoint resolves caps and deny-all against, BOUND to
+	// the captured snapshot per request (#270 review round 3) — not a live-holder
+	// lookup. Captured by value from serve (config has no reload seam yet).
+	fleetOrg       gateway.OrganizationPolicy
+	fleetProviders map[string]gateway.ProviderConfig
+	// fleetEnforcing gates the attention queue's BLOCKED state (#270 review
+	// round 2): budget exhaustion and agent-wide policy invalidity only prevent
+	// new work in enforce mode (or native execution). Defaults to true — the
+	// safe default is to surface BLOCKED unless serve knows the gateway is in
+	// shadow/log_only.
+	fleetEnforcing bool
 }
 
 // SetClassifier attaches the process-wide scanner engine. Call after
@@ -294,6 +311,9 @@ func NewServer(
 		eventsReplayBacklog:  1000,
 		eventsRecentMaxLimit: 500,
 		eventsPollInterval:   1 * time.Second,
+		// Safe default: surface BLOCKED unless serve tells us the gateway runs in
+		// shadow/log_only (WithFleetEnforcing(false)).
+		fleetEnforcing: true,
 	}
 	for _, opt := range opts {
 		opt(s)

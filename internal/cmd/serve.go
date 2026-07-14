@@ -615,6 +615,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 	opts = append(opts, server.WithFleetStatus(fleetView))
+	opts = append(opts, server.WithFleetCurrency(pricingTable.CurrencyCode()))
+	// Per-agent caps power the attention queue's COST/budget-health AND the
+	// /v1/costs/budget denominator in EVERY serve mode — native agents still
+	// enforce their own policies.cost_limits, so a native serve must NOT report
+	// them uncapped (#270 review round 1, P1). Wire a bundle-derived resolver
+	// with no org baseline here; gateway mode overrides it below to also tighten
+	// with the organization constraints.
+	if runtimeHolder != nil {
+		// /v1/costs/budget keeps the holder-backed lookup (it does not label its
+		// response with a fleet generation). The fleet endpoint resolves caps AND
+		// deny-all from its captured snapshot instead (#270 review round 3), so it
+		// only needs the org baseline + providers — native passes a zero org and
+		// no providers; gateway mode overrides both below.
+		opts = append(opts, server.WithAgentCapsLookup(agentCapsLookupFor(runtimeHolder, gateway.OrganizationPolicy{})))
+		opts = append(opts, server.WithFleetPolicyContext(gateway.OrganizationPolicy{}, nil))
+	}
 	if serveGateway {
 		gatewayCfg := preloadedGatewayCfg
 		if err := sovereignty.ValidateAirGap(cfg, gatewayCfg); err != nil {
@@ -665,7 +681,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 			// Dashboard budget view reads per-agent caps through the same
 			// effective-policy computation enforcement uses (#266), against
 			// the CURRENT registry snapshot (#289).
-			opts = append(opts, server.WithAgentCapsLookup(agentCapsLookupFor(registrySource, gatewayCfg.OrganizationPolicy)))
+			opts = append(opts, server.WithAgentCapsLookup(agentCapsLookupFor(runtimeHolder, gatewayCfg.OrganizationPolicy)))
+			// The fleet endpoint resolves caps + deny-all from its captured
+			// snapshot against this org baseline + configured providers (#270
+			// review round 3), so an empty provider-allowlist intersection is
+			// detectable in addition to a categorical model block.
+			opts = append(opts, server.WithFleetPolicyContext(gatewayCfg.OrganizationPolicy, gatewayCfg.Providers))
+			// BLOCKED is enforce-only (#270 review round 2): observable governance
+			// controls (budgets, model/provider allowlists) don't block in
+			// shadow/log_only, so the queue must not render BLOCKED there. Native
+			// serve always enforces and keeps the default (true).
+			opts = append(opts, server.WithFleetEnforcing(gatewayCfg.Mode == gateway.ModeEnforce))
 		}
 	} else if serveProxyQuickstart {
 		quickstartCfg, err := gateway.QuickstartConfig(gateway.QuickstartOptions{
@@ -898,40 +924,26 @@ func runServe(cmd *cobra.Command, args []string) error {
 }
 
 // agentCapsLookupFor builds the per-agent effective-cap lookup the dashboard
-// budget endpoint consumes: registry (through the shared holder, #289) +
-// ResolveEffectivePolicy — the same path enforcement uses, so the displayed
-// denominator can never disagree with the cap the runtime gated on (#288).
-// Caps are provider-independent, so the destination constraints are empty.
-// The org policy is captured by value: config (unlike identity) has no
-// reload seam yet — #269 revisits. An empty agentID resolves the tenant's
-// SINGLE registered agent when exactly one exists; ambiguity reports false
-// rather than guessing.
-func agentCapsLookupFor(holder gateway.RegistrySource, orgPolicy gateway.OrganizationPolicy) func(tenantID, agentID string) (float64, float64, bool) {
+// budget endpoint AND the attention queue consume: the ACTIVE runtime bundles
+// (through the shared holder, #289) + ResolveEffectivePolicy — the same path
+// enforcement uses, so the displayed denominator can never disagree with the
+// cap the runtime gated on (#288). It iterates the runtime BUNDLES rather than
+// the identity registry so a keyless native agent (which never enters the
+// registry) still projects its own cost_limits — otherwise native serve would
+// report every agent uncapped while the runner enforces its caps (#270 review
+// round 1, P1). Caps are provider-independent, so the destination constraints
+// are empty. The org policy is captured by value (config has no reload seam
+// yet, #269): zero in native serve, the gateway's organization baseline in
+// gateway serve — so an org ceiling tighter than the agent's own cap is what
+// both display and enforcement gate on (#287). An empty agentID resolves the
+// tenant's SINGLE agent when exactly one exists; ambiguity reports false.
+func agentCapsLookupFor(holder *agentcatalog.RuntimeHolder, orgPolicy gateway.OrganizationPolicy) func(tenantID, agentID string) (float64, float64, bool) {
 	return func(tenantID, agentID string) (float64, float64, bool) {
-		var match *gateway.ResolvedIdentity
-		for _, id := range holder.Current().Identities() {
-			if id.TenantID != tenantID {
-				continue
-			}
-			if agentID != "" {
-				if id.Name == agentID {
-					match = id
-					break
-				}
-				continue
-			}
-			if match != nil {
-				return 0, 0, false // ambiguous: two agents, no name
-			}
-			match = id
-		}
-		if match == nil {
+		override, ok := runtimeAgentOverride(holder.Current(), tenantID, agentID)
+		if !ok {
 			return 0, 0, false
 		}
-		eff := gateway.ResolveEffectivePolicy(orgPolicy, gateway.ProviderConfig{}, match.Override)
-		// Binding caps, not the agent-resolved values: an org ceiling
-		// (constraints.max_*) tighter than the agent's own cap is what
-		// enforcement gates on (#287).
+		eff := gateway.ResolveEffectivePolicy(orgPolicy, gateway.ProviderConfig{}, override)
 		daily, monthly := eff.BindingDailyCap(), eff.BindingMonthlyCap()
 		return daily, monthly, daily > 0 || monthly > 0
 	}
