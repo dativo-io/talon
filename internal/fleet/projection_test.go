@@ -16,7 +16,12 @@ type fakeEvidence struct {
 	fallbacks   map[string]int
 	dayCost     map[string]float64
 	summary     []evidence.AgentSummary
+	lastReq     map[string]time.Time
 	seenTenants []string
+}
+
+func (f *fakeEvidence) LastRequestByAgent(_ context.Context, _ string, _, _ time.Time) (map[string]time.Time, error) {
+	return f.lastReq, nil
 }
 
 func (f *fakeEvidence) AgentTrafficStats(_ context.Context, tenant string, _, _ time.Time) (map[string]evidence.TrafficStats, error) {
@@ -50,6 +55,7 @@ func TestProject_MapsSignalsSortsAndRenders(t *testing.T) {
 		},
 		fallbacks: map[string]int{},
 		dayCost:   map[string]float64{"coding": 10},
+		lastReq:   map[string]time.Time{"coding": now.Add(-5 * time.Minute)},
 		summary: []evidence.AgentSummary{
 			{AgentID: "coding", CostEUR: 900, LastRun: now.Add(-5 * time.Minute)},
 		},

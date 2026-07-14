@@ -17,6 +17,7 @@ type EvidenceSource interface {
 	FallbackCountsByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]int, error)
 	CostByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]float64, error)
 	AgentsSummary(ctx context.Context, from, to time.Time, tenantID string) ([]evidence.AgentSummary, error)
+	LastRequestByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]time.Time, error)
 }
 
 // SessionSource is the read surface Project needs from the session store.
@@ -63,17 +64,22 @@ func Project(ctx context.Context, ev EvidenceSource, ss SessionSource, agents []
 	if err != nil {
 		return nil, err
 	}
+	// LastRun is the most recent REQUEST-class timestamp, all-time (no month
+	// boundary), so an operator event never becomes the last-run and an agent
+	// whose last request predates this month still shows one (#270 review P2).
+	lastRun, err := ev.LastRequestByAgent(ctx, qTenant, time.Time{}, now)
+	if err != nil {
+		return nil, err
+	}
 	failed, err := ss.FailedSessionCountsByAgent(ctx, qTenant, failedSince)
 	if err != nil {
 		return nil, err
 	}
 
-	// Month-to-date cost and last-run per agent come from the one summary query.
+	// Month-to-date cost per agent comes from the summary query.
 	monthCost := make(map[string]float64, len(monthSummary))
-	lastRun := make(map[string]time.Time, len(monthSummary))
 	for _, a := range monthSummary {
 		monthCost[a.AgentID] = a.CostEUR
-		lastRun[a.AgentID] = a.LastRun
 	}
 
 	rows := make([]AgentRow, 0, len(agents))

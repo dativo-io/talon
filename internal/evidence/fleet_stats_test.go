@@ -84,6 +84,27 @@ func TestAgentTrafficStats_AllTenants(t *testing.T) {
 	require.NotContains(t, scoped, "summarizer")
 }
 
+// TestLastRequestByAgent covers #270 review round 1, P2: last-run is the most
+// recent REQUEST-class timestamp all-time — a request from last month is found
+// (no month boundary), and a newer operator event never becomes the last-run.
+func TestLastRequestByAgent(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	lastMonth := now.AddDate(0, -1, 0)
+
+	// A real request last month, and a NEWER operator event (agent_disabled).
+	storeRec(t, s, "r1", "acme", "coding", "gateway", true, 0.1, lastMonth, "")
+	storeRec(t, s, "op1", "acme", "coding", "agent_disabled", true, 0, now, "")
+
+	last, err := s.LastRequestByAgent(ctx, "acme", time.Time{}, time.Time{})
+	require.NoError(t, err)
+	got, ok := last["coding"]
+	require.True(t, ok)
+	require.WithinDuration(t, lastMonth, got, time.Second,
+		"last-run is the request-class row from last month, not the newer operator event")
+}
+
 func TestFallbackCountsByAgent_DispatchesOnly(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

@@ -64,6 +64,59 @@ func (s *Store) AgentTrafficStats(ctx context.Context, tenantID string, from, to
 	return out, rows.Err()
 }
 
+// LastRequestByAgent returns the most recent REQUEST-class timestamp per agent
+// over the half-open range [from, to) (pass zero times for all-time). Unlike a
+// month-bounded MAX over every invocation type, this answers "when did this
+// agent last serve real traffic" (#270 review round 1, P2): an operator event
+// (reload, enable/disable) never becomes the displayed last-run, and an agent
+// whose last request predates the current month still has one. Empty tenantID
+// spans all tenants (agent_id is fleet-unique).
+//
+//nolint:gosec // G202: RequestClassSQLPredicate is built from internal constants only
+func (s *Store) LastRequestByAgent(ctx context.Context, tenantID string, from, to time.Time) (map[string]time.Time, error) {
+	query := `SELECT agent_id, MAX(timestamp) FROM evidence WHERE ` + RequestClassSQLPredicate("invocation_type")
+	args := []interface{}{}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	if !from.IsZero() {
+		query += ` AND timestamp >= ?`
+		args = append(args, from.UTC())
+	}
+	if !to.IsZero() {
+		query += ` AND timestamp < ?`
+		args = append(args, to.UTC())
+	}
+	query += ` GROUP BY agent_id`
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying last request by agent: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]time.Time)
+	for rows.Next() {
+		var agentID string
+		var last interface{}
+		if err := rows.Scan(&agentID, &last); err != nil {
+			continue
+		}
+		switch v := last.(type) {
+		case time.Time:
+			out[agentID] = v
+		case string:
+			if t, err := time.Parse(time.RFC3339, v); err == nil {
+				out[agentID] = t
+			} else if t, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", v); err == nil {
+				out[agentID] = t
+			}
+		}
+	}
+	return out, rows.Err()
+}
+
 // FallbackCountsByAgent returns per-agent fallback DISPATCH counts over the
 // half-open range [from, to), keyed by agent_id. A dispatch is a
 // failover.role = "fallback_decision" record (FailoverRoleFallbackDecision) —
