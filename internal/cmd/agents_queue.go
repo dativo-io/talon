@@ -359,6 +359,8 @@ func renderAgentShow(w io.Writer, r fleet.AgentRow, label string) {
 	if r.ConfigError != "" {
 		fmt.Fprintf(w, "Config rejected: %s (last-known-good is serving)\n", r.ConfigError)
 	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Detail: `talon costs --agent`, `talon session`, `talon agents score` (layered effective policy + recent sessions/denials/fallbacks: #305).")
 }
 
 func monthCostLine(r fleet.AgentRow) string {
