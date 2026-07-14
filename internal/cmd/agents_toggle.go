@@ -158,15 +158,24 @@ func prepareToggle(ctx context.Context, cmd *cobra.Command, path, name string, e
 	return toggleTarget{path: path, original: original, edited: edited, tenant: tenant, prior: prior, unlock: unlock}, false, nil
 }
 
+// lifecycleSink persists one signed lifecycle record. *evidence.Store satisfies
+// it; tests inject failing writers to exercise the fail-after-intent paths so
+// the terminal-evidence guarantees below are actually verified (#300 review
+// round 6, P1).
+type lifecycleSink interface {
+	Store(ctx context.Context, ev *evidence.Evidence) error
+}
+
 // applyToggle records intent, atomically replaces the file, and records
-// completion under ONE correlation ID. It ALWAYS writes a terminal record that
-// matches the on-disk state — completion when the change went live, a
-// rolled-back record when it did not — so intent evidence never dangles and
-// recorded state and actual state can never silently diverge (#268 / #300
-// review round 5, blocker 4). The returned warn string is a non-fatal
-// durability caveat (the change and its completion are recorded, but the
-// parent-dir fsync did not confirm); it is surfaced to the operator.
-func applyToggle(ctx context.Context, evStore *evidence.Store, tgt toggleTarget, name, verb string, enable bool) (completionID, warn string, err error) {
+// completion under ONE correlation ID. It ALWAYS attempts a terminal record
+// matching the on-disk state — completion when the change went live, a
+// rolled-back record when it did not — and NEVER silently discards a
+// terminal-record write error or a rollback-durability failure: either escalates
+// to a combined CRITICAL error, because the operator must know when an operation
+// left no durable terminal record or when a rolled-back file might be resurrected
+// by a crash (#268 / #300 review rounds 5–6). The returned warn string is a
+// non-fatal durability caveat surfaced to the operator.
+func applyToggle(ctx context.Context, evStore lifecycleSink, tgt toggleTarget, name, verb string, enable bool) (completionID, warn string, err error) {
 	correlationID := "al_" + uuid.New().String()[:12]
 	if _, err := recordAgentLifecycle(ctx, evStore, correlationID, tgt.tenant, name, tgt.path, intentType(enable), tgt.prior, enable); err != nil {
 		return "", "", fmt.Errorf("recording intent evidence: %w (no change was made)", err)
@@ -174,29 +183,73 @@ func applyToggle(ctx context.Context, evStore *evidence.Store, tgt toggleTarget,
 	renamed, replaceErr := atomicReplaceFile(tgt.path, tgt.edited, tgt.original)
 	if !renamed {
 		// Nothing changed on disk. Close the intent with a terminal rolled-back
-		// record (state unchanged) so the operation never leaves a dangling
-		// intent, then report the failure.
-		_, _ = recordAgentLifecycle(ctx, evStore, correlationID, tgt.tenant, name, tgt.path, "agent_toggle_rolled_back", tgt.prior, tgt.prior)
+		// record; if THAT write fails, the intent has no terminal record — a
+		// critical condition, surfaced rather than swallowed.
+		if terminalErr := recordRolledBack(ctx, evStore, correlationID, tgt, name); terminalErr != nil {
+			return "", "", fmt.Errorf("CRITICAL: config replace failed (%v) AND the terminal rollback record could not be written (%v) — nothing changed on disk but the intent has no terminal record; fix the evidence store and re-run", replaceErr, terminalErr)
+		}
 		return "", "", fmt.Errorf("writing agent config: %w (no change was made)", replaceErr)
 	}
 	// The change is LIVE on disk. A non-nil replaceErr here is a durability
-	// warning only — record completion (matching disk) with the caveat; never
-	// leave a live change unrecorded.
-	var extra []string
+	// warning only — record completion (matching disk) with the caveat.
 	if replaceErr != nil {
 		warn = replaceErr.Error()
-		extra = append(extra, "durability_warning: "+warn)
 	}
-	completionID, cerr := recordAgentLifecycle(ctx, evStore, correlationID, tgt.tenant, name, tgt.path, completionType(enable), tgt.prior, enable, extra...)
-	if cerr != nil {
-		rolledBack, restoreErr := atomicReplaceFile(tgt.path, tgt.original, tgt.edited)
-		if !rolledBack {
-			return "", "", fmt.Errorf("CRITICAL: completion evidence failed (%v) AND restoring %s failed (%v) — the agent is %s on disk but the change is NOT recorded; fix the evidence store and re-run", cerr, tgt.path, restoreErr, verb)
-		}
-		_, _ = recordAgentLifecycle(ctx, evStore, correlationID, tgt.tenant, name, tgt.path, "agent_toggle_rolled_back", tgt.prior, tgt.prior)
-		return "", "", fmt.Errorf("completion evidence failed: %w — the config change was rolled back; fix the evidence store and re-run", cerr)
+	completionID, cerr := recordAgentLifecycle(ctx, evStore, correlationID, tgt.tenant, name, tgt.path, completionType(enable), tgt.prior, enable, durabilityReasons(replaceErr)...)
+	if cerr == nil {
+		return completionID, warn, nil
 	}
-	return completionID, warn, nil
+	return "", "", rollbackAfterCompletionFailure(ctx, evStore, correlationID, tgt, name, verb, cerr)
+}
+
+// rollbackAfterCompletionFailure restores the original file after a completion-
+// evidence failure and writes a terminal rollback record. It never hides a
+// failure: a restore that did not happen, a restore whose durability could not
+// be confirmed, or a terminal-record write that failed each escalates to a
+// combined CRITICAL error naming every failure — the operator must reconcile
+// disk state with the audit trail by hand.
+func rollbackAfterCompletionFailure(ctx context.Context, store lifecycleSink, correlationID string, tgt toggleTarget, name, verb string, cerr error) error {
+	rolledBack, restoreErr := atomicReplaceFile(tgt.path, tgt.original, tgt.edited)
+	if !rolledBack {
+		return fmt.Errorf("CRITICAL: completion evidence failed (%v) AND restoring %s failed (%v) — the agent is %s on disk but the change is NOT recorded; fix the evidence store and re-run", cerr, tgt.path, restoreErr, verb)
+	}
+	// The rollback rename happened. Record it, carrying any durability
+	// uncertainty into the evidence reasons, and never ignore the write error.
+	terminalErr := recordRolledBack(ctx, store, correlationID, tgt, name, durabilityUncertainReasons(restoreErr)...)
+	switch {
+	case terminalErr != nil && restoreErr != nil:
+		return fmt.Errorf("CRITICAL: completion evidence failed (%v); the change was rolled back but its durability is UNCONFIRMED (%v) AND the rollback record could not be written (%v) — verify %s on disk and the evidence store, then re-run", cerr, restoreErr, terminalErr, tgt.path)
+	case terminalErr != nil:
+		return fmt.Errorf("CRITICAL: completion evidence failed (%v) AND the rollback record could not be written (%v) — the change was rolled back on disk but has no terminal record; fix the evidence store and re-run", cerr, terminalErr)
+	case restoreErr != nil:
+		return fmt.Errorf("CRITICAL: completion evidence failed (%v); the change was rolled back but its durability is UNCONFIRMED (%v) — a crash may resurrect the edited file; verify %s, then re-run", cerr, restoreErr, tgt.path)
+	default:
+		return fmt.Errorf("completion evidence failed: %w — the config change was rolled back; fix the evidence store and re-run", cerr)
+	}
+}
+
+// recordRolledBack writes the terminal "rolled back" record (state unchanged)
+// and returns any write error — callers must NOT ignore it.
+func recordRolledBack(ctx context.Context, store lifecycleSink, correlationID string, tgt toggleTarget, name string, extraReasons ...string) error {
+	_, err := recordAgentLifecycle(ctx, store, correlationID, tgt.tenant, name, tgt.path, "agent_toggle_rolled_back", tgt.prior, tgt.prior, extraReasons...)
+	return err
+}
+
+// durabilityReasons turns a live-change durability warning into evidence
+// reasons (nil when there is no warning).
+func durabilityReasons(err error) []string {
+	if err == nil {
+		return nil
+	}
+	return []string{"durability_warning: " + err.Error()}
+}
+
+// durabilityUncertainReasons carries a rollback durability failure into evidence.
+func durabilityUncertainReasons(err error) []string {
+	if err == nil {
+		return nil
+	}
+	return []string{"rollback_durability_uncertain: " + err.Error()}
 }
 
 func intentType(enable bool) string {
@@ -412,26 +465,46 @@ func atomicReplaceFile(path string, data, expectCurrent []byte) (renamed bool, e
 	// Past this point the change is LIVE (renamed=true). fsync the directory so
 	// the rename is durable across a crash, but surface any failure as a
 	// durability WARNING alongside renamed=true — never as "nothing changed".
-	d, err := os.Open(dir)
-	if err != nil {
-		return true, fmt.Errorf("rewrote %s but could not open its directory to fsync (change may not survive a crash): %w", path, err)
-	}
-	syncErr := d.Sync()
-	closeErr := d.Close()
-	if syncErr != nil {
-		return true, fmt.Errorf("rewrote %s but directory fsync failed (change may not survive a crash): %w", path, syncErr)
-	}
-	if closeErr != nil {
-		return true, fmt.Errorf("rewrote %s but directory close failed: %w", path, closeErr)
+	if err := syncDirFn(dir); err != nil {
+		return true, fmt.Errorf("rewrote %s but directory fsync could not be confirmed (change may not survive a crash): %w", path, err)
 	}
 	return true, nil
+}
+
+// syncDirFn is the directory-sync step, indirected so tests can force a
+// durability failure on the rollback path (#300 review round 6, P1).
+var syncDirFn = syncDir
+
+// syncDir fsyncs a directory so a rename into it is durable, retrying a few
+// times to ride out a transient failure before giving up ("retry where
+// practical", #300 review round 6).
+func syncDir(dir string) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		d, err := os.Open(dir)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		syncErr := d.Sync()
+		closeErr := d.Close()
+		if syncErr == nil && closeErr == nil {
+			return nil
+		}
+		if syncErr != nil {
+			lastErr = syncErr
+		} else {
+			lastErr = closeErr
+		}
+	}
+	return lastErr
 }
 
 // recordAgentLifecycle writes one signed operational record for an
 // enable/disable step, attributed to the AGENT's tenant so it appears in that
 // tenant's audit trail. correlationID ties the intent, completion, and any
 // rollback of one operation together.
-func recordAgentLifecycle(ctx context.Context, store *evidence.Store, correlationID, tenantID, agentName, path, invocationType string, prior, target bool, extraReasons ...string) (string, error) {
+func recordAgentLifecycle(ctx context.Context, store lifecycleSink, correlationID, tenantID, agentName, path, invocationType string, prior, target bool, extraReasons ...string) (string, error) {
 	id := "al_" + uuid.New().String()[:12]
 	reasons := []string{
 		fmt.Sprintf("enabled: %t -> %t", prior, target),

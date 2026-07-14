@@ -320,25 +320,34 @@ func checkKeyCollisions(a *LoadedAgent, keyMaterial, adminKey string, byKey map[
 // <new>`) is picked up on the next rebuild and every ACL check runs against
 // the CURRENT tenant (#269 review rounds 4–5).
 //
-// Prior-key reuse keeps the last-known-good fleet serving through a TRANSIENT
-// vault outage — but only for a binding nothing has changed against. Reuse
-// requires ALL of (#300 review round 5):
-//   - the vault failure is transient (store unreachable, decrypt error), NOT an
-//     authoritative "no key": ErrSecretNotFound, ErrSecretAccessDenied, and an
-//     empty value all mean the key was revoked or this tenant/agent is no
-//     longer authorized, so reuse is refused and the key correctly stops
-//     working (blocker 2 — a revoked key never survives as a valid credential);
-//   - an unchanged (name, secretName) prior identity exists with key material;
-//   - its tenant is UNCHANGED (a tenant move must ACL-recheck, never reuse);
-//   - it is NOT a re-enable (prior disabled → new enabled): granting NEW access
-//     always requires a fresh, ACL-checked vault read (blocker 2 — a revoked key
-//     can never be re-enabled from stale material).
+// Prior-key reuse falls into two cases, distinguished by the NEW state and by
+// whether the vault answer is a transient outage or an authoritative absence
+// (ErrSecretNotFound / ErrSecretAccessDenied / empty value):
 //
-// Reuse deliberately covers UNCHANGED enabled agents too, not just the
-// enabled→disabled stop: rebuilding the registry to disable ONE agent must not
-// fail because unchanged enabled SIBLINGS also need a vault read during the same
-// outage (blocker 1). A disabled agent's reused key serves only an attributed
-// gateway 403 — the tenant-API surface refuses it (see holderKeyResolver).
+//   - DISABLING (newEnabled == false): reuse the prior key as a DENIAL-ONLY
+//     identity even when the secret is authoritatively absent (#300 review round
+//     6, P1). This lets an operator actually STOP an agent whose key was deleted
+//     or revoked: the disabled generation activates, the gateway returns an
+//     attributed 403, and the tenant-API surface rejects the disabled key (see
+//     holderKeyResolver) — so the old credential authorizes nothing. Without
+//     this the registry build would fail, the reload would reject the disabled
+//     generation, and last-known-good would keep the enabled agent + old key
+//     alive — the opposite of a stop.
+//
+//   - STAYING ENABLED (newEnabled == true): reuse ONLY on a TRANSIENT outage,
+//     never on authoritative absence — a revoked key must stop serving. This
+//     also covers unchanged enabled SIBLINGS during a transient outage, so
+//     rebuilding the registry to disable ONE agent does not fail on a sibling's
+//     vault read (round 5, blocker 1). NOTE: for an enabled agent whose secret
+//     is authoritatively deleted, this refuses reuse → the build fails → the
+//     reload rejects → last-known-good keeps the OLD key active. Secret deletion
+//     alone is therefore NOT a hot revocation for an enabled agent: to revoke
+//     it, DISABLE the agent (hot, via the case above) or restart.
+//
+// Every case additionally requires an unchanged (name, secretName) prior
+// identity with key material and an UNCHANGED tenant (a tenant move must
+// ACL-recheck), and refuses a RE-ENABLE (prior disabled → new enabled): granting
+// NEW access always needs a fresh, ACL-checked vault read.
 func resolveAgentKey(ctx context.Context, a *LoadedAgent, tenantID string, newEnabled bool, vault *secrets.SecretStore, priorKeys PriorKeyLookup) (string, error) {
 	var vaultErr error
 	authoritativeAbsent := false
@@ -353,8 +362,7 @@ func resolveAgentKey(ctx context.Context, a *LoadedAgent, tenantID string, newEn
 			vaultErr = fmt.Errorf("key secret %q resolved to an empty value", a.KeySecretName)
 			authoritativeAbsent = true
 		case errors.Is(err, secrets.ErrSecretNotFound), errors.Is(err, secrets.ErrSecretAccessDenied):
-			// The secret is gone or this tenant/agent is no longer authorized:
-			// a revoked key must stop working — never reuse stale material.
+			// The secret is gone or this tenant/agent is no longer authorized.
 			vaultErr = err
 			authoritativeAbsent = true
 		default:
@@ -365,10 +373,13 @@ func resolveAgentKey(ctx context.Context, a *LoadedAgent, tenantID string, newEn
 	} else {
 		vaultErr = fmt.Errorf("no vault configured")
 	}
-	if !authoritativeAbsent && priorKeys != nil {
+	if priorKeys != nil {
 		if prior, ok := priorKeys(a.Name, a.KeySecretName); ok {
 			reEnabling := !prior.Enabled && newEnabled
-			if !reEnabling && prior.TenantID == tenantID && len(prior.Key) > 0 {
+			unchanged := prior.TenantID == tenantID && len(prior.Key) > 0
+			// Disabling reuses regardless of the vault outcome (denial-only);
+			// staying enabled reuses only on a transient outage.
+			if !reEnabling && unchanged && (!newEnabled || !authoritativeAbsent) {
 				return string(prior.Key), nil
 			}
 		}

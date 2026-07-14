@@ -305,6 +305,61 @@ func TestReloader_RejectionDedupResetsAfterActivation(t *testing.T) {
 	assert.Len(t, f.reloadRows(t), 3, "reject + activation + reject; the reoccurring broken digest is recorded afresh")
 }
 
+// TestReloader_DisableRevokedSecretActivates covers #300 review round 6, P1:
+// revoking a secret AND disabling the agent must take effect at RUNTIME — the
+// reload activates a generation where the agent is disabled (denial-only key),
+// rather than rejecting it and leaving last-known-good serving the old ENABLED
+// key. A sibling with an intact secret keeps working.
+// TestReloader_RejectionTimestampMarksIncidentStart covers #300 review round 6,
+// P2: RejectedAt marks when the incident BEGAN, not the last poll, so a
+// continuous broken digest keeps its onset time across ticks.
+func TestReloader_RejectionTimestampMarksIncidentStart(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, true)
+	broken := filepath.Join(f.agentsDir, "support", "agent.talon.yaml")
+	require.NoError(t, os.WriteFile(broken, []byte("agent:\n  version: \"1.0.0\"\npolicies:\n  cost_limits: {}\n"), 0o600))
+
+	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	first := f.reloader.State().RejectedAt
+	require.False(t, first.IsZero())
+
+	time.Sleep(2 * time.Millisecond) // guarantee time.Now() advances
+	require.Equal(t, ReloadRejectedDuplicate, f.reloader.ReloadOnce(ctx))
+	assert.Equal(t, first, f.reloader.State().RejectedAt, "the incident-start time is preserved across polls of the same digest")
+}
+
+func TestReloader_DisableRevokedSecretActivates(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, true)
+
+	// Activate a two-agent generation (support + coding, both keyed).
+	f.writeAgent(t, "coding", "coding-key", true)
+	require.NoError(t, f.vault.Set(ctx, "coding-key", []byte("tk-coding"), secrets.ACL{}))
+	require.Equal(t, ReloadActivated, f.reloader.ReloadOnce(ctx))
+	require.Equal(t, 2, f.holder.Current().Len())
+
+	// Revoke support's secret (empty = authoritative absence) AND disable it.
+	require.NoError(t, f.vault.Set(ctx, "support-key", []byte(""), secrets.ACL{}))
+	f.writeAgent(t, "support", "support-key", false) // enabled: false
+
+	require.Equal(t, ReloadActivated, f.reloader.ReloadOnce(ctx),
+		"disabling a revoked-secret agent must activate at runtime, not reject to last-known-good")
+	snap := f.holder.Current()
+
+	support, ok := snap.Get("support")
+	require.True(t, ok)
+	assert.False(t, support.Enabled, "the active catalog shows support disabled")
+
+	// The support key still RESOLVES (denial-only, for the attributed 403) but is
+	// disabled; the sibling with an intact secret keeps working.
+	sid, ok := snap.Registry.ResolveKey("tk-support")
+	require.True(t, ok, "support key resolves for the attributed agent_disabled denial")
+	assert.False(t, sid.Enabled)
+	cid, ok := snap.Registry.ResolveKey("tk-coding")
+	require.True(t, ok)
+	assert.True(t, cid.Enabled, "the sibling with an intact secret keeps working")
+}
+
 func TestReloader_RequireNonEmptyRejectsEmptySet(t *testing.T) {
 	ctx := context.Background()
 	f := newReloadFixture(t, true)

@@ -44,10 +44,11 @@ func TestBuildIdentityRegistry_VaultOutageReusesUnchangedSiblings(t *testing.T) 
 	assert.True(t, idb.Enabled, "the unchanged enabled sibling keeps serving through the outage")
 }
 
-// TestBuildIdentityRegistry_RevokedKeyNotReused covers blocker 2: an
-// authoritatively-absent secret (ErrSecretNotFound) is a revocation and must
-// NEVER be reused — not even to serve a disabled agent's attributed 403.
-func TestBuildIdentityRegistry_RevokedKeyNotReused(t *testing.T) {
+// TestBuildIdentityRegistry_RevokedKeyReuse covers blocker 2 (round 5) and P1
+// (round 6): an authoritatively-absent secret is never reused to keep an ENABLED
+// agent serving, but IS carried forward as a denial-only key when the agent is
+// being DISABLED — so an operator can stop an agent whose key was revoked.
+func TestBuildIdentityRegistry_RevokedKeyReuse(t *testing.T) {
 	ctx := context.Background()
 	vault := newTestVault(t)
 	setSecret(t, vault, "k-a", "key-a")
@@ -56,13 +57,26 @@ func TestBuildIdentityRegistry_RevokedKeyNotReused(t *testing.T) {
 	}, vault, "")
 	require.NoError(t, err)
 
-	// A fresh vault that has never held k-a returns ErrSecretNotFound —
-	// authoritative absence, distinct from a transient outage.
+	// A fresh vault that never held k-a returns ErrSecretNotFound — authoritative
+	// absence, distinct from a transient outage.
 	revoked := newTestVault(t)
+
+	// Staying ENABLED: a revoked key must NOT be reused — the enabled agent's
+	// credential stops working.
 	_, err = BuildIdentityRegistryWith(ctx, []LoadedAgent{
+		{Path: "a/agent.talon.yaml", Name: "a", KeySecretName: "k-a", Enabled: boolPtr(true)},
+	}, revoked, "", BuildOptions{PriorKeys: gen1.PriorKeys()})
+	require.Error(t, err, "a revoked secret must never be reused to keep an enabled agent serving")
+
+	// DISABLING: the prior key IS carried forward as a denial-only identity, so
+	// the stop takes effect even though the secret is gone.
+	reg, err := BuildIdentityRegistryWith(ctx, []LoadedAgent{
 		{Path: "a/agent.talon.yaml", Name: "a", KeySecretName: "k-a", Enabled: boolPtr(false)},
 	}, revoked, "", BuildOptions{PriorKeys: gen1.PriorKeys()})
-	require.Error(t, err, "a revoked (not-found) secret must never be reused")
+	require.NoError(t, err, "disabling must carry the prior key forward as denial-only, not fail")
+	id, ok := reg.ResolveKey("key-a")
+	require.True(t, ok, "the disabled agent still resolves for an attributed 403")
+	require.False(t, id.Enabled)
 }
 
 // TestBuildIdentityRegistry_ReEnableNeverReuses covers blocker 2: re-enabling a

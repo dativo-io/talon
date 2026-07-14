@@ -291,7 +291,14 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 // replaced by a newer edit during an evidence outage (#269 review round 4).
 func (r *Reloader) reject(ctx context.Context, scan *ScanResult, causes []string) ReloadOutcome {
 	digest := scan.Digest
-	rej := &rejectionState{digest: digest, at: time.Now().UTC(), causes: causes, issues: append([]FleetIssue(nil), scan.Issues...)}
+	// Preserve the incident-start time across polls of the SAME continuous broken
+	// digest: RejectedAt marks WHEN the incident began, not the last poll, so the
+	// attention queue can order incidents by onset (#300 review round 6, P2).
+	at := time.Now().UTC()
+	if r.rejection != nil && r.rejection.digest == digest {
+		at = r.rejection.at
+	}
+	rej := &rejectionState{digest: digest, at: at, causes: causes, issues: append([]FleetIssue(nil), scan.Issues...)}
 	r.rejection = rej // current observed state (for View)
 
 	if _, done := r.recorded[digest]; done {

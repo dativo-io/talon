@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +17,24 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/testutil"
 )
+
+// recordingSink is a lifecycleSink that fails on configured 1-indexed call
+// numbers, so tests can force evidence-write failures at exact points in the
+// toggle sequence (#300 review round 6, P1).
+type recordingSink struct {
+	failOn map[int]bool
+	n      int
+	types  []string
+}
+
+func (s *recordingSink) Store(_ context.Context, ev *evidence.Evidence) error {
+	s.n++
+	if s.failOn[s.n] {
+		return fmt.Errorf("sink failure on call %d", s.n)
+	}
+	s.types = append(s.types, ev.InvocationType)
+	return nil
+}
 
 func TestSetAgentEnabledYAML(t *testing.T) {
 	t.Run("inserts enabled after name, preserving comments", func(t *testing.T) {
@@ -294,6 +314,63 @@ func TestApplyToggle_ReplaceFailureRecordsTerminalRollback(t *testing.T) {
 	assert.Equal(t, 1, types["agent_disable_intent"], "intent recorded")
 	assert.Equal(t, 1, types["agent_toggle_rolled_back"], "a terminal rollback closes the intent; nothing dangles")
 	assert.Equal(t, 0, types["agent_disabled"], "no false completion when nothing changed on disk")
+}
+
+// TestApplyToggle_ReplaceFailure_TerminalRecordAlsoFails covers #300 review
+// round 6, P1: when the replace changes nothing AND the terminal rollback record
+// cannot be written, the failure is a combined CRITICAL error naming both — never
+// silently swallowed.
+func TestApplyToggle_ReplaceFailure_TerminalRecordAlsoFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.talon.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("on-disk\n"), 0o600)) // != tgt.original → clobber guard trips
+	sink := &recordingSink{failOn: map[int]bool{2: true}}              // intent ok, terminal rollback fails
+	tgt := toggleTarget{path: path, original: []byte("what-we-read\n"), edited: []byte("edited\n"), tenant: "acme", prior: true, unlock: func() {}}
+
+	_, _, err := applyToggle(context.Background(), sink, tgt, "support", "disabled", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CRITICAL")
+	assert.Contains(t, err.Error(), "terminal rollback record could not be written")
+}
+
+// TestApplyToggle_CompletionFailure_RollbackDurabilityUnconfirmed covers P1: a
+// completion-evidence failure whose rollback rename happens but whose durability
+// cannot be confirmed escalates to CRITICAL and records the uncertainty.
+func TestApplyToggle_CompletionFailure_RollbackDurabilityUnconfirmed(t *testing.T) {
+	orig := syncDirFn
+	syncDirFn = func(string) error { return errors.New("fsync boom") }
+	defer func() { syncDirFn = orig }()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.talon.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("original\n"), 0o600))
+	sink := &recordingSink{failOn: map[int]bool{2: true}} // intent ok, completion fails, terminal ok
+	tgt := toggleTarget{path: path, original: []byte("original\n"), edited: []byte("edited\n"), tenant: "acme", prior: true, unlock: func() {}}
+
+	_, _, err := applyToggle(context.Background(), sink, tgt, "support", "disabled", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CRITICAL")
+	assert.Contains(t, err.Error(), "durability is UNCONFIRMED")
+	current, _ := os.ReadFile(path)
+	assert.Equal(t, "original\n", string(current), "the rollback rename still restored the original bytes")
+}
+
+// TestApplyToggle_CompletionFailure_RollbackRecordAlsoFails covers P1: a
+// completion failure whose rollback rename succeeds but whose terminal record
+// cannot be written escalates to CRITICAL naming the evidence failure.
+func TestApplyToggle_CompletionFailure_RollbackRecordAlsoFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.talon.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("original\n"), 0o600))
+	sink := &recordingSink{failOn: map[int]bool{2: true, 3: true}} // completion + terminal both fail
+	tgt := toggleTarget{path: path, original: []byte("original\n"), edited: []byte("edited\n"), tenant: "acme", prior: true, unlock: func() {}}
+
+	_, _, err := applyToggle(context.Background(), sink, tgt, "support", "disabled", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CRITICAL")
+	assert.Contains(t, err.Error(), "rollback record could not be written")
+	current, _ := os.ReadFile(path)
+	assert.Equal(t, "original\n", string(current), "disk restored despite the evidence failures")
 }
 
 // TestParseReloadInterval (#269 review, P2): "0" disables, negative is a hard
