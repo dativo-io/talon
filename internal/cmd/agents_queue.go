@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -275,14 +276,11 @@ func loadOfflineGatewayContext() (gateway.OrganizationPolicy, map[string]gateway
 	if path == "" {
 		path = "talon.config.yaml"
 	}
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return gateway.OrganizationPolicy{}, nil, nil // no baseline: native-only
-		}
-		return gateway.OrganizationPolicy{}, nil, fmt.Errorf("reading gateway config %s: %w", path, err)
-	}
 	gwCfg, err := gateway.LoadGatewayConfig(path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return gateway.OrganizationPolicy{}, nil, nil // no baseline: native-only
+		}
 		return gateway.OrganizationPolicy{}, nil, fmt.Errorf("gateway config %s is present but invalid: %w — fix it, or unset TALON_GATEWAY_CONFIG for a config-only view without an org baseline", path, err)
 	}
 	return gwCfg.OrganizationPolicy, gwCfg.Providers, nil
