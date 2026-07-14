@@ -100,6 +100,19 @@ Or just [try it with no key](#try-it-in-60-seconds-no-api-key) first, then [open
 
 ---
 
+## Product demo — three use cases, one control plane
+
+The canonical demo operates **customer-support, coding-assistant, and document-summary** as three `agent.talon.yaml` files under one `agents_dir`, on real providers, and walks the four pillars in one operating period:
+
+```bash
+export OPENAI_API_KEY=sk-...  ANTHROPIC_API_KEY=sk-ant-...   # stop Ollama first
+make product-demo
+```
+
+You watch, in one gateway: a downed local model trigger a **policy-valid failover** that *skips* a provider this use case isn't allowed to use; an email + IBAN **redacted before the provider**; a destructive `admin_*` tool **rejected by a company-wide boundary** the agent can't weaken; a use case's next call **denied on projected cost before it spends**; the `talon agents` fleet view flag the exhausted use case as `blocked`; and a **signed export verified offline**. Every receipt is parsed from Talon's own signed evidence. Real providers, ≈ $0.02–0.05/run (denials cost $0), no Docker. Full walk-through: [examples/product-demo](examples/product-demo/README.md).
+
+---
+
 ## Try it in 60 seconds (no API key)
 
 The bundled Docker Compose stack runs Talon plus a mock provider, so the full pipeline (policy, PII, cost, evidence) runs without any real LLM key.
