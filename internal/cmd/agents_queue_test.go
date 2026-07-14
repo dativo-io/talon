@@ -66,6 +66,58 @@ func TestOfflineFleet_ProjectsLocalConfig(t *testing.T) {
 	assert.Equal(t, fleet.HealthHealthy, rows[1].Health)
 }
 
+// TestOfflineFleet_DenyAllPolicyIsBlocked covers #270 review round 1, P1: an
+// agent whose effective policy denies all new work (blocked_models: ["*"])
+// renders BLOCKED offline, while a normal agent does not.
+func TestOfflineFleet_DenyAllPolicyIsBlocked(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	writeQueueAgent(t, agentsDir, "coding", true)
+	// An ORG-level deny-all (constraints.blocked_models: ["*"]) via the gateway
+	// config blocks every model for every agent's effective policy.
+	gwPath := filepath.Join(dir, "talon.config.yaml")
+	gw := "gateway:\n  organization_policy:\n    constraints:\n      blocked_models:\n        - \"*\"\n"
+	require.NoError(t, os.WriteFile(gwPath, []byte(gw), 0o600))
+	t.Setenv("TALON_GATEWAY_CONFIG", gwPath)
+
+	rows, _, err := offlineFleet(context.Background(), offlineTestConfig(t, agentsDir), "")
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "coding", rows[0].Name)
+	assert.Equal(t, fleet.HealthBlocked, rows[0].Health, "org blocked_models: [*] denies all work → BLOCKED")
+	require.NotEmpty(t, rows[0].Causes)
+	assert.Equal(t, fleet.CausePolicyDenyAll, rows[0].Causes[0].Kind)
+}
+
+// TestLoadOfflineGatewayContext covers #270 review round 1, P2: a missing gateway
+// config is no baseline (no error), a native config without a gateway block is
+// valid, but a config that EXISTS and fails to load is surfaced — never silently
+// replaced with an empty org policy.
+func TestLoadOfflineGatewayContext(t *testing.T) {
+	t.Run("missing → empty, no error", func(t *testing.T) {
+		t.Setenv("TALON_GATEWAY_CONFIG", filepath.Join(t.TempDir(), "nope.yaml"))
+		_, providers, err := loadOfflineGatewayContext()
+		require.NoError(t, err)
+		assert.Empty(t, providers)
+	})
+	t.Run("native config without gateway block → valid", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "talon.config.yaml")
+		require.NoError(t, os.WriteFile(p, []byte("agents_dir: agents\nsigning_key: \"x\"\n"), 0o600))
+		t.Setenv("TALON_GATEWAY_CONFIG", p)
+		_, _, err := loadOfflineGatewayContext()
+		require.NoError(t, err)
+	})
+	t.Run("present but invalid → error", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "talon.config.yaml")
+		// Gateway vocabulary at the file root is a hard LoadGatewayConfig error.
+		require.NoError(t, os.WriteFile(p, []byte("providers:\n  openai: {}\n"), 0o600))
+		t.Setenv("TALON_GATEWAY_CONFIG", p)
+		_, _, err := loadOfflineGatewayContext()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "present but invalid")
+	})
+}
+
 func TestFetchServerFleet(t *testing.T) {
 	body := fleetResponse{
 		Generation: "gen-1",

@@ -151,7 +151,7 @@ func TestHandleAgentsFleet_ParityWithDirectProjection(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 
 	// Direct projection over the SAME inputs (the assembler + Project the handler runs).
-	statuses := fleet.AssembleStatuses(membershipFromView(view), caps, "EUR")
+	statuses := fleet.AssembleStatuses(membershipFromView(view, nil), caps, "EUR")
 	direct, err := fleet.Project(context.Background(), ev, emptySessionSource{}, statuses, fleet.DefaultThresholds(), now)
 	require.NoError(t, err)
 
@@ -215,6 +215,33 @@ func TestHandleAgentsFleet_CapProjectedAtThresholds(t *testing.T) {
 			assert.Equal(t, tc.wantCause, resp.Agents[0].Causes[0].Kind)
 		})
 	}
+}
+
+// TestHandleAgentsFleet_PolicyDenyAllIsBlocked covers #270 review round 1, P1:
+// when the injected deny-all predicate reports an agent's effective policy denies
+// all new work, the endpoint renders it BLOCKED — from real runtime semantics,
+// not a synthetic input.
+func TestHandleAgentsFleet_PolicyDenyAllIsBlocked(t *testing.T) {
+	snap := fleetTestSnapshot(t)
+	ev, err := evidence.NewStore(filepath.Join(t.TempDir(), "e.db"), testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ev.Close() })
+
+	s := &Server{
+		fleetView:     func() agentcatalog.FleetView { return agentcatalog.FleetView{Snapshot: snap} },
+		evidenceStore: ev,
+		fleetCurrency: "EUR",
+		fleetDenyAll:  func(_, agent string) bool { return agent == "support" },
+	}
+	rec := httptest.NewRecorder()
+	s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp fleetStatusResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Agents, 1)
+	assert.Equal(t, fleet.HealthBlocked, resp.Agents[0].Health)
+	require.NotEmpty(t, resp.Agents[0].Causes)
+	assert.Equal(t, fleet.CausePolicyDenyAll, resp.Agents[0].Causes[0].Kind)
 }
 
 // TestHandleAgentsFleet_NoFleet: keyless/quickstart mode returns 503.

@@ -31,6 +31,15 @@ func WithFleetCurrency(code string) Option {
 	}
 }
 
+// WithFleetDenyAll injects the deny-all predicate: whether an agent's ACTIVE
+// effective policy denies ALL new work (agent-wide, persistent → BLOCKED, #270),
+// evaluated from the effective policy + configured destinations by serve.
+func WithFleetDenyAll(fn func(tenantID, agentID string) bool) Option {
+	return func(s *Server) {
+		s.fleetDenyAll = fn
+	}
+}
+
 // fleetStatusResponse is the runtime-state contract for GET /v1/agents/fleet.
 // The Agents field is the projected attention-queue view (STATE/HEALTH/COST/WHY,
 // #270), computed by fleet.Project — the SAME code path the `talon agents` CLI
@@ -72,7 +81,7 @@ func (s *Server) handleAgentsFleet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	members := membershipFromView(view)
+	members := membershipFromView(view, s.fleetDenyAll)
 	statuses := fleet.AssembleStatuses(members, s.agentCapsLookup, s.fleetCurrency)
 
 	var sessions fleet.SessionSource = emptySessionSource{}
@@ -115,7 +124,7 @@ func (s *Server) handleAgentsFleet(w http.ResponseWriter, r *http.Request) {
 // this agent's current on-disk config (matched by attributed agent name, else by
 // config path) while last-known-good keeps serving (#269) — a needs-attention
 // signal, distinct from a never-valid file (which stays a fleet issue by path).
-func membershipFromView(view agentcatalog.FleetView) []fleet.Membership {
+func membershipFromView(view agentcatalog.FleetView, denyAll func(tenantID, agentID string) bool) []fleet.Membership {
 	rejectedByName := map[string]string{}
 	rejectedByPath := map[string]string{}
 	if view.Reload.Rejected {
@@ -147,6 +156,7 @@ func membershipFromView(view agentcatalog.FleetView) []fleet.Membership {
 			PolicyDigest:   ra.PolicyDigest,
 			ConfigRejected: rejected,
 			ConfigError:    reason,
+			PolicyDenyAll:  denyAll != nil && denyAll(tenant, ra.Name),
 		})
 	}
 	return members

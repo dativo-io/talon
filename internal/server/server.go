@@ -84,6 +84,11 @@ type Server struct {
 	// budget caps are denominated in (#270), resolved once from the pricing
 	// table at serve time.
 	fleetCurrency string
+	// fleetDenyAll reports whether an agent's ACTIVE effective policy denies ALL
+	// new work (a persistent, agent-wide condition → BLOCKED, #270), evaluated
+	// from the effective policy + configured destinations. nil → never blocked
+	// on this axis.
+	fleetDenyAll func(tenantID, agentID string) bool
 }
 
 // SetClassifier attaches the process-wide scanner engine. Call after

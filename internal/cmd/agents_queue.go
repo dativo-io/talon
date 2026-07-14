@@ -206,7 +206,16 @@ func offlineFleet(ctx context.Context, cfg *config.Config, tenant string) ([]fle
 		return nil, nil, fmt.Errorf("no agent config found (set agents_dir or %s)", cfg.DefaultPolicy)
 	}
 
+	// The org baseline + configured providers come from the gateway config when
+	// present; an EXISTING-but-invalid config is surfaced, never silently
+	// replaced with an empty policy (#270 review round 1, P2).
+	org, providers, err := loadOfflineGatewayContext()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	members := make([]fleet.Membership, 0, len(scan.Agents))
+	capsByName := make(map[string][2]float64, len(scan.Agents))
 	for i := range scan.Agents {
 		a := &scan.Agents[i]
 		t := a.TenantID
@@ -216,13 +225,23 @@ func offlineFleet(ctx context.Context, cfg *config.Config, tenant string) ([]fle
 		if tenant != "" && t != tenant {
 			continue
 		}
+		override := agentbridge.LoadedAgentFromPolicy(a.Policy, a.Path).Override
+		eff := gateway.ResolveEffectivePolicy(org, gateway.ProviderConfig{}, override)
+		capsByName[a.Name] = [2]float64{eff.BindingDailyCap(), eff.BindingMonthlyCap()}
 		members = append(members, fleet.Membership{
 			Name: a.Name, TenantID: t, Enabled: a.Enabled,
 			ConfigPath: a.Path, PolicyDigest: a.PolicyDigest,
+			// BLOCKED (#270): the same effective-policy deny-all test the server
+			// uses. Offline has the gateway providers when a gateway config is
+			// present; without one, only a categorical model block is detectable.
+			PolicyDenyAll: !gateway.AgentCanAcceptWork(org, override, providers),
 		})
 	}
 
-	caps := offlineCapsLookup(scan)
+	caps := fleet.CapLookup(func(_, agentID string) (float64, float64, bool) {
+		c, ok := capsByName[agentID]
+		return c[0], c[1], ok && (c[0] > 0 || c[1] > 0)
+	})
 	currency := loadPricingTable(cfg, "").CurrencyCode()
 	statuses := fleet.AssembleStatuses(members, caps, currency)
 
@@ -244,31 +263,29 @@ func offlineFleet(ctx context.Context, cfg *config.Config, tenant string) ([]fle
 	return rows, append([]agentcatalog.FleetIssue(nil), scan.Issues...), nil
 }
 
-// offlineCapsLookup resolves each scanned agent's effective daily/monthly caps
-// from its OWN policy override tightened against the gateway org baseline — the
-// same ResolveEffectivePolicy the server uses. A missing gateway config yields a
-// zero org baseline (caps come from the agent override alone).
-func offlineCapsLookup(scan *agentcatalog.ScanResult) fleet.CapLookup {
-	org := gateway.OrganizationPolicy{}
-	gwPath := strings.TrimSpace(os.Getenv("TALON_GATEWAY_CONFIG"))
-	if gwPath == "" {
-		gwPath = "talon.config.yaml"
+// loadOfflineGatewayContext returns the organization baseline and configured
+// providers for offline projection. A MISSING gateway config legitimately means
+// no organization baseline (native-only) → empty context, no error. But a
+// config that EXISTS and fails to load is surfaced as an error rather than
+// silently replaced with an empty policy — which would make offline `talon
+// agents` report agent-only caps and an unrestricted policy where the intended
+// organization baseline failed to load (#270 review round 1, P2).
+func loadOfflineGatewayContext() (gateway.OrganizationPolicy, map[string]gateway.ProviderConfig, error) {
+	path := strings.TrimSpace(os.Getenv("TALON_GATEWAY_CONFIG"))
+	if path == "" {
+		path = "talon.config.yaml"
 	}
-	if gwCfg, err := gateway.LoadGatewayConfig(gwPath); err == nil {
-		org = gwCfg.OrganizationPolicy
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return gateway.OrganizationPolicy{}, nil, nil // no baseline: native-only
+		}
+		return gateway.OrganizationPolicy{}, nil, fmt.Errorf("reading gateway config %s: %w", path, err)
 	}
-	type cap struct{ daily, monthly float64 }
-	byName := make(map[string]cap, len(scan.Agents))
-	for i := range scan.Agents {
-		a := &scan.Agents[i]
-		la := agentbridge.LoadedAgentFromPolicy(a.Policy, a.Path)
-		eff := gateway.ResolveEffectivePolicy(org, gateway.ProviderConfig{}, la.Override)
-		byName[a.Name] = cap{eff.BindingDailyCap(), eff.BindingMonthlyCap()}
+	gwCfg, err := gateway.LoadGatewayConfig(path)
+	if err != nil {
+		return gateway.OrganizationPolicy{}, nil, fmt.Errorf("gateway config %s is present but invalid: %w — fix it, or unset TALON_GATEWAY_CONFIG for a config-only view without an org baseline", path, err)
 	}
-	return func(_, agentID string) (float64, float64, bool) {
-		c, ok := byName[agentID]
-		return c.daily, c.monthly, ok && (c.daily > 0 || c.monthly > 0)
-	}
+	return gwCfg.OrganizationPolicy, gwCfg.Providers, nil
 }
 
 func filterRowsByTenant(rows []fleet.AgentRow, tenant string) []fleet.AgentRow {
