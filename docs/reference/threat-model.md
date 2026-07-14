@@ -139,7 +139,8 @@ that authenticates that one agent's gateway traffic and tenant-scoped API access
   egress rules) and its derived tenant scope — never another tenant's data and never
   admin authority. Every request made with it is still enforced and evidenced.
 - **Rotation** is `talon secrets set <secret_name> <new-value>` plus a `talon serve`
-  restart (periodic reload is #269). One agent has one active key; there is never a
+  restart (a secret-only change is not digest-detected, so rotation still needs a
+  restart or a file-touch even with periodic reload running). One agent has one active key; there is never a
   window with two concurrently-valid keys, and raw key values cannot appear in policy
   files (the schema accepts only a vault secret name).
 

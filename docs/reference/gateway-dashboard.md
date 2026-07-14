@@ -313,7 +313,7 @@ Per-provider request counts and cost. One entry per selected provider in evidenc
 | `monthly_limit` | float | Monthly cost cap (see note below). |
 | `monthly_percent` | float | Monthly utilization percentage. |
 
-The global budget widget denominates against what enforcement actually gates on (#288): in gateway mode, the **sum of per-agent binding effective caps** over the identity registry — registry + `ResolveEffectivePolicy`, the same path enforcement uses, where the binding cap is the tightest of the agent's resolved cap and the organization ceiling (`constraints.max_daily_cost`/`max_monthly_cost`, #287). With #266's single loaded agent this is exactly that agent's cap; per-agent drill-down is the fleet view's job (#270/#143). Native mode (no gateway) uses the agent policy's own `cost_limits` — what the runner enforces.
+The global budget widget denominates against what enforcement actually gates on (#288): in gateway mode, the **sum of per-agent binding effective caps** over the identity registry — registry + `ResolveEffectivePolicy`, the same path enforcement uses, where the binding cap is the tightest of the agent's resolved cap and the organization ceiling (`constraints.max_daily_cost`/`max_monthly_cost`, #287). In single-file mode this is exactly that one agent's cap; with `agents_dir` (#267) it sums the whole discovered fleet; per-agent drill-down is `talon agents` (#270, shipped), and the read-only dashboard projection is #143. Native mode (no gateway) uses the agent policy's own `cost_limits` — what the runner enforces.
 
 #### `GET /v1/costs/budget` (per-agent budget endpoint)
 

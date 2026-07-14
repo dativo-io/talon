@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Record the ~30s "hero" acquisition demo as an asciinema cast (+ optional GIF).
-# Run on a dev machine with REAL keys exported, a warmed-up Ollama, and the
-# governed-session stack healthy (make governed-session). Not a CI step: real
-# spend + timestamp churn. The recording is transactional: it promotes over the
-# committed cast/GIF only after the run exits 0 and the cast carries its terminal
-# success marker, so a failed run can never overwrite a good asset.
+# Record the product-story "hero" demo as an asciinema cast (+ GIF).
 #
-#   ollama pull llama3.2:1b          # warm up the local model for the routing act
+# The hero is the product demo (examples/product-demo): it builds talon from this
+# checkout and operates three AI use cases through one gateway on REAL providers.
+# It therefore needs OPENAI_API_KEY + ANTHROPIC_API_KEY (real spend ~$0.02-0.05)
+# and the local model (Ollama, :11434) OFFLINE so the reliability beat sees a real
+# failover. Not a CI step: real spend + timestamp churn in the cast.
+#
+#   export OPENAI_API_KEY=... ANTHROPIC_API_KEY=...   # stop Ollama first
 #   scripts/record-hero.sh
+#
+# The recording is transactional: it promotes over the committed cast/GIF only
+# after the run exits 0 AND the cast carries its terminal success marker, so a
+# failed run can never overwrite a good asset.
 #
 # Outputs (README-readable size):
 #   docs/assets/talon_hero.cast   (committed source of truth)
@@ -15,70 +20,47 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEMO_DIR="${REPO_ROOT}/examples/governed-session"
+DEMO_DIR="${REPO_ROOT}/examples/product-demo"
 ASSET_DIR="${REPO_ROOT}/docs/assets"
 CAST="${ASSET_DIR}/talon_hero.cast"
 GIF="${ASSET_DIR}/talon_hero.gif"
-GATEWAY="${GATEWAY:-http://localhost:8080}"
+LOCAL_LLAMA_URL="${TALON_DEMO_LOCAL_LLAMA_URL:-http://localhost:11434}"
 
 if ! command -v asciinema >/dev/null 2>&1; then
   echo "✗ asciinema is required: brew install asciinema  (or pipx install asciinema)" >&2
   exit 1
 fi
-if ! curl -sf "${GATEWAY}/health" >/dev/null 2>&1; then
-  echo "✗ Stack not healthy at ${GATEWAY} — run: make governed-session" >&2
+for tool in go jq curl; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "✗ ${tool} is required" >&2; exit 1; }
+done
+# Fail before asciinema starts, so a preflight problem never records a broken cast.
+[[ -n "${OPENAI_API_KEY:-}" ]]    || { echo "✗ OPENAI_API_KEY is required (real providers)." >&2; exit 1; }
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] || { echo "✗ ANTHROPIC_API_KEY is required (document-summary runs on Anthropic)." >&2; exit 1; }
+if curl -sf -m 2 "${LOCAL_LLAMA_URL}/api/tags" >/dev/null 2>&1; then
+  echo "✗ The local model at ${LOCAL_LLAMA_URL} is UP — the reliability beat needs it DOWN. Stop Ollama and retry." >&2
   exit 1
 fi
 mkdir -p "$ASSET_DIR"
 cd "$DEMO_DIR"
 
-# Warm the routing model before recording so the ROUTED act's first local
-# inference doesn't cold-start into the runner's call timeout. Probe the Ollama
-# that Talon actually routes to, at its HOST-visible address (OLLAMA_PROBE_URL,
-# default http://localhost:11434) — works for both a host-native Ollama and a
-# published sidecar port, matching demo.sh's ollama_ready. Falls back to a
-# sidecar exec if the HTTP endpoint isn't reachable from the host.
-OLLAMA_PROBE_URL="${OLLAMA_PROBE_URL:-http://localhost:11434}"
-if curl -sf "${OLLAMA_PROBE_URL}/api/tags" 2>/dev/null | grep -q 'llama3.2:1b'; then
-  echo "==> Warming llama3.2:1b at ${OLLAMA_PROBE_URL} (avoids a cold-start timeout in the recording)..."
-  curl -sf "${OLLAMA_PROBE_URL}/api/generate" \
-    -d '{"model":"llama3.2:1b","prompt":"ok","stream":false,"options":{"num_predict":1}}' >/dev/null 2>&1 || true
-elif docker compose exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2:1b'; then
-  echo "==> Warming llama3.2:1b via the ollama sidecar..."
-  docker compose exec -T ollama ollama run llama3.2:1b "ok" >/dev/null 2>&1 || true
-else
-  echo "⚠ llama3.2:1b not reachable at ${OLLAMA_PROBE_URL} nor in a sidecar." >&2
-  echo "  host-native: ollama pull llama3.2:1b  (+ run Talon with TALON_OLLAMA_BASE_URL=http://host.docker.internal:11434)" >&2
-  echo "  sidecar:     docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" >&2
-  echo "  STRICT mode will fail the recording in the ROUTED act if it stays unreachable." >&2
-fi
-
-# PREFLIGHT: verify Talon-in-container can reach its CONFIGURED Ollama — the
-# exact path the routing act uses. A host-visible probe passing while the
-# container points at an unreachable host is precisely how a failed run (500 at
-# the routing act) got recorded and committed before. Catch it BEFORE recording.
-echo "==> Preflight: Talon → configured Ollama..."
-if ! ./demo.sh preflight; then
-  echo "✗ Preflight failed — not recording. Fix the topology above and retry." >&2
-  exit 1
-fi
-
-# Strict mode: a missing Ollama / skipped routing act FAILS the recording, so a
-# committed hero GIF can never be missing its headline sovereignty proof.
+# Strict mode: any beat whose outcome is unexpected FAILS the recording, so a
+# committed hero GIF can never ship a broken proof. Colour is forced so the GIF
+# renders in colour even when asciinema records headless.
 export TALON_DEMO_STRICT=1
-# Pace the acts so the rendered GIF lands in the ~20-30s readable range (5 acts
-# + closing proof). --idle-time-limit MUST exceed DEMO_STEP_PAUSE or agg
-# collapses the pause when it rewrites the timeline; keep them in lockstep.
-export DEMO_STEP_PAUSE="${DEMO_STEP_PAUSE:-3}"
+export TALON_DEMO_COLOR=1
+# Pace the acts so the rendered GIF lands in the readable range. --idle-time-limit
+# MUST exceed DEMO_STEP_PAUSE or agg collapses the pause when it rewrites the
+# timeline; keep them in lockstep.
+export DEMO_STEP_PAUSE="${DEMO_STEP_PAUSE:-2}"
 
 # TRANSACTIONAL RECORDING: record to a .tmp cast and promote to the committed
 # path ONLY after the run exits 0 AND the cast contains the terminal success
 # marker. asciinema --overwrite would otherwise clobber the good cast with a
-# partial failed one before strict mode's exit fires — how broken assets shipped.
+# partial failed one before strict mode's exit fires.
 CAST_TMP="${CAST}.tmp"
-HERO_MARKER="every decision signed and verified"
-echo "==> Recording ./demo.sh hero (real API calls + local Llama; the budget act"
-echo "    spends toward the \$0.03 session cap, so ~\$0.03 real spend)..."
+HERO_MARKER="one shared control plane"
+echo "==> Recording ./demo.sh hero (real providers: builds talon, operates three"
+echo "    use cases through one gateway — ~\$0.02-0.05 real spend; Ollama must be down)..."
 rec_rc=0
 asciinema rec --overwrite --cols 100 --rows 30 --idle-time-limit 4 \
   -c "./demo.sh hero" "$CAST_TMP" || rec_rc=$?
@@ -89,7 +71,7 @@ if [[ "$rec_rc" -ne 0 ]]; then
 fi
 if ! grep -q "$HERO_MARKER" "$CAST_TMP"; then
   echo "✗ Recording is missing the terminal success marker (\"${HERO_MARKER}\") — NOT promoted." >&2
-  echo "  The run ended before its closing 0-invalid proof; the committed cast is unchanged." >&2
+  echo "  The run ended before its closing signed-evidence proof; the committed cast is unchanged." >&2
   rm -f "$CAST_TMP"
   exit 1
 fi

@@ -70,8 +70,9 @@ Third-Party AI Agent → Talon MCP Server → Your Zendesk/CRM
 ```bash
 # On your infrastructure (VM, EC2, on-prem server) — check
 # https://github.com/dativo-io/talon/releases/latest for the newest version
-wget https://github.com/dativo-io/talon/releases/download/v1.8.0/talon_1.8.0_linux_amd64.tar.gz
-tar -xzf talon_1.8.0_linux_amd64.tar.gz
+TALON_VERSION=1.8.1   # set to the latest release tag
+wget https://github.com/dativo-io/talon/releases/download/v${TALON_VERSION}/talon_${TALON_VERSION}_linux_amd64.tar.gz
+tar -xzf talon_${TALON_VERSION}_linux_amd64.tar.gz
 sudo mv talon /usr/local/bin/talon
 ```
 

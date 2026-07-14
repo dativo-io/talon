@@ -1,0 +1,34 @@
+# Use case 3 of 3 — document-summary
+#
+# A batch summarizer that runs on Anthropic and can run up a bill fast. Its cost
+# control is a per-session budget: Talon adds each call's PROJECTED cost (spend
+# so far + the next request's estimate) and denies the next call before it is
+# sent once the session budget would be exceeded — you see the exact
+# spend + estimate vs limit in the signed evidence. Session budgets are SOFT
+# caps: a single in-flight request can overshoot before the next is denied.
+#
+# The daily cap is the hard, per-day ceiling that also drives the fleet
+# attention queue: once a day's real spend reaches it (a long summary can cost
+# more than the pre-call estimate), the use case shows HEALTH=blocked in
+# `talon agents` until the period resets. The monthly cap is this use case's
+# month budget — the figure the fleet COST column is measured against.
+#
+# The caps here are deliberately small so the stops are visible in a short demo;
+# the mechanism is identical at $50 or $50,000.
+agent:
+  name: document-summary
+  description: "Batch document summarizer on Anthropic — session + daily budgets"
+  version: "1.0.0"
+  tenant_id: acme
+  key:
+    secret_name: document-summary-talon-key
+
+policies:
+  cost_limits:
+    daily: 0.02       # hard per-day ceiling → drives fleet HEALTH=blocked when reached
+    monthly: 50.00    # this use case's monthly budget (the fleet COST column denominator)
+  session_limits:
+    max_cost: 0.015   # soft per-session budget (< daily) → the projected-cost receipt (spend + estimate vs limit)
+
+metadata:
+  team: knowledge

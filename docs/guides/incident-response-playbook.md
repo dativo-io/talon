@@ -138,7 +138,7 @@ policies:
     monthly: 500.00
 ```
 
-2. Restart Talon to apply the new limits (or use runtime overrides above for immediate effect):
+2. Agent-file `cost_limits` edits are hot-reloaded by the periodic reload within `agents_reload_interval` (default 30s), so a restart is optional. For immediate effect, use the runtime overrides above, or restart Talon:
 
 ```bash
 talon serve --config <path>
@@ -178,7 +178,7 @@ tool_policies:
 ```
 
 2. Verify that evidence still records the PII finding — `pii_action: "audit"` logs the detection without altering the data, preserving the compliance trail.
-3. No restart is needed if config reload is enabled. Otherwise restart Talon.
+3. No restart needed — agent-file policy edits are hot-reloaded within `agents_reload_interval` (default 30s). Restart only if reload is disabled (`0`).
 
 ---
 

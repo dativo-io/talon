@@ -56,7 +56,7 @@ Evidence distinction:
 
 ## Key rotation
 
-- **Agent key:** write a new value to the same vault secret (`talon secrets set <secret_name> "$(openssl rand -hex 24)"`) and restart `talon serve` (periodic reload is #269). One active key per agent — there is never a window with two concurrently-active keys.
+- **Agent key:** write a new value to the same vault secret (`talon secrets set <secret_name> "$(openssl rand -hex 24)"`) and restart `talon serve` (a secret-only change is not digest-detected, so rotation still needs a restart or a file-touch even with periodic reload running). One active key per agent — there is never a window with two concurrently-active keys.
 - **Admin key:** rotate `TALON_ADMIN_KEY` through your secret manager/deploy workflow.
 
 ---
