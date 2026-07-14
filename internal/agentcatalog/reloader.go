@@ -223,6 +223,12 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 		if r.rejection != nil {
 			log.Info().Str("generation", shortDigest(r.lastGood)).Msg("agent_config_recovered_to_last_known_good")
 			r.rejection = nil
+			// A recovery ENDS the broken incident: reset the dedup memory so the
+			// SAME broken digest, if reintroduced later, is recorded as a NEW
+			// incident rather than silently deduplicated (#300 review round 5,
+			// blocker 6). unrecorded is left intact — evidence still owed for any
+			// state that never persisted is flushed on subsequent ticks.
+			r.recorded = make(map[string]struct{})
 			return ReloadRecovered
 		}
 		return ReloadUnchanged
@@ -269,6 +275,10 @@ func (r *Reloader) ReloadOnce(ctx context.Context) ReloadOutcome {
 	r.lastGood = scan.Digest
 	r.activatedAt = next.BuiltAt
 	r.rejection = nil
+	// Activation ENDS any prior broken incident: reset the dedup memory so a
+	// broken digest seen before this good generation is recorded afresh if it
+	// reoccurs (#300 review round 5, blocker 6). unrecorded is left intact.
+	r.recorded = make(map[string]struct{})
 	log.Info().Int("agents", len(scan.Agents)).Str("generation", shortDigest(scan.Digest)).Str("source", scan.Source).Msg("agent_config_reload_activated")
 	return ReloadActivated
 }

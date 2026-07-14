@@ -194,10 +194,15 @@ type PriorKeyLookup func(name, secretName string) (PriorKey, bool)
 
 // BuildOptions tunes registry construction for the reload path.
 type BuildOptions struct {
-	// AllowUnkeyed skips agents with no key binding instead of failing.
-	// Plain (native-only) serve sets this so keyless agents run natively
-	// while never entering the gateway registry; gateway mode leaves it
-	// false (a keyless agent is a startup/reload error).
+	// AllowUnkeyed skips agents that cannot be gateway-keyed — no key binding,
+	// OR a configured binding whose secret is unminted or momentarily
+	// unresolvable — instead of failing the build. Plain (native-only) serve
+	// sets this so such agents run natively while never entering the gateway
+	// registry; gateway mode leaves it false (a keyless or unminted agent is a
+	// startup/reload error). Covering the unminted case keeps a single-file
+	// plain boot and its reloads consistent: startup degrades an unminted
+	// configured key to a keyless boot, so a reload must not REJECT the same
+	// config (#300 review round 5, blocker 5).
 	AllowUnkeyed bool
 	// PriorKeys reuses unchanged key material without vault access.
 	PriorKeys PriorKeyLookup
@@ -262,16 +267,21 @@ func BuildIdentityRegistryWith(ctx context.Context, agents []LoadedAgent, vault 
 		newEnabled := a.Enabled == nil || *a.Enabled
 		keyMaterial, err := resolveAgentKey(ctx, a, tenantID, newEnabled, vault, opts.PriorKeys)
 		if err != nil {
+			if opts.AllowUnkeyed {
+				// Native-only serve: a configured key that is unminted or
+				// momentarily unresolvable is not fatal — the agent simply never
+				// enters the gateway registry and runs natively, exactly as
+				// single-file boot degrades an unminted key. Without this, reload
+				// would reject a config startup accepted (#300 review round 5,
+				// blocker 5).
+				continue
+			}
 			return nil, err
 		}
-		if prev, dup := byKey[keyMaterial]; dup {
-			return nil, fmt.Errorf("agents %q and %q resolve to the same key material — a key identifies exactly one AI use case", prev, a.Name)
+		if err := checkKeyCollisions(a, keyMaterial, adminKey, byKey); err != nil {
+			return nil, err
 		}
 		byKey[keyMaterial] = a.Name
-
-		if adminKey != "" && subtle.ConstantTimeCompare([]byte(keyMaterial), []byte(adminKey)) == 1 {
-			return nil, fmt.Errorf("agent %q (%s): key secret %q resolves to the same value as TALON_ADMIN_KEY — an agent key must never carry admin authority; rotate one of them (`talon secrets set %s <new key>`): %w", a.Name, a.Path, a.KeySecretName, a.KeySecretName, ErrAdminKeyCollision)
-		}
 
 		reg.identities = append(reg.identities, &ResolvedIdentity{
 			Name:                 a.Name,
@@ -291,38 +301,74 @@ func BuildIdentityRegistryWith(ctx context.Context, agents []LoadedAgent, vault 
 	return reg, nil
 }
 
+// checkKeyCollisions fails closed when a resolved key duplicates another agent's
+// key (a key identifies exactly one agent) or collides with the admin key (which
+// the tenant-or-admin middleware checks first, so a collision would silently
+// elevate that agent's traffic to operator authority).
+func checkKeyCollisions(a *LoadedAgent, keyMaterial, adminKey string, byKey map[string]string) error {
+	if prev, dup := byKey[keyMaterial]; dup {
+		return fmt.Errorf("agents %q and %q resolve to the same key material — a key identifies exactly one AI use case", prev, a.Name)
+	}
+	if adminKey != "" && subtle.ConstantTimeCompare([]byte(keyMaterial), []byte(adminKey)) == 1 {
+		return fmt.Errorf("agent %q (%s): key secret %q resolves to the same value as TALON_ADMIN_KEY — an agent key must never carry admin authority; rotate one of them (`talon secrets set %s <new key>`): %w", a.Name, a.Path, a.KeySecretName, a.KeySecretName, ErrAdminKeyCollision)
+	}
+	return nil
+}
+
 // resolveAgentKey resolves one agent's key material. The CURRENT vault value
 // is ALWAYS preferred, so an in-place rotation (`talon secrets set <same-name>
 // <new>`) is picked up on the next rebuild and every ACL check runs against
 // the CURRENT tenant (#269 review rounds 4–5).
 //
-// The previous generation's key is reused ONLY for the narrow emergency
-// enabled→disabled transition — every other case must revalidate through the
-// vault. Reuse requires ALL of: the vault is unavailable/empty; an unchanged
-// (name, secretName) prior identity exists; its tenant is UNCHANGED (a tenant
-// move must ACL-recheck, never reuse); the prior state was enabled; the new
-// state is disabled. This means a revoked key can be used to serve an
-// attributed 403 while stopping the agent, but can never be re-enabled or
-// carried across a tenant move without a fresh, ACL-checked vault read.
+// Prior-key reuse keeps the last-known-good fleet serving through a TRANSIENT
+// vault outage — but only for a binding nothing has changed against. Reuse
+// requires ALL of (#300 review round 5):
+//   - the vault failure is transient (store unreachable, decrypt error), NOT an
+//     authoritative "no key": ErrSecretNotFound, ErrSecretAccessDenied, and an
+//     empty value all mean the key was revoked or this tenant/agent is no
+//     longer authorized, so reuse is refused and the key correctly stops
+//     working (blocker 2 — a revoked key never survives as a valid credential);
+//   - an unchanged (name, secretName) prior identity exists with key material;
+//   - its tenant is UNCHANGED (a tenant move must ACL-recheck, never reuse);
+//   - it is NOT a re-enable (prior disabled → new enabled): granting NEW access
+//     always requires a fresh, ACL-checked vault read (blocker 2 — a revoked key
+//     can never be re-enabled from stale material).
+//
+// Reuse deliberately covers UNCHANGED enabled agents too, not just the
+// enabled→disabled stop: rebuilding the registry to disable ONE agent must not
+// fail because unchanged enabled SIBLINGS also need a vault read during the same
+// outage (blocker 1). A disabled agent's reused key serves only an attributed
+// gateway 403 — the tenant-API surface refuses it (see holderKeyResolver).
 func resolveAgentKey(ctx context.Context, a *LoadedAgent, tenantID string, newEnabled bool, vault *secrets.SecretStore, priorKeys PriorKeyLookup) (string, error) {
 	var vaultErr error
+	authoritativeAbsent := false
 	if vault != nil {
-		if secret, err := vault.Get(ctx, a.KeySecretName, tenantID, a.Name); err == nil {
+		secret, err := vault.Get(ctx, a.KeySecretName, tenantID, a.Name)
+		switch {
+		case err == nil:
 			if km := strings.TrimSpace(string(secret.Value)); km != "" {
 				return km, nil // fresh, ACL-checked value — rotation & tenant moves land here
 			}
+			// An empty value is an authoritative revocation, not an outage.
 			vaultErr = fmt.Errorf("key secret %q resolved to an empty value", a.KeySecretName)
-		} else {
+			authoritativeAbsent = true
+		case errors.Is(err, secrets.ErrSecretNotFound), errors.Is(err, secrets.ErrSecretAccessDenied):
+			// The secret is gone or this tenant/agent is no longer authorized:
+			// a revoked key must stop working — never reuse stale material.
+			vaultErr = err
+			authoritativeAbsent = true
+		default:
+			// Transient/unknown failure: the key may still exist, so an unchanged
+			// binding is eligible for reuse below.
 			vaultErr = err
 		}
 	} else {
 		vaultErr = fmt.Errorf("no vault configured")
 	}
-	// Narrow emergency fallback: reuse the prior key ONLY to STOP an agent
-	// (enabled→disabled) whose tenant and binding are unchanged.
-	if !newEnabled && priorKeys != nil {
+	if !authoritativeAbsent && priorKeys != nil {
 		if prior, ok := priorKeys(a.Name, a.KeySecretName); ok {
-			if prior.Enabled && prior.TenantID == tenantID && len(prior.Key) > 0 {
+			reEnabling := !prior.Enabled && newEnabled
+			if !reEnabling && prior.TenantID == tenantID && len(prior.Key) > 0 {
 				return string(prior.Key), nil
 			}
 		}

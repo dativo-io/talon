@@ -234,16 +234,66 @@ func TestAtomicReplaceFile_ConcurrencyGuard(t *testing.T) {
 	// Another process changed the file since we read "original".
 	require.NoError(t, os.WriteFile(path, []byte("someone-else\n"), 0o600))
 
-	err := atomicReplaceFile(path, []byte("mine\n"), []byte("original\n"))
+	renamed, err := atomicReplaceFile(path, []byte("mine\n"), []byte("original\n"))
 	require.Error(t, err)
+	assert.False(t, renamed, "a clobber-guard failure must report renamed=false (nothing changed)")
 	assert.Contains(t, err.Error(), "modified by another writer")
 	current, _ := os.ReadFile(path)
 	assert.Equal(t, "someone-else\n", string(current), "the concurrent edit is preserved, not clobbered")
 
 	// With the correct expected bytes, the replace succeeds.
-	require.NoError(t, atomicReplaceFile(path, []byte("mine\n"), []byte("someone-else\n")))
+	renamed, err = atomicReplaceFile(path, []byte("mine\n"), []byte("someone-else\n"))
+	require.NoError(t, err)
+	assert.True(t, renamed, "a successful replace reports renamed=true")
 	current, _ = os.ReadFile(path)
 	assert.Equal(t, "mine\n", string(current))
+}
+
+// TestApplyToggle_ReplaceFailureRecordsTerminalRollback covers #300 review
+// round 5, blocker 4: when the atomic replace changes nothing on disk
+// (renamed=false — here the clobber guard trips), applyToggle must still write a
+// TERMINAL record matching disk (a rolled-back record), so the intent never
+// dangles and no false completion is recorded.
+func TestApplyToggle_ReplaceFailureRecordsTerminalRollback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.talon.yaml")
+	// On-disk bytes differ from tgt.original, so the recheck-before-rename trips
+	// and atomicReplaceFile reports renamed=false (nothing changed).
+	require.NoError(t, os.WriteFile(path, []byte("changed-by-someone-else\n"), 0o600))
+
+	store, err := evidence.NewStore(filepath.Join(dir, "e.db"), "0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	defer store.Close()
+
+	tgt := toggleTarget{
+		path:     path,
+		original: []byte("what-we-read\n"), // != on-disk bytes
+		edited:   []byte("edited\n"),
+		tenant:   "acme",
+		prior:    true,
+		unlock:   func() {},
+	}
+	id, warn, err := applyToggle(context.Background(), store, tgt, "support", "disabled", false)
+	require.Error(t, err)
+	assert.Empty(t, id)
+	assert.Empty(t, warn)
+	assert.Contains(t, err.Error(), "no change was made")
+
+	// Disk is untouched.
+	current, _ := os.ReadFile(path)
+	assert.Equal(t, "changed-by-someone-else\n", string(current))
+
+	// Terminal record closes the intent: intent + rolled_back, NO completion.
+	rows, err := store.List(context.Background(), "acme", "support", time.Time{}, time.Time{}, 10)
+	require.NoError(t, err)
+	types := map[string]int{}
+	for i := range rows {
+		types[rows[i].InvocationType]++
+		assert.True(t, store.VerifyRecord(&rows[i]))
+	}
+	assert.Equal(t, 1, types["agent_disable_intent"], "intent recorded")
+	assert.Equal(t, 1, types["agent_toggle_rolled_back"], "a terminal rollback closes the intent; nothing dangles")
+	assert.Equal(t, 0, types["agent_disabled"], "no false completion when nothing changed on disk")
 }
 
 // TestParseReloadInterval (#269 review, P2): "0" disables, negative is a hard

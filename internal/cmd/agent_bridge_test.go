@@ -118,6 +118,39 @@ func TestHolderKeyResolver_SwapPropagatesToServerAuth(t *testing.T) {
 	<-done
 }
 
+// TestHolderKeyResolver_DisabledAgentIsDenialOnly covers #300 review round 5,
+// blocker 2: a DISABLED agent's key still resolves on the data plane (so the
+// gateway can attribute a 403), but the tenant-API management surface must
+// refuse it — otherwise the kill switch (or a key reused through a vault
+// outage) would still authorize tenant-scoped reads/writes.
+func TestHolderKeyResolver_DisabledAgentIsDenialOnly(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	vault, err := secrets.NewSecretStore(filepath.Join(dir, "s.db"), "0123456789abcdef0123456789abcdef")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = vault.Close() })
+	require.NoError(t, vault.Set(ctx, "k", []byte("tk"), secrets.ACL{}))
+
+	disabled := false
+	reg, err := gateway.BuildIdentityRegistry(ctx, []gateway.LoadedAgent{
+		{Path: "a.yaml", Name: "support", TenantID: "acme", KeySecretName: "k", Enabled: &disabled},
+	}, vault, "")
+	require.NoError(t, err)
+
+	// Data plane: the disabled agent still resolves (resolve-then-deny).
+	id, ok := reg.ResolveKey("tk")
+	require.True(t, ok)
+	require.False(t, id.Enabled)
+
+	// Tenant-API surface: the same key must NOT authenticate.
+	scan := &agentcatalog.ScanResult{Source: "test", Digest: "gen-x"}
+	holder := agentcatalog.NewRuntimeHolder(agentcatalog.NewRuntimeSnapshot(scan, nil, reg, time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)))
+	resolver := holderKeyResolver{holder: holder}
+	auth := resolver.AuthenticateAgentKey("tk")
+	assert.True(t, auth.KeysConfigured, "the registry is non-empty, so this is not dev-open")
+	assert.False(t, auth.Found, "a disabled agent's key is gateway-denial-only; the tenant-API surface rejects it")
+}
+
 // TestBuildServeIdentityRegistryModeMatrix regression-tests the serve-time
 // registry mode matrix (#279 review): quickstart skips, gateway is
 // fail-closed, plain serve degrades to a warning EXCEPT the admin-key

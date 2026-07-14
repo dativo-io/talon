@@ -131,7 +131,14 @@ func (r holderKeyResolver) AuthenticateAgentKey(key string) server.AgentKeyAuth 
 		generation = snap.Generation
 	}
 	auth := server.AgentKeyAuth{KeysConfigured: reg.Len() > 0}
-	if id, ok := reg.ResolveKey(key); ok {
+	// A DISABLED agent is gateway-denial-only (#300 review round 5, blocker 2):
+	// the data plane still resolves its key (resolve-then-deny → attributed 403),
+	// but the tenant-API management surface must treat a disabled key as
+	// unauthenticated — otherwise the kill switch, or a key reused through a
+	// vault outage, would still authorize tenant-scoped reads/writes. Resolving
+	// but not marking Found leaves KeysConfigured intact, so the middleware
+	// returns 401 rather than falling into dev-open.
+	if id, ok := reg.ResolveKey(key); ok && id.Enabled {
 		auth.Found = true
 		auth.Identity = requestctx.AgentIdentity{
 			AgentID: id.Name, TenantID: id.TenantID, Team: id.Team,

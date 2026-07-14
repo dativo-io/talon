@@ -254,6 +254,57 @@ func TestReloader_RecoversWithoutActivation(t *testing.T) {
 	assert.Equal(t, ReloadUnchanged, f.reloader.ReloadOnce(ctx))
 }
 
+// TestReloader_RejectionDedupResetsAfterRecovery covers #300 review round 5,
+// blocker 6: once a broken incident RECOVERS, the same broken digest reoccurring
+// later is a NEW incident and must be recorded again — not silently deduplicated
+// against the earlier occurrence.
+func TestReloader_RejectionDedupResetsAfterRecovery(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, true)
+	path := filepath.Join(f.agentsDir, "support", "agent.talon.yaml")
+	original, err := os.ReadFile(path)
+	require.NoError(t, err)
+	brokenBytes := []byte("agent:\n  version: \"1.0.0\"\npolicies:\n  cost_limits: {}\n")
+
+	// Incident 1: broken digest D recorded.
+	require.NoError(t, os.WriteFile(path, brokenBytes, 0o600))
+	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	require.Len(t, f.reloadRows(t), 1)
+
+	// Operator reverts: recovery ends the incident and resets the dedup memory.
+	require.NoError(t, os.WriteFile(path, original, 0o600))
+	require.Equal(t, ReloadRecovered, f.reloader.ReloadOnce(ctx))
+
+	// Incident 2: the SAME broken bytes reoccur — recorded afresh, not deduped.
+	require.NoError(t, os.WriteFile(path, brokenBytes, 0o600))
+	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	assert.Len(t, f.reloadRows(t), 2, "a reoccurring incident after recovery is recorded afresh")
+}
+
+// TestReloader_RejectionDedupResetsAfterActivation covers blocker 6 for the
+// activation boundary: a good generation activating between two occurrences of
+// the same broken digest also resets the dedup memory.
+func TestReloader_RejectionDedupResetsAfterActivation(t *testing.T) {
+	ctx := context.Background()
+	f := newReloadFixture(t, true)
+	path := filepath.Join(f.agentsDir, "support", "agent.talon.yaml")
+	brokenBytes := []byte("agent:\n  version: \"1.0.0\"\npolicies:\n  cost_limits: {}\n")
+
+	// Incident 1: broken digest D recorded (1 row).
+	require.NoError(t, os.WriteFile(path, brokenBytes, 0o600))
+	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	require.Len(t, f.reloadRows(t), 1)
+
+	// A new VALID generation activates (1 activation row) and resets the dedup.
+	f.writeAgentVersion(t, "support", "support-key", true, "9.9.9")
+	require.Equal(t, ReloadActivated, f.reloader.ReloadOnce(ctx))
+
+	// Incident 2: the SAME broken bytes reoccur — recorded afresh (1 more row).
+	require.NoError(t, os.WriteFile(path, brokenBytes, 0o600))
+	require.Equal(t, ReloadRejected, f.reloader.ReloadOnce(ctx))
+	assert.Len(t, f.reloadRows(t), 3, "reject + activation + reject; the reoccurring broken digest is recorded afresh")
+}
+
 func TestReloader_RequireNonEmptyRejectsEmptySet(t *testing.T) {
 	ctx := context.Background()
 	f := newReloadFixture(t, true)
@@ -404,6 +455,46 @@ func TestReloader_KeylessNativeReload(t *testing.T) {
 	require.Equal(t, ReloadActivated, reloader.ReloadOnce(ctx))
 	ra, _ = holder.Current().Get("local-worker")
 	assert.False(t, ra.Enabled, "keyless single-file disable works")
+}
+
+// TestReloader_SingleFilePlainToleratesUnmintedKey covers #300 review round 5,
+// blocker 5: single-file plain serve BOOTS with an unminted CONFIGURED key
+// (degraded to a keyless boot), so its reload must ALSO tolerate that same
+// config — not reject it. The plain (AllowUnkeyed) builder skips the unminted
+// key exactly as boot does, so the reload activates and the agent runs natively.
+func TestReloader_SingleFilePlainToleratesUnmintedKey(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "agent.talon.yaml")
+	write := func(version string) {
+		require.NoError(t, os.WriteFile(policyPath,
+			[]byte("agent:\n  name: local-worker\n  version: \""+version+"\"\n  key:\n    secret_name: unminted\npolicies:\n  cost_limits:\n    daily: 10\n"), 0o600))
+	}
+	write("1.0.0")
+
+	src := Source{File: policyPath}
+	boot, err := src.Scan(ctx)
+	require.NoError(t, err)
+	bundles, err := BuildRuntimeAgents(ctx, boot, BundleDeps{})
+	require.NoError(t, err)
+	holder := NewRuntimeHolder(NewRuntimeSnapshot(boot, bundles, nil, time.Now().UTC()))
+
+	// Mirrors single-file plain serve's reload builder: AllowUnkeyed=true.
+	plainBuilder := func(bctx context.Context, scan *ScanResult, previous *RuntimeSnapshot) (*gateway.IdentityRegistry, error) {
+		return gateway.BuildIdentityRegistryWith(bctx, scan.LoadedAgents(), nil, "", gateway.BuildOptions{AllowUnkeyed: true})
+	}
+	reloader := NewReloader(ReloadConfig{
+		Source: src, Deps: BundleDeps{}, BuildRegistry: plainBuilder,
+		Holder: holder, Evidence: nil, RequireNonEmpty: false,
+	})
+
+	write("2.0.0")
+	require.Equal(t, ReloadActivated, reloader.ReloadOnce(ctx),
+		"a single-file plain reload must tolerate an unminted configured key, not reject what boot accepted")
+	ra, ok := holder.Current().Get("local-worker")
+	require.True(t, ok)
+	assert.Equal(t, "2.0.0", ra.Policy.Agent.Version)
+	assert.Equal(t, 0, holder.Current().Registry.Len(), "the unminted agent runs natively, never entering the gateway registry")
 }
 
 // TestReloader_RejectionEvidenceRetriedAfterFailure (#269 review, P1): a
