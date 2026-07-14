@@ -135,6 +135,88 @@ func TestResolveFleet_OfflineWhenNoServer(t *testing.T) {
 	assert.Equal(t, "support", rows[0].Name)
 }
 
+// talonMarkerServer identifies as Talon on /health (the #293 marker) and
+// delegates /v1/agents/fleet to fleetHandler.
+func talonMarkerServer(fleetHandler http.HandlerFunc) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.Header().Set("X-Talon-Service", "talon")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		fleetHandler(w, r)
+	}))
+}
+
+// TestResolveFleet_DetectedTalonFailureIsHardError covers #270 review round 1,
+// P1: an implicitly-detected Talon server whose fleet query fails (401/500/
+// malformed) is a HARD error carrying the reason — never a silent offline view
+// under a "no server found" banner (the #293 authority defect).
+func TestResolveFleet_DetectedTalonFailureIsHardError(t *testing.T) {
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+		wantIn  string
+	}{
+		{"401", func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "no admin key", http.StatusUnauthorized) }, "401"},
+		{"500", func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "boom", http.StatusInternalServerError) }, "500"},
+		{"malformed", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{not json")) }, "decoding"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := talonMarkerServer(tc.handler)
+			defer srv.Close()
+			dir := t.TempDir()
+			ad := filepath.Join(dir, "agents")
+			writeQueueAgent(t, ad, "support", true) // an offline fixture we must NOT fall back to
+
+			cmd := newAgentsTestCmd()
+			agentsQueueURL = srv.URL // implicit (--url not changed)
+			defer func() { agentsQueueURL = "http://localhost:8080" }()
+
+			_, _, _, err := resolveFleet(context.Background(), cmd, offlineTestConfig(t, ad), "")
+			require.Error(t, err, "a detected Talon server's failure must be a hard error")
+			assert.Contains(t, err.Error(), "Talon server")
+			assert.Contains(t, err.Error(), tc.wantIn)
+		})
+	}
+}
+
+// TestResolveFleet_NonTalonOccupantFallsOffline: a port occupant that does NOT
+// identify as Talon (no /health marker) is not authoritative → offline.
+func TestResolveFleet_NonTalonOccupantFallsOffline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK) // no X-Talon-Service marker
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	ad := filepath.Join(dir, "agents")
+	writeQueueAgent(t, ad, "support", true)
+
+	cmd := newAgentsTestCmd()
+	agentsQueueURL = srv.URL
+	defer func() { agentsQueueURL = "http://localhost:8080" }()
+
+	rows, _, label, err := resolveFleet(context.Background(), cmd, offlineTestConfig(t, ad), "")
+	require.NoError(t, err)
+	assert.Equal(t, offlineFleetLabel, label, "a non-Talon occupant is not authoritative → offline")
+	require.Len(t, rows, 1)
+}
+
+// TestResolveFleet_ForcedOfflineWithEmptyURL: explicit --url "" forces offline.
+func TestResolveFleet_ForcedOfflineWithEmptyURL(t *testing.T) {
+	dir := t.TempDir()
+	ad := filepath.Join(dir, "agents")
+	writeQueueAgent(t, ad, "support", true)
+
+	cmd := newAgentsTestCmd()
+	require.NoError(t, cmd.Flags().Set("url", "")) // explicit empty → forced offline
+	rows, _, label, err := resolveFleet(context.Background(), cmd, offlineTestConfig(t, ad), "")
+	require.NoError(t, err)
+	assert.Equal(t, offlineFleetLabel, label)
+	require.Len(t, rows, 1)
+}
+
 func TestRenderAgentsTable_BannerAndIssues(t *testing.T) {
 	var buf bytes.Buffer
 	rows := []fleet.AgentRow{

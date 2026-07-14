@@ -111,29 +111,51 @@ func runAgentShow(cmd *cobra.Command, args []string) error {
 	return fmt.Errorf("unknown agent %q: discovered agents: %s", name, strings.Join(agentRowNames(rows), ", "))
 }
 
-// resolveFleet returns the attention-queue rows + fleet issues, server-first:
+// resolveFleet returns the attention-queue rows + fleet issues, server-first,
+// under the SAME authority contract as `talon costs` (#288/#293) — a running
+// Talon server's answer, or its refusal, is authoritative; the offline config
+// view is used ONLY when no Talon server is actually there:
 //   - an EXPLICIT --url is authoritative — a reachable-but-failing server is a
-//     hard error, never a silent fall back to a possibly-divergent local view;
-//   - otherwise an implicitly-detected localhost Talon server (the #293 /health
-//     marker) is authoritative when reachable;
-//   - otherwise the local config is projected offline, prominently labeled.
+//     hard error, never a silent fall back to a possibly-divergent local view
+//     (--url "" forces the offline view);
+//   - an implicitly-detected localhost Talon server (the #293 /health marker) is
+//     likewise authoritative: if it is present but the fleet query fails (401,
+//     403, 500, malformed), that is a HARD ERROR carrying the original reason —
+//     NOT a silent offline view under a "no server found" banner (#270 review
+//     round 1, P1);
+//   - only when NO Talon server is reachable (unreachable, or a non-Talon port
+//     occupant) does the local config project offline, prominently labeled.
 func resolveFleet(ctx context.Context, cmd *cobra.Command, cfg *config.Config, tenant string) (rows []fleet.AgentRow, issues []agentcatalog.FleetIssue, label string, err error) {
 	explicit := cmd.Flags().Changed("url")
+	// Explicit --url "" forces the offline config view (skip the server path
+	// entirely), matching `talon costs`.
+	if explicit && strings.TrimSpace(agentsQueueURL) == "" {
+		return offlineWithLabel(ctx, cfg, tenant)
+	}
 	if explicit {
 		fr, ferr := fetchServerFleet(ctx, agentsQueueURL, tenant)
 		if ferr != nil {
-			return nil, nil, "", fmt.Errorf("querying %s: %w (an explicit --url is authoritative; not falling back to a local config view)", agentsQueueURL, ferr)
+			return nil, nil, "", fmt.Errorf("querying %s: %w (an explicit --url is authoritative; not falling back to a local config view — pass --url \"\" to force the offline view)", agentsQueueURL, ferr)
 		}
 		return fr.Agents, fr.FleetIssues, "", nil
 	}
 	if isTalonServer(ctx, agentsQueueURL) {
-		if fr, ferr := fetchServerFleet(ctx, agentsQueueURL, tenant); ferr == nil {
-			return fr.Agents, fr.FleetIssues, "", nil
+		fr, ferr := fetchServerFleet(ctx, agentsQueueURL, tenant)
+		if ferr != nil {
+			// A Talon server IS running here but the fleet query failed: its
+			// refusal is authoritative — never present a possibly-divergent local
+			// view under a "no running gateway found" banner (the #293 defect).
+			return nil, nil, "", fmt.Errorf("a Talon server at %s rejected the fleet query: %w (set TALON_ADMIN_KEY or fix the server; not falling back to a local config view — pass --url \"\" to force it)", agentsQueueURL, ferr)
 		}
-		// A Talon server was detected but the fleet read failed: fall through to
-		// the offline view rather than error, since --url was not explicit.
+		return fr.Agents, fr.FleetIssues, "", nil
 	}
-	rows, issues, err = offlineFleet(ctx, cfg, tenant)
+	// No Talon server reachable (unreachable or a non-Talon port occupant).
+	return offlineWithLabel(ctx, cfg, tenant)
+}
+
+// offlineWithLabel projects the local config and attaches the offline banner.
+func offlineWithLabel(ctx context.Context, cfg *config.Config, tenant string) ([]fleet.AgentRow, []agentcatalog.FleetIssue, string, error) {
+	rows, issues, err := offlineFleet(ctx, cfg, tenant)
 	if err != nil {
 		return nil, nil, "", err
 	}
