@@ -20,6 +20,13 @@
 - [ ] Evidence generated for auditable operations
 - [ ] No secrets hardcoded
 
+## Control-plane proof checklist (MVP #265)
+- [ ] Which pillar does this strengthen — cost control, reliability, shared policy, session understanding — or the evidence proof layer beneath them?
+- [ ] Enforcement happens before the provider/execution where claimed (deny-before-spend, block-before-forward), and the decision leaves signed evidence.
+- [ ] Demoable: does this show up in (or at least not break) the north-star demo (#107)?
+- [ ] Claims discipline: describes supporting controls and evidence, not regulatory outcomes; target behavior is not documented as shipped; session caps stay described as soft until atomic reservation lands.
+- [ ] Boundary discipline: no implication that Talon controls actions it cannot intercept (local shell/filesystem/direct calls).
+
 ## Related Issues
 <!-- Link related issues: Fixes #123 -->
 
