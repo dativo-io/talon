@@ -615,6 +615,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 	}
 	opts = append(opts, server.WithFleetStatus(fleetView))
+	opts = append(opts, server.WithFleetCurrency(pricingTable.CurrencyCode()))
 	if serveGateway {
 		gatewayCfg := preloadedGatewayCfg
 		if err := sovereignty.ValidateAirGap(cfg, gatewayCfg); err != nil {

@@ -80,6 +80,10 @@ type Server struct {
 	// fleetView backs GET /v1/agents/fleet (#269): ONE coherent read of the
 	// active runtime generation and the reloader's accept/reject state.
 	fleetView func() agentcatalog.FleetView
+	// fleetCurrency is the ISO-4217 unit the attention-queue COST column and
+	// budget caps are denominated in (#270), resolved once from the pricing
+	// table at serve time.
+	fleetCurrency string
 }
 
 // SetClassifier attaches the process-wide scanner engine. Call after
