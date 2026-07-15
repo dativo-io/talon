@@ -45,10 +45,29 @@ else
   exit 1
 fi
 # Confirm the headline receipts actually rendered (not just a clean exit).
-for marker in "SKIPPED" "\[EMAIL\], \[IBAN\]" "session spend" "FLEET HEALTH  blocked" "Invalid records: 0" "valid_fallback"; do
+for marker in "SKIPPED" "\[EMAIL\], \[IBAN\]" "session spend" "POLICY UPDATE" "HEALTH  blocked" "Invalid records: 0" "valid_fallback"; do
   grep -qE "$marker" /tmp/smoke-positive.out || { echo "✗ expected marker missing from output: $marker" >&2; exit 1; }
 done
-echo "    ✓ failover-skip, redaction, session-budget receipt, blocked fleet, offline verify, chain verify all present"
+echo "    ✓ failover-skip, redaction, session-budget receipt, visible policy-edit + blocked fleet, offline verify, chain verify all present"
+
+echo "==> RECORDER PATH: prepare (setup) + play (beats only) — the split scripts/record-hero.sh records..."
+STATE="$(mktemp)"
+if OPENAI_API_KEY=sk-smoke ANTHROPIC_API_KEY=sk-smoke \
+   TALON_DEMO_OPENAI_URL="http://localhost:${MOCK_PORT}" TALON_DEMO_ANTHROPIC_URL="http://localhost:${MOCK_PORT}" \
+   TALON_DEMO_LOCAL_LLAMA_URL="http://127.0.0.1:1" TALON_DEMO_COLOR=0 DEMO_STEP_PAUSE=0 \
+   bash "$REPO_ROOT/examples/product-demo/demo.sh" prepare "$STATE" hero >/tmp/smoke-prepare.out 2>&1; then
+  if TALON_DEMO_COLOR=0 DEMO_STEP_PAUSE=0 bash "$REPO_ROOT/examples/product-demo/demo.sh" play "$STATE" >/tmp/smoke-play.out 2>&1; then
+    grep -q "3 production AI use cases" /tmp/smoke-play.out || { echo "✗ play did not begin at the opening banner" >&2; tail -20 /tmp/smoke-play.out >&2; exit 1; }
+    grep -q "Preparing the fleet" /tmp/smoke-play.out && { echo "✗ play output contains setup noise (setup was not moved out of the recorded portion)" >&2; exit 1; }
+    grep -q "one shared control plane" /tmp/smoke-play.out || { echo "✗ play did not reach the terminal marker" >&2; exit 1; }
+    echo "    ✓ prepare/play works; the recorded portion starts at the product story with no build/seed noise"
+  else
+    echo "✗ demo.sh play FAILED" >&2; tail -30 /tmp/smoke-play.out >&2; rm -f "$STATE"; exit 1
+  fi
+else
+  echo "✗ demo.sh prepare FAILED" >&2; tail -30 /tmp/smoke-prepare.out >&2; rm -f "$STATE"; exit 1
+fi
+rm -f "$STATE"
 
 echo "==> NEGATIVE: local model reachable (points at the mock) — a real failover could not happen; a guardrail must FAIL the demo..."
 if run_demo "http://localhost:${MOCK_PORT}" >/tmp/smoke-negative.out 2>/tmp/smoke-negative.err; then

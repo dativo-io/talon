@@ -1431,6 +1431,7 @@ func (g *Gateway) recordEvidence(ctx context.Context, correlationID string, agen
 		OutputTier:              outputTier,
 		PIIDetected:             piiDetected,
 		PIIRedacted:             inputPIIRedacted,
+		InputPIIRedacted:        inputPIIRedacted,
 		OutputPIIDetected:       outputPIIDetected,
 		OutputPIITypes:          outputPIITypes,
 		Cost:                    cost,

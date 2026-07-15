@@ -8,8 +8,8 @@ use case in a single operating period:
 |---|---|---|
 | **customer-support** | **Reliability** + **shared policy** | one customer incident: an email + IBAN are **redacted** before the provider; the preferred local model is down, so Talon fails over — **skipping a healthy provider this use case isn't allowed to use** and selecting the first policy-valid one |
 | **coding-assistant** | **Shared capability policy** | a request carrying a destructive `admin_*` tool is rejected by an **organization** boundary the agent cannot weaken |
-| **document-summary** | **Cost control before spend** | a per-session budget denies the next call using its **projected** cost (spend + estimate vs limit) before Anthropic is called; the day's spend then reaches a hard daily cap and the fleet shows the use case **blocked** |
-| the whole fleet | **Session understanding** | `talon agents` is the attention queue; descend from the fleet to one session (`audit list --session`) to one signed decision; every decision is exported and independently verified |
+| **document-summary** | **Cost control** + **operational control** | a per-session budget denies the next call using its **projected** cost (spend + estimate vs limit) before Anthropic is called; then an operator **lowers its daily budget below today's spend** — a live policy edit activated by periodic safe reload — and the fleet immediately shows the use case **blocked** |
+| the whole fleet | **Session understanding** | `talon agents` is the attention queue; descend from the fleet to one session (`audit list --session`) to one signed decision; every decision is exported and **verified offline** |
 
 ## Run it
 
@@ -21,13 +21,15 @@ make product-demo
 #      ./demo.sh hero     # tight product-story cut (the README GIF)
 ```
 
-**Real providers, real spend** — about **$0.02–0.05 per run** on cheap models
-(`gpt-4o-mini`, `claude-sonnet-5`). The denials (tool boundary, budget stop) cost
-`$0`; only the failover answer, the redacted answer, and a few real summaries
-cost anything. No Docker. State lives in a throwaway temp directory — your real
-`~/.talon` is never touched.
+**Real, paid provider calls** — approximately **$0.02–0.05 per run** of
+Talon-accounted cost on cheap models (`gpt-4o-mini`, `claude-sonnet-5`), computed
+from Talon's bundled standard pricing table (your actual provider invoice may
+differ, e.g. under introductory rates). The denials (tool boundary, budget stop)
+cost `$0`; only the failover answer, the redacted answer, and a few real
+summaries cost anything. No Docker. State lives in a throwaway temp directory —
+your real `~/.talon` is never touched.
 
-Requirements: `go`, `jq`, `curl`, an `OPENAI_API_KEY` and an `ANTHROPIC_API_KEY`,
+Requirements: `go`, `jq`, `curl`, `openssl`, an `OPENAI_API_KEY` and an `ANTHROPIC_API_KEY`,
 and **Ollama not listening on `:11434`** (the reliability beat demonstrates
 failover *from* the local model, so it must be offline; the demo asserts this in
 preflight).
@@ -57,8 +59,8 @@ The files that drive it are meant to be read:
 
 ## Security posture
 
-The demo is safe to run on a shared machine and models the product's intended
-security:
+Safe from network exposure on a developer workstation — loopback-only,
+authenticated admin endpoints, and isolated temporary state:
 
 - The gateway binds to **loopback only** (`--host 127.0.0.1`) on a **random free
   port** — nothing is exposed on a shared interface.
@@ -72,6 +74,11 @@ security:
 - The gateway is confirmed to be Talon (the `/health` marker) and to have
   discovered exactly the three demo agents before any traffic is sent.
 
+This is not a hardened multi-user posture: your provider keys are passed to
+`talon secrets set` as command-line arguments, so they can appear in the process
+list while the demo runs. Run it as yourself on a workstation you control, not on
+a shared host with untrusted users.
+
 ## Honest boundaries
 
 - The reliability beat stages a **real** outage only in the sense that the local
@@ -84,8 +91,14 @@ security:
   classification (the record still shows the request was tier-2 confidential).
 - The **session** budget is a **soft** cap — a single in-flight request can
   overshoot before the next is denied. The **daily/monthly** budgets are hard,
-  pre-provider ceilings; the daily cap is what drives the fleet's `blocked`
-  health once a day's real spend reaches it.
+  pre-provider ceilings; a use case shows `blocked` in the fleet when its recorded
+  period spend meets its cap.
+- The demo reaches `blocked` **deterministically and visibly**: rather than wait
+  for spend to drift up to a fixed cap, an operator lowers document-summary's
+  daily budget below what it has already spent today (a real policy edit picked up
+  by periodic safe reload). This is honest about *how* the blocked state is
+  produced, and it doubles as a demonstration of hot policy reload + the fleet as
+  a live operational-control surface.
 - The caps here are deliberately small so the stops are visible in a short demo;
   the mechanism is identical at $50 or $50,000.
 - Talon governs the traffic and actions **routed through it**. Local shell

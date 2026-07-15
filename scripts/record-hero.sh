@@ -19,6 +19,9 @@
 #   docs/assets/talon_hero.gif    (README embed; only when `agg` exists)
 set -euo pipefail
 
+CAST_ONLY=0
+[[ "${1:-}" == "--cast-only" ]] && CAST_ONLY=1   # allow a cast without a rendered GIF
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEMO_DIR="${REPO_ROOT}/examples/product-demo"
 ASSET_DIR="${REPO_ROOT}/docs/assets"
@@ -30,7 +33,7 @@ if ! command -v asciinema >/dev/null 2>&1; then
   echo "✗ asciinema is required: brew install asciinema  (or pipx install asciinema)" >&2
   exit 1
 fi
-for tool in go jq curl; do
+for tool in go jq curl openssl; do
   command -v "$tool" >/dev/null 2>&1 || { echo "✗ ${tool} is required" >&2; exit 1; }
 done
 # Fail before asciinema starts, so a preflight problem never records a broken cast.
@@ -53,33 +56,41 @@ export TALON_DEMO_COLOR=1
 # timeline; keep them in lockstep.
 export DEMO_STEP_PAUSE="${DEMO_STEP_PAUSE:-2}"
 
-# TRANSACTIONAL RECORDING: record to a .tmp cast and promote to the committed
-# path ONLY after the run exits 0 AND the cast contains the terminal success
-# marker. asciinema --overwrite would otherwise clobber the good cast with a
-# partial failed one before strict mode's exit fires.
+# PREPARE OUTSIDE THE RECORDING: setup() (build, seed the vault, start the
+# gateway) runs here — NOT inside asciinema — so the recorded frames begin with
+# the opening banner, not the build/seed log. `demo.sh play` then records only
+# the product story and tears the gateway down when it finishes.
+STATE="$(mktemp)"
+prep_cleanup() {   # safety net: if the recording aborts before play tears down, kill the prepared gateway
+  # shellcheck disable=SC1090
+  [[ -s "$STATE" ]] && { source "$STATE" 2>/dev/null || true; [[ -n "${GW_PID:-}" ]] && kill "$GW_PID" 2>/dev/null || true; [[ -n "${WORK:-}" ]] && rm -rf "$WORK" 2>/dev/null || true; }
+  rm -f "$STATE"
+}
+trap prep_cleanup EXIT
+
+echo "==> Preparing the fleet OUTSIDE the recording (build + gateway; ~\$0.02-0.05 real spend follows)..."
+( cd "$DEMO_DIR" && ./demo.sh prepare "$STATE" hero ) || { echo "✗ prepare failed — nothing recorded." >&2; exit 1; }
+
+# TRANSACTIONAL RECORDING: record to a .tmp cast and promote ONLY after the run
+# exits 0 AND the cast carries its terminal success marker.
 CAST_TMP="${CAST}.tmp"
 HERO_MARKER="one shared control plane"
-echo "==> Recording ./demo.sh hero (real providers: builds talon, operates three"
-echo "    use cases through one gateway — ~\$0.02-0.05 real spend; Ollama must be down)..."
+echo "==> Recording only the product story (./demo.sh play)..."
 rec_rc=0
-asciinema rec --overwrite --cols 100 --rows 30 --idle-time-limit 4 \
-  -c "./demo.sh hero" "$CAST_TMP" || rec_rc=$?
+asciinema rec --overwrite --window-size 100x30 --idle-time-limit 4 \
+  -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
 if [[ "$rec_rc" -ne 0 ]]; then
-  echo "✗ demo.sh hero exited ${rec_rc} — recording NOT promoted. The committed cast is unchanged." >&2
-  rm -f "$CAST_TMP"
-  exit 1
+  echo "✗ demo.sh play exited ${rec_rc} — recording NOT promoted. The committed cast is unchanged." >&2
+  rm -f "$CAST_TMP"; exit 1
 fi
 if ! grep -q "$HERO_MARKER" "$CAST_TMP"; then
   echo "✗ Recording is missing the terminal success marker (\"${HERO_MARKER}\") — NOT promoted." >&2
-  echo "  The run ended before its closing signed-evidence proof; the committed cast is unchanged." >&2
-  rm -f "$CAST_TMP"
-  exit 1
+  rm -f "$CAST_TMP"; exit 1
 fi
 mv -f "$CAST_TMP" "$CAST"
 echo "    Wrote ${CAST} (validated: exit 0 + terminal marker)"
 
-# Render the GIF from the VALIDATED cast, to a .tmp then promote — so a failed
-# render never leaves a half-written committed GIF either.
+# Render the GIF from the VALIDATED cast, to a .tmp then promote.
 GIF_TMP="${GIF}.tmp"
 render_ok=0
 if command -v agg >/dev/null 2>&1; then
@@ -89,15 +100,20 @@ elif command -v docker >/dev/null 2>&1; then
   echo "==> Rendering GIF (agg via Docker)..."
   docker run --rm -v "${ASSET_DIR}:/data" ghcr.io/asciinema/agg \
     --font-size 16 "/data/$(basename "$CAST")" "/data/$(basename "$GIF_TMP")" && render_ok=1
-else
-  echo "⚠ Neither agg nor docker found — GIF not rendered. Render the validated cast elsewhere:" >&2
-  echo "    agg --font-size 16 ${CAST} ${GIF}    (brew/cargo install agg)" >&2
 fi
 if [[ "$render_ok" == 1 && -s "$GIF_TMP" ]]; then
   mv -f "$GIF_TMP" "$GIF"
   echo "    Wrote ${GIF}"
 else
   rm -f "$GIF_TMP"
+fi
+
+# The README embeds the GIF, not the cast: fail unless BOTH assets exist, so a
+# missing/failed render can never leave the old GIF beside a new cast.
+[[ -s "$CAST" ]] || { echo "✗ no cast was produced." >&2; exit 1; }
+if [[ "$CAST_ONLY" != 1 ]]; then
+  [[ -s "$GIF" ]] || { echo "✗ No GIF was rendered (install agg: brew/cargo install agg — or have Docker running)." >&2
+    echo "  The README embeds the GIF; refusing to finish with only a cast. Re-run with --cast-only to override." >&2; exit 1; }
 fi
 
 echo ""

@@ -27,7 +27,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-CUT="${1:-all}"
 PAUSE="${DEMO_STEP_PAUSE:-0}"
 COLOR="${TALON_DEMO_COLOR:-0}"
 
@@ -40,8 +39,8 @@ PORT_OVERRIDE="${PORT:-}"
 
 for t in go jq curl openssl; do command -v "$t" >/dev/null 2>&1 || { echo "✗ $t is required" >&2; exit 1; }; done
 
-WORK="$(mktemp -d)"; GW_PID=""
-cleanup() { [[ -n "$GW_PID" ]] && kill "$GW_PID" >/dev/null 2>&1 || true; rm -rf "$WORK"; }
+WORK=""; GW_PID=""
+cleanup() { [[ -n "$GW_PID" ]] && kill "$GW_PID" >/dev/null 2>&1 || true; [[ -n "$WORK" ]] && rm -rf "$WORK"; }
 trap cleanup EXIT
 die() { echo "✗ $*" >&2; exit 1; }
 trap 'echo "ERROR: demo aborted at line $LINENO (see above)." >&2' ERR
@@ -79,6 +78,7 @@ export_session() { talon audit export --format signed-json --session "$1" --outp
 # ── Setup: isolate env, mint keys, loopback bind, verify the running server ───
 CS_KEY=""; CODE_KEY=""; DOC_KEY=""; GW_PORT=""; GATEWAY=""; SUPPORT_SID=""
 setup() {
+  WORK="$(mktemp -d)"
   # Isolate from an evaluator's ambient TALON_* operator config (agents_dir,
   # default policy, ollama url, reload, …). Overrides consumed above are already
   # captured; drop everything else and set only the demo's own values.
@@ -175,10 +175,16 @@ beat_reliability() {
     "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
   require_http 200 "reliability"
   export_session "$SUPPORT_SID" "$WORK/support.json"
-  # ASSERT the headline before rendering it (fatal if evidence disagrees):
+  # ASSERT each headline before rendering it (fatal if evidence disagrees):
+  # input-path redaction specifically (not the generic flag), both entities, tier 2.
   assert_ev "$WORK/support.json" \
-    'any(.records[]; .classification.pii_redacted==true and (.classification.pii_detected|index("email")) and (.classification.pii_detected|index("iban")) and .classification.input_tier==2)' \
-    "PII redaction (email+iban, tier 2)"
+    'any(.records[]; .classification.input_pii_redacted==true and (.classification.pii_detected|index("email")) and (.classification.pii_detected|index("iban")) and .classification.input_tier==2)' \
+    "input-path PII redaction (email+iban, tier 2)"
+  # the local model genuinely failed with a connection error (what we render):
+  assert_ev "$WORK/support.json" \
+    'any(.records[]; .failover.role=="failed_attempt" and .failover.provider=="local-llama" and .failover.error_class=="connection_error")' \
+    "local model failed attempt (connection_error)"
+  # the fallback was policy-valid: the not-allowed provider was skipped, openai selected.
   assert_ev "$WORK/support.json" \
     'any(.records[]; .failover.role=="fallback_decision" and .failover.provider=="openai" and any(.failover.skipped_candidates[]?; .provider=="openai-batch" and .filter=="agent_provider_allowlist"))' \
     "policy-valid failover (openai-batch skipped by agent allowlist, openai selected)"
@@ -238,38 +244,38 @@ beat_cost() {
   no "Next call denied before Anthropic — the decision uses PROJECTED cost, not the bill after. \$0 spent on it."
 }
 
-# Stage the fleet's blocked state deterministically (no reliance on a call
-# overshooting an estimate): let document-summary's real daily spend accrue, read
-# the signed figure, lower its daily cap below that figure, and let periodic
-# reload activate it — recorded period spend now meets the hard cap → blocked.
-stage_blocked() {
-  local sess spend newcap _ h
-  sess="doc-day-$(rand 4)"
-  # A couple of real summaries so daily spend is clearly non-zero (fresh session
-  # so the soft session budget is not what stops us here).
-  anthropic_msg "$DOC_KEY" claude-sonnet-5 "Summarize this quarterly compliance document in detail." 1024 "$sess" || true
-  anthropic_msg "$DOC_KEY" claude-sonnet-5 "Summarize this quarterly compliance document in detail." 1024 "$sess" || true
-  spend="$(talon agents show document-summary --url "$GATEWAY" --json 2>/dev/null | jq -r '.spend_day')"
-  [[ -n "$spend" && "$spend" != "null" && "$spend" != "0" ]] || die "could not read document-summary daily spend"
-  newcap="$(awk -v s="$spend" 'BEGIN{printf "%.4f", s*0.9}')"
-  sed -i.bak -E "s/daily: [0-9.]+/daily: ${newcap}/" "$WORK/agents/document-summary/agent.talon.yaml"
-  for _ in $(seq 1 30); do
-    h="$(talon agents show document-summary --url "$GATEWAY" --json 2>/dev/null | jq -r '.health')"
-    [[ "$h" == "blocked" ]] && return 0
-    sleep 0.5
-  done
-  die "document-summary did not reach HEALTH=blocked after lowering the daily cap (reload/eval issue)"
-}
+# dsum_json <field> — read one field of document-summary's live fleet row.
+dsum_json() { talon agents show document-summary --url "$GATEWAY" --json 2>/dev/null | jq -r ".$1"; }
 
 beat_sessions() {
-  beat 4 4 "📊" "Session understanding" "the whole fleet — one operating period, one attention queue"
-  stage_blocked
-  local spend cap
-  spend="$(talon agents show document-summary --url "$GATEWAY" --json 2>/dev/null | jq -r '.spend_day')"
-  cap="$(talon agents show document-summary --url "$GATEWAY" --json 2>/dev/null | jq -r '.daily_cap')"
+  beat 4 4 "📊" "Session understanding + operational control" "the fleet — one attention queue, one live policy edit"
+  # A couple more real summaries this operating period (fresh session, so the soft
+  # per-session budget is not what stops us here).
+  local sess _; sess="doc-day-$(rand 4)"
+  anthropic_msg "$DOC_KEY" claude-sonnet-5 "Summarize this quarterly compliance document in detail." 1024 "$sess" || true
+  anthropic_msg "$DOC_KEY" claude-sonnet-5 "Summarize this quarterly compliance document in detail." 1024 "$sess" || true
+  local oldcap spend newcap
+  oldcap="$(dsum_json daily_cap)"
+  spend="$(dsum_json spend_day)"
+  [[ -n "$spend" && "$spend" != "null" && "$spend" != "0" ]] || die "could not read document-summary daily spend"
+  # An operator lowers the daily budget to below what this use case has already
+  # spent today — a real policy edit, activated by periodic safe reload. This is
+  # deterministic (the cap is set below recorded spend), and it demonstrates a
+  # live budget change immediately flagging a use case that can no longer work.
+  newcap="$(awk -v s="$spend" 'BEGIN{printf "%.4f", s*0.9}')"
+  row "EVENT" "an operator lowers document-summary's daily budget below today's spend"
+  printf '  %sPOLICY UPDATE%s   daily budget  $%s → $%s   (edited on disk)\n' "$YEL" "$R" "$oldcap" "$newcap"
+  sed -i.bak -E "s/daily: [0-9.]+/daily: ${newcap}/" "$WORK/agents/document-summary/agent.talon.yaml"
+  local health=""
+  for _ in $(seq 1 30); do health="$(dsum_json health)"; [[ "$health" == "blocked" ]] && break; sleep 0.5; done
+  [[ "$health" == "blocked" ]] || die "document-summary did not reach HEALTH=blocked after lowering the daily cap (reload/eval issue)"
+  printf '  %sRELOAD%s          new effective policy activated (periodic safe reload)\n' "$YEL" "$R"
+  echo
   runcmd "talon agents --url '$GATEWAY'"
   echo
-  printf '  %sDAILY SPEND  $%.4f     DAILY CAP  $%.4f     FLEET HEALTH  blocked%s\n' "$DIM" "$spend" "$cap" "$R"
+  printf '  %sDAILY SPEND  $%s      DAILY CAP  $%s      HEALTH  blocked%s\n' "$DIM" "$(dsum_json spend_day)" "$(dsum_json daily_cap)" "$R"
+  echo
+  ok "A live budget change activates safely — the fleet immediately flags the use case that can no longer accept work."
   echo
   printf ' %sDescend from the fleet to one session, and from the session to one signed decision:%s\n' "$DIM" "$R"
   runcmd "talon audit list --session '$SUPPORT_SID'"
@@ -304,17 +310,39 @@ closing() {
          "cost control · reliability · shared policy · session understanding"
 }
 
-cmd_hero() { setup; opening; beat_reliability; beat_capability; beat_cost; beat_sessions; evidence_close; closing; }
-cmd_all() {
-  setup; opening; beat_reliability; beat_capability; beat_cost; beat_sessions
-  banner "Inspect one use case: health, budgets, and runtime signals"
-  runcmd "talon agents show document-summary --url '$GATEWAY'"
-  evidence_close
-  closing
+# The visible product story (no setup/teardown) — this is all a recording captures.
+run_beats() { # run_beats <hero|all>
+  opening; beat_reliability; beat_capability; beat_cost; beat_sessions
+  if [[ "$1" == all ]]; then
+    banner "Inspect one use case: health, budgets, and runtime signals"
+    runcmd "talon agents show document-summary --url '$GATEWAY'"
+  fi
+  evidence_close; closing
 }
 
-case "$CUT" in
-  hero) cmd_hero ;;
-  all)  cmd_all ;;
-  *) echo "usage: $0 [hero|all]" >&2; exit 2 ;;
+# For a clean recording, setup() runs OUTSIDE asciinema (prepare) and only the
+# beats are recorded (play). State is a sourceable file; play owns teardown.
+write_state() { # write_state <file> <cut>
+  cat > "$1" <<EOF
+export TALON_DATA_DIR='${TALON_DATA_DIR}' TALON_SECRETS_KEY='${TALON_SECRETS_KEY}' TALON_SIGNING_KEY='${TALON_SIGNING_KEY}' TALON_ADMIN_KEY='${TALON_ADMIN_KEY}' TALON_LOG_LEVEL='warn'
+export PATH='${WORK}/bin:'"\$PATH"
+WORK='${WORK}'; GW_PORT='${GW_PORT}'; GATEWAY='${GATEWAY}'; GW_PID='${GW_PID}'
+CS_KEY='${CS_KEY}'; CODE_KEY='${CODE_KEY}'; DOC_KEY='${DOC_KEY}'; SUPPORT_SID='${SUPPORT_SID}'; STATE_CUT='${2}'
+EOF
+}
+
+case "${1:-all}" in
+  hero|all)                                   # one process: setup + beats + teardown
+    setup; run_beats "${1:-all}" ;;
+  prepare)                                     # setup only; leave the gateway running for `play`
+    STATE="${2:?usage: demo.sh prepare <statefile> [hero|all]}"
+    setup; write_state "$STATE" "${3:-hero}"
+    trap - EXIT                                # keep the gateway + WORK alive for a separate recording
+    echo "prepared: gateway ${GATEWAY}, state ${STATE} (run: demo.sh play ${STATE})" >&2 ;;
+  play)                                        # beats only, against a prepared gateway; owns teardown
+    STATE="${2:?usage: demo.sh play <statefile>}"
+    # shellcheck disable=SC1090
+    source "$STATE"; cd "$WORK"
+    run_beats "${STATE_CUT:-hero}" ;;
+  *) echo "usage: $0 [hero | all | prepare <statefile> [hero|all] | play <statefile>]" >&2; exit 2 ;;
 esac

@@ -109,7 +109,7 @@ export OPENAI_API_KEY=sk-...  ANTHROPIC_API_KEY=sk-ant-...   # stop Ollama first
 make product-demo
 ```
 
-You watch, in one gateway: a downed local model trigger a **policy-valid failover** that *skips* a provider this use case isn't allowed to use; an email + IBAN **redacted before the provider**; a destructive `admin_*` tool **rejected by a company-wide boundary** the agent can't weaken; a use case's next call **denied on projected cost before it spends**; the `talon agents` fleet view flag the exhausted use case as `blocked`; and a **signed export verified offline**. Every receipt is parsed from Talon's own signed evidence. Real providers, ≈ $0.02–0.05/run (denials cost $0), no Docker. Full walk-through: [examples/product-demo](examples/product-demo/README.md).
+You watch, in one gateway: a downed local model trigger a **policy-valid failover** that *skips* a provider this use case isn't allowed to use; an email + IBAN **redacted before the provider**; a destructive `admin_*` tool **rejected by a company-wide boundary** the agent can't weaken; a use case's next call **denied on projected cost before it spends**; the `talon agents` fleet view flag the exhausted use case as `blocked` after a live budget edit; and a **signed export verified offline**. Every headline is asserted against Talon's own signed evidence before it's rendered. Real, paid provider calls — ≈ $0.02–0.05/run of Talon-accounted cost (denials cost $0), no Docker. Full walk-through: [examples/product-demo](examples/product-demo/README.md).
 
 ---
 
