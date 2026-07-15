@@ -76,9 +76,23 @@ echo "==> Preparing the fleet OUTSIDE the recording (build + gateway; ~\$0.02-0.
 CAST_TMP="${CAST}.tmp"
 HERO_MARKER="HERO_COMPLETE"   # emitted via a terminal-title escape at the end of the hero cut
 echo "==> Recording only the product story (./demo.sh play)..."
+# asciinema v3 sets a fixed headless geometry with --window-size; asciinema v2
+# has no such flag — it records the controlling terminal's size. Detect the
+# installed major version and adapt so the recorder works on either. (The v2
+# usage banner lists {rec,play,cat,upload,auth} and rejects --window-size.)
+ASCII_MAJOR="$(asciinema --version 2>&1 | grep -oE '[0-9]+' | head -n1)"
 rec_rc=0
-asciinema rec --overwrite --window-size 84x22 --idle-time-limit 4 \
-  -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
+if [[ "${ASCII_MAJOR:-0}" -ge 3 ]]; then
+  asciinema rec --overwrite --window-size 84x22 --idle-time-limit 4 \
+    -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
+else
+  echo "    asciinema v${ASCII_MAJOR:-?}: no --window-size — requesting an 84x22 terminal and recording at terminal size."
+  echo "    For a pixel-clean asset, size this terminal to 84x22 first (or install asciinema 3)."
+  printf '\033[8;22;84t'   # ask the emulator to resize to 22 rows x 84 cols (honored by most; harmless where ignored)
+  sleep 1
+  asciinema rec --overwrite --idle-time-limit 4 \
+    -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
+fi
 if [[ "$rec_rc" -ne 0 ]]; then
   echo "✗ demo.sh play exited ${rec_rc} — recording NOT promoted. The committed cast is unchanged." >&2
   rm -f "$CAST_TMP"; exit 1
@@ -88,7 +102,8 @@ if ! grep -q "$HERO_MARKER" "$CAST_TMP"; then
   rm -f "$CAST_TMP"; exit 1
 fi
 mv -f "$CAST_TMP" "$CAST"
-echo "    Wrote ${CAST} (validated: exit 0 + terminal marker)"
+CAST_GEO="$(head -n1 "$CAST" 2>/dev/null | jq -r 'if .width then "\(.width)x\(.height)" else "?" end' 2>/dev/null || echo '?')"
+echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 84x22)"
 
 # Render the GIF from the VALIDATED cast, to a .tmp then promote.
 GIF_TMP="${GIF}.tmp"
