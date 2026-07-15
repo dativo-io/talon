@@ -22,6 +22,13 @@ set -euo pipefail
 CAST_ONLY=0
 [[ "${1:-}" == "--cast-only" ]] && CAST_ONLY=1   # allow a cast without a rendered GIF
 
+# The recorded hero MUST be the styled console; refuse the plain fallback up front
+# (before any tool preflight) — the plain layout exists only for text assertions.
+if [[ "${TALON_DEMO_UI:-gum}" == "plain" ]]; then
+  echo "✗ TALON_DEMO_UI=plain will not be recorded — the plain layout exists only for automated text assertions." >&2
+  exit 1
+fi
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEMO_DIR="${REPO_ROOT}/examples/product-demo"
 ASSET_DIR="${REPO_ROOT}/docs/assets"
@@ -46,11 +53,6 @@ if ! command -v gum >/dev/null 2>&1; then
 fi
 gv="$(gum --version 2>&1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"; gv="v${gv#v}"
 [[ "$gv" == "$GUM_VERSION" ]] || echo "    ⚠ gum ${gv} is installed but the hero is pinned to ${GUM_VERSION}; styled layout may differ." >&2
-# The recorded hero MUST be the styled console; never record the plain fallback.
-if [[ "${TALON_DEMO_UI:-gum}" == "plain" ]]; then
-  echo "✗ TALON_DEMO_UI=plain will not be recorded — the plain layout exists only for automated text assertions." >&2
-  exit 1
-fi
 # Fail before asciinema starts, so a preflight problem never records a broken cast.
 [[ -n "${OPENAI_API_KEY:-}" ]]    || { echo "✗ OPENAI_API_KEY is required (real providers)." >&2; exit 1; }
 [[ -n "${ANTHROPIC_API_KEY:-}" ]] || { echo "✗ ANTHROPIC_API_KEY is required (document-summary runs on Anthropic)." >&2; exit 1; }
@@ -102,12 +104,12 @@ echo "==> Recording only the product story (./demo.sh play)..."
 ASCII_MAJOR="$(asciinema --version 2>&1 | grep -oE '[0-9]+' | head -n1)"
 rec_rc=0
 if [[ "${ASCII_MAJOR:-0}" -ge 3 ]]; then
-  asciinema rec --overwrite --window-size 88x28 --idle-time-limit 3 \
+  asciinema rec --overwrite --window-size 96x32 --idle-time-limit 3 \
     -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
 else
-  echo "    asciinema v${ASCII_MAJOR:-?}: no --window-size — requesting an 88x28 terminal and recording at terminal size."
-  echo "    For a pixel-clean asset, size this terminal to 88x28 first (or install asciinema 3)."
-  printf '\033[8;28;88t'   # ask the emulator to resize to 28 rows x 88 cols (honored by most; harmless where ignored)
+  echo "    asciinema v${ASCII_MAJOR:-?}: no --window-size — requesting a 96x32 terminal and recording at terminal size."
+  echo "    For a pixel-clean asset, size this terminal to 96x32 first (or install asciinema 3)."
+  printf '\033[8;32;96t'   # ask the emulator to resize to 32 rows x 96 cols (honored by most; harmless where ignored)
   sleep 1
   asciinema rec --overwrite --idle-time-limit 3 \
     -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
@@ -154,7 +156,7 @@ fi
 # Both validated (or --cast-only): promote atomically.
 mv -f "$CAST_TMP" "$CAST"
 CAST_GEO="$(head -n1 "$CAST" 2>/dev/null | jq -r 'if .width then "\(.width)x\(.height)" else "?" end' 2>/dev/null || echo '?')"
-echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 88x28)"
+echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 96x32)"
 if [[ "$render_ok" == 1 && -s "$GIF_TMP" ]]; then
   mv -f "$GIF_TMP" "$GIF"
   echo "    Wrote ${GIF}"

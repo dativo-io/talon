@@ -208,10 +208,10 @@ GUM_CYAN=$'\033[38;2;88;166;255m';  GUM_GREEN=$'\033[38;2;63;185;80m'
 GUM_AMBER=$'\033[38;2;210;153;34m'; GUM_RED=$'\033[38;2;248;81;73m'
 GUM_PURPLE=$'\033[38;2;188;140;255m'; GB=$'\033[1m'; GR=$'\033[0m'
 GUM_BORDER='#30363D'; GUM_PANEL='#161B22'
-HEADW=84; RAILW=22; MAINW=56; CH=15
+HEADW=88; CMDW=88; RAILW=20; MAINW=64; CH=14; CMDH=6
 declare -a STAGE_ST=("active" "next" "next" "next")
 SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
-HERO_SCREEN=0; LAST_MAIN=""
+HERO_SCREEN=0; LAST_MAIN=""; CMD=""
 
 g_vislen() { local t; t="$(sed -E $'s/\033\\[[0-9;]*m//g' <<<"$1")"; printf '%s' "${#t}"; }
 g_lr()   { local w="$1" pad; pad=$(( w - $(g_vislen "$2") - $(g_vislen "$3") )); (( pad<1 )) && pad=1; printf '%s%*s%s' "$2" "$pad" '' "$3"; }
@@ -238,22 +238,72 @@ g_rail() {
   g_panel "$RAILW" "$CH" "${GB}${GUM_MUTED}LIVE RUN${GR}" "$(printf '\n%s\n\n%s\n\n%s\n\n%s' "${out[0]}" "${out[1]}" "${out[2]}" "${out[3]}")" '0 2 0 0'
 }
 g_receipt() { gum style --border rounded --border-foreground "$GUM_BORDER" --background "$GUM_PANEL" --width "$HEADW" --padding '0 1' "$1"; }
+# ── LIVE COMMAND panel — the real command being executed + a concise, real excerpt
+# of its output. Compact (≤5 rows). Secrets and temp values are redacted; $GATEWAY
+# and paths are shown as safe placeholders (the panel says so).
+g_cmdpanel() { # g_cmdpanel <STATE|""> <body>
+  local title="LIVE COMMAND"; [[ -n "$1" ]] && title="LIVE COMMAND · $1"
+  gum style --border rounded --border-foreground "$GUM_BORDER" --background "$GUM_PANEL" --width "$CMDW" --height "$CMDH" --padding '0 1' \
+    "$(printf '%s%s%s\n%s' "$GB$GUM_MUTED" "$title" "$GR" "$2")"
+}
+hero_truncate_line() { local s="$1" w="$2"; (( ${#s} <= w )) && { printf '%s' "$s"; return; }; local k=$(( (w-2)/2 )); printf '%s…%s' "${s:0:k}" "${s: -k}"; }
+# A safe curl command line for a proxied provider request (loopback → $GATEWAY).
+hero_curl_cmd() { # hero_curl_cmd <provider> <payload-summary>
+  printf '%s$ curl -X POST %s$GATEWAY/v1/proxy/%s/…%s\n%s  %s%s' \
+    "$GUM_CYAN" "$GUM_TEXT" "$1" "$GR" "$GUM_MUTED" "$2" "$GR"
+}
+hero_cli_cmd() { printf '%s$ %s%s' "$GUM_CYAN" "$1" "$GR"; }   # a talon CLI command line
+hero_cmd_running()  { CMD="$(g_cmdpanel RUNNING  "$(printf '%s\n\n%s%s waiting for Talon…%s' "$1" "$GUM_CYAN" "${2:-⠋}" "$GR")")"; }
+hero_cmd_complete() { CMD="$(g_cmdpanel COMPLETE "$(printf '%s\n\n%s' "$1" "$2")")"; }   # <cmd-block> <output-block>
+# hero_http_output <http> <detail> <subline>  — colours the real HTTP status (2xx green,
+# 4xx amber = policy denial, else red) and shows a real one-line excerpt beneath.
+hero_http_output() {
+  local hc; case "$1" in 2*) hc="$GUM_GREEN";; 4*) hc="$GUM_AMBER";; *) hc="$GUM_RED";; esac
+  local head="HTTP $1"; [[ -n "${2:-}" ]] && head="HTTP $1 · $2"
+  if [[ -n "${3:-}" ]]; then printf '%s%s%s\n%s%s%s' "$hc" "$head" "$GR" "$GUM_MUTED" "$3" "$GR"
+  else printf '%s%s%s' "$hc" "$head" "$GR"; fi
+}
+# hero_agents_output — the real `talon agents` table, first 3 rows, AGENT/STATE/HEALTH
+# columns only (visual-safe trim of the real stdout); blocked health rendered amber.
+hero_agents_output() {
+  talon agents --url "$GATEWAY" 2>/dev/null | awk 'NR>1 && NF>=3 {print $1"\t"$2"\t"$3}' | head -3 \
+    | while IFS=$'\t' read -r a s h; do
+        local hc="$GUM_GREEN"; [[ "$h" == blocked ]] && hc="$GUM_AMBER"
+        printf '%s %s %s\n' "$(pcell 20 "$a" "$GUM_TEXT")" "$(pcell 9 "$s" "$GUM_MUTED")" "$(pcell 10 "$h" "$hc")"
+      done
+}
+# hero_perl_edit_cmd <oldcap> <newcap-or-empty> — the real in-place YAML edit, safe
+# display (relative path; the temp dir is redacted). Matches the executed command.
+hero_perl_edit_cmd() {
+  local q; q="'s/daily: $1/daily: ${2:-…}/'"
+  printf '%s$ perl -i.bak -pe %s%s%s\n%s  agents/document-summary/agent.talon.yaml%s' \
+    "$GUM_CYAN" "$GUM_TEXT" "$q" "$GR" "$GUM_MUTED" "$GR"
+}
+# hero_agent_row <name> — the real `talon agents` row for one agent (STATE + HEALTH), trimmed.
+hero_agent_row() {
+  talon agents --url "$GATEWAY" 2>/dev/null | awk -v n="$1" '$1==n && NF>=3 {print $2"\t"$3; exit}' \
+    | while IFS=$'\t' read -r s h; do
+        local hc="$GUM_GREEN"; [[ "$h" == blocked ]] && hc="$GUM_AMBER"
+        printf '%s %s %s' "$(pcell 20 "$1" "$GUM_TEXT")" "$(pcell 9 "$s" "$GUM_MUTED")" "$(pcell 10 "$h" "$hc")"
+      done
+}
 g_show() { # g_show <main-panel> <receipt-line>
   LAST_MAIN="$1"
-  printf '\033[H\033[J%s' "$(gum join --vertical "$(g_header)" "$(gum join --horizontal --align top "$(g_rail)" "$1")" "$(g_receipt "$2")")"
+  printf '\033[H\033[J%s' "$(gum join --vertical "$(g_header)" "$CMD" "$(gum join --horizontal --align top "$(g_rail)" "$1")" "$(g_receipt "$2")")"
 }
-g_await() { # g_await <pid> <content-precomposed> <statusfn>   animate the status spinner until <pid> exits
-  local pid="$1" content="$2" sf="$3" i=0 hdr; hdr="$(g_header)"
-  # Draw the pending frame at least once (so even a fast call shows its live
-  # in-flight state), then keep animating the status spinner until the call ends.
+g_await() { # g_await <pid> <content-precomposed> <cmd-block> <receipt-line>  spinner lives in the LIVE COMMAND panel
+  local pid="$1" content="$2" cmdblock="$3" i=0 hdr rc; hdr="$(g_header)"; rc="$(g_receipt "$4")"
+  # Draw the RUNNING frame at least once (so even a fast call shows its live
+  # in-flight state), then animate the command-panel spinner until the call ends.
   while :; do
-    printf '\033[H\033[J%s' "$(gum join --vertical "$hdr" "$content" "$(g_receipt "$("$sf" "${SPIN[$((i%10))]}")")")"
+    hero_cmd_running "$cmdblock" "${SPIN[$((i%10))]}"
+    printf '\033[H\033[J%s' "$(gum join --vertical "$hdr" "$CMD" "$content" "$rc")"
     kill -0 "$pid" 2>/dev/null || break
     i=$((i+1)); sleep 0.3
   done
   wait "$pid" 2>/dev/null || true
 }
-g_hold() { sleep "${1:-2}"; }
+g_hold() { [[ "$PAUSE" != 0 ]] && sleep "${1:-2}"; return 0; }   # holds pace the RECORDING (PAUSE>0); no-op for fast test runs
 hero_set_stage() { local a="$1" i; for i in 0 1 2 3; do if (( i<a )); then STAGE_ST[i]="done"; elif (( i==a )); then STAGE_ST[i]="active"; else STAGE_ST[i]="next"; fi; done; }
 g_transition() { # g_transition <proved> <next-title> <next-stage-idx>  — advance the rail + a brief transition status
   hero_set_stage "$3"
@@ -266,6 +316,7 @@ g_restore_screen() { [[ "${HERO_SCREEN:-0}" == 1 ]] && printf '\033[?25h\033[?10
 # ── OPENING / FLEET (live data) ──────────────────────────────────────────────
 hero_opening() {
   STAGE_ST=("active" "next" "next" "next")
+  hero_cmd_complete "$(hero_cli_cmd 'talon agents')" "$(hero_agents_output)"
   local rows body
   rows="$(talon agents --url "$GATEWAY" --json 2>/dev/null \
     | jq -r '.agents|sort_by(.name)[]|"\(.name)\t\(.health)\t\(.spend_day)"' \
@@ -280,7 +331,6 @@ hero_opening() {
 }
 
 # ── RELIABILITY + SHARED POLICY ──────────────────────────────────────────────
-support_status() { printf '%s%s Routing through Talon…%s' "$GUM_CYAN" "$1" "$GR"; }
 support_pending_content() {
   local body; body="$(printf '%s%sCUSTOMER-SUPPORT%s\n\n%sIncoming request%s\n%sRefund request containing email + IBAN%s\n\n%sscanning input · evaluating policy-valid routes%s' \
     "$GB" "$GUM_TEXT" "$GR" "$GB$GUM_MUTED" "$GR" "$GUM_TEXT" "$GR" "$GUM_MUTED" "$GR")"
@@ -301,8 +351,6 @@ hero_support_complete() { # tier failed skip sel cost
 }
 
 # ── ORGANIZATION POLICY + COST (two cards, one stage) ────────────────────────
-tool_status() { printf '%s%s Evaluating capability policy…%s' "$GUM_CYAN" "$1" "$GR"; }
-cost_status() { printf '%s%s Checking projected session cost…%s' "$GUM_CYAN" "$1" "$GR"; }
 stage2_body() { # <tool:active|done> <cost:muted|active|done> [sp es pr li]
   local tool="$1" cost="$2" sp="${3:-}" es="${4:-}" pr="${5:-}" li="${6:-}" tblk cblk
   tblk="$(printf '%s%sORGANIZATION TOOL BOUNDARY%s\n%sRequested%s  %sread_file · search_kb · %sadmin_purge_records%s\n%sBoundary%s   %sadmin_*%s' \
@@ -332,7 +380,6 @@ hero_cost_complete()   { # sp es pr li
 }
 
 # ── OPERATIONS + PROOF ───────────────────────────────────────────────────────
-ops_status() { printf '%s%s Applying policy edit and reloading…%s' "$GUM_CYAN" "$1" "$GR"; }
 ops_pending_content() {
   STAGE_ST=("done" "done" "done" "active")
   local body; body="$(printf '%s%sLIVE POLICY EDIT%s\n\n%sFinance sets an emergency daily ceiling%s\n\n%sediting the budget on disk · periodic safe reload%s' \
@@ -406,13 +453,15 @@ beat_fleet() {
 
 # ── 2. Customer-support incident (reliability + shared policy) ────────────────
 beat_support() {
+  local cmdblock=""
   if [[ "$CUT" == hero && "$UI" == gum ]]; then
     hero_set_stage 1
     local content; content="$(support_pending_content)"
+    cmdblock="$(hero_curl_cmd 'local-llama' 'agent=customer-support · prompt · email + IBAN')"
     ( openai_chat "$CS_KEY" local-llama llama3.2:1b \
         "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID" || true
       printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
-    g_await "$!" "$content" support_status
+    g_await "$!" "$content" "$cmdblock" "${GUM_MUTED}LIVE · executing the governed request · evidence pending${GR}"
     HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
   else
     [[ "$CUT" == hero ]] && pending "customer refund · contains email + IBAN" "scanning input and evaluating the route…"
@@ -440,6 +489,8 @@ beat_support() {
   sel="$(jq -r 'first(.records[]|select(.failover.role=="fallback_decision").failover.provider)' "$WORK/support.json")"
   local scost; scost="$(jq -r '[.records[].execution.cost // 0]|add' "$WORK/support.json" 2>/dev/null)"
   if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    local model; model="$(jq -r '.model // .model_id // empty' "$WORK/b" 2>/dev/null)"
+    hero_cmd_complete "$cmdblock" "$(hero_http_output "$HTTP" "$([[ -n "$model" ]] && printf 'model=%s' "$model")" 'response received through fallback route')"
     hero_support_complete "$tier" "$failed_prov" "$skip_prov" "$sel" "$scost"; g_hold 3
     g_transition "RELIABILITY PROVED" "ORGANIZATION POLICY + COST" 2
   elif [[ "$CUT" == hero ]]; then present_support_hero "$ph" "$tier" "$failed_prov" "$skip_prov" "$sel" "$scost"
@@ -470,10 +521,12 @@ present_support_full() { # pii ph tier failed failed_err skip sel
 
 # ── 3. Organization tool boundary (shared capability policy) ──────────────────
 beat_capability() {
+  local cmdblock=""
   if [[ "$CUT" == hero && "$UI" == gum ]]; then
     local content; content="$(tool_pending_content)"
+    cmdblock="$(hero_curl_cmd 'openai' 'tools=read_file,search_kb,admin_purge_records')"
     ( tools_req "$CODE_KEY" || true; printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
-    g_await "$!" "$content" tool_status
+    g_await "$!" "$content" "$cmdblock" "${GUM_MUTED}LIVE · evaluating organization capability policy · evidence pending${GR}"
     HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
   else
     [[ "$CUT" == hero ]] && pending "coding-assistant asks for:" "evaluating organization capability policy…" "read_file · search_kb · admin_purge_records"
@@ -484,7 +537,9 @@ beat_capability() {
   assert_ev "$WORK/coding.json" \
     'any(.records[]; .policy_decision.allowed==false and ((.execution.cost//0)==0) and (tostring|test("admin_purge_records")) and (.policy_decision.reasons|tostring|test("tool")))' \
     "organization tool boundary (admin_purge_records denied, \$0)"
-  if [[ "$CUT" == hero && "$UI" == gum ]]; then hero_tool_complete; g_hold 2
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    hero_cmd_complete "$cmdblock" "$(hero_http_output "$HTTP" 'forbidden tool' 'admin_purge_records')"
+    hero_tool_complete; g_hold 2
   elif [[ "$CUT" == hero ]]; then present_capability_hero; else present_capability_full; fi
 }
 present_capability_hero() {   # appended below the pending frame — Talon behaved correctly, so ✓ (not ✗)
@@ -510,11 +565,12 @@ cost_loop() { local sess="$1" n; for n in $(seq 1 12); do
     case "$HTTP" in 403|200) [[ "$HTTP" == 403 ]] && break;; *) break;; esac
   done; }
 beat_cost() {
-  local sess; sess="doc-budget-$(rand 4)"
+  local sess cmdblock=""; sess="doc-budget-$(rand 4)"
   if [[ "$CUT" == hero && "$UI" == gum ]]; then
     local content; content="$(cost_pending_content)"
+    cmdblock="$(hero_curl_cmd 'anthropic' 'session=document-summary · batch summary')"
     ( cost_loop "$sess" || true; printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
-    g_await "$!" "$content" cost_status
+    g_await "$!" "$content" "$cmdblock" "${GUM_MUTED}LIVE · checking projected session cost · evidence pending${GR}"
     HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
   else
     [[ "$CUT" == hero ]] && pending "document-summary" "checking projected session cost…"
@@ -531,6 +587,8 @@ beat_cost() {
   li="$(jq -r 'first(.records[]|select(.session_budget!=null).session_budget.limit)' "$WORK/doc.json")"
   pr="$(awk -v a="$sp" -v b="$es" 'BEGIN{printf "%.4f", a+b}')"
   if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    hero_cmd_complete "$cmdblock" "$(hero_http_output "$HTTP" 'session_budget_exceeded' \
+      "$(printf 'spent=$%s · estimate=$%s · limit=$%s' "$(fmt "$sp")" "$(fmt "$es")" "$(fmt "$li")")")"
     hero_cost_complete "$sp" "$es" "$pr" "$li"; g_hold 3
     g_transition "POLICY + COST PROVED" "OPERATIONS + PROOF" 3
   elif [[ "$CUT" == hero ]]; then present_cost_hero "$sp" "$es" "$pr" "$li"
@@ -566,15 +624,17 @@ policy_apply() {
   oldcap="$(dsum_json daily_cap)"; spend="$(dsum_json spend_day)"
   if [[ -z "$spend" || "$spend" == "null" || "$spend" == "0" ]]; then printf 'ERR\t\t\t' >"$WORK/.policy"; return; fi
   newcap="$(awk -v s="$spend" 'BEGIN{printf "%.4f", s*0.9}')"
-  sed -i.bak -E "s/daily: [0-9.]+/daily: ${newcap}/" "$WORK/agents/document-summary/agent.talon.yaml"
+  # Real in-place edit (this exact command is what the hero's LIVE COMMAND panel shows).
+  perl -i.bak -pe "s/daily: [0-9.]+/daily: ${newcap}/" "$WORK/agents/document-summary/agent.talon.yaml"
   for _ in $(seq 1 30); do health="$(dsum_json health)"; [[ "$health" == "blocked" ]] && break; sleep 0.5; done
   printf '%s\t%s\t%s\t%s' "$oldcap" "$newcap" "$(dsum_json spend_day)" "$health" >"$WORK/.policy"
 }
 beat_policy() {
   if [[ "$CUT" == hero && "$UI" == gum ]]; then
-    local content; content="$(ops_pending_content)"
+    local content oldcap_pre; content="$(ops_pending_content)"
+    oldcap_pre="$(dsum_json daily_cap)"
     ( policy_apply ) &
-    g_await "$!" "$content" ops_status
+    g_await "$!" "$content" "$(hero_perl_edit_cmd "$(fmt "$oldcap_pre")" "")" "${GUM_MUTED}LIVE · applying policy edit · periodic safe reload${GR}"
   else
     [[ "$CUT" == hero ]] && pending "document-summary · new daily ceiling" "applying policy edit and reloading…"
     policy_apply
@@ -583,7 +643,9 @@ beat_policy() {
   IFS=$'\t' read -r oldcap newcap final_spend health < "$WORK/.policy" 2>/dev/null || true
   [[ "$oldcap" != "ERR" ]] || die "could not read document-summary daily spend"
   [[ "$health" == "blocked" ]] || die "document-summary did not reach HEALTH=blocked after lowering the daily cap (reload/eval issue)"
-  if [[ "$CUT" == hero && "$UI" == gum ]]; then hero_ops_complete "$oldcap" "$newcap" "$final_spend"; g_hold 3
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    hero_cmd_complete "$(hero_cli_cmd 'talon agents')" "$(printf '%s\n%sdaily budget exhausted%s' "$(hero_agent_row document-summary)" "$GUM_MUTED" "$GR")"
+    hero_ops_complete "$oldcap" "$newcap" "$final_spend"; g_hold 3
   elif [[ "$CUT" == hero ]]; then present_policy_hero "$oldcap" "$newcap" "$final_spend"
   else present_policy_full "$oldcap" "$newcap" "$final_spend"; fi
 }
@@ -641,6 +703,9 @@ beat_close() {
   c_skip="$(jq -r 'first(.records[].failover.skipped_candidates[]?.provider)' "$WORK/support.json")"
   c_sel="$(jq -r 'first(.records[]|select(.failover.role=="fallback_decision").failover.provider)' "$WORK/support.json")"
   if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    hero_cmd_complete "$(hero_cli_cmd 'talon audit verify --file signed-evidence.json')" \
+      "$(printf '%sTotal records: %s%s\n%sValid records: %s%s\n%sInvalid records: 0%s' \
+         "$GUM_TEXT" "$total" "$GR" "$GUM_GREEN" "$valid" "$GR" "$GUM_GREEN" "$GR")"
     hero_proof "${SUPPORT_SID:0:12}" "$c_failed" "$c_skip" "$c_sel" "$scost" "$total" "$valid"; g_hold 3
     hero_final; g_hold 3
   elif [[ "$CUT" == hero ]]; then present_close_hero "$total" "$valid" "$fv" "$scost" "$c_failed" "$c_skip" "$c_sel"

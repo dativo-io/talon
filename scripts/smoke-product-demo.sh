@@ -85,6 +85,42 @@ grep -qE '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12
 grep -qE '\$[0-9]+\.[0-9]{5,}' /tmp/hero.plain && { echo "✗ hero frames contain over-precise money (>4dp)" >&2; exit 1; } || true
 echo "    ✓ plain hero: four stages, HERO_COMPLETE, ✓ prevention, SOFT limit, no setup/paths/UUID/over-precise money"
 
+echo "==> POSITIVE — gum LIVE COMMAND panel: real command + real output, and NO secret / host-prompt / temp-path leak..."
+# The command panel is gum-only, so capture the gum UI itself. Secrets are the
+# actual generated Talon keys (read from the prepared state) + the mock provider key.
+STATE2="$(mktemp)"
+run_pd "$PD" http://127.0.0.1:1 prepare "$STATE2" hero >/tmp/smoke-prep2.out 2>&1 || { echo "✗ prepare (gum) failed" >&2; tail -20 /tmp/smoke-prep2.out >&2; rm -f "$STATE2"; exit 1; }
+sval() { sed -nE "s/.*\\b$1='([^']*)'.*/\\1/p" "$STATE2" | head -1; }
+if TALON_DEMO_UI=gum TALON_DEMO_COLOR=1 DEMO_STEP_PAUSE=0 \
+   OPENAI_API_KEY=sk-smoke ANTHROPIC_API_KEY=sk-smoke \
+   TALON_DEMO_OPENAI_URL="http://localhost:${MOCK_PORT}" TALON_DEMO_ANTHROPIC_URL="http://localhost:${MOCK_PORT}" \
+   TALON_DEMO_LOCAL_LLAMA_URL="http://127.0.0.1:1" \
+   bash "$PD/demo.sh" play "$STATE2" >/tmp/gum.raw 2>&1; then :; else
+  echo "✗ gum hero play FAILED" >&2; tail -25 /tmp/gum.raw >&2; rm -f "$STATE2"; exit 1
+fi
+strip_ansi </tmp/gum.raw >/tmp/gum.plain
+# Each stage shows its REAL command + REAL output in the LIVE COMMAND panel.
+for m in "LIVE COMMAND" "talon agents" "/v1/proxy/local-llama" "/v1/proxy/openai" "/v1/proxy/anthropic" \
+         "talon audit verify --file signed-evidence.json" "perl -i.bak -pe" \
+         "HTTP 200" "HTTP 403" "session_budget_exceeded" "Total records:" "Valid records:" "Invalid records: 0"; do
+  grep -qF "$m" /tmp/gum.plain || { echo "✗ command-panel marker missing: $m" >&2; rm -f "$STATE2"; exit 1; }
+done
+# The recorded hero must begin inside the Talon console: no outer host shell prompt / setup output.
+for bad in "Preparing the fleet" "==> " "openclaw@" "demo.sh hero" "demo.sh play" "go build" "/var/folders/" "/tmp/tmp."; do
+  grep -qF "$bad" /tmp/gum.plain && { echo "✗ host/setup text leaked into the hero: $bad" >&2; rm -f "$STATE2"; exit 1; } || true
+done
+# SECRET-LEAK: no generated Talon key, admin/secrets/signing key, mock provider key,
+# or raw temp path may appear anywhere in the rendered output or cast.
+leak=0
+for var in CS_KEY CODE_KEY DOC_KEY TALON_ADMIN_KEY TALON_SECRETS_KEY TALON_SIGNING_KEY WORK; do
+  v="$(sval "$var")"
+  if [[ -n "$v" ]] && grep -qF "$v" /tmp/gum.raw; then echo "✗ SECRET/temp leak: ${var} value appears in the rendered hero" >&2; leak=1; fi
+done
+grep -qF "sk-smoke" /tmp/gum.raw && { echo "✗ SECRET leak: provider key sk-smoke appears in the rendered hero" >&2; leak=1; }
+rm -f "$STATE2"
+[[ "$leak" == 0 ]] || exit 1
+echo "    ✓ gum LIVE COMMAND: real commands + HTTP + verify counts; no secrets, temp paths, or host prompt"
+
 echo "==> NEGATIVE — local model reachable → preflight aborts the demo..."
 if run_pd "$PD" "http://localhost:${MOCK_PORT}" hero >/tmp/smoke-neg1.out 2>&1; then
   echo "✗ demo did NOT abort when the local model was reachable" >&2; exit 1
