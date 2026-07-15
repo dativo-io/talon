@@ -67,7 +67,14 @@ pause()  { [[ "$PAUSE" != 0 ]] && sleep "$PAUSE"; return 0; }
 HTTP=""
 require_http() { # require_http <expected> <label>
   [[ "$HTTP" == "$1" ]] && return 0
-  echo "  response body:" >&2; cat "$WORK/b" >&2 2>/dev/null || true
+  echo "  response body:" >&2; cat "$WORK/b" >&2 2>/dev/null || true; echo >&2
+  # Distinguish a provider-account problem (quota / auth / rate limit / outage)
+  # from a Talon decision, so a real-provider run gets an actionable message.
+  if grep -qiE "usage limit|quota|rate.?limit|invalid_api_key|authentication|permission|overloaded|billing|credit" "$WORK/b" 2>/dev/null; then
+    echo "  ⚠ This looks like a PROVIDER-ACCOUNT issue (quota / auth / rate limit / outage), not a Talon" >&2
+    echo "    policy decision. Check the relevant provider key/account and re-run. The demo aborts here" >&2
+    echo "    on purpose — it will not fake a governed result on top of a failed upstream call." >&2
+  fi
   die "$2: expected HTTP $1, got $HTTP"
 }
 assert_ev() { # assert_ev <file> <jq-filter> <label>
