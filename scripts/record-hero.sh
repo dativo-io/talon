@@ -43,10 +43,10 @@ fi
 mkdir -p "$ASSET_DIR"
 cd "$DEMO_DIR"
 
-# Strict mode: any beat whose outcome is unexpected FAILS the recording, so a
-# committed hero GIF can never ship a broken proof. Colour is forced so the GIF
-# renders in colour even when asciinema records headless.
-export TALON_DEMO_STRICT=1
+# The demo asserts every headline against signed evidence and aborts non-zero on
+# any unexpected outcome (in every mode), so a broken run can never be promoted
+# below. Colour is forced so the GIF renders in colour even when asciinema
+# records headless.
 export TALON_DEMO_COLOR=1
 # Pace the acts so the rendered GIF lands in the readable range. --idle-time-limit
 # MUST exceed DEMO_STEP_PAUSE or agg collapses the pause when it rewrites the

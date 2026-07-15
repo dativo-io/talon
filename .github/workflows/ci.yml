@@ -126,6 +126,31 @@ jobs:
       - name: Run proof gates
         run: make proof-gates
 
+  product-demo-smoke:
+    name: Product demo smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.12'
+          cache: true
+
+      - name: Install SQLite
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: Download dependencies
+        run: go mod download
+
+      # Runs examples/product-demo/demo.sh against the offline mock provider (no
+      # API keys, no spend): validates startup, three-agent discovery, the
+      # policy-valid-failover / org-tool / session-budget / blocked-fleet evidence
+      # assertions, and that those assertions are load-bearing (a NEGATIVE case
+      # fails the demo when failover cannot happen).
+      - name: Smoke-test the product demo (mock provider)
+        run: make smoke-product-demo
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

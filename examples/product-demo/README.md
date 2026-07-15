@@ -34,11 +34,13 @@ preflight).
 
 ## What you're looking at
 
-Every line printed under a `$ …` prompt is the exact command the script ran, and
-every receipt — the redaction, the skipped fallback candidate, the projected-cost
-line — is parsed from **Talon's own signed evidence**, not hardcoded. In strict
-mode (`TALON_DEMO_STRICT=1`, used by the asset recorder) any beat whose outcome is
-unexpected is a hard failure, so a recorded asset can never ship a broken proof.
+Every line printed under a `$ …` prompt is the exact command the script ran. Each
+headline — the PII redaction (entities + tier), the skipped fallback candidate and
+why, the projected-cost stop — is **asserted against Talon's own signed evidence
+(`jq -e`) before it is rendered, and the receipt is drawn from that record**, not
+hardcoded. Any unexpected outcome is a **hard failure in every mode** (not only
+when recording), so the demo can never print a successful-looking proof that did
+not actually happen.
 
 The files that drive it are meant to be read:
 
@@ -53,13 +55,30 @@ The files that drive it are meant to be read:
   — one file per use case. A per-agent override only ever narrows the org
   baseline; it never widens it.
 
+## Security posture
+
+The demo is safe to run on a shared machine and models the product's intended
+security:
+
+- The gateway binds to **loopback only** (`--host 127.0.0.1`) on a **random free
+  port** — nothing is exposed on a shared interface.
+- It mints a **random admin key** (admin endpoints are authenticated, never open)
+  and **random per-use-case traffic keys** (no public keys baked in).
+- Cloud and traffic secrets are **scoped to the agents that use them**
+  (`--tenant acme --agent …`), not allow-all.
+- The local provider carries a **dummy secret** — a cloud credential is never
+  attached to a local or user-supplied endpoint, so it can never be transmitted
+  there even if the local model came up mid-run.
+- The gateway is confirmed to be Talon (the `/health` marker) and to have
+  discovered exactly the three demo agents before any traffic is sent.
+
 ## Honest boundaries
 
 - The reliability beat stages a **real** outage only in the sense that the local
   model is off — there are **no fabricated responses**; every answer comes from a
   real provider. A fallback candidate is re-checked against the agent's full
   policy before it is used (a fallback must stay policy-valid — it is not a
-  bypass), which is why the healthy `openai-batch` account is *skipped* for
+  bypass), which is why the healthy `openai-batch` destination is *skipped* for
   customer-support.
 - **Redaction** masks the forwarded payload; it does **not** lower the data
   classification (the record still shows the request was tier-2 confidential).
@@ -72,8 +91,10 @@ The files that drive it are meant to be read:
 - Talon governs the traffic and actions **routed through it**. Local shell
   commands, file edits, and direct provider calls that bypass Talon remain
   outside its control. Client-asserted subagent identity is attribution, not
-  authentication. Evidence is tamper-evident and independently verifiable, not
-  immutable.
+  authentication. Evidence is tamper-evident and **offline-verifiable** — its
+  HMAC-SHA256 signatures are checked with the shared signing key, no live database
+  or network needed (this is symmetric signing, not public-key verification), and
+  it is not immutable.
 
 See [`docs/reference/configuration.md`](../../docs/reference/configuration.md) for
 the full config reference, and the [governed-session demo](../governed-session/)

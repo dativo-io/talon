@@ -6,11 +6,11 @@
 # operates the whole fleet — customer-support, coding-assistant, document-summary
 # — from a single process.
 #
-# REAL providers, real spend (~$0.02–0.05/run on cheap models). No mock. Needs
-# OPENAI_API_KEY and ANTHROPIC_API_KEY. examples/product-demo/demo.sh seeds the
-# keys into the vault and runs everything against real OpenAI + Anthropic; the
-# reliability beat additionally needs the local model (Ollama) to be OFFLINE, so
-# a real connection failure triggers a real, policy-valid failover.
+# REAL providers, real spend (~$0.02-0.05/run on cheap models). No mock. Needs
+# OPENAI_API_KEY and ANTHROPIC_API_KEY. examples/product-demo/demo.sh binds the
+# gateway to loopback only, mints random admin + traffic keys, and requires the
+# local model (Ollama, :11434) to be OFFLINE so a real connection failure
+# triggers a real, policy-valid failover.
 
 gateway:
   enabled: true
@@ -21,24 +21,29 @@ gateway:
     # customer-support's PREFERRED provider: a local model (in-region, cheap).
     # It is OFFLINE during the demo (demo.sh asserts :11434 is not answering), so
     # a request to it fails with a real connection error and Talon fails over.
+    # It carries a DUMMY secret — never a cloud credential — so a cloud key can
+    # never be transmitted to a local or user-supplied endpoint.
     local-llama:
       enabled: true
-      secret_name: "openai-api-key"        # unused: the endpoint is down; nothing is sent
+      secret_name: "local-llama-demo-key"
       base_url: "http://localhost:11434"   # Ollama (OpenAI-compatible) — offline in this demo
       region: "LOCAL"
       api_family: "openai"
-      allowed_models: ["gpt-4o-mini"]
+      allowed_models: ["llama3.2:1b"]
       # A fallback must stay policy-valid. The chain is walked in order; each
       # candidate is re-checked against the agent's effective policy BEFORE it is
-      # dispatched. openai-batch is healthy but NOT on customer-support's
-      # allowlist, so it is skipped; openai is the first policy-valid fallback.
+      # dispatched, and the request's model is rewritten to one the candidate can
+      # serve. openai-batch could serve the rewritten model but is NOT on
+      # customer-support's allowed_providers, so it is skipped for THAT reason;
+      # openai is the first policy-valid fallback.
       fallback:
-        - { provider: openai-batch }
+        - { provider: openai-batch, model: "gpt-4o-mini" }
         - { provider: openai, model: "gpt-4o-mini" }
 
-    # A healthy second OpenAI account the company uses for OTHER use cases. It is
-    # deliberately NOT on customer-support's allowed_providers, so the failover
-    # walk skips it — availability never overrides the use-case policy.
+    # A second configured OpenAI destination profile the company uses for OTHER
+    # use cases. Same wire format; it is deliberately NOT on customer-support's
+    # allowed_providers, so the failover walk skips it — availability never
+    # overrides the use-case policy.
     openai-batch:
       enabled: true
       secret_name: "openai-api-key"
@@ -92,6 +97,10 @@ gateway:
 # together (Fleet Operations v1).
 agents_dir: agents
 
-# Evidence signing key. Prefer the TALON_SIGNING_KEY env var in production; this
-# demo value keeps the offline verification self-contained.
+# Re-scan the agent files this often so a policy edit (the demo lowers a daily
+# budget to stage the fleet's blocked state) activates promptly.
+agents_reload_interval: "2s"
+
+# Evidence signing key. Prefer the TALON_SIGNING_KEY env var (the demo sets a
+# random one); this file value keeps a manual run self-contained.
 signing_key: "product-demo-signing-key-not-for-production"

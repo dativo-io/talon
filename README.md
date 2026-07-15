@@ -12,7 +12,7 @@ Every AI use case a company ships — a customer-support assistant, a coding ass
 
 [![Talon operating three AI use cases through one gateway — the local model is down so a customer request fails over, skipping a provider the use case isn't allowed to use; customer email and IBAN are redacted before the provider; a forbidden admin tool is rejected by a company boundary; a projected-cost budget stops the next call before spend; and one fleet view shows what each use case did, with every decision signed](docs/assets/talon_hero.gif)](examples/product-demo/)
 
-*One operating layer for a company's AI use cases — **customer-support, coding-assistant, document-summary** — through one gateway: a downed local model triggers a **policy-valid failover** (skipping a provider this use case may not use), customer **PII is redacted before the provider**, a destructive **admin tool is rejected by a company-wide boundary**, a use case's **next call is denied on projected cost before it spends**, and one **fleet view** shows what each did — every decision signed and independently verifiable.*
+*One operating layer for a company's AI use cases — **customer-support, coding-assistant, document-summary** — through one gateway: a downed local model triggers a **policy-valid failover** (skipping a provider this use case may not use), customer **PII is redacted before the provider**, a destructive **admin tool is rejected by a company-wide boundary**, a use case's **next call is denied on projected cost before it spends**, and one **fleet view** shows what each did — every decision signed and offline-verifiable.*
 
 <!-- Static, motion-free version of the demo above — the same four things Talon does for every use case, in one operating period: -->
 
