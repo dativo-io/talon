@@ -101,35 +101,44 @@ if ! grep -q "$HERO_MARKER" "$CAST_TMP"; then
   echo "✗ Recording is missing the terminal success marker (\"${HERO_MARKER}\") — NOT promoted." >&2
   rm -f "$CAST_TMP"; exit 1
 fi
-mv -f "$CAST_TMP" "$CAST"
-CAST_GEO="$(head -n1 "$CAST" 2>/dev/null | jq -r 'if .width then "\(.width)x\(.height)" else "?" end' 2>/dev/null || echo '?')"
-echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 88x26)"
-
-# Render the GIF from the VALIDATED cast, to a .tmp then promote.
+# Render the GIF from the VALIDATED TEMP cast — BEFORE promoting anything — so the
+# cast and GIF promote together. A failed render can then never leave a fresh cast
+# beside a stale GIF: if no fresh GIF is produced, NEITHER asset is promoted (the
+# committed pair is left untouched). CAST_TMP lives under ASSET_DIR, so the Docker
+# mount can read it.
 GIF_TMP="${GIF}.tmp"
 render_ok=0
 if command -v agg >/dev/null 2>&1; then
   echo "==> Rendering GIF (agg)..."
-  agg --font-size 20 "$CAST" "$GIF_TMP" && render_ok=1
+  agg --font-size 20 "$CAST_TMP" "$GIF_TMP" && render_ok=1
 elif command -v docker >/dev/null 2>&1; then
   echo "==> Rendering GIF (agg via Docker)..."
   docker run --rm -v "${ASSET_DIR}:/data" ghcr.io/asciinema/agg \
-    --font-size 20 "/data/$(basename "$CAST")" "/data/$(basename "$GIF_TMP")" && render_ok=1
+    --font-size 20 "/data/$(basename "$CAST_TMP")" "/data/$(basename "$GIF_TMP")" && render_ok=1
 fi
+
+# Promotion gate: unless --cast-only, a FRESH GIF must have rendered this run.
+# Checking render_ok (not merely -s "$GIF") means a pre-existing committed GIF can
+# never satisfy the gate after a failed render.
+if [[ "$CAST_ONLY" != 1 && ( "$render_ok" != 1 || ! -s "$GIF_TMP" ) ]]; then
+  rm -f "$GIF_TMP" "$CAST_TMP"
+  echo "✗ No GIF was rendered (install agg: brew/cargo install agg — or have Docker running)." >&2
+  echo "  The README embeds the GIF; refusing to promote a cast without a fresh GIF — committed assets unchanged." >&2
+  echo "  Re-run with --cast-only to promote just the cast." >&2
+  exit 1
+fi
+
+# Both validated (or --cast-only): promote atomically.
+mv -f "$CAST_TMP" "$CAST"
+CAST_GEO="$(head -n1 "$CAST" 2>/dev/null | jq -r 'if .width then "\(.width)x\(.height)" else "?" end' 2>/dev/null || echo '?')"
+echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 88x26)"
 if [[ "$render_ok" == 1 && -s "$GIF_TMP" ]]; then
   mv -f "$GIF_TMP" "$GIF"
   echo "    Wrote ${GIF}"
 else
-  rm -f "$GIF_TMP"
+  rm -f "$GIF_TMP"   # --cast-only with no fresh render: keep the committed GIF as-is
 fi
-
-# The README embeds the GIF, not the cast: fail unless BOTH assets exist, so a
-# missing/failed render can never leave the old GIF beside a new cast.
 [[ -s "$CAST" ]] || { echo "✗ no cast was produced." >&2; exit 1; }
-if [[ "$CAST_ONLY" != 1 ]]; then
-  [[ -s "$GIF" ]] || { echo "✗ No GIF was rendered (install agg: brew/cargo install agg — or have Docker running)." >&2
-    echo "  The README embeds the GIF; refusing to finish with only a cast. Re-run with --cast-only to override." >&2; exit 1; }
-fi
 
 echo ""
 echo "Review the recording, then commit docs/assets/talon_hero.{cast,gif}."
