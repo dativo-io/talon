@@ -224,7 +224,7 @@ beat_capability() {
   row "REQUEST"  "tool call: admin_purge_records  (+ search_kb)"
   row "BOUNDARY" "organization_policy.constraints.forbidden_tools: [admin_*]   — the agent declares none of its own"
   echo
-  no "403 — $(jq -r '.error.message//empty' "$WORK/b"). The use case cannot weaken the company boundary. \$0 spent."
+  ok "Blocked before the provider — admin_purge_records never reached the model. \$0 spent. The use case cannot weaken the company boundary."
 }
 
 beat_cost() {
@@ -248,13 +248,29 @@ beat_cost() {
   row "BUDGET"  "per-session cost budget (soft cap)"
   row "RECEIPT" "$(printf 'session spend $%.4f + next estimate $%.4f  →  over the $%.4f limit' "$sb_spent" "$sb_est" "$sb_lim")"
   echo
-  no "Next call denied before Anthropic — the decision uses PROJECTED cost, not the bill after. \$0 spent on it."
+  ok "Prevented the next Anthropic call using PROJECTED cost — decided before spend, not after the bill. \$0 spent on the denied call."
 }
 
-# dsum_json <field> — read one field of document-summary's live fleet row.
+# dsum_json <field> — read one numeric/string field of document-summary's live row.
 dsum_json() { talon agents show document-summary --url "$GATEWAY" --json 2>/dev/null | jq -r ".$1"; }
+fmt() { awk -v v="$1" 'BEGIN{printf "%.4f", v}'; }   # consistent money formatting
 
-beat_sessions() {
+# session_summary_compact — a product-level one-glance view of the customer-support
+# incident, drawn from its signed evidence (support.json).
+session_summary_compact() {
+  local cost
+  cost="$(jq -r '[.records[].execution.cost // 0]|add' "$WORK/support.json" 2>/dev/null)"
+  printf ' %sThe customer-support incident, at a glance (from its signed evidence):%s\n' "$DIM" "$R"
+  row "SESSION"  "$SUPPORT_SID"
+  row "OUTCOME"  "completed"
+  row "PII"      "email + IBAN redacted"
+  row "PRIMARY"  "local-llama failed"
+  row "SKIPPED"  "openai-batch — policy"
+  row "SELECTED" "openai"
+  row "COST"     "$(awk -v c="$cost" 'BEGIN{ if (c+0 < 0.0001) printf "< $0.0001"; else printf "$%.4f", c }')"
+}
+
+beat_sessions() { # beat_sessions <hero|all>
   beat 4 4 "📊" "Session understanding + operational control" "the fleet — one attention queue, one live policy edit"
   # A couple more real summaries this operating period (fresh session, so the soft
   # per-session budget is not what stops us here).
@@ -265,50 +281,66 @@ beat_sessions() {
   oldcap="$(dsum_json daily_cap)"
   spend="$(dsum_json spend_day)"
   [[ -n "$spend" && "$spend" != "null" && "$spend" != "0" ]] || die "could not read document-summary daily spend"
-  # An operator lowers the daily budget to below what this use case has already
-  # spent today — a real policy edit, activated by periodic safe reload. This is
-  # deterministic (the cap is set below recorded spend), and it demonstrates a
-  # live budget change immediately flagging a use case that can no longer work.
+  # A credible operational event: Finance caps a use case that is spending too fast.
+  # The cap is set below today's recorded spend, so the block is deterministic and
+  # the reload immediately flags the use case — a live demonstration of hot policy
+  # reload + the fleet as an operational-control surface.
   newcap="$(awk -v s="$spend" 'BEGIN{printf "%.4f", s*0.9}')"
-  row "EVENT" "an operator lowers document-summary's daily budget below today's spend"
-  printf '  %sPOLICY UPDATE%s   daily budget  $%s → $%s   (edited on disk)\n' "$YEL" "$R" "$oldcap" "$newcap"
+  row "EVENT" "Finance imposes an emergency daily ceiling on document-summary"
+  printf '  %sPOLICY UPDATE%s   daily budget  $%.2f → $%.4f   (edited on disk)\n' "$YEL" "$R" "$oldcap" "$newcap"
   sed -i.bak -E "s/daily: [0-9.]+/daily: ${newcap}/" "$WORK/agents/document-summary/agent.talon.yaml"
   local health=""
   for _ in $(seq 1 30); do health="$(dsum_json health)"; [[ "$health" == "blocked" ]] && break; sleep 0.5; done
   [[ "$health" == "blocked" ]] || die "document-summary did not reach HEALTH=blocked after lowering the daily cap (reload/eval issue)"
-  printf '  %sRELOAD%s          new effective policy activated (periodic safe reload)\n' "$YEL" "$R"
+  printf '  %sRELOAD%s          effective policy activated safely (periodic safe reload)\n' "$YEL" "$R"
+  printf '  %sRESULT%s          document-summary blocked from new work\n' "$YEL" "$R"
   echo
   runcmd "talon agents --url '$GATEWAY'"
   echo
-  printf '  %sDAILY SPEND  $%s      DAILY CAP  $%s      HEALTH  blocked%s\n' "$DIM" "$(dsum_json spend_day)" "$(dsum_json daily_cap)" "$R"
+  printf '  %sDAILY SPEND  $%s      DAILY CAP  $%s      HEALTH  blocked%s\n' "$DIM" "$(fmt "$(dsum_json spend_day)")" "$(fmt "$(dsum_json daily_cap)")" "$R"
   echo
   ok "A live budget change activates safely — the fleet immediately flags the use case that can no longer accept work."
   echo
-  printf ' %sDescend from the fleet to one session, and from the session to one signed decision:%s\n' "$DIM" "$R"
-  runcmd "talon audit list --session '$SUPPORT_SID'"
+  if [[ "$1" == all ]]; then
+    printf ' %sDescend from the fleet to one session, and from the session to one signed decision:%s\n' "$DIM" "$R"
+    runcmd "talon audit list --session '$SUPPORT_SID'"
+  else
+    session_summary_compact
+  fi
 }
 
-evidence_close() {
+evidence_close() { # evidence_close <hero|all>
   banner "Every decision is signed and verifiable offline"
   talon audit export --format signed-json --output "$WORK/hero-evidence.json" >/dev/null || die "signed export failed"
-  # The export must be non-empty and cover the whole operating period.
+  # Assertions run in BOTH cuts (load-bearing); only the on-screen density differs.
   assert_ev "$WORK/hero-evidence.json" '(.records|length) >= 5' "signed export is non-empty"
   assert_ev "$WORK/hero-evidence.json" \
     '([.records[].agent_id]|unique) as $a | ($a|index("customer-support")) and ($a|index("coding-assistant")) and ($a|index("document-summary"))' \
     "export covers all three use cases"
-  local corr
+  local corr vout total valid fv
   corr="$(jq -r 'first(.records[]|select(.failover.role=="fallback_decision").correlation_id)' "$WORK/support.json")"
-  runcmd "talon audit export --format signed-json --output hero-evidence.json >/dev/null && echo '  wrote hero-evidence.json ('\$(jq '.records|length' \"$WORK/hero-evidence.json\")' records)'"
-  pause
-  # Show the verification COUNTS (not the per-record list) — the load-bearing line
-  # is 'Invalid records: 0'.
-  runcmd "talon audit verify --file '$WORK/hero-evidence.json' | grep -E '^(File|Total records|Valid records|Invalid records):'"
-  grep -q "Invalid records: 0" <(talon audit verify --file "$WORK/hero-evidence.json") || die "signed export failed verification"
+  vout="$(talon audit verify --file "$WORK/hero-evidence.json")"
+  echo "$vout" | grep -q "Invalid records: 0" || die "signed export failed verification"
+  total="$(echo "$vout" | awk -F': *' '/^Total records:/{print $2}')"
+  valid="$(echo "$vout" | awk -F': *' '/^Valid records:/{print $2}')"
+  fv=""
   if [[ -n "$corr" && "$corr" != "null" ]]; then
+    fv="$(talon audit verify --failover "$corr" 2>&1)"
+    echo "$fv" | grep -qiE "valid_fallback|chains checked: 1" || die "failover-chain verification did not confirm the support incident's chain"
+  fi
+  if [[ "$1" == all ]]; then
+    runcmd "talon audit export --format signed-json --output hero-evidence.json >/dev/null && echo '  wrote hero-evidence.json ('\$(jq '.records|length' \"$WORK/hero-evidence.json\")' records)'"
     pause
-    printf ' %sVerify the failover chain itself — that the recorded fallback was policy-valid:%s\n' "$DIM" "$R"
-    runcmd "talon audit verify --failover '$corr'"
-    talon audit verify --failover "$corr" 2>&1 | grep -qiE "valid_fallback|chains checked: 1" || die "failover-chain verification did not confirm the support incident's chain"
+    runcmd "talon audit verify --file '$WORK/hero-evidence.json' | grep -E '^(File|Total records|Valid records|Invalid records):'"
+    if [[ -n "$fv" ]]; then
+      pause
+      printf ' %sVerify the failover chain itself — that the recorded fallback was policy-valid:%s\n' "$DIM" "$R"
+      runcmd "talon audit verify --failover '$corr'"
+    fi
+  else
+    # Compact for the hero: the load-bearing numbers only.
+    printf '  %sSIGNED EVIDENCE%s   %s records · %s valid · 0 invalid\n' "$YEL" "$R" "$total" "$valid"
+    [[ -n "$fv" ]] && printf '  %sFAILOVER CHAIN%s   valid_fallback\n' "$YEL" "$R"
   fi
 }
 
@@ -319,12 +351,12 @@ closing() {
 
 # The visible product story (no setup/teardown) — this is all a recording captures.
 run_beats() { # run_beats <hero|all>
-  opening; beat_reliability; beat_capability; beat_cost; beat_sessions
+  opening; beat_reliability; beat_capability; beat_cost; beat_sessions "$1"
   if [[ "$1" == all ]]; then
     banner "Inspect one use case: health, budgets, and runtime signals"
     runcmd "talon agents show document-summary --url '$GATEWAY'"
   fi
-  evidence_close; closing
+  evidence_close "$1"; closing
 }
 
 # For a clean recording, setup() runs OUTSIDE asciinema (prepare) and only the
