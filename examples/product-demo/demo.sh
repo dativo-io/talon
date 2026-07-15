@@ -139,7 +139,9 @@ setup() {
   local n; n="$(talon agents --url "$GATEWAY" --json 2>/dev/null | jq '.agents | length')"
   [[ "$n" == 3 ]] || die "expected exactly 3 discovered agents, got ${n:-none} — wrong config or stale server"
 
-  [[ "$PAUSE" != 0 ]] && command -v clear >/dev/null 2>&1 && clear || printf '\033[2J\033[H'   # start the recording clean
+  # Start the recording clean (only when pacing for a recording; leaves smoke-test
+  # output intact otherwise).
+  if [[ "$PAUSE" != 0 ]]; then command -v clear >/dev/null 2>&1 && clear || printf '\033[2J\033[H'; fi
 }
 
 # openai_chat <bearer> <provider> <model> <content> [session]
@@ -285,7 +287,9 @@ evidence_close() {
   corr="$(jq -r 'first(.records[]|select(.failover.role=="fallback_decision").correlation_id)' "$WORK/support.json")"
   runcmd "talon audit export --format signed-json --output hero-evidence.json >/dev/null && echo '  wrote hero-evidence.json ('\$(jq '.records|length' \"$WORK/hero-evidence.json\")' records)'"
   pause
-  runcmd "talon audit verify --file '$WORK/hero-evidence.json' | tail -8"
+  # Show the verification COUNTS (not the per-record list) — the load-bearing line
+  # is 'Invalid records: 0'.
+  runcmd "talon audit verify --file '$WORK/hero-evidence.json' | grep -E '^(File|Total records|Valid records|Invalid records):'"
   grep -q "Invalid records: 0" <(talon audit verify --file "$WORK/hero-evidence.json") || die "signed export failed verification"
   if [[ -n "$corr" && "$corr" != "null" ]]; then
     pause
