@@ -2,23 +2,30 @@
 # CI smoke test for examples/product-demo/demo.sh.
 #
 # The shipped demo is real-provider-only. This test exercises the same script's
-# ORCHESTRATION and EVIDENCE ASSERTIONS deterministically against the offline
+# LIVE orchestration and EVIDENCE ASSERTIONS deterministically against the offline
 # mock provider (examples/docker-compose/mock-provider) via the demo's base-URL
 # overrides — no API keys, no spend, no recording. It validates:
-#   - startup, loopback bind, exactly-three-agent discovery;
-#   - the policy-valid-failover, org-tool-boundary, session-budget, and
-#     blocked-fleet evidence assertions all pass on a real gateway;
-#   - a NEGATIVE case: when the local model is reachable (failover could not be a
-#     real event), the demo's guardrails abort it non-zero — proving the demo
-#     cannot render a successful-looking proof that did not actually happen.
+#   - the full `all` evaluator cut exits 0;
+#   - the fixed-screen `hero` cut: six scene markers, HERO_COMPLETE in the cast,
+#     ✓ prevention markers, and visual discipline (no setup noise, no temp paths,
+#     no full UUIDs, no over-precise money in the presented frames);
+#   - two NEGATIVE cases proving the guardrails are load-bearing: the demo aborts
+#     when the local model is reachable (preflight), and it FAILS at the
+#     policy-valid-fallback evidence assertion when openai-batch is allowed (so no
+#     skip happens) — the hero cannot present a claim unsupported by evidence.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-for t in go jq curl openssl; do command -v "$t" >/dev/null 2>&1 || { echo "✗ $t is required" >&2; exit 1; }; done
+for t in go jq curl openssl perl; do command -v "$t" >/dev/null 2>&1 || { echo "✗ $t is required" >&2; exit 1; }; done
+strip_ansi() { perl -pe 's/\e\[[0-9;]*[a-zA-Z]//g; s/\e\][0-9];[^\a]*\a//g'; }
 
 MOCK_PORT="${MOCK_PORT:-9390}"
 MOCK_PID=""
-cleanup() { [[ -n "$MOCK_PID" ]] && kill "$MOCK_PID" >/dev/null 2>&1 || true; }
+NEG_DIR=""   # a copy of the product-demo, kept under examples/ so `../..` still finds the repo root
+cleanup() {
+  [[ -n "$MOCK_PID" ]] && kill "$MOCK_PID" >/dev/null 2>&1 || true
+  [[ -n "$NEG_DIR" && -d "$NEG_DIR" ]] && rm -rf "$NEG_DIR"
+}
 trap cleanup EXIT
 
 echo "==> Starting mock provider on :${MOCK_PORT} (stands in for OpenAI + Anthropic)..."
@@ -27,60 +34,68 @@ MOCK_PID=$!
 for _ in $(seq 1 40); do curl -sf "http://localhost:${MOCK_PORT}/health" >/dev/null 2>&1 && break; sleep 0.3; done
 curl -sf "http://localhost:${MOCK_PORT}/health" >/dev/null 2>&1 || { echo "✗ mock did not start" >&2; cat /tmp/smoke-mock.log >&2; exit 1; }
 
-run_demo() { # run_demo <local-llama-url>
+# run_pd <pd-dir> <local-llama-url> <demo.sh args...>  — a mock-backed run.
+run_pd() {
+  local dir="$1" llama="$2"; shift 2
   OPENAI_API_KEY=sk-smoke ANTHROPIC_API_KEY=sk-smoke \
-  TALON_DEMO_OPENAI_URL="http://localhost:${MOCK_PORT}" \
-  TALON_DEMO_ANTHROPIC_URL="http://localhost:${MOCK_PORT}" \
-  TALON_DEMO_LOCAL_LLAMA_URL="$1" \
-  TALON_DEMO_COLOR=0 DEMO_STEP_PAUSE=0 \
-  bash "$REPO_ROOT/examples/product-demo/demo.sh" all
+  TALON_DEMO_OPENAI_URL="http://localhost:${MOCK_PORT}" TALON_DEMO_ANTHROPIC_URL="http://localhost:${MOCK_PORT}" \
+  TALON_DEMO_LOCAL_LLAMA_URL="$llama" TALON_DEMO_COLOR=0 DEMO_STEP_PAUSE=0 \
+  bash "$dir/demo.sh" "$@"
 }
+PD="$REPO_ROOT/examples/product-demo"
 
-echo "==> POSITIVE: full demo against the mock (local model DOWN) — expect success + all assertions pass..."
-if run_demo "http://127.0.0.1:1" >/tmp/smoke-positive.out 2>/tmp/smoke-positive.err; then
+echo "==> POSITIVE — full 'all' evaluator cut exits 0..."
+if run_pd "$PD" http://127.0.0.1:1 all >/tmp/smoke-all.out 2>/tmp/smoke-all.err; then
   echo "    ✓ demo.sh all exited 0"
 else
-  echo "✗ demo.sh all FAILED against the mock — see below" >&2
-  tail -30 /tmp/smoke-positive.err >&2; tail -30 /tmp/smoke-positive.out >&2
-  exit 1
+  echo "✗ demo.sh all FAILED" >&2; tail -30 /tmp/smoke-all.err >&2; exit 1
 fi
-# Confirm the headline receipts actually rendered (not just a clean exit).
-for marker in "SKIPPED" "\[EMAIL\], \[IBAN\]" "session spend" "POLICY UPDATE" "HEALTH  blocked" "Invalid records: 0" "valid_fallback"; do
-  grep -qE "$marker" /tmp/smoke-positive.out || { echo "✗ expected marker missing from output: $marker" >&2; exit 1; }
-done
-echo "    ✓ failover-skip, redaction, session-budget receipt, visible policy-edit + blocked fleet, offline verify, chain verify all present"
 
-echo "==> RECORDER PATH: prepare (setup) + play (beats only) — the split scripts/record-hero.sh records..."
+echo "==> POSITIVE — fixed-screen 'hero' cut (prepare/play; the split record-hero.sh records)..."
 STATE="$(mktemp)"
-if OPENAI_API_KEY=sk-smoke ANTHROPIC_API_KEY=sk-smoke \
-   TALON_DEMO_OPENAI_URL="http://localhost:${MOCK_PORT}" TALON_DEMO_ANTHROPIC_URL="http://localhost:${MOCK_PORT}" \
-   TALON_DEMO_LOCAL_LLAMA_URL="http://127.0.0.1:1" TALON_DEMO_COLOR=0 DEMO_STEP_PAUSE=0 \
-   bash "$REPO_ROOT/examples/product-demo/demo.sh" prepare "$STATE" hero >/tmp/smoke-prepare.out 2>&1; then
-  if TALON_DEMO_COLOR=0 DEMO_STEP_PAUSE=0 bash "$REPO_ROOT/examples/product-demo/demo.sh" play "$STATE" >/tmp/smoke-play.out 2>&1; then
-    grep -q "3 production AI use cases" /tmp/smoke-play.out || { echo "✗ play did not begin at the opening banner" >&2; tail -20 /tmp/smoke-play.out >&2; exit 1; }
-    grep -q "Preparing the fleet" /tmp/smoke-play.out && { echo "✗ play output contains setup noise (setup was not moved out of the recorded portion)" >&2; exit 1; }
-    grep -q "one shared control plane" /tmp/smoke-play.out || { echo "✗ play did not reach the terminal marker" >&2; exit 1; }
-    echo "    ✓ prepare/play works; the recorded portion starts at the product story with no build/seed noise"
-  else
-    echo "✗ demo.sh play FAILED" >&2; tail -30 /tmp/smoke-play.out >&2; rm -f "$STATE"; exit 1
-  fi
-else
-  echo "✗ demo.sh prepare FAILED" >&2; tail -30 /tmp/smoke-prepare.out >&2; rm -f "$STATE"; exit 1
+run_pd "$PD" http://127.0.0.1:1 prepare "$STATE" hero >/tmp/smoke-prep.out 2>&1 || { echo "✗ prepare failed" >&2; tail -20 /tmp/smoke-prep.out >&2; rm -f "$STATE"; exit 1; }
+if TALON_DEMO_COLOR=1 DEMO_STEP_PAUSE=0 bash "$PD/demo.sh" play "$STATE" >/tmp/hero.raw 2>/tmp/hero.err; then :; else
+  echo "✗ demo.sh play FAILED" >&2; tail -30 /tmp/hero.err >&2; rm -f "$STATE"; exit 1
 fi
 rm -f "$STATE"
+grep -q "HERO_COMPLETE" /tmp/hero.raw || { echo "✗ HERO_COMPLETE marker missing from the cast" >&2; exit 1; }
+strip_ansi </tmp/hero.raw >/tmp/hero.plain
+for m in "USE CASE" "CUSTOMER-SUPPORT" "EMAIL + IBAN REDACTED" "blocked by use-case policy" \
+         "BLOCKED BEFORE MODEL" "Provider call prevented" "SOFT SESSION LIMIT" "NEXT CALL PREVENTED" \
+         "EMERGENCY DAILY CEILING" "■ blocked" "SIGNED EVIDENCE" "valid_fallback" "VERIFIED OFFLINE" \
+         "Operate every AI use case"; do
+  grep -qF "$m" /tmp/hero.plain || { echo "✗ hero scene marker missing: $m" >&2; exit 1; }
+done
+grep -qF "✓ NEXT CALL PREVENTED" /tmp/hero.plain || { echo "✗ successful prevention must render ✓ (not ✗)" >&2; exit 1; }
+for bad in "Preparing the fleet" "go build" "secrets set" "gateway started" "/tmp/" "/var/folders/"; do
+  grep -qF "$bad" /tmp/hero.plain && { echo "✗ hero frames leaked: $bad" >&2; exit 1; } || true
+done
+grep -qE '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}' /tmp/hero.plain && { echo "✗ hero frames contain a full UUID" >&2; exit 1; } || true
+grep -qE '\$[0-9]+\.[0-9]{5,}' /tmp/hero.plain && { echo "✗ hero frames contain over-precise money (>4dp)" >&2; exit 1; } || true
+echo "    ✓ hero: six scenes, HERO_COMPLETE, ✓ prevention, no setup/paths/UUID/over-precise money"
 
-echo "==> NEGATIVE: local model reachable (points at the mock) — a real failover could not happen; a guardrail must FAIL the demo..."
-if run_demo "http://localhost:${MOCK_PORT}" >/tmp/smoke-negative.out 2>/tmp/smoke-negative.err; then
-  echo "✗ demo.sh all UNEXPECTEDLY SUCCEEDED when failover could not occur — assertions are not load-bearing" >&2
-  exit 1
-else
-  # It must fail for the RIGHT reason (a preflight/assertion), not a random error.
-  if grep -qE "local model at .* is UP|policy-valid failover|signed evidence did not confirm" /tmp/smoke-negative.err; then
-    echo "    ✓ demo correctly aborted (preflight or the policy-valid-failover assertion)"
-  else
-    echo "✗ demo failed, but not for the expected reason:" >&2; tail -15 /tmp/smoke-negative.err >&2; exit 1
-  fi
+echo "==> NEGATIVE — local model reachable → preflight aborts the demo..."
+if run_pd "$PD" "http://localhost:${MOCK_PORT}" hero >/tmp/smoke-neg1.out 2>&1; then
+  echo "✗ demo did NOT abort when the local model was reachable" >&2; exit 1
 fi
+grep -qiE "local model at .* is UP" /tmp/smoke-neg1.out || { echo "✗ aborted, but not via the local-model preflight" >&2; tail -12 /tmp/smoke-neg1.out >&2; exit 1; }
+echo "    ✓ aborts when the local model is up (preflight is load-bearing)"
+
+echo "==> NEGATIVE — allow openai-batch (no skip) → the policy-valid-fallback evidence assertion must FAIL the hero..."
+# The demo builds talon from SCRIPT_DIR/../.., so the variant must live under
+# examples/ for that to still resolve to the repo root (a copy in /tmp would have
+# no go.mod above it). A hidden sibling dir keeps the build correct while the
+# patched agents/ is what the gateway loads.
+NEG_DIR="$REPO_ROOT/examples/.smoke-neg-$$"
+cp -r "$PD" "$NEG_DIR"
+perl -0pi -e 's/allowed_providers: \["local-llama", "openai"\]/allowed_providers: ["local-llama", "openai-batch", "openai"]/' "$NEG_DIR/agents/customer-support/agent.talon.yaml"
+grep -q '"local-llama", "openai-batch", "openai"' "$NEG_DIR/agents/customer-support/agent.talon.yaml" || { echo "✗ could not patch the allowlist" >&2; exit 1; }
+if run_pd "$NEG_DIR" http://127.0.0.1:1 hero >/tmp/smoke-neg2.out 2>&1; then
+  echo "✗ hero SUCCEEDED with openai-batch allowed — the skip assertion is not load-bearing" >&2; exit 1
+fi
+grep -qiE "policy-valid failover|signed evidence did not confirm" /tmp/smoke-neg2.out || { echo "✗ hero failed, but not at the policy-valid-fallback assertion" >&2; tail -20 /tmp/smoke-neg2.out >&2; exit 1; }
+rm -rf "$NEG_DIR"; NEG_DIR=""
+echo "    ✓ the policy-valid-fallback evidence assertion is load-bearing"
 
 echo ""
-echo "✓ product-demo smoke test passed (orchestration + evidence assertions verified; assertions are load-bearing)."
+echo "✓ product-demo smoke passed (live orchestration + evidence assertions + hero visual discipline)."

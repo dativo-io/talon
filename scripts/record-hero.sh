@@ -74,10 +74,10 @@ echo "==> Preparing the fleet OUTSIDE the recording (build + gateway; ~\$0.02-0.
 # TRANSACTIONAL RECORDING: record to a .tmp cast and promote ONLY after the run
 # exits 0 AND the cast carries its terminal success marker.
 CAST_TMP="${CAST}.tmp"
-HERO_MARKER="one shared control plane"
+HERO_MARKER="HERO_COMPLETE"   # emitted via a terminal-title escape at the end of the hero cut
 echo "==> Recording only the product story (./demo.sh play)..."
 rec_rc=0
-asciinema rec --overwrite --window-size 100x30 --idle-time-limit 4 \
+asciinema rec --overwrite --window-size 84x22 --idle-time-limit 4 \
   -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
 if [[ "$rec_rc" -ne 0 ]]; then
   echo "✗ demo.sh play exited ${rec_rc} — recording NOT promoted. The committed cast is unchanged." >&2
@@ -95,11 +95,11 @@ GIF_TMP="${GIF}.tmp"
 render_ok=0
 if command -v agg >/dev/null 2>&1; then
   echo "==> Rendering GIF (agg)..."
-  agg --font-size 16 "$CAST" "$GIF_TMP" && render_ok=1
+  agg --font-size 18 "$CAST" "$GIF_TMP" && render_ok=1
 elif command -v docker >/dev/null 2>&1; then
   echo "==> Rendering GIF (agg via Docker)..."
   docker run --rm -v "${ASSET_DIR}:/data" ghcr.io/asciinema/agg \
-    --font-size 16 "/data/$(basename "$CAST")" "/data/$(basename "$GIF_TMP")" && render_ok=1
+    --font-size 18 "/data/$(basename "$CAST")" "/data/$(basename "$GIF_TMP")" && render_ok=1
 fi
 if [[ "$render_ok" == 1 && -s "$GIF_TMP" ]]; then
   mv -f "$GIF_TMP" "$GIF"

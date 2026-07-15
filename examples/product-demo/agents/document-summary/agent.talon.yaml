@@ -31,7 +31,7 @@ policies:
     daily: 1.00       # generous per-day ceiling; the demo lowers it to the measured spend to stage HEALTH=blocked
     monthly: 50.00    # this use case's monthly budget (the fleet COST column denominator)
   session_limits:
-    max_cost: 0.015   # soft per-session budget → the projected-cost receipt ({ limit, spent, estimate })
+    max_cost: 0.01    # soft per-session budget, sized so one summary is allowed then the next is denied on projected cost
 
 metadata:
   team: knowledge

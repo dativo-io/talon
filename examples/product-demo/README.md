@@ -17,8 +17,8 @@ use case in a single operating period:
 export OPENAI_API_KEY=sk-...  ANTHROPIC_API_KEY=sk-ant-...
 # The reliability beat needs the local model DOWN — stop Ollama if it's running.
 make product-demo
-# or:  ./demo.sh          # full narrated demo
-#      ./demo.sh hero     # tight product-story cut (the README GIF)
+# or:  ./demo.sh          # full narrated demo (every command shown, for evaluators)
+#      ./demo.sh hero     # directed fixed-screen product-story cut, recorded live (the README GIF)
 ```
 
 **Real, paid provider calls** — approximately **$0.02–0.05 per run** of
