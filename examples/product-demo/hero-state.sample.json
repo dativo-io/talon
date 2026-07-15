@@ -1,0 +1,52 @@
+{
+  "org": "ACME",
+  "mode": "enforce",
+  "fleet_before": [
+    {"name": "customer-support", "health": "healthy", "spend_day": 0.0},
+    {"name": "coding-assistant", "health": "healthy", "spend_day": 0.0},
+    {"name": "document-summary", "health": "healthy", "spend_day": 0.0}
+  ],
+  "support": {
+    "pii": ["email", "iban"],
+    "tier": 2,
+    "failed_provider": "local-llama",
+    "skipped_provider": "openai-batch",
+    "skip_reason": "agent_provider_allowlist",
+    "selected_provider": "openai",
+    "outcome": "completed",
+    "cost": 0.00003
+  },
+  "tool_boundary": {
+    "requested": ["read_file", "search_kb", "admin_purge_records"],
+    "boundary": "admin_*",
+    "provider_calls": 0,
+    "cost": 0
+  },
+  "cost": {
+    "spent": 0.0072,
+    "estimate": 0.0090,
+    "limit": 0.0150
+  },
+  "policy_edit": {
+    "event": "Finance imposes an emergency daily ceiling",
+    "old_cap": 1.0,
+    "new_cap": 0.0166,
+    "spend_day": 0.0185,
+    "health": "blocked"
+  },
+  "fleet_after": [
+    {"name": "customer-support", "health": "healthy", "spend_day": 0.00003},
+    {"name": "coding-assistant", "health": "healthy", "spend_day": 0.0},
+    {"name": "document-summary", "health": "blocked", "spend_day": 0.0185}
+  ],
+  "evidence": {
+    "total": 8,
+    "valid": 8,
+    "invalid": 0,
+    "failover": "valid_fallback"
+  },
+  "session": {
+    "id": "support-05e1",
+    "outcome": "completed"
+  }
+}
