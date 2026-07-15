@@ -16,7 +16,7 @@
 # failover.
 #
 #   ./demo.sh          # full evaluator walkthrough (verbose)
-#   ./demo.sh hero     # directed, fixed-screen LIVE cut (the README GIF)
+#   ./demo.sh hero     # anchored LIVE product cut (the README GIF)
 #
 # The hero and full cuts share the SAME live execution and the SAME signed-evidence
 # assertions — only the presentation density differs, so they can never disagree
@@ -56,10 +56,13 @@ fmt()  { awk -v v="$1" 'BEGIN{printf "%.4f", v}'; }        # consistent 4-dp mon
 #   red=genuine technical failure only · grey=context.
 if [[ -t 1 || "$COLOR" == 1 ]]; then
   R=$'\033[0m'; DIM=$'\033[2m'; B=$'\033[1m'; GRN=$'\033[32m'; RED=$'\033[31m'; CYN=$'\033[36m'; YEL=$'\033[33m'
+  # High-contrast hero palette — bright variants render as distinct hues in agg's
+  # theme, so labels, values, warnings and successes never blend into one olive wash.
+  WHT=$'\033[97m'; GRY=$'\033[90m'; BCY=$'\033[96m'; BGR=$'\033[92m'; AMB=$'\033[93m'; BRD=$'\033[91m'
 else
   R=''; DIM=''; B=''; GRN=''; RED=''; CYN=''; YEL=''
+  WHT=''; GRY=''; BCY=''; BGR=''; AMB=''; BRD=''
 fi
-HRULE='────────────────────────────────────────────────────────────────────────'   # 72
 
 # Verbose-cut renderers (used by the full `all` walkthrough).
 BAR='══════════════════════════════════════════════════════════════════════'
@@ -71,17 +74,28 @@ ok()     { printf '  %s✓ %s%s\n' "$GRN" "$1" "$R"; }
 runcmd() { printf '\n%s$ %s%s\n' "$DIM" "$*" "$R"; eval "$*"; }
 pause()  { [[ "$PAUSE" != 0 ]] && sleep "$PAUSE"; return 0; }
 
-# Hero-cut renderers (fixed screen: clear, redraw, hold).
+# Hero-cut renderers — an ANCHORED LIVE NARRATIVE, not one slide per scene.
+# Clear ONCE at the open and ONCE before the closing frame; every chapter and
+# every verified result APPENDS beneath a divider, so request→decision→result
+# accumulates on screen and the causal chain is never erased mid-story.
 clear_scene() { printf '\033[2J\033[H'; }
-draw_header() {
-  printf '%b%s%b%*sENFORCE %b●%b\n' "${B}${CYN}" "TALON / ACME" "$R" 55 '' "$GRN" "$R"
-  printf '%b3 AI USE CASES · 1 ORG POLICY · 1 OPERATING VIEW%b\n' "$DIM" "$R"
-  printf '%b%s%b\n\n' "$DIM" "$HRULE" "$R"
-}
-scene()   { clear_scene; draw_header; }
 hold()    { [[ "$PAUSE" != 0 ]] && sleep "${1:-2}"; return 0; }
-running() { scene; printf '  %s%s%s\n' "$DIM" "$1" "$R"; }
-title()   { printf '  %s%-24s%s%36s%s%s / 6%s\n\n' "$B" "$1" "$R" '' "$DIM" "$2" "$R"; }
+dashes()  { local n="$1" s=''; while (( n-- > 0 )); do s+='─'; done; printf '%s' "$s"; }
+moneylt() { awk -v c="$1" 'BEGIN{ if (c+0 < 0.0001) printf "< $0.0001"; else printf "$%.4f", c }'; }
+tierlabel() { case "$1" in 0) echo public;; 1) echo internal;; 3) echo restricted;; *) echo confidential;; esac; }
+chapter() { # chapter <n> <TITLE> — a symmetric high-contrast divider (grey number, bright-cyan title)
+  local bar; bar="$(dashes 16)"
+  printf '\n%b%s%b  %b%s / 3%b  %b%s%b  %b%s%b\n' \
+    "$GRY" "$bar" "$R" "$GRY" "$1" "$R" "${B}${BCY}" "$2" "$R" "$GRY" "$bar" "$R"
+}
+pending() { # pending <request> <talon-status> [request-subline] — the live in-flight frame
+  printf '\n  %b%-11s%b %b%s%b\n' "$B" "REQUEST" "$R" "$WHT" "$1" "$R"
+  [[ -n "${3:-}" ]] && printf '  %-11s %b%s%b\n' '' "$WHT" "$3" "$R"
+  printf '  %b%-11s%b %b%s%b\n' "$B" "TALON" "$R" "$GRY" "$2" "$R"
+}
+hroute() { # hroute <name> <status> <status-color> <desc>
+  printf '  %b%-15s%b %b%-13s%b %b%s%b\n' "$WHT" "$1" "$R" "$3" "$2" "$R" "$GRY" "$4" "$R"
+}
 
 # ── Assertions — ALWAYS fatal, in every mode ─────────────────────────────────
 HTTP=""
@@ -178,20 +192,23 @@ tools_req() { # <bearer>; coding-assistant declares no forbidden_tools — the O
 dsum_json() { talon agents show document-summary --url "$GATEWAY" --json 2>/dev/null | jq -r ".$1"; }
 
 # ════════════════════════════════════════════════════════════════════════════
-# Beats: [hero running frame] → live call → assert (shared) → extract → present.
+# Beats: [hero pending frame] → live call → assert (shared) → extract → append result.
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── 1. Category + fleet ──────────────────────────────────────────────────────
-present_fleet_hero() {
-  scene
-  printf '  %s$ talon agents%s\n\n' "$DIM" "$R"
-  printf '  %s%-20s %-14s %s%s\n' "$B" "USE CASE" "HEALTH" "SPEND TODAY" "$R"
+present_fleet_hero() {   # OPENING / FLEET — the single clear of the whole hero
+  clear_scene
+  printf '\n  %b%bTALON%b\n' "$B" "$BCY" "$R"
+  printf '  %bOne operating layer for your company'\''s AI use cases%b\n\n' "$GRY" "$R"
+  printf '  %b3 AI USE CASES  ·  1 ORGANIZATION POLICY  ·  1 OPERATING VIEW%b\n\n' "$WHT" "$R"
+  printf '  %b$ talon agents%b\n\n' "$GRY" "$R"
+  printf '  %b%-20s %-18s %s%b\n' "$B" "USE CASE" "HEALTH" "SPEND TODAY" "$R"
   talon agents --url "$GATEWAY" --json 2>/dev/null \
     | jq -r '.agents | sort_by(.name)[] | "\(.name)\t\(.health)\t\(.spend_day)"' \
     | while IFS=$'\t' read -r name health spend; do
-        printf '  %-20s %b●%b %-12s $%s\n' "$name" "$GRN" "$R" "$health" "$(fmt "$spend")"
+        printf '  %b%-20s%b %b%-18s%b %b$%s%b\n' "$WHT" "$name" "$R" "$BGR" "$health" "$R" "$WHT" "$(fmt "$spend")" "$R"
       done
-  hold 4
+  hold 3
 }
 present_fleet_full() { runcmd "talon agents --url '$GATEWAY'"; }
 beat_fleet() {
@@ -205,7 +222,7 @@ beat_fleet() {
 
 # ── 2. Customer-support incident (reliability + shared policy) ────────────────
 beat_support() {
-  [[ "$CUT" == hero ]] && running "Routing customer request through Talon…"
+  [[ "$CUT" == hero ]] && pending "customer refund · contains email + IBAN" "scanning input and evaluating the route…"
   openai_chat "$CS_KEY" local-llama llama3.2:1b \
     "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
   require_http 200 "reliability"
@@ -227,17 +244,19 @@ beat_support() {
   failed_err="$(jq -r 'first(.records[]|select(.failover.role=="failed_attempt").failover.error_class)' "$WORK/support.json")"
   skip_prov="$(jq -r 'first(.records[].failover.skipped_candidates[]?.provider)' "$WORK/support.json")"
   sel="$(jq -r 'first(.records[]|select(.failover.role=="fallback_decision").failover.provider)' "$WORK/support.json")"
-  if [[ "$CUT" == hero ]]; then present_support_hero "$ph" "$tier" "$failed_prov" "$skip_prov" "$sel"
+  local scost; scost="$(jq -r '[.records[].execution.cost // 0]|add' "$WORK/support.json" 2>/dev/null)"
+  if [[ "$CUT" == hero ]]; then present_support_hero "$ph" "$tier" "$failed_prov" "$skip_prov" "$sel" "$scost"
   else present_support_full "$pii" "$ph" "$tier" "$failed_prov" "$failed_err" "$skip_prov" "$sel"; fi
 }
-present_support_hero() { # ph tier failed skip sel
-  scene; title "CUSTOMER-SUPPORT" 2
-  printf '  %b✓ EMAIL + IBAN REDACTED%b\n' "$GRN" "$R"
-  printf '  %b  classification remains confidential (tier %s)%b\n\n' "$DIM" "$2" "$R"
-  printf '  %b%-14s%b %b×%b connection error\n'          "$B" "$3" "$R" "$RED" "$R"
-  printf '  %b%-14s%b %b⊘%b blocked by use-case policy\n' "$B" "$4" "$R" "$YEL" "$R"
-  printf '  %b%-14s%b %b✓%b selected\n\n'                 "$B" "$5" "$R" "$GRN" "$R"
-  printf '  %bRESULT%b        completed\n' "$YEL" "$R"
+present_support_hero() { # ph tier failed skip sel cost — appended below the pending frame
+  printf '\n  %b%-11s%b %b✓ email + IBAN redacted%b\n' "$B" "PII" "$R" "$BGR" "$R"
+  printf '  %b%-11s%b %b%s%b %b· unchanged after redaction%b\n\n' "$B" "TIER" "$R" "$WHT" "$(tierlabel "$2")" "$R" "$GRY" "$R"
+  printf '  %b%s%b\n' "$B" "ROUTE" "$R"
+  hroute "$3" "FAILED"      "$BRD" "connection error"
+  hroute "$4" "POLICY SKIP" "$AMB" "blocked by use-case policy"
+  hroute "$5" "SELECTED"    "$BCY" "first policy-valid fallback"
+  printf '\n  %b%-11s%b %b✓ completed%b\n' "$B" "RESULT" "$R" "$BGR" "$R"
+  printf '  %b%-11s%b %b%s%b\n' "$B" "COST" "$R" "$WHT" "$(moneylt "$6")" "$R"
   hold 6
 }
 present_support_full() { # pii ph tier failed failed_err skip sel
@@ -254,7 +273,7 @@ present_support_full() { # pii ph tier failed failed_err skip sel
 
 # ── 3. Organization tool boundary (shared capability policy) ──────────────────
 beat_capability() {
-  [[ "$CUT" == hero ]] && running "Evaluating organization policy…"
+  [[ "$CUT" == hero ]] && pending "coding-assistant asks for:" "evaluating organization capability policy…" "read_file · search_kb · admin_purge_records"
   tools_req "$CODE_KEY"
   require_http 403 "capability"
   export_session "coding-${SUPPORT_SID}" "$WORK/coding.json"
@@ -263,13 +282,11 @@ beat_capability() {
     "organization tool boundary (admin_purge_records denied, \$0)"
   if [[ "$CUT" == hero ]]; then present_capability_hero; else present_capability_full; fi
 }
-present_capability_hero() {
-  scene; title "CODING-ASSISTANT" 3
-  printf '  %sRequested%s\n' "$DIM" "$R"
-  printf '    read_file\n    search_kb\n    %badmin_purge_records%b\n\n' "$YEL" "$R"
-  printf '  %bORGANIZATION BOUNDARY%b     admin_*\n\n' "$B" "$R"
-  printf '  %b✓ BLOCKED BEFORE MODEL%b\n' "$GRN" "$R"
-  printf '  %b  Provider call prevented\n    Cost                 $0.0000%b\n' "$DIM" "$R"
+present_capability_hero() {   # appended below the pending frame — Talon behaved correctly, so ✓ (not ✗)
+  printf '\n  %b%-11s%b %borganization forbids%b %badmin_*%b\n\n' "$B" "BOUNDARY" "$R" "$GRY" "$R" "$AMB" "$R"
+  printf '  %b✓ BLOCKED BEFORE MODEL%b\n' "${B}${BGR}" "$R"
+  printf '  %b  Provider call prevented%b\n' "$GRY" "$R"
+  printf '  %b  Cost $0.0000%b\n' "$GRY" "$R"
   hold 5
 }
 present_capability_full() {
@@ -282,7 +299,7 @@ present_capability_full() {
 
 # ── 4. Cost control (projected-cost session budget — a SOFT cap) ──────────────
 beat_cost() {
-  [[ "$CUT" == hero ]] && running "Checking projected session cost…"
+  [[ "$CUT" == hero ]] && pending "document-summary" "checking projected session cost…"
   local sess n; sess="doc-budget-$(rand 4)"
   # One (or a few) allowed summaries, then the next is denied on PROJECTED cost.
   for n in $(seq 1 12); do
@@ -302,14 +319,15 @@ beat_cost() {
   pr="$(awk -v a="$sp" -v b="$es" 'BEGIN{printf "%.4f", a+b}')"
   if [[ "$CUT" == hero ]]; then present_cost_hero "$sp" "$es" "$pr" "$li"; else present_cost_full "$sp" "$es" "$pr" "$li"; fi
 }
-present_cost_hero() { # spent est projected limit
-  scene; title "DOCUMENT-SUMMARY" 4
-  printf '  SESSION SPEND        $%s\n' "$(fmt "$1")"
-  printf '  NEXT ESTIMATE        $%s\n' "$(fmt "$2")"
-  printf '  %bPROJECTED TOTAL      $%s%b\n' "$B" "$(fmt "$3")" "$R"
-  printf '  %bSOFT SESSION LIMIT   $%s%b\n\n' "$YEL" "$(fmt "$4")" "$R"
-  printf '  %b✓ NEXT CALL PREVENTED%b\n' "$GRN" "$R"
-  printf '  %b  Anthropic not called · $0.0000%b\n' "$DIM" "$R"
+present_cost_hero() { # spent est projected limit — appended below the pending frame
+  printf '\n  %b%-24s%b %b$%s%b\n' "$B" "SESSION SPEND" "$R" "$WHT" "$(fmt "$1")" "$R"
+  printf '  %b%-24s%b %b$%s%b\n' "$B" "NEXT ESTIMATE" "$R" "$WHT" "$(fmt "$2")" "$R"
+  printf '  %b%-24s%b %b$%s%b\n' "$B" "PROJECTED TOTAL" "$R" "$WHT" "$(fmt "$3")" "$R"
+  printf '  %b%-24s%b %b$%s%b\n' "$B" "SOFT SESSION LIMIT" "$R" "$AMB" "$(fmt "$4")" "$R"
+  printf '  %-24s %b───────%b\n\n' '' "$GRY" "$R"
+  printf '  %b✓ NEXT CALL PREVENTED%b\n' "${B}${BGR}" "$R"
+  printf '  %b  Anthropic was not called%b\n' "$GRY" "$R"
+  printf '  %b  Denied-call cost $0.0000%b\n' "$GRY" "$R"
   hold 6
 }
 present_cost_full() { # spent est projected limit
@@ -331,7 +349,7 @@ beat_policy() {
   oldcap="$(dsum_json daily_cap)"; spend="$(dsum_json spend_day)"
   [[ -n "$spend" && "$spend" != "null" && "$spend" != "0" ]] || die "could not read document-summary daily spend"
   newcap="$(awk -v s="$spend" 'BEGIN{printf "%.4f", s*0.9}')"
-  [[ "$CUT" == hero ]] && running "Finance sets an emergency daily ceiling…"
+  [[ "$CUT" == hero ]] && pending "document-summary · new daily ceiling" "applying policy edit and reloading…"
   sed -i.bak -E "s/daily: [0-9.]+/daily: ${newcap}/" "$WORK/agents/document-summary/agent.talon.yaml"
   local health=""
   for _ in $(seq 1 30); do health="$(dsum_json health)"; [[ "$health" == "blocked" ]] && break; sleep 0.5; done
@@ -339,17 +357,20 @@ beat_policy() {
   local final_spend; final_spend="$(dsum_json spend_day)"
   if [[ "$CUT" == hero ]]; then present_policy_hero "$oldcap" "$newcap" "$final_spend"; else present_policy_full "$oldcap" "$newcap" "$final_spend"; fi
 }
-present_policy_hero() { # oldcap newcap spend
-  scene; title "DOCUMENT-SUMMARY" 5
-  printf '  %bFINANCE SETS AN EMERGENCY DAILY CEILING%b\n\n' "$B" "$R"
-  printf '  Daily budget       $%s → %b$%s%b\n' "$(fmt "$1")" "$YEL" "$(fmt "$2")" "$R"
-  printf '  Policy reload      %b✓ activated safely%b\n' "$GRN" "$R"
-  printf '  Current spend      $%s\n\n' "$(fmt "$3")"
+present_policy_hero() { # oldcap newcap spend — appended below the pending frame
+  printf '\n  %bFINANCE SETS AN EMERGENCY DAILY CEILING%b\n\n' "$B" "$R"
+  printf '  %b%-14s%b %b$%s%b → %b$%s%b\n' "$B" "Daily budget" "$R" "$WHT" "$(fmt "$1")" "$R" "$AMB" "$(fmt "$2")" "$R"
+  printf '  %b%-14s%b %b$%s%b\n' "$B" "Current spend" "$R" "$WHT" "$(fmt "$3")" "$R"
+  printf '  %b%-14s%b %b✓ activated safely%b\n\n' "$B" "Policy reload" "$R" "$BGR" "$R"
+  printf '  %b%-20s %s%b\n' "$B" "USE CASE" "HEALTH" "$R"
   talon agents --url "$GATEWAY" --json 2>/dev/null \
     | jq -r '.agents | sort_by(.name)[] | "\(.name)\t\(.health)"' \
     | while IFS=$'\t' read -r name health; do
-        if [[ "$health" == blocked ]]; then printf '  %-20s %b■ blocked%b\n' "$name" "$RED" "$R"
-        else printf '  %s%-20s ● %s%s\n' "$DIM" "$name" "$health" "$R"; fi
+        if [[ "$health" == blocked ]]; then
+          printf '  %b%-20s%b %b%-10s%b %bdaily budget exhausted%b\n' "$WHT" "$name" "$R" "$AMB" "BLOCKED" "$R" "$GRY" "$R"
+        else
+          printf '  %b%-20s%b %b%s%b\n' "$WHT" "$name" "$R" "$BGR" "$health" "$R"
+        fi
       done
   hold 6
 }
@@ -385,28 +406,32 @@ beat_close() {
     grep -qiE "valid_fallback|chains checked: 1" <<<"$fv" || die "failover-chain verification did not confirm the support incident's chain"
   fi
   scost="$(jq -r '[.records[].execution.cost // 0]|add' "$WORK/support.json" 2>/dev/null)"
-  if [[ "$CUT" == hero ]]; then present_close_hero "$total" "$valid" "$fv" "$scost"
+  local c_failed c_skip c_sel
+  c_failed="$(jq -r 'first(.records[]|select(.failover.role=="failed_attempt").failover.provider)' "$WORK/support.json")"
+  c_skip="$(jq -r 'first(.records[].failover.skipped_candidates[]?.provider)' "$WORK/support.json")"
+  c_sel="$(jq -r 'first(.records[]|select(.failover.role=="fallback_decision").failover.provider)' "$WORK/support.json")"
+  if [[ "$CUT" == hero ]]; then present_close_hero "$total" "$valid" "$fv" "$scost" "$c_failed" "$c_skip" "$c_sel"
   else present_close_full "$corr" "$fv"; fi
 }
-present_close_hero() { # total valid fv scost
-  scene; title "SESSION ${SUPPORT_SID:0:12}" 6
-  printf '  %-13s completed\n' "OUTCOME"
-  printf '  %-13s email + IBAN redacted\n' "PII"
-  printf '  %-13s local-llama failed\n' "PRIMARY"
-  printf '  %-13s openai-batch\n' "POLICY SKIP"
-  printf '  %-13s openai\n' "SELECTED"
-  printf '  %-13s %s\n\n' "COST" "$(awk -v c="$4" 'BEGIN{ if (c+0 < 0.0001) printf "< $0.0001"; else printf "$%.4f", c }')"
-  printf '  %bSIGNED EVIDENCE%b\n' "$B" "$R"
-  printf '  %s records · %s valid · 0 invalid\n' "$1" "$2"
-  [[ -n "$3" ]] && printf '  Failover · valid_fallback\n'
-  printf '  %b✓ VERIFIED OFFLINE%b\n' "$GRN" "$R"
+present_close_hero() { # total valid fv scost failed skip sel — the compact product-level receipt
+  printf '\n  %b%-13s%b %b%s%b\n'              "$B" "SESSION"     "$R" "$WHT" "${SUPPORT_SID:0:12}" "$R"
+  printf '  %b%-13s%b %bcompleted%b\n'         "$B" "OUTCOME"     "$R" "$WHT" "$R"
+  printf '  %b%-13s%b %bemail + IBAN redacted%b\n' "$B" "PII"     "$R" "$WHT" "$R"
+  printf '  %b%-13s%b %b%s failed%b\n'         "$B" "PRIMARY"     "$R" "$WHT" "$5" "$R"
+  printf '  %b%-13s%b %b%s%b\n'                "$B" "POLICY SKIP" "$R" "$WHT" "$6" "$R"
+  printf '  %b%-13s%b %b%s%b\n'                "$B" "SELECTED"    "$R" "$WHT" "$7" "$R"
+  printf '  %b%-13s%b %b%s%b\n\n'              "$B" "COST"        "$R" "$WHT" "$(moneylt "$4")" "$R"
+  printf '  %bSIGNED EVIDENCE%b\n\n' "$B" "$R"
+  printf '  %b%s records · %s valid · 0 invalid%b\n' "$WHT" "$1" "$2" "$R"
+  [[ -n "$3" ]] && printf '  %bFailover chain · %bvalid_fallback%b\n' "$WHT" "$BGR" "$R"
+  printf '  %b✓ VERIFIED OFFLINE%b\n' "${B}${BGR}" "$R"
   hold 4
-  # Closing frame — clean, no header.
+  # ── Final frame — clear ONCE, then the closing statement (held ≥3s) ──
   clear_scene
-  printf '\n\n\n  %b%bTALON%b\n\n' "$B" "$CYN" "$R"
+  printf '\n\n\n  %b%bTALON%b\n\n' "$B" "$BCY" "$R"
   printf '  %bOperate every AI use case%b\n' "$B" "$R"
   printf '  %bthrough one shared control plane%b\n\n' "$B" "$R"
-  printf '  %scost · reliability · policy · understanding%s\n' "$DIM" "$R"
+  printf '  %bcost control · reliability · shared policy · session understanding%b\n' "$GRY" "$R"
   hold 4
 }
 present_close_full() { # corr fv
@@ -426,8 +451,17 @@ present_close_full() { # corr fv
 # ── Cuts ─────────────────────────────────────────────────────────────────────
 run_beats() { # run_beats <hero|all>
   CUT="$1"
-  beat_fleet; beat_support; beat_capability; beat_cost; beat_policy; beat_close
-  if [[ "$CUT" == hero ]]; then printf '\033]0;HERO_COMPLETE\007'; fi   # machine marker, off the visible frame
+  if [[ "$CUT" == hero ]]; then
+    # Anchored narrative: OPENING/FLEET, then four chapters that APPEND (never clear
+    # between beats) so request→decision→result accumulates on one continuous screen.
+    beat_fleet
+    chapter 1 "RELIABILITY + SHARED POLICY"; beat_support
+    chapter 2 "ORGANIZATION POLICY + COST";  beat_capability; beat_cost
+    chapter 3 "OPERATIONAL CONTROL + PROOF"; beat_policy;     beat_close
+    printf '\033]0;HERO_COMPLETE\007'   # machine marker via terminal title — off the visible frame
+  else
+    beat_fleet; beat_support; beat_capability; beat_cost; beat_policy; beat_close
+  fi
 }
 
 write_state() { # write_state <file> <cut>

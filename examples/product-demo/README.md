@@ -1,8 +1,9 @@
 # Talon product demo — one operating layer for a company's AI use cases
 
-This demo operates a **fleet of three real AI use cases** through **one Talon
-gateway**, on **real providers**, and walks the four things Talon does for every
-use case in a single operating period:
+A **live, evidence-backed product demo**. It operates a **fleet of three real AI
+use cases** through **one Talon gateway**, on **real providers**, and walks the
+four things Talon does for every use case in a single operating period — every
+headline asserted against Talon's own signed evidence before it is shown:
 
 | Use case | Pillar it shows | What happens |
 |---|---|---|
@@ -18,7 +19,7 @@ export OPENAI_API_KEY=sk-...  ANTHROPIC_API_KEY=sk-ant-...
 # The reliability beat needs the local model DOWN — stop Ollama if it's running.
 make product-demo
 # or:  ./demo.sh          # full narrated demo (every command shown, for evaluators)
-#      ./demo.sh hero     # directed fixed-screen product-story cut, recorded live (the README GIF)
+#      ./demo.sh hero     # anchored live product cut — the README GIF
 ```
 
 **Real, paid provider calls** — approximately **$0.02–0.05 per run** of
@@ -93,12 +94,12 @@ a shared host with untrusted users.
   overshoot before the next is denied. The **daily/monthly** budgets are hard,
   pre-provider ceilings; a use case shows `blocked` in the fleet when its recorded
   period spend meets its cap.
-- The demo reaches `blocked` **deterministically and visibly**: rather than wait
-  for spend to drift up to a fixed cap, an operator lowers document-summary's
-  daily budget below what it has already spent today (a real policy edit picked up
-  by periodic safe reload). This is honest about *how* the blocked state is
-  produced, and it doubles as a demonstration of hot policy reload + the fleet as
-  a live operational-control surface.
+- The demo reaches `blocked` from **real, recorded spend** — not a stochastic
+  overshoot: rather than wait for spend to drift up to a fixed cap, an operator
+  lowers document-summary's daily budget below what it has already spent today (a
+  real policy edit picked up by periodic safe reload). This is honest about *how*
+  the blocked state is produced, and it doubles as a demonstration of hot policy
+  reload + the fleet as a live operational-control surface.
 - The caps here are deliberately small so the stops are visible in a short demo;
   the mechanism is identical at $50 or $50,000.
 - Talon governs the traffic and actions **routed through it**. Local shell

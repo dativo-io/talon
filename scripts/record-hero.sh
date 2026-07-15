@@ -83,12 +83,12 @@ echo "==> Recording only the product story (./demo.sh play)..."
 ASCII_MAJOR="$(asciinema --version 2>&1 | grep -oE '[0-9]+' | head -n1)"
 rec_rc=0
 if [[ "${ASCII_MAJOR:-0}" -ge 3 ]]; then
-  asciinema rec --overwrite --window-size 84x22 --idle-time-limit 4 \
+  asciinema rec --overwrite --window-size 88x26 --idle-time-limit 4 \
     -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
 else
-  echo "    asciinema v${ASCII_MAJOR:-?}: no --window-size — requesting an 84x22 terminal and recording at terminal size."
-  echo "    For a pixel-clean asset, size this terminal to 84x22 first (or install asciinema 3)."
-  printf '\033[8;22;84t'   # ask the emulator to resize to 22 rows x 84 cols (honored by most; harmless where ignored)
+  echo "    asciinema v${ASCII_MAJOR:-?}: no --window-size — requesting an 88x26 terminal and recording at terminal size."
+  echo "    For a pixel-clean asset, size this terminal to 88x26 first (or install asciinema 3)."
+  printf '\033[8;26;88t'   # ask the emulator to resize to 26 rows x 88 cols (honored by most; harmless where ignored)
   sleep 1
   asciinema rec --overwrite --idle-time-limit 4 \
     -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
@@ -103,18 +103,18 @@ if ! grep -q "$HERO_MARKER" "$CAST_TMP"; then
 fi
 mv -f "$CAST_TMP" "$CAST"
 CAST_GEO="$(head -n1 "$CAST" 2>/dev/null | jq -r 'if .width then "\(.width)x\(.height)" else "?" end' 2>/dev/null || echo '?')"
-echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 84x22)"
+echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 88x26)"
 
 # Render the GIF from the VALIDATED cast, to a .tmp then promote.
 GIF_TMP="${GIF}.tmp"
 render_ok=0
 if command -v agg >/dev/null 2>&1; then
   echo "==> Rendering GIF (agg)..."
-  agg --font-size 18 "$CAST" "$GIF_TMP" && render_ok=1
+  agg --font-size 20 "$CAST" "$GIF_TMP" && render_ok=1
 elif command -v docker >/dev/null 2>&1; then
   echo "==> Rendering GIF (agg via Docker)..."
   docker run --rm -v "${ASSET_DIR}:/data" ghcr.io/asciinema/agg \
-    --font-size 18 "/data/$(basename "$CAST")" "/data/$(basename "$GIF_TMP")" && render_ok=1
+    --font-size 20 "/data/$(basename "$CAST")" "/data/$(basename "$GIF_TMP")" && render_ok=1
 fi
 if [[ "$render_ok" == 1 && -s "$GIF_TMP" ]]; then
   mv -f "$GIF_TMP" "$GIF"

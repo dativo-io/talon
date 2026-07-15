@@ -102,7 +102,7 @@ Or just [try it with no key](#try-it-in-60-seconds-no-api-key) first, then [open
 
 ## Product demo — three use cases, one control plane
 
-The canonical demo operates **customer-support, coding-assistant, and document-summary** as three `agent.talon.yaml` files under one `agents_dir`, on real providers, and walks the four pillars in one operating period:
+A **live, evidence-backed product demo**: it operates **customer-support, coding-assistant, and document-summary** as three `agent.talon.yaml` files under one `agents_dir`, on real providers, and walks the four pillars in one operating period:
 
 ```bash
 export OPENAI_API_KEY=sk-...  ANTHROPIC_API_KEY=sk-ant-...   # stop Ollama first

@@ -6,13 +6,14 @@
 # mock provider (examples/docker-compose/mock-provider) via the demo's base-URL
 # overrides — no API keys, no spend, no recording. It validates:
 #   - the full `all` evaluator cut exits 0;
-#   - the fixed-screen `hero` cut: six scene markers, HERO_COMPLETE in the cast,
-#     ✓ prevention markers, and visual discipline (no setup noise, no temp paths,
+#   - the anchored-live `hero` cut: the opening + three chapter dividers, every
+#     beat's receipt, HERO_COMPLETE in the cast, ✓ prevention markers, the SOFT
+#     session-limit label, and visual discipline (no setup noise, no temp paths,
 #     no full UUIDs, no over-precise money in the presented frames);
 #   - two NEGATIVE cases proving the guardrails are load-bearing: the demo aborts
-#     when the local model is reachable (preflight), and it FAILS at the
-#     policy-valid-fallback evidence assertion when openai-batch is allowed (so no
-#     skip happens) — the hero cannot present a claim unsupported by evidence.
+#     when the local model is reachable (preflight), and — evidence omission — a
+#     SUCCESSFUL response whose openai-batch skipped-candidate fact is absent FAILS
+#     the hero, so a receipt can never be shown without the evidence behind it.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -51,7 +52,7 @@ else
   echo "✗ demo.sh all FAILED" >&2; tail -30 /tmp/smoke-all.err >&2; exit 1
 fi
 
-echo "==> POSITIVE — fixed-screen 'hero' cut (prepare/play; the split record-hero.sh records)..."
+echo "==> POSITIVE — anchored live 'hero' cut (prepare/play; the split record-hero.sh records)..."
 STATE="$(mktemp)"
 run_pd "$PD" http://127.0.0.1:1 prepare "$STATE" hero >/tmp/smoke-prep.out 2>&1 || { echo "✗ prepare failed" >&2; tail -20 /tmp/smoke-prep.out >&2; rm -f "$STATE"; exit 1; }
 if TALON_DEMO_COLOR=1 DEMO_STEP_PAUSE=0 bash "$PD/demo.sh" play "$STATE" >/tmp/hero.raw 2>/tmp/hero.err; then :; else
@@ -60,19 +61,25 @@ fi
 rm -f "$STATE"
 grep -q "HERO_COMPLETE" /tmp/hero.raw || { echo "✗ HERO_COMPLETE marker missing from the cast" >&2; exit 1; }
 strip_ansi </tmp/hero.raw >/tmp/hero.plain
-for m in "USE CASE" "CUSTOMER-SUPPORT" "EMAIL + IBAN REDACTED" "blocked by use-case policy" \
-         "BLOCKED BEFORE MODEL" "Provider call prevented" "SOFT SESSION LIMIT" "NEXT CALL PREVENTED" \
-         "EMERGENCY DAILY CEILING" "■ blocked" "SIGNED EVIDENCE" "valid_fallback" "VERIFIED OFFLINE" \
-         "Operate every AI use case"; do
+# The anchored narrative: opening + three chapter dividers + each beat's receipt.
+for m in "1 OPERATING VIEW" \
+         "1 / 3" "RELIABILITY + SHARED POLICY" "email + IBAN redacted" "POLICY SKIP" "blocked by use-case policy" "first policy-valid fallback" \
+         "2 / 3" "ORGANIZATION POLICY + COST" "admin_*" "BLOCKED BEFORE MODEL" "Provider call prevented" \
+         "SOFT SESSION LIMIT" "NEXT CALL PREVENTED" "Anthropic was not called" \
+         "3 / 3" "OPERATIONAL CONTROL + PROOF" "FINANCE SETS AN EMERGENCY DAILY CEILING" "daily budget exhausted" \
+         "SIGNED EVIDENCE" "valid_fallback" "VERIFIED OFFLINE" "Operate every AI use case"; do
   grep -qF "$m" /tmp/hero.plain || { echo "✗ hero scene marker missing: $m" >&2; exit 1; }
 done
-grep -qF "✓ NEXT CALL PREVENTED" /tmp/hero.plain || { echo "✗ successful prevention must render ✓ (not ✗)" >&2; exit 1; }
+# Successful governance renders ✓, never ✗ (Talon behaved correctly).
+grep -qF "✓ NEXT CALL PREVENTED"  /tmp/hero.plain || { echo "✗ cost prevention must render ✓ (not ✗)" >&2; exit 1; }
+grep -qF "✓ BLOCKED BEFORE MODEL" /tmp/hero.plain || { echo "✗ tool boundary must render ✓ (not ✗)" >&2; exit 1; }
+grep -qF "SOFT SESSION LIMIT"     /tmp/hero.plain || { echo "✗ the session budget must be labeled SOFT" >&2; exit 1; }
 for bad in "Preparing the fleet" "go build" "secrets set" "gateway started" "/tmp/" "/var/folders/"; do
   grep -qF "$bad" /tmp/hero.plain && { echo "✗ hero frames leaked: $bad" >&2; exit 1; } || true
 done
 grep -qE '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}' /tmp/hero.plain && { echo "✗ hero frames contain a full UUID" >&2; exit 1; } || true
 grep -qE '\$[0-9]+\.[0-9]{5,}' /tmp/hero.plain && { echo "✗ hero frames contain over-precise money (>4dp)" >&2; exit 1; } || true
-echo "    ✓ hero: six scenes, HERO_COMPLETE, ✓ prevention, no setup/paths/UUID/over-precise money"
+echo "    ✓ hero: opening + 3 chapters, HERO_COMPLETE, ✓ prevention, SOFT limit, no setup/paths/UUID/over-precise money"
 
 echo "==> NEGATIVE — local model reachable → preflight aborts the demo..."
 if run_pd "$PD" "http://localhost:${MOCK_PORT}" hero >/tmp/smoke-neg1.out 2>&1; then
@@ -81,7 +88,13 @@ fi
 grep -qiE "local model at .* is UP" /tmp/smoke-neg1.out || { echo "✗ aborted, but not via the local-model preflight" >&2; tail -12 /tmp/smoke-neg1.out >&2; exit 1; }
 echo "    ✓ aborts when the local model is up (preflight is load-bearing)"
 
-echo "==> NEGATIVE — allow openai-batch (no skip) → the policy-valid-fallback evidence assertion must FAIL the hero..."
+echo "==> NEGATIVE (evidence omission) — a SUCCESSFUL response whose skipped-candidate fact is absent must FAIL the hero..."
+# Fault injection: allow openai-batch for customer-support. The request still
+# succeeds, but openai-batch is now SELECTED rather than SKIPPED — so the signed
+# evidence no longer carries the openai-batch skipped-candidate fact. The hero
+# must NOT be able to present the policy-valid-fallback receipt without that fact:
+# beat_support's third assert_ev fails and the whole cut aborts non-zero. This
+# proves the receipts are backed by evidence, not just by a healthy HTTP 200.
 # The demo builds talon from SCRIPT_DIR/../.., so the variant must live under
 # examples/ for that to still resolve to the repo root (a copy in /tmp would have
 # no go.mod above it). A hidden sibling dir keeps the build correct while the
