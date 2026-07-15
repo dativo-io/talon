@@ -8,9 +8,9 @@
 #   - startup, loopback bind, exactly-three-agent discovery;
 #   - the policy-valid-failover, org-tool-boundary, session-budget, and
 #     blocked-fleet evidence assertions all pass on a real gateway;
-#   - a NEGATIVE case: when failover cannot happen (the local model is up), the
-#     demo's signed-evidence assertion makes it fail — proving the assertions are
-#     load-bearing, not decorative.
+#   - a NEGATIVE case: when the local model is reachable (failover could not be a
+#     real event), the demo's guardrails abort it non-zero — proving the demo
+#     cannot render a successful-looking proof that did not actually happen.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -50,7 +50,7 @@ for marker in "SKIPPED" "\[EMAIL\], \[IBAN\]" "session spend" "FLEET HEALTH  blo
 done
 echo "    ✓ failover-skip, redaction, session-budget receipt, blocked fleet, offline verify, chain verify all present"
 
-echo "==> NEGATIVE: local model UP (points at the mock) — failover cannot happen; the evidence assertion must FAIL the demo..."
+echo "==> NEGATIVE: local model reachable (points at the mock) — a real failover could not happen; a guardrail must FAIL the demo..."
 if run_demo "http://localhost:${MOCK_PORT}" >/tmp/smoke-negative.out 2>/tmp/smoke-negative.err; then
   echo "✗ demo.sh all UNEXPECTEDLY SUCCEEDED when failover could not occur — assertions are not load-bearing" >&2
   exit 1
