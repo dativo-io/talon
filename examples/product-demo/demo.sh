@@ -34,6 +34,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PAUSE="${DEMO_STEP_PAUSE:-0}"
 COLOR="${TALON_DEMO_COLOR:-0}"
 CUT="all"                                   # set by the dispatch below
+# Hero presentation surface: 'gum' = the styled live operations console (the
+# recorded README asset; requires gum); 'plain' = a pure Bash/ANSI fallback used
+# ONLY for automated text assertions. The verbose `all` cut ignores this entirely
+# and never touches gum.
+UI="${TALON_DEMO_UI:-gum}"
 
 OPENAI_URL="${TALON_DEMO_OPENAI_URL:-https://api.openai.com}"
 ANTHROPIC_URL="${TALON_DEMO_ANTHROPIC_URL:-https://api.anthropic.com}"
@@ -43,7 +48,7 @@ PORT_OVERRIDE="${PORT:-}"
 for t in go jq curl openssl; do command -v "$t" >/dev/null 2>&1 || { echo "✗ $t is required" >&2; exit 1; }; done
 
 WORK=""; GW_PID=""
-cleanup() { [[ -n "$GW_PID" ]] && kill "$GW_PID" >/dev/null 2>&1 || true; [[ -n "$WORK" ]] && rm -rf "$WORK"; }
+cleanup() { g_restore_screen 2>/dev/null || true; [[ -n "$GW_PID" ]] && kill "$GW_PID" >/dev/null 2>&1 || true; [[ -n "$WORK" ]] && rm -rf "$WORK"; }
 trap cleanup EXIT
 die() { echo "✗ $*" >&2; exit 1; }
 trap 'echo "ERROR: demo aborted at line $LINENO (see above)." >&2' ERR
@@ -192,7 +197,185 @@ tools_req() { # <bearer>; coding-assistant declares no forbidden_tools — the O
 dsum_json() { talon agents show document-summary --url "$GATEWAY" --json 2>/dev/null | jq -r ".$1"; }
 
 # ════════════════════════════════════════════════════════════════════════════
-# Beats: [hero pending frame] → live call → assert (shared) → extract → append result.
+# Gum operations-console renderers — hero cut with TALON_DEMO_UI=gum ONLY.
+# A persistent alternate-screen dashboard (header + progress rail + live main
+# panel + status bar), each frame composed in memory and written home in one
+# write (no clear-then-print tearing). gum is a DEMO-ONLY dependency: the verbose
+# `all` cut and the plain-UI fallback never call it.
+# ════════════════════════════════════════════════════════════════════════════
+GUM_TEXT=$'\033[38;2;240;246;252m'; GUM_MUTED=$'\033[38;2;139;148;158m'
+GUM_CYAN=$'\033[38;2;88;166;255m';  GUM_GREEN=$'\033[38;2;63;185;80m'
+GUM_AMBER=$'\033[38;2;210;153;34m'; GUM_RED=$'\033[38;2;248;81;73m'
+GUM_PURPLE=$'\033[38;2;188;140;255m'; GB=$'\033[1m'; GR=$'\033[0m'
+GUM_BORDER='#30363D'; GUM_PANEL='#161B22'
+HEADW=84; RAILW=22; MAINW=56; CH=15
+declare -a STAGE_ST=("active" "next" "next" "next")
+SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+HERO_SCREEN=0; LAST_MAIN=""
+
+g_vislen() { local t; t="$(sed -E $'s/\033\\[[0-9;]*m//g' <<<"$1")"; printf '%s' "${#t}"; }
+g_lr()   { local w="$1" pad; pad=$(( w - $(g_vislen "$2") - $(g_vislen "$3") )); (( pad<1 )) && pad=1; printf '%s%*s%s' "$2" "$pad" '' "$3"; }
+pcell()  { local s; printf -v s '%-*s' "$1" "$2"; printf '%s%s%s' "$3" "$s" "$GR"; }   # pcell <w> <text> <color>
+money()  { printf '$%s' "$(fmt "$1")"; }
+g_panel() { gum style --border rounded --border-foreground "$GUM_BORDER" --background "$GUM_PANEL" \
+  --width "$1" --height "$2" --padding '0 1' --margin "${5:-0}" "$(printf '%s\n%s' "$3" "$4")"; }
+mainp()  { g_panel "$MAINW" "$CH" "$1" "$2"; }
+g_header() {
+  local l2; l2="$(g_lr 80 "${GUM_MUTED}Control plane for company AI use cases${GR}" "${GUM_MUTED}ACME · ENFORCE ${GUM_GREEN}●${GR}")"
+  gum style --border rounded --border-foreground "$GUM_BORDER" --background "$GUM_PANEL" --width "$HEADW" --padding '0 1' \
+    "$(printf '%s%sTALON%s   %s3 use cases · 1 policy · 1 operating view%s\n%s' "$GB" "$GUM_CYAN" "$GR" "$GUM_MUTED" "$GR" "$l2")"
+}
+g_rail() {
+  local -a nm=(Fleet Reliability "Policy + cost" "Operations + proof") out=(); local i g l
+  for i in 0 1 2 3; do
+    case "${STAGE_ST[$i]}" in
+      done)   g="${GUM_GREEN}✓${GR}"; l="${GUM_MUTED}${nm[$i]}${GR}";;
+      active) g="${GUM_CYAN}●${GR}";  l="${GB}${GUM_CYAN}${nm[$i]}${GR}";;
+      *)      g="${GUM_MUTED}○${GR}"; l="${GUM_MUTED}${nm[$i]}${GR}";;
+    esac
+    out+=("$g $l")
+  done
+  g_panel "$RAILW" "$CH" "${GB}${GUM_MUTED}LIVE RUN${GR}" "$(printf '\n%s\n\n%s\n\n%s\n\n%s' "${out[0]}" "${out[1]}" "${out[2]}" "${out[3]}")" '0 2 0 0'
+}
+g_receipt() { gum style --border rounded --border-foreground "$GUM_BORDER" --background "$GUM_PANEL" --width "$HEADW" --padding '0 1' "$1"; }
+g_show() { # g_show <main-panel> <receipt-line>
+  LAST_MAIN="$1"
+  printf '\033[H\033[J%s' "$(gum join --vertical "$(g_header)" "$(gum join --horizontal --align top "$(g_rail)" "$1")" "$(g_receipt "$2")")"
+}
+g_await() { # g_await <pid> <content-precomposed> <statusfn>   animate the status spinner until <pid> exits
+  local pid="$1" content="$2" sf="$3" i=0 hdr; hdr="$(g_header)"
+  # Draw the pending frame at least once (so even a fast call shows its live
+  # in-flight state), then keep animating the status spinner until the call ends.
+  while :; do
+    printf '\033[H\033[J%s' "$(gum join --vertical "$hdr" "$content" "$(g_receipt "$("$sf" "${SPIN[$((i%10))]}")")")"
+    kill -0 "$pid" 2>/dev/null || break
+    i=$((i+1)); sleep 0.3
+  done
+  wait "$pid" 2>/dev/null || true
+}
+g_hold() { sleep "${1:-2}"; }
+hero_set_stage() { local a="$1" i; for i in 0 1 2 3; do if (( i<a )); then STAGE_ST[i]="done"; elif (( i==a )); then STAGE_ST[i]="active"; else STAGE_ST[i]="next"; fi; done; }
+g_transition() { # g_transition <proved> <next-title> <next-stage-idx>  — advance the rail + a brief transition status
+  hero_set_stage "$3"
+  g_show "$LAST_MAIN" "$(printf '%s✓ %s%s   %s→  NEXT: %s%s' "$GUM_GREEN" "$1" "$GR" "$GUM_MUTED" "$2" "$GR")"
+  sleep 0.7
+}
+g_enter_screen()   { printf '\033[?1049h\033[?25l'; HERO_SCREEN=1; }
+g_restore_screen() { [[ "${HERO_SCREEN:-0}" == 1 ]] && printf '\033[?25h\033[?1049l'; HERO_SCREEN=0; }
+
+# ── OPENING / FLEET (live data) ──────────────────────────────────────────────
+hero_opening() {
+  STAGE_ST=("active" "next" "next" "next")
+  local rows body
+  rows="$(talon agents --url "$GATEWAY" --json 2>/dev/null \
+    | jq -r '.agents|sort_by(.name)[]|"\(.name)\t\(.health)\t\(.spend_day)"' \
+    | while IFS=$'\t' read -r n h s; do
+        printf '%s %s %s\n' "$(pcell 20 "$n" "$GUM_TEXT")" "$(pcell 13 "● $h" "$GUM_GREEN")" "$(pcell 10 "$(money "$s")" "$GUM_TEXT")"
+      done)"
+  body="$(printf '%s3 production AI use cases%s\n\n%s %s %s\n%s\n\n%sOne organization policy · one operating view%s' \
+    "$GUM_TEXT" "$GR" \
+    "$(pcell 20 "USE CASE" "$GB$GUM_MUTED")" "$(pcell 13 HEALTH "$GB$GUM_MUTED")" "$(pcell 12 "SPEND TODAY" "$GB$GUM_MUTED")" \
+    "$rows" "$GUM_MUTED" "$GR")"
+  g_show "$(mainp "${GB}${GUM_CYAN}FLEET${GR}" "$body")" "${GUM_MUTED}LIVE · one policy · one operating view · real requests next${GR}"
+}
+
+# ── RELIABILITY + SHARED POLICY ──────────────────────────────────────────────
+support_status() { printf '%s%s Routing through Talon…%s' "$GUM_CYAN" "$1" "$GR"; }
+support_pending_content() {
+  local body; body="$(printf '%s%sCUSTOMER-SUPPORT%s\n\n%sIncoming request%s\n%sRefund request containing email + IBAN%s\n\n%sscanning input · evaluating policy-valid routes%s' \
+    "$GB" "$GUM_TEXT" "$GR" "$GB$GUM_MUTED" "$GR" "$GUM_TEXT" "$GR" "$GUM_MUTED" "$GR")"
+  gum join --horizontal --align top "$(g_rail)" "$(mainp "${GB}${GUM_CYAN}RELIABILITY + SHARED POLICY${GR}" "$body")"
+}
+hero_support_complete() { # tier failed skip sel cost
+  STAGE_ST=("done" "done" "next" "next")
+  local body
+  body="$(printf '%s%sCUSTOMER-SUPPORT%s\n\n%sDATA%s\n%s✓ Email + IBAN redacted%s\n%s  Tier remains %s%s\n\n%sROUTE%s\n%s %s\n%s %s\n%s %s' \
+    "$GB" "$GUM_TEXT" "$GR" \
+    "$GB$GUM_MUTED" "$GR" "$GUM_GREEN" "$GR" "$GUM_MUTED" "$(tierlabel "$1")" "$GR" \
+    "$GB$GUM_MUTED" "$GR" \
+    "$(pcell 18 "× $2" "$GUM_RED")"   "${GUM_MUTED}connection error${GR}" \
+    "$(pcell 18 "⊘ $3" "$GUM_AMBER")" "${GUM_MUTED}blocked by use-case policy${GR}" \
+    "$(pcell 18 "✓ $4" "$GUM_CYAN")"  "${GUM_MUTED}selected fallback${GR}")"
+  g_show "$(mainp "${GB}${GUM_CYAN}RELIABILITY + SHARED POLICY${GR}" "$body")" \
+    "$(printf '%s✓ COMPLETED%s%s · %s · policy-valid fallback · evidence signed%s' "$GUM_GREEN" "$GR" "$GUM_MUTED" "$(moneylt "$5")" "$GR")"
+}
+
+# ── ORGANIZATION POLICY + COST (two cards, one stage) ────────────────────────
+tool_status() { printf '%s%s Evaluating capability policy…%s' "$GUM_CYAN" "$1" "$GR"; }
+cost_status() { printf '%s%s Checking projected session cost…%s' "$GUM_CYAN" "$1" "$GR"; }
+stage2_body() { # <tool:active|done> <cost:muted|active|done> [sp es pr li]
+  local tool="$1" cost="$2" sp="${3:-}" es="${4:-}" pr="${5:-}" li="${6:-}" tblk cblk
+  tblk="$(printf '%s%sORGANIZATION TOOL BOUNDARY%s\n%sRequested%s  %sread_file · search_kb · %sadmin_purge_records%s\n%sBoundary%s   %sadmin_*%s' \
+    "$GB" "$GUM_TEXT" "$GR" "$GB$GUM_MUTED" "$GR" "$GUM_MUTED" "$GUM_AMBER" "$GR" "$GB$GUM_MUTED" "$GR" "$GUM_AMBER" "$GR")"
+  [[ "$tool" == "done" ]] && tblk="$(printf '%s\n%s✓ BLOCKED BEFORE MODEL%s\n%s  provider call prevented · $0.0000%s' "$tblk" "$GUM_GREEN" "$GR" "$GUM_MUTED" "$GR")"
+  if [[ "$cost" == "done" ]]; then
+    cblk="$(printf '%s%sPROJECTED COST CONTROL%s\n%s %s\n%s %s\n%s %s\n%s %s\n%s✓ NEXT CALL PREVENTED%s\n%s  Anthropic not called · $0.0000%s' \
+      "$GB" "$GUM_TEXT" "$GR" \
+      "$(pcell 18 "Spend now" "$GUM_MUTED")" "$(pcell 8 "$(money "$sp")" "$GUM_TEXT")" \
+      "$(pcell 18 "Next estimate" "$GUM_MUTED")" "$(pcell 8 "$(money "$es")" "$GUM_TEXT")" \
+      "$(pcell 18 "Projected" "$GUM_MUTED")" "$(pcell 8 "$(money "$pr")" "$GUM_TEXT")" \
+      "$(pcell 18 "Soft session limit" "$GUM_MUTED")" "$(pcell 8 "$(money "$li")" "$GUM_AMBER")" \
+      "$GUM_GREEN" "$GR" "$GUM_MUTED" "$GR")"
+  else
+    local c="$GUM_MUTED"; [[ "$cost" == "active" ]] && c="$GUM_TEXT"
+    cblk="$(printf '%s%sPROJECTED COST CONTROL%s\n%schecking projected session cost before the next call%s' "$GB" "$c" "$GR" "$GUM_MUTED" "$GR")"
+  fi
+  printf '%s\n\n%s' "$tblk" "$cblk"
+}
+tool_pending_content() { STAGE_ST=("done" "done" "active" "next"); gum join --horizontal --align top "$(g_rail)" "$(mainp "${GB}${GUM_CYAN}ORGANIZATION POLICY + COST${GR}" "$(stage2_body "active" "muted")")"; }
+hero_tool_complete()   { g_show "$(mainp "${GB}${GUM_CYAN}ORGANIZATION POLICY + COST${GR}" "$(stage2_body "done" "muted")")" "$(printf '%s✓ BLOCKED BEFORE MODEL%s%s · provider call prevented · $0.0000%s' "$GUM_GREEN" "$GR" "$GUM_MUTED" "$GR")"; }
+cost_pending_content() { gum join --horizontal --align top "$(g_rail)" "$(mainp "${GB}${GUM_CYAN}ORGANIZATION POLICY + COST${GR}" "$(stage2_body "done" "active")")"; }
+hero_cost_complete()   { # sp es pr li
+  STAGE_ST=("done" "done" "done" "next")
+  g_show "$(mainp "${GB}${GUM_CYAN}ORGANIZATION POLICY + COST${GR}" "$(stage2_body "done" "done" "$1" "$2" "$3" "$4")")" \
+    "$(printf '%s✓ NEXT CALL PREVENTED%s%s · Anthropic not called · denied-call cost $0.0000%s' "$GUM_GREEN" "$GR" "$GUM_MUTED" "$GR")"
+}
+
+# ── OPERATIONS + PROOF ───────────────────────────────────────────────────────
+ops_status() { printf '%s%s Applying policy edit and reloading…%s' "$GUM_CYAN" "$1" "$GR"; }
+ops_pending_content() {
+  STAGE_ST=("done" "done" "done" "active")
+  local body; body="$(printf '%s%sLIVE POLICY EDIT%s\n\n%sFinance sets an emergency daily ceiling%s\n\n%sediting the budget on disk · periodic safe reload%s' \
+    "$GB" "$GUM_TEXT" "$GR" "$GUM_TEXT" "$GR" "$GUM_MUTED" "$GR")"
+  gum join --horizontal --align top "$(g_rail)" "$(mainp "${GB}${GUM_CYAN}OPERATIONS + PROOF${GR}" "$body")"
+}
+hero_ops_complete() { # oldcap newcap spend
+  local edit fleet body
+  edit="$(printf '%s%sLIVE POLICY EDIT%s\n%s %s → %s\n%s %s\n%s %s✓ activated safely%s' \
+    "$GB" "$GUM_TEXT" "$GR" \
+    "$(pcell 14 "Daily budget" "$GUM_MUTED")" "$(pcell 9 "$(money "$1")" "$GUM_TEXT")" "${GUM_AMBER}$(money "$2")${GR}" \
+    "$(pcell 14 "Current spend" "$GUM_MUTED")" "$(pcell 9 "$(money "$3")" "$GUM_TEXT")" \
+    "$(pcell 14 "Reload" "$GUM_MUTED")" "$GUM_GREEN" "$GR")"
+  local frows; frows="$(talon agents --url "$GATEWAY" --json 2>/dev/null | jq -r '.agents|sort_by(.name)[]|"\(.name)\t\(.health)"' \
+    | while IFS=$'\t' read -r n h; do
+        if [[ "$h" == blocked ]]; then printf '%s %s\n' "$(pcell 20 "$n" "$GUM_TEXT")" "$(pcell 8 BLOCKED "$GUM_AMBER")"
+        else printf '%s %s\n' "$(pcell 20 "$n" "$GUM_TEXT")" "$(pcell 8 "$h" "$GUM_GREEN")"; fi
+      done)"
+  fleet="$(printf '%s%sFLEET AFTER RELOAD%s\n%s' "$GB" "$GUM_TEXT" "$GR" "$frows")"
+  body="$(printf '%s\n\n%s' "$edit" "$fleet")"
+  g_show "$(mainp "${GB}${GUM_CYAN}OPERATIONS + PROOF${GR}" "$body")" "${GUM_MUTED}emergency ceiling active · document-summary blocked from new work${GR}"
+}
+hero_proof() { # sid failed skip sel cost total valid
+  local body
+  body="$(printf '%s%sSESSION%s  %s%s%s\n%scompleted · PII redacted · %s failed%s\n%s%s skipped · %s selected · cost %s%s\n\n%s%sSIGNED EVIDENCE%s\n%s%s records · %s valid · 0 invalid%s\n%sfailover · valid_fallback%s\n\n%s✓ VERIFIED OFFLINE%s' \
+    "$GB" "$GUM_TEXT" "$GR" "$GUM_MUTED" "$1" "$GR" \
+    "$GUM_MUTED" "$2" "$GR" \
+    "$GUM_MUTED" "$3" "$4" "$(moneylt "$5")" "$GR" \
+    "$GB" "$GUM_PURPLE" "$GR" \
+    "$GUM_TEXT" "$6" "$7" "$GR" \
+    "$GUM_MUTED" "$GR" \
+    "$GUM_PURPLE" "$GR")"
+  g_show "$(mainp "${GB}${GUM_PURPLE}PROOF${GR}" "$body")" "$(printf '%s✓ VERIFIED OFFLINE%s%s · every decision signed · tamper-evident%s' "$GUM_PURPLE" "$GR" "$GUM_MUTED" "$GR")"
+}
+hero_final() {
+  STAGE_ST=("done" "done" "done" "done")
+  local body; body="$(printf '\n%s%sOperate every AI use case%s\n%s%sthrough one shared control plane%s\n\n%sCost control · Reliability · Shared policy · Session understanding%s\n\n%s✓ Live decisions   ✓ Signed evidence   ✓ Verified offline%s' \
+    "$GB" "$GUM_TEXT" "$GR" "$GB" "$GUM_TEXT" "$GR" "$GUM_MUTED" "$GR" "$GUM_GREEN" "$GR")"
+  g_show "$(g_panel "$MAINW" "$CH" "${GB}${GUM_CYAN}TALON${GR}" "$body")" "${GUM_MUTED}one control plane · every AI use case · proven live${GR}"
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# Beats: [pending frame] → live call (spinner in gum) → assert (shared) → extract → present.
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── 1. Category + fleet ──────────────────────────────────────────────────────
@@ -212,7 +395,8 @@ present_fleet_hero() {   # OPENING / FLEET — the single clear of the whole her
 }
 present_fleet_full() { runcmd "talon agents --url '$GATEWAY'"; }
 beat_fleet() {
-  if [[ "$CUT" == hero ]]; then present_fleet_hero
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then hero_opening; g_hold 2
+  elif [[ "$CUT" == hero ]]; then present_fleet_hero
   else
     banner "Talon — one operating layer for a company's AI use cases"
     printf ' %s3 production AI use cases   ·   1 organization policy   ·   1 operating view%s\n' "$DIM" "$R"
@@ -222,9 +406,19 @@ beat_fleet() {
 
 # ── 2. Customer-support incident (reliability + shared policy) ────────────────
 beat_support() {
-  [[ "$CUT" == hero ]] && pending "customer refund · contains email + IBAN" "scanning input and evaluating the route…"
-  openai_chat "$CS_KEY" local-llama llama3.2:1b \
-    "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    hero_set_stage 1
+    local content; content="$(support_pending_content)"
+    ( openai_chat "$CS_KEY" local-llama llama3.2:1b \
+        "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID" || true
+      printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
+    g_await "$!" "$content" support_status
+    HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
+  else
+    [[ "$CUT" == hero ]] && pending "customer refund · contains email + IBAN" "scanning input and evaluating the route…"
+    openai_chat "$CS_KEY" local-llama llama3.2:1b \
+      "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
+  fi
   require_http 200 "reliability"
   export_session "$SUPPORT_SID" "$WORK/support.json"
   assert_ev "$WORK/support.json" \
@@ -245,7 +439,10 @@ beat_support() {
   skip_prov="$(jq -r 'first(.records[].failover.skipped_candidates[]?.provider)' "$WORK/support.json")"
   sel="$(jq -r 'first(.records[]|select(.failover.role=="fallback_decision").failover.provider)' "$WORK/support.json")"
   local scost; scost="$(jq -r '[.records[].execution.cost // 0]|add' "$WORK/support.json" 2>/dev/null)"
-  if [[ "$CUT" == hero ]]; then present_support_hero "$ph" "$tier" "$failed_prov" "$skip_prov" "$sel" "$scost"
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    hero_support_complete "$tier" "$failed_prov" "$skip_prov" "$sel" "$scost"; g_hold 3
+    g_transition "RELIABILITY PROVED" "ORGANIZATION POLICY + COST" 2
+  elif [[ "$CUT" == hero ]]; then present_support_hero "$ph" "$tier" "$failed_prov" "$skip_prov" "$sel" "$scost"
   else present_support_full "$pii" "$ph" "$tier" "$failed_prov" "$failed_err" "$skip_prov" "$sel"; fi
 }
 present_support_hero() { # ph tier failed skip sel cost — appended below the pending frame
@@ -273,14 +470,22 @@ present_support_full() { # pii ph tier failed failed_err skip sel
 
 # ── 3. Organization tool boundary (shared capability policy) ──────────────────
 beat_capability() {
-  [[ "$CUT" == hero ]] && pending "coding-assistant asks for:" "evaluating organization capability policy…" "read_file · search_kb · admin_purge_records"
-  tools_req "$CODE_KEY"
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    local content; content="$(tool_pending_content)"
+    ( tools_req "$CODE_KEY" || true; printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
+    g_await "$!" "$content" tool_status
+    HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
+  else
+    [[ "$CUT" == hero ]] && pending "coding-assistant asks for:" "evaluating organization capability policy…" "read_file · search_kb · admin_purge_records"
+    tools_req "$CODE_KEY"
+  fi
   require_http 403 "capability"
   export_session "coding-${SUPPORT_SID}" "$WORK/coding.json"
   assert_ev "$WORK/coding.json" \
     'any(.records[]; .policy_decision.allowed==false and ((.execution.cost//0)==0) and (tostring|test("admin_purge_records")) and (.policy_decision.reasons|tostring|test("tool")))' \
     "organization tool boundary (admin_purge_records denied, \$0)"
-  if [[ "$CUT" == hero ]]; then present_capability_hero; else present_capability_full; fi
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then hero_tool_complete; g_hold 2
+  elif [[ "$CUT" == hero ]]; then present_capability_hero; else present_capability_full; fi
 }
 present_capability_hero() {   # appended below the pending frame — Talon behaved correctly, so ✓ (not ✗)
   printf '\n  %b%-11s%b %borganization forbids%b %badmin_*%b\n\n' "$B" "BOUNDARY" "$R" "$GRY" "$R" "$AMB" "$R"
@@ -298,15 +503,23 @@ present_capability_full() {
 }
 
 # ── 4. Cost control (projected-cost session budget — a SOFT cap) ──────────────
-beat_cost() {
-  [[ "$CUT" == hero ]] && pending "document-summary" "checking projected session cost…"
-  local sess n; sess="doc-budget-$(rand 4)"
-  # One (or a few) allowed summaries, then the next is denied on PROJECTED cost.
-  for n in $(seq 1 12); do
+# The projected-cost loop: one (or a few) allowed summaries, then the next is
+# denied on projected cost. Sets HTTP; no die (the caller checks HTTP + evidence).
+cost_loop() { local sess="$1" n; for n in $(seq 1 12); do
     anthropic_msg "$DOC_KEY" claude-sonnet-5 "Please write a full, multi-section summary of this quarterly compliance document." 1024 "$sess"
-    [[ "$HTTP" == "403" ]] && break
-    require_http 200 "cost-batch"
-  done
+    case "$HTTP" in 403|200) [[ "$HTTP" == 403 ]] && break;; *) break;; esac
+  done; }
+beat_cost() {
+  local sess; sess="doc-budget-$(rand 4)"
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    local content; content="$(cost_pending_content)"
+    ( cost_loop "$sess" || true; printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
+    g_await "$!" "$content" cost_status
+    HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
+  else
+    [[ "$CUT" == hero ]] && pending "document-summary" "checking projected session cost…"
+    cost_loop "$sess"
+  fi
   [[ "$HTTP" == "403" ]] || die "cost: session budget never tripped in 12 calls"
   export_session "$sess" "$WORK/doc.json"
   assert_ev "$WORK/doc.json" \
@@ -317,7 +530,11 @@ beat_cost() {
   es="$(jq -r 'first(.records[]|select(.session_budget!=null).session_budget.estimate)' "$WORK/doc.json")"
   li="$(jq -r 'first(.records[]|select(.session_budget!=null).session_budget.limit)' "$WORK/doc.json")"
   pr="$(awk -v a="$sp" -v b="$es" 'BEGIN{printf "%.4f", a+b}')"
-  if [[ "$CUT" == hero ]]; then present_cost_hero "$sp" "$es" "$pr" "$li"; else present_cost_full "$sp" "$es" "$pr" "$li"; fi
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    hero_cost_complete "$sp" "$es" "$pr" "$li"; g_hold 3
+    g_transition "POLICY + COST PROVED" "OPERATIONS + PROOF" 3
+  elif [[ "$CUT" == hero ]]; then present_cost_hero "$sp" "$es" "$pr" "$li"
+  else present_cost_full "$sp" "$es" "$pr" "$li"; fi
 }
 present_cost_hero() { # spent est projected limit — appended below the pending frame
   printf '\n  %b%-24s%b %b$%s%b\n' "$B" "SESSION SPEND" "$R" "$WHT" "$(fmt "$1")" "$R"
@@ -339,23 +556,36 @@ present_cost_full() { # spent est projected limit
 }
 
 # ── 5. Live operational control (a policy edit → fleet blocked) ───────────────
-beat_policy() {
-  # A couple more real summaries this operating period, then Finance lowers the
-  # daily budget below today's spend (a live YAML edit, activated by safe reload).
-  local sess _; sess="doc-day-$(rand 4)"
+# A couple more real summaries this operating period, then Finance lowers the
+# daily budget below today's spend (a live YAML edit, activated by safe reload).
+# Writes "oldcap<TAB>newcap<TAB>final_spend<TAB>health" to $WORK/.policy; no die.
+policy_apply() {
+  local sess oldcap spend newcap health="" _; sess="doc-day-$(rand 4)"
   anthropic_msg "$DOC_KEY" claude-sonnet-5 "Summarize this quarterly compliance document in detail." 1024 "$sess" || true
   anthropic_msg "$DOC_KEY" claude-sonnet-5 "Summarize this quarterly compliance document in detail." 1024 "$sess" || true
-  local oldcap spend newcap
   oldcap="$(dsum_json daily_cap)"; spend="$(dsum_json spend_day)"
-  [[ -n "$spend" && "$spend" != "null" && "$spend" != "0" ]] || die "could not read document-summary daily spend"
+  if [[ -z "$spend" || "$spend" == "null" || "$spend" == "0" ]]; then printf 'ERR\t\t\t' >"$WORK/.policy"; return; fi
   newcap="$(awk -v s="$spend" 'BEGIN{printf "%.4f", s*0.9}')"
-  [[ "$CUT" == hero ]] && pending "document-summary · new daily ceiling" "applying policy edit and reloading…"
   sed -i.bak -E "s/daily: [0-9.]+/daily: ${newcap}/" "$WORK/agents/document-summary/agent.talon.yaml"
-  local health=""
   for _ in $(seq 1 30); do health="$(dsum_json health)"; [[ "$health" == "blocked" ]] && break; sleep 0.5; done
+  printf '%s\t%s\t%s\t%s' "$oldcap" "$newcap" "$(dsum_json spend_day)" "$health" >"$WORK/.policy"
+}
+beat_policy() {
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    local content; content="$(ops_pending_content)"
+    ( policy_apply ) &
+    g_await "$!" "$content" ops_status
+  else
+    [[ "$CUT" == hero ]] && pending "document-summary · new daily ceiling" "applying policy edit and reloading…"
+    policy_apply
+  fi
+  local oldcap newcap final_spend health
+  IFS=$'\t' read -r oldcap newcap final_spend health < "$WORK/.policy" 2>/dev/null || true
+  [[ "$oldcap" != "ERR" ]] || die "could not read document-summary daily spend"
   [[ "$health" == "blocked" ]] || die "document-summary did not reach HEALTH=blocked after lowering the daily cap (reload/eval issue)"
-  local final_spend; final_spend="$(dsum_json spend_day)"
-  if [[ "$CUT" == hero ]]; then present_policy_hero "$oldcap" "$newcap" "$final_spend"; else present_policy_full "$oldcap" "$newcap" "$final_spend"; fi
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then hero_ops_complete "$oldcap" "$newcap" "$final_spend"; g_hold 3
+  elif [[ "$CUT" == hero ]]; then present_policy_hero "$oldcap" "$newcap" "$final_spend"
+  else present_policy_full "$oldcap" "$newcap" "$final_spend"; fi
 }
 present_policy_hero() { # oldcap newcap spend — appended below the pending frame
   printf '\n  %bFINANCE SETS AN EMERGENCY DAILY CEILING%b\n\n' "$B" "$R"
@@ -410,7 +640,10 @@ beat_close() {
   c_failed="$(jq -r 'first(.records[]|select(.failover.role=="failed_attempt").failover.provider)' "$WORK/support.json")"
   c_skip="$(jq -r 'first(.records[].failover.skipped_candidates[]?.provider)' "$WORK/support.json")"
   c_sel="$(jq -r 'first(.records[]|select(.failover.role=="fallback_decision").failover.provider)' "$WORK/support.json")"
-  if [[ "$CUT" == hero ]]; then present_close_hero "$total" "$valid" "$fv" "$scost" "$c_failed" "$c_skip" "$c_sel"
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    hero_proof "${SUPPORT_SID:0:12}" "$c_failed" "$c_skip" "$c_sel" "$scost" "$total" "$valid"; g_hold 3
+    hero_final; g_hold 3
+  elif [[ "$CUT" == hero ]]; then present_close_hero "$total" "$valid" "$fv" "$scost" "$c_failed" "$c_skip" "$c_sel"
   else present_close_full "$corr" "$fv"; fi
 }
 present_close_hero() { # total valid fv scost failed skip sel — the compact product-level receipt
@@ -451,14 +684,23 @@ present_close_full() { # corr fv
 # ── Cuts ─────────────────────────────────────────────────────────────────────
 run_beats() { # run_beats <hero|all>
   CUT="$1"
-  if [[ "$CUT" == hero ]]; then
-    # Anchored narrative: OPENING/FLEET, then four chapters that APPEND (never clear
-    # between beats) so request→decision→result accumulates on one continuous screen.
+  if [[ "$CUT" == hero && "$UI" == gum ]]; then
+    # Styled live operations console: enter the alternate screen once; every beat
+    # recomposes the stable header + progress rail + main panel + status bar in
+    # place. The progress rail (not chapter dividers) carries orientation.
+    g_enter_screen
+    beat_fleet; beat_support; beat_capability; beat_cost; beat_policy; beat_close
+    printf '\033]0;HERO_COMPLETE\007'   # machine marker via terminal title — off the visible frame
+    # Keep the final frame as the last recorded event when recording (the recorder
+    # resets the real terminal afterward); restore it for a manual/interactive run.
+    if [[ "${TALON_DEMO_KEEP_SCREEN:-0}" == 1 ]]; then HERO_SCREEN=0; else g_restore_screen; fi
+  elif [[ "$CUT" == hero ]]; then
+    # Plain-UI anchored narrative — the automated-assertion fallback (no gum).
     beat_fleet
     chapter 1 "RELIABILITY + SHARED POLICY"; beat_support
     chapter 2 "ORGANIZATION POLICY + COST";  beat_capability; beat_cost
     chapter 3 "OPERATIONAL CONTROL + PROOF"; beat_policy;     beat_close
-    printf '\033]0;HERO_COMPLETE\007'   # machine marker via terminal title — off the visible frame
+    printf '\033]0;HERO_COMPLETE\007'
   else
     beat_fleet; beat_support; beat_capability; beat_cost; beat_policy; beat_close
   fi
@@ -473,8 +715,14 @@ CS_KEY='${CS_KEY}'; CODE_KEY='${CODE_KEY}'; DOC_KEY='${DOC_KEY}'; SUPPORT_SID='$
 EOF
 }
 
+# gum is required ONLY for the styled hero (TALON_DEMO_UI=gum). The full `all`
+# walkthrough and the plain-UI hero fallback never need it.
+require_gum() { command -v gum >/dev/null 2>&1 || die "gum is required for the styled hero (TALON_DEMO_UI=gum) — install gum v0.17.0 (https://github.com/charmbracelet/gum). The full walkthrough needs no gum:  ./demo.sh   (and the plain hero for tests:  TALON_DEMO_UI=plain ./demo.sh hero)."; }
+
 case "${1:-all}" in
-  hero|all) setup; run_beats "${1:-all}" ;;
+  hero|all)
+    [[ "$1" == hero && "$UI" == gum ]] && require_gum
+    setup; run_beats "${1:-all}" ;;
   prepare)
     STATE="${2:?usage: demo.sh prepare <statefile> [hero|all]}"
     setup; write_state "$STATE" "${3:-hero}"
@@ -484,6 +732,7 @@ case "${1:-all}" in
     STATE="${2:?usage: demo.sh play <statefile>}"
     # shellcheck disable=SC1090
     source "$STATE"; cd "$WORK"
+    [[ "${STATE_CUT:-hero}" == hero && "$UI" == gum ]] && require_gum
     run_beats "${STATE_CUT:-hero}" ;;
   *) echo "usage: $0 [hero | all | prepare <statefile> [hero|all] | play <statefile>]" >&2; exit 2 ;;
 esac

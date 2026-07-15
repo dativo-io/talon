@@ -19,7 +19,7 @@ export OPENAI_API_KEY=sk-...  ANTHROPIC_API_KEY=sk-ant-...
 # The reliability beat needs the local model DOWN — stop Ollama if it's running.
 make product-demo
 # or:  ./demo.sh          # full narrated demo (every command shown, for evaluators)
-#      ./demo.sh hero     # anchored live product cut — the README GIF
+#      ./demo.sh hero     # styled live operations console — the README GIF (needs gum)
 ```
 
 **Real, paid provider calls** — approximately **$0.02–0.05 per run** of
@@ -34,6 +34,25 @@ Requirements: `go`, `jq`, `curl`, `openssl`, an `OPENAI_API_KEY` and an `ANTHROP
 and **Ollama not listening on `:11434`** (the reliability beat demonstrates
 failover *from* the local model, so it must be offline; the demo asserts this in
 preflight).
+
+### The styled hero console needs `gum` (demo-only)
+
+`./demo.sh hero` (and `scripts/record-hero.sh`) render a live operations console
+with [gum](https://github.com/charmbracelet/gum) — a **demo-only** dependency
+pinned to **v0.17.0**:
+
+```bash
+go install github.com/charmbracelet/gum@v0.17.0   # or: brew install gum
+```
+
+gum is **not** a Talon dependency in any sense that matters: it is not in `go.mod`,
+not compiled into or invoked by the `talon` binary, and **not** required to build,
+install, run, or operate Talon. It is also not required for `make product-demo`,
+the verbose `./demo.sh` (`all`) walkthrough, or the CI smoke test's core path — only
+for the styled `hero` cut and its recording. Where a plain-text surface is needed
+(automated assertions), `TALON_DEMO_UI=plain ./demo.sh hero` renders the same live
+run without gum; the recorder refuses that fallback so the committed asset is always
+the styled console.
 
 ## What you're looking at
 

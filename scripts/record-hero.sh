@@ -36,6 +36,21 @@ fi
 for tool in go jq curl openssl; do
   command -v "$tool" >/dev/null 2>&1 || { echo "✗ ${tool} is required" >&2; exit 1; }
 done
+# gum renders the styled hero console. It is a DEMO-ONLY dependency — the full
+# `all` walkthrough and `make product-demo` do NOT need it. Pinned for recording.
+GUM_VERSION="v0.17.0"
+if ! command -v gum >/dev/null 2>&1; then
+  echo "✗ gum ${GUM_VERSION} is required for the recorded hero (the full demo needs no gum)." >&2
+  echo "  Install:  go install github.com/charmbracelet/gum@${GUM_VERSION}   (or: brew install gum)" >&2
+  exit 1
+fi
+gv="$(gum --version 2>&1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"; gv="v${gv#v}"
+[[ "$gv" == "$GUM_VERSION" ]] || echo "    ⚠ gum ${gv} is installed but the hero is pinned to ${GUM_VERSION}; styled layout may differ." >&2
+# The recorded hero MUST be the styled console; never record the plain fallback.
+if [[ "${TALON_DEMO_UI:-gum}" == "plain" ]]; then
+  echo "✗ TALON_DEMO_UI=plain will not be recorded — the plain layout exists only for automated text assertions." >&2
+  exit 1
+fi
 # Fail before asciinema starts, so a preflight problem never records a broken cast.
 [[ -n "${OPENAI_API_KEY:-}" ]]    || { echo "✗ OPENAI_API_KEY is required (real providers)." >&2; exit 1; }
 [[ -n "${ANTHROPIC_API_KEY:-}" ]] || { echo "✗ ANTHROPIC_API_KEY is required (document-summary runs on Anthropic)." >&2; exit 1; }
@@ -51,6 +66,10 @@ cd "$DEMO_DIR"
 # below. Colour is forced so the GIF renders in colour even when asciinema
 # records headless.
 export TALON_DEMO_COLOR=1
+# Record the styled operations console, and keep its final frame as the last cast
+# event (the alt-screen is reset on the real terminal after asciinema finishes).
+export TALON_DEMO_UI=gum
+export TALON_DEMO_KEEP_SCREEN=1
 # Pace the acts so the rendered GIF lands in the readable range. --idle-time-limit
 # MUST exceed DEMO_STEP_PAUSE or agg collapses the pause when it rewrites the
 # timeline; keep them in lockstep.
@@ -83,16 +102,19 @@ echo "==> Recording only the product story (./demo.sh play)..."
 ASCII_MAJOR="$(asciinema --version 2>&1 | grep -oE '[0-9]+' | head -n1)"
 rec_rc=0
 if [[ "${ASCII_MAJOR:-0}" -ge 3 ]]; then
-  asciinema rec --overwrite --window-size 88x26 --idle-time-limit 4 \
+  asciinema rec --overwrite --window-size 88x28 --idle-time-limit 3 \
     -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
 else
-  echo "    asciinema v${ASCII_MAJOR:-?}: no --window-size — requesting an 88x26 terminal and recording at terminal size."
-  echo "    For a pixel-clean asset, size this terminal to 88x26 first (or install asciinema 3)."
-  printf '\033[8;26;88t'   # ask the emulator to resize to 26 rows x 88 cols (honored by most; harmless where ignored)
+  echo "    asciinema v${ASCII_MAJOR:-?}: no --window-size — requesting an 88x28 terminal and recording at terminal size."
+  echo "    For a pixel-clean asset, size this terminal to 88x28 first (or install asciinema 3)."
+  printf '\033[8;28;88t'   # ask the emulator to resize to 28 rows x 88 cols (honored by most; harmless where ignored)
   sleep 1
-  asciinema rec --overwrite --idle-time-limit 4 \
+  asciinema rec --overwrite --idle-time-limit 3 \
     -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
 fi
+# The styled hero leaves the terminal in the alternate screen (KEEP_SCREEN) so the
+# final frame is the last cast event; reset the REAL terminal now that it's captured.
+printf '\033[?25h\033[?1049l'
 if [[ "$rec_rc" -ne 0 ]]; then
   echo "✗ demo.sh play exited ${rec_rc} — recording NOT promoted. The committed cast is unchanged." >&2
   rm -f "$CAST_TMP"; exit 1
@@ -108,13 +130,14 @@ fi
 # mount can read it.
 GIF_TMP="${GIF}.tmp"
 render_ok=0
+AGG_FLAGS=(--theme github-dark --font-size 20 --line-height 1.2 --last-frame-duration 3)
 if command -v agg >/dev/null 2>&1; then
-  echo "==> Rendering GIF (agg)..."
-  agg --font-size 20 "$CAST_TMP" "$GIF_TMP" && render_ok=1
+  echo "==> Rendering GIF (agg, github-dark)..."
+  agg "${AGG_FLAGS[@]}" "$CAST_TMP" "$GIF_TMP" && render_ok=1
 elif command -v docker >/dev/null 2>&1; then
   echo "==> Rendering GIF (agg via Docker)..."
   docker run --rm -v "${ASSET_DIR}:/data" ghcr.io/asciinema/agg \
-    --font-size 20 "/data/$(basename "$CAST_TMP")" "/data/$(basename "$GIF_TMP")" && render_ok=1
+    "${AGG_FLAGS[@]}" "/data/$(basename "$CAST_TMP")" "/data/$(basename "$GIF_TMP")" && render_ok=1
 fi
 
 # Promotion gate: unless --cast-only, a FRESH GIF must have rendered this run.
@@ -131,7 +154,7 @@ fi
 # Both validated (or --cast-only): promote atomically.
 mv -f "$CAST_TMP" "$CAST"
 CAST_GEO="$(head -n1 "$CAST" 2>/dev/null | jq -r 'if .width then "\(.width)x\(.height)" else "?" end' 2>/dev/null || echo '?')"
-echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 88x26)"
+echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 88x28)"
 if [[ "$render_ok" == 1 && -s "$GIF_TMP" ]]; then
   mv -f "$GIF_TMP" "$GIF"
   echo "    Wrote ${GIF}"

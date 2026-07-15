@@ -143,13 +143,21 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      # gum is a DEMO-ONLY dependency, pinned to v0.17.0. It is needed only by the
+      # smoke's gum-dependency-boundary checks (hero-errors-without-gum, the
+      # recorder-refuses-plain check) and NOT by Talon itself: it never enters
+      # go.mod, the talon binary, or `make product-demo` / the verbose `all` cut.
+      - name: Install gum (demo-only, pinned)
+        run: go install github.com/charmbracelet/gum@v0.17.0
+
       # Runs examples/product-demo/demo.sh against the offline mock provider (no
       # API keys, no spend): validates startup, three-agent discovery, the
       # policy-valid-failover / org-tool / session-budget / blocked-fleet evidence
-      # assertions, and that those assertions are load-bearing (a NEGATIVE case
-      # fails the demo when failover cannot happen).
+      # assertions, that those assertions are load-bearing (a NEGATIVE evidence
+      # case fails the demo), and the gum dependency boundary (the `all` cut never
+      # calls gum; `hero` errors clearly without gum; the recorder refuses plain).
       - name: Smoke-test the product demo (mock provider)
-        run: make smoke-product-demo
+        run: PATH="$(go env GOPATH)/bin:$PATH" make smoke-product-demo
 
   lint:
     name: Lint
