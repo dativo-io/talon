@@ -167,7 +167,8 @@ post_anthropic() {
 
 # post_openai <bearer> <model> <user_content> [tools_json]
 # post_openai_probe <key> — 200/401 probe so acts can detect which agent the
-# gateway is serving (#266; multi-agent single-process serving is #267).
+# gateway is serving (#266; this demo deliberately serves one act agent at a
+# time — agents_dir discovery, #267 shipped, could serve all acts at once).
 post_openai_probe() {
   curl -s -o /dev/null -w "%{http_code}" -X POST "${GATEWAY}/v1/proxy/openai/v1/chat/completions" \
     -H "Authorization: Bearer $1" -H "Content-Type: application/json" \
@@ -481,7 +482,7 @@ act_redact() {
       echo "STRICT: redact act skipped (gateway not serving session-demo-redact) — refusing to record" >&2
       exit 1
     fi
-    block_result "-" "SKIPPED: gateway is serving the hero agent. Switch acts (until #267): TALON_ACT_AGENT=session-demo-redact docker compose up -d talon"
+    block_result "-" "SKIPPED: gateway is serving the hero agent. Switch acts (one act agent at a time by design): TALON_ACT_AGENT=session-demo-redact docker compose up -d talon"
     return 0
   fi
   block_config "agents/session-demo-redact.talon.yaml → data_classification.redact_input: true"
@@ -502,7 +503,7 @@ act_routing_deny() {
       echo "STRICT: routing-deny act skipped (gateway not serving session-demo-eu) — refusing to record" >&2
       exit 1
     fi
-    block_result "-" "SKIPPED: gateway is serving the hero agent. Switch acts (until #267): TALON_ACT_AGENT=session-demo-eu docker compose up -d talon"
+    block_result "-" "SKIPPED: gateway is serving the hero agent. Switch acts (one act agent at a time by design): TALON_ACT_AGENT=session-demo-eu docker compose up -d talon"
     return 0
   fi
   block_config "agents/session-demo-eu.talon.yaml → policies.models.allowed: [\"gpt-4o-mini\"]"

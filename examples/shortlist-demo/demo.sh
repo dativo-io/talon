@@ -50,14 +50,15 @@ require_stack() {
 }
 
 # switch_agent <name> — restart the gateway serving a different agent (#266).
-# One gateway process serves one agent until agents_dir lands (#267); proofs
-# that exercise another identity switch by restarting the talon service with
-# TALON_ACT_AGENT and waiting for health.
+# This demo deliberately serves one agent per gateway process (agents_dir
+# discovery — #267, shipped — could serve every proof identity at once);
+# proofs that exercise another identity switch by restarting the talon
+# service with TALON_ACT_AGENT and waiting for health.
 CURRENT_ACT_AGENT="shortlist-allow"
 switch_agent() {
   local want="$1"
   [[ "$CURRENT_ACT_AGENT" == "$want" ]] && return 0
-  echo "  ↻  switching gateway agent: ${CURRENT_ACT_AGENT} → ${want} (#266; single-process multi-agent is #267)"
+  echo "  ↻  switching gateway agent: ${CURRENT_ACT_AGENT} → ${want} (#266; one agent per process by design)"
   TALON_ACT_AGENT="$want" dc up -d talon >/dev/null 2>&1
   local _attempt
   for _attempt in $(seq 1 30); do

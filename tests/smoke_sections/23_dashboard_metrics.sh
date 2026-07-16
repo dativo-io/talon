@@ -26,9 +26,10 @@ test_section_23_dashboard_metrics() {
   [[ -n "${OPENAI_API_KEY:-}" ]] && run_talon secrets set openai-api-key "$OPENAI_API_KEY" &>/dev/null; true
   smoke_tighten_limits "$dir"
   # Per-dimension agents (#266): metrics (baseline), pii-block, tool-filter.
-  # Phases restart the gateway with TALON_DEFAULT_POLICY; the dashboard
-  # collector backfills from evidence at startup, so cross-phase agent_stats
-  # survive restarts (multi-agent single-process serving is #267).
+  # This section deliberately restarts the gateway per phase with
+  # TALON_DEFAULT_POLICY (multi-agent single-process serving exists via
+  # agents_dir, #267); the dashboard collector backfills from evidence at
+  # startup, so cross-phase agent_stats survive restarts.
   mkdir -p "$dir/agents"
   dm_write_agent() { cat > "$dir/agents/$1.talon.yaml" <<AGEOF
 agent:

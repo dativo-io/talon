@@ -49,10 +49,10 @@ services:
       - |
         set -e
         talon secrets set openai-api-key mock-demo-not-a-real-key >/dev/null 2>&1 || true
-        # Agent traffic keys (#266): one per demo proof identity. The gateway
-        # serves ONE agent at a time; the demo driver switches proofs by
-        # restarting this service with TALON_ACT_AGENT (agents_dir single-
-        # process serving is #267).
+        # Agent traffic keys (#266): one per demo proof identity. This demo
+        # deliberately serves ONE agent at a time; the driver switches proofs
+        # by restarting this service with TALON_ACT_AGENT (agents_dir
+        # discovery — #267, shipped — could serve all identities at once).
         talon secrets set shortlist-allow-talon-key talon-shortlist-allow >/dev/null 2>&1 || true
         talon secrets set shortlist-deny-talon-key talon-shortlist-deny >/dev/null 2>&1 || true
         talon secrets set shortlist-eu-talon-key talon-shortlist-eu >/dev/null 2>&1 || true

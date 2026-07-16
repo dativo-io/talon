@@ -130,6 +130,17 @@ func checkDataDir(cfg *config.Config) CheckResult {
 func checkPolicy(cfg *config.Config) CheckResult {
 	policyPath := cfg.DefaultPolicy
 	if _, err := os.Stat(policyPath); err != nil {
+		// Fleet mode (#318): run/serve resolve agents from the fleet
+		// discovered under agents_dir, so the default file is NOT required
+		// for them — only process-wide surfaces (MCP/graph interception)
+		// fall back to a synthetic minimal policy until one exists.
+		if cfg.AgentsDir != "" {
+			return CheckResult{
+				Name: "policy_valid", Category: "config", Status: "warn",
+				Message: fmt.Sprintf("%s — file not found; serve/run use the fleet discovered under agents_dir %s, but process-wide MCP/graph interception falls back to a synthetic minimal policy without a default file", policyPath, cfg.AgentsDir),
+				Fix:     "Add a default agent.talon.yaml for process-wide surfaces, or accept the synthetic minimal default",
+			}
+		}
 		// Advisory in the general pass: plain `talon serve` synthesizes a
 		// minimal default. Gateway mode REQUIRES a keyed agent — that is
 		// enforced as a FAIL by gateway_agent_identity when a gateway config

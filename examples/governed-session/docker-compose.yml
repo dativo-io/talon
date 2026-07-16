@@ -75,7 +75,8 @@ services:
         talon secrets set openai-api-key "$${OPENAI_API_KEY}" >/dev/null
         # Agent traffic keys (#266): one per demo act. The gateway serves the
         # hero act agent; switching acts = restarting with another
-        # TALON_DEFAULT_POLICY (multi-agent single-process serving is #267).
+        # TALON_DEFAULT_POLICY — deliberate single-act activation (agents_dir
+        # discovery, #267 shipped, could serve all acts at once).
         talon secrets set session-demo-talon-key "talon-session-demo" >/dev/null
         talon secrets set session-demo-redact-talon-key "talon-session-redact" >/dev/null
         talon secrets set session-demo-eu-talon-key "talon-session-eu" >/dev/null
