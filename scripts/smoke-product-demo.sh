@@ -25,9 +25,10 @@ for t in go jq curl openssl perl gum; do command -v "$t" >/dev/null 2>&1 || { ec
 strip_ansi() { perl -pe 's/\e\[[0-9;?]*[a-zA-Z]//g; s/\e\][0-9];[^\a]*\a//g'; }
 
 MOCK_PORT="${MOCK_PORT:-9390}"
-MOCK_PID=""; NEG_DIR=""; GUMSTUB=""; TOOLDIR=""
+MOCK_PID=""; FAULT_PID=""; NEG_DIR=""; GUMSTUB=""; TOOLDIR=""
 cleanup() {
-  [[ -n "$MOCK_PID" ]] && kill "$MOCK_PID" >/dev/null 2>&1 || true
+  [[ -n "$MOCK_PID"  ]] && kill "$MOCK_PID"  >/dev/null 2>&1 || true
+  [[ -n "$FAULT_PID" ]] && kill "$FAULT_PID" >/dev/null 2>&1 || true
   [[ -n "$NEG_DIR"  && -d "$NEG_DIR"  ]] && rm -rf "$NEG_DIR"
   [[ -n "$GUMSTUB"  && -d "$GUMSTUB"  ]] && rm -rf "$GUMSTUB"
   [[ -n "$TOOLDIR"  && -d "$TOOLDIR"  ]] && rm -rf "$TOOLDIR"
@@ -74,18 +75,26 @@ strip_ansi </tmp/hero.raw >/tmp/hero.plain
 # Self-identifying demo + four terminal-comment chapters + real commands + real output.
 for m in "TALON · LIVE TERMINAL DEMO" "── 1." "Fleet" "── 2." "Reliability + shared policy" \
          "── 3." "Organization policy + cost" "── 4." "Operations + proof" \
-         '$ talon agents' "/v1/proxy/local-llama" "/v1/proxy/openai" "/v1/proxy/anthropic" \
-         "perl -i.bak -pe" "talon audit verify --file signed-evidence.json" "verdict=valid_fallback" \
+         '$ talon agents' "/v1/proxy/local-llama/v1/chat/completions" "/v1/proxy/openai/v1/chat/completions" "/v1/proxy/anthropic/v1/messages" \
+         "coding-assistant · tools=" "replaced the detected email and IBAN" \
+         "perl -i.bak -pe" "+ daily:" "daily budget exhausted" \
+         "audit list --session support-" "Requests:" "Providers:" "policy-valid fallback — every decision above is a signed record" \
+         "talon audit verify --file signed-evidence.json" "verdict=valid_fallback" \
          "HTTP 200" "HTTP 403" "session_budget_exceeded" "Total records:" "Valid records:" "Invalid records: 0" \
-         "Operate every AI use case"; do
+         "✓ Live decisions" "Operate every AI use case"; do
   grep -qF "$m" /tmp/hero.plain || { echo "✗ walkthrough marker missing: $m" >&2; rm -f "$STATE"; exit 1; }
 done
 grep -qF "→ " /tmp/hero.plain || { echo "✗ demo annotations (→) missing" >&2; rm -f "$STATE"; exit 1; }
-# No host shell prompt / setup output, and NONE of the old dashboard chrome (it must
-# read as a terminal recording, not an interactive Talon product UI).
+# The displayed perl edit carries the EXACT computed replacement (no elided value).
+grep -qE "daily: [0-9]+\.[0-9]{4}/'" /tmp/hero.plain || { echo "✗ the perl edit no longer shows the exact computed value" >&2; rm -f "$STATE"; exit 1; }
+grep -qF "daily: …" /tmp/hero.plain && { echo "✗ the perl edit still shows an elided value" >&2; rm -f "$STATE"; exit 1; } || true
+# No host shell prompt / setup output, NONE of the old dashboard chrome, and no
+# Talon-attributed retry text (retries are demo-runner infrastructure; a clean
+# mock run must show none at all).
 for bad in "Preparing the fleet" "==> " "openclaw@" "demo.sh hero" "demo.sh play" "go build" "/var/folders/" "/tmp/tmp." \
-           "TALON / ACME" "LIVE RUN" "ENFORCE ●" "LIVE COMMAND ·"; do
-  grep -qF "$bad" /tmp/hero.plain && { echo "✗ host/setup/dashboard text leaked: $bad" >&2; rm -f "$STATE"; exit 1; } || true
+           "TALON / ACME" "LIVE RUN" "ENFORCE ●" "LIVE COMMAND ·" \
+           "provider transient" "demo runner:" "retried the demonstration"; do
+  grep -qF "$bad" /tmp/hero.plain && { echo "✗ host/setup/dashboard/retry text leaked: $bad" >&2; rm -f "$STATE"; exit 1; } || true
 done
 grep -qE '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}' /tmp/hero.plain && { echo "✗ walkthrough contains a full UUID" >&2; rm -f "$STATE"; exit 1; } || true
 grep -qE '\$[0-9]+\.[0-9]{5,}' /tmp/hero.plain && { echo "✗ walkthrough contains over-precise money (>4dp)" >&2; rm -f "$STATE"; exit 1; } || true
@@ -100,6 +109,28 @@ grep -qF "sk-smoke" /tmp/hero.raw && { echo "✗ SECRET leak: provider key sk-sm
 rm -f "$STATE"
 [[ "$leak" == 0 ]] || exit 1
 echo "    ✓ walkthrough: self-ID + 4 chapters, real commands + HTTP + verify counts, ✓ annotations; no secrets / host prompt / dashboard / UUID / over-precise money"
+
+echo "==> POSITIVE (fault injection) — a transient provider 529 is absorbed by the demo-runner retry, attributed honestly..."
+# A second mock whose FIRST /v1/messages request returns HTTP 529 (the exact
+# Anthropic "Overloaded" failure seen in the field). The walkthrough must still
+# exit 0, and the surfaced line must attribute the retry to the DEMO RUNNER —
+# never to Talon (same-provider retry is not a shipped product capability).
+FAULT_PORT=$((MOCK_PORT+1))
+( cd "$REPO_ROOT/examples/docker-compose/mock-provider" && go run main.go -port "$FAULT_PORT" -fail-first 1 -fail-status 529 ) >/tmp/smoke-fault.log 2>&1 &
+FAULT_PID=$!
+for _ in $(seq 1 40); do curl -sf "http://localhost:${FAULT_PORT}/health" >/dev/null 2>&1 && break; sleep 0.3; done
+curl -sf "http://localhost:${FAULT_PORT}/health" >/dev/null 2>&1 || { echo "✗ fault mock did not start" >&2; exit 1; }
+if OPENAI_API_KEY=sk-smoke ANTHROPIC_API_KEY=sk-smoke \
+   TALON_DEMO_OPENAI_URL="http://localhost:${MOCK_PORT}" TALON_DEMO_ANTHROPIC_URL="http://localhost:${FAULT_PORT}" \
+   TALON_DEMO_LOCAL_LLAMA_URL="http://127.0.0.1:1" TALON_DEMO_COLOR=0 DEMO_STEP_PAUSE=0 TALON_DEMO_UI=plain \
+   TALON_DEMO_RETRY_BACKOFF=0 \
+   bash "$PD/demo.sh" hero >/tmp/smoke-fault.out 2>&1; then :; else
+  echo "✗ hero FAILED despite the demo-runner retry (fault mock 529-once)" >&2; tail -20 /tmp/smoke-fault.out >&2; exit 1
+fi
+strip_ansi </tmp/smoke-fault.out >/tmp/smoke-fault.plain
+grep -qF "demo runner: provider temporarily overloaded" /tmp/smoke-fault.plain || { echo "✗ retry fired but was not surfaced with demo-runner attribution" >&2; exit 1; }
+grep -qF "retried the demonstration" /tmp/smoke-fault.plain || { echo "✗ retry attribution line incomplete" >&2; exit 1; }
+echo "    ✓ transient 529 absorbed; surfaced as demo-runner behavior (exit 0, honest attribution)"
 
 echo "==> NEGATIVE — local model reachable → preflight aborts the demo..."
 if run_pd "$PD" "http://localhost:${MOCK_PORT}" hero >/tmp/smoke-neg1.out 2>&1; then

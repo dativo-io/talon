@@ -242,6 +242,16 @@ func handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"Method not allowed"}}`, http.StatusMethodNotAllowed)
 		return
 	}
+	// Fault injection (-fail-first N): the first N requests to this endpoint fail
+	// with -fail-status, mimicking a transient provider outage (Anthropic's real
+	// overloaded_error shape). Lets tests prove the demo's recorder-level retry
+	// absorbs exactly the failure seen in the field (HTTP 529 "Overloaded").
+	if n := failCount.Add(1); *failFirst > 0 && n <= int64(*failFirst) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(*failStatus)
+		fmt.Fprintf(w, `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded (mock fault %d of %d)"}}`, n, *failFirst)
+		return
+	}
 	var req anthropicRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf(`{"type":"error","error":{"type":"invalid_request_error","message":"Invalid JSON: %s"}}`, err), http.StatusBadRequest)
@@ -436,8 +446,16 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+var (
+	failFirst  *int
+	failStatus *int
+	failCount  atomic.Int64
+)
+
 func main() {
 	port := flag.Int("port", 9090, "listen port")
+	failFirst = flag.Int("fail-first", 0, "fail the first N /v1/messages requests (transient-outage fault injection)")
+	failStatus = flag.Int("fail-status", 529, "HTTP status for injected /v1/messages failures")
 	flag.Parse()
 
 	mux := http.NewServeMux()

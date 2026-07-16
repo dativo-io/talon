@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -27,8 +28,17 @@ func WhyString(causes []Cause) string {
 // pricing formatter (USD → $, EUR → €), so the attention queue reads in the
 // same currency and symbol as `talon costs`. An empty code defaults to USD, the
 // honest default for the shipped pricing tables (#216).
+//
+// Precision is adaptive: two decimals for ordinary amounts, four when a non-zero
+// amount would otherwise round to nothing (0 < |v| < 0.01). LLM spend is often
+// sub-cent; without this, a blocked agent's WHY read "daily budget exhausted
+// ($0.00 / $0.00)" — true, but useless to the operator deciding what to do.
 func formatMoney(currency string, v float64) string {
-	return pricing.FormatAmount(currency, strconv.FormatFloat(v, 'f', 2, 64))
+	digits := 2
+	if av := math.Abs(v); av > 0 && av < 0.01 {
+		digits = 4
+	}
+	return pricing.FormatAmount(currency, strconv.FormatFloat(v, 'f', digits, 64))
 }
 
 // FormatMoney is the exported form used by the CLI/handler renderers so the COST

@@ -60,6 +60,30 @@ if curl -sf -m 2 "${LOCAL_LLAMA_URL}/api/tags" >/dev/null 2>&1; then
   echo "✗ The local model at ${LOCAL_LLAMA_URL} is UP — the reliability beat needs it DOWN. Stop Ollama and retry." >&2
   exit 1
 fi
+
+# PROVIDER PREFLIGHT — direct minimal-cost calls BEFORE asciinema starts, so a
+# take that would die on provider weather (a real Anthropic HTTP 529 was seen in
+# the field) never begins. Uses the demo's exact model so model-access failures
+# are caught too (~$0.0001). Honors TALON_DEMO_*_URL, so the mock path works.
+OPENAI_URL="${TALON_DEMO_OPENAI_URL:-https://api.openai.com}"
+ANTHROPIC_URL="${TALON_DEMO_ANTHROPIC_URL:-https://api.anthropic.com}"
+preflight() { # preflight <label> <curl args...> — 1 try + 2 retries (3s/6s), abort on failure
+  local label="$1"; shift; local i out code
+  for i in 1 2 3; do
+    out="$(curl -sS -m 20 -w $'\n%{http_code}' "$@" 2>&1)" && code="${out##*$'\n'}" || code="000"
+    [[ "$code" == 2?? ]] && { echo "    ✓ ${label} reachable (HTTP ${code})"; return 0; }
+    (( i < 3 )) && { echo "    ⚠ ${label} preflight HTTP ${code} — retrying in $((i*3))s (${i}/2)..."; sleep $((i*3)); }
+  done
+  echo "✗ ${label} preflight failed after 2 retries (last HTTP ${code}) — NOT starting the recording." >&2
+  echo "  Last response: $(printf '%s' "${out%$'\n'*}" | head -c 300)" >&2
+  exit 1
+}
+echo "==> Provider preflight (minimal-cost live checks; honors TALON_DEMO_*_URL)..."
+preflight "OpenAI"    "${OPENAI_URL}/v1/models" -H "Authorization: Bearer ${OPENAI_API_KEY}"
+preflight "Anthropic" -X POST "${ANTHROPIC_URL}/v1/messages" \
+  -H "x-api-key: ${ANTHROPIC_API_KEY}" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-5","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}'
+
 mkdir -p "$ASSET_DIR"
 cd "$DEMO_DIR"
 
@@ -71,6 +95,9 @@ export TALON_DEMO_COLOR=1
 # Record the styled walkthrough (gum spinner + closing callout). The hero is a
 # scrolling terminal session (no alternate screen), so nothing to restore after.
 export TALON_DEMO_UI=gum
+# Keep the cursor hidden to the very last recorded byte (no stray cursor block on
+# the final frame); the real terminal is reset right after asciinema exits.
+export TALON_DEMO_NO_CURSOR_RESTORE=1
 # Pace the acts so the rendered GIF lands in the readable range. --idle-time-limit
 # MUST exceed DEMO_STEP_PAUSE or agg collapses the pause when it rewrites the
 # timeline; keep them in lockstep.
@@ -103,16 +130,17 @@ echo "==> Recording only the product story (./demo.sh play)..."
 ASCII_MAJOR="$(asciinema --version 2>&1 | grep -oE '[0-9]+' | head -n1)"
 rec_rc=0
 if [[ "${ASCII_MAJOR:-0}" -ge 3 ]]; then
-  asciinema rec --overwrite --window-size 88x34 --idle-time-limit 3 \
+  asciinema rec --overwrite --window-size 88x30 --idle-time-limit 3 \
     -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
 else
-  echo "    asciinema v${ASCII_MAJOR:-?}: no --window-size — requesting an 88x34 terminal and recording at terminal size."
-  echo "    For a pixel-clean asset, size this terminal to 88x34 first (or install asciinema 3)."
-  printf '\033[8;34;88t'   # ask the emulator to resize to 34 rows x 88 cols (honored by most; harmless where ignored)
+  echo "    asciinema v${ASCII_MAJOR:-?}: no --window-size — requesting an 88x30 terminal and recording at terminal size."
+  echo "    For a pixel-clean asset, size this terminal to 88x30 first (or install asciinema 3)."
+  printf '\033[8;30;88t'   # ask the emulator to resize to 30 rows x 88 cols (honored by most; harmless where ignored)
   sleep 1
   asciinema rec --overwrite --idle-time-limit 3 \
     -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
 fi
+printf '\033[?25h'   # reset the REAL terminal (the recorded process left the cursor hidden)
 if [[ "$rec_rc" -ne 0 ]]; then
   echo "✗ demo.sh play exited ${rec_rc} — recording NOT promoted. The committed cast is unchanged." >&2
   rm -f "$CAST_TMP"; exit 1
@@ -128,7 +156,7 @@ fi
 # mount can read it.
 GIF_TMP="${GIF}.tmp"
 render_ok=0
-AGG_FLAGS=(--theme github-dark --font-size 20 --line-height 1.2 --last-frame-duration 3)
+AGG_FLAGS=(--theme github-dark --font-size 20 --line-height 1.2 --last-frame-duration 4)
 if command -v agg >/dev/null 2>&1; then
   echo "==> Rendering GIF (agg, github-dark)..."
   agg "${AGG_FLAGS[@]}" "$CAST_TMP" "$GIF_TMP" && render_ok=1
@@ -152,7 +180,7 @@ fi
 # Both validated (or --cast-only): promote atomically.
 mv -f "$CAST_TMP" "$CAST"
 CAST_GEO="$(head -n1 "$CAST" 2>/dev/null | jq -r 'if .width then "\(.width)x\(.height)" else "?" end' 2>/dev/null || echo '?')"
-echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 88x34)"
+echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 88x30)"
 if [[ "$render_ok" == 1 && -s "$GIF_TMP" ]]; then
   mv -f "$GIF_TMP" "$GIF"
   echo "    Wrote ${GIF}"

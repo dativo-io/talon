@@ -48,7 +48,7 @@ PORT_OVERRIDE="${PORT:-}"
 for t in go jq curl openssl; do command -v "$t" >/dev/null 2>&1 || { echo "✗ $t is required" >&2; exit 1; }; done
 
 WORK=""; GW_PID=""
-cleanup() { [[ -n "$GW_PID" ]] && kill "$GW_PID" >/dev/null 2>&1 || true; [[ -n "$WORK" ]] && rm -rf "$WORK"; }
+cleanup() { w_cursor_restore 2>/dev/null || true; [[ -n "$GW_PID" ]] && kill "$GW_PID" >/dev/null 2>&1 || true; [[ -n "$WORK" ]] && rm -rf "$WORK"; }
 trap cleanup EXIT
 die() { echo "✗ $*" >&2; exit 1; }
 trap 'echo "ERROR: demo aborted at line $LINENO (see above)." >&2' ERR
@@ -157,17 +157,45 @@ setup() {
 }
 
 # ── Live HTTP (shared by both cuts) ──────────────────────────────────────────
+# ── Recorder-grade resilience — DEMO-RUNNER infrastructure, NOT a Talon feature.
+# Talon does not ship same-provider retries (policy-valid failover is the shipped
+# reliability story); these retries exist so a transient upstream blip (e.g. a
+# real Anthropic HTTP 529 "Overloaded" seen in the field) cannot kill a recording
+# take. If one fires in the hero, the surfaced line is attributed to the demo
+# runner — never presented as Talon behavior.
+RETRY_BACKOFF="${TALON_DEMO_RETRY_BACKOFF:-3}"   # seconds; tests set 0
+transient_http() { case "$1" in 429|500|502|503|529|000|"") return 0;; *) return 1;; esac; }
+retry_call() { # retry_call <fn> [args...] — ≤3 retries on transient upstream status
+  # or transport failure. Always returns 0: the result travels via $HTTP/$WORK/b,
+  # keeping require_http the single fail-closed gate. Retries append to
+  # $WORK/.retries so hero beats can surface them (attributed to the demo runner).
+  local attempt rc
+  for attempt in 1 2 3; do
+    rc=0; "$@" || rc=$?; (( rc != 0 )) && HTTP="000"
+    transient_http "$HTTP" || return 0
+    printf 'HTTP %s\n' "$HTTP" >>"$WORK/.retries"
+    sleep "$(( attempt * RETRY_BACKOFF ))"
+  done
+  rc=0; "$@" || rc=$?; (( rc != 0 )) && HTTP="000"   # final answer stands; require_http diagnoses
+  return 0
+}
+
 openai_chat() { # <bearer> <provider> <model> <content> [session]
+  : >"$WORK/b"   # never let require_http diagnose a stale body from a prior attempt
   local -a h=(-H "Authorization: Bearer $1" -H "Content-Type: application/json"); [[ -n "${5:-}" ]] && h+=(-H "X-Talon-Session-ID: $5")
   HTTP="$(curl -sS -o "$WORK/b" -w '%{http_code}' -X POST "${GATEWAY}/v1/proxy/$2/v1/chat/completions" "${h[@]}" \
     -d "$(jq -nc --arg m "$3" --arg c "$4" '{model:$m,messages:[{role:"user",content:$c}]}')")"
 }
 anthropic_msg() { # <bearer> <model> <content> <max_tokens> [session]
+  : >"$WORK/b"
   local -a h=(-H "Authorization: Bearer $1" -H "Content-Type: application/json"); [[ -n "${5:-}" ]] && h+=(-H "X-Talon-Session-ID: $5")
   HTTP="$(curl -sS -o "$WORK/b" -w '%{http_code}' -X POST "${GATEWAY}/v1/proxy/anthropic/v1/messages" "${h[@]}" \
     -d "$(jq -nc --arg m "$2" --arg c "$3" --argjson mt "$4" '{model:$m,max_tokens:$mt,messages:[{role:"user",content:$c}]}')")"
 }
 tools_req() { # <bearer>; coding-assistant declares no forbidden_tools — the ORG boundary fires
+  # (Deliberately NOT retry_call-wrapped: the 403 is decided by the local gateway
+  # before any provider dispatch, so there is no transient upstream surface.)
+  : >"$WORK/b"
   HTTP="$(curl -sS -o "$WORK/b" -w '%{http_code}' -X POST "${GATEWAY}/v1/proxy/openai/v1/chat/completions" \
     -H "Authorization: Bearer $1" -H "Content-Type: application/json" -H "X-Talon-Session-ID: coding-${SUPPORT_SID}" \
     -d '{"model":"gpt-4o","messages":[{"role":"user","content":"refactor the billing module"}],"tools":[{"type":"function","function":{"name":"read_file","description":"x","parameters":{"type":"object"}}},{"type":"function","function":{"name":"search_kb","description":"y","parameters":{"type":"object"}}},{"type":"function","function":{"name":"admin_purge_records","description":"z","parameters":{"type":"object"}}}]}')"
@@ -195,10 +223,19 @@ GUMUI=0; [[ "$UI" == "gum" ]] && command -v gum >/dev/null 2>&1 && GUMUI=1
 pcell()  { local s; printf -v s '%-*s' "$1" "$2"; printf '%s%s%s' "$3" "$s" "$WR"; }   # pcell <w> <text> <colour>
 w_hold() { [[ "$PAUSE" != 0 ]] && sleep "${1:-2}"; return 0; }
 
+CURSOR_HIDDEN=0
 w_open() {   # the ONE clear at the start; identify the recording as a live terminal demo
+  printf '\033[?25l'; CURSOR_HIDDEN=1   # hidden for the whole hero; restored by cleanup + run_beats
   clear_scene
   printf '\n  %b%bTALON · LIVE TERMINAL DEMO%b\n' "$WB" "$WT_CYAN" "$WR"
   printf '  %bReal CLI/API calls · live decisions · signed evidence%b\n' "$WT_MUTED" "$WR"
+}
+w_cursor_restore() {
+  # When recording, the restore must NOT enter the cast (the final frame would
+  # show a stray cursor block) — the recorder resets the real terminal itself
+  # after asciinema exits (TALON_DEMO_NO_CURSOR_RESTORE=1).
+  [[ "${TALON_DEMO_NO_CURSOR_RESTORE:-0}" == 1 ]] && { CURSOR_HIDDEN=0; return 0; }
+  [[ "${CURSOR_HIDDEN:-0}" == 1 ]] && printf '\033[?25h'; CURSOR_HIDDEN=0; return 0
 }
 w_chapter() { # <n> <title>  — a terminal comment/separator, not a navigation tab
   local mid; mid="$(printf '── %s. %s ' "$1" "$2")"; local rest=$(( 76 - ${#mid} )); (( rest < 3 )) && rest=3
@@ -208,6 +245,24 @@ w_cmd()   { printf '  %b$%b %b%s%b\n' "$WT_CYAN" "$WR" "$WT_TEXT" "$1" "$WR"; [[
 w_comment() { printf '  %b# %s%b\n' "$WT_MUTED" "$1" "$WR"; }   # a shell-comment context line (part of the directed session)
 w_line()  { printf '  %s\n' "$1"; }                          # a real-output line (pre-coloured)
 w_annot() { local c="$WT_MUTED"; [[ "${2:-}" == "green" ]] && c="$WT_GREEN"; printf '  %b→ %s%b\n' "$c" "$1" "$WR"; }
+w_retries() { # surface any transients retry_call absorbed — attributed to the DEMO
+  # RUNNER (Talon does not ship same-provider retries; never imply it does).
+  [[ -s "$WORK/.retries" ]] || return 0
+  local last; last="$(tail -1 "$WORK/.retries")"
+  w_annot "demo runner: provider temporarily overloaded (${last}) — retried the demonstration."
+  rm -f "$WORK/.retries"
+}
+w_reveal() { # w_reveal <delay-s> <line...> — paced reveal of REAL, pre-rendered output
+  # lines (sequence, not shimmer); instant when PAUSE=0 so tests stay fast.
+  local delay="$1"; shift; local l
+  for l in "$@"; do printf '%s\n' "$l"; [[ "$PAUSE" != 0 ]] && sleep "$delay"; done
+  return 0
+}
+w_reveal_stdin() { # paced pass-through for pre-rendered multi-line output (pipelines)
+  local delay="$1" l
+  while IFS= read -r l; do printf '%s\n' "$l"; [[ "$PAUSE" != 0 ]] && sleep "$delay"; done
+  return 0
+}
 w_http()  { # <http> <detail>  → real HTTP status, 2xx green / 4xx amber (policy denial) / else red
   local hc; case "$1" in 2*) hc="$WT_GREEN";; 4*) hc="$WT_AMBER";; *) hc="$WT_RED";; esac
   local head="HTTP $1"; [[ -n "${2:-}" ]] && head="HTTP $1 · $2"
@@ -223,30 +278,75 @@ w_run() {  # <wait-text> <pid>  — an inline spinner beside the running command
   fi
   wait "$pid" 2>/dev/null || true
 }
-# The REAL `talon agents` stdout — header + 3 rows, first three columns
-# (AGENT/STATE/HEALTH), a visual-safe trim; blocked health is amber.
-w_agents() {   # header + 3 data rows; drop the CLI's dash-separator row
-  talon agents --url "$GATEWAY" 2>/dev/null | awk 'NF>=3 && $1 !~ /^-+$/ {print $1"\t"$2"\t"$3}' | head -4 \
-    | while IFS=$'\t' read -r a s h; do
-        if [[ "$a" == "AGENT" ]]; then printf '  %b%-22s %-9s %s%b\n' "${WB}${WT_MUTED}" "$a" "$s" "$h" "$WR"
-        else local hc="$WT_TEXT"; [[ "$h" == "healthy" ]] && hc="$WT_GREEN"; [[ "$h" == "blocked" ]] && hc="$WT_AMBER"
-          printf '  %s %s %s\n' "$(pcell 22 "$a" "$WT_TEXT")" "$(pcell 9 "$s" "$WT_MUTED")" "$(pcell 10 "$h" "$hc")"; fi
-      done
+# The REAL `talon agents` stdout, visual-safe trims only (dash-separator row
+# dropped). Default: AGENT/STATE/HEALTH. "why" mode: AGENT/HEALTH/WHY — the
+# attention-queue view (WHY is the CLI's own cause text, e.g. "daily budget
+# exhausted ($0.0035 / $0.0032)"); blocked health is amber.
+w_agents() { # [why]
+  local mode="${1:-}"
+  if [[ "$mode" == "why" ]]; then
+    # The CLI prints fixed printf widths (%-22s %-9s %-16s %-24s %s), so slice by
+    # column position — COST itself contains spaces ("$0.0035 / $0.0032").
+    talon agents --url "$GATEWAY" 2>/dev/null \
+      | awk 'NF>=3 && $1 !~ /^-+$/ {
+          a=substr($0,1,22); h=substr($0,34,16); w=substr($0,76)
+          gsub(/[[:space:]]+$/,"",a); gsub(/[[:space:]]+$/,"",h); gsub(/[[:space:]]+$/,"",w)
+          print a"\t"h"\t"w}' | head -4 \
+      | while IFS=$'\t' read -r a h why; do
+          if [[ "$a" == "AGENT" ]]; then printf '  %b%-22s %-9s %s%b\n' "${WB}${WT_MUTED}" "$a" "$h" "$why" "$WR"
+          else local hc="$WT_TEXT"; [[ "$h" == "healthy" ]] && hc="$WT_GREEN"; [[ "$h" == "blocked" ]] && hc="$WT_AMBER"
+            printf '  %s %s %b%s%b\n' "$(pcell 22 "$a" "$WT_TEXT")" "$(pcell 9 "$h" "$hc")" "$WT_MUTED" "$why" "$WR"; fi
+        done
+  else
+    talon agents --url "$GATEWAY" 2>/dev/null | awk 'NF>=3 && $1 !~ /^-+$/ {print $1"\t"$2"\t"$3}' | head -4 \
+      | while IFS=$'\t' read -r a s h; do
+          if [[ "$a" == "AGENT" ]]; then printf '  %b%-22s %-9s %s%b\n' "${WB}${WT_MUTED}" "$a" "$s" "$h" "$WR"
+          else local hc="$WT_TEXT"; [[ "$h" == "healthy" ]] && hc="$WT_GREEN"; [[ "$h" == "blocked" ]] && hc="$WT_AMBER"
+            printf '  %s %s %s\n' "$(pcell 22 "$a" "$WT_TEXT")" "$(pcell 9 "$s" "$WT_MUTED")" "$(pcell 10 "$h" "$hc")"; fi
+        done
+  fi
+}
+# Session-scoped audit, normalized from the REAL `talon audit list --session`
+# summary block (no record rows — counts/providers/cost are the CLI's own values;
+# the outcome line is a demo annotation asserted from signed evidence).
+w_session() { # <session-id>
+  talon audit list --session "$1" >"$WORK/.audit" 2>/dev/null || true
+  # Real summary line: "  Requests:  3 (2 allowed, 1 denied, 0 error)"
+  local rline req err prov cost
+  rline="$(grep -m1 -E '^[[:space:]]*Requests:' "$WORK/.audit" || true)"
+  req="$(awk '{print $2}' <<<"$rline")"
+  err="$(sed -nE 's/.*, *([0-9]+) error.*/\1/p' <<<"$rline")"
+  prov="$(sed -nE 's/^[[:space:]]*Providers:[[:space:]]*(.*)$/\1/p' "$WORK/.audit" | head -1)"
+  # The CLI renders tiny session costs as "$< 0.0001" and larger ones at 6dp —
+  # normalize both to the demo's ≤4dp money grammar.
+  cost="$(sed -nE 's/^[[:space:]]*Cost:[[:space:]]*(.*)$/\1/p' "$WORK/.audit" | head -1)"
+  case "$cost" in
+    *"< 0.0001"*) cost="< \$0.0001" ;;
+    \$*)          cost="$(moneylt "${cost#\$}")" ;;
+    *)            cost="" ;;
+  esac
+  printf '  %b%s%b\n' "$WT_TEXT" "Session ${1}" "$WR"
+  printf '  %bRequests: %s · Errors: %s%b\n' "$WT_TEXT" "${req:-?}" "${err:-0}" "$WR"
+  [[ -n "$prov" ]] && printf '  %bProviders: %s%b\n' "$WT_TEXT" "$prov" "$WR"
+  [[ -n "$cost" ]] && printf '  %bCost: %s%b\n' "$WT_TEXT" "$cost" "$WR"
+  return 0
 }
 w_close() {  # clear once; the closing statement — the single bordered callout in the gum UI
   # Compose the callout BEFORE clearing (gum exec takes real time; composing first
   # keeps clear→print adjacent so no blank frame ever appears in the recording).
   local callout
   if [[ "$GUMUI" == 1 ]]; then
-    callout="$(gum style --border rounded --border-foreground '#30363D' --padding '1 4' --margin '0 0 0 2' --align center \
-      "$(printf '%b%bTALON%b\n\n%bOperate every AI use case\nthrough one shared control plane%b\n\n%bCost control · Reliability · Shared policy · Session understanding%b' \
-         "$WB" "$WT_CYAN" "$WR" "$WT_TEXT" "$WR" "$WT_MUTED" "$WR")")"
+    # --border normal: light box-drawing corners render cleanly in agg (the
+    # rounded arc glyphs were the corner-artifact source in rendered GIFs).
+    callout="$(gum style --border normal --border-foreground '#30363D' --padding '1 4' --margin '0 0 0 2' --align center \
+      "$(printf '%b%bTALON%b\n\n%bOperate every AI use case\nthrough one shared control plane%b\n\n%b✓ Live decisions · ✓ Signed evidence · ✓ Verified offline%b\n\n%bCost control · Reliability · Shared policy · Session understanding%b' \
+         "$WB" "$WT_CYAN" "$WR" "$WT_TEXT" "$WR" "$WT_GREEN" "$WR" "$WT_MUTED" "$WR")")"
   else
-    callout="$(printf '  %b%bTALON%b\n\n  %bOperate every AI use case%b\n  %bthrough one shared control plane%b\n\n  %bCost control · Reliability · Shared policy · Session understanding%b' \
-      "$WB" "$WT_CYAN" "$WR" "$WT_TEXT" "$WR" "$WT_TEXT" "$WR" "$WT_MUTED" "$WR")"
+    callout="$(printf '  %b%bTALON%b\n\n  %bOperate every AI use case%b\n  %bthrough one shared control plane%b\n\n  %b✓ Live decisions · ✓ Signed evidence · ✓ Verified offline%b\n\n  %bCost control · Reliability · Shared policy · Session understanding%b' \
+      "$WB" "$WT_CYAN" "$WR" "$WT_TEXT" "$WR" "$WT_TEXT" "$WR" "$WT_GREEN" "$WR" "$WT_MUTED" "$WR")"
   fi
   clear_scene; printf '\n\n%s\n' "$callout"
-  w_hold 3
+  w_hold 4
 }
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -258,9 +358,9 @@ present_fleet_full() { runcmd "talon agents --url '$GATEWAY'"; }
 beat_fleet() {
   if [[ "$CUT" == hero ]]; then
     w_cmd "talon agents"; echo
-    w_agents; echo
+    w_agents | w_reveal_stdin 0.2; echo
     w_annot "Three AI use cases under one organization policy — one operating view."
-    w_hold 2
+    w_hold 3
   else
     banner "Talon — one operating layer for a company's AI use cases"
     printf ' %s3 production AI use cases   ·   1 organization policy   ·   1 operating view%s\n' "$DIM" "$R"
@@ -271,14 +371,16 @@ beat_fleet() {
 # ── 2. Customer-support incident (reliability + shared policy) ────────────────
 beat_support() {
   if [[ "$CUT" == hero ]]; then
-    w_cmd 'curl -X POST $GATEWAY/v1/proxy/local-llama/…' "customer-support · refund request · email + IBAN"
-    ( openai_chat "$CS_KEY" local-llama llama3.2:1b \
-        "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID" || true
+    rm -f "$WORK/.retries"
+    w_cmd 'curl -X POST $GATEWAY/v1/proxy/local-llama/v1/chat/completions' "customer-support · refund request · email + IBAN"
+    ( retry_call openai_chat "$CS_KEY" local-llama llama3.2:1b \
+        "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
       printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
     w_run "Routing through Talon" "$!"
     HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
+    w_retries
   else
-    openai_chat "$CS_KEY" local-llama llama3.2:1b \
+    retry_call openai_chat "$CS_KEY" local-llama llama3.2:1b \
       "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
   fi
   require_http 200 "reliability"
@@ -304,12 +406,15 @@ beat_support() {
   if [[ "$CUT" == hero ]]; then
     local model; model="$(jq -r '.model // .model_id // empty' "$WORK/b" 2>/dev/null)"
     echo; w_http "$HTTP" "${model:+model=$model}"; echo
-    w_line "$(printf '%b✓ email + IBAN redacted%b' "$WT_GREEN" "$WR")"
-    w_line "$(printf '%s %bconnection error%b' "$(pcell 16 "× $failed_prov" "$WT_RED")" "$WT_MUTED" "$WR")"
-    w_line "$(printf '%s %bblocked by use-case policy%b' "$(pcell 16 "⊘ $skip_prov" "$WT_AMBER")" "$WT_MUTED" "$WR")"
-    w_line "$(printf '%s %bselected fallback%b' "$(pcell 16 "✓ $sel" "$WT_CYAN")" "$WT_MUTED" "$WR")"
+    # Route ledger revealed in sequence (200ms) — failed → policy-skipped → selected.
+    w_reveal 0.2 \
+      "  $(printf '%b✓ email + IBAN redacted%b' "$WT_GREEN" "$WR")" \
+      "  $(printf '%s %bconnection error%b' "$(pcell 16 "× $failed_prov" "$WT_RED")" "$WT_MUTED" "$WR")" \
+      "  $(printf '%s %bblocked by use-case policy%b' "$(pcell 16 "⊘ $skip_prov" "$WT_AMBER")" "$WT_MUTED" "$WR")" \
+      "  $(printf '%s %bselected fallback%b' "$(pcell 16 "✓ $sel" "$WT_CYAN")" "$WT_MUTED" "$WR")"
+    w_annot "Talon replaced the detected email and IBAN before forwarding · tier unchanged."
     w_annot "Completed through the first policy-valid destination · cost $(moneylt "$scost")."
-    w_hold 3
+    w_hold 5
   else present_support_full "$pii" "$ph" "$tier" "$failed_prov" "$failed_err" "$skip_prov" "$sel"; fi
 }
 present_support_full() { # pii ph tier failed failed_err skip sel
@@ -327,7 +432,7 @@ present_support_full() { # pii ph tier failed failed_err skip sel
 # ── 3. Organization tool boundary (shared capability policy) ──────────────────
 beat_capability() {
   if [[ "$CUT" == hero ]]; then
-    w_cmd 'curl -X POST $GATEWAY/v1/proxy/openai/…' "tools=read_file,search_kb,admin_purge_records"
+    w_cmd 'curl -X POST $GATEWAY/v1/proxy/openai/v1/chat/completions' "coding-assistant · tools=read_file,search_kb,admin_purge_records"
     ( tools_req "$CODE_KEY" || true; printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
     w_run "Evaluating organization capability policy" "$!"
     HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
@@ -344,7 +449,7 @@ beat_capability() {
     [[ -n "$emsg" ]] || emsg="Request contains forbidden tools: admin_purge_records"
     echo; w_http "$HTTP"; w_line "$(printf '%b%s%b' "$WT_TEXT" "$emsg" "$WR")"
     w_annot "Organization boundary enforced before provider access · \$0.0000 spent."
-    w_hold 2.5
+    w_hold 4
   else present_capability_full; fi
 }
 present_capability_full() {
@@ -359,17 +464,21 @@ present_capability_full() {
 # The projected-cost loop: one (or a few) allowed summaries, then the next is
 # denied on projected cost. Sets HTTP; no die (the caller checks HTTP + evidence).
 cost_loop() { local sess="$1" n; for n in $(seq 1 12); do
-    anthropic_msg "$DOC_KEY" claude-sonnet-5 "Please write a full, multi-section summary of this quarterly compliance document." 1024 "$sess"
-    case "$HTTP" in 403|200) [[ "$HTTP" == 403 ]] && break;; *) break;; esac
+    # retry_call absorbs transient upstream weather (429/5xx/529); any other
+    # non-200 (the expected 403, or a hard failure) ends the loop for diagnosis.
+    retry_call anthropic_msg "$DOC_KEY" claude-sonnet-5 "Please write a full, multi-section summary of this quarterly compliance document." 1024 "$sess"
+    [[ "$HTTP" == "200" ]] || break
   done; }
 beat_cost() {
   local sess; sess="doc-budget-$(rand 4)"
   if [[ "$CUT" == hero ]]; then
     echo
-    w_cmd 'curl -X POST $GATEWAY/v1/proxy/anthropic/…' "session=document-summary · batch summary"
+    rm -f "$WORK/.retries"
+    w_cmd 'curl -X POST $GATEWAY/v1/proxy/anthropic/v1/messages' "session=document-summary · batch summary"
     ( cost_loop "$sess" || true; printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
     w_run "Checking projected session cost" "$!"
     HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
+    w_retries
   else
     cost_loop "$sess"
   fi
@@ -391,11 +500,12 @@ beat_cost() {
   pr="$(awk -v a="$sp" -v b="$es" 'BEGIN{printf "%.4f", a+b}')"
   if [[ "$CUT" == hero ]]; then
     echo; w_http "$HTTP" "session_budget_exceeded"
-    w_line "$(printf '%bspent=$%s%b'    "$WT_TEXT" "$(fmt "$sp")" "$WR")"
-    w_line "$(printf '%bestimate=$%s%b' "$WT_TEXT" "$(fmt "$es")" "$WR")"
-    w_line "$(printf '%blimit=$%s%b'    "$WT_TEXT" "$(fmt "$li")" "$WR")"
+    w_reveal 0.3 \
+      "  $(printf '%bspent=$%s%b'    "$WT_TEXT" "$(fmt "$sp")" "$WR")" \
+      "  $(printf '%bestimate=$%s%b' "$WT_TEXT" "$(fmt "$es")" "$WR")" \
+      "  $(printf '%blimit=$%s%b'    "$WT_TEXT" "$(fmt "$li")" "$WR")"
     w_annot "Projected total \$$(fmt "$pr") over the soft session limit — the next call was prevented."
-    w_hold 3
+    w_hold 5
   else present_cost_full "$sp" "$es" "$pr" "$li"; fi
 }
 present_cost_full() { # spent est projected limit
@@ -407,43 +517,69 @@ present_cost_full() { # spent est projected limit
 }
 
 # ── 5. Live operational control (a policy edit → fleet blocked) ───────────────
-# A couple more real summaries this operating period, then Finance lowers the
-# daily budget below today's spend (a live YAML edit, activated by safe reload).
-# Writes "oldcap<TAB>newcap<TAB>final_spend<TAB>health" to $WORK/.policy; no die.
-policy_apply() {
-  local sess oldcap spend newcap health="" _; sess="doc-day-$(rand 4)"
-  anthropic_msg "$DOC_KEY" claude-sonnet-5 "Summarize this quarterly compliance document in detail." 1024 "$sess" || true
-  anthropic_msg "$DOC_KEY" claude-sonnet-5 "Summarize this quarterly compliance document in detail." 1024 "$sess" || true
+# Split so the hero can display the EXACT executed edit: policy_warmup runs two
+# more real summaries this operating period and computes the new ceiling from
+# live spend (→ $WORK/.policy-pre "oldcap<TAB>spend<TAB>newcap"; ERR sentinel);
+# policy_edit applies the perl edit + waits for the safe reload to flip health
+# (→ $WORK/.policy "final_spend<TAB>health"). No die inside either (subshell-run).
+policy_warmup() {
+  local sess oldcap spend newcap; sess="doc-day-$(rand 4)"
+  retry_call anthropic_msg "$DOC_KEY" claude-sonnet-5 "Summarize this quarterly compliance document in detail." 1024 "$sess"
+  retry_call anthropic_msg "$DOC_KEY" claude-sonnet-5 "Summarize this quarterly compliance document in detail." 1024 "$sess"
   oldcap="$(dsum_json daily_cap)"; spend="$(dsum_json spend_day)"
-  if [[ -z "$spend" || "$spend" == "null" || "$spend" == "0" ]]; then printf 'ERR\t\t\t' >"$WORK/.policy"; return; fi
+  if [[ -z "$spend" || "$spend" == "null" || "$spend" == "0" ]]; then printf 'ERR\t\t' >"$WORK/.policy-pre"; return; fi
   newcap="$(awk -v s="$spend" 'BEGIN{printf "%.4f", s*0.9}')"
-  # Real in-place edit — the hero prints this command via w_cmd with only the
-  # computed ${newcap} replacement elided (the pattern is shown verbatim).
-  perl -i.bak -pe "s/daily: [0-9.]+/daily: ${newcap}/" "$WORK/agents/document-summary/agent.talon.yaml"
+  printf '%s\t%s\t%s' "$oldcap" "$spend" "$newcap" >"$WORK/.policy-pre"
+}
+policy_edit() { # <newcap> — the exact command the hero displays
+  local health="" _
+  perl -i.bak -pe "s/daily: [0-9.]+/daily: ${1}/" "$WORK/agents/document-summary/agent.talon.yaml"
   for _ in $(seq 1 30); do health="$(dsum_json health)"; [[ "$health" == "blocked" ]] && break; sleep 0.5; done
-  printf '%s\t%s\t%s\t%s' "$oldcap" "$newcap" "$(dsum_json spend_day)" "$health" >"$WORK/.policy"
+  printf '%s\t%s' "$(dsum_json spend_day)" "$health" >"$WORK/.policy"
+}
+# Real config diff — the PRIMARY visual of the policy beat (the capability being
+# sold is safe reload from YAML, not the edit mechanics). Lines come from the
+# actual files perl left behind (.bak = before, current = after).
+w_config_diff() {
+  local before after yaml="$WORK/agents/document-summary/agent.talon.yaml"
+  # key/value only — the trailing YAML comment is noise at demo width
+  before="$(grep -m1 -E '^[[:space:]]*daily:' "${yaml}.bak" 2>/dev/null | sed 's/#.*//; s/^ *//; s/ *$//')"
+  after="$(grep -m1 -E '^[[:space:]]*daily:' "$yaml" 2>/dev/null | sed 's/#.*//; s/^ *//; s/ *$//')"
+  printf '  %b- %s%b\n' "$WT_RED" "${before:-daily: ?}" "$WR"
+  printf '  %b+ %s%b\n' "$WT_GREEN" "${after:-daily: ?}" "$WR"
 }
 beat_policy() {
   if [[ "$CUT" == hero ]]; then
+    rm -f "$WORK/.retries"
     w_comment "Finance sets an emergency ceiling below today's spend"
-    # The EXECUTED command verbatim — only the computed replacement value is elided
-    # (it is derived from today's live spend a moment later, inside policy_apply).
-    w_cmd "perl -i.bak -pe 's/daily: [0-9.]+/daily: …/' \\" \
-          "  agents/document-summary/agent.talon.yaml"
-    ( policy_apply ) &
+    ( policy_warmup ) &
+    w_run "Reading today's live document-summary spend" "$!"
+    w_retries
+  else
+    policy_warmup
+  fi
+  local oldcap newcap
+  IFS=$'\t' read -r oldcap _ newcap < "$WORK/.policy-pre" 2>/dev/null || true
+  [[ "$oldcap" != "ERR" && -n "${newcap:-}" ]] || die "could not read document-summary daily spend"
+  if [[ "$CUT" == hero ]]; then
+    # The EXACT executed command (dim — deliberately not a hero moment; the
+    # config diff below is the primary visual).
+    printf '  %b$ %s%b\n' "$WT_MUTED" "perl -i.bak -pe 's/daily: [0-9.]+/daily: ${newcap}/' \\" "$WR"
+    printf '    %bagents/document-summary/agent.talon.yaml%b\n' "$WT_MUTED" "$WR"
+    ( policy_edit "$newcap" ) &
     w_run "Applying the edit · periodic safe reload" "$!"
   else
-    policy_apply
+    policy_edit "$newcap"
   fi
-  local oldcap newcap final_spend health
-  IFS=$'\t' read -r oldcap newcap final_spend health < "$WORK/.policy" 2>/dev/null || true
-  [[ "$oldcap" != "ERR" ]] || die "could not read document-summary daily spend"
+  local final_spend health
+  IFS=$'\t' read -r final_spend health < "$WORK/.policy" 2>/dev/null || true
   [[ "$health" == "blocked" ]] || die "document-summary did not reach HEALTH=blocked after lowering the daily cap (reload/eval issue)"
   if [[ "$CUT" == hero ]]; then
-    echo; w_cmd "talon agents"; echo
-    w_agents; echo
+    echo; w_config_diff; echo
+    w_cmd "talon agents"; echo
+    w_agents why | w_reveal_stdin 0.2; echo
     w_annot "Ceiling → \$$(fmt "$newcap"), below today's \$$(fmt "$final_spend") spend; the safe reload blocked new work."
-    w_hold 3
+    w_hold 5
   else present_policy_full "$oldcap" "$newcap" "$final_spend"; fi
 }
 present_policy_full() { # oldcap newcap spend
@@ -459,7 +595,21 @@ present_policy_full() { # oldcap newcap spend
   runcmd "talon audit list --session '$SUPPORT_SID'"
 }
 
-# ── 6. Session understanding + signed-evidence close ─────────────────────────
+# ── 6. Session-scoped audit (drill from the fleet into one session) ───────────
+# Deliberately framed as session-scoped audit — counts, providers, cost — from
+# the real CLI summary; the outcome line is a demo annotation asserted from the
+# signed evidence (the CLI has no native session-outcome diagnosis yet).
+beat_session() {
+  [[ "$CUT" == hero ]] || return 0   # the `all` cut already drills down in present_policy_full
+  echo
+  w_cmd "talon audit list --session ${SUPPORT_SID}"; echo
+  w_session "$SUPPORT_SID" | w_reveal_stdin 0.4
+  echo
+  w_annot "completed through policy-valid fallback — every decision above is a signed record." green
+  w_hold 4
+}
+
+# ── 7. Signed-evidence close ──────────────────────────────────────────────────
 beat_close() {
   talon audit export --format signed-json --output "$WORK/hero-evidence.json" >/dev/null || die "signed export failed"
   assert_ev "$WORK/hero-evidence.json" '(.records|length) >= 5' "signed export is non-empty"
@@ -480,15 +630,19 @@ beat_close() {
   scost="$(jq -r '[.records[].execution.cost // 0]|add' "$WORK/support.json" 2>/dev/null)"
   if [[ "$CUT" == hero ]]; then
     echo; w_cmd "talon audit verify --file signed-evidence.json"; echo
-    w_line "$(printf '%bTotal records: %s%b'   "$WT_TEXT"  "$total" "$WR")"
-    w_line "$(printf '%bValid records: %s%b'   "$WT_GREEN" "$valid" "$WR")"
-    w_line "$(printf '%bInvalid records: 0%b'  "$WT_GREEN" "$WR")"
+    w_reveal 0.3 \
+      "  $(printf '%bTotal records: %s%b'   "$WT_TEXT"  "$total" "$WR")" \
+      "  $(printf '%bValid records: %s%b'   "$WT_GREEN" "$valid" "$WR")" \
+      "  $(printf '%bInvalid records: 0%b'  "$WT_GREEN" "$WR")"
     if [[ -n "$fv" ]]; then
-      echo; w_cmd "talon audit verify --failover [support chain]"; echo
+      # Low visual weight (implementation detail): real id, shortened for display,
+      # executed above with the full $corr — short hold.
+      echo; w_cmd "talon audit verify --failover ${corr:0:12}…"
       w_line "$(printf '%bverdict=valid_fallback%b' "$WT_GREEN" "$WR")"
+      w_hold 1.5
     fi
     w_annot "Evidence verified offline — every decision signed, tamper-evident." green
-    w_hold 3
+    w_hold 4
     w_close
   else present_close_full "$corr" "$fv"; fi
 }
@@ -517,8 +671,9 @@ run_beats() { # run_beats <hero|all>
     w_chapter 1 "Fleet";                        beat_fleet
     w_chapter 2 "Reliability + shared policy";  beat_support
     w_chapter 3 "Organization policy + cost";   beat_capability; beat_cost
-    w_chapter 4 "Operations + proof";           beat_policy;     beat_close
+    w_chapter 4 "Operations + proof";           beat_policy; beat_session; beat_close
     printf '\033]0;HERO_COMPLETE\007'   # machine marker via terminal title — off the visible frame
+    w_cursor_restore
   else
     beat_fleet; beat_support; beat_capability; beat_cost; beat_policy; beat_close
   fi
