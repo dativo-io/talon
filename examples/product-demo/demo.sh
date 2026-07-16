@@ -180,30 +180,40 @@ retry_call() { # retry_call <fn> [args...] — ≤3 retries on transient upstrea
   return 0
 }
 
+# Every request body lives in a REAL file and is sent with -d @file, so the hero
+# can `cat` the exact payload and show the exact curl — no display/exec drift.
 openai_chat() { # <bearer> <provider> <model> <content> [session]
   : >"$WORK/b"   # never let require_http diagnose a stale body from a prior attempt
-  # The request body lives in a real file and is sent with -d @file, so the hero
-  # can `cat` the exact payload and show the exact curl — no display/exec drift.
   local req="$WORK/${REQ_FILE:-request.json}"
-  jq -nc --arg m "$3" --arg c "$4" '{model:$m,messages:[{role:"user",content:$c}]}' >"$req"
+  # max_tokens bounds the reply so the hero can honestly show the FULL response text.
+  jq -nc --arg m "$3" --arg c "$4" '{model:$m,max_tokens:150,messages:[{role:"user",content:$c}]}' >"$req"
   local -a h=(-H "Authorization: Bearer $1" -H "Content-Type: application/json"); [[ -n "${5:-}" ]] && h+=(-H "X-Talon-Session-ID: $5")
   HTTP="$(curl -sS -o "$WORK/b" -w '%{http_code}' -X POST "${GATEWAY}/v1/proxy/$2/v1/chat/completions" "${h[@]}" \
     -d @"$req")"
 }
 anthropic_msg() { # <bearer> <model> <content> <max_tokens> [session]
   : >"$WORK/b"
+  local req="$WORK/summary-request.json"
+  jq -nc --arg m "$2" --arg c "$3" --argjson mt "$4" '{model:$m,max_tokens:$mt,messages:[{role:"user",content:$c}]}' >"$req"
   local -a h=(-H "Authorization: Bearer $1" -H "Content-Type: application/json"); [[ -n "${5:-}" ]] && h+=(-H "X-Talon-Session-ID: $5")
   HTTP="$(curl -sS -o "$WORK/b" -w '%{http_code}' -X POST "${GATEWAY}/v1/proxy/anthropic/v1/messages" "${h[@]}" \
-    -d "$(jq -nc --arg m "$2" --arg c "$3" --argjson mt "$4" '{model:$m,max_tokens:$mt,messages:[{role:"user",content:$c}]}')")"
+    -d @"$req")"
 }
 tools_req() { # <bearer>; coding-assistant declares no forbidden_tools — the ORG boundary fires
   # (Deliberately NOT retry_call-wrapped: the 403 is decided by the local gateway
   # before any provider dispatch, so there is no transient upstream surface.)
   : >"$WORK/b"
+  printf '%s' '{"model":"gpt-4o","messages":[{"role":"user","content":"refactor the billing module"}],"tools":[{"type":"function","function":{"name":"read_file","description":"x","parameters":{"type":"object"}}},{"type":"function","function":{"name":"search_kb","description":"y","parameters":{"type":"object"}}},{"type":"function","function":{"name":"admin_purge_records","description":"z","parameters":{"type":"object"}}}]}' >"$WORK/tools-request.json"
   HTTP="$(curl -sS -o "$WORK/b" -w '%{http_code}' -X POST "${GATEWAY}/v1/proxy/openai/v1/chat/completions" \
     -H "Authorization: Bearer $1" -H "Content-Type: application/json" -H "X-Talon-Session-ID: coding-${SUPPORT_SID}" \
-    -d '{"model":"gpt-4o","messages":[{"role":"user","content":"refactor the billing module"}],"tools":[{"type":"function","function":{"name":"read_file","description":"x","parameters":{"type":"object"}}},{"type":"function","function":{"name":"search_kb","description":"y","parameters":{"type":"object"}}},{"type":"function","function":{"name":"admin_purge_records","description":"z","parameters":{"type":"object"}}}]}')"
+    -d @"$WORK/tools-request.json")"
 }
+# w_body <file> — a request/response body shown IN FULL, folded to the frame
+# width. (`|| [[ -n $l ]]` keeps the final line when the file lacks a trailing
+# newline — otherwise `read` drops it and the body would render truncated.)
+w_body() { fold -s -w 82 "$1" 2>/dev/null | while IFS= read -r l || [[ -n "$l" ]]; do printf '  %b%s%b\n' "$WT_TEXT" "$l" "$WR"; done; }
+# w_body_text <string> [colour] — same, for already-extracted text.
+w_body_text() { local c="${2:-$WT_TEXT}"; fold -s -w 82 <<<"$1" | while IFS= read -r l || [[ -n "$l" ]]; do printf '  %b%s%b\n' "$c" "$l" "$WR"; done; }
 dsum_json() { talon agents show document-summary --url "$GATEWAY" --json 2>/dev/null | jq -r ".$1"; }
 
 
@@ -231,11 +241,28 @@ pcell()  { local s; printf -v s '%-*s' "$1" "$2"; printf '%s%s%s' "$3" "$s" "$WR
 w_hold() { [[ "$PAUSE" != 0 ]] && sleep "${1:-2}"; return 0; }
 
 CURSOR_HIDDEN=0
-w_open() {   # the ONE clear at the start; identify the recording as a live terminal demo
+# The bordered TALON value card — the single bordered region of the recording.
+# Composed BEFORE any clear (gum exec takes real time; composing first keeps
+# clear→print adjacent so no blank frame ever appears).
+w_card() {
+  local callout
+  if [[ "$GUMUI" == 1 ]]; then
+    callout="$(gum style --border normal --border-foreground '#30363D' --padding '1 4' --margin '0 0 0 2' --align center \
+      "$(printf '%b%bTALON%b\n\n%bOperate every AI use case%b\n%bthrough one shared control plane%b\n\n%b✓ Live decisions · ✓ Signed evidence · ✓ Verified offline%b\n\n%bCost control · Reliability · Shared policy · Session understanding%b' \
+         "$WB" "$WT_CYAN" "$WR" "$WT_TEXT" "$WR" "$WT_TEXT" "$WR" "$WT_GREEN" "$WR" "$WT_MUTED" "$WR")")"
+  else
+    callout="$(printf '  %b%bTALON%b\n\n  %bOperate every AI use case%b\n  %bthrough one shared control plane%b\n\n  %b✓ Live decisions · ✓ Signed evidence · ✓ Verified offline%b\n\n  %bCost control · Reliability · Shared policy · Session understanding%b' \
+      "$WB" "$WT_CYAN" "$WR" "$WT_TEXT" "$WR" "$WT_TEXT" "$WR" "$WT_GREEN" "$WR" "$WT_MUTED" "$WR")"
+  fi
+  printf '\n%s\n' "$callout"
+}
+w_open() {   # the ONE clear at the start; OPEN on the value card (the hook), then
+  # the live session scrolls beneath it — no blank transitions.
+  local card; card="$(w_card)"
   printf '\033[?25l'; CURSOR_HIDDEN=1   # hidden for the whole hero; restored by cleanup + run_beats
   clear_scene
-  printf '\n  %b%bTALON · LIVE TERMINAL DEMO%b\n' "$WB" "$WT_CYAN" "$WR"
-  printf '  %bReal CLI/API calls · live decisions · signed evidence%b\n' "$WT_MUTED" "$WR"
+  printf '%s\n' "$card"
+  w_hold 4
 }
 w_cursor_restore() {
   # When recording, the restore must NOT enter the cast (the final frame would
@@ -346,23 +373,12 @@ w_session() { # <session-id>
   [[ -n "$cost" ]] && printf '  %bCost: %s%b\n' "$WT_TEXT" "$cost" "$WR"
   return 0
 }
-w_close() {  # clear once; the closing statement — the single bordered callout in the gum UI
-  # Compose the callout BEFORE clearing (gum exec takes real time; composing first
-  # keeps clear→print adjacent so no blank frame ever appears in the recording).
-  local callout
-  if [[ "$GUMUI" == 1 ]]; then
-    # --border normal: light box-drawing corners render cleanly in agg (the
-    # rounded arc glyphs were the corner-artifact source in rendered GIFs). Every
-    # line carries its OWN colour wrap — gum styles per line, and an escape that
-    # spans a newline rendered inconsistently in field terminals.
-    callout="$(gum style --border normal --border-foreground '#30363D' --padding '1 4' --margin '0 0 0 2' --align center \
-      "$(printf '%b%bTALON%b\n\n%bOperate every AI use case%b\n%bthrough one shared control plane%b\n\n%b✓ Live decisions · ✓ Signed evidence · ✓ Verified offline%b\n\n%bCost control · Reliability · Shared policy · Session understanding%b' \
-         "$WB" "$WT_CYAN" "$WR" "$WT_TEXT" "$WR" "$WT_TEXT" "$WR" "$WT_GREEN" "$WR" "$WT_MUTED" "$WR")")"
-  else
-    callout="$(printf '  %b%bTALON%b\n\n  %bOperate every AI use case%b\n  %bthrough one shared control plane%b\n\n  %b✓ Live decisions · ✓ Signed evidence · ✓ Verified offline%b\n\n  %bCost control · Reliability · Shared policy · Session understanding%b' \
-      "$WB" "$WT_CYAN" "$WR" "$WT_TEXT" "$WR" "$WT_TEXT" "$WR" "$WT_GREEN" "$WR" "$WT_MUTED" "$WR")"
-  fi
-  clear_scene; printf '\n\n%s\n' "$callout"
+w_close() {  # clear once; CLOSE on the provenance claim — after watching the live
+  # session, "real CLI/API calls · live decisions · signed evidence" is no longer
+  # a promise but a description of what the viewer just saw.
+  clear_scene
+  printf '\n\n\n  %b%bTALON · LIVE TERMINAL DEMO%b\n' "$WB" "$WT_CYAN" "$WR"
+  printf '  %bReal CLI/API calls · live decisions · signed evidence%b\n' "$WT_MUTED" "$WR"
   w_hold 4
 }
 
@@ -376,7 +392,7 @@ beat_fleet() {
   if [[ "$CUT" == hero ]]; then
     w_cmd "talon agents"; echo
     w_agents | w_reveal_stdin 0.2; echo
-    w_annot "Three AI use cases under one organization policy — one operating view."
+    w_annot "Three AI use cases, each defined by one agent.talon.yaml — one policy, one view."
     w_hold 3
   else
     banner "Talon — one operating layer for a company's AI use cases"
@@ -386,20 +402,21 @@ beat_fleet() {
 }
 
 # ── 2. Customer-support incident (reliability + shared policy) ────────────────
+CS_PROMPT="Draft a short reply confirming we received the refund request from Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000"
 beat_support() {
   export REQ_FILE="refund-request.json"
   if [[ "$CUT" == hero ]]; then
     rm -f "$WORK/.retries"
     # Show the RAW request going in — the synthetic customer PII on screen is the
     # setup for the redaction receipt (the provider's reply proves it never saw it).
-    ( retry_call openai_chat "$CS_KEY" local-llama llama3.2:1b \
-        "Draft a short reply confirming we received the refund request from Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
+    ( retry_call openai_chat "$CS_KEY" local-llama llama3.2:1b "$CS_PROMPT" "$SUPPORT_SID"
       printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
     local reqpid=$!
     # The body file exists as soon as openai_chat writes it; give it a beat.
     local _; for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$WORK/refund-request.json" ]] && break; sleep 0.1; done
+    w_comment "customer-support · sensitive traffic prefers the local model"
     w_cmd "cat refund-request.json"; echo
-    fold -s -w 82 "$WORK/refund-request.json" 2>/dev/null | while IFS= read -r l; do printf '  %b%s%b\n' "$WT_TEXT" "$l" "$WR"; done
+    w_body "$WORK/refund-request.json"
     echo
     # The trailing \ inside the single-quoted string is a DISPLAYED shell
     # continuation (the on-screen command wraps), not an escape.
@@ -411,8 +428,7 @@ beat_support() {
     HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
     w_retries
   else
-    retry_call openai_chat "$CS_KEY" local-llama llama3.2:1b \
-      "Draft a short reply confirming we received the refund request from Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
+    retry_call openai_chat "$CS_KEY" local-llama llama3.2:1b "$CS_PROMPT" "$SUPPORT_SID"
   fi
   unset REQ_FILE
   require_http 200 "reliability"
@@ -437,14 +453,22 @@ beat_support() {
   local scost; scost="$(jq -r '[.records[].execution.cost // 0]|add' "$WORK/support.json" 2>/dev/null)"
   if [[ "$CUT" == hero ]]; then
     local model; model="$(jq -r '.model // .model_id // empty' "$WORK/b" 2>/dev/null)"
+    # (b) What left the building — derived by applying the signed redaction
+    # findings (email+iban → the scanner's [TYPE] placeholders) to the original;
+    # labeled as derived, never claimed byte-exact (evidence stores findings,
+    # not payload text — see the filed observability gap).
+    local redacted; redacted="$(sed -e 's/anna\.kowalska@example\.com/[EMAIL]/' -e 's/DE89370400440532013000/[IBAN]/' <<<"$CS_PROMPT")"
+    echo
+    w_annot "forwarded upstream (derived from the signed redaction findings):"
+    w_body_text "$redacted"
     # Display normalization only: drop a trailing -YYYY-MM-DD version suffix
     # (gpt-4o-mini-2024-07-18 → gpt-4o-mini); evidence keeps the exact value.
     model="$(sed -E 's/-[0-9]{4}-[0-9]{2}-[0-9]{2}$//' <<<"$model")"
     echo; w_http "$HTTP" "${model:+model=$model}"
-    # The provider's ACTUAL reply text (first line, trimmed). The model answered
-    # the REDACTED prompt — its own words are the redaction proof.
-    local rtext; rtext="$(jq -r '.choices[0].message.content // empty' "$WORK/b" 2>/dev/null | tr '\n' ' ' | sed -E 's/  +/ /g' | awk '{print substr($0,1,78)}')"
-    [[ -n "$rtext" ]] && w_line "$(printf '%b"%s…"%b' "$WT_MUTED" "$rtext" "$WR")"
+    # (c) The provider's ACTUAL reply, in full (max_tokens bounds it) — the model
+    # answered the REDACTED prompt; its own words are the redaction proof.
+    local rtext; rtext="$(jq -r '.choices[0].message.content // empty' "$WORK/b" 2>/dev/null | tr '\n' ' ' | sed -E 's/  +/ /g')"
+    [[ -n "$rtext" ]] && w_body_text "\"$rtext\"" "$WT_MUTED"
     echo
     # Route ledger revealed in sequence (200ms) — failed → policy-skipped → selected.
     # The status glyph sits OUTSIDE the %-14s pad so multibyte glyph width can
@@ -474,9 +498,18 @@ present_support_full() { # pii ph tier failed failed_err skip sel
 # ── 3. Organization tool boundary (shared capability policy) ──────────────────
 beat_capability() {
   if [[ "$CUT" == hero ]]; then
-    w_cmd 'curl -X POST $GATEWAY/v1/proxy/openai/v1/chat/completions' "coding-assistant · tools=read_file,search_kb,admin_purge_records"
     ( tools_req "$CODE_KEY" || true; printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
-    w_run "Evaluating organization capability policy" "$!"
+    local tpid=$!
+    local _; for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$WORK/tools-request.json" ]] && break; sleep 0.1; done
+    w_comment "coding-assistant asks for three tools — one of them destructive"
+    w_cmd "cat tools-request.json"; echo
+    w_body "$WORK/tools-request.json"
+    echo
+    # shellcheck disable=SC1003
+    printf '  %b$%b %b%s%b\n    %b%s%b\n' \
+      "${WB}${WT_CYAN}" "$WR" "${WB}${WT_TEXT}" 'curl -X POST $GATEWAY/v1/proxy/openai/v1/chat/completions \' "$WR" \
+      "${WB}${WT_TEXT}" '-d @tools-request.json' "$WR"
+    w_run "Evaluating organization capability policy" "$tpid"
     HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
   else
     tools_req "$CODE_KEY"
@@ -487,9 +520,10 @@ beat_capability() {
     'any(.records[]; .policy_decision.allowed==false and ((.execution.cost//0)==0) and (tostring|test("admin_purge_records")) and (.policy_decision.reasons|tostring|test("tool")))' \
     "organization tool boundary (admin_purge_records denied, \$0)"
   if [[ "$CUT" == hero ]]; then
-    local emsg; emsg="$(jq -r '.error.message // .error // empty' "$WORK/b" 2>/dev/null | head -c 60)"
-    [[ -n "$emsg" ]] || emsg="Request contains forbidden tools: admin_purge_records"
-    echo; w_http "$HTTP"; w_line "$(printf '%b%s%b' "$WT_TEXT" "$emsg" "$WR")"
+    echo; w_http "$HTTP"
+    # The FULL 403 body — the gateway's own denial, verbatim.
+    local ebody; ebody="$(jq -c . "$WORK/b" 2>/dev/null || cat "$WORK/b" 2>/dev/null)"
+    [[ -n "$ebody" ]] && w_body_text "$ebody"
     w_annot "Organization boundary enforced before provider access · \$0.0000 spent."
     w_hold 4
   else present_capability_full; fi
@@ -516,9 +550,18 @@ beat_cost() {
   if [[ "$CUT" == hero ]]; then
     echo
     rm -f "$WORK/.retries"
-    w_cmd 'curl -X POST $GATEWAY/v1/proxy/anthropic/v1/messages' "agent=document-summary · session=${sess}"
     ( cost_loop "$sess" || true; printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
-    w_run "Checking projected session cost" "$!"
+    local cpid=$!
+    local _; for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$WORK/summary-request.json" ]] && break; sleep 0.1; done
+    w_cmd "cat summary-request.json"; echo
+    w_body "$WORK/summary-request.json"
+    echo
+    # shellcheck disable=SC1003
+    printf '  %b$%b %b%s%b\n    %b%s%b\n' \
+      "${WB}${WT_CYAN}" "$WR" "${WB}${WT_TEXT}" 'curl -X POST $GATEWAY/v1/proxy/anthropic/v1/messages \' "$WR" \
+      "${WB}${WT_TEXT}" '-d @summary-request.json' "$WR"
+    printf '    %bagent=document-summary · session=%s%b\n' "$WT_MUTED" "$sess" "$WR"
+    w_run "Checking projected session cost" "$cpid"
     HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
     w_retries
   else
@@ -542,6 +585,10 @@ beat_cost() {
   pr="$(awk -v a="$sp" -v b="$es" 'BEGIN{printf "%.4f", a+b}')"
   if [[ "$CUT" == hero ]]; then
     echo; w_http "$HTTP" "session_budget_exceeded"
+    # The FULL 403 body — the gateway's own denial, verbatim — then the signed
+    # budget arithmetic from evidence.
+    local cbody; cbody="$(jq -c . "$WORK/b" 2>/dev/null || cat "$WORK/b" 2>/dev/null)"
+    [[ -n "$cbody" ]] && w_body_text "$cbody" "$WT_MUTED"
     w_reveal 0.3 \
       "  $(printf '%bspent=$%s%b'    "$WT_TEXT" "$(fmt "$sp")" "$WR")" \
       "  $(printf '%bestimate=$%s%b' "$WT_TEXT" "$(fmt "$es")" "$WR")" \

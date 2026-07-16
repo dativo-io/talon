@@ -18,11 +18,15 @@ chapter heading → real command → live wait → REAL output → one annotatio
   asserted against Talon's own signed evidence *before* it renders; an
   unexpected outcome aborts the demo — it can never present a proof that did
   not happen. No fixtures, no replay, no hardcoded values.
-- **Self-identifying.** The first frame says what the asset is
-  (`TALON · LIVE TERMINAL DEMO / Real CLI/API calls · live decisions · signed
-  evidence`) — shown once, never as persistent chrome.
-- **One clear at the open, one before the closing card.** Everything else
-  scrolls; the causal chain is never erased mid-story.
+- **Hook first, provenance last.** The recording OPENS on the bordered TALON
+  value card (the pitch — the only bordered region of the asset) and CLOSES on
+  the self-identification (`TALON · LIVE TERMINAL DEMO / Real CLI/API calls ·
+  live decisions · signed evidence`): after the session, that line is a
+  description of what the viewer just watched, not a promise. Neither is
+  persistent chrome.
+- **One clear at the open, one before the closing frame.** Everything else
+  scrolls (the opening card scrolls away naturally as chapter 1 begins); the
+  causal chain is never erased mid-story.
 
 ## The story: four chapters
 

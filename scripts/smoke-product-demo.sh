@@ -76,8 +76,11 @@ strip_ansi </tmp/hero.raw >/tmp/hero.plain
 for m in "TALON · LIVE TERMINAL DEMO" " 1 · Fleet " " 2 · Reliability + shared policy " \
          " 3 · Organization policy + cost " " 4 · Operations + proof " \
          '$ talon agents' "cat refund-request.json" "anna.kowalska@example.com" "-d @refund-request.json" \
+         "forwarded upstream (derived from the signed redaction findings" "[EMAIL]" "[IBAN]" \
+         "cat tools-request.json" "-d @tools-request.json" "admin_purge_records" \
+         "cat summary-request.json" "-d @summary-request.json" \
          "/v1/proxy/local-llama/v1/chat/completions" "/v1/proxy/openai/v1/chat/completions" "/v1/proxy/anthropic/v1/messages" \
-         "coding-assistant · tools=" "agent=document-summary · session=doc-budget-" "replaced the detected email and IBAN" \
+         "coding-assistant asks for three tools" "agent=document-summary · session=doc-budget-" "replaced the detected email and IBAN" \
          "perl -i.bak -pe" "+ daily:" "daily budget exhausted" \
          "audit list --session support-" "Requests:" "Providers:" "Session completed successfully; one provider attempt failed before fallback" \
          "talon audit verify --file signed-evidence.json" "verdict=valid_fallback" \
