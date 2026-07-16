@@ -303,7 +303,7 @@ beat_support() {
   local scost; scost="$(jq -r '[.records[].execution.cost // 0]|add' "$WORK/support.json" 2>/dev/null)"
   if [[ "$CUT" == hero ]]; then
     local model; model="$(jq -r '.model // .model_id // empty' "$WORK/b" 2>/dev/null)"
-    echo; w_http 200 "${model:+model=$model}"; echo
+    echo; w_http "$HTTP" "${model:+model=$model}"; echo
     w_line "$(printf '%b✓ email + IBAN redacted%b' "$WT_GREEN" "$WR")"
     w_line "$(printf '%s %bconnection error%b' "$(pcell 16 "× $failed_prov" "$WT_RED")" "$WT_MUTED" "$WR")"
     w_line "$(printf '%s %bblocked by use-case policy%b' "$(pcell 16 "⊘ $skip_prov" "$WT_AMBER")" "$WT_MUTED" "$WR")"
@@ -342,7 +342,7 @@ beat_capability() {
   if [[ "$CUT" == hero ]]; then
     local emsg; emsg="$(jq -r '.error.message // .error // empty' "$WORK/b" 2>/dev/null | head -c 60)"
     [[ -n "$emsg" ]] || emsg="Request contains forbidden tools: admin_purge_records"
-    echo; w_http 403; w_line "$(printf '%b%s%b' "$WT_TEXT" "$emsg" "$WR")"
+    echo; w_http "$HTTP"; w_line "$(printf '%b%s%b' "$WT_TEXT" "$emsg" "$WR")"
     w_annot "Organization boundary enforced before provider access · \$0.0000 spent."
     w_hold 2.5
   else present_capability_full; fi
@@ -373,7 +373,13 @@ beat_cost() {
   else
     cost_loop "$sess"
   fi
-  [[ "$HTTP" == "403" ]] || die "cost: session budget never tripped in 12 calls"
+  if [[ "$HTTP" != "403" ]]; then
+    # Distinguish "the budget genuinely never tripped" (all 200s) from a provider
+    # error that broke the loop early — require_http prints the REAL response body
+    # and the provider-account hint (quota / auth / rate limit / outage).
+    [[ "$HTTP" == "200" ]] && die "cost: session budget never tripped in 12 calls (all 200s — check document-summary session_limits.max_cost)"
+    require_http 403 "cost (projected session budget; document-summary runs on Anthropic)"
+  fi
   export_session "$sess" "$WORK/doc.json"
   assert_ev "$WORK/doc.json" \
     'any(.records[]; .session_budget != null and .session_budget.limit != null and .session_budget.spent != null and .session_budget.estimate != null)' \
@@ -384,7 +390,7 @@ beat_cost() {
   li="$(jq -r 'first(.records[]|select(.session_budget!=null).session_budget.limit)' "$WORK/doc.json")"
   pr="$(awk -v a="$sp" -v b="$es" 'BEGIN{printf "%.4f", a+b}')"
   if [[ "$CUT" == hero ]]; then
-    echo; w_http 403 "session_budget_exceeded"
+    echo; w_http "$HTTP" "session_budget_exceeded"
     w_line "$(printf '%bspent=$%s%b'    "$WT_TEXT" "$(fmt "$sp")" "$WR")"
     w_line "$(printf '%bestimate=$%s%b' "$WT_TEXT" "$(fmt "$es")" "$WR")"
     w_line "$(printf '%blimit=$%s%b'    "$WT_TEXT" "$(fmt "$li")" "$WR")"
@@ -411,16 +417,18 @@ policy_apply() {
   oldcap="$(dsum_json daily_cap)"; spend="$(dsum_json spend_day)"
   if [[ -z "$spend" || "$spend" == "null" || "$spend" == "0" ]]; then printf 'ERR\t\t\t' >"$WORK/.policy"; return; fi
   newcap="$(awk -v s="$spend" 'BEGIN{printf "%.4f", s*0.9}')"
-  # Real in-place edit (this exact command is what the hero's LIVE COMMAND panel shows).
+  # Real in-place edit — the hero prints this command via w_cmd with only the
+  # computed ${newcap} replacement elided (the pattern is shown verbatim).
   perl -i.bak -pe "s/daily: [0-9.]+/daily: ${newcap}/" "$WORK/agents/document-summary/agent.talon.yaml"
   for _ in $(seq 1 30); do health="$(dsum_json health)"; [[ "$health" == "blocked" ]] && break; sleep 0.5; done
   printf '%s\t%s\t%s\t%s' "$oldcap" "$newcap" "$(dsum_json spend_day)" "$health" >"$WORK/.policy"
 }
 beat_policy() {
-  local oldcap_pre; oldcap_pre="$(dsum_json daily_cap)"
   if [[ "$CUT" == hero ]]; then
     w_comment "Finance sets an emergency ceiling below today's spend"
-    w_cmd "perl -i.bak -pe 's/daily: $(fmt "$oldcap_pre")/daily: …/' \\" \
+    # The EXECUTED command verbatim — only the computed replacement value is elided
+    # (it is derived from today's live spend a moment later, inside policy_apply).
+    w_cmd "perl -i.bak -pe 's/daily: [0-9.]+/daily: …/' \\" \
           "  agents/document-summary/agent.talon.yaml"
     ( policy_apply ) &
     w_run "Applying the edit · periodic safe reload" "$!"
@@ -467,7 +475,7 @@ beat_close() {
   fv=""
   if [[ -n "$corr" && "$corr" != "null" ]]; then
     fv="$(talon audit verify --failover "$corr" 2>&1)"
-    grep -qiE "valid_fallback|chains checked: 1" <<<"$fv" || die "failover-chain verification did not confirm the support incident's chain"
+    grep -q "verdict=valid_fallback" <<<"$fv" || die "failover-chain verification did not confirm the support incident's chain"
   fi
   scost="$(jq -r '[.records[].execution.cost // 0]|add' "$WORK/support.json" 2>/dev/null)"
   if [[ "$CUT" == hero ]]; then
