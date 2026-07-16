@@ -12,16 +12,18 @@ Every AI use case a company ships — a customer-support assistant, a coding ass
 
 [![A live terminal demo of real Talon CLI and API calls — the local model is down so a customer request fails over, skipping a provider the use case isn't allowed to use; customer email and IBAN are redacted before the provider; a forbidden admin tool is rejected by a company boundary; a projected-cost budget stops the next call before spend; and `talon agents` shows the fleet, with every decision signed](docs/assets/talon_hero.gif)](examples/product-demo/)
 
-*A **live terminal walkthrough**: real Talon CLI and API calls across three AI use cases — **customer-support, coding-assistant, document-summary** — with every headline checked against **signed evidence**. A downed local model triggers a **policy-valid failover** (skipping a provider this use case may not use), customer **PII is redacted before the provider**, a destructive **admin tool is rejected by a company-wide boundary**, a use case's **next call is denied on projected cost before it spends**, and `talon agents` shows the fleet react — every decision signed and offline-verifiable.*
+*A **live terminal walkthrough** (55s): real Talon CLI and API calls across three AI use cases — **customer-support, coding-assistant, document-summary** — with every headline checked against **signed evidence**. A downed local model triggers a **policy-valid failover** (skipping a provider this use case may not use), customer **PII is redacted before the provider** (the raw request and the provider's reply are both on screen), a destructive **admin tool is rejected by a company-wide boundary**, a use case's **next call is denied on projected cost before it spends**, `talon agents` shows the fleet react, and one session is **audited end-to-end** — every decision signed and offline-verifiable.*
 
-<!-- Static, motion-free version of the demo above — the same four things Talon does for every use case, in one operating period: -->
+<!-- Static, motion-free version of the recording above — the walkthrough's four chapters, in one operating period: -->
 
 ```
-customer-support   reliability     local model down → skips a provider it may not use → policy-valid failover
-                   shared policy   customer email + IBAN → redacted before the provider ([EMAIL], [IBAN])
-coding-assistant   shared policy   admin_* tool → rejected by the company boundary, before the model
-document-summary   cost control    projected cost over budget → next call denied before the provider
-the fleet          understanding   talon agents → STATE / HEALTH / COST / WHY; every decision signed & verified
+1 · fleet          talon agents → three use cases, each one agent.talon.yaml, one operating view
+2 · reliability    raw request (email + IBAN) → redacted ([EMAIL], [IBAN]) → local model down
+   + shared policy → disallowed provider skipped → policy-valid fallback → provider's own reply
+3 · org policy     admin_* tool → HTTP 403 before the provider, $0.0000 spent
+   + cost          projected spend + estimate over the soft session cap → next call denied
+4 · operations     live budget edit → safe reload → fleet shows blocked (and why)
+   + proof         audit list --session → verify offline: 8 records · 8 valid · 0 invalid
 ```
 
 **Operate three use cases →** [Product demo](examples/product-demo/) (real providers, ~$0.05) · **See it in 60 seconds, no key →** [Quickstart](#try-it-in-60-seconds-no-api-key) · **Deep proof, one session →** [Governed session demo](#governed-session-demo-real-providers) · **Pilot a real use case →** [Open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)
