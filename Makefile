@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   GO_ENV := env -u CC CC=/usr/bin/clang CGO_ENABLED=1
 endif
 
-.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
+.PHONY: help build install test test-integration test-e2e test-smoke test-all test-ssot-gate conformance benchmarks benchmark-regression benchmark-baseline-update proof-gates auditor-pack verify-newcomer shortlist-demo verify-shortlist-demo coding-agents-demo product-demo smoke-product-demo lint fmt clean vet mod-tidy check docker-build demo-gateway demo-full demo-clean verify-flow0 nosec-count
 
 # Conformance suite: the evidence + policy paths whose passing test/subtest
 # count is published as Talon's honest conformance number. See
@@ -142,6 +142,12 @@ verify-shortlist-demo: ## Run full #107 shortlist demo verification (Docker)
 
 coding-agents-demo: ## Run #203 coding-agents demo (multi-model orchestration, offline mock, Docker)
 	@cd examples/coding-agents-demo && docker compose up -d --build --wait && ./demo.sh all
+
+product-demo: ## Run the product demo — 3 AI use cases through one Talon (real providers; needs OPENAI_API_KEY + ANTHROPIC_API_KEY, Ollama down)
+	@bash examples/product-demo/demo.sh all
+
+smoke-product-demo: ## CI smoke test: run the product demo's orchestration + evidence assertions against the offline mock (no keys, no spend)
+	@bash scripts/smoke-product-demo.sh
 
 governed-session: ## Start #107 governed-session demo stack (REAL providers; needs ANTHROPIC_API_KEY + OPENAI_API_KEY)
 	@bash scripts/governed-session-up.sh

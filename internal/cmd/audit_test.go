@@ -212,7 +212,7 @@ func TestRenderAuditShow_PIIDetected(t *testing.T) {
 	assert.Contains(t, out, "✓ VALID")
 	assert.Contains(t, out, "EMAIL_ADDRESS")
 	assert.Contains(t, out, "PHONE_NUMBER")
-	assert.Contains(t, out, "PII Redacted:  input=true output=true")
+	assert.Contains(t, out, "PII Redacted:  input=true")
 }
 
 func TestRenderAuditShow_PINone(t *testing.T) {

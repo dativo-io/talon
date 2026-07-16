@@ -1,0 +1,106 @@
+# Talon product demo — the organization baseline for a company's AI use cases.
+#
+# One file, owned by the platform team: the company-wide defaults every use case
+# inherits, the providers Talon may call, and the agents_dir where each use case
+# lives as its own agent.talon.yaml. One `talon serve` reads all of it and
+# operates the whole fleet — customer-support, coding-assistant, document-summary
+# — from a single process.
+#
+# REAL providers, real spend (~$0.02-0.05/run on cheap models). No mock. Needs
+# OPENAI_API_KEY and ANTHROPIC_API_KEY. examples/product-demo/demo.sh binds the
+# gateway to loopback only, mints random admin + traffic keys, and requires the
+# local model (Ollama, :11434) to be OFFLINE so a real connection failure
+# triggers a real, policy-valid failover.
+
+gateway:
+  enabled: true
+  listen_prefix: "/v1/proxy"
+  mode: "enforce"
+
+  providers:
+    # customer-support's PREFERRED provider: a local model (in-region, cheap).
+    # It is OFFLINE during the demo (demo.sh asserts :11434 is not answering), so
+    # a request to it fails with a real connection error and Talon fails over.
+    # It carries a DUMMY secret — never a cloud credential — so a cloud key can
+    # never be transmitted to a local or user-supplied endpoint.
+    local-llama:
+      enabled: true
+      secret_name: "local-llama-demo-key"
+      base_url: "http://localhost:11434"   # Ollama (OpenAI-compatible) — offline in this demo
+      region: "LOCAL"
+      api_family: "openai"
+      allowed_models: ["llama3.2:1b"]
+      # A fallback must stay policy-valid. The chain is walked in order; each
+      # candidate is re-checked against the agent's effective policy BEFORE it is
+      # dispatched, and the request's model is rewritten to one the candidate can
+      # serve. openai-batch could serve the rewritten model but is NOT on
+      # customer-support's allowed_providers, so it is skipped for THAT reason;
+      # openai is the first policy-valid fallback.
+      fallback:
+        - { provider: openai-batch, model: "gpt-4o-mini" }
+        - { provider: openai, model: "gpt-4o-mini" }
+
+    # A second configured OpenAI destination profile the company uses for OTHER
+    # use cases. Same wire format; it is deliberately NOT on customer-support's
+    # allowed_providers, so the failover walk skips it — availability never
+    # overrides the use-case policy.
+    openai-batch:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+      region: "US"
+      api_family: "openai"
+      allowed_models: ["gpt-4o-mini"]
+
+    # The real, healthy OpenAI provider: customer-support's fallback + the
+    # coding-assistant tool beat.
+    openai:
+      enabled: true
+      secret_name: "openai-api-key"
+      base_url: "https://api.openai.com"
+      region: "US"
+      allowed_models: ["gpt-4o", "gpt-4o-mini"]
+
+    # The real Anthropic provider: document-summary runs here. One control plane,
+    # more than one provider.
+    anthropic:
+      enabled: true
+      secret_name: "anthropic-api-key"
+      base_url: "https://api.anthropic.com"
+      region: "US"
+      allowed_models: ["claude-sonnet-5", "claude-haiku-4-5"]
+
+  # Company defaults + hard boundaries every use case inherits. An agent can only
+  # TIGHTEN these, never weaken them.
+  organization_policy:
+    defaults:
+      pii_action: "redact"          # scan for PII and mask it before the provider
+      tool_policy_action: "block"   # reject a request that carries a forbidden tool
+    constraints:
+      # The organization tool boundary. No use case may ever be handed a
+      # destructive admin_* tool — an agent that declares tool_policy_action:
+      # filter still cannot weaken this to a silent strip.
+      forbidden_tools: ["admin_*"]
+    log_prompts: false
+    log_responses: false
+
+  rate_limits:
+    global_requests_per_min: 600
+    per_agent_requests_per_min: 120
+
+  timeouts:
+    connect_timeout: 5s
+    request_timeout: 60s
+    stream_idle_timeout: 60s
+
+# One directory, one agent.talon.yaml per use case. Discovered and served
+# together (Fleet Operations v1).
+agents_dir: agents
+
+# Re-scan the agent files this often so a policy edit (the demo lowers a daily
+# budget to stage the fleet's blocked state) activates promptly.
+agents_reload_interval: "2s"
+
+# Evidence signing key. Prefer the TALON_SIGNING_KEY env var (the demo sets a
+# random one); this file value keeps a manual run self-contained.
+signing_key: "product-demo-signing-key-not-for-production"

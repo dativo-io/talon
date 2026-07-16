@@ -70,7 +70,7 @@ Mint the key that clients of this agent will present to the gateway:
 talon secrets set support-triage-talon-key "$(openssl rand -hex 24)"
 ```
 
-**Rotation:** write a new value to the same secret name (`talon secrets set support-triage-talon-key <new>`) and restart `talon serve` (periodic reload is #269). There is never a window with two concurrently-active keys — one agent, one key.
+**Rotation:** write a new value to the same secret name (`talon secrets set support-triage-talon-key <new>`) and restart `talon serve` (a secret-only change is not digest-detected, so rotation still needs a restart or a file-touch even with periodic reload running). There is never a window with two concurrently-active keys — one agent, one key.
 
 ### Gateway policy overrides (one agent, one override)
 

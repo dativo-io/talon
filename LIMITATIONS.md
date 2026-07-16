@@ -33,7 +33,7 @@ This document serves as an explicit boundaries guide so that operators and secur
 **Today: Forbidden tools are filtered from request bodies before forwarding.**
 - Talon prevents the model from ever seeing forbidden tools by stripping them from the initial request JSON.
 - **Tool-related content is observed, not enforced.** PII inside tool_use inputs, tool_result outputs, and function-call arguments is scanned and recorded in signed evidence (`classification.tool_content`, evidence spec 1.5; `scan_tool_content: evidence_only` is the default) but does **not** block, redact, or otherwise change the request. Tool content cannot be redacted yet — acting on the signal would break agentic sessions — so treat this trail as visibility, not prevention (#212).
-- **Not yet:** Talon does not currently provide runtime execution interception or full MCP tool-call governance. These are planned for future roadmap epics.
+- **Shipped, but bounded:** MCP `tools/call` requests are intercepted and policy-forbidden calls are denied with signed denial evidence. **Not yet:** per-execution tool *lifecycle* evidence and destination egress governance (#146) — Talon does not intercept a governed tool's actual runtime execution or its outbound destinations. These remain roadmap.
 
 ## 4. Isolation Boundary
 

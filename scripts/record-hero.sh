@@ -1,122 +1,204 @@
 #!/usr/bin/env bash
-# Record the ~30s "hero" acquisition demo as an asciinema cast (+ optional GIF).
-# Run on a dev machine with REAL keys exported, a warmed-up Ollama, and the
-# governed-session stack healthy (make governed-session). Not a CI step: real
-# spend + timestamp churn. The recording is transactional: it promotes over the
-# committed cast/GIF only after the run exits 0 and the cast carries its terminal
-# success marker, so a failed run can never overwrite a good asset.
+# Record the product-story "hero" demo as an asciinema cast (+ GIF).
 #
-#   ollama pull llama3.2:1b          # warm up the local model for the routing act
+# The hero is the product demo (examples/product-demo): it builds talon from this
+# checkout and operates three AI use cases through one gateway on REAL providers.
+# It therefore needs OPENAI_API_KEY + ANTHROPIC_API_KEY (real spend ~$0.02-0.05)
+# and the local model (Ollama, :11434) OFFLINE so the reliability beat sees a real
+# failover. Not a CI step: real spend + timestamp churn in the cast.
+#
+#   export OPENAI_API_KEY=... ANTHROPIC_API_KEY=...   # stop Ollama first
 #   scripts/record-hero.sh
+#
+# The recording is transactional: it promotes over the committed cast/GIF only
+# after the run exits 0 AND the cast carries its terminal success marker, so a
+# failed run can never overwrite a good asset.
 #
 # Outputs (README-readable size):
 #   docs/assets/talon_hero.cast   (committed source of truth)
 #   docs/assets/talon_hero.gif    (README embed; only when `agg` exists)
 set -euo pipefail
 
+CAST_ONLY=0
+[[ "${1:-}" == "--cast-only" ]] && CAST_ONLY=1   # allow a cast without a rendered GIF
+
+# The recorded hero MUST be the styled terminal walkthrough; refuse the plain fallback up front
+# (before any tool preflight) — the plain layout exists only for text assertions.
+if [[ "${TALON_DEMO_UI:-gum}" == "plain" ]]; then
+  echo "✗ TALON_DEMO_UI=plain will not be recorded — the plain layout exists only for automated text assertions." >&2
+  exit 1
+fi
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEMO_DIR="${REPO_ROOT}/examples/governed-session"
+DEMO_DIR="${REPO_ROOT}/examples/product-demo"
 ASSET_DIR="${REPO_ROOT}/docs/assets"
 CAST="${ASSET_DIR}/talon_hero.cast"
 GIF="${ASSET_DIR}/talon_hero.gif"
-GATEWAY="${GATEWAY:-http://localhost:8080}"
+LOCAL_LLAMA_URL="${TALON_DEMO_LOCAL_LLAMA_URL:-http://localhost:11434}"
 
 if ! command -v asciinema >/dev/null 2>&1; then
   echo "✗ asciinema is required: brew install asciinema  (or pipx install asciinema)" >&2
   exit 1
 fi
-if ! curl -sf "${GATEWAY}/health" >/dev/null 2>&1; then
-  echo "✗ Stack not healthy at ${GATEWAY} — run: make governed-session" >&2
+for tool in go jq curl openssl; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "✗ ${tool} is required" >&2; exit 1; }
+done
+# gum styles the recorded terminal walkthrough (spinner + closing callout). DEMO-ONLY — the full
+# `all` walkthrough and `make product-demo` do NOT need it. Pinned for recording.
+GUM_VERSION="v0.17.0"
+if ! command -v gum >/dev/null 2>&1; then
+  echo "✗ gum ${GUM_VERSION} is required for the recorded hero (the full demo needs no gum)." >&2
+  echo "  Install:  go install github.com/charmbracelet/gum@${GUM_VERSION}   (or: brew install gum)" >&2
   exit 1
 fi
+gv="$(gum --version 2>&1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"; gv="v${gv#v}"
+[[ "$gv" == "$GUM_VERSION" ]] || echo "    ⚠ gum ${gv} is installed but the hero is pinned to ${GUM_VERSION}; styled layout may differ." >&2
+# Fail before asciinema starts, so a preflight problem never records a broken cast.
+[[ -n "${OPENAI_API_KEY:-}" ]]    || { echo "✗ OPENAI_API_KEY is required (real providers)." >&2; exit 1; }
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] || { echo "✗ ANTHROPIC_API_KEY is required (document-summary runs on Anthropic)." >&2; exit 1; }
+if curl -sf -m 2 "${LOCAL_LLAMA_URL}/api/tags" >/dev/null 2>&1; then
+  echo "✗ The local model at ${LOCAL_LLAMA_URL} is UP — the reliability beat needs it DOWN. Stop Ollama and retry." >&2
+  exit 1
+fi
+
+# PROVIDER PREFLIGHT — direct minimal-cost calls BEFORE asciinema starts, so a
+# take that would die on provider weather (a real Anthropic HTTP 529 was seen in
+# the field) never begins. Uses the demo's exact model so model-access failures
+# are caught too (~$0.0001). Honors TALON_DEMO_*_URL, so the mock path works.
+OPENAI_URL="${TALON_DEMO_OPENAI_URL:-https://api.openai.com}"
+ANTHROPIC_URL="${TALON_DEMO_ANTHROPIC_URL:-https://api.anthropic.com}"
+preflight() { # preflight <label> <curl args...> — 1 try + 2 retries (3s/6s), abort on failure
+  local label="$1"; shift; local i out code
+  for i in 1 2 3; do
+    out="$(curl -sS -m 20 -w $'\n%{http_code}' "$@" 2>&1)" && code="${out##*$'\n'}" || code="000"
+    [[ "$code" == 2?? ]] && { echo "    ✓ ${label} reachable (HTTP ${code})"; return 0; }
+    (( i < 3 )) && { echo "    ⚠ ${label} preflight HTTP ${code} — retrying in $((i*3))s (${i}/2)..."; sleep $((i*3)); }
+  done
+  echo "✗ ${label} preflight failed after 2 retries (last HTTP ${code}) — NOT starting the recording." >&2
+  echo "  Last response: $(printf '%s' "${out%$'\n'*}" | head -c 300)" >&2
+  exit 1
+}
+echo "==> Provider preflight (minimal-cost live checks; honors TALON_DEMO_*_URL)..."
+preflight "OpenAI"    "${OPENAI_URL}/v1/models" -H "Authorization: Bearer ${OPENAI_API_KEY}"
+preflight "Anthropic" -X POST "${ANTHROPIC_URL}/v1/messages" \
+  -H "x-api-key: ${ANTHROPIC_API_KEY}" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-5","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}'
+
 mkdir -p "$ASSET_DIR"
 cd "$DEMO_DIR"
 
-# Warm the routing model before recording so the ROUTED act's first local
-# inference doesn't cold-start into the runner's call timeout. Probe the Ollama
-# that Talon actually routes to, at its HOST-visible address (OLLAMA_PROBE_URL,
-# default http://localhost:11434) — works for both a host-native Ollama and a
-# published sidecar port, matching demo.sh's ollama_ready. Falls back to a
-# sidecar exec if the HTTP endpoint isn't reachable from the host.
-OLLAMA_PROBE_URL="${OLLAMA_PROBE_URL:-http://localhost:11434}"
-if curl -sf "${OLLAMA_PROBE_URL}/api/tags" 2>/dev/null | grep -q 'llama3.2:1b'; then
-  echo "==> Warming llama3.2:1b at ${OLLAMA_PROBE_URL} (avoids a cold-start timeout in the recording)..."
-  curl -sf "${OLLAMA_PROBE_URL}/api/generate" \
-    -d '{"model":"llama3.2:1b","prompt":"ok","stream":false,"options":{"num_predict":1}}' >/dev/null 2>&1 || true
-elif docker compose exec -T ollama ollama list 2>/dev/null | grep -q 'llama3.2:1b'; then
-  echo "==> Warming llama3.2:1b via the ollama sidecar..."
-  docker compose exec -T ollama ollama run llama3.2:1b "ok" >/dev/null 2>&1 || true
-else
-  echo "⚠ llama3.2:1b not reachable at ${OLLAMA_PROBE_URL} nor in a sidecar." >&2
-  echo "  host-native: ollama pull llama3.2:1b  (+ run Talon with TALON_OLLAMA_BASE_URL=http://host.docker.internal:11434)" >&2
-  echo "  sidecar:     docker compose --profile routing-demo up -d && docker compose exec ollama ollama pull llama3.2:1b" >&2
-  echo "  STRICT mode will fail the recording in the ROUTED act if it stays unreachable." >&2
-fi
+# The demo asserts every headline against signed evidence and aborts non-zero on
+# any unexpected outcome (in every mode), so a broken run can never be promoted
+# below. Colour is forced so the GIF renders in colour even when asciinema
+# records headless.
+export TALON_DEMO_COLOR=1
+# Record the styled walkthrough (gum spinner + closing callout). The hero is a
+# scrolling terminal session (no alternate screen), so nothing to restore after.
+export TALON_DEMO_UI=gum
+# Keep the cursor hidden to the very last recorded byte (no stray cursor block on
+# the final frame); the real terminal is reset right after asciinema exits.
+export TALON_DEMO_NO_CURSOR_RESTORE=1
+# Pace the acts so the rendered GIF lands in the readable range. --idle-time-limit
+# MUST exceed DEMO_STEP_PAUSE or agg collapses the pause when it rewrites the
+# timeline; keep them in lockstep.
+export DEMO_STEP_PAUSE="${DEMO_STEP_PAUSE:-2}"
 
-# PREFLIGHT: verify Talon-in-container can reach its CONFIGURED Ollama — the
-# exact path the routing act uses. A host-visible probe passing while the
-# container points at an unreachable host is precisely how a failed run (500 at
-# the routing act) got recorded and committed before. Catch it BEFORE recording.
-echo "==> Preflight: Talon → configured Ollama..."
-if ! ./demo.sh preflight; then
-  echo "✗ Preflight failed — not recording. Fix the topology above and retry." >&2
-  exit 1
-fi
+# PREPARE OUTSIDE THE RECORDING: setup() (build, seed the vault, start the
+# gateway) runs here — NOT inside asciinema — so the recorded frames begin with
+# the opening banner, not the build/seed log. `demo.sh play` then records only
+# the product story and tears the gateway down when it finishes.
+STATE="$(mktemp)"
+prep_cleanup() {   # safety net: if the recording aborts before play tears down, kill the prepared gateway
+  # shellcheck disable=SC1090
+  [[ -s "$STATE" ]] && { source "$STATE" 2>/dev/null || true; [[ -n "${GW_PID:-}" ]] && kill "$GW_PID" 2>/dev/null || true; [[ -n "${WORK:-}" ]] && rm -rf "$WORK" 2>/dev/null || true; }
+  rm -f "$STATE"
+}
+trap prep_cleanup EXIT
 
-# Strict mode: a missing Ollama / skipped routing act FAILS the recording, so a
-# committed hero GIF can never be missing its headline sovereignty proof.
-export TALON_DEMO_STRICT=1
-# Pace the acts so the rendered GIF lands in the ~20-30s readable range (5 acts
-# + closing proof). --idle-time-limit MUST exceed DEMO_STEP_PAUSE or agg
-# collapses the pause when it rewrites the timeline; keep them in lockstep.
-export DEMO_STEP_PAUSE="${DEMO_STEP_PAUSE:-3}"
+echo "==> Preparing the fleet OUTSIDE the recording (build + gateway; ~\$0.02-0.05 real spend follows)..."
+( cd "$DEMO_DIR" && ./demo.sh prepare "$STATE" hero ) || { echo "✗ prepare failed — nothing recorded." >&2; exit 1; }
 
-# TRANSACTIONAL RECORDING: record to a .tmp cast and promote to the committed
-# path ONLY after the run exits 0 AND the cast contains the terminal success
-# marker. asciinema --overwrite would otherwise clobber the good cast with a
-# partial failed one before strict mode's exit fires — how broken assets shipped.
+# TRANSACTIONAL RECORDING: record to a .tmp cast and promote ONLY after the run
+# exits 0 AND the cast carries its terminal success marker.
 CAST_TMP="${CAST}.tmp"
-HERO_MARKER="every decision signed and verified"
-echo "==> Recording ./demo.sh hero (real API calls + local Llama; the budget act"
-echo "    spends toward the \$0.03 session cap, so ~\$0.03 real spend)..."
+HERO_MARKER="HERO_COMPLETE"   # emitted via a terminal-title escape at the end of the hero cut
+echo "==> Recording only the product story (./demo.sh play)..."
+# asciinema v3 sets a fixed headless geometry with --window-size; asciinema v2
+# has no such flag — it records the controlling terminal's size. Detect the
+# installed major version and adapt so the recorder works on either. (The v2
+# usage banner lists {rec,play,cat,upload,auth} and rejects --window-size.)
+ASCII_MAJOR="$(asciinema --version 2>&1 | grep -oE '[0-9]+' | head -n1)"
 rec_rc=0
-asciinema rec --overwrite --cols 100 --rows 30 --idle-time-limit 4 \
-  -c "./demo.sh hero" "$CAST_TMP" || rec_rc=$?
+if [[ "${ASCII_MAJOR:-0}" -ge 3 ]]; then
+  asciinema rec --overwrite --window-size 88x30 --idle-time-limit 3 \
+    -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
+else
+  echo "    asciinema v${ASCII_MAJOR:-?}: no --window-size — requesting an 88x30 terminal and recording at terminal size."
+  echo "    For a pixel-clean asset, size this terminal to 88x30 first (or install asciinema 3)."
+  printf '\033[8;30;88t'   # ask the emulator to resize to 30 rows x 88 cols (honored by most; harmless where ignored)
+  sleep 1
+  asciinema rec --overwrite --idle-time-limit 3 \
+    -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
+fi
+printf '\033[?25h'   # reset the REAL terminal (the recorded process left the cursor hidden)
 if [[ "$rec_rc" -ne 0 ]]; then
-  echo "✗ demo.sh hero exited ${rec_rc} — recording NOT promoted. The committed cast is unchanged." >&2
-  rm -f "$CAST_TMP"
-  exit 1
+  echo "✗ demo.sh play exited ${rec_rc} — recording NOT promoted. The committed cast is unchanged." >&2
+  rm -f "$CAST_TMP"; exit 1
 fi
 if ! grep -q "$HERO_MARKER" "$CAST_TMP"; then
   echo "✗ Recording is missing the terminal success marker (\"${HERO_MARKER}\") — NOT promoted." >&2
-  echo "  The run ended before its closing 0-invalid proof; the committed cast is unchanged." >&2
-  rm -f "$CAST_TMP"
-  exit 1
+  rm -f "$CAST_TMP"; exit 1
 fi
-mv -f "$CAST_TMP" "$CAST"
-echo "    Wrote ${CAST} (validated: exit 0 + terminal marker)"
-
-# Render the GIF from the VALIDATED cast, to a .tmp then promote — so a failed
-# render never leaves a half-written committed GIF either.
+# Acceptance condition: the committed cast OPENS on the TALON value card and
+# CLOSES on the provenance line ("TALON · LIVE TERMINAL DEMO") — it must contain
+# no host shell prompt or setup noise (that is what the prepare/play split is for).
+for noise in "Preparing the fleet" "==> " "go build" "secrets set"; do
+  if grep -qF "$noise" "$CAST_TMP"; then
+    echo "✗ The cast contains setup/host noise (\"${noise}\") — NOT promoted. The recording must begin at the demo's first frame." >&2
+    rm -f "$CAST_TMP"; exit 1
+  fi
+done
+grep -q "Operate every AI use case" "$CAST_TMP" || { echo "✗ The cast is missing the opening value card — NOT promoted." >&2; rm -f "$CAST_TMP"; exit 1; }
+grep -q "TALON · LIVE TERMINAL DEMO" "$CAST_TMP" || { echo "✗ The cast is missing the closing provenance line — NOT promoted." >&2; rm -f "$CAST_TMP"; exit 1; }
+# Render the GIF from the VALIDATED TEMP cast — BEFORE promoting anything — so the
+# cast and GIF promote together. A failed render can then never leave a fresh cast
+# beside a stale GIF: if no fresh GIF is produced, NEITHER asset is promoted (the
+# committed pair is left untouched). CAST_TMP lives under ASSET_DIR, so the Docker
+# mount can read it.
 GIF_TMP="${GIF}.tmp"
 render_ok=0
+AGG_FLAGS=(--theme github-dark --font-size 20 --line-height 1.2 --last-frame-duration 4)
 if command -v agg >/dev/null 2>&1; then
-  echo "==> Rendering GIF (agg)..."
-  agg --font-size 16 "$CAST" "$GIF_TMP" && render_ok=1
+  echo "==> Rendering GIF (agg, github-dark)..."
+  agg "${AGG_FLAGS[@]}" "$CAST_TMP" "$GIF_TMP" && render_ok=1
 elif command -v docker >/dev/null 2>&1; then
   echo "==> Rendering GIF (agg via Docker)..."
   docker run --rm -v "${ASSET_DIR}:/data" ghcr.io/asciinema/agg \
-    --font-size 16 "/data/$(basename "$CAST")" "/data/$(basename "$GIF_TMP")" && render_ok=1
-else
-  echo "⚠ Neither agg nor docker found — GIF not rendered. Render the validated cast elsewhere:" >&2
-  echo "    agg --font-size 16 ${CAST} ${GIF}    (brew/cargo install agg)" >&2
+    "${AGG_FLAGS[@]}" "/data/$(basename "$CAST_TMP")" "/data/$(basename "$GIF_TMP")" && render_ok=1
 fi
+
+# Promotion gate: unless --cast-only, a FRESH GIF must have rendered this run.
+# Checking render_ok (not merely -s "$GIF") means a pre-existing committed GIF can
+# never satisfy the gate after a failed render.
+if [[ "$CAST_ONLY" != 1 && ( "$render_ok" != 1 || ! -s "$GIF_TMP" ) ]]; then
+  rm -f "$GIF_TMP" "$CAST_TMP"
+  echo "✗ No GIF was rendered (install agg: brew/cargo install agg — or have Docker running)." >&2
+  echo "  The README embeds the GIF; refusing to promote a cast without a fresh GIF — committed assets unchanged." >&2
+  echo "  Re-run with --cast-only to promote just the cast." >&2
+  exit 1
+fi
+
+# Both validated (or --cast-only): promote atomically.
+mv -f "$CAST_TMP" "$CAST"
+CAST_GEO="$(head -n1 "$CAST" 2>/dev/null | jq -r 'if .width then "\(.width)x\(.height)" else "?" end' 2>/dev/null || echo '?')"
+echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 88x30)"
 if [[ "$render_ok" == 1 && -s "$GIF_TMP" ]]; then
   mv -f "$GIF_TMP" "$GIF"
   echo "    Wrote ${GIF}"
 else
-  rm -f "$GIF_TMP"
+  rm -f "$GIF_TMP"   # --cast-only with no fresh render: keep the committed GIF as-is
 fi
+[[ -s "$CAST" ]] || { echo "✗ no cast was produced." >&2; exit 1; }
 
 echo ""
 echo "Review the recording, then commit docs/assets/talon_hero.{cast,gif}."

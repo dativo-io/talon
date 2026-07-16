@@ -126,6 +126,39 @@ jobs:
       - name: Run proof gates
         run: make proof-gates
 
+  product-demo-smoke:
+    name: Product demo smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.12'
+          cache: true
+
+      - name: Install SQLite
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: Download dependencies
+        run: go mod download
+
+      # gum is a DEMO-ONLY dependency, pinned to v0.17.0. It is needed only by the
+      # smoke's gum-dependency-boundary checks (hero-errors-without-gum, the
+      # recorder-refuses-plain check) and NOT by Talon itself: it never enters
+      # go.mod, the talon binary, or `make product-demo` / the verbose `all` cut.
+      - name: Install gum (demo-only, pinned)
+        run: go install github.com/charmbracelet/gum@v0.17.0
+
+      # Runs examples/product-demo/demo.sh against the offline mock provider (no
+      # API keys, no spend): validates startup, three-agent discovery, the
+      # policy-valid-failover / org-tool / session-budget / blocked-fleet evidence
+      # assertions, that those assertions are load-bearing (a NEGATIVE evidence
+      # case fails the demo), and the gum dependency boundary (the `all` cut never
+      # calls gum; `hero` errors clearly without gum; the recorder refuses plain).
+      - name: Smoke-test the product demo (mock provider)
+        run: PATH="$(go env GOPATH)/bin:$PATH" make smoke-product-demo
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

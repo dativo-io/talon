@@ -918,8 +918,10 @@ func renderAuditShow(w io.Writer, ev *evidence.Evidence, valid bool) {
 		piiStr = "(none)"
 	}
 	fmt.Fprintf(w, "PII Detected:  %s\n", piiStr)
-	fmt.Fprintf(w, "PII Redacted:  input=%t output=%t\n",
-		ev.Classification.InputPIIRedacted, ev.Classification.PIIRedacted)
+	// Input-path redaction only: the gateway/runner records whether the request
+	// was masked before egress (InputPIIRedacted). There is no output-redaction
+	// flag, so we do not print a misleading output= value (#307).
+	fmt.Fprintf(w, "PII Redacted:  input=%t\n", ev.Classification.InputPIIRedacted)
 	fmt.Fprintln(w, "Execution")
 	fmt.Fprintf(w, "Model:         %s\n", ev.Execution.ModelUsed)
 	fmt.Fprintf(w, "Cost:          %s\n", formatMoney(ev.Execution.Currency, ev.Execution.Cost))

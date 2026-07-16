@@ -27,7 +27,7 @@ This creates three files (source of truth: `internal/pack/templates/coding-agent
 - `agent.talon.yaml` — the `claude-code` agent for Claude Code (the pack's primary agent; see the [Claude Code guide](claude-code-integration.md)).
 - `talon.config.yaml` — gateway config with the OpenAI provider, the **organization baseline** (`organization_policy.defaults`: `pii_action: warn`, `response_pii_action: allow`), **shadow mode**, and a raised `request_timeout: 600s` (the response-header wait follows it by default).
 
-**One active agent per gateway process until #267:** #266 loads the single default agent policy file. To govern Codex traffic, activate the codex agent file for this gateway process (`export TALON_DEFAULT_POLICY=agents/codex.talon.yaml` before `talon serve`, or run it as a second gateway process alongside the Claude Code one); `agents_dir` discovery serves both from one process when #267 lands.
+**One agent, or the whole fleet (#267, shipped):** this guide provisions only the `codex` agent, so `talon serve` runs it single-file via `TALON_DEFAULT_POLICY=agents/codex.talon.yaml` (step 2). To govern Codex **and** Claude Code from one `talon serve`, set `agents_dir` in `talon.config.yaml` — discovery loads every `agent.talon.yaml` under it, each served with its own key, policy, and routing; provision both agents' keys first, and give the codex agent its own `agents/codex/agent.talon.yaml` (the pack writes it flat as `agents/codex.talon.yaml`). See the [Claude Code guide](claude-code-integration.md) for the second agent.
 
 These defaults are deliberate — see [Why the pack defaults look like this](#why-the-pack-defaults-look-like-this) below before changing them.
 

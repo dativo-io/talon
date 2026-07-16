@@ -1,0 +1,24 @@
+# Use case 2 of 3 — coding-assistant
+#
+# A coding agent that can call tools. Note what is NOT here: this file declares
+# no forbidden_tools of its own. The destructive-tool boundary lives in the
+# ORGANIZATION baseline (../../talon.config.yaml: organization_policy.constraints.
+# forbidden_tools: [admin_*], tool_policy_action: block). The coding assistant can
+# declare what capabilities it needs, but it cannot weaken the company boundary —
+# a request carrying admin_* is rejected before the model, even if this agent
+# tried to set tool_policy_action: filter. This is the "shared capability policy"
+# pillar: one place decides what every use case is allowed to do.
+agent:
+  name: coding-assistant
+  description: "Coding assistant — may search/read; the admin_* boundary is company-wide"
+  version: "1.0.0"
+  tenant_id: acme
+  key:
+    secret_name: coding-assistant-talon-key
+
+policies:
+  cost_limits:
+    monthly: 500.00
+
+metadata:
+  team: engineering

@@ -1,0 +1,35 @@
+# Use case 1 of 3 — customer-support
+#
+# Talks to customers, so personal data is in scope; prefers the local model but
+# must stay answerable. Two pillars ride on this one file:
+#
+#   • Reliability — a fallback must stay POLICY-VALID. This use case may reach
+#     only the local model and the primary OpenAI account (allowed_providers).
+#     When the local model is down, Talon walks the provider fallback chain and
+#     skips any candidate this use case isn't allowed to use — availability never
+#     overrides the use-case policy.
+#   • Shared policy — the organization default (pii_action: redact, see
+#     ../../talon.config.yaml) masks customer PII before the provider. This agent
+#     turns on input scanning; it does not weaken the org default.
+#
+# A per-agent override only NARROWS the org baseline; it never widens it.
+agent:
+  name: customer-support
+  description: "Customer support assistant — prefers the local model; PII in scope"
+  version: "1.0.0"
+  tenant_id: acme
+  key:
+    secret_name: customer-support-talon-key
+
+policies:
+  # This use case may reach only the local model and the primary OpenAI account.
+  # The healthy 'openai-batch' account is intentionally absent → the failover
+  # walk skips it.
+  allowed_providers: ["local-llama", "openai"]
+  data_classification:
+    input_scan: true
+  cost_limits:
+    monthly: 200.00
+
+metadata:
+  team: support

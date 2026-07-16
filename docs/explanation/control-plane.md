@@ -30,14 +30,15 @@ Policy-valid, error-driven provider fallback
 Session identity, session-scoped audit and cost rollups
 MCP tool-call interception; tool schema filtering
 Signed evidence: verify, export, compliance reports
+agents_dir discovery: one agent.talon.yaml per use case, one process serving all (#267)
+`talon agents` fleet attention queue (list/show/enable/disable) (#270)
+agent.enabled + periodic safe config reload (#268/#269)
 
 Active MVP direction
 ────────────────────
-agents_dir discovery: one agent.talon.yaml per use case, one process serving all (#267)
-`talon agents` fleet attention queue (list/show/enable/disable)
-CLI-primary fleet operations; dashboard as a read-only projection of the same semantics
-agent.enabled + periodic safe config reload
-Same-provider retries; cost warning thresholds as signed evidence + org webhook
+CLI-primary fleet operations; dashboard as a read-only projection of the same semantics (#143)
+Same-provider retries with backoff (#139)
+Cost warning thresholds as signed evidence + org webhook (#144)
 ```
 
 ## Vocabulary
@@ -48,7 +49,7 @@ Same-provider retries; cost warning thresholds as signed evidence + org webhook
 
 ## Operator model: CLI primary, dashboard secondary
 
-The operator interface is the local `talon` CLI, run where Talon runs — there is no remote-administration requirement, and configuration in YAML is the source of truth. Today the CLI covers auditing, costs, sessions, providers, secrets and compliance exports; the fleet view (`talon agents` as an attention queue with enable/disable) is active roadmap, not shipped — today `talon agents` offers only an analytics score.
+The operator interface is the local `talon` CLI, run where Talon runs — there is no remote-administration requirement, and configuration in YAML is the source of truth. Today the CLI covers auditing, costs, sessions, providers, secrets and compliance exports; it also covers the fleet: `talon agents` is the shipped attention queue (STATE/HEALTH/COST/WHY columns, with `talon agents show <name>`) and `talon agents enable/disable` is the host-local kill switch (Fleet Operations v1).
 
 The dashboard is the secondary surface, and its direction is a **read-only projection** for inspection, filtering, verification and export. The design rule for both: health, budget state, session outcome and effective policy must be computed once and shared, never re-derived per interface. Parts of that already exist (the dashboard's metrics are rebuilt from the same evidence the CLI reads); completing it is tracked on the roadmap.
 

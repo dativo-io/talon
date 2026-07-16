@@ -40,7 +40,7 @@ talon secrets set customer-globex-api-talon-key "$(openssl rand -hex 24)"
 
 When a request presents acme's agent key (`Authorization: Bearer <key>`), Talon resolves the agent and derives tenant `acme`. Tenant-scoped evidence and cost APIs, called with the same key, return only that tenant's data.
 
-> #266 loads the single default `agent.talon.yaml` per gateway process; multi-file `agents_dir` discovery lands with #267. Until then, run one gateway process per customer agent file (or point each at its own file) for a multi-customer fleet.
+> Set `agents_dir` (#267, shipped) to serve a multi-customer fleet from one `talon serve`: one `agents/<customer>/agent.talon.yaml` per customer, each with its own vault-bound key; discovery fails closed on a duplicate `agent.name`. Without `agents_dir`, `talon serve` runs the single default `agent.talon.yaml`.
 
 ---
 

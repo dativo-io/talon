@@ -14,6 +14,7 @@ Everything below is current, code-verified behavior — see [CHANGELOG.md](CHANG
 - **Reliability** — error-driven provider fallback chains triggered only by transient failures (timeout, connection, 429, 5xx), with every candidate re-checked against sovereignty, model and budget policy, failing closed on exhaustion; connect vs response-header timeout separation; provider-native error envelopes.
 - **Shared policy** — an organization baseline with one explicit per-agent override; PII scanning (regex/Presidio/HTTP/local-LLM) on prompts, attachments, tool arguments and responses; tool allowlists and forbidden globs filtered or blocked before the model; egress and sovereignty rules (`eu_strict`/`eu_preferred`/`global`), air-gap mode.
 - **Session understanding** — session identity (explicit `X-Talon-Session-ID` → vendor header → synthetic evidence-only); session-scoped audit, cost rollups and verification; dashboard session drill-down; metrics API, SSE stream, OTel GenAI traces.
+- **Fleet operations** — a multi-agent native runtime where one `agent.talon.yaml` = one AI use case = one active key, discovered by an `agents_dir` scan (duplicate names fail closed); `agent.enabled` plus `talon agents enable/disable`; periodic safe config reload (default 30s) with last-known-good; the `talon agents` attention queue — STATE/HEALTH/COST/WHY — and `talon agents show <name>`.
 - **Proof layer** — HMAC-SHA256 signed evidence per decision; `talon audit list/show/verify/export` incl. offline signed-file verification; compliance report generators (GDPR Art. 30 RoPA, EU AI Act Annex IV) built on the evidence; reproducible conformance suite and benchmarks.
 - **Differentiators** — single self-hosted Go binary (SQLite default, no required SaaS); provider registry with jurisdiction/EU-region metadata across 10 providers; MCP server and MCP proxy interception; `talon init` packs (incl. coding agents).
 
@@ -26,10 +27,6 @@ The gaps between today and the MVP contract, each tracked by an issue in the [MV
 - **Cost-control contract** — warning thresholds as signed evidence (once per crossing), one organization webhook delivered after evidence commit, session-cap hardening ([#144](https://github.com/dativo-io/talon/issues/144))
 - **Same-provider retries with backoff** — transient failures only, cost-counted, evidence-visible ([#139](https://github.com/dativo-io/talon/issues/139))
 - **Stream idle timeout enforcement** ([#217](https://github.com/dativo-io/talon/issues/217)) and the **error contract** with stable machine codes ([#142](https://github.com/dativo-io/talon/issues/142), [#195](https://github.com/dativo-io/talon/issues/195))
-- **Organization baseline + per-agent effective policy and identity** — one `agent.talon.yaml` = one AI use case = one active key ([#266](https://github.com/dativo-io/talon/issues/266))
-- **Agent discovery** — `agents_dir` scan, duplicate names fail closed ([#267](https://github.com/dativo-io/talon/issues/267))
-- **`agent.enabled`** + `talon agents enable/disable` ([#268](https://github.com/dativo-io/talon/issues/268)) and **periodic safe config reload** with last-known-good ([#269](https://github.com/dativo-io/talon/issues/269))
-- **`talon agents` attention queue** — STATE/HEALTH/COST/WHY fleet view ([#270](https://github.com/dativo-io/talon/issues/270))
 - **Session summary contract** for `talon session show` ([#271](https://github.com/dativo-io/talon/issues/271))
 - **Per-execution tool lifecycle evidence + tool-destination egress** on the MCP path ([#146](https://github.com/dativo-io/talon/issues/146))
 - **Read-only operations dashboard** over the same semantics the CLI uses ([#143](https://github.com/dativo-io/talon/issues/143))
@@ -54,7 +51,7 @@ The gaps between today and the MVP contract, each tracked by an issue in the [MV
 
 ## Explicitly postponed
 
-Parked with no delivery commitment (milestone ["Parked — not on active roadmap"](https://github.com/dativo-io/talon/milestone/4), tracked under [#116](https://github.com/dativo-io/talon/issues/116)): generic context/memory layer, remote administration, proactive provider health probes, automatic model downgrade, generic tool risk tiers, full runtime cancellation, dashboard write actions, team-level policy inheritance, provider-breadth/routing-optimizer parity, broad GRC platform behavior, HITL approval gates for runtime tools, per-agent attestation, red-team CLI, workflow/cross-session governance, multi-agent governance, semantic caching.
+Parked with no delivery commitment (milestone ["Parked — not on active roadmap"](https://github.com/dativo-io/talon/milestone/4), tracked under [#116](https://github.com/dativo-io/talon/issues/116)): generic context/memory layer, remote administration, proactive provider health probes, automatic model downgrade, generic tool risk tiers, full runtime cancellation, dashboard write actions, team-level policy inheritance, provider-breadth/routing-optimizer parity, broad GRC platform behavior, HITL approval gates for runtime tools, per-agent attestation, red-team CLI, workflow/cross-session governance, agent-to-agent (A2A) trust-mesh governance, semantic caching.
 
 ## Anti-goals (what we will not build)
 

@@ -8,13 +8,25 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/dativo-io/talon)](https://goreportcard.com/report/github.com/dativo-io/talon)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Every AI use case a company ships — a support bot, a coding agent, an internal copilot — reinvents the same operational plumbing: its own cost controls, its own retry behavior, its own data policy, its own incident trail. The result is use cases you can't reliably operate, and agentic projects that stall because nobody can control them. Talon is one self-hosted Go binary in front of OpenAI, Anthropic, AWS Bedrock, Azure OpenAI, local Ollama, and any OpenAI-compatible endpoint: change one base URL and every use case gets budget caps enforced **before** the provider is called, policy-checked failover when a provider degrades, central policy defaults with explicit exceptions for PII, tools, and data destinations, and a per-session view of what each use case did and spent — with a signed, verifiable evidence record behind every decision. Apache 2.0.
+Every AI use case a company ships — a customer-support assistant, a coding assistant, a document summarizer — reinvents the same operational plumbing: its own cost controls, its own retry behavior, its own data policy, its own incident trail. The result is use cases you can't reliably operate, and agentic projects that stall because nobody can control them. Talon is one self-hosted Go binary in front of OpenAI, Anthropic, AWS Bedrock, Azure OpenAI, local Ollama, and any OpenAI-compatible endpoint: point every use case at it and each one gets budget caps enforced **before** the provider is called, policy-checked failover when a provider degrades, central policy defaults with explicit exceptions for PII, tools, and data destinations, and a per-use-case view of what each did and spent — with a signed, verifiable evidence record behind every decision. Operate the whole fleet — discover, inspect, stop, and reconfigure every use case — from one gateway. Apache 2.0.
 
-![Talon hero demo — one governed AI session: allowed, tool stripped, PII blocked, US destination routed to a local model, budget enforced](docs/assets/talon_hero.gif)
+[![A live terminal demo of real Talon CLI and API calls — the local model is down so a customer request fails over, skipping a provider the use case isn't allowed to use; customer email and IBAN are redacted before the provider; a forbidden admin tool is rejected by a company boundary; a projected-cost budget stops the next call before spend; and `talon agents` shows the fleet, with every decision signed](docs/assets/talon_hero.gif)](examples/product-demo/)
 
-*One AI session, one governed boundary: good traffic flows, a dangerous tool is stripped, PII is blocked before the provider, confidential data is refused by a US model and runs on a local one instead, runaway spend is stopped — and every decision verifies.*
+*A **live terminal walkthrough** (55s): real Talon CLI and API calls across three AI use cases — **customer-support, coding-assistant, document-summary** — with every headline checked against **signed evidence**. A downed local model triggers a **policy-valid failover** (skipping a provider this use case may not use), customer **PII is redacted before the provider** (the raw request and the provider's reply are both on screen), a destructive **admin tool is rejected by a company-wide boundary**, a use case's **next call is denied on projected cost before it spends**, `talon agents` shows the fleet react, and one session is **audited end-to-end** — every decision signed and offline-verifiable.*
 
-**See it in 60 seconds, no API key →** [Try it now](#try-it-in-60-seconds-no-api-key) · **Deep proof on live providers →** [Governed session demo](#governed-session-demo-real-providers) · **Pilot on a real AI use case →** [Open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)
+<!-- Static, motion-free version of the recording above — the walkthrough's four chapters, in one operating period: -->
+
+```
+1 · fleet          talon agents → three use cases, each one agent.talon.yaml, one operating view
+2 · reliability    raw request (email + IBAN) → redacted ([EMAIL], [IBAN]) → local model down
+   + shared policy → disallowed provider skipped → policy-valid fallback → provider's own reply
+3 · org policy     admin_* tool → HTTP 403 before the provider, $0.0000 spent
+   + cost          projected spend + estimate over the soft session cap → next call denied
+4 · operations     live budget edit → safe reload → fleet shows blocked (and why)
+   + proof         audit list --session → verify offline: 8 records · 8 valid · 0 invalid
+```
+
+**Operate three use cases →** [Product demo](examples/product-demo/) (real providers, ~$0.05) · **See it in 60 seconds, no key →** [Quickstart](#try-it-in-60-seconds-no-api-key) · **Deep proof, one session →** [Governed session demo](#governed-session-demo-real-providers) · **Pilot a real use case →** [Open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A)
 
 ---
 
@@ -87,6 +99,19 @@ You don't have to trust Talon in blocking mode on day one.
 | A new agent to build | `talon init` → `talon run` ([guide](docs/tutorials/first-governed-agent.md)) |
 
 Or just [try it with no key](#try-it-in-60-seconds-no-api-key) first, then [open a pilot issue](https://github.com/dativo-io/talon/issues/new?title=Pilot%3A%20%3Cyour%20stack%3E&body=Current%20stack%3A%0AFirst%20control%20I%20need%20%28PII%20%2F%20spend%20%2F%20tools%20%2F%20data%20residency%29%3A) with your stack and the first control you need.
+
+---
+
+## Product demo — three use cases, one control plane
+
+A **live, evidence-backed product demo**: it operates **customer-support, coding-assistant, and document-summary** as three `agent.talon.yaml` files under one `agents_dir`, on real providers, and walks the four pillars in one operating period:
+
+```bash
+export OPENAI_API_KEY=sk-...  ANTHROPIC_API_KEY=sk-ant-...   # stop Ollama first
+make product-demo
+```
+
+You watch, in one gateway: a downed local model trigger a **policy-valid failover** that *skips* a provider this use case isn't allowed to use; an email + IBAN **redacted before the provider**; a destructive `admin_*` tool **rejected by a company-wide boundary** the agent can't weaken; a use case's next call **denied on projected cost before it spends**; the `talon agents` fleet view flag the exhausted use case as `blocked` after a live budget edit; and a **signed export verified offline**. Every headline is asserted against Talon's own signed evidence before it's rendered. Real, paid provider calls — ≈ $0.02–0.05/run of Talon-accounted cost (denials cost $0), no Docker. Full walk-through: [examples/product-demo](examples/product-demo/README.md).
 
 ---
 
