@@ -29,13 +29,14 @@ func WhyString(causes []Cause) string {
 // same currency and symbol as `talon costs`. An empty code defaults to USD, the
 // honest default for the shipped pricing tables (#216).
 //
-// Precision is adaptive: two decimals for ordinary amounts, four when a non-zero
-// amount would otherwise round to nothing (0 < |v| < 0.01). LLM spend is often
-// sub-cent; without this, a blocked agent's WHY read "daily budget exhausted
-// ($0.00 / $0.00)" — true, but useless to the operator deciding what to do.
+// Precision is adaptive: two decimals for ordinary amounts, four for non-zero
+// amounts under a dime. LLM spend routinely lives in that range; at two decimals
+// a blocked agent's WHY rendered "daily budget exhausted ($0.00 / $0.00)" — and
+// with spend $0.0126 against a cap of $0.0114, "($0.01 / $0.01)" — true, but
+// useless to the operator deciding what to act on.
 func formatMoney(currency string, v float64) string {
 	digits := 2
-	if av := math.Abs(v); av > 0 && av < 0.01 {
+	if av := math.Abs(v); av > 0 && av < 0.1 {
 		digits = 4
 	}
 	return pricing.FormatAmount(currency, strconv.FormatFloat(v, 'f', digits, 64))

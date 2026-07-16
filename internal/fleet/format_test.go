@@ -15,10 +15,11 @@ func TestFormatMoneyAdaptivePrecision(t *testing.T) {
 	}{
 		{"zero stays 2dp", "USD", 0, "$0.00"},
 		{"ordinary amount 2dp", "USD", 1.5, "$1.50"},
-		{"exact cent boundary 2dp", "USD", 0.01, "$0.01"},
+		{"dime boundary 2dp", "USD", 0.1, "$0.10"},
+		{"sub-dime gets 4dp (field case: spend vs cap)", "USD", 0.0126, "$0.0126"},
 		{"sub-cent gets 4dp", "USD", 0.0032, "$0.0032"},
 		{"tiny sub-cent gets 4dp", "USD", 0.0001, "$0.0001"},
-		{"euro sub-cent gets 4dp", "EUR", 0.0035, "€0.0035"},
+		{"euro sub-dime gets 4dp", "EUR", 0.0350, "€0.0350"},
 		{"large amount unchanged", "EUR", 1000, "€1000.00"},
 	}
 	for _, tc := range cases {

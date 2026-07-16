@@ -217,7 +217,10 @@ dsum_json() { talon agents show document-summary --url "$GATEWAY" --json 2>/dev/
 WT_TEXT=$'\033[38;2;240;246;252m'; WT_MUTED=$'\033[38;2;139;148;158m'
 WT_CYAN=$'\033[38;2;88;166;255m';  WT_GREEN=$'\033[38;2;63;185;80m'
 WT_AMBER=$'\033[38;2;210;153;34m'; WT_RED=$'\033[38;2;248;81;73m'
-WB=$'\033[1m'; WR=$'\033[0m'
+WB=$'\033[1m'; WI=$'\033[3m'; WR=$'\033[0m'
+# Chapter chip: bold white on GitHub-blue — a heading can never be mistaken for
+# command, output, or annotation.
+WCHIP=$'\033[1;38;2;240;246;252;48;2;31;111;235m'
 SPIN=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 GUMUI=0; [[ "$UI" == "gum" ]] && command -v gum >/dev/null 2>&1 && GUMUI=1
 pcell()  { local s; printf -v s '%-*s' "$1" "$2"; printf '%s%s%s' "$3" "$s" "$WR"; }   # pcell <w> <text> <colour>
@@ -237,19 +240,25 @@ w_cursor_restore() {
   [[ "${TALON_DEMO_NO_CURSOR_RESTORE:-0}" == 1 ]] && { CURSOR_HIDDEN=0; return 0; }
   [[ "${CURSOR_HIDDEN:-0}" == 1 ]] && printf '\033[?25h'; CURSOR_HIDDEN=0; return 0
 }
-w_chapter() { # <n> <title>  — a terminal comment/separator, not a navigation tab
-  local mid; mid="$(printf '── %s. %s ' "$1" "$2")"; local rest=$(( 76 - ${#mid} )); (( rest < 3 )) && rest=3
-  printf '\n  %b── %s.%b %b%s%b %b%s%b\n\n' "$WT_MUTED" "$1" "$WR" "${WB}${WT_CYAN}" "$2" "$WR" "$WT_MUTED" "$(dashes "$rest")" "$WR"
+w_chapter() { # <n> <title> <emoji> — a chapter heading, unmistakably distinct from
+  # command/output/annotation: emoji + a bold white-on-blue chip + a grey rule.
+  local n="$1" t="$2" e="${3:-}"
+  local rest=$(( 76 - (4 + 5 + ${#n} + ${#t}) )); (( rest < 3 )) && rest=3
+  printf '\n  %s %b %s · %s %b %b%s%b\n\n' "$e" "$WCHIP" "$n" "$t" "$WR" "$WT_MUTED" "$(dashes "$rest")" "$WR"
 }
-w_cmd()   { printf '  %b$%b %b%s%b\n' "$WT_CYAN" "$WR" "$WT_TEXT" "$1" "$WR"; [[ -n "${2:-}" ]] && printf '    %b%s%b\n' "$WT_MUTED" "$2" "$WR"; return 0; }
+# COMMAND level: bright-cyan $, BOLD white command text (the strongest text weight
+# in the recording after chapter chips); dim grey request subline.
+w_cmd()   { printf '  %b$%b %b%s%b\n' "${WB}${WT_CYAN}" "$WR" "${WB}${WT_TEXT}" "$1" "$WR"; [[ -n "${2:-}" ]] && printf '    %b%s%b\n' "$WT_MUTED" "$2" "$WR"; return 0; }
 w_comment() { printf '  %b# %s%b\n' "$WT_MUTED" "$1" "$WR"; }   # a shell-comment context line (part of the directed session)
-w_line()  { printf '  %s\n' "$1"; }                          # a real-output line (pre-coloured)
-w_annot() { local c="$WT_MUTED"; [[ "${2:-}" == "green" ]] && c="$WT_GREEN"; printf '  %b→ %s%b\n' "$c" "$1" "$WR"; }
+w_line()  { printf '  %s\n' "$1"; }                          # a real-output line (pre-coloured, regular weight)
+# ANNOTATION level: italic + → prefix (grey commentary; green only for a proven
+# conclusion) — visibly the demo's voice, never Talon output.
+w_annot() { local c="$WT_MUTED"; [[ "${2:-}" == "green" ]] && c="$WT_GREEN"; printf '  %b%b→ %s%b\n' "$WI" "$c" "$1" "$WR"; }
 w_retries() { # surface any transients retry_call absorbed — attributed to the DEMO
   # RUNNER (Talon does not ship same-provider retries; never imply it does).
   [[ -s "$WORK/.retries" ]] || return 0
   local last; last="$(tail -1 "$WORK/.retries")"
-  w_annot "demo runner: provider temporarily overloaded (${last}) — retried the demonstration."
+  w_annot "demo runner: provider overloaded (${last}) — retried this recording step."
   rm -f "$WORK/.retries"
 }
 w_reveal() { # w_reveal <delay-s> <line...> — paced reveal of REAL, pre-rendered output
@@ -337,10 +346,12 @@ w_close() {  # clear once; the closing statement — the single bordered callout
   local callout
   if [[ "$GUMUI" == 1 ]]; then
     # --border normal: light box-drawing corners render cleanly in agg (the
-    # rounded arc glyphs were the corner-artifact source in rendered GIFs).
+    # rounded arc glyphs were the corner-artifact source in rendered GIFs). Every
+    # line carries its OWN colour wrap — gum styles per line, and an escape that
+    # spans a newline rendered inconsistently in field terminals.
     callout="$(gum style --border normal --border-foreground '#30363D' --padding '1 4' --margin '0 0 0 2' --align center \
-      "$(printf '%b%bTALON%b\n\n%bOperate every AI use case\nthrough one shared control plane%b\n\n%b✓ Live decisions · ✓ Signed evidence · ✓ Verified offline%b\n\n%bCost control · Reliability · Shared policy · Session understanding%b' \
-         "$WB" "$WT_CYAN" "$WR" "$WT_TEXT" "$WR" "$WT_GREEN" "$WR" "$WT_MUTED" "$WR")")"
+      "$(printf '%b%bTALON%b\n\n%bOperate every AI use case%b\n%bthrough one shared control plane%b\n\n%b✓ Live decisions · ✓ Signed evidence · ✓ Verified offline%b\n\n%bCost control · Reliability · Shared policy · Session understanding%b' \
+         "$WB" "$WT_CYAN" "$WR" "$WT_TEXT" "$WR" "$WT_TEXT" "$WR" "$WT_GREEN" "$WR" "$WT_MUTED" "$WR")")"
   else
     callout="$(printf '  %b%bTALON%b\n\n  %bOperate every AI use case%b\n  %bthrough one shared control plane%b\n\n  %b✓ Live decisions · ✓ Signed evidence · ✓ Verified offline%b\n\n  %bCost control · Reliability · Shared policy · Session understanding%b' \
       "$WB" "$WT_CYAN" "$WR" "$WT_TEXT" "$WR" "$WT_TEXT" "$WR" "$WT_GREEN" "$WR" "$WT_MUTED" "$WR")"
@@ -407,11 +418,13 @@ beat_support() {
     local model; model="$(jq -r '.model // .model_id // empty' "$WORK/b" 2>/dev/null)"
     echo; w_http "$HTTP" "${model:+model=$model}"; echo
     # Route ledger revealed in sequence (200ms) — failed → policy-skipped → selected.
+    # The status glyph sits OUTSIDE the %-14s pad so multibyte glyph width can
+    # never skew the description column (locale-proof alignment).
     w_reveal 0.2 \
       "  $(printf '%b✓ email + IBAN redacted%b' "$WT_GREEN" "$WR")" \
-      "  $(printf '%s %bconnection error%b' "$(pcell 16 "× $failed_prov" "$WT_RED")" "$WT_MUTED" "$WR")" \
-      "  $(printf '%s %bblocked by use-case policy%b' "$(pcell 16 "⊘ $skip_prov" "$WT_AMBER")" "$WT_MUTED" "$WR")" \
-      "  $(printf '%s %bselected fallback%b' "$(pcell 16 "✓ $sel" "$WT_CYAN")" "$WT_MUTED" "$WR")"
+      "  $(printf '%b× %-14s%b %b%s%b' "$WT_RED"   "$failed_prov" "$WR" "$WT_MUTED" "connection error" "$WR")" \
+      "  $(printf '%b⊘ %-14s%b %b%s%b' "$WT_AMBER" "$skip_prov"   "$WR" "$WT_MUTED" "blocked by use-case policy" "$WR")" \
+      "  $(printf '%b✓ %-14s%b %b%s%b' "$WT_CYAN"  "$sel"         "$WR" "$WT_MUTED" "selected fallback" "$WR")"
     w_annot "Talon replaced the detected email and IBAN before forwarding · tier unchanged."
     w_annot "Completed through the first policy-valid destination · cost $(moneylt "$scost")."
     w_hold 5
@@ -474,7 +487,7 @@ beat_cost() {
   if [[ "$CUT" == hero ]]; then
     echo
     rm -f "$WORK/.retries"
-    w_cmd 'curl -X POST $GATEWAY/v1/proxy/anthropic/v1/messages' "session=document-summary · batch summary"
+    w_cmd 'curl -X POST $GATEWAY/v1/proxy/anthropic/v1/messages' "agent=document-summary · session=${sess}"
     ( cost_loop "$sess" || true; printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
     w_run "Checking projected session cost" "$!"
     HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
@@ -604,9 +617,10 @@ beat_session() {
   echo
   w_cmd "talon audit list --session ${SUPPORT_SID}"; echo
   w_session "$SUPPORT_SID" | w_reveal_stdin 0.4
-  echo
-  w_annot "completed through policy-valid fallback — every decision above is a signed record." green
-  w_hold 4
+  # Resolve the "Errors: 1" reading immediately — the error IS the failed local
+  # attempt the fallback recovered from (asserted from signed evidence).
+  w_annot "Session completed successfully; one provider attempt failed before fallback." green
+  w_hold 5
 }
 
 # ── 7. Signed-evidence close ──────────────────────────────────────────────────
@@ -668,10 +682,10 @@ run_beats() { # run_beats <hero|all>
     # the open (self-identifying the recording), terminal-comment chapter headings,
     # then each beat prints a real command → live wait → real output → a short note.
     w_open
-    w_chapter 1 "Fleet";                        beat_fleet
-    w_chapter 2 "Reliability + shared policy";  beat_support
-    w_chapter 3 "Organization policy + cost";   beat_capability; beat_cost
-    w_chapter 4 "Operations + proof";           beat_policy; beat_session; beat_close
+    w_chapter 1 "Fleet" "🖥";                        beat_fleet
+    w_chapter 2 "Reliability + shared policy" "🛡";  beat_support
+    w_chapter 3 "Organization policy + cost" "💶";   beat_capability; beat_cost
+    w_chapter 4 "Operations + proof" "📊";           beat_policy; beat_session; beat_close
     printf '\033]0;HERO_COMPLETE\007'   # machine marker via terminal title — off the visible frame
     w_cursor_restore
   else

@@ -73,12 +73,12 @@ fi
 grep -q "HERO_COMPLETE" /tmp/hero.raw || { echo "✗ HERO_COMPLETE marker missing from the cast" >&2; rm -f "$STATE"; exit 1; }
 strip_ansi </tmp/hero.raw >/tmp/hero.plain
 # Self-identifying demo + four terminal-comment chapters + real commands + real output.
-for m in "TALON · LIVE TERMINAL DEMO" "── 1." "Fleet" "── 2." "Reliability + shared policy" \
-         "── 3." "Organization policy + cost" "── 4." "Operations + proof" \
+for m in "TALON · LIVE TERMINAL DEMO" " 1 · Fleet " " 2 · Reliability + shared policy " \
+         " 3 · Organization policy + cost " " 4 · Operations + proof " \
          '$ talon agents' "/v1/proxy/local-llama/v1/chat/completions" "/v1/proxy/openai/v1/chat/completions" "/v1/proxy/anthropic/v1/messages" \
-         "coding-assistant · tools=" "replaced the detected email and IBAN" \
+         "coding-assistant · tools=" "agent=document-summary · session=doc-budget-" "replaced the detected email and IBAN" \
          "perl -i.bak -pe" "+ daily:" "daily budget exhausted" \
-         "audit list --session support-" "Requests:" "Providers:" "policy-valid fallback — every decision above is a signed record" \
+         "audit list --session support-" "Requests:" "Providers:" "Session completed successfully; one provider attempt failed before fallback" \
          "talon audit verify --file signed-evidence.json" "verdict=valid_fallback" \
          "HTTP 200" "HTTP 403" "session_budget_exceeded" "Total records:" "Valid records:" "Invalid records: 0" \
          "✓ Live decisions" "Operate every AI use case"; do
@@ -93,7 +93,7 @@ grep -qF "daily: …" /tmp/hero.plain && { echo "✗ the perl edit still shows a
 # mock run must show none at all).
 for bad in "Preparing the fleet" "==> " "openclaw@" "demo.sh hero" "demo.sh play" "go build" "/var/folders/" "/tmp/tmp." \
            "TALON / ACME" "LIVE RUN" "ENFORCE ●" "LIVE COMMAND ·" \
-           "provider transient" "demo runner:" "retried the demonstration"; do
+           "provider transient" "demo runner:" "retried this recording step"; do
   grep -qF "$bad" /tmp/hero.plain && { echo "✗ host/setup/dashboard/retry text leaked: $bad" >&2; rm -f "$STATE"; exit 1; } || true
 done
 grep -qE '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}' /tmp/hero.plain && { echo "✗ walkthrough contains a full UUID" >&2; rm -f "$STATE"; exit 1; } || true
@@ -128,8 +128,8 @@ if OPENAI_API_KEY=sk-smoke ANTHROPIC_API_KEY=sk-smoke \
   echo "✗ hero FAILED despite the demo-runner retry (fault mock 529-once)" >&2; tail -20 /tmp/smoke-fault.out >&2; exit 1
 fi
 strip_ansi </tmp/smoke-fault.out >/tmp/smoke-fault.plain
-grep -qF "demo runner: provider temporarily overloaded" /tmp/smoke-fault.plain || { echo "✗ retry fired but was not surfaced with demo-runner attribution" >&2; exit 1; }
-grep -qF "retried the demonstration" /tmp/smoke-fault.plain || { echo "✗ retry attribution line incomplete" >&2; exit 1; }
+grep -qF "demo runner: provider overloaded" /tmp/smoke-fault.plain || { echo "✗ retry fired but was not surfaced with demo-runner attribution" >&2; exit 1; }
+grep -qF "retried this recording step" /tmp/smoke-fault.plain || { echo "✗ retry attribution line incomplete" >&2; exit 1; }
 echo "    ✓ transient 529 absorbed; surfaced as demo-runner behavior (exit 0, honest attribution)"
 
 echo "==> NEGATIVE — local model reachable → preflight aborts the demo..."
