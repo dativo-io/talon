@@ -147,11 +147,18 @@ func checkPolicy(cfg *config.Config) CheckResult {
 			Message: fmt.Sprintf("%s — %v", policyPath, loadErr),
 		}
 	}
+	// State this check's scope plainly (#290): it validates the ONE default
+	// policy file. With agents_dir set, serve/run use the discovered fleet
+	// instead — point there rather than implying this file is what runs.
+	if cfg.AgentsDir != "" {
+		return CheckResult{
+			Name: "policy_valid", Category: "config", Status: "pass",
+			Message: fmt.Sprintf("%s (agent %s — the default single-file policy; agents_dir is set, so serve/run use the fleet discovered under %s: validate it with 'talon validate')", policyPath, pol.Agent.Name, cfg.AgentsDir),
+		}
+	}
 	return CheckResult{
 		Name: "policy_valid", Category: "config", Status: "pass",
-		// State the pre-#267 scope plainly (#290): doctor validates the ONE
-		// loaded agent policy, not a fleet — multi-agent discovery is #267.
-		Message: fmt.Sprintf("%s (agent %s — the single loaded agent policy; select another via TALON_DEFAULT_POLICY, agents_dir discovery is #267)", policyPath, pol.Agent.Name),
+		Message: fmt.Sprintf("%s (agent %s — the single loaded agent policy; select another via TALON_DEFAULT_POLICY, or serve several via agents_dir discovery)", policyPath, pol.Agent.Name),
 	}
 }
 

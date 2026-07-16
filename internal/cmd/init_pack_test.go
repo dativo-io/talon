@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
+	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/pricing"
 )
@@ -32,14 +33,26 @@ func TestInitPack_CrewAI_GeneratesFiles(t *testing.T) {
 	require.FileExists(t, configPath)
 
 	// Each crew role is its own agent with a vault-bound key (#266): the
-	// researcher is the primary file; writer and reviewer scaffold under agents/.
+	// researcher is the primary file; writer and reviewer scaffold as
+	// agents/<role>/agent.talon.yaml so agents_dir discovery finds them (#308).
 	agentContent, err := os.ReadFile(agentPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(agentContent), "crew-researcher")
 	assert.Contains(t, string(agentContent), "crew-researcher-talon-key")
 
-	require.FileExists(t, filepath.Join(dir, "agents", "crew-writer.talon.yaml"))
-	require.FileExists(t, filepath.Join(dir, "agents", "crew-reviewer.talon.yaml"))
+	require.FileExists(t, filepath.Join(dir, "agents", "crew-writer", "agent.talon.yaml"))
+	require.FileExists(t, filepath.Join(dir, "agents", "crew-reviewer", "agent.talon.yaml"))
+
+	// The scaffolded layout must be discoverable: agents_dir: "." over the
+	// pack directory serves ALL roles from one process (#267, #308).
+	scan, err := agentcatalog.DiscoverAgents(context.Background(), dir)
+	require.NoError(t, err)
+	require.Empty(t, scan.Issues, "every scaffolded agent file must load cleanly")
+	names := make([]string, 0, len(scan.Agents))
+	for _, a := range scan.Agents {
+		names = append(names, a.Name)
+	}
+	assert.ElementsMatch(t, []string{"crew-researcher", "crew-writer", "crew-reviewer"}, names)
 
 	configContent, err := os.ReadFile(configPath)
 	require.NoError(t, err)
@@ -380,7 +393,7 @@ func TestInitPack_CodingAgents_GeneratesFiles(t *testing.T) {
 
 	// Contract-critical defaults (#201, #266): honest streaming default in the
 	// organization baseline + soft session cap and vault key binding on both
-	// coding agents (claude-code primary, codex under agents/).
+	// coding agents (claude-code primary, codex at agents/codex/).
 	cfg := string(configContent)
 	assert.Contains(t, cfg, "organization_policy")
 	assert.NotContains(t, cfg, "tenant_key", "legacy identity must not scaffold")
@@ -392,7 +405,7 @@ func TestInitPack_CodingAgents_GeneratesFiles(t *testing.T) {
 	assert.Contains(t, agent, "claude-code-talon-key", "primary agent binds its vault traffic key")
 	assert.Contains(t, agent, "max_cost: 10.00", "primary agent carries the soft session cap")
 
-	codexContent, err := os.ReadFile(filepath.Join(dir, "agents", "codex.talon.yaml"))
+	codexContent, err := os.ReadFile(filepath.Join(dir, "agents", "codex", "agent.talon.yaml"))
 	require.NoError(t, err)
 	assert.Contains(t, string(codexContent), "codex-talon-key", "codex agent binds its own key")
 	assert.Contains(t, string(codexContent), "max_cost: 10.00", "codex agent carries the soft session cap")
@@ -400,6 +413,17 @@ func TestInitPack_CodingAgents_GeneratesFiles(t *testing.T) {
 
 	// The generated policy must be schema-valid.
 	require.NoError(t, policy.ValidateSchema(agentContent, false))
+
+	// The scaffolded layout must be discoverable: agents_dir: "." over the
+	// pack directory serves BOTH coding agents from one process (#267, #308).
+	scan, err := agentcatalog.DiscoverAgents(context.Background(), dir)
+	require.NoError(t, err)
+	require.Empty(t, scan.Issues, "every scaffolded agent file must load cleanly")
+	names := make([]string, 0, len(scan.Agents))
+	for _, a := range scan.Agents {
+		names = append(names, a.Name)
+	}
+	assert.ElementsMatch(t, []string{"claude-code", "codex"}, names)
 }
 
 // TestInitPack_CodingAgents_RecognizersDetectFixtureSecrets loads the

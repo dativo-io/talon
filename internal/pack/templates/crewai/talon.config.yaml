@@ -5,10 +5,16 @@
 # Each crew role is its own agent — one agent.talon.yaml = one AI use case =
 # one vault-bound traffic key (#266) — so governance and audit attribute per
 # role: crew-researcher (agent.talon.yaml), crew-writer and crew-reviewer
-# (agents/). Mint each key with `talon secrets set <name>-talon-key ...`.
+# (agents/<role>/agent.talon.yaml). Mint each key with
+# `talon secrets set <name>-talon-key ...`.
 
 llm:
   pricing_file: "pricing/models.yaml"
+
+# Fleet mode (#267): scan this project for agent.talon.yaml files (finds all
+# three roles) and serve every discovered agent with its own key, policy,
+# and routing.
+# agents_dir: "."
 
 llm_provider: openai
 log_level: info
