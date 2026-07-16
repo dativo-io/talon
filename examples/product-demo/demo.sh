@@ -393,7 +393,7 @@ beat_support() {
     # Show the RAW request going in — the synthetic customer PII on screen is the
     # setup for the redaction receipt (the provider's reply proves it never saw it).
     ( retry_call openai_chat "$CS_KEY" local-llama llama3.2:1b \
-        "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
+        "Draft a short reply confirming we received the refund request from Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
       printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
     local reqpid=$!
     # The body file exists as soon as openai_chat writes it; give it a beat.
@@ -412,7 +412,7 @@ beat_support() {
     w_retries
   else
     retry_call openai_chat "$CS_KEY" local-llama llama3.2:1b \
-      "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
+      "Draft a short reply confirming we received the refund request from Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
   fi
   unset REQ_FILE
   require_http 200 "reliability"
