@@ -182,9 +182,13 @@ retry_call() { # retry_call <fn> [args...] — ≤3 retries on transient upstrea
 
 openai_chat() { # <bearer> <provider> <model> <content> [session]
   : >"$WORK/b"   # never let require_http diagnose a stale body from a prior attempt
+  # The request body lives in a real file and is sent with -d @file, so the hero
+  # can `cat` the exact payload and show the exact curl — no display/exec drift.
+  local req="$WORK/${REQ_FILE:-request.json}"
+  jq -nc --arg m "$3" --arg c "$4" '{model:$m,messages:[{role:"user",content:$c}]}' >"$req"
   local -a h=(-H "Authorization: Bearer $1" -H "Content-Type: application/json"); [[ -n "${5:-}" ]] && h+=(-H "X-Talon-Session-ID: $5")
   HTTP="$(curl -sS -o "$WORK/b" -w '%{http_code}' -X POST "${GATEWAY}/v1/proxy/$2/v1/chat/completions" "${h[@]}" \
-    -d "$(jq -nc --arg m "$3" --arg c "$4" '{model:$m,messages:[{role:"user",content:$c}]}')")"
+    -d @"$req")"
 }
 anthropic_msg() { # <bearer> <model> <content> <max_tokens> [session]
   : >"$WORK/b"
@@ -383,19 +387,34 @@ beat_fleet() {
 
 # ── 2. Customer-support incident (reliability + shared policy) ────────────────
 beat_support() {
+  export REQ_FILE="refund-request.json"
   if [[ "$CUT" == hero ]]; then
     rm -f "$WORK/.retries"
-    w_cmd 'curl -X POST $GATEWAY/v1/proxy/local-llama/v1/chat/completions' "customer-support · refund request · email + IBAN"
+    # Show the RAW request going in — the synthetic customer PII on screen is the
+    # setup for the redaction receipt (the provider's reply proves it never saw it).
     ( retry_call openai_chat "$CS_KEY" local-llama llama3.2:1b \
         "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
       printf '%s' "${HTTP:-}" >"$WORK/.http" ) &
-    w_run "Routing through Talon" "$!"
+    local reqpid=$!
+    # The body file exists as soon as openai_chat writes it; give it a beat.
+    local _; for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$WORK/refund-request.json" ]] && break; sleep 0.1; done
+    w_cmd "cat refund-request.json"; echo
+    fold -s -w 82 "$WORK/refund-request.json" 2>/dev/null | while IFS= read -r l; do printf '  %b%s%b\n' "$WT_TEXT" "$l" "$WR"; done
+    echo
+    # The trailing \ inside the single-quoted string is a DISPLAYED shell
+    # continuation (the on-screen command wraps), not an escape.
+    # shellcheck disable=SC1003
+    printf '  %b$%b %b%s%b\n    %b%s%b\n' \
+      "${WB}${WT_CYAN}" "$WR" "${WB}${WT_TEXT}" 'curl -X POST $GATEWAY/v1/proxy/local-llama/v1/chat/completions \' "$WR" \
+      "${WB}${WT_TEXT}" '-d @refund-request.json' "$WR"
+    w_run "Routing through Talon" "$reqpid"
     HTTP="$(cat "$WORK/.http" 2>/dev/null || echo)"
     w_retries
   else
     retry_call openai_chat "$CS_KEY" local-llama llama3.2:1b \
       "Refund Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000" "$SUPPORT_SID"
   fi
+  unset REQ_FILE
   require_http 200 "reliability"
   export_session "$SUPPORT_SID" "$WORK/support.json"
   assert_ev "$WORK/support.json" \
@@ -421,7 +440,12 @@ beat_support() {
     # Display normalization only: drop a trailing -YYYY-MM-DD version suffix
     # (gpt-4o-mini-2024-07-18 → gpt-4o-mini); evidence keeps the exact value.
     model="$(sed -E 's/-[0-9]{4}-[0-9]{2}-[0-9]{2}$//' <<<"$model")"
-    echo; w_http "$HTTP" "${model:+model=$model}"; echo
+    echo; w_http "$HTTP" "${model:+model=$model}"
+    # The provider's ACTUAL reply text (first line, trimmed). The model answered
+    # the REDACTED prompt — its own words are the redaction proof.
+    local rtext; rtext="$(jq -r '.choices[0].message.content // empty' "$WORK/b" 2>/dev/null | tr '\n' ' ' | sed -E 's/  +/ /g' | awk '{print substr($0,1,78)}')"
+    [[ -n "$rtext" ]] && w_line "$(printf '%b"%s…"%b' "$WT_MUTED" "$rtext" "$WR")"
+    echo
     # Route ledger revealed in sequence (200ms) — failed → policy-skipped → selected.
     # The status glyph sits OUTSIDE the %-14s pad so multibyte glyph width can
     # never skew the description column (locale-proof alignment).
