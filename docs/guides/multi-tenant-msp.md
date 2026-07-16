@@ -14,7 +14,7 @@ Talon scopes evidence and costs by **tenant**. Each customer is a tenant. The te
 **One agent per customer:** each customer's AI use case gets its own `agent.talon.yaml` with a `tenant_id` and a vault-bound key:
 
 ```yaml
-# agents/customer-acme-api.talon.yaml
+# agents/customer-acme-api/agent.talon.yaml
 agent:
   name: customer-acme-api
   tenant_id: acme
@@ -23,7 +23,7 @@ agent:
 ```
 
 ```yaml
-# agents/customer-globex-api.talon.yaml
+# agents/customer-globex-api/agent.talon.yaml
 agent:
   name: customer-globex-api
   tenant_id: globex
@@ -49,7 +49,7 @@ When a request presents acme's agent key (`Authorization: Bearer <key>`), Talon 
 Each customer agent carries its own policy override on top of your shared organization baseline (`gateway.organization_policy` in `talon.config.yaml`) — per-customer cost caps, model lists, PII posture:
 
 ```yaml
-# agents/customer-acme-app1.talon.yaml
+# agents/customer-acme-app1/agent.talon.yaml
 agent:
   name: customer-acme-app1
   tenant_id: acme
@@ -62,7 +62,7 @@ policies:
 ```
 
 ```yaml
-# agents/customer-globex-bot.talon.yaml
+# agents/customer-globex-bot/agent.talon.yaml
 agent:
   name: customer-globex-bot
   tenant_id: globex

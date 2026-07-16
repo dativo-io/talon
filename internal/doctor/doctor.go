@@ -130,6 +130,17 @@ func checkDataDir(cfg *config.Config) CheckResult {
 func checkPolicy(cfg *config.Config) CheckResult {
 	policyPath := cfg.DefaultPolicy
 	if _, err := os.Stat(policyPath); err != nil {
+		// Fleet mode (#318): run/serve resolve agents from the fleet
+		// discovered under agents_dir, so the default file is NOT required
+		// for them — only process-wide surfaces (MCP/graph interception)
+		// fall back to a synthetic minimal policy until one exists.
+		if cfg.AgentsDir != "" {
+			return CheckResult{
+				Name: "policy_valid", Category: "config", Status: "warn",
+				Message: fmt.Sprintf("%s — file not found; serve/run use the fleet discovered under agents_dir %s, but process-wide MCP/graph interception falls back to a synthetic minimal policy without a default file", policyPath, cfg.AgentsDir),
+				Fix:     "Add a default agent.talon.yaml for process-wide surfaces, or accept the synthetic minimal default",
+			}
+		}
 		// Advisory in the general pass: plain `talon serve` synthesizes a
 		// minimal default. Gateway mode REQUIRES a keyed agent — that is
 		// enforced as a FAIL by gateway_agent_identity when a gateway config
@@ -147,11 +158,18 @@ func checkPolicy(cfg *config.Config) CheckResult {
 			Message: fmt.Sprintf("%s — %v", policyPath, loadErr),
 		}
 	}
+	// State this check's scope plainly (#290): it validates the ONE default
+	// policy file. With agents_dir set, serve/run use the discovered fleet
+	// instead — point there rather than implying this file is what runs.
+	if cfg.AgentsDir != "" {
+		return CheckResult{
+			Name: "policy_valid", Category: "config", Status: "pass",
+			Message: fmt.Sprintf("%s (agent %s — the default single-file policy; agents_dir is set, so serve/run use the fleet discovered under %s: validate it with 'talon validate')", policyPath, pol.Agent.Name, cfg.AgentsDir),
+		}
+	}
 	return CheckResult{
 		Name: "policy_valid", Category: "config", Status: "pass",
-		// State the pre-#267 scope plainly (#290): doctor validates the ONE
-		// loaded agent policy, not a fleet — multi-agent discovery is #267.
-		Message: fmt.Sprintf("%s (agent %s — the single loaded agent policy; select another via TALON_DEFAULT_POLICY, agents_dir discovery is #267)", policyPath, pol.Agent.Name),
+		Message: fmt.Sprintf("%s (agent %s — the single loaded agent policy; select another via TALON_DEFAULT_POLICY, or serve several via agents_dir discovery)", policyPath, pol.Agent.Name),
 	}
 }
 

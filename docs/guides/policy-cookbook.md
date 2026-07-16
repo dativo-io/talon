@@ -423,7 +423,7 @@ attachment_handling:
 
 **Goal:** Per-session budgets, per-subagent audit, and credential detection for coding-agent traffic — without breaking streaming or coding UX.
 
-**Where:** one `agent.talon.yaml` per coding tool (or scaffold everything with `talon init --pack coding-agents`, which generates `claude-code` as the primary agent plus `agents/codex.talon.yaml`).
+**Where:** one `agent.talon.yaml` per coding tool (or scaffold everything with `talon init --pack coding-agents`, which generates `claude-code` as the primary agent plus `agents/codex/agent.talon.yaml`).
 
 ```yaml
 # agent.talon.yaml (claude-code)

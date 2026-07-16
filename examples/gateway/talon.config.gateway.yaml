@@ -30,8 +30,11 @@ gateway:
   # agents/support-slack-bot.talon.yaml. Mint their traffic keys:
   #   talon secrets set openclaw-main-talon-key     "$(openssl rand -hex 24)"
   #   talon secrets set support-slack-bot-talon-key "$(openssl rand -hex 24)"
-  # Serving several agents from one process arrives with agents_dir (#267);
-  # until then activate one file per gateway via the default_policy setting.
+  # This example activates one file per gateway via the default_policy
+  # setting. To serve several agents from one process, set agents_dir
+  # (#267, shipped): discovery loads every file named exactly
+  # agent.talon.yaml under it, so give each agent its own
+  # agents/<name>/agent.talon.yaml.
   organization_policy:
     defaults:
       pii_action: "warn"

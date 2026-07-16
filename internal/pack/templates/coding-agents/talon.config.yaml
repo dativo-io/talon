@@ -5,9 +5,12 @@
 # through one governed gateway. Each tool is its own agent — one
 # agent.talon.yaml = one AI use case = one vault-bound traffic key (#266) —
 # so budgets, policy, and audit attribute per tool. Claude Code is the
-# primary agent (agent.talon.yaml); Codex ships as agents/codex.talon.yaml
-# (serving several agents from one process arrives with agents_dir, #267 —
-# until then activate one file per gateway via the default_policy setting).
+# primary agent (agent.talon.yaml); Codex ships as
+# agents/codex/agent.talon.yaml. To serve BOTH from this one process,
+# uncomment agents_dir below — discovery (#267) loads every file named
+# exactly agent.talon.yaml under it (mint both keys first; the gateway
+# fails closed on a missing key binding). Without agents_dir, talon serve
+# runs the single default_policy file.
 # Mint each agent's traffic key:
 #   talon secrets set claude-code-talon-key "$(openssl rand -hex 24)"
 #   talon secrets set codex-talon-key       "$(openssl rand -hex 24)"
@@ -17,6 +20,11 @@
 
 llm:
   pricing_file: "pricing/models.yaml"
+
+# Fleet mode (#267): scan this project for agent.talon.yaml files (finds the
+# primary agent and agents/codex/agent.talon.yaml) and serve every discovered
+# agent with its own key, policy, and routing.
+# agents_dir: "."
 
 llm_provider: anthropic
 log_level: info

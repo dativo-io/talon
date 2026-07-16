@@ -11,8 +11,8 @@
 
 agent:
   # Primary agent of the pack: Claude Code traffic. Codex is its own agent
-  # (agents/codex.talon.yaml) — one agent.talon.yaml = one AI use case = one
-  # vault-bound traffic key (#266).
+  # (agents/codex/agent.talon.yaml) — one agent.talon.yaml = one AI use case
+  # = one vault-bound traffic key (#266).
   name: claude-code
   description: Claude Code traffic governed by Talon
   version: "1.0.0"

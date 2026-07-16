@@ -33,9 +33,11 @@ test_section_27_runtime_governance() {
   smoke_tighten_limits "$dir"
 
   # Gateway config: organization baseline only — identity lives in per-phase
-  # agent files (#266). Each governance dimension is its own agent; phases
-  # restart the gateway with TALON_DEFAULT_POLICY pointing at the phase agent
-  # (multi-agent single-process serving arrives with agents_dir, #267).
+  # agent files (#266). Each governance dimension is its own agent; this
+  # section deliberately exercises single-agent default_policy mode, so
+  # phases restart the gateway with TALON_DEFAULT_POLICY pointing at the
+  # phase agent (multi-agent single-process serving exists via agents_dir,
+  # #267, and is not what this section covers).
   if [[ -f "$dir/talon.config.yaml" ]] && ! grep -q "gateway:" "$dir/talon.config.yaml" 2>/dev/null; then
     cat >> "$dir/talon.config.yaml" <<'GOVEOF'
 

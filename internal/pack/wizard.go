@@ -150,8 +150,8 @@ var builtinPacks = []PackDescriptor{
 		Framework:   "CrewAI",
 		Files: []PackFile{
 			{TemplatePath: "templates/crewai/agent.talon.yaml", OutputPath: "agent.talon.yaml", Description: "Agent policy (crew-researcher, primary)"},
-			{TemplatePath: "templates/crewai/agents/crew-writer.talon.yaml", OutputPath: "agents/crew-writer.talon.yaml", Description: "Agent policy (crew-writer)"},
-			{TemplatePath: "templates/crewai/agents/crew-reviewer.talon.yaml", OutputPath: "agents/crew-reviewer.talon.yaml", Description: "Agent policy (crew-reviewer)"},
+			{TemplatePath: "templates/crewai/agents/crew-writer/agent.talon.yaml", OutputPath: "agents/crew-writer/agent.talon.yaml", Description: "Agent policy (crew-writer)"},
+			{TemplatePath: "templates/crewai/agents/crew-reviewer/agent.talon.yaml", OutputPath: "agents/crew-reviewer/agent.talon.yaml", Description: "Agent policy (crew-reviewer)"},
 			{TemplatePath: "templates/crewai/talon.config.yaml", OutputPath: "talon.config.yaml", Description: "Infrastructure config"},
 		},
 		PostMessage: crewaiPostInit,
@@ -164,7 +164,7 @@ var builtinPacks = []PackDescriptor{
 		Framework:   "Claude Code / Codex CLI",
 		Files: []PackFile{
 			{TemplatePath: "templates/coding-agents/agent.talon.yaml", OutputPath: "agent.talon.yaml", Description: "Agent policy (claude-code, primary; credential recognizers)"},
-			{TemplatePath: "templates/coding-agents/agents/codex.talon.yaml", OutputPath: "agents/codex.talon.yaml", Description: "Agent policy (codex)"},
+			{TemplatePath: "templates/coding-agents/agents/codex/agent.talon.yaml", OutputPath: "agents/codex/agent.talon.yaml", Description: "Agent policy (codex)"},
 			{TemplatePath: "templates/coding-agents/talon.config.yaml", OutputPath: "talon.config.yaml", Description: "Gateway config (organization baseline + providers)"},
 		},
 		PostMessage: codingAgentsPostInit,

@@ -23,11 +23,11 @@ talon init --pack coding-agents
 
 This creates three files (source of truth: `internal/pack/templates/coding-agents/`):
 
-- `agents/codex.talon.yaml` — the **`codex` agent**: Codex CLI's Talon traffic identity (`agent.key.secret_name: codex-talon-key`) plus its policy override with coding-tuned defaults — `session_limits.max_cost: 10.00`, `cost_limits.daily: 50.00` / `monthly: 500.00`, `input_scan: true` (input PII action `warn`), `allowed_providers: ["openai"]`, `metadata.team: coding` — and high-precision credential recognizers (PEM private-key blocks, AWS `AKIA...` key IDs, GitHub `ghp_`/`github_pat_` tokens, Anthropic/OpenAI `sk-ant-...`/`sk-proj-...` keys) so leaked credentials in prompt traffic land in evidence.
+- `agents/codex/agent.talon.yaml` — the **`codex` agent**: Codex CLI's Talon traffic identity (`agent.key.secret_name: codex-talon-key`) plus its policy override with coding-tuned defaults — `session_limits.max_cost: 10.00`, `cost_limits.daily: 50.00` / `monthly: 500.00`, `input_scan: true` (input PII action `warn`), `allowed_providers: ["openai"]`, `metadata.team: coding` — and high-precision credential recognizers (PEM private-key blocks, AWS `AKIA...` key IDs, GitHub `ghp_`/`github_pat_` tokens, Anthropic/OpenAI `sk-ant-...`/`sk-proj-...` keys) so leaked credentials in prompt traffic land in evidence.
 - `agent.talon.yaml` — the `claude-code` agent for Claude Code (the pack's primary agent; see the [Claude Code guide](claude-code-integration.md)).
 - `talon.config.yaml` — gateway config with the OpenAI provider, the **organization baseline** (`organization_policy.defaults`: `pii_action: warn`, `response_pii_action: allow`), **shadow mode**, and a raised `request_timeout: 600s` (the response-header wait follows it by default).
 
-**One agent, or the whole fleet (#267, shipped):** this guide provisions only the `codex` agent, so `talon serve` runs it single-file via `TALON_DEFAULT_POLICY=agents/codex.talon.yaml` (step 2). To govern Codex **and** Claude Code from one `talon serve`, set `agents_dir` in `talon.config.yaml` — discovery loads every `agent.talon.yaml` under it, each served with its own key, policy, and routing; provision both agents' keys first, and give the codex agent its own `agents/codex/agent.talon.yaml` (the pack writes it flat as `agents/codex.talon.yaml`). See the [Claude Code guide](claude-code-integration.md) for the second agent.
+**One agent, or the whole fleet (#267, shipped):** this guide provisions only the `codex` agent, so `talon serve` runs it single-file via `TALON_DEFAULT_POLICY=agents/codex/agent.talon.yaml` (step 2). To govern Codex **and** Claude Code from one `talon serve`, set `agents_dir: "."` in `talon.config.yaml` (the pack ships it commented out) — discovery loads every `agent.talon.yaml` under it, each served with its own key, policy, and routing; provision both agents' keys first. See the [Claude Code guide](claude-code-integration.md) for the second agent.
 
 These defaults are deliberate — see [Why the pack defaults look like this](#why-the-pack-defaults-look-like-this) below before changing them.
 
@@ -49,7 +49,7 @@ talon secrets set codex-talon-key "$CODEX_KEY"
 
 # 4. Start Talon with the gateway — same shell so TALON_SECRETS_KEY is still set,
 #    with the codex agent file active (see step 1)
-export TALON_DEFAULT_POLICY=agents/codex.talon.yaml
+export TALON_DEFAULT_POLICY=agents/codex/agent.talon.yaml
 talon serve --gateway
 ```
 

@@ -362,10 +362,11 @@ func resolveBudgetUsage(
 	// The default agent FILE's cost_limits apply only to THAT agent (or the
 	// tenant-wide view). Reporting them as another agent's budget was the
 	// #288 defect: `talon costs --agent other` silently showed the default
-	// agent's caps. Until agents_dir (#267), an unknown agent gets NO
-	// denominator rather than a wrong one.
+	// agent's caps. Offline resolution covers only the default agent policy
+	// (fleet-wide offline caps via agents_dir is #314), so an unknown agent
+	// gets NO denominator rather than a wrong one.
 	if agentID != "" && agentID != pol.Agent.Name {
-		fmt.Fprintf(os.Stderr, "note: agent %q is not the loaded default agent policy (%q) — no budget caps reported; start `talon serve` and use --url for the runtime-resolved caps, or wait for agents_dir discovery (#267)\n", agentID, pol.Agent.Name)
+		fmt.Fprintf(os.Stderr, "note: agent %q is not the loaded default agent policy (%q) — no budget caps reported; offline resolution covers only the default agent, so start `talon serve` and use --url for the runtime-resolved caps\n", agentID, pol.Agent.Name)
 		return nil, nil, nil
 	}
 	cl := pol.Policies.CostLimits
