@@ -22,7 +22,7 @@ set -euo pipefail
 CAST_ONLY=0
 [[ "${1:-}" == "--cast-only" ]] && CAST_ONLY=1   # allow a cast without a rendered GIF
 
-# The recorded hero MUST be the styled console; refuse the plain fallback up front
+# The recorded hero MUST be the styled terminal walkthrough; refuse the plain fallback up front
 # (before any tool preflight) — the plain layout exists only for text assertions.
 if [[ "${TALON_DEMO_UI:-gum}" == "plain" ]]; then
   echo "✗ TALON_DEMO_UI=plain will not be recorded — the plain layout exists only for automated text assertions." >&2
@@ -43,7 +43,7 @@ fi
 for tool in go jq curl openssl; do
   command -v "$tool" >/dev/null 2>&1 || { echo "✗ ${tool} is required" >&2; exit 1; }
 done
-# gum renders the styled hero console. It is a DEMO-ONLY dependency — the full
+# gum styles the recorded terminal walkthrough (spinner + closing callout). DEMO-ONLY — the full
 # `all` walkthrough and `make product-demo` do NOT need it. Pinned for recording.
 GUM_VERSION="v0.17.0"
 if ! command -v gum >/dev/null 2>&1; then
@@ -68,10 +68,9 @@ cd "$DEMO_DIR"
 # below. Colour is forced so the GIF renders in colour even when asciinema
 # records headless.
 export TALON_DEMO_COLOR=1
-# Record the styled operations console, and keep its final frame as the last cast
-# event (the alt-screen is reset on the real terminal after asciinema finishes).
+# Record the styled walkthrough (gum spinner + closing callout). The hero is a
+# scrolling terminal session (no alternate screen), so nothing to restore after.
 export TALON_DEMO_UI=gum
-export TALON_DEMO_KEEP_SCREEN=1
 # Pace the acts so the rendered GIF lands in the readable range. --idle-time-limit
 # MUST exceed DEMO_STEP_PAUSE or agg collapses the pause when it rewrites the
 # timeline; keep them in lockstep.
@@ -104,19 +103,16 @@ echo "==> Recording only the product story (./demo.sh play)..."
 ASCII_MAJOR="$(asciinema --version 2>&1 | grep -oE '[0-9]+' | head -n1)"
 rec_rc=0
 if [[ "${ASCII_MAJOR:-0}" -ge 3 ]]; then
-  asciinema rec --overwrite --window-size 96x32 --idle-time-limit 3 \
+  asciinema rec --overwrite --window-size 88x34 --idle-time-limit 3 \
     -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
 else
-  echo "    asciinema v${ASCII_MAJOR:-?}: no --window-size — requesting a 96x32 terminal and recording at terminal size."
-  echo "    For a pixel-clean asset, size this terminal to 96x32 first (or install asciinema 3)."
-  printf '\033[8;32;96t'   # ask the emulator to resize to 32 rows x 96 cols (honored by most; harmless where ignored)
+  echo "    asciinema v${ASCII_MAJOR:-?}: no --window-size — requesting an 88x34 terminal and recording at terminal size."
+  echo "    For a pixel-clean asset, size this terminal to 88x34 first (or install asciinema 3)."
+  printf '\033[8;34;88t'   # ask the emulator to resize to 34 rows x 88 cols (honored by most; harmless where ignored)
   sleep 1
   asciinema rec --overwrite --idle-time-limit 3 \
     -c "cd '$DEMO_DIR' && ./demo.sh play '$STATE'" "$CAST_TMP" || rec_rc=$?
 fi
-# The styled hero leaves the terminal in the alternate screen (KEEP_SCREEN) so the
-# final frame is the last cast event; reset the REAL terminal now that it's captured.
-printf '\033[?25h\033[?1049l'
 if [[ "$rec_rc" -ne 0 ]]; then
   echo "✗ demo.sh play exited ${rec_rc} — recording NOT promoted. The committed cast is unchanged." >&2
   rm -f "$CAST_TMP"; exit 1
@@ -156,7 +152,7 @@ fi
 # Both validated (or --cast-only): promote atomically.
 mv -f "$CAST_TMP" "$CAST"
 CAST_GEO="$(head -n1 "$CAST" 2>/dev/null | jq -r 'if .width then "\(.width)x\(.height)" else "?" end' 2>/dev/null || echo '?')"
-echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 96x32)"
+echo "    Wrote ${CAST} (validated: exit 0 + terminal marker; geometry ${CAST_GEO} — aim for 88x34)"
 if [[ "$render_ok" == 1 && -s "$GIF_TMP" ]]; then
   mv -f "$GIF_TMP" "$GIF"
   echo "    Wrote ${GIF}"

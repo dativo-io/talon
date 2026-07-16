@@ -19,7 +19,7 @@ export OPENAI_API_KEY=sk-...  ANTHROPIC_API_KEY=sk-ant-...
 # The reliability beat needs the local model DOWN — stop Ollama if it's running.
 make product-demo
 # or:  ./demo.sh          # full narrated demo (every command shown, for evaluators)
-#      ./demo.sh hero     # styled live operations console — the README GIF (needs gum)
+#      ./demo.sh hero     # annotated live terminal demo — the README GIF (needs gum)
 ```
 
 **Real, paid provider calls** — approximately **$0.02–0.05 per run** of
@@ -35,11 +35,14 @@ and **Ollama not listening on `:11434`** (the reliability beat demonstrates
 failover *from* the local model, so it must be offline; the demo asserts this in
 preflight).
 
-### The styled hero console needs `gum` (demo-only)
+### The recorded hero needs `gum` (demo-only)
 
-`./demo.sh hero` (and `scripts/record-hero.sh`) render a live operations console
-with [gum](https://github.com/charmbracelet/gum) — a **demo-only** dependency
-pinned to **v0.17.0**:
+`./demo.sh hero` (and `scripts/record-hero.sh`) produce a **live terminal demo
+using real Talon CLI and API calls** — a directed shell session, not a Talon
+interface (Talon ships no such UI; the styling is part of the recording). The
+light styling (a spinner beside the running command, one closing callout) uses
+[gum](https://github.com/charmbracelet/gum) — a **demo-only** dependency pinned
+to **v0.17.0**:
 
 ```bash
 go install github.com/charmbracelet/gum@v0.17.0   # or: brew install gum
@@ -49,10 +52,10 @@ gum is **not** a Talon dependency in any sense that matters: it is not in `go.mo
 not compiled into or invoked by the `talon` binary, and **not** required to build,
 install, run, or operate Talon. It is also not required for `make product-demo`,
 the verbose `./demo.sh` (`all`) walkthrough, or the CI smoke test's core path — only
-for the styled `hero` cut and its recording. Where a plain-text surface is needed
-(automated assertions), `TALON_DEMO_UI=plain ./demo.sh hero` renders the same live
-run without gum; the recorder refuses that fallback so the committed asset is always
-the styled console.
+for the recorded `hero` cut. Where a plain-text surface is needed (automated
+assertions), `TALON_DEMO_UI=plain ./demo.sh hero` renders the same live run without
+gum; the recorder refuses that fallback so the committed asset is always the styled
+recording.
 
 ## What you're looking at
 

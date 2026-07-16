@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CI smoke test for examples/product-demo/demo.sh.
 #
-# The shipped hero renders a styled gum operations console; that VISUAL is
+# The shipped hero is a gum-styled live terminal walkthrough; that VISUAL is
 # validated from the rendered GIF (see scripts/record-hero.sh + the preview), not
 # here. This test exercises the same script's LIVE orchestration + EVIDENCE
 # ASSERTIONS against the offline mock provider, using the plain-UI fallback
@@ -59,67 +59,47 @@ else
   echo "✗ demo.sh all FAILED (or invoked gum)" >&2; tail -30 /tmp/smoke-all.err >&2; exit 1
 fi
 
-echo "==> POSITIVE — plain-UI hero (the deterministic text surface; gum renders the recorded asset)..."
+echo "==> POSITIVE — the live terminal walkthrough (real commands + real output + annotations; no secret/host/temp/dashboard)..."
+# The plain surface is the deterministic text of the same walkthrough (the gum
+# recording only adds a spinner + the closing callout). Secrets are the actual
+# generated Talon keys (read from the prepared state) + the mock provider key.
 STATE="$(mktemp)"
 run_pd "$PD" http://127.0.0.1:1 prepare "$STATE" hero >/tmp/smoke-prep.out 2>&1 || { echo "✗ prepare failed" >&2; tail -20 /tmp/smoke-prep.out >&2; rm -f "$STATE"; exit 1; }
+sval() { sed -nE "s/.*\\b$1='([^']*)'.*/\\1/p" "$STATE" | head -1; }
 if TALON_DEMO_UI=plain TALON_DEMO_COLOR=1 DEMO_STEP_PAUSE=0 bash "$PD/demo.sh" play "$STATE" >/tmp/hero.raw 2>/tmp/hero.err; then :; else
-  echo "✗ demo.sh play (plain) FAILED" >&2; tail -30 /tmp/hero.err >&2; rm -f "$STATE"; exit 1
+  echo "✗ demo.sh play (walkthrough) FAILED" >&2; tail -30 /tmp/hero.err >&2; rm -f "$STATE"; exit 1
 fi
-rm -f "$STATE"
-grep -q "HERO_COMPLETE" /tmp/hero.raw || { echo "✗ HERO_COMPLETE marker missing from the cast" >&2; exit 1; }
+grep -q "HERO_COMPLETE" /tmp/hero.raw || { echo "✗ HERO_COMPLETE marker missing from the cast" >&2; rm -f "$STATE"; exit 1; }
 strip_ansi </tmp/hero.raw >/tmp/hero.plain
-# The four stages + each beat's receipt content.
-for m in "RELIABILITY + SHARED POLICY" "email + IBAN redacted" "POLICY SKIP" "blocked by use-case policy" \
-         "ORGANIZATION POLICY + COST" "admin_*" "BLOCKED BEFORE MODEL" "Provider call prevented" \
-         "SOFT SESSION LIMIT" "NEXT CALL PREVENTED" \
-         "OPERATIONAL CONTROL + PROOF" "FINANCE SETS AN EMERGENCY DAILY CEILING" "daily budget exhausted" \
-         "SIGNED EVIDENCE" "valid_fallback" "VERIFIED OFFLINE" "Operate every AI use case"; do
-  grep -qF "$m" /tmp/hero.plain || { echo "✗ hero stage/marker missing: $m" >&2; exit 1; }
+# Self-identifying demo + four terminal-comment chapters + real commands + real output.
+for m in "TALON · LIVE TERMINAL DEMO" "── 1." "Fleet" "── 2." "Reliability + shared policy" \
+         "── 3." "Organization policy + cost" "── 4." "Operations + proof" \
+         '$ talon agents' "/v1/proxy/local-llama" "/v1/proxy/openai" "/v1/proxy/anthropic" \
+         "perl -i.bak -pe" "talon audit verify --file signed-evidence.json" "verdict=valid_fallback" \
+         "HTTP 200" "HTTP 403" "session_budget_exceeded" "Total records:" "Valid records:" "Invalid records: 0" \
+         "Operate every AI use case"; do
+  grep -qF "$m" /tmp/hero.plain || { echo "✗ walkthrough marker missing: $m" >&2; rm -f "$STATE"; exit 1; }
 done
-grep -qF "✓ NEXT CALL PREVENTED"  /tmp/hero.plain || { echo "✗ cost prevention must render ✓ (not ✗)" >&2; exit 1; }
-grep -qF "✓ BLOCKED BEFORE MODEL" /tmp/hero.plain || { echo "✗ tool boundary must render ✓ (not ✗)" >&2; exit 1; }
-for bad in "Preparing the fleet" "go build" "secrets set" "gateway started" "/tmp/" "/var/folders/"; do
-  grep -qF "$bad" /tmp/hero.plain && { echo "✗ hero frames leaked: $bad" >&2; exit 1; } || true
+grep -qF "→ " /tmp/hero.plain || { echo "✗ demo annotations (→) missing" >&2; rm -f "$STATE"; exit 1; }
+# No host shell prompt / setup output, and NONE of the old dashboard chrome (it must
+# read as a terminal recording, not an interactive Talon product UI).
+for bad in "Preparing the fleet" "==> " "openclaw@" "demo.sh hero" "demo.sh play" "go build" "/var/folders/" "/tmp/tmp." \
+           "TALON / ACME" "LIVE RUN" "ENFORCE ●" "LIVE COMMAND ·"; do
+  grep -qF "$bad" /tmp/hero.plain && { echo "✗ host/setup/dashboard text leaked: $bad" >&2; rm -f "$STATE"; exit 1; } || true
 done
-grep -qE '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}' /tmp/hero.plain && { echo "✗ hero frames contain a full UUID" >&2; exit 1; } || true
-grep -qE '\$[0-9]+\.[0-9]{5,}' /tmp/hero.plain && { echo "✗ hero frames contain over-precise money (>4dp)" >&2; exit 1; } || true
-echo "    ✓ plain hero: four stages, HERO_COMPLETE, ✓ prevention, SOFT limit, no setup/paths/UUID/over-precise money"
-
-echo "==> POSITIVE — gum LIVE COMMAND panel: real command + real output, and NO secret / host-prompt / temp-path leak..."
-# The command panel is gum-only, so capture the gum UI itself. Secrets are the
-# actual generated Talon keys (read from the prepared state) + the mock provider key.
-STATE2="$(mktemp)"
-run_pd "$PD" http://127.0.0.1:1 prepare "$STATE2" hero >/tmp/smoke-prep2.out 2>&1 || { echo "✗ prepare (gum) failed" >&2; tail -20 /tmp/smoke-prep2.out >&2; rm -f "$STATE2"; exit 1; }
-sval() { sed -nE "s/.*\\b$1='([^']*)'.*/\\1/p" "$STATE2" | head -1; }
-if TALON_DEMO_UI=gum TALON_DEMO_COLOR=1 DEMO_STEP_PAUSE=0 \
-   OPENAI_API_KEY=sk-smoke ANTHROPIC_API_KEY=sk-smoke \
-   TALON_DEMO_OPENAI_URL="http://localhost:${MOCK_PORT}" TALON_DEMO_ANTHROPIC_URL="http://localhost:${MOCK_PORT}" \
-   TALON_DEMO_LOCAL_LLAMA_URL="http://127.0.0.1:1" \
-   bash "$PD/demo.sh" play "$STATE2" >/tmp/gum.raw 2>&1; then :; else
-  echo "✗ gum hero play FAILED" >&2; tail -25 /tmp/gum.raw >&2; rm -f "$STATE2"; exit 1
-fi
-strip_ansi </tmp/gum.raw >/tmp/gum.plain
-# Each stage shows its REAL command + REAL output in the LIVE COMMAND panel.
-for m in "LIVE COMMAND" "talon agents" "/v1/proxy/local-llama" "/v1/proxy/openai" "/v1/proxy/anthropic" \
-         "talon audit verify --file signed-evidence.json" "perl -i.bak -pe" \
-         "HTTP 200" "HTTP 403" "session_budget_exceeded" "Total records:" "Valid records:" "Invalid records: 0"; do
-  grep -qF "$m" /tmp/gum.plain || { echo "✗ command-panel marker missing: $m" >&2; rm -f "$STATE2"; exit 1; }
-done
-# The recorded hero must begin inside the Talon console: no outer host shell prompt / setup output.
-for bad in "Preparing the fleet" "==> " "openclaw@" "demo.sh hero" "demo.sh play" "go build" "/var/folders/" "/tmp/tmp."; do
-  grep -qF "$bad" /tmp/gum.plain && { echo "✗ host/setup text leaked into the hero: $bad" >&2; rm -f "$STATE2"; exit 1; } || true
-done
-# SECRET-LEAK: no generated Talon key, admin/secrets/signing key, mock provider key,
-# or raw temp path may appear anywhere in the rendered output or cast.
+grep -qE '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}' /tmp/hero.plain && { echo "✗ walkthrough contains a full UUID" >&2; rm -f "$STATE"; exit 1; } || true
+grep -qE '\$[0-9]+\.[0-9]{5,}' /tmp/hero.plain && { echo "✗ walkthrough contains over-precise money (>4dp)" >&2; rm -f "$STATE"; exit 1; } || true
+# SECRET-LEAK: the generated Talon keys (from the state), the mock provider key, and
+# the raw temp path must never appear anywhere in the rendered output or cast.
 leak=0
 for var in CS_KEY CODE_KEY DOC_KEY TALON_ADMIN_KEY TALON_SECRETS_KEY TALON_SIGNING_KEY WORK; do
   v="$(sval "$var")"
-  if [[ -n "$v" ]] && grep -qF "$v" /tmp/gum.raw; then echo "✗ SECRET/temp leak: ${var} value appears in the rendered hero" >&2; leak=1; fi
+  if [[ -n "$v" ]] && grep -qF "$v" /tmp/hero.raw; then echo "✗ SECRET/temp leak: ${var} value appears in the hero" >&2; leak=1; fi
 done
-grep -qF "sk-smoke" /tmp/gum.raw && { echo "✗ SECRET leak: provider key sk-smoke appears in the rendered hero" >&2; leak=1; }
-rm -f "$STATE2"
+grep -qF "sk-smoke" /tmp/hero.raw && { echo "✗ SECRET leak: provider key sk-smoke appears in the hero" >&2; leak=1; }
+rm -f "$STATE"
 [[ "$leak" == 0 ]] || exit 1
-echo "    ✓ gum LIVE COMMAND: real commands + HTTP + verify counts; no secrets, temp paths, or host prompt"
+echo "    ✓ walkthrough: self-ID + 4 chapters, real commands + HTTP + verify counts, ✓ annotations; no secrets / host prompt / dashboard / UUID / over-precise money"
 
 echo "==> NEGATIVE — local model reachable → preflight aborts the demo..."
 if run_pd "$PD" "http://localhost:${MOCK_PORT}" hero >/tmp/smoke-neg1.out 2>&1; then
@@ -162,7 +142,7 @@ if TALON_DEMO_UI=plain bash "$REPO_ROOT/scripts/record-hero.sh" >/tmp/smoke-neg4
   echo "✗ record-hero.sh did NOT refuse TALON_DEMO_UI=plain" >&2; exit 1
 fi
 grep -qiE "TALON_DEMO_UI=plain will not be recorded" /tmp/smoke-neg4.out || { echo "✗ recorder aborted, but not on the plain-UI refusal" >&2; tail -8 /tmp/smoke-neg4.out >&2; exit 1; }
-echo "    ✓ recorder refuses the plain fallback (records only the styled console)"
+echo "    ✓ recorder refuses the plain fallback (records only the styled walkthrough)"
 
 echo ""
 echo "✓ product-demo smoke passed (live orchestration + evidence assertions + gum dependency boundary)."
