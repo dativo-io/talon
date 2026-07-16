@@ -149,6 +149,16 @@ if ! grep -q "$HERO_MARKER" "$CAST_TMP"; then
   echo "✗ Recording is missing the terminal success marker (\"${HERO_MARKER}\") — NOT promoted." >&2
   rm -f "$CAST_TMP"; exit 1
 fi
+# Acceptance condition: the committed cast starts at "TALON · LIVE TERMINAL DEMO"
+# and ends on the closing card — it must contain no host shell prompt or setup
+# noise (that is what the prepare/play split exists for).
+for noise in "Preparing the fleet" "==> " "go build" "secrets set"; do
+  if grep -qF "$noise" "$CAST_TMP"; then
+    echo "✗ The cast contains setup/host noise (\"${noise}\") — NOT promoted. The recording must begin at the demo's first frame." >&2
+    rm -f "$CAST_TMP"; exit 1
+  fi
+done
+grep -q "TALON · LIVE TERMINAL DEMO" "$CAST_TMP" || { echo "✗ The cast does not open with the demo self-identification — NOT promoted." >&2; rm -f "$CAST_TMP"; exit 1; }
 # Render the GIF from the VALIDATED TEMP cast — BEFORE promoting anything — so the
 # cast and GIF promote together. A failed render can then never leave a fresh cast
 # beside a stale GIF: if no fresh GIF is produced, NEITHER asset is promoted (the

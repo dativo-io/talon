@@ -240,11 +240,13 @@ w_cursor_restore() {
   [[ "${TALON_DEMO_NO_CURSOR_RESTORE:-0}" == 1 ]] && { CURSOR_HIDDEN=0; return 0; }
   [[ "${CURSOR_HIDDEN:-0}" == 1 ]] && printf '\033[?25h'; CURSOR_HIDDEN=0; return 0
 }
-w_chapter() { # <n> <title> <emoji> — a chapter heading, unmistakably distinct from
-  # command/output/annotation: emoji + a bold white-on-blue chip + a grey rule.
-  local n="$1" t="$2" e="${3:-}"
+w_chapter() { # <n> <title> — a chapter heading, unmistakably distinct from
+  # command/output/annotation: a cyan ◆ + a bold white-on-blue chip + a grey rule.
+  # (◆ over emoji: emoji rendered as inconsistent, muddy glyphs in the agg GIF at
+  # README scale — the vector diamond is crisp and identical-width everywhere.)
+  local n="$1" t="$2"
   local rest=$(( 76 - (4 + 5 + ${#n} + ${#t}) )); (( rest < 3 )) && rest=3
-  printf '\n  %s %b %s · %s %b %b%s%b\n\n' "$e" "$WCHIP" "$n" "$t" "$WR" "$WT_MUTED" "$(dashes "$rest")" "$WR"
+  printf '\n  %b◆%b %b %s · %s %b %b%s%b\n\n' "$WT_CYAN" "$WR" "$WCHIP" "$n" "$t" "$WR" "$WT_MUTED" "$(dashes "$rest")" "$WR"
 }
 # COMMAND level: bright-cyan $, BOLD white command text (the strongest text weight
 # in the recording after chapter chips); dim grey request subline.
@@ -416,6 +418,9 @@ beat_support() {
   local scost; scost="$(jq -r '[.records[].execution.cost // 0]|add' "$WORK/support.json" 2>/dev/null)"
   if [[ "$CUT" == hero ]]; then
     local model; model="$(jq -r '.model // .model_id // empty' "$WORK/b" 2>/dev/null)"
+    # Display normalization only: drop a trailing -YYYY-MM-DD version suffix
+    # (gpt-4o-mini-2024-07-18 → gpt-4o-mini); evidence keeps the exact value.
+    model="$(sed -E 's/-[0-9]{4}-[0-9]{2}-[0-9]{2}$//' <<<"$model")"
     echo; w_http "$HTTP" "${model:+model=$model}"; echo
     # Route ledger revealed in sequence (200ms) — failed → policy-skipped → selected.
     # The status glyph sits OUTSIDE the %-14s pad so multibyte glyph width can
@@ -655,7 +660,8 @@ beat_close() {
       w_line "$(printf '%bverdict=valid_fallback%b' "$WT_GREEN" "$WR")"
       w_hold 1.5
     fi
-    w_annot "Evidence verified offline — every decision signed, tamper-evident." green
+    # Close on the concrete receipt the viewer just saw, not abstract properties.
+    w_annot "Evidence verified offline — ${total} signed records, 0 invalid." green
     w_hold 4
     w_close
   else present_close_full "$corr" "$fv"; fi
@@ -682,10 +688,10 @@ run_beats() { # run_beats <hero|all>
     # the open (self-identifying the recording), terminal-comment chapter headings,
     # then each beat prints a real command → live wait → real output → a short note.
     w_open
-    w_chapter 1 "Fleet" "🖥";                        beat_fleet
-    w_chapter 2 "Reliability + shared policy" "🛡";  beat_support
-    w_chapter 3 "Organization policy + cost" "💶";   beat_capability; beat_cost
-    w_chapter 4 "Operations + proof" "📊";           beat_policy; beat_session; beat_close
+    w_chapter 1 "Fleet";                        beat_fleet
+    w_chapter 2 "Reliability + shared policy";  beat_support
+    w_chapter 3 "Organization policy + cost";   beat_capability; beat_cost
+    w_chapter 4 "Operations + proof";           beat_policy; beat_session; beat_close
     printf '\033]0;HERO_COMPLETE\007'   # machine marker via terminal title — off the visible frame
     w_cursor_restore
   else
