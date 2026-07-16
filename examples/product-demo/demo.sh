@@ -414,7 +414,9 @@ beat_support() {
     local reqpid=$!
     # The body file exists as soon as openai_chat writes it; give it a beat.
     local _; for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$WORK/refund-request.json" ]] && break; sleep 0.1; done
-    w_comment "customer-support · sensitive traffic prefers the local model"
+    # Policy-driven, not "local-first": THIS use case's policy prefers the
+    # private local model because the traffic is confidential.
+    w_comment "customer-support · local-llama privacy-preferred for confidential traffic"
     w_cmd "cat refund-request.json"; echo
     w_body "$WORK/refund-request.json"
     echo
@@ -472,13 +474,15 @@ beat_support() {
     echo
     # Route ledger revealed in sequence (200ms) — failed → policy-skipped → selected.
     # The status glyph sits OUTSIDE the %-14s pad so multibyte glyph width can
-    # never skew the description column (locale-proof alignment).
+    # never skew the description column (locale-proof alignment). Wording: the
+    # primary is PRIVACY-PREFERRED by this use case's policy, not arbitrary.
     w_reveal 0.2 \
       "  $(printf '%b✓ email + IBAN redacted%b' "$WT_GREEN" "$WR")" \
-      "  $(printf '%b× %-14s%b %b%s%b' "$WT_RED"   "$failed_prov" "$WR" "$WT_MUTED" "connection error" "$WR")" \
-      "  $(printf '%b⊘ %-14s%b %b%s%b' "$WT_AMBER" "$skip_prov"   "$WR" "$WT_MUTED" "blocked by use-case policy" "$WR")" \
-      "  $(printf '%b✓ %-14s%b %b%s%b' "$WT_CYAN"  "$sel"         "$WR" "$WT_MUTED" "selected fallback" "$WR")"
-    w_annot "Talon replaced the detected email and IBAN before forwarding · tier unchanged."
+      "  $(printf '%b× %-14s%b %b%s%b' "$WT_RED"   "$failed_prov" "$WR" "$WT_MUTED" "preferred private destination unavailable (connection error)" "$WR")" \
+      "  $(printf '%b⊘ %-14s%b %b%s%b' "$WT_AMBER" "$skip_prov"   "$WR" "$WT_MUTED" "healthy, but not permitted for customer-support" "$WR")" \
+      "  $(printf '%b✓ %-14s%b %b%s%b' "$WT_CYAN"  "$sel"         "$WR" "$WT_MUTED" "first policy-valid fallback" "$WR")"
+    w_annot "Talon degraded safely: PII was redacted before cloud egress," green
+    printf '    %b%band only an approved provider was allowed to receive the request.%b\n' "$WI" "$WT_GREEN" "$WR"
     w_annot "Completed through the first policy-valid destination · cost $(moneylt "$scost")."
     w_hold 5
   else present_support_full "$pii" "$ph" "$tier" "$failed_prov" "$failed_err" "$skip_prov" "$sel"; fi

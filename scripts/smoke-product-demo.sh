@@ -80,7 +80,9 @@ for m in "TALON · LIVE TERMINAL DEMO" " 1 · Fleet " " 2 · Reliability + share
          "cat tools-request.json" "-d @tools-request.json" "admin_purge_records" \
          "cat summary-request.json" "-d @summary-request.json" \
          "/v1/proxy/local-llama/v1/chat/completions" "/v1/proxy/openai/v1/chat/completions" "/v1/proxy/anthropic/v1/messages" \
-         "coding-assistant asks for three tools" "agent=document-summary · session=doc-budget-" "replaced the detected email and IBAN" \
+         "coding-assistant asks for three tools" "agent=document-summary · session=doc-budget-" \
+         "privacy-preferred for confidential traffic" "preferred private destination unavailable" \
+         "healthy, but not permitted for customer-support" "degraded safely: PII was redacted before cloud egress" \
          "perl -i.bak -pe" "+ daily:" "daily budget exhausted" \
          "audit list --session support-" "Requests:" "Providers:" "Session completed successfully; one provider attempt failed before fallback" \
          "talon audit verify --file signed-evidence.json" "verdict=valid_fallback" \

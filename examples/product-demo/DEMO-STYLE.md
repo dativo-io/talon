@@ -67,6 +67,11 @@ grey = context. Money is ≤4 decimals everywhere (`< $0.0001` below that).
    line must say so (`→ demo runner: … — retried this recording step.`).
 5. A denial that proves governance closes with the receipt (cost `$0.0000`,
    the limit arithmetic, the blocked row) — concrete numbers over adjectives.
+6. Routing posture is **policy-driven, never "local-first" as a product
+   position**: where a use case's policy prefers the private local model, say
+   *privacy-preferred* and attribute it to that use case's policy. The degraded
+   path is the story: preferred private destination unavailable → disallowed
+   route skipped → PII redacted before any cloud egress → approved provider only.
 
 ## Pacing (do not compress below this)
 
