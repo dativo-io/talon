@@ -402,7 +402,7 @@ beat_fleet() {
 }
 
 # ── 2. Customer-support incident (reliability + shared policy) ────────────────
-CS_PROMPT="Draft a short reply confirming we received the refund request from Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000"
+CS_PROMPT="Draft a short two-sentence reply, with no signature block, confirming we received the refund request from Anna Kowalska. Email: anna.kowalska@example.com IBAN: DE89370400440532013000"
 beat_support() {
   export REQ_FILE="refund-request.json"
   if [[ "$CUT" == hero ]]; then
