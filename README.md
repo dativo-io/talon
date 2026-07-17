@@ -234,7 +234,7 @@ Full byte-level breakdown: [What Talon does to your request](docs/explanation/wh
 | **Proof layer (cross-cutting)** | HMAC-SHA256 signed record per request; verify online/offline; export to CSV/JSON/signed-JSON; compliance report generators (GDPR Art. 30 RoPA, EU AI Act Annex IV) built on the evidence. | [Evidence store](docs/explanation/evidence-store.md) · [Conformance](docs/reference/conformance.md) |
 | **Differentiators** | Single self-hosted binary; provider registry with jurisdiction + EU-region metadata; `eu_strict` / `eu_preferred` / `global` routing enforced by OPA; air-gap deployment mode. | [Provider registry](docs/reference/provider-registry.md) · [Air-gapped deployment](docs/guides/air-gapped-deployment.md) |
 
-**317 passing conformance tests** across the evidence + policy paths — reproduce with `make conformance`.
+**447 passing conformance tests** across the evidence + policy paths — reproduce the current count with `make conformance`.
 
 ---
 
@@ -316,8 +316,9 @@ policies:
 ```yaml
 # talon.config.yaml — forbid dangerous tools, enforce EU-strict routing
 gateway:
-  default_policy:
-    forbidden_tools: ["delete_*", "admin_*", "bulk_*"]
+  organization_policy:
+    constraints:
+      forbidden_tools: ["delete_*", "admin_*", "bulk_*"]
 llm:
   routing:
     data_sovereignty_mode: eu_strict

@@ -37,26 +37,30 @@ type PackDescriptor struct {
 	PostMessage string     // printed after init completes
 }
 
-// Post-init message for CrewAI pack.
+// Post-init message for CrewAI pack. Every step must succeed verbatim against
+// the files the pack just wrote (#334): the agents bind vault traffic keys via
+// agent.key.secret_name, minted by the operator — never fixed literals.
 const crewaiPostInit = `
 Talon initialized for CrewAI! Next steps:
 
-  1. Set your secrets key:
+  1. Set your secrets key (same shell for steps 2-3):
      export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 
   2. Store your OpenAI API key:
      talon secrets set openai-api-key sk-your-key-here
 
-  3. Store caller keys (one per crew agent; use the api_key value as secret):
-     talon secrets set langchain-app-api-key talon-gw-crew-researcher
-     (Repeat for writer and reviewer if you use separate keys.)
+  3. Mint each crew role's traffic key (bound via agent.key.secret_name;
+     keep the researcher's value — CrewAI presents it to the gateway):
+     CREW_KEY=$(openssl rand -hex 24); talon secrets set crew-researcher-talon-key "$CREW_KEY"
+     talon secrets set crew-writer-talon-key   "$(openssl rand -hex 24)"
+     talon secrets set crew-reviewer-talon-key "$(openssl rand -hex 24)"
 
-  4. Start the gateway:
+  4. Start the gateway (same shell so TALON_SECRETS_KEY is still set):
      talon serve --gateway
 
   5. Point CrewAI at Talon (e.g. in your Python env):
      OPENAI_API_BASE=http://localhost:8080/v1/proxy/openai/v1
-     OPENAI_API_KEY=talon-gw-crew-researcher
+     OPENAI_API_KEY=$CREW_KEY
      (trailing /v1 matters: the SDK appends /chat/completions, #235)
 
   6. Verify and monitor:
@@ -68,6 +72,10 @@ Talon initialized for CrewAI! Next steps:
      talon enforce enable
 `
 
+// Post-init message for the coding-agents pack. Every step must succeed
+// verbatim against the files the pack just wrote (#334): gateway startup
+// fails closed unless BOTH agents' vault traffic keys are minted, and the
+// tools authenticate with the minted values — never fixed literals.
 const codingAgentsPostInit = `
 Coding-agents pack scaffolded. Next steps:
 
@@ -75,27 +83,35 @@ Coding-agents pack scaffolded. Next steps:
      export TALON_SECRETS_KEY=$(openssl rand -hex 32)
 
   2. Store real provider keys in the vault (Talon injects them upstream;
-     the coding tools only ever see their tenant keys):
+     the coding tools only ever see their agent traffic keys):
      talon secrets set anthropic-api-key "sk-ant-..."
      talon secrets set openai-api-key "sk-..."
 
-  3. Start the gateway:
+  3. Mint each agent's traffic key (bound via agent.key.secret_name; keep
+     the values — the tools present them to the gateway):
+     CLAUDE_KEY=$(openssl rand -hex 24); talon secrets set claude-code-talon-key "$CLAUDE_KEY"
+     CODEX_KEY=$(openssl rand -hex 24);  talon secrets set codex-talon-key "$CODEX_KEY"
+
+  4. Start the gateway (same shell so TALON_SECRETS_KEY is still set).
+     To serve BOTH tools from this one process, first uncomment
+     agents_dir: "." in talon.config.yaml (see its comment); without it,
+     talon serve runs only the primary claude-code agent.
      talon serve --gateway
 
-  4. Point the tools at Talon:
+  5. Point the tools at Talon:
      Claude Code:
        export ANTHROPIC_BASE_URL=http://localhost:8080/v1/proxy/anthropic
-       export ANTHROPIC_AUTH_TOKEN=talon-gw-claude-code-001
+       export ANTHROPIC_AUTH_TOKEN=$CLAUDE_KEY
      Codex CLI (~/.codex/config.toml profile):
        base_url = "http://localhost:8080/v1/proxy/openai/v1"
-       wire_api = "responses"   # auth: tenant key talon-gw-codex-001
+       wire_api = "responses"   # auth: env_key -> $CODEX_KEY (see docs/guides/codex-cli-integration.md)
        (trailing /v1 matters: Codex appends /responses to base_url, #235)
 
-  5. Watch a session:
+  6. Watch a session:
      talon audit list --session <id>       # per-subagent rollup
      open http://localhost:8080/gateway/dashboard   # Coding Sessions panel
 
-  6. Enforce once the shadow evidence looks right:
+  7. Enforce once the shadow evidence looks right:
      talon enforce report && talon enforce enable
 
 Notes: response_pii_action is "allow" for coding callers because any other

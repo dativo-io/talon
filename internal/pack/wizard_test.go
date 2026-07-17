@@ -51,6 +51,12 @@ func TestFindByID_CrewAIHasFilesAndPostMessage(t *testing.T) {
 	assert.NotEmpty(t, p.Files, "crewai pack should have template files")
 	assert.NotEmpty(t, p.PostMessage, "crewai pack should have post-init message")
 	assert.Len(t, p.Files, 4, "crewai: primary agent + two role agents + config")
+	// #334: onboarding mints the vault keys the generated files bind and never
+	// names fictitious fixed credentials.
+	assert.NotContains(t, p.PostMessage, "talon-gw-", "no fixed credential literals")
+	assert.Contains(t, p.PostMessage, "crew-researcher-talon-key")
+	assert.Contains(t, p.PostMessage, "crew-writer-talon-key")
+	assert.Contains(t, p.PostMessage, "crew-reviewer-talon-key")
 }
 
 func TestReadComplianceOverlay(t *testing.T) {
@@ -135,4 +141,11 @@ func TestFindByID_CodingAgentsHasFilesAndPostMessage(t *testing.T) {
 	assert.Len(t, p.Files, 3, "coding-agents: primary agent + codex agent + config")
 	assert.Contains(t, p.PostMessage, "ANTHROPIC_BASE_URL")
 	assert.Contains(t, p.PostMessage, "wire_api")
+	// #334: onboarding mints the vault keys the generated files bind and never
+	// names fictitious fixed credentials; gateway startup fails closed without
+	// both agent traffic keys minted.
+	assert.NotContains(t, p.PostMessage, "talon-gw-", "no fixed credential literals")
+	assert.Contains(t, p.PostMessage, "claude-code-talon-key")
+	assert.Contains(t, p.PostMessage, "codex-talon-key")
+	assert.Contains(t, p.PostMessage, `agents_dir: "."`, "fleet-mode pointer for serving both tools")
 }

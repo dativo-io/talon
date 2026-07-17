@@ -17,10 +17,11 @@ whatever `make conformance` reports for the commit you are looking at.
 make conformance
 ```
 
-Example output:
+Example output (the count grows with the test suite — reproduce the current
+number with the command above):
 
 ```
-Conformance: 317 passing tests across evidence + policy paths (./internal/policy/... ./internal/evidence/...)
+Conformance: 447 passing tests across evidence + policy paths (./internal/policy/... ./internal/evidence/...)
 ```
 
 The target runs `go test -count=1 -run . -v` over `./internal/policy/...` and
