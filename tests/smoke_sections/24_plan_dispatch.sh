@@ -225,27 +225,46 @@ PREVIEWEOF
       test "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=10")" = "200"
     # Filter by invocation_type so the newest plan_dispatch is first; a mixed top-N
     # list can omit the fresh dispatch or surface an older plan_dispatch first.
-    assert_pass "evidence index contains plan_dispatch invocation after approval" \
-      bash -c "curl -s -H 'X-Talon-Admin-Key: ${admin_key}' '${base_url}/v1/evidence?limit=10&invocation_type=plan_dispatch' | jq -e '(.entries // []) | length > 0' >/dev/null"
-    if [[ -n "$serve_session_id" ]]; then
-      local dispatch_evidence_id="" dispatch_ev_json="" dispatch_sid="" dispatch_index_json=""
-      local attempts=10
-      local attempt=0
-      # Evidence indexing can lag briefly after approval/dispatch; poll for the entry
-      # that matches the current serve session_id instead of assuming entries[0].
-      # Dispatch runs with a fresh correlation_id, so matching by correlation_id from
-      # the original plan-pending response can miss the correct record.
-      while [[ "$attempt" -lt "$attempts" ]]; do
-        dispatch_index_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=20&invocation_type=plan_dispatch")"
+    # Dispatch evidence is written when the auto-dispatched run COMPLETES — a
+    # real LLM call (8–12s is routine) — while pending-list removal happens at
+    # dispatch start. Both checks below share ONE poll instead of racing that
+    # window with a single-shot query (#322). Dispatch runs with a fresh
+    # correlation_id, so match the record by the current serve session_id.
+    local dispatch_index_json="" dispatch_evidence_id="" dispatch_ev_json="" dispatch_sid=""
+    # The index verdict is judged on EVERY poll, not just the last body: a
+    # transient curl failure on the final iteration must not erase 29 polls
+    # that proved the index non-empty. The last non-empty body is kept for
+    # the diagnostics dump.
+    local dispatch_index_nonempty=0 dispatch_index_diag=""
+    local attempts=30
+    local attempt=0
+    while [[ "$attempt" -lt "$attempts" ]]; do
+      dispatch_index_json="$(curl -s --max-time 10 -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence?limit=20&invocation_type=plan_dispatch")"
+      if echo "$dispatch_index_json" | jq -e '(.entries // []) | length > 0' &>/dev/null; then
+        dispatch_index_nonempty=1
+        dispatch_index_diag="$dispatch_index_json"
+      fi
+      if [[ -n "$serve_session_id" ]]; then
         dispatch_evidence_id="$(echo "$dispatch_index_json" | jq -r --arg sid "$serve_session_id" '.entries[]? | select((.session_id // "") == $sid) | .id' | head -1)"
-        if [[ -n "$dispatch_evidence_id" ]]; then
-          dispatch_ev_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence/${dispatch_evidence_id}")"
-          dispatch_sid="$(echo "$dispatch_ev_json" | jq -r '.session_id // empty' 2>/dev/null || true)"
-          break
-        fi
-        attempt=$((attempt + 1))
-        sleep 1
-      done
+        [[ -n "$dispatch_evidence_id" ]] && break
+      else
+        [[ "$dispatch_index_nonempty" -eq 1 ]] && break
+      fi
+      attempt=$((attempt + 1))
+      sleep 1
+    done
+    if [[ "$dispatch_index_nonempty" -eq 1 ]]; then
+      echo "  ✓  evidence index contains plan_dispatch invocation after approval (polled ${attempt}s)"
+      record_pass
+    else
+      log_failure "evidence index contains plan_dispatch invocation after approval" "attempts=$attempts"
+      dump_diag_json "plan_dispatch evidence index (final poll)" "$dispatch_index_json"
+    fi
+    if [[ -n "$serve_session_id" ]]; then
+      if [[ -n "$dispatch_evidence_id" ]]; then
+        dispatch_ev_json="$(curl -s -H "X-Talon-Admin-Key: ${admin_key}" "${base_url}/v1/evidence/${dispatch_evidence_id}")"
+        dispatch_sid="$(echo "$dispatch_ev_json" | jq -r '.session_id // empty' 2>/dev/null || true)"
+      fi
 
       if [[ -n "$dispatch_evidence_id" ]] && [[ "$dispatch_sid" == "$serve_session_id" ]]; then
         echo "  ✓  plan_dispatch evidence reuses session_id from plan-gated run"
@@ -258,7 +277,7 @@ PREVIEWEOF
           "actual_sid=${dispatch_sid:-missing}" \
           "dispatch_evidence_id=${dispatch_evidence_id:-missing}" \
           "attempts=$attempts"
-        dump_diag_json "plan_dispatch evidence index (latest)" "$dispatch_index_json"
+        dump_diag_json "plan_dispatch evidence index (latest non-empty)" "${dispatch_index_diag:-$dispatch_index_json}"
         dump_diag_json "dispatch evidence" "$dispatch_ev_json"
         dump_diag_file "plan_dispatch serve log (tail)" "$dir/plan_dispatch_serve.log" 80
       fi
