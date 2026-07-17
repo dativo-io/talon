@@ -17,6 +17,10 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.9.0] - 2026-07-17
+
+Fleet Operations v1 (#265 milestone): discover, inspect, stop, and safely reconfigure multiple AI use cases through one control plane. Gate: the 8-point walkthrough (discovery, attention queue, disable enforcement across gateway and native runs, live reload, last-known-good rejection, generation consistency, signed lifecycle evidence) — codified in `TestFleetOps_Walkthrough`, `TestReload_EndToEnd`, and `TestAgentsDir_*` (`go test -tags integration ./tests/integration`), and runnable live via `examples/fleet-ops/demo.sh`.
+
 ### BREAKING — pack layouts move to the agents_dir discovery convention (#308)
 
 - **`talon init` packs now scaffold secondary agents as `agents/<name>/agent.talon.yaml` (was flat `agents/<name>.talon.yaml`).** `agents_dir` discovery (#267) matches only files named exactly `agent.talon.yaml`, so the old pack layout was invisible to the fleet serving it exists to enable — `talon validate --dir .` on a scaffolded coding-agents pack silently found only the primary agent. Affected: `coding-agents` (codex → `agents/codex/agent.talon.yaml`) and `crewai` (crew-writer, crew-reviewer → `agents/<role>/agent.talon.yaml`); both pack configs ship a commented `agents_dir: "."` fleet-mode toggle. No compatibility period (no installed base): projects scaffolded from earlier packs must move each flat `agents/<name>.talon.yaml` to `agents/<name>/agent.talon.yaml` (or re-scaffold) before enabling `agents_dir`; single-file `default_policy`/`TALON_DEFAULT_POLICY` activation keeps working at the new paths. Who cares: anyone who scaffolded `coding-agents` or `crewai` and wants one gateway serving the whole pack. Verify: `talon init --pack coding-agents --skip-verify && talon validate --dir .` → 2 agents valid. Also fixed under #309: runtime strings (doctor `policy_valid`, the `talon costs` offline note, pack/example/demo comments) no longer describe shipped `agents_dir` discovery as future work.
@@ -677,7 +681,8 @@ For user-facing entries, include:
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.8.1...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/dativo-io/talon/compare/v1.8.1...v1.9.0
 [1.8.1]: https://github.com/dativo-io/talon/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/dativo-io/talon/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/dativo-io/talon/compare/v1.7.0...v1.7.1
