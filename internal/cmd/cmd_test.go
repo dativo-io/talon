@@ -83,6 +83,50 @@ func TestPackageLevelTracer_IsNotNil(t *testing.T) {
 	assert.NotNil(t, tracer, "package-level tracer should be initialized")
 }
 
+// TestRuntimeError_NoUsageDump pins #339: a RUNTIME error (command parsed
+// fine, execution failed) must print only the error — no usage block
+// burying the message the operator needs.
+func TestRuntimeError_NoUsageDump(t *testing.T) {
+	t.Setenv("TALON_DATA_DIR", t.TempDir())
+
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"audit", "show", "al_does-not-exist"})
+
+	err := rootCmd.Execute()
+	require.Error(t, err)
+	assert.NotContains(t, buf.String(), "Usage:", "runtime errors must not dump the usage block")
+}
+
+// TestParseError_KeepsUsage pins the #339 counterpart: a flag PARSE error is
+// a syntax mistake and still gets the usage block (via the FlagErrorFunc).
+func TestParseError_KeepsUsage(t *testing.T) {
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"version", "--no-such-flag"})
+
+	err := rootCmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, buf.String(), "unknown flag: --no-such-flag")
+	assert.Contains(t, buf.String(), "Usage:", "flag parse errors must keep the usage block")
+}
+
+// TestUnknownCommand_KeepsHelpHint: unknown commands keep cobra's
+// "Run 'talon --help' for usage." pointer (unaffected by SilenceUsage).
+func TestUnknownCommand_KeepsHelpHint(t *testing.T) {
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"no-such-command"})
+
+	err := rootCmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, buf.String(), "unknown command")
+	assert.Contains(t, buf.String(), "--help")
+}
+
 func TestMemoryAsOfCmd_EmptyStore(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("TALON_DATA_DIR", dir)

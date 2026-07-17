@@ -94,6 +94,13 @@ It enforces policies on AI agent execution with:
 - Multi-tenant isolation
 - MCP-native tool integration`,
 
+	// Runtime errors print only the error, not the full usage block (#339):
+	// a failed RunE means the operator needs the message (an evidence id, a
+	// path, a fix hint), not flag documentation. Parse errors still get
+	// usage via the FlagErrorFunc in init(), and unknown commands keep
+	// cobra's "Run 'talon --help' for usage." hint.
+	SilenceUsage: true,
+
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Initialize logging
 		setupLogging()
@@ -141,6 +148,13 @@ func setupLogging() {
 
 func init() {
 	cobra.OnInitialize(initConfig)
+
+	// Flag PARSE errors (unknown flag, bad value) are syntax mistakes and DO
+	// warrant usage — SilenceUsage on the root suppresses cobra's default
+	// print, so append the usage block to the error here (#339).
+	rootCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return fmt.Errorf("%w\n\n%s", err, cmd.UsageString())
+	})
 
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "infrastructure config file (default: ./talon.config.yaml or ~/.talon/talon.config.yaml)")
