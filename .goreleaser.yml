@@ -55,22 +55,32 @@ checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
 
+# Squash-merge subjects here are SCOPED conventional commits ("feat(fleet): …",
+# "fix(pack): …"), so every pattern must accept an optional scope and a group
+# without a regexp must exist as the catch-all — goreleaser DISCARDS commits
+# that match no group, which is how the v1.8.0 release notes shipped with a
+# single commit and silently dropped the whole #266 cutover (#325).
 changelog:
   sort: asc
   use: github
   filters:
     exclude:
-      - '^docs:'
-      - '^test:'
-      - '^chore:'
-      - '^ci:'
+      - '^docs(\([^)]*\))?[!]?:'
+      - '^test(\([^)]*\))?[!]?:'
+      - '^chore(\([^)]*\))?[!]?:'
+      - '^ci(\([^)]*\))?[!]?:'
   groups:
     - title: 'New Features'
-      regexp: '^feat:'
+      regexp: '^feat(\([^)]*\))?[!]?:'
+      order: 0
     - title: 'Bug Fixes'
-      regexp: '^fix:'
+      regexp: '^fix(\([^)]*\))?[!]?:'
+      order: 1
     - title: 'Security'
-      regexp: '^sec:'
+      regexp: '^sec(\([^)]*\))?[!]?:'
+      order: 2
+    - title: 'Other'
+      order: 999
 
 dockers:
   - image_templates:

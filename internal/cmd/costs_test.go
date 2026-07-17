@@ -161,6 +161,30 @@ metadata: { owner: "", tags: [] }
 	require.Contains(t, out, "0.0%") // no spend yet
 }
 
+// TestPrintBudgetUtilization_SubCentCapKeepsPrecision (#323): used and limit
+// share one formatter. A $0.001 daily cap used to render through a hard-coded
+// %.2f as "42.1% ($0.000421 / $0.00)" — a non-zero percent of a zero-looking
+// budget. Sub-cent caps are real at per-request LLM cost scale.
+func TestPrintBudgetUtilization_SubCentCapKeepsPrecision(t *testing.T) {
+	var buf bytes.Buffer
+	printBudgetUtilization(&buf, "USD",
+		&budgetUsage{UsedEUR: 0.000421, LimitEUR: 0.001, Percent: 42.1, Source: "policy_cost_limits"},
+		&budgetUsage{UsedEUR: 0.000421, LimitEUR: 50, Percent: 0.0, Source: "policy_cost_limits"},
+	)
+	out := buf.String()
+	require.Contains(t, out, "Daily budget:   42.1% ($0.000421 / $0.001000) [policy_cost_limits]")
+	require.Contains(t, out, "Monthly budget: 0.0% ($0.000421 / $50.000000) [policy_cost_limits]")
+	require.NotContains(t, out, "/ $0.00)", "a non-zero cap must never render as $0.00")
+
+	// Boundary: caps below $0.0001 follow the repo-wide tiny-money convention
+	// ("< 0.0001") — an inequality, but never the misleading "$0.00"; the
+	// percent beside it stays exact.
+	buf.Reset()
+	printBudgetUtilization(&buf, "USD",
+		&budgetUsage{UsedEUR: 0.00003, LimitEUR: 0.00005, Percent: 60.0, Source: "policy_cost_limits"}, nil)
+	require.Contains(t, buf.String(), "Daily budget:   60.0% ($< 0.0001 / $< 0.0001) [policy_cost_limits]")
+}
+
 func TestRenderCostsExportCSV_IncludesProviderAndDeniedReason(t *testing.T) {
 	var buf bytes.Buffer
 	records := []evidence.ExportRecord{

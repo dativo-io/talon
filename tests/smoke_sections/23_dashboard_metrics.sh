@@ -638,19 +638,34 @@ CACHEEOF
   # CLI costs --by-model: compare model names with dashboard model_breakdown
   local cli_bymodel; cli_bymodel="$(run_talon costs --by-model --tenant default 2>/dev/null)"; true
   assert_pass "talon costs --by-model exits 0" run_talon costs --by-model --tenant default
-  # Extract model names from CLI output (data rows carry a currency symbol, #216)
-  local cli_models; cli_models="$(echo "$cli_bymodel" | grep -E '[€$]' | grep -v '^Total' | awk '{print $1}' | sort)"
+  # Extract model names from CLI output: body rows are left-aligned (%-32s)
+  # and carry a currency symbol (#216); the indented "  7d total: $…" summary
+  # line used to leak "7d" into the set (#324). Structural (indentation-based)
+  # extraction, NOT a charset whitelist: model ids are an open namespace
+  # ("meta-llama/Llama-3.1-8B-Instruct", "claude-3-5-sonnet-v2@20241022").
+  local cli_models; cli_models="$(echo "$cli_bymodel" | awk '/^[^ ]/ && /[€$]/ {print $1}' | grep -v -E '^(Total|Model|Tenant)$' | sort)"
   local dash_models; dash_models="$(jq -r '.model_breakdown[].model // empty' <<< "$snap_after" 2>/dev/null | sort)"
   echo "[SMOKE] CONSISTENCY|cli_models|$(echo "$cli_models" | tr '\n' ',')"
   echo "[SMOKE] CONSISTENCY|dash_models|$(echo "$dash_models" | tr '\n' ',')"
   if [[ -n "$cli_models" ]] && [[ -n "$dash_models" ]]; then
-    if [[ "$cli_models" == "$dash_models" ]]; then
-      echo "  ✓  CLI costs --by-model models match dashboard model_breakdown"
+    # Subset, not equality: the CLI table is the UNION of today's and
+    # month-to-date models while dashboard model_breakdown is today-only, so
+    # a persistent TALON_DATA_DIR legitimately carries month-only CLI rows.
+    # The invariant over one store: every dashboard (today) model must appear
+    # in the CLI table.
+    local missing_models
+    missing_models="$(comm -13 <(echo "$cli_models") <(echo "$dash_models"))"
+    if [[ -z "$missing_models" ]]; then
+      echo "  ✓  every dashboard model_breakdown model appears in CLI costs --by-model"
       record_pass
     else
-      echo "  -  model mismatch: CLI=[$cli_models] dash=[$dash_models] (timing or scope difference)"
+      log_failure "dashboard model_breakdown models must appear in CLI costs --by-model" \
+        "missing=[$missing_models] cli=[$cli_models] dash=[$dash_models]"
     fi
   else
+    # Non-USD/EUR pricing currencies render without €/$ (e.g. "CHF 0.0012"),
+    # which empties the CLI extraction — a parser limitation, not a product
+    # divergence, so stay informational.
     echo "  -  model parity: could not extract models from CLI or dashboard"
   fi
 

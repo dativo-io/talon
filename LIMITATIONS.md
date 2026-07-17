@@ -57,7 +57,7 @@ This document serves as an explicit boundaries guide so that operators and secur
 **Evidence signing depends on operator-controlled key handling.**
 - The cryptographic guarantees of Talon's evidence records rely on the operator securing the signing keys.
 - Provider registry and routing claims depend entirely on accurate provider configuration by the operator.
-- Air-gapped deployments and full auditor-pack claims should be considered roadmap items unless marked as explicitly live.
+- Air-gap deployment mode (`sovereignty.deployment_mode: air_gap`, with `talon doctor` preflight and the egress guard) and the auditor exports (audit pack, RoPA, Annex IV) are live — see the [air-gapped deployment guide](docs/guides/air-gapped-deployment.md); their claims remain supporting controls and evidence, never a compliance determination.
 
 ## 7. Coding-Agent and Orchestration Boundary
 

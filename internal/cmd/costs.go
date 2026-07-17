@@ -20,7 +20,6 @@ import (
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
 	"github.com/dativo-io/talon/internal/policy"
-	"github.com/dativo-io/talon/internal/pricing"
 )
 
 var (
@@ -301,11 +300,15 @@ func printBudgetUtilization(w io.Writer, currency string, dailyBudget, monthlyBu
 	// The source is part of the human output (#291 review): an operator must
 	// see WHERE a denominator came from — the running server's effective
 	// caps (server_*) or a local file — without reaching for --json.
+	//
+	// Used and limit share ONE formatter (#323): a hard-coded %.2f rendered a
+	// $0.001 cap as "42.1% ($0.000421 / $0.00)" — a non-zero percent of a
+	// zero-looking budget. Sub-cent caps are real at per-request LLM cost scale.
 	if dailyBudget != nil && dailyBudget.LimitEUR > 0 {
-		fmt.Fprintf(w, "  Daily budget:   %.1f%% (%s / %s) [%s]\n", dailyBudget.Percent, formatMoney(currency, dailyBudget.UsedEUR), pricing.FormatAmount(currency, fmt.Sprintf("%.2f", dailyBudget.LimitEUR)), dailyBudget.Source)
+		fmt.Fprintf(w, "  Daily budget:   %.1f%% (%s / %s) [%s]\n", dailyBudget.Percent, formatMoney(currency, dailyBudget.UsedEUR), formatMoney(currency, dailyBudget.LimitEUR), dailyBudget.Source)
 	}
 	if monthlyBudget != nil && monthlyBudget.LimitEUR > 0 {
-		fmt.Fprintf(w, "  Monthly budget: %.1f%% (%s / %s) [%s]\n", monthlyBudget.Percent, formatMoney(currency, monthlyBudget.UsedEUR), pricing.FormatAmount(currency, fmt.Sprintf("%.2f", monthlyBudget.LimitEUR)), monthlyBudget.Source)
+		fmt.Fprintf(w, "  Monthly budget: %.1f%% (%s / %s) [%s]\n", monthlyBudget.Percent, formatMoney(currency, monthlyBudget.UsedEUR), formatMoney(currency, monthlyBudget.LimitEUR), monthlyBudget.Source)
 	}
 }
 
