@@ -15,8 +15,12 @@ trap 'echo "ERROR: demo aborted at line $LINENO (see above)." >&2' ERR
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-export TALON_HOME="$WORK/.talon"
-mkdir -p "$TALON_HOME"
+# Isolation (#319): every stateful path (evidence.db, secrets.db, memory.db)
+# derives from data_dir, so pin it inside the temp workspace — both via env
+# (TALON_DATA_DIR is viper's data_dir) and in the generated talon.config.yaml
+# below, mirroring the product-demo pattern. The real ~/.talon is never touched.
+export TALON_DATA_DIR="$WORK/.talon"
+mkdir -p "$TALON_DATA_DIR"
 
 say()  { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 run()  { printf '\n\033[2m$ %s\033[0m\n' "$*"; eval "$*"; }
@@ -27,7 +31,8 @@ TALON="$WORK/talon"
 
 say "Discover a fleet: three AI use cases under agents_dir"
 mkdir -p "$WORK/agents/customer-support" "$WORK/agents/coding" "$WORK/agents/summarizer"
-cat > "$WORK/talon.config.yaml" <<'YAML'
+cat > "$WORK/talon.config.yaml" <<YAML
+data_dir: $WORK/.talon
 agents_dir: agents
 signing_key: "demo-signing-key-0123456789abcdef0123456789abcdef"
 YAML
