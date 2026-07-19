@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/dativo-io/talon/internal/agentcatalog"
+	"github.com/dativo-io/talon/internal/config"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/pricing"
 )
@@ -58,6 +59,58 @@ func TestInitPack_CrewAI_GeneratesFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(configContent), "organization_policy")
 	assert.NotContains(t, string(configContent), "tenant_key", "legacy identity must not scaffold")
+}
+
+// TestInitPack_GeneratedConfigKeysAreConsumed pins #342: every top-level key
+// in a generated talon.config.yaml must be read by one of the two real
+// loaders — viper (internal/config Key* constants + block loaders +
+// internal/cmd/root.go log bindings) or the gateway loader
+// (internal/gateway/config.go LoadGatewayConfig "gateway" subtree). A key
+// outside this set is dead config: it silently does nothing while looking
+// authoritative (the shipped templates once carried evidence.path,
+// secrets_key_env, tenants, llm_provider — all unread).
+func TestInitPack_GeneratedConfigKeysAreConsumed(t *testing.T) {
+	consumed := map[string]bool{
+		// viper scalar keys (internal/config/config.go)
+		config.KeyDataDir: true, config.KeySecretsKey: true, config.KeySigningKey: true,
+		config.KeyDefaultPolicy: true, config.KeyAgentsDir: true, config.KeyAgentsReloadEvery: true,
+		config.KeyOrphanRetentionDays: true, config.KeyMaxAttachmentMB: true,
+		config.KeyOllamaBaseURL: true, config.KeyOllamaMaxNumPredict: true,
+		// viper-bound logging flags (internal/cmd/root.go BindPFlag)
+		"log_level": true, "log_format": true,
+		// viper block loaders (internal/config/config.go loadLLMConfig,
+		// loadCacheConfig, loadComplianceConfig, loadSovereigntyConfig,
+		// loadScannerConfig)
+		"llm": true, "cache": true, "compliance": true, "sovereignty": true, "scanner": true,
+		// gateway loader subtree (internal/gateway/config.go LoadGatewayConfig)
+		"gateway": true,
+	}
+
+	// One pack per template source: generic (base tmpl), coding-agents and
+	// crewai (internal/pack/templates), copaw and openclaw (legacy
+	// pack_<id>.config.yaml.tmpl).
+	for _, packID := range []string{"generic", "coding-agents", "crewai", "copaw", "openclaw"} {
+		t.Run(packID, func(t *testing.T) {
+			dir := t.TempDir()
+			prevWd, err := os.Getwd()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = os.Chdir(prevWd) })
+			require.NoError(t, os.Chdir(dir))
+
+			rootCmd.SetArgs([]string{"init", "--pack", packID, "--skip-verify"})
+			require.NoError(t, rootCmd.Execute())
+
+			raw, err := os.ReadFile(filepath.Join(dir, "talon.config.yaml"))
+			require.NoError(t, err)
+			var doc map[string]any
+			require.NoError(t, yaml.Unmarshal(raw, &doc))
+			require.NotEmpty(t, doc)
+			for key := range doc {
+				assert.True(t, consumed[key],
+					"pack %q writes talon.config.yaml key %q that no loader reads — dead config (#342)", packID, key)
+			}
+		})
+	}
 }
 
 // TestInitPack_CreatedFilesListMatchesPackFiles pins #341: the printed

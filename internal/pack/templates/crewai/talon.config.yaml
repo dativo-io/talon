@@ -16,13 +16,8 @@ llm:
 # and routing.
 # agents_dir: "."
 
-llm_provider: openai
 log_level: info
 log_format: console
-
-evidence:
-  type: sqlite
-  path: ~/.talon/evidence.db
 
 cache:
   enabled: false
@@ -30,15 +25,13 @@ cache:
   similarity_threshold: 0.92
   max_entries_per_tenant: 10000
 
-secrets_key_env: TALON_SECRETS_KEY
-
-tenants:
-  - id: default
-    display_name: Default Tenant
-    budgets:
-      daily: 100.0
-      monthly: 2000.0
-    rate_limit: 120
+# State location (#342): every stateful path (evidence.db, secrets.db,
+# memory.db) derives from data_dir — default ~/.talon. There is no separate
+# evidence path/type key, and the vault key comes from the TALON_SECRETS_KEY
+# env var (or a secrets_key entry here). Tenancy, budgets, and rate limits
+# are NOT configured in this file: they derive from each agent.talon.yaml
+# (key -> agent -> tenant, #266) and gateway.organization_policy below.
+# data_dir: ~/.talon
 
 gateway:
   enabled: true
