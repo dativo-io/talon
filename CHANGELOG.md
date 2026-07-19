@@ -17,6 +17,31 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.9.1] - 2026-07-19
+
+Trust-blocker patch: no new features. Closes the credibility issues an evaluator hits first — a demo that contaminated real local state, vendor/MCP documentation describing unshipped functionality, stale coding-agent guides, and runtime errors buried under usage dumps. Issues #319, #332, #336, #337, #339 plus three defects found while fixing them (#340, #341, #342 — #342 remains open).
+
+### BREAKING — unknown keys in `--proxy-config` files now fail closed (#332)
+
+- **`talon serve --proxy-config` rejects YAML keys that are not part of the shipped schema** (`ProxyPolicyConfig`, `internal/policy/proxy.go`). Previously a pasted `proxy.auth`, `proxy.tls`, or misnested `pii_handling` block loaded silently — the operator believed a security control was active when nothing enforced it, the worst failure mode for a governance product. Who cares: anyone running the MCP proxy. Upgrade impact: a proxy config carrying unknown keys now fails at startup with a parse error naming the field — delete or fix the flagged keys (the shipped schema is documented in `docs/ARCHITECTURE_MCP_PROXY.md`, working examples in `examples/vendor-proxy/` and `examples/mcp-proxy-minimal/`). Verify: add `auth: {required: true}` under `proxy:` in any proxy config and `talon serve --proxy-config <file>` refuses to start. Same fail-closed discipline as `agents_dir` discovery.
+
+### Fixed
+
+- **fleet-ops demo no longer writes into the real `~/.talon` evidence store (#319).** The demo exported `TALON_HOME`, which nothing reads; its signed evidence (throwaway demo key) landed in the operator's real store, showed up in real cost/health projections, and rendered as a false `✗ INVALID (tampered)` record in `talon audit show`. The demo now pins `data_dir` inside its temp workspace (env + generated config, the product-demo pattern). Who cares: anyone who ran or will run `examples/fleet-ops/demo.sh`. Verify: run the demo, then confirm `~/.talon/evidence.db` mtime is unchanged and the demo's fleet shows `$0.00` COST. Note: records leaked by pre-1.9.1 runs remain in the real store; removing them is an operator decision (`talon audit list --tenant acme`).
+- **Runtime errors print only the error — no more 30-line cobra usage dump (#339).** `SilenceUsage` on the root command; flag parse errors (unknown flag) still get usage via a `FlagErrorFunc`, unknown commands keep the `--help` hint. Who cares: every CLI user; the operator's fix hint (an evidence id, a path) is now the last line on screen, not buried. Verify: `talon audit verify --session does-not-exist` prints one error line; `talon serve --no-such-flag` still prints usage.
+- **`examples/mcp-proxy-minimal` never loaded (#340).** The "smallest working proxy" config used plain-string `allowed_tools` (schema: name/upstream_name mappings) and nested `pii_handling` under `proxy:` where the loader dropped it — `talon serve` failed on the example's own happy path. Rewritten to the real schema; both shipped proxy examples are now pinned to the strict parser by `TestLoadProxyConfig_ShippedExamples`, so this drift class fails CI, not the user. Verify: `talon serve --port 8080 --proxy-config examples/mcp-proxy-minimal/proxy.talon.yaml` starts with `mcp_proxy=true`.
+- **`talon init` prints the files it actually wrote (#341).** The hardcoded "Created files" list omitted pack-declared files (coding-agents: `agents/codex/agent.talon.yaml`; crewai: both role agents). Packs with declared files now print their real list. Verify: `talon init --pack coding-agents` lists four files.
+
+### Documentation
+
+- **`docs/VENDOR_INTEGRATION_GUIDE.md` rewritten to shipped truth (#336).** The "Webhook Interception" pattern documented an entirely unshipped feature (webhook_interceptor agents, forward/redact config, a fabricated `talon logs --follow` transcript) and the guide's launch commands did not exist (`talon server`, `--mcp-proxy`). Now: the shipped LLM API Gateway is the second pattern, Shadow Mode documents the real `proxy.mode: shadow` semantics, every command is runnable as printed (`talon serve --proxy-config`, `POST /mcp/proxy`), and the guide states honestly when Talon cannot govern a vendor (no passive vendor-log monitoring exists). Who cares: evaluators following the README's "MCP / vendor proxy" front door.
+- **`docs/ARCHITECTURE_MCP_PROXY.md` no longer presents never-shipped config as usable (#332).** `--mcp-proxy`, `proxy.auth` vendor tokens, `proxy.tls` mTLS, per-vendor rate limits with burst, `upstream.auth`, and PostgreSQL evidence storage are gone or explicitly marked Roadmap; mode descriptions match `internal/mcp/proxy.go` (shadow blocks forbidden tools; PII-scanner failure is fail-closed in every mode); the design-sketch code listing is labeled as such. Inbound auth is documented as it ships: agent/admin-key middleware on `POST /mcp/proxy`.
+- **Coding-agent guides match the pack (#337).** "Creates three files" → four (`pricing/models.yaml` included) in all three guides; the stale "#235 wizard omits `/v1`" claim removed (the wizard prints the correct base URL); the single-file pricing-resolution surprise is documented with the three ways to make pricing edits count (fleet mode resolves from the project root; single-file mode resolves from the policy file's directory — the pre-fleet contract deliberately kept in #267), plus the same caveat as a comment in the pack's `talon.config.yaml` template.
+
+### Known issues
+
+- The coding-agents pack template still ships config keys nothing reads (`evidence.type/path`, `secrets_key_env`, `tenants`, `llm_provider`) — tracked as #342; the real state-location surface is `data_dir`.
+
 ## [1.9.0] - 2026-07-17
 
 Fleet Operations v1 (#265 milestone): discover, inspect, stop, and safely reconfigure multiple AI use cases through one control plane. Gate: the 8-point walkthrough (discovery, attention queue, disable enforcement across gateway and native runs, live reload, last-known-good rejection, generation consistency, signed lifecycle evidence) — codified in `TestFleetOps_Walkthrough`, `TestReload_EndToEnd`, and `TestAgentsDir_*` (`go test -tags integration ./tests/integration`), and runnable live via `examples/fleet-ops/demo.sh`.
