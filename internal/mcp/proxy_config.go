@@ -2,8 +2,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -16,13 +19,18 @@ import (
 // LoadProxyConfig reads a proxy YAML file into ProxyPolicyConfig, expands ${VAR}
 // in upstream URL/vendor via ExpandEnv, and applies defaults.
 // Validates: upstream.url required (after expansion), at least one allowed_tools entry.
+// Unknown keys are rejected fail-closed (#332): a pasted `proxy.auth` or
+// `proxy.tls` block must error loudly, not silently load with the operator
+// believing a security control is active.
 func LoadProxyConfig(ctx context.Context, path string) (*policy.ProxyPolicyConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading proxy config: %w", err)
 	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
 	var cfg policy.ProxyPolicyConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parsing proxy config: %w", err)
 	}
 	expandProxyConfigEnv(&cfg)

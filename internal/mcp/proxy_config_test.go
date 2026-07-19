@@ -66,6 +66,75 @@ proxy:
 	assert.Equal(t, 100, cfg.Proxy.RateLimits.RequestsPerMinute)
 }
 
+// TestLoadProxyConfig_RejectsUnknownKeys pins the #332 fix: fabricated config
+// blocks from stale docs (proxy.auth, proxy.tls, upstream.auth) must fail
+// closed at load, never silently no-op while the operator believes a security
+// control is active.
+func TestLoadProxyConfig_RejectsUnknownKeys(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	cases := []struct {
+		name string
+		yaml string
+	}{
+		{"proxy.auth block", `
+proxy:
+  upstream: { url: https://example.com }
+  allowed_tools: [{ name: foo }]
+  auth:
+    required: true
+`},
+		{"proxy.tls block", `
+proxy:
+  upstream: { url: https://example.com }
+  allowed_tools: [{ name: foo }]
+  tls: { enabled: true }
+`},
+		{"upstream.auth", `
+proxy:
+  upstream: { url: https://example.com, auth: { type: bearer } }
+  allowed_tools: [{ name: foo }]
+`},
+		{"pii_handling nested under proxy", `
+proxy:
+  upstream: { url: https://example.com }
+  allowed_tools: [{ name: foo }]
+  pii_handling:
+    redaction_rules: [{ field: email, method: hash }]
+`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(dir, "unknown.yaml")
+			require.NoError(t, os.WriteFile(p, []byte(tc.yaml), 0o600))
+			_, err := LoadProxyConfig(ctx, p)
+			require.Error(t, err, "unknown keys must be rejected fail-closed")
+			assert.Contains(t, err.Error(), "parsing proxy config")
+		})
+	}
+}
+
+// TestLoadProxyConfig_ShippedExamples pins the shipped example configs to the
+// real schema (#340): the examples are the first thing an evaluator runs, and
+// the strict loader now guarantees any drift fails this test instead of
+// failing the user.
+func TestLoadProxyConfig_ShippedExamples(t *testing.T) {
+	ctx := context.Background()
+	for _, rel := range []string{
+		"../../examples/mcp-proxy-minimal/proxy.talon.yaml",
+		"../../examples/vendor-proxy/zendesk-proxy.talon.yaml",
+	} {
+		t.Run(filepath.Base(filepath.Dir(rel)), func(t *testing.T) {
+			cfg, err := LoadProxyConfig(ctx, rel)
+			require.NoError(t, err, "shipped example must load with the strict parser")
+			require.NotNil(t, cfg)
+			assert.NotEmpty(t, cfg.Proxy.Upstream.URL)
+			assert.NotEmpty(t, cfg.Proxy.AllowedTools)
+		})
+	}
+}
+
 func TestLoadProxyConfig_ExpandEnv(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

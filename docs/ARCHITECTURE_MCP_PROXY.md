@@ -46,7 +46,7 @@ Third-Party AI Vendor          Talon MCP Proxy               Your Data Sources
                         │              │             │             │
                         │     ┌────────▼──────────┐  │    ┌────────▼─────────┐
                         │     │ Evidence Store    │  │    │ API Response     │
-                        │     │ (SQLite/PG)       │  │    │ (redacted)       │
+                        │     │ (SQLite)          │  │    │ (redacted)       │
                         │     │ - What accessed   │  │    └──────────────────┘
                         │     │ - What redacted   │  │             │
                         │     │ - Policy decision │  │             │
@@ -67,42 +67,47 @@ Third-Party AI Vendor          Talon MCP Proxy               Your Data Sources
 
 ```go
 internal/mcp/
-├── server.go         # JSON-RPC 2.0 server (existing)
-├── proxy.go          # NEW: Proxy mode implementation
-├── proxy_config.go   # NEW: Proxy configuration loader
-├── tools.go          # Native tool bridge (existing)
-└── transport.go      # HTTP transport (existing)
+├── server.go         # JSON-RPC 2.0 server (native tool exposure at /mcp)
+├── proxy.go          # Proxy mode implementation (/mcp/proxy)
+└── proxy_config.go   # Proxy configuration loader (strict; fails closed)
 ```
 
 ### Proxy Configuration
+
+The full shipped schema is `ProxyPolicyConfig` in `internal/policy/proxy.go`;
+a complete working file ships as `examples/vendor-proxy/zendesk-proxy.talon.yaml`.
+Unknown keys are rejected at load (the loader is strict — a mistyped or
+unsupported block fails `talon serve` instead of being silently ignored):
 
 ```yaml
 # agents/zendesk-vendor-proxy.talon.yaml
 agent:
   name: "zendesk-vendor-proxy"
-  type: "mcp_proxy"  # NEW: Activates proxy mode
+  type: "mcp_proxy"  # Activates proxy mode
 
 proxy:
   mode: "intercept"  # intercept | passthrough | shadow
-  
+
   upstream:
     vendor: "zendesk-ai-agent"
     url: "https://zendesk-ai-vendor.com"
-    auth:
-      type: "bearer"
-      header: "Authorization"
-      # Vendor's auth token passed through
-  
+    region: "EU"  # jurisdiction for policy input + data-flow evidence; omitted = "unknown"
+    # Upstream auth-header injection is not yet a config surface (see
+    # Roadmap); front the upstream with your own network-layer credentials.
+
   allowed_tools:
     - name: "zendesk_ticket_search"
       upstream_name: "ticket_search"  # Map to vendor's naming
     - name: "zendesk_ticket_read"
       upstream_name: "get_ticket"
-  
+
   forbidden_tools:
     - "zendesk_user_delete"      # Block destructive ops
     - "zendesk_export_all"       # Block mass exports
-    - "zendesk_admin_*"          # Wildcard block
+    - "zendesk_admin_*"          # Trailing-* wildcard block
+
+  rate_limits:
+    requests_per_minute: 100     # single global limit (default 100)
 
 pii_handling:
   redaction_rules:
@@ -117,19 +122,11 @@ pii_handling:
 
 compliance:
   frameworks: ["gdpr", "nis2"]
-  audit_retention: 365
-  human_oversight:
-    required_for:
-      - tool: "zendesk_ticket_update"
-        conditions:
-          - "priority == 'urgent'"
-          - "impact > 500"  # Financial threshold
-
-evidence:
-  capture_requests: true
-  capture_responses: true
-  capture_redactions: true
+  data_residency: "eu-only"      # requires upstream.region in the EU
 ```
+
+Evidence capture is not configurable per proxy: every proxied call produces a
+signed evidence record (tool, decision, PII findings, data flow) unconditionally.
 
 ### Proxy Modes
 
@@ -164,17 +161,17 @@ proxy:
 ```
 
 **Behavior:**
-- Talon logs calls but doesn't block
-- PII redaction optional (warn only)
-- Policy violations logged but allowed
-- Evidence trail generated
+- Talon logs calls but doesn't block — even explicitly forbidden tools are
+  forwarded (with a `proxy_tool_blocked` evidence record noting the match)
+- Policy and PII violations recorded in evidence, request forwarded
+- Full evidence trail generated
 
 **Flow:**
 ```
 Vendor → Talon (log only) → Upstream API → Talon (log response) → Vendor
 ```
 
-**Use when:** Testing Talon policies without impacting vendor.
+**Use when:** Testing Talon policies with zero enforcement risk.
 
 ---
 
@@ -186,24 +183,34 @@ proxy:
 ```
 
 **Behavior:**
-- Vendor calls upstream directly
-- Talon independently audits logs
-- Compares vendor claims vs. actual access
-- Alerts on discrepancies
+- Traffic still flows through Talon (same wire path as intercept)
+- Policy and PII violations are recorded as would-have-denied evidence,
+  then forwarded — nothing policy-evaluated is blocked
+- **Exception:** explicitly `forbidden_tools` are audited and then blocked —
+  destructive operations are never forwarded outside passthrough mode
 
 **Flow:**
 ```
-Vendor → Upstream API (direct)
-Talon → Polls audit logs → Compares → Alerts if mismatch
+Vendor → Talon (audit, no policy blocking) → Upstream API → Talon → Vendor
 ```
 
-**Use when:** Vendor doesn't support custom MCP, but you need visibility.
+**Use when:** Rolling out enforcement — validate policies against live vendor
+traffic before flipping to intercept.
+
+**All modes:** a PII-scanner failure blocks the call fail-closed regardless of
+mode — arguments Talon cannot classify must not reach the upstream tool.
 
 ---
 
-## Code: Proxy Implementation
+## Code: Proxy Implementation (design sketch)
 
-### internal/mcp/proxy.go
+> **Note:** the listing below is the original design sketch, kept for
+> architectural orientation — it is NOT the shipped source. The real
+> implementation lives in `internal/mcp/proxy.go` (`ProxyHandler`), with the
+> config schema in `internal/policy/proxy.go` and policy evaluation via
+> embedded OPA/Rego (`ProxyEngine`, `rego/proxy_*.rego`). Where the sketch
+> and the code disagree (e.g. the sketch's `Upstream.Auth` field), the code
+> is authoritative.
 
 ```go
 package mcp
@@ -387,23 +394,26 @@ func (p *ProxyServer) callUpstream(ctx context.Context, req *JSONRPCRequest) (*J
 ### 1. Local Test Setup
 
 ```bash
-# Terminal 1: Start Talon in proxy mode
-talon serve \
-  --port 8080 \
-  --mcp-proxy \
-  --config agents/zendesk-vendor-proxy.talon.yaml
+# Terminal 1: Start Talon with the MCP proxy enabled
+talon serve --port 8080 --proxy-config agents/zendesk-vendor-proxy.talon.yaml
 
-# Output:
-# → MCP proxy listening on http://localhost:8080
-# → Proxying to: https://zendesk-ai-vendor.com
-# → Audit trail: /opt/talon/evidence.db
+# The startup log confirms the proxy is mounted:
+#   INF talon_serve_started addr=:8080 agent=zendesk-vendor-proxy ... mcp_proxy=true
 ```
+
+`--proxy-config` is the only proxy-related flag on `serve`; the `--config`
+global flag selects the *infrastructure* config (talon.config.yaml), not the
+proxy policy.
 
 ### 2. Test Tool Call
 
+The proxy listens at `POST /mcp/proxy` (JSON-RPC 2.0). Locally without
+`TALON_ADMIN_KEY` the endpoint is unrestricted (dev mode; the startup log
+warns); in production send an agent or admin key as a Bearer token.
+
 ```bash
 # Terminal 2: Simulate vendor calling Talon
-curl -X POST http://localhost:8080/mcp \
+curl -X POST http://localhost:8080/mcp/proxy \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -417,39 +427,18 @@ curl -X POST http://localhost:8080/mcp \
     },
     "id": 1
   }'
-
-# Expected output:
-# {
-#   "jsonrpc": "2.0",
-#   "result": {
-#     "tickets": [
-#       {
-#         "id": 45231,
-#         "subject": "eSIM activation issue",
-#         "requester": {
-#           "email": "sha256:a1b2c3...",  # Redacted
-#           "phone": "+34 6XX XXX 789"    # Masked
-#         }
-#       }
-#     ]
-#   },
-#   "id": 1
-# }
 ```
+
+The response is the upstream's JSON-RPC result with PII redacted per your
+`pii_handling` rules; a forbidden tool returns a JSON-RPC error
+(`"tool not allowed by policy"`) instead of being forwarded.
 
 ### 3. Verify Evidence
 
 ```bash
 # Check audit trail
-talon audit list --agent zendesk-vendor-proxy --last 5m
-
-# Output:
-# [16:42:13] proxy_tool_call
-#   Tool: zendesk_ticket_search
-#   Upstream: ticket_search (zendesk-ai-vendor.com)
-#   PII redacted: 1 email, 1 phone
-#   Policy: ALLOWED (zendesk_ticket_search in allowed_tools)
-#   Evidence: evt_abc123
+talon audit list --agent zendesk-vendor-proxy --limit 10
+talon audit show <evidence-id>   # full record incl. PII findings + data flow
 ```
 
 ---
@@ -483,114 +472,90 @@ talon audit list --agent zendesk-vendor-proxy --last 5m
 
 ---
 
-### Pattern 2: Gateway Proxy (High-Scale)
+### Pattern 2: Gateway Proxy (High-Scale) — future design
+
+> **Not shipped:** Talon's evidence store is SQLite (single writer, one node);
+> there is no PostgreSQL driver and no shared-state mode today. Multi-replica
+> HA with a shared store is a future design direction, not a deployable
+> pattern. What you CAN do today: run one Talon node per vendor/region behind
+> your edge, each with its own evidence store, and merge audit exports
+> (`talon audit export`) downstream.
 
 ```
 ┌───────────────────────────────────────────────┐
 │ Edge (Cloudflare, AWS ALB)                    │
-│   ├─ /mcp → Talon MCP Proxy (2+ replicas)    │
-│   └─ Rate limiting, DDoS protection           │
+│   ├─ /mcp/proxy → Talon (one node per vendor) │
+│   └─ Rate limiting, DDoS protection, TLS      │
 └───────────────────────────────────────────────┘
                     │
     ┌───────────────┼───────────────┐
     ▼               ▼               ▼
 ┌─────────┐   ┌─────────┐   ┌─────────┐
-│ Talon 1 │   │ Talon 2 │   │ Talon 3 │
-│ (MCP    │   │ (MCP    │   │ (MCP    │
-│  proxy) │   │  proxy) │   │  proxy) │
+│ Talon   │   │ Talon   │   │ Talon   │
+│ vendor A│   │ vendor B│   │ vendor C│
 └─────────┘   └─────────┘   └─────────┘
-                    │
-            Shared PostgreSQL
-            (evidence + state)
+     │             │             │
+  SQLite        SQLite        SQLite
+  evidence      evidence      evidence
 ```
-
-**Use when:** High request volume (>100 req/sec), need HA.
 
 ---
 
 ## Security Considerations
 
-### 1. Vendor Authentication
+### 1. Vendor Authentication (inbound)
 
-**Problem:** How does vendor authenticate to Talon?
+**How does the vendor authenticate to Talon?** `POST /mcp/proxy` is mounted
+behind Talon's key middleware:
 
-**Solution:** Bearer token with vendor-specific scope
+- Default: an **agent key** (vault-bound, `agent.key.secret_name`) or the
+  **admin key** (`TALON_ADMIN_KEY`) as a Bearer token.
+- With the LLM gateway enabled (`--gateway`), the endpoint requires the
+  **admin key** specifically — agent keys are reserved for gateway traffic.
+- With no keys configured, the endpoint is **unrestricted** (local dev only;
+  `talon serve` warns loudly). Never expose that configuration.
 
-```yaml
-proxy:
-  auth:
-    required: true
-    tokens:
-      - vendor: "zendesk-ai-agent"
-        token: "${ZENDESK_AI_TOKEN}"  # From secrets vault
-        allowed_tools:
-          - "zendesk_*"  # Wildcard
-      - vendor: "intercom"
-        token: "${INTERCOM_TOKEN}"
-        allowed_tools:
-          - "intercom_*"
-```
+Per-vendor scoped bearer tokens (one token per vendor, tool-scoped) are a
+Roadmap item — there is no `proxy.auth` config block today, and the strict
+config loader rejects one.
 
-### 2. Mutual TLS (mTLS)
+### 2. TLS / Mutual TLS
 
-**For enterprise deployments:**
-
-```yaml
-proxy:
-  tls:
-    enabled: true
-    cert: "/etc/talon/tls/server.crt"
-    key: "/etc/talon/tls/server.key"
-    client_ca: "/etc/talon/tls/vendor-ca.crt"  # Verify vendor cert
-    verify_client: true
-```
+`talon serve` terminates **no TLS**. Run Talon behind your reverse proxy or
+load balancer and terminate TLS (and, if required, client-certificate mTLS)
+there. Native mTLS is a Roadmap item (Phase 3) — there is no `proxy.tls`
+config block today.
 
 ### 3. Rate Limiting
 
-**Prevent vendor abuse:**
+The shipped limit is a single global ceiling for the proxy (default 100):
 
 ```yaml
 proxy:
   rate_limits:
-    - vendor: "zendesk-ai-agent"
-      requests_per_minute: 100
-      burst: 20
-    - vendor: "intercom"
-      requests_per_minute: 50
+    requests_per_minute: 100
 ```
+
+Per-vendor limits and burst allowances are Roadmap items.
 
 ---
 
 ## Monitoring & Alerts
 
-### Key Metrics (OTel)
+**Shipped today:** every proxied call — allowed, blocked, redacted — lands in
+the signed evidence store. Operational visibility comes from there:
 
-```go
-// Expose these metrics via Prometheus
-proxy_requests_total{vendor="zendesk", tool="ticket_search", status="allowed"}
-proxy_requests_total{vendor="zendesk", tool="user_delete", status="blocked"}
-proxy_pii_redactions_total{vendor="zendesk", field="email"}
-proxy_upstream_latency_seconds{vendor="zendesk", tool="ticket_search"}
-proxy_policy_evaluation_duration_seconds{vendor="zendesk"}
+```bash
+talon audit list --agent zendesk-vendor-proxy --limit 50   # recent decisions
+talon audit export --format json                           # feed your SIEM
 ```
 
-### Alerting Rules
-
-```yaml
-# Alert on forbidden tool attempts
-alerts:
-  - name: "ForbiddenToolAttempt"
-    condition: "proxy_requests_total{status='blocked'} > 0"
-    notify: "security@company.com"
-  
-  - name: "HighPIIRedactionRate"
-    condition: "proxy_pii_redactions_total / proxy_requests_total > 0.5"
-    notify: "compliance@company.com"
-  
-  - name: "VendorDataExfiltration"
-    condition: "proxy_requests_total{tool=~'.*export.*'} > 0"
-    notify: "security@company.com"
-```
+OTel tracing (`talon serve --otel`) emits spans for proxy policy evaluation
+(`policy.proxy.*`). Named Prometheus metrics for the proxy
+(`proxy_requests_total`-style counters) and built-in alerting rules are
+**Roadmap items** — today, alert off the exported evidence stream (e.g. a
+`proxy_tool_blocked` record for a `*export*` tool is your exfiltration
+signal).
 
 ---
 
@@ -629,21 +594,25 @@ alerts:
 
 ## Roadmap
 
-### Phase 1 (MVP - Q1 2025)
+### Phase 1 — shipped
 - ✅ MCP proxy intercept mode
-- ✅ PII redaction
-- ✅ Policy enforcement
-- ✅ Evidence logging
+- ✅ PII redaction (bidirectional: request arguments and upstream responses)
+- ✅ Policy enforcement (OPA/Rego: tool access, rate limit, PII, compliance)
+- ✅ Evidence logging (signed, unconditional)
+- ✅ Shadow and passthrough modes (see Proxy Modes above)
+- ✅ Strict config loading — unknown proxy config keys fail closed
 
-### Phase 2 (Q2 2025)
-- [ ] Shadow mode implementation
+### Phase 2 — planned
 - [ ] Tool usage analytics
 - [ ] Multi-vendor config templates
 - [ ] Plan review UI for proxy calls
+- [ ] Named Prometheus metrics + alerting for proxy traffic
 
-### Phase 3 (Q3 2025)
+### Phase 3 — planned
+- [ ] Upstream auth-header injection from config
+- [ ] Per-vendor inbound bearer tokens (tool-scoped)
 - [ ] mTLS support
-- [ ] Advanced rate limiting
+- [ ] Per-vendor rate limits with burst
 - [ ] Vendor-specific compliance overlays
 - [ ] A2A protocol proxy
 

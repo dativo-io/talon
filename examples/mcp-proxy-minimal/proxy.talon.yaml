@@ -6,30 +6,36 @@
 #
 # Then point your vendor AI at: http://localhost:8080/mcp/proxy
 proxy:
+  # shadow = audit everything and forward; would-be policy denials are
+  # recorded in evidence, but explicitly forbidden tools are still blocked.
+  # intercept = additionally block policy/PII violations.
   mode: shadow
 
   upstream:
     vendor: generic
     url: "http://localhost:9091/mcp"
-    timeout: 30s
 
+  # Talon-facing tool name -> vendor's upstream name.
+  # Omit upstream_name when the names are identical.
   allowed_tools:
-    - "ticket_search"
-    - "ticket_create"
-    - "ticket_update"
-    - "user_lookup"
+    - name: ticket_search
+    - name: ticket_create
+    - name: ticket_update
+    - name: user_lookup
 
   forbidden_tools:
-    - "user_delete"
-    - "bulk_export"
+    - user_delete
+    - bulk_export
     - "admin_*"
 
   rate_limits:
     requests_per_minute: 100
 
-  pii_handling:
-    redaction_rules:
-      - field: "email"
-        method: hash
-      - field: "phone"
-        method: mask_middle
+# Top-level block (NOT under proxy:) — redaction rules applied to PII
+# found in tool arguments and upstream responses.
+pii_handling:
+  redaction_rules:
+    - field: email
+      method: hash
+    - field: phone
+      method: mask_middle

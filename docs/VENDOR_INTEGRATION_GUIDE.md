@@ -8,10 +8,10 @@
 
 This guide shows how to add Talon compliance to **existing AI automation**, whether custom-built or third-party SaaS vendors. Talon doesn't replace your existing tools — it adds governance, audit trails, and compliance controls.
 
-**Three integration patterns:**
-1. **MCP Proxy** (recommended) — Talon sits between vendor and your data
-2. **Webhook Interception** — Talon logs/redacts webhook payloads
-3. **Shadow Mode** — Read-only audit of vendor behavior
+**Three integration patterns (all shipped):**
+1. **MCP Proxy** (recommended) — Talon sits between the vendor and your data (`talon serve --proxy-config`)
+2. **LLM API Gateway** — the vendor/bot calls its LLM provider *through* Talon (`talon serve --gateway`)
+3. **Shadow Mode** — the MCP proxy in non-blocking audit mode (`proxy.mode: shadow`)
 
 ---
 
@@ -70,30 +70,19 @@ Third-Party AI Agent → Talon MCP Server → Your Zendesk/CRM
 ```bash
 # On your infrastructure (VM, EC2, on-prem server) — check
 # https://github.com/dativo-io/talon/releases/latest for the newest version
-TALON_VERSION=1.8.1   # set to the latest release tag
+TALON_VERSION=1.9.0   # set to the latest release tag
 wget https://github.com/dativo-io/talon/releases/download/v${TALON_VERSION}/talon_${TALON_VERSION}_linux_amd64.tar.gz
 tar -xzf talon_${TALON_VERSION}_linux_amd64.tar.gz
 sudo mv talon /usr/local/bin/talon
 ```
 
-#### Step 2: Configure MCP Proxy for Zendesk
-```bash
-# Create MCP server config
-mkdir -p /opt/talon/mcp-servers
+#### Step 2: Create the Proxy Policy
 
-cat > /opt/talon/mcp-servers/zendesk-proxy.json <<EOF
-{
-  "command": "talon",
-  "args": ["mcp", "serve", "zendesk", "--mode", "proxy"],
-  "env": {
-    "ZENDESK_URL": "https://your-company.zendesk.com",
-    "ZENDESK_API_KEY": "\${ZENDESK_KEY}"
-  }
-}
-EOF
-```
+The schema is `ProxyPolicyConfig` (`internal/policy/proxy.go`); a complete
+working file ships in the repo as
+`examples/vendor-proxy/zendesk-proxy.talon.yaml`. Unknown keys fail the load
+(the parser is strict), so what you write is what is enforced.
 
-#### Step 3: Create Governance Policy
 ```yaml
 # /opt/talon/agents/zendesk-vendor-proxy.talon.yaml
 agent:
@@ -103,21 +92,23 @@ agent:
   type: "mcp_proxy"
 
 proxy:
-  mode: "intercept"  # Intercept all calls
+  mode: "intercept"  # intercept | passthrough | shadow
   upstream:
     vendor: "zendesk-ai-agent"
-    url: "https://zendesk-ai.example.com"
-    auth: "bearer"  # Pass through vendor auth token
+    url: "https://zendesk-ai.example.com/mcp"
+    region: "EU"     # jurisdiction, recorded in evidence; omitted = "unknown"
 
-capabilities:
   allowed_tools:
-    - zendesk_ticket_search
-    - zendesk_ticket_read
-    - zendesk_ticket_update
-  
+    - name: zendesk_ticket_search
+    - name: zendesk_ticket_read
+    - name: zendesk_ticket_update
+
   forbidden_tools:
     - zendesk_user_delete  # Block destructive operations
     - zendesk_export_all   # Block mass data export
+
+  rate_limits:
+    requests_per_minute: 100
 
 pii_handling:
   redaction_rules:
@@ -129,68 +120,65 @@ pii_handling:
       method: "redact_full"  # Complete removal
 
 compliance:
-  frameworks: ["gdpr", "nis2", "iso-27001"]
-  data_residency: "eu-only"   # requires upstream in an EU region (eu-*)
-  audit_retention: 365
-
-  # High-risk operations (refunds, account deletion, exports) require human
-  # approval; see proxy compliance policy for the built-in detection rules.
-  human_oversight: "always"
-
-evidence:
-  capture_requests: true
-  capture_responses: true
-  capture_pii_redactions: true
-  exclude_fields:
-    - "auth_token"
-    - "internal_notes"
+  frameworks: ["gdpr", "nis2"]
+  data_residency: "eu-only"   # requires upstream.region in the EU
 ```
 
-#### Step 4: Start Talon MCP Proxy
+Every proxied call produces a signed evidence record unconditionally — there
+is no capture toggle to get wrong.
+
+#### Step 3: Start Talon with the MCP Proxy
 ```bash
-talon server \
-  --port 8080 \
-  --mcp-proxy \
-  --config /opt/talon/agents/zendesk-vendor-proxy.talon.yaml
+talon serve --port 8080 --proxy-config /opt/talon/agents/zendesk-vendor-proxy.talon.yaml
 
-# Output:
-# → MCP proxy listening on https://talon.your-company.local:8080
-# → Proxying requests to https://zendesk-ai.example.com
-# → Audit trail: /opt/talon/evidence.db
+# The startup log confirms the proxy is mounted:
+#   INF talon_serve_started addr=:8080 agent=zendesk-vendor-proxy ... mcp_proxy=true
 ```
 
-#### Step 5: Point Vendor to Talon
+For production, set `TALON_ADMIN_KEY` (and agent keys) — without any keys
+configured the endpoint is unrestricted and `talon serve` warns loudly.
+
+#### Step 4: Point Vendor to Talon
+
+The proxy endpoint is `POST /mcp/proxy` (JSON-RPC 2.0):
+
 ```
 In Zendesk AI Agent settings:
-┌──────────────────────────────────────────────┐
-│ Data Sources Configuration                   │
-│                                              │
-│ ☐ Direct Zendesk API access                 │
-│ ☑ Custom MCP Server                         │
-│   MCP Endpoint: https://talon.your-company.local:8080 │
-│   Auth Token: <your-talon-token>            │
-└──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ Data Sources Configuration                               │
+│                                                          │
+│ ☐ Direct Zendesk API access                             │
+│ ☑ Custom MCP Server                                     │
+│   MCP Endpoint: https://talon.your-company.local/mcp/proxy │
+│   Auth Token: <Talon agent or admin key>                │
+└──────────────────────────────────────────────────────────┘
 ```
+
+Terminate TLS at your reverse proxy — `talon serve` itself speaks plain HTTP.
 
 ### What Happens Now
 
 ```
 Vendor wants to search tickets
     ↓
-Calls Talon MCP endpoint: /tools/call {"name": "zendesk_ticket_search", ...}
+POST /mcp/proxy  {"method": "tools/call", "params": {"name": "zendesk_ticket_search", ...}}
     ↓
 Talon intercepts:
-    ├─ Logs: "Zendesk AI Agent requested tickets matching 'eSIM activation'"
     ├─ Policy check: Is "zendesk_ticket_search" in allowed_tools? ✓ YES
-    ├─ PII redaction: Masks phone numbers per redaction_rules
-    ├─ Fetches from real Zendesk API
-    ├─ Redacts response before returning
-    ├─ Generates evidence record (who, what, when, redacted_fields)
-    └─ Returns to vendor
+    ├─ Rate limit check (requests_per_minute)
+    ├─ PII scan on arguments; redaction per redaction_rules (fail-closed
+    │  if the scanner is unavailable — unclassifiable data is never forwarded)
+    ├─ Forwards to the upstream endpoint (tool name mapped via upstream_name)
+    ├─ PII scan + redaction on the upstream response
+    ├─ Generates a signed evidence record (who, what, when, findings, data flow)
+    └─ Returns the redacted result to the vendor
     ↓
 Vendor receives data (works normally, unaware of governance layer)
     ↓
-Your compliance officer has complete audit trail
+Your compliance officer has a complete audit trail
+
+Also: tools/list responses are filtered — the vendor only ever discovers
+tools you listed in allowed_tools.
 ```
 
 **Benefits:**
@@ -203,190 +191,119 @@ Your compliance officer has complete audit trail
 
 ---
 
-## Pattern 2: Webhook Interception
+## Pattern 2: LLM API Gateway
 
 ### When to Use
-- Vendor triggers via webhooks (Zendesk → Vendor on ticket creation)
-- You can control webhook destinations
-- Simpler than MCP if vendor doesn't support custom servers
-
-### Implementation (20 minutes)
-
-#### Step 1: Configure Webhook Proxy
-```yaml
-# /opt/talon/agents/webhook-proxy.talon.yaml
-agent:
-  name: "zendesk-webhook-proxy"
-  type: "webhook_interceptor"
-
-triggers:
-  - name: "intercept-vendor-webhooks"
-    type: "webhook"
-    endpoint: "/webhooks/zendesk"
-    method: "POST"
-    
-    # Talon forwards to vendor after logging/redacting
-    forward_to: "https://zendesk-ai-vendor.com/api/v1/tickets"
-    forward_auth:
-      type: "bearer"
-      token: "${VENDOR_API_KEY}"
-
-pii_handling:
-  redaction_rules:
-    - field: "ticket.requester.email"
-      method: "hash"
-    - field: "ticket.description"
-      patterns:
-        - "(\\+?\\d{1,3}[-.\\s]?)?\\d{9,15}"  # Phone numbers
-      method: "mask"
-
-compliance:
-  audit_retention: 365
-  frameworks: ["gdpr", "nis2"]
-
-evidence:
-  capture_webhook_payload: true
-  capture_forwarded_payload: true  # See what vendor received
-```
-
-#### Step 2: Update Zendesk Webhook
-```
-BEFORE:
-Zendesk Webhook URL: https://zendesk-ai-vendor.com/api/v1/tickets
-
-AFTER:
-Zendesk Webhook URL: https://talon.your-company.local/webhooks/zendesk
-                      ↓
-                  (Talon logs, redacts, forwards)
-                      ↓
-                  https://zendesk-ai-vendor.com/api/v1/tickets
-```
-
-#### Step 3: Verify Interception
-```bash
-talon logs --follow --agent webhook-proxy
-
-# Output shows every webhook:
-# [2025-02-16 10:23:15] Webhook received: ticket.created #45231
-# [2025-02-16 10:23:15] PII redacted: 2 phone numbers, 1 email
-# [2025-02-16 10:23:15] Forwarded to vendor: 1.2KB payload
-# [2025-02-16 10:23:15] Evidence record generated: evt_abc123
-```
-
-**Benefits:**
-- ✅ Logs every webhook payload vendor receives
-- ✅ Redacts PII before vendor sees it
-- ✅ Can block suspicious payloads
-- ✅ Vendor unaware of proxy (transparent)
-- ✅ Minimal setup (just change webhook URL)
-
----
-
-## Pattern 3: Shadow Mode (Audit Only)
-
-### When to Use
-- Vendor doesn't support custom MCP or webhook routing
-- You need compliance visibility but can't force vendor changes
-- First step before full interception (validate Talon policies)
+- The vendor tool or bot calls an LLM API (OpenAI, Anthropic, Ollama) and
+  lets you configure the base URL — Slack bots, desktop apps, scripts,
+  self-built automations
+- You want per-agent budgets, PII scanning, and signed evidence on every
+  LLM request without touching the tool's logic
 
 ### Implementation (15 minutes)
 
-#### Step 1: Shadow Audit Configuration
-```yaml
-# /opt/talon/agents/zendesk-shadow-audit.talon.yaml
-agent:
-  name: "zendesk-shadow-audit"
-  mode: "shadow"  # Read-only, no interception
+Point the tool at Talon instead of the provider. Talon authenticates the
+caller with a Talon **agent key**, enforces the agent's model/cost/PII
+policy, injects the vault-stored provider key upstream, and signs evidence:
 
-triggers:
-  - name: "audit-zendesk-access"
-    type: "cron"
-    schedule: "*/5 * * * *"  # Every 5 minutes
-    action: "compare_access_logs"
-
-audit:
-  # Talon independently fetches Zendesk audit logs
-  sources:
-    - name: "zendesk_api_logs"
-      endpoint: "https://your-company.zendesk.com/api/v2/audit_logs"
-      auth: "bearer:${ZENDESK_ADMIN_KEY}"
-    
-    - name: "vendor_claimed_access"
-      endpoint: "https://zendesk-ai-vendor.com/api/audit"
-      auth: "bearer:${VENDOR_API_KEY}"
-  
-  # Compare what vendor claims vs. what Zendesk logs show
-  compare:
-    - field: "accessed_ticket_ids"
-      alert_if: "mismatch"
-    
-    - field: "accessed_user_ids"
-      alert_if: "vendor_accessed_but_not_in_their_audit"
-    
-    - field: "data_center_location"
-      alert_if: "non_eu_location"
-
-  alerts:
-    slack_webhook: "https://hooks.slack.com/services/YOUR/WEBHOOK"
-    email: "security@your-company.com"
-
-compliance:
-  generate_reports:
-    - type: "gdpr_article_30"
-      frequency: "weekly"
-      recipients: ["compliance@your-company.com"]
-```
-
-#### Step 2: Run Shadow Audit
 ```bash
-talon server --config /opt/talon/agents/zendesk-shadow-audit.talon.yaml
+talon serve --port 8080 --gateway
 
-# Talon runs in background, auditing vendor behavior
+# The tool calls Talon's provider-native route:
+curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $AGENT_KEY" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Help me reset my password"}]}'
 ```
 
-#### Step 3: Review Findings
-```bash
-talon audit report --agent zendesk-shadow-audit --last 7d
-
-# Output:
-# Vendor Access Audit (2025-02-09 to 2025-02-16)
-# ------------------------------------------------
-# ✓ Total API calls: 1,247
-# ✓ PII accessed: 423 customer records
-# ⚠ Discrepancies found: 3
-#   - Vendor accessed ticket #45299 (not in their audit log)
-#   - API call from us-east-1 (outside EU data residency)
-#   - User export at 3:47 AM (suspicious timing)
-#
-# Evidence: /opt/talon/evidence/shadow-audit-2025-02-16.json
-```
+The real provider key never reaches the vendor tool — it lives in Talon's
+encrypted vault only. See the dedicated guides:
+[Slack bot integration](guides/slack-bot-integration.md),
+[Desktop app governance](guides/desktop-app-governance.md),
+[Governing coding agents](guides/governing-coding-agents.md).
 
 **Benefits:**
-- ✅ No changes to vendor setup (zero friction)
-- ✅ Independent verification of vendor claims
-- ✅ Alerts on policy violations
-- ✅ Can't prevent violations, but detects them
-- ✅ Good first step before forcing interception
+- ✅ Every LLM request audited and attributed to an agent + tenant
+- ✅ Budgets enforced per session / day / month
+- ✅ PII scanning on prompts and responses per your policy
+- ✅ Provider keys leave the laptops and live in the vault
+
+### What About Webhooks?
+
+Talon ships **webhook triggers**, not a webhook forwarding proxy: a
+`triggers.webhooks` entry on an agent (`name`, `source`, `prompt_template`,
+`require_approval`) dispatches a **governed agent run** when the webhook
+fires — the payload becomes a policy-checked, audited Talon execution.
+
+What Talon does **not** do today: sit between a SaaS webhook and a vendor
+endpoint to log/redact/forward the payload transparently. If your vendor is
+webhook-driven and you cannot reroute its LLM traffic (Pattern 2) or its
+data access (Pattern 1), use Shadow Mode below for visibility, or front the
+vendor with your own relay.
+
+---
+
+## Pattern 3: Shadow Mode (Audit Without Enforcement)
+
+### When to Use
+- First step before full interception — validate Talon policies against
+  live vendor traffic with zero enforcement risk
+- You can route the vendor's MCP traffic through Talon, but aren't ready
+  to let policies block anything yet
+
+### How It Works
+
+Shadow mode is the same MCP proxy as Pattern 1 with one config change —
+traffic still flows through Talon on the same wire path:
+
+```yaml
+proxy:
+  mode: "shadow"
+```
+
+- Policy and PII violations are recorded as **would-have-denied** signed
+  evidence, then forwarded — policy evaluation blocks nothing
+- Explicitly `forbidden_tools` are audited and then **still blocked** —
+  destructive operations are never forwarded outside passthrough mode
+- A working minimal config ships as `examples/mcp-proxy-minimal/proxy.talon.yaml`
+
+#### Run and Review
+```bash
+talon serve --port 8080 --proxy-config /opt/talon/agents/zendesk-vendor-proxy.talon.yaml
+
+# After a few days of traffic:
+talon audit list --agent zendesk-vendor-proxy --limit 50
+talon audit export --format csv   # review would-have-denied decisions
+```
+
+When the evidence shows the policy is denying the right things, flip
+`mode: "shadow"` to `mode: "intercept"` and restart.
+
+**Benefits:**
+- ✅ Zero enforcement risk while policies are tuned
+- ✅ Full signed evidence trail from day one
+- ✅ Destructive tools blocked even while observing
+- ✅ One-line switch to enforcement
 
 **Limitations:**
-- ❌ Cannot block vendor in real-time
-- ❌ Relies on vendor providing audit logs
-- ❌ PII already sent to vendor (can only detect, not prevent)
+- ❌ Requires the vendor's MCP traffic to route through Talon (like Pattern 1)
+- ❌ Policy violations are recorded, not prevented, until you flip to intercept
+- ❌ If the vendor cannot be rerouted at all, Talon cannot see its traffic —
+  there is no passive "poll the vendor's own audit logs" mode
 
 ---
 
 ## Pattern Comparison Table
 
-| Feature | MCP Proxy | Webhook Interception | Shadow Mode |
-|---------|-----------|---------------------|-------------|
-| **Setup Time** | 30 min | 20 min | 15 min |
-| **Vendor Changes Required** | Medium (MCP endpoint config) | Low (webhook URL change) | None |
-| **Blocks Violations** | ✅ Yes | ✅ Yes | ❌ No (detect only) |
-| **PII Redaction** | ✅ Before vendor sees it | ✅ Before vendor sees it | ❌ After vendor has it |
-| **Human Oversight** | ✅ Real-time approval | ✅ Real-time approval | ❌ Post-hoc review |
-| **Audit Trail** | ✅ Complete | ✅ Complete | ✅ Partial |
-| **Vendor Transparency** | Vendor aware | Transparent | Transparent |
-| **Best For** | New vendors, controlled environments | Webhook-based vendors | Legacy vendors, validation |
+| Feature | MCP Proxy (intercept) | LLM API Gateway | Shadow Mode |
+|---------|-----------------------|-----------------|-------------|
+| **Setup Time** | 30 min | 15 min | 30 min (same as MCP proxy) |
+| **What It Governs** | Vendor's tool/data access (MCP) | Vendor's LLM API calls | Same wire as MCP proxy |
+| **Vendor Changes Required** | MCP endpoint config | Base-URL + key config | MCP endpoint config |
+| **Blocks Violations** | ✅ Yes | ✅ Yes (budget/policy denials) | Forbidden tools only |
+| **PII Redaction** | ✅ Before vendor sees it | ✅ Per policy (scan/redact/block) | Recorded, not enforced |
+| **Audit Trail** | ✅ Complete, signed | ✅ Complete, signed | ✅ Complete, signed |
+| **Best For** | Vendors with MCP support | Bots/tools calling LLM APIs | Policy validation before enforcement |
 
 ---
 
@@ -404,36 +321,39 @@ compliance_gain: "Full GDPR Article 30 records + PII redaction"
 ### Scenario 2: Intercom Resolution Bot
 ```yaml
 vendor: "Intercom Resolution Bot"
-pattern: "Webhook Interception"
-reason: "Intercom triggers via webhooks, can change URL in settings"
-setup_time: "20 minutes"
-compliance_gain: "Audit trail + PII redaction on webhooks"
+pattern: "Shadow Mode -> MCP Proxy"
+reason: "Route its data access through Talon; validate policies in shadow, then intercept"
+setup_time: "30 minutes"
+compliance_gain: "Signed audit trail + PII redaction on tool traffic"
 ```
 
 ### Scenario 3: Custom Slack Bot (Self-Built)
 ```yaml
 vendor: "Internal Slack bot (Python script)"
-pattern: "Direct Integration"
-reason: "You control the code, modify it to call Talon"
-setup_time: "10 minutes (5 lines of code)"
-compliance_gain: "Full governance + policy enforcement"
+pattern: "LLM API Gateway"
+reason: "You control the code — point its OpenAI client at Talon's gateway"
+setup_time: "15 minutes (base URL + key change)"
+compliance_gain: "Full governance + policy enforcement + signed evidence"
 code_change: |
   # Before
-  response = openai.ChatCompletion.create(...)
-  
-  # After
-  response = requests.post("http://localhost:8081/v1/chat/completions", ...)
+  client = OpenAI(api_key=REAL_OPENAI_KEY)
+
+  # After — Talon agent key in, vault-stored provider key out
+  client = OpenAI(api_key=TALON_AGENT_KEY,
+                  base_url="http://localhost:8080/v1/proxy/openai/v1")
+docs: guides/slack-bot-integration.md
 ```
 
-### Scenario 4: HubSpot AI Assistant (No API Access)
+### Scenario 4: HubSpot AI Assistant (No Reroute Possible)
 ```yaml
 vendor: "HubSpot AI Assistant"
-pattern: "Shadow Mode"
-reason: "HubSpot doesn't allow custom MCP or webhook routing"
-setup_time: "15 minutes"
-compliance_gain: "Audit detection, vendor behavior monitoring"
-limitation: "Cannot block in real-time, only detect violations"
-next_step: "Escalate to HubSpot for MCP support or find alternative"
+pattern: "None today — honest boundary"
+reason: "No custom MCP endpoint, no configurable LLM base URL, no webhook reroute"
+compliance_gain: "None until the vendor exposes a routing surface"
+limitation: "If Talon cannot sit on the traffic path, it cannot see or govern it —
+  there is no passive vendor-log monitoring mode"
+next_step: "Escalate to HubSpot for MCP support (see Vendor Negotiation Guide)
+  or choose a governable alternative"
 ```
 
 ---
@@ -477,9 +397,9 @@ If 10+ European companies demand MCP proxying:
 3. Talon becomes de facto compliance gateway
 
 **This is already happening:**
-- Anthropic supports MCP natively (Claude Desktop, API)
-- OpenAI announced "Custom Tools Protocol" (MCP-compatible)
-- Microsoft exploring MCP for Copilot
+- Anthropic supports MCP natively (Claude Desktop, Claude Code, API)
+- OpenAI supports MCP (Agents SDK, ChatGPT connectors)
+- Microsoft supports MCP (Copilot Studio, Windows AI Foundry)
 
 **Talon's advantage:** First mover in compliance-grade MCP gateway.
 
@@ -489,64 +409,58 @@ If 10+ European companies demand MCP proxying:
 
 ### Test Your Integration
 
+The proxy speaks JSON-RPC 2.0 at `POST /mcp/proxy`.
+
 #### 1. Verify Interception
 ```bash
-# Send test request through Talon
-curl -X POST https://talon.your-company.local/tools/call \
-  -H "Authorization: Bearer ${TALON_TOKEN}" \
+# Send a test request through Talon
+curl -X POST https://talon.your-company.local/mcp/proxy \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${TALON_AGENT_KEY}" \
   -d '{
-    "name": "zendesk_ticket_search",
-    "arguments": {"query": "test"}
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {"name": "zendesk_ticket_search", "arguments": {"query": "test"}},
+    "id": 1
   }'
 
-# Check logs
-talon logs --last 1m
-
-# Expected output:
-# → Policy check: ALLOWED (zendesk_ticket_search in allowed_tools)
-# → PII redacted: 0 fields
-# → Upstream call: 200 OK (154ms)
-# → Evidence generated: evt_abc123
+# Then check the audit trail — the call appears as signed evidence:
+talon audit list --agent zendesk-vendor-proxy --limit 5
 ```
 
 #### 2. Verify PII Redaction
 ```bash
-# Create test ticket with PII
-curl -X POST https://talon.your-company.local/tools/call \
+# Send arguments containing PII
+curl -X POST https://talon.your-company.local/mcp/proxy \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${TALON_AGENT_KEY}" \
   -d '{
-    "name": "zendesk_ticket_create",
-    "arguments": {
-      "subject": "Test",
-      "requester": {
-        "email": "test@example.com",
-        "phone": "+34612345678"
-      }
-    }
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "zendesk_ticket_create",
+      "arguments": {"subject": "Test", "requester_email": "test@example.com", "requester_phone": "+34612345678"}
+    },
+    "id": 2
   }'
 
-# Check evidence
-talon audit show evt_abc123
-
-# Expected evidence:
-# {
-#   "pii_redacted": [
-#     {"field": "requester.email", "method": "hash", "original_hash": "sha256:..."},
-#     {"field": "requester.phone", "method": "mask_middle", "redacted_value": "+34 6XX XXX 678"}
-#   ]
-# }
+# Inspect the record: PII findings and the data-flow section show what was
+# detected and how it was redacted (evidence stores digests, never raw values)
+talon audit show <evidence-id>
 ```
 
 #### 3. Verify Policy Enforcement
 ```bash
-# Try forbidden operation
-curl -X POST https://talon.your-company.local/tools/call \
-  -d '{"name": "zendesk_user_delete", "arguments": {"user_id": 123}}'
+# Try a forbidden operation
+curl -X POST https://talon.your-company.local/mcp/proxy \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${TALON_AGENT_KEY}" \
+  -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"zendesk_user_delete","arguments":{"user_id":123}},"id":3}'
 
-# Expected: 403 Forbidden
-# {
-#   "error": "Policy violation: zendesk_user_delete not in allowed_tools",
-#   "evidence_id": "evt_xyz789"
-# }
+# Expected: a JSON-RPC error instead of a forwarded call —
+#   {"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"tool not allowed by policy"}}
+# and a proxy_tool_blocked evidence record:
+talon audit list --agent zendesk-vendor-proxy --limit 1
 ```
 
 ---
@@ -554,23 +468,22 @@ curl -X POST https://talon.your-company.local/tools/call \
 ## Migration Path
 
 ### Phase 1: Shadow Mode (Week 1)
-- Deploy Talon in read-only mode
-- Build audit trail for 1 week
-- Validate policies without blocking vendor
-- **Risk:** Zero (no vendor changes)
+- Route the vendor through Talon with `proxy.mode: shadow`
+- Build a signed audit trail for 1 week
+- Validate policies — would-have-denied decisions land in evidence, nothing
+  policy-evaluated is blocked
+- **Risk:** Low (one endpoint change at the vendor; no enforcement)
 - **Goal:** Prove Talon works, tune policies
 
 ### Phase 2: Pilot Interception (Week 2)
-- Enable MCP proxy or webhook interception
-- Route 10% of traffic through Talon
-- Monitor for issues (latency, errors)
-- **Risk:** Low (easy rollback)
+- Flip a low-stakes vendor (or a staging instance) to `mode: intercept`
+- Monitor for issues (latency, errors, false denials) in the audit trail
+- **Risk:** Low (flip back to shadow is a one-line change)
 - **Goal:** Verify production readiness
 
 ### Phase 3: Full Rollout (Week 3)
-- Route 100% traffic through Talon
-- Enable PII redaction
-- Enable policy enforcement
+- Flip all proxied vendors to `mode: intercept`
+- PII redaction and policy enforcement now active on every call
 - **Risk:** Medium (vendor dependency)
 - **Goal:** Full compliance coverage
 
@@ -600,10 +513,9 @@ curl -X POST https://talon.your-company.local/tools/call \
 **Symptom:** API calls 2-3x slower through Talon
 
 **Solutions:**
-1. Check Talon's policy evaluation time: `talon metrics`
-2. Optimize Rego policies (use indexed data structures)
-3. Enable caching: `cache_ttl: 60s` in agent config
-4. Deploy Talon closer to vendor (reduce network hops)
+1. Inspect policy-evaluation spans: `talon serve --otel` (traces `policy.proxy.*`)
+2. Keep redaction_rules pattern lists tight (each regex runs per call)
+3. Deploy Talon closer to the vendor / upstream (reduce network hops)
 
 ### Issue: PII Still Reaching Vendor
 
@@ -612,18 +524,22 @@ curl -X POST https://talon.your-company.local/tools/call \
 **Solutions:**
 1. Verify redaction rules match actual field names
 2. Check vendor uses nested fields: `requester.custom_fields.phone`
-3. Enable debug logging: `talon server --log-level debug`
+3. Enable debug logging: `talon serve --log-level debug`
 4. Add catch-all regex patterns for PII detection
 
-### Issue: Vendor Audit Logs Unavailable
+### Issue: Vendor Cannot Be Rerouted at All
 
-**Symptom:** Shadow mode can't fetch vendor's audit logs
+**Symptom:** No MCP endpoint config, no LLM base-URL config, no way to put
+Talon on the traffic path
 
-**Solutions:**
-1. Check if vendor provides audit API (may be enterprise-only)
-2. Request CSV export if API unavailable
-3. Use Zendesk/CRM audit logs as source of truth
-4. Escalate to vendor for better audit access
+**Honest answer:** Talon can only govern traffic that flows through it —
+there is no passive mode that polls the vendor's own audit logs.
+
+**Options:**
+1. Check for an LLM base-URL setting (many tools have one buried in
+   advanced/self-hosted options) → Pattern 2
+2. Escalate to the vendor for MCP support (see Vendor Negotiation Guide)
+3. Choose a governable alternative vendor
 
 ---
 
@@ -671,19 +587,19 @@ curl -X POST https://talon.your-company.local/tools/call \
 ## Next Steps
 
 1. **Choose your pattern:**
-   - New vendor or greenfield: **MCP Proxy**
-   - Webhook-based vendor: **Webhook Interception**
-   - Legacy vendor or validation: **Shadow Mode**
+   - Vendor with MCP support: **MCP Proxy**
+   - Bot or tool calling an LLM API you can repoint: **LLM API Gateway**
+   - Not ready to enforce: **Shadow Mode** first
 
 2. **Start with pilot:**
-   - Deploy Talon in shadow mode for 1 week
-   - Validate policies without impacting vendor
-   - Review audit trails with compliance officer
+   - Deploy the proxy in shadow mode for 1 week
+   - Validate policies without impacting the vendor
+   - Review audit trails with your compliance officer
 
 3. **Gradual rollout:**
-   - Enable interception for 10% traffic
-   - Monitor for issues (latency, errors)
-   - Roll out to 100% after validation
+   - Flip a low-stakes vendor to `mode: intercept`
+   - Monitor for issues (latency, errors, false denials)
+   - Flip the rest after validation
 
 4. **Prove compliance:**
    - Generate first GDPR Article 30 report

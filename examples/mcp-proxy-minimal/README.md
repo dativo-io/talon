@@ -1,8 +1,10 @@
 # MCP Proxy Minimal Example
 
 The smallest working Talon MCP proxy. Audits vendor AI tool calls with PII
-scanning, tool filtering, and evidence logging. Shadow mode: logs everything,
-blocks nothing.
+scanning, tool filtering, and evidence logging. Shadow mode: audits everything
+and forwards; would-be policy denials are recorded in signed evidence, and
+explicitly forbidden tools are still blocked (they are never forwarded outside
+`passthrough` mode).
 
 ## Setup
 
@@ -29,19 +31,20 @@ allowed/forbidden tool lists, and generates evidence records.
 
 ```yaml
 proxy:
-  mode: shadow               # Audit only
+  mode: shadow               # Audit; forbidden tools still blocked
   upstream:
     url: "http://vendor:9091/mcp"
-  allowed_tools:
-    - "ticket_search"
-    - "ticket_create"
+  allowed_tools:             # name -> optional upstream_name mapping
+    - name: ticket_search
+    - name: ticket_create
   forbidden_tools:
-    - "user_delete"
-    - "admin_*"              # Glob patterns supported
-  pii_handling:
-    redaction_rules:
-      - field: "email"
-        method: hash
+    - user_delete
+    - "admin_*"              # Trailing-* patterns supported
+
+pii_handling:                # top-level, NOT under proxy:
+  redaction_rules:
+    - field: email
+      method: hash
 ```
 
 ## Check the Audit Trail
@@ -53,6 +56,7 @@ bin/talon audit list
 
 ## Next Steps
 
-- Switch to `mode: intercept` to block forbidden tool calls
+- Switch to `mode: intercept` to also block policy and PII violations
+  (forbidden tools are blocked in shadow mode already)
 - Add more redaction rules for your specific vendor's data fields
 - See `examples/vendor-proxy/` for a full Zendesk integration example
