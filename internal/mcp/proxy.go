@@ -46,6 +46,12 @@ func NewProxyHandler(
 	evidenceStore *evidence.Store,
 	cls classifier.Facade,
 ) *ProxyHandler {
+	// Defense in depth for #346: the loaders default/validate mode, but a
+	// handler constructed directly (tests, future callers) must never run
+	// with an empty mode — empty used to fail open as passthrough.
+	if cfg != nil && cfg.Proxy.Mode == "" {
+		cfg.Proxy.Mode = policy.ProxyModeIntercept
+	}
 	timeout := 30 * time.Second
 	return &ProxyHandler{
 		config:        cfg,
@@ -55,6 +61,101 @@ func NewProxyHandler(
 		httpClient:    &http.Client{Timeout: timeout},
 		runtime:       DefaultProxyRuntime(),
 	}
+}
+
+// proxyInvocation carries request-scoped attribution for evidence (#350):
+// resolved once at the HTTP boundary and reused by every record the call
+// produces, so tenant, agent, session, and correlation stay consistent
+// across the intent/result records of one MCP call and joinable with the
+// same use case's LLM gateway traffic.
+type proxyInvocation struct {
+	tenantID string
+	// agentID is the authenticated agent from the key middleware when
+	// present; otherwise the proxy config's agent name; "mcp-proxy" only as
+	// the final legacy fallback (admin/dev-open paths with an unnamed config).
+	agentID string
+	team    string
+	// sessionID is the validated X-Talon-Session-ID ("" when not asserted).
+	// Client-asserted: attribution, not authentication — never a policy input.
+	sessionID string
+	// correlationID is the validated inbound X-Correlation-ID, or one
+	// generated ID reused across all records of this request.
+	correlationID string
+	orch          *evidence.OrchestrationContext
+}
+
+// resolveProxyInvocation builds the invocation context from the authenticated
+// request context and the neutral X-Talon-* attribution headers. Header
+// values follow the same hygiene contract as the gateway (128-byte cap, RFC
+// 7230 token charset, reject — never truncate): an error here must become an
+// HTTP 400 before any evidence is written. Vendor header adapters are an LLM
+// wire concern and deliberately not consulted on the MCP wire.
+func (h *ProxyHandler) resolveProxyInvocation(r *http.Request) (*proxyInvocation, error) {
+	ctx := r.Context()
+	inv := &proxyInvocation{}
+
+	inv.tenantID = requestctx.TenantID(ctx)
+	if inv.tenantID == "" {
+		inv.tenantID = "default"
+	}
+	if id, ok := requestctx.AgentIdentityFrom(ctx); ok {
+		inv.agentID = id.AgentID
+		inv.team = id.Team
+	} else if h.config != nil && h.config.Agent.Name != "" {
+		// Admin-key and dev-open paths carry no agent identity: attribute to
+		// the proxy's own declared agent identity from the config.
+		inv.agentID = h.config.Agent.Name
+	} else {
+		inv.agentID = "mcp-proxy"
+	}
+
+	sessionID, err := evidence.ValidateOrchValue("X-Talon-Session-ID", r.Header.Get("X-Talon-Session-ID"))
+	if err != nil {
+		return nil, err
+	}
+	subagent, err := evidence.ValidateOrchValue("X-Talon-Agent-ID", r.Header.Get("X-Talon-Agent-ID"))
+	if err != nil {
+		return nil, err
+	}
+	parent, err := evidence.ValidateOrchValue("X-Talon-Parent-Agent-ID", r.Header.Get("X-Talon-Parent-Agent-ID"))
+	if err != nil {
+		return nil, err
+	}
+	client, err := evidence.ValidateOrchValue("X-Talon-Client", r.Header.Get("X-Talon-Client"))
+	if err != nil {
+		return nil, err
+	}
+	correlationID, err := evidence.ValidateOrchValue("X-Correlation-ID", r.Header.Get("X-Correlation-ID"))
+	if err != nil {
+		return nil, err
+	}
+	if correlationID == "" {
+		correlationID = "mcp_proxy_" + uuid.New().String()[:8]
+	}
+	inv.sessionID = sessionID
+	inv.correlationID = correlationID
+
+	// Same emission rule as the gateway: a bare session id fills the
+	// session_id column only; the orchestration block exists when the client
+	// asserted identity beyond the session.
+	if subagent != "" || parent != "" || client != "" {
+		if client == "" {
+			client = "generic"
+		}
+		sessionSource := ""
+		if sessionID != "" {
+			sessionSource = "client_asserted"
+		}
+		inv.orch = &evidence.OrchestrationContext{
+			SessionID:     sessionID,
+			AgentID:       subagent,
+			ParentAgentID: parent,
+			Client:        client,
+			SessionSource: sessionSource,
+			Provenance:    "client_asserted",
+		}
+	}
+	return inv, nil
 }
 
 // SetRuntime overrides timeout and auth for upstream calls.
@@ -89,19 +190,34 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := requestctx.TenantID(ctx)
-	if tenantID == "" {
-		tenantID = "default"
+	// Attribution is resolved once per request (#350). Header hygiene
+	// violations are rejected before any evidence is written, mirroring the
+	// gateway contract (reject, never truncate).
+	inv, err := h.resolveProxyInvocation(r)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(&jsonrpcResponse{
+			JSONRPC: jsonrpcVersion, ID: req.ID,
+			Error: &rpcError{Code: codeInvalidRequest, Message: "invalid attribution header: " + err.Error()},
+		})
+		return
+	}
+	// Echo the resolved identifiers so callers can join their receipts to
+	// the audit trail.
+	w.Header().Set("X-Correlation-ID", inv.correlationID)
+	if inv.sessionID != "" {
+		w.Header().Set("X-Talon-Session-ID", inv.sessionID)
 	}
 
 	var resp *jsonrpcResponse
 	switch req.Method {
 	case "tools/list":
-		resp = h.handleToolsList(ctx, body, tenantID, &req)
+		resp = h.handleToolsList(ctx, body, inv, &req)
 	case "tools/call":
-		resp = h.handleProxyToolCall(ctx, &req, tenantID)
+		resp = h.handleProxyToolCall(ctx, &req, inv)
 	default:
-		resp = h.forwardRequest(ctx, body, tenantID, &req)
+		resp = h.forwardRequest(ctx, body, &req)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -110,7 +226,7 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 //nolint:gocyclo // proxy flow: forbidden, policy, PII, forward, evidence
-func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequest, tenantID string) *jsonrpcResponse {
+func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequest, inv *proxyInvocation) *jsonrpcResponse {
 	ctx, span := proxyTracer.Start(ctx, "mcp.proxy.tools.call")
 	defer span.End()
 
@@ -134,18 +250,23 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		}
 	}
 
-	// Forbidden check: explicitly forbidden tools are never forwarded in intercept or shadow.
-	// intercept = block; shadow = audit then block; passthrough = log only then forward.
+	// Forbidden check (#346, fail-closed): explicitly forbidden tools are
+	// forwarded ONLY under explicit passthrough mode — intercept, shadow, and
+	// any unexpected mode value block. Evidence must say what actually
+	// happened: a block records proxy_tool_blocked; a passthrough forward
+	// records a shadow violation on an allowed record, never a fake "blocked".
 	for _, f := range h.config.Proxy.ForbiddenTools {
 		if f == toolName || (strings.HasSuffix(f, "*") && strings.HasPrefix(toolName, strings.TrimSuffix(f, "*"))) {
-			h.recordEvidence(ctx, tenantID, "proxy_tool_blocked", toolName, nil, "forbidden_tools", nil)
 			span.SetAttributes(attribute.String("proxy.blocked", "forbidden"))
-			switch h.config.Proxy.Mode {
-			case "intercept", "shadow":
-				// Block: intercept always; shadow audits then blocks (never forward forbidden tools).
+			if h.config.Proxy.Mode != policy.ProxyModePassthrough {
+				h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, "forbidden_tools", nil, nil)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "tool not allowed by policy"}}
 			}
-			// passthrough: evidence recorded, fall through to forward
+			h.recordEvidence(ctx, inv, "proxy_shadow_violation", toolName, "forbidden_tools", nil, &evidence.ShadowViolation{
+				Type:   "tool_block",
+				Detail: "forbidden tool " + toolName + " forwarded in passthrough mode",
+				Action: "block",
+			})
 			break
 		}
 	}
@@ -162,9 +283,20 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		span.RecordError(err)
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error()}}
 	}
-	if !decision.Allowed && h.config.Proxy.Mode == "intercept" {
-		h.recordEvidence(ctx, tenantID, "proxy_tool_blocked", toolName, nil, strings.Join(decision.Reasons, "; "), nil)
-		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: strings.Join(decision.Reasons, "; ")}}
+	if !decision.Allowed {
+		denyReason := strings.Join(decision.Reasons, "; ")
+		if h.config.Proxy.Mode == policy.ProxyModeIntercept {
+			h.recordEvidence(ctx, inv, "proxy_tool_blocked", toolName, denyReason, nil, nil)
+			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: denyReason}}
+		}
+		// shadow/passthrough (#346): the deny is recorded as a would-have-
+		// denied shadow violation — previously these modes produced no
+		// evidence of the deny at all.
+		h.recordEvidence(ctx, inv, "proxy_shadow_violation", toolName, denyReason, nil, &evidence.ShadowViolation{
+			Type:   "policy_deny",
+			Detail: denyReason,
+			Action: "block",
+		})
 	}
 
 	// PII scan on arguments. A scanner failure blocks the call fail-closed:
@@ -176,7 +308,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		if scanErr != nil {
 			flow.requestBlocked = true
 			flow.scannerFailure = scannerFailureKind(scanErr)
-			h.recordEvidence(ctx, tenantID, "proxy_pii_scan_error", toolName, nil, "scanner_unavailable", &flow)
+			h.recordEvidence(ctx, inv, "proxy_pii_scan_error", toolName, "scanner_unavailable", &flow, nil)
 			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Request blocked: PII scanner unavailable (fail-closed)"}}
 		}
 		if result != nil && len(result.Entities) > 0 {
@@ -187,21 +319,39 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 				proxyInput.DetectedPII = append(proxyInput.DetectedPII, e.Type)
 			}
 			piiDecision, piiErr := h.proxyEngine.EvaluateProxyPII(ctx, proxyInput)
-			if piiErr != nil && h.config.Proxy.Mode == "intercept" {
-				flow.requestBlocked = true
-				h.recordEvidence(ctx, tenantID, "proxy_pii_eval_error", toolName, nil, piiErr.Error(), &flow)
-				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII policy evaluation failed (fail-closed)"}}
+			if piiErr != nil {
+				if h.config.Proxy.Mode == policy.ProxyModeIntercept {
+					flow.requestBlocked = true
+					h.recordEvidence(ctx, inv, "proxy_pii_eval_error", toolName, piiErr.Error(), &flow, nil)
+					return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII policy evaluation failed (fail-closed)"}}
+				}
+				// shadow/passthrough (#346): enforce mode would block
+				// fail-closed on an eval error — record it, then continue.
+				h.recordEvidence(ctx, inv, "proxy_shadow_violation", toolName, "pii_eval_error: "+piiErr.Error(), &flow, &evidence.ShadowViolation{
+					Type:   "pii_block",
+					Detail: "PII policy evaluation failed: " + piiErr.Error(),
+					Action: "block",
+				})
 			}
-			if piiDecision != nil && !piiDecision.Allowed && h.config.Proxy.Mode == "intercept" {
-				flow.requestBlocked = true
-				h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "pii_detected_in_request", &flow)
-				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII detected in request"}}
+			if piiDecision != nil && !piiDecision.Allowed {
+				if h.config.Proxy.Mode == policy.ProxyModeIntercept {
+					flow.requestBlocked = true
+					h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, "pii_detected_in_request", &flow, nil)
+					return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII detected in request"}}
+				}
+				// shadow/passthrough (#346): record the would-have-denied PII
+				// decision, then continue to redaction as before.
+				h.recordEvidence(ctx, inv, "proxy_shadow_violation", toolName, "pii_detected_in_request", &flow, &evidence.ShadowViolation{
+					Type:   "pii_block",
+					Detail: "PII detected in request: " + strings.Join(proxyInput.DetectedPII, ", "),
+					Action: "block",
+				})
 			}
 			redactedArgs, redactErr := h.classifier.RedactText(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), argStr)
 			if redactErr != nil {
 				flow.requestBlocked = true
 				flow.scannerFailure = scannerFailureKind(redactErr)
-				h.recordEvidence(ctx, tenantID, "proxy_pii_scan_error", toolName, nil, "scanner_unavailable", &flow)
+				h.recordEvidence(ctx, inv, "proxy_pii_scan_error", toolName, "scanner_unavailable", &flow, nil)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Request blocked: PII redaction failed (fail-closed)"}}
 			}
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionRequest), redactedArgs); verifyErr != nil {
@@ -213,7 +363,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 					msg = "Request blocked: redaction could not be verified (fail-closed)"
 					flow.scannerFailure = scannerFailureKind(verifyErr)
 				}
-				h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, reason, &flow)
+				h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, reason, &flow, nil)
 				return &jsonrpcResponse{
 					JSONRPC: jsonrpcVersion,
 					ID:      req.ID,
@@ -226,14 +376,14 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			if redactedArgs != argStr {
 				if !json.Valid([]byte(redactedArgs)) {
 					flow.requestBlocked = true
-					h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "request_redaction_invalid_json", &flow)
+					h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, "request_redaction_invalid_json", &flow, nil)
 					return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII redaction produced invalid JSON (fail-closed)"}}
 				}
 				params.Arguments = json.RawMessage(redactedArgs)
 				proxyInput.Arguments = paramsToMap(params.Arguments)
 				flow.requestRedacted = true
 			}
-			h.recordEvidence(ctx, tenantID, "proxy_pii_request_detected", toolName, nil, "", &flow)
+			h.recordEvidence(ctx, inv, "proxy_pii_request_detected", toolName, "", &flow, nil)
 		}
 	}
 
@@ -266,7 +416,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		if scanErr != nil {
 			flow.responseBlocked = true
 			flow.scannerFailure = scannerFailureKind(scanErr)
-			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_scanner_unavailable", &flow)
+			h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_scanner_unavailable", &flow, nil)
 			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Tool result blocked: PII scanner unavailable (fail-closed)"}}
 		}
 		if cls != nil && cls.HasPII {
@@ -287,7 +437,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			if redactErr != nil {
 				flow.responseBlocked = true
 				flow.scannerFailure = scannerFailureKind(redactErr)
-				h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_scanner_unavailable", &flow)
+				h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_scanner_unavailable", &flow, nil)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Tool result blocked: PII redaction failed (fail-closed)"}}
 			}
 			if verifyErr := h.classifier.VerifyEgress(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), redacted); verifyErr != nil {
@@ -299,7 +449,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 					msg = "Tool result blocked: redaction could not be verified (fail-closed)"
 					flow.scannerFailure = scannerFailureKind(verifyErr)
 				}
-				h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, reason, &flow)
+				h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, reason, &flow, nil)
 				return &jsonrpcResponse{
 					JSONRPC: jsonrpcVersion,
 					ID:      req.ID,
@@ -312,16 +462,16 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 			var redactedResult interface{}
 			if err := json.Unmarshal([]byte(redacted), &redactedResult); err != nil {
 				flow.responseBlocked = true
-				h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_redaction_invalid_json", &flow)
+				h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_redaction_invalid_json", &flow, nil)
 				return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "PII redaction of tool result produced invalid JSON (fail-closed)"}}
 			}
 			out.Result = redactedResult
-			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "output_pii_redacted", &flow)
+			h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "output_pii_redacted", &flow, nil)
 		} else {
-			h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "", &flow)
+			h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "", &flow, nil)
 		}
 	} else {
-		h.recordEvidence(ctx, tenantID, "proxy_tool_call", toolName, nil, "", &flow)
+		h.recordEvidence(ctx, inv, "proxy_tool_call", toolName, "", &flow, nil)
 	}
 
 	return &out
@@ -438,11 +588,11 @@ func toolNameFromRaw(raw json.RawMessage) string {
 // It supports multiple upstream result shapes (object with "tools", array at top,
 // or other common keys) and preserves the response shape. If the result shape
 // is unrecognizable, it returns an empty tool list to avoid leaking unfiltered data.
-func (h *ProxyHandler) handleToolsList(ctx context.Context, body []byte, tenantID string, req *jsonrpcRequest) *jsonrpcResponse {
+func (h *ProxyHandler) handleToolsList(ctx context.Context, body []byte, _ *proxyInvocation, req *jsonrpcRequest) *jsonrpcResponse {
 	ctx, span := proxyTracer.Start(ctx, "mcp.proxy.tools.list")
 	defer span.End()
 
-	resp := h.forwardRequest(ctx, body, tenantID, req)
+	resp := h.forwardRequest(ctx, body, req)
 	if resp == nil || resp.Error != nil || resp.Result == nil {
 		return resp
 	}
@@ -503,7 +653,7 @@ func (h *ProxyHandler) handleToolsList(ctx context.Context, body []byte, tenantI
 	return resp
 }
 
-func (h *ProxyHandler) forwardRequest(ctx context.Context, body []byte, tenantID string, req *jsonrpcRequest) *jsonrpcResponse {
+func (h *ProxyHandler) forwardRequest(ctx context.Context, body []byte, req *jsonrpcRequest) *jsonrpcResponse {
 	upstreamResp, err := h.doUpstreamRequest(ctx, body)
 	if err != nil {
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error()}}
@@ -579,15 +729,20 @@ func (h *ProxyHandler) upstreamEndpointHost() string {
 	return u.Host
 }
 
-func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, toolName string, result []byte, reason string, flow *proxyFlowState) {
+func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation, eventType, toolName, reason string, flow *proxyFlowState, sv *evidence.ShadowViolation) {
 	if h.evidenceStore == nil {
 		return
 	}
 	// Allowed must reflect what actually happened, not the event label: the
 	// output fail-closed branches (scanner unavailable, residual PII, invalid
 	// redaction JSON) record eventType proxy_tool_call with a blocked flow,
-	// and evidence must say denied for those.
-	allowed := eventType == "proxy_tool_call" || (eventType == "proxy_pii_request_detected" && reason == "")
+	// and evidence must say denied for those. A shadow violation is an
+	// ALLOWED record — the call was forwarded — with the would-have-denied
+	// verdict carried in ShadowViolations + ObservationModeOverride (#346),
+	// matching the gateway's shadow-mode vocabulary.
+	allowed := eventType == "proxy_tool_call" ||
+		eventType == "proxy_shadow_violation" ||
+		(eventType == "proxy_pii_request_detected" && reason == "")
 	if flow != nil && (flow.requestBlocked || flow.responseBlocked) {
 		allowed = false
 	}
@@ -599,13 +754,14 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 	if reason != "" {
 		reasons = []string{reason}
 	}
-	correlationID := "mcp_proxy_" + uuid.New().String()[:8]
 	ev := &evidence.Evidence{
 		ID:              "proxy_" + uuid.New().String()[:8],
-		CorrelationID:   correlationID,
+		CorrelationID:   inv.correlationID,
+		SessionID:       inv.sessionID,
 		Timestamp:       time.Now(),
-		TenantID:        tenantID,
-		AgentID:         "mcp-proxy",
+		TenantID:        inv.tenantID,
+		AgentID:         inv.agentID,
+		Team:            inv.team,
 		InvocationType:  eventType,
 		RequestSourceID: h.config.Proxy.Upstream.Vendor,
 		PolicyDecision:  evidence.PolicyDecision{Allowed: allowed, Action: action, Reasons: reasons},
@@ -613,6 +769,11 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 			ToolsCalled: []string{toolName},
 			Error:       reason,
 		},
+		Orchestration: inv.orch,
+	}
+	if sv != nil {
+		ev.ObservationModeOverride = true
+		ev.ShadowViolations = []evidence.ShadowViolation{*sv}
 	}
 	if flow != nil {
 		ev.Classification = evidence.Classification{
@@ -623,12 +784,12 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, tenantID, eventType, 
 			OutputPIITypes:    entityTypeSet(flow.responseEntities),
 			PIIRedacted:       flow.responseRedacted,
 		}
-		ev.DataFlow = h.buildProxyDataFlow(tenantID, correlationID, toolName, flow)
+		ev.DataFlow = h.buildProxyDataFlow(inv.tenantID, inv.correlationID, toolName, flow)
 		if ev.DataFlow != nil {
 			log.Info().
-				Str("correlation_id", correlationID).
-				Str("tenant_id", tenantID).
-				Str("agent_id", "mcp-proxy").
+				Str("correlation_id", inv.correlationID).
+				Str("tenant_id", inv.tenantID).
+				Str("agent_id", inv.agentID).
 				Str("flow_destination", evidence.FlowDestMCPTool+":"+h.config.Proxy.Upstream.Vendor).
 				Str("flow_region", h.upstreamRegion()).
 				Int("flow_items", len(ev.DataFlow.Items)).
@@ -726,6 +887,18 @@ func proxyExplanationFacts(eventType, reason, toolName string, allowed bool) []e
 			Decision: explanation.DecisionDeny,
 			Stage:    explanation.StageToolExecution,
 			Trigger:  trigger,
+		}}
+	case "proxy_shadow_violation":
+		// The call was forwarded (allowed); the would-have-denied verdict
+		// lives in ShadowViolations. Gateway precedent: shadow evidence
+		// explains as allowed, with the trigger naming what enforce would
+		// have denied.
+		return []explanation.Fact{{
+			Code:     explanation.CodePolicyAllowed,
+			Decision: explanation.DecisionAllow,
+			Stage:    explanation.StageToolExecution,
+			Trigger:  trigger,
+			Fix:      "Observation mode forwarded a call enforce mode would deny; set proxy.mode: intercept to enforce.",
 		}}
 	case "proxy_pii_eval_error":
 		return []explanation.Fact{{

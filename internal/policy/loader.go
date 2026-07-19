@@ -245,9 +245,15 @@ func LoadProxyPolicy(path string, baseDir string) (*ProxyPolicyConfig, error) {
 		return nil, fmt.Errorf("proxy.allowed_tools must have at least one entry")
 	}
 
-	// Default proxy mode to "intercept" when unset.
-	if config.Proxy.Mode == "" {
-		config.Proxy.Mode = "intercept"
+	// Mode (#346): default unset to intercept and reject unknown values —
+	// identical contract to the serve loader (internal/mcp LoadProxyConfig)
+	// so the two loaders cannot diverge on enforcement semantics again.
+	switch config.Proxy.Mode {
+	case "":
+		config.Proxy.Mode = ProxyModeIntercept
+	case ProxyModeIntercept, ProxyModePassthrough, ProxyModeShadow:
+	default:
+		return nil, fmt.Errorf("proxy.mode %q is invalid; use intercept, passthrough, or shadow", config.Proxy.Mode)
 	}
 
 	return &config, nil
