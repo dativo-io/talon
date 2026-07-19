@@ -56,7 +56,7 @@ mkdir talon-coding && cd talon-coding
 talon init --pack coding-agents --name coding-gateway
 ```
 
-This creates `agent.talon.yaml`, `agents/codex/agent.talon.yaml`, and `talon.config.yaml` pre-configured for coding traffic (source of truth: `internal/pack/templates/coding-agents/`). The defaults are deliberate:
+This creates `agent.talon.yaml`, `agents/codex/agent.talon.yaml`, `talon.config.yaml`, and `pricing/models.yaml` pre-configured for coding traffic (source of truth: `internal/pack/templates/coding-agents/`; the pricing table is a copy of the embedded default). The defaults are deliberate:
 
 - **Two agents, one per tool** — `claude-code` (the primary `agent.talon.yaml`, Anthropic route) and `codex` (`agents/codex/agent.talon.yaml`, OpenAI route), each its own AI use case with its own vault-bound agent key, `metadata.team: coding`, `policies.allowed_providers`, and its own budgets. Budgets and audit attribute **per tool**. To serve both from one `talon serve`, set `agents_dir: "."` (#267, shipped; the pack ships it commented out) — discovery matches the exact filename `agent.talon.yaml` and fails closed on duplicate `agent.name`. Without `agents_dir`, `talon serve` runs the single default `agent.talon.yaml`.
 - **Shadow mode** — would-have-denied decisions are recorded in signed evidence while nothing blocks. Flip to `mode: "enforce"` once the dashboard looks right.

@@ -19,11 +19,12 @@ mkdir talon-coding && cd talon-coding
 talon init --pack coding-agents
 ```
 
-This creates three files:
+This creates four files:
 
 - `agent.talon.yaml` — the **`claude-code` agent**: Claude Code's Talon traffic identity (`agent.key.secret_name: claude-code-talon-key`) plus its policy override with coding-tuned defaults — `session_limits.max_cost: 10.00`, `cost_limits.daily: 50.00` / `monthly: 500.00`, `input_scan: true` (input PII action `warn`), `allowed_providers: ["anthropic"]` — and high-precision credential recognizers (PEM private-key blocks, AWS `AKIA...` key IDs, GitHub `ghp_`/`github_pat_` tokens, Anthropic/OpenAI `sk-ant-...`/`sk-proj-...` keys) so leaked credentials in prompt traffic land in evidence.
 - `agents/codex/agent.talon.yaml` — the `codex` agent for Codex CLI (see the [Codex guide](codex-cli-integration.md)). To serve both agents from one `talon serve`, set `agents_dir: "."` in `talon.config.yaml` (the pack ships it commented out): discovery (#267, shipped) loads every file named exactly `agent.talon.yaml` under it — provision both agents' keys first. Without `agents_dir`, `talon serve` runs the single default `agent.talon.yaml`.
 - `talon.config.yaml` — gateway config with the Anthropic provider, the **organization baseline** (`organization_policy.defaults`: `pii_action: warn`, `response_pii_action: allow`), **shadow mode**, and a raised `request_timeout: 600s` (the response-header wait follows it by default).
+- `pricing/models.yaml` — the LLM cost-estimation table (a copy of the embedded default). The relative `pricing_file` resolves against the active policy file's directory in single-file mode: in this guide's flow (policy at the project root) that's the project root, so edits work; in the Codex single-file flow (`TALON_DEFAULT_POLICY=agents/codex/...`) they are silently ignored — see the [Codex guide's pricing caveat](codex-cli-integration.md#5-verify).
 
 These defaults are deliberate — see [Why the pack defaults look like this](#why-the-pack-defaults-look-like-this) below before changing them.
 

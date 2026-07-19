@@ -278,6 +278,30 @@ func runListCompliance(out io.Writer) error {
 	return nil
 }
 
+// printCreatedFiles lists exactly what init wrote (#341): packs with declared
+// Files get their real file list (the hardcoded three-file list omitted e.g.
+// agents/codex/agent.talon.yaml); pricing/models.yaml is written by the
+// shared scaffold for every pack.
+func printCreatedFiles(out io.Writer, packID string) {
+	fmt.Fprintln(out, "Created files:")
+	if p, ok := pack.FindByID(packID); ok && len(p.Files) > 0 {
+		width := len("pricing/models.yaml")
+		for _, f := range p.Files {
+			if len(f.OutputPath) > width {
+				width = len(f.OutputPath)
+			}
+		}
+		for _, f := range p.Files {
+			fmt.Fprintf(out, "  - %-*s  (%s)\n", width, f.OutputPath, f.Description)
+		}
+		fmt.Fprintf(out, "  - %-*s  (LLM cost estimation table)\n", width, "pricing/models.yaml")
+		return
+	}
+	fmt.Fprintln(out, "  - agent.talon.yaml     (agent policy — governance/compliance team)")
+	fmt.Fprintln(out, "  - talon.config.yaml    (infrastructure config — DevOps/platform team)")
+	fmt.Fprintln(out, "  - pricing/models.yaml  (LLM cost estimation table)")
+}
+
 //nolint:gocyclo // runPackInit dispatches pack validation, init, and post-message by pack type
 func runPackInit(out, errOut io.Writer) error {
 	ok := false
@@ -306,10 +330,7 @@ func runPackInit(out, errOut io.Writer) error {
 	log.Info().Str("name", initName).Str("pack", initPack).Msg("Initialized Talon project")
 	fmt.Fprintln(out, "Initialized Talon project")
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Created files:")
-	fmt.Fprintln(out, "  - agent.talon.yaml     (agent policy — governance/compliance team)")
-	fmt.Fprintln(out, "  - talon.config.yaml    (infrastructure config — DevOps/platform team)")
-	fmt.Fprintln(out, "  - pricing/models.yaml  (LLM cost estimation table)")
+	printCreatedFiles(out, initPack)
 	fmt.Fprintln(out)
 	if p, ok := pack.FindByID(initPack); ok && p.PostMessage != "" {
 		fmt.Fprintln(out, strings.TrimSpace(p.PostMessage))

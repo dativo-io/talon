@@ -19,6 +19,12 @@
 # docs/guides/governing-coding-agents.md).
 
 llm:
+  # Relative pricing_file resolution (#337): fleet mode (agents_dir) resolves
+  # from the project root; single-file mode resolves from the ACTIVE policy
+  # file's directory. With TALON_DEFAULT_POLICY=agents/codex/agent.talon.yaml
+  # this file is NOT found and serve falls back to embedded defaults — use
+  # agents_dir, an absolute path, or keep the policy at the project root
+  # before editing the pricing table.
   pricing_file: "pricing/models.yaml"
 
 # Fleet mode (#267): scan this project for agent.talon.yaml files (finds the
