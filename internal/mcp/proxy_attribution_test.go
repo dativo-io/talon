@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/explanation"
 	"github.com/dativo-io/talon/internal/policy"
@@ -60,9 +61,14 @@ func attribHandler(t *testing.T, mode, upstreamURL string, forbidden []string) (
 
 func attribCall(t *testing.T, h *ProxyHandler, ctx context.Context, headers map[string]string, tool string) (*httptest.ResponseRecorder, jsonrpcResponse) {
 	t.Helper()
+	return attribCallArgs(t, h, ctx, headers, tool, map[string]string{"q": "hello"})
+}
+
+func attribCallArgs(t *testing.T, h *ProxyHandler, ctx context.Context, headers map[string]string, tool string, args map[string]string) (*httptest.ResponseRecorder, jsonrpcResponse) {
+	t.Helper()
 	body, _ := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-		"params": map[string]interface{}{"name": tool, "arguments": map[string]string{"q": "hello"}},
+		"params": map[string]interface{}{"name": tool, "arguments": args},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/mcp/proxy", bytes.NewReader(body)).WithContext(ctx)
 	for k, v := range headers {
@@ -131,19 +137,24 @@ func TestProxyPassthrough_ForbiddenForwarded_HonestEvidence(t *testing.T) {
 	assert.True(t, hit)
 
 	records := listRecords(t, store, "default")
-	var sv *evidence.Evidence
+	svTypes := map[string]*evidence.Evidence{}
 	for i := range records {
 		if records[i].InvocationType == "proxy_shadow_violation" {
-			sv = &records[i]
+			require.Len(t, records[i].ShadowViolations, 1)
+			svTypes[records[i].ShadowViolations[0].Type] = &records[i]
 		}
 		assert.NotEqual(t, "proxy_tool_blocked", records[i].InvocationType,
 			"a forwarded call must not be recorded as blocked")
 	}
-	require.NotNil(t, sv, "passthrough must record the would-have-denied verdict")
-	assert.True(t, sv.PolicyDecision.Allowed, "the call was forwarded; the deny verdict lives in ShadowViolations")
-	assert.True(t, sv.ObservationModeOverride)
-	require.Len(t, sv.ShadowViolations, 1)
-	assert.Equal(t, "tool_block", sv.ShadowViolations[0].Type)
+	// user_delete is both explicitly forbidden AND absent from allowed_tools,
+	// so passthrough must record BOTH would-have-denied verdicts (#346): the
+	// forbidden-tool match and the tool-access policy deny.
+	require.Contains(t, svTypes, "tool_block", "passthrough must record the forbidden-tool would-deny")
+	require.Contains(t, svTypes, "policy_deny", "passthrough must record the policy would-deny")
+	for _, sv := range svTypes {
+		assert.True(t, sv.PolicyDecision.Allowed, "the call was forwarded; the deny verdict lives in ShadowViolations")
+		assert.True(t, sv.ObservationModeOverride)
+	}
 }
 
 // TestProxyShadow_PolicyDeny_RecordsWouldDeny pins the #346 gap where shadow
@@ -240,6 +251,119 @@ func TestProxyEvidence_BlockedCarriesPolicyDeniedTool(t *testing.T) {
 	primary, ok := explanation.Primary(records[0].Explanations)
 	require.True(t, ok)
 	assert.Equal(t, explanation.CodePolicyDeniedTool, primary.Code)
+}
+
+// TestProxyEvidence_OrchestrationBlockEmission pins the #350 orchestration
+// contract on the MCP wire: identity headers populate the record's
+// orchestration block (client defaulting to "generic", client_asserted
+// provenance), and each identity header is hygiene-validated.
+func TestProxyEvidence_OrchestrationBlockEmission(t *testing.T) {
+	hit := false
+	up := attribUpstream(t, &hit)
+	h, store := attribHandler(t, policy.ProxyModeIntercept, up.URL, nil)
+
+	_, resp := attribCall(t, h, context.Background(), map[string]string{
+		"X-Talon-Session-ID":      "sess-orch-1",
+		"X-Talon-Agent-ID":        "reviewer-subagent",
+		"X-Talon-Parent-Agent-ID": "orchestrator",
+	}, "crm_lookup")
+	require.Nil(t, resp.Error)
+
+	records := listRecords(t, store, "default")
+	require.Len(t, records, 1)
+	orch := records[0].Orchestration
+	require.NotNil(t, orch, "identity headers must emit the orchestration block")
+	assert.Equal(t, "reviewer-subagent", orch.AgentID)
+	assert.Equal(t, "orchestrator", orch.ParentAgentID)
+	assert.Equal(t, "generic", orch.Client, "client defaults to generic when identity is asserted without X-Talon-Client")
+	assert.Equal(t, "sess-orch-1", orch.SessionID)
+	assert.Equal(t, "client_asserted", orch.SessionSource)
+	assert.Equal(t, "client_asserted", orch.Provenance)
+
+	// A bare session (no identity headers) must NOT emit the block —
+	// the session_id column alone carries it (gateway emission rule).
+	h2, store2 := attribHandler(t, policy.ProxyModeIntercept, up.URL, nil)
+	_, resp = attribCall(t, h2, context.Background(), map[string]string{"X-Talon-Session-ID": "sess-bare"}, "crm_lookup")
+	require.Nil(t, resp.Error)
+	recs2 := listRecords(t, store2, "default")
+	require.Len(t, recs2, 1)
+	assert.Nil(t, recs2[0].Orchestration)
+	assert.Equal(t, "sess-bare", recs2[0].SessionID)
+
+	// Identity headers are hygiene-validated like the session header.
+	rec, _ := attribCall(t, h2, context.Background(), map[string]string{
+		"X-Talon-Agent-ID": "bad value with spaces",
+	}, "crm_lookup")
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestProxyShadow_PIIWouldDeny_RecordsShadowViolation pins the #346 gap on
+// the PII gate: in shadow mode a PII policy deny (detected PII with no
+// redaction rule) is recorded as a would-have-denied shadow violation while
+// the (redacted) call is forwarded — and the allowed records carry no
+// Execution.Error, so session summaries do not count them as errors.
+func TestProxyShadow_PIIWouldDeny_RecordsShadowViolation(t *testing.T) {
+	hit := false
+	up := attribUpstream(t, &hit)
+	cfg := &policy.ProxyPolicyConfig{
+		Agent: policy.ProxyAgentConfig{Name: "vendor-proxy-agent", Type: "mcp_proxy"},
+		Proxy: policy.ProxyConfig{
+			Mode:         policy.ProxyModeShadow,
+			Upstream:     policy.UpstreamConfig{URL: up.URL, Vendor: "testvendor"},
+			AllowedTools: []policy.ToolMapping{{Name: "crm_lookup"}},
+		},
+		// No redaction rules: rego proxy_pii_redaction denies any detected PII.
+	}
+	engine, err := policy.NewProxyEngine(context.Background(), cfg)
+	require.NoError(t, err)
+	store, err := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+
+	_, resp := attribCallArgs(t, h, context.Background(), map[string]string{"X-Talon-Session-ID": "sess-pii-1"}, "crm_lookup",
+		map[string]string{"email": "jane.doe@example.com"})
+	require.Nil(t, resp.Error, "shadow mode forwards the PII would-deny")
+	assert.True(t, hit)
+
+	records := listRecords(t, store, "default")
+	var sv *evidence.Evidence
+	for i := range records {
+		if records[i].InvocationType == "proxy_shadow_violation" {
+			sv = &records[i]
+		}
+		if records[i].PolicyDecision.Allowed {
+			assert.Empty(t, records[i].Execution.Error,
+				"allowed records must not carry Execution.Error (session summaries count it as an error)")
+		}
+	}
+	require.NotNil(t, sv, "shadow mode must record the PII would-deny")
+	require.Len(t, sv.ShadowViolations, 1)
+	assert.Equal(t, "pii_block", sv.ShadowViolations[0].Type)
+	assert.True(t, sv.ObservationModeOverride)
+	assert.Equal(t, "sess-pii-1", sv.SessionID)
+}
+
+// TestProxyEvidence_GeneratedCorrelationSharedAcrossRecords pins the #350
+// correlation contract for the no-header case: one generated request-scoped
+// ID is shared by every record of the call.
+func TestProxyEvidence_GeneratedCorrelationSharedAcrossRecords(t *testing.T) {
+	hit := false
+	up := attribUpstream(t, &hit)
+	// Passthrough + forbidden yields multiple records for one call.
+	h, store := attribHandler(t, policy.ProxyModePassthrough, up.URL, []string{"user_delete"})
+
+	rec, resp := attribCall(t, h, context.Background(), nil, "user_delete")
+	require.Nil(t, resp.Error)
+
+	records := listRecords(t, store, "default")
+	require.GreaterOrEqual(t, len(records), 2)
+	corr := records[0].CorrelationID
+	assert.True(t, strings.HasPrefix(corr, "mcp_proxy_"), "generated correlation keeps the mcp_proxy_ prefix")
+	for _, r := range records {
+		assert.Equal(t, corr, r.CorrelationID, "all records of one call share the generated correlation ID")
+	}
+	assert.Equal(t, corr, rec.Header().Get("X-Correlation-ID"), "generated correlation is echoed to the caller")
 }
 
 // TestProxyInvalidAttributionHeader_Rejected400 pins the hygiene contract

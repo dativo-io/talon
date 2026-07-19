@@ -48,9 +48,15 @@ func NewProxyHandler(
 ) *ProxyHandler {
 	// Defense in depth for #346: the loaders default/validate mode, but a
 	// handler constructed directly (tests, future callers) must never run
-	// with an empty mode — empty used to fail open as passthrough.
-	if cfg != nil && cfg.Proxy.Mode == "" {
-		cfg.Proxy.Mode = policy.ProxyModeIntercept
+	// with an empty OR unknown mode — empty used to fail open as passthrough,
+	// and an unrecognized value must get the strictest semantics, not
+	// shadow's forward-with-record.
+	if cfg != nil {
+		switch cfg.Proxy.Mode {
+		case policy.ProxyModeIntercept, policy.ProxyModePassthrough, policy.ProxyModeShadow:
+		default:
+			cfg.Proxy.Mode = policy.ProxyModeIntercept
+		}
 	}
 	timeout := 30 * time.Second
 	return &ProxyHandler{
@@ -767,9 +773,16 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation,
 		PolicyDecision:  evidence.PolicyDecision{Allowed: allowed, Action: action, Reasons: reasons},
 		Execution: evidence.Execution{
 			ToolsCalled: []string{toolName},
-			Error:       reason,
 		},
 		Orchestration: inv.orch,
+	}
+	// Execution.Error only on records that actually denied/failed: session
+	// summaries count any non-empty Execution.Error as a session error, and
+	// allowed records (shadow violations, output_pii_redacted notes) now
+	// join sessions via SessionID — their reason already lives in
+	// PolicyDecision.Reasons.
+	if !allowed {
+		ev.Execution.Error = reason
 	}
 	if sv != nil {
 		ev.ObservationModeOverride = true

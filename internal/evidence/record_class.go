@@ -47,6 +47,12 @@ var nonRequestClass = map[string]RecordClass{
 	"llm_failover_decision":    ClassProviderAttempt,
 	"gateway_count_tokens":     ClassProviderAttempt,
 
+	// Per-request would-deny sub-record of one proxied MCP call (#346): a
+	// shadow/passthrough violation is always followed by the call's terminal
+	// record (proxy_tool_call or a block), so counting it as a request would
+	// multiply one call into several.
+	"proxy_shadow_violation": ClassProviderAttempt,
+
 	// Operator / control-plane actions.
 	"agent_enabled":        ClassOperatorEvent,
 	"agent_disabled":       ClassOperatorEvent,
