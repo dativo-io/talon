@@ -36,6 +36,15 @@ type ProxyAgentConfig struct {
 	Version     string `yaml:"version,omitempty" json:"version,omitempty"`
 }
 
+// Proxy modes (#346). These are the only three declared values; loaders
+// default unset to intercept and reject anything else, so the handler never
+// sees an empty or unknown mode (which would otherwise fail open).
+const (
+	ProxyModeIntercept   = "intercept"   // block policy/PII violations and forbidden tools
+	ProxyModePassthrough = "passthrough" // record everything, forward everything
+	ProxyModeShadow      = "shadow"      // record would-have-denied, forward; forbidden tools still blocked
+)
+
 // ProxyConfig defines the MCP proxy behaviour.
 type ProxyConfig struct {
 	Mode           string               `yaml:"mode,omitempty" json:"mode,omitempty"` // intercept | passthrough | shadow

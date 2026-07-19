@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/dativo-io/talon/internal/evidence"
@@ -62,34 +61,14 @@ var vendorAdapters = []vendorAdapter{
 	},
 }
 
-const orchHeaderMaxLen = 128
+const orchHeaderMaxLen = evidence.OrchHeaderMaxLen
 
 // validateOrchValue enforces header hygiene: values are length-capped and
 // restricted to the RFC 7230 token charset, and rejected — never truncated —
-// on violation. This blocks header/HTML injection at ingestion so hostile
-// client-asserted strings never reach signed evidence or operator dashboards.
+// on violation. The shared implementation lives in internal/evidence so the
+// gateway and the MCP proxy (#350) cannot diverge on ingestion hygiene.
 func validateOrchValue(name, v string) (string, error) {
-	if v == "" {
-		return "", nil
-	}
-	if len(v) > orchHeaderMaxLen {
-		return "", fmt.Errorf("orchestration header %s exceeds %d bytes", name, orchHeaderMaxLen)
-	}
-	for i := 0; i < len(v); i++ {
-		if !isTokenChar(v[i]) {
-			return "", fmt.Errorf("orchestration header %s contains a disallowed character", name)
-		}
-	}
-	return v, nil
-}
-
-// isTokenChar reports whether c is an RFC 7230 tchar (the HTTP token charset).
-func isTokenChar(c byte) bool {
-	switch c {
-	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
-		return true
-	}
-	return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+	return evidence.ValidateOrchValue(name, v)
 }
 
 // orchHeaders is the validated raw header set from one request.

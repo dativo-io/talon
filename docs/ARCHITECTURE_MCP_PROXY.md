@@ -162,8 +162,10 @@ proxy:
 
 **Behavior:**
 - Talon logs calls but doesn't block — even explicitly forbidden tools are
-  forwarded (with a `proxy_tool_blocked` evidence record noting the match)
-- Policy and PII violations recorded in evidence, request forwarded
+  forwarded, recorded honestly as `proxy_shadow_violation` evidence
+  (`ObservationModeOverride: true` + a `ShadowViolations` entry saying what
+  enforce mode would have done), never as a fake "blocked" record
+- Policy and PII violations recorded the same way, request forwarded
 - Full evidence trail generated
 
 **Flow:**
@@ -199,6 +201,12 @@ traffic before flipping to intercept.
 
 **All modes:** a PII-scanner failure blocks the call fail-closed regardless of
 mode — arguments Talon cannot classify must not reach the upstream tool.
+
+**Mode is fail-closed at every layer (#346):** `mode` defaults to `intercept`
+when unset and both loaders reject values outside
+`intercept | passthrough | shadow` at startup; the handler itself forwards a
+forbidden tool only under explicit `passthrough`. An unset or mistyped mode
+can never silently behave as passthrough.
 
 ---
 
@@ -641,6 +649,35 @@ Both the MCP proxy and the LLM API gateway now scan **responses** from upstream 
 ### `tools/list` filtering
 
 When a vendor calls `tools/list` via the MCP proxy, Talon filters the response so the caller only sees tools listed in `allowed_tools`. Forbidden tools and unlisted tools are stripped from the response before it reaches the vendor. This reduces the attack surface — agents cannot discover or attempt to call tools they are not authorized to use.
+
+### Evidence attribution (#350)
+
+Every proxy evidence record attributes to the real caller, resolved once at
+the HTTP boundary and reused across all records of one call:
+
+- **Agent**: the authenticated agent from the key middleware
+  (`agent_id: coding-assistant` when the request presented that agent's key);
+  on the admin-key and dev-open paths, which carry no agent identity, records
+  attribute to the proxy config's own `agent.name`. The tenant derives the
+  same way (key → agent → tenant, #266).
+- **Session**: a caller-supplied `X-Talon-Session-ID` lands in the record's
+  `session_id`, so MCP tool calls join the same session's LLM gateway
+  traffic. Client-asserted — **attribution, not authentication**; never a
+  policy input. No session is synthesized when none is asserted.
+- **Correlation**: an inbound `X-Correlation-ID` is preserved; otherwise one
+  request-scoped ID is generated and shared by every record of that call
+  (intent and result records are joinable). Both resolved identifiers are
+  echoed on the response headers.
+- **Header hygiene**: the same contract as the gateway (128-byte cap, RFC
+  7230 token charset, reject — never truncate; shared implementation in
+  `internal/evidence`): an invalid attribution header is an HTTP 400 before
+  any evidence is written. The `X-Talon-Agent-ID` / `X-Talon-Parent-Agent-ID`
+  / `X-Talon-Client` identity headers populate the record's `orchestration`
+  block exactly as on the gateway. Vendor header adapters (Claude Code,
+  Codex) are an LLM-wire concern and are not consulted on the MCP wire.
+- **Denied tool calls** carry the deterministic `POLICY_DENIED_TOOL`
+  explanation code alongside the native trigger (`forbidden_tools`, Rego
+  reasons) for debugging.
 
 ---
 

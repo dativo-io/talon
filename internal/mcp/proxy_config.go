@@ -57,6 +57,18 @@ func validateAndApplyDefaults(cfg *policy.ProxyPolicyConfig) error {
 	if len(cfg.Proxy.AllowedTools) == 0 {
 		return fmt.Errorf("at least one proxy.allowed_tools entry is required")
 	}
+	// Mode (#346): default unset to intercept — matching LoadProxyPolicy's
+	// documented default — and reject anything outside the three declared
+	// values. An unset mode must never reach the handler, where it would
+	// silently behave as passthrough (forbidden tools recorded as blocked
+	// but forwarded upstream).
+	switch cfg.Proxy.Mode {
+	case "":
+		cfg.Proxy.Mode = policy.ProxyModeIntercept
+	case policy.ProxyModeIntercept, policy.ProxyModePassthrough, policy.ProxyModeShadow:
+	default:
+		return fmt.Errorf("proxy.mode %q is invalid; use intercept, passthrough, or shadow", cfg.Proxy.Mode)
+	}
 	// Defaults: rate limits
 	if cfg.Proxy.RateLimits.RequestsPerMinute <= 0 {
 		cfg.Proxy.RateLimits.RequestsPerMinute = 100
