@@ -60,6 +60,35 @@ func TestInitPack_CrewAI_GeneratesFiles(t *testing.T) {
 	assert.NotContains(t, string(configContent), "tenant_key", "legacy identity must not scaffold")
 }
 
+// TestInitPack_CreatedFilesListMatchesPackFiles pins #341: the printed
+// "Created files" list must name every file the pack actually wrote — the
+// old hardcoded three-file list omitted pack-declared files like
+// agents/codex/agent.talon.yaml.
+func TestInitPack_CreatedFilesListMatchesPackFiles(t *testing.T) {
+	dir := t.TempDir()
+	prevWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(prevWd) })
+	require.NoError(t, os.Chdir(dir))
+
+	buf := new(strings.Builder)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"init", "--pack", "coding-agents", "--skip-verify"})
+	require.NoError(t, rootCmd.Execute())
+
+	out := buf.String()
+	for _, f := range []string{
+		"agent.talon.yaml",
+		"agents/codex/agent.talon.yaml",
+		"talon.config.yaml",
+		"pricing/models.yaml",
+	} {
+		assert.Contains(t, out, f, "Created files list must include %s", f)
+		require.FileExists(t, filepath.Join(dir, filepath.FromSlash(f)))
+	}
+}
+
 func TestInitPack_ComplianceGDPR_MergesOverlay(t *testing.T) {
 	dir := t.TempDir()
 	prevWd, err := os.Getwd()
