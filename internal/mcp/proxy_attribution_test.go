@@ -70,7 +70,7 @@ func attribCallArgs(t *testing.T, h *ProxyHandler, ctx context.Context, headers 
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 		"params": map[string]interface{}{"name": tool, "arguments": args},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/mcp/proxy", bytes.NewReader(body)).WithContext(ctx)
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
