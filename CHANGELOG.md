@@ -17,6 +17,37 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.9.3] - 2026-07-20
+
+Governance-completeness patch, shaped by real-integrator feedback from the talon-full-demo validation: the MCP endpoints become spec-conformant and fully consumable by standard clients, every denial carries a stable machine code, the vendor path gets vault-backed upstream auth, and the last evidence-correctness gaps close. Issues #356, #357, #358, #360, #351, #367, #368, #369, #370; follow-ups filed as #363, #371–#373, #378. Release gated on a live 7-point walkthrough.
+
+### BREAKING
+
+- **MCP proxy method surface is closed (#356).** Non-lifecycle, non-tools methods (`resources/read`, `prompts/get`, …) are rejected with `-32601` + `error.data.talon_code: TALON_METHOD_NOT_ALLOWED` + an attributed `proxy_method_rejected` deny record, in every mode — previously they were forwarded verbatim with no policy, no PII scanning, and no evidence. Who cares: anyone whose vendor uses MCP resources — that lane was silently ungoverned. Governed resource reads are a future feature. Verify: POST `resources/read` to `/mcp/proxy` → `-32601` with the talon_code.
+- **One proxied call = one request-class record (#357).** The allowed PII "note" record is folded into the call's terminal record, correcting `talon agents` traffic counts and session summaries (previously a PII-carrying allowed call counted twice). Upstream failures — transport, non-JSON body, vendor JSON-RPC error — now produce `proxy_upstream_error` records (policy-ALLOWED with `Status: failed`, so vendor outages don't inflate denial rates); transport failures deliberately carry **no data-flow item** (a signed flow entry must never assert delivery the wire may not have made).
+- **`NewProxyHandler` constructor changed** (gains the secrets store, #358) — embedders update per the no-installed-base convention.
+
+### Added
+
+- **MCP handshake (#367).** Both `/mcp` and `/mcp/proxy` answer `initialize` locally (tools capability only, client `protocolVersion` echoed, build version in `serverInfo`, **never forwarded upstream**) and accept `notifications/initialized` with HTTP 202 — spec-conformant clients (Copilot CLI, Claude Code, MCP Inspector, SDKs) now connect. This unblocks the talon-full-demo Copilot scene. Verify: `initialize` → `notifications/initialized` → `tools/call` sequence against either endpoint.
+- **Vault-backed upstream auth for the MCP proxy (#358).** `proxy.upstream.auth: {secret_name, header, scheme}` — per-request vault resolution (rotation via `talon secrets set` lands on the next request, proven live), fail-closed on retrieval failure (generic `Service configuration error` to the vendor, typed reason in signed evidence, nothing egressed), vault ACL keyed to the proxy's own `agent.name`, `upstream_auth_mode: "secret"` in evidence. The dead `ProxyRuntimeConfig.AuthHeader` is retired. Who cares: every real vendor endpoint requires auth — this was the vendor-path capability gap.
+- **Stable denial codes (#369).** Every Talon-shaped proxy error carries `error.data.talon_code` (`TALON_TOOL_FORBIDDEN`, `TALON_POLICY_DENIED`, `TALON_PII_BLOCKED`, `TALON_SCANNER_UNAVAILABLE`, `TALON_METHOD_NOT_ALLOWED`, `TALON_UPSTREAM_ERROR`) — integrators key on codes, not prose. Table in ARCHITECTURE_MCP_PROXY.md. Gateway-side codes remain phase 2 of #369.
+- **`talon serve --gateway-mode shadow|enforce|log_only` (#368).** Validated override of `gateway.mode` — flipping enforcement no longer requires YAML surgery (the downstream demo's worst config bug becomes a non-problem). Typos and missing `--gateway` fail before any file loads.
+- **`talon doctor` warns on unrecognized config keys (#351).** Advisory WARN (never changes exit code) naming each dead top-level `talon.config.yaml` key with its real surface (`tenants` → agent files) or a nearest-key typo hint; the consumed-key set is shared with the pack-template CI pin (`config.ConsumedTopLevelKeys()`) so guard and pin cannot drift.
+
+### Fixed
+
+- `graph_governance` registered as a canonical explanation stage (#360); the stage set is now closed and pinned (source-walking literal test + constant registration test).
+
+### Documentation
+
+- Canonical "verify a running gateway" snippet (#370): `talon agents --url` existed with exactly the right semantics but no doc showed it — QUICKSTART and both coding-agent guides now carry it.
+- Method surface + denial-code contract documented in ARCHITECTURE_MCP_PROXY.md, the vendor guide, and the minimal example.
+
+### Known issues
+
+- MCP notifications other than `notifications/initialized` still receive JSON-RPC error bodies (#363); SDK-client conformance test (#372), evidence schema reference (#371), budget-calibration note (#373), and `talon secrets delete` + unknown-subcommand exit codes (#378) are filed follow-ups.
+
 ## [1.9.2] - 2026-07-20
 
 Governance-integrity and adoption patch, continuing the v1.9.1 trust theme: the MCP proxy no longer fails open on an unset mode, its evidence tells the truth about what was blocked versus forwarded and who actually made the call, the pack templates no longer ship configuration keys nothing reads, macOS users get release binaries for the first time, and four remaining false-path docs/examples are fixed. Issues #342, #345, #346, #350, #326, #328, #329, #330, #359; follow-up guard filed as #351.
