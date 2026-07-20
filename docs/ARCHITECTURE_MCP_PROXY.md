@@ -361,7 +361,8 @@ func (p *ProxyServer) redactPII(data interface{}, rules []RedactionRule) interfa
     // - Apply redaction method (hash, mask, redact_full)
     // - Return redacted copy
     
-    // See internal/classifier/redactor.go for full implementation
+    // Shipped implementation: internal/classifier/pii.go (analysis +
+    // redaction) and internal/classifier/redact_guard.go (egress verify)
     return data
 }
 

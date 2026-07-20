@@ -33,7 +33,8 @@ def cell_langchain_stateless():
     llm = ChatOpenAI(
         model="gpt-4o-mini",
         temperature=0,
-        base_url=f"{TALON_URL}/v1/proxy/openai",
+        # Trailing /v1 required (#345): the OpenAI client appends /chat/completions.
+        base_url=f"{TALON_URL}/v1/proxy/openai/v1",
         api_key=TALON_AGENT_KEY,
         default_headers={"X-Talon-Session-ID": "notebook-demo"},
     )

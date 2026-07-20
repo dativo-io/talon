@@ -354,6 +354,7 @@ The gateway pipeline implementation lives in these files:
 | `internal/gateway/tool_filter.go` | Tool governance / filtering |
 | `internal/gateway/ratelimit.go` | Token-bucket rate limiting |
 | `internal/gateway/attachment.go` | Attachment extraction + injection scanning |
-| `internal/classifier/scanner.go` | PII regex recognizers |
+| `internal/classifier/patterns.go` | PII regex recognizers (EU pattern set) |
+| `internal/classifier/pii.go` | PII analysis + redaction engine |
 | `internal/evidence/store.go` | Evidence storage + HMAC signing |
 | `internal/evidence/generator.go` | Evidence record creation |

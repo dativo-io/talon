@@ -13,7 +13,8 @@ from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
     model="gpt-4o-mini",
-    base_url="http://localhost:8080/v1/proxy/openai",
+    # Trailing /v1 required: the client appends /chat/completions
+    base_url="http://localhost:8080/v1/proxy/openai/v1",
     api_key="your-agent-key",
 )
 response = llm.invoke("What is GDPR Article 30?")
@@ -72,8 +73,8 @@ Best for: **LangGraph stateful graphs, multi-step agents, compliance-heavy**.
 
 Talon is framework-agnostic. The same governance applies to:
 
-- **OpenAI SDK**: Point `base_url` at `http://localhost:8080/v1/proxy/openai`
-- **Anthropic SDK**: Use `http://localhost:8080/v1/proxy/anthropic`
+- **OpenAI SDK**: Point `base_url` at `http://localhost:8080/v1/proxy/openai/v1` (the client appends `/chat/completions`; without the trailing `/v1` every request 404s)
+- **Anthropic SDK**: Use `http://localhost:8080/v1/proxy/anthropic` — no trailing `/v1` here: the Anthropic client appends `/v1/messages` itself
 - **MCP clients**: Send tool calls to `POST /mcp` (JSON-RPC 2.0)
 - **Custom agents**: Use the graph events API with any HTTP client
 
