@@ -538,8 +538,18 @@ func TestProxyEvidence_GeneratedCorrelationSharedAcrossRecords(t *testing.T) {
 // server. The contract is mode-INDEPENDENT: passthrough and shadow reject
 // exactly like intercept ("in every mode" is the documented surface, and
 // "passthrough forwards everything" must never grow to cover methods).
+// talonCodeOf extracts error.data.talon_code from a decoded response (#369).
+func talonCodeOf(t *testing.T, e *rpcError) string {
+	t.Helper()
+	require.NotNil(t, e)
+	data, ok := e.Data.(map[string]interface{})
+	require.True(t, ok, "error.data must carry the talon_code object, got %T", e.Data)
+	code, _ := data["talon_code"].(string)
+	return code
+}
+
 func TestProxyUnknownMethod_RejectedFailClosed(t *testing.T) {
-	methods := []string{"resources/read", "prompts/get", "initialize"}
+	methods := []string{"resources/read", "prompts/get", "logging/setLevel"}
 	for _, mode := range []string{policy.ProxyModeIntercept, policy.ProxyModePassthrough, policy.ProxyModeShadow} {
 		t.Run(mode, func(t *testing.T) {
 			hit := false
@@ -559,6 +569,8 @@ func TestProxyUnknownMethod_RejectedFailClosed(t *testing.T) {
 				require.NotNil(t, resp.Error, "method %s must be rejected in mode %s", method, mode)
 				assert.Equal(t, codeMethodNotFound, resp.Error.Code)
 				assert.Contains(t, resp.Error.Message, method)
+				assert.Equal(t, TalonCodeMethodNotAllowed, talonCodeOf(t, resp.Error),
+					"rejections carry the stable #369 code, not just prose")
 			}
 			assert.False(t, hit, "ungoverned methods must never reach the upstream (mode %s)", mode)
 
@@ -583,6 +595,100 @@ func TestProxyUnknownMethod_RejectedFailClosed(t *testing.T) {
 				"every rejection reason names the rejected method")
 		})
 	}
+}
+
+// TestProxyMCPHandshake pins #367: the mandatory MCP lifecycle completes
+// against the proxy — initialize answered LOCALLY (tools capability only,
+// protocolVersion echoed, NEVER forwarded upstream), notifications/initialized
+// accepted with 202 and no body, then governed tools/call proceeds normally.
+func TestProxyMCPHandshake(t *testing.T) {
+	hit := false
+	up := attribUpstream(t, &hit)
+	h, _ := attribHandler(t, policy.ProxyModeIntercept, up.URL, nil)
+
+	// 1. initialize — answered locally.
+	initBody, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": map[string]interface{}{
+			"protocolVersion": "2025-03-26",
+			"capabilities":    map[string]interface{}{},
+			"clientInfo":      map[string]interface{}{"name": "mcp-inspector", "version": "1.0"},
+		},
+	})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(initBody))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var initResp jsonrpcResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &initResp))
+	require.Nil(t, initResp.Error, "initialize must succeed: %v", initResp.Error)
+	result, ok := initResp.Result.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "2025-03-26", result["protocolVersion"], "the client's protocolVersion is echoed")
+	caps, ok := result["capabilities"].(map[string]interface{})
+	require.True(t, ok)
+	_, hasTools := caps["tools"]
+	assert.True(t, hasTools, "the tools capability is advertised")
+	assert.NotContains(t, caps, "resources", "resources are NOT advertised — not part of the governed surface")
+	assert.NotContains(t, caps, "prompts", "prompts are NOT advertised")
+	assert.False(t, hit, "initialize is answered locally — NEVER forwarded upstream")
+
+	// 2. notifications/initialized — 202, no body.
+	notifBody, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "method": "notifications/initialized",
+	})
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(notifBody))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Empty(t, rec.Body.String(), "notifications get no response body")
+	assert.False(t, hit, "notifications/initialized is never forwarded upstream")
+
+	// 3. Governed traffic proceeds.
+	_, resp := attribCall(t, h, context.Background(), nil, "crm_lookup")
+	require.Nil(t, resp.Error)
+	assert.True(t, hit, "tools/call still reaches the upstream")
+}
+
+// TestNativeMCPHandshake pins #367 on the native /mcp server: same local
+// initialize + accepted initialized notification.
+func TestNativeMCPHandshake(t *testing.T) {
+	h := &Handler{}
+	initBody, _ := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": map[string]interface{}{"protocolVersion": "2025-06-18"},
+	})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(initBody))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp jsonrpcResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Nil(t, resp.Error, "native initialize must succeed")
+	result, ok := resp.Result.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "2025-06-18", result["protocolVersion"])
+
+	notifBody, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "notifications/initialized"})
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(notifBody))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Empty(t, rec.Body.String())
+}
+
+// TestProxyDenialCodes pins #369 on the two most load-bearing denials:
+// integrators key on error.data.talon_code, never on prose.
+func TestProxyDenialCodes(t *testing.T) {
+	hit := false
+	up := attribUpstream(t, &hit)
+	h, _ := attribHandler(t, policy.ProxyModeIntercept, up.URL, []string{"user_delete"})
+
+	_, resp := attribCall(t, h, context.Background(), nil, "user_delete")
+	assert.Equal(t, TalonCodeToolForbidden, talonCodeOf(t, resp.Error))
+
+	_, resp = attribCall(t, h, context.Background(), nil, "not_in_allowlist")
+	assert.Equal(t, TalonCodePolicyDenied, talonCodeOf(t, resp.Error))
 }
 
 // TestProxyInvalidAttributionHeader_Rejected400 pins the hygiene contract
