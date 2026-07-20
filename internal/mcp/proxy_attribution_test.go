@@ -366,6 +366,43 @@ func TestProxyEvidence_GeneratedCorrelationSharedAcrossRecords(t *testing.T) {
 	assert.Equal(t, corr, rec.Header().Get("X-Correlation-ID"), "generated correlation is echoed to the caller")
 }
 
+// TestProxyUnknownMethod_RejectedFailClosed pins #356: the proxy governs
+// tools/list and tools/call only; any other MCP method (resources/read,
+// prompts/get, initialize, ...) is rejected with -32601 and an attributed
+// deny record — never forwarded ungoverned, mirroring the native /mcp server.
+func TestProxyUnknownMethod_RejectedFailClosed(t *testing.T) {
+	hit := false
+	up := attribUpstream(t, &hit)
+	h, store := attribHandler(t, policy.ProxyModeIntercept, up.URL, nil)
+
+	for _, method := range []string{"resources/read", "prompts/get", "initialize"} {
+		body, _ := json.Marshal(map[string]interface{}{
+			"jsonrpc": "2.0", "id": 7, "method": method,
+			"params": map[string]interface{}{"uri": "file:///etc/passwd"},
+		})
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var resp jsonrpcResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		require.NotNil(t, resp.Error, "method %s must be rejected", method)
+		assert.Equal(t, codeMethodNotFound, resp.Error.Code)
+		assert.Contains(t, resp.Error.Message, method)
+	}
+	assert.False(t, hit, "ungoverned methods must never reach the upstream")
+
+	records := listRecords(t, store, "default")
+	require.Len(t, records, 3, "each rejection is the request's terminal record")
+	for _, r := range records {
+		assert.Equal(t, "proxy_method_rejected", r.InvocationType)
+		assert.False(t, r.PolicyDecision.Allowed)
+		assert.Equal(t, "vendor-proxy-agent", r.AgentID, "rejections carry full #350 attribution")
+		primary, ok := explanation.Primary(r.Explanations)
+		require.True(t, ok)
+		assert.Equal(t, explanation.CodePolicyDeniedTool, primary.Code)
+	}
+}
+
 // TestProxyInvalidAttributionHeader_Rejected400 pins the hygiene contract
 // shared with the gateway: an oversized or non-token session header is
 // rejected with HTTP 400 before any evidence is written.

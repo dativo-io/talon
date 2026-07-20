@@ -226,7 +226,16 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "tools/call":
 		resp = h.handleProxyToolCall(ctx, &req, inv)
 	default:
-		resp = h.forwardRequest(ctx, body, &req)
+		// Fail-closed method allowlist (#356): the proxy governs tools/list
+		// and tools/call; every other MCP method is rejected with evidence,
+		// mirroring the native /mcp server's -32601. Forwarding ungoverned
+		// methods (resources/read, prompts/get) would open an unscanned,
+		// unaudited data lane through the governance proxy.
+		h.recordEvidence(ctx, inv, "proxy_method_rejected", req.Method, "unsupported_method:"+req.Method, nil, nil)
+		resp = &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{
+			Code:    codeMethodNotFound,
+			Message: "method not found: " + req.Method + " (the proxy governs tools/list and tools/call only)",
+		}}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -907,7 +916,7 @@ func proxyExplanationFacts(eventType, reason, toolName string, allowed bool) []e
 		trigger = strings.TrimSpace(toolName)
 	}
 	switch eventType {
-	case "proxy_tool_blocked":
+	case "proxy_tool_blocked", "proxy_method_rejected":
 		return []explanation.Fact{{
 			Code:     explanation.CodePolicyDeniedTool,
 			Decision: explanation.DecisionDeny,

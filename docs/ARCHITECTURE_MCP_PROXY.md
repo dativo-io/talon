@@ -208,6 +208,14 @@ when unset and both loaders reject values outside
 forbidden tool only under explicit `passthrough`. An unset or mistyped mode
 can never silently behave as passthrough.
 
+**Method surface is fail-closed (#356):** the proxy governs `tools/list` and
+`tools/call` — every other MCP method (`resources/read`, `prompts/get`,
+`initialize`, …) is rejected with JSON-RPC `-32601` and an attributed
+`proxy_method_rejected` evidence record, in **every** mode. This mirrors the
+native `/mcp` server and closes what would otherwise be an unscanned,
+unaudited data lane (an upstream's resources bypassing PII governance).
+Governed resource/prompt reads are a future feature, not a passthrough.
+
 ---
 
 ## Code: Proxy Implementation (design sketch)
