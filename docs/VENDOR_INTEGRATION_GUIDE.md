@@ -182,6 +182,10 @@ Vendor receives data (works normally, unaware of governance layer)
     ↓
 Your compliance officer has a complete audit trail
 
+Note: the proxy governs tools/list and tools/call ONLY. Any other MCP
+method (resources/read, prompts/get, initialize, ...) is rejected
+fail-closed with a signed evidence record — never forwarded ungoverned.
+
 Also: tools/list responses are filtered — the vendor only ever discovers
 tools you listed in allowed_tools.
 ```

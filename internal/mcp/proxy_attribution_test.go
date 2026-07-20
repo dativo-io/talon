@@ -366,6 +366,60 @@ func TestProxyEvidence_GeneratedCorrelationSharedAcrossRecords(t *testing.T) {
 	assert.Equal(t, corr, rec.Header().Get("X-Correlation-ID"), "generated correlation is echoed to the caller")
 }
 
+// TestProxyUnknownMethod_RejectedFailClosed pins #356: the proxy governs
+// tools/list and tools/call only; any other MCP method (resources/read,
+// prompts/get, initialize, ...) is rejected with -32601 and an attributed
+// deny record — never forwarded ungoverned, mirroring the native /mcp
+// server. The contract is mode-INDEPENDENT: passthrough and shadow reject
+// exactly like intercept ("in every mode" is the documented surface, and
+// "passthrough forwards everything" must never grow to cover methods).
+func TestProxyUnknownMethod_RejectedFailClosed(t *testing.T) {
+	methods := []string{"resources/read", "prompts/get", "initialize"}
+	for _, mode := range []string{policy.ProxyModeIntercept, policy.ProxyModePassthrough, policy.ProxyModeShadow} {
+		t.Run(mode, func(t *testing.T) {
+			hit := false
+			up := attribUpstream(t, &hit)
+			h, store := attribHandler(t, mode, up.URL, nil)
+
+			for _, method := range methods {
+				body, _ := json.Marshal(map[string]interface{}{
+					"jsonrpc": "2.0", "id": 7, "method": method,
+					"params": map[string]interface{}{"uri": "file:///etc/passwd"},
+				})
+				req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, req)
+				var resp jsonrpcResponse
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+				require.NotNil(t, resp.Error, "method %s must be rejected in mode %s", method, mode)
+				assert.Equal(t, codeMethodNotFound, resp.Error.Code)
+				assert.Contains(t, resp.Error.Message, method)
+			}
+			assert.False(t, hit, "ungoverned methods must never reach the upstream (mode %s)", mode)
+
+			records := listRecords(t, store, "default")
+			require.Len(t, records, len(methods), "each rejection is the request's terminal record")
+			gotReasons := make([]string, 0, len(records))
+			for _, r := range records {
+				assert.Equal(t, "proxy_method_rejected", r.InvocationType)
+				assert.False(t, r.PolicyDecision.Allowed)
+				assert.Equal(t, "vendor-proxy-agent", r.AgentID, "rejections carry full #350 attribution")
+				require.NotEmpty(t, r.PolicyDecision.Reasons, "deny records must name their reason")
+				gotReasons = append(gotReasons, r.PolicyDecision.Reasons[0])
+				primary, ok := explanation.Primary(r.Explanations)
+				require.True(t, ok)
+				assert.Equal(t, explanation.CodePolicyDeniedTool, primary.Code)
+			}
+			wantReasons := make([]string, 0, len(methods))
+			for _, m := range methods {
+				wantReasons = append(wantReasons, "unsupported_method:"+m)
+			}
+			assert.ElementsMatch(t, wantReasons, gotReasons,
+				"every rejection reason names the rejected method")
+		})
+	}
+}
+
 // TestProxyInvalidAttributionHeader_Rejected400 pins the hygiene contract
 // shared with the gateway: an oversized or non-token session header is
 // rejected with HTTP 400 before any evidence is written.
