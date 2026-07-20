@@ -78,7 +78,7 @@ func TestProxy_ForbiddenToolBlocked_DeleteWildcard(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	r := proxyCall(t, h, "delete_repo", map[string]interface{}{"repo": "my-project"})
 	require.NotNil(t, r.Error, "delete_repo must be blocked by forbidden_tools: delete_*")
@@ -94,7 +94,7 @@ func TestProxy_ForbiddenToolBlocked_AdminWildcard(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	r := proxyCall(t, h, "admin_reset_password", map[string]interface{}{})
 	require.NotNil(t, r.Error, "admin_reset_password must be blocked by forbidden_tools: admin_*")
@@ -110,7 +110,7 @@ func TestProxy_ForbiddenToolBlocked_BulkDelete(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	r := proxyCall(t, h, "bulk_delete", map[string]interface{}{"filter": "all"})
 	require.NotNil(t, r.Error, "bulk_delete must be blocked by exact match in forbidden_tools")
@@ -139,7 +139,7 @@ func TestProxy_AllowedToolForwardedToUpstream(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	r := proxyCall(t, h, "search_issues", map[string]interface{}{"query": "open bugs"})
 	assert.Nil(t, r.Error, "search_issues is in allowed_tools and should be forwarded")
@@ -155,7 +155,7 @@ func TestProxy_EvidenceRecordedOnBlock(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	_ = proxyCall(t, h, "delete_user", map[string]interface{}{"user": "admin"})
 
@@ -183,7 +183,7 @@ func TestProxy_PIIInArgumentsBlocked(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	r := proxyCall(t, h, "search_issues", map[string]interface{}{
 		"query": "emails from hans.mueller@example.de with IBAN DE89370400440532013000",
@@ -236,7 +236,7 @@ func TestProxy_GapF_ResponsePIIScanned(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	r := proxyCall(t, h, "search_issues", map[string]interface{}{"query": "test"})
 	require.Nil(t, r.Error, "allowed tool should succeed")
@@ -272,7 +272,7 @@ func TestProxy_UnlistedToolDefaultBehavior(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	r := proxyCall(t, h, "unknown_new_tool", map[string]interface{}{})
 	// Tool is not in forbidden list; whether it's forwarded depends on OPA.

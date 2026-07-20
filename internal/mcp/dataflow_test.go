@@ -66,7 +66,7 @@ func proxyFlowHandler(t *testing.T, upstreamURL string, withRedactionRule bool) 
 	store, err := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	return NewProxyHandler(cfg, engine, store, classifier.MustNewScanner()), store
+	return NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil), store
 }
 
 func callProxyTool(t *testing.T, h *ProxyHandler, arguments string) *jsonrpcResponse {

@@ -196,5 +196,4 @@ func TestExpandEnv(t *testing.T) {
 func TestDefaultProxyRuntime(t *testing.T) {
 	r := DefaultProxyRuntime()
 	assert.Equal(t, 30*time.Second, r.UpstreamTimeout)
-	assert.Empty(t, r.AuthHeader)
 }

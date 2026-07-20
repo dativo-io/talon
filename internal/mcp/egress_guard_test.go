@@ -54,7 +54,7 @@ func proxyHandlerWithScanner(t *testing.T, upstreamURL string, scanner *classifi
 	store, err := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	return NewProxyHandler(cfg, engine, store, scanner)
+	return NewProxyHandler(cfg, engine, store, scanner, nil)
 }
 
 func TestNoPIIEgressAfterRedaction_MCPProxy(t *testing.T) {

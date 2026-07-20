@@ -26,9 +26,17 @@ import (
 	"github.com/dativo-io/talon/internal/otel"
 	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/requestctx"
+	"github.com/dativo-io/talon/internal/secrets"
 )
 
 var proxyTracer = otel.Tracer("github.com/dativo-io/talon/internal/mcp")
+
+// UpstreamSecretGetter is the vault surface the proxy needs for upstream
+// auth (#358) — satisfied by *secrets.SecretStore; an interface so tests can
+// fake retrieval failures.
+type UpstreamSecretGetter interface {
+	Get(ctx context.Context, name, tenantID, agentID string) (*secrets.Secret, error)
+}
 
 // ProxyHandler forwards MCP requests to an upstream vendor endpoint with policy and PII handling.
 type ProxyHandler struct {
@@ -36,16 +44,20 @@ type ProxyHandler struct {
 	proxyEngine   *policy.ProxyEngine
 	evidenceStore *evidence.Store
 	classifier    classifier.Facade
+	secrets       UpstreamSecretGetter
 	httpClient    *http.Client
 	runtime       ProxyRuntimeConfig
 }
 
-// NewProxyHandler creates an MCP proxy handler.
+// NewProxyHandler creates an MCP proxy handler. secretsStore may be nil when
+// the proxy config declares no upstream auth; with an auth block and no
+// store, every upstream call fails closed.
 func NewProxyHandler(
 	cfg *policy.ProxyPolicyConfig,
 	proxyEngine *policy.ProxyEngine,
 	evidenceStore *evidence.Store,
 	cls classifier.Facade,
+	secretsStore UpstreamSecretGetter,
 ) *ProxyHandler {
 	// Defense in depth for #346: the loaders default/validate mode, but a
 	// handler constructed directly (tests, future callers) must never run
@@ -65,6 +77,7 @@ func NewProxyHandler(
 		proxyEngine:   proxyEngine,
 		evidenceStore: evidenceStore,
 		classifier:    cls,
+		secrets:       secretsStore,
 		httpClient:    &http.Client{Timeout: timeout},
 		runtime:       DefaultProxyRuntime(),
 	}
@@ -432,7 +445,7 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 	forwardReq := jsonrpcRequest{JSONRPC: jsonrpcVersion, Method: req.Method, Params: forwardBody, ID: req.ID}
 	forwardJSON, _ := json.Marshal(forwardReq)
 
-	upstreamResp, err := h.doUpstreamRequest(ctx, forwardJSON)
+	upstreamResp, err := h.doUpstreamRequest(ctx, forwardJSON, inv)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -444,6 +457,13 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		// but must not assert a data flow to the vendor that may never have
 		// happened.
 		flow.egressUnconfirmed = true
+		if errors.Is(err, errSecretRetrieval) {
+			// Vault failure (#358): fail-closed, generic message to the
+			// vendor (gateway parity — no vault detail leaks), evidence
+			// carries the typed reason.
+			h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "secret retrieval error", &flow, nil)
+			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Service configuration error", Data: talonErrData(TalonCodeUpstreamError)}}
+		}
 		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_error: "+err.Error(), &flow, nil)
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error(), Data: talonErrData(TalonCodeUpstreamError)}}
 	}
@@ -647,11 +667,11 @@ func toolNameFromRaw(raw json.RawMessage) string {
 // It supports multiple upstream result shapes (object with "tools", array at top,
 // or other common keys) and preserves the response shape. If the result shape
 // is unrecognizable, it returns an empty tool list to avoid leaking unfiltered data.
-func (h *ProxyHandler) handleToolsList(ctx context.Context, body []byte, _ *proxyInvocation, req *jsonrpcRequest) *jsonrpcResponse {
+func (h *ProxyHandler) handleToolsList(ctx context.Context, body []byte, inv *proxyInvocation, req *jsonrpcRequest) *jsonrpcResponse {
 	ctx, span := proxyTracer.Start(ctx, "mcp.proxy.tools.list")
 	defer span.End()
 
-	resp := h.forwardRequest(ctx, body, req)
+	resp := h.forwardRequest(ctx, body, inv, req)
 	if resp == nil || resp.Error != nil || resp.Result == nil {
 		return resp
 	}
@@ -712,9 +732,13 @@ func (h *ProxyHandler) handleToolsList(ctx context.Context, body []byte, _ *prox
 	return resp
 }
 
-func (h *ProxyHandler) forwardRequest(ctx context.Context, body []byte, req *jsonrpcRequest) *jsonrpcResponse {
-	upstreamResp, err := h.doUpstreamRequest(ctx, body)
+func (h *ProxyHandler) forwardRequest(ctx context.Context, body []byte, inv *proxyInvocation, req *jsonrpcRequest) *jsonrpcResponse {
+	upstreamResp, err := h.doUpstreamRequest(ctx, body, inv)
 	if err != nil {
+		if errors.Is(err, errSecretRetrieval) {
+			// Fail-closed vault failure (#358): generic message, no detail leak.
+			return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "Service configuration error", Data: talonErrData(TalonCodeUpstreamError)}}
+		}
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error()}}
 	}
 	defer upstreamResp.Body.Close()
@@ -726,17 +750,43 @@ func (h *ProxyHandler) forwardRequest(ctx context.Context, body []byte, req *jso
 	return &out
 }
 
-func (h *ProxyHandler) doUpstreamRequest(ctx context.Context, body []byte) (*http.Response, error) {
+// errSecretRetrieval marks a vault failure on the upstream-auth path (#358):
+// fail-closed, surfaced to the caller as a generic configuration error
+// (gateway parity — vault details never leak to the vendor).
+var errSecretRetrieval = errors.New("secret retrieval error")
+
+func (h *ProxyHandler) doUpstreamRequest(ctx context.Context, body []byte, inv *proxyInvocation) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.config.Proxy.Upstream.URL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if h.runtime.AuthHeader != "" {
-		parts := strings.SplitN(h.runtime.AuthHeader, ":", 2)
-		if len(parts) == 2 {
-			req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+	// Vault-backed upstream auth (#358): resolved PER REQUEST — rotation via
+	// `talon secrets set` lands immediately, and retrieval failure is
+	// fail-closed (the request never leaves without its credential). The
+	// vault ACL identity is the proxy's own declared agent, stable
+	// regardless of caller.
+	if auth := h.config.Proxy.Upstream.Auth; auth != nil {
+		if h.secrets == nil {
+			return nil, fmt.Errorf("%w: no secrets store wired", errSecretRetrieval)
 		}
+		sec, err := h.secrets.Get(ctx, auth.SecretName, inv.tenantID, h.config.Agent.Name)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errSecretRetrieval, err)
+		}
+		header := auth.Header
+		if header == "" {
+			header = "Authorization"
+		}
+		value := string(sec.Value)
+		scheme := "Bearer"
+		if auth.Scheme != nil {
+			scheme = *auth.Scheme
+		}
+		if scheme != "" {
+			value = scheme + " " + value
+		}
+		req.Header.Set(header, value)
 	}
 	//nolint:gosec // G704: upstream URL is from proxy config (validated at load), not user request input
 	return h.httpClient.Do(req)
@@ -889,6 +939,11 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation,
 	if sv != nil {
 		ev.ObservationModeOverride = true
 		ev.ShadowViolations = []evidence.ShadowViolation{*sv}
+	}
+	// Upstream auth evidence (#358): mode-only, exact gateway parity in
+	// secret mode (fingerprint/source stay client_bearer-only vocabulary).
+	if h.config.Proxy.Upstream.Auth != nil {
+		ev.UpstreamAuthMode = "secret"
 	}
 	if flow != nil {
 		h.attachProxyFlow(ev, inv, toolName, flow)

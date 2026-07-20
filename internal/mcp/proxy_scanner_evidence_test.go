@@ -90,7 +90,7 @@ func newProxyWithUpstream(t *testing.T, cls classifier.Facade, upstreamResult st
 	store, err := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	return NewProxyHandler(cfg, engine, store, cls), store
+	return NewProxyHandler(cfg, engine, store, cls, nil), store
 }
 
 func callProxyEchoTool(t *testing.T, h *ProxyHandler, args map[string]interface{}) *jsonrpcResponse {

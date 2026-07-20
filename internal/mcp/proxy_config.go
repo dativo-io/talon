@@ -57,6 +57,12 @@ func validateAndApplyDefaults(cfg *policy.ProxyPolicyConfig) error {
 	if len(cfg.Proxy.AllowedTools) == 0 {
 		return fmt.Errorf("at least one proxy.allowed_tools entry is required")
 	}
+	// Upstream auth (#358): when the block is present, secret_name is
+	// required — a half-configured auth block must fail startup, never
+	// silently send unauthenticated requests.
+	if cfg.Proxy.Upstream.Auth != nil && strings.TrimSpace(cfg.Proxy.Upstream.Auth.SecretName) == "" {
+		return fmt.Errorf("proxy.upstream.auth.secret_name is required when the auth block is present")
+	}
 	// Mode (#346): default unset to intercept — matching LoadProxyPolicy's
 	// documented default — and reject anything outside the three declared
 	// values. An unset mode must never reach the handler, where it would
@@ -85,13 +91,15 @@ func ExpandEnv(s string) string {
 	})
 }
 
-// ProxyRuntimeConfig holds runtime settings for the proxy (timeouts, auth header).
+// ProxyRuntimeConfig holds runtime settings for the proxy (timeouts).
+// Upstream auth is NOT runtime config: it is the vault-backed
+// proxy.upstream.auth block (#358), resolved per request — the old
+// AuthHeader field had zero production callers and is retired.
 type ProxyRuntimeConfig struct {
 	UpstreamTimeout time.Duration
-	AuthHeader      string // e.g. "Authorization: Bearer <token>"
 }
 
-// DefaultProxyRuntime returns default runtime config (30s timeout, no auth).
+// DefaultProxyRuntime returns default runtime config (30s timeout).
 func DefaultProxyRuntime() ProxyRuntimeConfig {
 	return ProxyRuntimeConfig{
 		UpstreamTimeout: 30 * time.Second,
