@@ -60,6 +60,15 @@ talon run "Your query here"
 # Server (API + dashboard + optional gateway/proxy)
 export TALON_ADMIN_KEY="replace-with-strong-admin-key"
 talon serve --port 8080
+
+# Verify a RUNNING server: which agents is it actually serving? (#370)
+# An explicit --url is authoritative — it errors rather than silently
+# falling back to a local config view; --json for scripting.
+talon agents --url http://localhost:8080
+talon agents --url http://localhost:8080 --json
+
+# Flip gateway enforcement without editing YAML (#368)
+talon serve --gateway --gateway-mode shadow    # or: enforce
 ```
 
 Verify the cold-start path from repo root: `make verify-newcomer`.

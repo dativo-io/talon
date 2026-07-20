@@ -50,6 +50,7 @@ var (
 	serveDashboard       bool
 	serveGateway         bool
 	serveGatewayConfig   string
+	serveGatewayMode     string
 	serveProxyQuickstart bool
 	serveUnsafeListen    bool
 )
@@ -67,6 +68,7 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveDashboard, "dashboard", true, "Serve embedded dashboard at / and /dashboard")
 	serveCmd.Flags().BoolVar(&serveGateway, "gateway", false, "Enable LLM API gateway at /v1/proxy/*")
 	serveCmd.Flags().StringVar(&serveGatewayConfig, "gateway-config", "talon.config.yaml", "Path to config file with gateway block (used when --gateway is set)")
+	serveCmd.Flags().StringVar(&serveGatewayMode, "gateway-mode", "", "Override gateway.mode from the config file (shadow|enforce|log_only) — no YAML editing needed to flip modes")
 	serveCmd.Flags().BoolVar(&serveProxyQuickstart, "proxy-quickstart", false, "Enable local/dev OpenAI-compatible quickstart proxy at host-root /v1/*")
 	serveCmd.Flags().BoolVar(&serveUnsafeListen, "unsafe-listen", false, "Allow --proxy-quickstart to bind non-loopback addresses")
 	rootCmd.AddCommand(serveCmd)
@@ -80,6 +82,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 	gatewayConfigExplicit := cmd.Flags().Changed("gateway-config")
 	if err := validateServeModeFlags(serveProxyQuickstart, serveGateway, gatewayConfigExplicit); err != nil {
 		return err
+	}
+	// --gateway-mode (#368) is validated BEFORE any file loads so a typo or
+	// missing --gateway fails immediately with the flag error, not a
+	// config-load error.
+	if serveGatewayMode != "" {
+		if !serveGateway {
+			return fmt.Errorf("--gateway-mode requires --gateway")
+		}
+		if _, err := resolveGatewayModeOverride(serveGatewayMode); err != nil {
+			return err
+		}
 	}
 
 	cfg, err := config.Load()
@@ -140,6 +153,21 @@ func runServe(cmd *cobra.Command, args []string) error {
 		preloadedGatewayCfg, err = gateway.LoadGatewayConfig(serveGatewayConfig)
 		if err != nil {
 			return fmt.Errorf("loading gateway config for sovereignty: %w", err)
+		}
+		// --gateway-mode (#368): a validated runtime override so flipping
+		// shadow<->enforce never requires YAML surgery (the downstream class
+		// of hand-edited config bugs this kills is real). The flag is
+		// authoritative over the file value and the override is logged.
+		// (Value already validated at the top of runServe.)
+		if serveGatewayMode != "" {
+			mode, _ := resolveGatewayModeOverride(serveGatewayMode)
+			if preloadedGatewayCfg.Mode != "" && preloadedGatewayCfg.Mode != mode {
+				log.Info().
+					Str("file_mode", string(preloadedGatewayCfg.Mode)).
+					Str("flag_mode", string(mode)).
+					Msg("gateway_mode_override")
+			}
+			preloadedGatewayCfg.Mode = mode
 		}
 	}
 	sovereignty.ApplySovereigntyGate(cfg, preloadedGatewayCfg)
@@ -1002,6 +1030,18 @@ func gatewayCostEstimator(pricingTable *pricing.PricingTable) gateway.CostEstima
 		}
 		return gateway.CostResult{Amount: cost, PricingKnown: true, PricingBasis: basis}
 	}
+}
+
+// resolveGatewayModeOverride validates the --gateway-mode flag value (#368):
+// only the three declared gateway modes are accepted — a typo must fail
+// startup loudly, never silently run a different enforcement posture.
+func resolveGatewayModeOverride(flag string) (gateway.Mode, error) {
+	mode := gateway.Mode(flag)
+	switch mode {
+	case gateway.ModeShadow, gateway.ModeEnforce, gateway.ModeLogOnly:
+		return mode, nil
+	}
+	return "", fmt.Errorf("--gateway-mode %q is invalid; use shadow, enforce, or log_only", flag)
 }
 
 // validateServeModeFlags enforces mutual exclusivity between the quickstart

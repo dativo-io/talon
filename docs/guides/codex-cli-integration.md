@@ -66,7 +66,14 @@ Codex presents its agent key; Talon resolves it to the `codex` agent (and its de
 
 ### 3. Confirm the gateway is running
 
-Leave `talon serve --gateway` running. Optional: test the Responses route with curl:
+Leave `talon serve --gateway` running. The canonical check — which agents is
+the server actually serving right now:
+
+```bash
+talon agents --url http://localhost:8080   # RUNTIME fleet view; --json to script it
+```
+
+Optional: test the Responses route with curl:
 
 ```bash
 curl -s -X POST http://localhost:8080/v1/proxy/openai/v1/responses \
