@@ -109,6 +109,8 @@ func checkConfig() []CheckResult {
 }
 
 // deadKeyHints names the real surface for known dead keys (#342 class).
+//
+//nolint:gosec // G101: key-NAME hint strings for operator guidance, not credentials
 var deadKeyHints = map[string]string{
 	"evidence":        "state paths derive from data_dir",
 	"tenants":         "tenancy and budgets live in agent.talon.yaml (key → agent → tenant, #266)",
