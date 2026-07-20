@@ -56,7 +56,7 @@ func attribHandler(t *testing.T, mode, upstreamURL string, forbidden []string) (
 	store, err := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	return NewProxyHandler(cfg, engine, store, nil), store
+	return NewProxyHandler(cfg, engine, store, nil, nil), store
 }
 
 func attribCall(t *testing.T, h *ProxyHandler, ctx context.Context, headers map[string]string, tool string) (*httptest.ResponseRecorder, jsonrpcResponse) {
@@ -319,7 +319,7 @@ func TestProxyShadow_PIIWouldDeny_RecordsShadowViolation(t *testing.T) {
 	store, err := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	_, resp := attribCallArgs(t, h, context.Background(), map[string]string{"X-Talon-Session-ID": "sess-pii-1"}, "crm_lookup",
 		map[string]string{"email": "jane.doe@example.com"})
@@ -378,7 +378,7 @@ func TestProxyPIIAllowed_OneRequestClassRecord(t *testing.T) {
 	store, err := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	_, resp := attribCallArgs(t, h, context.Background(), nil, "crm_lookup",
 		map[string]string{"email": "jane.doe@example.com"})
@@ -415,7 +415,7 @@ func TestProxyUpstreamError_RecordsTrail(t *testing.T) {
 	store, err := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	_, resp := attribCallArgs(t, h, context.Background(), nil, "crm_lookup",
 		map[string]string{"email": "jane.doe@example.com"})
@@ -457,7 +457,7 @@ func upstreamErrorHandler(t *testing.T, upstream http.HandlerFunc) (*ProxyHandle
 	store, err := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	return NewProxyHandler(cfg, engine, store, classifier.MustNewScanner()), store
+	return NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil), store
 }
 
 // TestProxyUpstreamDecodeFailure_RecordsTrail pins the second upstream-error

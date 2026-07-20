@@ -45,9 +45,9 @@ func TestNewProxyHandler_and_SetRuntime(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	cls := classifier.MustNewScanner()
 
-	h := NewProxyHandler(cfg, engine, store, cls)
+	h := NewProxyHandler(cfg, engine, store, cls, nil)
 	require.NotNil(t, h)
-	h.SetRuntime(ProxyRuntimeConfig{UpstreamTimeout: 0, AuthHeader: "Bearer x"})
+	h.SetRuntime(ProxyRuntimeConfig{UpstreamTimeout: 0})
 }
 
 func TestProxyHandler_ServeHTTP_methodAndJSON(t *testing.T) {
@@ -62,7 +62,7 @@ func TestProxyHandler_ServeHTTP_methodAndJSON(t *testing.T) {
 	require.NoError(t, err)
 	store, _ := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	t.Cleanup(func() { _ = store.Close() })
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	// GET not allowed
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/mcp/proxy", nil)
@@ -108,7 +108,7 @@ func TestProxyHandler_toolsCall_missingName(t *testing.T) {
 	require.NoError(t, err)
 	store, _ := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	t.Cleanup(func() { _ = store.Close() })
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0", "method": "tools/call", "params": map[string]interface{}{}, "id": 1,
@@ -146,7 +146,7 @@ func TestProxyHandler_forbiddenTool_shadowBlocks(t *testing.T) {
 	store, err := evidence.NewStore(dir+"/e.db", testutil.TestSigningKey)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	// Forbidden exact match: must be blocked (audit + block, no forward).
 	body, _ := json.Marshal(map[string]interface{}{
@@ -282,7 +282,7 @@ func TestProxyHandler_toolsList_filteringAndShapes(t *testing.T) {
 	require.NoError(t, err)
 	store, _ := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	t.Cleanup(func() { _ = store.Close() })
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
@@ -332,7 +332,7 @@ func TestProxyHandler_toolsList_arrayShapeAndUnknownSafe(t *testing.T) {
 	require.NoError(t, err)
 	store, _ := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	t.Cleanup(func() { _ = store.Close() })
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
@@ -375,7 +375,7 @@ func TestProxyHandler_toolsList_unknownShapeReturnsEmpty(t *testing.T) {
 	require.NoError(t, err)
 	store, _ := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
 	t.Cleanup(func() { _ = store.Close() })
-	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner())
+	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
 	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "tools/list", "id": 1})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))

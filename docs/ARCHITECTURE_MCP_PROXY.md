@@ -92,8 +92,15 @@ proxy:
     vendor: "zendesk-ai-agent"
     url: "https://zendesk-ai-vendor.com"
     region: "EU"  # jurisdiction for policy input + data-flow evidence; omitted = "unknown"
-    # Upstream auth-header injection is not yet a config surface (see
-    # Roadmap); front the upstream with your own network-layer credentials.
+    # Vault-backed upstream auth (#358): resolved PER REQUEST (rotation via
+    # `talon secrets set` lands immediately); retrieval failure is
+    # fail-closed — the request never leaves without its credential. The
+    # vault ACL identity is the proxy's own agent.name. No env fallback,
+    # no ${VAR} for secrets.
+    auth:
+      secret_name: "vendor-upstream-key"  # required when the block is present
+      # header: "Authorization"           # default
+      # scheme: "Bearer"                  # default; explicit "" = raw value
 
   allowed_tools:
     - name: "zendesk_ticket_search"
@@ -643,7 +650,7 @@ signal).
 - [ ] Named Prometheus metrics + alerting for proxy traffic
 
 ### Phase 3 — planned
-- [ ] Upstream auth-header injection from config
+- ✅ Vault-backed upstream auth injection (`proxy.upstream.auth`, per-request, fail-closed — #358)
 - [ ] Per-vendor inbound bearer tokens (tool-scoped)
 - [ ] mTLS support
 - [ ] Per-vendor rate limits with burst

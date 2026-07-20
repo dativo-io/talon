@@ -13,9 +13,14 @@ proxy:
   upstream:
     vendor: zendesk-ai
     url: "https://zendesk-ai-vendor.example.com/mcp"
-    # Note: Talon does not yet inject upstream auth headers from config —
-    # if the upstream requires credentials, terminate them at your network
-    # layer (reverse proxy / service mesh) in front of the vendor endpoint.
+    # Vault-backed upstream auth (#358): store the vendor credential once
+    # (`talon secrets set zendesk-upstream-key "<token>"`) and Talon injects
+    # it per request — rotation lands immediately, retrieval failure is
+    # fail-closed. Uncomment to enable:
+    # auth:
+    #   secret_name: "zendesk-upstream-key"
+    #   # header: "Authorization"   # default
+    #   # scheme: "Bearer"          # default; explicit "" = raw value
   allowed_tools:
     - name: zendesk_ticket_search
       upstream_name: ticket_search

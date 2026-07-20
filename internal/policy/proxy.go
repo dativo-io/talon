@@ -62,6 +62,22 @@ type UpstreamConfig struct {
 	// used for policy input and data-flow evidence. When empty, Talon
 	// records "unknown" — it never guesses a region.
 	Region string `yaml:"region,omitempty" json:"region,omitempty"`
+	// Auth configures vault-backed upstream credential injection (#358).
+	// Resolved per request (rotation via `talon secrets set` lands
+	// immediately); retrieval failure is fail-closed. Vault only — no env
+	// fallback, no ${VAR} expansion for secrets.
+	Auth *UpstreamAuthConfig `yaml:"auth,omitempty" json:"auth,omitempty"`
+}
+
+// UpstreamAuthConfig is the vault-backed upstream credential surface (#358).
+type UpstreamAuthConfig struct {
+	// SecretName is the vault entry holding the upstream credential (required).
+	SecretName string `yaml:"secret_name" json:"secret_name"`
+	// Header receives the credential; default "Authorization".
+	Header string `yaml:"header,omitempty" json:"header,omitempty"`
+	// Scheme prefixes the value: absent -> "Bearer"; explicit "" -> raw
+	// secret value (pointer distinguishes absent from empty).
+	Scheme *string `yaml:"scheme,omitempty" json:"scheme,omitempty"`
 }
 
 // ToolMapping maps a Talon-facing tool name to the vendor's upstream name.

@@ -615,7 +615,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("proxy policy engine: %w", err)
 		}
-		proxyHandler = mcp.NewProxyHandler(proxyCfg, proxyEngine, evidenceStore, cls)
+		proxyHandler = mcp.NewProxyHandler(proxyCfg, proxyEngine, evidenceStore, cls, secretsStore)
 		opts = append(opts, server.WithMCPProxy(proxyHandler))
 	}
 
