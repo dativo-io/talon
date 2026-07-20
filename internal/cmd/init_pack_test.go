@@ -62,29 +62,15 @@ func TestInitPack_CrewAI_GeneratesFiles(t *testing.T) {
 }
 
 // TestInitPack_GeneratedConfigKeysAreConsumed pins #342: every top-level key
-// in a generated talon.config.yaml must be read by one of the two real
-// loaders — viper (internal/config Key* constants + block loaders +
-// internal/cmd/root.go log bindings) or the gateway loader
-// (internal/gateway/config.go LoadGatewayConfig "gateway" subtree). A key
-// outside this set is dead config: it silently does nothing while looking
-// authoritative (the shipped templates once carried evidence.path,
-// secrets_key_env, tenants, llm_provider — all unread).
+// in a generated talon.config.yaml must be read by a real loader. The
+// consumed-key set is the shared config.ConsumedTopLevelKeys() (#351) — the
+// same source the doctor unrecognized-key check uses, so the pin test and
+// the operator-facing guard cannot drift apart. A key outside this set is
+// dead config: it silently does nothing while looking authoritative (the
+// shipped templates once carried evidence.path, secrets_key_env, tenants,
+// llm_provider — all unread).
 func TestInitPack_GeneratedConfigKeysAreConsumed(t *testing.T) {
-	consumed := map[string]bool{
-		// viper scalar keys (internal/config/config.go)
-		config.KeyDataDir: true, config.KeySecretsKey: true, config.KeySigningKey: true,
-		config.KeyDefaultPolicy: true, config.KeyAgentsDir: true, config.KeyAgentsReloadEvery: true,
-		config.KeyOrphanRetentionDays: true, config.KeyMaxAttachmentMB: true,
-		config.KeyOllamaBaseURL: true, config.KeyOllamaMaxNumPredict: true,
-		// viper-bound logging flags (internal/cmd/root.go BindPFlag)
-		"log_level": true, "log_format": true,
-		// viper block loaders (internal/config/config.go loadLLMConfig,
-		// loadCacheConfig, loadComplianceConfig, loadSovereigntyConfig,
-		// loadScannerConfig)
-		"llm": true, "cache": true, "compliance": true, "sovereignty": true, "scanner": true,
-		// gateway loader subtree (internal/gateway/config.go LoadGatewayConfig)
-		"gateway": true,
-	}
+	consumed := config.ConsumedTopLevelKeys()
 
 	// One pack per template source: generic (base tmpl), coding-agents and
 	// crewai (internal/pack/templates), copaw and openclaw (legacy

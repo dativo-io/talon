@@ -567,3 +567,38 @@ func TestGatewayIdentityPreflight_AgentsDir(t *testing.T) {
 		assert.Contains(t, err.Error(), "coding")
 	})
 }
+
+// TestCheckConfigKeys pins #351: top-level talon.config.yaml keys no loader
+// reads produce an advisory WARN naming each key with a hint — never a fail.
+func TestCheckConfigKeys(t *testing.T) {
+	t.Run("no config file loaded", func(t *testing.T) {
+		r := checkConfigKeys("")
+		assert.Equal(t, "pass", r.Status)
+	})
+
+	t.Run("clean config passes", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "talon.config.yaml")
+		require.NoError(t, os.WriteFile(p, []byte("log_level: info\nllm:\n  pricing_file: pricing/models.yaml\ngateway:\n  enabled: true\n"), 0o600))
+		r := checkConfigKeys(p)
+		assert.Equal(t, "pass", r.Status, r.Message)
+	})
+
+	t.Run("dead keys warn with hints", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "talon.config.yaml")
+		require.NoError(t, os.WriteFile(p, []byte("tenants:\n  - id: default\nevidence:\n  path: ~/.talon/evidence.db\nlog_lvel: info\n"), 0o600))
+		r := checkConfigKeys(p)
+		assert.Equal(t, "warn", r.Status, "dead keys are advisory, not fatal")
+		assert.Contains(t, r.Message, "tenants")
+		assert.Contains(t, r.Message, "agent.talon.yaml", "known dead keys carry their real surface")
+		assert.Contains(t, r.Message, "data_dir", "evidence hint names the real state surface")
+		assert.Contains(t, r.Message, `did you mean "log_level"?`, "typos get a nearest-key hint")
+		assert.NotEmpty(t, r.Fix)
+	})
+
+	t.Run("unparseable config warns not fails", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "talon.config.yaml")
+		require.NoError(t, os.WriteFile(p, []byte("not: yaml: ["), 0o600))
+		r := checkConfigKeys(p)
+		assert.Equal(t, "warn", r.Status)
+	})
+}
