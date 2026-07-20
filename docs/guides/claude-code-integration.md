@@ -66,7 +66,14 @@ gateway provider "anthropic": upstream_auth_mode client_bearer is not supported 
 
 ### 3. Confirm the gateway is running
 
-Leave `talon serve --gateway` running. Optional: test with curl (the agent key is accepted as `Authorization: Bearer` or as `x-api-key` — `extractKey` in `internal/gateway/resolve.go` checks both):
+Leave `talon serve --gateway` running. The canonical check — which agents is
+the server actually serving right now:
+
+```bash
+talon agents --url http://localhost:8080   # RUNTIME fleet view; --json to script it
+```
+
+Optional: test with curl (the agent key is accepted as `Authorization: Bearer` or as `x-api-key` — `extractKey` in `internal/gateway/resolve.go` checks both):
 
 ```bash
 curl -s -X POST http://localhost:8080/v1/proxy/anthropic/v1/messages \

@@ -67,6 +67,24 @@ func TestMapToGatewayEvent_DefaultTimestampWhenMissing(t *testing.T) {
 	assert.Equal(t, "test", got.AgentName)
 }
 
+// TestResolveGatewayModeOverride pins #368: only the three declared gateway
+// modes are accepted; a typo fails startup loudly instead of silently running
+// a different enforcement posture.
+func TestResolveGatewayModeOverride(t *testing.T) {
+	for _, valid := range []string{"shadow", "enforce", "log_only"} {
+		mode, err := resolveGatewayModeOverride(valid)
+		assert.NoError(t, err)
+		assert.Equal(t, valid, string(mode))
+	}
+	for _, invalid := range []string{"Shadow", "observe", "enforcee", ""} {
+		_, err := resolveGatewayModeOverride(invalid)
+		assert.Error(t, err, "mode %q must be rejected", invalid)
+		if err != nil {
+			assert.Contains(t, err.Error(), "--gateway-mode")
+		}
+	}
+}
+
 func TestValidateServeModeFlags(t *testing.T) {
 	// Not in quickstart mode: any combination is fine.
 	assert.NoError(t, validateServeModeFlags(false, false, false))
