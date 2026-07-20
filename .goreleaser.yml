@@ -20,9 +20,12 @@ builds:
     goarch:
       - amd64
       - arm64
-    # goreleaser-cross v1.25.7: darwin and windows cross-compilation from Linux is
-    # broken (osxcross passes -arch to host gcc). Ship linux/amd64 via CI; macOS
-    # users build natively with `go install` or `make build`.
+    # goreleaser builds ONLY linux/amd64 (#326): CGO (mattn/go-sqlite3)
+    # cross-compilation via osxcross/mingw has been unreliable, so darwin
+    # archives are built natively by the release-darwin job in
+    # .github/workflows/release.yml (#359) and uploaded to the same release
+    # (with per-file .sha256 checksums, separate from checksums.txt).
+    # Windows and linux/arm64 remain unshipped — tracked in #359.
     ignore:
       - goos: linux
         goarch: arm64

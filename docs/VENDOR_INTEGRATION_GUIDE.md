@@ -70,11 +70,16 @@ Third-Party AI Agent → Talon MCP Server → Your Zendesk/CRM
 ```bash
 # On your infrastructure (VM, EC2, on-prem server) — check
 # https://github.com/dativo-io/talon/releases/latest for the newest version
-TALON_VERSION=1.9.0   # set to the latest release tag
+TALON_VERSION=1.9.1   # set to the latest release tag
 wget https://github.com/dativo-io/talon/releases/download/v${TALON_VERSION}/talon_${TALON_VERSION}_linux_amd64.tar.gz
 tar -xzf talon_${TALON_VERSION}_linux_amd64.tar.gz
 sudo mv talon /usr/local/bin/talon
 ```
+
+macOS archives (`talon_<version>_darwin_arm64.tar.gz` / `_darwin_amd64.tar.gz`)
+ship from v1.9.2 onward; earlier releases are linux_amd64 only — on macOS use
+`go install github.com/dativo-io/talon/cmd/talon@<tag>` (prefix with
+`CC=/usr/bin/clang` if the linker errors) or `make install` from a clone.
 
 #### Step 2: Create the Proxy Policy
 
