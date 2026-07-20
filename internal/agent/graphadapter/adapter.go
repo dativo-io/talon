@@ -359,7 +359,7 @@ func (a *Adapter) handleRunEnd(ctx context.Context, span trace.Span, ev *Event) 
 			facts = append(facts, explanation.Fact{
 				Code:     explanation.CodePolicyDenied,
 				Decision: explanation.DecisionDeny,
-				Stage:    "graph_governance",
+				Stage:    explanation.StageGraphGovernance,
 				Trigger:  reason,
 			})
 		}
@@ -367,7 +367,7 @@ func (a *Adapter) handleRunEnd(ctx context.Context, span trace.Span, ev *Event) 
 		facts = []explanation.Fact{{
 			Code:     explanation.CodeGraphRunAllowed,
 			Decision: explanation.DecisionAllow,
-			Stage:    "graph_governance",
+			Stage:    explanation.StageGraphGovernance,
 		}}
 	}
 

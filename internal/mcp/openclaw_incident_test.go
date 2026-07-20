@@ -193,21 +193,23 @@ func TestProxy_PIIInArgumentsBlocked(t *testing.T) {
 		assert.Contains(t, r.Error.Message, "PII",
 			"PII in arguments should trigger a block in intercept mode")
 	} else {
-		// PII detection may not block if EvaluateProxyPII allows (depends on rego).
-		// Verify evidence was at least recorded.
+		// PII detection may not block if EvaluateProxyPII allows (depends on
+		// rego). Since #357 the allowed path writes NO separate note record —
+		// the request-side PII classification rides on the call's terminal
+		// record (one call = one request-class record).
 		records, err := store.List(context.Background(), "test-tenant", "",
 			time.Time{}, time.Time{}, 10)
 		require.NoError(t, err)
 		piiRecorded := false
 		for _, ev := range records {
-			if ev.InvocationType == "proxy_pii_request_detected" {
+			if len(ev.Classification.PIIDetected) > 0 {
 				require.NotEmpty(t, ev.Explanations, "proxy evidence should include deterministic explanations")
 				assert.NotEmpty(t, ev.Explanations[0].Code)
 				piiRecorded = true
 			}
 		}
 		assert.True(t, piiRecorded,
-			"PII in proxy arguments must at minimum generate an evidence record")
+			"PII in proxy arguments must at minimum land in the terminal record's classification")
 	}
 }
 
