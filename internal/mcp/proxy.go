@@ -90,6 +90,16 @@ type proxyInvocation struct {
 	orch          *evidence.OrchestrationContext
 }
 
+// proxyAttributionHeaders are the client-asserted attribution headers the
+// proxy validates and consumes (#350).
+var proxyAttributionHeaders = []string{
+	"X-Talon-Session-ID",
+	"X-Talon-Agent-ID",
+	"X-Talon-Parent-Agent-ID",
+	"X-Talon-Client",
+	"X-Correlation-ID",
+}
+
 // resolveProxyInvocation builds the invocation context from the authenticated
 // request context and the neutral X-Talon-* attribution headers. Header
 // values follow the same hygiene contract as the gateway (128-byte cap, RFC
@@ -115,26 +125,19 @@ func (h *ProxyHandler) resolveProxyInvocation(r *http.Request) (*proxyInvocation
 		inv.agentID = "mcp-proxy"
 	}
 
-	sessionID, err := evidence.ValidateOrchValue("X-Talon-Session-ID", r.Header.Get("X-Talon-Session-ID"))
-	if err != nil {
-		return nil, err
+	vals := make(map[string]string, len(proxyAttributionHeaders))
+	for _, name := range proxyAttributionHeaders {
+		v, err := evidence.ValidateOrchValue(name, r.Header.Get(name))
+		if err != nil {
+			return nil, err
+		}
+		vals[name] = v
 	}
-	subagent, err := evidence.ValidateOrchValue("X-Talon-Agent-ID", r.Header.Get("X-Talon-Agent-ID"))
-	if err != nil {
-		return nil, err
-	}
-	parent, err := evidence.ValidateOrchValue("X-Talon-Parent-Agent-ID", r.Header.Get("X-Talon-Parent-Agent-ID"))
-	if err != nil {
-		return nil, err
-	}
-	client, err := evidence.ValidateOrchValue("X-Talon-Client", r.Header.Get("X-Talon-Client"))
-	if err != nil {
-		return nil, err
-	}
-	correlationID, err := evidence.ValidateOrchValue("X-Correlation-ID", r.Header.Get("X-Correlation-ID"))
-	if err != nil {
-		return nil, err
-	}
+	sessionID := vals["X-Talon-Session-ID"]
+	subagent := vals["X-Talon-Agent-ID"]
+	parent := vals["X-Talon-Parent-Agent-ID"]
+	client := vals["X-Talon-Client"]
+	correlationID := vals["X-Correlation-ID"]
 	if correlationID == "" {
 		correlationID = "mcp_proxy_" + uuid.New().String()[:8]
 	}
@@ -735,23 +738,51 @@ func (h *ProxyHandler) upstreamEndpointHost() string {
 	return u.Host
 }
 
+// proxyRecordAllowed decides the record's PolicyDecision.Allowed. It must
+// reflect what actually happened, not the event label: the output fail-closed
+// branches (scanner unavailable, residual PII, invalid redaction JSON) record
+// eventType proxy_tool_call with a blocked flow, and evidence must say denied
+// for those. A shadow violation is an ALLOWED record — the call was forwarded
+// — with the would-have-denied verdict carried in ShadowViolations +
+// ObservationModeOverride (#346), matching the gateway's shadow vocabulary.
+func proxyRecordAllowed(eventType, reason string, flow *proxyFlowState) bool {
+	if flow != nil && (flow.requestBlocked || flow.responseBlocked) {
+		return false
+	}
+	return eventType == "proxy_tool_call" ||
+		eventType == "proxy_shadow_violation" ||
+		(eventType == "proxy_pii_request_detected" && reason == "")
+}
+
+// attachProxyFlow copies the flow's classification and data-flow sections
+// onto the record.
+func (h *ProxyHandler) attachProxyFlow(ev *evidence.Evidence, inv *proxyInvocation, toolName string, flow *proxyFlowState) {
+	ev.Classification = evidence.Classification{
+		InputTier:         flow.requestTier,
+		OutputTier:        flow.responseTier,
+		PIIDetected:       entityTypeSet(flow.requestEntities),
+		OutputPIIDetected: len(flow.responseEntities) > 0,
+		OutputPIITypes:    entityTypeSet(flow.responseEntities),
+		PIIRedacted:       flow.responseRedacted,
+	}
+	ev.DataFlow = h.buildProxyDataFlow(inv.tenantID, inv.correlationID, toolName, flow)
+	if ev.DataFlow != nil {
+		log.Info().
+			Str("correlation_id", inv.correlationID).
+			Str("tenant_id", inv.tenantID).
+			Str("agent_id", inv.agentID).
+			Str("flow_destination", evidence.FlowDestMCPTool+":"+h.config.Proxy.Upstream.Vendor).
+			Str("flow_region", h.upstreamRegion()).
+			Int("flow_items", len(ev.DataFlow.Items)).
+			Msg("data_flow_recorded")
+	}
+}
+
 func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation, eventType, toolName, reason string, flow *proxyFlowState, sv *evidence.ShadowViolation) {
 	if h.evidenceStore == nil {
 		return
 	}
-	// Allowed must reflect what actually happened, not the event label: the
-	// output fail-closed branches (scanner unavailable, residual PII, invalid
-	// redaction JSON) record eventType proxy_tool_call with a blocked flow,
-	// and evidence must say denied for those. A shadow violation is an
-	// ALLOWED record — the call was forwarded — with the would-have-denied
-	// verdict carried in ShadowViolations + ObservationModeOverride (#346),
-	// matching the gateway's shadow-mode vocabulary.
-	allowed := eventType == "proxy_tool_call" ||
-		eventType == "proxy_shadow_violation" ||
-		(eventType == "proxy_pii_request_detected" && reason == "")
-	if flow != nil && (flow.requestBlocked || flow.responseBlocked) {
-		allowed = false
-	}
+	allowed := proxyRecordAllowed(eventType, reason, flow)
 	action := "allow"
 	if !allowed {
 		action = "deny"
@@ -789,25 +820,7 @@ func (h *ProxyHandler) recordEvidence(ctx context.Context, inv *proxyInvocation,
 		ev.ShadowViolations = []evidence.ShadowViolation{*sv}
 	}
 	if flow != nil {
-		ev.Classification = evidence.Classification{
-			InputTier:         flow.requestTier,
-			OutputTier:        flow.responseTier,
-			PIIDetected:       entityTypeSet(flow.requestEntities),
-			OutputPIIDetected: len(flow.responseEntities) > 0,
-			OutputPIITypes:    entityTypeSet(flow.responseEntities),
-			PIIRedacted:       flow.responseRedacted,
-		}
-		ev.DataFlow = h.buildProxyDataFlow(inv.tenantID, inv.correlationID, toolName, flow)
-		if ev.DataFlow != nil {
-			log.Info().
-				Str("correlation_id", inv.correlationID).
-				Str("tenant_id", inv.tenantID).
-				Str("agent_id", inv.agentID).
-				Str("flow_destination", evidence.FlowDestMCPTool+":"+h.config.Proxy.Upstream.Vendor).
-				Str("flow_region", h.upstreamRegion()).
-				Int("flow_items", len(ev.DataFlow.Items)).
-				Msg("data_flow_recorded")
-		}
+		h.attachProxyFlow(ev, inv, toolName, flow)
 	}
 	// Every record identifies the scan engine behind its classification;
 	// scanner-driven denials also carry the typed failure kind.
