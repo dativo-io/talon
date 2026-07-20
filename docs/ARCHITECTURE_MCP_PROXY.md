@@ -208,13 +208,30 @@ when unset and both loaders reject values outside
 forbidden tool only under explicit `passthrough`. An unset or mistyped mode
 can never silently behave as passthrough.
 
-**Method surface is fail-closed (#356):** the proxy governs `tools/list` and
-`tools/call` — every other MCP method (`resources/read`, `prompts/get`,
-`initialize`, …) is rejected with JSON-RPC `-32601` and an attributed
-`proxy_method_rejected` evidence record, in **every** mode. This mirrors the
-native `/mcp` server and closes what would otherwise be an unscanned,
-unaudited data lane (an upstream's resources bypassing PII governance).
-Governed resource/prompt reads are a future feature, not a passthrough.
+**Method surface is fail-closed (#356, #367):** both endpoints speak the
+mandatory MCP lifecycle — `initialize` is answered **locally** (tools
+capability only, the client's `protocolVersion` echoed, never forwarded
+upstream) and `notifications/initialized` is accepted with HTTP 202 — so
+spec-conformant clients (Copilot CLI, Claude Code, MCP Inspector, the SDKs)
+connect normally. Governed traffic is `tools/list` and `tools/call`. Every
+OTHER method (`resources/read`, `prompts/get`, …) is rejected with JSON-RPC
+`-32601`, `error.data.talon_code: TALON_METHOD_NOT_ALLOWED`, and an
+attributed `proxy_method_rejected` evidence record, in **every** mode —
+closing what would otherwise be an unscanned, unaudited data lane. Governed
+resource/prompt reads are a future feature, not a passthrough.
+
+**Stable denial codes (#369):** every Talon-shaped proxy error carries
+`error.data.talon_code` — the machine contract; messages are prose and may
+change:
+
+| talon_code | Meaning |
+|---|---|
+| `TALON_TOOL_FORBIDDEN` | explicit `forbidden_tools` match |
+| `TALON_POLICY_DENIED` | tool-access policy deny (Rego) |
+| `TALON_PII_BLOCKED` | PII deny, residual PII after redaction, invalid redaction output |
+| `TALON_SCANNER_UNAVAILABLE` | PII scanner fail-closed (unavailable/unverifiable) |
+| `TALON_METHOD_NOT_ALLOWED` | non-governed MCP method (#356) |
+| `TALON_UPSTREAM_ERROR` | upstream transport/decode failure (vendor JSON-RPC errors pass through untagged) |
 
 ---
 

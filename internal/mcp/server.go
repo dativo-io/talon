@@ -45,6 +45,10 @@ type jsonrpcResponse struct {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	// Data carries the stable machine-readable denial code (#369):
+	// {"talon_code": "TALON_..."} — integrators key on this, never on the
+	// prose Message.
+	Data interface{} `json:"data,omitempty"`
 }
 
 // Standard JSON-RPC 2.0 error codes
@@ -101,8 +105,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// MCP lifecycle (#367): initialize is answered locally (tools capability
+	// only) and notifications/initialized is accepted with 202/no body —
+	// spec-conformant clients can now complete the mandatory handshake.
+	if req.Method == "notifications/initialized" {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
 	var resp *jsonrpcResponse
 	switch req.Method {
+	case "initialize":
+		resp = &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Result: mcpInitializeResult("talon", req.Params)}
 	case "tools/list":
 		resp = h.handleToolsList(ctx, req.ID)
 	case "tools/call":

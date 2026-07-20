@@ -182,9 +182,13 @@ Vendor receives data (works normally, unaware of governance layer)
     ↓
 Your compliance officer has a complete audit trail
 
-Note: the proxy governs tools/list and tools/call ONLY. Any other MCP
-method (resources/read, prompts/get, initialize, ...) is rejected
-fail-closed with a signed evidence record — never forwarded ungoverned.
+Note: the proxy speaks the MCP lifecycle (initialize is answered locally —
+never forwarded; notifications/initialized accepted) and governs tools/list
+and tools/call. Any OTHER method (resources/read, prompts/get, ...) is
+rejected fail-closed with error.data.talon_code TALON_METHOD_NOT_ALLOWED
+and a signed evidence record — never forwarded ungoverned. All Talon-shaped
+denials carry stable machine-readable codes in error.data.talon_code (see
+ARCHITECTURE_MCP_PROXY.md for the full table).
 
 Also: tools/list responses are filtered — the vendor only ever discovers
 tools you listed in allowed_tools.

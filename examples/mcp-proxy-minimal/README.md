@@ -26,9 +26,12 @@ http://localhost:8080/mcp/proxy
 
 Talon intercepts all MCP tool calls, scans for PII, checks against
 allowed/forbidden tool lists, and generates evidence records. The proxy
-governs `tools/list` and `tools/call` only — any other MCP method
-(`resources/read`, `prompts/get`, …) is rejected fail-closed with an
-evidence record, never forwarded ungoverned.
+speaks the MCP lifecycle (`initialize` answered locally, never forwarded;
+`notifications/initialized` accepted) and governs `tools/list` and
+`tools/call` — any other MCP method (`resources/read`, `prompts/get`, …)
+is rejected fail-closed with `error.data.talon_code:
+TALON_METHOD_NOT_ALLOWED` and an evidence record, never forwarded
+ungoverned.
 
 ## What's in the Config
 
