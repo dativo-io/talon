@@ -91,6 +91,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	cfg.WarnIfDefaultKeys()
 
+	// The MCP initialize handshake advertises the real build version (#367).
+	mcp.ServerVersion = resolvedVersion()
+
 	policyBaseDir := "."
 	policyPath := cfg.DefaultPolicy
 	safePath, err := policy.ResolvePathUnderBase(policyBaseDir, policyPath)
