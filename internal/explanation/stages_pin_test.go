@@ -8,6 +8,19 @@ import (
 	"testing"
 )
 
+// TestGraphGovernanceStageRegistered pins the #360 registration directly:
+// the literal-walking test below is blind to CONSTANT usages (the same diff
+// converted graphadapter's literals to StageGraphGovernance), so removing
+// the stage from IsKnownStage must fail here, not merge green.
+func TestGraphGovernanceStageRegistered(t *testing.T) {
+	if !IsKnownStage(StageGraphGovernance) {
+		t.Fatal("StageGraphGovernance must be part of the canonical stage set")
+	}
+	if !IsKnownStage("graph_governance") {
+		t.Fatal(`the "graph_governance" literal must remain a known stage`)
+	}
+}
+
 // TestAllEmittedStageLiteralsKnown pins #360: the explanation stage set is
 // CLOSED — every quoted `Stage: "..."` literal anywhere in production code
 // must pass IsKnownStage, so a new emitter cannot introduce an unregistered

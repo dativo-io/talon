@@ -431,6 +431,82 @@ func TestProxyUpstreamError_RecordsTrail(t *testing.T) {
 	assert.NotEmpty(t, r.Execution.Error, "execution failure must count in session summaries")
 	assert.Contains(t, r.Classification.PIIDetected, "email",
 		"the request-side PII trail survives the upstream failure")
+	assert.Nil(t, r.DataFlow,
+		"transport failure: a signed flow item must never assert delivery the wire may not have made")
+}
+
+// upstreamErrorHandler builds an intercept proxy with a redaction rule whose
+// upstream is the given httptest handler — for the non-transport failure shapes.
+func upstreamErrorHandler(t *testing.T, upstream http.HandlerFunc) (*ProxyHandler, *evidence.Store) {
+	t.Helper()
+	srv := httptest.NewServer(upstream)
+	t.Cleanup(srv.Close)
+	cfg := &policy.ProxyPolicyConfig{
+		Agent: policy.ProxyAgentConfig{Name: "vendor-proxy-agent", Type: "mcp_proxy"},
+		Proxy: policy.ProxyConfig{
+			Mode:         policy.ProxyModeIntercept,
+			Upstream:     policy.UpstreamConfig{URL: srv.URL, Vendor: "testvendor"},
+			AllowedTools: []policy.ToolMapping{{Name: "crm_lookup"}},
+		},
+		PIIHandling: policy.PIIHandlingConfig{
+			RedactionRules: []policy.RedactionRule{{Field: "email", Method: "hash"}},
+		},
+	}
+	engine, err := policy.NewProxyEngine(context.Background(), cfg)
+	require.NoError(t, err)
+	store, err := evidence.NewStore(t.TempDir()+"/e.db", testutil.TestSigningKey)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return NewProxyHandler(cfg, engine, store, classifier.MustNewScanner()), store
+}
+
+// TestProxyUpstreamDecodeFailure_RecordsTrail pins the second upstream-error
+// shape (#357 review): a 200 with a non-JSON body. Egress DID happen, so the
+// record keeps its data-flow item, unlike the transport case.
+func TestProxyUpstreamDecodeFailure_RecordsTrail(t *testing.T) {
+	h, store := upstreamErrorHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html>gateway timeout</html>"))
+	})
+
+	_, resp := attribCallArgs(t, h, context.Background(), nil, "crm_lookup",
+		map[string]string{"email": "jane.doe@example.com"})
+	require.NotNil(t, resp.Error)
+	assert.Contains(t, resp.Error.Message, "upstream response invalid")
+
+	records := listRecords(t, store, "default")
+	require.Len(t, records, 1)
+	r := records[0]
+	assert.Equal(t, "proxy_upstream_error", r.InvocationType)
+	assert.Equal(t, "failed", r.Status)
+	assert.Contains(t, r.PolicyDecision.Reasons, "upstream_response_invalid")
+	assert.Contains(t, r.Classification.PIIDetected, "email")
+	require.NotNil(t, r.DataFlow, "a response arrived, so the egress flow item is truthful and must stay")
+}
+
+// TestProxyUpstreamJSONRPCError_RecordsFailure pins the third shape (#357
+// review): the vendor answers with a valid JSON-RPC error body. The call
+// executed and failed — it must never be recorded as a clean allowed
+// completion, and the vendor's error passes through to the caller.
+func TestProxyUpstreamJSONRPCError_RecordsFailure(t *testing.T) {
+	h, store := upstreamErrorHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"internal error"}}`))
+	})
+
+	_, resp := attribCallArgs(t, h, context.Background(), nil, "crm_lookup",
+		map[string]string{"email": "jane.doe@example.com"})
+	require.NotNil(t, resp.Error, "the vendor's JSON-RPC error passes through")
+	assert.Equal(t, -32603, resp.Error.Code)
+
+	records := listRecords(t, store, "default")
+	require.Len(t, records, 1)
+	r := records[0]
+	assert.Equal(t, "proxy_upstream_error", r.InvocationType)
+	assert.Equal(t, "failed", r.Status)
+	require.NotEmpty(t, r.PolicyDecision.Reasons)
+	assert.Contains(t, r.PolicyDecision.Reasons[0], "upstream_jsonrpc_error")
+	assert.NotEmpty(t, r.Execution.Error)
 }
 
 // TestProxyEvidence_GeneratedCorrelationSharedAcrossRecords pins the #350

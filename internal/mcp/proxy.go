@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -421,17 +422,30 @@ func (h *ProxyHandler) handleProxyToolCall(ctx context.Context, req *jsonrpcRequ
 		span.SetStatus(codes.Error, err.Error())
 		// #357: with the PII note folded into the terminal record, the
 		// upstream-failure path must still leave the call's trail —
-		// including any request-side PII classification in flow.
+		// including any request-side PII classification in flow. Transport
+		// errors mean egress is UNCONFIRMED (connection refused = nothing
+		// left; timeout = maybe): the signed record keeps the classification
+		// but must not assert a data flow to the vendor that may never have
+		// happened.
+		flow.egressUnconfirmed = true
 		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_error: "+err.Error(), &flow, nil)
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: err.Error()}}
 	}
 	defer upstreamResp.Body.Close()
 	var out jsonrpcResponse
 	if err := json.NewDecoder(upstreamResp.Body).Decode(&out); err != nil {
+		// A response arrived, so egress happened — the flow item is truthful.
 		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName, "upstream_response_invalid", &flow, nil)
 		return &jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: req.ID, Error: &rpcError{Code: codeServerError, Message: "upstream response invalid"}}
 	}
 	out.ID = req.ID
+	if out.Error != nil {
+		// The vendor answered with a JSON-RPC error: the call executed and
+		// failed — record it as such, never as a clean allowed completion.
+		h.recordEvidence(ctx, inv, "proxy_upstream_error", toolName,
+			fmt.Sprintf("upstream_jsonrpc_error: %d %s", out.Error.Code, out.Error.Message), &flow, nil)
+		return &out
+	}
 
 	// Response PII scanning: scan tool result before returning to caller.
 	// A scanner failure blocks the result fail-closed.
@@ -735,6 +749,11 @@ type proxyFlowState struct {
 	// status, decode, validation) when a scanner failure drove a block;
 	// "scanner_unavailable" for non-adapter engines.
 	scannerFailure string
+	// egressUnconfirmed marks upstream TRANSPORT failures (#357 review):
+	// classification still attaches to the record, but no data-flow item is
+	// emitted — a signed flow entry must never assert delivery to the vendor
+	// when the connection may never have been established.
+	egressUnconfirmed bool
 }
 
 // upstreamRegion returns the configured jurisdiction of the upstream vendor
@@ -784,6 +803,11 @@ func (h *ProxyHandler) attachProxyFlow(ev *evidence.Evidence, inv *proxyInvocati
 		OutputPIIDetected: len(flow.responseEntities) > 0,
 		OutputPIITypes:    entityTypeSet(flow.responseEntities),
 		PIIRedacted:       flow.responseRedacted,
+	}
+	if flow.egressUnconfirmed {
+		// Transport failure (#357 review): no flow item — a signed data-flow
+		// entry must never assert delivery the wire may not have made.
+		return
 	}
 	ev.DataFlow = h.buildProxyDataFlow(inv.tenantID, inv.correlationID, toolName, flow)
 	if ev.DataFlow != nil {
