@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/dativo-io/talon/internal/agentbridge"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/config"
@@ -94,6 +96,7 @@ func checkConfig() []CheckResult {
 		}}
 	}
 
+	results = append(results, checkConfigKeys(config.UsedConfigFile()))
 	results = append(results, checkDataDir(cfg))
 	results = append(results, checkPolicy(cfg))
 	results = append(results, checkLLMKeys(cfg))
@@ -103,6 +106,110 @@ func checkConfig() []CheckResult {
 	results = append(results, checkSovereignty(cfg, nil))
 	results = append(results, checkAirGap(cfg, nil))
 	return results
+}
+
+// deadKeyHints names the real surface for known dead keys (#342 class).
+//
+//nolint:gosec // G101: key-NAME hint strings for operator guidance, not credentials
+var deadKeyHints = map[string]string{
+	"evidence":        "state paths derive from data_dir",
+	"tenants":         "tenancy and budgets live in agent.talon.yaml (key → agent → tenant, #266)",
+	"secrets_key_env": "the vault key comes from the TALON_SECRETS_KEY env var (or secrets_key here)",
+	"llm_provider":    "providers are configured under llm.providers or gateway.providers",
+}
+
+// checkConfigKeys warns on top-level talon.config.yaml keys no loader reads
+// (#351). Both shipped loaders are permissive by design (viper merges
+// env/defaults; the gateway loader tolerates viper-owned keys), so a dead
+// key silently does nothing while looking authoritative — the worst failure
+// mode for a governance product. Advisory: WARN never fails doctor.
+func checkConfigKeys(path string) CheckResult {
+	const name = "config_keys_recognized"
+	if path == "" {
+		return CheckResult{
+			Name: name, Category: "config", Status: "pass",
+			Message: "no talon.config.yaml loaded (defaults/env only)",
+		}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return CheckResult{
+			Name: name, Category: "config", Status: "warn",
+			Message: fmt.Sprintf("%s could not be re-read — %v", path, err),
+		}
+	}
+	var doc map[string]interface{}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return CheckResult{
+			Name: name, Category: "config", Status: "warn",
+			Message: fmt.Sprintf("%s is not parseable as YAML — %v", path, err),
+		}
+	}
+	consumed := config.ConsumedTopLevelKeys()
+	var unknown []string
+	for k := range doc {
+		if !consumed[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return CheckResult{
+			Name: name, Category: "config", Status: "pass",
+			Message: fmt.Sprintf("every top-level key in %s is read by a loader", filepath.Base(path)),
+		}
+	}
+	sort.Strings(unknown)
+	parts := make([]string, 0, len(unknown))
+	for _, k := range unknown {
+		hint := deadKeyHints[k]
+		if hint == "" {
+			if near := nearestConsumedKey(k, consumed); near != "" {
+				hint = fmt.Sprintf("did you mean %q?", near)
+			}
+		}
+		if hint != "" {
+			parts = append(parts, fmt.Sprintf("%s (%s)", k, hint))
+		} else {
+			parts = append(parts, k)
+		}
+	}
+	return CheckResult{
+		Name: name, Category: "config", Status: "warn",
+		Message: fmt.Sprintf("%s has keys no loader reads: %s", path, strings.Join(parts, "; ")),
+		Fix:     "Remove or replace these keys — they are silently ignored (#342, #351)",
+	}
+}
+
+// nearestConsumedKey returns the closest consumed key within edit distance 2,
+// or "" — a dumb typo hint, deliberately nothing fancier.
+func nearestConsumedKey(k string, consumed map[string]bool) string {
+	best, bestDist := "", 3
+	for c := range consumed {
+		if d := editDistance(k, c); d < bestDist {
+			best, bestDist = c, d
+		}
+	}
+	return best
+}
+
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	curr := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			curr[j] = min(min(curr[j-1]+1, prev[j]+1), prev[j-1]+cost)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(b)]
 }
 
 func checkDataDir(cfg *config.Config) CheckResult {

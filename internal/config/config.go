@@ -52,6 +52,34 @@ const (
 	KeyOllamaMaxNumPredict = "ollama_max_num_predict"
 )
 
+// ConsumedTopLevelKeys returns every top-level talon.config.yaml key a
+// shipped loader actually reads: the viper scalar keys above, the viper
+// block loaders (loadLLMConfig, loadCacheConfig, loadComplianceConfig,
+// loadSovereigntyConfig, loadScannerConfig), the logging flags bound in
+// internal/cmd/root.go, and the gateway subtree (internal/gateway
+// LoadGatewayConfig). One source of truth (#351): consumed by BOTH the
+// doctor unrecognized-key check and the pack-template pin test
+// (TestInitPack_GeneratedConfigKeysAreConsumed) so they cannot drift.
+// A key outside this set is dead config — silently ignored by every loader.
+func ConsumedTopLevelKeys() map[string]bool {
+	return map[string]bool{
+		KeyDataDir: true, KeySecretsKey: true, KeySigningKey: true,
+		KeyDefaultPolicy: true, KeyAgentsDir: true, KeyAgentsReloadEvery: true,
+		KeyOrphanRetentionDays: true, KeyMaxAttachmentMB: true,
+		KeyOllamaBaseURL: true, KeyOllamaMaxNumPredict: true,
+		"log_level": true, "log_format": true,
+		"llm": true, "cache": true, "compliance": true, "sovereignty": true, "scanner": true,
+		"gateway": true,
+	}
+}
+
+// UsedConfigFile returns the config file viper actually loaded, or "" when
+// running configless (defaults/env only). Wrapper so packages outside
+// internal/cmd need no viper knowledge.
+func UsedConfigFile() string {
+	return viper.ConfigFileUsed()
+}
+
 // Defaults that do NOT involve crypto material. Crypto keys intentionally
 // have no baked-in defaults — when unset we generate a deterministic
 // per-machine fallback and warn loudly.
