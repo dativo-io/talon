@@ -32,7 +32,7 @@ func authProxy(t *testing.T, upstreamURL string, vault UpstreamSecretGetter) (*P
 	cfg := &policy.ProxyPolicyConfig{
 		Agent: policy.ProxyAgentConfig{Name: "vendor-proxy-agent", Type: "mcp_proxy"},
 		Proxy: policy.ProxyConfig{
-			Mode:         policy.ProxyModeIntercept,
+			Mode: policy.ProxyModeIntercept,
 			Upstream: policy.UpstreamConfig{
 				URL:    upstreamURL,
 				Vendor: "testvendor",
