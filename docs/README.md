@@ -156,7 +156,7 @@ Choose the shortest path for your situation:
 | Doc | Description |
 |-----|-------------|
 | [Policy cookbook](guides/policy-cookbook.md) | Copy-paste policy snippets for common needs. |
-| [Starter policy library](../examples/policies/README.md) | Ready-to-use Rego policies for cost, PII, model allowlists, data residency. |
+| [Starter policy library](../examples/policies/README.md) | Reference Rego policies for cost, PII, model allowlists, data residency (custom Rego loading is a v2 surface; the equivalent shipped controls live in `.talon.yaml`). |
 
 ### Community / internal
 
@@ -189,5 +189,5 @@ Talon's evidence layer supports these control objectives; it is not a compliance
 | [Gateway minimal](../examples/gateway-minimal/README.md) | Smallest working LLM gateway config. |
 | [MCP proxy minimal](../examples/mcp-proxy-minimal/README.md) | Smallest working MCP proxy config. |
 | [Plan review](../examples/plan-review/README.md) | Human-in-the-loop demo (EU AI Act Art. 14). |
-| [Starter policies](../examples/policies/README.md) | OPA/Rego policies for common governance scenarios. |
+| [Starter policies](../examples/policies/README.md) | Reference OPA/Rego policies for common governance scenarios (not auto-loaded; v2 surface). |
 | [Observability stack](../examples/observability/README.md) | Local OTel Collector + Prometheus + Grafana with pre-built Talon dashboard. |

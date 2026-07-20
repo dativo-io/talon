@@ -24,10 +24,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # goreleaser-cross provides CGO cross-compilers (Darwin, Windows) so we can
-      # build all targets from Linux; plain goreleaser fails with "unsupported -arch"
-      # when building darwin/arm64 from Linux.
-      - name: Run GoReleaser (goreleaser-cross)
+      # goreleaser (via goreleaser-cross image) builds and publishes the
+      # linux/amd64 archive + Docker images + release notes. Darwin archives
+      # are NOT built here — CGO (mattn/go-sqlite3) cross-compilation via
+      # osxcross has been unreliable (#326) — they come from the native
+      # macOS job below (#359).
+      - name: Run GoReleaser (linux + docker)
         run: |
           docker run --rm --privileged \
             -v $PWD:/work -w /work \
@@ -37,3 +39,53 @@ jobs:
             -e CGO_ENABLED=1 \
             ghcr.io/goreleaser/goreleaser-cross:v1.26.4 \
             release --clean
+
+  # Darwin binaries (#359): built natively on a macOS runner because the
+  # evidence store is CGO (mattn/go-sqlite3) — Apple clang builds both
+  # arm64 and amd64 (-arch x86_64) without osxcross. Runs after the
+  # goreleaser job so the release exists; a failure here never blocks the
+  # linux/docker release, and re-runs are safe (--clobber).
+  release-darwin:
+    name: Darwin binaries (${{ matrix.arch }})
+    needs: release
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build and package (darwin/${{ matrix.arch }})
+        env:
+          CGO_ENABLED: "1"
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build -trimpath -ldflags "-s -w \
+            -X github.com/dativo-io/talon/internal/cmd.Version=${VERSION} \
+            -X github.com/dativo-io/talon/internal/cmd.Commit=${COMMIT} \
+            -X github.com/dativo-io/talon/internal/cmd.BuildDate=${DATE}" \
+            -o talon ./cmd/talon
+          # Smoke-run only the native arch (amd64 on the arm64 runner would
+          # need Rosetta); the cross build is still verified by `file`.
+          if [ "${{ matrix.arch }}" = "$(uname -m | sed 's/x86_64/amd64/')" ]; then ./talon version; fi
+          file talon
+          ARCHIVE="talon_${VERSION}_darwin_${{ matrix.arch }}.tar.gz"
+          tar -czf "${ARCHIVE}" talon LICENSE README.md CHANGELOG.md
+          shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCHIVE="talon_${VERSION}_darwin_${{ matrix.arch }}.tar.gz"
+          gh release upload "${GITHUB_REF_NAME}" "${ARCHIVE}" "${ARCHIVE}.sha256" --clobber

@@ -37,7 +37,10 @@ def run_stateless_call():
     llm = ChatOpenAI(
         model="gpt-4o-mini",
         temperature=0,
-        base_url=f"{talon_url}/v1/proxy/openai",
+        # Trailing /v1 required (#345): the OpenAI client joins
+        # {base_url}/chat/completions, and Talon's path-gated handling
+        # matches /v1/chat/completions.
+        base_url=f"{talon_url}/v1/proxy/openai/v1",
         api_key=agent_key,
         default_headers={
             "X-Talon-Session-ID": "notebook-session-1",
