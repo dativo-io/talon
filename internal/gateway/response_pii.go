@@ -447,6 +447,15 @@ func extractContentFromSSE(m map[string]interface{}) string {
 			}
 		}
 	}
+	// OpenAI Responses API: {"type":"response.output_text.delta","delta":"..."}
+	// — delta is a top-level string, not a map. Without this branch a
+	// truncated Responses stream accumulates no content and bypasses the
+	// response-PII scan on the error path (#392).
+	if typ, _ := m["type"].(string); typ == "response.output_text.delta" {
+		if d, ok := m["delta"].(string); ok {
+			return d
+		}
+	}
 	// Anthropic: content_block.text or delta.text
 	if delta, ok := m["delta"].(map[string]interface{}); ok {
 		if text, ok := delta["text"].(string); ok {
@@ -672,9 +681,51 @@ func forwardRedactedAsSSE(w http.ResponseWriter, capture *responseCapture, origi
 		buf.Write(redactedJSON)
 		buf.WriteString("\n\n")
 	}
-	buf.WriteString("data: [DONE]\n\n")
+	if term := extractGatewayTerminalEvent(capture.body.Bytes()); term != nil {
+		// The stream died (#195/#217): keep the family-correct failure signal
+		// instead of presenting the redacted truncation as a completed stream (#392).
+		buf.Write(term)
+	} else {
+		buf.WriteString("data: [DONE]\n\n")
+	}
 	//nolint:gosec // G705: forwarding redacted SSE response
 	_, _ = w.Write(buf.Bytes())
+}
+
+// gatewayTerminalMessages are the constant messages writeStreamTerminalError
+// emits (#195/#217). Matching on them lets redaction preserve exactly the
+// gateway-authored terminal event — never arbitrary upstream event content.
+var gatewayTerminalMessages = []string{
+	"stream idle timeout: no data from provider",
+	"gateway request timeout",
+	"upstream connection lost mid-stream",
+	"stream interrupted by gateway",
+	"upstream stream interrupted",
+}
+
+// extractGatewayTerminalEvent returns the gateway-authored terminal SSE error
+// event (event: error / event: response.failed) buffered at the end of a dead
+// stream, or nil when the stream ended normally.
+func extractGatewayTerminalEvent(raw []byte) []byte {
+	for _, prefix := range [][]byte{[]byte("event: error\ndata: "), []byte("event: response.failed\ndata: ")} {
+		idx := bytes.LastIndex(raw, prefix)
+		if idx < 0 {
+			continue
+		}
+		block := raw[idx:]
+		if end := bytes.Index(block, []byte("\n\n")); end >= 0 {
+			block = block[:end+2]
+		}
+		for _, msg := range gatewayTerminalMessages {
+			if bytes.Contains(block, []byte(msg)) {
+				if !bytes.HasSuffix(block, []byte("\n\n")) {
+					block = append(append([]byte{}, block...), '\n', '\n')
+				}
+				return block
+			}
+		}
+	}
+	return nil
 }
 
 // forwardBlockedResponse writes a provider-native JSON error for blocked
