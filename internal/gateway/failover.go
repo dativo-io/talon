@@ -33,6 +33,12 @@ type failoverWriter struct {
 	status    int
 	committed bool
 	buf       bytes.Buffer
+	// pendingTerminal holds a terminal SSE error event produced before any
+	// upstream body byte was delivered (#217): written directly it would
+	// count as the first body byte, commit the response, and permanently
+	// disable failover. flushTo delivers it on every give-up path; a fallback
+	// attempt that replaces this writer discards it.
+	pendingTerminal []byte
 }
 
 func newFailoverWriter(dst http.ResponseWriter) *failoverWriter {
@@ -72,6 +78,18 @@ func (f *failoverWriter) Flush() {
 	}
 }
 
+// deferTerminalEvent buffers a terminal SSE error event instead of letting it
+// commit an uncommitted response (#217). Returns false once committed —
+// mid-stream terminal events after real upstream bytes go straight to the
+// client (#195).
+func (f *failoverWriter) deferTerminalEvent(event []byte) bool {
+	if f.committed {
+		return false
+	}
+	f.pendingTerminal = append(f.pendingTerminal, event...)
+	return true
+}
+
 func (f *failoverWriter) commit() {
 	for k, vs := range f.header {
 		for _, v := range vs {
@@ -84,8 +102,9 @@ func (f *failoverWriter) commit() {
 	f.committed = true
 }
 
-// flushTo commits the buffered response (headers, status, body) to the
-// destination. No-op for the already-committed portion.
+// flushTo commits the buffered response (headers, status, body, and any
+// deferred terminal event) to the destination. No-op for the
+// already-committed portion.
 func (f *failoverWriter) flushTo() {
 	if !f.committed {
 		f.commit()
@@ -93,6 +112,13 @@ func (f *failoverWriter) flushTo() {
 	if f.buf.Len() > 0 {
 		//nolint:gosec // G705: buffered upstream API response (JSON), gateway passthrough
 		_, _ = f.dst.Write(f.buf.Bytes())
+	}
+	if len(f.pendingTerminal) > 0 {
+		//nolint:gosec // G705: gateway-authored constant terminal SSE event (#195/#217)
+		_, _ = f.dst.Write(f.pendingTerminal)
+		if fl, ok := f.dst.(http.Flusher); ok {
+			fl.Flush()
+		}
 	}
 }
 

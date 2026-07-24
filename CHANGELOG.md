@@ -17,6 +17,10 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+### Fixed
+
+- **Streams are no longer hard-cut at `request_timeout`; `stream_idle_timeout` is now enforced** (#217). `gateway.timeouts.stream_idle_timeout` was parsed and validated but never used, and the only bound on a streaming response was the whole-request `request_timeout` (default 120s), which killed healthy long generations — routine coding-agent traffic. A live SSE stream is now bounded by silence instead: chunks keep it alive past `request_timeout`, and a gap longer than `stream_idle_timeout` (default 60s) aborts it with the family-correct terminal error event, classified as a transient timeout so pre-commit failover still engages. Non-streaming requests keep the exact `request_timeout` contract. **Upgrade impact:** a stream that previously survived 60–120s of provider silence is now aborted at 60s — raise `stream_idle_timeout` for slow local providers (CPU inference can pause >60s before the first token), or set `0` to disable idle enforcement. Verify: `go test ./internal/gateway/ -run 'TestForward_HealthyStreamOutlivesRequestTimeout|TestForward_StreamIdleTimeoutAborts'`.
+
 ## [1.9.3] - 2026-07-20
 
 Governance-completeness patch, shaped by real-integrator feedback from the talon-full-demo validation: the MCP endpoints become spec-conformant and fully consumable by standard clients, every denial carries a stable machine code, the vendor path gets vault-backed upstream auth, and the last evidence-correctness gaps close. Issues #356, #357, #358, #360, #351, #367, #368, #369, #370; follow-ups filed as #363, #371–#373, #378. Release gated on a live 7-point walkthrough.

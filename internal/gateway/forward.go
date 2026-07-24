@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,14 +58,26 @@ type ForwardParams struct {
 
 // Forward sends the request to the upstream provider and writes the response to w.
 // For streaming responses it passes through bytes and flushes incrementally; token usage is captured when present.
+//
+// Timeout semantics (#217): request_timeout bounds the whole exchange for
+// non-streaming responses, enforced via a cancelable child context rather than
+// http.Client.Timeout (which cannot distinguish streams). Once the response is
+// identified as a live SSE stream, the total bound is released and
+// stream_idle_timeout takes over: a healthy stream may run past
+// request_timeout as long as the provider keeps sending; silence longer than
+// the idle timeout aborts with a family-correct terminal event.
 func Forward(w http.ResponseWriter, p ForwardParams) error {
-	ctx := p.Context
 	if p.Client == nil {
-		p.Client = &http.Client{Timeout: p.Timeouts.RequestTimeout}
+		p.Client = &http.Client{} // timeouts are enforced via reqCtx below
 	}
 
+	reqCtx, cancel := context.WithCancel(p.Context)
+	defer cancel()
+	wd := newGatewayWatchdog(cancel, p.Timeouts.RequestTimeout, p.Timeouts.StreamIdleTimeout)
+	defer wd.stop()
+
 	bodyReader := io.NopCloser(bytes.NewReader(p.Body))
-	req, err := http.NewRequestWithContext(ctx, p.Method, p.UpstreamURL, bodyReader)
+	req, err := http.NewRequestWithContext(reqCtx, p.Method, p.UpstreamURL, bodyReader)
 	if err != nil {
 		return err
 	}
@@ -83,7 +97,7 @@ func Forward(w http.ResponseWriter, p ForwardParams) error {
 	streamStart := time.Now()
 	resp, err := p.Client.Do(req)
 	if err != nil {
-		return err
+		return wd.mapErr(err)
 	}
 	defer resp.Body.Close()
 
@@ -100,13 +114,13 @@ func Forward(w http.ResponseWriter, p ForwardParams) error {
 	isStream := resp.StatusCode < 400 && strings.Contains(contentType, "text/event-stream")
 
 	if isStream {
-		return streamCopy(ctx, w, resp.Body, streamStart, p.TokenUsage, p.StreamingMetrics, resp.Header.Get("X-Request-Id"), p.StreamFlavor)
+		return wd.mapErr(streamCopy(reqCtx, w, wd.streamBody(resp.Body), streamStart, p.TokenUsage, p.StreamingMetrics, resp.Header.Get("X-Request-Id"), p.StreamFlavor, wd))
 	}
 
 	// Non-streaming: read full body, parse usage if present, then write
 	all, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return wd.mapErr(err)
 	}
 	if p.TokenUsage != nil {
 		parseUsageFromJSON(all, resp.Header.Get("X-Request-Id"), p.TokenUsage)
@@ -131,18 +145,134 @@ func copyResponseHeaders(w http.ResponseWriter, from http.Header, upstreamHeader
 	}
 }
 
+// gatewayTimeoutError marks a timeout the gateway itself enforced: the total
+// request_timeout or the stream_idle_timeout (#217). It unwraps to
+// context.DeadlineExceeded and reports Timeout() true so failover
+// classification (ClassTimeout, transient) matches the pre-#217
+// http.Client.Timeout behavior — never context.Canceled, which classifies as
+// a non-transient client disconnect.
+type gatewayTimeoutError struct{ msg string }
+
+func (e *gatewayTimeoutError) Error() string { return e.msg }
+func (e *gatewayTimeoutError) Unwrap() error { return context.DeadlineExceeded }
+func (e *gatewayTimeoutError) Timeout() bool { return true }
+
+// gatewayWatchdog enforces request_timeout and stream_idle_timeout for one
+// Forward call by canceling the upstream request's child context (#217).
+// Canceling the child unblocks a read parked inside bufio.Scanner and aborts
+// the in-flight request without touching the caller's context, so evidence,
+// session accounting, and metrics still run after an abort.
+type gatewayWatchdog struct {
+	cancel     context.CancelFunc
+	total      time.Duration
+	idle       time.Duration
+	totalTimer *time.Timer
+	idleTimer  *time.Timer
+	totalFired atomic.Bool
+	idleFired  atomic.Bool
+}
+
+func newGatewayWatchdog(cancel context.CancelFunc, total, idle time.Duration) *gatewayWatchdog {
+	wd := &gatewayWatchdog{cancel: cancel, total: total, idle: idle}
+	if total > 0 {
+		wd.totalTimer = time.AfterFunc(total, func() {
+			wd.totalFired.Store(true)
+			cancel()
+		})
+	}
+	return wd
+}
+
+func (wd *gatewayWatchdog) stop() {
+	if wd.totalTimer != nil {
+		wd.totalTimer.Stop()
+	}
+	if wd.idleTimer != nil {
+		wd.idleTimer.Stop()
+	}
+}
+
+// streamBody switches enforcement from total duration to idle silence: the
+// response is a live SSE stream, so request_timeout no longer applies. The
+// returned reader arms the idle timer only while a Read is blocked on the
+// upstream — a slow client (write backpressure) never trips it — and re-arms
+// on every read, not per SSE event, since one large event spans many reads.
+// stream_idle_timeout <= 0 disables idle enforcement (the outer server
+// write timeout remains the only ceiling).
+func (wd *gatewayWatchdog) streamBody(r io.Reader) io.Reader {
+	if wd.totalTimer != nil {
+		wd.totalTimer.Stop()
+	}
+	if wd.idle <= 0 {
+		return r
+	}
+	wd.idleTimer = time.AfterFunc(wd.idle, func() {
+		wd.idleFired.Store(true)
+		wd.cancel()
+	})
+	wd.idleTimer.Stop()
+	return &idleResetReader{r: r, wd: wd}
+}
+
+// mapErr rewrites errors caused by a watchdog cancellation into a
+// gatewayTimeoutError so evidence and logs say what actually happened
+// ("stream idle timeout", not "context canceled") and failover still
+// classifies the attempt as a transient timeout.
+func (wd *gatewayWatchdog) mapErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if wd.idleFired.Load() {
+		return &gatewayTimeoutError{msg: fmt.Sprintf("stream idle timeout: no data from provider for %s", wd.idle)}
+	}
+	if wd.totalFired.Load() {
+		return &gatewayTimeoutError{msg: fmt.Sprintf("gateway request timeout after %s", wd.total)}
+	}
+	return err
+}
+
+// terminalMessage picks the terminal-event message for a dying stream.
+// Nil-safe: a nil watchdog always returns the fallback.
+func (wd *gatewayWatchdog) terminalMessage(fallback string) string {
+	if wd == nil {
+		return fallback
+	}
+	if wd.idleFired.Load() {
+		return "stream idle timeout: no data from provider"
+	}
+	if wd.totalFired.Load() {
+		return "gateway request timeout"
+	}
+	return fallback
+}
+
+// idleResetReader arms the watchdog's idle timer for the duration of each
+// blocking Read and disarms it as soon as data arrives.
+type idleResetReader struct {
+	r  io.Reader
+	wd *gatewayWatchdog
+}
+
+func (ir *idleResetReader) Read(p []byte) (int, error) {
+	ir.wd.idleTimer.Reset(ir.wd.idle)
+	n, err := ir.r.Read(p)
+	ir.wd.idleTimer.Stop()
+	return n, err
+}
+
 // streamCopy copies the SSE stream to w, flushing after each event, and extracts token usage when seen.
 // streamStart is when the HTTP request was sent (for TTFT). If streamingMetrics is non-nil, TTFT is set
 // on the first content-bearing SSE event. On mid-stream failure a family-correct
 // terminal event is emitted per flavor (#195) so clients see an explicit error
-// instead of a silently truncated stream.
-func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, streamStart time.Time, usage *TokenUsage, streamingMetrics *StreamingMetrics, requestID string, flavor string) error {
+// instead of a silently truncated stream. wd (nil-safe) refines the terminal
+// message when the gateway's own idle/total watchdog caused the abort (#217).
+func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, streamStart time.Time, usage *TokenUsage, streamingMetrics *StreamingMetrics, requestID string, flavor string, wd *gatewayWatchdog) error {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// Fallback: copy without flush
 		_, err := io.Copy(w, r)
 		if err != nil {
-			writeStreamTerminalError(w, nil, flavor, "upstream stream interrupted")
+			writeStreamTerminalError(w, nil, flavor, wd.terminalMessage("upstream stream interrupted"))
 		}
 		return err
 	}
@@ -153,7 +283,7 @@ func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, streamS
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			writeStreamTerminalError(w, flusher, flavor, "stream interrupted by gateway")
+			writeStreamTerminalError(w, flusher, flavor, wd.terminalMessage("stream interrupted by gateway"))
 			return ctx.Err()
 		default:
 		}
@@ -190,7 +320,7 @@ func streamCopy(ctx context.Context, w http.ResponseWriter, r io.Reader, streamS
 		// Upstream died mid-stream. Without a terminal event the client sees a
 		// truncated-but-"successful" stream: Codex retry-loops waiting for
 		// response.completed; Anthropic SDKs hang until their own timeout.
-		writeStreamTerminalError(w, flusher, flavor, "upstream connection lost mid-stream")
+		writeStreamTerminalError(w, flusher, flavor, wd.terminalMessage("upstream connection lost mid-stream"))
 		return err
 	}
 	return nil
@@ -222,6 +352,13 @@ func writeStreamTerminalError(w http.ResponseWriter, flusher http.Flusher, flavo
 		})
 		event = "event: response.failed\ndata: " + string(payload) + "\n\n"
 	default:
+		return
+	}
+	// A terminal event written through an uncommitted failover writer would
+	// count as the first body byte of a 200, committing the response and
+	// permanently disabling failover for a stream that delivered nothing.
+	// Defer it instead: flushTo emits it when no fallback takes over (#217).
+	if d, ok := w.(interface{ deferTerminalEvent([]byte) bool }); ok && d.deferTerminalEvent([]byte(event)) {
 		return
 	}
 	//nolint:gosec // G705: gateway-authored constant SSE error event, not upstream content
@@ -434,7 +571,10 @@ func HTTPClientForGateway(timeouts ParsedTimeouts, transport http.RoundTripper) 
 		rt = transport
 	}
 	return &http.Client{
-		Timeout:   timeouts.RequestTimeout,
+		// No http.Client.Timeout: request_timeout and stream_idle_timeout are
+		// enforced per-request in Forward via context cancellation, so a
+		// healthy SSE stream is bounded by idle silence instead of being
+		// hard-cut at request_timeout (#217).
 		Transport: rt,
 	}
 }
