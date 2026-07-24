@@ -1184,13 +1184,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Streaming + PII scan: buffer the entire SSE stream, extract text,
 		// scan for PII. If clean, forward the original buffered events. If
 		// PII found, return the redacted content wrapped in SSE format.
+		// A forward error (upstream death, idle abort) goes through the SAME
+		// scan: the truncated buffer may already contain PII-bearing deltas,
+		// and flushing it raw would bypass the enforced response control
+		// (#392). handleStreamingPIIScan accumulates delta content when no
+		// completed frame exists, so partial streams scan correctly; empty
+		// buffers and buffered error envelopes pass through unchanged.
 		capture := &responseCapture{ResponseWriter: w}
 		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, agent, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
-		if forwardErr == nil {
-			responsePII = handleStreamingPIIScan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), w, capture, wire, responsePIIAction, g.classifier)
-		} else {
-			capture.flushTo(w)
-		}
+		responsePII = handleStreamingPIIScan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), w, capture, wire, responsePIIAction, g.classifier)
 
 	default:
 		failoverOut, forwardErr = g.forwardWithFailover(ctx, w, fwdParams, route, agent, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)

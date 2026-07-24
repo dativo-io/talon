@@ -703,3 +703,102 @@ func TestForwardBlockedResponse_PerFamily(t *testing.T) {
 		t.Errorf("anthropic scanner-unavailable body must be Anthropic-shaped: %s", w2.Body.String())
 	}
 }
+
+// --- #392: forward errors must not bypass the response-PII scan ---
+
+// dieMidStreamHandler writes the given SSE chunk(s), flushes, and severs the
+// connection without completing the stream, producing a gateway forwardErr
+// with a truncated, PII-bearing buffer.
+func dieMidStreamHandler(chunks string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte(chunks))
+		flusher.Flush()
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		_ = conn.Close()
+	}
+}
+
+func TestGateway_StreamingPIIBlock_UpstreamDiesMidStream(t *testing.T) {
+	partial := `data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"Your IBAN is DE89370400440532013000"},"finish_reason":null}]}` + "\n\n"
+	gw, _, _ := setupOpenClawGateway(t, "redact", dieMidStreamHandler(partial))
+	gw.config.OrganizationPolicy.Defaults.ResponsePIIAction = "block"
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"what is my IBAN?"}],"stream":true}`
+	w := makeGatewayRequest(gw, body)
+	require.Equal(t, http.StatusUnavailableForLegalReasons, w.Code,
+		"a truncated stream buffer must pass the same scan as a complete one — never flushed raw (#392)")
+	assert.NotContains(t, w.Body.String(), "DE89370400440532013000",
+		"PII from the partial buffer must not reach the client on the error path")
+	assert.Contains(t, w.Body.String(), "pii_policy_violation")
+}
+
+func TestGateway_StreamingPIIRedact_UpstreamDiesMidStream(t *testing.T) {
+	partial := `data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"Contact jan.kowalski@gmail.com now"},"finish_reason":null}]}` + "\n\n"
+	gw, _, _ := setupOpenClawGateway(t, "redact", dieMidStreamHandler(partial))
+	gw.config.OrganizationPolicy.Defaults.ResponsePIIAction = "redact"
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"give me the email"}],"stream":true}`
+	w := makeGatewayRequest(gw, body)
+	respBody := w.Body.String()
+	assert.NotContains(t, respBody, "jan.kowalski@gmail.com",
+		"PII in a truncated stream must be redacted, not flushed raw (#392)")
+	assert.Contains(t, respBody, "Contact", "non-PII content survives redaction")
+}
+
+func TestGateway_StreamingCleanPartial_UpstreamDiesMidStream_PassesThrough(t *testing.T) {
+	partial := `data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"Hello world"},"finish_reason":null}]}` + "\n\n"
+	gw, _, _ := setupOpenClawGateway(t, "redact", dieMidStreamHandler(partial))
+	gw.config.OrganizationPolicy.Defaults.ResponsePIIAction = "redact"
+
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"say hello"}],"stream":true}`
+	w := makeGatewayRequest(gw, body)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "Hello world",
+		"clean truncated buffers keep flowing to the client unchanged")
+}
+
+func TestGateway_ResponsesAPI_StreamingPIIBlock_UpstreamDiesMidStream(t *testing.T) {
+	partial := `data: {"type":"response.output_text.delta","delta":"Your IBAN is DE89370400440532013000"}` + "\n\n"
+	gw, _, _ := setupOpenClawGateway(t, "redact", dieMidStreamHandler(partial))
+	gw.config.OrganizationPolicy.Defaults.ResponsePIIAction = "block"
+
+	body := `{"model":"gpt-4o-mini","input":"what is my IBAN?","stream":true}`
+	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
+	require.Equal(t, http.StatusUnavailableForLegalReasons, w.Code,
+		"Responses-family truncated buffers must scan too — delta is a top-level string (#392)")
+	assert.NotContains(t, w.Body.String(), "DE89370400440532013000")
+}
+
+func TestGateway_ResponsesAPI_StreamingPIIRedact_UpstreamDiesMidStream_KeepsTerminalEvent(t *testing.T) {
+	partial := `data: {"type":"response.output_text.delta","delta":"Contact jan.kowalski@gmail.com now"}` + "\n\n"
+	gw, _, _ := setupOpenClawGateway(t, "redact", dieMidStreamHandler(partial))
+	gw.config.OrganizationPolicy.Defaults.ResponsePIIAction = "redact"
+
+	body := `{"model":"gpt-4o-mini","input":"give me the email","stream":true}`
+	w := makeGatewayRequestToPath(gw, "/v1/proxy/openai/v1/responses", body)
+	respBody := w.Body.String()
+	assert.NotContains(t, respBody, "jan.kowalski@gmail.com",
+		"PII in a truncated Responses stream must be redacted (#392)")
+	assert.Contains(t, respBody, "response.failed",
+		"redaction must preserve the gateway terminal event — a dead stream must not present as completed (#392)")
+	assert.NotContains(t, respBody, "[DONE]",
+		"a dead redacted stream must not end with [DONE]")
+}
+
+func TestExtractGatewayTerminalEvent(t *testing.T) {
+	term := "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"stream idle timeout: no data from provider\"}}\n\n"
+	raw := []byte("data: {\"delta\":{\"text\":\"hi\"}}\n\n" + term)
+	got := extractGatewayTerminalEvent(raw)
+	require.NotNil(t, got)
+	assert.Equal(t, term, string(got))
+
+	// Upstream-authored error events (arbitrary messages) are never extracted.
+	upstream := []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"upstream says hi\"}}\n\n")
+	assert.Nil(t, extractGatewayTerminalEvent(upstream))
+
+	// Clean streams have no terminal event.
+	assert.Nil(t, extractGatewayTerminalEvent([]byte("data: {\"x\":1}\n\ndata: [DONE]\n\n")))
+}
