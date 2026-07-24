@@ -354,6 +354,13 @@ func writeStreamTerminalError(w http.ResponseWriter, flusher http.Flusher, flavo
 	default:
 		return
 	}
+	// The stream may have died mid-event, leaving an unterminated partial
+	// event on the wire; without a separator, SSE parsers would fold the
+	// terminal event's lines into that partial and never dispatch the error.
+	// A leading blank line closes any pending event (and dispatches nothing
+	// when none is pending), so the terminal event always parses as its own
+	// event (#393).
+	event = "\n\n" + event
 	// A terminal event written through an uncommitted failover writer would
 	// count as the first body byte of a 200, committing the response and
 	// permanently disabling failover for a stream that delivered nothing.

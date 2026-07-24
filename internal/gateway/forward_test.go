@@ -983,3 +983,21 @@ func TestForward_SlowClientBackpressureDoesNotTripIdle(t *testing.T) {
 	require.NoError(t, err, "write backpressure must not count as upstream idle (#217)")
 	require.Equal(t, 5, strings.Count(sw.Body.String(), "data: "))
 }
+
+// A stream that dies mid-event leaves an unterminated partial on the wire;
+// the terminal event must still parse as its own SSE event (#393).
+func TestStreamCopy_MidEventAbort_TerminalEventStaysParseable(t *testing.T) {
+	// Complete line, but the event is never terminated by a blank line before
+	// the upstream dies.
+	r := &failingReader{data: []byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"cut\"}}\n"), err: errors.New("connection reset")}
+	w := httptest.NewRecorder()
+	err := streamCopy(context.Background(), w, r, time.Now(), nil, nil, "req-1", streamFlavorAnthropic, nil)
+	require.Error(t, err)
+
+	body := w.Body.String()
+	require.Contains(t, body, "cut", "partial bytes are still delivered")
+	idx := strings.Index(body, "event: error")
+	require.Greater(t, idx, 0, "terminal event must be present")
+	require.True(t, strings.HasSuffix(body[:idx], "\n\n"),
+		"a blank-line separator must close the partial event so parsers dispatch the terminal error (#393)")
+}
