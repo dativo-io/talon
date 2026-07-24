@@ -79,9 +79,10 @@ proof-gates: ## Run Epic #112 proof gates (matrix/parity/egress/fuzz/benchmark)
 	@$(GO_ENV) go test -count=1 ./internal/agent/... -run 'PII|Tool|Residual|NoPIIEgress|Remediation|ScannerFailure'
 	@$(GO_ENV) go test -count=1 ./internal/classifier/adapter/... -run 'TestAnalyze|TestRedactText|TestVerifyEgress'
 	@$(GO_ENV) go test -count=1 ./internal/scanner/... -run 'TestBuild|TestValidateEndpointLocality'
-	@$(GO_ENV) go test -run '^$$' -fuzz=FuzzPIIRedactVerify -fuzztime=3s ./internal/classifier
-	@$(GO_ENV) go test -run '^$$' -fuzz=FuzzNormalizeResultsOffsets -fuzztime=3s ./internal/classifier/presidio
-	@$(GO_ENV) go test -run '^$$' -fuzz=FuzzAdapterResponseDecode -fuzztime=3s ./internal/classifier/adapter
+	@# Exec-count fuzztime (Nx), never a duration: duration deadlines race in Go's fuzz coordinator (golang/go#72104) and flake the gate.
+	@$(GO_ENV) go test -run '^$$' -fuzz=FuzzPIIRedactVerify -fuzztime=40000x ./internal/classifier
+	@$(GO_ENV) go test -run '^$$' -fuzz=FuzzNormalizeResultsOffsets -fuzztime=150000x ./internal/classifier/presidio
+	@$(GO_ENV) go test -run '^$$' -fuzz=FuzzAdapterResponseDecode -fuzztime=20000x ./internal/classifier/adapter
 	@if [ "${SKIP_BENCHMARK_REGRESSION:-}" = "1" ]; then \
 		echo "Skipping benchmark regression (SKIP_BENCHMARK_REGRESSION=1)"; \
 	else \
