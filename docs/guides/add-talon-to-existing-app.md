@@ -141,7 +141,7 @@ Run your app (or the curl command above) once. Then in another terminal, from th
 talon audit list
 ```
 
-You should see a new row: agent `my-app`, model, cost, and decision. **This is the first record from your real app.** Talon intercepted the request, forwarded it to OpenAI, and wrote a tamper-proof evidence record.
+You should see a new row: agent `my-app`, model, cost, and decision. **This is the first record from your real app.** Talon intercepted the request, forwarded it to OpenAI, and wrote a tamper-evident evidence record.
 
 ---
 

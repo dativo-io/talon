@@ -498,7 +498,7 @@ talon audit list --agent zendesk-vendor-proxy --limit 1
 - Flip all proxied vendors to `mode: intercept`
 - PII redaction and policy enforcement now active on every call
 - **Risk:** Medium (vendor dependency)
-- **Goal:** Full compliance coverage
+- **Goal:** Full control and evidence coverage of vendor traffic
 
 ### Phase 4: Human Oversight (Week 4)
 - Add approval workflows for high-risk actions
@@ -561,14 +561,14 @@ there is no passive mode that polls the vendor's own audit logs.
 ### Before Talon
 - ❌ No independent audit trail
 - ❌ Vendor's "we're compliant" claims unverified
-- ❌ Can't prove GDPR Article 30 compliance
+- ❌ Can't produce GDPR Article 30 supporting records on demand
 - ❌ PII sent to vendors unredacted
 - ❌ No human oversight for high-risk decisions
 - ❌ Manual evidence gathering during audits (weeks)
 
 ### After Talon
 - ✅ Independent audit trail (vendor-agnostic)
-- ✅ Real-time verification of vendor compliance
+- ✅ Real-time verification of vendor behavior against your policies
 - ✅ One-command GDPR Article 30 exports
 - ✅ PII automatically redacted before vendor access
 - ✅ Systematic human oversight (visual plan review)
@@ -583,17 +583,17 @@ there is no passive mode that polls the vendor's own audit logs.
 **Without Talon:**
 - Vendor cost: €2,000/month (Zendesk AI Agent)
 - Compliance audit prep: 40 hours/quarter × €100/hr = €4,000/quarter
-- Risk of GDPR fine: €50,000 (if violation discovered)
-- **Total annual risk: €16,000 + €50,000 exposure**
+- No independent records to draw on if a violation is alleged
+- **Total annual audit-prep cost: €16,000**
 
 **With Talon:**
 - Vendor cost: €2,000/month (unchanged)
 - Talon cost: €0 (open source)
 - Compliance audit prep: 2 hours/quarter × €100/hr = €200/quarter
-- Risk of GDPR fine: ~€0 (full compliance)
-- **Total annual cost: €800 + zero exposure**
+- GDPR Art. 30 supporting records and evidence exportable on demand
+- **Total annual audit-prep cost: €800**
 
-**ROI: €15,200/year savings + eliminated fine risk**
+**Illustrative savings: €15,200/year in audit-prep effort.** Talon provides supporting controls and evidence for GDPR; it does not by itself make a deployment compliant or eliminate fine risk.
 
 ---
 

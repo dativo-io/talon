@@ -629,7 +629,7 @@ signal).
 - Hosting: €200/month = €2,400/year
 - **Total Year 1: €4,400**
 
-**ROI: €39,600 saved (90% cost reduction)**
+**Illustrative build-vs-buy example: €39,600 saved (90% cost reduction)**
 
 ---
 

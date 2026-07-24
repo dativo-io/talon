@@ -33,7 +33,7 @@ Principles:
 
 **What works:** Use a proxy in front of your LLM provider that has recognizers for the EU patterns you care about, classifies the request (e.g. tier by sensitivity), and applies a policy (block / redact / warn). You want one binary or service that every app talks to so you don't reimplement detection in each codebase.
 
-**Optional link:** [Talon](https://github.com/dativo-io/talon) ships 25+ EU PII patterns (IBAN, BSN, NIR, NIF, PESEL, VAT IDs, etc.), runs policy before the call, and writes a tamper-proof record per request. No API key needed to try: `git clone https://github.com/dativo-io/talon && cd talon/examples/docker-compose && docker compose up` — then curl a request with an IBAN in the body and run `docker compose exec talon talon audit list` to see PII detected and the decision.
+**Optional link:** [Talon](https://github.com/dativo-io/talon) ships 25+ EU PII patterns (IBAN, BSN, NIR, NIF, PESEL, VAT IDs, etc.), runs policy before the call, and writes a tamper-evident record per request. No API key needed to try: `git clone https://github.com/dativo-io/talon && cd talon/examples/docker-compose && docker compose up` — then curl a request with an IBAN in the body and run `docker compose exec talon talon audit list` to see PII detected and the decision.
 
 ---
 

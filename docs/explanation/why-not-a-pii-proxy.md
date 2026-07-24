@@ -60,7 +60,7 @@ A "PII proxy" here means a service that sits in front of your LLM API and scans 
 
 **What it misses:** You are still liable for what the vendor does with your data. A proxy in front of *your* app does not help with *their* app. You need a way to put their traffic through the same pipeline: PII scan, tool filter, policy, signed evidence. That means the vendor must send their traffic through your proxy (e.g. they point their MCP client at your endpoint).
 
-**What Talon does:** Talon's MCP proxy is an endpoint the vendor can use. They point their agent at Talon; Talon intercepts MCP (including `tools/list` and `tools/call`), runs policy, redacts or blocks, and writes evidence. You get the same controls and tamper-proof record for vendor traffic. No vendor code change required beyond configuration (endpoint URL and key).
+**What Talon does:** Talon's MCP proxy is an endpoint the vendor can use. They point their agent at Talon; Talon intercepts MCP (including `tools/list` and `tools/call`), runs policy, redacts or blocks, and writes evidence. You get the same controls and tamper-evident record for vendor traffic. No vendor code change required beyond configuration (endpoint URL and key).
 
 **Proof:** Configure `talon serve --proxy-config <path>` with a proxy policy that has `allowed_tools` and PII settings. Point the vendor at your Talon `/mcp/proxy` endpoint. Trigger the vendor; `talon audit list` shows evidence for MCP requests and tool calls. See [Vendor integration guide](../VENDOR_INTEGRATION_GUIDE.md) and [Architecture: MCP proxy](../ARCHITECTURE_MCP_PROXY.md).
 
