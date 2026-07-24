@@ -14,6 +14,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dativo-io/talon/internal/failover"
 )
 
 func TestForward_NonStreaming(t *testing.T) {
@@ -334,7 +336,8 @@ func TestHTTPClientForGateway(t *testing.T) {
 	}
 	client := HTTPClientForGateway(timeouts, nil)
 	require.NotNil(t, client)
-	require.Equal(t, 10*time.Second, client.Timeout)
+	require.Zero(t, client.Timeout,
+		"no http.Client.Timeout: request_timeout/stream_idle_timeout are enforced per-request in Forward so streams are bounded by idle silence, not total duration (#217)")
 
 	base, ok := client.Transport.(*http.Transport)
 	require.True(t, ok, "base transport must be *http.Transport")
@@ -647,7 +650,7 @@ func TestStreamCopy_MidStreamTerminalEvents(t *testing.T) {
 	run := func(flavor string) string {
 		w := httptest.NewRecorder()
 		r := &failingReader{data: []byte(upstream), err: errors.New("connection reset")}
-		err := streamCopy(context.Background(), w, r, time.Now(), nil, nil, "req-1", flavor)
+		err := streamCopy(context.Background(), w, r, time.Now(), nil, nil, "req-1", flavor, nil)
 		require.Error(t, err)
 		return w.Body.String()
 	}
@@ -669,7 +672,314 @@ func TestStreamCopy_MidStreamTerminalEvents(t *testing.T) {
 func TestStreamCopy_CleanStreamNoTerminalEvent(t *testing.T) {
 	w := httptest.NewRecorder()
 	clean := "data: {\"choices\":[]}\n\ndata: [DONE]\n\n"
-	err := streamCopy(context.Background(), w, strings.NewReader(clean), time.Now(), nil, nil, "req-1", streamFlavorAnthropic)
+	err := streamCopy(context.Background(), w, strings.NewReader(clean), time.Now(), nil, nil, "req-1", streamFlavorAnthropic, nil)
 	require.NoError(t, err)
 	assert.Equal(t, clean, w.Body.String(), "healthy streams must never gain a terminal error event")
+}
+
+// --- #217: stream_idle_timeout enforcement; request_timeout no longer hard-cuts streams ---
+
+// A healthy SSE stream must outlive request_timeout: chunks keep arriving, so
+// only idle silence may bound it. Regression test for the 120s hard-cut (#217).
+func TestForward_HealthyStreamOutlivesRequestTimeout(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		for i := 0; i < 8; i++ {
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n"))
+			flusher.Flush()
+			time.Sleep(75 * time.Millisecond)
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	w := httptest.NewRecorder()
+	err := Forward(w, ForwardParams{
+		Context:     context.Background(),
+		UpstreamURL: upstream.URL,
+		Method:      http.MethodPost,
+		Body:        []byte(`{"stream":true}`),
+		Timeouts: ParsedTimeouts{
+			ConnectTimeout:    time.Second,
+			RequestTimeout:    400 * time.Millisecond, // total ~600ms of chunks outlives this
+			StreamIdleTimeout: 2 * time.Second,        // gaps are 75ms, far below idle
+		},
+		StreamFlavor: streamFlavorChat,
+	})
+	require.NoError(t, err, "a stream with steady chunks must not be cut at request_timeout (#217)")
+	require.Equal(t, 9, strings.Count(w.Body.String(), "data: "), "all chunks incl. [DONE] must pass through")
+	require.NotContains(t, w.Body.String(), "event: error")
+}
+
+// A stream that goes silent longer than stream_idle_timeout is aborted with
+// the family-correct terminal event, classified as a transient timeout (never
+// a client cancel), and the caller's context stays alive for evidence.
+func TestForward_StreamIdleTimeoutAborts(t *testing.T) {
+	stall := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n"))
+		flusher.Flush()
+		<-stall // go silent without closing the stream
+	}))
+	defer upstream.Close()
+	defer close(stall)
+
+	parent, parentCancel := context.WithCancel(context.Background())
+	defer parentCancel()
+	w := httptest.NewRecorder()
+	start := time.Now()
+	err := Forward(w, ForwardParams{
+		Context:      parent,
+		UpstreamURL:  upstream.URL,
+		Method:       http.MethodPost,
+		Body:         []byte(`{"stream":true}`),
+		StreamFlavor: streamFlavorAnthropic,
+		Timeouts: ParsedTimeouts{
+			ConnectTimeout:    time.Second,
+			RequestTimeout:    10 * time.Second, // must NOT be what fires
+			StreamIdleTimeout: 150 * time.Millisecond,
+		},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "stream idle timeout")
+	require.ErrorIs(t, err, context.DeadlineExceeded,
+		"idle abort must classify as a transient timeout, not a client cancel (#217)")
+	require.Less(t, time.Since(start), 5*time.Second, "abort must come from the idle timer, not request_timeout")
+	require.Contains(t, w.Body.String(), "message_start", "chunks before the stall must reach the client")
+	require.Contains(t, w.Body.String(), "event: error", "family-correct terminal event required (#195)")
+	require.Contains(t, w.Body.String(), "stream idle timeout")
+	require.NoError(t, parent.Err(),
+		"watchdog must cancel only the child context; evidence/session bookkeeping needs the parent alive")
+}
+
+// Non-streaming requests keep the exact request_timeout contract: a hung JSON
+// body is cut at request_timeout and still classifies as a transient timeout
+// so the failover chain can engage.
+func TestForward_NonStreamingStillBoundedByRequestTimeout(t *testing.T) {
+	stall := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte(`{"partial":`))
+		flusher.Flush()
+		<-stall // never finish the body
+	}))
+	defer upstream.Close()
+	defer close(stall)
+
+	w := httptest.NewRecorder()
+	err := Forward(w, ForwardParams{
+		Context:     context.Background(),
+		UpstreamURL: upstream.URL,
+		Method:      http.MethodPost,
+		Body:        []byte(`{}`),
+		Timeouts: ParsedTimeouts{
+			ConnectTimeout:    time.Second,
+			RequestTimeout:    150 * time.Millisecond,
+			StreamIdleTimeout: 10 * time.Second,
+		},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway request timeout")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	cls := failover.ClassifyHTTP(err, 0)
+	require.Equal(t, failover.ClassTimeout, cls.Class)
+	require.True(t, cls.Transient, "gateway-enforced timeouts must stay failover-eligible")
+}
+
+// stream_idle_timeout: 0 disables idle enforcement entirely — a silent gap
+// longer than request_timeout must survive on an already-flowing stream.
+func TestForward_StreamIdleTimeoutZeroDisablesIdleAbort(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n"))
+		flusher.Flush()
+		time.Sleep(500 * time.Millisecond) // silent gap > request_timeout
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	w := httptest.NewRecorder()
+	err := Forward(w, ForwardParams{
+		Context:     context.Background(),
+		UpstreamURL: upstream.URL,
+		Method:      http.MethodPost,
+		Body:        []byte(`{"stream":true}`),
+		Timeouts: ParsedTimeouts{
+			ConnectTimeout:    time.Second,
+			RequestTimeout:    250 * time.Millisecond,
+			StreamIdleTimeout: 0,
+		},
+		StreamFlavor: streamFlavorChat,
+	})
+	require.NoError(t, err)
+	require.Contains(t, w.Body.String(), "[DONE]")
+	require.NotContains(t, w.Body.String(), "event: error")
+}
+
+// A pre-commit idle abort (200 + SSE headers, then silence before any body
+// byte) must leave the failoverWriter uncommitted and classify transient, so
+// the fallback chain stays eligible; the terminal event is deferred and only
+// delivered when no fallback takes over (#217).
+func TestForward_PreCommitIdleAbort_StaysFailoverEligible(t *testing.T) {
+	stall := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-stall // headers sent, then total silence: no body byte ever
+	}))
+	defer upstream.Close()
+	defer close(stall)
+
+	rec := httptest.NewRecorder()
+	fw := newFailoverWriter(rec)
+	err := Forward(fw, ForwardParams{
+		Context:      context.Background(),
+		UpstreamURL:  upstream.URL,
+		Method:       http.MethodPost,
+		Body:         []byte(`{"stream":true}`),
+		StreamFlavor: streamFlavorAnthropic,
+		Timeouts: ParsedTimeouts{
+			ConnectTimeout:    time.Second,
+			RequestTimeout:    10 * time.Second,
+			StreamIdleTimeout: 150 * time.Millisecond,
+		},
+	})
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.False(t, fw.committed,
+		"terminal event must not commit an uncommitted failover writer — pre-commit idle aborts stay failover-eligible (#217)")
+	cls := classifyAttempt(err, fw.status)
+	require.True(t, cls.Transient)
+	require.Empty(t, rec.Body.String(), "nothing reaches the client while failover is still possible")
+
+	// No fallback took over: the give-up path must still deliver the
+	// family-correct terminal event (#195).
+	fw.flushTo()
+	require.Contains(t, rec.Body.String(), "event: error")
+	require.Contains(t, rec.Body.String(), "stream idle timeout")
+}
+
+// Post-commit (real upstream bytes already forwarded) the terminal event goes
+// straight through — deferral applies only while uncommitted.
+func TestFailoverWriter_DeferredTerminalEvent(t *testing.T) {
+	rec := httptest.NewRecorder()
+	fw := newFailoverWriter(rec)
+	fw.WriteHeader(http.StatusOK)
+	require.True(t, fw.deferTerminalEvent([]byte("event: error\ndata: {}\n\n")),
+		"uncommitted writer must defer the terminal event")
+	require.Empty(t, rec.Body.String())
+
+	_, _ = fw.Write([]byte("data: chunk\n\n")) // first body byte commits
+	require.True(t, fw.committed)
+	require.False(t, fw.deferTerminalEvent([]byte("ignored")),
+		"committed writer must write terminal events directly (#195)")
+
+	fw2 := newFailoverWriter(httptest.NewRecorder())
+	fw2.WriteHeader(http.StatusOK)
+	require.True(t, fw2.deferTerminalEvent([]byte("event: error\ndata: {\"deferred\":true}\n\n")))
+	fw2.flushTo()
+	require.Contains(t, fw2.dst.(*httptest.ResponseRecorder).Body.String(), "deferred",
+		"flushTo must deliver the deferred terminal event on give-up paths")
+}
+
+// plainWriter implements http.ResponseWriter without http.Flusher, forcing
+// streamCopy's io.Copy fallback path.
+type plainWriter struct {
+	h      http.Header
+	buf    bytes.Buffer
+	status int
+}
+
+func (p *plainWriter) Header() http.Header         { return p.h }
+func (p *plainWriter) Write(b []byte) (int, error) { return p.buf.Write(b) }
+func (p *plainWriter) WriteHeader(c int)           { p.status = c }
+
+// The io.Copy fallback path (non-Flusher writer) gets the same idle
+// enforcement and terminal event as the scanner path.
+func TestForward_StreamIdleTimeout_NonFlusherWriter(t *testing.T) {
+	stall := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n"))
+		flusher.Flush()
+		<-stall
+	}))
+	defer upstream.Close()
+	defer close(stall)
+
+	pw := &plainWriter{h: make(http.Header)}
+	err := Forward(pw, ForwardParams{
+		Context:      context.Background(),
+		UpstreamURL:  upstream.URL,
+		Method:       http.MethodPost,
+		Body:         []byte(`{"stream":true}`),
+		StreamFlavor: streamFlavorAnthropic,
+		Timeouts: ParsedTimeouts{
+			ConnectTimeout:    time.Second,
+			RequestTimeout:    10 * time.Second,
+			StreamIdleTimeout: 150 * time.Millisecond,
+		},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "stream idle timeout")
+	require.Contains(t, pw.buf.String(), "event: error",
+		"io.Copy fallback path must emit the terminal event too")
+}
+
+// slowFlusherWriter simulates client write backpressure: every Write blocks
+// longer than the idle timeout.
+type slowFlusherWriter struct {
+	*httptest.ResponseRecorder
+	delay time.Duration
+}
+
+func (s *slowFlusherWriter) Write(b []byte) (int, error) {
+	time.Sleep(s.delay)
+	return s.ResponseRecorder.Write(b)
+}
+
+// The idle timer is armed only while a Read is blocked on the upstream: a
+// slow CLIENT must never trip it while the provider keeps sending (#217).
+func TestForward_SlowClientBackpressureDoesNotTripIdle(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		for i := 0; i < 5; i++ {
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n"))
+			flusher.Flush()
+			time.Sleep(20 * time.Millisecond)
+		}
+	}))
+	defer upstream.Close()
+
+	sw := &slowFlusherWriter{ResponseRecorder: httptest.NewRecorder(), delay: 300 * time.Millisecond}
+	err := Forward(sw, ForwardParams{
+		Context:     context.Background(),
+		UpstreamURL: upstream.URL,
+		Method:      http.MethodPost,
+		Body:        []byte(`{"stream":true}`),
+		Timeouts: ParsedTimeouts{
+			ConnectTimeout:    time.Second,
+			RequestTimeout:    10 * time.Second,
+			StreamIdleTimeout: 150 * time.Millisecond, // < per-write delay: would fire if armed across writes
+		},
+		StreamFlavor: streamFlavorChat,
+	})
+	require.NoError(t, err, "write backpressure must not count as upstream idle (#217)")
+	require.Equal(t, 5, strings.Count(sw.Body.String(), "data: "))
 }

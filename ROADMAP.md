@@ -11,7 +11,7 @@ The active roadmap lives on GitHub: the [MVP milestone](https://github.com/dativ
 Everything below is current, code-verified behavior — see [CHANGELOG.md](CHANGELOG.md) and [releases](https://github.com/dativo-io/talon/releases).
 
 - **Cost control** — per-agent daily/monthly caps that deny **before** the provider call; cross-provider session budgets (soft caps); cache-aware pricing with ISO currency labels; cost attribution and rollups by tenant/agent/session.
-- **Reliability** — error-driven provider fallback chains triggered only by transient failures (timeout, connection, 429, 5xx), with every candidate re-checked against sovereignty, model and budget policy, failing closed on exhaustion; connect vs response-header timeout separation; provider-native error envelopes.
+- **Reliability** — error-driven provider fallback chains triggered only by transient failures (timeout, connection, 429, 5xx), with every candidate re-checked against sovereignty, model and budget policy, failing closed on exhaustion; connect vs response-header timeout separation; stream idle-timeout enforcement (healthy streams outlive `request_timeout`, silent ones abort with a terminal event); provider-native error envelopes.
 - **Shared policy** — an organization baseline with one explicit per-agent override; PII scanning (regex/Presidio/HTTP/local-LLM) on prompts, attachments, tool arguments and responses; tool allowlists and forbidden globs filtered or blocked before the model; egress and sovereignty rules (`eu_strict`/`eu_preferred`/`global`), air-gap mode.
 - **Session understanding** — session identity (explicit `X-Talon-Session-ID` → vendor header → synthetic evidence-only); session-scoped audit, cost rollups and verification; dashboard session drill-down; metrics API, SSE stream, OTel GenAI traces.
 - **Fleet operations** — a multi-agent native runtime where one `agent.talon.yaml` = one AI use case = one active key, discovered by an `agents_dir` scan (duplicate names fail closed); `agent.enabled` plus `talon agents enable/disable`; periodic safe config reload (default 30s) with last-known-good; the `talon agents` attention queue — STATE/HEALTH/COST/WHY — and `talon agents show <name>`.
@@ -26,7 +26,7 @@ The gaps between today and the MVP contract, each tracked by an issue in the [MV
 
 - **Cost-control contract** — warning thresholds as signed evidence (once per crossing), one organization webhook delivered after evidence commit, session-cap hardening ([#144](https://github.com/dativo-io/talon/issues/144))
 - **Same-provider retries with backoff** — transient failures only, cost-counted, evidence-visible ([#139](https://github.com/dativo-io/talon/issues/139))
-- **Stream idle timeout enforcement** ([#217](https://github.com/dativo-io/talon/issues/217)) and the **error contract** with stable machine codes ([#142](https://github.com/dativo-io/talon/issues/142), [#195](https://github.com/dativo-io/talon/issues/195))
+- **Error contract** with stable machine codes ([#142](https://github.com/dativo-io/talon/issues/142), [#195](https://github.com/dativo-io/talon/issues/195))
 - **Session summary contract** for `talon session show` ([#271](https://github.com/dativo-io/talon/issues/271))
 - **Per-execution tool lifecycle evidence + tool-destination egress** on the MCP path ([#146](https://github.com/dativo-io/talon/issues/146))
 - **Read-only operations dashboard** over the same semantics the CLI uses ([#143](https://github.com/dativo-io/talon/issues/143))

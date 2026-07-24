@@ -414,8 +414,8 @@ Timeout phases (`gateway.timeouts`):
 |-----|---------|--------|
 | `connect_timeout` | `10s` | Connection establishment: TCP dial + TLS handshake. |
 | `response_header_timeout` | `request_timeout` | Wait for upstream response headers (time-to-first-byte) after the request is sent. Non-streaming LLM calls with large inputs routinely take >10s before headers — keep this at least as generous as your longest expected generation. |
-| `request_timeout` | `120s` | Entire request lifecycle, including reading the full response body. Raise for long non-streaming generations. |
-| `stream_idle_timeout` | `60s` | Reserved for gaps between stream chunks (not yet enforced, #217). |
+| `request_timeout` | `120s` | Entire request lifecycle for non-streaming responses, including reading the full body. Also bounds a streaming request until the response is identified as SSE; from that point `stream_idle_timeout` takes over (#217). Raise for long non-streaming generations. |
+| `stream_idle_timeout` | `60s` | Maximum silence between upstream stream chunks. A live SSE stream may run past `request_timeout` as long as chunks keep arriving; silence longer than this aborts the stream with the family-correct terminal error event. `0` disables idle enforcement. Raise for slow local providers (CPU inference can pause >60s before the first token). |
 
 Provider auth mode:
 
