@@ -5,6 +5,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -12,7 +14,7 @@ import (
 )
 
 func TestSecretsCmd_HasSubcommands(t *testing.T) {
-	expected := []string{"set", "list", "audit", "rotate"}
+	expected := []string{"set", "list", "audit", "rotate", "delete"}
 	registered := make(map[string]bool)
 	for _, cmd := range secretsCmd.Commands() {
 		registered[cmd.Name()] = true
@@ -132,4 +134,37 @@ func TestOpenSecretsStore_InvalidKeyLength(t *testing.T) {
 	t.Setenv("TALON_SECRETS_KEY", "too-short")
 	_, err := openSecretsStore()
 	require.Error(t, err)
+}
+
+// TestNoRunlessParentCommands is the #378 invariant: cobra prints help and
+// exits 0 when a runless parent gets an unknown subcommand, so a typo'd
+// destructive command looks successful to scripts. After hardening, every
+// parent in the tree must be runnable, and unknown subcommands must error.
+func TestNoRunlessParentCommands(t *testing.T) {
+	hardenParentCommands(rootCmd)
+
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		if c.HasSubCommands() {
+			assert.True(t, c.Runnable(),
+				"parent command %q must be runnable so unknown subcommands exit non-zero (#378)", c.CommandPath())
+		}
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(rootCmd)
+}
+
+func TestParentCommand_UnknownSubcommandErrors(t *testing.T) {
+	hardenParentCommands(rootCmd)
+
+	err := secretsCmd.RunE(secretsCmd, []string{"frobnicate"})
+	require.Error(t, err, "unknown subcommand must exit non-zero (#378)")
+	assert.Contains(t, err.Error(), "frobnicate")
+	assert.Contains(t, err.Error(), "talon secrets")
+
+	// Bare invocation keeps the help behavior (exit 0).
+	secretsCmd.SetOut(&bytes.Buffer{})
+	assert.NoError(t, secretsCmd.RunE(secretsCmd, nil))
 }

@@ -48,6 +48,13 @@ var secretsRotateCmd = &cobra.Command{
 	RunE:  secretsRotate,
 }
 
+var secretsDeleteCmd = &cobra.Command{
+	Use:   "delete [name]",
+	Short: "Remove a secret from the vault",
+	Args:  cobra.ExactArgs(1),
+	RunE:  secretsDelete,
+}
+
 func init() {
 	secretsSetCmd.Flags().StringSliceVar(&secretsSetTenants, "tenant", nil,
 		"Restrict retrieval to this tenant (repeatable; glob patterns allowed). Empty means every tenant.")
@@ -57,6 +64,7 @@ func init() {
 	secretsCmd.AddCommand(secretsListCmd)
 	secretsCmd.AddCommand(secretsAuditCmd)
 	secretsCmd.AddCommand(secretsRotateCmd)
+	secretsCmd.AddCommand(secretsDeleteCmd)
 	rootCmd.AddCommand(secretsCmd)
 }
 
@@ -179,6 +187,28 @@ func secretsAudit(cmd *cobra.Command, args []string) error {
 		)
 	}
 
+	return nil
+}
+
+func secretsDelete(cmd *cobra.Command, args []string) error {
+	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+	defer cancel()
+
+	name := args[0]
+
+	store, err := openSecretsStore()
+	if err != nil {
+		return fmt.Errorf("initializing secrets: %w", err)
+	}
+	defer store.Close()
+
+	if err := store.Delete(ctx, name); err != nil {
+		return fmt.Errorf("deleting secret: %w", err)
+	}
+
+	fmt.Printf("✓ Secret '%s' deleted (recorded in access log)\n", name)
+	fmt.Fprintln(cmd.ErrOrStderr(),
+		"notice: running gateways resolve secrets at request time — traffic referencing this name now fails closed on next use")
 	return nil
 }
 

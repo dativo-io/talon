@@ -194,8 +194,30 @@ func initConfig() {
 	_ = viper.ReadInConfig()
 }
 
+// hardenParentCommands makes every parent-only command fail loudly on an
+// unknown subcommand. Cobra's default for a runless parent is to print help
+// and exit 0 — so a typo'd or nonexistent destructive command (e.g. `talon
+// secrets frobnicate`) looks successful to scripts (#378). Bare invocation
+// keeps the help behavior; an unrecognized subcommand becomes a non-zero
+// error. Walking the tree at Execute time covers current and future parents.
+func hardenParentCommands(c *cobra.Command) {
+	if c.HasSubCommands() && !c.Runnable() {
+		c.RunE = func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			return fmt.Errorf("unknown command %q for %q — run %q for available subcommands",
+				args[0], cmd.CommandPath(), cmd.CommandPath()+" --help")
+		}
+	}
+	for _, sub := range c.Commands() {
+		hardenParentCommands(sub)
+	}
+}
+
 // Execute runs the root command and flushes OTel on exit
 func Execute() error {
+	hardenParentCommands(rootCmd)
 	err := rootCmd.Execute()
 	if otelShutdown != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
