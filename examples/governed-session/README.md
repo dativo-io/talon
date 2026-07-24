@@ -86,7 +86,7 @@ Individual acts: `allowed`, `tool`, `pii`, `route`, `budget`, `planner-write`,
 Both providers discount cached prompt tokens — Anthropic bills cache **writes**
 at 1.25× the input rate and cache **reads** at ~0.1×; OpenAI discounts
 `cached_tokens`. A naïve `input_tokens × input_rate` total therefore misprices
-exactly the workloads agents create (long shared prefixes, many calls).
+exactly the traffic patterns agents create (long shared prefixes, many calls).
 
 Talon parses `cache_creation_input_tokens` / `cache_read_input_tokens`
 (Anthropic) and `prompt_tokens_details.cached_tokens` (OpenAI) into evidence

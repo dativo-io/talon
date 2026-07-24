@@ -9,7 +9,7 @@
 #
 # THE STORY (data classification drives execution placement):
 #   Confidential input (an IBAN → sensitivity 3 → data tier 2) is NOT blocked
-#   here — this workload is ALLOWED to process confidential data, but the
+#   here — this agent is ALLOWED to process confidential data, but the
 #   routing policy requires it to stay LOCAL. So the runner evaluates the
 #   tier-2 candidates: the US primary (gpt-4o) is REJECTED by routing.rego
 #   ("confidential tier requires LOCAL provider only") and the LOCAL fallback

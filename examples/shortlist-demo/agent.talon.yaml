@@ -45,4 +45,4 @@ compliance:
     system:
       system_description: "Governed LLM gateway demo for EU shortlist evaluation"
       intended_purpose: "Demonstrate policy enforcement, PII handling, and auditor exports"
-      oversight_description: "Platform operator reviews denied requests and evidence in Mission Control"
+      oversight_description: "Platform operator reviews denied requests and evidence in the Talon dashboard"

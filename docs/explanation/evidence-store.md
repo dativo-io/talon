@@ -1,6 +1,6 @@
 # Evidence Store
 
-How Talon creates, signs, stores, and exports tamper-proof audit records.
+How Talon creates, signs, stores, and exports tamper-evident audit records.
 
 For a complete list of explanation codes and remediation guidance, see [explanation-catalog.md](./explanation-catalog.md).
 
@@ -219,7 +219,7 @@ for the full rationale.
 | Regulation | Article | Talon Feature |
 |-----------|---------|--------------|
 | GDPR | Article 30 (Processing records) | Evidence export with data categories, purposes |
-| ISO 27001 | A.8.15 (Logging) | HMAC-signed tamper-proof records |
+| ISO 27001 | A.8.15 (Logging) | HMAC-signed tamper-evident records |
 | NIS2 | Article 21 (Incident reporting) | Timeline view, correlation IDs |
 | EU AI Act | Article 13 (Transparency) | Full execution records with model, cost, PII |
 | DORA | Article 11 (ICT incidents) | Cost tracking, incident timeline |

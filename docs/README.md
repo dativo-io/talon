@@ -70,7 +70,7 @@ Choose the shortest path for your situation:
 | Doc | Pillar | Description |
 |-----|--------|-------------|
 | [60-Second Demo (no API key)](tutorials/quickstart-demo.md) | Integrate | Docker Compose demo with mock provider — see the full pipeline in action in 60 seconds. |
-| [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Proof | End-to-end tamper-proof demo: verify in dashboard, export signed evidence, tamper one field, verify failure with CLI. |
+| [Evidence integrity 5-minute proof](tutorials/evidence-integrity-demo.md) | Proof | End-to-end tamper-evidence demo: verify in dashboard, export signed evidence, tamper one field, verify failure with CLI. |
 | [Your first governed agent](tutorials/first-governed-agent.md) | Integrate | Install → init → run → see evidence. Native Talon (requires Go + API key). |
 | [Manual governed session](tutorials/manual-governed-session.md) | Sessions | Reproduce a governed session by hand: tools, enforcement, sovereignty, session budgets, tamper check. |
 | [Turnkey compliance reports](tutorials/turnkey-compliance-reports.md) | Proof | Init with EU policy packs → dashboard Compliance tab → signed RoPA / Annex IV exports, each leaving evidence. No API key needed. |
