@@ -71,6 +71,20 @@ var nonRequestClass = map[string]RecordClass{
 	CacheEventErasureUser:   ClassToolEvent,
 }
 
+// toolActionType is the closed registry of request-class invocation types that
+// are intercepted tool actions rather than LLM traffic units: MCP calls Talon
+// proxied or served, with their terminal outcome. Session summaries (#271)
+// split these out of the request count so "9 requests, 3 tool calls" reads
+// truthfully. Registered here, next to nonRequestClass, so a new tool-shaped
+// invocation type is classified in one place.
+var toolActionType = map[string]struct{}{
+	"proxy_tool_call":       {}, // proxied MCP tools/call, allowed and forwarded
+	"proxy_tool_blocked":    {}, // proxied MCP tools/call, denied by policy
+	"proxy_upstream_error":  {}, // proxied MCP tools/call, upstream failed (#357)
+	"proxy_method_rejected": {}, // ungoverned MCP method rejected fail-closed (#356)
+	"mcp":                   {}, // Talon MCP server tools/call
+}
+
 // RecordClassOf returns the class of an invocation type. Unknown/empty →
 // ClassRequest by design (see ClassRequest).
 func RecordClassOf(invocationType string) RecordClass {
@@ -78,6 +92,13 @@ func RecordClassOf(invocationType string) RecordClass {
 		return c
 	}
 	return ClassRequest
+}
+
+// IsToolActionType reports whether a request-class invocation type is an
+// intercepted tool action (MCP call) rather than an LLM request.
+func IsToolActionType(invocationType string) bool {
+	_, ok := toolActionType[invocationType]
+	return ok
 }
 
 // IsRequestClass reports whether an invocation type counts as request traffic.

@@ -55,6 +55,26 @@ func TestRecordClassOf(t *testing.T) {
 	}
 }
 
+// TestIsToolActionType pins the tool-action registry (#271): intercepted MCP
+// calls stay request-class for traffic queries but are split out of the
+// session summary's LLM request count.
+func TestIsToolActionType(t *testing.T) {
+	toolActions := []string{"proxy_tool_call", "proxy_tool_blocked", "proxy_upstream_error", "proxy_method_rejected", "mcp"}
+	for _, it := range toolActions {
+		if !IsToolActionType(it) {
+			t.Errorf("IsToolActionType(%q) = false, want true", it)
+		}
+		if !IsRequestClass(it) {
+			t.Errorf("IsRequestClass(%q) = false — tool actions must stay request-class for traffic queries", it)
+		}
+	}
+	for _, it := range []string{"", "gateway", "manual", "gateway_failover_attempt", "proxy_shadow_violation"} {
+		if IsToolActionType(it) {
+			t.Errorf("IsToolActionType(%q) = true, want false", it)
+		}
+	}
+}
+
 // TestRequestClassSQLPredicate asserts the generated predicate is deterministic,
 // excludes every non-request type, and permits NULL/empty (request-class).
 func TestRequestClassSQLPredicate(t *testing.T) {

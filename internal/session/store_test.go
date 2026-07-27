@@ -229,6 +229,39 @@ func TestGetByExternal_NotFound(t *testing.T) {
 	require.ErrorIs(t, err, ErrSessionNotFound)
 }
 
+// ListByExternalID (#271): the operator lookup bridging the external-id
+// namespace evidence uses to the internal-id primary key — every matching row
+// is returned so a cross-agent collision is visible, and tenant scoping holds.
+func TestListByExternalID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	a, err := s.GetOrCreateExternal(ctx, "acme", "coder-a", "sess-shared", SourceClientAsserted)
+	require.NoError(t, err)
+	b, err := s.GetOrCreateExternal(ctx, "acme", "coder-b", "sess-shared", SourceClientAsserted)
+	require.NoError(t, err)
+	_, err = s.GetOrCreateExternal(ctx, "other", "coder-a", "sess-shared", SourceVendorAsserted)
+	require.NoError(t, err)
+
+	all, err := s.ListByExternalID(ctx, "sess-shared", "")
+	require.NoError(t, err)
+	require.Len(t, all, 3, "unscoped operator read sees every asserting tuple")
+
+	scoped, err := s.ListByExternalID(ctx, "sess-shared", "acme")
+	require.NoError(t, err)
+	require.Len(t, scoped, 2)
+	ids := []string{scoped[0].ID, scoped[1].ID}
+	require.ElementsMatch(t, []string{a.ID, b.ID}, ids)
+
+	none, err := s.ListByExternalID(ctx, "no-such-external", "")
+	require.NoError(t, err)
+	require.Empty(t, none)
+
+	internal, err := s.ListByExternalID(ctx, a.ID, "")
+	require.NoError(t, err)
+	require.Empty(t, internal, "internal ids live in a different namespace")
+}
+
 func TestGet_TenantScoped(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

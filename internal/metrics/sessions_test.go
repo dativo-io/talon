@@ -90,6 +90,25 @@ func TestFillSessions_EqualsAuditSummary(t *testing.T) {
 	now := time.Now().UTC()
 	require.NoError(t, store.Store(ctx, sessEvidence("ev1", "sess-eq", "coder", "anthropic", "claude-sonnet-5", "generator", 0.07, true, now.Add(-3*time.Minute))))
 	require.NoError(t, store.Store(ctx, sessEvidence("ev2", "sess-eq", "coder", "openai", "gpt-5.3-codex", "judge", 0.02, false, now.Add(-1*time.Minute))))
+	// Operational-contract records (#271): a failed failover attempt, a
+	// retried fallback dispatch, and a blocked MCP tool call — the full-struct
+	// equality below proves the dashboard carries every new field.
+	attempt := sessEvidence("ev3", "sess-eq", "coder", "anthropic", "claude-sonnet-5", "generator", 0, true, now.Add(-2*time.Minute))
+	attempt.InvocationType = "gateway_failover_attempt"
+	attempt.Execution.Error = "upstream status 529"
+	attempt.FailureReason = evidence.FailureReasonProviderTransient
+	attempt.Failover = &evidence.FailoverContext{Role: evidence.FailoverRoleFailedAttempt, Provider: "anthropic", Model: "claude-sonnet-5"}
+	require.NoError(t, store.Store(ctx, attempt))
+	fallback := sessEvidence("ev4", "sess-eq", "coder", "openai", "gpt-5.3-codex", "generator", 0.03, true, now.Add(-90*time.Second))
+	fallback.RetryAttempt = "1"
+	fallback.Failover = &evidence.FailoverContext{Role: evidence.FailoverRoleFallbackDecision, Provider: "openai", Model: "gpt-5.3-codex"}
+	require.NoError(t, store.Store(ctx, fallback))
+	tool := sessEvidence("ev5", "sess-eq", "coder", "", "", "generator", 0, false, now.Add(-80*time.Second))
+	tool.InvocationType = "proxy_tool_blocked"
+	tool.RoutingDecision = nil
+	tool.PolicyDecision.Reasons = []string{"mcp_tool_denied: delete_record"}
+	tool.Execution.ToolsCalled = []string{"delete_record"}
+	require.NoError(t, store.Store(ctx, tool))
 
 	c := NewCollector("enforce", nil, WithSessionQuerier(store))
 	defer c.Close()
@@ -101,6 +120,15 @@ func TestFillSessions_EqualsAuditSummary(t *testing.T) {
 	audit := evidence.BuildSessionSummary("sess-eq", records)
 
 	assert.Equal(t, audit, snap.Sessions[0], "dashboard and talon audit must be byte-identical for the same session")
+	// The fixture must actually exercise the operational fields, or the
+	// equality above proves nothing about them.
+	assert.Equal(t, 3, audit.Requests)
+	assert.Equal(t, 1, audit.Fallbacks)
+	assert.Equal(t, 1, audit.FailedAttempts)
+	assert.Equal(t, 1, audit.Retries)
+	assert.Equal(t, 1, audit.ToolCalls)
+	assert.NotEmpty(t, audit.ProviderPath)
+	assert.NotNil(t, audit.LastFailure)
 }
 
 // TestFillSessions_SurvivesReconcile: session stats are re-derived from the
@@ -204,12 +232,4 @@ func TestGatewayEventFromEvidence_ProjectsSessionFields(t *testing.T) {
 
 	den := sessEvidence("ev2", "sess-proj", "coder", "anthropic", "claude-sonnet-5", "generator", 0, false, time.Now().UTC())
 	assert.Equal(t, "session_budget_exceeded", GatewayEventFromEvidence(den).DenyReasonCode)
-}
-
-func TestDenyReasonCode(t *testing.T) {
-	assert.Equal(t, "policy_deny", denyReasonCode(nil))
-	assert.Equal(t, "policy_deny", denyReasonCode([]string{"Data tier 2 exceeds caller restriction (max 1)"}))
-	assert.Equal(t, "session_budget_exceeded", denyReasonCode([]string{"session_budget_exceeded: spend"}))
-	assert.Equal(t, "egress_tier_destination_disallowed", denyReasonCode([]string{"egress_tier_destination_disallowed"}))
-	assert.Equal(t, "policy_deny", denyReasonCode([]string{"<img onerror=alert(1)>: nope"}), "hostile prefix falls back")
 }

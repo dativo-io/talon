@@ -225,7 +225,7 @@
        client-asserted orchestration data exists. -->
   <div class="panel grid-full" id="panel-sessions" style="display:none">
     <div class="panel-title">Coding Sessions (orchestration)</div>
-    <div class="kpi-sub">Client-asserted coding sessions across providers &mdash; identical numbers to <code>talon audit list --session &lt;id&gt;</code>. Click a session for its per-agent breakdown.</div>
+    <div class="kpi-sub">Client-asserted coding sessions across providers &mdash; identical numbers to <code>talon session show &lt;id&gt;</code>. Click a session for its operational summary and per-agent breakdown.</div>
     <table>
       <thead><tr><th></th><th>Session</th><th>Client</th><th>Agent</th><th>Requests</th><th>Denied</th><th>Models</th><th>Providers</th><th>Tokens in/out</th><th data-cost-th="Cost">Cost (USD)</th><th>Last Active</th></tr></thead>
       <tbody id="sessions-table"></tbody>
@@ -536,6 +536,55 @@
     }).join('');
   }
 
+  // sessionFacts renders a session's operational summary line (#271): the
+  // same evidence-derived fields `talon session show` prints — reliability,
+  // provider path, denials by reason, interventions, tool calls, failure.
+  // All values are client-asserted/hostile; esc() everything.
+  function sessionFacts(sess) {
+    var parts = [];
+    var rel = [];
+    if (sess.retries) rel.push('retries ' + fmt(sess.retries));
+    if (sess.failed_attempts) rel.push('failed attempts ' + fmt(sess.failed_attempts));
+    if (sess.fallbacks) rel.push('fallbacks ' + fmt(sess.fallbacks));
+    if (sess.fail_closed) rel.push('fail-closed ' + fmt(sess.fail_closed));
+    if (rel.length) parts.push('Reliability: ' + rel.join(' &middot; '));
+    if (sess.provider_path && sess.provider_path.length) {
+      parts.push('Path: ' + sess.provider_path.map(esc).join(' &rarr; '));
+    }
+    if (sess.denied_by_reason) {
+      var dr = Object.keys(sess.denied_by_reason).sort().map(function(code) {
+        return esc(code) + ' &times; ' + fmt(sess.denied_by_reason[code]);
+      });
+      if (dr.length) parts.push('Denials: ' + dr.join(', '));
+    }
+    var iv = [];
+    if (sess.pii_redactions) {
+      iv.push('PII redacted &times; ' + fmt(sess.pii_redactions) +
+        (sess.pii_types && sess.pii_types.length ? ' (' + sess.pii_types.map(esc).join(', ') + ')' : ''));
+    }
+    if (sess.tool_filter_events) {
+      iv.push('tools filtered &times; ' + fmt(sess.tool_filter_events) +
+        (sess.tools_filtered && sess.tools_filtered.length ? ' (' + sess.tools_filtered.map(esc).join(', ') + ')' : ''));
+    }
+    if (sess.shadow_violation_records) iv.push('shadow violations &times; ' + fmt(sess.shadow_violation_records));
+    if (iv.length) parts.push('Interventions: ' + iv.join(' &middot; '));
+    if (sess.tool_calls) {
+      var tc = 'Tool calls: ' + fmt(sess.tool_calls) + ' intercepted';
+      var tcd = [];
+      if (sess.tool_calls_denied) tcd.push(fmt(sess.tool_calls_denied) + ' denied');
+      if (sess.tool_calls_failed) tcd.push(fmt(sess.tool_calls_failed) + ' failed upstream');
+      if (tcd.length) tc += ' (' + tcd.join(', ') + ')';
+      if (sess.tool_names && sess.tool_names.length) tc += ' &mdash; ' + sess.tool_names.map(esc).join(', ');
+      parts.push(tc);
+    }
+    if (sess.last_failure) {
+      parts.push('<span class="rate-bad">Failure: ' + esc(sess.last_failure.code) +
+        (sess.last_failure.detail ? ': ' + esc(sess.last_failure.detail) : '') + '</span>');
+    }
+    if (!parts.length) return 'No reliability events, denials, or interventions recorded.';
+    return parts.join(' &nbsp;&bull;&nbsp; ');
+  }
+
   // Sessions panel (#199). session_id / agent_id / client / models are
   // client-asserted strings — hostile input; esc() EVERYTHING interpolated.
   function renderSessions(sessions, denials) {
@@ -546,21 +595,22 @@
     panel.style.display = '';
     tb.innerHTML = sessions.map(function(sess, i) {
       var agents = sess.subagents || [];
-      var hasAgents = agents.length > 0;
-      var caret = hasAgents ? '<span class="sess-caret" id="sess-caret-' + i + '">&#9656;</span>' : '';
+      var caret = '<span class="sess-caret" id="sess-caret-' + i + '">&#9656;</span>';
       var deniedCell = (sess.denied || 0) > 0 ? '<span class="rate-bad">' + fmt(sess.denied) + '</span>' : fmt(sess.denied || 0);
-      var row = '<tr class="sess-row" data-idx="' + i + '" style="cursor:' + (hasAgents ? 'pointer' : 'default') + '">' +
+      var row = '<tr class="sess-row" data-idx="' + i + '" style="cursor:pointer">' +
         '<td>' + caret + '</td>' +
         '<td>' + esc(sess.session_id) + '</td>' +
         '<td>' + esc(sess.client || '-') + '</td>' +
         '<td>' + esc((sess.agents || []).join(', ')) + '</td>' +
-        '<td>' + fmt(sess.record_count) + '</td>' +
+        '<td>' + fmt(sess.requests) + '</td>' +
         '<td>' + deniedCell + '</td>' +
         '<td>' + esc((sess.models || []).join(', ')) + '</td>' +
         '<td>' + esc((sess.providers || []).join(', ')) + '</td>' +
         '<td>' + fmt(sess.input_tokens) + ' / ' + fmt(sess.output_tokens) + '</td>' +
         '<td>&euro;' + (sess.total_cost || 0).toFixed(4) + '</td>' +
         '<td>' + esc(new Date(sess.last_seen).toLocaleTimeString()) + '</td></tr>';
+      var detailRow = '<tr class="sess-agent-row sess-agents-' + i + '" style="display:none;color:var(--text-dim)">' +
+        '<td></td><td colspan="10" style="padding-left:18px">' + sessionFacts(sess) + '</td></tr>';
       var agentRows = agents.map(function(a) {
         var parent = a.parent_agent_id ? ' &larr; ' + esc(a.parent_agent_id) : '';
         return '<tr class="sess-agent-row sess-agents-' + i + '" style="display:none;color:var(--text-dim)">' +
@@ -569,7 +619,7 @@
           '<td>' + fmt(a.input_tokens) + ' / ' + fmt(a.output_tokens) + '</td>' +
           '<td>&euro;' + (a.total_cost || 0).toFixed(4) + '</td><td></td></tr>';
       }).join('');
-      return row + agentRows;
+      return row + detailRow + agentRows;
     }).join('');
     Array.prototype.forEach.call(tb.querySelectorAll('tr.sess-row'), function(row) {
       row.addEventListener('click', function() {

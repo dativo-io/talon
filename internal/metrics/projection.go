@@ -121,34 +121,11 @@ func gatewayEventFromEvidence(e *evidence.Evidence) GatewayEvent {
 		ev.OrchClient = e.Orchestration.Client
 	}
 	if ev.Blocked {
-		ev.DenyReasonCode = denyReasonCode(e.PolicyDecision.Reasons)
+		// One classifier for deny reason codes across the dashboard event
+		// projection and the session summary (#271): evidence.DenyReasonCode.
+		ev.DenyReasonCode = evidence.DenyReasonCode(e.PolicyDecision.Reasons)
 	}
 	return ev
-}
-
-// denyReasonCode classifies a deny by the machine-code prefix convention
-// ("session_budget_exceeded: ...", "budget_exceeded: ...", bare egress codes)
-// so session denials don't lump under a generic policy_deny bucket (#199).
-// Unrecognized shapes fall back to "policy_deny".
-func denyReasonCode(reasons []string) string {
-	if len(reasons) == 0 {
-		return "policy_deny"
-	}
-	code := reasons[0]
-	if i := strings.IndexByte(code, ':'); i >= 0 {
-		code = code[:i]
-	}
-	code = strings.TrimSpace(code)
-	if code == "" || len(code) > 64 {
-		return "policy_deny"
-	}
-	for i := 0; i < len(code); i++ {
-		c := code[i]
-		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' && c != '-' {
-			return "policy_deny"
-		}
-	}
-	return code
 }
 
 // SnapshotFromEvidenceRecords aggregates a standalone snapshot from evidence rows.

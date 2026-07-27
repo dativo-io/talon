@@ -27,7 +27,6 @@ The gaps between today and the MVP contract, each tracked by an issue in the [MV
 - **Cost-control contract** — warning thresholds as signed evidence (once per crossing), one organization webhook delivered after evidence commit, session-cap hardening ([#144](https://github.com/dativo-io/talon/issues/144))
 - **Same-provider retries with backoff** — transient failures only, cost-counted, evidence-visible ([#139](https://github.com/dativo-io/talon/issues/139))
 - **Error contract** with stable machine codes ([#142](https://github.com/dativo-io/talon/issues/142), [#195](https://github.com/dativo-io/talon/issues/195))
-- **Session summary contract** for `talon session show` ([#271](https://github.com/dativo-io/talon/issues/271))
 - **Per-execution tool lifecycle evidence + tool-destination egress** on the MCP path ([#146](https://github.com/dativo-io/talon/issues/146))
 - **Read-only operations dashboard** over the same semantics the CLI uses ([#143](https://github.com/dativo-io/talon/issues/143))
 
