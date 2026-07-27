@@ -406,3 +406,44 @@ func TestSetOverwriteExisting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []byte("second"), secret.Value)
 }
+
+// TestDelete verifies the full delete lifecycle (#378): the secret is gone,
+// the deletion is audit-logged, and a subsequent Get fails.
+func TestDelete(t *testing.T) {
+	dir := t.TempDir()
+	key := "12345678901234567890123456789012"
+	store, err := NewSecretStore(filepath.Join(dir, "secrets.db"), key)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+	require.NoError(t, store.Set(ctx, "doomed-key", []byte("secret"), ACL{Agents: []string{"*"}, Tenants: []string{"*"}}))
+
+	require.NoError(t, store.Delete(ctx, "doomed-key"))
+
+	_, err = store.Get(ctx, "doomed-key", "t", "a")
+	require.Error(t, err, "deleted secret must not resolve — vault-miss fails closed")
+
+	records, err := store.AuditLog(ctx, "system", "doomed-key", 10)
+	require.NoError(t, err)
+	deleteEntries := 0
+	for _, r := range records {
+		if r.Reason == "delete" {
+			deleteEntries++
+			assert.True(t, r.Allowed)
+		}
+	}
+	assert.Equal(t, 1, deleteEntries, "one Delete must produce exactly one audit entry with reason \"delete\"")
+}
+
+func TestDeleteNonexistent(t *testing.T) {
+	dir := t.TempDir()
+	key := "12345678901234567890123456789012"
+	store, err := NewSecretStore(filepath.Join(dir, "secrets.db"), key)
+	require.NoError(t, err)
+	defer store.Close()
+
+	err = store.Delete(context.Background(), "does-not-exist")
+	assert.ErrorIs(t, err, ErrSecretNotFound,
+		"deleting a nonexistent secret must fail — scripts depend on the exit code (#378)")
+}

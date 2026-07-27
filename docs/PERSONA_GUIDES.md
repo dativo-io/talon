@@ -148,6 +148,7 @@ talon secrets set openai-api-key "sk-..."    # Store encrypted (AES-256-GCM)
 talon secrets list                           # List secrets (metadata only; values hidden)
 talon secrets audit                          # Who accessed which secret, when, allow/deny
 talon secrets rotate openai-api-key          # Re-encrypt with fresh nonce
+talon secrets delete openai-api-key          # Remove from vault (audit-logged; traffic fails closed on next use)
 
 # Evidence and policy enforcement
 talon audit list                             # See allowed vs denied requests

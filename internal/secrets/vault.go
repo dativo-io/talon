@@ -422,6 +422,32 @@ func (s *SecretStore) Rotate(ctx context.Context, name string) error {
 	return nil
 }
 
+// Delete removes a secret from the vault and records the deletion in the
+// access log. A running gateway resolves secrets at request time, so traffic
+// referencing a deleted name fails closed on its next use; revocation
+// propagation for already-resolved credentials is #301.
+func (s *SecretStore) Delete(ctx context.Context, name string) error {
+	ctx, span := tracer.Start(ctx, "secrets.delete",
+		trace.WithAttributes(attribute.String("secret.name", name)))
+	defer span.End()
+
+	res, err := s.db.ExecContext(ctx, `DELETE FROM secrets WHERE name = ?`, name)
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("deleting secret: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		span.RecordError(err)
+		return fmt.Errorf("deleting secret: %w", err)
+	}
+	if n == 0 {
+		return ErrSecretNotFound
+	}
+	s.logAccess(ctx, name, "system", "operator", true, "delete")
+	return nil
+}
+
 // logAccess records secret access attempts for audit compliance.
 func (s *SecretStore) logAccess(ctx context.Context, secretName, tenantID, agentID string, allowed bool, reason string) {
 	id := uuid.New().String()
