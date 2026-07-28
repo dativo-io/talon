@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -2841,21 +2840,10 @@ func emitBudgetAlertIfNeeded(ctx context.Context, tenantID string, dailyCost, mo
 }
 
 // allowedBudgetAlertURL returns true if the URL is safe for outbound webhook POST (HTTPS, or HTTP to loopback only).
-// Used to mitigate SSRF when the URL comes from policy config.
+// Used to mitigate SSRF when the URL comes from policy config. The rule lives
+// in policy.AllowedWebhookURL, shared with the org-wide cost webhook (#144).
 func allowedBudgetAlertURL(raw string) bool {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return false
-	}
-	switch u.Scheme {
-	case "https":
-		return true
-	case "http":
-		h := strings.ToLower(u.Hostname())
-		return h == "localhost" || h == "127.0.0.1" || strings.HasSuffix(h, ".localhost")
-	default:
-		return false
-	}
+	return policy.AllowedWebhookURL(raw)
 }
 
 func postBudgetAlert(ctx context.Context, webhookURL string, payload map[string]interface{}) {

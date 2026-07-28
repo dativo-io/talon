@@ -305,10 +305,35 @@ func printBudgetUtilization(w io.Writer, currency string, dailyBudget, monthlyBu
 	// $0.001 cap as "42.1% ($0.000421 / $0.00)" — a non-zero percent of a
 	// zero-looking budget. Sub-cent caps are real at per-request LLM cost scale.
 	if dailyBudget != nil && dailyBudget.LimitEUR > 0 {
-		fmt.Fprintf(w, "  Daily budget:   %.1f%% (%s / %s) [%s]\n", dailyBudget.Percent, formatMoney(currency, dailyBudget.UsedEUR), formatMoney(currency, dailyBudget.LimitEUR), dailyBudget.Source)
+		fmt.Fprintf(w, "  Daily budget:   %.1f%% (%s / %s) [%s] — %s\n", dailyBudget.Percent, formatMoney(currency, dailyBudget.UsedEUR), formatMoney(currency, dailyBudget.LimitEUR), dailyBudget.Source, budgetStatusWord(dailyBudget.Percent))
 	}
 	if monthlyBudget != nil && monthlyBudget.LimitEUR > 0 {
-		fmt.Fprintf(w, "  Monthly budget: %.1f%% (%s / %s) [%s]\n", monthlyBudget.Percent, formatMoney(currency, monthlyBudget.UsedEUR), formatMoney(currency, monthlyBudget.LimitEUR), monthlyBudget.Source)
+		fmt.Fprintf(w, "  Monthly budget: %.1f%% (%s / %s) [%s] — %s\n", monthlyBudget.Percent, formatMoney(currency, monthlyBudget.UsedEUR), formatMoney(currency, monthlyBudget.LimitEUR), monthlyBudget.Source, budgetStatusWord(monthlyBudget.Percent))
+	}
+	if (dailyBudget != nil && dailyBudget.LimitEUR > 0) || (monthlyBudget != nil && monthlyBudget.LimitEUR > 0) {
+		warns := make([]string, 0, len(gateway.BudgetWarnThresholds))
+		for _, t := range gateway.BudgetWarnThresholds {
+			warns = append(warns, fmt.Sprintf("%.0f%%", t))
+		}
+		fmt.Fprintf(w, "  Thresholds:     warn at %s (signed evidence + org webhook), hard stop at 100%% (denied before the provider)\n", strings.Join(warns, " and "))
+	}
+}
+
+// budgetStatusWord maps utilization to the operator status vocabulary of the
+// cost-control contract (#144): the warning statuses correspond one-to-one to
+// the gateway's BudgetWarnThresholds evidence events; BLOCKED means new
+// requests whose estimate exceeds the remaining headroom are denied before
+// the provider is called.
+func budgetStatusWord(pct float64) string {
+	switch {
+	case pct >= 100:
+		return "BLOCKED"
+	case pct >= 95:
+		return "CRITICAL"
+	case pct >= 80:
+		return "WARNING"
+	default:
+		return "OK"
 	}
 }
 

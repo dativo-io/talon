@@ -748,6 +748,10 @@
               ],
               "default": "evidence_only",
               "description": "Observation-only PII scan of tool-related request content (tool_use inputs, tool_result outputs, function-call arguments). evidence_only records findings in evidence without influencing enforcement; off disables the scan. Enforcement on tool content is not offered until per-block-type tool redaction exists (#212)."
+            },
+            "cost_webhook_url": {
+              "type": "string",
+              "description": "One organization-wide endpoint for cost-control events (#144): budget warning-threshold crossings and budget hard-stop denials POST here strictly after the signed evidence record commits. HTTPS required; HTTP is allowed to loopback only. Delivery failure is logged — evidence remains the truth."
             }
           },
           "description": "Organization policy in two explicit classes (#287): defaults — per-agent baselines an agent override may replace (PII and tool actions keep their monotonic floor merge) — and constraints — organization-wide hard bounds an override can only tighten within. Operational logging/scanning scalars stay at the top level. The pre-split flat keys (default_pii_action, max_daily_cost, allowed_models, ...) are rejected at load with a migration error naming the new location.",

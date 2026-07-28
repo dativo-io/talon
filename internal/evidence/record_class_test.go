@@ -36,6 +36,7 @@ func TestRecordClassOf(t *testing.T) {
 		"plan_dispatch":        ClassOperatorEvent,
 		"plan_dispatch_manual": ClassOperatorEvent,
 		"control_plane":        ClassOperatorEvent,
+		"budget_threshold":     ClassOperatorEvent, // #144 crossing fact
 
 		// Configuration lifecycle.
 		"config_reload": ClassConfigEvent,
