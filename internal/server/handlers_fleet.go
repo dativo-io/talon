@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/dativo-io/talon/internal/agentbridge"
 	"github.com/dativo-io/talon/internal/agentcatalog"
 	"github.com/dativo-io/talon/internal/fleet"
 	"github.com/dativo-io/talon/internal/gateway"
@@ -174,6 +175,7 @@ func membershipFromView(view agentcatalog.FleetView, denyAll func(tenantID, agen
 			ConfigRejected: rejected,
 			ConfigError:    reason,
 			PolicyDenyAll:  denyAll != nil && denyAll(tenant, ra.Name),
+			UseCase:        agentbridge.FleetUseCase(ra.Policy),
 		})
 	}
 	return members

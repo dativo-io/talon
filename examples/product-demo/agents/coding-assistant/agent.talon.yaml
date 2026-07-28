@@ -13,6 +13,19 @@ agent:
   description: "Coding assistant — may search/read; the admin_* boundary is company-wide"
   version: "1.0.0"
   tenant_id: acme
+  # Different accountabilities than customer-support: engineering runs and
+  # budgets its own use case; the risk owner is shared company-wide.
+  use_case:
+    purpose: "Assist engineers with code review, refactoring and internal API usage"
+    department: "Engineering"
+    criticality: standard
+    owners:
+      business: "Priya Nair <p.nair@acme.example>"
+      technical: "dev-productivity@acme.example"
+      budget: "eng-budget@acme.example"
+      risk: "privacy-office@acme.example"
+    references:
+      - "AIGOV-102"
   key:
     secret_name: coding-assistant-talon-key
 

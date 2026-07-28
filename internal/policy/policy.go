@@ -58,6 +58,12 @@ type AgentConfig struct {
 	// agent loaded into the gateway identity registry (a missing binding fails
 	// startup); optional for native-only, non-traffic-bound runs.
 	Key *AgentKeyBinding `yaml:"key,omitempty" json:"key,omitempty"`
+	// UseCase is the optional AI use-case operating record (#382): purpose,
+	// organizational context and accountable owners. Attribution for humans
+	// reading the fleet — the Talon key authenticates the presenter of
+	// traffic; nothing here authenticates the named owners, and none of it is
+	// a policy input. Fully optional: existing configs stay valid unchanged.
+	UseCase *UseCaseConfig `yaml:"use_case,omitempty" json:"use_case,omitempty"`
 	// AcceptClientMetadata controls whether client-asserted orchestration
 	// identity (x-claude-code-* / Codex / generic X-Talon-* headers) is
 	// recorded in evidence for this agent's gateway traffic. nil = true
@@ -77,6 +83,93 @@ func (a *AgentConfig) IsEnabled() bool {
 // per agent, structurally.
 type AgentKeyBinding struct {
 	SecretName string `yaml:"secret_name" json:"secret_name"`
+}
+
+// UseCaseConfig is the AI use-case operating record (#382): what the use case
+// is for, which part of the organization operates it, how critical it is, and
+// who is accountable. Every field is optional (a use case must route traffic
+// before its paperwork is complete); owners are stable identifiers or contact
+// strings, never an embedded organization directory. Criticality is context
+// for operators and stakeholders — it maps to NO enforcement unless an
+// explicit separate policy does so.
+type UseCaseConfig struct {
+	// Purpose is a short human description of what the use case does.
+	Purpose string `yaml:"purpose,omitempty" json:"purpose,omitempty"`
+	// Department is the operating area that owns the use case day-to-day.
+	Department string `yaml:"department,omitempty" json:"department,omitempty"`
+	// Criticality is one of: experimental, standard, important, critical.
+	// A closed vocabulary so fleet views stay comparable — free-form values
+	// are rejected at load rather than silently becoming a risk taxonomy.
+	Criticality string `yaml:"criticality,omitempty" json:"criticality,omitempty"`
+	// Owners names who is accountable, by role.
+	Owners *UseCaseOwners `yaml:"owners,omitempty" json:"owners,omitempty"`
+	// References link to external lifecycle/approval records (ticket ids,
+	// wiki URLs). Talon stores the pointers; the workflows stay external.
+	References []string `yaml:"references,omitempty" json:"references,omitempty"`
+}
+
+// UseCaseOwners are the accountable contacts for a use case, by role. Free
+// strings ("Jane Vos <j.vos@acme.example>", "finops@acme.example") —
+// attribution for humans, never authentication of the named owners.
+type UseCaseOwners struct {
+	// Business is accountable for the business outcome.
+	Business string `yaml:"business,omitempty" json:"business,omitempty"`
+	// Technical operates the integration.
+	Technical string `yaml:"technical,omitempty" json:"technical,omitempty"`
+	// Budget owns the spend allocation the cost caps draw from.
+	Budget string `yaml:"budget,omitempty" json:"budget,omitempty"`
+	// Risk owns control/risk decisions and explicit policy exceptions.
+	Risk string `yaml:"risk,omitempty" json:"risk,omitempty"`
+}
+
+// Use-case validation bounds: generous for humans, tight enough that the
+// record stays a record (not embedded documentation).
+const (
+	useCasePurposeMaxLen   = 500
+	useCaseFieldMaxLen     = 200
+	useCaseMaxReferences   = 8
+	useCaseReferenceMaxLen = 300
+)
+
+var useCaseCriticalities = map[string]bool{
+	"experimental": true, "standard": true, "important": true, "critical": true,
+}
+
+// ValidateUseCase enforces the operating-record rules (#382): closed
+// criticality vocabulary and length bounds. A nil record is valid — the block
+// is optional by design.
+func ValidateUseCase(uc *UseCaseConfig) error {
+	if uc == nil {
+		return nil
+	}
+	if uc.Criticality != "" && !useCaseCriticalities[uc.Criticality] {
+		return fmt.Errorf("use_case.criticality must be one of experimental|standard|important|critical, got %q", uc.Criticality)
+	}
+	if len(uc.Purpose) > useCasePurposeMaxLen {
+		return fmt.Errorf("use_case.purpose exceeds %d characters", useCasePurposeMaxLen)
+	}
+	if len(uc.Department) > useCaseFieldMaxLen {
+		return fmt.Errorf("use_case.department exceeds %d characters", useCaseFieldMaxLen)
+	}
+	if uc.Owners != nil {
+		for field, v := range map[string]string{
+			"business": uc.Owners.Business, "technical": uc.Owners.Technical,
+			"budget": uc.Owners.Budget, "risk": uc.Owners.Risk,
+		} {
+			if len(v) > useCaseFieldMaxLen {
+				return fmt.Errorf("use_case.owners.%s exceeds %d characters", field, useCaseFieldMaxLen)
+			}
+		}
+	}
+	if len(uc.References) > useCaseMaxReferences {
+		return fmt.Errorf("use_case.references allows at most %d entries", useCaseMaxReferences)
+	}
+	for i, r := range uc.References {
+		if len(r) > useCaseReferenceMaxLen {
+			return fmt.Errorf("use_case.references[%d] exceeds %d characters", i, useCaseReferenceMaxLen)
+		}
+	}
+	return nil
 }
 
 // CapabilitiesConfig defines what the agent is allowed to do.

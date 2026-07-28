@@ -25,7 +25,34 @@
             "secret_name": {"type": "string", "minLength": 1}
           }
         },
-        "accept_client_metadata": {"type": "boolean", "description": "Record client-asserted orchestration identity (session/subagent headers) in evidence for this agent's gateway traffic. Default true; recording only, never a policy input."}
+        "accept_client_metadata": {"type": "boolean", "description": "Record client-asserted orchestration identity (session/subagent headers) in evidence for this agent's gateway traffic. Default true; recording only, never a policy input."},
+        "use_case": {
+          "type": "object",
+          "description": "Optional AI use-case operating record (#382): purpose, organizational context and accountable owners. Attribution for humans reading the fleet — the Talon key authenticates the presenter of traffic; nothing here authenticates the named owners, and none of it is a policy input.",
+          "additionalProperties": false,
+          "properties": {
+            "purpose": {"type": "string", "maxLength": 500, "description": "Short human description of what the use case does."},
+            "department": {"type": "string", "maxLength": 200, "description": "Operating area that owns the use case day-to-day."},
+            "criticality": {"type": "string", "enum": ["experimental", "standard", "important", "critical"], "description": "Closed vocabulary — context for operators; maps to NO enforcement unless an explicit separate policy does so."},
+            "owners": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Accountable contacts by role — stable identifiers or contact strings, never an embedded organization directory.",
+              "properties": {
+                "business": {"type": "string", "maxLength": 200, "description": "Accountable for the business outcome."},
+                "technical": {"type": "string", "maxLength": 200, "description": "Operates the integration."},
+                "budget": {"type": "string", "maxLength": 200, "description": "Owns the spend allocation the cost caps draw from."},
+                "risk": {"type": "string", "maxLength": 200, "description": "Owns control/risk decisions and explicit policy exceptions."}
+              }
+            },
+            "references": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {"type": "string", "maxLength": 300},
+              "description": "External lifecycle/approval pointers (ticket ids, wiki URLs). Talon stores pointers; the workflows stay external."
+            }
+          }
+        }
       }
     },
     "capabilities": {

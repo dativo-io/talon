@@ -23,6 +23,20 @@ agent:
   description: "Batch document summarizer on Anthropic — session + daily budgets"
   version: "1.0.0"
   tenant_id: acme
+  # A third accountability shape: operations owns the outcome AND the budget;
+  # still experimental, so it says so instead of borrowing importance.
+  use_case:
+    purpose: "Summarize inbound contracts and reports for the operations team"
+    department: "Operations"
+    criticality: experimental
+    owners:
+      business: "ops-leads@acme.example"
+      technical: "support-platform@acme.example"
+      budget: "ops-leads@acme.example"
+      risk: "privacy-office@acme.example"
+    references:
+      - "AIGOV-103"
+      - "https://wiki.acme.example/ai/document-summary"
   key:
     secret_name: document-summary-talon-key
 

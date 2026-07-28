@@ -45,6 +45,7 @@ Cost warning thresholds as signed evidence + org webhook (#144)
 
 - **AI use case** — the public product term: one operated unit of AI usage (a bot, an agent, a copilot integration).
 - **Agent** — the CLI/config object that represents one AI use case. One `agent.talon.yaml` describes one use case; `agent.name` is its operational identity in one Talon installation. Shipped model (#266): one active vault-bound Talon key per agent — the presented key IS the traffic identity, and `tenant_id` derives from it.
+- **Operating record** (`agent.use_case`, #382) — the optional block in `agent.talon.yaml` naming what the use case is for, which department operates it, how critical it is, and who is accountable (business / technical / budget / risk owners as contact strings), plus pointers to external approval records. `talon agents show` and the fleet API project it as declared. Two identities, never conflated: the **Talon key authenticates the presenter of traffic**; the **owner metadata is attribution for humans** — it authenticates nobody and is never a policy input. Criticality is context; it maps to no enforcement unless an explicit policy does so.
 - **Evidence** — the signed record of a decision; the proof layer, not the front door.
 
 ## Operator model: CLI primary, dashboard secondary

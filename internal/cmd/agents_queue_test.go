@@ -66,6 +66,61 @@ func TestOfflineFleet_ProjectsLocalConfig(t *testing.T) {
 	assert.Equal(t, fleet.HealthHealthy, rows[1].Health)
 }
 
+// The operating record (#382) flows from agent.talon.yaml through the catalog
+// and the fleet projection into the row `agents show` renders — no separate
+// YAML re-parse anywhere on the path.
+func TestOfflineFleet_ProjectsUseCaseRecord(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	d := filepath.Join(agentsDir, "support")
+	require.NoError(t, os.MkdirAll(d, 0o755))
+	y := `agent:
+  name: support
+  version: "1.0.0"
+  use_case:
+    purpose: "Answer tier-1 customer questions"
+    department: "Customer Support"
+    criticality: important
+    owners:
+      business: "Sofia Marino <s.marino@acme.example>"
+      budget: "cs-finops@acme.example"
+    references:
+      - "AIGOV-101"
+policies:
+  cost_limits:
+    daily: 10
+`
+	require.NoError(t, os.WriteFile(filepath.Join(d, "agent.talon.yaml"), []byte(y), 0o600))
+	writeQueueAgent(t, agentsDir, "plain", true) // no use_case block
+
+	rows, _, err := offlineFleet(context.Background(), offlineTestConfig(t, agentsDir), "")
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	byName := map[string]fleet.AgentRow{rows[0].Name: rows[0], rows[1].Name: rows[1]}
+
+	uc := byName["support"].UseCase
+	require.NotNil(t, uc)
+	assert.Equal(t, "Customer Support", uc.Department)
+	assert.Equal(t, "important", uc.Criticality)
+	assert.Equal(t, "Sofia Marino <s.marino@acme.example>", uc.OwnerBusiness)
+	assert.Nil(t, byName["plain"].UseCase, "no block → no record, not an empty one")
+
+	// The show rendering carries the record; a row without one stays clean.
+	var buf bytes.Buffer
+	renderAgentShow(&buf, byName["support"], "")
+	out := buf.String()
+	assert.Contains(t, out, "Use case (declared in config):")
+	assert.Contains(t, out, "Purpose:     Answer tier-1 customer questions")
+	assert.Contains(t, out, "Criticality: important")
+	assert.Contains(t, out, "Owner (business): Sofia Marino <s.marino@acme.example>")
+	assert.Contains(t, out, "Owner (budget): cs-finops@acme.example")
+	assert.Contains(t, out, "Reference:   AIGOV-101")
+
+	buf.Reset()
+	renderAgentShow(&buf, byName["plain"], "")
+	assert.NotContains(t, buf.String(), "Use case", "absent record renders nothing")
+}
+
 // TestOfflineFleet_DenyAllPolicyIsBlocked covers #270 review round 1, P1: an
 // agent whose effective policy denies all new work (blocked_models: ["*"])
 // renders BLOCKED offline, while a normal agent does not.

@@ -18,6 +18,8 @@ type Membership struct {
 	ConfigError    string
 	// PolicyDenyAll — the ACTIVE policy denies all new work agent-wide (BLOCKED).
 	PolicyDenyAll bool
+	// UseCase is the config-declared operating record (#382); nil when absent.
+	UseCase *UseCase
 }
 
 // CapLookup returns an agent's effective daily/monthly cost caps (0 = uncapped),
@@ -53,6 +55,7 @@ func AssembleStatuses(members []Membership, caps CapLookup, currency string) []A
 			DailyCap:       daily,
 			MonthlyCap:     monthly,
 			Currency:       currency,
+			UseCase:        m.UseCase,
 		})
 	}
 	return out
