@@ -60,9 +60,21 @@ func newSessionBudgetUpstreams(t *testing.T) (anthropicURL, openaiURL string) {
 	return anth.URL, oai.URL
 }
 
+// sbFlatEstimator prices estimate and actual identically (1.0), making
+// admission arithmetic deterministic for the reservation tests: with actual ==
+// estimate, the allowed/denied split of a burst depends only on the cap.
+func sbFlatEstimator(_, _ string, _ Usage) CostResult {
+	return CostResult{Amount: sbEstimate, PricingKnown: true, PricingBasis: PricingBasisTable}
+}
+
 // newSessionBudgetGateway builds an enforce-mode gateway with the real OPA
 // gateway engine, a session store, and the deterministic estimator above.
 func newSessionBudgetGateway(t *testing.T, mode Mode, maxSessionCost float64) (evStore *evidence.Store, sessStore *session.Store, handler http.Handler) {
+	t.Helper()
+	return newSessionBudgetGatewayEst(t, mode, maxSessionCost, sbEstimator)
+}
+
+func newSessionBudgetGatewayEst(t *testing.T, mode Mode, maxSessionCost float64, estimator CostEstimator) (evStore *evidence.Store, sessStore *session.Store, handler http.Handler) {
 	t.Helper()
 	anthropicURL, openaiURL := newSessionBudgetUpstreams(t)
 	dir := t.TempDir()
@@ -98,7 +110,7 @@ func newSessionBudgetGateway(t *testing.T, mode Mode, maxSessionCost float64) (e
 	sessStore, err = session.NewStore(filepath.Join(dir, "sess.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sessStore.Close() })
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, sbEstimator)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, policyEngine, estimator)
 	require.NoError(t, err)
 	gw.SetSessionStore(sessStore)
 	gw.SetPricingCurrency("USD")
@@ -233,25 +245,31 @@ func TestSessionBudget_FirstRequestOverCap(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "session_budget_exceeded")
 }
 
-// TestSessionBudget_SoftCapOvershoot documents the soft-cap semantics (#192
-// §3.7): one in-flight request whose real cost exceeds the estimate can
-// overshoot the cap; the NEXT request is denied. Atomic reservation is #144.
-func TestSessionBudget_SoftCapOvershoot(t *testing.T) {
+// TestSessionBudget_SingleRequestEstimateOvershoot documents the remaining
+// estimate-quality limitation AFTER reservation hardening (#144): admission
+// is decided on the pre-request estimate, so ONE in-flight request whose real
+// cost exceeds its own estimate still overshoots the cap; the NEXT request is
+// denied. Reservation eliminates the CONCURRENCY overshoot (see
+// TestSessionBudget_ConcurrentReservationHardBound), not estimation error.
+func TestSessionBudget_SingleRequestEstimateOvershoot(t *testing.T) {
 	_, sessStore, h := newSessionBudgetGateway(t, ModeEnforce, 5)
 
 	// 0 + estimate(1) <= 5 → allowed; real cost 6 lands on the session.
 	require.Equal(t, http.StatusOK, sbDo(t, h, "anthropic", sbTenantKeyA, "sess-over").Code)
 	sess, err := sessStore.GetByExternal(context.Background(), "tenant-a", "coder-a", "sess-over")
 	require.NoError(t, err)
-	assert.Greater(t, sess.TotalCost, 5.0, "soft cap: a single request may overshoot")
+	assert.Greater(t, sess.TotalCost, 5.0, "estimate-based admission: a single request may overshoot")
+	assert.Zero(t, sess.ReservedCost, "settle must consume the reservation")
 
 	// The overshoot is caught on the next request.
 	require.Equal(t, http.StatusForbidden, sbDo(t, h, "anthropic", sbTenantKeyA, "sess-over").Code)
 }
 
-// TestSessionBudget_ConcurrentBurstBound: N concurrent first requests all see
-// zero spend (soft cap), so total spend is bounded by N * per-request cost —
-// and the unique tuple index collapses the race to exactly one session row.
+// TestSessionBudget_ConcurrentBurstBound: with reservation (#144), concurrent
+// first requests serialize against each other's in-flight estimates instead
+// of all reading zero spend; the unique tuple index still collapses the race
+// to one row, and residual overshoot is bounded by estimation error, not
+// concurrency.
 func TestSessionBudget_ConcurrentBurstBound(t *testing.T) {
 	_, sessStore, h := newSessionBudgetGateway(t, ModeEnforce, 10)
 	const n = 5
@@ -273,6 +291,64 @@ func TestSessionBudget_ConcurrentBurstBound(t *testing.T) {
 	require.Len(t, rows, 1, "concurrent create-if-absent must collapse to one row")
 	assert.LessOrEqual(t, rows[0].TotalCost, float64(n)*sbActual+1e-9,
 		"burst overshoot is bounded by N * per-request cost")
+	assert.Zero(t, rows[0].ReservedCost, "every reservation must be settled or released")
+}
+
+// TestSessionBudget_ConcurrentReservationHardBound is the #144 hardening
+// proof: with actual == estimate (flat estimator), a 5-request concurrent
+// burst against a cap of 3 admits EXACTLY 3 — under the soft cap all five
+// passed, because each saw zero spend.
+func TestSessionBudget_ConcurrentReservationHardBound(t *testing.T) {
+	_, sessStore, h := newSessionBudgetGatewayEst(t, ModeEnforce, 3, sbFlatEstimator)
+	const n = 5
+	var wg sync.WaitGroup
+	codes := make([]int, n)
+	bodies := make([]string, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := sbDo(t, h, "openai", sbTenantKeyA, "sess-hard")
+			codes[i], bodies[i] = rec.Code, rec.Body.String()
+		}(i)
+	}
+	wg.Wait()
+
+	allowed, denied := 0, 0
+	for i, c := range codes {
+		switch c {
+		case http.StatusOK:
+			allowed++
+		case http.StatusForbidden:
+			denied++
+			assert.Contains(t, bodies[i], "session_budget_exceeded")
+		default:
+			t.Fatalf("request %d: unexpected status %d: %s", i, c, bodies[i])
+		}
+	}
+	assert.Equal(t, 3, allowed, "cap 3 at 1.0/request must admit exactly 3")
+	assert.Equal(t, 2, denied)
+
+	sess, err := sessStore.GetByExternal(context.Background(), "tenant-a", "coder-a", "sess-hard")
+	require.NoError(t, err)
+	assert.InDelta(t, 3.0, sess.TotalCost, 1e-9, "settled spend equals the admitted requests")
+	assert.Zero(t, sess.ReservedCost, "denied requests must release their reservations")
+}
+
+// A denied request must return its reservation — otherwise every denial
+// permanently shrinks the session's remaining headroom.
+func TestSessionBudget_ReservationReleasedOnDeny(t *testing.T) {
+	_, sessStore, h := newSessionBudgetGatewayEst(t, ModeEnforce, 2, sbFlatEstimator)
+
+	require.Equal(t, http.StatusOK, sbDo(t, h, "openai", sbTenantKeyA, "sess-rel").Code)
+	require.Equal(t, http.StatusOK, sbDo(t, h, "openai", sbTenantKeyA, "sess-rel").Code)
+	require.Equal(t, http.StatusForbidden, sbDo(t, h, "openai", sbTenantKeyA, "sess-rel").Code)
+	require.Equal(t, http.StatusForbidden, sbDo(t, h, "openai", sbTenantKeyA, "sess-rel").Code)
+
+	sess, err := sessStore.GetByExternal(context.Background(), "tenant-a", "coder-a", "sess-rel")
+	require.NoError(t, err)
+	assert.InDelta(t, 2.0, sess.TotalCost, 1e-9)
+	assert.Zero(t, sess.ReservedCost, "denied requests released their reservations")
 }
 
 // TestSessionBudget_FailOpenAnnotated: a session-store failure must not take
@@ -364,8 +440,15 @@ func TestPolicyInputParity_WithAssertedSession(t *testing.T) {
 
 	assertedCtx := context.WithValue(ctx, gatewaySessionSourceKey, orchSourceClientAsserted)
 
-	primary, primaryUnavail := gw.buildPolicyInputForRequest(assertedCtx, agent, "openai", "gpt-4o-mini", 1, 0.01, 1, 2, "sess-parity")
-	candidate, candUnavail := gw.buildPolicyInputForRequest(assertedCtx, agent, "backup", "gpt-4o", 1, 0.02, 1, 2, "sess-parity")
+	// The view is computed (and the estimate reserved) ONCE (#144); the
+	// primary and every candidate evaluate the identical view.
+	view, res := gw.reserveSessionBudget(assertedCtx, agent, "sess-parity", session.SourceClientAsserted, 0.01)
+	require.NotNil(t, view)
+	require.NotNil(t, res)
+	t.Cleanup(func() { gw.releaseSessionReservation(res) })
+
+	primary, primaryUnavail := gw.buildPolicyInputForRequest(assertedCtx, agent, "openai", "gpt-4o-mini", 1, 0.01, 1, 2, view)
+	candidate, candUnavail := gw.buildPolicyInputForRequest(assertedCtx, agent, "backup", "gpt-4o", 1, 0.02, 1, 2, view)
 
 	require.False(t, primaryUnavail)
 	require.False(t, candUnavail)

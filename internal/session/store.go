@@ -87,8 +87,13 @@ type Session struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 	TotalCost   float64    `json:"total_cost"`
 	TotalTokens int        `json:"total_tokens"`
-	MaxCost     float64    `json:"max_cost,omitempty"`
-	Reasoning   string     `json:"reasoning,omitempty"`
+	// ReservedCost is the sum of in-flight pre-request estimates reserved
+	// against this session's cap (#144): admission control counts it, settled
+	// requests convert it to TotalCost. Non-zero only while requests are in
+	// flight (or briefly after a crash, until the stale heal on next touch).
+	ReservedCost float64 `json:"reserved_cost,omitempty"`
+	MaxCost      float64 `json:"max_cost,omitempty"`
+	Reasoning    string  `json:"reasoning,omitempty"`
 	// ExternalSessionID/Source identify gateway sessions created from a
 	// client-asserted session id (#198). The internal ID stays the opaque
 	// public handle; the external id is only unique per (tenant, agent) —
@@ -191,6 +196,7 @@ func (s *Store) ensureSessionColumns(ctx context.Context) error {
 		{"external_session_id", `ALTER TABLE sessions ADD COLUMN external_session_id TEXT`},
 		{"caller_id", `ALTER TABLE sessions ADD COLUMN caller_id TEXT`},
 		{"source", `ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'talon'`},
+		{"reserved_cost", `ALTER TABLE sessions ADD COLUMN reserved_cost REAL NOT NULL DEFAULT 0`},
 	}
 	for _, m := range migrations {
 		if cols[m.column] {
@@ -229,7 +235,7 @@ func (s *Store) Create(ctx context.Context, tenantID, agentID, reasoning string,
 }
 
 // sessionColumns is the canonical SELECT list scanned by scanSession.
-const sessionColumns = `id, tenant_id, agent_id, status, created_at, updated_at, completed_at, total_cost, total_tokens, max_cost, reasoning, external_session_id, caller_id, source`
+const sessionColumns = `id, tenant_id, agent_id, status, created_at, updated_at, completed_at, total_cost, total_tokens, max_cost, reasoning, external_session_id, caller_id, source, reserved_cost`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -242,7 +248,7 @@ func scanSession(row rowScanner) (*Session, error) {
 	// mirrors agent_id for gateway sessions (#266).
 	var reasoning, external, tupleAgent, source sql.NullString
 	err := row.Scan(&out.ID, &out.TenantID, &out.AgentID, &status, &out.CreatedAt, &out.UpdatedAt, &completed,
-		&out.TotalCost, &out.TotalTokens, &out.MaxCost, &reasoning, &external, &tupleAgent, &source)
+		&out.TotalCost, &out.TotalTokens, &out.MaxCost, &reasoning, &external, &tupleAgent, &source, &out.ReservedCost)
 	if err != nil {
 		return nil, err
 	}
@@ -388,6 +394,77 @@ func (s *Store) Complete(ctx context.Context, id, tenantID, agentID string, cost
 	}
 	if n == 0 {
 		return ErrSessionNotFound
+	}
+	return nil
+}
+
+// ReserveSessionCost atomically adds a pre-request estimate to the session's
+// in-flight reservation and returns the spend the admission decision must see:
+// settled spend plus every OTHER request's reservation (the caller's own
+// estimate is excluded — the policy rule adds it back as estimated_cost).
+// This is the session-cap hardening of #144: concurrent requests serialize
+// against reserved+settled spend instead of all reading the same pre-burst
+// total. staleAfter > 0 first heals a leaked reservation (a crash between
+// reserve and settle) when the row has seen no activity for that long —
+// heal-on-touch, so an abandoned session cannot stay blocked forever.
+func (s *Store) ReserveSessionCost(ctx context.Context, id string, estimate float64, staleAfter time.Duration) (float64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("beginning reservation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().UTC()
+	if staleAfter > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE sessions SET reserved_cost = 0 WHERE id = ? AND reserved_cost > 0 AND updated_at < ?`,
+			id, now.Add(-staleAfter)); err != nil {
+			return 0, fmt.Errorf("healing stale reservation: %w", err)
+		}
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE sessions SET reserved_cost = reserved_cost + ?, updated_at = ? WHERE id = ?`,
+		estimate, now, id)
+	if err != nil {
+		return 0, fmt.Errorf("reserving session cost: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return 0, ErrSessionNotFound
+	}
+	var view float64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT total_cost + reserved_cost - ? FROM sessions WHERE id = ?`, estimate, id).Scan(&view); err != nil {
+		return 0, fmt.Errorf("reading reserved session spend: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("committing reservation: %w", err)
+	}
+	return view, nil
+}
+
+// ReleaseSessionReservation returns an unconsumed reservation (denied request,
+// pre-provider failure). Floored at zero: a heal or purge may already have
+// dropped it.
+func (s *Store) ReleaseSessionReservation(ctx context.Context, id string, estimate float64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET reserved_cost = MAX(0, reserved_cost - ?), updated_at = ? WHERE id = ?`,
+		estimate, time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("releasing session reservation: %w", err)
+	}
+	return nil
+}
+
+// SettleSessionUsage converts a reservation into settled spend in one atomic
+// statement: the estimate leaves reserved_cost (floored at zero) and the
+// ACTUAL cost/tokens land on the totals — the reservation bounds admission,
+// the settled numbers stay truthful to what the provider charged.
+func (s *Store) SettleSessionUsage(ctx context.Context, id string, estimate, actualCost float64, tokens int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET reserved_cost = MAX(0, reserved_cost - ?),
+			total_cost = total_cost + ?, total_tokens = total_tokens + ?, updated_at = ? WHERE id = ?`,
+		estimate, actualCost, tokens, time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("settling session usage: %w", err)
 	}
 	return nil
 }
