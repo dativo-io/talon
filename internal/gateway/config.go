@@ -221,7 +221,7 @@ type OrgDefaults struct {
 	DailyCost   float64 `yaml:"daily_cost" json:"daily_cost"`
 	MonthlyCost float64 `yaml:"monthly_cost" json:"monthly_cost"`
 	// SessionCost is the per-session budget baseline (#283, EUR): the session
-	// soft cap (#198) every agent inherits unless its session_limits.max_cost
+	// budget (#198, reservation-enforced #144) every agent inherits unless its session_limits.max_cost
 	// replaces it. 0 = no default session budget.
 	SessionCost float64 `yaml:"session_cost,omitempty" json:"session_cost,omitempty"`
 	// ToolPolicyAction is the default action on tool-governance violations:

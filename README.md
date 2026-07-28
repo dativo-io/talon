@@ -47,7 +47,7 @@ If those are your questions, Talon sits in front of your existing OpenAI/Anthrop
 ### 1. Cost control — stop spend before it happens
 
 - Per-agent daily/monthly caps: the request is denied *before* the provider call, not flagged after the money is gone.
-- Session budgets across providers (soft cap — see [limitations](LIMITATIONS.md)), plus cache-aware, currency-labeled cost attribution by tenant/agent from an editable pricing table.
+- Session budgets across providers, enforced by atomic reservation of each request's estimate (admission is estimate-based — see [limitations](LIMITATIONS.md)), plus cache-aware, currency-labeled cost attribution by tenant/agent from an editable pricing table.
 
 → [Cap AI spend per agent](docs/guides/cost-governance-by-agent.md)
 
@@ -342,7 +342,7 @@ agent:
     secret_name: "support-bot-talon-key"   # talon secrets set support-bot-talon-key ...
 policies:
   session_limits:
-    max_cost: 0.50          # soft cap: denies the next request once exceeded
+    max_cost: 0.50          # session cap: estimates reserved at admission, denied before the provider once exhausted
 ```
 
 ---

@@ -10,7 +10,7 @@ The active roadmap lives on GitHub: the [MVP milestone](https://github.com/dativ
 
 Everything below is current, code-verified behavior — see [CHANGELOG.md](CHANGELOG.md) and [releases](https://github.com/dativo-io/talon/releases).
 
-- **Cost control** — per-agent daily/monthly caps that deny **before** the provider call; cross-provider session budgets (soft caps); cache-aware pricing with ISO currency labels; cost attribution and rollups by tenant/agent/session.
+- **Cost control** — per-agent daily/monthly caps that deny **before** the provider call; cross-provider session budgets enforced by atomic reservation (#144); cache-aware pricing with ISO currency labels; cost attribution and rollups by tenant/agent/session.
 - **Reliability** — error-driven provider fallback chains triggered only by transient failures (timeout, connection, 429, 5xx), with every candidate re-checked against sovereignty, model and budget policy, failing closed on exhaustion; connect vs response-header timeout separation; stream idle-timeout enforcement (healthy streams outlive `request_timeout`, silent ones abort with a terminal event); provider-native error envelopes.
 - **Shared policy** — an organization baseline with one explicit per-agent override; PII scanning (regex/Presidio/HTTP/local-LLM) on prompts, attachments, tool arguments and responses; tool allowlists and forbidden globs filtered or blocked before the model; egress and sovereignty rules (`eu_strict`/`eu_preferred`/`global`), air-gap mode.
 - **Session understanding** — session identity (explicit `X-Talon-Session-ID` → vendor header → synthetic evidence-only); session-scoped audit, cost rollups and verification; dashboard session drill-down; metrics API, SSE stream, OTel GenAI traces.

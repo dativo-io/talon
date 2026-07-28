@@ -172,7 +172,7 @@ func TestCodingAgentsDemo_EndToEnd(t *testing.T) {
 		map[string]string{"X-Talon-Session-ID": sessID, "X-Talon-Agent-ID": "generator"})
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	// 4. Loop until the session budget trips (soft cap 0.02).
+	// 4. Loop until the session budget trips (session cap 0.02).
 	denied := false
 	var denyBody string
 	for i := 0; i < 30 && !denied; i++ {

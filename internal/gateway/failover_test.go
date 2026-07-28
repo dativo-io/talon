@@ -613,8 +613,8 @@ func TestPolicyInputParity_PrimaryVsCandidate(t *testing.T) {
 	gw, _ := setupFailoverGateway(t, "", "EU", "EU", primary, backup, "")
 	agent := failoverAgent(gw)
 
-	primaryInput, _ := gw.buildPolicyInputForRequest(context.Background(), agent, "openai", "gpt-4o-mini", 1, 0.01, 1, 2, "")
-	candidateInput, _ := gw.buildPolicyInputForRequest(context.Background(), agent, "backup", "gpt-4o", 1, 0.02, 1, 2, "")
+	primaryInput, _ := gw.buildPolicyInputForRequest(context.Background(), agent, "openai", "gpt-4o-mini", 1, 0.01, 1, 2, nil)
+	candidateInput, _ := gw.buildPolicyInputForRequest(context.Background(), agent, "backup", "gpt-4o", 1, 0.02, 1, 2, nil)
 
 	primaryKeys := make([]string, 0, len(primaryInput))
 	for k := range primaryInput {
