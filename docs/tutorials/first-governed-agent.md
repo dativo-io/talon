@@ -32,7 +32,7 @@ You should see the list of commands.
 
 ## 2. Initialize a project
 
-Create a new directory and run `talon init`. In a terminal, this starts the **interactive wizard**: you answer a few questions (workload type, framework pack, LLM provider, data residency, compliance features) and Talon generates both config files.
+Create a new directory and run `talon init`. In a terminal, this starts the **interactive wizard**: you answer a few questions (AI use-case type, framework pack, LLM provider, data residency, compliance features) and Talon generates both config files.
 
 ```bash
 mkdir my-agents && cd my-agents

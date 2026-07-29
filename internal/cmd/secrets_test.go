@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -24,12 +25,39 @@ func TestSecretsCmd_HasSubcommands(t *testing.T) {
 	}
 }
 
-func TestSecretsSetCmd_RequiresTwoArgs(t *testing.T) {
+// #310: the value argument is optional — with only a name, the value is read
+// from piped stdin so the credential never appears in argv/ps.
+func TestSecretsSetCmd_ArgRange(t *testing.T) {
 	assert.NotNil(t, secretsSetCmd.Args)
-	err := secretsSetCmd.Args(secretsSetCmd, []string{"one"})
-	assert.Error(t, err)
-	err = secretsSetCmd.Args(secretsSetCmd, []string{"name", "value"})
-	assert.NoError(t, err)
+	assert.Error(t, secretsSetCmd.Args(secretsSetCmd, []string{}), "a name is required")
+	assert.NoError(t, secretsSetCmd.Args(secretsSetCmd, []string{"name"}), "value may come from stdin")
+	assert.NoError(t, secretsSetCmd.Args(secretsSetCmd, []string{"name", "value"}))
+	assert.Error(t, secretsSetCmd.Args(secretsSetCmd, []string{"a", "b", "c"}))
+}
+
+// #310: piped stdin becomes the value with exactly one trailing newline
+// trimmed; an interactive terminal without a value argument errors instead of
+// hanging; oversized input is rejected.
+func TestReadSecretValueFromStdin(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.SetIn(strings.NewReader("sk-test-key-123\n"))
+	v, err := readSecretValueFromStdin(cmd)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-test-key-123", v, "one trailing newline trimmed (echo compatibility)")
+
+	cmd.SetIn(strings.NewReader("multi\nline\nvalue"))
+	v, err = readSecretValueFromStdin(cmd)
+	require.NoError(t, err)
+	assert.Equal(t, "multi\nline\nvalue", v, "interior newlines preserved verbatim")
+
+	cmd.SetIn(strings.NewReader("crlf-key\r\n"))
+	v, err = readSecretValueFromStdin(cmd)
+	require.NoError(t, err)
+	assert.Equal(t, "crlf-key", v)
+
+	cmd.SetIn(strings.NewReader(strings.Repeat("x", maxSecretStdinBytes+1)))
+	_, err = readSecretValueFromStdin(cmd)
+	assert.Error(t, err, "oversized stdin must fail loudly")
 }
 
 func TestSecretsRotateCmd_RequiresOneArg(t *testing.T) {

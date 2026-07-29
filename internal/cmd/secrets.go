@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -25,8 +27,14 @@ var (
 var secretsSetCmd = &cobra.Command{
 	Use:   "set [name] [value]",
 	Short: "Store an encrypted secret",
-	Args:  cobra.ExactArgs(2),
-	RunE:  secretsSet,
+	Long: `Store an encrypted secret in the vault.
+
+The value may be passed as the second argument, or — preferably — piped on
+stdin so the credential never appears in the process list (#310):
+
+  printf '%s' "$OPENAI_API_KEY" | talon secrets set openai-api-key`,
+	Args: cobra.RangeArgs(1, 2),
+	RunE: secretsSet,
 }
 
 var secretsListCmd = &cobra.Command{
@@ -86,7 +94,19 @@ func secretsSet(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	name := args[0]
-	value := args[1]
+	var value string
+	if len(args) == 2 {
+		value = args[1]
+	} else {
+		v, err := readSecretValueFromStdin(cmd)
+		if err != nil {
+			return err
+		}
+		value = v
+	}
+	if value == "" {
+		return fmt.Errorf("secret value is empty")
+	}
 
 	store, err := openSecretsStore()
 	if err != nil {
@@ -109,6 +129,35 @@ func secretsSet(cmd *cobra.Command, args []string) error {
 			formatACLList(acl.Tenants), formatACLList(acl.Agents))
 	}
 	return nil
+}
+
+// maxSecretStdinBytes bounds a piped secret value — far above any real
+// credential, low enough that a misdirected file redirect fails loudly.
+const maxSecretStdinBytes = 1 << 20
+
+// readSecretValueFromStdin reads the secret value from piped stdin (#310), so
+// the credential never appears in argv/ps. An interactive terminal with no
+// value argument is an explicit error rather than a silent hang waiting for
+// input the operator doesn't know to type. Exactly one trailing newline is
+// trimmed (echo adds one; printf '%s' does not) — interior whitespace is
+// preserved verbatim.
+func readSecretValueFromStdin(cmd *cobra.Command) (string, error) {
+	in := cmd.InOrStdin()
+	if f, ok := in.(*os.File); ok {
+		if info, err := f.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+			return "", fmt.Errorf("no value argument and stdin is a terminal; pipe the value to keep it out of the process list: printf '%%s' \"$KEY\" | talon secrets set <name>")
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(in, maxSecretStdinBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("reading secret value from stdin: %w", err)
+	}
+	if len(data) > maxSecretStdinBytes {
+		return "", fmt.Errorf("stdin value exceeds %d bytes — is this really a secret?", maxSecretStdinBytes)
+	}
+	s := strings.TrimSuffix(string(data), "\n")
+	s = strings.TrimSuffix(s, "\r")
+	return s, nil
 }
 
 func formatACLList(patterns []string) string {
