@@ -58,16 +58,16 @@ func TestLookupAndGetByIDWithNullableColumns(t *testing.T) {
 	}
 
 	got, err := store.GetByID(ctx, entry.ID)
-	if err != nil {
+	// Ordered switch: each case's deref is guarded by the nil case before it —
+	// keeps the flow obvious to SA5011 across staticcheck versions.
+	switch {
+	case err != nil:
 		t.Fatalf("GetByID() error = %v", err)
-	}
-	if got == nil {
+	case got == nil:
 		t.Fatalf("GetByID() returned nil entry")
-	}
-	if got.UserID != "" {
+	case got.UserID != "":
 		t.Fatalf("GetByID() user_id mismatch: got %q want empty", got.UserID)
-	}
-	if got.LastAccessed != nil {
+	case got.LastAccessed != nil:
 		t.Fatalf("GetByID() last_accessed mismatch: got non-nil, want nil")
 	}
 }
