@@ -236,6 +236,7 @@ func offlineFleet(ctx context.Context, cfg *config.Config, tenant string) ([]fle
 			// uses. Offline has the gateway providers when a gateway config is
 			// present; without one, only a categorical model block is detectable.
 			PolicyDenyAll: !gateway.AgentCanAcceptWork(org, override, providers),
+			UseCase:       agentbridge.FleetUseCase(a.Policy),
 		})
 	}
 
@@ -343,6 +344,7 @@ func renderAgentShow(w io.Writer, r fleet.AgentRow, label string) {
 		fmt.Fprintf(w, "  - %s: %s\n", c.Kind, c.Detail)
 	}
 	fmt.Fprintln(w)
+	renderAgentUseCase(w, r.UseCase)
 	fmt.Fprintf(w, "Cost (month-to-date): %s\n", monthCostLine(r))
 	fmt.Fprintf(w, "Cost (today):         %s\n", dayCostLine(r))
 	fmt.Fprintln(w)
@@ -362,6 +364,41 @@ func renderAgentShow(w io.Writer, r fleet.AgentRow, label string) {
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Detail: `talon costs --agent`, `talon session`, `talon agents score` (layered effective policy + recent sessions/denials/fallbacks: #305).")
+}
+
+// renderAgentUseCase prints the operating record declared in the agent's
+// config (#382). Purely declared metadata — no health/budget/policy
+// computation happens here; owners are attribution for the reader, never
+// authentication of the named people.
+func renderAgentUseCase(w io.Writer, uc *fleet.UseCase) {
+	if uc == nil {
+		return
+	}
+	fmt.Fprintln(w, "Use case (declared in config):")
+	if uc.Purpose != "" {
+		fmt.Fprintf(w, "  Purpose:     %s\n", uc.Purpose)
+	}
+	if uc.Department != "" {
+		fmt.Fprintf(w, "  Department:  %s\n", uc.Department)
+	}
+	if uc.Criticality != "" {
+		fmt.Fprintf(w, "  Criticality: %s\n", uc.Criticality)
+	}
+	owners := [][2]string{
+		{"business", uc.OwnerBusiness},
+		{"technical", uc.OwnerTechnical},
+		{"budget", uc.OwnerBudget},
+		{"risk", uc.OwnerRisk},
+	}
+	for _, o := range owners {
+		if o[1] != "" {
+			fmt.Fprintf(w, "  Owner (%s): %s\n", o[0], o[1])
+		}
+	}
+	for _, ref := range uc.References {
+		fmt.Fprintf(w, "  Reference:   %s\n", ref)
+	}
+	fmt.Fprintln(w)
 }
 
 func monthCostLine(r fleet.AgentRow) string {

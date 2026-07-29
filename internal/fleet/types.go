@@ -186,6 +186,8 @@ type AgentStatus struct {
 	MonthlyCap float64
 	// Currency the caps and evidence spend are denominated in (ISO-4217).
 	Currency string
+	// UseCase is the config-declared operating record (#382); nil when absent.
+	UseCase *UseCase
 }
 
 // AgentRow is one projected attention-queue row: the STATE/HEALTH/COST/WHY the
@@ -214,6 +216,27 @@ type AgentRow struct {
 	ConfigPath     string    `json:"config_path"`
 	PolicyDigest   string    `json:"policy_digest"`
 	ConfigError    string    `json:"config_error,omitempty"`
+	// UseCase is the operating record declared in the agent's config (#382):
+	// purpose, organizational context and accountable owners. Nil when the
+	// config declares none — the record is optional by design.
+	UseCase *UseCase `json:"use_case,omitempty"`
+}
+
+// UseCase is the AI use-case operating record (#382) as projected to the CLI
+// and dashboard: flat strings mirroring policy.UseCaseConfig so internal/fleet
+// stays a leaf read model (no policy import). Owner values are attribution
+// for humans reading the fleet — the Talon key authenticates the presenter of
+// traffic; nothing here authenticates the named owners, and none of it is a
+// policy input.
+type UseCase struct {
+	Purpose        string   `json:"purpose,omitempty"`
+	Department     string   `json:"department,omitempty"`
+	Criticality    string   `json:"criticality,omitempty"`
+	OwnerBusiness  string   `json:"owner_business,omitempty"`
+	OwnerTechnical string   `json:"owner_technical,omitempty"`
+	OwnerBudget    string   `json:"owner_budget,omitempty"`
+	OwnerRisk      string   `json:"owner_risk,omitempty"`
+	References     []string `json:"references,omitempty"`
 }
 
 // CostString renders the COST column: month-to-date spend, and "/ cap" when a

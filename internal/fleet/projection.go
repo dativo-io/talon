@@ -127,6 +127,7 @@ func Project(ctx context.Context, ev EvidenceSource, ss SessionSource, agents []
 			ConfigPath:     a.ConfigPath,
 			PolicyDigest:   a.PolicyDigest,
 			ConfigError:    a.ConfigError,
+			UseCase:        a.UseCase,
 		})
 	}
 	sortRows(rows)

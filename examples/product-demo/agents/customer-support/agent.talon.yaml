@@ -18,6 +18,20 @@ agent:
   description: "Customer support assistant — prefers the local model; PII in scope"
   version: "1.0.0"
   tenant_id: acme
+  # Operating record (#382): who this use case is for and who is accountable.
+  # Attribution for humans reading the fleet — the Talon key authenticates
+  # traffic; nothing here authenticates the named owners.
+  use_case:
+    purpose: "Answer tier-1 customer questions from the support knowledge base"
+    department: "Customer Support"
+    criticality: important
+    owners:
+      business: "Sofia Marino <s.marino@acme.example>"
+      technical: "support-platform@acme.example"
+      budget: "cs-finops@acme.example"
+      risk: "privacy-office@acme.example"
+    references:
+      - "AIGOV-101"
   key:
     secret_name: customer-support-talon-key
 

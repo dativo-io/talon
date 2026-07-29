@@ -102,6 +102,12 @@ func LoadPolicy(ctx context.Context, path string, strict bool, baseDir string) (
 		return nil, fmt.Errorf("computing policy identity: %w", err)
 	}
 
+	// Operating-record rules (#382): closed criticality vocabulary + length
+	// bounds. A config without a use_case block is untouched.
+	if err := ValidateUseCase(pol.Agent.UseCase); err != nil {
+		return nil, fmt.Errorf("use_case validation: %w", err)
+	}
+
 	// Validate routing configuration for sovereignty misconfigurations
 	if pol.Policies.ModelRouting != nil {
 		warnings, err := ValidateRouting(pol.Policies.ModelRouting)
