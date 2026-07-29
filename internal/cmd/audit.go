@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -468,6 +469,13 @@ func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
 		fmt.Fprintln(w, "  (no records)")
 		return
 	}
+	renderSessionSummaryBody(w, sum)
+}
+
+// renderSessionSummaryBody prints the summary lines below the header — shared
+// by `talon audit --session` and `talon session show` (#271) so the two
+// commands can never describe the same session differently.
+func renderSessionSummaryBody(w io.Writer, sum evidence.SessionSummary) {
 	fmt.Fprintf(w, "  Tenant:    %s\n", sum.TenantID)
 	if len(sum.AgentIDs) > 0 {
 		fmt.Fprintf(w, "  Agent:     %s\n", strings.Join(sum.AgentIDs, ", "))
@@ -475,10 +483,19 @@ func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
 	if sum.Client != "" || sum.SessionSource != "" {
 		fmt.Fprintf(w, "  Source:    %s (%s)\n", sum.Client, sum.SessionSource)
 	}
-	fmt.Fprintf(w, "  Window:    %s → %s\n",
-		sum.FirstSeen.Format(time.RFC3339), sum.LastSeen.Format(time.RFC3339))
-	fmt.Fprintf(w, "  Requests:  %d (%d allowed, %d denied, %d error)\n",
+	fmt.Fprintf(w, "  Window:    %s → %s (%s)\n",
+		sum.FirstSeen.Format(time.RFC3339), sum.LastSeen.Format(time.RFC3339),
+		formatSessionDuration(sum.DurationMS))
+	fmt.Fprintf(w, "  Requests:  %d LLM", sum.Requests)
+	if sum.ToolCalls > 0 {
+		fmt.Fprintf(w, " · %d tool calls", sum.ToolCalls)
+	}
+	fmt.Fprintf(w, " · %d records (%d allowed, %d denied, %d error)\n",
 		sum.RecordCount, sum.Allowed, sum.Denied, sum.Errors)
+	renderSessionReliability(w, sum)
+	if len(sum.ProviderPath) > 0 {
+		fmt.Fprintf(w, "  Path:      %s\n", strings.Join(sum.ProviderPath, " → "))
+	}
 	if len(sum.Providers) > 0 {
 		fmt.Fprintf(w, "  Providers: %s\n", strings.Join(sum.Providers, ", "))
 	}
@@ -488,6 +505,16 @@ func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
 	fmt.Fprintf(w, "  Tokens:    in %d / out %d / cache-read %d / cache-write %d\n",
 		sum.InputTokens, sum.OutputTokens, sum.CacheReadTokens, sum.CacheWriteTokens)
 	fmt.Fprintf(w, "  Cost:      %s\n", formatMoney(sum.Currency, sum.TotalCost))
+	renderSessionDenials(w, sum)
+	renderSessionInterventions(w, sum)
+	renderSessionToolCalls(w, sum)
+	if sum.LastFailure != nil {
+		fmt.Fprintf(w, "  Failure:   [%s] %s", sum.LastFailure.At.Format(time.RFC3339), sum.LastFailure.Code)
+		if sum.LastFailure.Detail != "" && sum.LastFailure.Detail != sum.LastFailure.Code {
+			fmt.Fprintf(w, ": %s", sum.LastFailure.Detail)
+		}
+		fmt.Fprintln(w)
+	}
 	if sessionHasAgentBreakdown(sum) {
 		fmt.Fprintln(w, "\n  Per-agent:")
 		for i := range sum.Subagents {
@@ -504,6 +531,115 @@ func renderSessionSummary(w io.Writer, sum evidence.SessionSummary) {
 				id, parent, a.RecordCount, formatMoney(sum.Currency, a.TotalCost), a.InputTokens, a.OutputTokens)
 		}
 	}
+}
+
+// renderSessionReliability prints the retry/fallback line when the session saw
+// any reliability event.
+func renderSessionReliability(w io.Writer, sum evidence.SessionSummary) {
+	if sum.Retries == 0 && sum.FailedAttempts == 0 && sum.Fallbacks == 0 && sum.FailClosed == 0 {
+		return
+	}
+	parts := []string{}
+	if sum.Retries > 0 {
+		parts = append(parts, fmt.Sprintf("retries %d", sum.Retries))
+	}
+	if sum.FailedAttempts > 0 {
+		parts = append(parts, fmt.Sprintf("failed attempts %d", sum.FailedAttempts))
+	}
+	if sum.Fallbacks > 0 {
+		parts = append(parts, fmt.Sprintf("fallbacks %d", sum.Fallbacks))
+	}
+	if sum.FailClosed > 0 {
+		parts = append(parts, fmt.Sprintf("fail-closed %d", sum.FailClosed))
+	}
+	fmt.Fprintf(w, "  Reliability: %s\n", strings.Join(parts, " · "))
+}
+
+// renderSessionDenials prints denial counts bucketed by machine reason code,
+// most frequent first (ties by code for a stable line).
+func renderSessionDenials(w io.Writer, sum evidence.SessionSummary) {
+	if len(sum.DeniedByReason) == 0 {
+		return
+	}
+	codes := make([]string, 0, len(sum.DeniedByReason))
+	for code := range sum.DeniedByReason {
+		codes = append(codes, code)
+	}
+	sort.Slice(codes, func(i, j int) bool {
+		if sum.DeniedByReason[codes[i]] != sum.DeniedByReason[codes[j]] {
+			return sum.DeniedByReason[codes[i]] > sum.DeniedByReason[codes[j]]
+		}
+		return codes[i] < codes[j]
+	})
+	parts := make([]string, 0, len(codes))
+	for _, code := range codes {
+		parts = append(parts, fmt.Sprintf("%s ×%d", code, sum.DeniedByReason[code]))
+	}
+	fmt.Fprintf(w, "  Denials:   %s\n", strings.Join(parts, ", "))
+}
+
+// renderSessionInterventions prints the policy-intervention line: PII
+// redactions, tool filtering, shadow-mode violations.
+func renderSessionInterventions(w io.Writer, sum evidence.SessionSummary) {
+	parts := []string{}
+	if sum.PIIRedactions > 0 {
+		p := fmt.Sprintf("PII redacted ×%d", sum.PIIRedactions)
+		if len(sum.PIITypes) > 0 {
+			p += " (" + strings.Join(sum.PIITypes, ", ") + ")"
+		}
+		parts = append(parts, p)
+	} else if len(sum.PIITypes) > 0 {
+		parts = append(parts, "PII detected ("+strings.Join(sum.PIITypes, ", ")+")")
+	}
+	if sum.ToolFilterEvents > 0 {
+		p := fmt.Sprintf("tools filtered ×%d", sum.ToolFilterEvents)
+		if len(sum.ToolsFiltered) > 0 {
+			p += " (" + strings.Join(sum.ToolsFiltered, ", ") + ")"
+		}
+		parts = append(parts, p)
+	}
+	if sum.ShadowViolations > 0 {
+		parts = append(parts, fmt.Sprintf("shadow violations ×%d", sum.ShadowViolations))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "  Interventions: %s\n", strings.Join(parts, " · "))
+}
+
+// renderSessionToolCalls prints the intercepted-MCP line. The count covers
+// only calls Talon intercepted — local actions that bypass Talon are invisible
+// by design and never implied.
+func renderSessionToolCalls(w io.Writer, sum evidence.SessionSummary) {
+	if sum.ToolCalls == 0 {
+		return
+	}
+	allowed := sum.ToolCalls - sum.ToolCallsDenied - sum.ToolCallsFailed
+	line := fmt.Sprintf("  Tool calls: %d intercepted (%d allowed", sum.ToolCalls, allowed)
+	if sum.ToolCallsDenied > 0 {
+		line += fmt.Sprintf(", %d denied", sum.ToolCallsDenied)
+	}
+	if sum.ToolCallsFailed > 0 {
+		line += fmt.Sprintf(", %d failed upstream", sum.ToolCallsFailed)
+	}
+	line += ")"
+	if len(sum.ToolNames) > 0 {
+		line += " — " + strings.Join(sum.ToolNames, ", ")
+	}
+	fmt.Fprintln(w, line)
+}
+
+// formatSessionDuration renders the observed window compactly (e.g. "4m12s");
+// sub-second windows render as "<1s" so a one-record session isn't "0s".
+func formatSessionDuration(ms int64) string {
+	if ms <= 0 {
+		return "single record"
+	}
+	if ms < 1000 {
+		return "<1s"
+	}
+	d := time.Duration(ms) * time.Millisecond
+	return d.Round(time.Second).String()
 }
 
 // sessionHasAgentBreakdown reports whether the per-agent table adds information

@@ -180,6 +180,113 @@ func TestListRecentOrchestrationSessionIDs(t *testing.T) {
 	}
 }
 
+// The #271 operational contract: one session that saw a fallback, a denial, a
+// caller retry, intercepted MCP tool calls, tool filtering, and PII redaction
+// must surface every fact with counts and the serving provider path.
+func TestBuildSessionSummary_OperationalContract(t *testing.T) {
+	served := rec("s", "acme", "coder", true, 0.10, 1000, 200, 0, 0, "anthropic", "claude-sonnet-5", nil)
+	served.Timestamp = ts(1)
+	served.InvocationType = "gateway"
+	served.ToolGovernance = &ToolGovernance{
+		ToolsRequested: []string{"search", "delete_record", "summarize"},
+		ToolsFiltered:  []string{"delete_record"},
+		ToolsForwarded: []string{"search", "summarize"},
+	}
+	served.Classification.PIIRedacted = true
+	served.Classification.PIIDetected = []string{"EMAIL"}
+
+	failedAttempt := rec("s", "acme", "coder", true, 0, 0, 0, 0, 0, "", "claude-sonnet-5", nil)
+	failedAttempt.Timestamp = ts(10)
+	failedAttempt.InvocationType = "gateway_failover_attempt"
+	failedAttempt.Status = "failed"
+	failedAttempt.FailureReason = FailureReasonProviderTransient
+	failedAttempt.Execution.Error = "upstream status 529"
+	failedAttempt.Failover = &FailoverContext{Role: FailoverRoleFailedAttempt, Provider: "anthropic", Model: "claude-sonnet-5"}
+
+	fallbackServed := rec("s", "acme", "coder", true, 0.08, 800, 150, 0, 0, "", "gpt-5", nil)
+	fallbackServed.Timestamp = ts(11)
+	fallbackServed.InvocationType = "gateway"
+	fallbackServed.RetryAttempt = "1"
+	fallbackServed.Failover = &FailoverContext{Role: FailoverRoleFallbackDecision, Provider: "openai", Model: "gpt-5"}
+
+	denied := rec("s", "acme", "coder", false, 0, 0, 0, 0, 0, "", "", nil)
+	denied.Timestamp = ts(20)
+	denied.PolicyDecision.Reasons = []string{"session_budget_exceeded: estimated cost 0.09 exceeds remaining session budget 0.01"}
+
+	toolAllowed := rec("s", "acme", "coder", true, 0, 0, 0, 0, 0, "", "", nil)
+	toolAllowed.Timestamp = ts(5)
+	toolAllowed.InvocationType = "proxy_tool_call"
+	toolAllowed.Execution.ToolsCalled = []string{"search_kb"}
+
+	toolDenied := rec("s", "acme", "coder", false, 0, 0, 0, 0, 0, "", "", nil)
+	toolDenied.Timestamp = ts(6)
+	toolDenied.InvocationType = "proxy_tool_blocked"
+	toolDenied.Execution.ToolsCalled = []string{"delete_record"}
+	toolDenied.PolicyDecision.Reasons = []string{"mcp_tool_denied: delete_record"}
+	toolDenied.Execution.Error = "mcp_tool_denied: delete_record"
+
+	// Newest-first input, the ListBySessionID order.
+	sum := BuildSessionSummary("s", []*Evidence{denied, fallbackServed, failedAttempt, toolDenied, toolAllowed, served})
+
+	assert.Equal(t, 6, sum.RecordCount)
+	assert.Equal(t, 3, sum.Requests, "LLM requests: served, fallback-served, denied — attempt and tool calls split out")
+	assert.Equal(t, 2, sum.ToolCalls)
+	assert.Equal(t, 1, sum.ToolCallsDenied)
+	assert.Equal(t, 0, sum.ToolCallsFailed)
+	assert.Equal(t, []string{"delete_record", "search_kb"}, sum.ToolNames)
+	assert.Equal(t, 1, sum.Retries)
+	assert.Equal(t, 1, sum.FailedAttempts)
+	assert.Equal(t, 1, sum.Fallbacks)
+	assert.Equal(t, 0, sum.FailClosed)
+	assert.Equal(t, map[string]int{"session_budget_exceeded": 1, "mcp_tool_denied": 1}, sum.DeniedByReason)
+	assert.Equal(t, []string{"anthropic/claude-sonnet-5", "openai/gpt-5"}, sum.ProviderPath,
+		"path lists what served, in time order — the failed attempt is not a hop")
+	assert.Equal(t, []string{"delete_record"}, sum.ToolsFiltered)
+	assert.Equal(t, 1, sum.ToolFilterEvents)
+	assert.Equal(t, 1, sum.PIIRedactions)
+	assert.Equal(t, []string{"EMAIL"}, sum.PIITypes)
+	assert.Equal(t, ts(20).Sub(ts(1)).Milliseconds(), sum.DurationMS)
+	if assert.NotNil(t, sum.LastFailure, "denied session must explain its failure") {
+		assert.Equal(t, "session_budget_exceeded", sum.LastFailure.Code)
+		assert.True(t, sum.LastFailure.At.Equal(ts(20)))
+	}
+
+	// Order independence: oldest-first input gives the identical summary.
+	sum2 := BuildSessionSummary("s", []*Evidence{served, toolAllowed, toolDenied, failedAttempt, fallbackServed, denied})
+	assert.Equal(t, sum, sum2, "summary must be input-order independent")
+}
+
+// The failure explanation is the NEWEST deny or execution failure; structured
+// failure_reason wins over the generic "error" code.
+func TestBuildSessionSummary_LastFailureNewestWins(t *testing.T) {
+	older := rec("s", "acme", "c", false, 0, 0, 0, 0, 0, "", "", nil)
+	older.Timestamp = ts(3)
+	older.PolicyDecision.Reasons = []string{"pii_block: EMAIL in tier-2 payload"}
+	newer := rec("s", "acme", "c", true, 0, 0, 0, 0, 0, "", "m", nil)
+	newer.Timestamp = ts(9)
+	newer.Execution.Error = "provider timeout after 30s"
+	newer.FailureReason = "llm_error"
+
+	sum := BuildSessionSummary("s", []*Evidence{older, newer})
+	if assert.NotNil(t, sum.LastFailure) {
+		assert.Equal(t, "llm_error", sum.LastFailure.Code)
+		assert.Equal(t, "provider timeout after 30s", sum.LastFailure.Detail)
+	}
+
+	clean := rec("s", "acme", "c", true, 0.01, 1, 1, 0, 0, "anthropic", "m", nil)
+	assert.Nil(t, BuildSessionSummary("s", []*Evidence{clean}).LastFailure)
+}
+
+// Moved with the classifier from internal/metrics (#271): one deny-reason
+// vocabulary for the dashboard event projection and the session summary.
+func TestDenyReasonCode(t *testing.T) {
+	assert.Equal(t, "policy_deny", DenyReasonCode(nil))
+	assert.Equal(t, "policy_deny", DenyReasonCode([]string{"Data tier 2 exceeds caller restriction (max 1)"}))
+	assert.Equal(t, "session_budget_exceeded", DenyReasonCode([]string{"session_budget_exceeded: spend"}))
+	assert.Equal(t, "egress_tier_destination_disallowed", DenyReasonCode([]string{"egress_tier_destination_disallowed"}))
+	assert.Equal(t, "policy_deny", DenyReasonCode([]string{"<img onerror=alert(1)>: nope"}), "hostile prefix falls back")
+}
+
 // The session's client/source label comes from the EARLIEST orchestrated
 // record (the client that opened the session), regardless of input order —
 // ListBySessionID returns newest-first, which used to mislabel a

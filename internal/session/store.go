@@ -311,6 +311,40 @@ func (s *Store) GetByExternal(ctx context.Context, tenantID, agentID, externalID
 	return out, nil
 }
 
+// ListByExternalID returns every session row carrying the given external
+// (client/vendor-asserted) session id, newest activity first. Operator/CLI
+// use: evidence records key sessions by the EXTERNAL id while the store's
+// primary key is the internal opaque id, and `talon session show` must accept
+// either (#271). More than one row is possible when different agents assert
+// the same external id — callers must surface that instead of silently
+// picking one. A non-empty tenantID scopes the read (#215 semantics).
+func (s *Store) ListByExternalID(ctx context.Context, externalID, tenantID string) ([]*Session, error) {
+	query := `SELECT ` + sessionColumns + ` FROM sessions WHERE external_session_id = ?`
+	args := []any{externalID}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	query += ` ORDER BY updated_at DESC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing sessions by external id: %w", err)
+	}
+	defer rows.Close()
+	var out []*Session
+	for rows.Next() {
+		sess, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning session row: %w", err)
+		}
+		out = append(out, sess)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating session rows: %w", err)
+	}
+	return out, nil
+}
+
 // GetOrCreateExternal returns the session for the caller-scoped tuple,
 // creating it (internal opaque id, status active) on first sight (#198,
 // create-if-absent). source must be client_asserted or vendor_asserted —

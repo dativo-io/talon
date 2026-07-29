@@ -73,6 +73,11 @@ func TestGatewayDashboardHTML_SessionsPanel(t *testing.T) {
 	assert.Contains(t, html, "Coding Sessions (orchestration)")
 	assert.Contains(t, html, `style="display:none"`, "sessions panel hidden by default")
 	assert.Contains(t, html, "renderSessions(d.sessions, d.denials_by_reason)")
+	// Session drill-down (#271): the expanded row renders the operational
+	// summary from the same evidence.SessionSummary fields the CLI prints.
+	assert.Contains(t, html, "function sessionFacts(sess)")
+	assert.Contains(t, html, "sessionFacts(sess)")
+	assert.Contains(t, html, "fmt(sess.requests)", "Requests column uses the LLM request count, not record_count")
 	// Naming collision resolved: the metrics feed card no longer claims the
 	// word "Session"; the new panel owns it.
 	assert.NotContains(t, html, "Session Timeline (Lifecycle)")
