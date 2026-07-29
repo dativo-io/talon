@@ -115,6 +115,11 @@ type Evidence struct {
 	// session spend at evaluation time, and the pre-request estimate. Appended
 	// after orchestration per the spec §2 append rule.
 	SessionBudget *SessionBudget `json:"session_budget,omitempty"`
+	// CostBudget records the agent/org budget window a cost-control event was
+	// decided on (#144): the crossed warning threshold on a budget_threshold
+	// record, or the binding limit/spend/estimate a budget_exceeded deny saw.
+	// Appended after session_budget per the spec §2 append rule.
+	CostBudget *CostBudget `json:"cost_budget,omitempty"`
 }
 
 // SessionBudget is the structured detail of a session-budget deny (#198).
@@ -122,6 +127,19 @@ type SessionBudget struct {
 	Limit    float64 `json:"limit"`    // caller's max_session_cost at evaluation time
 	Spent    float64 `json:"spent"`    // accumulated session spend the rule saw
 	Estimate float64 `json:"estimate"` // pre-request estimate added to spend
+}
+
+// CostBudget is the structured budget-window context of a cost-control event
+// (#144): a warning-threshold crossing (invocation_type budget_threshold) or a
+// budget hard-stop deny. Limit is the BINDING cap — the tightest of the
+// per-agent resolved cap and the org ceiling, the same number enforcement and
+// utilization use (#216/#287).
+type CostBudget struct {
+	Period       string  `json:"period"`                  // daily | monthly
+	Limit        float64 `json:"limit"`                   // binding cap at evaluation time
+	Spent        float64 `json:"spent"`                   // window spend the decision saw
+	Estimate     float64 `json:"estimate,omitempty"`      // pre-request estimate (deny records)
+	ThresholdPct float64 `json:"threshold_pct,omitempty"` // crossed threshold (budget_threshold records)
 }
 
 // OrchestrationContext is the client-asserted orchestration identity for one

@@ -216,6 +216,51 @@ gateway:
 	})
 }
 
+// A misconfigured org cost webhook must fail at LOAD (#144): silently
+// dropping every cost event at delivery time would be an invisible outage of
+// the notification contract.
+func TestValidateCostWebhookURL(t *testing.T) {
+	base := `
+gateway:
+  enabled: true
+  mode: enforce
+  providers:
+    ollama:
+      enabled: true
+      base_url: "http://localhost:11434"
+  organization_policy:
+`
+	t.Run("https accepted", func(t *testing.T) {
+		path := writeConfig(t, base+"    cost_webhook_url: https://hooks.example.com/talon\n")
+		cfg, err := LoadGatewayConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.OrganizationPolicy.CostWebhookURL != "https://hooks.example.com/talon" {
+			t.Errorf("cost_webhook_url mis-parsed: %+v", cfg.OrganizationPolicy.CostWebhookURL)
+		}
+	})
+	t.Run("http loopback accepted", func(t *testing.T) {
+		path := writeConfig(t, base+"    cost_webhook_url: http://127.0.0.1:9000/hook\n")
+		if _, err := LoadGatewayConfig(path); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("http non-loopback rejected", func(t *testing.T) {
+		path := writeConfig(t, base+"    cost_webhook_url: http://internal.corp/hook\n")
+		_, err := LoadGatewayConfig(path)
+		if err == nil || !strings.Contains(err.Error(), "cost_webhook_url") {
+			t.Fatalf("want cost_webhook_url error, got: %v", err)
+		}
+	})
+	t.Run("unset accepted", func(t *testing.T) {
+		path := writeConfig(t, base+"    defaults:\n      daily_cost: 10\n")
+		if _, err := LoadGatewayConfig(path); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 // Org allowed_providers entries must name configured providers (#284):
 // matching is exact and case-sensitive, so a typo would silently deny every
 // request at runtime instead of failing at load.

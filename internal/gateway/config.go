@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/dativo-io/talon/internal/policy"
 )
 
 // Mode is the gateway operation mode.
@@ -196,6 +198,13 @@ type OrganizationPolicy struct {
 	// on tool content is deliberately not offered until per-block-type tool
 	// redaction exists (#212).
 	ScanToolContent string `yaml:"scan_tool_content,omitempty" json:"scan_tool_content,omitempty"` // evidence_only (default) | off
+	// CostWebhookURL is the ONE organization-wide endpoint for cost-control
+	// events (#144): budget warning-threshold crossings and budget hard-stop
+	// denials POST here strictly AFTER the signed evidence record commits.
+	// HTTPS required; HTTP is allowed to loopback only (the runner
+	// budget_alert_webhook SSRF rule, policy.AllowedWebhookURL). Delivery
+	// failure is logged — evidence remains the truth.
+	CostWebhookURL string `yaml:"cost_webhook_url,omitempty" json:"cost_webhook_url,omitempty"`
 }
 
 // OrgDefaults holds the organization baselines every agent inherits — the
@@ -672,6 +681,11 @@ func (c *GatewayConfig) Validate() error {
 	}
 	if err := validateToolPolicyAction("organization_policy.defaults.tool_policy_action", c.OrganizationPolicy.Defaults.ToolPolicyAction); err != nil {
 		return err
+	}
+	// A bad webhook URL must fail at load, not silently at first delivery —
+	// a misconfigured endpoint would otherwise drop every cost event (#144).
+	if u := c.OrganizationPolicy.CostWebhookURL; u != "" && !policy.AllowedWebhookURL(u) {
+		return fmt.Errorf("gateway organization_policy.cost_webhook_url must be https (or http to loopback), got %q", u)
 	}
 	if err := c.OrganizationPolicy.validateBudgetBounds(); err != nil {
 		return err

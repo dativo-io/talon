@@ -96,6 +96,9 @@ type RecordGatewayEvidenceParams struct {
 	// deny was decided on (#198). Nil unless a session_budget_exceeded
 	// deny fired.
 	SessionBudget *evidence.SessionBudget
+	// CostBudget carries the agent/org budget-window context of a
+	// cost-control event (#144): threshold crossings and budget denies.
+	CostBudget *evidence.CostBudget
 }
 
 // RecordGatewayEvidence creates and stores a signed evidence record for a gateway request.
@@ -186,6 +189,7 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		Failover:       params.Failover,
 		Orchestration:  params.Orchestration,
 		SessionBudget:  params.SessionBudget,
+		CostBudget:     params.CostBudget,
 	}
 	if !params.PolicyAllowed {
 		ev.PolicyDecision.Action = "deny"

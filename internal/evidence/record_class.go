@@ -61,6 +61,10 @@ var nonRequestClass = map[string]RecordClass{
 	"plan_dispatch":        ClassOperatorEvent,
 	"plan_dispatch_manual": ClassOperatorEvent,
 	"control_plane":        ClassOperatorEvent,
+	// Budget warning-threshold crossing (#144): a control-plane fact recorded
+	// once per crossing during some triggering request — counting it as a
+	// request would double that request in traffic queries.
+	"budget_threshold": ClassOperatorEvent,
 
 	// Configuration lifecycle.
 	"config_reload": ClassConfigEvent,

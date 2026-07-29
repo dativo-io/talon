@@ -185,6 +185,27 @@ func TestPrintBudgetUtilization_SubCentCapKeepsPrecision(t *testing.T) {
 	require.Contains(t, buf.String(), "Daily budget:   60.0% ($< 0.0001 / $< 0.0001) [policy_cost_limits]")
 }
 
+// The cost-control contract's operator status (#144): utilization maps to the
+// same vocabulary the gateway's threshold evidence fires on, and the output
+// names the thresholds and the hard stop so "clear status" needs no docs.
+func TestPrintBudgetUtilization_StatusAndThresholds(t *testing.T) {
+	var buf bytes.Buffer
+	printBudgetUtilization(&buf, "USD",
+		&budgetUsage{UsedEUR: 8.5, LimitEUR: 10, Percent: 85.0, Source: "server_effective_cap"},
+		&budgetUsage{UsedEUR: 210, LimitEUR: 200, Percent: 105.0, Source: "server_effective_cap"},
+	)
+	out := buf.String()
+	require.Contains(t, out, "Daily budget:   85.0% ($8.500000 / $10.000000) [server_effective_cap] — WARNING")
+	require.Contains(t, out, "Monthly budget: 105.0% ($210.000000 / $200.000000) [server_effective_cap] — BLOCKED")
+	require.Contains(t, out, "warn at 80% and 95% (signed evidence + org webhook), hard stop at 100%")
+
+	require.Equal(t, "OK", budgetStatusWord(0))
+	require.Equal(t, "OK", budgetStatusWord(79.9))
+	require.Equal(t, "WARNING", budgetStatusWord(80))
+	require.Equal(t, "CRITICAL", budgetStatusWord(95))
+	require.Equal(t, "BLOCKED", budgetStatusWord(100))
+}
+
 func TestRenderCostsExportCSV_IncludesProviderAndDeniedReason(t *testing.T) {
 	var buf bytes.Buffer
 	records := []evidence.ExportRecord{

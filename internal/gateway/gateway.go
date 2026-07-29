@@ -120,9 +120,12 @@ type Gateway struct {
 	// costEstimate; stamped into evidence so records stay self-describing
 	// if the operator later changes the table (#216).
 	pricingCurrency string
-	// budgetAlertLast tracks last time we emitted a budget alert per tenant+period+threshold to avoid spamming
-	budgetAlertMu   sync.Mutex
-	budgetAlertLast map[string]time.Time
+	// budgetEventFired is the in-memory half of the once-per-crossing budget
+	// contract (#144): keys (tenant|agent|period|threshold|window) whose signed
+	// budget_threshold record exists. Claimed before I/O, released on write
+	// failure, rebuilt lazily from the evidence store after a restart.
+	budgetEventMu    sync.Mutex
+	budgetEventFired map[string]bool
 }
 
 type gatewayCacheConfig struct {
@@ -601,16 +604,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// agent_budget_unavailable annotation instead.
 	dailyCap, monthlyCap := eff.BindingDailyCap(), eff.BindingMonthlyCap()
 	if dailyCap > 0 && !budgetUnavailable {
-		pct := (dailyCost / dailyCap) * 100
-		RecordBudgetUtilization(ctx, agent.TenantID, "daily", pct)
-		g.tryBudgetAlert(ctx, agent.Name, agent.TenantID, "daily", pct, 80)
-		g.tryBudgetAlert(ctx, agent.Name, agent.TenantID, "daily", pct, 95)
+		RecordBudgetUtilization(ctx, agent.TenantID, "daily", (dailyCost/dailyCap)*100)
+		g.noteBudgetThresholds(ctx, agent, route.Provider, correlationID, "daily", dailyCost, dailyCap)
 	}
 	if monthlyCap > 0 && !budgetUnavailable {
-		pct := (monthlyCost / monthlyCap) * 100
-		RecordBudgetUtilization(ctx, agent.TenantID, "monthly", pct)
-		g.tryBudgetAlert(ctx, agent.Name, agent.TenantID, "monthly", pct, 80)
-		g.tryBudgetAlert(ctx, agent.Name, agent.TenantID, "monthly", pct, 95)
+		RecordBudgetUtilization(ctx, agent.TenantID, "monthly", (monthlyCost/monthlyCap)*100)
+		g.noteBudgetThresholds(ctx, agent, route.Provider, correlationID, "monthly", monthlyCost, monthlyCap)
 	}
 	destinationRegion := g.providerRegion(route.Provider)
 	policyInput, sessionBudgetUnavailable := g.buildPolicyInputForRequest(ctx, agent, route.Provider, extracted.Model, tier, estimatedCost, dailyCost, monthlyCost, sessionID)
@@ -665,6 +664,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				WriteProviderError(w, wire, http.StatusForbidden, preferredDenyReason(reasons))
 				persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, reasons, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
 					p.SessionBudget = sessionBudgetDetail(reasons, policyInput, estimatedCost)
+					// Budget hard stop (#144): the deny record explicitly
+					// carries the window/limit/spend it was decided on.
+					p.CostBudget = costBudgetDetail(reasons, dailyCost, monthlyCost, dailyCap, monthlyCap, estimatedCost)
 					if sessionBudgetUnavailable {
 						p.GatewayAnnotations = append(p.GatewayAnnotations, "session_budget_unavailable")
 					}
@@ -672,6 +674,25 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					g.handleEvidenceWriteFailure(ctx, err)
 					return
+				}
+				// Cost hard stops notify the org webhook — strictly after the
+				// signed deny record committed (#144). Non-cost denials
+				// (PII, egress, tools) are not cost events.
+				if code := costDenyReasonCode(reasons); code != "" {
+					costEv := CostEvent{
+						Event:         "budget_denied",
+						TenantID:      agent.TenantID,
+						Agent:         agent.Name,
+						EstimatedCost: estimatedCost,
+						Currency:      g.pricingCurrency,
+						ReasonCode:    code,
+						EvidenceID:    persisted.ID,
+						Timestamp:     persisted.Timestamp.UTC(),
+					}
+					if cb := persisted.CostBudget; cb != nil {
+						costEv.Period, costEv.Limit, costEv.Spent = cb.Period, cb.Limit, cb.Spent
+					}
+					g.postCostEvent(costEv)
 				}
 				g.emitMetrics(ctx, agent, route.Provider, extracted.Model, classification, nil, nil, nil, 0, durationMS, false, true, piiAction, false, 0, 0, 0, persisted)
 				return
@@ -1920,31 +1941,6 @@ func hashJSONDigest(v any) string {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
-}
-
-// tryBudgetAlert emits RecordBudgetAlert when utilization >= threshold, with a
-// 1-hour cooldown keyed per AGENT+tenant+period+threshold. Enforcement caps
-// and utilization are per-agent, so the cooldown must be too — a tenant-only
-// key let one agent's 80% alert suppress every other agent's for an hour
-// (#266 review round 4).
-func (g *Gateway) tryBudgetAlert(ctx context.Context, agentName, tenantID, period string, utilizationPct float64, threshold float64) {
-	if utilizationPct < threshold {
-		return
-	}
-	key := agentName + ":" + tenantID + ":" + period + ":" + fmt.Sprintf("%.0f", threshold)
-	g.budgetAlertMu.Lock()
-	if g.budgetAlertLast == nil {
-		g.budgetAlertLast = make(map[string]time.Time)
-	}
-	last := g.budgetAlertLast[key]
-	now := time.Now()
-	if now.Sub(last) < time.Hour {
-		g.budgetAlertMu.Unlock()
-		return
-	}
-	g.budgetAlertLast[key] = now
-	g.budgetAlertMu.Unlock()
-	RecordBudgetAlert(ctx, tenantID, threshold)
 }
 
 // agentCostTotals returns the agent's accumulated daily/monthly spend. The
