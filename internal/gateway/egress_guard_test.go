@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -73,4 +74,15 @@ func TestGatewayResidualPIIApprovalCannotBypass(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code, "residual PII must fail closed")
 	assert.Contains(t, rec.Body.String(), "recognized PII remains after redaction")
 	assert.Equal(t, 0, upstreamCalls, "approval headers must not bypass residual PII block")
+
+	// #209: a residual-PII block is a POLICY outcome — the error type must
+	// say so instead of the misleading invalid_request_error, so clients can
+	// distinguish "don't retry this content" from a retriable scanner outage.
+	var errBody struct {
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errBody))
+	assert.Equal(t, "pii_policy_violation", errBody.Error.Type)
 }

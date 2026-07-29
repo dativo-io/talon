@@ -83,6 +83,19 @@ func TestExternalScannerFailClosed_EnforceBlocksRequest(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "PII scanner unavailable")
 	assert.False(t, upstreamHit, "blocked request must never reach the provider")
 
+	// #209: the provider-native error TYPE must say infrastructure, not
+	// "your request is malformed" — a 502 scanner outage is retriable once
+	// the engine is back, and SDK clients branch on error.type.
+	var body struct {
+		Error struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "scanner_unavailable", body.Error.Type,
+		"request-side scanner outage must carry the same machine type as the response path")
+
 	ev := latestGatewayEvidence(t, evStore)
 	require.NotNil(t, ev.Classification.Scanner, "evidence must identify the scan engine")
 	assert.Equal(t, "failing-engine", ev.Classification.Scanner.Engine)

@@ -482,7 +482,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			durationMS := time.Since(start).Milliseconds()
 			RecordGatewayError(ctx, "scanner_unavailable")
-			WriteProviderError(w, wire, http.StatusBadGateway, "Request blocked: PII scanner unavailable (fail-closed)")
+			WriteProviderError(w, wire, http.StatusBadGateway, "scanner_unavailable: Request blocked: PII scanner unavailable (fail-closed)")
 			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, nil, nil, 0, durationMS, "", false, []string{"scanner unavailable"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0, func(p *RecordGatewayEvidenceParams) {
 				if p.Scanner != nil {
 					p.Scanner.Failure = scannerFailureKind(scanErr)
@@ -573,7 +573,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Warn().Str("agent", agent.Name).Str("enforcement_mode", "shadow").Strs("pii", piiTypes).Msg("shadow_pii_block")
 		} else {
 			durationMS := time.Since(start).Milliseconds()
-			WriteProviderError(w, wire, http.StatusBadRequest, "Request contains PII that is not allowed")
+			WriteProviderError(w, wire, http.StatusBadRequest, "pii_policy_violation: Request contains PII that is not allowed")
 			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, 0, "", false, []string{"PII block"}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
@@ -779,7 +779,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if redactErr != nil {
 			durationMS := time.Since(start).Milliseconds()
 			RecordGatewayError(ctx, "scanner_unavailable")
-			WriteProviderError(w, wire, http.StatusBadGateway, "Request blocked: PII redaction failed (fail-closed)")
+			WriteProviderError(w, wire, http.StatusBadGateway, "scanner_unavailable: Request blocked: PII redaction failed (fail-closed)")
 			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"request redaction failed"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost, func(p *RecordGatewayEvidenceParams) {
 				if p.Scanner != nil {
 					p.Scanner.Failure = scannerFailureKind(redactErr)
@@ -816,11 +816,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// and scanner failure kind must each say which one happened.
 			residual := errors.Is(verifyErr, classifier.ErrPIIDetected)
 			types := strings.Join(classifier.ResidualTypes(verifyErr), ", ")
-			msg := "Request blocked: recognized PII remains after redaction"
+			// The machine-code prefix travels into the provider-native
+			// error.type (#209): a residual block is a policy outcome (never
+			// retriable as-is), a failed verification is infrastructure
+			// (retriable once the engine is back) — SDK clients must be able
+			// to branch on that, consistent with the response path.
+			msg := "pii_policy_violation: Request blocked: recognized PII remains after redaction"
 			status := http.StatusBadRequest
 			reason := "request residual pii after redaction"
 			if !residual {
-				msg = "Request blocked: redaction could not be verified (fail-closed)"
+				msg = "scanner_unavailable: Request blocked: redaction could not be verified (fail-closed)"
 				status = http.StatusBadGateway
 				reason = "request redaction verification failed: scanner unavailable"
 				RecordGatewayError(ctx, "scanner_unavailable")
