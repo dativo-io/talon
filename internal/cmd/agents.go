@@ -15,6 +15,12 @@ var (
 	agentsID     string
 )
 
+// agentsCmd is only DECLARED here. The agents ROOT behavior — the attention
+// queue (`talon agents`), `agents show`, and the --url/--tenant/--json flags —
+// is implemented in agents_root.go (wired onto this command in its init). Two
+// independent readers have concluded from this file alone that
+// `talon agents --url` doesn't exist (#380); it does — read agents_root.go
+// before drawing conclusions about the root command.
 var agentsCmd = &cobra.Command{
 	Use:   "agents",
 	Short: "Agent analytics commands",

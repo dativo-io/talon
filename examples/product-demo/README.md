@@ -97,10 +97,10 @@ authenticated admin endpoints, and isolated temporary state:
 - The gateway is confirmed to be Talon (the `/health` marker) and to have
   discovered exactly the three demo agents before any traffic is sent.
 
-This is not a hardened multi-user posture: your provider keys are passed to
-`talon secrets set` as command-line arguments, so they can appear in the process
-list while the demo runs. Run it as yourself on a workstation you control, not on
-a shared host with untrusted users.
+Your provider keys are piped to `talon secrets set` on stdin (#310), never
+passed as command-line arguments, so they cannot appear in the process list
+while the demo runs. As with any local demo, run it as yourself on a
+workstation you control.
 
 ## Honest boundaries
 

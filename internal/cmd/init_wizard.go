@@ -192,7 +192,7 @@ func RunWizard(wio WizardIO) (WizardState, bool, error) {
 	// Q1: Workload type — determines totalSteps (Q2/pack is skipped for proxy)
 	currentStep++
 	fmt.Fprintf(out, "Step %d …\n", currentStep)
-	workload, err := readChoice(scan, out, "What type of AI workload are you governing?", []string{
+	workload, err := readChoice(scan, out, "What type of AI use case are you governing?", []string{
 		"AI agent framework  (OpenClaw, n8n, Flowise, custom agent)",
 		"Direct LLM API calls  (OpenAI SDK, LangChain, bare HTTP calls)",
 		"Both — mixed environment",

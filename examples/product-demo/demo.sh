@@ -25,8 +25,9 @@
 # mode) — the demo can never present a proof that did not actually happen.
 #
 # Security: the gateway binds to loopback only, on a random free port, with a
-# random admin key and random per-use-case traffic keys. Not a hardened multi-user
-# posture (keys reach `talon secrets set` as argv) — run it as yourself.
+# random admin key and random per-use-case traffic keys. Keys reach
+# `talon secrets set` via stdin (#310), never argv, so they cannot appear in
+# the process list.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -137,12 +138,13 @@ setup() {
   cp -r "$SCRIPT_DIR/agents" "$WORK/agents"
   cd "$WORK"
 
-  talon secrets set local-llama-demo-key  "not-a-real-key-local-demo" --tenant acme --agent customer-support >/dev/null
-  talon secrets set openai-api-key    "$OPENAI_API_KEY"    --tenant acme --agent customer-support --agent coding-assistant >/dev/null
-  talon secrets set anthropic-api-key "$ANTHROPIC_API_KEY" --tenant acme --agent document-summary >/dev/null
-  talon secrets set customer-support-talon-key "$CS_KEY"   --tenant acme --agent customer-support >/dev/null
-  talon secrets set coding-assistant-talon-key "$CODE_KEY" --tenant acme --agent coding-assistant >/dev/null
-  talon secrets set document-summary-talon-key "$DOC_KEY"  --tenant acme --agent document-summary >/dev/null
+  # Keys travel via stdin (#310), never argv — they cannot appear in `ps`.
+  printf '%s' "not-a-real-key-local-demo" | talon secrets set local-llama-demo-key --tenant acme --agent customer-support >/dev/null
+  printf '%s' "$OPENAI_API_KEY"    | talon secrets set openai-api-key    --tenant acme --agent customer-support --agent coding-assistant >/dev/null
+  printf '%s' "$ANTHROPIC_API_KEY" | talon secrets set anthropic-api-key --tenant acme --agent document-summary >/dev/null
+  printf '%s' "$CS_KEY"   | talon secrets set customer-support-talon-key --tenant acme --agent customer-support >/dev/null
+  printf '%s' "$CODE_KEY" | talon secrets set coding-assistant-talon-key --tenant acme --agent coding-assistant >/dev/null
+  printf '%s' "$DOC_KEY"  | talon secrets set document-summary-talon-key --tenant acme --agent document-summary >/dev/null
 
   ( talon serve --host 127.0.0.1 --port "$GW_PORT" --gateway ) >"$WORK/gw.log" 2>&1 &
   GW_PID=$!
