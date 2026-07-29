@@ -1,6 +1,6 @@
 # Evidence Integrity Specification
 
-**Status:** stable · **Version:** 1.8 · **Scope:** the signed evidence record produced by Talon.
+**Status:** stable · **Version:** 1.9 · **Scope:** the signed evidence record produced by Talon.
 
 This is the normative specification for how a Talon evidence record is serialized,
 signed, and verified. It is written so that a third party can independently verify a
@@ -93,6 +93,7 @@ Top-level fields, **in serialization order** (this order is significant — see
 | 48 | `failover` | object | optional |
 | 49 | `orchestration` | object | optional |
 | 50 | `session_budget` | object | optional |
+| 51 | `cost_budget` | object | optional |
 
 Nested objects (`policy_decision`, `classification`, `execution`, `audit_trail`,
 `compliance`, and the optional objects) follow the same encoding rules recursively; their
@@ -161,6 +162,19 @@ nested fields are:
   to spend). Present only on session-budget deny records (and their shadow
   would-have-denied counterparts carry the reason in `shadow_violations`
   instead). Appended after `orchestration` per the §2 append rule.
+- `cost_budget` (optional, spec 1.9, #144): the agent/org budget-window
+  context a cost-control event was decided on. Fields: `period` (`"daily"` |
+  `"monthly"`), `limit` (the BINDING cap — the tightest of the per-agent
+  resolved cap and the org ceiling, the same denominator enforcement uses),
+  `spent` (window spend at evaluation time), `estimate` (number, optional —
+  the pre-request estimate; deny records only), `threshold_pct` (number,
+  optional — the crossed warning threshold; `budget_threshold` records only).
+  Present on two record kinds: budget hard-stop denials
+  (`budget_exceeded` reasons), and warning-threshold crossing records with
+  `invocation_type: "budget_threshold"` — a signed fact written ONCE per
+  crossing per budget window (record class `operator_event`, so it never
+  counts as request traffic). Appended after `session_budget` per the §2
+  append rule; pre-1.9 record signatures remain valid.
 
 ## 3. Canonical serialization
 
@@ -267,6 +281,16 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 `Store.VerifyRecord`, and confirms that mutating a field invalidates the signature.
 
 ## 8. Changelog
+
+- **1.9** — added optional top-level field `cost_budget` (#144): the
+  structured `{period, limit, spent, estimate?, threshold_pct?}` an agent/org
+  budget decision was made on, carried by budget hard-stop denials and by the
+  new `budget_threshold` warning-crossing records (invocation type
+  `budget_threshold`, record class `operator_event` — one signed fact per
+  crossing per budget window). Appended after `session_budget` per the §2
+  append rule. Additive and backward-compatible: records that omit the field
+  keep identical canonical bytes and verify unchanged; use a 1.9 verifier for
+  records that carry it.
 
 - **1.8** — added optional top-level field `session_budget` (#198): the
   structured `{limit, spent, estimate}` a `session_budget_exceeded` gateway
