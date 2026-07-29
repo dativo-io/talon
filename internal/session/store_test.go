@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -260,6 +262,97 @@ func TestListByExternalID(t *testing.T) {
 	internal, err := s.ListByExternalID(ctx, a.ID, "")
 	require.NoError(t, err)
 	require.Empty(t, internal, "internal ids live in a different namespace")
+}
+
+// Session-cap reservation lifecycle (#144): the returned view excludes the
+// caller's own estimate but includes everyone else's; settle converts the
+// estimate to actual spend; release floors at zero.
+func TestSessionReservation_Lifecycle(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	sess, err := s.Create(ctx, "acme", "agent-a", "", 0)
+	require.NoError(t, err)
+	require.NoError(t, s.AddUsage(ctx, sess.ID, 2.0, 10))
+
+	view1, err := s.ReserveSessionCost(ctx, sess.ID, 1.0, 0)
+	require.NoError(t, err)
+	require.Equal(t, 2.0, view1, "first reservation sees settled spend only (own estimate excluded)")
+
+	view2, err := s.ReserveSessionCost(ctx, sess.ID, 0.5, 0)
+	require.NoError(t, err)
+	require.Equal(t, 3.0, view2, "second reservation sees the first one (2.0 + 1.0)")
+
+	// Settle the first: estimate 1.0 leaves the reservation, actual 6.0 lands.
+	require.NoError(t, s.SettleSessionUsage(ctx, sess.ID, 1.0, 6.0, 100))
+	got, err := s.Get(ctx, sess.ID, "acme")
+	require.NoError(t, err)
+	require.Equal(t, 8.0, got.TotalCost)
+	require.Equal(t, 0.5, got.ReservedCost)
+	require.Equal(t, 110, got.TotalTokens)
+
+	// Release the second; floor at zero even if released twice.
+	require.NoError(t, s.ReleaseSessionReservation(ctx, sess.ID, 0.5))
+	require.NoError(t, s.ReleaseSessionReservation(ctx, sess.ID, 0.5))
+	got, err = s.Get(ctx, sess.ID, "acme")
+	require.NoError(t, err)
+	require.Zero(t, got.ReservedCost)
+
+	_, err = s.ReserveSessionCost(ctx, "no-such-session", 1.0, 0)
+	require.ErrorIs(t, err, ErrSessionNotFound)
+}
+
+// A leaked reservation (crash between reserve and settle) heals on the next
+// touch once the row has been idle past staleAfter.
+func TestSessionReservation_StaleHeal(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	sess, err := s.Create(ctx, "acme", "agent-a", "", 0)
+	require.NoError(t, err)
+	_, err = s.ReserveSessionCost(ctx, sess.ID, 3.0, 0)
+	require.NoError(t, err)
+
+	// Backdate the row's activity to simulate a crash 1h ago.
+	_, err = s.db.ExecContext(ctx, `UPDATE sessions SET updated_at = ? WHERE id = ?`,
+		time.Now().UTC().Add(-time.Hour), sess.ID)
+	require.NoError(t, err)
+
+	view, err := s.ReserveSessionCost(ctx, sess.ID, 1.0, 15*time.Minute)
+	require.NoError(t, err)
+	require.Zero(t, view, "stale reservation healed before reserving — view shows settled spend only")
+
+	got, err := s.Get(ctx, sess.ID, "acme")
+	require.NoError(t, err)
+	require.Equal(t, 1.0, got.ReservedCost, "only the fresh reservation remains")
+}
+
+// Concurrent reservations serialize: every reserver sees a distinct,
+// monotonically growing view — the property the gateway's hard session cap
+// rests on (#144). Run with -race in CI.
+func TestSessionReservation_ConcurrentSerialization(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	sess, err := s.Create(ctx, "acme", "agent-a", "", 0)
+	require.NoError(t, err)
+
+	const n = 8
+	views := make([]float64, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			v, err := s.ReserveSessionCost(ctx, sess.ID, 1.0, 0)
+			require.NoError(t, err)
+			views[i] = v
+		}(i)
+	}
+	wg.Wait()
+
+	sort.Float64s(views)
+	for i, v := range views {
+		require.Equal(t, float64(i), v,
+			"reserver %d must see exactly the %d prior reservations — identical views would mean a burst slipped the cap", i, i)
+	}
 }
 
 func TestGet_TenantScoped(t *testing.T) {
