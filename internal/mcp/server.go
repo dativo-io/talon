@@ -35,6 +35,14 @@ type jsonrpcRequest struct {
 	ID      interface{}     `json:"id"`
 }
 
+// isNotification reports whether a decoded JSON-RPC message carries no id —
+// a notification, which per JSON-RPC 2.0 §4.1 (and the MCP streamable-HTTP
+// transport) MUST NOT receive a response. Shared by both `/mcp` and
+// `/mcp/proxy` ServeHTTPs (#363) so the two endpoints cannot drift. An
+// explicit `"id": null` is treated the same as an absent id — the spec
+// discourages null ids precisely because they are indistinguishable here.
+func isNotification(req *jsonrpcRequest) bool { return req.ID == nil }
+
 type jsonrpcResponse struct {
 	JSONRPC string      `json:"jsonrpc"`
 	Result  interface{} `json:"result,omitempty"`
@@ -105,10 +113,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// MCP lifecycle (#367): initialize is answered locally (tools capability
-	// only) and notifications/initialized is accepted with 202/no body —
-	// spec-conformant clients can now complete the mandatory handshake.
-	if req.Method == "notifications/initialized" {
+	// MCP lifecycle (#367) generalized to every notification (#363): a
+	// JSON-RPC message without an id MUST NOT receive a response body (spec
+	// §4.1; MCP streamable-HTTP transport) — acknowledge with 202 and drop.
+	// Previously only notifications/initialized was handled; any other
+	// notification got a -32601 body with "id": null, which a conformant SDK
+	// treats as a protocol error.
+	if isNotification(&req) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}

@@ -234,11 +234,14 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// MCP lifecycle (#367): initialize is answered LOCALLY — tools capability
-	// only, never forwarded upstream (nothing ungoverned moves) — and
-	// notifications/initialized is accepted with 202/no body, so
-	// spec-conformant clients (Copilot CLI, Claude Code, MCP Inspector,
-	// SDKs) can complete the mandatory handshake against the proxy.
-	if req.Method == "notifications/initialized" {
+	// only, never forwarded upstream (nothing ungoverned moves). Generalized
+	// to every notification (#363): an id-less JSON-RPC message MUST NOT
+	// receive a response body (spec §4.1) — acknowledge with 202 and drop,
+	// instead of routing it into the method-allowlist rejection arm where it
+	// used to earn a -32601 body with "id": null. Nothing is forwarded
+	// upstream: the streamable-HTTP session handshake is unsupported here by
+	// design (#356 mapping), so there is no session to relay state into.
+	if isNotification(&req) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
