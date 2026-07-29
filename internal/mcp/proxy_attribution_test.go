@@ -677,6 +677,43 @@ func TestNativeMCPHandshake(t *testing.T) {
 	assert.Empty(t, rec.Body.String())
 }
 
+// TestNotificationsGetNoResponse pins #363 on BOTH endpoints: any JSON-RPC
+// message without an id is a notification and MUST NOT receive a response
+// body — previously only notifications/initialized was handled, and e.g.
+// notifications/cancelled earned a -32601 body with "id": null, which a
+// spec-conformant SDK treats as a protocol error. A request WITH an id and
+// an unknown method keeps its -32601 response, id echoed.
+func TestNotificationsGetNoResponse(t *testing.T) {
+	hit := false
+	up := attribUpstream(t, &hit)
+	proxy, _ := attribHandler(t, policy.ProxyModeIntercept, up.URL, nil)
+	native := &Handler{}
+
+	for name, h := range map[string]http.Handler{"proxy": proxy, "native": native} {
+		for _, method := range []string{"notifications/cancelled", "notifications/progress", "totally/unknown"} {
+			body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": method})
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			assert.Equal(t, http.StatusAccepted, rec.Code, "%s: id-less %s must be accepted", name, method)
+			assert.Empty(t, rec.Body.String(), "%s: notifications get NO response body (%s)", name, method)
+		}
+		assert.False(t, hit, "%s: notifications are never forwarded upstream", name)
+
+		// The same unknown method WITH an id is a request — it keeps its
+		// -32601 response with the id echoed.
+		body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "id": 7, "method": "totally/unknown"})
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var resp jsonrpcResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp), name)
+		require.NotNil(t, resp.Error, "%s: an id-carrying unknown method stays a proper JSON-RPC error", name)
+		assert.Equal(t, codeMethodNotFound, resp.Error.Code, name)
+		assert.Equal(t, float64(7), resp.ID, "%s: the request id is echoed", name)
+	}
+}
+
 // TestProxyDenialCodes pins #369 on the two most load-bearing denials:
 // integrators key on error.data.talon_code, never on prose.
 func TestProxyDenialCodes(t *testing.T) {
