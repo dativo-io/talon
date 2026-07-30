@@ -147,6 +147,27 @@ func TestSessionShow_OperationalSummary(t *testing.T) {
 	}
 }
 
+// #415: gateway deny reasons carry the machine-code prefix, and the Failure
+// line already prints the code — the renderer must not print it twice.
+func TestRenderSessionSummary_FailureLineNoDoubledCode(t *testing.T) {
+	var buf bytes.Buffer
+	renderSessionSummary(&buf, evidence.SessionSummary{
+		SessionID:   "s",
+		RecordCount: 1,
+		Requests:    1,
+		Denied:      1,
+		LastFailure: &evidence.SessionFailure{
+			At:     time.Date(2026, 7, 29, 13, 56, 50, 0, time.UTC),
+			Code:   "session_budget_exceeded",
+			Detail: "session_budget_exceeded: session spend 0.0018 + estimate 0.0004 exceeds limit 0.002",
+		},
+	})
+	out := buf.String()
+	assert.Contains(t, out, "session_budget_exceeded: session spend 0.0018")
+	assert.NotContains(t, out, "session_budget_exceeded: session_budget_exceeded",
+		"the machine code must not print twice (#415)")
+}
+
 // --json must be the same structure the dashboard drill-down serves: the
 // summary equals evidence.BuildSessionSummary over the session's records
 // (shared code path — the parity contract of #271).

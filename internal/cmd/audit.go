@@ -510,8 +510,13 @@ func renderSessionSummaryBody(w io.Writer, sum evidence.SessionSummary) {
 	renderSessionToolCalls(w, sum)
 	if sum.LastFailure != nil {
 		fmt.Fprintf(w, "  Failure:   [%s] %s", sum.LastFailure.At.Format(time.RFC3339), sum.LastFailure.Code)
-		if sum.LastFailure.Detail != "" && sum.LastFailure.Detail != sum.LastFailure.Code {
-			fmt.Fprintf(w, ": %s", sum.LastFailure.Detail)
+		// Gateway deny reasons carry the machine-code prefix by convention;
+		// the code is already printed, so strip it from the detail rather
+		// than printing "code: code: detail" (#415). Renderer-side only —
+		// --json keeps the raw reason, and the shared summary is not mutated.
+		detail := strings.TrimSpace(strings.TrimPrefix(sum.LastFailure.Detail, sum.LastFailure.Code+":"))
+		if detail != "" && detail != sum.LastFailure.Code {
+			fmt.Fprintf(w, ": %s", detail)
 		}
 		fmt.Fprintln(w)
 	}
