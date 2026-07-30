@@ -612,6 +612,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.noteBudgetThresholds(ctx, agent, route.Provider, correlationID, "monthly", monthlyCost, monthlyCap)
 	}
 	destinationRegion := g.providerRegion(route.Provider)
+	// Same-provider retry policy for this request (#139), resolved once from
+	// the effective policy (org defaults.retry replaced by the agent's
+	// retries block).
+	retryS := retrySettings{
+		MaxAttempts:    eff.RetryMaxAttempts,
+		InitialBackoff: eff.RetryInitialBackoff,
+		MaxBackoff:     eff.RetryMaxBackoff,
+	}
 	// Session-cap admission (#144): reserve this request's estimate BEFORE
 	// policy evaluation so concurrent requests serialize against reserved +
 	// settled spend. The deferred release covers every non-settling exit
@@ -1147,7 +1155,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case needsResponseScan && !isStreaming:
 		// Non-streaming: capture response, scan, then write
 		capture := &responseCapture{ResponseWriter: w}
-		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, agent, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, agent, extracted.Model, originalAuthorization, retryS, recordAttempt, checkCandidate)
 		if forwardErr == nil {
 			scannedBody, scanResult := scanResponseForPII(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), wire, capture.body.Bytes(), responsePIIAction, g.classifier)
 			responsePII = scanResult
@@ -1226,11 +1234,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// completed frame exists, so partial streams scan correctly; empty
 		// buffers and buffered error envelopes pass through unchanged.
 		capture := &responseCapture{ResponseWriter: w}
-		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, agent, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, capture, fwdParams, route, agent, extracted.Model, originalAuthorization, retryS, recordAttempt, checkCandidate)
 		responsePII = handleStreamingPIIScan(classifier.WithPIIDirection(ctx, classifier.PIIDirectionResponse), w, capture, wire, responsePIIAction, g.classifier)
 
 	default:
-		failoverOut, forwardErr = g.forwardWithFailover(ctx, w, fwdParams, route, agent, extracted.Model, originalAuthorization, recordAttempt, checkCandidate)
+		failoverOut, forwardErr = g.forwardWithFailover(ctx, w, fwdParams, route, agent, extracted.Model, originalAuthorization, retryS, recordAttempt, checkCandidate)
 	}
 
 	// Shadow mode: record what response enforcement would have done.

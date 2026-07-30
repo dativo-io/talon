@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,6 +136,71 @@ type failoverAttemptRecord struct {
 	GroupID        string
 	DurationMS     int64
 	EvidenceID     string
+	// Retry is the same-provider retry ordinal (#139): 0 = first attempt.
+	Retry int
+}
+
+// retrySettings is the effective same-provider retry policy for one request
+// (#139), resolved from EffectivePolicy before dispatch.
+type retrySettings struct {
+	MaxAttempts    int
+	InitialBackoff time.Duration
+	MaxBackoff     time.Duration
+}
+
+// retryBackoff computes one retry sleep: full jitter over an exponential
+// window seeded by InitialBackoff, floored by a Retry-After header when the
+// provider sent one, and capped at MaxBackoff either way.
+func retryBackoff(attempt int, s retrySettings, retryAfter time.Duration) time.Duration {
+	window := s.InitialBackoff
+	for i := 0; i < attempt && window < s.MaxBackoff; i++ {
+		window *= 2
+	}
+	if window > s.MaxBackoff {
+		window = s.MaxBackoff
+	}
+	d := time.Duration(0)
+	if window > 0 {
+		d = time.Duration(rand.Int64N(int64(window) + 1))
+	}
+	if retryAfter > d {
+		d = retryAfter
+	}
+	if d > s.MaxBackoff {
+		d = s.MaxBackoff
+	}
+	return d
+}
+
+// retryAfterHint parses a numeric Retry-After header from a buffered
+// (uncommitted) attempt response. HTTP-date forms are ignored — the backoff
+// cap bounds the sleep regardless.
+func retryAfterHint(h http.Header) time.Duration {
+	v := strings.TrimSpace(h.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs < 0 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// sleepRetry waits d respecting request-context cancellation; false when the
+// context ended first (no further attempt should be made).
+func sleepRetry(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // failoverOutcome summarizes the fallback chain execution for evidence,
@@ -308,6 +375,7 @@ func (g *Gateway) forwardWithFailover(
 	agent *ResolvedIdentity,
 	clientModel string,
 	originalAuthorization string,
+	retry retrySettings,
 	recordAttempt recordAttemptFn,
 	checkCandidate checkCandidateFn,
 ) (*failoverOutcome, error) {
@@ -321,16 +389,78 @@ func (g *Gateway) forwardWithFailover(
 	err := Forward(fw, p)
 	class := classifyAttempt(err, fw.status)
 
+	// Same-provider retries (#139): a TRANSIENT, uncommitted primary failure
+	// retries per the effective policy BEFORE any fallback is considered —
+	// the documented sequence is retry budget first, then the policy-valid
+	// chain. Every failed attempt becomes a signed evidence record carrying
+	// its retry ordinal; a response with committed bytes is never retried
+	// (the same pre-commit rule failover enforces). Backoff is exponential
+	// with full jitter, floors at a numeric Retry-After, caps at max_backoff,
+	// and aborts when the request context ends.
+	retries := 0
+	for class.Transient && !fw.committed && retries < retry.MaxAttempts && ctx.Err() == nil {
+		if out.GroupID == "" {
+			out.GroupID = newFailoverGroupID()
+		}
+		rec := failoverAttemptRecord{
+			Provider:       route.Provider,
+			Model:          clientModel,
+			Class:          class,
+			UpstreamStatus: fw.status,
+			ChainPosition:  0,
+			RuleID:         fmt.Sprintf("gateway.providers.%s", route.Provider),
+			GroupID:        out.GroupID,
+			DurationMS:     time.Since(primaryStart).Milliseconds(),
+			Retry:          retries,
+		}
+		if err != nil {
+			rec.ErrMsg = err.Error()
+		}
+		rec.EvidenceID = recordAttempt(ctx, rec)
+		out.FailedAttempts = append(out.FailedAttempts, rec)
+		if !sleepRetry(ctx, retryBackoff(retries, retry, retryAfterHint(fw.Header()))) {
+			break
+		}
+		retries++
+		fw = newFailoverWriter(dst)
+		primaryStart = time.Now()
+		err = Forward(fw, p)
+		class = classifyAttempt(err, fw.status)
+	}
+
 	if !class.Transient || fw.committed || len(chain) == 0 {
 		// Success, permanent upstream error, mid-stream failure after first
 		// byte, or no chain configured: identical behavior to a chainless
-		// gateway.
+		// gateway — except that a retried-and-still-transient final attempt
+		// records itself, so the evidence sequence of a retry-exhausted
+		// request is complete. (A final PERMANENT failure keeps today's
+		// shape: the terminal request record captures it.)
+		if retries > 0 && class.Transient && !fw.committed {
+			rec := failoverAttemptRecord{
+				Provider:       route.Provider,
+				Model:          clientModel,
+				Class:          class,
+				UpstreamStatus: fw.status,
+				ChainPosition:  0,
+				RuleID:         fmt.Sprintf("gateway.providers.%s", route.Provider),
+				GroupID:        out.GroupID,
+				DurationMS:     time.Since(primaryStart).Milliseconds(),
+				Retry:          retries,
+			}
+			if err != nil {
+				rec.ErrMsg = err.Error()
+			}
+			rec.EvidenceID = recordAttempt(ctx, rec)
+			out.FailedAttempts = append(out.FailedAttempts, rec)
+		}
 		fw.flushTo()
 		return out, err
 	}
 
 	out.Engaged = true
-	out.GroupID = newFailoverGroupID()
+	if out.GroupID == "" {
+		out.GroupID = newFailoverGroupID()
+	}
 	primaryRec := failoverAttemptRecord{
 		Provider:       route.Provider,
 		Model:          clientModel,
@@ -340,6 +470,7 @@ func (g *Gateway) forwardWithFailover(
 		RuleID:         fmt.Sprintf("gateway.providers.%s", route.Provider),
 		GroupID:        out.GroupID,
 		DurationMS:     time.Since(primaryStart).Milliseconds(),
+		Retry:          retries,
 	}
 	if err != nil {
 		primaryRec.ErrMsg = err.Error()
@@ -551,6 +682,7 @@ func (g *Gateway) recordFailoverAttemptEvidence(ctx context.Context, correlation
 			ChainPosition:   rec.ChainPosition,
 			FallbackRuleID:  rec.RuleID,
 			SovereigntyMode: mode,
+			Retry:           rec.Retry,
 		},
 	})
 	if err != nil {

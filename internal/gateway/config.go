@@ -230,6 +230,68 @@ type OrgDefaults struct {
 	// filter; a provider entry (operator-owned, like this file) still replaces.
 	ToolPolicyAction string                  `yaml:"tool_policy_action,omitempty" json:"tool_policy_action,omitempty"` // filter (default) | block
 	AttachmentPolicy *AttachmentPolicyConfig `yaml:"attachment_policy,omitempty" json:"attachment_policy,omitempty"`
+	// Retry is the same-provider retry baseline (#139): how many times a
+	// TRANSIENT primary failure (timeout, connection error, 429, 5xx) is
+	// retried with backoff+jitter BEFORE the fallback chain is evaluated.
+	// Absent/0 attempts (the default) disables retries — no behavior change
+	// unless an operator opts in. An agent override replaces the whole block.
+	Retry *RetryConfig `yaml:"retry,omitempty" json:"retry,omitempty"`
+}
+
+// RetryConfig bounds same-provider retries (#139). Durations are strings in
+// time.ParseDuration syntax, validated at load.
+type RetryConfig struct {
+	// MaxAttempts is the number of RETRIES after the first attempt (0 = off,
+	// max 5 — retries multiply provider spend and latency).
+	MaxAttempts int `yaml:"max_attempts" json:"max_attempts"`
+	// InitialBackoff seeds the exponential backoff (default 250ms).
+	InitialBackoff string `yaml:"initial_backoff,omitempty" json:"initial_backoff,omitempty"`
+	// MaxBackoff caps a single backoff sleep, including one derived from a
+	// Retry-After header (default 2s, max 30s).
+	MaxBackoff string `yaml:"max_backoff,omitempty" json:"max_backoff,omitempty"`
+}
+
+// validateRetryConfig enforces the retry bounds at load (#139): a typo'd
+// duration or an unbounded attempt count must fail startup, not silently
+// misbehave per request.
+func validateRetryConfig(where string, rc *RetryConfig) error {
+	if rc == nil {
+		return nil
+	}
+	if rc.MaxAttempts < 0 || rc.MaxAttempts > 5 {
+		return fmt.Errorf("%s.max_attempts must be between 0 and 5, got %d", where, rc.MaxAttempts)
+	}
+	initial, maxB, err := rc.backoffs()
+	if err != nil {
+		return fmt.Errorf("%s: %w", where, err)
+	}
+	if maxB > 30*time.Second {
+		return fmt.Errorf("%s.max_backoff must not exceed 30s, got %s", where, maxB)
+	}
+	if initial > maxB {
+		return fmt.Errorf("%s.initial_backoff (%s) must not exceed max_backoff (%s)", where, initial, maxB)
+	}
+	return nil
+}
+
+// backoffs parses the configured backoff durations, applying the defaults
+// (250ms initial, 2s max) for absent values.
+func (rc *RetryConfig) backoffs() (initial, maxB time.Duration, err error) {
+	initial, maxB = 250*time.Millisecond, 2*time.Second
+	if rc == nil {
+		return initial, maxB, nil
+	}
+	if rc.InitialBackoff != "" {
+		if initial, err = time.ParseDuration(rc.InitialBackoff); err != nil || initial < 0 {
+			return 0, 0, fmt.Errorf("initial_backoff %q is not a valid duration", rc.InitialBackoff)
+		}
+	}
+	if rc.MaxBackoff != "" {
+		if maxB, err = time.ParseDuration(rc.MaxBackoff); err != nil || maxB < 0 {
+			return 0, 0, fmt.Errorf("max_backoff %q is not a valid duration", rc.MaxBackoff)
+		}
+	}
+	return initial, maxB, nil
 }
 
 // OrgConstraints holds the organization-wide HARD bounds (#266/#287): an
@@ -686,6 +748,9 @@ func (c *GatewayConfig) Validate() error {
 	// a misconfigured endpoint would otherwise drop every cost event (#144).
 	if u := c.OrganizationPolicy.CostWebhookURL; u != "" && !policy.AllowedWebhookURL(u) {
 		return fmt.Errorf("gateway organization_policy.cost_webhook_url must be https (or http to loopback), got %q", u)
+	}
+	if err := validateRetryConfig("gateway organization_policy.defaults.retry", c.OrganizationPolicy.Defaults.Retry); err != nil {
+		return err
 	}
 	if err := c.OrganizationPolicy.validateBudgetBounds(); err != nil {
 		return err

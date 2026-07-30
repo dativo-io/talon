@@ -147,7 +147,10 @@ nested fields are:
 - `failover` (optional): provider fallback-chain context (#191). Present when
   error-driven failover produced a failed-attempt record, a fallback decision,
   or a fail-closed outcome. Fields are defined by the `FailoverContext` Go
-  struct; see the failover verifier (`talon audit verify --failover`).
+  struct; see the failover verifier (`talon audit verify --failover`). Spec
+  1.9 adds the optional `retry` field at the struct's end (#139): the
+  same-provider retry ordinal of a failed attempt (0/absent = first attempt,
+  1 = first retry) — additive per the nested append rule.
 - `orchestration` (optional): client-asserted coding-orchestration identity
   (#194). Fields: `session_id`, `agent_id`, `parent_agent_id`, `client`
   (adapter-detected: `"claude-code"`, `"codex"`, or `"generic"`),
@@ -282,7 +285,9 @@ It serializes a record per [§3](#3-canonical-serialization), signs it per
 
 ## 8. Changelog
 
-- **1.9** — added optional top-level field `cost_budget` (#144): the
+- **1.9** — added optional top-level field `cost_budget` (#144) and the
+  optional nested field `failover.retry` (#139, same-provider retry ordinal,
+  appended at the end of `FailoverContext`): the
   structured `{period, limit, spent, estimate?, threshold_pct?}` an agent/org
   budget decision was made on, carried by budget hard-stop denials and by the
   new `budget_threshold` warning-crossing records (invocation type

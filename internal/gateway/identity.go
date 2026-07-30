@@ -101,6 +101,11 @@ type PolicyOverride struct {
 	// a destination must pass BOTH (logical intersection) — the agent narrows
 	// within the org boundary, never widens or replaces it (#266 review r5).
 	Egress *EgressPolicyConfig
+
+	// Retry replaces the organization retry baseline as a WHOLE block when
+	// set (#139): same-provider retries for transient failures. Validated at
+	// registry build with the same bounds as the org config.
+	Retry *RetryConfig
 }
 
 // ResolvedIdentity is the runtime identity of one AI use case, produced by

@@ -249,6 +249,16 @@
             "max_judge_calls": {"type": "integer", "minimum": 0}
           }
         },
+        "retries": {
+          "type": "object",
+          "description": "Same-provider retry override (#139): replaces the organization retry baseline as a whole block. Only TRANSIENT primary failures (timeout, connection error, 429, 5xx) are retried, with backoff+jitter, before the fallback chain is evaluated.",
+          "additionalProperties": false,
+          "properties": {
+            "max_attempts": {"type": "integer", "minimum": 0, "maximum": 5, "description": "Retries after the first attempt; 0 = off."},
+            "initial_backoff": {"type": "string", "description": "Go duration (default 250ms)."},
+            "max_backoff": {"type": "string", "description": "Go duration cap per backoff sleep, including Retry-After-derived sleeps (default 2s, max 30s)."}
+          }
+        },
         "data_classification": {
           "type": "object",
           "properties": {

@@ -286,6 +286,47 @@ type SessionLimitsConfig struct {
 	MaxJudgeCalls int     `yaml:"max_judge_calls,omitempty" json:"max_judge_calls,omitempty"`
 }
 
+// RetriesConfig is this agent's same-provider retry override (#139): replaces
+// the organization retry baseline as a whole block. max_attempts counts
+// RETRIES after the first attempt (0 = off, max 5); durations use
+// time.ParseDuration syntax and are validated at load.
+type RetriesConfig struct {
+	MaxAttempts    int    `yaml:"max_attempts" json:"max_attempts"`
+	InitialBackoff string `yaml:"initial_backoff,omitempty" json:"initial_backoff,omitempty"`
+	MaxBackoff     string `yaml:"max_backoff,omitempty" json:"max_backoff,omitempty"`
+}
+
+// ValidateRetries enforces the retry bounds at load (#139), mirroring the
+// gateway's org-baseline validation: a typo'd duration or unbounded attempt
+// count fails the file, never silently misbehaves per request.
+func ValidateRetries(rc *RetriesConfig) error {
+	if rc == nil {
+		return nil
+	}
+	if rc.MaxAttempts < 0 || rc.MaxAttempts > 5 {
+		return fmt.Errorf("retries.max_attempts must be between 0 and 5, got %d", rc.MaxAttempts)
+	}
+	initial, maxB := 250*time.Millisecond, 2*time.Second
+	var err error
+	if rc.InitialBackoff != "" {
+		if initial, err = time.ParseDuration(rc.InitialBackoff); err != nil || initial < 0 {
+			return fmt.Errorf("retries.initial_backoff %q is not a valid duration", rc.InitialBackoff)
+		}
+	}
+	if rc.MaxBackoff != "" {
+		if maxB, err = time.ParseDuration(rc.MaxBackoff); err != nil || maxB < 0 {
+			return fmt.Errorf("retries.max_backoff %q is not a valid duration", rc.MaxBackoff)
+		}
+	}
+	if maxB > 30*time.Second {
+		return fmt.Errorf("retries.max_backoff must not exceed 30s, got %s", maxB)
+	}
+	if initial > maxB {
+		return fmt.Errorf("retries.initial_backoff (%s) must not exceed max_backoff (%s)", initial, maxB)
+	}
+	return nil
+}
+
 // PoliciesConfig is the main governance section.
 type PoliciesConfig struct {
 	CostLimits         *CostLimitsConfig         `yaml:"cost_limits" json:"cost_limits"`
@@ -296,6 +337,8 @@ type PoliciesConfig struct {
 	ModelRouting       *ModelRoutingConfig       `yaml:"model_routing,omitempty" json:"model_routing,omitempty"`
 	TimeRestrictions   *TimeRestrictionsConfig   `yaml:"time_restrictions,omitempty" json:"time_restrictions,omitempty"`
 	SessionLimits      *SessionLimitsConfig      `yaml:"session_limits,omitempty" json:"session_limits,omitempty"`
+	// Retries is the agent's same-provider retry override (#139).
+	Retries *RetriesConfig `yaml:"retries,omitempty" json:"retries,omitempty"`
 	// Models are flat allow/block lists for this agent's gateway traffic.
 	// Distinct from ModelRouting, which is the runner-side tier-based routing
 	// preference — Models decides what MAY be called, ModelRouting decides

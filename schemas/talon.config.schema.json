@@ -644,6 +644,16 @@
                 },
                 "attachment_policy": {
                   "$ref": "#/definitions/attachmentPolicy"
+                },
+                "retry": {
+                  "type": "object",
+                  "description": "Same-provider retry baseline (#139): TRANSIENT primary failures (timeout, connection error, 429, 5xx) are retried with backoff+jitter before the fallback chain is evaluated. 0/omitted = retries off. An agent's policies.retries block replaces this whole block.",
+                  "additionalProperties": false,
+                  "properties": {
+                    "max_attempts": {"type": "integer", "minimum": 0, "maximum": 5, "description": "Retries after the first attempt; 0 = off."},
+                    "initial_backoff": {"type": "string", "description": "Go duration (default 250ms)."},
+                    "max_backoff": {"type": "string", "description": "Go duration cap per backoff sleep, including Retry-After-derived sleeps (default 2s, max 30s)."}
+                  }
                 }
               },
               "description": "Per-agent starting values an agent override may REPLACE (#287). Exceptions keeping their monotonic floor merge: pii_action/response_pii_action (block > redact > warn > allow) and tool_policy_action at the agent layer (an agent cannot loosen block to filter).",
