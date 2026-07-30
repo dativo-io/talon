@@ -186,3 +186,39 @@ func TestWriteCachedCompletion_AnthropicShape(t *testing.T) {
 		t.Errorf("openai cache hit must stay chat.completion: %s", w2.Body.String())
 	}
 }
+
+// TestErrorContract_DocumentedCodes pins the public error-contract table
+// (docs/reference/error-contract.md, #142): every documented machine code
+// must survive the normalization layer into the envelope's error type — a
+// silently broken prefix would degrade a stable public code into the generic
+// fallback and break client retry logic. Codes are additive-only public API.
+func TestErrorContract_DocumentedCodes(t *testing.T) {
+	codes := []string{
+		"invalid_agent_key",
+		"agent_disabled",
+		"model_not_allowed",
+		"provider_not_allowed",
+		"data_tier_exceeded",
+		"tool_policy_violation",
+		"budget_exceeded",
+		"session_budget_exceeded",
+		"egress_tier_destination_disallowed",
+		"pii_policy_violation",
+		"model_required_for_policy_evaluation",
+		"rate_limited",
+		"scanner_unavailable",
+	}
+	for _, code := range codes {
+		msg, errType := normalizeGatewayError(code + ": human-readable detail")
+		if errType != code {
+			t.Errorf("normalizeGatewayError(%q: ...) type = %q, want the documented code", code, errType)
+		}
+		if msg != "human-readable detail" {
+			t.Errorf("normalizeGatewayError(%q: ...) message = %q, want the detail without the prefix", code, msg)
+		}
+	}
+	// Unregistered shapes keep the fallback path: no accidental code minting.
+	if _, errType := normalizeGatewayError("Free-form denial text with no prefix"); errType != "" {
+		t.Errorf("unprefixed reason must not mint a machine code, got %q", errType)
+	}
+}
