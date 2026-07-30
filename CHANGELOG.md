@@ -17,6 +17,10 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+## [1.10.0] - 2026-07-30
+
+Reliability-contract release: the reliability pillar's runtime contract is complete — same-provider retries with backoff before policy-valid fallback (#139), and a published, test-pinned gateway error contract giving every denial a stable machine code on both wire families (#142, #195; parent epic #113's runtime scope closes with this). Docs gain the verified Copilot CLI case study; carried fixes: #415 (session-show failure line) and #411 (drift-proof ollama smoke). Cross-pillar residuals stay tracked: read-only dashboard (#143), session terminal states (#401).
+
 ### Documentation
 
 - **Copilot CLI case study** (`docs/explanation/copilot-cli-case-study.md`): the full verified experiment behind the governance guide — one unmodified GitHub Copilot CLI session governed across both planes, what the one signed session record answers (use case, model, data handling, actions, cost, verifiability), the bounded-actions claims made honestly (preventive tool-surface scoping vs runtime denial, each with its own test), and the explicit non-interception boundary. Cost figures reflect the corrected #399 pricing.
@@ -816,7 +820,8 @@ Fleet Operations v1 (#265 milestone): discover, inspect, stop, and safely reconf
 - EU AI Act: risk management, transparency, human oversight (Art. 9, 13, 14).
 - Data residency: tier-based EU model routing.
 
-[Unreleased]: https://github.com/dativo-io/talon/compare/v1.9.4...HEAD
+[Unreleased]: https://github.com/dativo-io/talon/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/dativo-io/talon/compare/v1.9.4...v1.10.0
 [1.9.4]: https://github.com/dativo-io/talon/compare/v1.9.3...v1.9.4
 [1.9.3]: https://github.com/dativo-io/talon/compare/v1.9.2...v1.9.3
 [1.9.2]: https://github.com/dativo-io/talon/compare/v1.9.1...v1.9.2
