@@ -46,15 +46,21 @@ func TestOllamaSmoke(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, cls.HasPII, "a real model should find the email address")
 
-	foundEmail := false
+	// Assert the ADAPTER contract, not the tiny model's taxonomy (#411):
+	// llama3.2:1b has drifted between labeling this fixture "email" and
+	// "national_id", and the label is the model's judgment call. What this
+	// lane must prove is pipeline behavior — an entity COVERS the address
+	// with byte-exact relocated offsets, redaction removes it, and the
+	// verify re-scan passes.
+	foundAddress := false
 	for _, e := range cls.Entities {
 		assert.Equal(t, e.Value, text[e.Position:e.Position+len(e.Value)],
 			"relocated offsets must be byte-exact regardless of model behavior")
-		if e.Type == "email" && strings.Contains(e.Value, "kai.nova@example.com") {
-			foundEmail = true
+		if strings.Contains(e.Value, "kai.nova@example.com") {
+			foundAddress = true
 		}
 	}
-	assert.True(t, foundEmail, "expected an email entity, got %+v", cls.Entities)
+	assert.True(t, foundAddress, "expected an entity covering the email address (any type), got %+v", cls.Entities)
 
 	redacted, err := a.RedactText(ctx, text)
 	require.NoError(t, err)
