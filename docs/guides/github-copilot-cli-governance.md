@@ -1,5 +1,7 @@
 # How to govern GitHub Copilot CLI with Talon
 
+> The narrative companion to this guide — the full experiment, what one signed session record answers, and exactly where the boundary ends — is the [Copilot CLI case study](../explanation/copilot-cli-case-study.md).
+
 This guide explains the verified GitHub Copilot CLI integration implemented in [`dativo-io/talon-full-demo`](https://github.com/dativo-io/talon-full-demo). It shows how a real Copilot CLI session can use Talon for both model traffic and MCP tool calls, while keeping one operational identity, one lifecycle session, attributable spend, data-handling evidence, and signed records.
 
 The tested case is intentionally bounded:
