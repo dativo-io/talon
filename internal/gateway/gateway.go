@@ -316,7 +316,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		RecordGatewayError(ctx, "auth")
 		RecordGatewayRequest(ctx, "unknown", "", route.Provider, "error")
-		WriteProviderError(w, wire, http.StatusUnauthorized, "Invalid or missing agent key")
+		WriteProviderError(w, wire, http.StatusUnauthorized, "invalid_agent_key: Invalid or missing agent key")
 		return
 	}
 
@@ -392,7 +392,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			log.Warn().Str("agent", agent.Name).Msg("gateway_rate_limited")
 			durationMS := time.Since(start).Milliseconds()
-			WriteProviderError(w, wire, http.StatusTooManyRequests, "Rate limit exceeded")
+			WriteProviderError(w, wire, http.StatusTooManyRequests, "rate_limited: Rate limit exceeded")
 			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, "", start, "", &classifier.Classification{}, nil, 0, durationMS, "", false, []string{"rate limit exceeded"}, false, nil, nil, nil, nil, false, "", 0, 0, false, 0, 0, 0)
 			if err != nil {
 				g.handleEvidenceWriteFailure(ctx, err)
@@ -540,9 +540,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Warn().Str("agent", agent.Name).Str("enforcement_mode", string(g.config.Mode)).Str("provider", route.Provider).Msg("observe_provider_not_allowed")
 		} else {
 			durationMS := time.Since(start).Milliseconds()
-			clientMsg := "Provider not allowed for this agent (agent allowlist)"
+			clientMsg := "provider_not_allowed: Provider not allowed for this agent (agent allowlist)"
 			if denySrc == DenySourceOrgProviderAllowlist {
-				clientMsg = "Provider not allowed by organization policy"
+				clientMsg = "provider_not_allowed: Provider not allowed by organization policy"
 			}
 			WriteProviderError(w, wire, http.StatusForbidden, clientMsg)
 			persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text, classification, nil, 0, durationMS, "", false, []string{"provider not allowed: " + denySrc}, false, nil, attSummary, nil, nil, false, "", 0, 0, false, 0, 0, 0)
@@ -740,7 +740,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					Strs("forbidden", tr.Removed).
 					Msg("gateway_tool_blocked")
 				WriteProviderError(w, wire, http.StatusForbidden,
-					fmt.Sprintf("Request contains forbidden tools: %v", tr.Removed))
+					fmt.Sprintf("tool_policy_violation: Request contains forbidden tools: %v", tr.Removed))
 				persisted, err := g.recordEvidence(ctx, correlationID, agent, route.Provider, extracted.Model, start, extracted.Text,
 					classification, nil, 0, 0, "", false, []string{"tool governance block"}, false, nil, attSummary, toolResult, nil, false, "", 0, 0, false, 0, 0, estimatedCost)
 				if err != nil {

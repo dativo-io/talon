@@ -16,7 +16,7 @@ deny contains msg if {
 	input.agent_allowed_models != null
 	count(input.agent_allowed_models) > 0
 	not input.model in input.agent_allowed_models
-	msg := sprintf("Model %s not in agent allowlist", [input.model])
+	msg := sprintf("model_not_allowed: Model %s not in agent allowlist", [input.model])
 }
 
 # Per-agent blocked models: if model matches any pattern, deny. The wildcard
@@ -27,14 +27,14 @@ deny contains msg if {
 	input.agent_blocked_models != null
 	some blocked in input.agent_blocked_models
 	blocked == "*"
-	msg := "All models are blocked for this agent"
+	msg := "model_not_allowed: All models are blocked for this agent"
 }
 
 deny contains msg if {
 	input.agent_blocked_models != null
 	some blocked in input.agent_blocked_models
 	blocked == input.model
-	msg := sprintf("Model %s is blocked for this agent", [input.model])
+	msg := sprintf("model_not_allowed: Model %s is blocked for this agent", [input.model])
 }
 
 # Organization model allowlist — a HARD constraint (#266): the gateway emits
@@ -43,7 +43,7 @@ deny contains msg if {
 	input.org_allowed_models != null
 	count(input.org_allowed_models) > 0
 	not input.model in input.org_allowed_models
-	msg := sprintf("Model %s not in organization allowlist", [input.model])
+	msg := sprintf("model_not_allowed: Model %s not in organization allowlist", [input.model])
 }
 
 # Organization blocked models — same hard-constraint contract. Wildcard fires
@@ -52,14 +52,14 @@ deny contains msg if {
 	input.org_blocked_models != null
 	some blocked in input.org_blocked_models
 	blocked == "*"
-	msg := "All models are blocked by organization policy"
+	msg := "model_not_allowed: All models are blocked by organization policy"
 }
 
 deny contains msg if {
 	input.org_blocked_models != null
 	some blocked in input.org_blocked_models
 	blocked == input.model
-	msg := sprintf("Model %s is blocked by organization policy", [input.model])
+	msg := sprintf("model_not_allowed: Model %s is blocked by organization policy", [input.model])
 }
 
 # Provider (destination) model lists — a HARD constraint enforced on the
@@ -70,21 +70,21 @@ deny contains msg if {
 	input.provider_allowed_models != null
 	count(input.provider_allowed_models) > 0
 	not input.model in input.provider_allowed_models
-	msg := sprintf("Model %s not allowed for provider", [input.model])
+	msg := sprintf("model_not_allowed: Model %s not allowed for provider", [input.model])
 }
 
 deny contains msg if {
 	input.provider_blocked_models != null
 	some blocked in input.provider_blocked_models
 	blocked == "*"
-	msg := "All models are blocked for this provider"
+	msg := "model_not_allowed: All models are blocked for this provider"
 }
 
 deny contains msg if {
 	input.provider_blocked_models != null
 	some blocked in input.provider_blocked_models
 	blocked == input.model
-	msg := sprintf("Model %s is blocked for this provider", [input.model])
+	msg := sprintf("model_not_allowed: Model %s is blocked for this provider", [input.model])
 }
 
 # Fail-closed contract for model-less requests (#279 review round 3): when
@@ -208,7 +208,7 @@ deny contains msg if {
 deny contains msg if {
 	input.agent_max_data_tier != null
 	input.data_tier > input.agent_max_data_tier
-	msg := sprintf("Data tier %d exceeds agent restriction (max %d)", [input.data_tier, input.agent_max_data_tier])
+	msg := sprintf("data_tier_exceeded: Data tier %d exceeds agent restriction (max %d)", [input.data_tier, input.agent_max_data_tier])
 }
 
 # Organization-wide data tier ceiling (#266): separate input key + message so
@@ -217,5 +217,5 @@ deny contains msg if {
 deny contains msg if {
 	input.org_max_data_tier != null
 	input.data_tier > input.org_max_data_tier
-	msg := sprintf("Data tier %d exceeds organization restriction (max %d)", [input.data_tier, input.org_max_data_tier])
+	msg := sprintf("data_tier_exceeded: Data tier %d exceeds organization restriction (max %d)", [input.data_tier, input.org_max_data_tier])
 }
