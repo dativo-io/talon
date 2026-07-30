@@ -62,6 +62,16 @@ func overrideFromPolicy(pol *policy.Policy) *gateway.PolicyOverride {
 		o.Egress = e
 		set = true
 	}
+	// Same-provider retry override (#139): the file's retries block replaces
+	// the organization retry baseline as a whole; bounds validated at load.
+	if r := pol.Policies.Retries; r != nil {
+		o.Retry = &gateway.RetryConfig{
+			MaxAttempts:    r.MaxAttempts,
+			InitialBackoff: r.InitialBackoff,
+			MaxBackoff:     r.MaxBackoff,
+		}
+		set = true
+	}
 
 	if !set {
 		return nil

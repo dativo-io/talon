@@ -1,5 +1,7 @@
 package gateway
 
+import "time"
+
 // EffectivePolicy is the one resolved policy a request runs against:
 //
 //	organization baseline → one agent override → provider destination constraints
@@ -23,6 +25,11 @@ type EffectivePolicy struct {
 	// MaxSessionCost is the per-session soft cap (#198); baseline from
 	// defaults.session_cost (#283), replaced by the agent override when > 0.
 	MaxSessionCost float64
+	// Same-provider retry settings (#139): org defaults.retry replaced as a
+	// whole block by the agent override. 0 attempts = retries off.
+	RetryMaxAttempts    int
+	RetryInitialBackoff time.Duration
+	RetryMaxBackoff     time.Duration
 	// Org budget CEILINGS (constraints.max_*, #287/#283) — hard constraints
 	// enforced by their own Rego rules alongside the per-agent cap, so an
 	// agent declaring a bigger budget than the org allows still denies at
@@ -167,6 +174,18 @@ func ResolveEffectivePolicy(baseline OrganizationPolicy, provider ProviderConfig
 		Attachment:            resolveBaselineAttachment(baseline.Defaults.AttachmentPolicy),
 		Egress:                cloneEgressPolicy(baseline.Constraints.Egress),
 	}
+	// Same-provider retries (#139): the org baseline block, replaced as a
+	// WHOLE by the agent override when present (one explicit override, #266).
+	// Durations were validated at load/registry build; parse errors here fall
+	// back to the safe defaults rather than disabling the request.
+	retrySrc := baseline.Defaults.Retry
+	if override != nil && override.Retry != nil {
+		retrySrc = override.Retry
+	}
+	if retrySrc != nil {
+		eff.RetryMaxAttempts = retrySrc.MaxAttempts
+	}
+	eff.RetryInitialBackoff, eff.RetryMaxBackoff, _ = retrySrc.backoffs()
 	if baseline.Constraints.MaxDataTier != nil {
 		t := *baseline.Constraints.MaxDataTier
 		eff.MaxDataTier = &t

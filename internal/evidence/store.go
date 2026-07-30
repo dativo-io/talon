@@ -215,6 +215,10 @@ type FailoverContext struct {
 	// SkippedCandidates are chain candidates refused by a policy filter before
 	// any provider call was made — distinct from failed runtime attempts.
 	SkippedCandidates []SkippedCandidate `json:"skipped_candidates,omitempty"`
+	// Retry is the same-provider retry ordinal of a failed attempt (#139):
+	// 0/absent = the first attempt on the provider, 1 = the first retry.
+	// Appended at the end of the struct per the spec §2 nested append rule.
+	Retry int `json:"retry,omitempty"`
 }
 
 // SkippedCandidate is a fallback candidate refused by a candidate filter

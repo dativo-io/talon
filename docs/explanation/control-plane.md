@@ -10,8 +10,8 @@ Companies create more AI use cases than they can reliably operate. Each one — 
 
 | Pillar | What it means | Shipped today |
 |--------|---------------|---------------|
-| **Cost control** | Spend is visible and capped per use case | Daily/monthly caps deny **before** the provider call; session budgets (soft caps); cache-aware, currency-labeled attribution |
-| **Reliability** | One failure behavior instead of N | Error-driven fallback chains on transient failures, every candidate policy-checked, fail-closed on exhaustion |
+| **Cost control** | Spend is visible and capped per use case | Daily/monthly caps deny **before** the provider call; hard session caps by atomic reservation (estimate-based admission); threshold crossings as signed evidence + one org cost webhook; cache-aware, currency-labeled attribution |
+| **Reliability** | One failure behavior instead of N | Same-provider retries with backoff for transient failures (evidence-visible), then error-driven fallback chains, every candidate policy-checked, fail-closed on exhaustion |
 | **Shared policy** | Central policy defaults with explicit exceptions | Organization baseline + one explicit per-agent override for PII, tools, models, budgets, egress/sovereignty (#266) |
 | **Session understanding** | Know what each use case did, spent, and why it failed | Session identity, session-scoped audit and cost rollups, dashboard drill-down |
 
@@ -24,7 +24,7 @@ The category describes where the product is going as well as where it is. To kee
 ```
 Available today
 ───────────────
-Per-agent cost caps (deny before the provider call) + session budgets (soft)
+Per-agent cost caps (deny before the provider call) + hard session caps (atomic reservation, #144)
 Organization baseline + one explicit per-agent override (one effective-policy computation, #266)
 Policy-valid, error-driven provider fallback
 Session identity, session-scoped audit and cost rollups
@@ -33,12 +33,14 @@ Signed evidence: verify, export, compliance reports
 agents_dir discovery: one agent.talon.yaml per use case, one process serving all (#267)
 `talon agents` fleet attention queue (list/show/enable/disable) (#270)
 agent.enabled + periodic safe config reload (#268/#269)
+Same-provider retries with backoff, evidence-visible, then policy-valid fallback (#139)
+Cost warning thresholds as signed evidence + one org cost webhook; hard session caps by atomic reservation (#144)
+Session summary contract: talon session show over the shared evidence projection (#271)
+AI use-case operating record: agent.use_case in the fleet view (#382)
 
 Active MVP direction
 ────────────────────
 CLI-primary fleet operations; dashboard as a read-only projection of the same semantics (#143)
-Same-provider retries with backoff (#139)
-Cost warning thresholds as signed evidence + org webhook (#144)
 ```
 
 ## Vocabulary
@@ -63,7 +65,7 @@ The dashboard is the secondary surface, and its direction is a **read-only proje
 
 ## Honest boundaries worth knowing up front
 
-- Session caps are **soft** today: in-flight requests can overshoot before the next request is denied.
+- Session-cap admission is **estimate-based**: concurrent bursts serialize against reserved+settled spend (#144), but one in-flight request whose real cost exceeds its own estimate can still overshoot.
 - Client-asserted agent/session identity is **attribution, not authentication** — there is no request attestation yet.
 - HMAC-signed evidence is **tamper-evident and verifiable**, not immutable.
 

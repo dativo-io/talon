@@ -108,6 +108,12 @@ func LoadPolicy(ctx context.Context, path string, strict bool, baseDir string) (
 		return nil, fmt.Errorf("use_case validation: %w", err)
 	}
 
+	// Retry override bounds (#139): fail the file at load, mirroring the
+	// gateway's org-baseline validation.
+	if err := ValidateRetries(pol.Policies.Retries); err != nil {
+		return nil, fmt.Errorf("retries validation: %w", err)
+	}
+
 	// Validate routing configuration for sovereignty misconfigurations
 	if pol.Policies.ModelRouting != nil {
 		warnings, err := ValidateRouting(pol.Policies.ModelRouting)

@@ -36,6 +36,10 @@ type failoverUpstream struct {
 	calls  atomic.Int64
 	// status controls the response code (200 = success). 0 = kill connection.
 	status atomic.Int64
+	// recoverAfter, when > 0, serves the configured error status for that
+	// many calls and 200 afterwards — the flaky-then-healthy upstream the
+	// same-provider retry tests need (#139).
+	recoverAfter atomic.Int64
 	// lastModel records the "model" field of the last request body.
 	lastModel   atomic.Value
 	lastAuth    atomic.Value
@@ -60,6 +64,9 @@ func newFailoverUpstream(t *testing.T, status int) *failoverUpstream {
 		u.lastModel.Store(body.Model)
 		u.lastAuth.Store(r.Header.Get("Authorization"))
 		st := int(u.status.Load())
+		if ra := u.recoverAfter.Load(); ra > 0 && u.calls.Load() > ra {
+			st = http.StatusOK
+		}
 		if st == 0 {
 			// Kill the connection mid-request (simulates provider death).
 			hj, ok := w.(http.Hijacker)
