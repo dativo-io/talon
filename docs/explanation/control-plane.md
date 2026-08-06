@@ -42,7 +42,7 @@ AI use-case operating record: agent.use_case in the fleet view (#382)
 
 Active MVP direction
 ────────────────────
-Session simplification: status open/completed, lifecycle attribution and evidence-derived failure attention (#401)
+Session simplification: status open/completed, managed_by attribution and evidence-derived failure attention (#401)
 Shared model/action control-plane boundaries and canonical object linkage (#424)
 Persistent typed approvals and exact logical operations (#426)
 Durable native run checkpoints and approval waits (#430)
@@ -55,7 +55,7 @@ CLI-primary fleet operations; dashboard as a read-only projection of the same se
 - **AI use case** — the public product term: one operated unit of AI usage (a bot, an agent, a copilot integration).
 - **Agent** — the CLI/config object that represents one AI use case. One `agent.talon.yaml` describes one use case; `agent.name` is its operational identity in one Talon installation. Shipped model (#266): one active vault-bound Talon key per agent — the presented key IS the traffic identity, and `tenant_id` derives from it.
 - **Operating record** (`agent.use_case`, #382) — the optional block in `agent.talon.yaml` naming what the use case is for, which department operates it, how critical it is, and who is accountable (business / technical / budget / risk owners as contact strings), plus pointers to external approval records. `talon agents show` and the fleet API project it as declared. Two identities, never conflated: the **Talon key authenticates the presenter of traffic**; the **owner metadata is attribution for humans** — it authenticates nobody and is never a policy input. Criticality is context; it maps to no enforcement unless an explicit policy does so.
-- **Session** — the correlation, cost and understanding boundary for related activity through Talon. The settled target contract in #401 uses one field, `status`, with only `open | completed`. `open` means no explicit completion was observed, not necessarily currently executing. Approval, execution, failure and timeout lifecycles belong to runs, operations and approvals instead.
+- **Session** — the correlation, cost and understanding boundary for related activity through Talon. The settled target contract in #401 uses one field, `status`, with only `open | completed`, plus one manager field, `managed_by`. `open` means no explicit completion was observed, not necessarily currently executing. Approval, execution, failure and timeout lifecycles belong to runs, operations and approvals instead.
 - **Native run** — a Talon-owned executable lifecycle with durable planning, waiting, execution and terminal states. It may be linked to a session but does not copy its state onto the session.
 - **Logical operation** — one exact governed side effect with stable operation identity, bound inputs, approval when required, execution attempts and outcome/provenance.
 - **Approval** — an authorization decision over one immutable plan version or exact logical operation. Approval state is distinct from operation execution state.
@@ -79,7 +79,7 @@ agent/use case
 
 A session may show **attention required** because it has a pending approval, unresolved operation or unrecovered provider failure. Those are shared projection facts linked to the session; they do not become new session statuses.
 
-Lifecycle ownership is derived from how the session was created. `managed_by` names the broader runtime or orchestrator—such as `talon-native`, `n8n`, `claude-code` or `codex`—using existing client attribution. This metadata is informational, not authenticated authority and never a policy input.
+`managed_by` is the single session field that names the concrete runtime or orchestrator responsible for the session lifecycle—for example `talon`, `n8n`, `claude-code` or `codex`. The separate `source` field records only how Talon obtained the session identity. Neither field authenticates authority or changes policy, and Talon does not expose a separate `lifecycle_owner` concept.
 
 ## Operator model: CLI primary, dashboard secondary
 
@@ -112,7 +112,7 @@ Talon keeps failure facts visible without inventing session outcomes:
 
 - Session-cap admission is **estimate-based**: concurrent bursts serialize against reserved+settled spend (#144), but one in-flight request whose real cost exceeds its own estimate can still overshoot.
 - Client-asserted agent/session/client identity is **attribution, not authentication** — there is no request attestation yet.
-- An external session shown as **Open** may be idle or abandoned; Talon only knows that no explicit completion was recorded.
+- An externally managed session shown as **Open** may be idle or abandoned; Talon only knows that no explicit completion was recorded.
 - Talon cannot infer that an external orchestrator failed merely because it stopped polling or sending requests.
 - HMAC-signed evidence is **tamper-evident and verifiable**, not immutable.
 
