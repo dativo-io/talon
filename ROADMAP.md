@@ -26,7 +26,7 @@ The gaps between today and the MVP contract, each tracked by an issue in the act
 
 ### Current correctness gate
 
-- **Lightweight session model** — `status = open | completed`, explicit terminal/idempotent completion, lifecycle attribution, `managed_by` metadata and evidence-derived recent failure attention ([#401](https://github.com/dativo-io/talon/issues/401))
+- **Lightweight session model** — `status = open | completed`, explicit terminal/idempotent completion, one `managed_by` manager field and evidence-derived recent failure attention ([#401](https://github.com/dativo-io/talon/issues/401))
 - **Operator-event evidence classification** — keep lifecycle/operator events out of request traffic statistics ([#423](https://github.com/dativo-io/talon/issues/423))
 
 ### Controlled actions and approvals
@@ -72,7 +72,8 @@ Key rules:
 - provider/action failures remain evidence and request/operation facts;
 - recovered failures remain visible but do not trigger the recent-failure signal;
 - external inactivity or stopped polling is not interpreted as orchestrator failure;
-- `managed_by` names the lifecycle manager but never grants authority;
+- `managed_by` is the only field naming the session manager and never grants authority;
+- `source` records session-identity provenance only;
 - native and external runtimes use the same approval/operation services without Talon becoming a workflow engine.
 
 ---
@@ -86,7 +87,7 @@ Key rules:
 | Cost warnings | Signed `budget_threshold` evidence once per crossing + org webhook after commit (#144) **shipped** | — |
 | Provider failure handling | Same-provider retries with backoff (#139), then policy-valid fallback chains **shipped** | Evidence-derived recovered/unrecovered session summary and fleet signal (#401) |
 | Session status | Current implementation exposes the older status vocabulary | Canonical `open | completed`; explicit terminal/idempotent completion (#401) |
-| Session lifecycle attribution | Session source distinguishes Talon/client/vendor asserted identity | Derive lifecycle owner from source and expose informational `managed_by` using existing client attribution (#401) |
+| Session manager attribution | Existing session source records how identity was obtained; request metadata may include client attribution | Persist/expose one informational `managed_by` field using existing client/vendor attribution; keep `source` as provenance only and add no `lifecycle_owner` field (#401) |
 | Pending human approval | Existing Plan Review/tool paths are separate and partly process-local | Canonical approval/run/operation status linked as session attention, never a session status (#426, #430, #433) |
 | External workflow completion | No unified official adapter completion contract | Explicit external completion; completed session IDs cannot be reopened/reused (#401, #434) |
 | Tool schemas in LLM requests | Filtering/blocking **shipped** | — |
