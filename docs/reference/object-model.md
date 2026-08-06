@@ -25,7 +25,7 @@ agent / AI use case
 Every decision and observed/asserted result can append signed evidence.
 ```
 
-Not every session has a native run. An external system such as n8n may own the workflow lifecycle while using Talon for model governance, action authorization, operation tracking and evidence.
+Not every session has a native run. An external system such as n8n may manage the session and own the workflow lifecycle while using Talon for model governance, action authorization, operation tracking and evidence.
 
 ## Agent / AI use case
 
@@ -66,8 +66,8 @@ open | completed
 
 | Status | Meaning |
 |---|---|
-| `open` | Talon has observed the session and no explicit completion has been recorded. This does not prove that an external workflow is currently executing. |
-| `completed` | The lifecycle owner explicitly declared that no more activity is expected for this session. This says nothing about success, failure or approval outcome. |
+| `open` | Talon has observed the session and no explicit completion has been recorded. This does not prove that the managing runtime or workflow is currently executing. |
+| `completed` | The runtime or orchestrator named by `managed_by` explicitly declared that no more activity is expected for this session. This says nothing about success, failure or approval outcome. |
 
 The only transition is:
 
@@ -80,33 +80,25 @@ Completion is explicit, terminal and idempotent. Talon does not infer completion
 
 ### Session identity source
 
-`source` records how Talon obtained the session identity:
+`source` records only how Talon obtained the session identity:
 
 ```text
 talon | client_asserted | vendor_asserted
 ```
 
-This also determines lifecycle ownership:
+`source` is provenance. It is not a lifecycle-manager or ownership field and must not be used to derive or expose a second owner concept.
 
-| Source | Lifecycle owner |
-|---|---|
-| `talon` | Talon |
-| `client_asserted` | external system |
-| `vendor_asserted` | external system |
+### Session manager
 
-Lifecycle ownership is derived from `source`; Talon does not persist a second redundant owner field.
-
-### Session manager attribution
-
-`managed_by` is optional informational metadata naming the runtime or orchestrator responsible for the broader lifecycle, for example:
+`managed_by` is the single session field naming the runtime or orchestrator responsible for the broader lifecycle, including declaring completion. Examples:
 
 ```text
-talon-native | n8n | claude-code | codex | custom-client | unknown
+talon | n8n | claude-code | codex | custom-client | unknown
 ```
 
 Population rules:
 
-- native Talon uses `talon-native`;
+- native Talon uses `talon`;
 - official adapters use a normalized name such as `n8n`;
 - recognized vendor integrations use their normalized adapter name;
 - generic gateway clients reuse `X-Talon-Client`;
@@ -114,6 +106,8 @@ Population rules:
 - later conflicting claims do not silently rewrite the session manager;
 - request-level conflicting claims may still appear in evidence;
 - missing attribution is presented as `unknown`.
+
+Do not add, persist or derive a separate `lifecycle_owner` field. `managed_by` is sufficient for both native and external sessions.
 
 `managed_by` is attribution only. It does not authenticate the caller, authorize an approver, grant administrative rights or change policy.
 
@@ -244,12 +238,12 @@ Example session view:
 ```text
 Session:              refund-workflow-8912
 Status:               Open
-Managed by:           n8n (external)
+Managed by:           n8n
 Identity source:      Client asserted
 Last activity:        12 minutes ago
 Attention required:   Yes
 Pending approvals:    1
-Waiting on:            create_refund_request
+Waiting on:           create_refund_request
 Recovered failures:   2
 Unrecovered failures: 1
 Last issue:           Provider attempts exhausted
@@ -264,7 +258,7 @@ The linked operation and approval views then show their own canonical statuses a
 ### Native Talon
 
 - creates `source = talon` sessions;
-- uses `managed_by = talon-native`;
+- uses `managed_by = talon`;
 - owns run lifecycle and checkpoints;
 - may explicitly complete the session according to the native lifecycle contract.
 
@@ -301,6 +295,7 @@ To keep Talon lightweight:
 - no universal conditions framework for sessions;
 - no inferred session timeout from inactivity;
 - no automatic session generations;
+- no separate persisted or derived `lifecycle_owner` field;
 - no duplication of run/operation/approval statuses onto sessions;
 - no policy or authorization decisions based on `managed_by`;
 - no claim of control over activity that bypasses Talon gateways/adapters.
