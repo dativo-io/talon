@@ -1,6 +1,6 @@
 # Roadmap & focus
 
-Talon is the **control plane for company AI use cases**: operate and control your AI use cases with budget caps, shared policy defaults, reliability and session visibility, on one self-hosted binary you point your existing apps at. Every enforcement decision leaves a signed, verifiable evidence record — the proof layer under the operations. For what Talon does *not* claim (compliance outcomes, immutability, control over actions it cannot intercept), see [LIMITATIONS.md](LIMITATIONS.md); for what "control plane" means here, see [Talon as a control plane](docs/explanation/control-plane.md).
+Talon is the **control plane for company AI use cases**: operate and control your AI use cases with budget caps, shared policy defaults, reliability and session visibility, on one self-hosted binary you point your existing apps at. Every enforcement decision leaves a signed, verifiable evidence record — the proof layer under the operations. For what Talon does *not* claim (compliance outcomes, immutability, control over actions it cannot intercept), see [LIMITATIONS.md](LIMITATIONS.md); for what "control plane" means here, see [Talon as a control plane](docs/explanation/control-plane.md). The canonical relationship between agents, sessions, native runs, operations, approvals, attempts and evidence is defined in the [Talon object model](docs/reference/object-model.md).
 
 The active roadmap lives on GitHub: the [MVP milestone](https://github.com/dativo-io/talon/milestone/3) and the pinned [control-plane MVP epic (#265)](https://github.com/dativo-io/talon/issues/265).
 
@@ -22,11 +22,58 @@ Everything below is current, code-verified behavior — see [CHANGELOG.md](CHANG
 
 ## Active MVP roadmap
 
-The gaps between today and the MVP contract, each tracked by an issue in the [MVP milestone](https://github.com/dativo-io/talon/milestone/3):
+The gaps between today and the MVP contract, each tracked by an issue in the active milestones:
 
-- **Error contract** with stable machine codes ([#142](https://github.com/dativo-io/talon/issues/142), [#195](https://github.com/dativo-io/talon/issues/195))
+### Current correctness gate
+
+- **Lightweight session model** — `status = open | completed`, explicit terminal/idempotent completion, lifecycle attribution, `managed_by` metadata and evidence-derived recent failure attention ([#401](https://github.com/dativo-io/talon/issues/401))
+- **Operator-event evidence classification** — keep lifecycle/operator events out of request traffic statistics ([#423](https://github.com/dativo-io/talon/issues/423))
+
+### Controlled actions and approvals
+
+- **Shared control-plane architecture ADR** — explicit ownership across Model Gateway, Action Gateway, native runtime and external adapters ([#424](https://github.com/dativo-io/talon/issues/424))
+- **Configuration and trusted action contracts** ([#425](https://github.com/dativo-io/talon/issues/425), [#427](https://github.com/dativo-io/talon/issues/427))
+- **Persistent approvals and logical operations** with exact subject binding and restart-safe state ([#426](https://github.com/dativo-io/talon/issues/426))
+- **Approver identity and authorization** ([#428](https://github.com/dativo-io/talon/issues/428))
+- **Canonical Action Gateway API** ([#429](https://github.com/dativo-io/talon/issues/429))
+- **Native run integration and durable checkpoints** ([#430](https://github.com/dativo-io/talon/issues/430))
+- **MCP convergence and shared model governance** ([#431](https://github.com/dativo-io/talon/issues/431), [#432](https://github.com/dativo-io/talon/issues/432))
+- **Signed action lifecycle and execution receipts** ([#146](https://github.com/dativo-io/talon/issues/146))
+- **Approval CLI/API/focused reviewer UI** ([#433](https://github.com/dativo-io/talon/issues/433))
+- **n8n reference adapter and external runtime profile** ([#434](https://github.com/dativo-io/talon/issues/434))
+- **End-to-end native+n8n+MCP proof** ([#435](https://github.com/dativo-io/talon/issues/435))
+
+### Remaining operational work
+
 - **Per-execution tool lifecycle evidence + tool-destination egress** on the MCP path ([#146](https://github.com/dativo-io/talon/issues/146))
 - **Read-only operations dashboard** over the same semantics the CLI uses ([#143](https://github.com/dativo-io/talon/issues/143))
+
+---
+
+## Canonical lightweight object boundaries
+
+The active design avoids one heavyweight universal state machine:
+
+```text
+agent / AI use case
+  -> session: correlation, cost, timeline; status open/completed
+       -> native run: Talon-owned executable lifecycle
+       -> logical operation: one exact governed side effect
+            -> approval: authorization decision
+            -> attempt: transport/business result
+
+signed evidence records decisions and observed/asserted results
+```
+
+Key rules:
+
+- a session is not a workflow execution;
+- pending approval is a session-linked attention fact, not a session status;
+- provider/action failures remain evidence and request/operation facts;
+- recovered failures remain visible but do not trigger the recent-failure signal;
+- external inactivity or stopped polling is not interpreted as orchestrator failure;
+- `managed_by` names the lifecycle manager but never grants authority;
+- native and external runtimes use the same approval/operation services without Talon becoming a workflow engine.
 
 ---
 
@@ -37,18 +84,35 @@ The gaps between today and the MVP contract, each tracked by an issue in the [MV
 | Budget hard caps | Deny before the provider call | — (shipped) |
 | Session caps | **Hard** against concurrency by atomic reservation (#144); admission is estimate-based | — (shipped; estimate-quality caveat stated in LIMITATIONS.md) |
 | Cost warnings | Signed `budget_threshold` evidence once per crossing + org webhook after commit (#144) **shipped** | — |
-| Provider failure handling | Same-provider retries with backoff (#139), then policy-valid fallback chains **shipped** | — |
+| Provider failure handling | Same-provider retries with backoff (#139), then policy-valid fallback chains **shipped** | Evidence-derived recovered/unrecovered session summary and fleet signal (#401) |
+| Session status | Current implementation exposes the older status vocabulary | Canonical `open | completed`; explicit terminal/idempotent completion (#401) |
+| Session lifecycle attribution | Session source distinguishes Talon/client/vendor asserted identity | Derive lifecycle owner from source and expose informational `managed_by` using existing client attribution (#401) |
+| Pending human approval | Existing Plan Review/tool paths are separate and partly process-local | Canonical approval/run/operation status linked as session attention, never a session status (#426, #430, #433) |
+| External workflow completion | No unified official adapter completion contract | Explicit external completion; completed session IDs cannot be reopened/reused (#401, #434) |
 | Tool schemas in LLM requests | Filtering/blocking **shipped** | — |
 | MCP `tools/call` routed through Talon | Runtime interception with signed denial evidence **shipped** | Per-execution lifecycle evidence + destination egress ([#146](https://github.com/dativo-io/talon/issues/146)) |
 | Local shell/filesystem/direct actions bypassing Talon | **Invisible and uncontrolled** | Permanently out of scope — Talon governs only what it can intercept |
-| Agent identity | Client-asserted = **attribution, not authentication** | Attestation (parked, [#149](https://github.com/dativo-io/talon/issues/149)) |
-| Dashboard | Read-only views + admin-API write endpoints | Read-only secondary projection ([#143](https://github.com/dativo-io/talon/issues/143)) |
+| Agent/client identity | Client-asserted = **attribution, not authentication** | Attestation (parked, [#149](https://github.com/dativo-io/talon/issues/149)) |
+| Dashboard | Read-only views + admin-API write endpoints | Read-only fleet projection plus a narrow authenticated approval surface (#143, #433) |
+
+---
+
+## Execution order
+
+1. #401 and #423 correctness fixes.
+2. #424 architecture ADR.
+3. #425 and #427 contracts in parallel.
+4. #426 and #428 persistent state/identity in parallel.
+5. #429 Action Gateway API.
+6. #432, #431, #430 and #146 runtime/evidence integration.
+7. #433 and #434 operator/integration surfaces.
+8. #435 release proof, followed by buyer/technical demo cuts #437/#438.
 
 ---
 
 ## Explicitly postponed
 
-Parked with no delivery commitment (milestone ["Parked — not on active roadmap"](https://github.com/dativo-io/talon/milestone/4), tracked under [#116](https://github.com/dativo-io/talon/issues/116)): generic context/memory layer, remote administration, proactive provider health probes, automatic model downgrade, generic tool risk tiers, full runtime cancellation, dashboard write actions, team-level policy inheritance, provider-breadth/routing-optimizer parity, broad GRC platform behavior, HITL approval gates for runtime tools, per-agent attestation, red-team CLI, workflow/cross-session governance, agent-to-agent (A2A) trust-mesh governance, semantic caching.
+Parked with no delivery commitment (milestone ["Parked — not on active roadmap"](https://github.com/dativo-io/talon/milestone/4), tracked under [#116](https://github.com/dativo-io/talon/issues/116)): generic context/memory layer, remote administration, proactive provider health probes, automatic model downgrade, generic tool risk tiers, full runtime cancellation, dashboard write actions beyond the focused approval surface, team-level policy inheritance, provider-breadth/routing-optimizer parity, broad GRC platform behavior, generic workflow/task management, multi-stage/quorum/batch approvals, per-agent attestation, red-team CLI, workflow/cross-session governance, agent-to-agent (A2A) trust-mesh governance, semantic caching.
 
 ## Anti-goals (what we will not build)
 
@@ -56,7 +120,9 @@ These protect a small team from platform creep. If your primary need is below, a
 
 | We are **not** building | Why |
 |-------------------------|-----|
-| **Multi-language SDKs** | Your apps already speak HTTP; Talon governs at the boundary, not inside every codebase. |
+| **Generic workflow engine** | Talon owns governance, exact authorization, operation state and evidence at its boundaries; n8n/LangGraph/custom runtimes own workflow orchestration. |
+| **Universal session state machine** | Sessions stay lightweight correlation/summary containers; runs, operations and approvals own their own lifecycles. |
+| **Multi-language SDK ecosystem** | Existing apps already speak HTTP; a small supported action client/reference adapter is enough for the governed boundary. |
 | **Full agent-to-agent trust mesh** | Rare at typical scale; lightweight identity and attribution come first. |
 | **Kubernetes operator / gVisor** | Most teams want systemd or Docker Compose, not another cluster abstraction. |
 | **Managed Talon cloud (yet)** | Data residency and procurement often rule out hosted control planes; self-host first. |
@@ -67,10 +133,10 @@ These protect a small team from platform creep. If your primary need is below, a
 
 ## When to choose Talon
 
-- You have a **growing number of AI use cases** (bots, agents, copilots) and need per-use-case budget caps, one set of policy defaults, and per-session visibility across them — Talon is built for exactly this.
+- You have a **growing number of AI use cases** (bots, agents, copilots) and need per-use-case budget caps, one set of policy defaults, controlled side effects and per-session visibility across them — Talon is built for exactly this.
 - You have **one app with a growing bill** — start with [per-agent cost caps](docs/guides/cost-governance-by-agent.md) and grow from there.
-- You need **provable records** of how AI traffic was handled (customer security reviews, DPAs, audits) — the evidence layer generates them from operations you run anyway.
-- You only need log shipping or cost dashboards, not enforcement before the provider — a plain observability stack may suffice.
+- You need **provable records** of how AI traffic and governed actions were handled (customer security reviews, DPAs, audits) — the evidence layer generates them from operations you run anyway.
+- You only need log shipping or cost dashboards, not enforcement before the provider/action boundary — a plain observability stack may suffice.
 
 ---
 
