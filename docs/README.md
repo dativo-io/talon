@@ -48,6 +48,7 @@ Choose the shortest path for your situation:
    - Reliability: [Provider fallback chains](reference/configuration.md#provider-fallback-chains-error-driven-failover)
    - Policy: [Policy cookbook](guides/policy-cookbook.md) · [Policy packs](guides/policy-packs.md)
    - Sessions: [Governing coding agents](guides/governing-coding-agents.md) · [Manual governed session](tutorials/manual-governed-session.md)
+   - Objects and lifecycles: [Talon object model](reference/object-model.md)
    - The big picture: [Talon as a control plane](explanation/control-plane.md)
 2. **"I already have an app calling OpenAI/Anthropic and want controls fast."**
    - Start: [Add Talon to your existing app](guides/add-talon-to-existing-app.md)
@@ -107,6 +108,7 @@ Choose the shortest path for your situation:
 
 | Doc | Description |
 |-----|-------------|
+| [Talon object model](reference/object-model.md) | Canonical agents, sessions, native runs, logical operations, approvals, attempts, evidence, metadata and lifecycle boundaries. |
 | [Configuration and environment](reference/configuration.md) | Environment variables, crypto keys, and config reference. |
 | [Evidence integrity specification](reference/evidence-integrity-spec.md) | Normative signed-record spec: fields, canonical serialization, HMAC-SHA256 signing, and the independent verification procedure. |
 | [Presidio compatibility matrix](reference/presidio-compatibility-matrix.md) | Scanner boundary contract: Presidio-shaped result ingress, canonical mapping, and byte-offset normalization rules. |
