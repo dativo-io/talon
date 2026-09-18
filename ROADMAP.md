@@ -2,7 +2,7 @@
 
 Talon is the **control plane for company AI use cases**. The current acquisition wedge is deliberately sharper: **prevent runaway AI spend and disallowed intercepted actions before they happen**, while reliability and session understanding keep those governed use cases operable. Talon remains one self-hosted operating layer rather than a router, workflow engine, MCP-only product or GRC suite. Every enforcement decision leaves a signed, verifiable evidence record — the proof layer under the operations. For what Talon does *not* claim (compliance outcomes, immutability, control over actions it cannot intercept), see [LIMITATIONS.md](LIMITATIONS.md); for what "control plane" means here, see [Talon as a control plane](docs/explanation/control-plane.md). The canonical relationship between agents, sessions, native runs, operations, approvals, attempts and evidence is defined in the [Talon object model](docs/reference/object-model.md).
 
-The active roadmap lives on GitHub: the [MVP milestone](https://github.com/dativo-io/talon/milestone/3) and the pinned [control-plane MVP epic (#265)](https://github.com/dativo-io/talon/issues/265).
+The active roadmap lives on GitHub: [Control-plane MVP / milestone 3](https://github.com/dativo-io/talon/milestone/3), [Action Gateway core / milestone 8](https://github.com/dativo-io/talon/milestone/8), and the pinned [control-plane MVP epic (#265)](https://github.com/dativo-io/talon/issues/265). Post-core hardening and integrations sit in [milestone 9](https://github.com/dativo-io/talon/milestone/9); parked bets remain isolated in milestone 4.
 
 ---
 
