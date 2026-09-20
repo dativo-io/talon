@@ -1,6 +1,6 @@
 # Roadmap & focus
 
-Talon is the **control plane for company AI use cases**. The current acquisition wedge is deliberately sharper: **prevent runaway AI spend and disallowed intercepted actions before they happen**, while reliability and session understanding keep those governed use cases operable. Talon remains one self-hosted operating layer rather than a router, workflow engine, MCP-only product or GRC suite. Every enforcement decision leaves a signed, verifiable evidence record — the proof layer under the operations. For what Talon does *not* claim (compliance outcomes, immutability, control over actions it cannot intercept), see [LIMITATIONS.md](LIMITATIONS.md); for what "control plane" means here, see [Talon as a control plane](docs/explanation/control-plane.md). The canonical relationship between agents, sessions, native runs, operations, approvals, attempts and evidence is defined in the [Talon object model](docs/reference/object-model.md).
+Talon is the **control plane for company AI use cases**. The current acquisition wedge is deliberately sharper: **prevent runaway AI spend and disallowed intercepted actions before they happen**, while reliability and session understanding keep those governed use cases operable. The deeper strategic contract is **runtime-independent company control**: native Talon, n8n, Pi, MCP, Vercel eve or another runtime may own the agent loop and durable workflow, while Talon keeps one company policy/authorization/evidence contract at the boundaries it can intercept. Talon remains one self-hosted operating layer rather than a router, workflow engine, MCP-only product or GRC suite. Every enforcement decision leaves a signed, verifiable evidence record — the proof layer under the operations. For what Talon does *not* claim (compliance outcomes, immutability, control over actions it cannot intercept), see [LIMITATIONS.md](LIMITATIONS.md); for what "control plane" means here, see [Talon as a control plane](docs/explanation/control-plane.md). The canonical relationship between agents, sessions, native runs, operations, approvals, attempts and evidence is defined in the [Talon object model](docs/reference/object-model.md).
 
 The active roadmap lives on GitHub: [Control-plane MVP / milestone 3](https://github.com/dativo-io/talon/milestone/3), [Action Gateway core / milestone 8](https://github.com/dativo-io/talon/milestone/8), and the pinned [control-plane MVP epic (#265)](https://github.com/dativo-io/talon/issues/265). Post-core hardening and integrations sit in [milestone 9](https://github.com/dativo-io/talon/milestone/9); parked bets remain isolated in milestone 4.
 
@@ -58,7 +58,7 @@ The gaps between today and the MVP contract, each tracked by an issue in the act
 
 - **Federated workload identity** — consume existing OIDC/JWT, mTLS or SPIFFE workload identity without turning OSS Talon into an IdP/PKI; corporate reviewer SSO remains Enterprise work ([#457](https://github.com/dativo-io/talon/issues/457))
 - **Safe policy-impact preview** — side-effect-free candidate-policy impact over verified evidence, as the adoption bridge after global shadow removal ([#459](https://github.com/dativo-io/talon/issues/459)); richer historical replay remains [#441](https://github.com/dativo-io/talon/issues/441)
-- **Pi integration** is the preferred P1 external coding-agent proof after core Action Gateway contracts stabilize ([#453](https://github.com/dativo-io/talon/issues/453)); **Hermes is P2/demand-gated** ([#449](https://github.com/dativo-io/talon/issues/449))
+- **Pi integration** is the preferred P1 external coding-agent proof after core Action Gateway contracts stabilize ([#453](https://github.com/dativo-io/talon/issues/453)); **Hermes is P2/demand-gated** ([#449](https://github.com/dativo-io/talon/issues/449)); **Vercel eve is research-only P2/GATED** until #458/#435 and Pi prove the shared external-runtime contract ([#461](https://github.com/dativo-io/talon/issues/461))
 
 ---
 
@@ -122,7 +122,7 @@ Key rules:
 8. **#458 early exact-action preview gate.**
 9. Complete remaining native+n8n+MCP parity and failure cases in **#435 full release gate**.
 10. Buyer/technical cuts #437/#438 from the canonical harness.
-11. Post-core: #457, #459/#441, Pi #453–#456; Hermes #449–#452 only after explicit demand activation.
+11. Post-core: #457, #459/#441, Pi #453–#456; Hermes #449–#452 only after explicit demand activation; eve #461 remains research-only until the core + Pi contract is stable or named demand changes the order.
 
 ---
 
