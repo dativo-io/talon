@@ -1,6 +1,6 @@
 # Roadmap & focus
 
-Talon is the **control plane for company AI use cases**. The current acquisition wedge is deliberately sharper: **prevent runaway AI spend and disallowed intercepted actions before they happen**, while reliability and session understanding keep those governed use cases operable. The deeper strategic contract is **runtime-independent company control**: native Talon, n8n, Pi, MCP, Vercel eve or another runtime may own the agent loop and durable workflow, while Talon keeps one company policy/authorization/evidence contract at the boundaries it can intercept. Talon remains one self-hosted operating layer rather than a router, workflow engine, MCP-only product or GRC suite. Every enforcement decision leaves a signed, verifiable evidence record — the proof layer under the operations. For what Talon does *not* claim (compliance outcomes, immutability, control over actions it cannot intercept), see [LIMITATIONS.md](LIMITATIONS.md); for what "control plane" means here, see [Talon as a control plane](docs/explanation/control-plane.md). The canonical relationship between agents, sessions, native runs, operations, approvals, attempts and evidence is defined in the [Talon object model](docs/reference/object-model.md).
+Talon is the **control layer for company AI use cases**: it turns company AI policy into enforceable, use-case-specific controls and proves what was enforced. The stable product object is the **AI use case**, not the provider, model, agent framework or workflow runtime. Talon applies the strongest honest enforcement mechanism available for each environment — **INTERCEPT, DELEGATE, COMPILE or VERIFY** — while external runtimes keep ownership of their agent loop, workflow, sandbox and business-process state. The value order is **shared company control → consequential-action control → verifiable proof**; cost, reliability, attribution and session understanding remain important supporting capabilities rather than the category itself. Talon remains one self-hosted operating layer rather than a router, workflow engine, MCP-only product or GRC suite. For what Talon does *not* claim (compliance outcomes, immutability, control over actions it cannot intercept), see [LIMITATIONS.md](LIMITATIONS.md); for what "control plane" means here, see [Talon as a control plane](docs/explanation/control-plane.md). The canonical relationship between agents, sessions, native runs, operations, approvals, attempts and evidence is defined in the [Talon object model](docs/reference/object-model.md).
 
 The active roadmap lives on GitHub: [Control-plane MVP / milestone 3](https://github.com/dativo-io/talon/milestone/3), [Action Gateway core / milestone 8](https://github.com/dativo-io/talon/milestone/8), and the pinned [control-plane MVP epic (#265)](https://github.com/dativo-io/talon/issues/265). Post-core hardening and integrations sit in [milestone 9](https://github.com/dativo-io/talon/milestone/9); parked bets remain isolated in milestone 4.
 
@@ -22,43 +22,62 @@ Everything below is current, code-verified behavior — see [CHANGELOG.md](CHANG
 
 ## Active MVP roadmap
 
-The gaps between today and the MVP contract, each tracked by an issue in the active milestones:
+The active roadmap is optimized for one near-term outcome: **qualified activation** — a real company puts at least one non-demo AI use case into Talon's active control path and keeps Talon there.
 
-### Current correctness gate
+### P0 — front door, policy truth and single-node production
 
-- **Lightweight session model** — `status = open | completed`, explicit terminal/idempotent completion, one `managed_by` manager field and evidence-derived recent failure attention ([#401](https://github.com/dativo-io/talon/issues/401))
-- **Operator-event evidence classification** — keep lifecycle/operator events out of request traffic statistics ([#423](https://github.com/dativo-io/talon/issues/423))
-- **Always-enforced runtime posture** — remove global `shadow`, `log_only` and MCP passthrough while preserving historical evidence readability ([#442](https://github.com/dativo-io/talon/issues/442))
-- **Canonical operator/config lifecycle events** — correlated intent → activation → completion/rollback semantics across configuration changes ([#383](https://github.com/dativo-io/talon/issues/383))
+- **Published install path** — native release artifacts and post-release smoke ([#359](https://github.com/dativo-io/talon/issues/359))
+- **60-second published-image quickstart** — no clone, no build and no provider key ([#463](https://github.com/dativo-io/talon/issues/463))
+- **Verifiable OCI distribution** — multi-arch image, signatures, provenance and SBOM ([#464](https://github.com/dativo-io/talon/issues/464))
+- **Executable onboarding documentation** — every promoted getting-started path runs in CI against published artifacts ([#473](https://github.com/dativo-io/talon/issues/473))
+- **Streaming first-run truth** — response PII warn/record preserves real streaming and is described honestly as post-delivery observation ([#476](https://github.com/dativo-io/talon/issues/476))
+- **Effective policy visibility** — show the compiled use-case policy, rule provenance and bounded recent facts ([#305](https://github.com/dativo-io/talon/issues/305))
+- **Safe rollout preview** — policy-impact preview without reintroducing global live shadow/log-only posture ([#459](https://github.com/dativo-io/talon/issues/459))
+- **Use-case registration and inheritance** — make use case #2 registration, not another policy/integration project ([#472](https://github.com/dativo-io/talon/issues/472))
+- **Always-enforced posture** — remove global `shadow`, `log_only` and MCP passthrough from the active product surface ([#442](https://github.com/dativo-io/talon/issues/442))
+- **Single-node production contract** — persistence, backup/restore, recovery, degradation and operations for the OSS v1 topology ([#465](https://github.com/dativo-io/talon/issues/465))
 
-### Controlled actions and approvals
+### P0 — exact-action authorization spine
 
-- **Shared control-plane architecture ADR** — explicit ownership across Model Gateway, Action Gateway, native runtime and external adapters ([#424](https://github.com/dativo-io/talon/issues/424))
-- **MCP 2026-07-28 clean cutover** — stateless request metadata, discovery and header/body integrity with no legacy protocol compatibility ([#447](https://github.com/dativo-io/talon/issues/447))
-- **Configuration and trusted action contracts** ([#425](https://github.com/dativo-io/talon/issues/425), [#427](https://github.com/dativo-io/talon/issues/427))
-- **Persistent approvals and logical operations** with exact subject binding and restart-safe state ([#426](https://github.com/dativo-io/talon/issues/426))
-- **Approver identity and authorization** ([#428](https://github.com/dativo-io/talon/issues/428))
-- **Canonical Action Gateway API** ([#429](https://github.com/dativo-io/talon/issues/429))
-- **Native run integration and durable checkpoints** ([#430](https://github.com/dativo-io/talon/issues/430))
-- **MCP convergence and shared model governance** ([#431](https://github.com/dativo-io/talon/issues/431), [#432](https://github.com/dativo-io/talon/issues/432))
-- **MCP Tasks/MRTR approval continuation** without making protocol Tasks the business-operation authority ([#448](https://github.com/dativo-io/talon/issues/448))
-- **Stable Talon MCP governance/evidence references** after committed evidence ([#372](https://github.com/dativo-io/talon/issues/372))
-- **Signed action lifecycle and execution receipts** ([#146](https://github.com/dativo-io/talon/issues/146))
-- **Approval CLI/API/focused reviewer UI** ([#433](https://github.com/dativo-io/talon/issues/433))
-- **n8n reference adapter and external runtime profile** ([#434](https://github.com/dativo-io/talon/issues/434))
-- **Early exact-action preview gate** — one approval-safe, at-most-one-effect, signed-lifecycle buyer proof before every runtime reaches parity ([#458](https://github.com/dativo-io/talon/issues/458))
-- **Full end-to-end native+n8n+MCP release proof** ([#435](https://github.com/dativo-io/talon/issues/435))
+- **Control-plane/runtime boundary ADR** — one canonical policy/authorization model with `INTERCEPT | DELEGATE | COMPILE | VERIFY` enforcement choices ([#424](https://github.com/dativo-io/talon/issues/424))
+- **Company/use-case policy compiler** — constrained authoring model, source attribution and effective rules; no generic policy DSL ([#425](https://github.com/dativo-io/talon/issues/425))
+- **Trusted action catalog and exact binding** — schema validation, material-argument binding and reviewer-safe projection ([#427](https://github.com/dativo-io/talon/issues/427))
+- **MCP 2026-07-28 clean cutover** — current protocol only, request metadata integrity and no legacy compatibility track ([#447](https://github.com/dativo-io/talon/issues/447))
+- **Minimal durable authorization correctness** — immutable subject/decision, operation identity, attempt claim/dispatch boundary and conservative unknown outcomes ([#426](https://github.com/dativo-io/talon/issues/426))
+- **Local approver authority** — canonical principals/groups and policy-authorized decisions ([#428](https://github.com/dativo-io/talon/issues/428))
+- **Privileged management permissions** — explicit operator authorization, separate from reviewer/runtime identity ([#446](https://github.com/dativo-io/talon/issues/446))
+- **Canonical Action Gateway API** — evaluate → decide → claim/consume → report ([#429](https://github.com/dativo-io/talon/issues/429))
+- **Signed lifecycle proof** — exact subject, decision, approval, dispatch/attempt and known/unknown outcome ([#146](https://github.com/dativo-io/talon/issues/146))
+- **MCP governance/evidence references** ([#372](https://github.com/dativo-io/talon/issues/372))
+- **MCP enforcement convergence** — route governed MCP actions through the Action Gateway and remove alternate business-action authority ([#431](https://github.com/dativo-io/talon/issues/431))
+- **MCP Tasks/MRTR bounded approval continuation** only where the selected first proof requires it ([#448](https://github.com/dativo-io/talon/issues/448))
+- **Authenticated decision surface** — reviewer-safe projection plus CLI/API sufficient for the first exact-action proof ([#433](https://github.com/dativo-io/talon/issues/433))
+- **Early exact-action proof gate** — one consequential action is prevented/approved/released at most once with verifiable evidence ([#458](https://github.com/dativo-io/talon/issues/458))
 
-### Remaining operational work
+### P1 — breadth and hardening after the P0 spine
 
-- **Per-execution tool lifecycle evidence + tool-destination egress** on the MCP path ([#146](https://github.com/dativo-io/talon/issues/146))
-- **Read-only operations dashboard** over the same semantics the CLI uses ([#143](https://github.com/dativo-io/talon/issues/143))
+- **Argument-aware authorization** over trusted material action fields ([#205](https://github.com/dativo-io/talon/issues/205))
+- **Session and operator truth** — lightweight sessions, `managed_by`, failure attention and correct operator-event classification ([#401](https://github.com/dativo-io/talon/issues/401), [#423](https://github.com/dativo-io/talon/issues/423), [#383](https://github.com/dativo-io/talon/issues/383))
+- **Native/HTTP model-governance parity** ([#432](https://github.com/dativo-io/talon/issues/432))
+- **Native run parity** — durable Plan Review/action waits without changing the core authorization model ([#430](https://github.com/dativo-io/talon/issues/430))
+- **n8n/external workflow reference** ([#434](https://github.com/dativo-io/talon/issues/434))
+- **Full native+n8n+MCP conformance** after the early proof, not before it ([#435](https://github.com/dativo-io/talon/issues/435))
+- **Buyer/technical proof cuts** generated from the real authorization harness ([#437](https://github.com/dativo-io/talon/issues/437), [#438](https://github.com/dativo-io/talon/issues/438))
+- **Install/readiness, upgrade, Helm and client compatibility** ([#466](https://github.com/dativo-io/talon/issues/466)–[#469](https://github.com/dativo-io/talon/issues/469))
+- **Short-lived upstream workload credentials** where providers support workload identity/token exchange ([#474](https://github.com/dativo-io/talon/issues/474))
+- **OTLP export** into existing customer observability systems ([#475](https://github.com/dativo-io/talon/issues/475))
+- **Federated inbound workload identity** — OIDC/JWT, mTLS and SPIFFE mapped into normalized Talon principals ([#457](https://github.com/dativo-io/talon/issues/457))
+- **Richer historical policy replay** — separate from the narrow P0 preview ([#441](https://github.com/dativo-io/talon/issues/441))
+- **Pi** remains the preferred first external coding-agent proof after the core authorization contract is stable ([#453](https://github.com/dativo-io/talon/issues/453)–[#456](https://github.com/dativo-io/talon/issues/456))
+- **OSS application composition seam** for the official Enterprise superset remains active architecture work but is not an OSS activation blocker ([#445](https://github.com/dativo-io/talon/issues/445))
 
-### Post-core hardening and integrations
+### P2 / demand-gated
 
-- **Federated workload identity** — consume existing OIDC/JWT, mTLS or SPIFFE workload identity without turning OSS Talon into an IdP/PKI; corporate reviewer SSO remains Enterprise work ([#457](https://github.com/dativo-io/talon/issues/457))
-- **Safe policy-impact preview** — side-effect-free candidate-policy impact over verified evidence, as the adoption bridge after global shadow removal ([#459](https://github.com/dativo-io/talon/issues/459)); richer historical replay remains [#441](https://github.com/dativo-io/talon/issues/441)
-- **Pi integration** is the preferred P1 external coding-agent proof after core Action Gateway contracts stabilize ([#453](https://github.com/dativo-io/talon/issues/453)); **Hermes is P2/demand-gated** ([#449](https://github.com/dativo-io/talon/issues/449)); **Vercel eve is research-only P2/GATED** until #458/#435 and Pi prove the shared external-runtime contract ([#461](https://github.com/dativo-io/talon/issues/461))
+- **Read-only Talon dashboard** after OTLP/existing-observability integration ([#143](https://github.com/dativo-io/talon/issues/143))
+- **Hermes support** only after demonstrated demand ([#449](https://github.com/dativo-io/talon/issues/449)–[#452](https://github.com/dativo-io/talon/issues/452))
+- **Vercel eve integration research** only after demonstrated demand ([#461](https://github.com/dativo-io/talon/issues/461))
+- **Homebrew** after the native artifact contract is stable ([#470](https://github.com/dativo-io/talon/issues/470))
+- **One cloud IaC reference** only when a named customer selects the target ([#471](https://github.com/dativo-io/talon/issues/471))
 
 ---
 
@@ -112,23 +131,22 @@ Key rules:
 
 ## Execution order
 
-1. #401, #423, #442 and #383 correctness/posture fixes.
-2. #424 architecture ADR, with #445/#446 as parallel composition/security lanes after their contracts stabilize.
-3. #447 plus #425; then #427 trusted action binding.
-4. #426 and #428 persistent state/identity in parallel, with early #146 lifecycle-proof work.
-5. #429 Action Gateway API plus #372 committed MCP references.
-6. #432, #431, #448, #430 and #146 runtime/protocol/evidence convergence.
-7. #433 plus the minimum current-MCP slice required by #458; #434 may proceed in parallel.
-8. **#458 early exact-action preview gate.**
-9. Complete remaining native+n8n+MCP parity and failure cases in **#435 full release gate**.
-10. Buyer/technical cuts #437/#438 from the canonical harness.
-11. Post-core: #457, #459/#441, Pi #453–#456; Hermes #449–#452 only after explicit demand activation; eve #461 remains research-only until the core + Pi contract is stable or named demand changes the order.
+1. Make the product reachable and truthful: #359, #463, #464, #473 and #476.
+2. Make company/use-case policy visible and safe to roll out: #305, #459, #472 and #442.
+3. Lock the authorization architecture and compiler: #424, #425, #427 and #447.
+4. Implement the minimal exact-action correctness kernel: #426, #428, #446, #429, #146 and #372.
+5. Converge the primary enforcement surface: #431 plus only the #448/#433 slices required by the first proof.
+6. Ship **#458** as the first differentiated exact-action activation gate.
+7. In parallel, complete the OSS **single-node production contract #465**.
+8. After the P0 spine is usable, add argument-aware rules, native/n8n parity, production hardening, identity and telemetry: #205, #401/#423/#383, #432/#430/#434, #466–#469, #474/#475 and #457.
+9. Require **#435** only before claiming full native+n8n+MCP parity.
+10. Run Pi or another design-partner integration only after the canonical authorization contract is stable; keep Hermes/eve demand-gated.
 
 ---
 
 ## Explicitly postponed
 
-Parked with no delivery commitment (milestone ["Parked — not on active roadmap"](https://github.com/dativo-io/talon/milestone/4), tracked under [#116](https://github.com/dativo-io/talon/issues/116)): semantic caching, generic lifecycle hooks, stronger exact-request attestation, red-team/attachment-sandbox maturation, workflow/cross-session governance, verified multi-agent delegation, provider operational-facts intelligence, argument-conditional approval rules, streaming response-PII observation, hot trigger/webhook reconciliation, Article 50 artifact-receipt integration, context budgeting/compression, and hot credential revocation. None of these may shape active architecture until the activation protocol in #116 is satisfied.
+Parked with no delivery commitment (milestone ["Parked — not on active roadmap"](https://github.com/dativo-io/talon/milestone/4), tracked under [#116](https://github.com/dativo-io/talon/issues/116)): semantic caching, generic lifecycle hooks, stronger exact-request attestation, red-team/attachment-sandbox maturation, workflow/cross-session governance, verified multi-agent delegation, provider operational-facts intelligence, streaming response-PII observation beyond the immediate first-run fix, hot trigger/webhook reconciliation, Article 50 artifact-receipt integration, context budgeting/compression, and hot credential revocation. None of these may shape active architecture until the activation protocol in #116 is satisfied.
 
 ## Anti-goals (what we will not build)
 
@@ -149,8 +167,9 @@ These protect a small team from platform creep. If your primary need is below, a
 
 ## When to choose Talon
 
-- You have a **growing number of AI use cases** (bots, agents, copilots) and need per-use-case budget caps, one set of policy defaults, controlled side effects and per-session visibility across them — Talon is built for exactly this.
-- You have **one app with a growing bill** — start with [per-agent cost caps](docs/guides/cost-governance-by-agent.md) and grow from there.
+- Your company has **AI policies that different AI use cases implement inconsistently** and you need one constrained control model with explicit use-case-specific effective rules.
+- You have **one consequential AI use case** and need Talon to prevent or authorize an exact action before the effect happens; that first use case must have standalone value even before fleet expansion.
+- You expect to add more use cases and want use case #2 to inherit company controls rather than rebuild governance around a new runtime/provider.
 - You need **provable records** of how AI traffic and governed actions were handled (customer security reviews, DPAs, audits) — the evidence layer generates them from operations you run anyway.
 - You only need log shipping or cost dashboards, not enforcement before the provider/action boundary — a plain observability stack may suffice.
 
