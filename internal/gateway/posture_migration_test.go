@@ -74,9 +74,27 @@ func TestLoadGatewayConfig_NoModeKeyIsEnforced(t *testing.T) {
 	assert.True(t, cfg.Enabled)
 }
 
-func TestQuickstartConfig_IgnoresRemovedShadowEnv(t *testing.T) {
-	t.Setenv("TALON_QUICKSTART_MODE", "shadow")
-	cfg, err := QuickstartConfig(QuickstartOptions{})
-	require.NoError(t, err)
-	assert.True(t, cfg.Enabled, "the removed env selector must have no effect")
+// TestQuickstartConfig_RejectsRemovedModeEnv pins the #442 adversarial
+// contract for the environment surface: the removed TALON_QUICKSTART_MODE
+// selector fails closed for EVERY non-empty value (a stale "shadow" must not
+// silently become an enforcing gateway, and "enforce" is not a valid knob
+// either) with the shared migration guidance.
+func TestQuickstartConfig_RejectsRemovedModeEnv(t *testing.T) {
+	for _, v := range []string{"shadow", "enforce", "log_only", "bogus", " shadow "} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("TALON_QUICKSTART_MODE", v)
+			cfg, err := QuickstartConfig(QuickstartOptions{})
+			require.Error(t, err)
+			assert.Nil(t, cfg)
+			assert.Contains(t, err.Error(), "TALON_QUICKSTART_MODE")
+			assert.Contains(t, err.Error(), "#442")
+			assert.Contains(t, err.Error(), "talon doctor")
+		})
+	}
+	t.Run("unset builds an enforcing quickstart", func(t *testing.T) {
+		t.Setenv("TALON_QUICKSTART_MODE", "")
+		cfg, err := QuickstartConfig(QuickstartOptions{})
+		require.NoError(t, err)
+		assert.True(t, cfg.Enabled)
+	})
 }

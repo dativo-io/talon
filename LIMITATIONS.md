@@ -12,7 +12,7 @@ This document serves as an explicit boundaries guide so that operators and secur
 | :--- | :--- | :--- |
 | **Available Now** | ✅ | Proxy governance, input/output PII scan, policy decision, cost caps, policy-valid fallback, MCP tool-call interception, signed evidence, audit verify. |
 | **Partial Today** | 🟡 | EU routing proof is currently deny/allow evidence, not silent rerouting; session-budget admission is estimate-based (reservation blocks concurrent overshoot, not estimation error). |
-| **Roadmap** | ⏳ | Per-execution tool lifecycle evidence, same-provider retries with backoff, cost warning-threshold evidence + org webhooks, broader trust mesh/A2A. |
+| **Roadmap** | ⏳ | Per-execution tool lifecycle evidence, side-effect-free policy-impact preview (#459), offline evidence replay (#441), broader trust mesh/A2A. (Same-provider retries shipped in 1.10.0, #139; cost warning-threshold evidence and the organization webhook shipped in 1.9.4, #144.) |
 
 ---
 

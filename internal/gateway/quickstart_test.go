@@ -53,18 +53,15 @@ func TestQuickstartIdentityShape(t *testing.T) {
 }
 
 func TestQuickstartConfig_EnvOverrides(t *testing.T) {
-	// The posture knob was removed (#442): a stale value must be ignored and
-	// quickstart always enforces.
-	t.Setenv("TALON_QUICKSTART_MODE", "shadow")
+	// TALON_QUICKSTART_MODE is a removed posture selector and is rejected when
+	// set (see posture_migration_test.go); the remaining env overrides still apply.
+	t.Setenv("TALON_QUICKSTART_MODE", "")
 	t.Setenv("TALON_QUICKSTART_OPENAI_BASE_URL", "http://localhost:4000")
 	t.Setenv("TALON_QUICKSTART_ALLOW_ALL_MODELS", "true")
 
 	cfg, err := QuickstartConfig(QuickstartOptions{})
 	if err != nil {
 		t.Fatalf("QuickstartConfig() error = %v", err)
-	}
-	if !cfg.Enabled {
-		t.Fatalf("quickstart config must be enabled regardless of the removed TALON_QUICKSTART_MODE env (#442)")
 	}
 	prov, _ := cfg.Provider("openai")
 	if prov.BaseURL != "http://localhost:4000" {

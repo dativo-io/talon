@@ -210,3 +210,37 @@ func runCommand(t *testing.T, dir string, timeout time.Duration, env map[string]
 	}
 	return -1, stderr.String()
 }
+
+// TestE2E_Quickstart_LegacyModeEnvFailsStartup pins the #442 environment
+// contract at the real binary boundary: the removed TALON_QUICKSTART_MODE
+// selector must fail `talon serve --proxy-quickstart` before a listener
+// exists, for a stale "shadow" as well as for "enforce" and unknown values,
+// and the failure must carry the migration guidance. A ready governed
+// runtime is never reachable through the legacy env.
+func TestE2E_Quickstart_LegacyModeEnvFailsStartup(t *testing.T) {
+	for _, legacy := range []string{"shadow", "enforce", "bogus"} {
+		t.Run(legacy, func(t *testing.T) {
+			dir := t.TempDir()
+			port := freePort(t)
+			code, out := runCommand(t, dir, 20*time.Second,
+				map[string]string{"TALON_QUICKSTART_MODE": legacy},
+				"serve", "--proxy-quickstart", "--port", fmt.Sprintf("%d", port))
+			if code == 0 {
+				t.Fatalf("serve must fail startup with TALON_QUICKSTART_MODE=%q; output:\n%s", legacy, out)
+			}
+			if code == -1 {
+				t.Fatalf("serve did not exit on its own with TALON_QUICKSTART_MODE=%q (killed at timeout): a listener may have started; output:\n%s", legacy, out)
+			}
+			for _, want := range []string{"TALON_QUICKSTART_MODE", "#442", "talon doctor"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("startup failure must carry %q; output:\n%s", want, out)
+				}
+			}
+			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 500*time.Millisecond)
+			if err == nil {
+				_ = conn.Close()
+				t.Fatalf("port %d is listening: the legacy env must never reach a ready runtime", port)
+			}
+		})
+	}
+}

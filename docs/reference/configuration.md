@@ -345,7 +345,7 @@ When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml
 - `audit.observation_only` (agent policy) (#442)
 - `tool_policies.*.schema_validation` (agent policy) (#442)
 
-Also removed: `talon serve --gateway-mode`, the `TALON_QUICKSTART_MODE` environment variable, and the `talon enforce status|report|enable|disable` commands. To check configuration without live traffic: `talon doctor` (infrastructure config), `talon validate` (agent policies), `talon run --dry-run` (native policy evaluation, no provider call), and the admin-only `POST /v1/policies/evaluate` (OPA input only). A side-effect-free policy-impact preview is tracked in #459. Feature-local vocabularies are unaffected: `memory.mode: shadow`, `semantic_enrichment.mode: shadow`, and `attachment_handling.scanning.action_on_detection: warn|log_only` keep their meanings.
+Also removed: `talon serve --gateway-mode`, the `TALON_QUICKSTART_MODE` environment variable (a non-empty value is rejected at startup), and the `talon enforce status|report|enable|disable` commands. To check configuration without live traffic: `talon doctor` (infrastructure config), `talon validate` (agent policies), `talon run --dry-run` (native policy evaluation, no provider call), and the admin-only `POST /v1/policies/evaluate` (OPA input only). A side-effect-free policy-impact preview is tracked in #459. Feature-local vocabularies are unaffected: `memory.mode: shadow`, `semantic_enrichment.mode: shadow`, and `attachment_handling.scanning.action_on_detection: warn|log_only` keep their meanings.
 
 Key sections:
 

@@ -44,7 +44,7 @@ Quickstart uses upstream BYOK as a scoped exception:
 
 ## Governance defaults
 
-- Policy is always enforced (the `TALON_QUICKSTART_MODE` env var was removed in #442 and is now ignored).
+- Policy is always enforced. The former `TALON_QUICKSTART_MODE` selector was removed in #442: a non-empty value makes `talon serve --proxy-quickstart` fail at startup with migration guidance rather than silently starting an enforcing gateway; unset it.
 - PII default action: `redact`.
 - Default model allowlist: `gpt-4o-mini`, `gpt-4o` (use `TALON_QUICKSTART_ALLOW_ALL_MODELS=1` to disable for local-only experiments).
 - Evidence includes `upstream_auth_mode`, `upstream_key_source`, `upstream_key_fingerprint`, and optional `gateway_annotations` (e.g. `quickstart_mode`, `quickstart_model_allowlist_disabled`, `quickstart_unsafe_listen`). The `quickstart_shadow_mode` annotation is legacy: it is no longer written since #442 and appears only on historical records, which remain verifiable.

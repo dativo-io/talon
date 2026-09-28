@@ -22,7 +22,7 @@ For user-facing entries, include:
 - **Live non-enforcing runtime postures (#442).** A posture switch that let a running gateway forward what policy had just denied undermined the one promise Talon makes — a denial means the provider or tool was never reached — and split every rule into two semantics (what it says vs what it does in this mode). Active policy is now always enforced; how permissive a rollout is follows from the rule actions an operator declares (`pii_action: warn|redact|block`, allowlists, budgets, egress), not from a mode. Removed:
   - **Config keys:** `gateway.mode` (`enforce|shadow|log_only`), MCP `proxy.mode` (`intercept|passthrough|shadow`), agent `audit.observation_only`, and `tool_policies.*.schema_validation`. Governed MCP calls are always intercepted; tool argument schemas are always validated when a tool declares one.
   - **CLI:** the whole `talon enforce status|report|enable|disable` family and the `talon serve --gateway-mode` flag. `talon doctor` no longer reports a `gateway_mode` check.
-  - **Environment:** `TALON_QUICKSTART_MODE`.
+  - **Environment:** `TALON_QUICKSTART_MODE`. A non-empty value now fails `talon serve --proxy-quickstart` at startup with migration guidance; it is rejected, not ignored.
   - **JSON:** `enforcement_mode` and `shadow_summary` are no longer returned by `/api/v1/metrics`, `/v1/status`, or the dashboard SSE stream.
   - **Metrics:** the OTel counter `talon.shadow.violations.total` is retired; the bundled Grafana dashboard drops its "Shadow Violations" panel.
   - **Evidence:** new records never populate `observation_mode_override` or `shadow_violations`, and `mode_change` / `proxy_shadow_violation` records are no longer written.
