@@ -43,7 +43,6 @@ EOF
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "enforce"
   providers:
     openai:
       enabled: true

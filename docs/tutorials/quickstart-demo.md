@@ -39,9 +39,9 @@ curl -X POST http://localhost:8080/v1/proxy/openai/v1/chat/completions \
   }'
 ```
 
-You'll get back a standard OpenAI-compatible JSON response. The mock provider returned a canned answer, but Talon's request pipeline still inspected and classified the request.
+You'll get back a standard OpenAI-compatible JSON response. The mock provider returned a canned answer, but Talon's request pipeline inspected, classified, and **redacted** the request before forwarding it.
 
-The demo configuration is deliberately in **shadow mode**. Talon records what policy observed without changing the request or response. This is the low-risk adoption path: observe real traffic first, then enable enforcement.
+The demo configuration sets `organization_policy.defaults.pii_action: "redact"`. Active policy is always enforced (#442) — there is no observe-only posture — so the rule you declare is what happens: the mock provider receives `[EMAIL]` and `[IBAN]` in place of the detected values, and the request still succeeds. Change that one line to `"block"` and the same request is denied before the provider is reached.
 
 ### 3. List the evidence (10 seconds)
 
@@ -63,7 +63,7 @@ docker compose exec talon /usr/local/bin/talon audit show req_a1b2c3d4
 
 The record shows:
 
-- **Policy decision:** allowed in shadow mode
+- **Policy decision:** allowed, with input PII redacted (`pii_redacted: true`)
 - **Classification:** email + IBAN detected; input tier 2
 - **Execution:** model, cost, token counts, duration
 - **Integrity:** hashes and HMAC signature
@@ -98,10 +98,10 @@ You executed and inspected this exact path:
 
 1. **Talon accepted an OpenAI-compatible request without changing the client protocol.**
 2. **PII was detected and classified before forwarding.** The email and IBAN produced a tier-2 finding.
-3. **Shadow mode recorded the governance signal without breaking the application.** The request still reached the mock provider.
+3. **The declared rule was enforced without breaking the application.** The provider received the redacted text, never the raw email or IBAN, and the signed record says so (`pii_redacted: true`).
 4. **The resulting evidence is tamper-evident and cryptographically verifiable.** `talon audit verify` checks the HMAC signature.
 
-This page did **not** yet execute tool filtering, PII blocking, model denial, sovereignty routing, a session budget, or tamper failure. Reproduce those manually next:
+This page did **not** yet execute tool filtering, PII blocking, model denial, sovereignty routing, a session budget, or tamper failure. To see a native policy decision without any model call, `talon run --dry-run "<prompt>"` prints the decision and exits. Reproduce the rest manually next:
 
 **[Reproduce the governed session manually →](manual-governed-session.md)**
 
@@ -154,9 +154,9 @@ When your curl request hits Talon, the gateway path runs:
 4. **Extract** — Talon parses model and message text.
 5. **PII scan** — recognizers find the email and IBAN.
 6. **Classify** — the IBAN raises the input to confidential tier 2.
-7. **Policy** — OPA evaluates the request; shadow mode records rather than blocks.
+7. **Policy** — OPA evaluates the request; the decision is enforced (here: allow with redaction — `block` would deny before step 9).
 8. **Tool policy** — there are no tools in this request.
-9. **Forward** — the request goes to the mock provider.
+9. **Forward** — the redacted request goes to the mock provider.
 10. **Evidence** — Talon writes an HMAC-signed record to SQLite.
 
 See [What Talon does to your request](../explanation/what-talon-does-to-your-request.md) for the full technical breakdown.

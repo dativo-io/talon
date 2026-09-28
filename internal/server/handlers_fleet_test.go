@@ -30,10 +30,9 @@ func fleetTestServer(t *testing.T, view agentcatalog.FleetView) *Server {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ev.Close() })
 	return &Server{
-		fleetView:      func() agentcatalog.FleetView { return view },
-		evidenceStore:  ev,
-		fleetCurrency:  "EUR",
-		fleetEnforcing: true,
+		fleetView:     func() agentcatalog.FleetView { return view },
+		evidenceStore: ev,
+		fleetCurrency: "EUR",
 	}
 }
 
@@ -147,7 +146,7 @@ func TestHandleAgentsFleet_ParityWithDirectProjection(t *testing.T) {
 	// so both the endpoint and the direct projection resolve caps from the SAME
 	// captured snapshot — no injected caps lookup.
 	view := agentcatalog.FleetView{Snapshot: snap}
-	s := &Server{fleetView: func() agentcatalog.FleetView { return view }, evidenceStore: ev, fleetCurrency: "EUR", fleetEnforcing: true}
+	s := &Server{fleetView: func() agentcatalog.FleetView { return view }, evidenceStore: ev, fleetCurrency: "EUR"}
 
 	rec := httptest.NewRecorder()
 	s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
@@ -160,7 +159,7 @@ func TestHandleAgentsFleet_ParityWithDirectProjection(t *testing.T) {
 	caps := fleetCapsFor(snap, gateway.OrganizationPolicy{})
 	denyAll := fleetDenyAllForSnapshot(snap, gateway.OrganizationPolicy{}, nil)
 	statuses := fleet.AssembleStatuses(membershipFromView(view, denyAll), caps, "EUR")
-	direct, err := fleet.Project(context.Background(), ev, emptySessionSource{}, statuses, fleet.DefaultThresholds(), now, true)
+	direct, err := fleet.Project(context.Background(), ev, emptySessionSource{}, statuses, fleet.DefaultThresholds(), now)
 	require.NoError(t, err)
 
 	// Compare the serialized form (robust to time.Time representation quirks).
@@ -202,10 +201,9 @@ func TestHandleAgentsFleet_CapProjectedAtThresholds(t *testing.T) {
 			// support's own policy carries monthly cap 100 (fleetTestSnapshot); the
 			// endpoint resolves it from the captured snapshot.
 			s := &Server{
-				fleetView:      func() agentcatalog.FleetView { return agentcatalog.FleetView{Snapshot: snap} },
-				evidenceStore:  ev,
-				fleetCurrency:  "EUR",
-				fleetEnforcing: true,
+				fleetView:     func() agentcatalog.FleetView { return agentcatalog.FleetView{Snapshot: snap} },
+				evidenceStore: ev,
+				fleetCurrency: "EUR",
 			}
 			rec := httptest.NewRecorder()
 			s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
@@ -231,11 +229,10 @@ func TestHandleAgentsFleet_PolicyDenyAllIsBlocked(t *testing.T) {
 	t.Cleanup(func() { _ = ev.Close() })
 
 	s := &Server{
-		fleetView:      func() agentcatalog.FleetView { return agentcatalog.FleetView{Snapshot: snap} },
-		evidenceStore:  ev,
-		fleetCurrency:  "EUR",
-		fleetOrg:       gateway.OrganizationPolicy{Constraints: gateway.OrgConstraints{BlockedModels: []string{"*"}}},
-		fleetEnforcing: true,
+		fleetView:     func() agentcatalog.FleetView { return agentcatalog.FleetView{Snapshot: snap} },
+		evidenceStore: ev,
+		fleetCurrency: "EUR",
+		fleetOrg:      gateway.OrganizationPolicy{Constraints: gateway.OrgConstraints{BlockedModels: []string{"*"}}},
 	}
 	rec := httptest.NewRecorder()
 	s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
@@ -265,7 +262,6 @@ func TestHandleAgentsFleet_CapsFromCapturedSnapshotNotHolder(t *testing.T) {
 		fleetView:       func() agentcatalog.FleetView { return agentcatalog.FleetView{Snapshot: snap} },
 		evidenceStore:   ev,
 		fleetCurrency:   "EUR",
-		fleetEnforcing:  true,
 		agentCapsLookup: staleCaps, // /v1/costs/budget only — must not reach the fleet endpoint
 	}
 	rec := httptest.NewRecorder()
@@ -277,31 +273,6 @@ func TestHandleAgentsFleet_CapsFromCapturedSnapshotNotHolder(t *testing.T) {
 	assert.Equal(t, snap.Generation, resp.Generation, "generation is the captured snapshot's")
 	assert.Equal(t, "support", resp.Agents[0].Name)
 	assert.Equal(t, float64(10), resp.Agents[0].DailyCap, "caps come from the captured snapshot's policy, not the stale holder lookup (999)")
-}
-
-// TestHandleAgentsFleet_ShadowModeNotBlocked covers #270 review round 2: in
-// shadow/log_only the gateway observes but forwards, so a deny-all policy does
-// NOT render BLOCKED — the agent is still serving.
-func TestHandleAgentsFleet_ShadowModeNotBlocked(t *testing.T) {
-	snap := fleetTestSnapshot(t)
-	ev, err := evidence.NewStore(filepath.Join(t.TempDir(), "e.db"), testutil.TestSigningKey)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ev.Close() })
-
-	s := &Server{
-		fleetView:      func() agentcatalog.FleetView { return agentcatalog.FleetView{Snapshot: snap} },
-		evidenceStore:  ev,
-		fleetCurrency:  "EUR",
-		fleetOrg:       gateway.OrganizationPolicy{Constraints: gateway.OrgConstraints{BlockedModels: []string{"*"}}},
-		fleetEnforcing: false, // shadow/log_only
-	}
-	rec := httptest.NewRecorder()
-	s.handleAgentsFleet(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/agents/fleet", nil))
-	require.Equal(t, http.StatusOK, rec.Code)
-	var resp fleetStatusResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Len(t, resp.Agents, 1)
-	assert.NotEqual(t, fleet.HealthBlocked, resp.Agents[0].Health, "shadow mode observes but does not block")
 }
 
 // TestHandleAgentsFleet_NoFleet: keyless/quickstart mode returns 503.

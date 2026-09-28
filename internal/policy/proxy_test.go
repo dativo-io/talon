@@ -2,8 +2,6 @@ package policy
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,7 +19,6 @@ func newTestProxyConfig() *ProxyPolicyConfig {
 			Type: "mcp_proxy",
 		},
 		Proxy: ProxyConfig{
-			Mode: "intercept",
 			Upstream: UpstreamConfig{
 				URL:    "https://vendor.example.com",
 				Vendor: "test-vendor",
@@ -303,7 +300,6 @@ func TestProxyRateLimit_HighRiskLimit(t *testing.T) {
 	cfg := &ProxyPolicyConfig{
 		Agent: ProxyAgentConfig{Name: "test-proxy", Type: "mcp_proxy"},
 		Proxy: ProxyConfig{
-			Mode:     "intercept",
 			Upstream: UpstreamConfig{URL: "http://localhost:3000", Vendor: "test"},
 			AllowedTools: []ToolMapping{
 				{Name: "email_read"},
@@ -725,154 +721,6 @@ func TestProxyCompliance_NoResidencyRestriction(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, decision.Allowed, "no residency restriction should allow any region")
-}
-
-// ---------------------------------------------------------------------------
-// LoadProxyPolicy tests
-// ---------------------------------------------------------------------------
-
-func TestLoadProxyPolicy_Valid(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "proxy.talon.yaml")
-
-	content := `
-agent:
-  name: "vendor-proxy"
-  type: "mcp_proxy"
-proxy:
-  upstream:
-    url: "https://vendor.example.com"
-  allowed_tools:
-    - name: "tool_a"
-      upstream_name: "a"
-compliance:
-  frameworks: ["gdpr"]
-  data_residency: "eu-only"
-`
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
-
-	cfg, err := LoadProxyPolicy(path, dir)
-	require.NoError(t, err)
-	assert.Equal(t, "vendor-proxy", cfg.Agent.Name)
-	assert.Equal(t, "mcp_proxy", cfg.Agent.Type)
-	assert.Equal(t, "https://vendor.example.com", cfg.Proxy.Upstream.URL)
-	assert.Len(t, cfg.Proxy.AllowedTools, 1)
-	assert.Equal(t, "intercept", cfg.Proxy.Mode, "default mode should be intercept")
-}
-
-func TestLoadProxyPolicy_MissingType(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "proxy.talon.yaml")
-
-	content := `
-agent:
-  name: "vendor-proxy"
-  type: "standard"
-proxy:
-  upstream:
-    url: "https://vendor.example.com"
-  allowed_tools:
-    - name: "tool_a"
-`
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
-
-	_, err := LoadProxyPolicy(path, dir)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "mcp_proxy")
-}
-
-func TestLoadProxyPolicy_MissingUpstreamURL(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "proxy.talon.yaml")
-
-	content := `
-agent:
-  name: "vendor-proxy"
-  type: "mcp_proxy"
-proxy:
-  allowed_tools:
-    - name: "tool_a"
-`
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
-
-	_, err := LoadProxyPolicy(path, dir)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "upstream.url")
-}
-
-func TestLoadProxyPolicy_MissingAllowedTools(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "proxy.talon.yaml")
-
-	content := `
-agent:
-  name: "vendor-proxy"
-  type: "mcp_proxy"
-proxy:
-  upstream:
-    url: "https://vendor.example.com"
-`
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
-
-	_, err := LoadProxyPolicy(path, dir)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "allowed_tools")
-}
-
-func TestLoadProxyPolicy_FileNotFound(t *testing.T) {
-	_, err := LoadProxyPolicy("/nonexistent/path.yaml", "/")
-	require.Error(t, err)
-}
-
-func TestLoadProxyPolicy_InvalidYAML(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "proxy.talon.yaml")
-
-	require.NoError(t, os.WriteFile(path, []byte("{{invalid yaml"), 0o644))
-
-	_, err := LoadProxyPolicy(path, dir)
-	require.Error(t, err)
-}
-
-func TestLoadProxyPolicy_WithPIIHandling(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "proxy.talon.yaml")
-
-	content := `
-agent:
-  name: "vendor-proxy"
-  type: "mcp_proxy"
-proxy:
-  mode: "passthrough"
-  upstream:
-    url: "https://vendor.example.com"
-    vendor: "zendesk-ai"
-  allowed_tools:
-    - name: "ticket_search"
-  forbidden_tools:
-    - "user_delete"
-  rate_limits:
-    requests_per_minute: 50
-pii_handling:
-  redaction_rules:
-    - field: "email"
-      method: "hash"
-    - field: "ssn"
-      method: "redact_full"
-compliance:
-  frameworks: ["gdpr", "nis2"]
-  data_residency: "eu-only"
-`
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
-
-	cfg, err := LoadProxyPolicy(path, dir)
-	require.NoError(t, err)
-	assert.Equal(t, "passthrough", cfg.Proxy.Mode)
-	assert.Equal(t, "zendesk-ai", cfg.Proxy.Upstream.Vendor)
-	assert.Len(t, cfg.Proxy.ForbiddenTools, 1)
-	assert.Equal(t, 50, cfg.Proxy.RateLimits.RequestsPerMinute)
-	assert.Len(t, cfg.PIIHandling.RedactionRules, 2)
-	assert.Equal(t, "eu-only", cfg.Compliance.DataResidency)
 }
 
 // ---------------------------------------------------------------------------

@@ -313,7 +313,7 @@ func annexLifecycleSection(stats annexIVStats) DocSection {
 		"changes traceable across the system lifecycle. Governed agent memory writes are individually audited."
 	rows := [][]string{
 		{"Audited memory writes in scope", strconv.Itoa(stats.memoryWrites)},
-		{"Shadow-mode records (controls evaluated, not enforced)", strconv.Itoa(stats.shadowRecords)},
+		{"Legacy shadow-mode records (removed posture, historical only)", strconv.Itoa(stats.shadowRecords)},
 	}
 	return DocSection{
 		Heading: "6. Changes through the lifecycle (Annex IV s.6)",

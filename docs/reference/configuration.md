@@ -120,7 +120,8 @@ Validation is fail-fast in `talon validate` and at startup:
 | `audit.include_prompts` | `bool` | `false` | Persist prompt text in the prompt version store and step evidence summaries. |
 | `audit.include_responses` | `bool` | `false` | Persist LLM response text in step evidence summaries. |
 | `audit.include_original_prompts` | `bool` | `false` | When `true` **and** input PII redaction is active (`redact_input: true`), also persist the original pre-redaction prompt alongside the redacted version. Default `false` aligns with GDPR Art. 5(1)(c) data minimization. Enable only for forensic/legal-hold scenarios. See [ADR-002](../contributor/adr/ADR-002-prompt-storage-data-minimization.md). |
-| `audit.observation_only` | `bool` | `false` | Shadow mode: log policy denials without enforcing them. |
+
+**Removed in #442:** `audit.observation_only` (and `tool_policies.*.schema_validation`). A policy denial is always enforced for native runs and tool argument schemas are always validated when a tool declares one; a file that still sets either key fails at load with the key name. To check a policy without live traffic use `talon validate` (agent policy) and `talon run --dry-run` (native policy evaluation, no provider call).
 
 ### Compliance declarations (auditor exports)
 
@@ -284,13 +285,13 @@ Optional. Selects **one** globally active PII scanner engine per Talon
 instance. When absent, the built-in regex scanner is used — zero config, no
 runtime dependency. An external engine **replaces** the built-in scanner (no
 result merging) and is **fail-closed**: a scan timeout or error blocks egress
-in enforce mode.
+wherever the declared rule action gates (`redact`/`block`); `warn` never gates.
 
 | Key | Default | Purpose |
 |-----|---------|---------|
 | `scanner.type` | `regex` | `regex` (built-in), `presidio` (Presidio analyzer REST sidecar), `http` (custom engine speaking the Presidio wire format), or `llm` (OpenAI-compatible endpoint prompted for NER, e.g. Ollama). |
 | `scanner.endpoint` | — | `http(s)://host:port` or `unix:///path/to.sock`. Required for `presidio`/`http`; defaults to `ollama_base_url` + `/v1` for `llm`. |
-| `scanner.timeout` | `10s` | Per-scan deadline. No retries — a timeout is an engine failure and blocks in enforce mode. |
+| `scanner.timeout` | `10s` | Per-scan deadline. No retries — a timeout is an engine failure and blocks under gating rule actions (`redact`/`block`). |
 | `scanner.min_score` | `0.5` | Entities below this confidence are discarded. |
 | `scanner.language` | `en` | Forwarded in Presidio `/analyze` requests. |
 | `scanner.offset_encoding` | per type | Override the offset encoding the engine reports: `byte` or `rune`. Defaults: `presidio` → `rune` (stock Presidio reports codepoint offsets), `http` → `byte`. |
@@ -335,11 +336,21 @@ compliance:
 
 ### Gateway block
 
-When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml` configures the LLM API proxy. Key sections:
+When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml` configures the LLM API proxy. Active policy is always enforced: how permissive the gateway is follows from the rule actions you declare (`pii_action: warn|redact|block`, allowlists, budgets, egress), not from a runtime posture.
+
+**Removed in #442 — live non-enforcing postures.** The following keys no longer exist, and a config that still contains one fails at load with an error naming the key, "#442", and the non-live alternatives:
+
+- `gateway.mode` (`enforce|shadow|log_only`) (#442)
+- MCP `proxy.mode` (`intercept|passthrough|shadow`) — governed MCP calls are always intercepted (#442)
+- `audit.observation_only` (agent policy) (#442)
+- `tool_policies.*.schema_validation` (agent policy) (#442)
+
+Also removed: `talon serve --gateway-mode`, the `TALON_QUICKSTART_MODE` environment variable, and the `talon enforce status|report|enable|disable` commands. To check configuration without live traffic: `talon doctor` (infrastructure config), `talon validate` (agent policies), `talon run --dry-run` (native policy evaluation, no provider call), and the admin-only `POST /v1/policies/evaluate` (OPA input only). A side-effect-free policy-impact preview is tracked in #459. Feature-local vocabularies are unaffected: `memory.mode: shadow`, `semantic_enrichment.mode: shadow`, and `attachment_handling.scanning.action_on_detection: warn|log_only` keep their meanings.
+
+Key sections:
 
 | Section | Purpose |
 |---------|---------|
-| `gateway.mode` | `enforce`, `shadow`, or `log_only`. Runtime default when omitted: `enforce`. Generated starter configs set `shadow` for a safe rollout. **Two control classes (#266):** HARD platform boundaries — authentication, agent identity, and data-sovereignty `eu_strict` — block in **every** mode. OBSERVABLE governance controls — PII, tools, attachments, provider/model allowlists, budgets, ordinary egress — block only in `enforce`; `shadow` evaluates and records their would-be decision without blocking, and `log_only` additionally skips OPA policy evaluation (records detections only). So `eu_strict` still blocks a non-EU provider even in shadow/log_only — forwarding EU-resident data merely to observe would itself breach residency. |
 | `gateway.providers` | LLM provider connections (base URL, secret name, region, allowed/blocked models — destination constraints) |
 | `gateway.organization_policy` | The organization policy every agent inherits, split into two explicit classes (#287): `defaults:` — per-agent starting values an agent override may **replace** (`pii_action`, `response_pii_action`, `daily_cost` / `monthly_cost` / `session_cost`, `tool_policy_action`, `attachment_policy`) — and `constraints:` — organization-wide **hard bounds** an agent may only tighten within, never escape (`allowed_providers`, `allowed_models` / `blocked_models`, `allowed_tools`, `forbidden_tools`, `max_daily_cost` / `max_monthly_cost` / `max_session_cost`, `max_data_tier`, `egress`). Org-owned observability scalars stay top-level: `log_prompts` / `log_responses` / `log_response_preview_chars`, `scan_tool_content`. Renamed from `default_policy` (#266). |
 | `gateway.rate_limits` | `global_requests_per_min` and `per_agent_requests_per_min` |
@@ -357,7 +368,7 @@ When `talon serve --gateway` is used, the `gateway:` block in `talon.config.yaml
 
 **Hot vs restart-required.** Hot-reloadable: agent file contents (`enabled`, identity metadata, key binding *name*, policy overrides) and `agents_dir` membership. Restart-required: trigger/webhook **definitions** (#297 — dispatch still re-resolves the current generation, so `enabled` and policy edits govern the next firing), `gateway:` block (organization policy, providers, mode), listeners/ports, scanner infrastructure, pricing and sovereignty. **Key rotation** via `talon secrets set` alone is not detected (the file digest is unchanged) — rotate = set the secret + restart, or touch the agent file. **Secret deletion/revocation of an *enabled* agent is likewise NOT a hot revocation:** the reload cannot build a valid registry for that agent, so the whole generation is rejected and last-known-good keeps the old key serving. To revoke access, **disable** the agent — that IS hot: the disabled generation activates with the prior key carried forward as a *denial-only* identity (the gateway returns an attributed 403; the tenant-API surface rejects it), so the old credential authorizes nothing — or restart.
 
-**`talon agents enable|disable <name>` (#268).** The config-backed kill switch: `enabled: false` denies NEW work for that agent (gateway requests → attributed 403 `agent_disabled` in **every** mode including shadow; native runs and trigger dispatch → refused before any lifecycle state) while in-flight work finishes. The command is **host-local by design** (it edits the YAML on this machine; remote administration is out of scope), rewrites the file atomically via a structural YAML edit that preserves comments, and records **intent + completion** as signed evidence in the agent's tenant — a failed completion record rolls the file back so recorded and actual state never diverge. A running `talon serve` applies the change within the reload interval.
+**`talon agents enable|disable <name>` (#268).** The config-backed kill switch: `enabled: false` denies NEW work for that agent (gateway requests → attributed 403 `agent_disabled`; native runs and trigger dispatch → refused before any lifecycle state) while in-flight work finishes. The command is **host-local by design** (it edits the YAML on this machine; remote administration is out of scope), rewrites the file atomically via a structural YAML edit that preserves comments, and records **intent + completion** as signed evidence in the agent's tenant — a failed completion record rolls the file back so recorded and actual state never diverge. A running `talon serve` applies the change within the reload interval.
 
 ```
 talon.config.yaml
@@ -499,8 +510,8 @@ Behavior:
   `egress_tier_destination_disallowed` (rule exists for the tier, destination
   not permitted) or `egress_destination_disallowed` (no rule for the tier,
   `default_action: deny`), and map to the `POLICY_DENIED_EGRESS` explanation
-  code. In `shadow` mode violations are recorded as shadow violations and the
-  request is forwarded.
+  code. Egress denials are always enforced — the request is never forwarded
+  (#442).
 
 **Relationship to `llm.routing.data_sovereignty_mode`:** the two controls are
 complementary and share the same sources of truth, but govern different
@@ -568,17 +579,15 @@ evidenced as "the provider actually used".
 Every candidate passes a filter pipeline before dispatch:
 
 - **Sovereignty (hard invariant):** under `sovereignty.mode: eu_strict` a
-  non-EU/LOCAL candidate is skipped in every gateway mode, shadow included —
-  Talon never dispatches outside EU/LOCAL under eu_strict.
+  non-EU/LOCAL candidate is always skipped — Talon never dispatches outside
+  EU/LOCAL under eu_strict.
 - **Agent provider allowlist (hard):** a candidate outside the agent's
   `policies.allowed_providers` is never dispatched.
-- **Target tool policy and gateway policy (mode-aware):** each candidate
-  re-runs the target provider's tool policy and the full gateway policy with
-  the candidate's provider, model, recomputed cost estimate, destination
-  region, and session context — the same input surface as the primary. In
-  `enforce` mode a denial skips the candidate; in `shadow` mode the would-be
-  denial is recorded as a shadow violation and the dispatch proceeds (shadow
-  never changes runtime behavior).
+- **Target tool policy and gateway policy:** each candidate re-runs the
+  target provider's tool policy and the full gateway policy with the
+  candidate's provider, model, recomputed cost estimate, destination region,
+  and session context — the same input surface as the primary. A denial
+  skips the candidate; a denied candidate is never dispatched (#442).
 
 Gateway (proxy path) — chain per provider; all members must share the
 provider's API family. The family defaults by name (`anthropic` → Anthropic

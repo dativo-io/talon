@@ -91,7 +91,7 @@ func TestSSOTGate_DegradedStatusContract(t *testing.T) {
 // SSOT gate: non-gateway evidence updates both events API and metrics totals live.
 func TestSSOTGate_NonGatewayEvidenceFeedsEventsAndMetrics(t *testing.T) {
 	srv, store := newEventsTestServer(t, map[string]string{"k-default": "default"})
-	collector := metrics.NewCollector("enforce", nil)
+	collector := metrics.NewCollector(nil)
 	defer collector.Close()
 	store.SetStoreObserver(func(_ context.Context, ev *evidence.Evidence) {
 		collector.Record(metrics.GatewayEventFromEvidence(ev))

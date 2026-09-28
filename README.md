@@ -83,11 +83,12 @@ Every decision — allow, deny, redact, fallback, budget stop — becomes an HMA
 
 ## Start with one AI use case
 
-You don't have to trust Talon in blocking mode on day one.
+Active policy is always enforced — there is no observe-and-forward posture — so you choose *what* the first policy does, not whether it applies.
 
 1. **Put Talon in front of one** dev or internal use case (change the base URL, present its agent key).
-2. **Start in shadow mode** — Talon records what policy *would* do (PII, tools, spend, destinations) **without changing the response**.
-3. **Turn on one control** when you're ready: block PII, cap spend, keep confidential data local, or strip a dangerous tool.
+2. **Check the config before traffic flows** — `talon doctor` validates the infrastructure config, `talon validate` the agent policy; both fail loudly on unknown or removed keys.
+3. **Choose each rule's action deliberately** — `pii_action: redact` keeps traffic flowing with PII replaced before the provider; `block` stops it. Cap spend, keep confidential data local, or strip a dangerous tool the same way — one rule at a time.
+4. **See a decision without spending** — `talon run --dry-run "<prompt>"` evaluates the native policy and prints the decision with no provider call. At the gateway, every denial is real, signed, and costs nothing ($0 — the provider is never reached).
 
 **Which are you?**
 
@@ -140,7 +141,7 @@ docker compose exec talon /usr/local/bin/talon audit show <evidence-id>
 
 The record shows the PII detected (email, IBAN), the data tier, the policy decision, the cost, and a verifiable HMAC signature.
 
-> **Why did the IBAN go through?** This demo ships in **shadow mode**: Talon *records* what policy would do — including the PII it found — **without changing the request**. That's the low-risk way to adopt: drop Talon in front of real traffic, see what it flags for a week, then flip to **enforce mode** to redact or block the IBAN before the provider (exactly what the hero above shows). One config line: `mode: shadow` → `mode: enforce`.
+> **Why did the request still succeed?** The demo config sets `pii_action: redact` — the enforced policy keeps traffic flowing but the provider never sees the raw values. The mock provider receives `[IBAN]` (and `[EMAIL]`) in place of the detected PII, and the signed record shows `pii_redacted: true` alongside the detections. The hero above shows the same redaction against real providers. Change one line to `pii_action: block` and the same request is denied before the provider is reached — a real denial that costs nothing. There is no shadow/observe-only posture (#442): whatever action a rule declares is what happens.
 
 Full walk-through: [60-second demo](docs/tutorials/quickstart-demo.md).
 
@@ -379,7 +380,7 @@ Artifacts a skeptical reviewer can grep in one session:
 
 ## Pilot Talon on a real AI use case
 
-The fastest way to know if Talon fits: put **one** use case behind it in shadow mode and see what it flags. Common first steps:
+The fastest way to know if Talon fits: put **one** dev or internal use case behind it with a deliberately chosen first rule (`pii_action: redact` keeps traffic flowing; `block` stops it) and read the signed evidence it produces. Common first controls:
 
 | AI use case | First control |
 |----------|--------------|

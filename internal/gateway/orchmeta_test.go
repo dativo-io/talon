@@ -189,7 +189,6 @@ func newOrchGateway(t *testing.T, anthropicURL, openaiURL string, acceptA *bool)
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"anthropic": {Enabled: true, BaseURL: anthropicURL, SecretName: "anthropic-key"},
 			"openai":    {Enabled: true, BaseURL: openaiURL, SecretName: "openai-key"},
@@ -214,7 +213,7 @@ func newOrchGateway(t *testing.T, anthropicURL, openaiURL string, acceptA *bool)
 	acl := secrets.ACL{Tenants: []string{"tenant-a", "tenant-b"}, Agents: []string{"*"}}
 	require.NoError(t, secStore.Set(context.Background(), "anthropic-key", []byte("sk-ant-test-000-orch"), acl))
 	require.NoError(t, secStore.Set(context.Background(), "openai-key", []byte("sk-test-000-orch"), acl))
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })

@@ -45,9 +45,10 @@ func jsonBreakingRedactionScanner(t *testing.T) *classifier.Scanner {
 }
 
 type capturingTool struct {
-	name string
-	mu   sync.Mutex
-	args json.RawMessage
+	name  string
+	mu    sync.Mutex
+	args  json.RawMessage
+	calls int
 }
 
 func (c *capturingTool) Name() string                 { return c.name }
@@ -56,8 +57,17 @@ func (c *capturingTool) InputSchema() json.RawMessage { return json.RawMessage(`
 func (c *capturingTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	c.mu.Lock()
 	c.args = append(json.RawMessage(nil), args...)
+	c.calls++
 	c.mu.Unlock()
 	return json.RawMessage(`{"ok":true}`), nil
+}
+
+// executions reports how many times Execute ran: the preventive-control
+// proof for deny paths is this count staying at zero.
+func (c *capturingTool) executions() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
 }
 
 func (c *capturingTool) executedArgs() string {

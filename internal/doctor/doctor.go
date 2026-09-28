@@ -1,5 +1,5 @@
 // Package doctor provides health checks for Talon configuration and runtime.
-// Used by `talon doctor` and as a safety gate for `talon enforce enable`.
+// Used by `talon doctor` and as a safety gate for the gateway identity preflight.
 package doctor
 
 import (
@@ -443,7 +443,6 @@ func checkGateway(ctx context.Context, opts Options) []CheckResult {
 		Name: "gateway_config_valid", Category: "gateway", Status: "pass",
 		Message: opts.GatewayConfigPath,
 	})
-	results = append(results, checkGatewayMode(gwCfg))
 	results = append(results, checkGatewayAgentIdentity(ctx))
 	results = append(results, checkGatewayToolPolicy(gwCfg))
 	results = append(results, checkSovereigntyFromGateway(gwCfg, opts.GatewayConfigPath))
@@ -457,28 +456,13 @@ func checkGateway(ctx context.Context, opts Options) []CheckResult {
 	return results
 }
 
-func checkGatewayMode(cfg *gateway.GatewayConfig) CheckResult {
-	var msg string
-	switch cfg.Mode {
-	case gateway.ModeShadow:
-		msg = "shadow (safe default — run 'talon enforce report' to review)"
-	case gateway.ModeEnforce:
-		msg = "enforce (active — violations are blocked)"
-	case gateway.ModeLogOnly:
-		msg = "log_only (evidence only)"
-	default:
-		msg = string(cfg.Mode) + " (unknown)"
-	}
-	return CheckResult{Name: "gateway_mode", Category: "gateway", Status: "pass", Message: msg}
-}
-
 // GatewayIdentityPreflight runs the SAME fail-closed checks `talon serve
 // --gateway` startup performs (#266): the agent policy loads, carries a key
 // binding, the vault opens, and a dry-run registry build passes (missing /
 // ACL-denied / empty secret, duplicate identity, admin-key collision). A
 // condition that would make gateway startup fail must fail here too — this
 // is the shared preflight behind `talon doctor --gateway-config` and
-// `talon enforce enable`.
+// the gateway identity preflight.
 func GatewayIdentityPreflight(ctx context.Context) (agentName, secretName string, err error) {
 	cfg, err := config.Load()
 	if err != nil {

@@ -112,8 +112,7 @@ which is untrusted. There are **no retries**; tune `scanner.timeout` instead.
 
 | Path | On engine failure |
 |------|-------------------|
-| Gateway request scan (enforce) | HTTP 502, `scanner_unavailable` error body, request never reaches the provider |
-| Gateway request scan (shadow) | Forwarded; a `scanner_unavailable` shadow violation is recorded |
+| Gateway request scan | HTTP 502, `scanner_unavailable` error body, request never reaches the provider |
 | Gateway response scan, action `block`/`redact` | HTTP 502 with a `scanner_unavailable` error body — never the upstream 200 |
 | Gateway response scan, action `warn` | Forwarded with a logged warning (warn never gates) |
 | Request/response redaction | Blocked — content known to contain PII is never forwarded unredacted |
@@ -133,9 +132,9 @@ never the upstream 200), while MCP paths return a JSON-RPC error object (over
 HTTP 200, per JSON-RPC convention). In both cases evidence records
 `policy_decision.allowed=false` with a machine reason (`output_pii_blocked`,
 `output_residual_pii_after_redaction`, `output_scanner_unavailable`, …), and
-metrics count the request as blocked. Shadow mode inverts this consistently:
-nothing is blocked or mutated, and the would-be enforcement is recorded as a
-shadow violation.
+metrics count the request as blocked. There is no observe-and-forward
+posture (#442): a scanner outcome that gates under the declared rule action
+gates every time.
 
 Each evidence record carries `classification.scanner` — engine identity,
 type, declared version, scan duration, and on scanner-driven blocks the

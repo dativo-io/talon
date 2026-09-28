@@ -90,7 +90,6 @@ type WizardState struct {
 type GatewayBlock struct {
 	Enabled            bool                       `yaml:"enabled"`
 	ListenPrefix       string                     `yaml:"listen_prefix"`
-	Mode               string                     `yaml:"mode"`
 	Providers          map[string]GatewayProvider `yaml:"providers"`
 	OrganizationPolicy *GatewayOrganizationPolicy `yaml:"organization_policy,omitempty"`
 	RateLimits         *GatewayRateLimits         `yaml:"rate_limits,omitempty"`
@@ -939,7 +938,6 @@ func buildInfraConfig(state WizardState) *InfraYAML {
 		cfg.Gateway = &GatewayBlock{
 			Enabled:      true,
 			ListenPrefix: "/v1/proxy",
-			Mode:         "shadow",
 			Providers: map[string]GatewayProvider{
 				state.ProviderID: {
 					Enabled:       true,

@@ -202,7 +202,6 @@ test_section_36_external_scanner() {
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "enforce"
   providers:
     openai:
       enabled: true

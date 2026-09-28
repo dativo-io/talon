@@ -36,7 +36,6 @@ func setupCoPawGateway(t *testing.T, upstreamHandler http.HandlerFunc) (*gateway
 	cfg := &gateway.GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         gateway.ModeEnforce,
 		Providers: map[string]gateway.ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
 		},

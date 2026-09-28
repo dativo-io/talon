@@ -46,7 +46,8 @@ type ExportRecord struct {
 	ToolsCalled      []string `json:"tools_called,omitempty"`
 	InputHash        string   `json:"input_hash,omitempty"`
 	OutputHash       string   `json:"output_hash,omitempty"`
-	// Shadow mode fields
+	// LEGACY (#442): reduced-export columns are positional (script-consumed), so
+	// these stay; they are false/empty for every record written after #442.
 	ObservationModeOverride bool     `json:"observation_mode_override"`
 	ShadowViolationTypes    []string `json:"shadow_violation_types,omitempty"`
 	// Semantic cache (audit export)

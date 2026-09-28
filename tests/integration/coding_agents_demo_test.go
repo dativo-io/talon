@@ -75,7 +75,6 @@ func newDemoGateway(t *testing.T, mockURL string) (*evidence.Store, http.Handler
 	cfg := &gateway.GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         gateway.ModeEnforce,
 		Providers: map[string]gateway.ProviderConfig{
 			"anthropic": {Enabled: true, BaseURL: mockURL, SecretName: "anthropic-api-key", APIFamily: "anthropic"},
 			"openai":    {Enabled: true, BaseURL: mockURL, SecretName: "openai-api-key"},

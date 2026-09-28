@@ -61,7 +61,6 @@ func TestRun_GatewayCategory_WithConfig(t *testing.T) {
 	gwYAML := `gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "shadow"
   providers:
     openai:
       enabled: true
@@ -84,17 +83,11 @@ func TestRun_GatewayCategory_WithConfig(t *testing.T) {
 			gatewayChecks++
 		}
 	}
-	assert.GreaterOrEqual(t, gatewayChecks, 3, "should have gateway config, mode, and agent-identity checks")
+	assert.GreaterOrEqual(t, gatewayChecks, 2, "should have gateway config and agent-identity checks")
 
-	found := false
 	for _, c := range report.Checks {
-		if c.Name == "gateway_mode" {
-			found = true
-			assert.Equal(t, "pass", c.Status)
-			assert.Contains(t, c.Message, "shadow")
-		}
+		assert.NotEqual(t, "gateway_mode", c.Name, "no selectable enforcement posture is reported (#442)")
 	}
-	assert.True(t, found, "should include gateway_mode check")
 }
 
 // TestGatewayIdentityParity (#279 review): every condition that makes
@@ -113,7 +106,6 @@ func TestGatewayIdentityParity(t *testing.T) {
 	gwYAML := `gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "shadow"
   providers:
     openai:
       enabled: true
@@ -279,7 +271,6 @@ func TestDoctorGatewaySovereigntyFromGatewayConfig_WhenOperatorSovereigntyEmpty(
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "shadow"
   providers:
     openai:
       enabled: true
@@ -329,7 +320,6 @@ func TestDoctorGatewaySovereignty_MixedProvidersWarns(t *testing.T) {
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "shadow"
   providers:
     openai:
       enabled: true
@@ -388,7 +378,6 @@ func TestDoctorGatewaySovereignty_NativeProviderDoesNotMaskGateway(t *testing.T)
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "shadow"
   providers:
     openai:
       enabled: true

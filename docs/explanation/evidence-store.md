@@ -148,7 +148,7 @@ talon audit export --format signed-json --from 2026-03-01 > march-signed-audit.j
 talon audit export --format signed-ndjson --from 2026-03-01 > march-signed-audit.ndjson
 ```
 
-CSV columns: `id`, `session_id`, `timestamp`, `tenant_id`, `agent_id`, `invocation_type`, `allowed`, `cost`, `model_used`, `duration_ms`, `has_error`, `input_tier`, `output_tier`, `pii_detected`, `pii_redacted`, `policy_reasons`, `tools_called`, `input_hash`, `output_hash`, `primary_explanation_code`, `primary_explanation_reason`, `primary_version_identity`, plus shadow/cache fields when applicable. JSON and NDJSON export include the same fields; `session_id` links evidence to a lifecycle session (e.g. plan-gated run and its dispatch).
+CSV columns: `id`, `session_id`, `timestamp`, `tenant_id`, `agent_id`, `invocation_type`, `allowed`, `cost`, `model_used`, `duration_ms`, `has_error`, `input_tier`, `output_tier`, `pii_detected`, `pii_redacted`, `policy_reasons`, `tools_called`, `input_hash`, `output_hash`, `primary_explanation_code`, `primary_explanation_reason`, `primary_version_identity`, plus cache fields when applicable, and two **legacy** columns — `observation_mode_override` and `shadow_violation_types` — kept for column stability: they are always `false`/empty for records written since #442 and non-empty only for historical records from the removed shadow/passthrough postures. JSON and NDJSON export include the same fields; `session_id` links evidence to a lifecycle session (e.g. plan-gated run and its dispatch).
 
 Signed exports include full `Evidence` records with per-record `signature` fields, so integrity can be verified later with `talon audit verify --file`.
 

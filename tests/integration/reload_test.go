@@ -84,7 +84,7 @@ func TestReload_EndToEnd(t *testing.T) {
 
 	// LIVE gateway over the holder's registry view.
 	cfg := &gateway.GatewayConfig{
-		Enabled: true, ListenPrefix: "/v1/proxy", Mode: gateway.ModeEnforce,
+		Enabled: true, ListenPrefix: "/v1/proxy",
 		Providers: map[string]gateway.ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
 		},

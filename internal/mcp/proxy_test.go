@@ -125,14 +125,16 @@ func TestProxyHandler_toolsCall_missingName(t *testing.T) {
 	assert.Equal(t, codeInvalidParams, r.Error.Code)
 }
 
-// TestProxyHandler_forbiddenTool_shadowBlocks verifies that in shadow mode, explicitly
-// forbidden tools are audited (evidence recorded) and blocked, not forwarded to upstream.
-func TestProxyHandler_forbiddenTool_shadowBlocks(t *testing.T) {
+// TestProxyHandler_forbiddenTool_Blocks_ZeroUpstream verifies that explicitly
+// forbidden tools (exact and glob) are recorded and blocked with
+// TALON_TOOL_FORBIDDEN, and that the upstream is never contacted (#442).
+func TestProxyHandler_forbiddenTool_Blocks_ZeroUpstream(t *testing.T) {
+	hit := false
+	up := attribUpstream(t, &hit)
 	cfg := &policy.ProxyPolicyConfig{
 		Agent: policy.ProxyAgentConfig{Name: "t", Type: "mcp_proxy"},
 		Proxy: policy.ProxyConfig{
-			Mode:         "shadow",
-			Upstream:     policy.UpstreamConfig{URL: "https://example.com", Vendor: "test"},
+			Upstream:     policy.UpstreamConfig{URL: up.URL, Vendor: "test"},
 			AllowedTools: []policy.ToolMapping{{Name: "allowed_tool"}},
 			ForbiddenTools: []string{
 				"zendesk_user_delete",
@@ -148,36 +150,42 @@ func TestProxyHandler_forbiddenTool_shadowBlocks(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 	h := NewProxyHandler(cfg, engine, store, classifier.MustNewScanner(), nil)
 
-	// Forbidden exact match: must be blocked (audit + block, no forward).
-	body, _ := json.Marshal(map[string]interface{}{
-		"jsonrpc": "2.0", "method": "tools/call", "id": 1,
-		"params": map[string]interface{}{"name": "zendesk_user_delete", "arguments": map[string]interface{}{}},
-	})
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	var r jsonrpcResponse
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
-	require.NotNil(t, r.Error, "shadow mode must block forbidden tool and return error")
+	call := func(id int, tool string) jsonrpcResponse {
+		body, _ := json.Marshal(map[string]interface{}{
+			"jsonrpc": "2.0", "method": "tools/call", "id": id,
+			"params": map[string]interface{}{"name": tool, "arguments": map[string]interface{}{}},
+		})
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusOK, rec.Code)
+		var r jsonrpcResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
+		return r
+	}
+
+	// Forbidden exact match: blocked, never forwarded.
+	r := call(1, "zendesk_user_delete")
+	require.NotNil(t, r.Error, "forbidden tool must be blocked")
 	assert.Equal(t, codeServerError, r.Error.Code)
 	assert.Contains(t, r.Error.Message, "tool not allowed by policy")
+	assert.Equal(t, TalonCodeToolForbidden, talonCodeOf(t, r.Error))
 
-	// Forbidden glob match: must be blocked.
-	body, _ = json.Marshal(map[string]interface{}{
-		"jsonrpc": "2.0", "method": "tools/call", "id": 2,
-		"params": map[string]interface{}{"name": "zendesk_admin_export", "arguments": map[string]interface{}{}},
-	})
-	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/mcp/proxy", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(requestctx.SetTenantID(req.Context(), "default"))
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&r))
+	// Forbidden glob match: blocked, never forwarded.
+	r = call(2, "zendesk_admin_export")
 	require.NotNil(t, r.Error)
 	assert.Contains(t, r.Error.Message, "tool not allowed by policy")
+	assert.Equal(t, TalonCodeToolForbidden, talonCodeOf(t, r.Error))
+
+	assert.False(t, hit, "forbidden tools must never reach the upstream")
+	records := listRecords(t, store, "default")
+	require.Len(t, records, 2, "each blocked call yields exactly one record")
+	for _, rec := range records {
+		assert.Equal(t, "proxy_tool_blocked", rec.InvocationType)
+		assert.False(t, rec.PolicyDecision.Allowed)
+	}
 }
 
 func TestExtractToolsListFromResult(t *testing.T) {

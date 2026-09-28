@@ -88,7 +88,7 @@ func TestDashboardIntegration_EvidenceToAPI(t *testing.T) {
 	}
 
 	// Wire: store → collector (with backfill) → server
-	collector := metrics.NewCollector("enforce", store,
+	collector := metrics.NewCollector(store,
 		metrics.WithBudgetLimits(5.0, 50.0),
 		metrics.WithTenantID("tenant-a"),
 	)

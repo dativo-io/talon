@@ -96,7 +96,6 @@ func gatewayEventFromEvidence(e *evidence.Evidence) GatewayEvent {
 	ev.TTFTMS = e.Execution.TTFTMS
 	ev.TPOTMS = e.Execution.TPOTMS
 	ev.EvidenceID = e.ID
-	ev.WouldHaveBlocked = e.ObservationModeOverride
 	ev.TimedOut = isTimedOutError(e.Execution.Error)
 
 	if len(e.Classification.PIIDetected) > 0 {
@@ -108,9 +107,6 @@ func gatewayEventFromEvidence(e *evidence.Evidence) GatewayEvent {
 	if e.ToolGovernance != nil {
 		ev.ToolsRequested = append([]string(nil), e.ToolGovernance.ToolsRequested...)
 		ev.ToolsFiltered = append([]string(nil), e.ToolGovernance.ToolsFiltered...)
-	}
-	for _, sv := range e.ShadowViolations {
-		ev.ShadowViolations = append(ev.ShadowViolations, sv.Type)
 	}
 	// Session/orchestration projection (#199): previously dropped, which made
 	// session stats impossible to rebuild from evidence. Attribution only.
@@ -131,15 +127,13 @@ func gatewayEventFromEvidence(e *evidence.Evidence) GatewayEvent {
 // SnapshotFromEvidenceRecords aggregates a standalone snapshot from evidence rows.
 func SnapshotFromEvidenceRecords(records []evidence.Evidence, now time.Time) Snapshot {
 	c := &Collector{
-		startTime:        now,
-		enforcementMode:  "standalone",
-		buckets:          make(map[string]*bucket),
-		agentStats:       make(map[string]*agentAccum),
-		piiCounts:        make(map[string]int),
-		toolFiltered:     make(map[string]int),
-		shadowViolations: make(map[string]*shadowViolationAccum),
-		byRiskLevel:      make(map[string]*riskLevelAccum),
-		anomalousAgents:  make(map[string]bool),
+		startTime:       now,
+		buckets:         make(map[string]*bucket),
+		agentStats:      make(map[string]*agentAccum),
+		piiCounts:       make(map[string]int),
+		toolFiltered:    make(map[string]int),
+		byRiskLevel:     make(map[string]*riskLevelAccum),
+		anomalousAgents: make(map[string]bool),
 	}
 	for i := range records {
 		c.processEvent(GatewayEventFromEvidence(&records[i]))
@@ -187,9 +181,6 @@ func mapStringFields(m map[string]interface{}, e *GatewayEvent) {
 	if v, ok := m["pii_action"].(string); ok {
 		e.PIIAction = v
 	}
-	if v, ok := m["enforcement_mode"].(string); ok {
-		e.EnforcementMode = v
-	}
 	if v, ok := m["evidence_id"].(string); ok {
 		e.EvidenceID = v
 	}
@@ -204,9 +195,6 @@ func mapSliceFields(m map[string]interface{}, e *GatewayEvent) {
 	}
 	if v, ok := m["tools_filtered"].([]string); ok {
 		e.ToolsFiltered = v
-	}
-	if v, ok := m["shadow_violations"].([]string); ok {
-		e.ShadowViolations = v
 	}
 }
 
@@ -237,9 +225,6 @@ func mapNumericFields(m map[string]interface{}, e *GatewayEvent) {
 func mapBoolFields(m map[string]interface{}, e *GatewayEvent) {
 	if v, ok := m["blocked"].(bool); ok {
 		e.Blocked = v
-	}
-	if v, ok := m["would_have_blocked"].(bool); ok {
-		e.WouldHaveBlocked = v
 	}
 	if v, ok := m["has_error"].(bool); ok {
 		e.HasError = v

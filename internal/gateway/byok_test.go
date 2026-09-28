@@ -117,7 +117,6 @@ func newBYOKGateway(t *testing.T, upstreamURL string) (*Gateway, *evidence.Store
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstreamURL, UpstreamAuthMode: "client_bearer"},
 		},
@@ -151,7 +150,7 @@ func newBYOKGateway(t *testing.T, upstreamURL string) (*Gateway, *evidence.Store
 		t.Fatalf("new secrets store: %v", err)
 	}
 	t.Cleanup(func() { _ = secStore.Close() })
-	gw, err := NewGateway(cfg, NewRegistryHolder(nil), classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(nil), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}

@@ -38,6 +38,7 @@ install: ## Install to $GOPATH/bin (or go env GOPATH/bin)
 test: test-ssot-gate ## Run tests (SSOT gate + unit + integration). Coverage excludes cmd/talon and internal/testutil. Uses -count=1 so cache is disabled.
 	@$(GO_ENV) go test -count=1 -race -coverprofile=coverage.out $$(go list ./internal/... ./cmd/... | grep -v internal/testutil | grep -v 'cmd/talon')
 	@$(GO_ENV) go test -count=1 -race -tags=integration ./tests/integration/...
+	@$(GO_ENV) go test -count=1 ./tests
 
 test-coverage: test ## Show test coverage
 	@go tool cover -html=coverage.out -o coverage.html

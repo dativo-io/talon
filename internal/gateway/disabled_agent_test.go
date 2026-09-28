@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,9 +26,11 @@ func disabledIdentity(name, tenant, key string) *ResolvedIdentity {
 	return id
 }
 
-func setupDisabledAgentGateway(t *testing.T, mode Mode) (*Gateway, *evidence.Store) {
+func setupDisabledAgentGateway(t *testing.T) (*Gateway, *atomic.Int64, *evidence.Store) {
 	t.Helper()
+	var upstreamCalls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"1","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":4}}`))
 	}))
@@ -35,7 +38,7 @@ func setupDisabledAgentGateway(t *testing.T, mode Mode) (*Gateway, *evidence.Sto
 	dir := t.TempDir()
 
 	cfg := &GatewayConfig{
-		Enabled: true, ListenPrefix: "/v1/proxy", Mode: mode,
+		Enabled: true, ListenPrefix: "/v1/proxy",
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
 		},
@@ -57,55 +60,52 @@ func setupDisabledAgentGateway(t *testing.T, mode Mode) (*Gateway, *evidence.Sto
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key",
 		[]byte("sk-upstream"), secrets.ACL{Tenants: []string{"acme"}, Agents: []string{"*"}}))
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
-	return gw, evStore
+	return gw, &upstreamCalls, evStore
 }
 
-// TestGateway_DisabledAgentDenied (#268): enabled: false is a hard PLATFORM
-// boundary — the resolved agent is denied with an attributed 403 and signed
-// evidence in EVERY mode (an operator kill switch is never shadow-bypassed),
-// while an enabled sibling keeps serving.
+// TestGateway_DisabledAgentDenied (#268): enabled: false is a hard platform
+// boundary — the resolved agent is denied with an attributed 403, zero
+// provider dispatch, and signed evidence, while an enabled sibling keeps
+// serving.
 func TestGateway_DisabledAgentDenied(t *testing.T) {
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}]}`
+	gw, upstreamCalls, evStore := setupDisabledAgentGateway(t)
 
-	for _, mode := range []Mode{ModeEnforce, ModeShadow, ModeLogOnly} {
-		t.Run(string(mode), func(t *testing.T) {
-			gw, evStore := setupDisabledAgentGateway(t, mode)
+	w := makeGatewayRequestWithKey(gw, "/v1/proxy/openai/v1/chat/completions", body, "tk-stopped")
+	require.Equal(t, http.StatusForbidden, w.Code, "disabled agent must be denied")
+	assert.Equal(t, int64(0), upstreamCalls.Load(), "disabled agent's request must never reach the provider")
 
-			w := makeGatewayRequestWithKey(gw, "/v1/proxy/openai/v1/chat/completions", body, "tk-stopped")
-			require.Equal(t, http.StatusForbidden, w.Code, "disabled agent must be denied in mode %s", mode)
-
-			// Machine-readable error code on the OpenAI wire.
-			var openaiErr struct {
-				Error struct {
-					Type    string `json:"type"`
-					Message string `json:"message"`
-				} `json:"error"`
-			}
-			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &openaiErr))
-			assert.Equal(t, "agent_disabled", openaiErr.Error.Type)
-			assert.NotContains(t, openaiErr.Error.Message, t.TempDir()[:5], "no server paths in the client body")
-
-			// The denial is ATTRIBUTED to the agent in signed evidence.
-			records, err := evStore.List(context.Background(), "acme", "stopped-agent", time.Time{}, time.Time{}, 5)
-			require.NoError(t, err)
-			require.NotEmpty(t, records)
-			assert.False(t, records[0].PolicyDecision.Allowed)
-			assert.Contains(t, records[0].PolicyDecision.Reasons[0], "agent disabled")
-			assert.True(t, evStore.VerifyRecord(&records[0]))
-
-			// The enabled sibling is untouched.
-			w = makeGatewayRequestWithKey(gw, "/v1/proxy/openai/v1/chat/completions", body, "tk-running")
-			assert.Equal(t, http.StatusOK, w.Code, "the sibling agent keeps serving")
-		})
+	// Machine-readable error code on the OpenAI wire.
+	var openaiErr struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &openaiErr))
+	assert.Equal(t, "agent_disabled", openaiErr.Error.Type)
+	assert.NotContains(t, openaiErr.Error.Message, t.TempDir()[:5], "no server paths in the client body")
+
+	// The denial is ATTRIBUTED to the agent in signed evidence.
+	records, err := evStore.List(context.Background(), "acme", "stopped-agent", time.Time{}, time.Time{}, 5)
+	require.NoError(t, err)
+	require.NotEmpty(t, records)
+	assertEnforcedDenial(t, &records[0])
+	assert.Contains(t, records[0].PolicyDecision.Reasons[0], "agent disabled")
+	assert.True(t, evStore.VerifyRecord(&records[0]))
+
+	// The enabled sibling is untouched and dispatched exactly once.
+	w = makeGatewayRequestWithKey(gw, "/v1/proxy/openai/v1/chat/completions", body, "tk-running")
+	assert.Equal(t, http.StatusOK, w.Code, "the sibling agent keeps serving")
+	assert.Equal(t, int64(1), upstreamCalls.Load())
 }
 
 // TestGateway_DisabledAgentDenied_AnthropicWire (#268): the same machine code
 // on the Anthropic wire format.
 func TestGateway_DisabledAgentDenied_AnthropicWire(t *testing.T) {
-	gw, _ := setupDisabledAgentGateway(t, ModeEnforce)
+	gw, _, _ := setupDisabledAgentGateway(t)
 	w := makeGatewayRequestWithKey(gw, "/v1/proxy/openai/v1/messages",
 		`{"model":"gpt-4o-mini","max_tokens":10,"messages":[{"role":"user","content":"Hello"}]}`, "tk-stopped")
 	require.Equal(t, http.StatusForbidden, w.Code)

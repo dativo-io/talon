@@ -53,7 +53,6 @@ llm:
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: enforce
   providers:
     ollama:
       enabled: true

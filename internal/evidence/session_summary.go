@@ -81,7 +81,8 @@ type SessionSummary struct {
 	ToolFilterEvents int      `json:"tool_filter_events,omitempty"`
 	PIIRedactions    int      `json:"pii_redactions,omitempty"`
 	PIITypes         []string `json:"pii_types,omitempty"`
-	ShadowViolations int      `json:"shadow_violation_records,omitempty"`
+	// ShadowViolations counts LEGACY records (#442); always 0 for sessions after the cutover.
+	ShadowViolations int `json:"shadow_violation_records,omitempty"`
 
 	// LastFailure is the newest deny or execution failure in the session — the
 	// one-line explanation for "why did this fail".

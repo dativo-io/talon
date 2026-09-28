@@ -35,11 +35,9 @@ type SessionSource interface {
 //
 // Never-valid files are NOT passed in as AgentStatus (they have no trustworthy
 // identity); they surface as FleetIssues rendered separately by the caller.
-// enforcing is true when the runtime actually blocks on policy/budget (gateway
-// enforce mode, or native execution). It gates the BLOCKED state fleet-wide (a
-// single gateway Mode governs all agents): in shadow/log_only, budget/policy
-// conditions are observed but do not prevent work, so they never render BLOCKED.
-func Project(ctx context.Context, ev EvidenceSource, ss SessionSource, agents []AgentStatus, th Thresholds, now time.Time, enforcing bool) ([]AgentRow, error) {
+// Active policy is always enforced (#442), so budget exhaustion and agent-wide
+// policy invalidity always render BLOCKED; there is no observe-only posture.
+func Project(ctx context.Context, ev EvidenceSource, ss SessionSource, agents []AgentStatus, th Thresholds, now time.Time) ([]AgentRow, error) {
 	now = now.UTC()
 	qTenant := queryTenant(agents)
 
@@ -100,7 +98,6 @@ func Project(ctx context.Context, ev EvidenceSource, ss SessionSource, agents []
 			FailedSessions: failed[a.Name],
 			ConfigRejected: a.ConfigRejected,
 			PolicyDenyAll:  a.PolicyDenyAll,
-			Enforcing:      enforcing,
 			Budgets: []BudgetPeriod{
 				{Name: "daily", Spend: dayCost[a.Name], Cap: a.DailyCap},
 				{Name: "monthly", Spend: monthCost[a.Name], Cap: a.MonthlyCap},

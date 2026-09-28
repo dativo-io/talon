@@ -108,7 +108,6 @@ func newResponsesConformanceGateway(t *testing.T, upstreamURL, storeMode string)
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstreamURL, SecretName: "openai-key", ResponsesStoreMode: storeMode},
 		},
@@ -133,7 +132,7 @@ func newResponsesConformanceGateway(t *testing.T, upstreamURL, storeMode string)
 	t.Cleanup(func() { _ = secStore.Close() })
 	require.NoError(t, secStore.Set(context.Background(), "openai-key", []byte("sk-test-000-respconf"),
 		secrets.ACL{Tenants: []string{"respconf-tenant"}, Agents: []string{"*"}}))
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })

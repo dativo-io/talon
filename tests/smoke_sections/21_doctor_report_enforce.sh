@@ -3,7 +3,7 @@
 # Sourced by tests/smoke_test.sh — do not run directly.
 
 # -----------------------------------------------------------------------------
-# SECTION 21 — Doctor, Report, Enforce (health checks, compliance summary, gateway mode)
+# SECTION 21 — Doctor, Report (health checks, compliance summary; talon enforce removed by #442)
 # -----------------------------------------------------------------------------
 test_section_21_doctor_report_enforce() {
   local section="21_doctor_report_enforce"
@@ -21,9 +21,8 @@ test_section_21_doctor_report_enforce() {
   local rpt_out; rpt_out="$(run_talon report 2>/dev/null)"; true
   assert_pass "report output contains evidence or cost" grep -qiE 'evidence|cost' <<< "$rpt_out"
   assert_pass "talon report --tenant default exits 0" run_talon report --tenant default
-  assert_pass "talon enforce status exits 0" run_talon enforce status
-  local enf_out; enf_out="$(run_talon enforce status 2>/dev/null)"; true
-  assert_pass "enforce status contains mode" grep -qiE 'mode|shadow|enforce' <<< "$enf_out"
+  # #442: enforcement is structural; the posture-management command family is gone.
+  assert_fail "talon enforce is not a command (#442)" run_talon enforce status
   cd "$REPO_ROOT" || true
 }
 

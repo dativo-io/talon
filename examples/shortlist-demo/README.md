@@ -150,6 +150,6 @@ docker compose down -v
 
 ## Related docs
 
-- [60-second demo (shadow mode)](../docker-compose/README.md) — generic onboarding
+- [60-second demo (PII redaction, no API key)](../docker-compose/README.md) — generic onboarding
 - [Evidence integrity 5-minute proof](../../docs/tutorials/evidence-integrity-demo.md)
 - [LIMITATIONS.md](../../LIMITATIONS.md) — honest capability boundaries

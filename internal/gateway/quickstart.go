@@ -26,11 +26,6 @@ type QuickstartOptions struct {
 // OpenAI-compatible proxy quickstart mode. It is intentionally narrow and
 // should not become a general configuration system.
 func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
-	mode := ModeEnforce
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("TALON_QUICKSTART_MODE")), "shadow") {
-		mode = ModeShadow
-	}
-
 	baseURL := strings.TrimSpace(opts.OpenAIBaseURL)
 	if baseURL == "" {
 		baseURL = strings.TrimSpace(os.Getenv("TALON_QUICKSTART_OPENAI_BASE_URL"))
@@ -64,7 +59,6 @@ func QuickstartConfig(opts QuickstartOptions) (*GatewayConfig, error) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: DefaultListenPrefix,
-		Mode:         mode,
 		Providers: map[string]ProviderConfig{
 			"openai": provider,
 		},

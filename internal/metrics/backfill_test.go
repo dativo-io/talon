@@ -21,7 +21,7 @@ func (s *stubEvidenceLister) List(_ context.Context, _, _ string, _, _ time.Time
 }
 
 func TestBackfillFromStore_Empty(t *testing.T) {
-	c := NewCollector("enforce", nil)
+	c := NewCollector(nil)
 	defer c.Close()
 
 	err := c.BackfillFromStore(context.Background(), &stubEvidenceLister{})
@@ -82,7 +82,7 @@ func TestBackfillFromStore_MultipleRecords(t *testing.T) {
 	}
 
 	lister := &stubEvidenceLister{records: records}
-	c := NewCollector("enforce", nil)
+	c := NewCollector(nil)
 	defer c.Close()
 
 	err := c.BackfillFromStore(context.Background(), lister)
@@ -95,39 +95,6 @@ func TestBackfillFromStore_MultipleRecords(t *testing.T) {
 	assert.Equal(t, 1, snap.Summary.PIIDetections, "ev-2 detected email")
 	assert.Equal(t, 1, snap.Summary.PIIRedactions, "ev-2 has PIIRedacted=true")
 	assert.InDelta(t, 0.08, snap.Summary.TotalCostEUR, 0.001)
-}
-
-func TestBackfillFromStore_ShadowMode(t *testing.T) {
-	now := time.Now().UTC()
-
-	records := []evidence.Evidence{
-		{
-			ID:                      "ev-shadow",
-			Timestamp:               now.Add(-20 * time.Minute),
-			RequestSourceID:         "test-caller",
-			PolicyDecision:          evidence.PolicyDecision{Allowed: true},
-			ObservationModeOverride: true,
-			ShadowViolations: []evidence.ShadowViolation{
-				{Type: "pii_block", Action: "block"},
-			},
-			Execution: evidence.Execution{
-				ModelUsed:  "gpt-4o",
-				DurationMS: 500,
-			},
-		},
-	}
-
-	c := NewCollector("shadow", nil)
-	defer c.Close()
-
-	err := c.BackfillFromStore(context.Background(), &stubEvidenceLister{records: records})
-	require.NoError(t, err)
-
-	snap := c.Snapshot(context.Background())
-	require.NotNil(t, snap.ShadowSummary)
-	assert.Equal(t, 1, snap.ShadowSummary.WouldHaveBlocked)
-	require.Len(t, snap.ShadowSummary.ViolationsByType, 1)
-	assert.Equal(t, "pii_block", snap.ShadowSummary.ViolationsByType[0].Type)
 }
 
 func TestBackfillFromStore_ToolGovernance(t *testing.T) {
@@ -149,7 +116,7 @@ func TestBackfillFromStore_ToolGovernance(t *testing.T) {
 		},
 	}
 
-	c := NewCollector("enforce", nil)
+	c := NewCollector(nil)
 	defer c.Close()
 
 	err := c.BackfillFromStore(context.Background(), &stubEvidenceLister{records: records})
@@ -181,7 +148,7 @@ func TestBackfillFromStore_CacheHit(t *testing.T) {
 
 	// CacheStats are populated from metricsQuerier, not in-memory events
 	q := &mockQuerier{cacheHits: 1, cacheSaved: 0.04}
-	c := NewCollector("enforce", q)
+	c := NewCollector(q)
 	defer c.Close()
 
 	err := c.BackfillFromStore(context.Background(), &stubEvidenceLister{records: records})
@@ -209,7 +176,7 @@ func TestBackfillFromStore_CallerFallsBackToAgentID(t *testing.T) {
 		},
 	}
 
-	c := NewCollector("enforce", nil)
+	c := NewCollector(nil)
 	defer c.Close()
 
 	err := c.BackfillFromStore(context.Background(), &stubEvidenceLister{records: records})
@@ -221,7 +188,7 @@ func TestBackfillFromStore_CallerFallsBackToAgentID(t *testing.T) {
 }
 
 func TestBackfillFromStore_Error(t *testing.T) {
-	c := NewCollector("enforce", nil)
+	c := NewCollector(nil)
 	defer c.Close()
 
 	lister := &stubEvidenceLister{err: assert.AnError}
@@ -271,7 +238,7 @@ func TestBackfillFromStore_DecisionOpsReconciliation(t *testing.T) {
 		},
 	}
 
-	c := NewCollector("enforce", nil)
+	c := NewCollector(nil)
 	defer c.Close()
 	require.NoError(t, c.BackfillFromStore(context.Background(), &stubEvidenceLister{records: records}))
 
@@ -332,9 +299,6 @@ func TestEvidenceToEvent(t *testing.T) {
 			ToolsRequested: []string{"read_file"},
 			ToolsFiltered:  []string{"exec_cmd"},
 		},
-		ShadowViolations: []evidence.ShadowViolation{
-			{Type: "cost_limit"},
-		},
 	}
 
 	event := GatewayEventFromEvidence(ev)
@@ -353,5 +317,4 @@ func TestEvidenceToEvent(t *testing.T) {
 	assert.Equal(t, "redact", event.PIIAction)
 	assert.Equal(t, []string{"read_file"}, event.ToolsRequested)
 	assert.Equal(t, []string{"exec_cmd"}, event.ToolsFiltered)
-	assert.Equal(t, []string{"cost_limit"}, event.ShadowViolations)
 }

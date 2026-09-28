@@ -18,7 +18,7 @@ import (
 
 func newTestServerWithDashboard(t *testing.T, token string) (*Server, *metrics.Collector) {
 	t.Helper()
-	collector := metrics.NewCollector("enforce", nil)
+	collector := metrics.NewCollector(nil)
 	t.Cleanup(collector.Close)
 
 	s := &Server{
@@ -83,7 +83,7 @@ func TestHandleMetricsJSON(t *testing.T) {
 	err := json.Unmarshal(rec.Body.Bytes(), &snap)
 	require.NoError(t, err)
 	assert.Equal(t, 1, snap.Summary.TotalRequests)
-	assert.Equal(t, "enforce", snap.EnforcementMode)
+	assert.NotContains(t, rec.Body.String(), "enforcement_mode", "no selectable posture in the metrics snapshot (#442)")
 }
 
 func TestMetricsEndpoint_ContainsNewFields(t *testing.T) {
@@ -204,12 +204,12 @@ func TestHandleMetricsJSON_FullSnapshot(t *testing.T) {
 	assert.NotEmpty(t, snap.Uptime)
 	assert.False(t, snap.GeneratedAt.IsZero())
 
-	// Shadow summary nil in enforce mode
-	assert.Nil(t, snap.ShadowSummary)
+	// No shadow projection exists at all (#442).
+	assert.NotContains(t, rec.Body.String(), "shadow_summary")
 }
 
 func TestHandleMetricsJSON_IncludesPlanStats(t *testing.T) {
-	collector := metrics.NewCollector("enforce", nil, metrics.WithPlanStatsFn(func(_ context.Context, _ string) (metrics.PlanStats, error) {
+	collector := metrics.NewCollector(nil, metrics.WithPlanStatsFn(func(_ context.Context, _ string) (metrics.PlanStats, error) {
 		return metrics.PlanStats{
 			Pending:          3,
 			Approved:         7,

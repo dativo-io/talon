@@ -12,6 +12,7 @@ import (
 
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
+	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 	"github.com/go-chi/chi/v5"
@@ -25,6 +26,16 @@ func testIdentity(name, tenant, key string, override *PolicyOverride) *ResolvedI
 	return &ResolvedIdentity{Name: name, TenantID: tenant, Enabled: true, Override: override, key: []byte(key), keyDigest: sha256.Sum256([]byte(key))}
 }
 
+// testGatewayPolicy returns the real OPA gateway engine. The gateway always
+// evaluates policy (#442 removed the postures that skipped it), so every
+// fixture wires an evaluator exactly as production does.
+func testGatewayPolicy(t testing.TB) GatewayPolicyEvaluator {
+	t.Helper()
+	engine, err := policy.NewGatewayEngine(context.Background())
+	require.NoError(t, err)
+	return engine
+}
+
 // testRegistry assembles an immutable registry from prebuilt identities.
 func testRegistry(ids ...*ResolvedIdentity) *IdentityRegistry {
 	return &IdentityRegistry{identities: ids}
@@ -34,12 +45,12 @@ func testRegistry(ids ...*ResolvedIdentity) *IdentityRegistry {
 // the forwarded request for inspection.
 func setupOpenClawGateway(t *testing.T, piiAction string, upstreamHandler http.HandlerFunc) (*Gateway, *httptest.Server, *evidence.Store) {
 	t.Helper()
-	return setupGatewayWithClassifier(t, piiAction, ModeEnforce, upstreamHandler, nil)
+	return setupGatewayWithClassifier(t, piiAction, upstreamHandler, nil)
 }
 
-// setupGatewayWithClassifier is setupOpenClawGateway with an explicit mode and
-// scanner engine (nil = built-in regex scanner).
-func setupGatewayWithClassifier(t *testing.T, piiAction string, mode Mode, upstreamHandler http.HandlerFunc, cls classifier.Facade) (*Gateway, *httptest.Server, *evidence.Store) {
+// setupGatewayWithClassifier is setupOpenClawGateway with an explicit scanner
+// engine (nil = built-in regex scanner).
+func setupGatewayWithClassifier(t *testing.T, piiAction string, upstreamHandler http.HandlerFunc, cls classifier.Facade) (*Gateway, *httptest.Server, *evidence.Store) {
 	t.Helper()
 
 	upstream := httptest.NewServer(upstreamHandler)
@@ -50,7 +61,6 @@ func setupGatewayWithClassifier(t *testing.T, piiAction string, mode Mode, upstr
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         mode,
 		Providers: map[string]ProviderConfig{
 			// OpenClaw references previous_response_id across turns, so its
 			// gateway opts into force_if_absent (the pre-#213 forcing became
@@ -93,7 +103,7 @@ func setupGatewayWithClassifier(t *testing.T, piiAction string, mode Mode, upstr
 		cls = classifier.MustNewScanner()
 	}
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 
 	return gw, upstream, evStore

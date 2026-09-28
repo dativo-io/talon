@@ -25,7 +25,7 @@ talon init --pack openclaw --name openclaw-gateway
 # In a terminal you can also run bare `talon init` and choose OpenClaw from the wizard.
 ```
 
-This creates `agent.talon.yaml` — the **`openclaw-gateway` agent**: OpenClaw's Talon traffic identity (`agent.key.secret_name: openclaw-gateway-talon-key`) plus its policy (PII scanning, cost limits, circuit breaker, credential recognizers) — and `talon.config.yaml` (gateway config with the OpenAI provider, the organization baseline under `organization_policy`, shadow mode). You can also create these files manually — see the [Docker-based primer](openclaw-talon-primer/docker-openclaw-talon-primer.md) for a full example config.
+This creates `agent.talon.yaml` — the **`openclaw-gateway` agent**: OpenClaw's Talon traffic identity (`agent.key.secret_name: openclaw-gateway-talon-key`) plus its policy (PII scanning, cost limits, circuit breaker, credential recognizers) — and `talon.config.yaml` (gateway config with the OpenAI provider and the organization baseline under `organization_policy`). You can also create these files manually — see the [Docker-based primer](openclaw-talon-primer/docker-openclaw-talon-primer.md) for a full example config.
 
 ### 2. Set the vault key and store the real OpenAI key
 

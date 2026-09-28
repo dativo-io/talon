@@ -89,8 +89,8 @@ What happens:
   `POLICY_DENIED_EGRESS` explanation code.
 - A provider with an unknown region never matches `allowed_regions`
   (fail-closed) — set `region` explicitly for custom `base_url` providers.
-- Use `default_action: deny` for a strict allowlist; in `shadow` mode
-  violations are recorded but requests are forwarded.
+- Use `default_action: deny` for a strict allowlist. Egress denials are
+  always enforced — there is no observe-and-forward posture (#442).
 - Running agents with `llm.routing.data_sovereignty_mode: eu_strict`? That
   control covers provider *selection* for agent runs; egress rules cover
   agent-chosen destinations at the gateway. Mirror them — see

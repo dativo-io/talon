@@ -67,9 +67,8 @@ Talon initialized for CrewAI! Next steps:
      talon doctor
      open http://localhost:8080/dashboard
 
-  7. Enable enforcement after validation:
-     talon enforce report
-     talon enforce enable
+  7. Review what was enforced:
+     talon audit list
 `
 
 // Post-init message for the coding-agents pack. Every step must succeed
@@ -111,8 +110,8 @@ Coding-agents pack scaffolded. Next steps:
      talon audit list --session <id>       # per-subagent rollup
      open http://localhost:8080/gateway/dashboard   # Coding Sessions panel
 
-  7. Enforce once the shadow evidence looks right:
-     talon enforce report && talon enforce enable
+  7. Review what was enforced (active policy is always enforced):
+     talon audit list --session <id>
 
 Notes: response_pii_action is "allow" for coding callers because any other
 value buffers whole SSE streams today; max_session_cost is a SOFT cap; the

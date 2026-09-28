@@ -13,44 +13,42 @@ import (
 
 // RecordGatewayEvidenceParams holds all inputs for a gateway evidence record.
 type RecordGatewayEvidenceParams struct {
-	CorrelationID           string
-	SessionID               string
-	TenantID                string
-	AgentName               string
-	Team                    string
-	Provider                string
-	Model                   string
-	PolicyAllowed           bool
-	PolicyReasons           []string
-	PolicyVersion           string
-	PolicyDigests           *evidence.PolicyDigests
-	ObservationModeOverride bool
-	ShadowViolations        []evidence.ShadowViolation
-	InputTier               int
-	OutputTier              int
-	PIIDetected             []string
-	PIIRedacted             bool
-	InputPIIRedacted        bool
-	OutputPIIDetected       bool
-	OutputPIITypes          []string
-	Cost                    float64
-	EstimatedCost           float64
-	Currency                string // ISO-4217 unit of Cost/EstimatedCost, from the pricing table (#216)
-	InputTokens             int
-	OutputTokens            int
-	CacheReadTokens         int
-	CacheWriteTokens        int
-	PricingBasis            string // how Cost was derived (#196)
-	PricingKnown            bool
-	DurationMS              int64
-	TTFTMS                  int64   // time to first token (streaming); 0 when not streaming
-	TPOTMS                  float64 // time per output token (streaming); 0 when not applicable
-	Error                   string
-	SecretsAccessed         []string // secret names only; never real keys
-	AttachmentScan          *evidence.AttachmentScan
-	ToolsRequested          []string
-	ToolsFiltered           []string
-	ToolsForwarded          []string
+	CorrelationID     string
+	SessionID         string
+	TenantID          string
+	AgentName         string
+	Team              string
+	Provider          string
+	Model             string
+	PolicyAllowed     bool
+	PolicyReasons     []string
+	PolicyVersion     string
+	PolicyDigests     *evidence.PolicyDigests
+	InputTier         int
+	OutputTier        int
+	PIIDetected       []string
+	PIIRedacted       bool
+	InputPIIRedacted  bool
+	OutputPIIDetected bool
+	OutputPIITypes    []string
+	Cost              float64
+	EstimatedCost     float64
+	Currency          string // ISO-4217 unit of Cost/EstimatedCost, from the pricing table (#216)
+	InputTokens       int
+	OutputTokens      int
+	CacheReadTokens   int
+	CacheWriteTokens  int
+	PricingBasis      string // how Cost was derived (#196)
+	PricingKnown      bool
+	DurationMS        int64
+	TTFTMS            int64   // time to first token (streaming); 0 when not streaming
+	TPOTMS            float64 // time per output token (streaming); 0 when not applicable
+	Error             string
+	SecretsAccessed   []string // secret names only; never real keys
+	AttachmentScan    *evidence.AttachmentScan
+	ToolsRequested    []string
+	ToolsFiltered     []string
+	ToolsForwarded    []string
 	// Semantic cache (set when response was served from cache)
 	CacheHit     bool
 	CacheEntryID string
@@ -163,8 +161,6 @@ func RecordGatewayEvidence(ctx context.Context, store *evidence.Store, params Re
 		SecretsAccessed:          params.SecretsAccessed,
 		AttachmentScan:           params.AttachmentScan,
 		ToolGovernance:           toolGov,
-		ObservationModeOverride:  params.ObservationModeOverride,
-		ShadowViolations:         params.ShadowViolations,
 		AuditTrail:               evidence.AuditTrail{},
 		Compliance:               evidence.Compliance{},
 		AgentReasoning:           params.AgentReasoning,
@@ -230,7 +226,7 @@ func sanitizeGatewayAnnotations(in []string) []string {
 		"quickstart_mode":                     {},
 		"quickstart_model_allowlist_disabled": {},
 		"quickstart_unsafe_listen":            {},
-		"quickstart_shadow_mode":              {},
+		"quickstart_shadow_mode":              {}, // LEGACY (#442): historical records only
 		// force_true reversed an explicit client store:false on a Responses
 		// API request (#213) — a retention decision that must be evidenced.
 		"responses_store_overridden": {},

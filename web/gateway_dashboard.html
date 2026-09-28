@@ -39,7 +39,7 @@
   .header-meta { display: flex; gap: 16px; font-size: 12px; color: var(--text-dim); }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
   .badge-enforce, .badge-ok { background: rgba(74,222,128,.15); color: var(--green); }
-  .badge-shadow, .badge-warn { background: rgba(250,204,21,.15); color: var(--yellow); }
+  .badge-warn { background: rgba(250,204,21,.15); color: var(--yellow); }
   .badge-log_only, .badge-info { background: rgba(96,165,250,.15); color: var(--blue); }
   .badge-risk { background: rgba(248,113,113,.15); color: var(--red); }
   .mission-band { margin-bottom: 1rem; }
@@ -67,7 +67,6 @@
   .dot-green { background: var(--green); }
   .dot-red { background: var(--red); }
   .dot-yellow { background: var(--yellow); }
-  .shadow-panel { border: 1px solid rgba(250,204,21,.3); }
   .pii-tag { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin: 1px 2px; background: rgba(108,114,203,.15); color: var(--accent-light); }
   .rate-good { color: var(--green); }
   .rate-warn { color: var(--yellow); }
@@ -273,11 +272,6 @@
     <div id="cache-content"></div>
   </div>
 
-  <!-- Shadow Mode Summary (conditional) -->
-  <div class="panel shadow-panel grid-full" id="panel-shadow" style="display:none">
-    <div class="panel-title"><span class="dot-yellow status-dot"></span> Shadow Mode Analysis</div>
-    <div id="shadow-content"></div>
-  </div>
 </div>
   </div>
   <aside class="split-right">
@@ -396,10 +390,8 @@
   function update(d) {
     lastUpdateAt = Date.now();
     var badge = document.getElementById('mode-badge');
-    badge.textContent = d.enforcement_mode || '--';
-    var mode = String(d.enforcement_mode || '').toLowerCase();
-    var badgeKind = mode === 'enforce' ? 'ok' : mode === 'shadow' ? 'warn' : mode === 'log_only' ? 'info' : 'risk';
-    badge.className = 'badge badge-' + badgeKind;
+    badge.textContent = 'enforced';
+    badge.className = 'badge badge-ok';
 
     document.getElementById('uptime').textContent = d.uptime || '--';
     document.getElementById('last-updated').textContent = 'Updated: ' + new Date(d.generated_at).toLocaleTimeString();
@@ -484,7 +476,6 @@
     renderAgentTable(d.agent_stats || []);
     renderPIIBreakdown(d.pii_breakdown || []);
     renderToolGovernance(d.tool_governance);
-    renderShadow(d.shadow_summary);
     renderModels(d.model_breakdown || []);
     renderProviders(d.provider_breakdown || []);
     renderBudget(d.budget_status);
@@ -566,7 +557,7 @@
       iv.push('tools filtered &times; ' + fmt(sess.tool_filter_events) +
         (sess.tools_filtered && sess.tools_filtered.length ? ' (' + sess.tools_filtered.map(esc).join(', ') + ')' : ''));
     }
-    if (sess.shadow_violation_records) iv.push('shadow violations &times; ' + fmt(sess.shadow_violation_records));
+    if (sess.shadow_violation_records) iv.push('legacy shadow violations &times; ' + fmt(sess.shadow_violation_records));
     if (iv.length) parts.push('Interventions: ' + iv.join(' &middot; '));
     if (sess.tool_calls) {
       var tc = 'Tool calls: ' + fmt(sess.tool_calls) + ' intercepted';
@@ -760,21 +751,6 @@
     tb.innerHTML = tg.top_filtered.slice(0, 10).map(function(t) {
       return '<tr><td>' + esc(t.tool) + '</td><td>' + t.count + '</td></tr>';
     }).join('');
-  }
-
-  function renderShadow(ss) {
-    var panel = document.getElementById('panel-shadow');
-    if (!ss) { panel.style.display = 'none'; return; }
-    panel.style.display = '';
-    var html = '<p>Would have blocked: <strong>' + ss.would_have_blocked + '</strong> | Would have redacted: <strong>' + ss.would_have_redacted + '</strong></p>';
-    if (ss.violations_by_type && ss.violations_by_type.length > 0) {
-      html += '<table><thead><tr><th>Type</th><th>Count</th><th>Action</th></tr></thead><tbody>';
-      ss.violations_by_type.forEach(function(v) {
-        html += '<tr><td>' + esc(v.type) + '</td><td>' + v.count + '</td><td>' + esc(v.action) + '</td></tr>';
-      });
-      html += '</tbody></table>';
-    }
-    document.getElementById('shadow-content').innerHTML = html;
   }
 
   function renderModels(models) {

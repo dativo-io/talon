@@ -63,10 +63,11 @@ Registered by `internal/gateway`. Emitted for every request through the LLM API 
 | `talon.tools.governance.total` | Int64Counter | `{decision}` | `tool`, `action` | Tool governance decisions (allow, block, filter). |
 | `talon.cache.hits` | Int64Counter | `{hit}` | `tenant_id` | Semantic cache hits (request served from cache). |
 | `talon.cache.misses` | Int64Counter | `{miss}` | `tenant_id` | Semantic cache misses (forwarded to LLM). |
-| `talon.shadow.violations.total` | Int64Counter | `{violation}` | `violation_type` | Shadow mode violations (would-have-blocked in enforce mode). |
 | `talon.gateway.egress.decisions` | Int64Counter | `{decision}` | `tenant_id`, `tier`, `gen_ai.system`, `region`, `decision` | Egress policy decisions (destination × data tier), `decision` is `allow` or `deny`. |
 | `talon.budget.utilization` | Float64Gauge | `%` | `tenant_id`, `period` | Current budget utilization as a percentage. |
 | `talon.budget.alerts.total` | Int64Counter | `{alert}` | `tenant_id`, `threshold` | Budget threshold breach alerts. |
+
+Retired series: `talon.shadow.violations.total` is no longer emitted (#442 — active policy is always enforced, so there are no would-have-blocked events to count); drop dashboards and alerts that reference it.
 
 When an egress policy is configured, the gateway request span also carries
 `talon.egress.*` attributes: `agent`, `correlation_id`, `data_tier`,
@@ -180,7 +181,6 @@ The dashboard snapshot includes:
 | `pii_breakdown` | array | Detections broken down by PII type (email, IBAN, phone, etc.). |
 | `model_breakdown` | array | Requests and cost broken down by LLM model. |
 | `tool_governance` | object | Tool filtering stats (total, filtered, by risk level, anomalous agents). |
-| `shadow_summary` | object | Shadow mode violation summary (only present in shadow mode). |
 | `budget_status` | object | Budget utilization (daily/monthly used, limit, percentage). |
 | `cache_stats` | object | Semantic cache performance (hits, hit rate, cost saved). |
 | `plan_stats` | object | Plan lifecycle counters (pending/approved/rejected/modified/dispatched/failures). |

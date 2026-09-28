@@ -45,7 +45,6 @@ func TestGatewayEgress_EndToEnd(t *testing.T) {
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: enforce
   providers:
     openai:
       enabled: true

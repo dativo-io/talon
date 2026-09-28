@@ -112,7 +112,7 @@ func TestCLIDashboardParity(t *testing.T) {
 
 	// === Dashboard path: Collector with same store as MetricsQuerier ===
 
-	collector := NewCollector("enforce", store,
+	collector := NewCollector(store,
 		WithBudgetLimits(10.0, 100.0),
 		WithTenantID(tenantID),
 	)
@@ -232,7 +232,7 @@ func TestDashboardCountMayLeadPersistedEvidence(t *testing.T) {
 		require.NoError(t, store.Store(ctx, &ev))
 	}
 
-	collector := NewCollector("enforce", store, WithTenantID(tenantID))
+	collector := NewCollector(store, WithTenantID(tenantID))
 	defer collector.Close()
 
 	// Backfill makes dashboard start from persisted evidence (=32).
@@ -241,11 +241,10 @@ func TestDashboardCountMayLeadPersistedEvidence(t *testing.T) {
 	// Emit extra in-memory events that are not persisted yet.
 	for i := 0; i < 4; i++ {
 		collector.Record(GatewayEvent{
-			Timestamp:       now,
-			AgentName:       "metrics-caller",
-			Model:           "gpt-4o-mini",
-			EnforcementMode: "enforce",
-			CostEUR:         0.0,
+			Timestamp: now,
+			AgentName: "metrics-caller",
+			Model:     "gpt-4o-mini",
+			CostEUR:   0.0,
 		})
 	}
 

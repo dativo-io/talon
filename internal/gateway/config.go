@@ -17,28 +17,6 @@ import (
 	"github.com/dativo-io/talon/internal/policy"
 )
 
-// Mode is the gateway operation mode.
-type Mode string
-
-// Gateway enforcement modes (#266 review round 4 — two control classes).
-// HARD PLATFORM BOUNDARIES (authentication, agent identity, data-sovereignty
-// eu_strict) block in EVERY mode. OBSERVABLE GOVERNANCE controls (PII, tools,
-// attachments, provider/model allowlists, budgets, ordinary egress) block
-// only in enforce; shadow and log_only record their would-be decision without
-// blocking.
-const (
-	// ModeEnforce: hard boundaries AND observable governance controls block.
-	ModeEnforce Mode = "enforce"
-	// ModeShadow: observable controls are evaluated and recorded as shadow
-	// violations but never block; hard boundaries still block.
-	ModeShadow Mode = "shadow"
-	// ModeLogOnly: strictly lighter than shadow — OPA policy evaluation
-	// (budgets, model lists, egress) is skipped entirely and observable
-	// controls never block; only detections are recorded. Hard boundaries
-	// still block.
-	ModeLogOnly Mode = "log_only"
-)
-
 // GatewayConfig is the top-level gateway configuration from talon.config.yaml
 // (infrastructure config, owned by DevOps/platform team). Traffic identity is
 // NOT configured here: agents are defined in agent.talon.yaml files and
@@ -48,7 +26,6 @@ const (
 type GatewayConfig struct {
 	Enabled      bool                      `yaml:"enabled" json:"enabled"`
 	ListenPrefix string                    `yaml:"listen_prefix" json:"listen_prefix"`
-	Mode         Mode                      `yaml:"mode" json:"mode"`
 	Providers    map[string]ProviderConfig `yaml:"providers" json:"providers"`
 	// OrganizationPolicy is the organization baseline — the shared policy
 	// every agent inherits before its one explicit override applies.
@@ -387,7 +364,6 @@ type NetworkInterceptionTLS struct {
 // Default gateway config values.
 const (
 	DefaultListenPrefix            = "/v1/proxy"
-	DefaultMode                    = ModeEnforce
 	DefaultLogPrompts              = true
 	DefaultPIIAction               = "warn"
 	DefaultGlobalRPM               = 300
@@ -494,6 +470,9 @@ func rejectLegacyGatewayKeys(gatewayRaw map[string]interface{}, isGatewaySubtree
 		"callers":             "define one agent.talon.yaml per AI use case with agent.key.secret_name instead",
 		"trusted_proxy_cidrs": "source-IP identity was removed; every request authenticates with an agent key",
 	}
+	if v, present := gatewayRaw["mode"]; present {
+		return fmt.Errorf("gateway config uses removed key \"gateway.mode\" (value %v) — %s", v, policy.LegacyPostureRemovedHint)
+	}
 	if isGatewaySubtree {
 		// Only inside a gateway block: at the FILE ROOT, default_policy is
 		// the legitimate operator key naming the default agent policy file.
@@ -565,9 +544,6 @@ func (d *OrganizationPolicy) applyDefaults() {
 func (c *GatewayConfig) ApplyDefaults() error {
 	if c.ListenPrefix == "" {
 		c.ListenPrefix = DefaultListenPrefix
-	}
-	if c.Mode == "" {
-		c.Mode = DefaultMode
 	}
 	if c.Providers == nil {
 		c.Providers = make(map[string]ProviderConfig)
@@ -716,11 +692,6 @@ func validateModelList(field string, models []string) error {
 func (c *GatewayConfig) Validate() error {
 	if c.ListenPrefix == "" {
 		return fmt.Errorf("gateway listen_prefix is required")
-	}
-	switch c.Mode {
-	case ModeEnforce, ModeShadow, ModeLogOnly:
-	default:
-		return fmt.Errorf("gateway mode must be enforce, shadow, or log_only")
 	}
 	switch c.OrganizationPolicy.ScanToolContent {
 	case "", ScanToolContentEvidenceOnly, ScanToolContentOff:

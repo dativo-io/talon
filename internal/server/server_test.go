@@ -209,7 +209,7 @@ func TestRouteAuthBehavior_GatewayMetricsRequireAdminKey(t *testing.T) {
 	pol := minimalPolicy()
 	engine, err := policy.NewEngine(context.Background(), pol)
 	require.NoError(t, err)
-	collector := metrics.NewCollector("enforce", nil)
+	collector := metrics.NewCollector(nil)
 	t.Cleanup(collector.Close)
 
 	srv := NewServer(
@@ -351,7 +351,7 @@ func TestStatusEndpoint(t *testing.T) {
 	assert.Contains(t, out, "pending_memory_reviews")
 	assert.Contains(t, out, "blocked_count")
 	assert.Contains(t, out, "error_rate")
-	assert.Contains(t, out, "enforcement_mode")
+	assert.NotContains(t, out, "enforcement_mode", "no selectable posture is exposed (#442)")
 	assert.Equal(t, "default", out["tenant_id"])
 }
 
@@ -399,7 +399,7 @@ func TestStatusEndpoint_IncludesMetricsDroppedEvents(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	collector := metrics.NewCollector("enforce", store)
+	collector := metrics.NewCollector(store)
 	collector.Close() // stop consumer to force backpressure drops
 	for i := 0; i < 1200; i++ {
 		collector.Record(metrics.GatewayEvent{Timestamp: time.Now().UTC(), AgentName: "app"})

@@ -20,7 +20,7 @@ import (
 const graphModelPlaceholder = "unknown_graph_model"
 
 // modeChangeMarkerPrefix marks control-plane mode-change records
-// (`talon enforce`), which reuse the model_used field as an event marker.
+// (the removed `talon enforce` command, #442); historical rows reuse the model_used field as an event marker.
 // No data egresses on a mode change, so no data_flow is expected.
 const modeChangeMarkerPrefix = "mode_change:"
 

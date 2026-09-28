@@ -17,6 +17,23 @@ For user-facing entries, include:
 - any upgrade/migration impact,
 - at least one share artifact reference (screenshot, GIF, or snippet) when applicable.
 
+### Removed
+
+- **Live non-enforcing runtime postures (#442).** A posture switch that let a running gateway forward what policy had just denied undermined the one promise Talon makes — a denial means the provider or tool was never reached — and split every rule into two semantics (what it says vs what it does in this mode). Active policy is now always enforced; how permissive a rollout is follows from the rule actions an operator declares (`pii_action: warn|redact|block`, allowlists, budgets, egress), not from a mode. Removed:
+  - **Config keys:** `gateway.mode` (`enforce|shadow|log_only`), MCP `proxy.mode` (`intercept|passthrough|shadow`), agent `audit.observation_only`, and `tool_policies.*.schema_validation`. Governed MCP calls are always intercepted; tool argument schemas are always validated when a tool declares one.
+  - **CLI:** the whole `talon enforce status|report|enable|disable` family and the `talon serve --gateway-mode` flag. `talon doctor` no longer reports a `gateway_mode` check.
+  - **Environment:** `TALON_QUICKSTART_MODE`.
+  - **JSON:** `enforcement_mode` and `shadow_summary` are no longer returned by `/api/v1/metrics`, `/v1/status`, or the dashboard SSE stream.
+  - **Metrics:** the OTel counter `talon.shadow.violations.total` is retired; the bundled Grafana dashboard drops its "Shadow Violations" panel.
+  - **Evidence:** new records never populate `observation_mode_override` or `shadow_violations`, and `mode_change` / `proxy_shadow_violation` records are no longer written.
+
+### Changed
+
+- **Migration (#442): an old config fails at load, by name.** A `talon.config.yaml`, proxy file, or `agent.talon.yaml` that still contains one of the removed keys is rejected at startup with an error naming the key, its value, "#442", and the non-live alternatives: `talon doctor` (infrastructure config), `talon validate` (agent policies), and `talon run --dry-run` (native policy evaluation, no provider call). Nothing is silently reinterpreted — `mode: shadow` does not become `enforce` behind your back. Who should care: any operator whose generated starter config from an earlier `talon init` still sets `gateway.mode: shadow` (the init packs no longer emit it). Verify: `talon doctor` on the existing file names the offending key; delete it and re-run. A side-effect-free policy-impact preview is tracked in #459; offline evidence replay in #441.
+- **Historical evidence keeps verifying (#442).** The legacy fields stay in the signed field table at their original positions (evidence-integrity spec rows 31–32, marked LEGACY) with unchanged `omitempty` rules, so canonical bytes are identical and records written under the removed postures remain readable, exportable, and verifiable with the same `talon audit verify`. The reduced CSV/JSON export keeps its `observation_mode_override` / `shadow_violation_types` columns for column stability (always `false`/empty for new records). Pinned by the fixtures under `internal/evidence/testdata/legacy_posture/`.
+- **Feature-local vocabularies are untouched (#442).** `memory.mode: shadow`, `semantic_enrichment.mode: shadow`, `attachment_handling.scanning.action_on_detection: warn|log_only`, PII rule actions `allow|redact|audit|block`, and `response_pii_action` keep their meanings — they select what a feature does, not whether policy applies.
+- **First-run story rewritten to enforced-by-default (#442).** README, the 60-second demo, the coding-agent/CoPaw/OpenClaw guides, the vendor integration guide, and the minimal examples no longer tell newcomers to "start in shadow mode". The compose demo runs with `pii_action: redact`: the mock provider receives `[EMAIL]`/`[IBAN]` and the signed record shows `pii_redacted: true`. The MCP proxy architecture doc also corrects two over-claims found in the same pass: `proxy.rate_limits.requests_per_minute` and the `compliance` declarations are parsed and passed as policy data but the proxy handler does not evaluate them.
+
 ## [1.10.0] - 2026-07-30
 
 Reliability-contract release: the reliability pillar's runtime contract is complete — same-provider retries with backoff before policy-valid fallback (#139), and a published, test-pinned gateway error contract giving every denial a stable machine code on both wire families (#142, #195; parent epic #113's runtime scope closes with this). Docs gain the verified Copilot CLI case study; carried fixes: #415 (session-show failure line) and #411 (drift-proof ollama smoke). Cross-pillar residuals stay tracked: read-only dashboard (#143), session terminal states (#401).

@@ -43,7 +43,7 @@ func TestNewGateway(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 	cls := classifier.MustNewScanner()
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 	require.NotNil(t, gw)
 }
@@ -61,7 +61,6 @@ func TestGateway_ServeHTTP_Integration(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: upstream.URL},
 		},
@@ -128,7 +127,7 @@ func TestGateway_ServeHTTP_Unauthorized(t *testing.T) {
 	secStore, _ := secrets.NewSecretStore(filepath.Join(dir, "s.db"), "12345678901234567890123456789012")
 	defer secStore.Close()
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://test/v1/proxy/ollama/v1/chat/completions", bytes.NewReader([]byte(`{"model":"x","messages":[]}`)))
@@ -163,7 +162,7 @@ func TestGateway_ServeHTTP_PIIBlock_RecordsEvidenceAsDenied(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 	cls := classifier.MustNewScanner()
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 
 	// Request body containing PII (email) so classifier detects it

@@ -69,7 +69,6 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/me
 ```json
 {
   "generated_at": "2026-03-09T14:32:00Z",
-  "enforcement_mode": "enforce",
   "uptime": "2h15m",
   "summary": {
     "total_requests": 1247,
@@ -133,12 +132,6 @@ curl -s -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/me
     "bulk_operations": 2,
     "irreversible_blocked": 3,
     "anomalous_agents": []
-  },
-  "shadow_summary": {
-    "total_violations": 15,
-    "by_type": [
-      {"type": "pii_would_block", "count": 10}
-    ]
   },
   "budget_status": {
     "daily_used": 4.82,
@@ -206,9 +199,9 @@ curl -N -H "X-Talon-Admin-Key: $TALON_ADMIN_KEY" http://localhost:8080/api/v1/me
 Each event has the format:
 
 ```
-data: {"generated_at":"2026-03-09T14:32:05Z","enforcement_mode":"enforce",...}
+data: {"generated_at":"2026-03-09T14:32:05Z","uptime":"2h15m",...}
 
-data: {"generated_at":"2026-03-09T14:32:10Z","enforcement_mode":"enforce",...}
+data: {"generated_at":"2026-03-09T14:32:10Z","uptime":"2h15m",...}
 ```
 
 The HTML dashboard connects to this endpoint automatically for live updates. If SSE fails, it falls back to polling `/api/v1/metrics` every 10 seconds.
@@ -295,12 +288,7 @@ Per-provider request counts and cost. One entry per selected provider in evidenc
 | `irreversible_blocked` | int | Irreversible operations blocked. |
 | `anomalous_agents` | array | Agent IDs with unusual tool usage patterns. |
 
-### `shadow_summary` (shadow mode only)
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `total_violations` | int | Violations that would have been blocked in enforce mode. |
-| `by_type` | array | Violations grouped by type. |
+> **Removed in #442:** the top-level `enforcement_mode` field and the `shadow_summary` object are no longer returned by `/api/v1/metrics`, `/v1/status`, or the SSE stream. Active policy is always enforced; `blocked_requests` counts real denials.
 
 ### `budget_status`
 

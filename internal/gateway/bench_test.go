@@ -36,7 +36,6 @@ func BenchmarkGatewayPipelineOverhead(b *testing.B) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: upstream.URL},
 		},
@@ -127,7 +126,6 @@ func BenchmarkGatewayPipelineOverheadLargePrompt(b *testing.B) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"anthropic": {Enabled: true, BaseURL: upstream.URL},
 		},

@@ -14,6 +14,7 @@ import (
 	"github.com/dativo-io/talon/internal/classifier"
 	"github.com/dativo-io/talon/internal/evidence"
 	"github.com/dativo-io/talon/internal/gateway"
+	"github.com/dativo-io/talon/internal/policy"
 	"github.com/dativo-io/talon/internal/secrets"
 	"github.com/dativo-io/talon/internal/testutil"
 )
@@ -130,7 +131,6 @@ func newFacadeForTest(t *testing.T, upstreamURL string) (http.Handler, *evidence
 	cfg := &gateway.GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         gateway.ModeEnforce,
 		Providers: map[string]gateway.ProviderConfig{
 			// Mirror the real quickstart facade, which sets force_if_absent so
 			// previous_response_id continuity works while honoring an explicit
@@ -166,7 +166,11 @@ func newFacadeForTest(t *testing.T, upstreamURL string) (http.Handler, *evidence
 	t.Cleanup(func() { _ = secStore.Close() })
 	// Quickstart runs with a nil registry: the synthetic identity is injected
 	// per request by the facade and is the ONLY non-key identity (#266).
-	gw, err := gateway.NewGateway(cfg, gateway.NewRegistryHolder(nil), classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gwPolicy, err := policy.NewGatewayEngine(context.Background())
+	if err != nil {
+		t.Fatalf("gateway policy engine: %v", err)
+	}
+	gw, err := gateway.NewGateway(cfg, gateway.NewRegistryHolder(nil), classifier.MustNewScanner(), evStore, secStore, gwPolicy, nil)
 	if err != nil {
 		t.Fatalf("new gateway: %v", err)
 	}

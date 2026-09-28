@@ -27,6 +27,9 @@ func LoadProxyConfig(ctx context.Context, path string) (*policy.ProxyPolicyConfi
 	if err != nil {
 		return nil, fmt.Errorf("reading proxy config: %w", err)
 	}
+	if err := rejectLegacyProxyMode(data); err != nil {
+		return nil, err
+	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	var cfg policy.ProxyPolicyConfig
@@ -38,6 +41,26 @@ func LoadProxyConfig(ctx context.Context, path string) (*policy.ProxyPolicyConfi
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// rejectLegacyProxyMode fails closed on a config that still selects the
+// removed proxy.mode posture (#442). It runs on the raw document before the
+// strict decode so the operator gets the migration hint, not a bare
+// "field mode not found" from KnownFields.
+func rejectLegacyProxyMode(data []byte) error {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		// Let the strict decoder report the parse error with its context.
+		return nil
+	}
+	proxyBlock, ok := raw["proxy"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	if v, present := proxyBlock["mode"]; present {
+		return fmt.Errorf("proxy config uses removed key \"proxy.mode\" (value %v) — governed MCP calls are always intercepted and enforced; forbidden or policy-denied calls never reach the upstream; %s", v, policy.LegacyPostureRemovedHint)
+	}
+	return nil
 }
 
 // expandProxyConfigEnv replaces ${VAR} with os.Getenv("VAR") in fields that
@@ -62,18 +85,6 @@ func validateAndApplyDefaults(cfg *policy.ProxyPolicyConfig) error {
 	// silently send unauthenticated requests.
 	if cfg.Proxy.Upstream.Auth != nil && strings.TrimSpace(cfg.Proxy.Upstream.Auth.SecretName) == "" {
 		return fmt.Errorf("proxy.upstream.auth.secret_name is required when the auth block is present")
-	}
-	// Mode (#346): default unset to intercept — matching LoadProxyPolicy's
-	// documented default — and reject anything outside the three declared
-	// values. An unset mode must never reach the handler, where it would
-	// silently behave as passthrough (forbidden tools recorded as blocked
-	// but forwarded upstream).
-	switch cfg.Proxy.Mode {
-	case "":
-		cfg.Proxy.Mode = policy.ProxyModeIntercept
-	case policy.ProxyModeIntercept, policy.ProxyModePassthrough, policy.ProxyModeShadow:
-	default:
-		return fmt.Errorf("proxy.mode %q is invalid; use intercept, passthrough, or shadow", cfg.Proxy.Mode)
 	}
 	// Defaults: rate limits
 	if cfg.Proxy.RateLimits.RequestsPerMinute <= 0 {

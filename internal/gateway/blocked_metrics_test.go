@@ -88,6 +88,9 @@ func setupGatewayWithSpy(t *testing.T, cfg *GatewayConfig, registry *IdentityReg
 	}
 
 	cls := classifier.MustNewScanner()
+	if policy == nil {
+		policy = testGatewayPolicy(t)
+	}
 	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, policy, nil)
 	require.NoError(t, err)
 
@@ -114,7 +117,6 @@ func TestBlockedPath_ProviderNotAllowed_EmitsMetrics(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
@@ -165,7 +167,6 @@ func TestBlockedPath_ModellessWildcardBlock_NeverReachesUpstream(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
 		},
@@ -204,7 +205,6 @@ func TestBlockedPath_PolicyEvalError_EmitsMetrics(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
@@ -235,7 +235,6 @@ func TestBlockedPath_SecretFailure_EmitsMetrics(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "http://localhost:1", SecretName: "nonexistent-secret"},
 		},
@@ -252,7 +251,7 @@ func TestBlockedPath_SecretFailure_EmitsMetrics(t *testing.T) {
 	t.Cleanup(func() { _ = secStore.Close() })
 
 	cls := classifier.MustNewScanner()
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 
 	spy := &metricsRecorderSpy{}
@@ -293,7 +292,7 @@ func TestBlockedPath_AuthFailure_EmitsErrorCounter(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = secStore.Close() })
 	cls := classifier.MustNewScanner()
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), cls, evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 
 	metrics := collectGatewayMetrics(t, func(ctx context.Context) {
@@ -326,7 +325,6 @@ func TestBlockedPath_PIIBlock_EmitsDashboardEvent(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
@@ -351,7 +349,6 @@ func TestBlockedPath_PolicyDeny_EmitsDashboardEvent(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"ollama": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
@@ -375,7 +372,6 @@ func TestBlockedPath_EvidenceStoreFailure_DoesNotEmitMetrics(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
@@ -401,7 +397,6 @@ func TestBlockedPath_RateLimitWritesEvidenceBeforeMetrics(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
@@ -488,7 +483,6 @@ func TestBlockedPath_AllBlockedPathsConsistent(t *testing.T) {
 			cfg := &GatewayConfig{
 				Enabled:      true,
 				ListenPrefix: "/v1/proxy",
-				Mode:         ModeEnforce,
 				Providers: map[string]ProviderConfig{
 					"openai": {Enabled: true, BaseURL: "http://localhost:1"},
 				},
@@ -516,7 +510,6 @@ func TestGatewayMetrics_RuntimeEventMatchesEvidenceProjection(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "http://localhost:1"},
 		},
@@ -563,7 +556,6 @@ func TestBudgetDeniedRequest_RecordsSignedEvidence(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         ModeEnforce,
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL},
 		},

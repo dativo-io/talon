@@ -12,15 +12,19 @@
 # carrying the egress_decision facts.
 # -----------------------------------------------------------------------------
 
-# Writes a gateway config with an EU-only tier_2 egress policy.
-# Usage: smoke_write_egress_config <path> <mode>
+# Writes a gateway config with an EU-only tier_2 egress policy. The optional
+# second argument injects the REMOVED legacy gateway.mode key so the section (#442)
+# can prove such a config fails to start (#442).
+# Usage: smoke_write_egress_config <path> [legacy_mode]
 smoke_write_egress_config() {
-  local path="$1" mode="$2"
+  local path="$1" legacy_mode="${2:-}"
+  local mode_line=""
+  [[ -n "$legacy_mode" ]] && mode_line="  mode: \"${legacy_mode}\""
   cat > "$path" <<EGEOF
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: "${mode}"
+${mode_line}
   providers:
     openai:
       enabled: true
@@ -59,7 +63,7 @@ test_section_32_egress() {
   smoke_tighten_limits "$dir"
 
   # --- Invalid egress config must fail fast at load (validation) ---
-  smoke_write_egress_config "$dir/talon.egress.bad.yaml" "enforce"
+  smoke_write_egress_config "$dir/talon.egress.bad.yaml"
   sed -i.bak 's/default_action: allow/default_action: maybe/' "$dir/talon.egress.bad.yaml" 2>/dev/null || true
   local bad_log="$dir/gateway_egress_bad.log"
   run_talon serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.egress.bad.yaml" >"$bad_log" 2>&1 &
@@ -84,7 +88,7 @@ test_section_32_egress() {
   fi
 
   # --- Enforce mode: tier_2 to US-region provider is blocked ---
-  smoke_write_egress_config "$dir/talon.egress.yaml" "enforce"
+  smoke_write_egress_config "$dir/talon.egress.yaml"
   TALON_GATEWAY_PID=""
   local gw_log="$dir/gateway_egress_serve.log"
   run_talon serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.egress.yaml" >"$gw_log" 2>&1 &
@@ -149,51 +153,32 @@ test_section_32_egress() {
   wait "$TALON_GATEWAY_PID" 2>/dev/null || true
   TALON_GATEWAY_PID=""
   if ! wait_port_free "$gateway_port" 30 5; then
-    log_failure "port ${gateway_port} busy after enforce-mode checks" "skipping shadow-mode check"
+    log_failure "port ${gateway_port} busy after enforcement checks" "skipping legacy-config check"
     cd "$REPO_ROOT" || true
     return 0
   fi
 
-  # --- Shadow mode: egress violation is recorded but not enforced ---
+  # --- Legacy shadow posture (#442): a config selecting gateway.mode must
+  # fail to start with migration guidance, never run as observe-only.
   smoke_write_egress_config "$dir/talon.egress.shadow.yaml" "shadow"
   local gw_shadow_log="$dir/gateway_egress_shadow.log"
   run_talon serve --port "$gateway_port" --gateway --gateway-config "$dir/talon.egress.shadow.yaml" >"$gw_shadow_log" 2>&1 &
-  TALON_GATEWAY_PID=$!
-  if ! smoke_wait_health "$gateway_base_url" 10 1; then
-    log_failure "shadow egress gateway did not start" "pid=$TALON_GATEWAY_PID"
-    dump_diag_file "section 32 shadow serve log" "$gw_shadow_log"
-    kill "$TALON_GATEWAY_PID" 2>/dev/null || true
-    TALON_GATEWAY_PID=""
-    cd "$REPO_ROOT" || true
-    return 0
-  fi
-  local shadow_body="/tmp/talon_egress_shadow.json"
-  code="$(smoke_gw_post_chat_to_file "$gateway_base_url" "Bearer $gw_key" "$SMOKE_BODY_PII" "$shadow_body")"
-  if [[ "$code" != "403" ]]; then
-    echo "  ✓  shadow mode does not block egress violation (http_code=$code)"
+  local legacy_pid=$!
+  local waited=0 legacy_exited=0
+  while (( waited < 20 )); do
+    if ! kill -0 "$legacy_pid" 2>/dev/null; then legacy_exited=1; break; fi
+    sleep 0.5; waited=$((waited + 1))
+  done
+  if [[ "$legacy_exited" -eq 1 ]] && ! wait "$legacy_pid" 2>/dev/null && grep -q 'gateway.mode' "$gw_shadow_log"; then # #442 legacy-config refusal
+    echo "  ✓  legacy gateway.mode config refused at startup with migration guidance (#442)"
     record_pass
   else
-    log_failure "shadow mode should not return 403 for egress violation" "body=$(cat "$shadow_body" 2>/dev/null)"
+    kill "$legacy_pid" 2>/dev/null || true
+    wait "$legacy_pid" 2>/dev/null || true
+    log_failure "legacy gateway.mode config must fail startup (#442)" "log=$(tail -5 "$gw_shadow_log" 2>/dev/null)"
   fi
-  local sv_match=0
-  ev_index="$(curl -s -H "X-Talon-Admin-Key: ${TALON_ADMIN_KEY}" "${gateway_base_url}${SMOKE_PATH_EVIDENCE}?limit=20")"
-  while read -r evid; do
-    [[ -z "$evid" ]] && continue
-    ev_json="$(curl -s -H "X-Talon-Admin-Key: ${TALON_ADMIN_KEY}" "${gateway_base_url}${SMOKE_PATH_EVIDENCE}/${evid}")"
-    if echo "$ev_json" | jq -e '
-        .observation_mode_override == true
-        and ([.shadow_violations[]? | select(.detail | startswith("egress_"))] | length) > 0' >/dev/null 2>&1; then
-      sv_match=1
-      break
-    fi
-  done < <(echo "$ev_index" | jq -r '.entries[]? | .id' 2>/dev/null)
-  if [[ "$sv_match" -eq 1 ]]; then
-    echo "  ✓  shadow mode records egress violation in evidence"
-    record_pass
-  else
-    log_failure "shadow evidence should carry an egress shadow violation" \
-      "index=$(echo "$ev_index" | jq -c '.entries[]? | .id' 2>/dev/null | head -5)"
-  fi
+  TALON_GATEWAY_PID=""
+  local shadow_body=""
 
   rm -f "$deny_body" "$clean_body" "$shadow_body" 2>/dev/null || true
   kill "$TALON_GATEWAY_PID" 2>/dev/null || true

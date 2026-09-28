@@ -21,7 +21,7 @@ talon init --pack copaw --name copaw-gateway
 # Or run `talon init` and choose CoPaw from the wizard.
 ```
 
-This creates `agent.talon.yaml` — the **`copaw-gateway` agent**: CoPaw's Talon traffic identity (`agent.key.secret_name: copaw-gateway-talon-key`) plus its policy override (cost limits, gateway model allowlist, `metadata.tags: [copaw]` for the CoPaw dashboard views) — and `talon.config.yaml` (gateway config with providers, the organization baseline under `organization_policy`, and shadow mode by default).
+This creates `agent.talon.yaml` — the **`copaw-gateway` agent**: CoPaw's Talon traffic identity (`agent.key.secret_name: copaw-gateway-talon-key`) plus its policy override (cost limits, gateway model allowlist, `metadata.tags: [copaw]` for the CoPaw dashboard views) — and `talon.config.yaml` (gateway config with providers and the organization baseline under `organization_policy`).
 
 ### 2. Set the vault key, store the real provider key, mint the agent key
 
@@ -94,7 +94,7 @@ Evidence rows will show `agent_id: copaw-gateway`. The Talon dashboard (`/dashbo
 
 ### 6. Policy and monitoring
 
-- **Shadow mode:** The generated config uses `gateway.mode: shadow` so violations are logged but not enforced. After 24h run `talon enforce report`, then switch to `enforce` in `talon.config.yaml` if desired.
+- **Always enforced:** there is no shadow posture (#442) — the action each rule declares is what happens. Check the files before pointing CoPaw at Talon (`talon doctor` for `talon.config.yaml`, `talon validate` for the agent file), start with permissive actions (`pii_action: warn`), and tighten after reviewing `talon audit list --agent copaw-gateway`.
 - **Cost limits:** Adjust `policies.cost_limits.daily` and `.monthly` in the agent file — each replaces the organization baseline cap when > 0.
 - **PII:** Set the floor in `gateway.organization_policy.defaults.pii_action`; tighten per agent via the `policies.data_classification` booleans (`input_scan` + `redact_input` → redact; `block_on_pii` → block; `input_scan` alone scans without changing the action). The merge is monotonic — an agent can only tighten the org floor, never weaken it.
 

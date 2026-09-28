@@ -66,7 +66,7 @@ func TestFillSessions_MixedProviderIsOneSession(t *testing.T) {
 	require.NoError(t, store.Store(ctx, sessEvidence("ev1", "sess-mix", "coder", "anthropic", "claude-opus-4-8", "generator", 0.20, true, now.Add(-2*time.Minute))))
 	require.NoError(t, store.Store(ctx, sessEvidence("ev2", "sess-mix", "coder", "openai", "gpt-5.3-codex", "executor", 0.10, true, now.Add(-1*time.Minute))))
 
-	c := NewCollector("enforce", nil, WithSessionQuerier(store))
+	c := NewCollector(nil, WithSessionQuerier(store))
 	defer c.Close()
 	snap := c.Snapshot(ctx)
 
@@ -110,7 +110,7 @@ func TestFillSessions_EqualsAuditSummary(t *testing.T) {
 	tool.Execution.ToolsCalled = []string{"delete_record"}
 	require.NoError(t, store.Store(ctx, tool))
 
-	c := NewCollector("enforce", nil, WithSessionQuerier(store))
+	c := NewCollector(nil, WithSessionQuerier(store))
 	defer c.Close()
 	snap := c.Snapshot(ctx)
 	require.Len(t, snap.Sessions, 1)
@@ -141,7 +141,7 @@ func TestFillSessions_SurvivesReconcile(t *testing.T) {
 	require.NoError(t, store.Store(ctx, sessEvidence("ev1", "sess-rec", "coder", "anthropic", "claude-sonnet-5", "generator", 0.05, true, now.Add(-2*time.Minute))))
 	require.NoError(t, store.Store(ctx, sessEvidence("ev2", "sess-rec", "coder", "openai", "gpt-5.3-codex", "judge", 0.01, true, now.Add(-1*time.Minute))))
 
-	c := NewCollector("enforce", nil, WithSessionQuerier(store))
+	c := NewCollector(nil, WithSessionQuerier(store))
 	defer c.Close()
 
 	before := c.Snapshot(ctx).Sessions
@@ -163,7 +163,7 @@ func TestFillSessions_HiddenWithoutOrchestration(t *testing.T) {
 	ev.Orchestration = nil // synthetic: no orchestration block
 	require.NoError(t, store.Store(ctx, ev))
 
-	c := NewCollector("enforce", nil, WithSessionQuerier(store))
+	c := NewCollector(nil, WithSessionQuerier(store))
 	defer c.Close()
 	snap := c.Snapshot(ctx)
 	assert.Empty(t, snap.Sessions)
@@ -181,7 +181,7 @@ func TestFillSessions_BoundedByRecency(t *testing.T) {
 			now.Add(-time.Duration(maxDashboardSessions+5-i)*time.Minute))
 		require.NoError(t, store.Store(ctx, ev))
 	}
-	c := NewCollector("enforce", nil, WithSessionQuerier(store))
+	c := NewCollector(nil, WithSessionQuerier(store))
 	defer c.Close()
 	snap := c.Snapshot(ctx)
 	require.Len(t, snap.Sessions, maxDashboardSessions)
@@ -194,7 +194,7 @@ func TestFillSessions_BoundedByRecency(t *testing.T) {
 // TestDenialsByReason_SessionDenialsNotLumped: a session-budget deny buckets
 // under its machine code, not generic policy_deny.
 func TestDenialsByReason_SessionDenialsNotLumped(t *testing.T) {
-	c := NewCollector("enforce", nil)
+	c := NewCollector(nil)
 	defer c.Close()
 	now := time.Now().UTC()
 

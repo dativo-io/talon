@@ -32,7 +32,6 @@ func TestGateway_SovereigntyDeny_USProvider(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:                  true,
 		ListenPrefix:             "/v1/proxy",
-		Mode:                     ModeEnforce,
 		EffectiveSovereigntyMode: config.DataSovereigntyEUStrict,
 		Providers: map[string]ProviderConfig{
 			"openai": {
@@ -61,7 +60,7 @@ func TestGateway_SovereigntyDeny_USProvider(t *testing.T) {
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key",
 		[]byte("sk-test"), secrets.ACL{Tenants: []string{"default"}, Agents: []string{"*"}}))
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
@@ -89,7 +88,6 @@ func TestGateway_SovereigntyAllow_EUProvider(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:                  true,
 		ListenPrefix:             "/v1/proxy",
-		Mode:                     ModeEnforce,
 		EffectiveSovereigntyMode: config.DataSovereigntyEUStrict,
 		Providers: map[string]ProviderConfig{
 			"ollama": {
@@ -118,7 +116,7 @@ func TestGateway_SovereigntyAllow_EUProvider(t *testing.T) {
 	require.NoError(t, secStore.Set(context.Background(), "ollama-api-key",
 		[]byte("local"), secrets.ACL{Tenants: []string{"default"}, Agents: []string{"*"}}))
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 
 	body := `{"model":"llama3.2:1b","messages":[{"role":"user","content":"hi"}]}`
@@ -127,11 +125,10 @@ func TestGateway_SovereigntyAllow_EUProvider(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-// Data residency is a HARD platform boundary (#266 review round 4): eu_strict
-// blocks a non-EU provider in EVERY mode, including shadow — forwarding
-// EU-resident data to a US provider merely to "observe" would itself breach
-// residency.
-func TestGateway_SovereigntyDeny_ShadowModeStillBlocks(t *testing.T) {
+// Data residency is a hard platform boundary: eu_strict blocks a non-EU
+// provider with zero dispatch — forwarding EU-resident data to a US provider
+// would itself breach residency, so the denial is proven at the upstream.
+func TestGateway_SovereigntyDeny_ZeroDispatch(t *testing.T) {
 	var upstreamCalls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls.Add(1)
@@ -145,7 +142,6 @@ func TestGateway_SovereigntyDeny_ShadowModeStillBlocks(t *testing.T) {
 	cfg := &GatewayConfig{
 		Enabled:                  true,
 		ListenPrefix:             "/v1/proxy",
-		Mode:                     ModeShadow,
 		EffectiveSovereigntyMode: config.DataSovereigntyEUStrict,
 		Providers: map[string]ProviderConfig{
 			"openai": {
@@ -162,7 +158,7 @@ func TestGateway_SovereigntyDeny_ShadowModeStillBlocks(t *testing.T) {
 			StreamIdleTimeout: "60s",
 		},
 	}
-	registry := testRegistry(testIdentity("test", "default", "talon-gw-sov-shadow", nil))
+	registry := testRegistry(testIdentity("test", "default", "talon-gw-sov-zero", nil))
 
 	evStore, err := evidence.NewStore(filepath.Join(dir, "e.db"), testutil.TestSigningKey)
 	require.NoError(t, err)
@@ -174,19 +170,19 @@ func TestGateway_SovereigntyDeny_ShadowModeStillBlocks(t *testing.T) {
 	require.NoError(t, secStore.Set(context.Background(), "openai-api-key",
 		[]byte("sk-test"), secrets.ACL{Tenants: []string{"default"}, Agents: []string{"*"}}))
 
-	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, nil, nil)
+	gw, err := NewGateway(cfg, NewRegistryHolder(registry), classifier.MustNewScanner(), evStore, secStore, testGatewayPolicy(t), nil)
 	require.NoError(t, err)
 
 	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
-	w := makeGatewayRequestWithKey(gw, "/v1/proxy/openai/v1/chat/completions", body, "talon-gw-sov-shadow")
+	w := makeGatewayRequestWithKey(gw, "/v1/proxy/openai/v1/chat/completions", body, "talon-gw-sov-zero")
 
-	assert.Equal(t, http.StatusForbidden, w.Code, "eu_strict is a hard boundary — blocks even in shadow")
+	assert.Equal(t, http.StatusForbidden, w.Code, "eu_strict is a hard boundary")
 	assert.Equal(t, int64(0), upstreamCalls.Load(), "EU-resident data must never egress to a non-EU provider")
 
 	records, err := evStore.List(context.Background(), "default", "", time.Time{}, time.Now(), 5)
 	require.NoError(t, err)
 	require.NotEmpty(t, records)
-	assert.False(t, records[0].PolicyDecision.Allowed, "sovereignty denial is recorded as a real block")
+	assertEnforcedDenial(t, &records[0])
 }
 
 func makeGatewayRequestWithKey(gw *Gateway, path, body, agentKey string) *httptest.ResponseRecorder {

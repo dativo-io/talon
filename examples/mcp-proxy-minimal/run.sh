@@ -15,7 +15,7 @@ fi
 
 echo "Starting Talon MCP proxy (minimal config)..."
 echo "  Config: $SCRIPT_DIR/proxy.talon.yaml"
-echo "  Mode:   shadow (audit only, no blocking)"
+echo "  Policy: enforced (allowed tools forwarded, forbidden tools blocked)"
 echo ""
 echo "Point your vendor AI at:"
 echo "  http://localhost:8080/mcp/proxy"

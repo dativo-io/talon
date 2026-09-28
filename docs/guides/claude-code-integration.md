@@ -23,7 +23,7 @@ This creates four files:
 
 - `agent.talon.yaml` — the **`claude-code` agent**: Claude Code's Talon traffic identity (`agent.key.secret_name: claude-code-talon-key`) plus its policy override with coding-tuned defaults — `session_limits.max_cost: 10.00`, `cost_limits.daily: 50.00` / `monthly: 500.00`, `input_scan: true` (input PII action `warn`), `allowed_providers: ["anthropic"]` — and high-precision credential recognizers (PEM private-key blocks, AWS `AKIA...` key IDs, GitHub `ghp_`/`github_pat_` tokens, Anthropic/OpenAI `sk-ant-...`/`sk-proj-...` keys) so leaked credentials in prompt traffic land in evidence.
 - `agents/codex/agent.talon.yaml` — the `codex` agent for Codex CLI (see the [Codex guide](codex-cli-integration.md)). To serve both agents from one `talon serve`, set `agents_dir: "."` in `talon.config.yaml` (the pack ships it commented out): discovery (#267, shipped) loads every file named exactly `agent.talon.yaml` under it — provision both agents' keys first. Without `agents_dir`, `talon serve` runs the single default `agent.talon.yaml`.
-- `talon.config.yaml` — gateway config with the Anthropic provider, the **organization baseline** (`organization_policy.defaults`: `pii_action: warn`, `response_pii_action: allow`), **shadow mode**, and a raised `request_timeout: 600s` (the response-header wait follows it by default).
+- `talon.config.yaml` — gateway config with the Anthropic provider, the **organization baseline** (`organization_policy.defaults`: `pii_action: warn`, `response_pii_action: allow`), and a raised `request_timeout: 600s` (the response-header wait follows it by default).
 - `pricing/models.yaml` — the LLM cost-estimation table (a copy of the embedded default). The relative `pricing_file` resolves against the active policy file's directory in single-file mode: in this guide's flow (policy at the project root) that's the project root, so edits work; in the Codex single-file flow (`TALON_DEFAULT_POLICY=agents/codex/...`) they are silently ignored — see the [Codex guide's pricing caveat](codex-cli-integration.md#5-verify).
 
 These defaults are deliberate — see [Why the pack defaults look like this](#why-the-pack-defaults-look-like-this) below before changing them.
@@ -157,19 +157,20 @@ Honest semantics, stated plainly ([LIMITATIONS.md §7](../../LIMITATIONS.md#7-co
 
 Session budgets stack with the agent's daily/monthly caps (`policies.cost_limits`), and sessions from one agent never affect another agent's budget (`TestSessionBudget_AgentAndTenantIsolation`).
 
-### 7. Roll out enforcement
+### 7. Roll out deliberately
 
-The generated config starts in `mode: "shadow"`: nothing is blocked, and every request that *would have been* denied is recorded as a shadow violation in signed evidence (`TestSessionBudget_ShadowMode` covers the session-budget case). Run in shadow until the dashboards look right, then:
+Active policy is always enforced (#442) — there is no shadow posture to warm up in, so the rollout lever is *which rules you declare*, not whether they apply. The pack's defaults are chosen for that: input PII is `warn` (recorded in evidence, traffic flows), the only hard controls are the provider allowlist and the budgets, and a budget denial is a real 403 with **zero provider dispatch** (`TestSessionBudget_ExceededDeny_ZeroDispatch`). Check the configuration before pointing real traffic at it:
 
 ```bash
-# Review what would have been blocked
-talon enforce report
+# Infrastructure config (talon.config.yaml) and agent policy (agent.talon.yaml)
+talon doctor
+talon validate
 
-# Flip to enforce mode
-talon enforce enable
+# A native policy decision with no provider call
+talon run --dry-run "Refactor the payment module"
 ```
 
-`talon enforce status` shows the current mode; `talon enforce disable` drops back to shadow.
+Tighten one rule at a time (`redact` before `block`; raise a budget before lowering it) and read the signed evidence between steps: `talon audit list --agent claude-code` shows every allow, warn, and deny as it actually happened.
 
 ---
 
@@ -201,7 +202,7 @@ Talon governs **model API traffic**. Claude Code's local tool executions — fil
 | Long generation hard-cut mid-stream | Streams bounded by idle silence, not total duration (#217) | `stream_idle_timeout` (raise for slow providers); `request_timeout: 600s` still bounds non-streaming calls and the header wait |
 | Subagent spend invisible in aggregate numbers | Per-agent rollup inside the session summary | `talon audit list --session` (`evidence.BuildSessionSummary`) |
 | Hostile/oversized orchestration header values | Validated at ingestion: 128-byte cap, HTTP token charset, rejected not truncated; recorded as `client_asserted`, never a policy input | `internal/gateway/orchmeta.go`, `TestPolicyInputParity_WithAssertedSession` |
-| Enforcement flipped on blind | Shadow mode records would-have-denied violations first | `mode: "shadow"`, `talon enforce report` / `enable` |
+| Enforcement flipped on blind | No observe-only posture to hide behind: the pack ships `warn` for PII and real denials only for budgets/providers; verify config with `talon doctor` / `talon validate` before traffic | `pii_action: warn`, `talon run --dry-run` |
 | Evidence tampering | HMAC-signed evidence chain, verifiable per session | `talon audit verify --session <id>` |
 
 ---
@@ -219,7 +220,7 @@ Talon governs **model API traffic**. Claude Code's local tool executions — fil
 
 ## You're done
 
-Claude Code now sends all Anthropic API traffic through Talon. Talon logs every request into signed evidence, attributes sessions and subagents, scans inputs for leaked credentials, and enforces (or shadow-records) session and agent budgets.
+Claude Code now sends all Anthropic API traffic through Talon. Talon logs every request into signed evidence, attributes sessions and subagents, scans inputs for leaked credentials, and enforces session and agent budgets.
 
 **Next steps:**
 

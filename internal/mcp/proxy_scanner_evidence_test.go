@@ -80,7 +80,6 @@ func newProxyWithUpstream(t *testing.T, cls classifier.Facade, upstreamResult st
 	cfg := &policy.ProxyPolicyConfig{
 		Agent: policy.ProxyAgentConfig{Name: "t", Type: "mcp_proxy"},
 		Proxy: policy.ProxyConfig{
-			Mode:         "intercept",
 			Upstream:     policy.UpstreamConfig{URL: upstream.URL, Vendor: "test"},
 			AllowedTools: []policy.ToolMapping{{Name: "echo_tool"}},
 		},

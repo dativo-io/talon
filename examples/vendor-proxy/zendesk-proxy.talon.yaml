@@ -9,7 +9,6 @@ agent:
   version: 1.0.0
 
 proxy:
-  mode: intercept  # intercept | passthrough | shadow
   upstream:
     vendor: zendesk-ai
     url: "https://zendesk-ai-vendor.example.com/mcp"

@@ -733,7 +733,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	monthEnd := monthStart.AddDate(0, 1, 0)
 	resp := map[string]interface{}{
 		"status": "ok", "evidence_count_today": 0, "cost_today": 0.0, "monthly": 0.0, "active_runs": 0,
-		"pending_memory_reviews": 0, "blocked_count": 0, "error_rate": 0.0, "enforcement_mode": "", "tenant_id": tenantID,
+		"pending_memory_reviews": 0, "blocked_count": 0, "error_rate": 0.0, "tenant_id": tenantID,
 	}
 	// An agent key sees only its OWN agent's aggregates (#266 review r5);
 	// admin sees the tenant-wide rollup.
@@ -823,7 +823,6 @@ func (s *Server) applyMetricsCollectorStatus(ctx context.Context, resp map[strin
 	}
 	snap := s.metricsCollector.Snapshot(ctx)
 	resp["error_rate"] = snap.Summary.ErrorRate
-	resp["enforcement_mode"] = snap.EnforcementMode
 	resp["metrics_events_dropped"] = s.metricsCollector.DroppedEvents()
 	reconcile := s.metricsCollector.ReconcileStatus()
 	resp["metrics_reconcile_runs"] = reconcile.Runs

@@ -22,7 +22,6 @@ func TestLoadGatewayConfig(t *testing.T) {
 gateway:
   enabled: true
   listen_prefix: "/v1/proxy"
-  mode: enforce
   providers:
     openai:
       enabled: true
@@ -62,7 +61,6 @@ func TestLoadGatewayConfigRejectsLegacyKeys(t *testing.T) {
 	base := `
 gateway:
   enabled: true
-  mode: enforce
   providers:
     ollama:
       enabled: true
@@ -115,7 +113,6 @@ func TestLoadGatewayConfigRejectsPreSplitOrgKeys(t *testing.T) {
 	base := `
 gateway:
   enabled: true
-  mode: enforce
   providers:
     ollama:
       enabled: true
@@ -169,7 +166,6 @@ func TestValidateBudgetBounds(t *testing.T) {
 	base := `
 gateway:
   enabled: true
-  mode: enforce
   providers:
     ollama:
       enabled: true
@@ -223,7 +219,6 @@ func TestValidateCostWebhookURL(t *testing.T) {
 	base := `
 gateway:
   enabled: true
-  mode: enforce
   providers:
     ollama:
       enabled: true
@@ -268,7 +263,6 @@ func TestValidateOrgAllowedProvidersAgainstConfigured(t *testing.T) {
 	base := `
 gateway:
   enabled: true
-  mode: enforce
   providers:
     openai:
       enabled: true

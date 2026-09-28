@@ -25,7 +25,6 @@ func openclawProxyCfg() *policy.ProxyPolicyConfig {
 	return &policy.ProxyPolicyConfig{
 		Agent: policy.ProxyAgentConfig{Name: "openclaw-vendor", Type: "mcp_proxy"},
 		Proxy: policy.ProxyConfig{
-			Mode: "intercept",
 			Upstream: policy.UpstreamConfig{
 				URL:    "https://placeholder.invalid",
 				Vendor: "openclaw",

@@ -86,7 +86,7 @@ func TestFleetOps_Walkthrough(t *testing.T) {
 	})
 
 	cfg := &gateway.GatewayConfig{
-		Enabled: true, ListenPrefix: "/v1/proxy", Mode: gateway.ModeEnforce,
+		Enabled: true, ListenPrefix: "/v1/proxy",
 		Providers: map[string]gateway.ProviderConfig{
 			"openai": {Enabled: true, BaseURL: upstream.URL, SecretName: "openai-api-key"},
 		},
@@ -141,7 +141,7 @@ func TestFleetOps_Walkthrough(t *testing.T) {
 			})
 		}
 		statuses := fleet.AssembleStatuses(members, orgCaps, "USD")
-		rows, err := fleet.Project(ctx, evStore, sessStore, statuses, fleet.DefaultThresholds(), time.Now().UTC(), true)
+		rows, err := fleet.Project(ctx, evStore, sessStore, statuses, fleet.DefaultThresholds(), time.Now().UTC())
 		require.NoError(t, err)
 		byName := map[string]fleet.AgentRow{}
 		for i := range rows {

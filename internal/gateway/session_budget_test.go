@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,19 +45,29 @@ func sbEstimator(_, _ string, u Usage) CostResult {
 	return CostResult{Amount: sbActual, PricingKnown: true, PricingBasis: PricingBasisTable}
 }
 
-func newSessionBudgetUpstreams(t *testing.T) (anthropicURL, openaiURL string) {
+// sbUpstreamCalls counts provider dispatches per route so a session-budget
+// denial can be proven preventive (AGENTS.md "Preventive-control proof").
+type sbUpstreamCalls struct {
+	anthropic atomic.Int64
+	openai    atomic.Int64
+}
+
+func newSessionBudgetUpstreams(t *testing.T) (anthropicURL, openaiURL string, calls *sbUpstreamCalls) {
 	t.Helper()
+	calls = &sbUpstreamCalls{}
 	anth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.anthropic.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"msg_1","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5}}`))
 	}))
 	t.Cleanup(anth.Close)
 	oai := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.openai.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"cmpl_1","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
 	}))
 	t.Cleanup(oai.Close)
-	return anth.URL, oai.URL
+	return anth.URL, oai.URL, calls
 }
 
 // sbFlatEstimator prices estimate and actual identically (1.0), making
@@ -67,21 +77,28 @@ func sbFlatEstimator(_, _ string, _ Usage) CostResult {
 	return CostResult{Amount: sbEstimate, PricingKnown: true, PricingBasis: PricingBasisTable}
 }
 
-// newSessionBudgetGateway builds an enforce-mode gateway with the real OPA
+// newSessionBudgetGateway builds an enforce gateway with the real OPA
 // gateway engine, a session store, and the deterministic estimator above.
-func newSessionBudgetGateway(t *testing.T, mode Mode, maxSessionCost float64) (evStore *evidence.Store, sessStore *session.Store, handler http.Handler) {
+func newSessionBudgetGateway(t *testing.T, maxSessionCost float64) (evStore *evidence.Store, sessStore *session.Store, handler http.Handler) {
 	t.Helper()
-	return newSessionBudgetGatewayEst(t, mode, maxSessionCost, sbEstimator)
+	return newSessionBudgetGatewayEst(t, maxSessionCost, sbEstimator)
 }
 
-func newSessionBudgetGatewayEst(t *testing.T, mode Mode, maxSessionCost float64, estimator CostEstimator) (evStore *evidence.Store, sessStore *session.Store, handler http.Handler) {
+func newSessionBudgetGatewayEst(t *testing.T, maxSessionCost float64, estimator CostEstimator) (evStore *evidence.Store, sessStore *session.Store, handler http.Handler) {
 	t.Helper()
-	anthropicURL, openaiURL := newSessionBudgetUpstreams(t)
+	evStore, sessStore, handler, _ = newSessionBudgetGatewayCounting(t, maxSessionCost, estimator)
+	return evStore, sessStore, handler
+}
+
+// newSessionBudgetGatewayCounting additionally returns the per-route
+// upstream call counters.
+func newSessionBudgetGatewayCounting(t *testing.T, maxSessionCost float64, estimator CostEstimator) (evStore *evidence.Store, sessStore *session.Store, handler http.Handler, calls *sbUpstreamCalls) {
+	t.Helper()
+	anthropicURL, openaiURL, calls := newSessionBudgetUpstreams(t)
 	dir := t.TempDir()
 	cfg := &GatewayConfig{
 		Enabled:      true,
 		ListenPrefix: "/v1/proxy",
-		Mode:         mode,
 		Providers: map[string]ProviderConfig{
 			"anthropic": {Enabled: true, BaseURL: anthropicURL, SecretName: "anthropic-key"},
 			"openai":    {Enabled: true, BaseURL: openaiURL, SecretName: "openai-key"},
@@ -116,7 +133,7 @@ func newSessionBudgetGatewayEst(t *testing.T, mode Mode, maxSessionCost float64,
 	gw.SetPricingCurrency("USD")
 	r := chi.NewRouter()
 	r.Route("/v1/proxy", func(r chi.Router) { r.Handle("/*", gw) })
-	return evStore, sessStore, r
+	return evStore, sessStore, r, calls
 }
 
 func sbDo(t *testing.T, h http.Handler, provider, key, sessionID string) *httptest.ResponseRecorder {
@@ -158,7 +175,7 @@ func lastGatewayEvidence(t *testing.T, evStore *evidence.Store, tenant string) *
 // cap → the next request is denied on the OTHER provider route, because the
 // session accumulates per (tenant, agent, external id), not per provider.
 func TestSessionBudget_CrossProviderDeny(t *testing.T) {
-	evStore, sessStore, h := newSessionBudgetGateway(t, ModeEnforce, 10)
+	evStore, sessStore, h := newSessionBudgetGateway(t, 10)
 
 	rec1 := sbDo(t, h, "anthropic", sbTenantKeyA, "sess-xp")
 	require.Equal(t, http.StatusOK, rec1.Code, rec1.Body.String())
@@ -194,7 +211,7 @@ func TestSessionBudget_CrossProviderDeny(t *testing.T) {
 // under a different agent (same tenant) or different tenant is a separate
 // session with a separate budget (#214, #215).
 func TestSessionBudget_AgentAndTenantIsolation(t *testing.T) {
-	_, sessStore, h := newSessionBudgetGateway(t, ModeEnforce, 10)
+	_, sessStore, h := newSessionBudgetGateway(t, 10)
 
 	// coder-a exhausts its cap under sess-shared.
 	require.Equal(t, http.StatusOK, sbDo(t, h, "anthropic", sbTenantKeyA, "sess-shared").Code)
@@ -224,7 +241,7 @@ func TestSessionBudget_AgentAndTenantIsolation(t *testing.T) {
 // TestSessionBudget_SyntheticSessionsCreateNoRows: header-less traffic gets a
 // synthetic session id in evidence but must create ZERO session rows (#214).
 func TestSessionBudget_SyntheticSessionsCreateNoRows(t *testing.T) {
-	_, sessStore, h := newSessionBudgetGateway(t, ModeEnforce, 10)
+	_, sessStore, h := newSessionBudgetGateway(t, 10)
 	for i := 0; i < 5; i++ {
 		require.Equal(t, http.StatusOK, sbDo(t, h, "openai", sbTenantKeyA, "").Code)
 	}
@@ -239,7 +256,7 @@ func TestSessionBudget_SyntheticSessionsCreateNoRows(t *testing.T) {
 // an estimate that alone exceeds the cap is denied on the session's first
 // request.
 func TestSessionBudget_FirstRequestOverCap(t *testing.T) {
-	_, _, h := newSessionBudgetGateway(t, ModeEnforce, 0.5) // cap < estimate (1.0)
+	_, _, h := newSessionBudgetGateway(t, 0.5) // cap < estimate (1.0)
 	rec := sbDo(t, h, "anthropic", sbTenantKeyA, "sess-first")
 	require.Equal(t, http.StatusForbidden, rec.Code)
 	assert.Contains(t, rec.Body.String(), "session_budget_exceeded")
@@ -252,7 +269,7 @@ func TestSessionBudget_FirstRequestOverCap(t *testing.T) {
 // denied. Reservation eliminates the CONCURRENCY overshoot (see
 // TestSessionBudget_ConcurrentReservationHardBound), not estimation error.
 func TestSessionBudget_SingleRequestEstimateOvershoot(t *testing.T) {
-	_, sessStore, h := newSessionBudgetGateway(t, ModeEnforce, 5)
+	_, sessStore, h := newSessionBudgetGateway(t, 5)
 
 	// 0 + estimate(1) <= 5 → allowed; real cost 6 lands on the session.
 	require.Equal(t, http.StatusOK, sbDo(t, h, "anthropic", sbTenantKeyA, "sess-over").Code)
@@ -271,7 +288,7 @@ func TestSessionBudget_SingleRequestEstimateOvershoot(t *testing.T) {
 // to one row, and residual overshoot is bounded by estimation error, not
 // concurrency.
 func TestSessionBudget_ConcurrentBurstBound(t *testing.T) {
-	_, sessStore, h := newSessionBudgetGateway(t, ModeEnforce, 10)
+	_, sessStore, h := newSessionBudgetGateway(t, 10)
 	const n = 5
 	var wg sync.WaitGroup
 	codes := make([]int, n)
@@ -299,7 +316,7 @@ func TestSessionBudget_ConcurrentBurstBound(t *testing.T) {
 // burst against a cap of 3 admits EXACTLY 3 — under the soft cap all five
 // passed, because each saw zero spend.
 func TestSessionBudget_ConcurrentReservationHardBound(t *testing.T) {
-	_, sessStore, h := newSessionBudgetGatewayEst(t, ModeEnforce, 3, sbFlatEstimator)
+	_, sessStore, h := newSessionBudgetGatewayEst(t, 3, sbFlatEstimator)
 	const n = 5
 	var wg sync.WaitGroup
 	codes := make([]int, n)
@@ -338,7 +355,7 @@ func TestSessionBudget_ConcurrentReservationHardBound(t *testing.T) {
 // A denied request must return its reservation — otherwise every denial
 // permanently shrinks the session's remaining headroom.
 func TestSessionBudget_ReservationReleasedOnDeny(t *testing.T) {
-	_, sessStore, h := newSessionBudgetGatewayEst(t, ModeEnforce, 2, sbFlatEstimator)
+	_, sessStore, h := newSessionBudgetGatewayEst(t, 2, sbFlatEstimator)
 
 	require.Equal(t, http.StatusOK, sbDo(t, h, "openai", sbTenantKeyA, "sess-rel").Code)
 	require.Equal(t, http.StatusOK, sbDo(t, h, "openai", sbTenantKeyA, "sess-rel").Code)
@@ -355,7 +372,7 @@ func TestSessionBudget_ReservationReleasedOnDeny(t *testing.T) {
 // down traffic — the request proceeds and the gap is visible in signed
 // evidence via the session_budget_unavailable annotation.
 func TestSessionBudget_FailOpenAnnotated(t *testing.T) {
-	evStore, sessStore, h := newSessionBudgetGateway(t, ModeEnforce, 10)
+	evStore, sessStore, h := newSessionBudgetGateway(t, 10)
 	require.NoError(t, sessStore.Close()) // break the store
 
 	rec := sbDo(t, h, "openai", sbTenantKeyA, "sess-broken")
@@ -366,26 +383,35 @@ func TestSessionBudget_FailOpenAnnotated(t *testing.T) {
 	assert.True(t, ev.PolicyDecision.Allowed)
 }
 
-// TestSessionBudget_ShadowMode: in shadow mode the would-have-denied request
-// proceeds and the deny is recorded as a shadow violation.
-func TestSessionBudget_ShadowMode(t *testing.T) {
-	evStore, _, h := newSessionBudgetGateway(t, ModeShadow, 10)
+// TestSessionBudget_ExceededDeny_ZeroDispatch: a session-cap denial is
+// preventive (#442 removed the posture that let it through): 403 with the
+// machine code, no provider dispatch for the denied request, structured
+// session_budget detail on an unpostured deny record, and the reservation
+// released.
+func TestSessionBudget_ExceededDeny_ZeroDispatch(t *testing.T) {
+	evStore, sessStore, h, calls := newSessionBudgetGatewayCounting(t, 10, sbEstimator)
 
-	require.Equal(t, http.StatusOK, sbDo(t, h, "anthropic", sbTenantKeyA, "sess-shadow").Code)
-	require.Equal(t, http.StatusOK, sbDo(t, h, "anthropic", sbTenantKeyA, "sess-shadow").Code)
-	// 12 + 1 > 10 → would deny; shadow lets it through.
-	rec := sbDo(t, h, "anthropic", sbTenantKeyA, "sess-shadow")
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, http.StatusOK, sbDo(t, h, "anthropic", sbTenantKeyA, "sess-deny").Code)
+	require.Equal(t, http.StatusOK, sbDo(t, h, "anthropic", sbTenantKeyA, "sess-deny").Code)
+	require.Equal(t, int64(2), calls.anthropic.Load())
+
+	// 12 spent + 1 estimate > 10 → denied.
+	rec := sbDo(t, h, "anthropic", sbTenantKeyA, "sess-deny")
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Equal(t, "session_budget_exceeded", providerErrorType(t, rec))
+	assert.Equal(t, int64(2), calls.anthropic.Load(), "denied request must not reach the provider")
+	assert.Equal(t, int64(0), calls.openai.Load())
 
 	ev := lastGatewayEvidence(t, evStore, "tenant-a")
-	found := false
-	for _, sv := range ev.ShadowViolations {
-		if sv.Type == "policy_deny" && strings.Contains(sv.Detail, "session_budget_exceeded") {
-			found = true
-		}
-	}
-	assert.True(t, found, "shadow violation must carry the session budget deny: %+v", ev.ShadowViolations)
-	assert.True(t, ev.ObservationModeOverride)
+	assertEnforcedDenial(t, ev)
+	require.NotNil(t, ev.SessionBudget, "session_budget detail must be on the deny record")
+	assert.InDelta(t, 10.0, ev.SessionBudget.Limit, 1e-9)
+	assert.InDelta(t, 2*sbActual, ev.SessionBudget.Spent, 1e-9)
+	assert.InDelta(t, sbEstimate, ev.SessionBudget.Estimate, 1e-9)
+
+	sess, err := sessStore.GetByExternal(context.Background(), "tenant-a", "coder-a", "sess-deny")
+	require.NoError(t, err)
+	assert.Zero(t, sess.ReservedCost, "denied request must release its reservation")
 }
 
 // TestSessionBudgetDetail_OnlyOnSessionDeny: the structured detail is nil for
@@ -416,7 +442,7 @@ func TestSessionBudget_EvidenceFieldAdditive(t *testing.T) {
 // same session_cost_total and session_stage_counts — a candidate evaluated
 // against different session state could allow what the primary denied.
 func TestPolicyInputParity_WithAssertedSession(t *testing.T) {
-	_, sessStore, _ := newSessionBudgetGateway(t, ModeEnforce, 10)
+	_, sessStore, _ := newSessionBudgetGateway(t, 10)
 	// Reach the gateway through a second handle to call the builder directly.
 	dir := t.TempDir()
 	_ = dir
@@ -428,13 +454,13 @@ func TestPolicyInputParity_WithAssertedSession(t *testing.T) {
 
 	agent := testIdentity("coder-a", "tenant-a", sbTenantKeyA, &PolicyOverride{MaxSessionCost: 10})
 	gw, err := NewGateway(&GatewayConfig{
-		Enabled: true, ListenPrefix: "/v1/proxy", Mode: ModeEnforce,
+		Enabled: true, ListenPrefix: "/v1/proxy",
 		Providers: map[string]ProviderConfig{
 			"openai": {Enabled: true, BaseURL: "http://unused", SecretName: "k"},
 			"backup": {Enabled: true, BaseURL: "http://unused", SecretName: "k"},
 		},
 		Timeouts: TimeoutsConfig{ConnectTimeout: "5s", RequestTimeout: "30s", StreamIdleTimeout: "60s"},
-	}, NewRegistryHolder(testRegistry(agent)), classifier.MustNewScanner(), nil, nil, nil, sbEstimator)
+	}, NewRegistryHolder(testRegistry(agent)), classifier.MustNewScanner(), nil, nil, testGatewayPolicy(t), sbEstimator)
 	require.NoError(t, err)
 	gw.SetSessionStore(sessStore)
 
