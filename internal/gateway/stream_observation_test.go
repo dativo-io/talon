@@ -493,6 +493,7 @@ func TestGateway_StreamingWarn_AllWireFamilies(t *testing.T) {
 			require.NotNil(t, ev.Classification.ResponseScan)
 			assert.Equal(t, evidence.ResponseScanEnforcementPostDelivery, ev.Classification.ResponseScan.Enforcement)
 			assert.Equal(t, evidence.ResponseScanStatusComplete, ev.Classification.ResponseScan.Status)
+			assert.True(t, ev.Classification.ResponseScan.Streamed, "the upstream answered with an SSE stream")
 			assert.Equal(t, int64(len(tc.head+tc.tail)), ev.Classification.ResponseScan.BytesObserved)
 			assert.Equal(t, "POLICY_OBSERVED_PII_OUTPUT", ev.Explanations[0].Code)
 			assert.Equal(t, "allow", ev.Explanations[0].Decision)
@@ -728,6 +729,8 @@ func TestGateway_StreamingWarn_UpstreamErrorStatusIsNotAScan(t *testing.T) {
 	require.NotNil(t, ev.Classification.ResponseScan)
 	assert.Equal(t, evidence.ResponseScanStatusIncomplete, ev.Classification.ResponseScan.Status)
 	assert.Equal(t, evidence.ResponseScanIncompleteUpstreamError, ev.Classification.ResponseScan.IncompleteReason)
+	assert.False(t, ev.Classification.ResponseScan.Streamed,
+		"streamed reflects the upstream response actually delivered (a JSON error), not the client's stream:true")
 }
 
 // Many concurrent warn streams: every client gets its own bytes, every record

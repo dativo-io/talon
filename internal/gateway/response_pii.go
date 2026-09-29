@@ -527,7 +527,7 @@ func handleStreamingPIIScan(
 		forwardBufferedSSE(w, capture)
 		return nil
 	}
-	result := newResponseScanResult(action, true)
+	result := newResponseScanResult(action, upstreamStreamed(capture.Header(), capture.statusCode))
 
 	completedJSON := extractCompletedResponseFromSSE(raw)
 	contentText := ""

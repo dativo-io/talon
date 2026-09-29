@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 
@@ -91,6 +92,18 @@ func (o *observingStreamWriter) status() int {
 	return o.statusCode
 }
 
+// upstreamStreamed reports whether the response actually delivered to the
+// client was an SSE stream — the same test Forward applies (success status
+// and text/event-stream content type) — rather than whether the client
+// asked for one. A provider that answers a stream:true request with a JSON
+// error was not streamed, and evidence must say so.
+func upstreamStreamed(h http.Header, status int) bool {
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return status < http.StatusBadRequest && strings.Contains(h.Get("Content-Type"), "text/event-stream")
+}
+
 // observeStreamedResponse is the post-delivery half of the streaming `warn`
 // path: the stream has terminated (normally, by upstream failure, idle
 // abort or client cancellation) and every byte the client will ever get has
@@ -104,7 +117,7 @@ func observeStreamedResponse(ctx context.Context, obs *observingStreamWriter, ac
 	result := &ResponsePIIScanResult{
 		Action:        action,
 		Enforcement:   evidence.ResponseScanEnforcementPostDelivery,
-		Streamed:      true,
+		Streamed:      upstreamStreamed(obs.Header(), obs.status()),
 		Status:        evidence.ResponseScanStatusComplete,
 		BytesObserved: int64(obs.capture.Len()),
 		CaptureLimit:  int64(obs.limit),
